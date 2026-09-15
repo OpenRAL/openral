@@ -10,7 +10,7 @@
 # physics, which lives in robosuite.
 #
 # Sim-only today; the matching sim adapter is
-# python/sim/src/openral_sim/adapters/robocasa.py (the RoboCasa sim-backend adapter).
+# python/sim/src/openral_sim/backends/robocasa.py (the RoboCasa sim-backend adapter).
 # There is no `openral_hal.panda_mobile` adapter yet (real
 # Panda-on-mobile-base hardware is an integration target, not a near
 # product) -- `sdk_kind: open` and `hal.real` is null because the only
@@ -319,7 +319,7 @@ safety:
 
 # Three-camera convention: robosuite's left/right agent-view cameras + in-hand
 # wrist camera. RoboCasa renders via `robot0_agentview_left_image` /
-# `_right_image` / `robot0_eye_in_hand_image`; openral_sim.adapters.robocasa
+# `_right_image` / `robot0_eye_in_hand_image`; openral_sim.backends.robocasa
 # surfaces them as `shoulder_left`/`shoulder_right`/`wrist` (HAL-facing
 # convention). `vla_feature_key` stays camera1/2/3 (checkpoint-frozen). RC365
 # (rldx1-ft-rc365-nf4) consumes all three; single-camera rSkills (pi05,

@@ -5,7 +5,7 @@
 # today — exists only so SimEnvironment configs targeting SimplerEnv's
 # `widowx_*` envs (Bridge-Data setup) can round-trip through the schema.
 # Sim-imposed observation/action contract lives in
-# python/sim/src/openral_sim/adapters/simpler_env.py, not here.
+# python/sim/src/openral_sim/backends/simpler_env.py, not here.
 #
 # Kinematic numbers from the public WidowX-250s data sheet
 # (trossenrobotics.com/widowx-250). Joint limits are placeholder for the

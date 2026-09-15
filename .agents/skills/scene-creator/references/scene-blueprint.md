@@ -85,7 +85,7 @@ openral sim list
 openral sim run --config scenes/<path>.yaml --rskill rskills/<skill> --n-episodes 1
 openral sim run --config scenes/<path>.yaml --rskill rskills/<skill> --task <task-id>
 openral sim run --config scenes/<path>.yaml --rskill rskills/<skill> --instruction "<prompt>"
-openral benchmark run --suite <suite-id> --vla <vla-id>:rskills/<skill>
+openral benchmark run --suite <suite-id> --rskill rskills/<skill>
 ```
 
 If optional simulator dependencies are missing, tests may skip only with a concrete dependency reason. Do not replace a sim run with a mock success.

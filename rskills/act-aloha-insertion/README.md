@@ -45,22 +45,27 @@ top-level `just sim-custom` recipe.
 | License | MIT |
 | Paper | Zhao et al., 2023 — *Learning Fine-Grained Bimanual Manipulation with Low-Cost Hardware* ([arXiv 2304.13705](https://arxiv.org/abs/2304.13705)) |
 
-## Why no `eval/` block?
+## Evaluation
 
-This skill is shipped as a **custom-example** package, not as a
-reproduced benchmark entry. The paper's headline number for sim ALOHA
-insertion is markedly lower than the cube-transfer figure (the task is
-harder and the upstream protocol uses different camera intrinsics). We
-deliberately omit `eval/` rather than copy paper numbers without an
-internal reproduction; per CLAUDE.md §6.4 that omission must be
-documented — this section is that documentation. Add `eval/aloha_insertion.json`
-once a local reproduction lands.
+Locally reproduced on the **ALOHA bimanual peg insertion** benchmark via
+`openral benchmark run --suite aloha_insertion --rskill act-aloha-insertion`
+(`reproduced_locally: true`, see
+[`eval/aloha_insertion.json`](eval/aloha_insertion.json)).
+
+| Suite | Episodes | Protocol | Result |
+| --- | --- | --- | --- |
+| `aloha_insertion` | 50 | seeds 0–49, `success_key=is_success`, `max_steps=400` | **10/50 success (20%)** |
+
+The paper's headline number for sim ALOHA insertion is markedly lower than
+the cube-transfer figure (the task is harder and the upstream protocol uses
+different camera intrinsics); this reproduction confirms that gap rather
+than a regression.
 
 ## Supported robots
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| ALOHA bimanual (Trossen) — `gym-aloha` MuJoCo | `aloha`, `lerobot` | ✓ sim | 14-DoF (2 × 7-DoF arms with parallel grippers); MuJoCo MJX `AlohaInsertion-v0`. |
+| ALOHA bimanual (Trossen) — `gym-aloha` MuJoCo | `aloha` | ✓ sim | 14-DoF (2 × 7-DoF arms with parallel grippers); MuJoCo MJX `AlohaInsertion-v0`. |
 
 Same physical embodiment as the [`act-aloha`](../act-aloha/) sibling
 (cube transfer); the only difference is the task contact dynamics — peg
@@ -84,7 +89,7 @@ checkpoint does not consume wrist or third-person views.
 | `version` | `0.1.0` |
 | `license` | `mit` |
 | `role` | `s1` |
-| `embodiment_tags` | `aloha`, `lerobot` |
+| `embodiment_tags` | `aloha` |
 | `runtime` / `quantization.dtype` | `pytorch` / `fp32` |
 | `weights_uri` | `hf://lerobot/act_aloha_sim_insertion_human` |
 | `chunk_size` | 100 |

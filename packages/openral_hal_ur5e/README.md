@@ -1,12 +1,12 @@
 # `openral_hal_ur5e`
 
-ROS 2 lifecycle-node skeleton for the Universal Robots UR5e 6-DoF arm.
+ROS 2 lifecycle node for the Universal Robots UR5e 6-DoF arm.
 
-This package will wrap `openral_hal.ur.UR5eHAL` as a managed ROS 2
+This package wraps `openral_hal.ur.UR5eHAL` as a managed ROS 2
 lifecycle node. The Python HAL adapter ships today (sim-only, MuJoCo via
-the public `robot_descriptions` URDF); the ROS package is a **skeleton**
-— `lifecycle_node.py` is ~25 lines and its transition handlers land with
-the M3 hardware bring-up.
+the public `robot_descriptions` URDF); the ROS package is shipped via the
+shared `make_lifecycle_main_from_manifest` (same pattern as
+`openral_hal_so100`).
 
 ## Status
 
@@ -15,7 +15,7 @@ the M3 hardware bring-up.
 | `UR5eHAL` Python adapter | ✓ shipped (sim-only via MuJoCo) |
 | `UR5e_DESCRIPTION` (Pydantic) | ✓ shipped |
 | `ur5e_with_sensors` factory | ✓ shipped |
-| ROS 2 lifecycle node | skeleton only — handlers are TODOs |
+| ROS 2 lifecycle node | shipped — manifest-driven (`make_lifecycle_main_from_manifest`) |
 | HIL test on real UR5e | M3 (planned) |
 
 ## Intended interface
@@ -46,8 +46,8 @@ source /opt/ros/jazzy/setup.bash
 colcon build --merge-install --packages-select openral_hal_ur5e
 ```
 
-Not yet included in `just ros2-build`; add via `--packages-select` until
-the lifecycle node is complete.
+The package builds via `just ros2-build` (see `Justfile`'s `ros2-build`
+recipe, which lists it in `--packages-select`).
 
 ## See also
 

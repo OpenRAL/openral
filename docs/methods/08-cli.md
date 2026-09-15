@@ -15,7 +15,7 @@ _openral CLI entry point — `openral` command (typer-based)._
 - `_check_openral_core() -> CheckResult` (L446)
 - `_check_ros2() -> list[CheckResult]` — ROS 2 binary, distro, RMW. A missing `ros2` binary is `absent` (non-fatal), not `missing`: Tier-0 ships no ROS 2 by design, so `openral doctor` must still exit 0 there. (L454)
 - `_check_colcon() -> CheckResult` — `absent` (non-fatal) when unavailable, for the same Tier-0 reason as `_check_ros2`. (L502)
-- `_check_gpu() -> list[CheckResult]` — One row per GPU. (L511)
+- `_check_gpu(result, warnings) -> list[CheckResult]` — One row per GPU. (L511)
 - `_check_usb() -> list[CheckResult]` — Candidate robot USB serial devices. (L619)
 - `_check_just() -> CheckResult` (L637)
 - `_check_reasoner_llm() -> list[CheckResult]` — Model-first doctor dispatcher. Reads `OPENRAL_REASONER_MODEL`, resolves `REASONER_MODELS`, and reports the effective dialect / hosting / endpoint / key status; missing auth gets a follow-up row. An uncurated model fails until `OPENRAL_REASONER_ENDPOINT` is a named endpoint (or a URL plus `OPENRAL_REASONER_DIALECT`), then reports `warn` (untested). The provider-first contract was removed in 0.3.0 and is no longer read. Never prints the API key value. (L850)

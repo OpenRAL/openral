@@ -146,9 +146,7 @@ PickCube-trained policy replaces it. Re-run via the curated franka_panda
 suite (it auto-filters to this rSkill's task):
 
 ```bash
-openral benchmark run \
-    --suite maniskill3_panda \
-    --vla smolvla:rskills/smolvla-maniskill-franka
+openral benchmark run --suite maniskill3_panda --rskill rskills/smolvla-maniskill-franka
 ```
 
 ## How the wiring works

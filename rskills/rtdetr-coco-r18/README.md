@@ -142,7 +142,7 @@ The detector emits **no** `Action` chunks and has no proprioception
 | `license` | `apache-2.0` |
 | `role` | `s1` |
 | `kind` | `detector` (perception producer) |
-| `embodiment_tags` | all 17 canonical embodiment tags (any robot with RGB camera) |
+| `embodiment_tags` | `any` (explicit embodiment-agnostic wildcard) |
 | `runtime` / `quantization.dtype` | `onnx` / `fp32` |
 | `weights_uri` | `local://rskills/rtdetr-coco-r18` |
 | `latency_budget.per_chunk_ms` | `50.0` |

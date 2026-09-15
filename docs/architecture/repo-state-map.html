@@ -383,7 +383,7 @@
   <h2 class="section">Cross-cutting · not a layer, but every layer touches them</h2>
   <div class="cross" id="cross"></div>
 
-  <h2 class="section">Out of scope · never going to exist in this repo (per CLAUDE.md §0, §1)</h2>
+  <h2 class="section">Out of scope · never going to exist in this repo (per CLAUDE.md §1)</h2>
   <div class="cross cancelled-row" id="cancelled"></div>
 
 </section>
@@ -690,7 +690,7 @@ const LAYERS = [
         title: "HAL · Unitree G1 (real-HW)",
         pkg: "packages/hal_g1 (planned)",
         status: "blue",
-        desc: "M2 target. Will wrap unitree_sdk2 (DDS topics) and add a cerebellar S0 controller for balance (CLAUDE.md §6.2). RobotDescription will derive from G1_DESCRIPTION via make_real_description, mirroring the UR / Franka / Sawyer / ALOHA real-HW pattern.",
+        desc: "M2 target. Will wrap unitree_sdk2 (DDS topics) and add a cerebellar S0 controller for balance (CLAUDE.md §3). RobotDescription will derive from G1_DESCRIPTION via make_real_description, mirroring the UR / Franka / Sawyer / ALOHA real-HW pattern.",
         inputs: ["Action"],
         outputs: ["JointState"],
         schemas: ["RobotDescription", "JointState", "Action"],
@@ -1247,7 +1247,7 @@ const LAYERS = [
   {
     ix: "L4",
     name: "Reasoning (S2) — slow planner",
-    desc: "Event-driven LLM supervisor with a slow 0.2 Hz heartbeat (one tick every 5 s; per the 2026-05-25 amendment to CLAUDE.md §6.2 / §7.6), preempted by failures (Tier A/B/C) and operator prompts (Tier D) subject to a 100 ms min-interval — the direct ReasonerToolCall surface is the chosen and only planner output. Tool palette generated from the local skill registry filtered by RobotCapabilities + license posture, rebuilt on /openral/skill_registry_changed. Bounded replanning ladder.",
+    desc: "Event-driven LLM supervisor with a slow 0.2 Hz heartbeat (one tick every 5 s; per the 2026-05-25 amendment to CLAUDE.md §3), preempted by failures (Tier A/B/C) and operator prompts (Tier D) subject to a 100 ms min-interval — the direct ReasonerToolCall surface is the chosen and only planner output. Tool palette generated from the local skill registry filtered by RobotCapabilities + license posture, rebuilt on /openral/skill_registry_changed. Bounded replanning ladder.",
     blocks: [
       {
         title: "Reasoner package (direct tool dispatch)",
@@ -1648,7 +1648,7 @@ const CROSS = [
   },
   {
     title: "Examples",
-    pkg: "examples/",
+    pkg: "scenes/",
     status: "green",
     desc: "scenes/ ships three-tier scene YAMLs: scenes/deploy/ (DeployScene, env-only, consumed by `openral deploy sim`), scenes/sim/ (SimScene, single rollout, consumed by `openral sim run --rskill <name>`), scenes/benchmark/ (BenchmarkScene, paper-comparable, consumed by `openral benchmark scene --rskill <name>` and aggregated into benchmarks/<id>.yaml suites by `openral benchmark run --suite <id> --rskill <name>`). Each YAML carries scene + task (and optional robot_id for free-axis scenes); policy is supplied at the CLI as --rskill rskills/<id>. Loaders: load_scene_strict(..., expect=DeployScene/SimScene/BenchmarkScene) (rejects legacy vla: blocks and wrong-tier YAMLs). Per-policy perf knobs (n_action_steps, compile, compile_mode for lerobot-style smolvla/act/pi05) live in the rSkill manifest's policy_extras, not the YAML. All Justfile sim-* recipes invoke `openral sim run --config scenes/sim/<yaml> --rskill rskills/<id>` (SimScene-tier) or `openral benchmark scene --config scenes/benchmark/<yaml>` (BenchmarkScene-tier); no per-example run.py scripts. The 3-panel debug-video helper lives at python/sim/src/openral_sim/_video.py (re-exported as openral_sim.save_episode_mp4). Direct lerobot.<Family>Policy.from_pretrained is forbidden — every config loads weights via the rSkill manifest so the runner's compat check fires.",
   },
@@ -1706,7 +1706,7 @@ const CROSS = [
     title: "SO-100 robosuite integration",
     pkg: "python/sim · openral_sim.backends.so100_robosuite",
     status: "green",
-    desc: "Registers the Hugging Face SO-100 follower as a first-class robosuite robot model (SO100 / ManipulatorModel) + gripper (SO100Gripper) so any robosuite env can use it via robots=['SO100']. The arm + jaw XMLs are rewritten at import time from the upstream DeepMind mujoco_menagerie SO-100 MJCF (split into arm + gripper, nested defaults flattened, motor actuators with ±200 N·m headroom for OSC's mass-matrix-amplified output, absolute mesh paths, jaw range tightened to keep the moving finger clear of the table); cached under $OPENRAL_CACHE_DIR/so100_robosuite/<menagerie-fingerprint>/. make_so100_lift_env composes the registered robot with robosuite's stock Lift env on the standard TableArena (table_offset = (0, 0, 0.8) so the shipped agentview / frontview cameras frame the scene correctly), bolts the SO-100 onto the table top, and wires robosuite's stock parts/osc_position.json composite controller — only output_max (5 cm/step → 1 cm/step), kp (150 → 1500 for the SO-100's 30-50× smaller mass matrix) and input_ref_frame (base → world, to avoid silently re-rotating commands through the SO-100's 90°-z base orientation) are overridden. No custom controller class. The ScriptedPickPolicy is correspondingly tiny: ~150 lines, four-phase Cartesian state machine (approach / descend / close / lift) emitting clip((target - eef) / cartesian_step_m, -1, 1) — OSC owns the IK. End-to-end test at tests/sim/test_so100_robosuite_lift.py exercises registration + env basics + the policy's grasp attempt (eef within 3 cm of the cube, jaw qpos sweeps a > 0.4 rad range) against real MuJoCo physics with no mocks. Runnable demo at examples/so100_robosuite_lift.py (optional --video MP4 output). NOT a SCENES.register(...) adapter — no VLA-driven benchmark suite yet; the integration exists as a standalone subpackage for closed-loop testing of the SO-100 against robosuite envs.",
+    desc: "Registers the Hugging Face SO-100 follower as a first-class robosuite robot model (SO100 / ManipulatorModel) + gripper (SO100Gripper) so any robosuite env can use it via robots=['SO100']. The arm + jaw XMLs are rewritten at import time from the upstream DeepMind mujoco_menagerie SO-100 MJCF (split into arm + gripper, nested defaults flattened, motor actuators with ±200 N·m headroom for OSC's mass-matrix-amplified output, absolute mesh paths, jaw range tightened to keep the moving finger clear of the table); cached under $OPENRAL_CACHE_DIR/so100_robosuite/<menagerie-fingerprint>/. make_so100_lift_env composes the registered robot with robosuite's stock Lift env on the standard TableArena (table_offset = (0, 0, 0.8) so the shipped agentview / frontview cameras frame the scene correctly), bolts the SO-100 onto the table top, and wires robosuite's stock parts/osc_position.json composite controller — only output_max (5 cm/step → 1 cm/step), kp (150 → 1500 for the SO-100's 30-50× smaller mass matrix) and input_ref_frame (base → world, to avoid silently re-rotating commands through the SO-100's 90°-z base orientation) are overridden. No custom controller class. The ScriptedPickPolicy is correspondingly tiny: ~150 lines, four-phase Cartesian state machine (approach / descend / close / lift) emitting clip((target - eef) / cartesian_step_m, -1, 1) — OSC owns the IK. End-to-end test at tests/sim/test_so100_robosuite_lift.py exercises registration + env basics + the policy's grasp attempt (eef within 3 cm of the cube, jaw qpos sweeps a > 0.4 rad range) against real MuJoCo physics with no mocks. NOT a SCENES.register(...) adapter — no VLA-driven benchmark suite yet; the integration exists as a standalone subpackage for closed-loop testing of the SO-100 against robosuite envs.",
     inputs: ["mujoco_menagerie SO-100 MJCF (via robot_descriptions)"],
     outputs: ["robosuite SO100 + SO100Gripper (registered)", "_So100Lift env", "OSC_POSITION action_dim=4"],
     schemas: [],
@@ -1737,19 +1737,19 @@ const CANCELLED = [
     title: "Reinvented ROS 2 / tf2 / ros2_control",
     pkg: "(intentionally unbuilt)",
     status: "red",
-    desc: "CLAUDE.md §0: we compose ROS 2, tf2, MoveIt 2, Nav2, ros2_control. Any PR that wraps or replaces them is rejected.",
+    desc: "We compose ROS 2, tf2, MoveIt 2, Nav2, ros2_control. Any PR that wraps or replaces them is rejected.",
   },
   {
     title: "Foundation VLA training",
     pkg: "(intentionally unbuilt)",
     status: "red",
-    desc: "CLAUDE.md §0: we load VLAs, we do not train them. Training pipelines live upstream (LeRobot, openpi, Isaac GR00T).",
+    desc: "We load VLAs, we do not train them. Training pipelines live upstream (LeRobot, openpi, Isaac GR00T).",
   },
   {
     title: "Robot hardware",
     pkg: "(intentionally unbuilt)",
     status: "red",
-    desc: "CLAUDE.md §0: we target robots, we do not build them.",
+    desc: "We target robots, we do not build them.",
   },
   {
     title: "Bundled closed-source weights",
@@ -1773,13 +1773,13 @@ const CANCELLED = [
     title: "Hidden retries / fallbacks",
     pkg: "(banned)",
     status: "red",
-    desc: "CLAUDE.md §1.4 + §9: no implicit retries in dispatcher or skill executor. Every fallback is logged + traced.",
+    desc: "CLAUDE.md §1.4: no implicit retries in dispatcher or skill executor. Every fallback is logged + traced.",
   },
   {
     title: "Feature flags that disable safety",
     pkg: "(banned)",
     status: "red",
-    desc: "CLAUDE.md §9 + §12: any toggle that bypasses E-stop or weakens SafetyEnvelope is rejected on sight.",
+    desc: "CLAUDE.md §3: any toggle that bypasses E-stop or weakens SafetyEnvelope is rejected on sight.",
   },
 ];
 

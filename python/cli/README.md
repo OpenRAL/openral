@@ -11,8 +11,9 @@ eight-layer model in the project docs.
 - **Source:** https://github.com/OpenRAL/openral
 - **License:** Apache-2.0
 
-> All OpenRAL workspace packages move in lockstep at `0.1.x` until the first
-> public release.
+> All OpenRAL workspace packages move in lockstep at the same SemVer version
+> (currently `0.3.1`); the bump is computed from Conventional Commits by
+> release-please.
 
 ## BEHAVIOR Challenge
 

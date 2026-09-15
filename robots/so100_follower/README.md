@@ -39,7 +39,7 @@ acceleration ≤ 2.0 m/s². Deadman required (`deadman_required: true`).
 | Python description | `openral_hal.SO100_DESCRIPTION` |
 | Sensor factory | `openral_hal.so100_with_sensors` |
 | ROS 2 lifecycle node | [`packages/openral_hal_so100/`](../../packages/openral_hal_so100/README.md) |
-| Compatible rSkills | [`smolvla-libero`](../../skills/smolvla-libero/README.md) (digital-twin verified) |
+| Compatible rSkills | [`smolvla-libero`](../../rskills/smolvla-libero/README.md) (digital-twin verified) |
 
 ## Joints
 
@@ -87,5 +87,5 @@ state uses 6-DoF twin positions padded to 7-DoF where needed by the VLA.
 
 - [`python/hal/README.md`](../../python/hal/README.md) — `SO100FollowerHAL`, `SO100DigitalTwin`, sensor wiring.
 - [`packages/openral_hal_so100/README.md`](../../packages/openral_hal_so100/README.md) — ROS lifecycle node.
-- [`skills/smolvla-libero/README.md`](../../skills/smolvla-libero/README.md) — example rSkill for this embodiment.
+- [`rskills/smolvla-libero/README.md`](../../rskills/smolvla-libero/README.md) — example rSkill for this embodiment.
 - [`docs/quickstart/so100.md`](../../docs/quickstart/so100.md) — sim and hardware quickstart.

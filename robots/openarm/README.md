@@ -27,7 +27,7 @@ MJCF — PR #19 on master).
 | Supported control modes | `joint_position` |
 | `sdk_kind` | `open` (Enactic OpenArm + upstream MJCF) |
 | `hal.sim` | `openral_hal.openarm:OpenArmMujocoHAL` (`deploy sim`). The tabletop arena (table + cubes + drawer + overview camera) is **not** in this manifest — it lives on the scene (`scenes/deploy/openarm_tabletop.yaml` `composition:`; `scenes/sim/openarm_tabletop.yaml` `backend_options.top_camera_*`), per the scene-composition / robot-manifest separation convention. The robot / scene / rSkill are separate. |
-| `hal.real` | _null_ — sim-only until a lerobot OpenArm HAL lands (`deploy run` raises `ROSCapabilityMismatch`) |
+| `hal.real` | `openral_hal.openarm_real:OpenArmRealHAL` (`deploy run`) |
 
 ## What v2 fixes vs the v1 era
 
@@ -69,7 +69,7 @@ pinned to a known-good v2 SHA. The helper goes away once
 | Python description | `openral_hal.OPENARM_DESCRIPTION` |
 | Sim test | `tests/sim/test_openarm_hal_mujoco.py` |
 | v2 fetch helper | `openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf` |
-| Future real-HW HAL | wrapper around [LeRobot's OpenArm driver](https://huggingface.co/docs/lerobot/openarm) |
+| Real-HW HAL | `openral_hal.openarm_real.OpenArmRealHAL` |
 | Upstream URDF | [enactic/openarm](https://github.com/enactic/openarm) |
 | Upstream MJCF | [enactic/openarm_mujoco](https://github.com/enactic/openarm_mujoco) (v2 on master) |
 

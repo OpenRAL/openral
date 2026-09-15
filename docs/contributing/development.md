@@ -25,7 +25,7 @@ macOS 14+ is supported for Python/tooling work. ROS 2 on macOS runs inside the d
 
 ```bash
 git clone https://github.com/OpenRAL/openral
-cd OpenRAL
+cd openral
 just bootstrap          # installs uv, ROS 2, system deps (~5–10 min)
 source /opt/ros/jazzy/setup.bash   # or 'humble' on Ubuntu 22.04
 just sync               # install Python workspace deps (always `just sync`,

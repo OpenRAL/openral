@@ -10,7 +10,7 @@
 # Kinematics: coarse 7-DoF arm + mobile-base approximation matching
 # ManiSkill3/SimplerEnv. Joint limits are placeholder (no public vendor sheet).
 # IO contract (state/action shape, camera res) lives in the scene adapter
-# under python/sim/src/openral_sim/adapters/{maniskill3,simpler_env}.py, not here.
+# under python/sim/src/openral_sim/backends/{maniskill3,simpler_env}.py, not here.
 
 name: "google_robot"
 embodiment_kind: "mobile_manipulator"

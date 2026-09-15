@@ -6,7 +6,7 @@ gripper). The MetaWorld MT50 benchmark simulates this same robot through
 `metaworld` / `robosuite` MuJoCo wrappers; the sim-imposed observation /
 action contract (4-D `agent_pos` state, 4-D delta-XYZ-plus-gripper
 action) lives in the matching scene adapter at
-[`python/sim/src/openral_sim/adapters/metaworld.py`](../../python/sim/src/openral_sim/adapters/metaworld.py),
+[`python/sim/src/openral_sim/backends/metaworld.py`](../../python/sim/src/openral_sim/backends/metaworld.py),
 not in this manifest. This follows the
 robot/sim split convention.
 
@@ -40,8 +40,8 @@ runner.
 
 | Layer | Where |
 | --- | --- |
-| Python HAL adapter (sim) | _planned_ — currently driven by `openral_sim.adapters.metaworld` |
-| Real-HW adapter | _planned_ — see [#57](https://github.com/OpenRAL/openral/issues/57) (`intera_sdk` / `sawyer_robot`) |
+| Python HAL adapter (sim) | _planned_ — currently driven by `openral_sim.backends.metaworld` |
+| Real-HW adapter | `openral_hal.sawyer_real:SawyerRealHAL` |
 | ROS 2 lifecycle node | _planned_ — covered by PR 7 of the refinement plan |
 | Sim test | `tests/sim/test_smolvla_metaworld_push.py` (or wherever the metaworld_push config gets exercised) |
 | Example configs | [`scenes/benchmark/metaworld_push.yaml`](../../scenes/benchmark/metaworld_push.yaml) (pass `--rskill rskills/smolvla-metaworld`) |
@@ -50,4 +50,4 @@ runner.
 
 - The robot/sim split convention — robot-vs-sim split rationale.
 - [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md) §3.2 — MetaWorld VLA matrix.
-- [`python/sim/src/openral_sim/adapters/metaworld.py`](../../python/sim/src/openral_sim/adapters/metaworld.py) — sim-side IO contract.
+- [`python/sim/src/openral_sim/backends/metaworld.py`](../../python/sim/src/openral_sim/backends/metaworld.py) — sim-side IO contract.
