@@ -17,7 +17,7 @@ the two is guarded by
 | End-effector | `panda_hand` parallel gripper (1 DoF, 70 N max grip force, 3 kg payload) |
 | Embodiment tags | `franka_panda`, `franka`, `panda` |
 | Supported control modes | `joint_position` |
-| `sdk_kind` | `open` (MuJoCo via `mujoco_menagerie`); real-HW (FCI) tracked by [#56](https://github.com/OpenRAL/openral/issues/56) |
+| `sdk_kind` | `closed_with_api` (MuJoCo via `mujoco_menagerie`); real-HW (FCI) tracked by [#56](https://github.com/OpenRAL/openral/issues/56) |
 | `hal.sim` | `openral_hal.franka_panda:FrankaPandaHAL` (`deploy sim`) |
 | `hal.real` | `openral_hal.franka_panda_real:FrankaPandaRealHAL` (`deploy run`) |
 
@@ -33,7 +33,7 @@ Sim-imposed observation/action contracts (LIBERO's 8-D
 `eef_pos+axisangle+gripper_qpos` state, 7-D delta-EEF action, 180°
 image flip; RoboCasa's variants; etc.) live in the matching scene
 adapter under
-[`python/eval/src/openral_sim/adapters/`](../../python/eval/src/openral_sim/adapters/),
+[`python/sim/src/openral_sim/backends/`](../../python/sim/src/openral_sim/backends/),
 not here. This follows the robot/sim split convention —
 the previous `robots/libero_franka/` manifest conflated the two and
 has been retired.
@@ -43,7 +43,7 @@ has been retired.
 | Layer | Where |
 | --- | --- |
 | Python HAL adapter (sim) | `openral_hal.franka_panda:FrankaPandaHAL` |
-| Real-HW adapter | _planned_ — see [#56](https://github.com/OpenRAL/openral/issues/56) (`franka_ros2` / FCI) |
+| Real-HW adapter | `openral_hal.franka_panda_real:FrankaPandaRealHAL` |
 | ROS 2 lifecycle node | `packages/openral_hal_franka/` |
 | Sim test (HAL) | `tests/sim/test_franka_panda_hal_mujoco.py` |
 | Sim test (LIBERO + VLA) | `tests/sim/test_franka_panda_smolvla_libero.py`, `test_xvla_libero.py` (and skill-level π0.5 LIBERO test) |

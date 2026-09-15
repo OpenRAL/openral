@@ -1,10 +1,11 @@
 # `openral_hal_ur10e`
 
-ROS 2 lifecycle-node skeleton for the Universal Robots UR10e 6-DoF arm.
+ROS 2 lifecycle node for the Universal Robots UR10e 6-DoF arm.
 
 Mirror of `openral_hal_ur5e` for the larger 12.5 kg / 1.30 m reach
 robot. The Python HAL adapter (`openral_hal.ur.UR10eHAL`) is shipped
-and sim-tested; the ROS package is a **skeleton**.
+and sim-tested; the ROS package is shipped via the shared
+`make_lifecycle_main_from_manifest` (same pattern as `openral_hal_so100`).
 
 ## Status
 
@@ -13,7 +14,7 @@ and sim-tested; the ROS package is a **skeleton**.
 | `UR10eHAL` Python adapter | ✓ shipped (sim-only via MuJoCo) |
 | `UR10e_DESCRIPTION` (Pydantic) | ✓ shipped |
 | `ur10e_with_sensors` factory | ✓ shipped |
-| ROS 2 lifecycle node | skeleton only — handlers are TODOs |
+| ROS 2 lifecycle node | shipped — manifest-driven (`make_lifecycle_main_from_manifest`) |
 | HIL test on real UR10e | M3 (planned) |
 
 ## Intended interface
@@ -44,7 +45,8 @@ source /opt/ros/jazzy/setup.bash
 colcon build --merge-install --packages-select openral_hal_ur10e
 ```
 
-Not yet included in `just ros2-build`; add via `--packages-select`.
+The package builds via `just ros2-build` (see `Justfile`'s `ros2-build`
+recipe, which lists it in `--packages-select`).
 
 ## See also
 

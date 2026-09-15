@@ -398,8 +398,8 @@ Requires TF from `base_frame` into the OctoMap's `header.frame_id` (usually
 | `octomap_topic` | `/octomap_binary` | Input `octomap_msgs/Octomap`. |
 | `output_topic` | `/openral/world_voxels` | Output `OccupancyVoxels`. |
 | `resolution` | `0.05` | Output voxel edge length (m). |
-| `box_size_{x,y,z}` | `2.0` | Local volume extent around the robot (m). |
-| `box_center_{x,y,z}` | `0,0,0.5` | Local volume centre in `base_frame`. |
+| `coverage_radius_m` | `0.0` | Local volume radius around the robot (m). |
+| `coverage_center_{x,y,z}` | `0.0, 0.0, 0.5` | Local volume centre in `base_frame`. |
 | `publish_rate_hz` | `10.0` | Republish rate (the grid follows the robot via TF). |
 | `attached_clear_enabled` | `true` | Clear an attached payload's own cells out of the published grid. Off = pre-#110 behaviour (payload stays in the map and can stop the robot against itself). |
 | `world_state_topic` | `/openral/world_state_fast` | Where the attachment set is read from — the kernel's own source. |

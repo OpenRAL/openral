@@ -15,7 +15,7 @@ Live status of OpenRAL development. For detailed architecture and module-by-modu
 | Humanoid + bimanual HALs (sim) | ✅ shipped — `G1MujocoHAL`, `H1MujocoHAL`, `AlohaMujocoHAL`, `OpenArmMujocoHAL`, `Rizon4MujocoHAL`, `PandaMobileHAL` with lifecycle nodes |
 | Sensor adapters | 🟡 in flight — `openral_sensors` catalog (RealSense D435/D435i/D415, Logitech UVC, Luxonis OAK-D Pro, Robotiq FT 300-S) + launch-gen + ROS image publisher; full perception-head ROS package still planned |
 | World State aggregator | ✅ shipped — 30 Hz tf2-aware snapshot, stale-sensor diagnostics, detected-objects lift |
-| Persistent spatial memory (scene graph) | 🟡 in flight — durable advisory object/place/room/agent graph the S2 reasoner queries (recall/resolve) + CLIP open-vocab match; sqlite-vec persistence + ROS feeder pending |
+| Persistent spatial memory (scene graph) | 🟡 in flight — durable advisory object/place/room/agent graph the S2 reasoner queries (recall/resolve) + CLIP open-vocab match; sqlite-vec persistence pending (ROS feeder shipped) |
 | Skill base + runtimes | ✅ shipped — lifecycle node, `PyTorchRuntime`, `ONNXRuntime`, quantization registry, engine cache |
 | rSkill manifest + loader | ✅ shipped — HF Hub packaging, `rSkill.from_pretrained`, license surface; sigstore provenance not yet implemented (unverified-provenance warning + `OPENRAL_REQUIRE_SIGNED_SKILLS` fail-closed gate) |
 | SmolVLA, π0.5, xVLA, ACT, DP, MolmoAct2, RLDX-1 adapters | ✅ shipped — loaded, tested, embodiment-tag gated; GR00T N1.7 in-process (lerobot 0.6.0 `GrootPolicy`, NF4 backbone) — ✅ live LIBERO-spatial 5/5 |
@@ -40,7 +40,7 @@ Legend: ✅ done, 🟡 in flight, 🔵 planned, 🔴 blocked / outstanding.
 
 - **M2** — Unitree G1 real-HW HAL (`unitree_sdk2`) + cerebellar (S0) C++ controller; `rt_bridge` shared-memory ring.
 - **M3** — HIL bring-up on lab runners: UR5e/UR10e/Franka/Sawyer/ALOHA real-HW adapters + D435 smoke test (adapters landed; runners not yet registered).
-- **v0.3** — WAM adapters (Cosmos Predict, UnifoLM-WMA-0, IRASim) behind the `WorldModel` Protocol; spatial-memory ROS feeder + sqlite-vec persistence.
+- **v0.3** — WAM adapters (Cosmos Predict, UnifoLM-WMA-0, IRASim) behind the `WorldModel` Protocol; sqlite-vec persistence for spatial memory.
 - **v1.0** — Failure-anticipation as first-class; C++ safety-kernel sim/HIL hardening + LTTng; certifiable build.
 
 See [repo state map](../architecture/repo-state-map.html) for detailed per-module status and cross-layer dependencies.

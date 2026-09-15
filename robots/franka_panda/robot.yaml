@@ -2,14 +2,14 @@
 #
 # Mirrors FRANKA_PANDA_DESCRIPTION in python/hal/src/openral_hal/franka_panda.py:168
 # — YAML is source of truth for eval-layer robot resolution
-# (openral_sim.adapters.robots) / from_yaml() consumers; the HAL constant
+# (openral_sim.backends.robots) / from_yaml() consumers; the HAL constant
 # remains the runtime-adapter source of truth (drift guarded by
 # tests/unit/test_robot_manifests_match_hal_constants.py).
 #
 # Describes the *physical* Panda only (kinematics, actuator limits, EE,
 # capabilities, safety envelope). Sim-imposed contracts (LIBERO's 8-D state,
 # 7-D delta-EEF action, 180deg flip; RoboCasa's 4-D agent_pos; etc.) live in
-# the scene adapter under python/eval/src/openral_sim/adapters/<sim>.py, not here.
+# the scene adapter under python/sim/src/openral_sim/backends/<sim>.py, not here.
 #
 # Joint/EE limits from the Franka FR3/Panda data sheet
 # (frankaemika.github.io/docs/control_parameters.html); the sim MJCF

@@ -41,7 +41,7 @@ so the geometry is consistent (per the object-lift design).
 | `sensor_id` | string | `front_depth` | Sensor name stamped on the metadata + `header.frame_id`. |
 | `onnx_path` | string | — (required) | RT-DETR ONNX model path. |
 | `model_id` | string | `rtdetr-coco-r18` | Id embedded in `ObjectsMetadata`. |
-| `score_threshold` | double | `0.3` | Minimum sigmoid score. |
+| `score_threshold` | double | `0.5` | Minimum sigmoid score. |
 | `input_size` | int | `640` | Square model input edge. |
 | `max_rate_hz` | double | `5.0` | Publish-rate cap. |
 | `labels` | string[] | — (required) | COCO-80 class names indexed by class-id. |

@@ -17,7 +17,7 @@ commands. Sim-only.
 | Workspace | 512 × 512 px canvas (`gym_pusht/PushT-v0` default) |
 | Sensors | 1× top-down RGB (96 × 96, key `observation.image`) |
 | Supported control modes | 2-D end-effector position |
-| `sdk_kind` | `closed` (`gym_pusht`, `pymunk`) |
+| `sdk_kind` | `open` (`gym_pusht`, `pymunk`) |
 
 > **Why prismatic joints for a 2-D tip?** There is no kinematic chain to
 > model, but the schema requires at least one joint. The `tip_x` /
@@ -33,9 +33,9 @@ explicitly so capability matching gates correctly.
 
 | Component | Path |
 | --- | --- |
-| Compatible rSkill | [`skills/diffusion-pusht/`](../../skills/diffusion-pusht/README.md) — Diffusion Policy |
+| Compatible rSkill | [`rskills/diffusion-pusht/`](../../rskills/diffusion-pusht/README.md) — Diffusion Policy |
 | BenchmarkScene config | [`scenes/benchmark/pusht.yaml`](../../scenes/benchmark/pusht.yaml) |
-| Eval adapter | `openral_sim.adapters.pusht` |
+| Eval adapter | `openral_sim.backends.pusht` |
 | Sim test | `tests/sim/test_pusht_2d_diffusion_pusht.py` |
 
 ## Tests
@@ -57,5 +57,5 @@ CPU-only; no GPU required.
 
 ## See also
 
-- [`skills/diffusion-pusht/README.md`](../../skills/diffusion-pusht/README.md) — Diffusion Policy rSkill.
+- [`rskills/diffusion-pusht/README.md`](../../rskills/diffusion-pusht/README.md) — Diffusion Policy rSkill.
 - [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md) — VLA × Robot × Sim matrix.

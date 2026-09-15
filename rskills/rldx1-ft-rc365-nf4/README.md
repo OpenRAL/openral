@@ -46,7 +46,6 @@ The `rldx` adapter auto-spawns the sidecar with `--embodiment-tag GENERAL_EMBODI
 openral sim run \
     --config scenes/sim/robocasa_pnp.yaml \
     --rskill rskills/rldx1-ft-rc365-nf4 \
-    --rskill rskills/rldx1-ft-rc365-nf4 \
     --view
 ```
 

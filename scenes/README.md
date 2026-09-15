@@ -150,6 +150,8 @@ supplied at the CLI via `--rskill <name>`.
 | Custom OpenArm      | `openarm_tabletop_pnp` (bimanual; default top camera matches the mddoai dataset POV)                                                                                                                                                                                                        | `python/sim/.../backends/openarm_*/env.py`|
 | Custom SO-101       | `so101_box` (100 × 61.5 × 75 cm box arena + OAK-D Pro overhead RGB-D + wrist camera + tube-insertion task — geometry/sensors/spawn ranges configurable via `BoxSceneOptions`)                                                                                                               | `python/sim/.../backends/so101_box/env.py`|
 | Custom tabletop     | `tabletop_push` (robot-agnostic cube push-to-goal; free-axis — pass `--robot`; SO-101 sim YAML pins pi0.5-style degree reset pose + top/front/wrist camera routing)                                                                                                                        | `python/sim/.../backends/tabletop_push/env.py` |
+| RoboTwin 2.0 (SAPIEN, sidecar) | `robotwin` (scene-fixed AgileX ALOHA; task selected via `backend_options`, e.g. `lift_pot`, `beat_block_hammer`, `handover_block`, `place_empty_cup`, `stack_blocks_two`)                                                                                                            | `python/sim/.../backends/robotwin.py`     |
+| VLABench (lerobot envs) | `vlabench` (scene-fixed Franka Panda; task selected via `backend_options`, e.g. `select_fruit`)                                                                                                                                                                                        | `python/sim/.../backends/vlabench.py`     |
 
 `openral sim list` walks every subdirectory here and prints each scene YAML
 path — paste one straight into `--config`. The `--rskill` half comes from
@@ -170,6 +172,8 @@ Some scenes hard-wire the physics robot via `@SCENES.register(..., fixed_robot=.
 | `robocasa/*` (kitchen)                           | `panda_mobile`      |
 | `robocasa/gr1/*` (humanoid tabletop)             | `gr1`               |
 | `behavior`                                       | `r1pro`              |
+| `robotwin`                                       | `aloha_agilex`       |
+| `vlabench`                                       | `franka_panda`       |
 
 Passing `--robot` (or authoring `robot_id:` in a YAML) with a value that
 disagrees with the scene's `fixed_robot` raises `ROSConfigError` at

@@ -5,7 +5,7 @@ An open-source operating layer for embodied AI, **OpenRAL** unifies fast policie
 ## Quick start
 
 ```bash
-git clone https://github.com/OpenRAL/openral && cd OpenRAL
+git clone https://github.com/OpenRAL/openral && cd openral
 just bootstrap          # installs uv, ROS 2, system deps
 just sync               # install Python workspace (wraps uv sync + repair)
 uv run openral doctor        # verify your environment

@@ -82,9 +82,9 @@ Read only what matches the target:
 openral detect
 openral rskill check <rskill-id> --robot robots/<id>/robot.yaml
 openral sim list
-openral deploy sim --config scenes/<scene>.yaml --rskill rskills/<skill>
+openral deploy sim --config scenes/<scene>.yaml
 openral deploy list
-openral deploy run --config deployments/<robot_task>.yaml
+openral deploy run --config scenes/deploy/<workcell>.yaml
 ```
 
 Run real-hardware commands only when the user explicitly asks and the robot is physically ready with E-stop access.

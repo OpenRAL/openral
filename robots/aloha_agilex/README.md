@@ -2,7 +2,7 @@
 
 The bimanual **AgileX "aloha-agilex"** platform RoboTwin 2.0 evaluates by default: two
 6-DoF PiPER arms with parallel grippers (**14-DoF**, 7 per arm) and three RGB cameras
-(`head_camera`, `left_camera`, `right_camera`, 240×320). It is the embodiment behind the
+(`top`, `wrist_left`, `wrist_right`, 256×256). It is the embodiment behind the
 [`lerobot/robotwin_unified`](https://huggingface.co/datasets/lerobot/robotwin_unified)
 dataset and the public RoboTwin checkpoints (e.g.
 [`lerobot/smolvla_robotwin`](https://huggingface.co/lerobot/smolvla_robotwin)).
