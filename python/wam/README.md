@@ -1,6 +1,6 @@
 # openral-wam
 
-OpenRAL World Action Model (WAM) layer — `WorldModel` Protocol +
+OpenRAL World Action Model (WAM) protocol — `WorldModel` Protocol +
 `Rollout` schema + `NullWorldModel` stub.
 
 > **Scaffold status (2026-05-18).** This package ships the **Protocol surface only**:
@@ -10,11 +10,11 @@ OpenRAL World Action Model (WAM) layer — `WorldModel` Protocol +
 > packages in the private OpenRAL Pro monorepo — this public package
 > stays the Protocol/contract surface.
 
-## Layer
+## Role
 
-CLAUDE.md §6.1 Layer 5 — generative simulator used by the planning loop
-for mental simulation (gating action chunks), failure anticipation, and
-replanning.
+Optional planning-layer component, not one of the seven core layers —
+a generative simulator used by the planning loop for mental simulation
+(gating action chunks), failure anticipation, and replanning.
 
 ## Three integration patterns (CLAUDE.md §6.3)
 

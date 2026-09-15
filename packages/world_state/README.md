@@ -1,7 +1,7 @@
 # `openral_world_state` (ROS 2)
 
 Lifecycle-node wrapper for `openral_world_state.WorldStateAggregator`
-— Layer 2 in the eight-layer architecture. Subscribes to joint and
+— Layer 2 in the seven-layer architecture. Subscribes to joint and
 sensor topics, ticks the aggregator, and publishes a typed
 `openral_msgs/WorldStateStamped` snapshot at two rates (fast 30 Hz,
 slow 5 Hz) for downstream consumers (Skill, Reasoner, dashboards).

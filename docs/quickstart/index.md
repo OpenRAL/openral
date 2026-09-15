@@ -160,5 +160,5 @@ and the [reasoner reference](../reference/reasoner.md).
 - [OpenRAL dashboard](dashboard.md) — live debugging UI over the OTel stream.
 - [Write & publish an rSkill](../tutorials/rskill/write-and-publish-an-rskill.md) — package a policy as an installable skill.
 - [Deploy on a robot](../tutorials/deploy/deploy-run-and-dashboard.md) — the real-hardware graph.
-- [Architecture overview](../architecture/overview.md) — understand the eight-layer architecture.
+- [Architecture overview](../architecture/overview.md) — understand the seven-layer architecture.
 - [Development setup](../contributing/development.md) — set up a full dev environment.

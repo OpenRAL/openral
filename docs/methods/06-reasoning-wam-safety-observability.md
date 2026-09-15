@@ -1,8 +1,8 @@
-# Layer 5–8 — Reasoning, WAM, Safety, Observability
+# Layer 4–6 — Reasoning, Safety, Observability (plus WAM)
 
 > Part of the OpenRAL [public-symbol inventory](../METHODS.md). Hand-curated; `(LNN)` markers are refreshed by `tools/refresh_methods_linenos.py`.
 
-Layer 8 (Observability) is fully shipped — traces + metrics + structlog→OTLP log bridge, with W3C TraceContext propagation helpers for cross-process correlation (Python ↔ ROS 2 ↔ C++ safety kernel). Layer 4 (Reasoner) ships the live `ReasonerCore` direct-dispatch loop below; Layers 5–6 (WAM, C++ safety kernel) are still planned.
+Layer 6 (Observability) is fully shipped — traces + metrics + structlog→OTLP log bridge, with W3C TraceContext propagation helpers for cross-process correlation (Python ↔ ROS 2 ↔ C++ safety kernel). Layer 4 (Reasoner) ships the live `ReasonerCore` direct-dispatch loop below; Layer 5 (C++ safety kernel) is still planned. This file also covers the WAM Protocol package (`python/wam/`) — an optional planning-layer component, not one of the seven core layers.
 
 ### `python/reasoner/src/openral_reasoner/tool_use.py`
 _Typed LLM tool-use clients (direct-dispatch surface). CLAUDE.md §6.2 / §7.6 amended in the same PR. The direct typed `ReasonerToolCall` surface is the sole planner output._
@@ -163,7 +163,7 @@ _Identity stub satisfying the `WorldModel` Protocol (for plumbing tests; not a p
   - `rollout(world_state, action_chunk, horizon) -> Rollout` — Replays the input state. Raises `ValueError` for `horizon ∉ (0, max_horizon]`. (L60)
 
 ### `packages/openral_safety/openral_safety/supervisor_node.py`
-_Lifecycle node skeleton; reserves the supervisor node name and topic surface for the future C++ kernel (CLAUDE.md §6.1 Layer 6, §7.7). No enforcement logic._
+_Lifecycle node skeleton; reserves the supervisor node name and topic surface for the future C++ kernel (CLAUDE.md §6.1 Layer 5, §7.7). No enforcement logic._
 
 - `class SafetySupervisorNode(LifecycleNode)` — Skeleton lifecycle node. Every transition callback returns `SUCCESS`. (L846)
   - `__init__(node_name="openral_safety_supervisor") -> None` — Initialise; logs a "skeleton no-op" line so the supervisor's presence in the graph is visible. (L155)
@@ -339,7 +339,7 @@ _`openral prompt "do X"` CLI adapter. Publishes a one-shot `PromptStamped` onto 
 
 - `prompt_command(text, topic="/openral/prompt_in/cli", wait_s=1.0, discovery_wait_s=5.0, new_goal=False)` — Initialise rclpy, publish one PromptStamped with `metadata_json={"source_cli": true}` plus `"new_goal": true` under `--new-goal`, wait briefly for the subscriber to be discovered, then shut down. Exits 2 if rclpy / openral_msgs are not importable (with a hint at `just ros2-build`). The prompt-router preserves the mission-replacement flag when stamping `source`/`priority`.
 
-### Observability (Layer 8 — fully shipped)
+### Observability (Layer 6 — fully shipped)
 
 ### `python/observability/src/openral_observability/_sdk.py`
 _Idempotent OTel SDK setup + flush helper._
