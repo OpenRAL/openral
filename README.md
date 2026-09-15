@@ -38,7 +38,7 @@
 
 A VLA alone is not an agent — OpenRAL wraps it in the loop it needs. It is a typed, layered runtime that sits between a robot's motor API and a task planner, four things in one:
 
-- **Typed runtime** — eight well-defined layers (HAL → Sensors → World State → rSkill → Reasoning → WAM → Safety → Observability) with Pydantic v2 contracts at every boundary.
+- **Typed runtime** — seven well-defined layers (HAL → Sensors → World State → rSkill → Reasoning → Safety → Observability) with Pydantic v2 contracts at every boundary.
 - **rSkill packaging format** — every capability the agent has is an rSkill, not just VLAs: detectors, scene VLMs, reward monitors, classical MoveIt 2 / Nav2 actions and reasoner playbooks. Each is a Hugging Face Hub artifact containing weights, a `rskill.yaml` manifest, quantization hints, latency budgets, and reproducible eval. Install like a model: `openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16`.
 - **Planning kernel** — a slow, provider-agnostic LLM reasoner (S2) emitting typed `ReasonerToolCall` tool-calls (`ExecuteRskillTool`, `LifecycleTransition`, `EmitPrompt`, plus read-only `locate_in_view` / `query_scene` / `query_task_progress` / `recall_object` query tools), and a fast visuomotor policy (S1, 30–200 Hz) executing dispatched skills. Replanning is bounded and explicit. See the **[Reasoner reference](docs/reference/reasoner.md)**.
 - **Safety kernel** — a C++ separate process, deny-by-default. An allocation-free validator enforces joint position / velocity / torque limits, a global torque cap, Cartesian workspace and end-effector-speed limits, NaN/Inf rejection, and self / world / voxel-grid collision — backed by independent deadman and hardware-E-stop watchdog processes. Python proposes actions; C++ disposes them; `ROSSafetyViolation` is never silently caught. Formal certification is the remaining work.
@@ -250,7 +250,6 @@ the adapter is transmitting into silence: the motors are unpowered.
 flowchart TB
     subgraph S2["S2 · slow reasoning (event-driven, ~0.2 Hz)"]
         REASON["<b>4 · Reasoning</b><br/>LLM planner → typed ReasonerToolCall<br/>(ExecuteSkill · LifecycleTransition · EmitPrompt)"]
-        WAM["<b>5 · WAM</b><br/>WorldModel protocol<br/><i>adapters outside this repo</i>"]
     end
 
     subgraph S1["S1 · fast policy (30–200 Hz, async action chunks)"]
@@ -260,13 +259,12 @@ flowchart TB
     HAL["<b>0 · HAL</b> — 15+ robot adapters<br/>SO-100 · Franka · UR5e · ALOHA · G1"]
     SENSORS["<b>1 · Sensors</b> — RGB-D · F/T · IMU → ROS 2 topics"]
     WORLD["<b>2 · World State</b> — tf2 snapshot @ 30 Hz<br/>+ lifted detected_objects"]
-    SAFETY["<b>6 · Safety</b> — C++ kernel, deny-by-default<br/>E-stop on fault"]
-    OBS["<b>7 · Observability</b><br/>OpenTelemetry spans + LeRobot dataset flywheel"]
+    SAFETY["<b>5 · Safety</b> — C++ kernel, deny-by-default<br/>E-stop on fault"]
+    OBS["<b>6 · Observability</b><br/>OpenTelemetry spans + LeRobot dataset flywheel"]
 
     HAL --> SENSORS --> WORLD
     WORLD --> RSKILL
     WORLD --> REASON
-    WAM -.-> REASON
     REASON -- ExecuteSkill --> RSKILL
     RSKILL -- action chunk --> SAFETY
     SAFETY -- vetted command --> HAL
@@ -275,11 +273,9 @@ flowchart TB
     REASON -.- OBS
     SAFETY -.- OBS
 
-    classDef external stroke-dasharray:5 5,fill:#f5f5f5,color:#666;
     classDef safety fill:#fde8e8,stroke:#c81e1e,color:#7a1010;
     classDef policy fill:#e8f0fe,stroke:#1a56db;
     classDef obs fill:#eafaf1,stroke:#057a55;
-    class WAM external;
     class SAFETY safety;
     class RSKILL,REASON policy;
     class OBS obs;
@@ -291,9 +287,8 @@ flowchart TB
 2  World State      tf2-aware typed snapshot at 30 Hz; folds in object detections
 3  rSkill (S1)       Fast visuomotor policy (VLA, 30–200 Hz, async action chunks)
 4  Reasoning (S2)   Slow LLM planner emitting typed ReasonerToolCall tool-calls
-5  WAM              Optional WorldModel protocol; concrete adapters live outside this repo
-6  Safety           C++ separate process, deny-by-default, E-stop on fault
-7  Observability    OpenTelemetry spans + LeRobotDataset v3 flywheel
+5  Safety           C++ separate process, deny-by-default, E-stop on fault
+6  Observability    OpenTelemetry spans + LeRobotDataset v3 flywheel
 ```
 
 Layer boundaries are enforced by Pydantic v2 schemas in `python/core/`. Crossing a layer requires a decision in the private `OpenRAL/management` log before code. Per-module live status: [docs/architecture/repo-state-map.html](docs/architecture/repo-state-map.html). Architecture deep-dive: [docs/architecture/overview.md](docs/architecture/overview.md).
