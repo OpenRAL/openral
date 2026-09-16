@@ -11,8 +11,9 @@ Live status of OpenRAL development. For detailed architecture and module-by-modu
 | Schemas (`openral_core`) | ✅ shipped — Pydantic v2, hypothesis fuzz, JSON Schema export, CI drift check |
 | HAL Protocol + ROS bridge | ✅ shipped — `RosControlHAL`, mock unit tests, exception hierarchy |
 | LeRobot SO-100/SO-101 HAL | ✅ shipped — real + MuJoCo `SO100FollowerHAL`, `SO100_DESCRIPTION`, `openral connect` |
-| Franka / UR5e / UR10e HALs | ✅ sim shipped over `MujocoArmHAL`; real-HW adapters landed (UR5e/UR10e via `ur_robot_driver`, Franka via FCI, Sawyer, ALOHA) — HIL gated on lab runners (M3) |
+| Franka / UR5e / UR10e HALs | ✅ sim shipped over `MujocoArmHAL`; real-HW adapters landed (UR5e/UR10e via `ur_robot_driver`, Franka via FCI, Sawyer, ALOHA) — HIL files exist but none has met a physical rig (M3) |
 | Humanoid + bimanual HALs (sim) | ✅ shipped — `G1MujocoHAL`, `H1MujocoHAL`, `AlohaMujocoHAL`, `OpenArmMujocoHAL`, `Rizon4MujocoHAL`, `PandaMobileHAL` with lifecycle nodes |
+| Enactic OpenArm v2 real HW | ✅ live — `OpenArmRealHAL` fans a 16-DoF action across `openarm_bringup`'s four ros2_control controllers; Damiao CAN FD at 400 Hz stays in C++. `tests/hil/test_openarm_can_live.py` passes both transport gates and the motor round-trip on the wired arm, and `send_action` has been verified moving it. Run by hand on the lab host — nothing in CI runs `tests/hil/` — and no real-HW OpenArm deploy scene ships in-tree (host-specific CAN/camera names), so there is no end-to-end policy rollout on the arm yet |
 | Sensor adapters | 🟡 in flight — `openral_sensors` catalog (RealSense D435/D435i/D415, Logitech UVC, Luxonis OAK-D Pro, Robotiq FT 300-S) + launch-gen + ROS image publisher; full perception-head ROS package still planned |
 | World State aggregator | ✅ shipped — 30 Hz tf2-aware snapshot, stale-sensor diagnostics, detected-objects lift |
 | Persistent spatial memory (scene graph) | 🟡 in flight — durable advisory object/place/room/agent graph the S2 reasoner queries (recall/resolve) + CLIP open-vocab match; sqlite-vec persistence pending (ROS feeder shipped) |
@@ -38,7 +39,7 @@ Legend: ✅ done, 🟡 in flight, 🔵 planned, 🔴 blocked / outstanding.
 ## Next phases
 
 - **M2** — Unitree G1 real-HW HAL (`unitree_sdk2`) + cerebellar (S0) C++ controller; `rt_bridge` shared-memory ring.
-- **M3** — HIL bring-up on lab runners: UR5e/UR10e/Franka/Sawyer/ALOHA real-HW adapters + D435 smoke test (adapters landed; runners not yet registered).
+- **M3** — HIL bring-up on lab runners. Verified on real hardware today, by hand on a lab host: **OpenArm v2** (`tests/hil/test_openarm_can_live.py` — CAN transport + motor round-trip) and **Galaxea A1** (`tests/hil/test_galaxea_a1*.py` — observation, hold, bounded joint and gripper round trips, and `candidate_action` → C++ kernel → `safe_action` → real HAL). Blocked on absent physical rigs, not on runners: UR5e/UR10e/Franka/Sawyer/ALOHA — the adapters and `tests/hil/` files landed, but there is no robot to validate them against. Blocked on runners: no workflow runs `tests/hil/` at all, so no HIL gate is enforced in CI. The SO-100/SO-101 and RealSense (D435) HIL gates were removed until matching lab hardware exists.
 - **v0.3** — spatial-memory ROS feeder + sqlite-vec persistence.
 - **v1.0** — Failure-anticipation as first-class; C++ safety-kernel sim/HIL hardening + LTTng; certifiable build.
 
