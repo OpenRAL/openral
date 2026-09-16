@@ -10,10 +10,11 @@ The point of this suite is the bimanual "real hardware first day"
 contract (CLAUDE.md §1.11): if these tests pass, the 14-DoF
 ``left arm 6 + left gripper 1 + right arm 6 + right gripper 1``
 action layout — which is the same layout
-``openral_hal.AlohaHAL`` forwards to the four Interbotix XS
-``ros2_control`` controllers — is guaranteed to drive the physical
-ALOHA the same way on first connect.  Remaining failure surface is
-the Interbotix USB / DXL driver level (HIL territory).
+``openral_hal.AlohaHAL`` fans out to its four command topics — is
+guaranteed to hold sim → hardware.  The *layout* is what this suite
+pins; the real-HW wire contract underneath it is wrong today and is
+tracked by issue #250 (``xs_sdk``, not ``ros2_control``), so passing
+here does not mean a physical ALOHA would move.
 
 Gravity is disabled in the closed-loop test so the joint positions
 converge exactly to the commanded pose; the staleness / lifecycle
