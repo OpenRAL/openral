@@ -70,8 +70,34 @@ pinned to a known-good v2 SHA. The helper goes away once
 | Sim test | `tests/sim/test_openarm_hal_mujoco.py` |
 | v2 fetch helper | `openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf` |
 | Real-HW HAL | `openral_hal.openarm_real.OpenArmRealHAL` |
+| Real-HW bench scene | `scenes/deploy/openarm_bench.yaml` (`openral deploy run`) |
+| Real-HW bringup | `ros2 launch openral_hal_openarm real_bringup.launch.py` |
+| Full-graph HIL gate | `tests/hil/test_openarm_deploy.py` (`just hil-openarm-deploy`) |
 | Upstream URDF | [enactic/openarm](https://github.com/enactic/openarm) |
 | Upstream MJCF | [enactic/openarm_mujoco](https://github.com/enactic/openarm_mujoco) (v2 on master) |
+
+## Real hardware
+
+`hal.real` is `OpenArmRealHAL`, which publishes to the four `ros2_control`
+controllers `openarm_bringup` spawns (per-side arm + gripper) and refuses to
+`connect()` unless both udev-pinned SocketCAN links (`openarm_left`,
+`openarm_right`) are up. It never starts `controller_manager` itself — that
+graph is C++ at 400 Hz and belongs under a vendor bringup (CLAUDE.md §1.5).
+
+Real deploys use `scenes/deploy/openarm_bench.yaml`, which binds the cell's
+real cameras and — the part that is easy to get silently wrong — pins
+`runtime.octomap_cloud_topic` to the topic the ZED SDK actually publishes.
+`head_zed` in `robot.yaml` auto-enables the octomap leg, but the topic keeps a
+sim-only launch default unless the scene sets it, and the result is an empty
+octree behind a graph where every node reports healthy.
+
+> **Bringup moves both arms.** `OpenArmHW::on_activate` calls `enable_all()`
+> and then `return_to_zero()`: an unramped MIT position command to 0.0 on all
+> seven joints per side, issued before the current pose is sampled, then a
+> 200 x 10 ms ramp to zero. There is no non-moving real bringup for this robot.
+> Clear the cell and keep a hand on the hardware E-stop. Note also that the
+> deploy graph does not currently launch a deadman watchdog or a human E-stop
+> node, so the hardware E-stop is the only independent stop in the loop.
 
 ## Action layout (16 DoF)
 
@@ -111,8 +137,14 @@ simultaneous targets, the `<equality>` follower-finger tracking
 invariant, and a per-slot identity sweep with alternating signs to
 catch wiring slips.
 
-HIL is planned alongside the real-HW HAL (wrapping lerobot's
-upstream OpenArm driver).
+HIL already exists and does not go through lerobot: the real-HW path is
+`OpenArmRealHAL` over `openarm_bringup`'s `ros2_control` stack. Four gates
+ship today — `tests/hil/test_openarm_can_live.py` (CAN transport, read-only),
+`tests/hil/test_openarm_ros_transport.py` (the 4-way fan-out bridge, needs a
+ROS install but no cell), `tests/hil/test_openarm_bringup_agreement.py` (the
+HAL's controller/joint table vs bringup's own YAML, no hardware at all), and
+`tests/hil/test_openarm_slot_group_motion.py` (the one test that commands a
+real arm, behind two explicit gates).
 
 ## Asymmetric joint conventions
 
@@ -128,7 +160,7 @@ independently or use sign-aware sentinels.
 
 - [openarm.dev](https://openarm.dev/) — project landing page.
 - [`python/hal/README.md`](../../python/hal/README.md) — `OpenArmMujocoHAL`, supported robots.
-- [LeRobot OpenArm docs](https://huggingface.co/docs/lerobot/openarm) — upstream driver, future real-HW path.
+- [LeRobot OpenArm docs](https://huggingface.co/docs/lerobot/openarm) — upstream lerobot driver. Not OpenRAL's real-HW path: `OpenArmRealHAL` drives `openarm_bringup`'s `ros2_control` stack directly.
 - [enactic/openarm_mujoco PR #19](https://github.com/enactic/openarm_mujoco/pull/19) — the v2 introduction.
 - [`robots/anvil_openarm_v2/README.md`](../anvil_openarm_v2/README.md) — the Anvil OpenARM 2.0 (this same v2 design with Anvil's J1/J6 range deltas and the wrist support bracket).
 - [`robots/aloha_bimanual/README.md`](../aloha_bimanual/README.md) — sibling bimanual twin (different gripper convention).

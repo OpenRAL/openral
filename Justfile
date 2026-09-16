@@ -722,6 +722,30 @@ hil robot:
     fi
     exit $status
 
+# Full-graph OpenArm HIL gate. `just hil openarm_deploy` would collect the same
+# file, but not survive contact with a rig: this gate needs the ROS overlay
+# sourced (rclpy, tf2_ros, controller_manager_msgs, lifecycle_msgs), and a
+# sourced overlay drags the system-Python `launch_testing` pytest plugin into
+# the workspace's pytest, where it is incompatible — hence
+# PYTEST_DISABLE_PLUGIN_AUTOLOAD=1, same reason as `hal-twin-sweep`.
+#
+# NON-MOTION, but it attaches to a graph that is NOT: `openral deploy run` on
+# real OpenArm hardware moves both arms to zero at bringup
+# (`OpenArmHW::on_activate` -> `return_to_zero()`). Start the graph yourself,
+# with the cell clear and a hand on the hardware E-stop, THEN run this.
+# See scenes/deploy/openarm_bench.yaml.
+hil-openarm-deploy:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    OPENARM_DEPLOY_HIL=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+        uv run pytest -q -rs tests/hil/test_openarm_deploy.py
+    status=$?
+    if [[ $status -eq 4 || $status -eq 5 ]]; then
+        echo "SKIPPED: no OpenArm on this host (openarm_left / openarm_right CAN links are not up)."
+        exit 0
+    fi
+    exit $status
+
 # Docs serve
 docs:
     uv run mkdocs serve
