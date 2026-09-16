@@ -111,8 +111,14 @@ simultaneous targets, the `<equality>` follower-finger tracking
 invariant, and a per-slot identity sweep with alternating signs to
 catch wiring slips.
 
-HIL is planned alongside the real-HW HAL (wrapping lerobot's
-upstream OpenArm driver).
+HIL already exists and does not go through lerobot: the real-HW path is
+`OpenArmRealHAL` over `openarm_bringup`'s `ros2_control` stack. Four gates
+ship today — `tests/hil/test_openarm_can_live.py` (CAN transport, read-only),
+`tests/hil/test_openarm_ros_transport.py` (the 4-way fan-out bridge, needs a
+ROS install but no cell), `tests/hil/test_openarm_bringup_agreement.py` (the
+HAL's controller/joint table vs bringup's own YAML, no hardware at all), and
+`tests/hil/test_openarm_slot_group_motion.py` (the one test that commands a
+real arm, behind two explicit gates).
 
 ## Asymmetric joint conventions
 
@@ -128,7 +134,7 @@ independently or use sign-aware sentinels.
 
 - [openarm.dev](https://openarm.dev/) — project landing page.
 - [`python/hal/README.md`](../../python/hal/README.md) — `OpenArmMujocoHAL`, supported robots.
-- [LeRobot OpenArm docs](https://huggingface.co/docs/lerobot/openarm) — upstream driver, future real-HW path.
+- [LeRobot OpenArm docs](https://huggingface.co/docs/lerobot/openarm) — upstream lerobot driver. Not OpenRAL's real-HW path: `OpenArmRealHAL` drives `openarm_bringup`'s `ros2_control` stack directly.
 - [enactic/openarm_mujoco PR #19](https://github.com/enactic/openarm_mujoco/pull/19) — the v2 introduction.
 - [`robots/anvil_openarm_v2/README.md`](../anvil_openarm_v2/README.md) — the Anvil OpenARM 2.0 (this same v2 design with Anvil's J1/J6 range deltas and the wrist support bracket).
 - [`robots/aloha_bimanual/README.md`](../aloha_bimanual/README.md) — sibling bimanual twin (different gripper convention).
