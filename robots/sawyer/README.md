@@ -43,7 +43,7 @@ runner.
 | Python HAL adapter (sim) | _planned_ — currently driven by `openral_sim.backends.metaworld` |
 | Real-HW adapter | `openral_hal.sawyer_real:SawyerRealHAL` |
 | ROS 2 lifecycle node | _planned_ — covered by PR 7 of the refinement plan |
-| Sim test | `tests/sim/test_smolvla_metaworld_push.py` (or wherever the metaworld_push config gets exercised) |
+| Sim test | none yet — `scenes/benchmark/metaworld_push.yaml` is referenced only by unit-level guard tests (`tests/unit/test_benchmark_scene_writeback_guard.py`, `tests/unit/test_sim_run_fixed_robot_guard.py`), not a closed-loop sim rollout test |
 | Example configs | [`scenes/benchmark/metaworld_push.yaml`](../../scenes/benchmark/metaworld_push.yaml) (pass `--rskill rskills/smolvla-metaworld`) |
 
 ## See also

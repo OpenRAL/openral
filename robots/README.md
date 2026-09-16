@@ -14,9 +14,12 @@ its own `README.md` with the manifest's specific provenance notes
 manifest is the source of truth for real-hardware support — `null`/absent
 means the embodiment is sim-only (no HAL, no HIL tests, no physical rig).
 `hal.sim` being `null` does **not** mean no sim support: several embodiments
-(`aloha_agilex`, `gr1`, `pusht_2d`, `widowx`, `r1pro`) drive a sim rollout
-through a scene-adapter's `fixed_robot=` binding or an out-of-process
-sidecar instead of the generic `MujocoArmHAL.from_description` path.
+(`aloha_agilex`, `gr1`, `pusht_2d`, `so101_follower`, `r1pro`) drive a sim
+rollout through a scene-adapter's `fixed_robot=` binding or an out-of-process
+sidecar instead of the generic `MujocoArmHAL.from_description` path. `widowx`
+is different again: it drives a free-axis (multi-robot) SimplerEnv/ManiSkill3
+scene with no `fixed_robot=` binding — the robot is selected by the scene
+YAML's `robot_id:` field instead.
 
 | Robot dir | Description | Embodiment tags | Sim support | Real-HW support | README |
 | --- | --- | --- | --- | --- | --- |
@@ -37,7 +40,7 @@ sidecar instead of the generic `MujocoArmHAL.from_description` path.
 | `rizon4` | 7-DoF collaborative arm (Flexiv Rizon 4), no gripper | `rizon4`, `flexiv` | yes — `Rizon4MujocoHAL` (mujoco_menagerie MJCF) | no (`hal.real` null) | [README.md](rizon4/README.md) |
 | `sawyer` | 7-DoF collaborative arm (Rethink Robotics Sawyer) | `sawyer`, `rethink` | no (`hal.sim` null) | yes — `SawyerRealHAL` (`intera_sdk`/`sawyer_robot` fork, BSD-3) | [README.md](sawyer/README.md) |
 | `so100_follower` | 6-DoF follower arm (LeRobot SO-100), serial — not `ros2_control` | `so100_follower`, `lerobot` | no (`hal.sim` null) | yes — `SO100FollowerHAL` (serial, `/dev/ttyUSB0`) | [README.md](so100_follower/README.md) |
-| `so101_follower` | 6-DoF follower arm (LeRobot SO-101), serial — shares `SO100FollowerHAL` | `so101_follower`, `lerobot` | no (`hal.sim` null) | yes — `SO100FollowerHAL` (serial, `/dev/ttyUSB0`) | [README.md](so101_follower/README.md) |
+| `so101_follower` | 6-DoF follower arm (LeRobot SO-101), serial — shares `SO100FollowerHAL` | `so101_follower`, `lerobot` | yes — `fixed_robot="so101_follower"` scene adapter (`so101_box`, MuJoCo tabletop arena) | yes — `SO100FollowerHAL` (serial, `/dev/ttyUSB0`) | [README.md](so101_follower/README.md) |
 | `ur10e` | 6-DoF collaborative arm (Universal Robots UR10e), no gripper | `ur10e`, `ur` | yes — `UR10eHAL` (mujoco_menagerie MJCF) | yes — `UR10eRealHAL` | [README.md](ur10e/README.md) |
 | `ur5e` | 6-DoF collaborative arm (Universal Robots UR5e), no gripper | `ur5e`, `ur` | yes — `UR5eHAL` (mujoco_menagerie MJCF) | yes — `UR5eRealHAL` | [README.md](ur5e/README.md) |
 | `widowx` | Trossen WidowX-250s 6-DoF arm (BridgeData V2 / SimplerEnv embodiment) | `widowx`, `widowx_250s`, `bridge`, `bridgedata_v2`, `oxe` | yes — SimplerEnv/ManiSkill3 scenes (`scenes/benchmark/widowx_carrot_on_plate.yaml`) | no (`hal.real` null) | [README.md](widowx/README.md) |
@@ -45,7 +48,7 @@ sidecar instead of the generic `MujocoArmHAL.from_description` path.
 ## Add a new robot
 
 ```bash
-openral detect         # probe the host and, for a recognized rig, write robots/<name>/robot.yaml directly
+openral detect         # probe the host and write robots/<name>/robot.yaml directly
 ```
 
 or author `robots/<name>/robot.yaml` by hand against the `RobotDescription`

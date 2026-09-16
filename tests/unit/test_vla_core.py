@@ -101,7 +101,7 @@ class TestResolveRskillRepoId:
             resolve_rskill_repo_id("local://rskills/smolvla-libero", adapter_name="xVLA")
 
     def test_resolves_real_rskill_manifest(self) -> None:
-        """Resolves the SmolVLA-LIBERO rSkill manifest committed under skills/."""
+        """Resolves the SmolVLA-LIBERO rSkill manifest committed under rskills/."""
         repo_id = resolve_rskill_repo_id("rskills/smolvla-libero", adapter_name="SmolVLA")
         assert "/" in repo_id  # bare HF Hub repo id like "owner/name"
         assert not repo_id.startswith("hf://")

@@ -64,7 +64,7 @@ latency_budget:
   per_chunk_ms: 25.0
 
 # ── Provenance ─────────────────────────────────────────────────────────────
-# Headline success rate from skills/act-aloha-insertion/eval/aloha_insertion.json.
+# Headline success rate from rskills/act-aloha-insertion/eval/aloha_insertion.json.
 benchmarks:
   aloha_insertion: 0.2
 

@@ -204,7 +204,7 @@ just sim-custom                 # custom example — ACT × gym-aloha insertion
 ## Hardware-in-loop (requires connected robot + USB perms)
 
 ```bash
-just hil franka_panda            # Franka HIL tests (UR5e/10e, Sawyer, ALOHA, OpenArm, Galaxea A1 also covered; SO-100 / G1 HIL are planned)
+just hil franka_panda            # Franka HIL tests (also: ur5e, ur10e, sawyer, aloha, galaxea_a1; OpenArm HIL runs by filename, e.g. `uv run pytest tests/hil/test_openarm_can_live.py` — no `just hil openarm`; SO-100 / G1 HIL are planned)
 ```
 
 ## Docs

@@ -183,8 +183,7 @@ and topic names.
   `tests/sim/test_so100_follower_hal_mujoco.py`,
   `tests/sim/test_aloha_bimanual_hal_mujoco.py`,
   `tests/sim/test_g1_hal_mujoco.py`,
-  `tests/sim/test_h1_hal_mujoco.py`,
-  `tests/sim/test_smolvla_so100.py`.
+  `tests/sim/test_h1_hal_mujoco.py`.
 - Sim (cross-HAL integration): `tests/sim/test_all_hals_via_runner.py`
   drives **every** HAL twin through the production `DeployRunner`
   with a real `WorldStateAggregator` + a trivial echo-current-pose

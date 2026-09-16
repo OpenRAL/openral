@@ -145,7 +145,7 @@ for the assertion that the production path satisfies it.
 
 The rSkill lifecycle-node contract mandates two gates:
 
-1. **Install-time** — `ral skill install` refuses non-commercial weights
+1. **Install-time** — `openral rskill install` refuses non-commercial weights
    in a commercial deployment.
 2. **Goal-acceptance** — `rskill_runner_node` re-checks the
    `RSkillLicensePosture` against the

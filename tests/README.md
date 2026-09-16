@@ -103,7 +103,7 @@ stale/incomplete; see §4) · **Consolidate** (overlap with another file) ·
 | `test_franka_panda_real.py` | ~210 | `FrankaPandaRealHAL` against `SimTransport` — closed-loop publish/subscribe, manifest pointer (`closed_with_api` → real HAL), e-stop publishes to `/error_recovery/goal`, staleness guard. **Added 2026-05-10 (issue #56).** | Keep |
 | `test_sawyer_real.py` | ~190 | `SAWYER_DESCRIPTION` joint inventory + `SawyerRealHAL` against `SimTransport` — closed-loop publish/subscribe, intera_sdk topic pinning, e-stop publishes to `/robot/set_super_stop`. **Added 2026-05-10 (issue #57).** | Keep |
 | `test_aloha.py` | ~290 | `ALOHA_DESCRIPTION` 14-DoF joint inventory + `AlohaHAL` against `SimTransport` — 4-way action split (left arm, right arm, left gripper, right gripper), bimanual capability flags, e-stop publishes to `/aloha/estop`. **Added 2026-05-10 (issue #58).** | Keep |
-| `test_skill_testing_helpers.py` | 145 | Unit tests for `openral_rskill.testing.assert_within_budget` (strict, tolerance, optional stages, defensive `ValueError`s, failure-message formatting). **Added 2026-05-08.** | Keep |
+| `test_rskill_testing_helpers.py` | 145 | Unit tests for `openral_rskill.testing.assert_within_budget` (strict, tolerance, optional stages, defensive `ValueError`s, failure-message formatting). **Added 2026-05-08.** | Keep |
 | `test_rskill_publisher.py` | 220 | `tools/rskill_publisher.py` smoke (token resolution, manifest validation, dry-run, exit codes, **privacy-gate regression guard** against accidental public publication of closed weights). **Added 2026-05-08.** | Keep |
 | `test_validation_matrix.py` | ~686 | `tools/validation_matrix.py` — verdict derivation, round-over-round diffing, importing a pre-harness round, the pinned stack (checked against the **live** `openral deploy sim` parser) and every guardrail, run against **recorded artifacts** from three real DGX Spark rounds (`tests/unit/fixtures/validation_matrix/`, provenance in `SOURCE.txt`): the two `master-1` rounds in their original `bag1`/`seed1` layout, plus `2026-08-22-harness-1`, the harness's own first live round, where all four scenes died on a flag that does not exist and must bucket as `harness-error` rather than as a clean deadline. Assertions are pinned to the conclusions published in `docs/reference/collision-validation-evidence.md`, so the suite goes red if the extractor stops reproducing the ledger. **Added 2026-08-22.** | Keep |
 
@@ -179,7 +179,7 @@ For each layer (per repo state map) and cross-cutting surface:
 | L3 Skill — `EngineCache`, `quantization` | ✓ (`test_runtime.py` lines 248–467) | ✗ | ◐ | ✗ | ✓ | ✓ | ✗ |
 | L3 Skill — `rSkill` loader, `RSkillManifest` | ✓ | ✗ | ✓ | ✗ | ✓ (manifest fuzzed) | ✓ | ✓ (`assert_within_budget`) |
 | L3 Skill — `SmolVLASkill` adapter | ✓ | ✗ | ✓ | ✗ | n/a | ✓ | ✓ (sim) |
-| L3 Skill — testing helper (`assert_within_budget`) | ✓ (`test_skill_testing_helpers.py`) | ✗ | n/a | n/a | n/a | ✓ | ✓ |
+| L3 Skill — testing helper (`assert_within_budget`) | ✓ (`test_rskill_testing_helpers.py`) | ✗ | n/a | n/a | n/a | ✓ | ✓ |
 | L4 Reasoner | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | L5 World Action Model | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | L6 Safety — `SafetyEnvelope` schema, `ROSSafetyViolation` hierarchy | ✓ (Protocol conformance pins `ROSEStopRequested`) | ✗ | ◐ | ✗ | ✓ | ✓ (exceptions) | n/a |
@@ -273,7 +273,7 @@ future contributors can audit the closure.
   `tests/unit/test_schemas_fuzz.py`.~~
 - ~~**Per-skill latency-budget enforcement helper (P1)** — added
   `openral_rskill.testing.assert_within_budget` +
-  `tests/unit/test_skill_testing_helpers.py` (14 tests).~~
+  `tests/unit/test_rskill_testing_helpers.py` (14 tests).~~
 - ~~**`tools/rskill_publisher.py` smoke (P2)** — added
   `tests/unit/test_rskill_publisher.py` (13 tests, incl. privacy-gate
   regression guard).~~

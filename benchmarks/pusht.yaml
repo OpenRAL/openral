@@ -10,7 +10,7 @@
 # gym_pusht/PushT-v0. Headline metric is mean coverage (IoU between the T
 # block and target), not binary success; runner reports both via
 # EpisodeResult.success (gym-pusht's info.is_success) and
-# EpisodeResult.total_reward (cumulative coverage). skills/diffusion-pusht/eval/pusht.json
+# EpisodeResult.total_reward (cumulative coverage). rskills/diffusion-pusht/eval/pusht.json
 # snapshot reports the paper's 0.91 mean IoU.
 #
 # Run: openral benchmark run --suite pusht --rskill diffusion-pusht
