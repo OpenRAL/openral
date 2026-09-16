@@ -233,8 +233,11 @@ worked examples: [`scenes/deploy/openarm_zed_octomap.yaml`](https://github.com/O
 sets `enable_octomap` and `octomap_cloud_topic` together, and
 [`scenes/deploy/openarm_tabletop.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_tabletop.yaml)
 pins `enable_octomap: false` rather than inherit the auto-enable that the
-manifest's `head_zed` depth `SensorSpec` would otherwise trigger. Copy one of
-them; never leave the pair half-set.
+manifest's `head_zed` depth `SensorSpec` would otherwise trigger (`deploy run`
+resolves that auto-enable through the same code path as `deploy sim`). Both are
+`deploy sim` scenes — `openarm_zed_octomap.yaml` pairs a real ZED with the
+MuJoCo twin so no motor is commanded — but the octomap pair is written the same
+way under `hal_mode:=real`. Copy one of them; never leave it half-set.
 
 That is deliberate reuse rather than a new node: `zed_wrapper` (and the RealSense
 and Orbbec drivers) already stereo-match and project on the GPU, so composing a
