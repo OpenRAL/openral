@@ -38,7 +38,7 @@ base_model_relation: quantized
 > deployment requires a separate agreement with Physical Intelligence
 > (see CLAUDE.md §7.4 / Operating Principle 9). The loader requires
 > `OPENRAL_ALLOW_NONCOMMERCIAL=1` (or the `--non-commercial` flag
-> on `openral skill install`) to activate this skill.
+> on `openral rskill install`) to activate this skill.
 
 ## Why int8 (and not NF4)
 
@@ -117,7 +117,7 @@ pkg = rSkill.from_yaml("rskills/pi05-libero-int8/rskill.yaml")
 
 ```bash
 # CLI (will prompt to accept the non-permissive license unless --yes is passed):
-uv run openral skill install OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8 --non-commercial --yes
+uv run openral rskill install OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8 --non-commercial --yes
 
 # LIBERO closed-loop sim (int8 fits 8 GB):
 PYTORCH_ALLOC_CONF=expandable_segments:True \

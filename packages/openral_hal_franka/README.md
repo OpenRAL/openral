@@ -1,12 +1,13 @@
 # `openral_hal_franka`
 
-ROS 2 lifecycle-node skeleton for the Franka Emika Panda 7-DoF arm.
+ROS 2 lifecycle node for the Franka Emika Panda 7-DoF arm.
 
-This package will wrap `openral_hal.franka_panda.FrankaPandaHAL` as
-a managed ROS 2 lifecycle node. The Python HAL adapter is shipped and
-sim-tested via MuJoCo (`tests/sim/test_franka_panda_hal_mujoco.py`); this ROS
-package itself is a **skeleton** — `lifecycle_node.py` is ~25 lines and
-its full transition handlers land alongside the M3 hardware bring-up.
+This package wraps `openral_hal.franka_panda.FrankaPandaHAL` (sim) /
+`openral_hal.franka_panda_real.FrankaPandaRealHAL` (real) as a managed
+ROS 2 lifecycle node, shipped via the shared
+`make_lifecycle_main_from_manifest` (same pattern as `openral_hal_so100`).
+The Python HAL adapter is shipped and sim-tested via MuJoCo
+(`tests/sim/test_franka_panda_hal_mujoco.py`).
 
 ## Status
 
@@ -15,7 +16,7 @@ its full transition handlers land alongside the M3 hardware bring-up.
 | `FrankaPandaHAL` Python adapter | ✓ shipped (sim-only via MuJoCo) |
 | `FRANKA_PANDA_DESCRIPTION` (Pydantic) | ✓ shipped |
 | `franka_panda_with_sensors` factory | ✓ shipped |
-| ROS 2 lifecycle node | skeleton only — handlers are TODOs |
+| ROS 2 lifecycle node | shipped — manifest-driven (`make_lifecycle_main_from_manifest`), same pattern as `openral_hal_so100` |
 | HIL test on real Panda hardware | M3 (planned) |
 
 ## Intended interface
@@ -46,9 +47,8 @@ source /opt/ros/jazzy/setup.bash
 colcon build --merge-install --packages-select openral_hal_franka
 ```
 
-The package is **not** included in `just ros2-build` today — that recipe
-only builds `msgs`, `hal_so100`, and `world_state`. Add it explicitly
-with `--packages-select` while the lifecycle node is iterated on.
+The package builds via `just ros2-build` (see `Justfile`'s `ros2-build`
+recipe, which lists it in `--packages-select`).
 
 ## See also
 

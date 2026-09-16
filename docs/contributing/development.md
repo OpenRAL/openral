@@ -25,7 +25,7 @@ macOS 14+ is supported for Python/tooling work. ROS 2 on macOS runs inside the d
 
 ```bash
 git clone https://github.com/OpenRAL/openral
-cd OpenRAL
+cd openral
 just bootstrap          # installs uv, ROS 2, system deps (~5–10 min)
 source /opt/ros/jazzy/setup.bash   # or 'humble' on Ubuntu 22.04
 just sync               # install Python workspace deps (always `just sync`,
@@ -279,42 +279,9 @@ just docs-build             # full build (CI parity, strict mode)
 
 ## Repository layout (quick reference)
 
-```
-python/core/         openral_core         — Pydantic v2 schemas (normative)
-python/cli/          openral_cli          — `openral` CLI entry point
-python/hal/          openral_hal          — HAL Protocol + per-robot adapters
-                                                  (so100_sim, so100_follower, franka_panda,
-                                                   ur5e/ur10e, ros_control)
-python/sensors/      openral_sensors      — sensor catalog + vendor adapters
-python/world_state/  openral_world_state  — WorldStateAggregator (30 Hz snapshot)
-python/rskill/        openral_rskill        — Skill ABC, rSkill loader, runtimes,
-                                                  SmolVLA adapter
-python/sim/          openral_sim          — openral sim run registry/runner; LIBERO/MetaWorld
-packages/msgs/                                — ROS 2 IDL (.msg, .action)
-packages/world_state/                         — WorldState lifecycle node
-packages/openral_hal_*/                   — per-robot lifecycle nodes (so100, ur5e,
-                                                  ur10e, franka)
-robots/                                       — canonical RobotDescription manifests
-                                                  (so100_follower, franka_panda, sawyer,
-                                                   aloha_bimanual, pusht_2d,
-                                                   ur5e, ur10e); auto-discovered
-                                                   by openral_sim at import.
-skills/                                       — rSkill packages (manifest + eval/)
-                                                  (smolvla-libero, smolvla-metaworld,
-                                                   pi05-libero-int8,
-                                                   xvla-libero, act-aloha,
-                                                   act-aloha-insertion,
-                                                   diffusion-pusht)
-scenes/                                       — three-tier scene YAMLs
-                                                  (deploy/ · sim/ · benchmark/)
-tests/unit/                                   — pytest unit tests (<30 s total)
-tests/integration/                            — launch_testing multi-node tests
-tests/sim/                                    — closed-loop sim (CUDA + HF weights, opt-in)
-tests/hil/                                    — hardware-in-the-loop (lab runners)
-tools/schema_export.py                        — JSON Schema generator + drift check
-tools/rskill_publisher.py                      — rSkill packaging / publish helper
-docs/                                         — mkdocs-material site
-```
+For the maintained directory layout — every `python/*` / `packages/*`
+package, all 21 `robots/`, all 48 `rskills/`, and the test tiers — see
+[`docs/architecture/repo-map.md`](../architecture/repo-map.md).
 
 Most directories carry a per-package `README.md` with usage examples and
 links back to the canonical schemas — start with the package matching

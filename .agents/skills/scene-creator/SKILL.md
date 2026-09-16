@@ -81,7 +81,7 @@ Read only what matches the scene type:
 openral sim list
 openral sim run --config scenes/<path>.yaml --rskill rskills/<skill>
 openral sim run --config scenes/<path>.yaml --rskill rskills/<skill> --task <task-id> --instruction "<prompt>"
-openral benchmark run --suite <suite-id> --vla <vla-id>:rskills/<skill>
+openral benchmark run --suite <suite-id> --rskill rskills/<skill>
 ```
 
 ## Output Checklist

@@ -5,8 +5,8 @@ edit_uri: edit/master/docs/
 
 # Files reachable by link rather than the nav tree. `docs/methods/*` is the
 # per-layer public-symbol inventory browsed via `METHODS.md`; `docs/audit/` holds
-# generated report artifacts linked from the Contributing pages. Listing them here
-# keeps `mkdocs build --strict` green without cluttering the top-level nav.
+# historical audit snapshots, not living docs. Listing them here keeps
+# `mkdocs build --strict` green without cluttering the top-level nav.
 not_in_nav: |
   /methods/
   /audit/
@@ -107,6 +107,7 @@ nav:
     - Collision primitives, in pictures: reference/collision-primitive-images.md
     - RoboCasa start-state collision census: reference/robocasa-start-state-census.md
     - Tight link geometry in the safety kernel: reference/collision-tight-geometry.md
+    - Staged hull narrow phase in the safety kernel: reference/collision-hull-narrow-phase.md
     - The live world map, measured: reference/world-map-fidelity.md
     - RoboCasa carry survey (base translation while carrying): reference/robocasa-carry-survey.md
     - Collision-safety alternatives survey: reference/collision-safety-alternatives-survey.md

@@ -765,7 +765,7 @@ class TestInTreeManifests:
         repo_root = pathlib.Path(__file__).resolve().parents[2]
         manifest_paths = sorted(repo_root.glob("rskills/*/rskill.yaml"))
         assert manifest_paths, (
-            f"No skills/*/rskill.yaml manifests found under {repo_root}; "
+            f"No rskills/*/rskill.yaml manifests found under {repo_root}; "
             "the test is in the wrong place or the tree is missing skills."
         )
         for p in manifest_paths:

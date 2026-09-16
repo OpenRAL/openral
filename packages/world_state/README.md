@@ -162,7 +162,7 @@ RobotDescription.sensors[sensor_id].intrinsics                  ─┘          
 
 ## See also
 
-- `python/world_state/README.md` (planned) and the package source under
+- `python/world_state/README.md` and the package source under
   `python/world_state/src/openral_world_state/`.
 - `openral_core.WorldState` / `JointState` / `Pose6D` /
   `RobotDescription` — Pydantic schemas this node produces and consumes.

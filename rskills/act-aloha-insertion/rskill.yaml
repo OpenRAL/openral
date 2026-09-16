@@ -64,9 +64,9 @@ latency_budget:
   per_chunk_ms: 25.0
 
 # ── Provenance ─────────────────────────────────────────────────────────────
-# Headline success rate from skills/act-aloha-insertion/eval/aloha_insertion.json.
+# Headline success rate from rskills/act-aloha-insertion/eval/aloha_insertion.json.
 benchmarks:
-  aloha_insertion: 0.0
+  aloha_insertion: 0.2
 
 paper_url: "https://arxiv.org/abs/2304.13705"
 source_repo: "hf://lerobot/act_aloha_sim_insertion_human"

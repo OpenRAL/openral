@@ -14,11 +14,14 @@ source /opt/ros/jazzy/setup.bash
 just ros2-build                 # colcon build --merge-install for selected packages
 source install/setup.bash
 
-ros2 run openral_hal_so100 lifecycle_node \
-    --ros-args -p port:=/dev/ttyUSB0 -p publish_rate_hz:=30.0
+ros2 run openral_hal_so100 lifecycle_node.py \
+    --ros-args -p robot_yaml:=robots/so100_follower/robot.yaml -p hal_mode:=real
 ```
 
 ## Lifecycle contract
+
+The transition handlers live in the shared `ManifestHALLifecycleNode`
+(`python/hal/src/openral_hal/lifecycle.py`), not in this package:
 
 | Transition | Action |
 | --- | --- |
@@ -34,7 +37,7 @@ ros2 run openral_hal_so100 lifecycle_node \
 | --- | --- | --- | --- |
 | `port` | string | `/dev/ttyUSB0` | USB serial port for the SO-100 controller. |
 | `publish_rate_hz` | double | `30.0` | Rate of `JointState` publication. |
-| `calibrate_on_connect` | bool | `false` | Run the lerobot calibration wizard at configure time. |
+| `calibrate_on_connect` | — | — | manifest-set (`SO100FollowerHAL.__init__` kwarg), not a declared ROS param. |
 
 ## Topics
 
@@ -61,7 +64,7 @@ commands flow through the `/openral/safe_action` path
 ## Build & test
 
 ```bash
-just ros2-build                                  # builds msgs + hal_so100 + world_state
+just ros2-build                                  # builds the full HAL/safety/world_state graph (see Justfile)
 just ros2-test                                   # colcon test + colcon test-result --verbose
 ```
 
@@ -69,5 +72,5 @@ just ros2-test                                   # colcon test + colcon test-res
 
 - `python/hal/README.md` — the Python adapter documentation.
 - `robots/so100_follower/README.md` — canonical SO-100 description.
-- `skills/smolvla-libero/` — gold-standard rSkill that targets this embodiment.
+- `rskills/smolvla-libero/` — gold-standard rSkill that targets this embodiment.
 - CLAUDE.md §5.3 (QoS profiles) and §6.1 (layer discipline).

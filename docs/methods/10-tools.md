@@ -409,3 +409,43 @@ _Per-frame TOPReward progress over one recorded episode, rendered as an overlay 
 - `per_frame_progress(*, dataset_repo_id, episode, vlm_name, image_key, ...) -> NDArray` — Score every frame of one episode. (L85)
 - `render_overlay(frame, value, task) -> NDArray[np.uint8]` — Draw a progress bar, the value and the task caption under an RGB frame. (L157)
 - `write_media(frames, progress, task, media_dir) -> None` — Write `progress.mp4` plus start/mid/end stills carrying the overlay. (L191)
+
+### `tools/build_robometer_nf4_checkpoint.py`
+_Builds the publishable pre-quantized Robometer-4B NF4 checkpoint: loads the upstream Apache-2.0 `robometer/Robometer-4B` bf16 via the pinned robometer loader, NF4-quantizes in place, and saves a self-contained directory (`model.safetensors` ~3.32 GB, `config.json`/`config.yaml`, tokenizer, preprocessor config) the scorer can meta-load directly as 4-bit. Run with Robometer build dependencies installed; the output uploads to `OpenRAL/rskill-robometer_4b-any-general-nf4`._
+
+- `main() -> int` — CLI entry; `--out <dir>` writes the quantized checkpoint directory. (L45)
+
+### `tools/export_act_onnx.py`
+_Exports a LeRobot ACT policy to a single whole-model ONNX graph (`ACTPolicy.model`, called as `predict_action_chunk` does). Normalization stays external (checkpoint's `policy_preprocessor.json`/`policy_postprocessor.json` MEAN_STD sidecars); inputs ordered by `config.image_features` plus the checkpoint's declared state dim. Parity checked in `tests/integration/test_act_onnx.py`._
+
+- `export(out_path, repo_id, *, device="cpu", preprocess="host") -> str` — CLI entry (`--repo-id`, `--out`). (L147)
+
+### `tools/export_rtdetr_onnx.py`
+_Exports `PekingU/rtdetr_r18vd_coco_o365` to ONNX matching `ObjectsDetector`'s contract: single image input, /255 preprocessing, two 3-D outputs (pre-sigmoid logits + cxcywh-normalised boxes). Run in an isolated `uv run --isolated --no-project` overlay — the project venv's torchvision would shadow it and break the `RTDetrForObjectDetection` import; do not `uv sync` the onnx-export group._
+
+- `export(out_path, model_id="PekingU/rtdetr_r18vd_coco_o365") -> None` — CLI entry (`--out`). (L30)
+
+### `tools/gen_nav2_visual.py`
+_Generates `packages/openral_nav2_bringup/config/nav2_visual.yaml` (the Nav2 costmap profile for the visual-SLAM backend — cuVSLAM + nvblox, `static_layer` off the backend-agnostic `/map` OccupancyGrid instead of ray-casting `/scan`) from the base lidar profile `nav2_panda_mobile.yaml`, so the two stay in sync. One-shot; re-run after editing the base config._
+
+- `main() -> int` — CLI entry, no arguments. (L50)
+
+### `tools/openpi_to_lerobot_pi05.py`
+_Converts an OpenPI π0.5 Orbax checkpoint (stacked JAX params, as the RoboCasa365 release ships) into a LeRobot PI05 checkpoint (unstacked PyTorch `model.safetensors` + policy processor sidecars). Deterministic format bridge only — quantization stays in `tools/quantize_rskill.py`._
+
+- `main() -> int` — CLI entry; downloads/restores Orbax params, maps state dict, copies sidecars, patches config, validates shapes. (L312)
+
+### `tools/quantize_lingbot_vla2.py`
+_Pre-quantizes LingBot-VLA 2.0's Qwen3-VL backbone to an NF4 pack ahead of time (the sidecar normally does this at load) so deploys download ~7 GB instead of 25.5 GB and skip the per-boot conversion. Runs in the sidecar venv (torch 2.9 / transformers 4.57.3 / bitsandbytes) importing `tools/_lingbot_vla2_server.py`'s own helpers so the pack matches the runtime shells byte-for-byte. Frugal streaming keeps GPU peak at a few hundred MB and host peak at ~30 GB._
+
+- `main(argv) -> int` — CLI entry (`--ckpt`, `--out`, `--qwen`). (L313)
+
+### `tools/verify_test_envs.py`
+_Verifies selected optional test environments locally: syncs the matching dependency group declared in `tools/test_selection.toml`, runs its selected targets, and fails if any test skips. Hardware and externally-provisioned sidecars are opt-in since this script cannot create physical devices or proprietary simulator installs._
+
+- `main(argv=None) -> int` — CLI entry; drives group sync, provisioning, and `_strict_pytest` per lane. (L468)
+
+### `tools/wait_for_action_and_signal_palette.py`
+_Polls for a ROS 2 action server to appear, then publishes an `Empty` message on `/openral/skill_registry_changed` so the reasoner re-seeds its rSkill palette. Needed because wrapped-ROS rSkills (`kind: ros_action`/`ros_service`) drop from the palette when their `interface_name` isn't yet advertised at the reasoner's early-launch autostart, but e.g. Nav2's lifecycle dance takes 15-30 s to advertise `/navigate_to_pose`. Exits 0 once the trigger is published; exits 1 if the action never appears within `--timeout-s`._
+
+- `main() -> int` — CLI entry (`--action`, `--timeout-s`). (L101)

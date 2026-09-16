@@ -27,9 +27,10 @@ inference: false
 ## ⚠ Status: baseline, scores 0%
 
 This rSkill exists to **exercise and validate the OpenRAL VLABench backend**, not
-to score the benchmark. Measured **0/3 on six diverse primitive tasks**
-(`select_fruit`, `select_drink`, `select_toy`, `select_book`, `add_condiment`,
-`insert_flower`) — **identical to lerobot's own `lerobot-eval` reference**, which
+to score the benchmark. Informal manual check, **0/3 on six diverse primitive
+tasks** (`select_fruit`, `select_drink`, `select_toy`, `select_book`,
+`add_condiment`, `insert_flower`) — no automated `eval/` artifact backs this
+number yet — **identical to lerobot's own `lerobot-eval` reference**, which
 confirms the OpenRAL wiring is faithful (state 7-D, action absolute-eef, cameras
 `camera1/2/3`) and the 0% is the policy, not the integration.
 

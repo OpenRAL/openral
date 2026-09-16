@@ -5,7 +5,7 @@
 OpenRAL uses a seven-layer architecture. Each layer has a single responsibility and communicates with adjacent layers through typed contracts. Status pills below match the [repo state map](repo-state-map.html): **✓ shipped** = source + tests on disk, **🟡 partial** = some pieces shipped, **⏳ planned** = not yet on disk.
 
 ```
-0  HAL                  python/hal/, packages/openral_hal_*/        ✓ shipped (11 robots: SO-100/101, Franka, UR5e/10e, ALOHA, OpenArm, Anvil-OpenArm-v2, Rizon4, H1, G1, panda_mobile)
+0  HAL                  python/hal/, packages/openral_hal_*/        ✓ shipped (12 robots: SO-100/101, Franka, UR5e/10e, ALOHA, OpenArm, Anvil-OpenArm-v2, Galaxea A1, Rizon4, H1, G1, panda_mobile)
 1  Sensors              python/sensors/                             ✓ shipped (catalog + vendor adapters)
 2  World State          python/world_state/, packages/world_state/  ✓ shipped (aggregator + lifecycle node)
 3  rSkill (S1)           python/rskill/, packages/openral_rskill_ros/ ✓ shipped (Python ABC + rSkill loader + openral_rskill_ros action server)
@@ -40,8 +40,8 @@ Crossing a layer boundary without an ADR is rejected in review.
 Every robot agent has:
 - **S1** — fast policy (VLA, 30–200 Hz), action-chunked.
 - **S2** — slow reasoning (event-driven, ~0.2 Hz heartbeat). The reasoner emits
-  typed `ReasonerToolCall` structured tool-calls (`ExecuteRskill`,
-  `LifecycleTransition`, `EmitPrompt`, …) as its sole planner output — the
+  typed `ReasonerToolCall` structured tool-calls (`ExecuteRskillTool`,
+  `LifecycleTransitionTool`, `EmitPromptTool`, …) as its sole planner output — the
   direct typed-dispatch surface.
 - **S0** (humanoids only) — cerebellar layer (500–1000 Hz, C++, inside ros2_control).
 

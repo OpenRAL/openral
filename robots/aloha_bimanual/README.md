@@ -3,8 +3,9 @@
 Canonical `RobotDescription` manifest for the **Trossen ALOHA** bimanual
 teleop platform — two 7-DoF arms with parallel grippers (14-DoF action
 space), one top-down RGB camera. Two execution paths share the
-manifest: `AlohaHAL` for the real Interbotix XS hardware (4
-`ros2_control` controllers) and `AlohaMujocoHAL` for the real-physics
+manifest: `AlohaHAL` for the real Interbotix XS hardware (via
+`interbotix_xs_sdk`, not `ros2_control`/`controller_manager`; hardware
+transport not yet wired in `connect()`) and `AlohaMujocoHAL` for the real-physics
 MuJoCo digital twin built on the
 [`gym-aloha`](https://github.com/huggingface/gym-aloha) bimanual MJCF.
 
@@ -31,9 +32,9 @@ MuJoCo digital twin built on the
 | Component | Path |
 | --- | --- |
 | Python HAL adapters | `openral_hal.aloha.AlohaHAL` (real HW; Interbotix XS), `openral_hal.aloha.AlohaMujocoHAL` (MuJoCo digital twin; gym-aloha) |
-| Compatible rSkill | [`skills/act-aloha/`](../../skills/act-aloha/README.md) — ACT cube transfer |
+| Compatible rSkill | [`rskills/act-aloha/`](../../rskills/act-aloha/README.md) — ACT cube transfer |
 | BenchmarkScene config | [`scenes/benchmark/aloha_transfer_cube.yaml`](../../scenes/benchmark/aloha_transfer_cube.yaml) |
-| Eval adapter | `openral_sim.adapters.aloha` |
+| Eval adapter | `openral_sim.backends.aloha` |
 | Sim test | `tests/sim/test_aloha_bimanual_act_aloha.py` (VLA rollout), `tests/sim/test_aloha_bimanual_hal_mujoco.py` (`AlohaMujocoHAL` end-to-end) |
 
 ## Tests
@@ -57,5 +58,5 @@ just sim-act-aloha
 
 ## See also
 
-- [`skills/act-aloha/README.md`](../../skills/act-aloha/README.md) — ACT rSkill.
+- [`rskills/act-aloha/README.md`](../../rskills/act-aloha/README.md) — ACT rSkill.
 - [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md) — VLA × Robot × Sim matrix.

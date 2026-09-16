@@ -5929,9 +5929,9 @@ ModelFamily: TypeAlias = Literal[
 """VLA / policy family the skill belongs to.
 
 Used by the eval / runner adapters to dispatch to the right
-``openral_sim.adapters.<family>`` policy adapter without
+``openral_sim.backends.<family>`` policy adapter without
 string-matching the skill name. Adding a family here means landing the
-matching adapter under ``python/sim/src/openral_sim/adapters/``.
+matching adapter under ``python/sim/src/openral_sim/backends/``.
 
 ``xr1`` (Xiaomi Robotics XR-1 / ``MiBoTForActionGeneration``) runs
 out-of-process because its released checkpoints pin transformers 4.57.1

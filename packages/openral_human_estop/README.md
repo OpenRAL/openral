@@ -4,11 +4,11 @@ ROS 2 reasoner + supervisor graph spec §5 bullet 2 — **human-driven E-stop fo
 subscribes to a high-level `/openral/human_estop` request (from the dashboard,
 a voice/prompt channel, or any operator UI) and republishes it onto the canonical
 `/openral/estop` topic, alongside a `FailureTrigger(KIND_HUMAN, SEVERITY_ABORT,
-HumanEvidence)` on `/openral/failure` so the reasoner records a structured
+HumanEvidence)` on `/openral/failure/safety` so the reasoner records a structured
 human-abort event.
 
 ```
-dashboard / operator UI ──/openral/human_estop──▶ forwarder_node ──▶ /openral/estop (+ /openral/failure)
+dashboard / operator UI ──/openral/human_estop──▶ forwarder_node ──▶ /openral/estop (+ /openral/failure/safety)
 ```
 
 It is deliberately separate from the hardware/deadman sources in

@@ -30,6 +30,7 @@ openral/                      ← THIS monorepo
 │  ├─ openral_hal_ur5e/  · openral_hal_ur10e/  ← UR5e / UR10e lifecycle nodes ✓
 │  ├─ openral_hal_aloha/  · openral_hal_openarm/  ← bimanual lifecycle nodes ✓
 │  ├─ openral_hal_rizon4/  · openral_hal_g1/  · openral_hal_h1/  · openral_hal_panda_mobile/  ← per-robot lifecycle nodes (unified base) ✓
+│  ├─ openral_hal_galaxea_a1/ ← Galaxea A1 real-HW HAL lifecycle node ✓
 │  ├─ openral_hal_scene_attached/ ← scene-attached sim HAL node (`deploy sim`) ✓
 │  ├─ openral_reasoner_ros/   ← reasoner_node (LLM ReasonerToolCall dispatch) ✓
 │  ├─ openral_prompt_router/  ← prompt fan-in lifecycle node ✓

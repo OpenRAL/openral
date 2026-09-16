@@ -2,7 +2,7 @@
 
 `RobotDescription` manifest used by:
 
-- `python/sim/src/openral_sim/adapters/simpler_env.py` — registers
+- `python/sim/src/openral_sim/backends/simpler_env.py` — registers
   `simpler_env/widowx_*` scenes for the BridgeData V2 / SimplerEnv
   WidowX setup.
 

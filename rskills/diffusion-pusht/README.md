@@ -44,7 +44,7 @@ queue-drain contract in `ChunkedExecutor`.
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| PushT 2-D pseudo-robot (`gym_pusht/PushT-v0`) | `pusht`, `lerobot` | ✓ sim | 2-D end-effector pushing a T block on a 512 × 512 px canvas |
+| PushT 2-D pseudo-robot (`gym_pusht/PushT-v0`) | `pusht` | ✓ sim | 2-D end-effector pushing a T block on a 512 × 512 px canvas |
 
 ## Sensors required
 
@@ -63,7 +63,7 @@ exposes the raw key `observation.image`.
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` | `s1` |
-| `embodiment_tags` | `pusht`, `lerobot` |
+| `embodiment_tags` | `pusht` |
 | `runtime` / `quantization.dtype` | `pytorch` / `fp32` |
 | `weights_uri` | `hf://lerobot/diffusion_pusht` |
 | `latency_budget.per_chunk_ms` | 1 250 ms (warm full-chunk ≈ 1 756 ms on RTX 4070 Laptop, dominated by DDPM) |

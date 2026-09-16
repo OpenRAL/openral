@@ -98,7 +98,7 @@ just sync --all-packages --group simpler-env
 hf download RLinf/RLinf-OpenVLAOFT-PPO-ManiSkill3-25ood
 OPENRAL_ALLOW_REMOTE_CODE=1 openral benchmark run \
   --suite simpler_env_widowx --task simpler_env/widowx_carrot_on_plate \
-  --rskill openvla-oft-simpler-widowx-nf4
+  --rskill rskills/openvla-oft-simpler-widowx-nf4
 ```
 
 ## Reproduction
@@ -107,7 +107,7 @@ OPENRAL_ALLOW_REMOTE_CODE=1 openral benchmark run \
 # Single SimplerEnv WidowX scene (carrot-on-plate):
 OPENRAL_ALLOW_REMOTE_CODE=1 openral benchmark run \
   --suite simpler_env_widowx --task simpler_env/widowx_carrot_on_plate \
-  --rskill openvla-oft-simpler-widowx-nf4
+  --rskill rskills/openvla-oft-simpler-widowx-nf4
 ```
 
 ## Evaluation

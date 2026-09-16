@@ -13,14 +13,19 @@
 
 | Direction | Topic / Service | Type | QoS |
 | --- | --- | --- | --- |
-| sub | `/openral/candidate_action` | `openral_msgs/ActionChunk` | RELIABLE, VOLATILE, KL=1 |
+| sub | `/openral/candidate_action` | `openral_msgs/ActionChunk` | RELIABLE, VOLATILE, KL=50 |
 | sub | `/openral/estop` | `std_msgs/Empty` | RELIABLE, VOLATILE, KL=10 |
-| pub | `/openral/safe_action` | `openral_msgs/ActionChunk` | RELIABLE, VOLATILE, KL=1 |
+| pub | `/openral/safe_action` | `openral_msgs/ActionChunk` | RELIABLE, VOLATILE, KL=50 |
 | pub | `/openral/estop` | `std_msgs/Empty` | RELIABLE, VOLATILE, KL=10 |
 | pub | `/openral/failure/safety` | `openral_msgs/FailureTrigger` | RELIABLE, VOLATILE, KL=50 |
 | pub | `/openral/safety_status` | `openral_msgs/SafetyStatus` | RELIABLE, **TRANSIENT_LOCAL**, KL=1 |
 | pub | `/diagnostics` | `diagnostic_msgs/DiagnosticArray`, 1 Hz | default |
 | srv | `/openral/estop_reset` | `std_srvs/Trigger` | — |
+
+`/openral/candidate_action` and `/openral/safe_action` deliberately deviate
+from CLAUDE.md §2's generic "control" QoS profile (`KEEP_LAST=1`): chunked
+action publishing needs more than one slot in flight, so `chunk_qos()`
+(`lifecycle_kernel.cpp`) sets `KEEP_LAST=50` for both.
 
 ### `/openral/safety_status` — current state, not events (ADR-0096)
 

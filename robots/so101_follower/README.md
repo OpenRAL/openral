@@ -82,4 +82,4 @@ the reasoner selects it at runtime from the installed `rskills/` registry. See t
 ## See also
 
 - [SO-100 manifest](../so100_follower/) — same 6-DoF contract, different MJCF.
-- [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md#so101_follower) for the rSkill lineage that targets this embodiment.
+- [`docs/reference/vla_compatibility.md`](../../docs/reference/vla_compatibility.md#35-so-100--so-101-real-robot-or-sim) for the rSkill lineage that targets this embodiment.

@@ -228,7 +228,7 @@ safety:
 # tests/unit/test_robot_manifests_match_hal_constants.py). The sim
 # baseline `ALOHA_DESCRIPTION` in the same file keeps sdk_kind: open and
 # the same `hal` block; gym-aloha is constructed directly by
-# openral_sim.adapters.aloha.
+# openral_sim.backends.aloha.
 sdk_kind: "closed_with_api"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
 hal:

@@ -31,7 +31,7 @@ inference: false
 ## Quick Start
 
 ```bash
-ral skill install hf://OpenRAL/rskill-qwen35_4b-any-general-nf4
+openral rskill install OpenRAL/rskill-qwen35_4b-any-general-nf4
 ```
 
 ```python
