@@ -40,6 +40,15 @@ repos:
         language: system
         pass_filenames: false
         files: ^(python/core/src/openral_core/|tools/schema_export\.py)
+      # always_run rather than a files: filter, because the drift this catches
+      # is usually introduced from the *tree* side — a module moves or a
+      # directory goes away and nobody opens the map. It costs ~0.2 s.
+      - id: repo-state-map
+        name: check repo state map drift
+        entry: uv run python tools/check_repo_state_map.py
+        language: system
+        pass_filenames: false
+        always_run: true
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v18.1.8
     hooks:

@@ -5,7 +5,7 @@ OpenRAL Pydantic schemas — normative contract for the OpenRAL layer interfaces
 Part of [**OpenRAL**](https://github.com/OpenRAL/openral) — the open Robot
 Abstraction Layer for vision-language-action robotics. This package is one
 member of the OpenRAL Python workspace; see the architecture overview and the
-eight-layer model in the project docs.
+seven-layer model in the project docs.
 
 - **Docs:** https://openral.github.io/openral/
 - **Source:** https://github.com/OpenRAL/openral

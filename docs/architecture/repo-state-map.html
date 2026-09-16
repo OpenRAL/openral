@@ -137,7 +137,7 @@
 
     /* Flow strip */
     .flow {
-      display: grid; grid-template-columns: repeat(8, minmax(0, 1fr));
+      display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
       gap: 0; align-items: stretch; padding: 14px;
       background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
       position: relative;
@@ -303,7 +303,7 @@
 
 <header>
   <h1>OpenRAL · repo state map</h1>
-  <div class="sub">A canvas view of every module in the eight-layer runtime, what it produces, what it consumes, and whether it actually exists. Click a block to inspect its schemas.</div>
+  <div class="sub">A canvas view of every module in the seven-layer runtime, what it produces, what it consumes, and whether it actually exists. Click a block to inspect its schemas.</div>
   <div class="legend">
     <span class="swatch sw-green">working</span>
     <span class="swatch sw-yellow">in development</span>
@@ -311,7 +311,7 @@
     <span class="swatch sw-red">cancelled / out of scope</span>
     <span class="swatch sw-schema">schema</span>
     <span style="color: var(--text-faint); font-size: 11px; margin-left: auto;">
-      Generated from <span class="mono">CLAUDE.md</span> + actual filesystem state. Branch: <span class="mono">master</span> · 2026-06-15
+      Generated from <span class="mono">CLAUDE.md</span> + actual filesystem state. Branch: <span class="mono">master</span> · 2026-09-16
     </span>
   </div>
 </header>
@@ -349,16 +349,11 @@
       </div>
       <div class="step dot-yellow">
         <div class="num">L5</div>
-        <div class="nm">WAM (opt.)</div>
-        <div class="hz">mental rollout</div>
-      </div>
-      <div class="step dot-yellow">
-        <div class="num">L6</div>
         <div class="nm">Safety</div>
         <div class="hz">C++, deny-by-default</div>
       </div>
       <div class="step dot-green">
-        <div class="num">L7</div>
+        <div class="num">L6</div>
         <div class="nm">Observability</div>
         <div class="hz">OTel + LeRobotDataset</div>
       </div>
@@ -377,7 +372,7 @@
     <span class="chip" data-filter="red">cancelled</span>
   </div>
 
-  <h2 class="section">The eight layers · per-module status, inputs, outputs, schemas</h2>
+  <h2 class="section">The seven layers · per-module status, inputs, outputs, schemas</h2>
   <div class="layers" id="layers"></div>
 
   <h2 class="section">Cross-cutting · not a layer, but every layer touches them</h2>
@@ -400,8 +395,8 @@
 </main>
 
 <footer>
-  Sources: <span class="mono">CLAUDE.md §2 (repo map)</span>, <span class="mono">README.md</span>, <span class="mono">docs/architecture/overview.md</span>, and the actual contents of <span class="mono">python/</span>, <span class="mono">packages/</span>, <span class="mono">cpp/</span>, <span class="mono">tools/</span>, <span class="mono">examples/</span>, <span class="mono">rskills/</span>, <span class="mono">tests/</span> as of branch HEAD.
-  Status pills are evidence-based: a module is <b>working</b> only if it has source files <i>and</i> tests; <b>in dev</b> if source exists but the layer responsibility is partially covered; <b>planned</b> if the directory does not yet exist; <b>cancelled</b> if CLAUDE.md explicitly says we will not build it.
+  Sources: <span class="mono">CLAUDE.md §2 (repo map)</span>, <span class="mono">README.md</span>, <span class="mono">docs/architecture/overview.md</span>, and the actual contents of <span class="mono">python/</span>, <span class="mono">packages/</span>, <span class="mono">cpp/</span>, <span class="mono">tools/</span>, <span class="mono">scenes/</span>, <span class="mono">rskills/</span>, <span class="mono">tests/</span> as of branch HEAD.
+  Status pills are evidence-based: a module is <b>working</b> only if it has source files <i>and</i> tests; <b>in dev</b> if source exists but the layer responsibility is partially covered; <b>planned</b> if the directory does not yet exist, or if the code + test harness exist but there is no physical robot in hand to validate against; <b>cancelled</b> if CLAUDE.md explicitly says we will not build it.
 </footer>
 
 <script>
@@ -602,9 +597,18 @@ const LAYERS = [
         title: "RosControlHAL",
         pkg: "python/hal · ros_control.py",
         status: "green",
-        desc: "ros2_control-backed adapter over an injectable transport. Tested with SimTransport; production transport pending real-hardware run.",
+        desc: "ros2_control-backed adapter over an injectable transport. Deliberately wire-format-free: it turns an Action into a plain dict and hands it to an injected publish_fn, so the same class backs the OpenArm / UR / Franka / Sawyer real-HW HALs. Exercised by SimTransport in unit tests (tests/unit/test_hal.py) and driven on real hardware by RosControlTransport (next card).",
         inputs: ["Action"],
         outputs: ["JointState"],
+        schemas: ["Action", "JointState"],
+      },
+      {
+        title: "RosControlTransport (real-HW wire)",
+        pkg: "python/hal · ros_control_transport.py",
+        status: "green",
+        desc: "The production rclpy transport behind every RosControlHAL robot — what actually moves a real ros2_control arm. Before it existed the default publish_fn was a log.debug no-op, so `openral deploy run` against a real arm published commands into a logger and read back zeros for the whole family (OpenArm / UR5e / UR10e / Franka / Sawyer); only the serial SO-100/SO-101 arms, whose HAL owns its own bus, actually moved. Robot-agnostic by construction: built entirely from what the HAL reports about itself — command_bindings() (one publisher per entry, typed by ControllerKind), ros2_control_joint_names(), joint_state_topic — so a single-controller UR and the four-controller bimanual OpenArm are one code path and adding a robot needs no transport code. Joint state is merged BY NAME, never by index (independently publishing controllers give no ordering guarantee, and per-limb controllers each carry only their own joints). Per-message arrival time is surfaced via last_arrival so RosControlHAL.read_state measures real staleness rather than time since connect(). RosControlDrivable is the runtime-checkable structural Protocol the lifecycle node gates on (not isinstance(hal, RosControlHAL)), so a ros2_control robot that reimplements the fan-out on HALBase opts in by shape instead of being silently skipped; ManifestHALLifecycleNode attaches it automatically under hal_mode:=real and drops its own global /joint_states publisher so the vendor's joint_state_broadcaster stays the single writer. An unmapped ControllerKind fails loudly at wire-up rather than publishing a plausible-but-wrong type onto the actuation path (pinned by tests/unit/test_ros_control_transport.py::test_every_controller_kind_maps_to_a_message_type). Reuse watch: the canonical real-HW ros2_control bridge — do not hand-roll publishers in a per-robot HAL.",
+        inputs: ["Action", "/joint_states"],
+        outputs: ["per-controller command topics", "JointState"],
         schemas: ["Action", "JointState"],
       },
       {
@@ -698,10 +702,19 @@ const LAYERS = [
         schemas: ["RobotDescription", "SimDescription", "JointState", "Action"],
       },
       {
+        title: "HAL · Anvil OpenARM 2.0 (sim, MuJoCo)",
+        pkg: "python/hal · anvil_openarm_v2.py",
+        status: "green",
+        desc: "AnvilOpenArmV2MujocoHAL: a second, distinct OpenArm digital twin — Anvil Robotics' manufactured variant of the standard OpenArm v2 (docs.anvil.bot/introduction/openarm-2.0), not the same hardware as the Enactic OpenArm v2 above. Differs from the Enactic twin in exactly two joint ranges (J1 ±135°; J6 -45..+70° radial deviation) plus the wrist support bracket that enables it — everything else (kinematics, meshes, native <position> actuators, single-driven-finger grippers) is the upstream Enactic v2, so the Anvil-ness is entirely in the fetched MJCF (bensonlee5/anvil-openarm-mujoco, pinned SHA, vendored by openral_hal._anvil_openarm_v2_assets.ensure_anvil_openarm_v2_mjcf). Structurally identical to OpenArmMujocoHAL — same thin MujocoArmHAL subclass pattern, all wiring in ANVIL_OPENARM_V2_DESCRIPTION.sim (robots/anvil_openarm_v2/robot.yaml). Sim-only: hal.real is null — no wrapper around Anvil's own driver stack exists yet, and there is no dedicated packages/openral_hal_anvil_openarm ROS package (unlike the Enactic real-HW path). Sim-tested in tests/sim/test_anvil_openarm_v2_hal_mujoco.py.",
+        inputs: ["Action (16-D)"],
+        outputs: ["JointState (16-D)"],
+        schemas: ["RobotDescription", "SimDescription", "JointState", "Action"],
+      },
+      {
         title: "HAL · Enactic OpenArm v2 (real-HW)",
         pkg: "python/hal · openarm_real.py",
-        status: "yellow",
-        desc: "OpenArmRealHAL: RosControlHAL subclass driving the physical arm, sharing OPENARM_DESCRIPTION with the twin so a Skill moves sim → hardware unchanged. Actuation goes through openarm_bringup's ros2_control stack, never Python-side CAN: the loop runs at 400 Hz and CLAUDE.md §1.5 keeps anything above 100 Hz in C++ (Action → four command topics → controller_manager → openarm_hardware SystemInterface → openarm_can → SocketCAN → Damiao motors). The bimanual bringup spawns four controllers (per-side arm + gripper), so one 16-DoF action is sliced across four topics — all four messages built before any is published, so a rejected action cannot half-command the robot. /joint_states is read by ros2_control joint name (sourced from each JointSpec.sim_joint_name) and returned in manifest order, because four controllers publish into that topic independently with no ordering guarantee. connect() refuses a CAN link that is missing, is not a CAN device, or is down. sdk_kind: open — openarm_can and openarm_ros2 are both Apache-2.0. Status yellow until a powered-arm HIL run: tests/hil/test_openarm_can_live.py currently passes its four transport gates on the lab Jetson and skips the motor round-trip (buses ERROR-PASSIVE = motors unpowered).",
+        status: "green",
+        desc: "OpenArmRealHAL: RosControlHAL subclass driving the physical arm, sharing OPENARM_DESCRIPTION with the twin so a Skill moves sim → hardware unchanged. Actuation goes through openarm_bringup's ros2_control stack, never Python-side CAN: the loop runs at 400 Hz and CLAUDE.md §1.5 keeps anything above 100 Hz in C++ (Action → four command topics → controller_manager → openarm_hardware SystemInterface → openarm_can → SocketCAN → Damiao motors). The bimanual bringup spawns four controllers (per-side arm + gripper), so one 16-DoF action is sliced across four topics — all four messages built before any is published, so a rejected action cannot half-command the robot. /joint_states is read by ros2_control joint name (sourced from each JointSpec.sim_joint_name) and returned in manifest order, because four controllers publish into that topic independently with no ordering guarantee. connect() refuses a CAN link that is missing, is not a CAN device, or is down. sdk_kind: open — openarm_can and openarm_ros2 are both Apache-2.0. Verified working on the physical arm: tests/hil/test_openarm_can_live.py passes both its transport gates and the motor round-trip (bus ERROR-ACTIVE, motors powered).",
         inputs: ["Action (16-D)"],
         outputs: ["JointState (16-D)", "trajectory_msgs/JointTrajectory ×4"],
         schemas: ["RobotDescription", "JointState", "Action", "HALHealthReport"],
@@ -745,8 +758,8 @@ const LAYERS = [
       {
         title: "HAL · Franka Panda (real-HW)",
         pkg: "python/hal · franka_panda_real.py",
-        status: "yellow",
-        desc: "FrankaPandaRealHAL wraps RosControlHAL for franka_ros2 / libfranka / FCI (closed-with-api per CLAUDE.md §7.4). Unit-tested in tests/unit/test_franka_panda_real.py against a real SimTransport (no mocks); HIL test at tests/hil/test_franka_panda.py is gated by [self-hosted, lab-franka] runner labels and drives a live rclpy bridge via tests/hil/_ros_control_transport.py (RosControlHILTransport). Issues #56 / #62.",
+        status: "blue",
+        desc: "FrankaPandaRealHAL wraps RosControlHAL for franka_ros2 / libfranka / FCI (closed-with-api per CLAUDE.md §7.4). Unit-tested in tests/unit/test_franka_panda_real.py against a real SimTransport (no mocks); HIL test at tests/hil/test_franka_panda.py is gated by [self-hosted, lab-franka] runner labels, but no such runner is registered and there is no physical Franka to validate against — status planned pending real hardware access. Issues #56 / #62.",
         inputs: ["Action", "/joint_states"],
         outputs: ["JointTrajectory", "/error_recovery/goal"],
         schemas: ["RobotDescription", "JointState", "Action"],
@@ -763,8 +776,8 @@ const LAYERS = [
       {
         title: "HAL · Sawyer (real-HW)",
         pkg: "python/hal · sawyer_real.py",
-        status: "yellow",
-        desc: "SawyerRealHAL wraps RosControlHAL for the community sawyer_robot fork (intera_sdk lineage; original Rethink Robotics dissolved in 2018). Eval-layer manifest at robots/sawyer/robot.yaml mirrors the in-code SAWYER_DESCRIPTION; the MetaWorld MuJoCo path is owned by openral_sim.backends.metaworld and is not affected. Unit + HIL tests at tests/unit/test_sawyer_real.py and tests/hil/test_sawyer.py; the HIL fixture drives a live rclpy bridge via tests/hil/_ros_control_transport.py (RosControlHILTransport) pinned to /robot/joint_states. Issues #57 / #62.",
+        status: "blue",
+        desc: "SawyerRealHAL wraps RosControlHAL for the community sawyer_robot fork (intera_sdk lineage; original Rethink Robotics dissolved in 2018). Eval-layer manifest at robots/sawyer/robot.yaml mirrors the in-code SAWYER_DESCRIPTION; the MetaWorld MuJoCo path is owned by openral_sim.backends.metaworld and is not affected. Unit + HIL tests at tests/unit/test_sawyer_real.py and tests/hil/test_sawyer.py exist, but there is no physical Sawyer to validate against — status planned pending real hardware access. Issues #57 / #62.",
         inputs: ["Action", "/robot/joint_states"],
         outputs: ["JointTrajectory", "/robot/set_super_stop"],
         schemas: ["RobotDescription", "JointState", "Action"],
@@ -772,8 +785,8 @@ const LAYERS = [
       {
         title: "HAL · ALOHA bimanual (real-HW)",
         pkg: "python/hal · aloha.py",
-        status: "yellow",
-        desc: "AlohaHAL drives 2 × ViperX 300 + 2 grippers via 4 ros2_control controllers from the Trossen Interbotix XS SDK. Splits a single 14-D Action across left/right arm + left/right gripper controllers; 14-D state aggregated via /joint_states. Eval-layer manifest at robots/aloha_bimanual/robot.yaml mirrors ALOHA_DESCRIPTION. Unit + HIL tests at tests/unit/test_aloha.py and tests/hil/test_aloha.py; the HIL fixture drives a live rclpy bridge via tests/hil/_aloha_ros_transport.py (AlohaHILTransport — 4-way fan-out, all four publishers use trajectory_msgs/JointTrajectory). Issues #58 / #62.",
+        status: "blue",
+        desc: "AlohaHAL drives 2 × ViperX 300 + 2 grippers via 4 ros2_control controllers from the Trossen Interbotix XS SDK. Splits a single 14-D Action across left/right arm + left/right gripper controllers; 14-D state aggregated via /joint_states. Eval-layer manifest at robots/aloha_bimanual/robot.yaml mirrors ALOHA_DESCRIPTION. Unit + HIL tests at tests/unit/test_aloha.py and tests/hil/test_aloha.py exist, and the HIL fixture drives a live rclpy bridge via tests/hil/_aloha_ros_transport.py (AlohaHILTransport — 4-way fan-out, all four publishers use trajectory_msgs/JointTrajectory), but there is no physical ALOHA rig to validate against — status planned pending real hardware access. Issues #58 / #62.",
         inputs: ["Action (14-D)", "/joint_states"],
         outputs: ["4 × JointTrajectory", "/aloha/estop"],
         schemas: ["RobotDescription", "JointState", "Action"],
@@ -1333,41 +1346,6 @@ const LAYERS = [
 
   {
     ix: "L5",
-    name: "World Action Model (optional)",
-    desc: "Generative simulator for mental rollouts, failure anticipation, replanning. Cosmos / IRASim / UnifoLM-WMA. Needs Thor-class compute.",
-    blocks: [
-      {
-        title: "WorldModel Protocol + nullop",
-        pkg: "python/wam · openral_wam",
-        status: "yellow",
-        desc: "v0.2 ships only the Protocol and a no-op default — landed (2026-05-18). WorldModel Protocol with rollout(world_state, action_chunk, horizon) → Rollout; Rollout Pydantic schema (predicted states + horizon + latency + confidence); NullWorldModel identity stub replaying input state for `horizon` steps. Three integration patterns from CLAUDE.md §6.3 (gating, failure anticipation, replanning) all consume this same surface; concrete adapters land in v0.3+.",
-        inputs: ["WorldState", "Action chunk", "horizon"],
-        outputs: ["Rollout"],
-        schemas: ["Rollout"],
-      },
-      {
-        title: "Cosmos Predict adapter",
-        pkg: "python/wam (planned)",
-        status: "blue",
-        desc: "v0.3 target. NVIDIA Cosmos Predict 2.5 / Reason 2.",
-      },
-      {
-        title: "UnifoLM-WMA-0 adapter",
-        pkg: "python/wam (planned)",
-        status: "blue",
-        desc: "v0.3 target. Apache-2.0; pairs naturally with the Unitree G1 HAL.",
-      },
-      {
-        title: "IRASim adapter",
-        pkg: "python/wam (planned)",
-        status: "blue",
-        desc: "v0.3 target.",
-      },
-    ],
-  },
-
-  {
-    ix: "L6",
     name: "Safety",
     desc: "Separate C++ process, deny-by-default, certifiable. Python proposes, C++ disposes. ROSSafetyViolation never silently caught.",
     blocks: [
@@ -1439,7 +1417,7 @@ const LAYERS = [
   },
 
   {
-    ix: "L7",
+    ix: "L6",
     name: "Observability",
     desc: "OpenTelemetry traces + metrics + structlog→OTLP log bridge + W3C TraceContext propagation. Every motor command is parented to a single cli.command root span and replayable from the trace alone.",
     blocks: [
@@ -1505,7 +1483,7 @@ const LAYERS = [
       },
       {
         title: "bag↔OTel correlator + openral replay (F7)",
-        pkg: "python/observability/openral_observability/replay + python/cli",
+        pkg: "python/observability/src/openral_observability/replay + python/cli",
         status: "green",
         desc: "Query-time joiner — mcap stays the canonical message log, the dashboard receiver stays the canonical span log; `openral replay BAG [--trace] [--dashboard]` opens both and merges by trace_id. The reader extracts the W3C `traceparent` from jsonschema-encoded payloads (a packed traceparent in the `trace_id` field, OR — for the `openral_msgs/Tick` schema — a raw 32-hex `trace_id` + raw 16-hex `span_id` pair, issue #109) and from CDR/ros2msg payloads (regex over the message body) without depending on rosbag2_py. `openral replay --frame <repo>/<ep>/<frame> --dataset-root <dir>` pivots from a written LeRobotDataset frame: `openral_dataset.read_frame_trace` reads that row's trace_id off parquet and uses it as the join key (issue #109). The dashboard store grows a bounded per-trace_id span index (64 traces × 2048 spans, FIFO eviction) and serves it on `GET /api/traces` + `GET /api/spans/{trace_id}`. `openral record --profile slim|full` wraps `ros2 bag record` with §F7's slim default (action chunks + failure bus + slow world state + one compressed image stream + diagnostics) and full opt-in (adds fast world state + every camera + every perception topic). `--dry-run` lets tests assert on the composed argv without a sourced ROS 2 install.",
         inputs: ["mcap files (rosbag2)", "LeRobotDataset parquet (--frame)", "/api/traces", "/api/spans/{trace_id}"],
@@ -1638,25 +1616,25 @@ const CROSS = [
     title: "Tests · unit",
     pkg: "tests/unit",
     status: "green",
-    desc: "190 files. Covers schemas (hypothesis fuzz), HAL protocol conformance, every adapter (so100 / ur / franka_panda{,_real} / sawyer_real / aloha / mujoco_arm), sensors + catalog + signatures, skill lifecycle, rSkill loader + manifest + eval validation, runtime + quantization, smolvla adapter, _vla_core, autodetect, doctor, eval CLI + registry + runner + factory + adapter helpers + view overrides (test_eval_cli_view_overrides.py — 11 cases for the --view tri-state resolver + --config flag-conflict guard from PR #65), sim environment schemas, robot manifests vs HAL constants, robots autodiscover, sim test collection guardrails, CLI commands (connect / calibrate / skill / detect — `openral detect` superseded `ral init`), schema fuzz, capability GPU fields, sensor wiring on RobotDescription, doctest runner, skill publisher, rskill benchmarks writeback, image convert + objects detector, runner safety, hardware runner, clock, benchmark runner, world state aggregator, state adapter, reasoner core + tool palette + tool use client, deploy CLI, lifecycle autostart, perception tee, nvmm aggregator, spatial memory query, SO-101 box scene, tabletop push scene, sim list rskills, fixed-robot guard.",
+    desc: "380 files. Covers schemas (hypothesis fuzz), HAL protocol conformance, every adapter (so100 / ur / franka_panda{,_real} / sawyer_real / aloha / mujoco_arm), sensors + catalog + signatures, skill lifecycle, rSkill loader + manifest + eval validation, runtime + quantization, smolvla adapter, _vla_core, autodetect, doctor, eval CLI + registry + runner + factory + adapter helpers + view overrides (test_eval_cli_view_overrides.py — 11 cases for the --view tri-state resolver + --config flag-conflict guard from PR #65), sim environment schemas, robot manifests vs HAL constants, robots autodiscover, sim test collection guardrails, CLI commands (connect / calibrate / skill / detect — `openral detect` superseded `ral init`), schema fuzz, capability GPU fields, sensor wiring on RobotDescription, doctest runner, skill publisher, rskill benchmarks writeback, image convert + objects detector, runner safety, hardware runner, clock, benchmark runner, world state aggregator, state adapter, reasoner core + tool palette + tool use client, deploy CLI, lifecycle autostart, perception tee, nvmm aggregator, spatial memory query, SO-101 box scene, tabletop push scene, sim list rskills, fixed-robot guard.",
   },
   {
     title: "Tests · integration",
     pkg: "tests/integration",
     status: "yellow",
-    desc: "18 files. Require a ROS-sourced host. Original 5: doctor, autodetect DDS, detect ros2 topology, world_state lifecycle, HIL transport. Added since: test_dashboard_end_to_end (OTLP receiver + SSE push), test_failure_bus (FailureBusPublisher rate-limit + suppression), test_manifest_hal_lifecycle_live (configure→activate→deactivate lifecycle via real rclpy), test_manifest_hal_reset_to_pose (HAL reset-to-pose under ROS), test_moveit_plan_arm_franka (ROSActionRskill wrapping MoveIt MoveGroup — skipped without moveit2), test_nvmm_aggregator_ds (TRT/NVMM detector end-to-end — skipped without DeepStream stack), test_object_lift_world_state (VoxelFrustumLifter + ObjectMemory → WorldState round-trip), test_openarm_hal_lifecycle (OpenArm MuJoCo lifecycle), test_panda_mobile_hal_lifecycle (PandaMobile HAL), test_reasoner_node_end_to_end (ReasonerCore + rclpy action dispatch), test_sim_idle_stepper_wiring (deploy-sim idle stepper), test_so100_digital_twin_e2e (SO-100 digital-twin end-to-end), test_world_state_stamped_objects (detected_objects serialisation round-trip on WorldStateStamped).",
+    desc: "42 files. Require a ROS-sourced host. Original 5: doctor, autodetect DDS, detect ros2 topology, world_state lifecycle, HIL transport. Added since: test_dashboard_end_to_end (OTLP receiver + SSE push), test_failure_bus (FailureBusPublisher rate-limit + suppression), test_manifest_hal_lifecycle_live (configure→activate→deactivate lifecycle via real rclpy), test_manifest_hal_reset_to_pose (HAL reset-to-pose under ROS), test_moveit_plan_arm_franka (ROSActionRskill wrapping MoveIt MoveGroup — skipped without moveit2), test_nvmm_aggregator_ds (TRT/NVMM detector end-to-end — skipped without DeepStream stack), test_object_lift_world_state (VoxelFrustumLifter + ObjectMemory → WorldState round-trip), test_openarm_hal_lifecycle (OpenArm MuJoCo lifecycle), test_panda_mobile_hal_lifecycle (PandaMobile HAL), test_reasoner_node_end_to_end (ReasonerCore + rclpy action dispatch), test_sim_idle_stepper_wiring (deploy-sim idle stepper), test_so100_digital_twin_e2e (SO-100 digital-twin end-to-end), test_world_state_stamped_objects (detected_objects serialisation round-trip on WorldStateStamped).",
   },
   {
     title: "Tests · sim",
     pkg: "tests/sim",
     status: "yellow",
-    desc: "26 files. Real MuJoCo physics — no kinematic mocks. HAL sim tests: test_data_driven_mujoco_hal (parametric, every manifest-driven arm), test_{so100,so101_box,openarm,aloha_bimanual,franka_panda,g1,h1,rizon4,ur5e,ur10e}_hal_mujoco. Policy rollout tests (test_<robot>_<vla>_<sim>.py convention): franka_panda_smolvla_libero, aloha_bimanual_act_aloha, pusht_2d_diffusion_pusht, panda_mobile_pi05_{robocasa,cli_benchmark_robocasa}, franka_panda_smolvla_cli_benchmark, franka_panda_maniskill3_adapter, widowx_simpler_env_adapter. Scene tests: test_so100_robosuite_lift, test_so101_box_tube_insertion, test_openarm_scene_pnp, test_tabletop_push_scene. Infrastructure: test_all_hals_via_runner, test_hal_protocol_contracts, test_dataset_emission, test_franka_libero_deploy_sim_cameras. Module-level CUDA / lerobot skips carry explicit reasons surfaced by pyproject `addopts = -ra`; tests/unit/test_sim_collection.py asserts none silently disappear.",
+    desc: "54 files. Real MuJoCo physics — no kinematic mocks. HAL sim tests: test_data_driven_mujoco_hal (parametric, every manifest-driven arm), test_{so100,so101_box,openarm,aloha_bimanual,franka_panda,g1,h1,rizon4,ur5e,ur10e}_hal_mujoco. Policy rollout tests (test_<robot>_<vla>_<sim>.py convention): franka_panda_smolvla_libero, aloha_bimanual_act_aloha, pusht_2d_diffusion_pusht, panda_mobile_pi05_{robocasa,cli_benchmark_robocasa}, franka_panda_smolvla_cli_benchmark, franka_panda_maniskill3_adapter, widowx_simpler_env_adapter. Scene tests: test_so100_robosuite_lift, test_so101_box_tube_insertion, test_openarm_scene_pnp, test_tabletop_push_scene. Infrastructure: test_all_hals_via_runner, test_hal_protocol_contracts, test_dataset_emission, test_franka_libero_deploy_sim_cameras. Module-level CUDA / lerobot skips carry explicit reasons surfaced by pyproject `addopts = -ra`; tests/unit/test_sim_collection.py asserts none silently disappear.",
   },
   {
     title: "Tests · HIL",
     pkg: "tests/hil",
     status: "yellow",
-    desc: "9 files: test_ur5e, test_ur10e, test_franka_panda, test_sawyer, test_aloha (real-hardware HALs gated by self-hosted [lab-<robot>] runner labels + UR{5,10}E_HOST / *_FCI_HOST env vars), test_galaxea_a1 (direct HAL observation/hold/joint/gripper gates), test_galaxea_a1_deploy (full candidate_action → C++ kernel → safe_action → real HAL → ROS 1 relay hold + mandatory e-stop), plus test_detect_jetson_live and test_openarm_can_live for the auto-provisioning and OpenArm bus probes (gated on the OpenArm's two udev-pinned CAN links being up, with the motor round-trip additionally requiring an ERROR-ACTIVE bus). No committed real-hardware OpenArm deploy scene ships in-tree (host-specific — CAN interface names, camera udev paths); test_openarm_slot_group_motion.py still closes the ADR-0102 motion gate directly against OpenArmRealHAL. SO-100 / SO-101 / RealSense HIL gates were removed until matching lab hardware exists. The shared rclpy bridge lives in _ros_control_transport.py (RosControlHILTransport) and _aloha_ros_transport.py (4-way ALOHA fan-out). The L4T HIL workflow (`hil-l4t.yml`) that PR #93 added was removed by the 2026-05-14 single-Dockerfile consolidation amendment — L4T returns when the `[self-hosted, l4t]` runner pool is online.",
+    desc: "12 files: test_ur5e, test_ur10e, test_franka_panda, test_sawyer, test_aloha (real-hardware HALs gated by self-hosted [lab-<robot>] runner labels + UR{5,10}E_HOST / *_FCI_HOST env vars), test_galaxea_a1 (direct HAL observation/hold/joint/gripper gates), test_galaxea_a1_deploy (full candidate_action → C++ kernel → safe_action → real HAL → ROS 1 relay hold + mandatory e-stop), plus test_detect_jetson_live and test_openarm_can_live for the auto-provisioning and OpenArm bus probes (gated on the OpenArm's two udev-pinned CAN links being up, with the motor round-trip additionally requiring an ERROR-ACTIVE bus). No committed real-hardware OpenArm deploy scene ships in-tree (host-specific — CAN interface names, camera udev paths); test_openarm_slot_group_motion.py still closes the ADR-0102 motion gate directly against OpenArmRealHAL. SO-100 / SO-101 / RealSense HIL gates were removed until matching lab hardware exists. The shared rclpy bridge lives in _ros_control_transport.py (RosControlHILTransport) and _aloha_ros_transport.py (4-way ALOHA fan-out). The L4T HIL workflow (`hil-l4t.yml`) that PR #93 added was removed by the 2026-05-14 single-Dockerfile consolidation amendment — L4T returns when the `[self-hosted, l4t]` runner pool is online.",
   },
   {
     title: "CI · Docker image build",
@@ -1667,7 +1645,7 @@ const CROSS = [
     outputs: ["ghcr.io/openral/openral:x86", "ghcr.io/openral/openral:x86-<sha>"],
   },
   {
-    title: "Examples",
+    title: "Scenes (three-tier YAMLs)",
     pkg: "scenes/",
     status: "green",
     desc: "scenes/ ships three-tier scene YAMLs: scenes/deploy/ (DeployScene, env-only, consumed by `openral deploy sim`), scenes/sim/ (SimScene, single rollout, consumed by `openral sim run --rskill <name>`), scenes/benchmark/ (BenchmarkScene, paper-comparable, consumed by `openral benchmark scene --rskill <name>` and aggregated into benchmarks/<id>.yaml suites by `openral benchmark run --suite <id> --rskill <name>`). Each YAML carries scene + task (and optional robot_id for free-axis scenes); policy is supplied at the CLI as --rskill rskills/<id>. Loaders: load_scene_strict(..., expect=DeployScene/SimScene/BenchmarkScene) (rejects legacy vla: blocks and wrong-tier YAMLs). Per-policy perf knobs (n_action_steps, compile, compile_mode for lerobot-style smolvla/act/pi05) live in the rSkill manifest's policy_extras, not the YAML. All Justfile sim-* recipes invoke `openral sim run --config scenes/sim/<yaml> --rskill rskills/<id>` (SimScene-tier) or `openral benchmark scene --config scenes/benchmark/<yaml>` (BenchmarkScene-tier); no per-example run.py scripts. The 3-panel debug-video helper lives at python/sim/src/openral_sim/_video.py (re-exported as openral_sim.save_episode_mp4). Direct lerobot.<Family>Policy.from_pretrained is forbidden — every config loads weights via the rSkill manifest so the runner's compat check fires.",
@@ -1676,7 +1654,7 @@ const CROSS = [
     title: "Skills (rSkill manifests)",
     pkg: "rskills/",
     status: "green",
-    desc: "49 manifests: VLA skills include smolvla, molmoact2, pi05-libero-int8, ACT, diffusion, xVLA, OpenVLA-OFT, 3D Diffuser Actor, GR00T, LingBot-VLA 2.0 (lingbot-vla2-robotwin) + LingBot-VLA 1.0 (lingbot-vla-4b-robotwin, the RoboTwin post-train), and the RLDX-1 family (rldx1-ft-libero, rldx1-ft-gr1, rldx1-ft-rc365, rldx1-ft-simpler-widowx). The pi05 OpenArm bimanual shelf-restocking finetune (private weights, no public upstream) was removed — the cell's policy is not distributable, and no public OpenArm checkpoint on the Hub yet matches this repo's 16-DoF joint/slot contract. Detector / VLM / reward / ROS-wrapped skills also live here. Apache-2.0 / MIT / permissive-research / NVIDIA non-commercial / RLWRLD non-commercial (both LingBot-VLA rSkills are Apache-2.0 code AND weights). Every benchmarked skill ships rskills/<id>/eval/<benchmark>.json — validated against RSkillEvalResult by the rSkill loader and aggregated by openral benchmark report. The RLDX-1 family runs out-of-process via the `rldx` sidecar adapter (openral_sim.policies.rldx + tools/rldx_sidecar.py); both LingBot-VLA models likewise via the `lingbot_vla2` adapter (auto-provisioned sidecar, torch-2.9.1 for v2 / torch-2.8 for v1, ids `lingbot_vla2`/`lingbot_vla` — tools/lingbot_vla2_sidecar.py + tools/_lingbot_vla2_server.py).",
+    desc: "48 manifests: VLA skills include smolvla, molmoact2, pi05-libero-int8, ACT, diffusion, xVLA, OpenVLA-OFT, 3D Diffuser Actor, GR00T, LingBot-VLA 2.0 (lingbot-vla2-robotwin) + LingBot-VLA 1.0 (lingbot-vla-4b-robotwin, the RoboTwin post-train), and the RLDX-1 family (rldx1-ft-libero, rldx1-ft-gr1, rldx1-ft-rc365, rldx1-ft-simpler-widowx). The pi05 OpenArm bimanual shelf-restocking finetune (private weights, no public upstream) was removed — the cell's policy is not distributable, and no public OpenArm checkpoint on the Hub yet matches this repo's 16-DoF joint/slot contract. Detector / VLM / reward / ROS-wrapped skills also live here. Apache-2.0 / MIT / permissive-research / NVIDIA non-commercial / RLWRLD non-commercial (both LingBot-VLA rSkills are Apache-2.0 code AND weights). Every benchmarked skill ships rskills/<id>/eval/<benchmark>.json — validated against RSkillEvalResult by the rSkill loader and aggregated by openral benchmark report. The RLDX-1 family runs out-of-process via the `rldx` sidecar adapter (openral_sim.policies.rldx + tools/rldx_sidecar.py); both LingBot-VLA models likewise via the `lingbot_vla2` adapter (auto-provisioned sidecar, torch-2.9.1 for v2 / torch-2.8 for v1, ids `lingbot_vla2`/`lingbot_vla` — tools/lingbot_vla2_sidecar.py + tools/_lingbot_vla2_server.py).",
     schemas: ["RSkillManifest", "RSkillEvalResult"],
   },
   {

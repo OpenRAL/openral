@@ -1,6 +1,6 @@
 # `openral_hal`
 
-Hardware Abstraction Layer for **OpenRAL** — Layer 0 in the eight-layer
+Hardware Abstraction Layer for **OpenRAL** — Layer 0 in the seven-layer
 architecture (CLAUDE.md §3). This package owns the `HAL` Protocol
 that every robot adapter must satisfy and ships concrete adapters for the
 robots OpenRAL targets today.
