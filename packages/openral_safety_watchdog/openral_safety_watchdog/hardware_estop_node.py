@@ -9,13 +9,24 @@ HumanEvidence(channel="hardware_pendant"))`` on the rising edge.
 
 The actual device driver is opaque to this node — the
 ``HardwareEstopNode._read_pressed`` hook is overridden by per-vendor
-subclasses (or by tests that simulate the device). The base class
-implements the polling loop, edge detection, and ROS publication.
+subclasses (or by tests that drive a real device state source). The base
+class implements the polling loop, edge detection, and ROS publication.
+
+**This repository ships no pendant driver.** The base ``_read_pressed``
+has nothing to read, so a bare ``hardware_estop_node`` is not a hardware
+E-stop source and must never be mistaken for one. ``on_configure``
+therefore refuses to leave UNCONFIGURED unless a read source is actually
+present (a vendor subclass, or an injected ``read_pressed_hook``) *and*
+the declared ``device`` path exists — see
+:meth:`HardwareEstopNode._resolve_read_source`. A node that reports
+not-ready is the honest outcome on a host with no pendant; a node sitting
+ACTIVE and polling a stub that always answers "not pressed" is not.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
 from typing import Any
 
@@ -33,16 +44,29 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
     """Lifecycle node bridging a hardware pendant onto /openral/estop.
 
     Subclasses override ``_read_pressed`` to talk to a real device.
-    The base class — used in tests — reads from an injected state
+    The base class reads from an injected ``read_pressed_hook`` state
     callable; this keeps the polling / publication logic exercised by
-    unit tests without requiring real hardware on CI runners.
+    tests driving a real state source without requiring a pendant on CI
+    runners.
+
+    Parameters:
+        ``poll_rate_hz``: Device poll rate. Default
+            ``DEFAULT_POLL_RATE_HZ``.
+        ``device``: Path of the GPIO chip / HID node this bridge owns
+            (e.g. ``/dev/gpiochip0``, ``/dev/input/by-id/...``). Empty —
+            the default — declares **no hardware E-stop on this host**,
+            and configure fails so the node reports not-ready rather than
+            posing as a source that can never fire.
+        ``active_low``: Electrical polarity of the pendant contact, for
+            vendor subclasses. Unused by the base class.
+        ``channel_label``: Tag on the emitted ``HumanEvidence``.
     """
 
     def __init__(self, node_name: str = "openral_hardware_estop") -> None:
         """Declare parameters; opens no resources until on_configure."""
         super().__init__(node_name)
         self.declare_parameter("poll_rate_hz", DEFAULT_POLL_RATE_HZ)
-        self.declare_parameter("device", "")  # "" → injection mode (tests)
+        self.declare_parameter("device", "")  # "" → no pendant declared (see _resolve_read_source)
         self.declare_parameter("active_low", True)
         self.declare_parameter("channel_label", "hardware_pendant")
 
@@ -59,8 +83,23 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     def on_configure(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Open publishers and start polling timer."""
+        """Open publishers and start polling timer, if a device is really there.
+
+        Returns ``FAILURE`` — leaving the node UNCONFIGURED, i.e. visibly
+        not-ready on the graph — whenever this host has no hardware E-stop
+        this node could read. The reason is logged at ERROR every time, so
+        a deploy without a pendant says so instead of implying one.
+        """
         del state
+        unavailable = self._resolve_read_source()
+        if unavailable is not None:
+            self.get_logger().error(
+                f"safety.hardware_estop_unavailable reason={unavailable!r} — "
+                "this graph has NO hardware E-stop source; the node stays "
+                "unconfigured. Other E-stop sources (deadman watchdog, human "
+                "forwarder, safety kernel) are unaffected."
+            )
+            return TransitionCallbackReturn.FAILURE
         from openral_msgs.msg import FailureTrigger
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
         from std_msgs.msg import Empty
@@ -115,12 +154,43 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
 
     # ── Device read hook ─────────────────────────────────────────────────────
 
+    def _resolve_read_source(self) -> str | None:
+        """``None`` when a real read source exists; else why it does not.
+
+        Two independent conditions, both required:
+
+        1. Something can actually answer "is it pressed" — an injected
+           ``read_pressed_hook`` or a subclass that overrides
+           ``_read_pressed``. The base implementation is not a driver; it
+           answers ``False`` forever, which would read as "pendant fine".
+        2. The ``device`` the operator declared exists on this host. An
+           empty ``device`` declares no pendant at all.
+        """
+        device = self.get_parameter("device").get_parameter_value().string_value
+        has_driver = (
+            self.read_pressed_hook is not None
+            or type(self)._read_pressed is not HardwareEstopNode._read_pressed
+        )
+        if not device:
+            return "no 'device' parameter declared"
+        if not os.path.exists(device):
+            return f"declared device {device!r} is not present on this host"
+        if not has_driver:
+            return (
+                f"device {device!r} exists but this build ships no pendant driver "
+                "(HardwareEstopNode is a base class; a vendor subclass must "
+                "override _read_pressed)"
+            )
+        return None
+
     def _read_pressed(self) -> bool:
         """Return whether the hardware pendant is currently pressed.
 
-        Default implementation uses ``read_pressed_hook`` if set,
-        otherwise returns ``False`` (no estop). Subclasses override to
-        read a real GPIO pin or HID device.
+        Default implementation uses ``read_pressed_hook`` if set.
+        Subclasses override to read a real GPIO pin or HID device.
+        ``on_configure`` refuses to bring the node up when neither exists,
+        so the ``False`` below is unreachable from an ACTIVE node — it is
+        not a "pendant is fine" answer, and must never become one.
         """
         if self.read_pressed_hook is not None:
             return bool(self.read_pressed_hook())

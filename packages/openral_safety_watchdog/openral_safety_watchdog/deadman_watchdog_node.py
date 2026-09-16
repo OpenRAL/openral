@@ -10,6 +10,14 @@ Also publishes a ``FailureTrigger`` with
 ``kind=KIND_TIMEOUT, severity=SEVERITY_ABORT`` on
 ``/openral/failure/safety`` so the reasoner sees a structured timeout
 event (TimeoutEvidence) rather than only the bare estop.
+
+``/openral/safe_action`` is a **bursty** topic, not a continuous stream:
+the runner publishes chunks only while an ``ExecuteRskill`` goal is
+running, and an idle deploy publishes nothing at all. A watchdog that
+armed at activation would therefore fire on every boot, so the node
+carries an explicit execution-window gate (``arm_topic``, see
+:class:`DeadmanWatchdogNode`). The gate only ever *narrows* when the
+watchdog may fire; inside an open window the deadline is unchanged.
 """
 
 from __future__ import annotations
@@ -43,6 +51,21 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         ``check_period_s``: Internal timer period. Default
             ``DEFAULT_CHECK_PERIOD_S``.
         ``robot_name``: Tag for FailureTrigger evidence.
+        ``arm_topic``: ``std_msgs/String`` topic carrying the execution
+            window. Empty (the default) means **free-running**: the
+            deadline is armed by ``on_activate`` and every silence past
+            it fires — the standalone posture, used by the unit tests and
+            by any graph whose ``safe_action`` really is continuous.
+            Non-empty subscribes that topic and only evaluates the
+            deadline while the window is open (a non-empty payload; an
+            empty payload closes it) **and** at least one
+            ``/openral/safe_action`` has arrived inside the window. That
+            is the posture ``deploy_e2e.launch.py`` wires
+            (``/openral/reward/active_task``, which the runner publishes
+            with the instruction on goal accept and ``""`` on every goal
+            exit): a crash mid-goal leaves the window open with the chunk
+            stream dead, which fires; an idle deploy and the seconds a
+            VLA spends loading before its first chunk do not.
     """
 
     def __init__(self, node_name: str = "openral_deadman_watchdog") -> None:
@@ -51,16 +74,22 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         self.declare_parameter("safe_action_deadline_s", DEFAULT_SAFE_ACTION_DEADLINE_S)
         self.declare_parameter("check_period_s", DEFAULT_CHECK_PERIOD_S)
         self.declare_parameter("robot_name", "robot")
+        self.declare_parameter("arm_topic", "")
 
         self._safe_sub: Any = None
         self._estop_pub: Any = None
         self._failure_pub: Any = None
         self._estop_sub: Any = None
+        self._arm_sub: Any = None
         self._timer: Any = None
 
         self._last_safe_ns: int = 0
         self._armed: bool = False
         self._triggered: bool = False
+        # Execution window (``arm_topic``). Free-running config leaves the
+        # window permanently open, which is exactly the old behaviour.
+        self._window_open: bool = False
+        self._chunk_seen_in_window: bool = False
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -101,6 +130,25 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
             Empty, "/openral/estop", self._on_external_estop, estop_qos
         )
 
+        # Execution-window gate. Only opened when ``arm_topic`` names one;
+        # otherwise the node is free-running and the window is always open.
+        arm_topic = self.get_parameter("arm_topic").get_parameter_value().string_value
+        if arm_topic:
+            from std_msgs.msg import String
+
+            window_qos = QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.VOLATILE,
+                depth=1,
+            )
+            self._arm_sub = self.create_subscription(
+                String, arm_topic, self._on_arm_window, window_qos
+            )
+            self.get_logger().info(
+                f"safety.deadman_window_gated arm_topic={arm_topic!r} "
+                "(deadline evaluated only inside an open execution window)"
+            )
+
         period = self.get_parameter("check_period_s").get_parameter_value().double_value
         self._timer = self.create_timer(period, self._check_deadline)
         return TransitionCallbackReturn.SUCCESS
@@ -111,6 +159,11 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         self._last_safe_ns = time.time_ns()
         self._armed = True
         self._triggered = False
+        # Free-running (no ``arm_topic``): the window is open from activation,
+        # which is the pre-gate behaviour. Gated: it opens on the first
+        # non-empty window message and not before.
+        self._window_open = self._arm_sub is None
+        self._chunk_seen_in_window = False
         return TransitionCallbackReturn.SUCCESS
 
     def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
@@ -131,6 +184,9 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         if self._estop_sub is not None:
             self.destroy_subscription(self._estop_sub)
             self._estop_sub = None
+        if self._arm_sub is not None:
+            self.destroy_subscription(self._arm_sub)
+            self._arm_sub = None
         if self._estop_pub is not None:
             self.destroy_publisher(self._estop_pub)
             self._estop_pub = None
@@ -148,9 +204,25 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
     def _on_safe_action(self, _msg: object) -> None:
         """Reset the deadline timer on every safe_action arrival."""
         self._last_safe_ns = time.time_ns()
+        self._chunk_seen_in_window = True
         # A late chunk after a trigger does NOT auto-clear the latch —
         # the kernel still owns recovery via /openral/estop_reset
         # (CLAUDE.md §10: ROSEStopRequested never auto-cleared).
+
+    def _on_arm_window(self, msg: Any) -> None:
+        """Open/close the execution window from ``arm_topic``.
+
+        A non-empty payload means "something is executing"; an empty one
+        means "nothing is". Opening re-bases the deadline so the window's
+        own start is never counted as silence, and closing forgets the
+        stream so a fresh window must see its own first chunk.
+        """
+        open_now = bool(str(msg.data))
+        if open_now and not self._window_open:
+            self._last_safe_ns = time.time_ns()
+        if not open_now:
+            self._chunk_seen_in_window = False
+        self._window_open = open_now
 
     def _on_external_estop(self, _msg: object) -> None:
         """Mark triggered when the kernel or another source fires estop.
@@ -163,6 +235,13 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
     def _check_deadline(self) -> None:
         """Timer callback: fire estop if no safe_action within the deadline."""
         if not self._armed or self._triggered:
+            return
+        if not self._window_open:
+            return
+        # Gated mode only: a window that has not yet produced a single chunk
+        # is not evidence of a dead actuation path — a VLA can spend tens of
+        # seconds loading between goal accept and its first chunk.
+        if self._arm_sub is not None and not self._chunk_seen_in_window:
             return
         deadline_s: float = (
             self.get_parameter("safe_action_deadline_s").get_parameter_value().double_value
