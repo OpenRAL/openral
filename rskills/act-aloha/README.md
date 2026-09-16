@@ -47,7 +47,7 @@ surfacing, latency budgets, and local registry integration. It does
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| ALOHA bimanual (Trossen) — `gym-aloha` MuJoCo | `aloha`, `lerobot` | ✓ sim | 14-DoF (2 × 7-DoF arms with parallel grippers) |
+| ALOHA bimanual (Trossen) — `gym-aloha` MuJoCo | `aloha` | ✓ sim | 14-DoF (2 × 7-DoF arms with parallel grippers) |
 
 ## Sensors required
 
@@ -66,7 +66,7 @@ wrist or third-person view.
 | `version` | `0.1.0` |
 | `license` | `mit` |
 | `role` | `s1` |
-| `embodiment_tags` | `aloha`, `lerobot` |
+| `embodiment_tags` | `aloha` |
 | `runtime` / `quantization.dtype` | `pytorch` / `fp32` |
 | `weights_uri` | `hf://lerobot/act_aloha_sim_transfer_cube_human` |
 | `latency_budget.per_chunk_ms` | 25 ms (warm; bf16 autocast ≈ 12 ms on RTX 4070 Laptop) |

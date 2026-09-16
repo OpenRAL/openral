@@ -2,8 +2,7 @@
 
 **Branch:** `refactor/ci_tests` · **Date:** 2026-06-12 · **Host:** RTX 4070 (8 GB) + ROS 2 Jazzy + MuJoCo + robosuite + a provisioned Isaac sidecar.
 
-This is the review-gate artifact for the test audit (design:
-`docs/superpowers/specs/2026-06-12-test-audit-ci-design.md`). It answers two
+This is this branch's review-gate artifact for the test audit. It answers two
 questions on two independent axes:
 
 1. **Value** — are the ~3.3k tests useful, and what (if anything) should be cut?

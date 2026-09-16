@@ -56,7 +56,7 @@ bowl is grasped and placed:
 ## Quick Start
 
 ```bash
-ral skill install hf://OpenRAL/rskill-robometer_4b-any-general-nf4
+openral rskill install OpenRAL/rskill-robometer_4b-any-general-nf4
 ```
 
 ```python

@@ -34,7 +34,7 @@ license_link: https://huggingface.co/nvidia/LocateAnything-3B/blob/main/LICENSE
 ## Quick Start
 
 ```bash
-OPENRAL_ALLOW_NONCOMMERCIAL=1 ral skill install hf://OpenRAL/rskill-locateanything_3b-any-general-nf4
+OPENRAL_ALLOW_NONCOMMERCIAL=1 openral rskill install OpenRAL/rskill-locateanything_3b-any-general-nf4
 ```
 
 ```python

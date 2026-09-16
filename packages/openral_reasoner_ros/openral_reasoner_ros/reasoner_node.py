@@ -2404,7 +2404,7 @@ class ReasonerNode(LifecycleNode):
                         f"(dim={sc.dim}); no assembler registered "
                         "in openral_state_adapter for this layout. "
                         "Add one or run via "
-                        "``openral sim run --vla ...``."
+                        "``openral sim run --rskill ...``."
                     )
                 else:
                     self.get_logger().warning(

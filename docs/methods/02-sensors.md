@@ -11,6 +11,7 @@ _Sensor catalog — vendor-agnostic registry of `SensorSpec` / `SensorBundle` fa
   fields: `id, vendor, model, kind, factory, modalities, description, docs_url, signatures`
 - `class SensorCatalog` — In-memory registry. (L114)
   - `register(entry, *, replace=False) -> SensorCatalogEntry` (L144)
+  - `register_many(entries, *, replace=True) -> None` — Bulk-register; used by vendor modules at import time to populate the global `CATALOG`. Defaults `replace=True` because side-effect imports may run more than once in some test setups. (L157)
   - `unregister(sensor_id) -> None` (idempotent) (L167)
   - `get(sensor_id) -> SensorCatalogEntry` — Raises `KeyError` on miss. (L173)
   - `__contains__(sensor_id) -> bool` (L182)

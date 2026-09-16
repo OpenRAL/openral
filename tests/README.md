@@ -8,7 +8,7 @@ update this README in the same change.
 
 - Last audit: 2026-05-08 against commit `0d09004`.
 - Last updated: 2026-07-09 — SO-100 / SO-101 / RealSense HIL tests were removed until matching lab hardware exists; SO-100 coverage remains in unit/integration/sim tests.
-- Repository milestone: **v0.1.0 (M1)** — pre-release.
+- Repository milestone: **v0.3.1** — pre-1.0.
 - Suite size: hand-curated in this file; SO-100 / SO-101 / RealSense HIL surfaces are intentionally absent until hardware exists. Doctest runner pins **70+** docstring examples on top of that.
 - Normative test policy: **CLAUDE.md §5.4, §7.10, §8, §9**.
 
@@ -72,7 +72,7 @@ Verdict legend: **Keep** (relevant, working) · **Update** (relevant but
 stale/incomplete; see §4) · **Consolidate** (overlap with another file) ·
 **Remove** (dead code — currently zero entries).
 
-### 2.1 `tests/unit/` — 30 files, ~10.5 kLOC
+### 2.1 `tests/unit/` — 379 files, ~89.2 kLOC
 
 | File | LOC | Module(s) under test | Verdict |
 | --- | ---: | --- | --- |
@@ -99,15 +99,15 @@ stale/incomplete; see §4) · **Consolidate** (overlap with another file) ·
 | `test_eval_adapters_helpers.py` | 427 | LIBERO / MetaWorld / SmolVLA helper functions; lazy-import failure paths. | Keep |
 | `test_eval_factory.py` | 210 | `make_env` / `make_policy` / `make_robot` error paths + Protocol runtime conformance + `EpisodeResult.summary()`. **Added 2026-05-08.** | Keep |
 | `test_doctest_runner.py` | 115 | Implements the CLAUDE.md §5.4 doctest mandate by running `pytest --doctest-modules` against `DOCTEST_TARGETS` (20 paths) as a subprocess; collected-count guard prevents silent regression. **Added 2026-05-08.** | Keep |
-| `test_hal_protocol_conformance.py` | 240 | Parametrized contract test for the `HAL` Protocol — 7 invariants × 8 HAL implementations (`RosControlHAL`, `SO100FollowerHAL+SO100DigitalTwin`, `UR5eHAL`, `UR10eHAL`, `FrankaPandaHAL`, `FrankaPandaRealHAL`, `SawyerRealHAL`, `AlohaHAL`); MuJoCo HALs `pytest.skip` when optional deps absent. **Added 2026-05-08; expanded to 8 HALs 2026-05-10 with the real-HW adapters from issues #56–#58.** | Keep |
+| `test_hal_protocol_conformance.py` | 240 | Parametrized contract test for the `HAL` Protocol — 7 invariants × 10 HAL implementations (`RosControlHAL`, `SO100FollowerHAL+SO100DigitalTwin`, `UR5eHAL`, `UR10eHAL`, `FrankaPandaHAL`, `FrankaPandaRealHAL`, `SawyerRealHAL`, `AlohaHAL`, `UR5eRealHAL+SimTransport`, `UR10eRealHAL+SimTransport`); MuJoCo HALs `pytest.skip` when optional deps absent. **Added 2026-05-08; expanded to 8 HALs 2026-05-10 with the real-HW adapters from issues #56–#58.** | Keep |
 | `test_franka_panda_real.py` | ~210 | `FrankaPandaRealHAL` against `SimTransport` — closed-loop publish/subscribe, manifest pointer (`closed_with_api` → real HAL), e-stop publishes to `/error_recovery/goal`, staleness guard. **Added 2026-05-10 (issue #56).** | Keep |
 | `test_sawyer_real.py` | ~190 | `SAWYER_DESCRIPTION` joint inventory + `SawyerRealHAL` against `SimTransport` — closed-loop publish/subscribe, intera_sdk topic pinning, e-stop publishes to `/robot/set_super_stop`. **Added 2026-05-10 (issue #57).** | Keep |
 | `test_aloha.py` | ~290 | `ALOHA_DESCRIPTION` 14-DoF joint inventory + `AlohaHAL` against `SimTransport` — 4-way action split (left arm, right arm, left gripper, right gripper), bimanual capability flags, e-stop publishes to `/aloha/estop`. **Added 2026-05-10 (issue #58).** | Keep |
-| `test_skill_testing_helpers.py` | 145 | Unit tests for `openral_rskill.testing.assert_within_budget` (strict, tolerance, optional stages, defensive `ValueError`s, failure-message formatting). **Added 2026-05-08.** | Keep |
+| `test_rskill_testing_helpers.py` | 145 | Unit tests for `openral_rskill.testing.assert_within_budget` (strict, tolerance, optional stages, defensive `ValueError`s, failure-message formatting). **Added 2026-05-08.** | Keep |
 | `test_rskill_publisher.py` | 220 | `tools/rskill_publisher.py` smoke (token resolution, manifest validation, dry-run, exit codes, **privacy-gate regression guard** against accidental public publication of closed weights). **Added 2026-05-08.** | Keep |
 | `test_validation_matrix.py` | ~686 | `tools/validation_matrix.py` — verdict derivation, round-over-round diffing, importing a pre-harness round, the pinned stack (checked against the **live** `openral deploy sim` parser) and every guardrail, run against **recorded artifacts** from three real DGX Spark rounds (`tests/unit/fixtures/validation_matrix/`, provenance in `SOURCE.txt`): the two `master-1` rounds in their original `bag1`/`seed1` layout, plus `2026-08-22-harness-1`, the harness's own first live round, where all four scenes died on a flag that does not exist and must bucket as `harness-error` rather than as a clean deadline. Assertions are pinned to the conclusions published in `docs/reference/collision-validation-evidence.md`, so the suite goes red if the extractor stops reproducing the ledger. **Added 2026-08-22.** | Keep |
 
-### 2.2 `tests/integration/` — 4 files, ~700 LOC
+### 2.2 `tests/integration/` — 42 files, ~14.3 kLOC
 
 | File | LOC | Behavior under test | Verdict |
 | --- | ---: | --- | --- |
@@ -116,7 +116,7 @@ stale/incomplete; see §4) · **Consolidate** (overlap with another file) ·
 | `test_world_state_integration.py` | ~330 | Five `rclpy`-driven tests against the real `_WorldStateLifecycleNode`: 30 Hz pipeline, joint-state dropout, recovery, high-load snapshot consistency, and the original lifecycle-launch smoke. All gated on `ROS_DISTRO`; CI exercises them in `hal.yml::hal-integration` after the `colcon build` step. | Keep — issue #27 closed: scenarios 1–4 migrated from in-process aggregator simulation to the integration boundary (QoS, lifecycle transitions, `/joint_states` → `/world_state` round-trip). The aggregator-only paths remain covered by `tests/unit/test_world_state.py`. |
 | `test_hil_transport_publishes_and_caches_state.py` | ~225 | Four `rclpy`-driven tests against the HIL transport bridges: `RosControlHILTransport` caches a published `JointState`, publishes a `JointTrajectory`, and `AlohaHILTransport` dispatches arm vs gripper publishes and rejects unknown topics. Gated on `ROS_DISTRO`. | Keep — issue #62: protects the bridge wiring against regressions so the lab HIL fixtures can rely on it. |
 
-### 2.3 `tests/sim/` — 6 files, ~1,340 LOC
+### 2.3 `tests/sim/` — 54 files, ~12.0 kLOC
 
 All files carry `pytestmark = [pytest.mark.sim, pytest.mark.slow]` and fall
 through to module-level skips when CUDA / HF / `mujoco` / `gym_*` are absent.
@@ -146,7 +146,7 @@ match the keys in `openral_sim.SCENES` / `POLICIES`.
 > `openral_sim.SimRunner` instead of bespoke per-test loops;
 > SO-100 + skill coverage is provided by the unit/integration HAL tests.
 
-### 2.4 `tests/hil/` — 6 test files + 2 transport bridges
+### 2.4 `tests/hil/` — 12 test files + 3 transport bridges
 
 | File | LOC | Behavior under test | Verdict |
 | --- | ---: | --- | --- |
@@ -168,7 +168,7 @@ For each layer (per repo state map) and cross-cutting surface:
 
 | Layer / surface | Unit | Integration | Sim | HIL | Schema fuzz | Doctest | Perf budget |
 | --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
-| L0 HAL — `RosControlHAL`, `SO100FollowerHAL`, UR / Franka, `SO100DigitalTwin` | ✓ (Protocol conformance × 5 HALs in `test_hal_protocol_conformance.py`) | ✗ | ✓ | ✓ (so100) | ✓ (descriptions) | ✓ (UR / Panda / so100_sim / so100_follower / ros_control) | n/a |
+| L0 HAL — `RosControlHAL`, `SO100FollowerHAL`, UR / Franka, `SO100DigitalTwin` | ✓ (Protocol conformance × 10 HALs in `test_hal_protocol_conformance.py`) | ✗ | ✓ | ✓ (so100) | ✓ (descriptions) | ✓ (UR / Panda / so100_sim / so100_follower / ros_control) | n/a |
 | L0 HAL — `protocol.HAL`, `sim_transport`, `_mujoco_arm`, `franka_panda` | ✓ (Protocol contract pinned + `_mujoco_arm` direct test) | ✗ | ◐ | ✗ | n/a | ✓ (`protocol`, `sim_transport`, `franka_panda`) | n/a |
 | L0 HAL — ROS 2 lifecycle nodes (`hal_so100`, `hal_ur5e`, `hal_ur10e`, `hal_franka`) | ✓ (per-package `colcon test` lifecycle smokes for `franka` / `ur5e` / `ur10e`; `so100` covered by unit/integration/sim) | ✓ (colcon + lifecycle smokes drive `unconfigured → … → shutdown` and assert joint-state publication) | ✗ | ✓ (UR / Franka live gates) | n/a | ✗ | n/a |
 | L1 Sensors — vendor adapters + `SensorCatalog` | ✓ | ✗ | ✗ | ◐ (Jetson live probe) | ✓ | ✓ (curated set) | n/a |
@@ -179,7 +179,7 @@ For each layer (per repo state map) and cross-cutting surface:
 | L3 Skill — `EngineCache`, `quantization` | ✓ (`test_runtime.py` lines 248–467) | ✗ | ◐ | ✗ | ✓ | ✓ | ✗ |
 | L3 Skill — `rSkill` loader, `RSkillManifest` | ✓ | ✗ | ✓ | ✗ | ✓ (manifest fuzzed) | ✓ | ✓ (`assert_within_budget`) |
 | L3 Skill — `SmolVLASkill` adapter | ✓ | ✗ | ✓ | ✗ | n/a | ✓ | ✓ (sim) |
-| L3 Skill — testing helper (`assert_within_budget`) | ✓ (`test_skill_testing_helpers.py`) | ✗ | n/a | n/a | n/a | ✓ | ✓ |
+| L3 Skill — testing helper (`assert_within_budget`) | ✓ (`test_rskill_testing_helpers.py`) | ✗ | n/a | n/a | n/a | ✓ | ✓ |
 | L4 Reasoner | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | L5 World Action Model | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
 | L6 Safety — `SafetyEnvelope` schema, `ROSSafetyViolation` hierarchy | ✓ (Protocol conformance pins `ROSEStopRequested`) | ✗ | ◐ | ✗ | ✓ | ✓ (exceptions) | n/a |
@@ -212,17 +212,6 @@ Remaining gaps (see §4):
   into `_HALLifecycleNode` and asserts joint-state publication during
   the `active` phase. Wired into `test-ros2.yml` via the existing
   `colcon test --merge-install` step.
-- ~~**Wider sim-test budget enforcement.** `test_franka_panda_smolvla_libero.py` is wired
-  to `assert_within_budget`; the other sim tests (`test_smolvla_so100`,
-  `test_pi05_so100`, `test_act_aloha`, `test_pusht_2d_diffusion_pusht`) use
-  hardcoded ceilings because their underlying skills do not yet ship as
-  rSkills with `RSkillManifest.latency_budget`.~~ Resolved 2026-05-08:
-  in-tree manifests landed under `rskills/smolvla-base/`,
-  `rskills/pi05-so100/`, `rskills/act-aloha/`, `rskills/diffusion-pusht/`;
-  every applicable sim test now asserts against its manifest's
-  `RSkillLatencyBudget`. HAL-only `test_hal_*_sim.py` remains out of
-  scope.
-
 ---
 
 ## 4. Flagged backlog
@@ -284,7 +273,7 @@ future contributors can audit the closure.
   `tests/unit/test_schemas_fuzz.py`.~~
 - ~~**Per-skill latency-budget enforcement helper (P1)** — added
   `openral_rskill.testing.assert_within_budget` +
-  `tests/unit/test_skill_testing_helpers.py` (14 tests).~~
+  `tests/unit/test_rskill_testing_helpers.py` (14 tests).~~
 - ~~**`tools/rskill_publisher.py` smoke (P2)** — added
   `tests/unit/test_rskill_publisher.py` (13 tests, incl. privacy-gate
   regression guard).~~

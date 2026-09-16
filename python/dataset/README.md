@@ -2,7 +2,7 @@
 
 **openral-dataset** — rosbag2 ↔ LeRobotDataset v3 bridge. Every skill execution (sim
 or hardware) becomes a row in a LeRobotDataset v3.0 (`codebase_version="3.0"`,
-`lerobot>=0.5.1`). Successful and failed episodes are both persisted; the
+`lerobot[dataset]>=0.6.0`). Successful and failed episodes are both persisted; the
 per-row `next.success` flag and the per-dataset `meta/info.json["metadata"]
 ["dataset_success_rate"]` let downstream consumers filter.
 
@@ -128,7 +128,7 @@ uv run pytest python/dataset/tests/test_sink_lerobot.py -v
 Per CLAUDE.md §1.11 (no mocks): every test loads the real SO-100
 `RobotDescription` from `robots/so100_follower/robot.yaml` and exercises the
 real `lerobot.datasets.LeRobotDataset` writer. Tests `pytest.skip` with a
-typed reason on hosts without `lerobot>=0.5.1` installed (it lives behind
+typed reason on hosts without `lerobot[dataset]>=0.6.0` installed (it lives behind
 the `libero` / `metaworld` dependency groups today).
 
 ### Coverage scope

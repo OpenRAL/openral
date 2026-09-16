@@ -28,29 +28,6 @@ This package wraps [`HuggingFaceVLA/smolvla_libero`](https://huggingface.co/Hugg
 
 ---
 
-## Demo — SO-100 digital twin
-
-50-step closed-loop rollout, zero real hardware:
-
-```bash
-uv run python examples/so100_smolvla/run.py \
-    --skill-id rskills/smolvla-libero/rskill.yaml \
-    --steps 50 \
-    --save-video /tmp/so100_rollout.gif
-```
-
-Measured on RTX 4070 Laptop · CUDA 12.8 · PyTorch 2.10:
-
-| Phase | Latency |
-|---|---|
-| Weight load (from disk cache) | ~14 s |
-| First chunk inference (JIT + cuDNN warm-up) | ~900 ms |
-| Subsequent steps (cached action-queue pop) | **4 ms** |
-| Mean over 50 steps | **4 ms** |
-| Manifest budget (`per_chunk_ms`) | 150 ms ✓ |
-
----
-
 ## Quick start
 
 ```python
@@ -71,8 +48,7 @@ pkg = rSkill.from_yaml("skills/smolvla-libero/rskill.yaml")
 Via CLI:
 
 ```bash
-ral skill install hf://OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
-ral run examples/so100_smolvla --skill-id OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
+openral rskill install OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16
 ```
 
 ---
@@ -268,20 +244,7 @@ uv run pytest tests/sim/test_franka_panda_smolvla_libero.py::TestRSkillManifest 
 uv run pytest tests/sim/test_franka_panda_smolvla_libero.py -v -m sim
 ```
 
-### 3 — Run the end-to-end demo
-
-```bash
-# 50-step SO-100 digital twin rollout with GIF output:
-uv run python examples/so100_smolvla/run.py \
-    --skill-id rskills/smolvla-libero/rskill.yaml \
-    --steps 50 \
-    --save-video /tmp/so100_rollout.gif
-
-# Or via just:
-just sim so100
-```
-
-### 4 — LIBERO benchmark reproduction (requires LIBERO gym, planned Day 21+)
+### 3 — LIBERO benchmark reproduction (requires LIBERO gym, planned Day 21+)
 
 ```bash
 # Install LIBERO gymnasium environment:

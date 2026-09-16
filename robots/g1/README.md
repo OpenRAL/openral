@@ -36,9 +36,9 @@ scope here. See `docs/architecture/repo-state-map.html` for the
 | `embodiment_kind` | `humanoid` |
 | Joints | 29 actuated (2 × 6 leg + 3 waist + 2 × 7 arm). The MJCF's `floating_base_joint` is implicit world state and is NOT enumerated in `joints`. |
 | End-effectors | none — wrist endpoints are bare on this menagerie variant. A future `g1_with_hands` rev would add Inspire / Dex-3 entries. |
-| Embodiment tags | `g1`, `unitree_g1`, `humanoid` |
+| Embodiment tags | `g1`, `unitree_g1`, `humanoid`, `mobile_base` |
 | Supported VLA embodiments | `g1`, `humanoid_everyday_g1` |
-| Supported control modes | `joint_position` |
+| Supported control modes | `joint_position`, `body_twist` |
 | Locomotion | `bipedal` |
 | Bimanual | yes |
 | `sdk_kind` | `open` (menagerie MJCF + `mujoco` Python package, Apache-2.0) |

@@ -54,7 +54,7 @@ Qwen3-VL-4B backbone (peak **3.13 GB**, RTX 4070 Laptop 8 GB):
 ## Quick Start
 
 ```bash
-ral skill install hf://OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4
+openral rskill install OpenRAL/rskill-topreward_qwen3vl_4b-any-general-nf4
 ```
 
 ```python

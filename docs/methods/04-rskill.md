@@ -65,11 +65,13 @@ _Filesystem-based per-host engine cache for compiled skill runtimes._
   - private: `_key_path`
 
 ### `python/rskill/src/openral_rskill/quantization.py`
+- const `QUANT_PRESETS: dict[str, QuantizationConfig] = {...}` — Named quantization presets keyed by string id: `fp32`, `fp16`, `bf16`, `int8_dynamic`, `int8_dynamic_per_channel`, `int4`, `fp4_nvfp4` (TensorRT), `trt_fp8` (TensorRT-only — reaches the engine as explicit Q/DQ node pairs, no PyTorch-backend counterpart). (L26)
 - `auto_select_quant(device_info: DeviceInfo) -> QuantizationConfig` — Heuristic to pick dtype/backend. (L79)
 
 ### `python/rskill/src/openral_rskill/loader.py`
 _rSkill loader — HF Hub download, manifest validation, license guard, local registry._
 
+- const `DEFAULT_REGISTRY_PATH: Path = _DATA_HOME / "rskills.json"` — Default JSON registry file written by `rSkill.from_pretrained`. (L69)
 - `class InstalledRSkillEntry(BaseModel)` — One row in the local registry. (L97)
   fields: `repo_id, version, revision, local_dir, manifest_path, license, role, embodiment_tags, installed_at`
 - `class rSkill` — Packaged, signed, capability-tagged robot skill. (L141)

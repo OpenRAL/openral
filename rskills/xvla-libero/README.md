@@ -56,7 +56,7 @@ underlying paper are TBD pending checkpoint inspection — see
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
-| Franka Panda (LIBERO sim) | `libero`, `franka_panda` | ✓ matches manifest | Native training embodiment (assumed). |
+| Franka Panda (LIBERO sim) | `franka_panda` | ✓ matches manifest | Native training embodiment (assumed). |
 | Other 7-DoF arms | — | needs adapter | A third 224×224 zero-tensor slot is filled in-process by the runner; it does not correspond to a physical sensor. |
 
 ## Sensors required

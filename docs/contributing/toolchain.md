@@ -22,7 +22,7 @@ uv run pytest -k so100          # filter by keyword
 just lint                       # ruff check + ruff format --check + mypy --strict
                                 # (mypy targets: openral_core, openral_cli, openral_sim,
                                 #  openral_observability, openral_runner, openral_reasoner,
-                                #  openral_wam, tools/)
+                                #  openral_wam, openral_hal, tools/)
 uv run ruff check . --fix       # autofix
 uv run ruff format .            # format
 ```
@@ -61,7 +61,7 @@ builds share the version string. Full detail →
 
 **2. Opt-in dependency groups → `just sync --group <name>`.** The
 `[dependency-groups]` in `pyproject.toml` define `sim`, `libero`, `robocasa`,
-`metaworld`, `maniskill3`, `rldx`, … Heavy runtime deps — `transformers>=5.4.0,<5.14.0`,
+`metaworld`, `maniskill3`, `rldx`, … Heavy runtime deps — `transformers>=5.4.0,<5.6.0`,
 `scipy`, `opencv`, robosuite — live in these groups, **not** in the core deps.
 A default sync (no `--group`) deliberately *removes* them, so for any VLA / sim
 work you need at least the `sim` group:
@@ -204,8 +204,7 @@ just sim-custom                 # custom example — ACT × gym-aloha insertion
 ## Hardware-in-loop (requires connected robot + USB perms)
 
 ```bash
-just hil so100                  # SO-100 HIL tests
-                                # (UR / Franka / G1 HIL are planned)
+just hil franka_panda            # Franka HIL tests (also: ur5e, ur10e, sawyer, aloha, galaxea_a1; OpenArm HIL runs by filename, e.g. `uv run pytest tests/hil/test_openarm_can_live.py` — no `just hil openarm`; SO-100 / G1 HIL are planned)
 ```
 
 ## Docs
@@ -253,7 +252,7 @@ Bare `openral` (no args) drops into an interactive REPL where subcommands run wi
 ```bash
 openral doctor                   # diagnose host: Python, OS, ROS 2 distro, GPU, USB
 openral detect                   # auto-detect robot + sensors + GPU; write a full robot.yaml
-openral connect --robot so100    # open a HAL connection (only so100 wired today)
+openral connect --robot so100    # open a HAL connection (so100 and so101 — shared SO100FollowerHAL)
 openral calibrate camera --sensor S  # ros2 camera_calibration helper
 openral install sim              # post-install opt-in dep groups
 openral install ros              # run the packaged bootstrap_ubuntu.sh (sudo); no clone needed

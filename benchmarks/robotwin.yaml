@@ -5,7 +5,7 @@
 #   openral benchmark scene --config scenes/benchmark/robotwin_lift_pot.yaml \
 #                           --rskill rskills/smolvla-robotwin
 # Run the suite:
-#   openral benchmark run --suite robotwin --vla smolvla:rskills/smolvla-robotwin
+#   openral benchmark run --suite robotwin --rskill rskills/smolvla-robotwin
 #
 # Setup: provision the py3.10 SAPIEN+RoboTwin sidecar venv and
 # `just sync --all-packages --group robotwin --inexact` for the openral-side wire.

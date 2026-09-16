@@ -82,7 +82,7 @@ surfacing, latency budgets, and local registry integration. It does
 | in | `observation.state`           | `(1, D)` float32                | <!-- TODO: joint positions in rad? deg? --> |
 | out | action chunk                  | `(chunk_size, A)` float32       | <!-- TODO: joint pos? delta EE? --> |
 
-## How it was trained
+## Upstream model / training
 
 <!-- TODO: Where do the weights come from? Cover all of:
 

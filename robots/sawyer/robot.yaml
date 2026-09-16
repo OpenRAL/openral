@@ -4,7 +4,7 @@
 # benchmark simulates this same robot through the metaworld / robosuite
 # MuJoCo wrappers; the sim-imposed observation/action contract (4-D
 # `agent_pos` state, 4-D delta-XYZ-plus-gripper action) lives in the
-# matching scene adapter at python/eval/src/openral_sim/adapters/
+# matching scene adapter at python/sim/src/openral_sim/backends/
 # metaworld.py — NOT in this manifest. This follows the robot/sim split convention.
 #
 # Joint limits / velocities / efforts come from the public Rethink Sawyer
@@ -151,7 +151,7 @@ safety:
   deadman_required: true
 
 # Single corner-view RGB camera mirroring MetaWorld's `pixels` observation
-# (480x480, surfaced as `front` by python/eval/src/openral_sim/adapters/metaworld.py:92,
+# (480x480, surfaced as `front` by python/sim/src/openral_sim/backends/metaworld.py:92,
 # per the canonical HAL-facing sensor-naming convention). Declared so the
 # rSkill compat check on `openral sim run --config smolvla_metaworld_push.yaml`
 # matches `observation.images.camera1` (checkpoint-facing, frozen per

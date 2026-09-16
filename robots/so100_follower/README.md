@@ -7,10 +7,10 @@ three execution paths: real hardware (`SO100FollowerHAL`), the
 in-process kinematic twin (`SO100DigitalTwin`), and the real-physics
 MuJoCo digital twin (`SO100MujocoHAL` on the `mujoco_menagerie` MJCF).
 
-> **Detection note.** The SO-100 and SO-101 share the same Feetech USB
-> controller (identical VID/PID), so `openral detect` cannot tell them apart
-> from the bus. The current SO-101 is the default, so to provision an SO-100 run
-> `openral detect --robot so100` (and `openral connect --robot so100`).
+> **Detection note.** SO-100 and SO-101 share a VID/PID over the Feetech bus;
+> see the detection note in
+> [deploy-run-and-dashboard.md](../../docs/tutorials/deploy/deploy-run-and-dashboard.md)
+> for how `openral detect`/`--robot` disambiguates them.
 
 ## At a glance
 
@@ -39,7 +39,7 @@ acceleration ≤ 2.0 m/s². Deadman required (`deadman_required: true`).
 | Python description | `openral_hal.SO100_DESCRIPTION` |
 | Sensor factory | `openral_hal.so100_with_sensors` |
 | ROS 2 lifecycle node | [`packages/openral_hal_so100/`](../../packages/openral_hal_so100/README.md) |
-| Compatible rSkills | [`smolvla-libero`](../../skills/smolvla-libero/README.md) (digital-twin verified) |
+| Compatible rSkills | [`smolvla-libero`](../../rskills/smolvla-libero/README.md) (digital-twin verified) |
 
 ## Joints
 
@@ -87,5 +87,5 @@ state uses 6-DoF twin positions padded to 7-DoF where needed by the VLA.
 
 - [`python/hal/README.md`](../../python/hal/README.md) — `SO100FollowerHAL`, `SO100DigitalTwin`, sensor wiring.
 - [`packages/openral_hal_so100/README.md`](../../packages/openral_hal_so100/README.md) — ROS lifecycle node.
-- [`skills/smolvla-libero/README.md`](../../skills/smolvla-libero/README.md) — example rSkill for this embodiment.
-- [`docs/quickstart/so100.md`](../../docs/quickstart/so100.md) — sim and hardware quickstart.
+- [`rskills/smolvla-libero/README.md`](../../rskills/smolvla-libero/README.md) — example rSkill for this embodiment.
+- [`docs/tutorials/deploy/deploy-run-and-dashboard.md`](../../docs/tutorials/deploy/deploy-run-and-dashboard.md) — sim and hardware quickstart, using SO-100 as the worked example.
