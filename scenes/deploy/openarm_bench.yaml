@@ -1,0 +1,193 @@
+# OpenArm v2 bimanual — REAL hardware bench cell (Jetson AGX Orin `qorin1`).
+#
+# The real-hardware counterpart to `openarm_tabletop.yaml` (MuJoCo, `deploy
+# sim`) and `openarm_zed_octomap.yaml` (real ZED, simulated HAL). This is the
+# first OpenArm scene where both halves are real:
+#
+#     openral deploy run --config scenes/deploy/openarm_bench.yaml
+#
+# ─── READ THIS BEFORE YOU RUN IT ──────────────────────────────────────────────
+# `deploy run --hal-mode real` includes `openral_hal_openarm`'s
+# `real_bringup.launch.py`, which starts upstream `openarm_bringup`. Activating
+# that graph MOVES BOTH ARMS: `OpenArmHW::on_activate`
+# (openarm_ros2/openarm_hardware/src/openarm_simple_hardware.cpp:223) calls
+# `enable_all()` and then `return_to_zero()` (:305), which issues an unramped
+# MIT position command to 0.0 on all seven joints per side BEFORE it samples
+# the current pose, then interpolates 200 x 10 ms to zero. There is no
+# non-moving real bringup for this arm.
+#
+# So: clear the cell, keep a hand on the hardware E-stop, and start the graph
+# with the arms already near zero. The deploy graph does NOT currently launch a
+# deadman watchdog or a human E-stop node, so the hardware E-stop is the only
+# independent stop in the loop.
+#
+# ─── HAL BINDING ──────────────────────────────────────────────────────────────
+# Deliberately no `hal:` block. Unlike `so101_bench.yaml` (whose serial port and
+# lerobot calibration identity are facts about one laptop), every real-HAL
+# parameter the OpenArm needs is already correct in `robots/openarm/robot.yaml`:
+# the udev CAN names `openarm_left` / `openarm_right` (PEAK PCAN-USB Pro FD,
+# dev_id 0x1 / 0x0) and the four `openarm_bringup` controller names. Verified
+# against this rig 2026-09-16 — both links up, CAN FD 1 Mbit/5 Mbit, MTU 72,
+# ERROR-ACTIVE. Re-pin here only on a cell wired differently.
+#
+# ─── MOUNTING POSE ────────────────────────────────────────────────────────────
+# Deliberately no `base_pose:`, and NOT an oversight. `base_pose` is read only
+# by the sim path (`openral_sim.cli`, `openral_sim.benchmark`, the MJCF
+# composers); nothing on the `deploy run` path consumes it. The sim scenes'
+# `xyz: [0.20, 0.0, 0.55]` exists to lift a MuJoCo arm above a simulated table
+# and would be fiction here. The real mounting geometry is already published:
+# `robots/openarm/robot.yaml` sets `assets.urdf.base_to_root_xyz_rpy`
+# `[0, 0, -0.698, 0, 0, 0]` against `root_frame: world`, so the TF tree carries
+# world -> openarm_base = 0.698 m from robot_state_publisher. One source, and
+# it is the one the kernel and octomap actually read.
+
+scene:
+  id: openarm_bench
+robot_id: openarm
+
+# Deploy-time host bindings for the manifest's own cameras (same names ->
+# scene entry wins field-wise; `robots/openarm/robot.yaml` stays authoritative
+# for frames, intrinsics and mounts — `merge_deploy_sensors`).
+#
+# INVENTORY, verified on the rig 2026-09-16 (`lsusb`, `ls -l /dev/v4l/by-id`),
+# not assumed: ONE StereoLabs ZED-M and TWO Arducam B0495, i.e. a depth sensor
+# and TWO RGB cameras. The manifest declares three RGB — `top` has no device on
+# this cell and is left unbound on purpose (see below).
+sensors:
+  # head_zed — the ZED-M's depth is COMPUTED BY THE SDK on the host GPU; the
+  # device itself only presents a side-by-side UVC node, so no `/dev/video*`
+  # read can reach it and `opencv_thread` is not an option. `ros2_image`
+  # subscribes to what `zed_wrapper` publishes. Bring the driver up on the same
+  # ROS_DOMAIN_ID FIRST:
+  #
+  #     ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedm \
+  #         publish_tf:=false publish_map_tf:=false
+  #
+  # `publish_tf:=false` is load-bearing: otherwise the wrapper publishes its own
+  # odom->zed_camera_link from visual odometry while the manifest also parents
+  # zed_camera_link to `openarm_base`. Two parents is not a tree, tf2 lookups go
+  # order-dependent, and octomap_server silently drops every cloud. The camera
+  # is bolted to the rig, so its pose belongs to the robot's tree, not to VO.
+  #
+  # POSE AND INTRINSICS ARE STILL THE MANIFEST'S UNCALIBRATED APPROXIMATION
+  # (0.20 m above the shoulder midpoint, pitched 45 deg down, fx/fy from the
+  # published 90 deg HFOV). Run `openral calibrate camera` before trusting
+  # anything geometric off this sensor — see `enable_octomap_kernel_check`.
+  #
+  # `frame_id` is repeated from the manifest because `SensorSpec` requires it;
+  # it MUST match `robots/openarm/robot.yaml` character for character, since a
+  # scene entry wins field-wise over the manifest and a divergent frame here
+  # would silently re-parent the cloud.
+  - name: head_zed
+    modality: depth
+    frame_id: zed_camera_link
+    rate_hz: 10.0
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/depth/depth_registered
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 500
+
+  # wrist_left / wrist_right — the two Arducam B0495 (USB3 2.3MP). Kernel-stable
+  # `/dev/v4l/by-id` symlinks, never raw `/dev/videoN`: those are assigned in USB
+  # enumeration order and silently renumber on replug or reboot. `-video-index0`
+  # is the capture node (`-video-index1` is the metadata node and yields no
+  # frames). The vendor burned the cell role into the USB serial string, so
+  # CAM_LEFT / CAM_RIGHT follow the camera across ports.
+  - name: wrist_left
+    modality: rgb
+    frame_id: openarm_left_ee_base_link
+    rate_hz: 30.0
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_LEFT-video-index0
+        width: 640
+        height: 480
+        fps: 30
+  - name: wrist_right
+    modality: rgb
+    frame_id: openarm_right_ee_base_link
+    rate_hz: 30.0
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_RIGHT-video-index0
+        width: 640
+        height: 480
+        fps: 30
+
+  # `top` (the manifest's third RGB) is NOT bound: it is `vendor: sim,
+  # model: mujoco_top`, the overview camera of the MuJoCo tabletop, and this
+  # cell has no third RGB device. A spec without a `deploy_binding` is skipped
+  # by the sensor leg (`sensor_leg.build_sensor_legs`), so the entry stays inert
+  # rather than failing or inventing a stream. Bind it here if an overview
+  # camera is ever added to the cell.
+
+runtime:
+  # The octomap leg is the reason this scene exists as a separate file.
+  #
+  # The manifest declares `head_zed` — a depth SensorSpec WITH intrinsics — which
+  # flips deploy's octomap auto-enable to true. But the auto-enable only sets the
+  # flag; `octomap_cloud_topic` keeps its launch default
+  # `/openral/cameras/front_depth/points`, which ONLY the sim sensor bridge ever
+  # publishes. On a real camera that leaves the octree, `/openral/world_voxels`
+  # and the dashboard POINTCLOUD card permanently empty while every node reports
+  # healthy — the quietest failure in the graph. So both keys are set together,
+  # always.
+  #
+  # Topic verified three ways on this rig rather than guessed: the wrapper's own
+  # source (`zed_camera_component_video_depth.cpp:84`,
+  # `mPointcloudTopic = mTopicRoot + "point_cloud/cloud_registered"`), the
+  # driver's advertise line in the rig's ZED log, and the argv of the previous
+  # OpenArm deploy on this host.
+  enable_octomap: true
+  octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+
+  # FALSE until `openral calibrate camera` has run on this cell.
+  #
+  # Unlike `openarm_zed_octomap.yaml` (where the camera watched a room and the
+  # kernel protected a MuJoCo twin), here the ZED DOES observe the real arm's own
+  # workspace, so this is exactly the scene that should eventually set it true.
+  # It stays false because `head_zed`'s mount is the manifest's stated
+  # approximation, and an uncalibrated cloud around a real bimanual arm does not
+  # degrade to a bad picture — it degrades to a phantom obstacle and an E-stop,
+  # or worse, to a real obstacle the kernel places in the wrong cell. Flip it
+  # true in the same commit that lands the calibration.
+  #
+  # Turning it off never drops below the `--no-enable-octomap` baseline: the leg
+  # still publishes `/openral/world_voxels` and still drives the dashboard card;
+  # only the capsule-vs-voxel check is skipped.
+  enable_octomap_kernel_check: false
+
+  # No reasoner, and therefore no path from this scene to a policy: without it
+  # no rSkill is ever selected or loaded. Bringup still energises the arm (see
+  # the header), but nothing in the OpenRAL graph can author a motion command.
+  # Turn it on only with a supervised operator present.
+  enable_reasoner: false
+
+  # Fixed-base bimanual arm: no wheels, no lidar, nothing to localise.
+  enable_slam: false
+  enable_nav2: false
+
+  # Both perception extras are off: the Orin shares its GPU with the ZED SDK's
+  # NEURAL_LIGHT depth, which is the one tenant this scene cannot do without.
+  enable_object_detector: false
+  object_detector_onnx: null
+  object_detector_manifest: null
+  object_detector_query: null
+  object_detector_locators: null
+  enable_reward_monitor: false
+  reward_monitor_manifest: null
+  reward_monitor_task: null
+  enable_critic: false
+
+  spatial_memory_ingest: true
+
+  # Null deliberately. An `approach_skill_id` makes EVERY ExecuteRskill goal run
+  # a MoveIt approach before inference, and there is no `move_group` in the
+  # OpenArm deploy graph to serve it — every goal would abort at the pre-inference
+  # approach step. Wire this only once an OpenArm MoveIt config is in the graph.
+  approach_skill_id: null
