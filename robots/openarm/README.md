@@ -70,8 +70,34 @@ pinned to a known-good v2 SHA. The helper goes away once
 | Sim test | `tests/sim/test_openarm_hal_mujoco.py` |
 | v2 fetch helper | `openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf` |
 | Real-HW HAL | `openral_hal.openarm_real.OpenArmRealHAL` |
+| Real-HW bench scene | `scenes/deploy/openarm_bench.yaml` (`openral deploy run`) |
+| Real-HW bringup | `ros2 launch openral_hal_openarm real_bringup.launch.py` |
+| Full-graph HIL gate | `tests/hil/test_openarm_deploy.py` (`just hil-openarm-deploy`) |
 | Upstream URDF | [enactic/openarm](https://github.com/enactic/openarm) |
 | Upstream MJCF | [enactic/openarm_mujoco](https://github.com/enactic/openarm_mujoco) (v2 on master) |
+
+## Real hardware
+
+`hal.real` is `OpenArmRealHAL`, which publishes to the four `ros2_control`
+controllers `openarm_bringup` spawns (per-side arm + gripper) and refuses to
+`connect()` unless both udev-pinned SocketCAN links (`openarm_left`,
+`openarm_right`) are up. It never starts `controller_manager` itself — that
+graph is C++ at 400 Hz and belongs under a vendor bringup (CLAUDE.md §1.5).
+
+Real deploys use `scenes/deploy/openarm_bench.yaml`, which binds the cell's
+real cameras and — the part that is easy to get silently wrong — pins
+`runtime.octomap_cloud_topic` to the topic the ZED SDK actually publishes.
+`head_zed` in `robot.yaml` auto-enables the octomap leg, but the topic keeps a
+sim-only launch default unless the scene sets it, and the result is an empty
+octree behind a graph where every node reports healthy.
+
+> **Bringup moves both arms.** `OpenArmHW::on_activate` calls `enable_all()`
+> and then `return_to_zero()`: an unramped MIT position command to 0.0 on all
+> seven joints per side, issued before the current pose is sampled, then a
+> 200 x 10 ms ramp to zero. There is no non-moving real bringup for this robot.
+> Clear the cell and keep a hand on the hardware E-stop. Note also that the
+> deploy graph does not currently launch a deadman watchdog or a human E-stop
+> node, so the hardware E-stop is the only independent stop in the loop.
 
 ## Action layout (16 DoF)
 
