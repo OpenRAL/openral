@@ -41,6 +41,15 @@ _Generates JSON Schema files for every public `openral_core` model._
 - `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L191)
 - `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L243)
 
+### `tools/check_repo_state_map.py`
+_The other pre-commit drift guard (`always_run`, ~0.2 s): pins the mechanically checkable half of `docs/architecture/repo-state-map.html` — that its `pkg:` pointers name something real, and that its asserted counts have not rotted. Both classes have shipped to master (a green card against an `examples/` directory that never existed; all five counts wrong at once, unit 190 vs 379). Prose on the map stays a human judgement call._
+
+- module const `COUNT_TOLERANCE: float` (L45) — counts are held to within 10%, not to the digit; an exact check would go red on every added test file and be disabled long before it caught the next 190-vs-379.
+- `iter_cards(html: str) -> list[tuple[str, str]]` — Pair each `pkg:` value with the `desc:` that follows it in the same card. (L71)
+- `_resolves(head: str, token: str) -> bool` — Whether a `pkg:` token names a real path under any of the three spellings the map uses: repo-root-relative, relative to the card's leading package under the workspace src layout, or a bare module name. (L80)
+- `check_paths(cards) -> list[str]` — Report `pkg:` tokens that name nothing on disk. (L98)
+- `check_counts(cards) -> list[str]` — Report `desc` counts that have drifted past `COUNT_TOLERANCE`. (L117)
+
 ### `tools/audit_sim_configs.py`
 _Real GPU rollout audit for every YAML under `scenes/`. Operator-driven (not a pytest test); 1 episode per config; writes `outputs/audit_sim_configs.json` and prints a Markdown table. See `just sim-audit`. Two modes: default (full rollout for sim/benchmark, Tier-2 launch + SIGINT for deploy) and `--check-compatibility` (cheap in-process scene+rSkill+HAL gate, no subprocess / no GPU)._
 
