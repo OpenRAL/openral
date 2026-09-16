@@ -279,6 +279,107 @@ just docs-build             # full build (CI parity, strict mode)
 
 ---
 
+## Lab HIL runners (`[self-hosted, lab-<robot>]`)
+
+**Status: documented, deliberately NOT registered.** No self-hosted runner is
+registered for this repository and none should be until the blocker below
+clears. The `[self-hosted, lab-<robot>]` labels in `tests/hil/` docstrings
+describe where a gate *would* run, not a lane that exists. Today HIL runs by
+hand on the cell, which is why every HIL file gates on an env var plus a live
+hardware probe and skips — never fails — off-rig.
+
+### The blocker, first
+
+Read *Security* under "Why there is no CI lane" above before doing any of this.
+The short version: **a runner label is a routing request made by a workflow,
+not an access control enforced by the runner.** A repository-scoped runner
+accepts jobs from any workflow naming its labels, and for `pull_request` GitHub
+runs the workflow definition from the **fork's** ref. `OpenRAL/openral` is
+public with three fork-reachable `pull_request` workflows (`dco.yml`,
+`quality.yml`, `test-selective.yml`), so a fork PR can add
+`runs-on: [self-hosted, lab-openarm]` with arbitrary `run:` steps and get code
+execution on the lab host — with that user's SSH keys, `gh` credentials, LAN
+access to the robots, and, for `lab-openarm`, the CAN buses of a powered
+bimanual arm.
+
+Registering a runner on a lab host is therefore gated on **one** of:
+
+1. an **organisation runner group** restricted to selected repositories and
+   selected workflows (needs a paid GitHub plan — Free does not offer it), or
+2. moving HIL to a **private** mirror repository with no fork-reachable
+   `pull_request` triggers, dispatched only by `workflow_dispatch` /
+   `repository_dispatch`.
+
+Neither is in place. Until one is, the procedure below is reference material.
+
+### Host prerequisites (OpenArm cell)
+
+A `lab-openarm` host must already satisfy what the gates probe, or every job
+is a green no-op that proves nothing:
+
+| Requirement | Check |
+| --- | --- |
+| Both motor buses up, CAN FD 1 Mbit/5 Mbit | `ip -details link show openarm_left` (and `openarm_right`) — `state ERROR-ACTIVE`, `mtu 72` |
+| udev naming pinned by `dev_id`, not `canN` order | `openral detect` reports `bh_robot_type: openarm` |
+| `openarm_bringup` on the ament prefix path | `ros2 pkg prefix openarm_bringup` |
+| ZED SDK + `zed_wrapper` for the world-map assertions | `ros2 pkg prefix zed_wrapper` |
+| OpenRAL ROS overlay built | `just ros2-build` |
+
+### Registering the runner
+
+```bash
+# On the lab host, as the account that owns the cell (NOT root).
+mkdir -p ~/actions-runner && cd ~/actions-runner
+curl -fsSLo runner.tar.gz \
+    https://github.com/actions/runner/releases/download/v2.330.0/actions-runner-linux-arm64-2.330.0.tar.gz
+tar xzf runner.tar.gz
+
+# Token from Settings -> Actions -> Runners -> New self-hosted runner.
+./config.sh --url https://github.com/OpenRAL/openral \
+    --labels self-hosted,lab-openarm \
+    --name qorin1-openarm --work _work --unattended
+
+sudo ./svc.sh install "$USER" && sudo ./svc.sh start
+```
+
+Use `linux-arm64` on a Jetson; `linux-x64` elsewhere. Do **not** run the
+service as root: a HIL job that can write CAN as root can also disable the
+udev rules that keep left and right from swapping.
+
+### Workflow shape
+
+A HIL lane must be dispatch-only — never `pull_request`, never `push`:
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      robot: { description: "lab-<robot> label suffix", required: true }
+
+jobs:
+  hil:
+    runs-on: [self-hosted, "lab-${{ inputs.robot }}"]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - run: just sync
+      - run: just hil-openarm-deploy
+```
+
+`timeout-minutes` is not optional: a wedged job holds the cell, and the HIL
+tier's own budget is 10 minutes (CLAUDE.md §2).
+
+### What a `lab-openarm` lane may NOT do unattended
+
+`just hil-openarm-deploy` is non-motion and attaches to a graph someone else
+started. It must stay that way. **Starting the OpenArm deploy graph is itself a
+motion event** — `openarm_bringup`'s `OpenArmHW::on_activate` calls
+`enable_all()` then `return_to_zero()`, an unramped MIT position command to 0.0
+on all seven joints per side. A CI lane must never launch it, and
+`tests/hil/test_openarm_slot_group_motion.py` (the one gate that commands the
+arm) must keep its `OPENRAL_OPENARM_ATTENDED=1` gate unexported on any runner
+host.
+
 ## Repository layout (quick reference)
 
 For the maintained directory layout — every `python/*` / `packages/*`

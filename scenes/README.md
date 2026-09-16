@@ -46,6 +46,11 @@ sibling is **not** valid for paper claims; the loader-strictness gate
 # DeployScene — env-only playground (reasoner picks the rSkill at runtime).
 openral deploy sim --config scenes/deploy/openarm_tabletop.yaml
 
+# The same robot on real hardware. `deploy run`, not `deploy sim`: it binds the
+# cell's real cameras and the real CAN/ros2_control HAL. Bringup MOVES BOTH ARMS
+# (openarm_bringup returns to zero on activate) — read the scene's header first.
+openral deploy run --config scenes/deploy/openarm_bench.yaml
+
 # BEHAVIOR-1K R1 Pro — official OmniGibson evaluator environment.
 openral deploy sim --config scenes/deploy/behavior_r1pro.yaml \
   --initial-task "turn on the radio"
