@@ -17,6 +17,7 @@ _Layout adapter registry. Assembles per-checkpoint state vectors from manifest-d
 ### `python/world_state/src/openral_world_state/aggregator.py`
 _WorldStateAggregator — tf2-aware, injectable snapshot producer._
 
+- const `DEFAULT_RATE_HZ: float = 30.0` — Advertised default snapshot rate. (L89)
 - `class WorldStateAggregator` — Aggregates sensor data and produces `WorldState` snapshots. (L106)
   - `__init__(description, *, staleness_limit_s=DEFAULT_STALENESS_S, image_staleness_limit_s=None, policy_state_staleness_limit_s=DEFAULT_POLICY_STATE_STALENESS_S, clock_fn=None)` — camera and policy-state streams have independent staleness windows. `image_staleness_limit_s` defaults to the general window; deploy sim passes 5.0 s for slow rendered frames while real deploys keep 0.5 s. `policy_state` defaults to 5.0 s because it is step-locked and heavy sidecar sims legitimately step at ~1 s wall. (L166)
   - `update_joint_state(state) -> None` — Record a fresh joint reading. (L274)
