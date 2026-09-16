@@ -41,8 +41,8 @@ Crossing a layer boundary without an ADR is rejected in review.
 Every robot agent has:
 - **S1** — fast policy (VLA, 30–200 Hz), action-chunked.
 - **S2** — slow reasoning (event-driven, ~0.2 Hz heartbeat). The reasoner emits
-  typed `ReasonerToolCall` structured tool-calls (`ExecuteRskill`,
-  `LifecycleTransition`, `EmitPrompt`, …) as its sole planner output — the
+  typed `ReasonerToolCall` structured tool-calls (`ExecuteRskillTool`,
+  `LifecycleTransitionTool`, `EmitPromptTool`, …) as its sole planner output — the
   direct typed-dispatch surface.
 - **S0** (humanoids only) — cerebellar layer (500–1000 Hz, C++, inside ros2_control).
 

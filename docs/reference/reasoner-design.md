@@ -46,8 +46,8 @@ is **event-driven with a slow heartbeat**:
   | **D — operator/world** | `/openral/prompt`, `/openral/perception/*` | new prompt forces; perception is informational |
 
 - Each tick the LLM emits **exactly one** variant of the `ReasonerToolCall`
-  discriminated union (`ExecuteRskill`, `LifecycleTransition`, `ReloadGstPipeline`,
-  `EmitPrompt`, plus the read-only query/memory tools below) — Pydantic-validated
+  discriminated union (`ExecuteRskillTool`, `LifecycleTransitionTool`, `ReloadGstPipelineTool`,
+  `EmitPromptTool`, plus the read-only query/memory tools below) — Pydantic-validated
   structured output, never free-form JSON.
 
 **Execution model (#21).** The blocking LLM round-trip (`select_tool`, and the

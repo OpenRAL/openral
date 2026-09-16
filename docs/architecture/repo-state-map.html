@@ -1471,7 +1471,7 @@ const LAYERS = [
       {
         title: "OTel Collector + Prometheus (dev stack)",
         pkg: "docker/otelcol",
-        status: "green",
+        status: "yellow",
         desc: "docker-compose.dev.yml fans out OTLP through otel/opentelemetry-collector-contrib: traces -> jaeger, metrics -> prometheus exporter at :8889, logs -> debug. Jaeger alone returns UNIMPLEMENTED on /v1/metrics; otelcol fixes the end-to-end metric path.",
       },
       {

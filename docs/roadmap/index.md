@@ -29,7 +29,7 @@ Live status of OpenRAL development. For detailed architecture and module-by-modu
 | World Action Model (WAM) | 🟡 protocol shipped — `WorldModel` Protocol + `NullWorldModel`; Cosmos / UnifoLM-WMA-0 / IRASim adapters planned (v0.3) |
 | Object detection + spatial lift | ✅ shipped — `RosImageObjectDetectorNode`, 2D→3D object lift, RT-DETR + OmDet-Turbo detector rSkills, GStreamer perception bus; LocateAnything-3B wired via VLM sidecar + `locate_in_view` on-demand tool; scene-VLM `kind:vlm` |
 | Geometric safety + watchdog | 🟡 in flight — chunk-rate safety pass-through + envelope checks (✅), deadman/E-stop forwarders + human-estop (✅ `openral_safety_watchdog` / `openral_human_estop`); self/world/voxel collision + OctoMap→voxel bridge in dev |
-| C++ safety kernel | 🟡 in flight — deny-by-default allocation-free validator landed (n_dof / position / velocity / torque / cartesian / ee-speed + geometric collision), OTel spans; sim/HIL gate + LTTng pending |
+| C++ safety kernel | ✅ deny-by-default allocation-free validator landed (n_dof / position / velocity / torque / cartesian / ee-speed + geometric collision), OTel spans; geometric collision verified end-to-end through the real kernel in the sim tier (issue #77); LTTng + formal proofs remain out of scope |
 | Org / publishing | 🟡 in flight — public repo + `master` branch protection ✅; lockstep SemVer computed from Conventional Commits by `release-please.yml` ✅ ([releasing](../contributing/releasing.md)); PyPI trusted-publishing live — 0.1.0 and 0.2.0 published for all 14 packages ✅. `release.yml` was dropped 2026-06-17; the GHCR release-image path returns as a purpose-built `release-image.yml` once ROS-in-CI infra exists |
 
 Legend: ✅ done, 🟡 in flight, 🔵 planned, 🔴 blocked / outstanding.

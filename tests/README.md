@@ -212,17 +212,6 @@ Remaining gaps (see §4):
   into `_HALLifecycleNode` and asserts joint-state publication during
   the `active` phase. Wired into `test-ros2.yml` via the existing
   `colcon test --merge-install` step.
-- ~~**Wider sim-test budget enforcement.** `test_franka_panda_smolvla_libero.py` is wired
-  to `assert_within_budget`; the other sim tests (`test_smolvla_so100`,
-  `test_pi05_so100`, `test_act_aloha`, `test_pusht_2d_diffusion_pusht`) use
-  hardcoded ceilings because their underlying skills do not yet ship as
-  rSkills with `RSkillManifest.latency_budget`.~~ Resolved 2026-05-08:
-  in-tree manifests landed under `rskills/smolvla-base/`,
-  `rskills/pi05-so100/`, `rskills/act-aloha/`, `rskills/diffusion-pusht/`;
-  every applicable sim test now asserts against its manifest's
-  `RSkillLatencyBudget`. HAL-only `test_hal_*_sim.py` remains out of
-  scope.
-
 ---
 
 ## 4. Flagged backlog

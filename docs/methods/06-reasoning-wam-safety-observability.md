@@ -163,18 +163,24 @@ _Identity stub satisfying the `WorldModel` Protocol (for plumbing tests; not a p
   - `rollout(world_state, action_chunk, horizon) -> Rollout` — Replays the input state. Raises `ValueError` for `horizon ∉ (0, max_horizon]`. (L60)
 
 ### `packages/openral_safety/openral_safety/supervisor_node.py`
-_Lifecycle node skeleton; reserves the supervisor node name and topic surface for the future C++ kernel (CLAUDE.md §6.1 Layer 6, §7.7). No enforcement logic._
+_Day-1 Python safety envelope: `candidate_action` → `safe_action` pass-through with real per-control-mode envelope checks, the estop latch/reset pair, and the ADR-0096 latched SafetyStatus topic. Reserves the node name and topic surface for the future C++ kernel (CLAUDE.md §3); any addition of enforcement beyond this file requires safety-WG sign-off._
 
-- `class SafetySupervisorNode(LifecycleNode)` — Skeleton lifecycle node. Every transition callback returns `SUCCESS`. (L846)
-  - `__init__(node_name="openral_safety_supervisor") -> None` — Initialise; logs a "skeleton no-op" line so the supervisor's presence in the graph is visible. (L155)
-  - `on_configure(state) -> TransitionCallbackReturn.SUCCESS` (L218)
-  - `on_activate(state) -> TransitionCallbackReturn.SUCCESS` (L308)
-  - `on_deactivate(state) -> TransitionCallbackReturn.SUCCESS` (L340)
-  - `on_cleanup(state) -> TransitionCallbackReturn.SUCCESS` (L350)
-  - `on_shutdown(state) -> TransitionCallbackReturn.SUCCESS` (L382)
-- `main(args=None) -> int` — Entry point for `ros2 run openral_safety supervisor_node`. (L849)
-- `SAFETY_STATUS_TOPIC: str` — `/openral/safety_status`, the ADR-0096 latched current-safety-state topic this node publishes `openral_msgs/SafetyStatus` on (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1), alongside — never instead of — `/openral/estop`. Same contract the C++ kernel publishes. (L69)
-- `SAFETY_STATUS_HEARTBEAT_S: float` — 1.0 s liveness refresh for that topic. Hazard-log HZ-0096-1 mitigation 2: a durable value is only trustworthy alongside evidence it is current, so `header.stamp` is re-stamped at this cadence even when nothing changed. (L76)
+- `class SafetyPassthroughNode(LifecycleNode)` (L134) — Owns `/openral/candidate_action → /openral/safe_action` plus the estop latch/reset pair and the ADR-0096 `SafetyStatus` topic.
+  - `__init__(node_name="openral_safety") -> None` (L155)
+  - `on_configure(state) -> TransitionCallbackReturn` (L218) — Opens the publishers, subscriptions, service, and diagnostics heartbeat.
+  - `on_activate(state) -> TransitionCallbackReturn` (L308)
+  - `on_deactivate(state) -> TransitionCallbackReturn` (L340)
+  - `on_cleanup(state) -> TransitionCallbackReturn` (L350)
+  - `on_shutdown(state) -> TransitionCallbackReturn` (L382)
+  - `_on_candidate_action(msg) -> None` (L388) — Subscribes `/openral/candidate_action`. Drops the candidate and re-fires `/openral/estop` on an envelope violation; drops silently (no re-fire) while already latched; otherwise forwards the message unchanged on `/openral/safe_action`. Emits a `safety.check` OTel span per candidate with `safety.severity` ∈ `{info, warn, violation}`.
+  - `_envelope_violation(msg) -> tuple[str | None, str]` (L445) — Dispatches on `control_mode`: joint position/velocity/torque/trajectory get the Day-1 `n_dof` + per-joint position-limit check; `CARTESIAN_DELTA`, `CARTESIAN_TWIST`, `BODY_TWIST`, and the gripper modes each get their own bound check (cartesian step, EE linear/angular speed, base linear/angular speed, gripper range). Every bound parameter defaults to `-1.0` ("no enforcement declared, skip").
+  - `_handle_violation(msg, *, kind, reason) -> None` (L706) — Drops the chunk, latches the estop, publishes `std_msgs/Empty` on `/openral/estop`, and updates the latched `SafetyStatus`.
+  - `_on_external_estop(_msg) -> None` (L735) — Subscribes `/openral/estop` (defense in depth, CLAUDE.md §1.5): any external estop publication latches this node too, independent of its own checks.
+  - `_on_estop_reset(request, response) -> object` (L762) — Exposes `/openral/estop_reset` (`std_srvs/Trigger`); clears the latch only once `estop_reset_cooldown_s` (default 0.5 s) has elapsed since the last estop.
+- `SafetySupervisorNode` (L846) — Back-compat alias of `SafetyPassthroughNode`, not a separate skeleton.
+- `SAFETY_STATUS_TOPIC: str` (L69) — `/openral/safety_status`, the ADR-0096 latched current-safety-state topic this node publishes `openral_msgs/SafetyStatus` on (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1), alongside — never instead of — `/openral/estop`. Same contract the C++ kernel publishes.
+- `SAFETY_STATUS_HEARTBEAT_S: float` (L76) — 1.0 s liveness refresh for that topic. A durable value is only trustworthy alongside evidence it is current, so `header.stamp` is re-stamped at this cadence even when nothing changed.
+- `main(args=None) -> int` (L849) — Entry point for `ros2 run openral_safety supervisor_node`.
 
 ### `cpp/openral_safety_kernel/include/openral_safety_kernel/collision.hpp`
 _Allocation-free attached-payload contact handling, plus the staged 26-DOP → exact-convex-hull narrow phase for the arm-link-vs-world-voxel check (design + measurements: [`collision-hull-narrow-phase.md`](../reference/collision-hull-narrow-phase.md), on top of [`collision-tight-geometry.md`](../reference/collision-tight-geometry.md) §12.2)._

@@ -3,8 +3,9 @@
 Canonical `RobotDescription` manifest for the **Trossen ALOHA** bimanual
 teleop platform — two 7-DoF arms with parallel grippers (14-DoF action
 space), one top-down RGB camera. Two execution paths share the
-manifest: `AlohaHAL` for the real Interbotix XS hardware (4
-`ros2_control` controllers) and `AlohaMujocoHAL` for the real-physics
+manifest: `AlohaHAL` for the real Interbotix XS hardware (via
+`interbotix_xs_sdk`, not `ros2_control`/`controller_manager`; hardware
+transport not yet wired in `connect()`) and `AlohaMujocoHAL` for the real-physics
 MuJoCo digital twin built on the
 [`gym-aloha`](https://github.com/huggingface/gym-aloha) bimanual MJCF.
 

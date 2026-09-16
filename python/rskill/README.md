@@ -1,6 +1,6 @@
 # openral-rskill
 
-OpenRAL Skill base class — lifecycle state machine and mock skill
+OpenRAL rSkill runtime — lifecycle base class, ROS-action skill adapters, SmolVLA inference adapter, and ONNX/PyTorch/GPU-passthrough runtimes
 
 Part of [**OpenRAL**](https://github.com/OpenRAL/openral) — the open Robot
 Abstraction Layer for vision-language-action robotics. This package is one
