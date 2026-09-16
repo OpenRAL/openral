@@ -305,8 +305,8 @@ skills/                                       — rSkill packages (manifest + ev
                                                    xvla-libero, act-aloha,
                                                    act-aloha-insertion,
                                                    diffusion-pusht)
-examples/                                     — runnable end-to-end demos +
-                                                  scenes/ SceneEnvironment YAMLs
+scenes/                                       — three-tier scene YAMLs
+                                                  (deploy/ · sim/ · benchmark/)
 tests/unit/                                   — pytest unit tests (<30 s total)
 tests/integration/                            — launch_testing multi-node tests
 tests/sim/                                    — closed-loop sim (CUDA + HF weights, opt-in)
