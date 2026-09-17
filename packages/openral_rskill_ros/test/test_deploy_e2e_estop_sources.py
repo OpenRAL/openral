@@ -131,19 +131,24 @@ def _params(node: Any) -> dict[str, Any]:
     return resolved
 
 
-def _autostart_script_targets(entities: list[Any]) -> list[str]:
-    """The ``--node`` argument of every ``lifecycle_autostart.py`` invocation."""
+def _autostart_invocations(entities: list[Any]) -> dict[str, list[str]]:
+    """``{--node target: full argv}`` for every ``lifecycle_autostart.py`` call."""
     from launch.actions import ExecuteProcess
 
-    targets: list[str] = []
+    found: dict[str, list[str]] = {}
     for entity in entities:
         if not isinstance(entity, ExecuteProcess):
             continue
         parts = [sub.text for group in entity.cmd for sub in group if hasattr(sub, "text")]
         if not parts or _AUTOSTART_SCRIPT not in parts:
             continue
-        targets.append(parts[parts.index("--node") + 1])
-    return targets
+        found[parts[parts.index("--node") + 1]] = parts
+    return found
+
+
+def _autostart_script_targets(entities: list[Any]) -> list[str]:
+    """The ``--node`` argument of every ``lifecycle_autostart.py`` invocation."""
+    return list(_autostart_invocations(entities))
 
 
 @pytest.mark.parametrize("hal_mode", ["sim", "real"])
@@ -168,32 +173,86 @@ def test_estop_sources_autostart_via_the_poll_based_script(hal_mode: str) -> Non
     Same Jazzy ``lifecycle_event_manager`` race the safety kernel, reasoner,
     prompt_router and HAL are already routed around: for these nodes it would
     mean an E-stop source that exists on the graph and can never fire.
+
+    The pendant is the deliberate exception — it is only driven when a device
+    is actually declared (see
+    ``test_the_pendant_is_not_autostarted_when_no_device_is_declared``).
     """
     targets = _autostart_script_targets(_compose(hal_mode))
-    for node_name in _ESTOP_NODES:
+    for node_name in ("openral_deadman_watchdog", "openral_human_estop_forwarder"):
         assert f"/{node_name}" in targets, (
             f"/{node_name} is not driven by tools/lifecycle_autostart.py on hal_mode="
             f"{hal_mode}; a dropped ACTIVATE would leave it inert with no diagnostic."
         )
 
 
-def test_deadman_is_gated_on_the_runners_execution_window() -> None:
+@pytest.mark.parametrize("hal_mode", ["sim", "real"])
+def test_the_deadman_autostart_is_required_and_shuts_the_graph_down_on_failure(
+    hal_mode: str,
+) -> None:
+    """A deploy that cannot arm its only independent watchdog must not run.
+
+    Two halves, and both are needed. ``--required`` makes an absent node a
+    non-zero exit — by default ``lifecycle_autostart.py`` treats "the service
+    never appeared" as informational and exits 0, so a colcon overlay built
+    without ``openral_safety_watchdog`` would deploy with no out-of-band E-stop
+    and one stderr line as evidence. The ``OnProcessExit`` handler is what
+    turns that exit code into a refusal to run.
+    """
+    from launch.actions import RegisterEventHandler
+
+    entities = _compose(hal_mode)
+    argv = _autostart_invocations(entities)["/openral_deadman_watchdog"]
+    assert "--required" in argv, (
+        "the deadman autostart is not --required, so an absent watchdog exits 0 and the "
+        "graph comes up with no independent E-stop source"
+    )
+    handlers = [e for e in entities if isinstance(e, RegisterEventHandler)]
+    assert handlers, "no OnProcessExit handler guards the deadman autostart"
+
+
+def test_the_pendant_is_not_autostarted_when_no_device_is_declared() -> None:
+    """Its expected refusal must not become the noise a real failure hides in.
+
+    With no pendant on the host the node is *supposed* to fail configure.
+    Driving it anyway emits that failure on every single deploy, and an
+    operator who learns to ignore it also ignores a deadman that failed to
+    activate — the two look identical in the log.
+    """
+    targets = _autostart_script_targets(_compose("sim"))
+    assert "/openral_hardware_estop" not in targets, (
+        "the pendant is autostarted with no device declared; its routine, expected "
+        "configure failure then masks a genuine E-stop source failure"
+    )
+
+
+def test_deadman_is_gated_on_the_runners_own_action_status() -> None:
     """Free-running, the deadman would E-stop every boot within its deadline.
 
     ``/openral/safe_action`` only carries chunks while an ``ExecuteRskill``
     goal runs, so the gate is what makes launching the watchdog possible at
     all. Losing it does not merely weaken the watchdog — it bricks every
     deploy, and the estop latches.
+
+    It must be the **action status** topic specifically. The advisory
+    ``/openral/reward/active_task`` has two publishers, and the reasoner's
+    dispatch watchdog clears it precisely when the runner dies after accepting
+    a goal — which is the deadman's headline scenario. Gating on that topic
+    lets one node silence the watchdog for the case it exists to catch.
     """
     params = _params(_lifecycle_nodes(_compose("sim"))["openral_deadman_watchdog"])
-    assert params.get("arm_topic") == "/openral/reward/active_task", (
-        f"deadman arm_topic is {params.get('arm_topic')!r}, not the runner's execution-window "
-        "topic — an idle deploy publishes no /openral/safe_action, so an ungated watchdog "
-        "E-stops the robot seconds after boot and only /openral/estop_reset clears it."
+    assert params.get("arm_status_topic") == "/openral/execute_rskill/_action/status", (
+        f"deadman arm_status_topic is {params.get('arm_status_topic')!r}, not the runner's "
+        "ExecuteRskill action-status topic — an idle deploy publishes no /openral/safe_action, "
+        "so an ungated watchdog E-stops the robot seconds after boot, and an advisory gate can "
+        "be closed by a second publisher exactly when the runner dies."
     )
     # Not the node's 0.2 s standalone default: one VLA inference separates two
     # consecutive chunks in a real rollout.
     assert float(params["safe_action_deadline_s"]) >= 1.0
+    # And the arm -> first-chunk wait must be bounded, or a runner that dies
+    # before its first chunk holds the window open forever.
+    assert float(params["first_chunk_deadline_s"]) > 0.0
 
 
 def test_hardware_estop_declares_no_device_by_default() -> None:

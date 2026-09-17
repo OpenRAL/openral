@@ -9,6 +9,10 @@ Two properties:
    is absent, or when a present device has no driver behind it.
 2. **When a real read source exists, the rising edge brakes.** Estop plus a
    ``FailureTrigger(KIND_HUMAN, SEVERITY_ABORT)`` carrying ``HumanEvidence``.
+3. **A read that raises fails closed.** An unplugged pendant or a driver fault
+   means the state is unknown, which for a brake source is unsafe: brake once
+   and latch, rather than letting the exception kill the timer and take the
+   E-stop source off the graph silently.
 
 Real lifecycle node, real ``openral_msgs`` IDL, real DDS (CLAUDE.md §1.11).
 ``read_pressed_hook`` is the node's own documented per-vendor injection seam,
@@ -28,6 +32,7 @@ import pytest
 rclpy = pytest.importorskip("rclpy")
 pytest.importorskip("openral_msgs")
 
+from openral_core import HumanEvidence
 from openral_msgs.msg import FailureTrigger
 from openral_safety_watchdog.hardware_estop_node import HardwareEstopNode
 from rclpy.executors import SingleThreadedExecutor
@@ -143,7 +148,9 @@ def test_rising_edge_fires_estop_and_human_evidence(ros_context: None) -> None:
         ft = next(ft for ft in failures_received if ft.kind == FailureTrigger.KIND_HUMAN)
         assert ft.severity == FailureTrigger.SEVERITY_ABORT
         evidence = json.loads(ft.evidence_json)
-        assert evidence == {"kind": "human", "channel": "bench_pendant"}
+        assert evidence == {"kind": "human", "actor": "bench_pendant", "reason": "pressed"}
+        # The whole point of evidence_json is that the reasoner can parse it.
+        assert HumanEvidence.model_validate(evidence).actor == "bench_pendant"
 
         # Held, not re-pressed: rising edge only, no storm on the brake topic.
         before = len([f for f in failures_received if f.kind == FailureTrigger.KIND_HUMAN])
@@ -151,6 +158,66 @@ def test_rising_edge_fires_estop_and_human_evidence(ros_context: None) -> None:
             executor.spin_once(timeout_sec=0.01)
         after = len([f for f in failures_received if f.kind == FailureTrigger.KIND_HUMAN])
         assert after == before, "a held pendant re-published the estop"
+    finally:
+        executor.remove_node(node)
+        executor.remove_node(helper)
+        node.destroy_node()
+        helper.destroy_node()
+
+
+def test_a_raising_read_brakes_and_does_not_kill_the_node(ros_context: None) -> None:
+    """A driver fault is "state unknown", which for a brake source is unsafe.
+
+    The regression: an exception out of ``_read_pressed`` propagates through the
+    timer and out of ``rclpy.spin``, the process exits, and because the launch
+    has no ``on_exit`` handler for it the hardware E-stop source just disappears
+    — no estop, no further diagnostic.
+    """
+    node = HardwareEstopNode(node_name="hardware_estop_test_read_raises")
+    helper = rclpy.create_node("hardware_estop_test_read_raises_helper")
+    estop_received: list[Empty] = []
+    failures_received: list[FailureTrigger] = []
+    helper.create_subscription(Empty, "/openral/estop", estop_received.append, 10)
+    helper.create_subscription(
+        FailureTrigger, "/openral/failure/safety", failures_received.append, 50
+    )
+
+    def _read() -> bool:
+        raise OSError("pendant unplugged")
+
+    node.read_pressed_hook = _read
+    node.set_parameters(
+        [
+            Parameter("device", Parameter.Type.STRING, _PRESENT_DEVICE),
+            Parameter("channel_label", Parameter.Type.STRING, "bench_pendant"),
+        ]
+    )
+
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    executor.add_node(helper)
+    try:
+        assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+        assert node.trigger_activate() == TransitionCallbackReturn.SUCCESS
+
+        def _have_human_failure() -> bool:
+            return any(ft.kind == FailureTrigger.KIND_HUMAN for ft in failures_received)
+
+        assert _spin_until(executor, lambda: len(estop_received) >= 1), (
+            "a pendant whose read raised did not brake"
+        )
+        assert _spin_until(executor, _have_human_failure)
+        ft = next(ft for ft in failures_received if ft.kind == FailureTrigger.KIND_HUMAN)
+        evidence = json.loads(ft.evidence_json)
+        assert evidence["reason"] == "read_failed"
+        assert HumanEvidence.model_validate(evidence).actor == "bench_pendant"
+
+        # Latched: a persistently broken driver must not storm the brake topic.
+        before = len([f for f in failures_received if f.kind == FailureTrigger.KIND_HUMAN])
+        for _ in range(40):
+            executor.spin_once(timeout_sec=0.01)
+        after = len([f for f in failures_received if f.kind == FailureTrigger.KIND_HUMAN])
+        assert after == before, "a persistently failing read re-published the estop"
     finally:
         executor.remove_node(node)
         executor.remove_node(helper)

@@ -21,6 +21,11 @@ the declared ``device`` path exists — see
 :meth:`HardwareEstopNode._resolve_read_source`. A node that reports
 not-ready is the honest outcome on a host with no pendant; a node sitting
 ACTIVE and polling a stub that always answers "not pressed" is not.
+
+A read that *raises* is also not a "not pressed" answer. An unplugged pendant
+or a driver fault means the state is unknown, and for a brake source unknown
+fails closed: :meth:`HardwareEstopNode._poll` catches the error, fires the
+estop once, and latches so a persistently broken driver cannot storm the topic.
 """
 
 from __future__ import annotations
@@ -74,6 +79,8 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
         self._failure_pub: Any = None
         self._timer: Any = None
         self._last_pressed: bool = False
+        # Set when a read raises; keeps a broken driver from storming.
+        self._read_failed: bool = False
 
         # Injection hook: tests assign a Callable[[], bool] here before
         # configure/activate. Production subclasses override
@@ -125,8 +132,9 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
         return TransitionCallbackReturn.SUCCESS
 
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """No additional resources to start."""
+        """Clear the read-failure latch for this activation."""
         del state
+        self._read_failed = False
         return TransitionCallbackReturn.SUCCESS
 
     def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
@@ -199,14 +207,31 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
     # ── Polling ──────────────────────────────────────────────────────────────
 
     def _poll(self) -> None:
-        """Poll the device; on rising edge publish estop + FailureTrigger."""
-        pressed = self._read_pressed()
+        """Poll the device; on rising edge publish estop + FailureTrigger.
+
+        A read that raises is treated as "pendant state unknown", which for a
+        brake source means unsafe: fire once, then latch. Letting the exception
+        escape would kill the timer and take this E-stop source off the graph
+        with no estop and no further diagnostic.
+        """
+        if self._read_failed:
+            return
+        try:
+            pressed = self._read_pressed()
+        except Exception as exc:  # reason: any driver fault -> unknown -> fail closed
+            self._read_failed = True
+            self.get_logger().error(
+                f"safety.hardware_estop_read_failed error={exc!r} — pendant state is "
+                "unknown, braking and latching; reactivate the node to retry"
+            )
+            self._fire_estop(reason="read_failed")
+            return
         # Rising-edge: only publish on the first press, not while held.
         if pressed and not self._last_pressed:
             self._fire_estop()
         self._last_pressed = pressed
 
-    def _fire_estop(self) -> None:
+    def _fire_estop(self, reason: str = "pressed") -> None:
         """Publish std_msgs/Empty + FailureTrigger(KIND_HUMAN)."""
         from openral_msgs.msg import FailureTrigger
         from std_msgs.msg import Empty
@@ -222,13 +247,16 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
         trigger.header.stamp = self.get_clock().now().to_msg()
         trigger.kind = FailureTrigger.KIND_HUMAN
         trigger.severity = FailureTrigger.SEVERITY_ABORT
-        # HumanEvidence layout from openral_core.HumanEvidence.
-        evidence = {"kind": "human", "channel": channel}
+        # openral_core.HumanEvidence — actor is REQUIRED and the model forbids
+        # extra keys, so the channel belongs in `actor`, not a `channel` key.
+        evidence = {"kind": "human", "actor": channel, "reason": reason}
         trigger.evidence_json = json.dumps(evidence)
         trigger.rskill_id = ""
         trigger.trace_id = ""
         self._failure_pub.publish(trigger)
-        self.get_logger().warning(f"safety.hardware_estop_fired channel={channel!r}")
+        self.get_logger().warning(
+            f"safety.hardware_estop_fired channel={channel!r} reason={reason!r}"
+        )
 
 
 def main(args: list[str] | None = None) -> int:

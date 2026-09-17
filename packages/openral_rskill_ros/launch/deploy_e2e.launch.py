@@ -49,11 +49,13 @@ from launch.actions import (
     DeclareLaunchArgument,
     EmitEvent,
     ExecuteProcess,
+    LogInfo,
     OpaqueFunction,
     RegisterEventHandler,
+    Shutdown,
     TimerAction,
 )
-from launch.event_handlers import OnProcessStart
+from launch.event_handlers import OnProcessExit, OnProcessStart
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import LifecycleNode, Node
 from launch_ros.event_handlers import OnStateTransition
@@ -1211,22 +1213,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     )
 
     # -- Defense-in-depth E-stop sources (CLAUDE.md section 3 "Safety") -------
-    # Three nodes, each in its OWN process, each an independent producer of
-    # /openral/estop. They exist precisely so a crash in the in-band path
-    # (openral_safety / the C++ kernel / the runner) cannot leave motors
-    # energised. Both hal_modes get all three: a sim graph is where the wiring
-    # gets exercised before a real arm ever sees it.
-    #
-    # The deadman's deadline is gated on an execution window rather than
-    # free-running, because /openral/safe_action is bursty: the runner only
-    # publishes chunks while an ExecuteRskill goal runs, and an idle deploy
-    # publishes none at all. Free-running, it would E-stop every boot within
-    # ``safe_action_deadline_s`` and latch. ``arm_topic`` is the runner's own
-    # /openral/reward/active_task (std_msgs/String -- the instruction on goal
-    # accept, "" on every goal exit, from ``_reset_active_goal``), so the
-    # watchdog only judges silence while something claims to be executing. A
-    # runner killed mid-goal never publishes that "", which is exactly the case
-    # that must fire.
+    # Three nodes, each its own process, each an independent producer of
+    # /openral/estop, so a crash in the in-band path (openral_safety, the C++
+    # kernel, the runner) cannot leave motors energised. Both hal_modes get all
+    # three: a sim graph is where the wiring is exercised before a real arm.
     deadman_watchdog = LifecycleNode(
         package="openral_safety_watchdog",
         executable="deadman_watchdog_node.py",
@@ -1234,32 +1224,36 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         namespace="",
         parameters=[
             {
-                "arm_topic": "/openral/reward/active_task",
-                # NOT the node's 0.2 s standalone default: the gap between two
-                # consecutive safe_action chunks in a real rollout is one VLA
-                # inference, measured in hundreds of ms and up (the XR-1
-                # VLABench checkpoint is 0.81 s per warmed chunk on an RTX 4070
-                # Laptop). This reuses the horizon the actuation path already
-                # treats as "this chunk should have moved by now" --
-                # ``action_applied_timeout_s`` below, 8 s sim / 5 s real. It is
-                # a first, deliberately conservative value; tightening it
-                # toward the chunk cadence is a safety-WG call backed by
-                # measured per-policy inference gaps, not a default to guess.
+                # The runner's own action-status topic, NOT an advisory task
+                # string: a dead runner cannot publish a terminal status, so
+                # the window stays open and the silence still fires. The
+                # advisory /openral/reward/active_task has two publishers, and
+                # the reasoner's dispatch watchdog clears it exactly when the
+                # runner dies — which would silence this node's headline case.
+                "arm_status_topic": "/openral/execute_rskill/_action/status",
+                # Gap between two consecutive chunks is one VLA inference, not
+                # the node's 0.2 s standalone default. Reuses the horizon the
+                # actuation path already applies to this stream
+                # (action_applied_timeout_s). Conservative first value;
+                # tightening it toward the chunk cadence is a safety-WG call
+                # backed by measured per-policy gaps.
                 "safe_action_deadline_s": 8.0 if hal_mode == "sim" else 5.0,
+                # Bound on goal-accepted -> first chunk, covering a cold policy
+                # load. Unbounded, a runner that dies before its first chunk
+                # holds the window open and is never braked.
+                "first_chunk_deadline_s": 120.0,
                 "robot_name": description.name,
             }
         ],
         additional_env=otel_env,
         output="screen",
     )
-    # Hardware pendant bridge. ``hardware_estop_device`` is empty by default and
-    # the node then refuses to configure, logging that this graph has NO
-    # hardware E-stop source -- see HardwareEstopNode._resolve_read_source. The
-    # node is still spawned so the refusal is visible on every deploy rather
-    # than being a silently absent process, and so ``ros2 lifecycle get`` tells
-    # the truth about the pendant. This repo ships no pendant driver, so a
-    # declared device also needs a vendor subclass; nothing here ever claims a
-    # hardware E-stop that cannot fire.
+    # Pendant bridge. ``hardware_estop_device`` is empty by default; the node
+    # then refuses to configure and stays UNCONFIGURED (see
+    # HardwareEstopNode._resolve_read_source). It is still spawned so the
+    # refusal is visible on every deploy and ``ros2 lifecycle get`` tells the
+    # truth. This repo ships no pendant driver, so a declared device also needs
+    # a vendor subclass.
     hardware_estop = LifecycleNode(
         package="openral_safety_watchdog",
         executable="hardware_estop_node.py",
@@ -1269,20 +1263,16 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         additional_env=otel_env,
         output="screen",
     )
+    # channel_label stays at the node's "unknown_human_channel" default: no
+    # in-repo node publishes /openral/human_estop (the dashboard stop button
+    # publishes /openral/estop directly), so naming a channel would assert a
+    # producer that does not exist. Brought up anyway so an external adapter
+    # can attach to a running graph.
     human_estop_forwarder = LifecycleNode(
         package="openral_human_estop",
         executable="forwarder_node.py",
         name="openral_human_estop_forwarder",
         namespace="",
-        # channel_label is left at the node's own "unknown_human_channel"
-        # default on purpose: NO in-repo producer publishes
-        # /openral/human_estop today (the dashboard stop button publishes
-        # /openral/estop directly, via
-        # openral_observability.dashboard.estop_publisher), so naming a channel
-        # here would assert a producer that does not exist. External UI / voice
-        # / Slack adapters are the intended publishers, and each should set its
-        # own label. The forwarder goes up regardless so that an adapter
-        # attaching to a running graph has its path already there.
         additional_env=otel_env,
         output="screen",
     )
@@ -1575,29 +1565,86 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             output="log",
         )
     )
-    # The three defense-in-depth E-stop sources take the same robust
-    # script-based path as the kernel, for the same reason: a dropped ACTIVATE
-    # would leave an E-stop source sitting in INACTIVE, i.e. silently absent,
-    # which is the exact failure this wiring exists to remove. Their
-    # on_configure work is trivial (a handful of pubs/subs), so a short
-    # transition budget is plenty -- and keeps the hardware pendant's expected
-    # refusal from stalling the boot when no device is declared.
-    for _estop_node_name in (
-        "/openral_deadman_watchdog",
-        "/openral_human_estop_forwarder",
-        # Expected to FAIL its configure on a host with no pendant. The failure
-        # is the honest report, and it cannot take the graph down: a non-zero
-        # exit from an autostart ExecuteProcess is logged, never fatal (no
-        # on_exit handler), and the other two sources are independent.
-        "/openral_hardware_estop",
-    ):
+    # The E-stop sources take the same poll-based autostart path as the kernel:
+    # a dropped ACTIVATE would leave a brake source sitting in INACTIVE, i.e.
+    # silently absent, which is the exact failure this wiring removes.
+    #
+    # The deadman is REQUIRED. --required makes an absent node a non-zero exit
+    # (the default treats "service never appeared" as informational), and the
+    # OnProcessExit below turns that into a graph shutdown. A deploy that
+    # cannot arm its only independent watchdog must refuse to run rather than
+    # run unprotected.
+    deadman_autostart = ExecuteProcess(
+        cmd=[
+            sys.executable,
+            _kernel_autostart_path,
+            "--node",
+            "/openral_deadman_watchdog",
+            "--target",
+            "active",
+            "--required",
+            "--service-timeout-s",
+            "60.0",
+            "--transition-timeout-s",
+            "30.0",
+        ],
+        output="log",
+    )
+    autostart.append(deadman_autostart)
+    autostart.append(
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=deadman_autostart,
+                on_exit=lambda event, context: (
+                    []
+                    if event.returncode == 0
+                    else [
+                        LogInfo(
+                            msg=(
+                                "FATAL: the deadman watchdog never reached ACTIVE "
+                                "(lifecycle_autostart exited "
+                                f"{event.returncode}). This graph has no independent "
+                                "E-stop source, so it is shutting down instead of "
+                                "running unprotected (CLAUDE.md section 3)."
+                            )
+                        ),
+                        Shutdown(reason="deadman watchdog failed to activate"),
+                    ]
+                ),
+            )
+        )
+    )
+    # The human forwarder has no in-repo producer, so its absence is not a
+    # safety regression: autostart it, but do not gate the graph on it.
+    autostart.append(
+        ExecuteProcess(
+            cmd=[
+                sys.executable,
+                _kernel_autostart_path,
+                "--node",
+                "/openral_human_estop_forwarder",
+                "--target",
+                "active",
+                "--service-timeout-s",
+                "60.0",
+                "--transition-timeout-s",
+                "30.0",
+            ],
+            output="log",
+        )
+    )
+    # The pendant is only autostarted when a device is actually declared.
+    # Driving it otherwise produces an expected configure FAILURE on every
+    # deploy, and that routine traceback is exactly the noise a REAL E-stop
+    # source failure would hide behind.
+    if hardware_estop_device:
         autostart.append(
             ExecuteProcess(
                 cmd=[
                     sys.executable,
                     _kernel_autostart_path,
                     "--node",
-                    _estop_node_name,
+                    "/openral_hardware_estop",
                     "--target",
                     "active",
                     "--service-timeout-s",

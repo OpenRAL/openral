@@ -81,9 +81,11 @@ _SAFETY_NODE = "openral_safety_estop_graph_test"
 _DEADMAN_NODE = "openral_deadman_watchdog_estop_graph_test"
 _FORWARDER_NODE = "openral_human_estop_forwarder_estop_graph_test"
 
-# The execution-window topic deploy_e2e.launch.py gates the deadman on (the
-# runner's own /openral/reward/active_task).
-_ARM_TOPIC = "/openral/reward/active_task"
+# The execution-window topic deploy_e2e.launch.py gates the deadman on: the
+# runner's own ExecuteRskill action status. A dead runner cannot publish a
+# terminal status, so the window stays open and the silence still fires.
+_ARM_STATUS_TOPIC = "/openral/execute_rskill/_action/status"
+_SAFETY_STATUS_TOPIC = "/openral/safety_status"
 
 # Well clear of a chunk-publish hiccup on a loaded laptop, small enough to keep
 # the test inside the integration tier's budget. The deploy graph runs 8 s
@@ -143,8 +145,9 @@ def estop_graph() -> Iterator[dict[str, Any]]:
             "deadman_watchdog_node.py",
             _DEADMAN_NODE,
             {
-                "arm_topic": _ARM_TOPIC,
+                "arm_status_topic": _ARM_STATUS_TOPIC,
                 "safe_action_deadline_s": str(_DEADLINE_S),
+                "first_chunk_deadline_s": str(_DEADLINE_S * 3.0),
                 "check_period_s": "0.05",
             },
         )
@@ -248,6 +251,61 @@ class _Probe:
         assert label == "active", f"{node_name} did not reach ACTIVE (state={label!r})"
 
 
+def _status_array(live: bool) -> Any:
+    """A GoalStatusArray carrying one live (EXECUTING) or terminal goal."""
+    from action_msgs.msg import GoalStatus, GoalStatusArray
+
+    array = GoalStatusArray()
+    entry = GoalStatus()
+    entry.status = GoalStatus.STATUS_EXECUTING if live else GoalStatus.STATUS_SUCCEEDED
+    array.status_list = [entry]
+    return array
+
+
+def _arm_publisher(probe: _Probe) -> Any:
+    """Publisher on the action-status topic, at the action server's own QoS."""
+    from action_msgs.msg import GoalStatusArray
+    from rclpy.qos import qos_profile_action_status_default
+
+    return probe.node.create_publisher(
+        GoalStatusArray, _ARM_STATUS_TOPIC, qos_profile_action_status_default
+    )
+
+
+def _close_any_open_window(probe: _Probe, arm_pub: Any) -> None:
+    """Publish a terminal goal status, closing any window a prior test left.
+
+    The action-status topic is TRANSIENT_LOCAL, so the last value published by
+    an earlier test in this module-scoped graph is delivered to the deadman on
+    subscribe. Leaving it EXECUTING means the next test starts inside an open
+    window, where the first-chunk budget is already running.
+    """
+    arm_pub.publish(_status_array(live=False))
+    probe.spin_for(0.5)
+
+
+def _clear_safety_status(probe: _Probe) -> Any:
+    """Publish SafetyStatus(latched=False) — the watchdog's real re-arm path."""
+    from openral_msgs.msg import SafetyStatus
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+
+    pub = probe.node.create_publisher(
+        SafetyStatus,
+        _SAFETY_STATUS_TOPIC,
+        QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            depth=1,
+        ),
+    )
+    msg = SafetyStatus()
+    msg.latched = False
+    msg.drop_reason = SafetyStatus.DROP_NONE
+    msg.detail = "integration test recovery"
+    pub.publish(msg)
+    return pub
+
+
 def _qos(depth: int) -> Any:
     """RELIABLE + VOLATILE at ``depth`` — the safety/control QoS class."""
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -292,7 +350,7 @@ def test_deadman_fires_after_the_in_band_safety_node_is_killed(
     to end.
     """
     from openral_msgs.msg import ActionChunk, FailureTrigger
-    from std_msgs.msg import Empty, String
+    from std_msgs.msg import Empty
 
     probe = _Probe()
     try:
@@ -302,7 +360,7 @@ def test_deadman_fires_after_the_in_band_safety_node_is_killed(
         candidate_pub = probe.node.create_publisher(
             ActionChunk, "/openral/candidate_action", _qos(1)
         )
-        arm_pub = probe.node.create_publisher(String, _ARM_TOPIC, _qos(1))
+        arm_pub = _arm_publisher(probe)
         safe_seen: list[Any] = []
         estop_seen: list[Any] = []
         failures: list[Any] = []
@@ -315,9 +373,7 @@ def test_deadman_fires_after_the_in_band_safety_node_is_killed(
         )
         probe.spin_for(2.0)  # publisher/subscriber matching
 
-        window = String()
-        window.data = "insert the tube into the fixture"
-        arm_pub.publish(window)
+        arm_pub.publish(_status_array(live=True))
 
         # Phase 1 — healthy graph. Chunks flow candidate → in-band node → safe,
         # and the watchdog must stay out of the way for well over a deadline.
@@ -369,16 +425,20 @@ def test_deadman_fires_when_safe_action_goes_silent_inside_an_open_window(
     withdrawn, which is the deadline contract in isolation.
     """
     from openral_msgs.msg import ActionChunk, FailureTrigger
-    from std_msgs.msg import Empty, String
+    from std_msgs.msg import Empty
 
     del estop_graph  # the module-scoped graph is already up; nothing to read
     probe = _Probe()
     try:
-        # A previous test may have latched this deadman. Cycle it back through
-        # INACTIVE → ACTIVE, which is the node's own re-arm path.
-        _recycle(probe, _DEADMAN_NODE)
-
-        arm_pub = probe.node.create_publisher(String, _ARM_TOPIC, _qos(1))
+        # A previous test latched this deadman behind its own estop. Release it
+        # the way production does — SafetyStatus(latched=False), i.e. the
+        # operator's /openral/estop_reset landing on the kernel. Cycling the
+        # node's lifecycle instead would hide the very bug this proves absent.
+        arm_pub = _arm_publisher(probe)
+        probe.spin_for(1.0)
+        _close_any_open_window(probe, arm_pub)
+        _clear_safety_status(probe)
+        probe.spin_for(1.0)
         safe_pub = probe.node.create_publisher(ActionChunk, "/openral/safe_action", _qos(1))
         estop_seen: list[Any] = []
         failures: list[Any] = []
@@ -388,9 +448,7 @@ def test_deadman_fires_when_safe_action_goes_silent_inside_an_open_window(
         )
         probe.spin_for(2.0)
 
-        window = String()
-        window.data = "insert the tube into the fixture"
-        arm_pub.publish(window)
+        arm_pub.publish(_status_array(live=True))
 
         streaming_until = time.monotonic() + (_DEADLINE_S * 1.5)
         while time.monotonic() < streaming_until:
@@ -442,31 +500,69 @@ def test_human_forwarder_brakes_from_its_own_process(estop_graph: dict[str, Any]
         assert trigger.severity == FailureTrigger.SEVERITY_ABORT
         assert json.loads(trigger.evidence_json) == {
             "kind": "human",
-            "channel": _CHANNEL_LABEL,
+            "actor": _CHANNEL_LABEL,
+            "reason": "human_estop",
         }
     finally:
         probe.close()
 
 
-def _recycle(probe: _Probe, node_name: str) -> None:
-    """DEACTIVATE → ACTIVATE ``node_name`` so a latched watchdog re-arms.
+def test_the_deadman_rearms_after_an_estop_is_cleared(estop_graph: dict[str, Any]) -> None:
+    """One estop must not silence the watchdog for the rest of the deploy.
 
-    ``/openral/estop`` never auto-clears and the deadman latches behind any
-    estop it sees (its anti-storm rule), so a test that needs a fresh watchdog
-    has to say so explicitly. This is the node's own lifecycle, not a back
-    door: it clears no safety state anywhere else in the graph.
+    ``/openral/estop`` never auto-clears, and the deadman latches behind any
+    estop it sees so it cannot storm the topic. Before this was fixed the ONLY
+    thing that released that latch was re-activating the node, which nothing in
+    production ever does — so after the first stop-and-reset of a deploy (a
+    dashboard button press is enough) the graph had exactly the hole the
+    watchdog exists to close, and no way to tell.
     """
-    from lifecycle_msgs.msg import Transition
-    from lifecycle_msgs.srv import ChangeState, GetState
+    from openral_msgs.msg import ActionChunk, FailureTrigger
+    from std_msgs.msg import Empty
 
-    change = probe.node.create_client(ChangeState, f"/{node_name}/change_state")
-    assert change.wait_for_service(timeout_sec=30.0), f"{node_name}: change_state never appeared"
-    for transition in (Transition.TRANSITION_DEACTIVATE, Transition.TRANSITION_ACTIVATE):
-        request = ChangeState.Request()
-        request.transition.id = transition
-        probe.call(change, request)
-    get = probe.node.create_client(GetState, f"/{node_name}/get_state")
-    assert get.wait_for_service(timeout_sec=30.0)
-    state = probe.call(get, GetState.Request())
-    label = None if state is None else state.current_state.label
-    assert label == "active", f"{node_name} did not re-arm (state={label!r})"
+    del estop_graph
+    probe = _Probe()
+    try:
+        arm_pub = _arm_publisher(probe)
+        safe_pub = probe.node.create_publisher(ActionChunk, "/openral/safe_action", _qos(1))
+        human_pub = probe.node.create_publisher(Empty, "/openral/human_estop", _qos(10))
+        estop_seen: list[Any] = []
+        failures: list[Any] = []
+        probe.node.create_subscription(Empty, "/openral/estop", estop_seen.append, _qos(10))
+        probe.node.create_subscription(
+            FailureTrigger, "/openral/failure/safety", failures.append, _qos(50)
+        )
+        probe.spin_for(2.0)
+        _close_any_open_window(probe, arm_pub)
+
+        # An operator stops the robot. The deadman latches behind that estop.
+        human_pub.publish(Empty())
+        assert probe.spin_until(lambda: bool(estop_seen), timeout_s=10.0), (
+            "the human forwarder never braked, so this test never reached its premise"
+        )
+        probe.spin_for(1.0)
+        timeouts_before = len([f for f in failures if f.kind == FailureTrigger.KIND_TIMEOUT])
+
+        # Operator clears it: the kernel republishes SafetyStatus(latched=False).
+        _clear_safety_status(probe)
+        probe.spin_for(1.5)
+
+        # A fresh goal, a live stream, then the producer dies. Must fire again.
+        arm_pub.publish(_status_array(live=True))
+        streaming_until = time.monotonic() + (_DEADLINE_S * 1.5)
+        while time.monotonic() < streaming_until:
+            safe_pub.publish(_chunk(ActionChunk))
+            probe.executor.spin_once(timeout_sec=0.03)
+
+        assert probe.spin_until(
+            lambda: (
+                len([f for f in failures if f.kind == FailureTrigger.KIND_TIMEOUT])
+                > timeouts_before
+            ),
+            timeout_s=_DEADLINE_S + 10.0,
+        ), (
+            "the deadman never fired again after the estop was cleared — it is one-shot "
+            "per activation, so the first stop of a deploy disarms it for good"
+        )
+    finally:
+        probe.close()
