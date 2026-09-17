@@ -23,7 +23,10 @@ pytest.importorskip("openral_msgs")
 
 from action_msgs.msg import GoalStatus, GoalStatusArray
 from openral_msgs.msg import ActionChunk, FailureTrigger, SafetyStatus
-from openral_safety_watchdog.deadman_watchdog_node import DeadmanWatchdogNode
+from openral_safety_watchdog.deadman_watchdog_node import (
+    DeadmanWatchdogNode,
+    _live_goal_statuses,
+)
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.lifecycle import TransitionCallbackReturn
 from rclpy.qos import (
@@ -362,3 +365,24 @@ def test_a_still_latched_safety_status_does_not_release_the_latch(ros_context: N
         )
     finally:
         harness.close()
+
+
+def test_the_live_goal_status_set_matches_the_real_message_constants() -> None:
+    """The gate's "still running" set must track action_msgs, not a copy.
+
+    Hardcoding the numbers would let an upstream renumbering silently widen the
+    gate (braking a finished goal) or narrow it (never braking a live one).
+    """
+    live = _live_goal_statuses(GoalStatus)
+    assert live == {
+        GoalStatus.STATUS_ACCEPTED,
+        GoalStatus.STATUS_EXECUTING,
+        GoalStatus.STATUS_CANCELING,
+    }
+    for terminal in (
+        GoalStatus.STATUS_SUCCEEDED,
+        GoalStatus.STATUS_ABORTED,
+        GoalStatus.STATUS_CANCELED,
+        GoalStatus.STATUS_UNKNOWN,
+    ):
+        assert terminal not in live

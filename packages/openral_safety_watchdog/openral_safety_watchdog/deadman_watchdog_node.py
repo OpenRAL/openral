@@ -60,10 +60,31 @@ DEFAULT_SAFETY_STATUS_TOPIC = "/openral/safety_status"
 """Latched SafetyStatus (ADR-0096) — the recovery signal that releases the
 latch this node sets when it observes an estop."""
 
-# action_msgs/GoalStatus values meaning "this goal is still live". The constants
-# are read off the message class in _on_arm_status; mirrored here so the set is
-# greppable without importing action_msgs at module scope.
-_LIVE_GOAL_STATUSES = frozenset({1, 2, 3})  # ACCEPTED, EXECUTING, CANCELING
+# Names of the action_msgs/GoalStatus constants meaning "this goal is still
+# live". Resolved to values off the generated message class at configure time
+# (_live_goal_statuses) rather than hardcoded, so a renumbering upstream cannot
+# silently widen or narrow the gate on a safety path.
+_LIVE_GOAL_STATUS_NAMES = ("STATUS_ACCEPTED", "STATUS_EXECUTING", "STATUS_CANCELING")
+
+
+def _live_goal_statuses(status_cls: Any) -> frozenset[int]:
+    """The GoalStatus values that mean a goal is still running.
+
+    Args:
+        status_cls: The generated ``action_msgs.msg.GoalStatus`` class.
+
+    Returns:
+        The numeric values of ACCEPTED / EXECUTING / CANCELING.
+
+    Example:
+        >>> class _S:
+        ...     STATUS_ACCEPTED = 1
+        ...     STATUS_EXECUTING = 2
+        ...     STATUS_CANCELING = 3
+        >>> sorted(_live_goal_statuses(_S))
+        [1, 2, 3]
+    """
+    return frozenset(getattr(status_cls, name) for name in _LIVE_GOAL_STATUS_NAMES)
 
 
 class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
@@ -116,6 +137,7 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         self._triggered: bool = False
         self._window_open: bool = False
         self._chunk_seen_in_window: bool = False
+        self._live_statuses: frozenset[int] = frozenset()
 
     # -- Lifecycle -----------------------------------------------------------
 
@@ -157,8 +179,10 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
 
         arm_status_topic = self.get_parameter("arm_status_topic").get_parameter_value().string_value
         if arm_status_topic:
-            from action_msgs.msg import GoalStatusArray
+            from action_msgs.msg import GoalStatus, GoalStatusArray
             from rclpy.qos import qos_profile_action_status_default
+
+            self._live_statuses = _live_goal_statuses(GoalStatus)
 
             # The action server's own QoS (RELIABLE, TRANSIENT_LOCAL, depth 1).
             # Matching it is what lets a late-joining watchdog inherit the
@@ -245,7 +269,7 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         ACCEPTED / EXECUTING / CANCELING mean the actuation path is supposed to
         be producing chunks; every other status is terminal.
         """
-        live = any(entry.status in _LIVE_GOAL_STATUSES for entry in msg.status_list)
+        live = any(entry.status in self._live_statuses for entry in msg.status_list)
         if live and not self._window_open:
             now = time.time_ns()
             self._last_safe_ns = now
