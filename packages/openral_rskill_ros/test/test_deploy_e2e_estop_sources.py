@@ -199,7 +199,8 @@ def test_the_deadman_autostart_is_required_and_shuts_the_graph_down_on_failure(
     and one stderr line as evidence. The ``OnProcessExit`` handler is what
     turns that exit code into a refusal to run.
     """
-    from launch.actions import RegisterEventHandler
+    from launch.actions import ExecuteProcess, RegisterEventHandler
+    from launch.event_handlers import OnProcessExit
 
     entities = _compose(hal_mode)
     argv = _autostart_invocations(entities)["/openral_deadman_watchdog"]
@@ -207,8 +208,56 @@ def test_the_deadman_autostart_is_required_and_shuts_the_graph_down_on_failure(
         "the deadman autostart is not --required, so an absent watchdog exits 0 and the "
         "graph comes up with no independent E-stop source"
     )
-    handlers = [e for e in entities if isinstance(e, RegisterEventHandler)]
-    assert handlers, "no OnProcessExit handler guards the deadman autostart"
+    # Find the handler that actually watches the deadman autostart and drive it
+    # both ways, through launch's public matches()/handle() API. "Some handler
+    # exists" would pass on a handler wired to a different process, or one that
+    # logs the failure and lets the graph run on unprotected.
+    from launch import LaunchContext
+    from launch.actions import Shutdown
+    from launch.events.process import ProcessExited
+
+    deadman_action = next(
+        e
+        for e in entities
+        if isinstance(e, ExecuteProcess)
+        and "/openral_deadman_watchdog"
+        in [sub.text for group in e.cmd for sub in group if hasattr(sub, "text")]
+    )
+
+    def _exit_event(returncode: int) -> Any:
+        return ProcessExited(
+            action=deadman_action,
+            name="openral_deadman_autostart",
+            cmd=["lifecycle_autostart.py"],
+            cwd=None,
+            env=None,
+            pid=4242,
+            returncode=returncode,
+        )
+
+    handlers = [
+        e.event_handler
+        for e in entities
+        if isinstance(e, RegisterEventHandler)
+        and isinstance(getattr(e, "event_handler", None), OnProcessExit)
+    ]
+    watching = [h for h in handlers if h.matches(_exit_event(1))]
+    assert watching, (
+        "no OnProcessExit handler watches the deadman autostart process, so a watchdog that "
+        "never activated would leave the graph running with no independent E-stop source"
+    )
+    handler = watching[0]
+
+    failed = handler.handle(_exit_event(1), LaunchContext()) or []
+    assert any(isinstance(a, Shutdown) for a in failed), (
+        "a deadman autostart that exited non-zero did not shut the graph down; the deploy "
+        "would come up unprotected"
+    )
+
+    ok = handler.handle(_exit_event(0), LaunchContext()) or []
+    assert not any(isinstance(a, Shutdown) for a in ok), (
+        "a successful deadman autostart shut the graph down"
+    )
 
 
 def test_the_pendant_is_not_autostarted_when_no_device_is_declared() -> None:
