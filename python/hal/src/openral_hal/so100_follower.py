@@ -187,20 +187,13 @@ SO100_DESCRIPTION = RobotDescription(
     safety=SafetyEnvelope(
         max_ee_speed_m_s=0.3,
         max_joint_speed_factor=0.5,
-        # KNOWN DRIFT, safety-WG call pending -- do not "fix" in passing.
-        # The shipped manifest this robot actually deploys with,
-        # robots/so100_follower/robot.yaml, declares ``deadman_required: true``
-        # (so does robots/so101_follower/robot.yaml and the so100 README); this
-        # literal is the only place that says False, and nothing but
-        # tests/unit/ reads it. The "deadman handled by USB watchdog"
-        # justification that used to sit on this line was fiction: no USB
-        # watchdog exists anywhere in the tree, and the follower is driven over
-        # the lerobot serial bus, not ros2_control. Left as-is rather than
-        # flipped, because ``deadman_required`` is an envelope field
-        # (openral_safety.envelope_loader: a skill may only tighten it, never
-        # clear it) and reconciling the two copies is an envelope decision for
-        # the safety WG, not a drive-by.
-        deadman_required=False,
+        # Matches the shipped manifests this robot deploys with
+        # (robots/so100_follower/robot.yaml, robots/so101_follower/robot.yaml).
+        # Tightening only, per openral_safety.envelope_loader: a skill may
+        # raise this, never clear it. Enforcement is the deploy graph's
+        # --required deadman autostart gate, not the C++ kernel, which parses
+        # the field and does not yet consult it (safety-WG item).
+        deadman_required=True,
     ),
     sdk_kind="open",
     hal=HalEntrypoints(sim=None, real="openral_hal.so100_follower:SO100FollowerHAL"),
