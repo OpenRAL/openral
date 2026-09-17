@@ -1,10 +1,14 @@
 """HIL tests for the Trossen ALOHA bimanual setup.
 
 These tests require two physical Trossen ViperX 300 arms wired through the
-Interbotix XS SDK + a running ``interbotix_xsarm_control`` ROS 2 launch
-(bringing up four ros2_control controllers per CLAUDE.md).
+Interbotix XS SDK + a running ``interbotix_xsarm_control`` ROS 2 launch.
 They must not run in standard CI.  Gated by the ``[self-hosted, lab-aloha]``
-runner label.
+runner label — no such runner is registered and there is no physical ALOHA
+rig, so this file has never run against hardware.
+
+The topic defaults below are ``AlohaHAL``'s, and issue #250 established that
+a real ALOHA exposes none of them: bring-up starts ``xs_sdk``, not a
+``controller_manager``. Both move together when #250 is fixed.
 
 Environment:
     ALOHA_LEFT_PORT: USB serial port of the left Interbotix arm (default

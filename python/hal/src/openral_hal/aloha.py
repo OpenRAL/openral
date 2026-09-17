@@ -11,14 +11,30 @@ This module wires the **real-hardware** Layer-0 path; the gym-aloha sim
 path is owned by ``openral_sim.backends.aloha`` and invokes the gym
 ``MjModel`` directly.
 
-Driver landscape: the reference ROS 2 driver is
-`Interbotix/interbotix_ros_manipulators`_, providing a
-``ros2_control`` joint trajectory controller (default name
-``"arm_controller"``) per arm and a gripper position controller per
-gripper. ALOHA bring-up launches two robot namespaces (``"left_arm"`` /
-``"right_arm"``); we expose a single 14-DoF action by interleaving left
-arm + left gripper, then right arm + right gripper, in the same order
-as ``ALOHA_DESCRIPTION.joints``.
+Driver landscape: ``Interbotix/aloha``'s ``aloha_bringup.launch.py``
+starts the ``interbotix_xs_sdk`` ``xs_sdk`` node — a direct
+Dynamixel/U2D2 driver — per arm. There is **no** ``controller_manager``
+and no ``JointTrajectoryController`` anywhere in it; a ros2_control
+bridge exists upstream (``interbotix_xs_ros_control``) but bring-up does
+not start it. The real node subscribes on
+``/<robot_name>/commands/joint_group`` (``interbotix_xs_msgs``) and
+publishes ``/<robot_name>/joint_states`` under its own namespace, with
+default namespaces ``follower_left`` / ``follower_right``.
+
+.. warning::
+   The topics this module publishes to below are the ros2_control
+   reading, and no real ALOHA exposes them (issue #250). Publishing to a
+   topic with no subscriber is not an error in ROS 2, so every
+   ``send_action`` reports success and the arm never moves. The defaults
+   are left as-is deliberately: #250 asks for the cell's namespaces and
+   ``motor_config`` groups to be read off the rig before the on-wire
+   contract is changed, because guessing it is what produced this state.
+   ``AlohaHAL`` stays on ``HALBase`` — it is a vendor-driver robot like
+   ``SO100FollowerHAL``, not a ``RosControlHAL``.
+
+ALOHA bring-up launches two robot namespaces; we expose a single 14-DoF
+action by interleaving left arm + left gripper, then right arm + right
+gripper, in the same order as ``ALOHA_DESCRIPTION.joints``.
 
 Per CLAUDE.md §7.4 the Trossen Interbotix XS SDK is BSD-3 / Apache-2.0
 (fully compatible) but ships as vendor-distributed packages, so the
@@ -306,9 +322,10 @@ ALOHA_REAL_DESCRIPTION = make_real_description(
 
 # ── HAL ──────────────────────────────────────────────────────────────────────
 
-# Default ros2_control controllers exported by the Interbotix XS launch
-# files for ALOHA.  Each arm is its own controller_manager namespace, and
-# the gripper is a separate position controller per arm.
+# Controller names this HAL was written against. They are NOT what a real
+# ALOHA exposes — `aloha_bringup.launch.py` starts `xs_sdk`, which has no
+# controller_manager at all (issue #250). Unchanged pending the on-rig
+# check that issue asks for.
 _DEFAULT_LEFT_ARM_CONTROLLER: str = "left_arm/arm_controller"
 _DEFAULT_RIGHT_ARM_CONTROLLER: str = "right_arm/arm_controller"
 _DEFAULT_LEFT_GRIPPER_CONTROLLER: str = "left_arm/gripper_controller"
@@ -337,18 +354,22 @@ class AlohaHAL(HALBase):
     * indices ``7:13`` → right arm joint trajectory  (right_arm controller)
     * index   ``13``   → right gripper position      (right gripper controller)
 
-    The split allows the per-arm Interbotix controllers to handle each side
-    independently (trajectory smoothing, gravity comp), while openral
-    upstream layers see one unified 14-DoF action.
+    The split keeps each side addressable independently while openral
+    upstream layers see one unified 14-DoF action. It does not currently
+    reach a real ALOHA: see the module docstring and issue #250.
 
     Args:
-        left_arm_controller: ``ros2_control`` joint trajectory controller
-            for the left ViperX.  Defaults to ``"left_arm/arm_controller"``.
+        left_arm_controller: Topic prefix for the left ViperX. Defaults to
+            ``"left_arm/arm_controller"`` — a ros2_control name no real
+            ALOHA exposes (#250).
         right_arm_controller: same for the right arm.
-        left_gripper_controller: gripper position controller for the left
-            gripper.  Defaults to ``"left_arm/gripper_controller"``.
+        left_gripper_controller: Topic prefix for the left gripper.
+            Defaults to ``"left_arm/gripper_controller"``, which matches no
+            ros2_control convention either (#250).
         right_gripper_controller: same for the right gripper.
         joint_state_topic: ROS 2 topic publishing aggregated joint state.
+            No real ALOHA publishes one — each arm publishes under its own
+            namespace (#250).
         estop_topic: ROS 2 topic the safety supervisor publishes to on
             ``estop()``.  A watchdog node downstream is expected to call
             the per-arm torque-disable service.
@@ -407,7 +428,7 @@ class AlohaHAL(HALBase):
     # ── HAL Protocol ──────────────────────────────────────────────────────
 
     def connect(self) -> None:
-        """Open the transport to the four Interbotix ros2_control controllers.
+        """Open the transport to the four configured command topics (#250).
 
         Raises:
             ROSRuntimeError: If already connected.

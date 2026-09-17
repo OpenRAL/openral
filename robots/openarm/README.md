@@ -7,8 +7,9 @@ LeRobot upstream integration; fully open-source CAD + firmware +
 control software (`enactic/openarm` on GitHub, project page at
 [openarm.dev](https://openarm.dev/)).
 
-The same manifest covers the real OpenArm (via lerobot's upstream
-driver, planned follow-up) and the real-physics MuJoCo digital twin
+The same manifest covers the real OpenArm (`OpenArmRealHAL` over
+`openarm_bringup`'s `ros2_control` stack and the Damiao CAN FD buses —
+not lerobot's upstream driver) and the real-physics MuJoCo digital twin
 (`OpenArmMujocoHAL` on the `enactic/openarm_mujoco` **v2** bimanual
 MJCF — PR #19 on master).
 
@@ -111,8 +112,14 @@ simultaneous targets, the `<equality>` follower-finger tracking
 invariant, and a per-slot identity sweep with alternating signs to
 catch wiring slips.
 
-HIL is planned alongside the real-HW HAL (wrapping lerobot's
-upstream OpenArm driver).
+HIL for the real arm lives in `tests/hil/`: `test_openarm_can_live.py`
+(CAN transport gates plus a read-only motor round-trip — it never
+energises) and `test_openarm_bringup_agreement.py` (the HAL's
+controller/joint table against `openarm_bringup`'s own YAML, no hardware
+needed) both pass on the wired cell. `test_openarm_slot_group_motion.py`
+is the command→motion gate and is double-gated on
+`OPENRAL_OPENARM_ALLOW_MOTION=1` + `OPENRAL_OPENARM_ATTENDED=1`; it has no
+recorded run. Nothing in CI runs `tests/hil/`.
 
 ## Asymmetric joint conventions
 
@@ -128,7 +135,8 @@ independently or use sign-aware sentinels.
 
 - [openarm.dev](https://openarm.dev/) — project landing page.
 - [`python/hal/README.md`](../../python/hal/README.md) — `OpenArmMujocoHAL`, supported robots.
-- [LeRobot OpenArm docs](https://huggingface.co/docs/lerobot/openarm) — upstream driver, future real-HW path.
+- [`packages/openral_hal_openarm/README.md`](../../packages/openral_hal_openarm/README.md) — real-hardware bringup (`real_bringup.launch.py`) and why no real-HW scene ships in-tree.
+- [LeRobot OpenArm docs](https://huggingface.co/docs/lerobot/openarm) — upstream driver (not the path OpenRAL takes).
 - [enactic/openarm_mujoco PR #19](https://github.com/enactic/openarm_mujoco/pull/19) — the v2 introduction.
 - [`robots/anvil_openarm_v2/README.md`](../anvil_openarm_v2/README.md) — the Anvil OpenARM 2.0 (this same v2 design with Anvil's J1/J6 range deltas and the wrist support bracket).
 - [`robots/aloha_bimanual/README.md`](../aloha_bimanual/README.md) — sibling bimanual twin (different gripper convention).

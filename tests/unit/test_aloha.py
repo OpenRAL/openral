@@ -1,7 +1,10 @@
 """Unit tests for ``AlohaHAL`` — the Trossen ALOHA bimanual adapter.
 
 The ALOHA exposes a 14-DoF action vector (left arm 6 + left gripper 1 +
-right arm 6 + right gripper 1) split across four ros2_control controllers.
+right arm 6 + right gripper 1) split across four command topics. Those
+topic names are ros2_control names that no real ALOHA exposes (issue #250 —
+bring-up starts ``xs_sdk``); the assertions below pin what ``AlohaHAL``
+publishes today, not what the rig accepts, and move with the #250 fix.
 This file pins:
 
 - the ``ALOHA_DESCRIPTION`` joint inventory + bimanual capability;
