@@ -41,6 +41,7 @@ __all__ = [
     "DEFAULT_FIRST_CHUNK_DEADLINE_S",
     "DEFAULT_SAFETY_STATUS_TOPIC",
     "DEFAULT_SAFE_ACTION_DEADLINE_S",
+    "SAFETY_STATUS_LIVENESS_S",
     "DeadmanWatchdogNode",
     "main",
 ]
@@ -59,6 +60,11 @@ chunk holds the window open forever and is never braked."""
 DEFAULT_SAFETY_STATUS_TOPIC = "/openral/safety_status"
 """Latched SafetyStatus (ADR-0096) — the recovery signal that releases the
 latch this node sets when it observes an estop."""
+
+SAFETY_STATUS_LIVENESS_S = 3.0
+"""HZ-0096-1: a SafetyStatus whose ``header.stamp`` is older than this is
+UNKNOWN, not safe, and cannot release the latch. Same window the runner
+applies (``rskill_runner_node._SAFETY_STATUS_LIVENESS_S``)."""
 
 # Names of the action_msgs/GoalStatus constants meaning "this goal is still
 # live". Resolved to values off the generated message class at configure time
@@ -101,9 +107,15 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         ``first_chunk_deadline_s``: Maximum time an open window may go without
             producing one ``/openral/safe_action`` before estop fires. Gated
             mode only.
-        ``safety_status_topic``: Latched ``openral_msgs/SafetyStatus`` whose
-            ``latched=False`` releases this node's post-estop latch. Empty
-            disables re-arming, leaving the node one-shot per activation.
+        ``safety_status_topic``: Latched ``openral_msgs/SafetyStatus``. The
+            post-estop latch is released on the **transition** ``latched=True``
+            → ``latched=False`` observed after this node latched — i.e. the
+            kernel confirmed the stop and then the operator's reset cleared it.
+            A bare ``latched=False`` (the kernel's 1 Hz liveness refresh, or a
+            durable sample from before the stop) does not release it, and a
+            sample older than ``SAFETY_STATUS_LIVENESS_S`` is ignored as
+            unknown. Empty disables re-arming, leaving the node one-shot per
+            activation.
 
     Example:
         >>> node = DeadmanWatchdogNode(node_name="deadman_doctest")
@@ -136,6 +148,14 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         self._window_open: bool = False
         self._chunk_seen_in_window: bool = False
         self._live_statuses: frozenset[int] = frozenset()
+        # Goal ids currently live. A NEW id appearing re-bases the window even
+        # when the array never showed a no-live-goal gap between two goals:
+        # the status QoS is KEEP_LAST depth 1, so [A:done] -> [A:done, B:live]
+        # can coalesce and the deadman sees live -> live.
+        self._live_goal_ids: frozenset[bytes] = frozenset()
+        # Set once the safety layer has confirmed OUR latch (latched=True seen
+        # while triggered). Only then does a latched=False mean "reset".
+        self._kernel_latched_seen: bool = False
 
     # -- Lifecycle -----------------------------------------------------------
 
@@ -265,35 +285,64 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         """Open/close the execution window from the runner's goal status.
 
         ACCEPTED / EXECUTING / CANCELING mean the actuation path is supposed to
-        be producing chunks; every other status is terminal.
+        be producing chunks; every other status is terminal. The window is
+        re-based whenever a goal id that was not live before becomes live, so a
+        second goal always gets its own first-chunk budget.
         """
-        live = any(entry.status in self._live_statuses for entry in msg.status_list)
-        if live and not self._window_open:
+        live_ids = frozenset(
+            bytes(entry.goal_info.goal_id.uuid)
+            for entry in msg.status_list
+            if entry.status in self._live_statuses
+        )
+        if live_ids - self._live_goal_ids:
             now = time.time_ns()
             self._last_safe_ns = now
             self._window_opened_ns = now
             self._chunk_seen_in_window = False
-        elif not live:
+        elif not live_ids:
             self._chunk_seen_in_window = False
-        self._window_open = live
+        self._live_goal_ids = live_ids
+        self._window_open = bool(live_ids)
+
+    def _latch(self) -> None:
+        """Enter the post-estop latch; a fresh cycle needs a fresh kernel confirmation."""
+        if not self._triggered:
+            self._triggered = True
+            self._kernel_latched_seen = False
 
     def _on_external_estop(self, _msg: object) -> None:
         """Latch behind an estop from any source, to avoid double publishes."""
-        self._triggered = True
+        self._latch()
 
     def _on_safety_status(self, msg: Any) -> None:
-        """Release the latch once the safety layer reports recovery.
+        """Release the latch on the kernel's own latched -> cleared transition.
 
-        Without this the node is dead after the first estop of a deploy: the
-        operator resets the kernel, the graph resumes, and the only independent
-        watchdog stays silent for the life of the process. Re-arming re-bases
-        both deadlines, so a reset is never immediately followed by a fire on
-        the silence that accumulated while stopped.
+        Level-triggering on ``latched=False`` alone is wrong: the kernel
+        republishes its *current* status at 1 Hz as a liveness refresh, so a
+        ``False`` sample can arrive between this node's estop reaching the wire
+        and the kernel's own estop callback running, and would release the
+        latch before the stop was even registered — one duplicate estop and one
+        duplicate FailureTrigger per race. Requiring an observed ``True`` first
+        means a release is always the operator's reset, never a refresh.
+
+        Per HZ-0096-1 a sample older than ``SAFETY_STATUS_LIVENESS_S`` is
+        UNKNOWN and is ignored — it can neither confirm nor release.
         """
-        if msg.latched or not self._triggered:
+        if not self._triggered:
+            return
+        from rclpy.time import Time
+
+        age_s = (self.get_clock().now() - Time.from_msg(msg.header.stamp)).nanoseconds / 1e9
+        if age_s > SAFETY_STATUS_LIVENESS_S:
+            return
+        if msg.latched:
+            self._kernel_latched_seen = True
+            return
+        if not self._kernel_latched_seen:
             return
         now = time.time_ns()
         self._triggered = False
+        self._kernel_latched_seen = False
         self._last_safe_ns = now
         self._window_opened_ns = now
         self.get_logger().info("safety.deadman_rearmed after /openral/safety_status recovery")
@@ -325,7 +374,7 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         from openral_msgs.msg import FailureTrigger
         from std_msgs.msg import Empty
 
-        self._triggered = True
+        self._latch()
         assert self._estop_pub is not None and self._failure_pub is not None
         self._estop_pub.publish(Empty())
 

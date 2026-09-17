@@ -81,6 +81,11 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
         self._last_pressed: bool = False
         # Set when a read raises; keeps a broken driver from storming.
         self._read_failed: bool = False
+        # The poll timer exists from configure, but only an ACTIVE node may
+        # brake: a poll from INACTIVE can land before /openral/estop has a
+        # matched reader and be dropped, and it would set _last_pressed so a
+        # still-held button produces no rising edge once active.
+        self._active: bool = False
 
         # Injection hook: tests assign a Callable[[], bool] here before
         # configure/activate. Production subclasses override
@@ -132,14 +137,17 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
         return TransitionCallbackReturn.SUCCESS
 
     def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """Clear the read-failure latch for this activation."""
+        """Start braking. A button already held at activation brakes on the first poll."""
         del state
         self._read_failed = False
+        self._last_pressed = False
+        self._active = True
         return TransitionCallbackReturn.SUCCESS
 
     def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
-        """No additional resources to stop."""
+        """Stop braking; the timer keeps running but _poll is a no-op."""
         del state
+        self._active = False
         return TransitionCallbackReturn.SUCCESS
 
     def on_cleanup(self, state: LifecycleState) -> TransitionCallbackReturn:
@@ -214,7 +222,7 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
         escape would kill the timer and take this E-stop source off the graph
         with no estop and no further diagnostic.
         """
-        if self._read_failed:
+        if not self._active or self._read_failed:
             return
         try:
             pressed = self._read_pressed()

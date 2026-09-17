@@ -223,3 +223,41 @@ def test_a_raising_read_brakes_and_does_not_kill_the_node(ros_context: None) -> 
         executor.remove_node(helper)
         node.destroy_node()
         helper.destroy_node()
+
+
+def test_a_button_already_held_at_activation_brakes_on_the_first_active_poll(
+    ros_context: None,
+) -> None:
+    """Pressed during the configure→activate gap must still brake.
+
+    The regression: the poll timer runs from configure. A poll from INACTIVE
+    could land on ``/openral/estop`` before any reader was matched and be
+    dropped, and it set ``_last_pressed`` — so once ACTIVE the still-held
+    button produced no rising edge and the pendant never braked.
+    """
+    node = HardwareEstopNode(node_name="hardware_estop_test_held_at_activate")
+    helper = rclpy.create_node("hardware_estop_test_held_at_activate_helper")
+    estop_received: list[Empty] = []
+    helper.create_subscription(Empty, "/openral/estop", estop_received.append, 10)
+    node.read_pressed_hook = lambda: True  # held the whole time
+    node.set_parameters([Parameter("device", Parameter.Type.STRING, _PRESENT_DEVICE)])
+
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    executor.add_node(helper)
+    try:
+        assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+        # INACTIVE: the timer is running but must not brake.
+        for _ in range(30):
+            executor.spin_once(timeout_sec=0.01)
+        assert estop_received == [], "an INACTIVE pendant published an estop"
+
+        assert node.trigger_activate() == TransitionCallbackReturn.SUCCESS
+        assert _spin_until(executor, lambda: len(estop_received) >= 1), (
+            "a pendant held across activation never braked once active"
+        )
+    finally:
+        executor.remove_node(node)
+        executor.remove_node(helper)
+        node.destroy_node()
+        helper.destroy_node()

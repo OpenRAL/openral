@@ -285,7 +285,15 @@ def _close_any_open_window(probe: _Probe, arm_pub: Any) -> None:
 
 
 def _clear_safety_status(probe: _Probe) -> Any:
-    """Publish SafetyStatus(latched=False) — the watchdog's real re-arm path."""
+    """Replay the kernel's latched -> cleared transition, stamped live.
+
+    The deadman releases its latch only on that TRANSITION, observed after it
+    latched — a bare ``latched=False`` is what the kernel's 1 Hz liveness
+    refresh looks like and must not release anything, and a sample older than
+    its liveness window is ignored as unknown. So this publishes what the real
+    kernel emits: ``latched=True`` (the stop registered), then ``latched=False``
+    (the operator's ``/openral/estop_reset`` landed), each stamped now.
+    """
     from openral_msgs.msg import SafetyStatus
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
@@ -298,11 +306,15 @@ def _clear_safety_status(probe: _Probe) -> Any:
             depth=1,
         ),
     )
-    msg = SafetyStatus()
-    msg.latched = False
-    msg.drop_reason = SafetyStatus.DROP_NONE
-    msg.detail = "integration test recovery"
-    pub.publish(msg)
+    probe.spin_for(0.5)  # let the deadman's subscription match
+    for latched in (True, False):
+        msg = SafetyStatus()
+        msg.latched = latched
+        msg.drop_reason = SafetyStatus.DROP_NONE
+        msg.detail = "integration test recovery"
+        msg.header.stamp = probe.node.get_clock().now().to_msg()
+        pub.publish(msg)
+        probe.spin_for(0.3)
     return pub
 
 

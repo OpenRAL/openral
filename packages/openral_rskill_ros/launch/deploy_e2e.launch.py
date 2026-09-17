@@ -1242,6 +1242,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # load. Unbounded, a runner that dies before its first chunk
                 # holds the window open and is never braked.
                 "first_chunk_deadline_s": 120.0,
+                # For the HZ-0096-1 staleness check on /openral/safety_status.
+                # The deadlines themselves stay on wall time: a watchdog must
+                # measure real elapsed time, and sim time can pause.
+                "use_sim_time": use_sim_time,
             }
         ],
         additional_env=otel_env,
@@ -1258,7 +1262,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         executable="hardware_estop_node.py",
         name="openral_hardware_estop",
         namespace="",
-        parameters=[{"device": hardware_estop_device}],
+        parameters=[{"device": hardware_estop_device, "use_sim_time": use_sim_time}],
         additional_env=otel_env,
         output="screen",
     )
@@ -1272,6 +1276,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         executable="forwarder_node.py",
         name="openral_human_estop_forwarder",
         namespace="",
+        parameters=[{"use_sim_time": use_sim_time}],
         additional_env=otel_env,
         output="screen",
     )
@@ -1590,26 +1595,43 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         output="log",
     )
     autostart.append(deadman_autostart)
+
+    def _shutdown_unless_clean(what: str) -> object:
+        """OnProcessExit callback: a non-zero exit of ``what`` ends the graph."""
+
+        def _on_exit(event: object, _context: object) -> list:
+            returncode = getattr(event, "returncode", None)
+            if returncode == 0:
+                return []
+            return [
+                LogInfo(
+                    msg=(
+                        f"FATAL: {what} exited {returncode}. This graph has no "
+                        "independent E-stop source, so it is shutting down instead "
+                        "of running unprotected (CLAUDE.md section 3)."
+                    )
+                ),
+                Shutdown(reason=f"{what} exited {returncode}"),
+            ]
+
+        return _on_exit
+
+    # Gate the graph on the deadman ARMING (the autostart) and on it STAYING
+    # ALIVE (the node itself). Without the second, a Python crash in the
+    # watchdog at t+60 s left the graph running unprotected and silent.
     autostart.append(
         RegisterEventHandler(
             OnProcessExit(
                 target_action=deadman_autostart,
-                on_exit=lambda event, context: (
-                    []
-                    if event.returncode == 0
-                    else [
-                        LogInfo(
-                            msg=(
-                                "FATAL: the deadman watchdog never reached ACTIVE "
-                                "(lifecycle_autostart exited "
-                                f"{event.returncode}). This graph has no independent "
-                                "E-stop source, so it is shutting down instead of "
-                                "running unprotected (CLAUDE.md section 3)."
-                            )
-                        ),
-                        Shutdown(reason="deadman watchdog failed to activate"),
-                    ]
-                ),
+                on_exit=_shutdown_unless_clean("the deadman watchdog autostart"),
+            )
+        )
+    )
+    autostart.append(
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=deadman_watchdog,
+                on_exit=_shutdown_unless_clean("the deadman watchdog node"),
             )
         )
     )
@@ -2722,7 +2744,10 @@ def generate_launch_description() -> LaunchDescription:
             default_value="",
             description=(
                 "Device path of the hardware E-stop this host owns -- a GPIO "
-                "chip (``/dev/gpiochip0``) or a USB-HID pendant "
+                "chip (``/dev/gpiochip0``) or a USB-HID pendant. NOTE: this tree "
+                "ships no vendor pendant driver and the launch always spawns the "
+                "base hardware_estop_node, so today ANY non-empty value fails "
+                "configure; the argument exists for a vendor overlay. "
                 "(``/dev/input/by-id/...``). Empty (the default) declares "
                 "that there is NO hardware E-stop here: the node is still "
                 "spawned, refuses to configure, and logs that fact, so the "

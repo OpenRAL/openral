@@ -72,24 +72,33 @@ def _chunk() -> ActionChunk:
     return chunk
 
 
-def _status(*statuses: int) -> GoalStatusArray:
-    """A GoalStatusArray carrying one entry per given status value."""
+def _status(*statuses: int, ids: tuple[int, ...] | None = None) -> GoalStatusArray:
+    """A GoalStatusArray carrying one entry per given status value.
+
+    Each entry gets a distinct goal id (``ids`` overrides, else 1..n), because
+    the gate keys re-basing on a NEW live goal id appearing.
+    """
     array = GoalStatusArray()
     entries = []
-    for value in statuses:
+    for index, value in enumerate(statuses):
         entry = GoalStatus()
         entry.status = value
+        goal_id = (ids[index] if ids else index + 1).to_bytes(16, "big")
+        entry.goal_info.goal_id.uuid = list(goal_id)
         entries.append(entry)
     array.status_list = entries
     return array
 
 
-def _safety_status(*, latched: bool) -> SafetyStatus:
-    """A SafetyStatus reporting the kernel's current latch state."""
+def _safety_status(helper: Any, *, latched: bool, age_s: float = 0.0) -> SafetyStatus:
+    """A SafetyStatus reporting the kernel's latch state, stamped ``age_s`` ago."""
+    from rclpy.duration import Duration
+
     msg = SafetyStatus()
     msg.latched = latched
     msg.drop_reason = SafetyStatus.DROP_NONE
     msg.detail = "test"
+    msg.header.stamp = (helper.get_clock().now() - Duration(seconds=age_s)).to_msg()
     return msg
 
 
@@ -332,7 +341,9 @@ def test_the_latch_is_released_when_safety_status_reports_recovery(ros_context: 
         assert _timeout_failures(harness.failures) == []
 
         # Operator resets: the kernel republishes SafetyStatus(latched=False).
-        harness.status_pub.publish(_safety_status(latched=False))
+        harness.status_pub.publish(_safety_status(harness.helper, latched=True))
+        harness.idle(0.1)
+        harness.status_pub.publish(_safety_status(harness.helper, latched=False))
         harness.idle(0.2)
 
         # A fresh goal whose chunk stream then dies must fire again.
@@ -354,7 +365,7 @@ def test_a_still_latched_safety_status_does_not_release_the_latch(ros_context: N
         foreign.publish(Empty())
         harness.idle(0.2)
 
-        harness.status_pub.publish(_safety_status(latched=True))
+        harness.status_pub.publish(_safety_status(harness.helper, latched=True))
         harness.idle(0.2)
 
         harness.arm_pub.publish(_status(GoalStatus.STATUS_EXECUTING))
@@ -386,3 +397,109 @@ def test_the_live_goal_status_set_matches_the_real_message_constants() -> None:
         GoalStatus.STATUS_UNKNOWN,
     ):
         assert terminal not in live
+
+
+def test_a_liveness_refresh_cannot_release_the_latch_before_the_kernel_confirms_it(
+    ros_context: None,
+) -> None:
+    """The kernel republishes its CURRENT status at 1 Hz; a bare False is not a reset.
+
+    Level-triggering on ``latched=False`` released the latch whenever a
+    liveness refresh landed between this node's estop reaching the wire and
+    the kernel's own estop callback running — one duplicate estop and one
+    duplicate FailureTrigger per race, and a re-armed watchdog beside a kernel
+    that was in fact latched. This publishes the refresh the production
+    publisher actually emits, continuously, and asserts exactly one brake.
+    """
+    harness = _Harness(_gated_node("deadman_liveness_race"), "deadman_liveness_race")
+    try:
+        harness.activate()
+        harness.arm_pub.publish(_status(GoalStatus.STATUS_EXECUTING))
+        harness.stream(0.15)
+
+        # Producer dies. Meanwhile the "kernel" keeps refreshing latched=False
+        # at 1 Hz, exactly as if its estop callback had not run yet.
+        deadline = time.time() + 2.5
+        next_refresh = 0.0
+        while time.time() < deadline:
+            if time.time() >= next_refresh:
+                harness.status_pub.publish(_safety_status(harness.helper, latched=False))
+                next_refresh = time.time() + 0.2  # faster than 1 Hz, to be adversarial
+            harness.executor.spin_once(timeout_sec=0.02)
+
+        timeouts = _timeout_failures(harness.failures)
+        assert len(timeouts) == 1, (
+            f"expected exactly one brake, got {len(timeouts)} — a liveness refresh "
+            "released the latch and the watchdog re-fired"
+        )
+        assert len(harness.estop) == 1
+
+        # Now the kernel confirms the latch, then the operator clears it: release.
+        harness.status_pub.publish(_safety_status(harness.helper, latched=True))
+        harness.idle(0.1)
+        harness.status_pub.publish(_safety_status(harness.helper, latched=False))
+        harness.idle(0.1)
+        harness.arm_pub.publish(_status(GoalStatus.STATUS_EXECUTING, ids=(7,)))
+        harness.stream(0.15)
+        rearmed = _spin_until(
+            harness.executor, lambda: len(_timeout_failures(harness.failures)) == 2
+        )
+        assert rearmed, "after a genuine latched→cleared transition the watchdog did not re-arm"
+    finally:
+        harness.close()
+
+
+def test_a_stale_safety_status_is_unknown_and_cannot_release_the_latch(ros_context: None) -> None:
+    """HZ-0096-1: a sample older than the liveness window is not evidence of anything."""
+    harness = _Harness(_gated_node("deadman_stale_status"), "deadman_stale_status")
+    try:
+        harness.activate()
+        foreign = harness.helper.create_publisher(Empty, "/openral/estop", 10)
+        foreign.publish(Empty())
+        harness.idle(0.2)
+
+        # A latched→cleared transition, but both samples are 10 s old.
+        harness.status_pub.publish(_safety_status(harness.helper, latched=True, age_s=10.0))
+        harness.idle(0.1)
+        harness.status_pub.publish(_safety_status(harness.helper, latched=False, age_s=10.0))
+        harness.idle(0.2)
+
+        harness.arm_pub.publish(_status(GoalStatus.STATUS_EXECUTING))
+        harness.stream(0.15)
+        harness.idle(0.4)
+        assert _timeout_failures(harness.failures) == [], "a stale SafetyStatus released the latch"
+    finally:
+        harness.close()
+
+
+def test_a_second_goal_gets_its_own_first_chunk_budget_when_the_gap_is_coalesced(
+    ros_context: None,
+) -> None:
+    """[A:done] → [A:done, B:live] with no empty gap in between must re-base.
+
+    The action-status QoS is KEEP_LAST depth 1, so the no-live-goal sample
+    between two back-to-back goals can be replaced in the writer's history
+    before delivery. Keyed on the closed→open edge alone, the deadman saw
+    live→live, kept ``_chunk_seen_in_window`` from A, and judged B's cold
+    policy load against ``safe_action_deadline_s`` instead of
+    ``first_chunk_deadline_s`` — a false brake.
+    """
+    node = _gated_node("deadman_coalesced_goals", first_chunk_deadline_s=5.0)
+    harness = _Harness(node, "deadman_coalesced_goals")
+    try:
+        harness.activate()
+        harness.arm_pub.publish(_status(GoalStatus.STATUS_EXECUTING, ids=(1,)))
+        harness.stream(0.2)  # goal A produced chunks
+
+        # Coalesced: A's terminal status and B's live status in ONE sample.
+        harness.arm_pub.publish(
+            _status(GoalStatus.STATUS_SUCCEEDED, GoalStatus.STATUS_EXECUTING, ids=(1, 2))
+        )
+        # B is cold-loading: no chunks for 6 safe_action deadlines.
+        harness.idle(0.6)
+        assert _timeout_failures(harness.failures) == [], (
+            "goal B was braked on the safe_action deadline instead of getting its own "
+            "first-chunk budget"
+        )
+    finally:
+        harness.close()

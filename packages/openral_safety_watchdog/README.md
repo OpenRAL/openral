@@ -26,7 +26,10 @@ the single launch behind `openral deploy sim` and `openral deploy run`, on **bot
 `/openral_deadman_watchdog`, `/openral_hardware_estop`.
 
 The deadman is driven to ACTIVE by `tools/lifecycle_autostart.py --required`,
-and **the graph shuts down if it does not get there.** The poll-based path is
+and **the graph shuts down if it does not get there — or if the node later
+exits non-zero.** Both the autostart and the node itself carry an
+`OnProcessExit` handler, so a crash after arming ends the deploy rather than
+leaving it running unprotected. The poll-based path is
 the same one the safety kernel uses, because a dropped `ACTIVATE` would leave a
 brake source silently sitting in INACTIVE; `--required` additionally turns "the
 node was never there at all" (an overlay built without this package) into a
@@ -52,7 +55,12 @@ every boot and latch, so the node has an explicit gate:
 | `check_period_s` | `0.05` | Internal deadline-check timer period. |
 | `arm_status_topic` | `""` | Empty = **free-running**: the deadline is armed by `on_activate` and any silence past it fires. Non-empty names an `action_msgs/GoalStatusArray` topic — the deadline is evaluated only while some goal is ACCEPTED / EXECUTING / CANCELING. `deploy_e2e.launch.py` sets `/openral/execute_rskill/_action/status`, the runner's own action-status topic. |
 | `first_chunk_deadline_s` | `60.0` | Bound on goal-accepted → first chunk, covering a cold policy load. `deploy_e2e.launch.py` sets 120 s. Gated mode only. |
-| `safety_status_topic` | `/openral/safety_status` | Latched `SafetyStatus` whose `latched=False` releases this node's post-estop latch. Empty makes the node one-shot per activation. |
+| `safety_status_topic` | `/openral/safety_status` | Latched `SafetyStatus`. The post-estop latch is released only on the **transition** `latched=True` → `latched=False` observed after this node latched — the kernel confirmed the stop, then the operator's reset cleared it. A bare `latched=False` (the kernel's 1 Hz liveness refresh) does not release it, and a sample older than `SAFETY_STATUS_LIVENESS_S` (3 s, HZ-0096-1) is ignored as unknown. Empty makes the node one-shot per activation. |
+
+The window is re-based whenever a goal id that was not live becomes live — not
+only on a closed→open edge — because the status QoS is `KEEP_LAST` depth 1 and
+the no-live-goal sample between two back-to-back goals can coalesce away, so a
+second goal always gets its own first-chunk budget.
 
 A runner killed mid-goal never publishes a terminal goal status, so the window
 stays open with the chunk stream dead — which is exactly the case that fires. An
@@ -75,9 +83,13 @@ chunk that a dead runner will never send.
 
 The node also **subscribes** `/openral/estop`: an estop from any other source
 latches its internal `_triggered` flag so it never storms the topic behind the
-kernel. That latch is released when `/openral/safety_status` reports
-`latched=False` — i.e. when the operator's `/openral/estop_reset` lands on the
-kernel. Without that release the node would be one-shot: the first estop of a
+kernel. That latch is released on the kernel's own `latched=True` → `latched=False`
+transition — i.e. the kernel registered the stop, then the operator's
+`/openral/estop_reset` cleared it. A bare `latched=False` is not enough: the
+kernel republishes its *current* status at 1 Hz as a liveness refresh, and a
+refresh landing between this node's estop reaching the wire and the kernel's
+own estop callback would otherwise release the latch before the stop was even
+registered. Without that release the node would be one-shot: the first estop of a
 deploy, from any source including the dashboard stop button, would silence it
 for the life of the process, leaving the graph with exactly the hole this node
 exists to close and no way to notice.
@@ -118,11 +130,13 @@ other E-stop sources.
 * `test/test_deadman_watchdog.py` — real lifecycle node + real `openral_msgs`
   IDL: fires on silence, stays quiet under a live chunk stream and while a
   policy is still loading, suppresses itself behind an external estop, bounds
-  the arm→first-chunk wait, and re-arms when `SafetyStatus` clears (but not
-  while it is still latched).
+  the arm→first-chunk wait, re-arms only on a genuine latched→cleared transition
+  (a 1 Hz liveness refresh cannot release it), ignores stale status, and gives a
+  second coalesced goal its own first-chunk budget.
 * `test/test_hardware_estop_node.py` — the not-ready refusals, the rising-edge
-  publish through an injected device state source, and the fail-closed brake on
-  a read that raises.
+  publish through an injected device state source, the fail-closed brake on a
+  read that raises, and a button held across activation braking on the first
+  active poll.
 * `tests/integration/test_estop_watchdog_graph_live.py` — the whole point: a
   real multi-process graph where the in-band safety node is killed and
   `/openral/estop` still fires from this package.
