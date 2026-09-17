@@ -53,7 +53,6 @@ every boot and latch, so the node has an explicit gate:
 | `arm_status_topic` | `""` | Empty = **free-running**: the deadline is armed by `on_activate` and any silence past it fires. Non-empty names an `action_msgs/GoalStatusArray` topic — the deadline is evaluated only while some goal is ACCEPTED / EXECUTING / CANCELING. `deploy_e2e.launch.py` sets `/openral/execute_rskill/_action/status`, the runner's own action-status topic. |
 | `first_chunk_deadline_s` | `60.0` | Bound on goal-accepted → first chunk, covering a cold policy load. `deploy_e2e.launch.py` sets 120 s. Gated mode only. |
 | `safety_status_topic` | `/openral/safety_status` | Latched `SafetyStatus` whose `latched=False` releases this node's post-estop latch. Empty makes the node one-shot per activation. |
-| `robot_name` | `"robot"` | Tag carried on the `FailureTrigger` evidence. |
 
 A runner killed mid-goal never publishes a terminal goal status, so the window
 stays open with the chunk stream dead — which is exactly the case that fires. An

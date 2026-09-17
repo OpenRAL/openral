@@ -94,7 +94,6 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         ``safe_action_deadline_s``: Maximum age (seconds) of the newest
             ``/openral/safe_action`` inside an open window before estop fires.
         ``check_period_s``: Internal timer period.
-        ``robot_name``: Tag for FailureTrigger evidence.
         ``arm_status_topic``: ``action_msgs/GoalStatusArray`` topic carrying the
             runner's goal status. Empty (the default) is **free-running**:
             armed by ``on_activate``, any silence past the deadline fires.
@@ -118,7 +117,6 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         super().__init__(node_name)
         self.declare_parameter("safe_action_deadline_s", DEFAULT_SAFE_ACTION_DEADLINE_S)
         self.declare_parameter("check_period_s", DEFAULT_CHECK_PERIOD_S)
-        self.declare_parameter("robot_name", "robot")
         self.declare_parameter("arm_status_topic", "")
         self.declare_parameter("first_chunk_deadline_s", DEFAULT_FIRST_CHUNK_DEADLINE_S)
         self.declare_parameter("safety_status_topic", DEFAULT_SAFETY_STATUS_TOPIC)

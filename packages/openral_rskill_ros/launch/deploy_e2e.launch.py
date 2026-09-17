@@ -1242,7 +1242,6 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # load. Unbounded, a runner that dies before its first chunk
                 # holds the window open and is never braked.
                 "first_chunk_deadline_s": 120.0,
-                "robot_name": description.name,
             }
         ],
         additional_env=otel_env,
