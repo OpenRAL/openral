@@ -187,7 +187,13 @@ SO100_DESCRIPTION = RobotDescription(
     safety=SafetyEnvelope(
         max_ee_speed_m_s=0.3,
         max_joint_speed_factor=0.5,
-        deadman_required=False,  # tabletop arm; deadman handled by USB watchdog
+        # Matches the shipped manifests this robot deploys with
+        # (robots/so100_follower/robot.yaml, robots/so101_follower/robot.yaml).
+        # Tightening only, per openral_safety.envelope_loader: a skill may
+        # raise this, never clear it. Enforcement is the deploy graph's
+        # --required deadman autostart gate, not the C++ kernel, which parses
+        # the field and does not yet consult it (safety-WG item).
+        deadman_required=True,
     ),
     sdk_kind="open",
     hal=HalEntrypoints(sim=None, real="openral_hal.so100_follower:SO100FollowerHAL"),

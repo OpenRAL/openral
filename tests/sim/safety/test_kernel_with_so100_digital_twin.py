@@ -64,7 +64,7 @@ _ENVELOPE_PARAMS: dict[str, object] = {
     "max_force_n": 10.0,
     "max_torque_nm": 3.0,
     "contact_force_threshold_n": 5.0,
-    "deadman_required": False,
+    "deadman_required": True,
 }
 
 

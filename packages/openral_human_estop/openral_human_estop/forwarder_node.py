@@ -109,7 +109,9 @@ class HumanEstopForwarderNode(LifecycleNode):  # type: ignore[misc]  # reason: r
         trigger.header.stamp = self.get_clock().now().to_msg()
         trigger.kind = FailureTrigger.KIND_HUMAN
         trigger.severity = FailureTrigger.SEVERITY_ABORT
-        evidence = {"kind": "human", "channel": channel}
+        # openral_core.HumanEvidence — actor is REQUIRED and the model forbids
+        # extra keys, so the channel belongs in `actor`, not a `channel` key.
+        evidence = {"kind": "human", "actor": channel, "reason": "human_estop"}
         trigger.evidence_json = json.dumps(evidence)
         trigger.rskill_id = ""
         trigger.trace_id = ""

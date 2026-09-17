@@ -16,8 +16,10 @@ Waits ``--service-timeout-s`` for ``<node>/change_state``, then drives
 CONFIGURE then ACTIVATE, each bounded by ``--transition-timeout-s`` (must
 cover a robocasa-kitchen ``on_configure``, which can exceed a minute: MuJoCo
 + robosuite import, ``env.reset``, a possible ``uv`` rebuild). Exits 0 on
-success, non-zero only if the service never appears or the FSM state never
-advances.
+success, non-zero if the FSM state never advances. An absent ``change_state``
+service is informational by default (many callers autostart optional nodes);
+``--required`` makes it an error instead, for a node whose absence must fail
+the graph rather than pass quietly.
 """
 
 from __future__ import annotations
@@ -125,6 +127,14 @@ def main() -> int:
         help="Goal state: drive CONFIGURE → INACTIVE, or +ACTIVATE → ACTIVE.",
     )
     parser.add_argument(
+        "--required",
+        action="store_true",
+        help=(
+            "Treat an absent change_state service as a failure (exit 1) rather "
+            "than informational. For nodes a caller gates the graph on."
+        ),
+    )
+    parser.add_argument(
         "--service-timeout-s",
         type=float,
         default=30.0,
@@ -156,8 +166,14 @@ def main() -> int:
                 node, get_state_name, args.service_timeout_s, GetState
             )
         except TimeoutError as exc:
+            if args.required:
+                print(
+                    f"lifecycle-autostart: {exc} (--required)",
+                    file=sys.stderr,
+                )
+                return 1
             print(f"lifecycle-autostart: {exc}", file=sys.stderr)
-            return 0  # don't log an [ERROR] from the process; absent server is informational
+            return 0  # absent server is informational unless --required
 
         current = _read_state(node, args.node, get_state_client)
         transitions = _STATE_TO_TRANSITION[args.target]

@@ -494,3 +494,10 @@ class TestJointValuesToLerobot:
             )
         )
         assert sent[-1] == ramp_final
+
+
+def test_so100_envelope_requires_a_deadman_like_its_manifests() -> None:
+    """The in-code literal must agree with robots/so10{0,1}_follower/robot.yaml."""
+    from openral_hal.so100_follower import SO100_DESCRIPTION
+
+    assert SO100_DESCRIPTION.safety.deadman_required is True

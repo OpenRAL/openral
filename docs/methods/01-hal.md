@@ -177,20 +177,20 @@ _Real-hardware HAL adapters for UR5e / UR10e via `ros2_control` + `ur_robot_driv
 ### `python/hal/src/openral_hal/so100_follower.py`
 _SO100FollowerHAL — wraps lerobot's SO-100 follower arm USB driver._
 
-- `class SO100FollowerHAL` — HAL adapter wrapping lerobot's SO-100 follower. (L281)
-  - `__init__(port='/dev/ttyUSB0', *, calibrate_on_connect=False, id=None, calibration_dir=None, max_relative_target=None, staleness_limit_s=0.5, robot=None)` (L323)
-  - `connect() -> None` — Open USB serial connection. (L365)
-  - `disconnect() -> None` — Close USB, disable motor torque (idempotent). (L475)
-  - `read_state() -> JointState` — Joint state in radians. (L488)
-  - `send_action(action: Action) -> None` — Forward one step to the SO-100 motor bus. (L516)
-  - `reset_to_pose(pose: list[float]) -> None` — Slow linear ramp current → target (speed-capped `_RESET_MAX_RAD_S`, duration clamped `[_RESET_MIN_S, _RESET_MAX_S]`, `_RESET_STEP_HZ` waypoints) — the real-arm counterpart of the sim arms' qpos snap; makes the HAL lifecycle node auto-open `/openral/<robot>/reset_to_pose`, so real `deploy run` starts VLAs from their manifest `starting_pose`. (L539)
-  - `estop() -> None` — Disconnect motors then raise. (L602)
+- `class SO100FollowerHAL` — HAL adapter wrapping lerobot's SO-100 follower. (L287)
+  - `__init__(port='/dev/ttyUSB0', *, calibrate_on_connect=False, id=None, calibration_dir=None, max_relative_target=None, staleness_limit_s=0.5, robot=None)` (L329)
+  - `connect() -> None` — Open USB serial connection. (L371)
+  - `disconnect() -> None` — Close USB, disable motor torque (idempotent). (L481)
+  - `read_state() -> JointState` — Joint state in radians. (L494)
+  - `send_action(action: Action) -> None` — Forward one step to the SO-100 motor bus. (L522)
+  - `reset_to_pose(pose: list[float]) -> None` — Slow linear ramp current → target (speed-capped `_RESET_MAX_RAD_S`, duration clamped `[_RESET_MIN_S, _RESET_MAX_S]`, `_RESET_STEP_HZ` waypoints) — the real-arm counterpart of the sim arms' qpos snap; makes the HAL lifecycle node auto-open `/openral/<robot>/reset_to_pose`, so real `deploy run` starts VLAs from their manifest `starting_pose`. (L545)
+  - `estop() -> None` — Disconnect motors then raise. (L608)
   - `_require_connected(operation: str)`, `_obs_to_positions(obs)` [@staticmethod], `_action_to_lerobot(action)`
-  - `_joint_values_to_lerobot(step) -> dict[str, float]` (module-level) — THE single manifest-order → lerobot `{"<joint>.pos": …}` unit conversion (rad→deg arm joints, `[0,1]`→`[0,100]` gripper); both `_action_to_lerobot` and the `reset_to_pose` ramp route through it so a calibration/range change can never apply to one actuation path and not the other. (L253)
-- `_deg_to_rad(deg) -> float` (L248)
-- `_rad_to_deg(rad) -> float` (L273)
+  - `_joint_values_to_lerobot(step) -> dict[str, float]` (module-level) — THE single manifest-order → lerobot `{"<joint>.pos": …}` unit conversion (rad→deg arm joints, `[0,1]`→`[0,100]` gripper); both `_action_to_lerobot` and the `reset_to_pose` ramp route through it so a calibration/range change can never apply to one actuation path and not the other. (L259)
+- `_deg_to_rad(deg) -> float` (L254)
+- `_rad_to_deg(rad) -> float` (L279)
 - const `SO100_DESCRIPTION = RobotDescription(...)` (L103)
-- `so100_with_sensors(catalog_ids=None) -> RobotDescription` — Copy of `SO100_DESCRIPTION` with catalog sensors attached; `None` defaults to the LeRobot reference loadout (`["logitech/c920"]`). (L217)
+- `so100_with_sensors(catalog_ids=None) -> RobotDescription` — Copy of `SO100_DESCRIPTION` with catalog sensors attached; `None` defaults to the LeRobot reference loadout (`["logitech/c920"]`). (L223)
 
 ### `python/hal/src/openral_hal/galaxea_a1.py`
 _Real-only Galaxea A1 HAL. OpenRAL stays ROS 2 / Python 3.12; the operator's

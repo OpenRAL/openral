@@ -10,7 +10,7 @@ OpenRAL uses a seven-layer architecture. Each layer has a single responsibility 
 2  World State          python/world_state/, packages/world_state/  ✓ shipped (aggregator + lifecycle node)
 3  rSkill (S1)           python/rskill/, packages/openral_rskill_ros/ ✓ shipped (Python ABC + rSkill loader + openral_rskill_ros action server)
 4  Reasoning (S2)       python/reasoner/, packages/openral_reasoner_ros/  ✓ shipped (ReasonerCore + reasoner/prompt-router nodes + typed ReasonerToolCall dispatch; full replanning ladder in progress)
-5  Safety               packages/openral_safety/, cpp/openral_safety_kernel/  🟡 partial (Python supervisor + deadman/E-stop forwarders ship; certifiable C++ kernel planned)
+5  Safety               packages/openral_safety/, cpp/openral_safety_kernel/  🟡 partial (Python supervisor + an independent deadman watchdog and human-E-stop forwarder, launched by the deploy graph; hardware-pendant driver and certifiable C++ kernel planned)
 6  Observability        python/observability/                       ✓ shipped (OTel SDK + OTLP exporter + structlog↔OTel bridge)
 ```
 
@@ -22,7 +22,8 @@ Policy, π0.5, and xVLA, the `openral_rskill_ros` action server, and the
 OpenTelemetry instrumentation. Reasoning (Layer 4) and Safety (Layer 5)
 have **initial ROS 2 implementations** — an LLM reasoner/supervisor graph
 (`openral_reasoner_ros` + `openral_prompt_router`) and a Python safety
-supervisor with deadman/E-stop forwarders (`openral_safety`) — with the
+supervisor with independent deadman/E-stop forwarder processes (`openral_safety`,
+`openral_safety_watchdog`, `openral_human_estop`) — with the
 certifiable **C++ safety kernel** (Layer 5) still
 planned; the prose below describes their target shape. The cross-cutting
 eval layer (`python/sim/`) is shipped and drives the closed-loop

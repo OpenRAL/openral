@@ -43,6 +43,12 @@ TARGETS=(
     # gating at `margin` vs at the surface is algebraically identical.
     tests/integration/test_safety_kernel_place_target_geometry.py
     tests/integration/test_sim_sensor_bridge_tf_guard.py
+    # Defense-in-depth E-stop, on a real three-process graph: the in-band
+    # safety node is SIGKILLed mid chunk-stream and /openral/estop still fires,
+    # from a different process, with the structured KIND_TIMEOUT trigger. Needs
+    # the colcon overlay for openral_safety / openral_safety_watchdog /
+    # openral_human_estop executables, so only this image can run it.
+    tests/integration/test_estop_watchdog_graph_live.py
     tests/integration/test_safety_status_latched_topic.py
     tests/integration/test_perception_overlay_live_topic.py
     # ADR-0097 place-witness attachment barrier. A bumped revision on an
