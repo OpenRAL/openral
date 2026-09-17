@@ -42,7 +42,9 @@ software stop button is wired.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `channel_label` | `"unknown_human_channel"` | Free-text tag placed on the `HumanEvidence` (e.g. `"dashboard"`, `"slack"`, `"voice"`). The deploy graph leaves it at the default, because naming a channel would assert a producer that does not exist; an adapter that owns the topic should set it. |
+| `channel_label` | `"unknown_human_channel"` | Free-text tag placed on the emitted `HumanEvidence` as its **`actor`** (e.g. `"dashboard"`, `"slack"`, `"voice"`). The deploy graph leaves it at the default, because naming a channel would assert a producer that does not exist; an adapter that owns the topic should set it. |
+
+The emitted `evidence_json` is `{"kind": "human", "actor": <channel_label>, "reason": "human_estop"}` — it validates against `openral_core.HumanEvidence`, whose `actor` is required and which forbids extra keys. (It previously emitted a `channel` key and no `actor`, so every human-channel event failed to parse.)
 
 ## Tests
 
