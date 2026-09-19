@@ -165,16 +165,38 @@ def test_filter_importable_manifests_keeps_unknown_families() -> None:
 
 
 def test_behavior_groot_manifest_uses_sidecar_wire_profile() -> None:
+    """Behavior-GR00T's manifest routes to the sidecar-wire profile.
+
+    ``can_import_policy_manifest`` special-cases this manifest to probe
+    ``zmq``/``msgpack`` directly (``_is_behavior_groot_manifest``), which are
+    real ``sidecar-wire``-group packages, not stdlib fakes — unlike
+    ``test_can_import_policy_family_succeeds_for_stdlib_smoke`` above, there
+    is no ``_FAMILY_REQUIRED_IMPORTS`` entry to monkeypatch here, since the
+    dispatch is on ``policy_extras``, not ``model_family``. So, like its
+    sibling ``test_xr1_probe_uses_only_the_sidecar_wire`` below, this test
+    only asserts the environment-independent naming contract
+    (install group / hint) and leaves the *actual* import outcome to
+    ``pytest.importorskip`` — asserting ``ok is True`` unconditionally here
+    means this test would fail on any host without the opt-in
+    ``sidecar-wire`` group installed, which the core test-selective jobs
+    never install (only opt-in dependency lanes do, and this file isn't one
+    of them — see ``[requirement_globs]`` in tools/test_selection.toml).
+    """
     manifest = _StubManifest(
         name="behavior",
         model_family="gr00t",
         policy_extras={"implementation": "behavior_b1k_sidecar"},
     )
+    assert manifest_install_groups(manifest) == ("behavior-groot",)
+    assert "behavior-groot" in manifest_install_hint(manifest)
+
+    pytest.importorskip("zmq", reason="behavior-groot's real probe needs the sidecar-wire group")
+    pytest.importorskip(
+        "msgpack", reason="behavior-groot's real probe needs the sidecar-wire group"
+    )
     ok, reason = can_import_policy_manifest(manifest)
     assert ok is True
     assert reason is None
-    assert manifest_install_groups(manifest) == ("behavior-groot",)
-    assert "behavior-groot" in manifest_install_hint(manifest)
 
 
 def test_purge_partial_imports_drops_only_matching_prefixes() -> None:
