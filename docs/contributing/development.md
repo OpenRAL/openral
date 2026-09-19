@@ -332,13 +332,18 @@ not automated from this repo. On the host with the arm attached:
    from the Actions tab, then `Ctrl-C` it when done — no need to install it
    as a background service unless you want it always available.
 
-!!! warning "Keep this lane non-motion"
+!!! warning "Keep this lane non-motion — and still keep a hand near the power switch"
     Everything the SO-101 lane runs today is read-only on the servos — the
     port opens, the pre-flight ping and `read_state()` run, nothing is
-    commanded. That is what makes it safe to schedule with nobody at the
-    E-stop. A motion test belongs behind an explicit attended-bench gate (see
+    commanded via `send_action` or `reset_to_pose`. That is *not* the same as
+    "nobody needs to be near the arm": `connect()` itself cycles servo torque
+    off and back on, and re-enabling torque makes a servo hold its last
+    `Goal_Position` — a stale one from a previous session can make the arm
+    twitch toward it right there, before any command is sent. Whoever
+    dispatches this workflow should be within reach of the power switch. A
+    motion test belongs behind an explicit attended-bench gate (see
     `tests/hil/test_openarm_slot_group_motion.py`, which requires two separate
-    opt-in env vars), never on a cron.
+    opt-in env vars), never on unattended dispatch.
 
 ---
 

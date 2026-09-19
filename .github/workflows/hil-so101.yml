@@ -13,10 +13,13 @@
 # disconnected/unpowered bench would just accumulate meaningless skips.
 #
 # NON-MOTION: tests/hil/test_so101_serial_live.py opens the serial bus, pings
-# the servos and reads state. It never calls send_action or reset_to_pose, so
-# this workflow is safe to run with nobody at the E-stop. Do not add a motion
-# test to this lane without an attended-bench gate of the kind
-# tests/hil/test_openarm_slot_group_motion.py uses.
+# the servos and reads state. It never calls send_action or reset_to_pose —
+# but connect() itself cycles servo torque off and back on, and a stale
+# Goal_Position left from a previous session can make the arm twitch toward
+# it right there, with no send_action involved. Whoever dispatches this job
+# should be within reach of the arm's power switch, not just watching CI.
+# Do not add a motion test to this lane without an attended-bench gate of the
+# kind tests/hil/test_openarm_slot_group_motion.py uses.
 name: HIL · SO-101
 
 on:
