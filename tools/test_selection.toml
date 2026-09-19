@@ -240,8 +240,22 @@ sim = [
   "tests/sim/test_hal_protocol_contracts.py",
   "tests/sim/test_pusht_2d_diffusion_pusht.py",
 ]
+# Explicit files, not a `test_*libero*.py` glob: the glob also matched
+# `test_franka_groot_libero.py`, whose GR00T action head needs
+# `lerobot[groot]`'s diffusers — a `gr00t`-group-only dependency (see that
+# lane below) the `libero` group does not install. Every real full_run CI
+# execution before this one was release-please's (short-circuited before
+# reaching the selector) or one of the rare other full_run_globs, so this
+# collision had never actually been exercised — the `libero` lane silently
+# ran the file, got "GR00T action head needs lerobot[groot]'s diffusers" as
+# an undeclared skip, and tools/lane_report.py's fail-closed policy
+# correctly reddened it the first time a real full_run reached it. Same
+# "assign a lane per FILE" fix as the OpenArm/LIBERO robosuite split above.
 libero = [
-  "tests/sim/test_*libero*.py",
+  "tests/sim/test_franka_libero_deploy_sim_cameras.py",
+  "tests/sim/test_franka_molmoact2_libero.py",
+  "tests/sim/test_franka_panda_smolvla_libero.py",
+  "tests/sim/test_libero_config_seed.py",
   "tests/sim/test_libero_continuous.py",
   "tests/sim/test_franka_3dda_rlbench.py",
   "python/hal/tests/test_sim_attached_action_dim.py",
