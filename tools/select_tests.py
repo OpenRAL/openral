@@ -552,6 +552,18 @@ def main(argv: list[str] | None = None) -> int:
             payload[f"requires_{safe}"] = "true"
             payload[f"{safe}_targets"] = " ".join(targets)
             payload[f"{safe}_targets_json"] = json.dumps(targets)
+        # One matrix-ready entry per non-empty lane, so the workflow can fan
+        # opt-in dependency lanes out across parallel jobs (`fromJSON` into a
+        # `matrix.include`) instead of running them serially in one job. Same
+        # data as the per-lane `<lane>_targets` outputs above, reshaped — not
+        # a second source of truth.
+        payload["lanes"] = json.dumps(
+            [
+                {"lane": requirement, "targets": " ".join(targets)}
+                for requirement, targets in result.requirement_targets.items()
+                if targets
+            ]
+        )
         if out_path:
             with open(out_path, "a", encoding="utf-8") as fh:
                 for key, value in payload.items():

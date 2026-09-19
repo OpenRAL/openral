@@ -1,0 +1,140 @@
+name: Set up test-selective runtime
+description: >
+  Shared setup for test-selective's core and lane jobs: uv, the native
+  runtime libs (ffmpeg/osmesa/just), the full Python workspace sync, and a
+  cached robot_descriptions/openarm asset pre-warm. Does NOT check out the
+  repo — a local composite action is resolved from the job's existing
+  workspace, so the calling job must run `actions/checkout` itself before
+  this step. Not used by the `select` job, which only needs pydantic +
+  stdlib in an isolated env and must stay fast even when nothing else runs
+  (docs-only / release-please PRs) — see
+  .github/workflows/test-selective.yml.
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+      with:
+        enable-cache: true
+        cache-dependency-glob: uv.lock
+
+    - run: uv python install 3.12
+      shell: bash
+
+    # torchcodec (pulled in by the lerobot dataset codec path) dlopen()s
+    # FFmpeg's libavutil/libavcodec at runtime. The ubuntu-24.04 image does
+    # not ship them, so dataset round-trip tests (python/dataset/tests,
+    # test_cli_dataset_from_bag, …) fail with "Could not load libtorchcodec
+    # … libavutil.so.* cannot open shared object file" whenever a broad diff
+    # selects them. Install FFmpeg (provides libavutil.so.58 → core6).
+    #
+    # `just` is installed for TWO reasons, both load-bearing:
+    #   1. tools/verify_test_envs.py (the robocasa-gr1 / simpler-env lanes)
+    #      shells out to `just sync --group <g>`. Without the binary those
+    #      lanes died with a bare `FileNotFoundError: 'just'` traceback
+    #      before running a single test.
+    #   2. Every optional-dependency failure in openral_sim._deps prints
+    #      "Install it first, then re-run: just sync --all-packages --group
+    #      <g> --inexact". A remediation you cannot run in the environment
+    #      that printed it is worse than no remediation. CLAUDE.md §1.2.
+    # ubuntu-24.04 ships just 1.21 in universe, so no extra action/tap.
+    - name: Install native runtime libs (torchcodec + MuJoCo OSMesa + just)
+      shell: bash
+      run: |
+        # `apt-get update` exits non-zero on ANY broken index, including the
+        # runner image's preinstalled third-party lists. dl.google.com's
+        # chrome repo returns a hash-sum mismatch every time Google
+        # republishes it and its mirrors have not caught up, which would
+        # fail this step for a repo none of the packages below come from.
+        # The install is the real gate: anything genuinely unfetchable
+        # still fails loudly on the next line.
+        sudo apt-get update -qq \
+          || echo "::warning::apt-get update reported errors; the install below is the gate"
+        sudo apt-get install -y --no-install-recommends ffmpeg libosmesa6 just
+        just --version
+
+    - name: Install Python dependencies
+      shell: bash
+      run: |
+        uv sync --frozen --all-packages --extra lerobot \
+          || uv sync --all-packages --extra lerobot
+
+    # Asset fetchers lazily `git clone` a shared cache the first time a
+    # description is resolved: `robot_descriptions` (rd: refs, cached under
+    # ~/.cache/robot_descriptions) and the openarm v2 fetcher (openarm: refs,
+    # cached under ~/.cache/openral — see
+    # python/hal/src/openral_hal/_openarm_v2_assets.py). Restoring a prior
+    # run's clones here means the parallel core/lane jobs never race the
+    # first clone of the same ref across the matrix, and skips the ~90s
+    # clone cost entirely once the cache is warm. Key on the manifests that
+    # determine which refs are needed, not on a version pin, and fall back to
+    # the latest cache under the same prefix on a key miss (any manifest
+    # edit): `cache-hit` is then false so the pre-warm step below still runs
+    # and resolves whichever refs the restored (possibly stale) cache is
+    # missing — incremental, not a full re-clone from empty.
+    - name: Restore asset cache (robot_descriptions + openarm)
+      id: asset-cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: |
+          ~/.cache/robot_descriptions
+          ~/.cache/openral
+        key: test-selective-assets-${{ hashFiles('robots/**/robot.yaml', 'robots/**/*.urdf') }}
+        restore-keys: |
+          test-selective-assets-
+
+    # The "Run selected targets" / lane steps launch several test-root
+    # partitions CONCURRENTLY, so on a cache miss a broad diff that selects
+    # several asset-resolving tests would have them all race the same first
+    # clone: "fatal: Unable to create '…/.git/shallow.lock': File exists" →
+    # exit 128. Pre-warm every cache serially here so the parallel
+    # partitions only ever read an already-populated cache. The rd: list is
+    # DERIVED from the robot manifests (not hand-maintained) so it can never
+    # drift behind a new ref. Warm failures are non-fatal — a missing extra
+    # just means that description isn't exercised this run.
+    - name: Pre-warm asset caches (robot_descriptions + openarm)
+      if: steps.asset-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        uv run python - <<'PY'
+        import importlib
+        import pathlib
+        import re
+
+        # Every `rd:<module>` referenced by a robots/*/robot.yaml — URDF and
+        # MJCF alike (panda_description AND panda_mj_description clone
+        # different repos, so both must warm). Vendored URDFs reference
+        # their meshes as `rd:<module>:<relpath>` (expanded by the collision
+        # lowering at load time), so scan them too.
+        refs: set[str] = set()
+        manifests = [
+            *pathlib.Path("robots").glob("*/robot.yaml"),
+            *pathlib.Path("robots").glob("*/*.urdf"),
+        ]
+        for mf in manifests:
+            refs.update(re.findall(r"rd:([a-z0-9_]+)", mf.read_text()))
+        for m in sorted(refs):
+            try:
+                importlib.import_module(f"robot_descriptions.{m}")
+                print(f"warmed rd:{m}")
+            except Exception as exc:  # noqa: BLE001 — best-effort warm
+                print(f"skip rd:{m}: {exc}")
+
+        # `openarm:<variant>` refs use per-variant fetchers + a separate
+        # cache (~/.cache/openral), not robot_descriptions — warm them too.
+        # DERIVED from the manifests and routed through resolve_asset, which
+        # dispatches to the right fetcher: each variant clones a DIFFERENT
+        # upstream (bimanual → enactic/openarm_mujoco, anvil_v2_bimanual →
+        # bensonlee5/anvil-openarm-mujoco + its mesh submodule), so
+        # hand-listing one silently leaves the other racing.
+        from openral_core.assets import resolve_asset
+
+        openarm_refs: set[str] = set()
+        for mf in manifests:
+            openarm_refs.update(re.findall(r"openarm:[a-z0-9_]+", mf.read_text()))
+        for ref in sorted(openarm_refs):
+            try:
+                resolve_asset(ref, "mjcf")
+                print(f"warmed {ref}")
+            except Exception as exc:  # noqa: BLE001 — best-effort warm
+                print(f"skip {ref}: {exc}")
+        PY

@@ -160,14 +160,17 @@ suite.
    exit code — a real failure fails the lane; an all-/partial-skip does not.
 
    The `robocasa` and `robocasa-gr1` lanes need robosuite 1.5.2 from the git pin
-   (`232ce7d4`). The `libero` lane runs first and leaves robosuite 1.4.0
-   installed, and a bare `uv run --group robocasa` group switch does not reliably
-   reinstall the git package (uv evicts master for a wheel — see
-   `python/sim/src/openral_sim/_deps.py`), which surfaces as SO100 missing from
-   `REGISTERED_ROBOTS` or `NullMount` not being a `MountModel`. `run_lane` guards
-   this with an explicit `uv sync --frozen --all-packages --group robocasa
-   --reinstall-package robosuite` before the lane's `uv run`s, so the env lands
-   on the pinned tree deterministically.
+   (`232ce7d4`). Each opt-in lane is its own CI job with its own runner and
+   venv (`lane` in `test-selective.yml`), so the cross-lane contamination this
+   guard originally targeted — the `libero` lane leaving robosuite 1.4.0
+   behind for a *later* lane sharing the same job/venv — cannot happen any
+   more. It is kept anyway: a bare `uv run --group robocasa` group switch does
+   not reliably land the git-pinned package on its own (uv evicts master for a
+   wheel — see `python/sim/src/openral_sim/_deps.py`), which surfaces as SO100
+   missing from `REGISTERED_ROBOTS` or `NullMount` not being a `MountModel`.
+   `run_lane` guards this with an explicit `uv sync --frozen --all-packages
+   --group robocasa --reinstall-package robosuite` before the lane's `uv
+   run`s, so the env lands on the pinned tree deterministically regardless.
 
 Every selected target carries a human-readable reason.
 
@@ -226,9 +229,11 @@ closing the hole costs nothing.
 ### Vacuous green is a failure, not a result
 
 `tools/lane_report.py` parses each lane's **junit XML** (not pytest's terse
-summary text) into a `LaneRecord`, appends it to a per-run *ledger*, and a final
-`Attest lane coverage` step cross-checks that ledger against the selector's own
-output. It fails when:
+summary text) into a `LaneRecord`, appended to that lane job's own ledger and
+uploaded as an artifact (`lane-ledger-<lane>`). The `heavy-lanes` job's "Merge
+ledgers and attest lane coverage" step downloads every lane's artifact,
+concatenates them into one ledger, and cross-checks it against the selector's
+own output. It fails when:
 
 - a `full_run` diff expanded to **zero** lanes — the #163 regression, guarded
   directly;
@@ -274,39 +279,73 @@ Sidecar lanes intentionally block until the required env vars are present; the
 script does not fake proprietary sidecars.
 
 In CI, the [`test-selective`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/test-selective.yml)
-workflow runs `select_tests.py --github-output`, then either runs the whole
-suite (`full_run=true`) or just the emitted targets — `--ignore`ing the
-`isolated_targets` from those partitions and re-running each in its own process
-(see rule 7 above). `just test-changed-run` mirrors this locally.
+workflow's `select` job runs `select_tests.py --github-output` once, then fans
+its outputs out to three downstream jobs: `core_full` (the whole suite,
+`full_run=true`), `core_selected` (just the emitted targets — `--ignore`ing
+the `isolated_targets` from those partitions and re-running each in its own
+process, see rule 7 above), and `lane` (one job per opt-in dependency group,
+built from the `lanes` output). `just test-changed-run` mirrors the
+`core_selected` path locally.
 
-### CI speed-up design
+### CI job graph and speed-up design
 
-The `test-selective` workflow is optimised so that slow setup steps are never
-paid for runs that select zero tests:
+```
+select ──┬── core_full (matrix: 4 file-shards + isolated) ──┐
+         ├── core_selected ────────────────────────────────┴── select-and-test
+         └── lane (matrix: one job per opt-in dependency      (required check,
+             group, gated on the `heavy-lanes` environment)    every push)
+                                                        └── heavy-lanes
+                                                            (required check,
+                                                             waits for a
+                                                             maintainer to
+                                                             approve the
+                                                             `heavy-lanes`
+                                                             deployment)
+```
 
-1. **Selection runs first, before heavy installs.** `select_tests.py` only needs
-   `pydantic` + stdlib; the workflow runs it via `uv run --isolated --with
-   pydantic` — a disposable ephemeral env that resolves in a few seconds with no
-   workspace sync required.
-2. **FFmpeg install and `uv sync` are conditional.** Both are skipped entirely
-   when `steps.select.outputs.any != 'true'` (docs-only diffs, pure markdown
-   changes, etc.), saving 1–3 min of pointless setup per such PR.
-3. **Test-root partitions run in parallel.** The bash loop in "Run selected
-   targets" launches each group as a background job (`&`), collects exit codes
-   after all finish, and streams the logs in collapsible GitHub groups — cutting
-   wall-clock time by roughly the number of partitions.
-4. **Opt-in lanes run only when selected, and every skip must be accounted
-   for.** If no selected target needs `gym_aloha`, the `sim` group is never
-   installed. If one does, CI reruns just those targets under `uv run
-   --all-packages --group sim ...` and requires passing tests, with no skip
-   beyond the declared capability gaps (see
+Splitting one job into this graph is what makes `test-selective` fast on
+every push instead of ~15 min every time — the 19 opt-in lanes used to run
+one after another in the same job as everything else; here they run in
+parallel, in their own jobs, and only after a maintainer approves them (see
+[Review policy](development.md#review-policy)).
+
+1. **Selection runs first, in its own cheap job.** `select_tests.py` only
+   needs `pydantic` + stdlib; `select` runs it via `uv run --isolated --with
+   pydantic` — a disposable ephemeral env that resolves in a few seconds. The
+   job doesn't even enable the `uv` cache, since it never touches `uv.lock`.
+2. **Everything downstream is conditional.** `core_full`, `core_selected`, and
+   `lane` are skipped entirely when nothing is selected (docs-only diffs,
+   pure markdown changes, etc.) — no FFmpeg install, no workspace sync, no
+   pytest.
+3. **The full `tests/unit/` suite runs as a 4-way file-based matrix** (plus one
+   dedicated shard for `isolated_targets`) instead of serially in one job.
+4. **Test-root partitions within `core_selected` run in parallel.** The bash
+   loop in "Run selected targets" launches each group as a background job
+   (`&`), collects exit codes after all finish, and streams the logs in
+   collapsible GitHub groups.
+5. **Every opt-in dependency lane is its own matrix job.** Each pays its own
+   ~2 min setup, but 19 lanes running in parallel finish close to the
+   *slowest* lane instead of the *sum* of all of them. A lane only runs when
+   selected, and every skip inside it must be accounted for — if no selected
+   target needs `gym_aloha`, the `sim` group is never installed; if one does,
+   the lane's own job reruns just those targets under `uv run --all-packages
+   --group sim ...` and requires passing tests, with no skip beyond the
+   declared capability gaps (see
    [Lane policy](#lane-policy-what-a-skip-is-allowed-to-mean)).
-5. **Stale runs are cancelled.** A `concurrency` group with `cancel-in-progress:
+6. **Lanes wait behind a maintainer's approval.** `lane` (and therefore
+   `heavy-lanes`) is gated on the `heavy-lanes` GitHub Environment, which
+   requires a maintainer to approve the pending deployment before any lane
+   starts. `select-and-test` — the fast required check — does not wait on
+   this at all.
+7. **`robot_descriptions` / openarm asset clones are cached** across runs
+   (`.github/actions/setup-test-env`), instead of re-cloned by every job that
+   needs them.
+8. **Stale runs are cancelled.** A `concurrency` group with `cancel-in-progress:
    true` stops any in-progress run on the same branch the moment a new push
    arrives.
-6. **Documentation-only PRs skip heavy setup.** The required workflow still
-   reports success, but the selector emits no targets, so FFmpeg install,
-   workspace sync, and pytest execution are skipped.
+9. **Documentation-only PRs skip heavy setup entirely.** Both required checks
+   still report success, but the selector emits no targets, so no downstream
+   job does any real work.
 
 ### Worked examples
 
