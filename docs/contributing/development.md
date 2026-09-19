@@ -353,9 +353,43 @@ not automated from this repo. On the host with the arm attached:
 2. Make your changes. Run `just lint && just test` before pushing.
 3. If you changed a Pydantic schema, run `just schema-export` and commit the updated JSON files.
 4. Open a PR. The title should follow [Conventional Commits](https://www.conventionalcommits.org/) — e.g. `feat(core): add FooSchema`.
-5. All CI checks must be green before merge. See `.github/workflows/` for what runs.
+5. If your PR comes from a fork, the first push waits for a maintainer to
+   click "Approve and run" on the workflow run before any check starts —
+   that's a GitHub setting (`all_external_contributors`), not something you
+   can skip.
+6. Every push runs two fast required checks: `quality` (lint/type/schema/docs,
+   <3 min) and `select-and-test` (the pytest targets your diff actually
+   touches — see [Selective testing](selective-testing.md), usually a few
+   minutes). A third required check, `heavy-lanes`, runs the opt-in
+   dependency lanes (LIBERO, RoboCasa, GR00T, …) that your diff selected —
+   see [Review policy](#review-policy) below for when that happens.
+7. All required checks must be green, and the PR needs one approving review
+   from a code owner, before it can merge. See `.github/workflows/` for what
+   each workflow runs.
 
 The full PR checklist is in the repo-root `CLAUDE.md` (not linked from docs — open it directly in your editor).
+
+### Review policy
+
+The branch ruleset on `master` requires one approving review from a
+[`CODEOWNERS`](https://github.com/OpenRAL/openral/blob/master/.github/CODEOWNERS)
+reviewer, with stale approvals dismissed on every push. GitHub does not allow
+a PR author to approve their own PR, so with today's single code owner the
+maintainer's own PRs merge via the ruleset's `OrganizationAdmin` bypass
+instead of a satisfying review — expected, not a workaround; a second code
+owner would remove the need for it. `heavy-lanes` (the opt-in dependency lanes: LIBERO,
+RoboCasa, GR00T, ManiSkill3, …) does not start until a maintainer approves the
+`heavy-lanes` GitHub Environment's pending deployment (the PR's checks list, or
+the workflow run page → "Review pending deployments"); one approval unlocks
+every lane selected by that push, running in parallel. A push after approval
+re-waits — that's the same "re-approve what changed" semantics as the review
+requirement itself, not a bug.
+
+This exists so a maintainer reviews the diff *and* decides whether the
+expensive lanes are worth running before they do, rather than every push
+paying for 19 parallel jobs regardless of whether the PR is close to mergeable.
+`select-and-test` — test-speed feedback on the code a diff actually
+touches (`quality` is the lint/type/schema/docs check) — never waits on this.
 
 ---
 

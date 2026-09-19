@@ -8,20 +8,53 @@ name: test-selective
 # "selected but skipped because an optional package is absent" is not a green PR.
 # See tools/select_tests.py and tools/test_selection.toml for selection logic.
 #
+# Job graph:
+#   select ──┬── core_full (matrix: 4 file-shards + isolated) ──┐
+#            ├── core_selected ────────────────────────────────┴── select-and-test
+#            └── lane (matrix, one job per opt-in dependency     (required check,
+#                group, gated on the `heavy-lanes` environment)   every push)
+#                                                          └── heavy-lanes
+#                                                              (required check,
+#                                                               waits for a
+#                                                               maintainer to
+#                                                               approve the
+#                                                               `heavy-lanes`
+#                                                               deployment)
+#
 # Speed-up design (in execution order):
-#   1. Test selection runs FIRST, before any heavy install step. The selector
-#      only needs pydantic + stdlib, so `uv run --isolated --with pydantic`
-#      provides it in a few seconds without a full workspace sync.
-#   2. FFmpeg and the full `uv sync` are SKIPPED entirely when no tests are
-#      selected (docs-only diffs, pure markdown changes, etc.) — saving 1–3 min
-#      of pointless setup on every such PR.
-#   3. The per-test-root partitions that the selector emits run IN PARALLEL
-#      (background &-jobs, results streamed after all groups finish), cutting
-#      wall-clock time by the number of partitions.
-#   4. A concurrency group cancels stale in-progress runs on the same branch
+#   1. Test selection runs FIRST, in its own cheap job. The selector only
+#      needs pydantic + stdlib, so `uv run --isolated --with pydantic`
+#      provides it in a few seconds without a workspace sync — `select` does
+#      not even enable the uv cache.
+#   2. `core_full` / `core_selected` / `lane` are skipped entirely when
+#      nothing is selected (docs-only diffs, pure markdown changes, etc.).
+#   3. The full `tests/unit/` suite (on a blast-radius diff) is split across
+#      a 4-way file-based matrix plus one isolated-targets shard, instead of
+#      running serially in one job.
+#   4. Every opt-in dependency lane (sim, libero, robocasa, …) is its own
+#      matrix job instead of 19 lanes run one after another — each pays its
+#      own ~2 min setup, but they run in parallel, so wall-clock is close to
+#      the SLOWEST lane instead of the SUM of all of them.
+#   5. Lanes wait behind the `heavy-lanes` GitHub Environment, which requires
+#      a maintainer to approve the deployment before any of them start. A
+#      push that only touches something small still gets a green
+#      `select-and-test` in a few minutes without waiting on the lanes at
+#      all; `heavy-lanes` (also a required check) stays pending until
+#      approved, which is what actually blocks the merge.
+#   6. robot_descriptions / openarm asset clones are cached
+#      (.github/actions/setup-test-env) instead of re-cloned every run.
+#   7. A concurrency group cancels stale in-progress runs on the same branch
 #      the moment a new push arrives.
-#   5. paths-ignore skips the workflow entirely (no runner queued) for
-#      documentation-only changes.
+#
+# NB on `pull_request`: deliberately NO paths-ignore. `select-and-test` and
+# `heavy-lanes` are REQUIRED status checks in the master ruleset. A job
+# skipped by an `if:` condition still reports "success" to required-check
+# evaluation (GitHub Actions docs, "Troubleshooting required status
+# checks") — that part is fine. What is NOT fine is a *workflow* skipped by
+# path/branch filtering: its checks stay "Pending" forever and block the
+# merge. So the workflow always triggers; for a docs-only diff the selector
+# finds no affected tests in a few seconds and every downstream job reports
+# skipped (⇒ success) without the heavy uv sync / ffmpeg install.
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -40,43 +73,22 @@ on:
         default: "HEAD"
   pull_request:
     branches: [master]
-    # NB: deliberately NO paths-ignore. `select-and-test` is a REQUIRED status
-    # check in the master ruleset, and a required check skipped by a path filter
-    # is never reported — GitHub leaves it "Expected" forever and blocks the
-    # merge (docs-only PRs could then never merge). So we always trigger: for a
-    # docs-only diff the selector finds no affected tests in a few seconds and
-    # the job reports success without the heavy uv sync / ffmpeg install.
+    # See the NB above — no paths-ignore, on purpose.
 
 permissions:
   contents: read
 
 jobs:
-  select-and-test:
+  select:
     runs-on: ubuntu-24.04
-    # Pin every native threadpool to a single thread for the WHOLE job as
-    # DEFENSE-IN-DEPTH. Several tests fork lerobot's `compute_stats`
-    # multiprocessing pool; if the fork lands in an interpreter that already
-    # spun up numpy/torch/pyarrow threadpools, a forked child / C-extension
-    # `atexit` handler crashes at Python finalization — the process exits
-    # non-zero *after* an all-green run (issue #24/#25).
-    #
-    # NOTE: thread-pinning alone is NOT sufficient — a broad partition that
-    # includes a forker still exits non-zero despite these vars (verified on a
-    # real run). The reliable fix is RUNNING EACH FORKER ONE-PER-PROCESS via the
-    # `isolate_globs` list in tools/test_selection.toml (the selector peels them
-    # into `isolated_targets` and the loops below run each alone, in a fresh
-    # not-yet-threaded interpreter). These env vars stay as a cheap belt to
-    # reduce pollution; isolation is what actually prevents the crash.
-    env:
-      OMP_NUM_THREADS: "1"
-      OPENBLAS_NUM_THREADS: "1"
-      MKL_NUM_THREADS: "1"
-      NUMEXPR_NUM_THREADS: "1"
-      VECLIB_MAXIMUM_THREADS: "1"
-      RAYON_NUM_THREADS: "1"
-      TOKENIZERS_PARALLELISM: "false"
-      MUJOCO_GL: "osmesa"
-      PYOPENGL_PLATFORM: "osmesa"
+    timeout-minutes: 5
+    outputs:
+      any: ${{ steps.select.outputs.any }}
+      full_run: ${{ steps.select.outputs.full_run }}
+      targets: ${{ steps.select.outputs.targets }}
+      isolated_targets: ${{ steps.select.outputs.isolated_targets }}
+      requirement_targets_json: ${{ steps.select.outputs.requirement_targets_json }}
+      lanes: ${{ steps.select.outputs.lanes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -85,8 +97,11 @@ jobs:
 
       - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
         with:
-          enable-cache: true
-          cache-dependency-glob: uv.lock
+          # No uv cache: this job only runs `uv run --isolated --with
+          # pydantic`, never touches uv.lock or the workspace env. Enabling
+          # the cache here would pay ~80s to restore 3.7 GB this job never
+          # reads.
+          enable-cache: false
 
       - run: uv python install 3.12
 
@@ -101,10 +116,10 @@ jobs:
             echo "head=${{ github.event.inputs.head }}" >> "$GITHUB_OUTPUT"
           fi
 
-      # Run the selector BEFORE the heavy uv sync and FFmpeg install so we can
-      # skip both entirely when nothing is selected (e.g. docs-only diffs).
-      # select_tests.py only needs pydantic + stdlib; `--isolated --with pydantic`
-      # gives us a tiny ephemeral env in a few seconds — no workspace sync needed.
+      # Run the selector BEFORE any heavy install so we can skip everything
+      # downstream when nothing is selected (e.g. docs-only diffs).
+      # select_tests.py only needs pydantic + stdlib; `--isolated --with
+      # pydantic` gives us a tiny ephemeral env in a few seconds.
       - name: Select tests for the diff
         id: select
         env:
@@ -116,27 +131,31 @@ jobs:
           # pyprojects and regenerates CHANGELOG.md, nothing else. Root
           # `pyproject.toml` is a full-run glob, so the selector would force
           # the ENTIRE suite plus every opt-in dependency lane — including
-          # isaacsim / robotwin / gr00t, whose sidecars a hosted runner cannot
-          # provision — for a diff that cannot change behaviour. Every commit
-          # the release covers already passed this job on its own PR.
+          # isaacsim / robotwin / gr00t, whose sidecars a hosted runner
+          # cannot provision — for a diff that cannot change behaviour.
+          # Every commit the release covers already passed this job on its
+          # own PR.
           #
-          # Emit an empty selection rather than adding a job-level `if:`:
-          # select-and-test is a REQUIRED check, and a required check skipped
-          # by a condition is never reported — GitHub leaves it "Expected" and
-          # blocks the merge forever (same trap as the pull_request trigger
-          # comment above). This keeps the job running and green, exactly like
-          # a docs-only PR. `full_run` must be set too: the full-suite step is
-          # gated on it alone, not on `any`.
+          # Emit an empty selection here rather than a job-level `if:` on
+          # `select-and-test` / `heavy-lanes`: both are required checks, and
+          # while a *job* skipped by `if:` still reports success (see the
+          # workflow header), keeping this job itself green end-to-end is
+          # simpler than reasoning about which downstream `if:` combination
+          # produces the same result. `full_run` and `lanes` must be set
+          # too: `core_full` is gated on `full_run` alone, `lane` on
+          # `lanes`, everything else on `any`.
           #
           # Prefix per release-please's RELEASE_PLEASE_BRANCH_PREFIX
           # ("release-please--branches"); the glob also covers the
-          # --components-- variant if separate-pull-requests is ever enabled.
+          # --components-- variant if separate-pull-requests is ever
+          # enabled.
           case "${HEAD_REF:-}" in
             release-please--*)
               echo "::notice::release-please PR — lockstep version churn only, no tests selected."
               {
                 echo "any=false"
                 echo "full_run=false"
+                echo "lanes=[]"
               } >> "$GITHUB_OUTPUT"
               exit 0
               ;;
@@ -151,186 +170,161 @@ jobs:
         if: steps.select.outputs.any != 'true'
         run: echo "::notice::No code paths affected by this diff — no tests selected."
 
-      # Everything below is skipped when no tests are selected — saving the
-      # ~1–3 min of FFmpeg install + full uv sync for e.g. docs-only PRs.
+  # The full `tests/unit/` suite, split across a 4-way file-based matrix plus
+  # one dedicated shard for `isolated_targets`. Only runs on a blast-radius
+  # diff (`full_run`) — most PRs take `core_selected` below instead.
+  core_full:
+    needs: select
+    if: needs.select.outputs.full_run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Pin every native threadpool to a single thread as DEFENSE-IN-DEPTH.
+    # Several tests fork lerobot's `compute_stats` multiprocessing pool; if
+    # the fork lands in an interpreter that already spun up numpy/torch/
+    # pyarrow threadpools, a forked child / C-extension `atexit` handler
+    # crashes at Python finalization — the process exits non-zero *after* an
+    # all-green run (issue #24/#25).
+    #
+    # NOTE: thread-pinning alone is NOT sufficient — a broad partition that
+    # includes a forker still exits non-zero despite these vars (verified on
+    # a real run). The reliable fix is RUNNING EACH FORKER ONE-PER-PROCESS
+    # via the `isolate_globs` list in tools/test_selection.toml (the
+    # selector peels them into `isolated_targets`, run alone below in the
+    # `isolated` shard). These env vars stay as a cheap belt to reduce
+    # pollution; isolation is what actually prevents the crash.
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      VECLIB_MAXIMUM_THREADS: "1"
+      RAYON_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      MUJOCO_GL: "osmesa"
+      PYOPENGL_PLATFORM: "osmesa"
+    strategy:
+      fail-fast: false
+      matrix:
+        # File-based sharding (NR % 4 by sorted path) is unbalanced by
+        # design — no per-test timing data is collected anywhere in this
+        # repo to split on. ponytail: a timing-based split is the upgrade
+        # if one shard measurably dominates.
+        shard: ["0", "1", "2", "3", "isolated"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: ./.github/actions/setup-test-env
 
-      # torchcodec (pulled in by the lerobot dataset codec path) dlopen()s
-      # FFmpeg's libavutil/libavcodec at runtime. The ubuntu-24.04 image does
-      # not ship them, so dataset round-trip tests (python/dataset/tests,
-      # test_cli_dataset_from_bag, …) fail with "Could not load libtorchcodec
-      # … libavutil.so.* cannot open shared object file" whenever a broad diff
-      # selects them. Install FFmpeg (provides libavutil.so.58 → core6).
-      #
-      # `just` is installed for TWO reasons, both load-bearing:
-      #   1. tools/verify_test_envs.py (the robocasa-gr1 / simpler-env lanes)
-      #      shells out to `just sync --group <g>`. Without the binary those
-      #      lanes died with a bare `FileNotFoundError: 'just'` traceback
-      #      before running a single test.
-      #   2. Every optional-dependency failure in openral_sim._deps prints
-      #      "Install it first, then re-run: just sync --all-packages --group
-      #      <g> --inexact". A remediation you cannot run in the environment
-      #      that printed it is worse than no remediation — it sends the next
-      #      reader down a dead end. CLAUDE.md §1.2 (truth over plausibility).
-      # ubuntu-24.04 ships just 1.21 in universe, so no extra action/tap.
-      - name: Install native runtime libs (torchcodec + MuJoCo OSMesa + just)
-        if: steps.select.outputs.any == 'true'
+      - name: Run shard ${{ matrix.shard }}
+        env:
+          ISOLATED_TARGETS: ${{ needs.select.outputs.isolated_targets }}
         run: |
-          # `apt-get update` exits non-zero on ANY broken index, including the
-          # runner image's preinstalled third-party lists. dl.google.com's
-          # chrome repo returns a hash-sum mismatch every time Google
-          # republishes it and its mirrors have not caught up, which fails this
-          # job for a repo none of the packages below come from. The install is
-          # the real gate: anything that genuinely cannot be fetched still
-          # fails loudly on the next line.
-          sudo apt-get update -qq \
-            || echo "::warning::apt-get update reported errors; the install below is the gate"
-          sudo apt-get install -y --no-install-recommends ffmpeg libosmesa6 just
-          just --version
+          if [ "${{ matrix.shard }}" = "isolated" ]; then
+            # isolated_targets fork a multiprocessing pool (lerobot
+            # compute_stats); running each ALONE, in a fresh not-yet-threaded
+            # interpreter, is what actually prevents the finalization crash
+            # (issue #24/#25). Thread-pinning (job-level `env:` above) is
+            # only defense-in-depth, so no inline env prefix is needed here.
+            rc=0
+            for t in $ISOLATED_TARGETS; do
+              echo "::group::pytest (isolated) ${t}"
+              iso_rc=0
+              uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || iso_rc=$?
+              echo "::endgroup::"
+              # pytest exit 5 == "no tests collected": an isolated file whose
+              # every test needs an optional extra (e.g. lerobot[dataset])
+              # skips its whole module via importorskip. On a runner without
+              # the extra that is a legitimate all-skipped outcome, not a
+              # failure — only a real non-zero (1 failed / 2 interrupted /
+              # 139 crash) fails.
+              if [ "$iso_rc" -ne 0 ] && [ "$iso_rc" -ne 5 ]; then rc=1; fi
+            done
+            exit $rc
+          fi
 
-      - name: Install Python dependencies
-        if: steps.select.outputs.any == 'true'
-        run: |
-          uv sync --frozen --all-packages --extra lerobot \
-            || uv sync --all-packages --extra lerobot
-
-      # Asset fetchers lazily `git clone` a shared cache the first time a
-      # description is resolved: `robot_descriptions` (rd: refs) and the openarm
-      # v2 fetcher (openarm: refs). The "Run selected targets" step below launches
-      # every test-root partition CONCURRENTLY, so a broad diff that selects
-      # several asset-resolving tests has them all racing the same first clone:
-      # "fatal: Unable to create '…/.git/shallow.lock': File exists" → exit 128.
-      # Pre-warm every cache serially here so the parallel partitions only ever
-      # read an already-populated cache. The rd: list is DERIVED from the robot
-      # manifests (not hand-maintained) so it can never drift behind a new ref —
-      # a stale hand-list is what let g1/sawyer URDF clones race in the first
-      # place. Warm failures are non-fatal — a missing extra just means that
-      # description isn't exercised this run.
-      - name: Pre-warm asset caches (robot_descriptions + openarm)
-        if: steps.select.outputs.any == 'true'
-        run: |
-          uv run python - <<'PY'
-          import importlib
-          import pathlib
-          import re
-
-          # Every `rd:<module>` referenced by a robots/*/robot.yaml — URDF and
-          # MJCF alike (panda_description AND panda_mj_description clone different
-          # repos, so both must warm). Vendored URDFs reference their meshes as
-          # `rd:<module>:<relpath>` (expanded by the collision lowering at load
-          # time), so scan them too — ur/rizon mesh clones must not race either.
-          refs: set[str] = set()
-          manifests = [
-              *pathlib.Path("robots").glob("*/robot.yaml"),
-              *pathlib.Path("robots").glob("*/*.urdf"),
-          ]
-          for mf in manifests:
-              refs.update(re.findall(r"rd:([a-z0-9_]+)", mf.read_text()))
-          for m in sorted(refs):
-              try:
-                  importlib.import_module(f"robot_descriptions.{m}")
-                  print(f"warmed rd:{m}")
-              except Exception as exc:  # noqa: BLE001 — best-effort warm
-                  print(f"skip rd:{m}: {exc}")
-
-          # `openarm:<variant>` refs use per-variant fetchers + a separate cache
-          # (~/.cache/openral), not robot_descriptions — warm them too so the
-          # partitions don't race a clone. DERIVED from the manifests and routed
-          # through resolve_asset, which dispatches to the right fetcher: each
-          # variant clones a DIFFERENT upstream (bimanual → enactic/openarm_mujoco,
-          # anvil_v2_bimanual → bensonlee5/anvil-openarm-mujoco + its mesh
-          # submodule), so hand-listing one silently leaves the other racing.
-          from openral_core.assets import resolve_asset
-
-          openarm_refs: set[str] = set()
-          for mf in manifests:
-              openarm_refs.update(re.findall(r"openarm:[a-z0-9_]+", mf.read_text()))
-          for ref in sorted(openarm_refs):
-              try:
-                  resolve_asset(ref, "mjcf")
-                  print(f"warmed {ref}")
-              except Exception as exc:  # noqa: BLE001 — best-effort warm
-                  print(f"skip {ref}: {exc}")
-          PY
-
-      - name: Run full suite (blast-radius change)
-        if: steps.select.outputs.full_run == 'true'
-        run: |
-          # `isolated_targets` fork a multiprocessing pool (lerobot
-          # compute_stats); run in the broad `tests/unit/` process they crash at
-          # interpreter teardown despite passing (issue #24). --ignore them here
-          # and run each in its own process below.
           ignore=""
-          for t in ${{ steps.select.outputs.isolated_targets }}; do
+          for t in $ISOLATED_TARGETS; do
             ignore="$ignore --ignore=$t"
           done
+          files=$(find tests/unit -name 'test_*.py' | sort | awk -v k="${{ matrix.shard }}" 'NR % 4 == k')
+          if [ -z "$files" ]; then
+            echo "::notice::shard ${{ matrix.shard }} has no files."
+            exit 0
+          fi
           rc=0
-          # shellcheck disable=SC2086 -- intentional word-splitting of $ignore.
-          uv run pytest tests/unit/ $ignore \
-            -q -p no:launch_testing -p no:launch_ros || rc=1
-          # isolated_targets run one-per-process (issue #24/#25): running each
-          # forker ALONE, in a fresh not-yet-threaded interpreter, is what
-          # actually prevents the finalization crash. Thread-pinning (job-level
-          # `env:`) is only defense-in-depth, so no inline env prefix is needed
-          # here anymore.
-          for t in ${{ steps.select.outputs.isolated_targets }}; do
-            echo "::group::pytest (isolated) ${t}"
-            iso_rc=0
-            uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || iso_rc=$?
-            echo "::endgroup::"
-            # pytest exit 5 == "no tests collected": an isolated file whose every
-            # test needs an optional extra (e.g. lerobot[dataset]) skips its whole
-            # module via `importorskip`, collecting nothing. On a runner without
-            # the extra that is a legitimate all-skipped outcome, not a failure —
-            # only a real non-zero (1 failed / 2 interrupted / 139 crash) fails.
-            if [ "$iso_rc" -ne 0 ] && [ "$iso_rc" -ne 5 ]; then rc=1; fi
-          done
-          exit $rc
+          # intentional word-splitting of $files/$ignore
+          # shellcheck disable=SC2086
+          uv run pytest $files $ignore -q -p no:launch_testing -p no:launch_ros || rc=$?
+          # pytest exit 5 == "no tests collected": every file in this shard
+          # is module-level importorskip'd (or --ignore'd as an isolated
+          # target) — a legitimate all-skipped outcome, not a failure. Same
+          # rule as every other pytest invocation in this workflow (the
+          # isolated shard above, core_selected, and each lane).
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 5 ]; then exit 1; fi
+          exit 0
 
-      # NOTE: this step must run BEFORE the opt-in dependency lanes. Lane-owned
-      # tests are deliberately included here too — in the pristine "cheap env"
-      # they skip (importorskip on the missing optional stack), which catches
-      # import-time breakage for free. The lanes then mutate this job's shared
-      # venv (e.g. the robocasa lane force-reinstalls the robosuite fork and
-      # later exact-match `uv sync --group` calls strip it partial); running the
-      # cheap-env suite after the lanes made tests/sim/test_so100_robosuite_lift.py
-      # import that stale half-installed robosuite and FAIL instead of skip.
+  # Everything below only runs on a non-blast-radius diff — the common case.
+  core_selected:
+    needs: select
+    if: needs.select.outputs.full_run != 'true' && needs.select.outputs.any == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      VECLIB_MAXIMUM_THREADS: "1"
+      RAYON_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      MUJOCO_GL: "osmesa"
+      PYOPENGL_PLATFORM: "osmesa"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: ./.github/actions/setup-test-env
+
       - name: Run selected targets
-        if: steps.select.outputs.full_run != 'true' && steps.select.outputs.any == 'true'
+        env:
+          TARGETS: ${{ needs.select.outputs.targets }}
+          ISOLATED_TARGETS: ${{ needs.select.outputs.isolated_targets }}
         run: |
-          # Partition targets by their nearest `test`/`tests` directory and run
-          # each partition in its OWN pytest process. Two directories named
-          # `tests` (e.g. root `tests/` and `python/observability/tests/`) both
-          # register their conftest.py under the plugin name `tests.conftest`,
-          # so collecting them in a single session aborts with
-          # "Plugin already registered under a different name". One invocation
-          # per test-root keeps every session collision-free. (--import-mode is
-          # already importlib via pyproject addopts; consider_namespace_packages
-          # is NOT usable here — it breaks the `from tests.integration...`
-          # imports several unit tests rely on.)
+          # Partition targets by their nearest `test`/`tests` directory and
+          # run each partition in its OWN pytest process. Two directories
+          # named `tests` (e.g. root `tests/` and
+          # `python/observability/tests/`) both register their conftest.py
+          # under the plugin name `tests.conftest`, so collecting them in a
+          # single session aborts with "Plugin already registered under a
+          # different name". One invocation per test-root keeps every
+          # session collision-free. (--import-mode is already importlib via
+          # pyproject addopts; consider_namespace_packages is NOT usable
+          # here — it breaks the `from tests.integration...` imports several
+          # unit tests rely on.)
           declare -A groups
-          for t in ${{ steps.select.outputs.targets }}; do
+          for t in $TARGETS; do
             root=$(printf '%s\n' "$t" | grep -oE '^.*/tests?(/|$)|^tests?(/|$)' | head -1 | sed 's#/$##')
             [ -z "$root" ] && root="$t"  # no test-root segment → its own group
             groups["$root"]="${groups["$root"]} $t"
           done
-          # `isolated_targets` (issue #24) are already excluded from `targets`,
-          # but a directory target may still *collect* them — --ignore each from
-          # every partition, then run them one-per-process below.
+          # `isolated_targets` (issue #24) are already excluded from
+          # `targets`, but a directory target may still *collect* them —
+          # --ignore each from every partition; they run one-per-process
+          # below.
           ignore=""
-          for t in ${{ steps.select.outputs.isolated_targets }}; do
+          for t in $ISOLATED_TARGETS; do
             ignore="$ignore --ignore=$t"
           done
 
           # Launch every test-root partition as a background job so they run
-          # concurrently. Each group writes to its own temp log; we stream the
-          # output only after all have finished (preserving GitHub log ordering).
+          # concurrently. Each group writes to its own temp log; we stream
+          # the output only after all have finished (preserving GitHub log
+          # ordering).
           declare -A pids
           declare -A logs
           for root in "${!groups[@]}"; do
             tmplog=$(mktemp)
             logs["$root"]="$tmplog"
-            # shellcheck disable=SC2086 -- intentional word-splitting of the
-            # space-separated per-group target list and $ignore flags.
+            # intentional word-splitting of the space-separated per-group
+            # target list and $ignore flags
+            # shellcheck disable=SC2086
             uv run pytest ${groups["$root"]} $ignore \
               -q -p no:launch_testing -p no:launch_ros >"$tmplog" 2>&1 &
             pids["$root"]=$!
@@ -343,63 +337,80 @@ jobs:
             echo "::group::pytest ${root}"
             cat "${logs[$root]}"
             echo "::endgroup::"
-            # pytest exit 5 == "no tests collected": a selected partition whose
-            # every test is module-level importorskip'd is all-skipped, not failed.
+            # pytest exit 5 == "no tests collected": a selected partition
+            # whose every test is module-level importorskip'd is
+            # all-skipped, not failed.
             if [ "$group_rc" -ne 0 ] && [ "$group_rc" -ne 5 ]; then rc=1; fi
           done
 
-          # isolated_targets run one-per-process (issue #24/#25): running each
-          # forker ALONE, in a fresh not-yet-threaded interpreter, is what
-          # actually prevents the finalization crash. Thread-pinning (job-level
-          # `env:`) is only defense-in-depth, so no inline env prefix is needed
-          # here anymore.
-          for t in ${{ steps.select.outputs.isolated_targets }}; do
+          # isolated_targets run one-per-process (issue #24/#25): running
+          # each forker ALONE, in a fresh not-yet-threaded interpreter, is
+          # what actually prevents the finalization crash. Thread-pinning
+          # (job-level `env:`) is only defense-in-depth, so no inline env
+          # prefix is needed here.
+          for t in $ISOLATED_TARGETS; do
             echo "::group::pytest (isolated) ${t}"
             iso_rc=0
             uv run pytest "$t" -q -p no:launch_testing -p no:launch_ros || iso_rc=$?
             echo "::endgroup::"
-            # pytest exit 5 == "no tests collected" (whole module importorskip'd
-            # because an optional extra is absent) is a legitimate all-skipped
-            # outcome, not a failure. See the full-run step for the rationale.
             if [ "$iso_rc" -ne 0 ] && [ "$iso_rc" -ne 5 ]; then rc=1; fi
           done
           exit $rc
-      - name: Run selected opt-in dependency lanes
-        if: steps.select.outputs.any == 'true'
+
+  # One job per opt-in dependency lane (sim, libero, robocasa, …), gated on
+  # the `heavy-lanes` GitHub Environment. GitHub holds every job in this
+  # matrix at "Waiting" until a maintainer approves that environment's
+  # pending deployment (Actions run page → "Review pending deployments"),
+  # then all selected lanes start together. Because each lane is now its own
+  # runner/venv, the cross-lane venv contamination the old single-job design
+  # had to work around (see the robosuite reinstall comment below) cannot
+  # happen between lanes any more — only within a single lane's own setup.
+  lane:
+    needs: select
+    if: needs.select.outputs.any == 'true' && needs.select.outputs.lanes != '[]'
+    environment: heavy-lanes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      VECLIB_MAXIMUM_THREADS: "1"
+      RAYON_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      MUJOCO_GL: "osmesa"
+      PYOPENGL_PLATFORM: "osmesa"
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.select.outputs.lanes) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: ./.github/actions/setup-test-env
+
+      - name: Run opt-in dependency lane ${{ matrix.lane }}
         env:
-          SIM_TARGETS: ${{ steps.select.outputs.sim_targets }}
-          LIBERO_TARGETS: ${{ steps.select.outputs.libero_targets }}
-          ROBOCASA_TARGETS: ${{ steps.select.outputs.robocasa_targets }}
-          ROBOCASA_GR1_TARGETS: ${{ steps.select.outputs.robocasa_gr1_targets }}
-          MANISKILL3_TARGETS: ${{ steps.select.outputs.maniskill3_targets }}
-          SIMPLER_ENV_TARGETS: ${{ steps.select.outputs.simpler_env_targets }}
-          ISAACSIM_TARGETS: ${{ steps.select.outputs.isaacsim_targets }}
-          ROBOTWIN_TARGETS: ${{ steps.select.outputs.robotwin_targets }}
-          SIDECAR_WIRE_TARGETS: ${{ steps.select.outputs.sidecar_wire_targets }}
-          DATASET_TARGETS: ${{ steps.select.outputs.dataset_targets }}
-          RLBENCH_TARGETS: ${{ steps.select.outputs.rlbench_targets }}
-          GR00T_TARGETS: ${{ steps.select.outputs.gr00t_targets }}
-          LOCATEANYTHING_TARGETS: ${{ steps.select.outputs.locateanything_targets }}
-          QWEN_VLM_TARGETS: ${{ steps.select.outputs.qwen_vlm_targets }}
-          OMDET_TARGETS: ${{ steps.select.outputs.omdet_targets }}
-          ONNX_EXPORT_TARGETS: ${{ steps.select.outputs.onnx_export_targets }}
-          CLIP_TARGETS: ${{ steps.select.outputs.clip_targets }}
-          OPENCV_TARGETS: ${{ steps.select.outputs.opencv_targets }}
-          LOWERING_TARGETS: ${{ steps.select.outputs.lowering_targets }}
-          ISOLATED_TARGETS: ${{ steps.select.outputs.isolated_targets }}
+          LANE: ${{ matrix.lane }}
+          TARGETS: ${{ matrix.targets }}
+          ISOLATED_TARGETS: ${{ needs.select.outputs.isolated_targets }}
           LEDGER: ${{ runner.temp }}/lane-ledger.jsonl
         run: |
-          # Accounting is done by tools/lane_report.py against pytest's junit
-          # XML, not by grepping the terse summary. Two reasons (issue #163):
-          #  * "any skip fails the lane" is right for anything this runner CAN
-          #    provide and wrong for anything it cannot. The report attributes a
-          #    skip to a DECLARED capability gap ([capability_gaps] in
-          #    tools/test_selection.toml) and fails on every other skip, so a
-          #    CUDA gate no longer reddens the lane while a real provisioning
-          #    gap ("panda.srdf not installed") still does.
-          #  * every lane now writes a LEDGER record, and the attest step below
-          #    checks the ledger against the selection. A lane that was selected
-          #    and never executed is a hard failure instead of an absence.
+          # Accounting is done by tools/lane_report.py against pytest's
+          # junit XML, not by grepping the terse summary. Two reasons
+          # (issue #163):
+          #  * "any skip fails the lane" is right for anything this runner
+          #    CAN provide and wrong for anything it cannot. The report
+          #    attributes a skip to a DECLARED capability gap
+          #    ([capability_gaps] in tools/test_selection.toml) and fails on
+          #    every other skip, so a CUDA gate no longer reddens the lane
+          #    while a real provisioning gap ("panda.srdf not installed")
+          #    still does.
+          #  * every lane writes a LEDGER record, uploaded as this job's own
+          #    artifact; the heavy-lanes gate job merges every lane's ledger
+          #    and cross-checks it against the selection. A lane that was
+          #    selected and never executed is a hard failure instead of an
+          #    absence.
           report_lane() {
             local lane_rc=0
             uv run --isolated --with pydantic --python 3.12 \
@@ -408,11 +419,17 @@ jobs:
             return "$lane_rc"
           }
           run_lane() {
-            # `local` is load-bearing. Without it this function's `rc=0` reset
-            # clobbered the CALLER's accumulator of the same name: a failing
-            # lane followed by any passing lane exited 0, so the step's status
-            # reflected only the LAST lane. Five runs went green carrying 12–13
-            # `::error::opt-in lane …` messages in the log.
+            # `local` is load-bearing even with one lane per job: this
+            # function still owns its own `rc`, `xml_args`, `log`, etc., and
+            # returning it explicitly is what makes the exit code below
+            # correct. It used to matter more because the old single-job
+            # workflow called this function 19 times in a row sharing one
+            # caller-scope accumulator — a missing `local` here once let a
+            # failing lane followed by a passing one report green, carrying
+            # 12–13 hidden `::error::` messages. One job = one call removes
+            # that failure mode; the function shape is kept unchanged from
+            # test-selective's original single-job form so this diff is a
+            # reshuffle, not a rewrite.
             local group="$1"
             local targets="$2"
             [ -z "$targets" ] && return 0
@@ -433,17 +450,16 @@ jobs:
             log=$(mktemp)
             batched_xml="$RUNNER_TEMP/lane-${group}-batched.xml"
             python3 scripts/repair_hf_libero_install.py || true
-            # robocasa + robocasa-gr1 both need robosuite 1.5.2 from the git pin
-            # (232ce7d4). The libero lane runs first and leaves robosuite 1.4.0
-            # installed; a bare `uv run --group robocasa` group switch does not
-            # reliably reinstall the git package (uv evicts master for a wheel —
-            # see python/sim/src/openral_sim/_deps.py), leaving a partial/1.4
-            # robosuite: SO100 absent from REGISTERED_ROBOTS, NullMount not a
-            # MountModel. Reinstall from the lock so every uv run below lands on
-            # the pinned tree deterministically.
-            # ponytail: reinstalls once per robocasa lane; if robocasa +
-            # robocasa-gr1 are both selected it rebuilds twice (rare, correctness
-            # over one extra git build).
+            # robocasa + robocasa-gr1 both need robosuite 1.5.2 from the git
+            # pin (232ce7d4). Each lane is now its own job/runner, so the
+            # cross-lane contamination this reinstall originally guarded
+            # against (the libero lane leaving robosuite 1.4.0 behind in a
+            # SHARED venv, in the old single-job workflow) can no longer
+            # happen — kept anyway, because a fresh `--group robocasa` sync
+            # on its OWN still does not reliably land the git-pinned wheel
+            # over whatever `uv` prefers (python/sim/src/openral_sim/_deps.py),
+            # independent of any other lane. Removing it is a separate
+            # change with its own evidence.
             if [ "$dependency_group" = "robocasa" ]; then
               uv sync --frozen --all-packages --group robocasa --reinstall-package robosuite
             fi
@@ -453,8 +469,8 @@ jobs:
             fi
             if [ "$rc" -eq 0 ]; then
               if [ "$group" = "simpler-env" ] || [ "$group" = "robocasa-gr1" ]; then
-                # verify_test_envs.py drives its own pytest, so there is no junit
-                # report to account from — judge it by exit code alone.
+                # verify_test_envs.py drives its own pytest, so there is no
+                # junit report to account from — judge it by exit code alone.
                 OPENRAL_ALLOW_ROBOCASA_ASSETS=1 uv run python tools/verify_test_envs.py \
                   --include-provisioned --groups "$group" 2>&1 | tee "$log" || rc=$?
                 python3 scripts/repair_hf_libero_install.py || true
@@ -462,11 +478,12 @@ jobs:
               else
                 # Partition selected targets: files flagged for per-process
                 # isolation (ISOLATED_TARGETS, from tools/test_selection.toml
-                # `isolate_globs`) run one-at-a-time in their own interpreter.
-                # Real robosuite/MuJoCo EGL contexts do not survive a sibling
-                # env's teardown in the same process — a second LIBERO env then
-                # dies with "RethinkMount is not a MujocoXML instance" even on the
-                # correct robosuite 1.4 (issue #24 class). The rest run together.
+                # `isolate_globs`) run one-at-a-time in their own
+                # interpreter. Real robosuite/MuJoCo EGL contexts do not
+                # survive a sibling env's teardown in the same process — a
+                # second LIBERO env then dies with "RethinkMount is not a
+                # MujocoXML instance" even on the correct robosuite 1.4
+                # (issue #24 class). The rest run together.
                 batched=""
                 isolated_here=""
                 for t in $targets; do
@@ -476,19 +493,14 @@ jobs:
                   esac
                 done
                 if [ -n "$batched" ]; then
-                  # shellcheck disable=SC2086 -- selector-emitted space-separated list.
+                  # selector-emitted space-separated list
+                  # shellcheck disable=SC2086
                   env "${env_args[@]}" uv run --all-packages --group "$dependency_group" "${extra_groups[@]}" pytest $batched \
                     -q -rs -p no:launch_testing -p no:launch_ros \
                     --junit-xml="$batched_xml" 2>&1 | tee "$log" || rc=$?
                   python3 scripts/repair_hf_libero_install.py || true
                   xml_args+=(--junit-xml "$batched_xml")
                 fi
-                # Isolated files are accounted by the SAME rule as the batched
-                # run. They used to be judged on exit code alone, so any skip
-                # inside one was invisible — the batched/isolated asymmetry was
-                # a place a real gap could hide. Every skip they emit today is
-                # explained by a declared capability gap, so applying the strict
-                # rule costs nothing and closes the hole.
                 iso_n=0
                 for t in $isolated_here; do
                   echo "::group::pytest (isolated) ${t}"
@@ -500,8 +512,9 @@ jobs:
                     --junit-xml="$iso_xml" || iso_rc=$?
                   python3 scripts/repair_hf_libero_install.py || true
                   echo "::endgroup::"
-                  # exit 5 == nothing collected (whole module importorskip'd):
-                  # a legitimate all-skipped outcome, judged from the report.
+                  # exit 5 == nothing collected (whole module
+                  # importorskip'd): a legitimate all-skipped outcome,
+                  # judged from the report.
                   if [ "$iso_rc" -ne 0 ] && [ "$iso_rc" -ne 5 ]; then rc=1; fi
                   xml_args+=(--junit-xml "$iso_xml")
                 done
@@ -512,48 +525,78 @@ jobs:
             return "$rc"
           }
 
-          rc=0
-          run_lane sim "$SIM_TARGETS" || rc=1
-          run_lane libero "$LIBERO_TARGETS" || rc=1
-          run_lane robocasa "$ROBOCASA_TARGETS" || rc=1
-          run_lane robocasa-gr1 "$ROBOCASA_GR1_TARGETS" || rc=1
-          run_lane maniskill3 "$MANISKILL3_TARGETS" || rc=1
-          run_lane simpler-env "$SIMPLER_ENV_TARGETS" || rc=1
-          run_lane isaacsim "$ISAACSIM_TARGETS" || rc=1
-          run_lane robotwin "$ROBOTWIN_TARGETS" || rc=1
-          run_lane sidecar-wire "$SIDECAR_WIRE_TARGETS" || rc=1
-          run_lane dataset "$DATASET_TARGETS" || rc=1
-          run_lane rlbench "$RLBENCH_TARGETS" || rc=1
-          run_lane gr00t "$GR00T_TARGETS" || rc=1
-          run_lane locateanything "$LOCATEANYTHING_TARGETS" || rc=1
-          run_lane qwen-vlm "$QWEN_VLM_TARGETS" || rc=1
-          run_lane omdet "$OMDET_TARGETS" || rc=1
-          run_lane onnx-export "$ONNX_EXPORT_TARGETS" || rc=1
-          run_lane clip "$CLIP_TARGETS" || rc=1
-          run_lane opencv "$OPENCV_TARGETS" || rc=1
-          run_lane lowering "$LOWERING_TARGETS" || rc=1
-          exit $rc
+          run_lane "$LANE" "$TARGETS"
 
-      # The anti-vacuity gate. Everything above can fail loudly; this step
-      # exists for the case where nothing failed because nothing RAN. It
-      # cross-checks the lane ledger against the selector's own output, so
-      # "tested nothing" and "tested everything and passed" can no longer
-      # report the same result (issue #163):
-      #   * a full_run diff that expanded to zero lanes fails outright — that
-      #     is the exact regression #163 describes;
-      #   * a lane the selector chose that produced no ledger record fails as
-      #     "selected but never executed";
-      #   * the ledger itself is written to the job summary, naming every lane
-      #     that was declared-not-run and the capability it needs, so the
-      #     coverage gap is legible instead of invisible.
-      # `always()` so a red lane still publishes the ledger.
-      - name: Attest lane coverage
-        if: ${{ always() && steps.select.outputs.any == 'true' }}
+      - name: Upload lane ledger
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: lane-ledger-${{ matrix.lane }}
+          path: ${{ runner.temp }}/lane-ledger.jsonl
+          if-no-files-found: warn
+
+  # Required status check #1 — the fast one. Reports as soon as `core_full`
+  # / `core_selected` finish; does NOT wait on `lane` (that is `heavy-lanes`,
+  # below). Name must stay exactly `select-and-test` — it is a required
+  # check in the master ruleset (docs/contributing/selective-testing.md).
+  select-and-test:
+    needs: [select, core_full, core_selected]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require select, core_full and core_selected to have succeeded or been skipped
+        if: >-
+          needs.select.result == 'failure' || needs.select.result == 'cancelled' ||
+          needs.core_full.result == 'failure' || needs.core_full.result == 'cancelled' ||
+          needs.core_selected.result == 'failure' || needs.core_selected.result == 'cancelled'
+        run: |
+          echo "::error::a required job failed or was cancelled — see select / core_full / core_selected above."
+          exit 1
+
+  # Required status check #2 — waits on `lane`, which itself waits behind the
+  # `heavy-lanes` environment's required reviewer. Stays pending until a
+  # maintainer approves the deployment, which is what actually blocks the
+  # merge until the opt-in dependency lanes have run. Also the anti-vacuity
+  # gate (issue #163): merges every lane's uploaded ledger and cross-checks
+  # it against the selector's own output, so "tested nothing" and "tested
+  # everything and passed" can no longer report the same result.
+  heavy-lanes:
+    needs: [select, lane]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+        with:
+          enable-cache: false
+
+      - name: Download lane ledgers
+        if: needs.select.outputs.lanes != '[]'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: lane-ledger-*
+          path: ledgers
+          if-no-artifact-found: ignore
+
+      - name: Merge ledgers and attest lane coverage
+        if: needs.select.outputs.any == 'true'
         env:
-          FULL_RUN: ${{ steps.select.outputs.full_run }}
-          REQUIREMENT_TARGETS_JSON: ${{ steps.select.outputs.requirement_targets_json }}
+          FULL_RUN: ${{ needs.select.outputs.full_run }}
+          REQUIREMENT_TARGETS_JSON: ${{ needs.select.outputs.requirement_targets_json }}
           LEDGER: ${{ runner.temp }}/lane-ledger.jsonl
         run: |
+          # Each lane job uploaded its own ledger artifact (one JSONL line,
+          # name lane-ledger-<lane>); merge them back into the single file
+          # tools/lane_report.py expects. Every lane's file lands in its own
+          # `ledgers/lane-ledger-<lane>/` subdirectory (no merge-multiple),
+          # so a download hiccup on one lane can't silently overwrite
+          # another's line. `find` over an absent `ledgers/` (no lanes
+          # selected) legitimately finds nothing — that is not an error.
+          find ledgers -name '*.jsonl' -exec cat {} + > "$LEDGER" 2>/dev/null || true
+          touch "$LEDGER"
           python3 - > "$RUNNER_TEMP/selection.json" <<'PY'
           import json, os, sys
           json.dump(
@@ -568,3 +611,11 @@ jobs:
             python tools/lane_report.py --ledger "$LEDGER" attest \
             --selection-json "$RUNNER_TEMP/selection.json" \
             --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Require select and every lane to have succeeded or been skipped
+        if: >-
+          needs.select.result == 'failure' || needs.select.result == 'cancelled' ||
+          needs.lane.result == 'failure' || needs.lane.result == 'cancelled'
+        run: |
+          echo "::error::select or a lane failed or was cancelled — see above."
+          exit 1

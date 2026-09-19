@@ -201,20 +201,30 @@ def test_selective_tests_short_circuit_the_release_pr() -> None:
     Rewriting all 15 pyprojects matches the ``pyproject.toml`` full-run glob and
     marks every package changed, which would otherwise select the whole suite
     plus every opt-in lane — including ones whose sidecars a hosted runner
-    cannot provision. The guard has to live *inside* the job: ``select-and-test``
-    is a required check, and a required check skipped by a job-level condition
-    is never reported, so GitHub blocks the merge forever.
+    cannot provision. The guard lives in the ``select`` job, which every other
+    job (``core_full``, ``core_selected``, ``lane``) and both required gates
+    (``select-and-test``, ``heavy-lanes``) key off via ``needs.select.outputs``.
+
+    Both gates use ``if: always()`` rather than skipping outright: a job
+    skipped by an ``if:`` still reports "success" to required-status-check
+    evaluation (that part is fine either way), but a *workflow* skipped by
+    path/branch filtering leaves its checks "Pending" forever and blocks the
+    merge — which is the actual trap this repo avoids by never adding
+    ``paths-ignore`` to the ``pull_request`` trigger (see the workflow header).
     """
     path = REPO_ROOT / ".github/workflows/test-selective.yml"
     workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-    job = workflow["jobs"]["select-and-test"]
+    jobs = workflow["jobs"]
 
-    assert "if" not in job, (
-        "select-and-test is a required check; a job-level `if:` leaves it "
-        "reported as Expected forever and blocks every merge it skips."
-    )
+    for gate in ("select-and-test", "heavy-lanes"):
+        assert jobs[gate]["if"] == "always()", (
+            f"{gate} is a required check; without `if: always()` a failed "
+            "dependency (e.g. `select`) makes GitHub auto-skip this job — "
+            "and a skipped job reports success, silently passing the gate."
+        )
 
-    select = next(s for s in job["steps"] if s.get("id") == "select")
+    select_job = jobs["select"]
+    select = next(s for s in select_job["steps"] if s.get("id") == "select")
     assert select["env"]["HEAD_REF"] == "${{ github.head_ref }}", (
         "the release-PR guard reads the head branch from HEAD_REF"
     )
@@ -224,10 +234,10 @@ def test_selective_tests_short_circuit_the_release_pr() -> None:
     assert "release-please--*)" in select["run"], (
         "the select step must short-circuit release-please's branch"
     )
-    for output in ("any=false", "full_run=false"):
+    for output in ("any=false", "full_run=false", "lanes=[]"):
         assert output in select["run"], (
-            f"the guard must emit {output!r} — the full-suite step is gated on "
-            "full_run alone, the rest on any."
+            f"the guard must emit {output!r} — core_full is gated on full_run "
+            "alone, lane on lanes, everything else on any."
         )
 
 
