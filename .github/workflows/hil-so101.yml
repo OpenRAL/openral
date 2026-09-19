@@ -38,16 +38,18 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d  # v10.0.1
       - run: uv python install 3.12
-      - run: uv sync --frozen --all-packages || uv sync --all-packages
+      - run: uv sync --locked --all-packages
 
       - name: SO-101 bench readiness (non-motion)
-        run: uv run openral deploy validate --config scenes/deploy/so101_bench.yaml
+        run: uv run --locked --no-sync openral deploy validate --config scenes/deploy/so101_bench.yaml
 
       - name: SO-101 serial HIL (non-motion)
         # Not `just hil-so101`: that recipe swallows pytest's "nothing
         # collected" exits so a dev box without an arm sees a clean skip. On
         # the lab runner an empty collection means the rig regressed, and this
         # lane must go red for it.
-        run: uv run pytest -q -rs tests/hil/test_so101_serial_live.py
+        run: uv run --locked --no-sync pytest -q -rs tests/hil/test_so101_serial_live.py

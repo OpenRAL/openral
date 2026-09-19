@@ -430,7 +430,13 @@ class SO100FollowerHAL(HALBase):
                 ) from exc
             self._robot = robot
 
-        self._preflight_servo_ping(self._robot)
+        try:
+            self._preflight_servo_ping(self._robot)
+        except Exception:
+            with contextlib.suppress(Exception):
+                self._robot.disconnect()
+            self._robot = None
+            raise
         self._connected = True
         self._last_obs_time = time.monotonic()
         log.info("hal.connect", robot="so100_follower", port=self._port)

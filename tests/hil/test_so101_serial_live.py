@@ -171,8 +171,8 @@ def live_hal() -> Iterator[SO100FollowerHAL]:
         calibration_dir=str(_bench_calibration_file().parent),
         calibrate_on_connect=False,  # never open the interactive wizard in CI
     )
-    hal.connect()
     try:
+        hal.connect()
         yield hal
     finally:
         hal.disconnect()
