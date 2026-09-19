@@ -29,13 +29,36 @@ update this README in the same change.
 
 ### CI workflows (`.github/workflows/`)
 
+Only three workflows auto-trigger on a pull request, and all three carry a
+required check that fires on every push to an open PR, at no per-PR cost
+regardless of the diff (`dco.yml` fires on `opened`/`synchronize`/`reopened`
+rather than the `pull_request` event the other two use — same effect, every
+push to the PR):
+
 | Workflow | Triggers | Suites it runs | Notes |
 | --- | --- | --- | --- |
-| `test-python.yml` | PR, push to `master` | `tests/unit/` + `tests/integration/` (no marker filter) | Matrix: `ubuntu-22.04`, `ubuntu-24.04`, `macos-14` × Python 3.12. Coverage uploaded to Codecov from the `ubuntu-24.04` cell. |
-| `test-ros2.yml` | PR, push to `master` | `colcon test` (not pytest) | Builds 6 ROS 2 packages on `ros:humble` and `ros:jazzy`, then runs colcon tests. |
-| `hal.yml` | PR, push to `master` | `tests/unit/test_hal.py`; then `tests/integration/` inside `ros:jazzy-ros-base` with **`-k "not test_lifecycle_node_launch"`** (see §4 below). |
-| `sim-mujoco.yml` | PR, push to `master` | `tests/sim/ -m "not slow"` | CPU runner; the GPU-only suite collects 0 tests (exit 5) which is forced to success. Also smoke-tests the SmolVLA SO-100 example with `--no-run`. |
-| `lint.yml` | PR, push to `master` | (lint only) | Includes **`schema_export.py --check`** as the schema-drift guard. |
+| `test-selective.yml` | PR (`branches: [master]`), `workflow_dispatch` | Only the pytest targets `tools/select_tests.py` selects for the diff — except a blast-radius diff (root `pyproject.toml`, `uv.lock`, a shared `conftest.py`, …), where `select_tests.py` emits `full_run=true` and `core_full` runs the whole `tests/unit/` suite instead. See [Selective testing](../docs/contributing/selective-testing.md). | **Required check.** Job graph: `select` → `core_full` (blast-radius diffs) / `core_selected` (everything else) → `select-and-test` (required, every push); `select` → `lane` (one job per opt-in dependency group, gated behind the `heavy-lanes` GitHub Environment) → `heavy-lanes` (required, waits for a maintainer to approve the environment). |
+| `quality.yml` | PR (`branches: [master]`), `workflow_dispatch` | ruff + `mypy --strict` (core/cli/hal + `tools/`) + schema-drift + rSkill README drift + manifest validation + `mkdocs build --strict`. | **Required check** (`quality`). No test execution. |
+| `dco.yml` | PR (`opened`, `synchronize`, `reopened`) | (no tests) | **Required check** (`Verify Signed-off-by`). Greps every commit in the PR for `Signed-off-by:`. |
+
+The four remaining test workflows are `workflow_dispatch`-only — **not** run
+automatically on a PR or a push, per the header comment in each ("Auto-triggers
+disabled: out of GitHub Actions credits. Re-enable PR/push triggers once
+billing is restored."). This does not apply to the non-test workflows below
+the table — `docker-build.yml`, `pages.yml`, `release-please.yml`, and
+`release-pypi.yml` all still trigger automatically, on `push`/tag rather than
+on a PR:
+
+| Workflow | Suites it runs | Notes |
+| --- | --- | --- |
+| `test-python.yml` | `tests/unit/` (`pytest -q --cov=python --cov-branch`) | Matrix: `ubuntu-22.04`, `ubuntu-24.04`, `ubuntu-24.04-arm` × Python 3.12 (`continue-on-error` on the arm row). Coverage uploaded to Codecov from the `ubuntu-24.04` cell. |
+| `test-ros2.yml` | `colcon build` + `colcon test` (not pytest) | Runs inside `ros:jazzy-ros-base`; `packages` input defaults to `openral_safety_kernel openral_octomap_bridge`. |
+| `hal.yml` | `tests/unit/test_hal.py` | Single-row matrix (`ubuntu-24.04`, Python 3.12, Jazzy). |
+| `docs.yml` | (no tests) | `mkdocs build --strict` — redundant with the step already folded into `quality.yml`; kept for on-demand parity. |
+
+`docker-build.yml`, `pages.yml`, `release-please.yml`, and `release-pypi.yml`
+trigger on `push` to `master` (or a `v*.*.*` tag) rather than on a PR; see
+their own headers for what each builds.
 
 ### Markers (`pyproject.toml`)
 

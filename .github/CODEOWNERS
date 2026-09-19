@@ -1,16 +1,29 @@
 # Default reviewers
-*                                   @openral/maintainers
+#
+# The paths below still carve out the intended working-group split (schemas,
+# safety, HAL) for when the project has more than one maintainer — restore
+# the `@openral/<wg>` teams once they exist. Until then every path routes to
+# the sole maintainer, and `require_code_owner_review` on the branch ruleset
+# (docs/contributing/development.md, "Review policy") makes this file
+# load-bearing rather than decorative.
+#
+# GitHub does not let a PR author approve their own PR, so with a single code
+# owner the sole maintainer's own PRs can never satisfy this rule through a
+# normal review. That is expected, not a gap: the ruleset's
+# `bypass_actors: [OrganizationAdmin]` is how the maintainer merges their own
+# PRs, same as release-please's. A second code owner removes the need for it.
+*                                   @AdrianLlopart
 
 # Schemas and IDL — extra care
-python/core/**                      @openral/maintainers @openral/schemas
-packages/msgs/**                    @openral/maintainers @openral/schemas
+python/core/**                      @AdrianLlopart
+packages/msgs/**                    @AdrianLlopart
 
 # Safety — mandatory review by safety WG
-packages/openral_safety/**          @openral/safety
-cpp/openral_safety_kernel/**        @openral/safety
+packages/openral_safety/**          @AdrianLlopart
+cpp/openral_safety_kernel/**        @AdrianLlopart
 
 # HAL adapters
-packages/openral_hal_*/**           @openral/hal
+packages/openral_hal_*/**           @AdrianLlopart
 
 # CI / release
-.github/**                          @openral/maintainers
+.github/**                          @AdrianLlopart
