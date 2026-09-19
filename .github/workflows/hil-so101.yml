@@ -2,23 +2,24 @@
 #
 # The first HIL lane in this repo to have a physical rig behind it. It is
 # INERT until someone registers a runner carrying BOTH labels below; with no
-# such runner the scheduled run simply queues and expires, and nothing else in
+# such runner a dispatched run simply queues and expires, and nothing else in
 # CI depends on it. Registering that runner is an org-settings action, not a
 # repo change — see docs/contributing/development.md ("Registering a lab-so101
 # HIL runner").
 #
+# MANUAL ONLY: no schedule trigger. The bench arm is not permanently attached
+# to a runner, so this lane is fired by hand (Actions tab → "Run workflow")
+# by whoever has the rig physically connected — a scheduled run against a
+# disconnected/unpowered bench would just accumulate meaningless skips.
+#
 # NON-MOTION: tests/hil/test_so101_serial_live.py opens the serial bus, pings
 # the servos and reads state. It never calls send_action or reset_to_pose, so
-# this workflow is safe to run on a schedule with nobody at the E-stop. Do not
-# add a motion test to this lane without an attended-bench gate of the kind
+# this workflow is safe to run with nobody at the E-stop. Do not add a motion
+# test to this lane without an attended-bench gate of the kind
 # tests/hil/test_openarm_slot_group_motion.py uses.
 name: HIL · SO-101
 
 on:
-  schedule:
-    # 04:17 UTC daily — off-hours for the bench, and offset off the hour so it
-    # does not pile onto every other cron in the org.
-    - cron: "17 4 * * *"
   workflow_dispatch:
 
 permissions:

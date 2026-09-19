@@ -101,8 +101,9 @@ units and envelope against this manifest and that the committed calibration is
 the one loaded into the motors. It commands nothing — no `send_action`, no
 `reset_to_pose` — and skips with a reason when the arm is unplugged or its
 12 V supply is off (the USB-serial adapter enumerates on 5 V alone, so the
-port looks healthy while every servo is dark). Running it on a schedule needs
-a `[self-hosted, lab-so101]` runner; see
+port looks healthy while every servo is dark). Running it from CI is manual
+dispatch only (Actions tab → "Run workflow") and needs a
+`[self-hosted, lab-so101]` runner listening; see
 [`docs/contributing/development.md`](../../docs/contributing/development.md#registering-a-lab-so101-hil-runner).
 
 Motion on this arm — `openral deploy run` — is an attended operation. The

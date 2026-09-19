@@ -297,9 +297,11 @@ The HIL tier (`tests/hil/`) is gated by `[self-hosted, lab-<robot>]` runner
 labels. The SO-101 bench is the first of these with a physical rig behind it:
 `.github/workflows/hil-so101.yml` is committed and runs
 `openral deploy validate` plus the non-motion serial gate
-(`tests/hil/test_so101_serial_live.py`) nightly — but it is **inert** until a
-runner carrying both labels exists. With no such runner the scheduled job
-queues and expires; nothing else in CI depends on it.
+(`tests/hil/test_so101_serial_live.py`) on manual dispatch (Actions tab →
+"Run workflow") — there is no schedule trigger, since the bench arm is not
+permanently attached to a runner. It is **inert** until a runner carrying
+both labels exists; with no such runner a dispatched run just queues and
+expires. Nothing else in CI depends on it.
 
 Registering the runner is an org/repo **settings** action and is deliberately
 not automated from this repo. On the host with the arm attached:
@@ -324,8 +326,11 @@ not automated from this repo. On the host with the arm attached:
     Device paths in `scenes/deploy/so101_bench.yaml` are host-specific.
     `deploy validate` reports a stale one as a warning rather than discovering
     it mid-run; fixing the scene is the fix.
-5. Install the runner as a service (`sudo ./svc.sh install && sudo ./svc.sh
-   start`) so a reboot does not silently retire the lane.
+5. Since this lane is manual-dispatch only and the bench is not an always-on
+   host, the runner only needs to be listening at dispatch time: run
+   `./run.sh` in a terminal after connecting the arm, trigger the workflow
+   from the Actions tab, then `Ctrl-C` it when done — no need to install it
+   as a background service unless you want it always available.
 
 !!! warning "Keep this lane non-motion"
     Everything the SO-101 lane runs today is read-only on the servos — the
