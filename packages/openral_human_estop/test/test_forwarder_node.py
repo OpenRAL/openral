@@ -17,6 +17,7 @@ import pytest
 rclpy = pytest.importorskip("rclpy")
 pytest.importorskip("openral_msgs")
 
+from openral_core import HumanEvidence
 from openral_human_estop.forwarder_node import HumanEstopForwarderNode
 from openral_msgs.msg import FailureTrigger
 from rclpy.executors import SingleThreadedExecutor
@@ -90,7 +91,9 @@ def test_forwarder_republishes_estop_with_failure_trigger(
         assert ft.severity == FailureTrigger.SEVERITY_ABORT
         evidence = json.loads(ft.evidence_json)
         assert evidence["kind"] == "human"
-        assert evidence["channel"] == "dashboard"
+        assert evidence["actor"] == "dashboard"
+        # The whole point of evidence_json is that the reasoner can parse it.
+        assert HumanEvidence.model_validate(evidence).actor == "dashboard"
     finally:
         executor.remove_node(node)
         executor.remove_node(helper)
@@ -128,7 +131,8 @@ def test_forwarder_uses_default_channel_label_when_unset(ros_context: None) -> N
         assert _spin_until(executor, _have_human_failure)
         ft = next(ft for ft in failures_received if ft.kind == FailureTrigger.KIND_HUMAN)
         evidence = json.loads(ft.evidence_json)
-        assert evidence["channel"] == "unknown_human_channel"
+        assert evidence["actor"] == "unknown_human_channel"
+        assert HumanEvidence.model_validate(evidence).actor == "unknown_human_channel"
     finally:
         executor.remove_node(node)
         executor.remove_node(helper)

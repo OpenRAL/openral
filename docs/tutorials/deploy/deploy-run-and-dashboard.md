@@ -33,6 +33,14 @@ The in-tree manifests are:
 Class is each manifest's `embodiment_kind`. `pusht_2d` is omitted: it is a
 sim-only scene-pseudo-robot with no hardware path.
 
+Being in that table is not itself a hardware path. `deploy run` resolves
+`hal.real` from the manifest, and only nine declare one — `so100_follower`,
+`so101_follower`, `franka_panda`, `ur5e`, `ur10e`, `sawyer`, `galaxea_a1`,
+`aloha_bimanual` and `openarm`. The rest carry `hal.real: null` (or no `hal:`
+block at all) and `build_hal` raises `ROSCapabilityMismatch` under
+`hal_mode:=real`. Watch the two OpenArms in particular: `openarm` (Enactic) has
+`OpenArmRealHAL`, while `anvil_openarm_v2` (Anvil) is sim-only.
+
 ### Set a reasoner model — the graph will not plan without one
 
 `deploy run` boots the S2 reasoner, and the reasoner has **no hidden default
@@ -219,6 +227,17 @@ runtime:
   # zed_wrapper's own registered cloud. RealSense: /camera/depth/color/points.
   octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
 ```
+
+Both shipped OpenArm scenes make the choice explicitly, and they are the two
+worked examples: [`scenes/deploy/openarm_zed_octomap.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_zed_octomap.yaml)
+sets `enable_octomap` and `octomap_cloud_topic` together, and
+[`scenes/deploy/openarm_tabletop.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_tabletop.yaml)
+pins `enable_octomap: false` rather than inherit the auto-enable that the
+manifest's `head_zed` depth `SensorSpec` would otherwise trigger (`deploy run`
+resolves that auto-enable through the same code path as `deploy sim`). Both are
+`deploy sim` scenes — `openarm_zed_octomap.yaml` pairs a real ZED with the
+MuJoCo twin so no motor is commanded — but the octomap pair is written the same
+way under `hal_mode:=real`. Copy one of them; never leave it half-set.
 
 That is deliberate reuse rather than a new node: `zed_wrapper` (and the RealSense
 and Orbbec drivers) already stereo-match and project on the GPU, so composing a

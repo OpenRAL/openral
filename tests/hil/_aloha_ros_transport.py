@@ -1,19 +1,20 @@
 """Lab-runner-only ``rclpy`` bridge for the ALOHA bimanual real-HW HAL.
 
 ``openral_hal.aloha.AlohaHAL`` splits a single 14-D ``openral_core.Action`` across four
-``ros2_control`` controllers — left arm, right arm, left gripper, right gripper. This bridge
-is the HIL counterpart of ``tests.hil._ros_control_transport`` for the bimanual fan-out: it
-owns four ``trajectory_msgs/JointTrajectory`` publishers + one aggregated
-``sensor_msgs/JointState`` subscriber and dispatches by topic match.
+command topics — left arm, right arm, left gripper, right gripper. This bridge mirrors that
+fan-out: four ``trajectory_msgs/JointTrajectory`` publishers + one aggregated
+``sensor_msgs/JointState`` subscriber, dispatched by topic match.
 
-All four publishers use ``trajectory_msgs/JointTrajectory`` because every ALOHA controller
-(arms and grippers alike) is a ``joint_trajectory_controller/JointTrajectoryController``
-instance — grippers are 1-DOF JointTrajectoryControllers. The standalone
-``parallel_gripper_action_controller/GripperActionController`` (action interface,
-``control_msgs/action/GripperCommand``) and Trossen's native
-``interbotix_xs_msgs/JointSingleCommand`` are deliberately not used: neither matches
-AlohaHAL's ``publish_fn(topic, msg)`` contract, which fans out via ``self._publish_fn(...)``
-four times per ``send_action()`` (see ``python/hal/src/openral_hal/aloha.py``).
+.. warning::
+   This bridge mirrors ``AlohaHAL``'s **current** wire contract, and issue #250 established
+   that a real ALOHA exposes none of it. ``aloha_bringup.launch.py`` starts
+   ``interbotix_xs_sdk``'s ``xs_sdk`` node: no ``controller_manager``, no
+   ``JointTrajectoryController``, no ``/…/arm_controller/…`` topic, and no aggregated
+   ``/joint_states`` — each arm publishes under ``follower_left`` / ``follower_right`` and
+   is commanded with ``interbotix_xs_msgs/JointGroupCommand`` on
+   ``/<robot_name>/commands/joint_group``. So this file cannot be read as evidence of what
+   the rig accepts; it will be retargeted with the HAL, once the cell's namespaces and
+   ``motor_config`` groups have been read off the robot (#250).
 
 HIL-only; shares the import-time ``rclpy`` guard from ``tests.hil._ros_control_transport``
 (CLAUDE.md §5.4: real component or ``pytest.skip`` — nothing in between).
@@ -72,16 +73,17 @@ class AlohaHILTransport(_PolledJointStateMixin):
             responsibility).
         joint_names: All 14 ALOHA joint names in the canonical interleaved
             order from ``ALOHA_REAL_DESCRIPTION.joints``.
-        left_arm_command_topic: Topic for the left-arm
-            ``JointTrajectoryController`` (e.g.
-            ``/left_arm/arm_controller/joint_trajectory``).
+        left_arm_command_topic: Left-arm command topic, matching whatever
+            ``AlohaHAL`` is configured to publish (default
+            ``/left_arm/arm_controller/joint_trajectory`` — see the #250
+            warning above).
         right_arm_command_topic: Same for the right arm.
-        left_gripper_command_topic: Topic for the 1-DOF left-gripper
-            ``JointTrajectoryController`` (e.g.
+        left_gripper_command_topic: Left-gripper command topic (default
             ``/left_arm/gripper_controller/command``).
         right_gripper_command_topic: Same for the right gripper.
-        joint_state_topic: Aggregated ``sensor_msgs/JointState`` topic the
-            Interbotix XS launch publishes on (default ``"/joint_states"``).
+        joint_state_topic: Aggregated ``sensor_msgs/JointState`` topic
+            (default ``"/joint_states"``). No real ALOHA publishes an
+            aggregated one (#250).
     """
 
     def __init__(
