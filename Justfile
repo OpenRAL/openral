@@ -722,6 +722,13 @@ hil robot:
     fi
     exit $status
 
+# SO-101 bench arm HIL gate (real Feetech serial bus, NON-MOTION).
+# Named rather than left to `just hil so101_serial_live` because the file name
+# is not the robot id. Skips cleanly with a reason when the arm is unplugged or
+# its 12 V supply is off; nothing here commands the arm.
+hil-so101:
+    just hil so101_serial_live
+
 # Docs serve
 docs:
     uv run mkdocs serve

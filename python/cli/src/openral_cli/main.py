@@ -3928,6 +3928,31 @@ def deploy_run(
             "unless --enable-reward-monitor."
         ),
     ),
+    dataset_out: str | None = typer.Option(
+        None,
+        "--dataset-out",
+        help=(
+            "record the session (proprio + action + camera frames + episode "
+            "markers) to this rosbag2 mcap FILE (not a bag directory): its "
+            "parent must exist and the file must not. Recording is segmented "
+            "by episode markers, which only an EXECUTING rSkill emits — a "
+            "session where every dispatch is rejected writes no file. Convert "
+            "to a LeRobotDataset v3 offline with `openral dataset from-bag`. "
+            "Same flag, same recorder and same launch args as `deploy sim`; "
+            "on real hardware it is what leaves a supervised run replayable "
+            "(CLAUDE.md §1.8). Empty disables recording."
+        ),
+    ),
+    dataset_repo_id: str | None = typer.Option(
+        None,
+        "--dataset-repo-id",
+        help="repo_id for the recorded dataset (default openral/dataset-<robot>).",
+    ),
+    dataset_license: str | None = typer.Option(
+        None,
+        "--dataset-license",
+        help="SPDX license carried into `openral dataset from-bag` (default CC-BY-4.0).",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
@@ -3975,6 +4000,9 @@ def deploy_run(
             robot_override=robot or deploy_scene.robot_id,
             dashboard_port=dashboard_port,
             reset_to_pose_service=None,
+            dataset_out=dataset_out,
+            dataset_repo_id=dataset_repo_id,
+            dataset_license=dataset_license,
             deploy_config=config,
             hal_param_overrides=overrides,
             hal_mode="real",
