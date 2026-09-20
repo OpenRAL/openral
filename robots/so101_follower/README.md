@@ -71,6 +71,45 @@ serial port, cameras, and limits stay in `robot.yaml`. The rSkill is not pinned 
 the reasoner selects it at runtime from the installed `rskills/` registry. See the
 [deploy tutorial](../../docs/tutorials/deploy/deploy-run-and-dashboard.md).
 
+## Hardware-in-the-loop
+
+The SO-101 is the only robot in this repo with a committed, self-contained
+real-hardware deploy scene: [`scenes/deploy/so101_bench.yaml`](../../scenes/deploy/so101_bench.yaml)
+carries the serial port, the lerobot calibration identity and both camera
+bindings, and the Feetech calibration itself is committed next to it at
+`scenes/deploy/calibration/so_follower.json`.
+
+Two non-motion commands check the rig before anything is dispatched:
+
+```bash
+openral deploy validate --config scenes/deploy/so101_bench.yaml
+just hil-so101       # tests/hil/test_so101_serial_live.py
+```
+
+`deploy validate` touches no hardware beyond `stat`-ing the device nodes: it
+resolves the scene, then checks the inputs a real run needs and otherwise
+discovers late — a declared serial port, a calibration file that actually
+exists (the "has no calibration registered" failure), and a `deploy_binding`
+per scene sensor. Camera paths are host-specific; a stale one is reported as a
+warning, and retuning the scene against `ls -l /dev/v4l/by-id /dev/v4l/by-path`
+is the fix. Never bind a raw `/dev/videoN` — USB enumeration order renumbers
+them on replug.
+
+`just hil-so101` is the HIL gate. It opens the real serial bus, runs the
+pre-flight servo ping, and reads state back, asserting the joint names, shape,
+units and envelope against this manifest and that the committed calibration is
+the one loaded into the motors. It commands nothing — no `send_action`, no
+`reset_to_pose` — and skips with a reason when the arm is unplugged or its
+12 V supply is off (the USB-serial adapter enumerates on 5 V alone, so the
+port looks healthy while every servo is dark). Running it from CI is manual
+dispatch only (Actions tab → "Run workflow") and needs a
+`[self-hosted, lab-so101]` runner listening; see
+[`docs/contributing/development.md`](../../docs/contributing/development.md#registering-a-lab-so101-hil-runner).
+
+Motion on this arm — `openral deploy run` — is an attended operation. The
+deploy graph does not currently launch the deadman watchdog or human E-stop
+nodes, so the physical power switch is the E-stop.
+
 ## Pair with
 
 | Component | Path |

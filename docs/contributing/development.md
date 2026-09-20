@@ -291,6 +291,62 @@ Full architecture is in [docs/architecture/overview.md](../architecture/overview
 
 ---
 
+## Registering a `lab-so101` HIL runner
+
+The HIL tier (`tests/hil/`) is gated by `[self-hosted, lab-<robot>]` runner
+labels. The SO-101 bench is the first of these with a physical rig behind it:
+`.github/workflows/hil-so101.yml` is committed and runs
+`openral deploy validate` plus the non-motion serial gate
+(`tests/hil/test_so101_serial_live.py`) on manual dispatch (Actions tab →
+"Run workflow") — there is no schedule trigger, since the bench arm is not
+permanently attached to a runner. It is **inert** until a runner carrying
+both labels exists; with no such runner a dispatched run just queues and
+expires. Nothing else in CI depends on it.
+
+Registering the runner is an org/repo **settings** action and is deliberately
+not automated from this repo. On the host with the arm attached:
+
+1. **Settings → Actions → Runners → New self-hosted runner** (repo or org
+   scope), follow the download/`config.sh` steps GitHub prints, and when it
+   asks for labels enter `lab-so101` (the `self-hosted` label is added for
+   you). The workflow matches on **both**.
+2. Give the runner's user access to the bus: `sudo usermod -aG dialout <user>`,
+   then re-login. Without it the arm's `/dev/ttyACM*` is unopenable and every
+   test in the file skips, green and useless.
+3. Install `just` and `uv` for that user — the workflow calls `uv` directly and
+   the local recipes assume `just` is on `PATH`.
+4. Confirm the bench matches the committed scene before trusting the lane:
+
+    ```bash
+    ls -l /dev/v4l/by-id /dev/v4l/by-path        # camera symlinks
+    uv run openral deploy validate --config scenes/deploy/so101_bench.yaml
+    just hil-so101
+    ```
+
+    Device paths in `scenes/deploy/so101_bench.yaml` are host-specific.
+    `deploy validate` reports a stale one as a warning rather than discovering
+    it mid-run; fixing the scene is the fix.
+5. Since this lane is manual-dispatch only and the bench is not an always-on
+   host, the runner only needs to be listening at dispatch time: run
+   `./run.sh` in a terminal after connecting the arm, trigger the workflow
+   from the Actions tab, then `Ctrl-C` it when done — no need to install it
+   as a background service unless you want it always available.
+
+!!! warning "Keep this lane non-motion — and still keep a hand near the power switch"
+    Everything the SO-101 lane runs today is read-only on the servos — the
+    port opens, the pre-flight ping and `read_state()` run, nothing is
+    commanded via `send_action` or `reset_to_pose`. That is *not* the same as
+    "nobody needs to be near the arm": `connect()` itself cycles servo torque
+    off and back on, and re-enabling torque makes a servo hold its last
+    `Goal_Position` — a stale one from a previous session can make the arm
+    twitch toward it right there, before any command is sent. Whoever
+    dispatches this workflow should be within reach of the power switch. A
+    motion test belongs behind an explicit attended-bench gate (see
+    `tests/hil/test_openarm_slot_group_motion.py`, which requires two separate
+    opt-in env vars), never on unattended dispatch.
+
+---
+
 ## Making a pull request
 
 1. Create a branch: `git switch -c feat/your-feature`.

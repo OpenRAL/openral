@@ -82,11 +82,12 @@ uv run openral rskill check rskills/rskill-smolvla-so101-eraser_place-bf16 \
 
 # Real SO-101 deploy (weights are public Apache-2.0). The skill is discovered
 # from the in-tree palette by embodiment match; the reasoner picks it from the
-# `eraser` / `place` vocabulary in the manifest.
-uv run openral deploy run --config scenes/deploy/so101_bench.yaml
+# `eraser` / `place` vocabulary in the manifest. Prompt VERBATIM — the startup
+# goal and the live prompt are the same string, typo included.
+uv run openral deploy run --config scenes/deploy/so101_bench.yaml \
+    --initial-task "place the erase on the blue square"
 
-# `deploy run` has no --initial-task (that flag is `deploy sim` only), so send
-# the goal to the running graph — verbatim:
+# Or send the goal to an already-running graph:
 uv run openral prompt "place the erase on the blue square"
 ```
 

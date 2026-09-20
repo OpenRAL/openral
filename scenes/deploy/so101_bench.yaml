@@ -42,7 +42,11 @@ sensors:
   # icspring across ports; `-video-index0` is the capture node). top uses
   # `by-path` (built-in Integrated Camera's `by-id` wrongly resolves to the
   # interface-1.2 GREY IR sensor, not the interface-1.0 RGB node; `by-path`
-  # pins interface 1.0 correctly).
+  # pins interface 1.0 correctly). Re-pointed 2026-09-16: the built-in camera's
+  # by-path moved (pci-0000:00:14.0-usb-0:9 -> pci-0000:80:14.0-usb-0:11) and
+  # the stale entry no longer resolved — `openral deploy validate` reported it
+  # as a warning, which is exactly what that command is for. The wrist `by-id`
+  # was unchanged, which is the whole point of keying on the USB serial.
   - name: top
     modality: rgb
     frame_id: world
@@ -50,7 +54,7 @@ sensors:
     deploy_binding:
       backend: opencv_thread
       backend_params:
-        device: /dev/v4l/by-path/pci-0000:00:14.0-usb-0:9:1.0-video-index0
+        device: /dev/v4l/by-path/pci-0000:80:14.0-usb-0:11:1.0-video-index0
         width: 640
         height: 480
         fps: 30

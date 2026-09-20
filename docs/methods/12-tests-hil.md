@@ -33,6 +33,29 @@ it is a fact about the bench and not about the code. The round-trip is
 read-only by construction: it queries motor state and never calls
 `enable_all()`, so it cannot energise or move the arm.
 
+The SO-101 bench arm has no `ros2_control` bridge either — it is a serial
+robot (`SO100FollowerHAL` over a Feetech `scservo_sdk` bus, shared verbatim
+with the SO-100), so its gate (`tests/hil/test_so101_serial_live.py`) runs on
+the serial transport itself. It is the first HIL file backed by a rig that
+physically exists; everything else driving `SO100FollowerHAL`
+(`tests/unit/test_so100_follower_hal.py`) injects a `SO100DigitalTwin` and
+never opens a port. Port, lerobot calibration `id` and `calibration_dir` are
+all read from `scenes/deploy/so101_bench.yaml`'s `hal:` binding rather than
+hardcoded, so the test and `openral deploy run --config
+scenes/deploy/so101_bench.yaml` cannot drift. It splits in two like the
+OpenArm's: bench-wiring checks (the committed calibration's joint keys + servo
+ids match `robots/so101_follower/robot.yaml`; `hal.real` still points at the
+class under test; an enumerated port whose servos are dark raises instead of
+connecting) run whenever the device node and calibration file are present,
+while the live-servo tier additionally requires a broadcast ping to find all
+six ids. The USB-serial adapter enumerates on 5 V, so an arm with its 12 V
+supply off leaves `/dev/ttyACM0` looking healthy and the bus completely
+silent — a skip, not a failure. **No motion commands by construction:** the
+powered tier calls only `connect()` / `read_state()` / `disconnect()`.
+`connect()` can re-enable torque, so a stale servo goal can still cause a
+twitch. Driven by `just hil-so101` and by
+`.github/workflows/hil-so101.yml` on a `[self-hosted, lab-so101]` runner.
+
 ### `tests/hil/_ros_control_transport.py`
 _Single-controller bridge. Used by UR5e, UR10e, Franka Panda, Sawyer._
 
