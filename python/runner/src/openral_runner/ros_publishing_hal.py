@@ -31,7 +31,12 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from openral_core.exceptions import ROSConfigError, ROSEStopRequested, ROSRuntimeError
+from openral_core.exceptions import (
+    ROSConfigError,
+    ROSEStopRequested,
+    ROSPerceptionStale,
+    ROSRuntimeError,
+)
 from openral_core.schemas import Action, ControlMode, JointState, RobotDescription
 from openral_observability import propagation
 
@@ -147,6 +152,10 @@ class ROSPublishingHAL:
             ``/openral/action_applied``, and the adapter reports only the
             apply-timeout (CLAUDE.md §1.4). Must be non-blocking — it is
             called while the adapter's applied-condition lock is held.
+        action_applied_timeout_s: Maximum time to wait for the HAL's
+            application acknowledgement for an active tick.
+        joint_state_staleness_limit_s: Maximum age of the last received
+            ``/joint_states`` frame. Defaults to 0.5 seconds.
     """
 
     description: RobotDescription
@@ -164,6 +173,7 @@ class ROSPublishingHAL:
         action_applied_topic: str = "/openral/action_applied",
         safety_abort_getter: Callable[[], str | None] = lambda: None,
         action_applied_timeout_s: float = 5.0,
+        joint_state_staleness_limit_s: float = 0.5,
     ) -> None:
         """Store references; opens no ROS resources until ``connect``."""
         self._node = node
@@ -179,7 +189,10 @@ class ROSPublishingHAL:
         self._safety_abort_getter = safety_abort_getter
         if action_applied_timeout_s <= 0.0:
             raise ROSConfigError("ROSPublishingHAL: action_applied_timeout_s must be positive")
+        if joint_state_staleness_limit_s <= 0.0:
+            raise ROSConfigError("ROSPublishingHAL: joint_state_staleness_limit_s must be positive")
         self._action_applied_timeout_s = action_applied_timeout_s
+        self._joint_state_staleness_limit_s = joint_state_staleness_limit_s
         self._publisher: Any = None
         self._subscription: Any = None
         self._applied_subscription: Any = None
@@ -188,10 +201,10 @@ class ROSPublishingHAL:
         self._published_group_tick: int | None = None
         self._published_group_count: int = 0
         # Cached JointState; populated on every /joint_states callback.
-        # ``read_state`` raises ROSRuntimeError if this is still ``None``
-        # when called (matches the HAL Protocol contract — connect-then-
-        # read sequence is enforced).
+        # ``read_state`` rejects a missing or stale frame (matches the HAL
+        # Protocol's connect-then-read and freshness contract).
         self._last_state: JointState | None = None
+        self._last_state_received_s: float = 0.0
         self._connected: bool = False
 
     # ── HAL Protocol ─────────────────────────────────────────────────────────
@@ -200,6 +213,8 @@ class ROSPublishingHAL:
         """Open the publisher on candidate_action + subscriber on joint_states."""
         if self._connected:
             return
+        self._last_state = None
+        self._last_state_received_s = 0.0
         from openral_msgs.msg import ActionChunk  # type: ignore[import-not-found,unused-ignore]
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
         from sensor_msgs.msg import JointState as RosJointState
@@ -260,6 +275,8 @@ class ROSPublishingHAL:
         if self._publisher is not None:
             self._node.destroy_publisher(self._publisher)
             self._publisher = None
+        self._last_state = None
+        self._last_state_received_s = 0.0
         self._connected = False
 
     def read_state(self) -> JointState:
@@ -269,6 +286,12 @@ class ROSPublishingHAL:
         if self._last_state is None:
             raise ROSRuntimeError(
                 f"no /joint_states message received yet on {self._joint_state_topic!r}"
+            )
+        age_s = time.monotonic() - self._last_state_received_s
+        if age_s > self._joint_state_staleness_limit_s:
+            raise ROSPerceptionStale(
+                f"Joint state is {age_s:.3f} s old "
+                f"(limit {self._joint_state_staleness_limit_s:g} s)."
             )
         return self._last_state
 
@@ -293,7 +316,7 @@ class ROSPublishingHAL:
         self._published_group_count = 0
 
     def _wait_for_group_applied(self, action: Action, *, tick_index: int | None = None) -> None:
-        """Apply backpressure after publishing the last slot of an atomic tick.
+        """Apply backpressure after publishing every complete action tick.
 
         Raises:
             ROSEStopRequested: When ``safety_abort_getter`` reports a
@@ -303,42 +326,36 @@ class ROSPublishingHAL:
                 simply goes silent — waiting out the full timeout and
                 reporting it as one would bury the safety stop behind a
                 generic apply-timeout (CLAUDE.md §1.4).
-            ROSRuntimeError: When the group is still unapplied at the
+            ROSRuntimeError: When the tick is still unapplied at the
                 deadline and no safety stop is latched.
-
-        Note:
-            Grouped-dispatch wait only: ``tick_group_size <= 1`` returns
-            below without blocking, so a single-surface policy never reaches
-            this safety check. The ungrouped path's seam is polled by
-            ``rskill_runner_node`` via
-            ``RskillRunnerNode._safety_abort_reason`` before each tick;
-            don't add a check to the early return — this adapter stays a
-            sink, and a per-publish gate here would duplicate the kernel's
-            own decision.
         """
         group_size = int(action.tick_group_size)
-        if group_size <= 1:
-            return
         tick = int(action.tick_index if tick_index is None else tick_index)
         if tick <= 0:
-            raise ROSConfigError("ROSPublishingHAL: grouped action requires a positive tick_index")
-        if self._published_group_tick is None:
-            self._published_group_tick = tick
-        elif self._published_group_tick != tick:
-            raise ROSRuntimeError(
-                "ROSPublishingHAL: started tick "
-                f"{tick} before publishing all {group_size} slots for "
-                f"tick {self._published_group_tick}"
-            )
-        self._published_group_count += 1
-        if self._published_group_count < group_size:
-            return
-        if self._published_group_count > group_size:
-            raise ROSRuntimeError(
-                f"ROSPublishingHAL: tick {tick} published more than {group_size} slots"
-            )
-        self._published_group_tick = None
-        self._published_group_count = 0
+            if group_size > 1:
+                raise ROSConfigError(
+                    "ROSPublishingHAL: grouped action requires a positive tick_index"
+                )
+            return  # no active goal, therefore no tick id to correlate with an ack
+        if group_size > 1:
+            if self._published_group_tick is None:
+                self._published_group_tick = tick
+            elif self._published_group_tick != tick:
+                raise ROSRuntimeError(
+                    "ROSPublishingHAL: started tick "
+                    f"{tick} before publishing all {group_size} slots for "
+                    f"tick {self._published_group_tick}"
+                )
+            self._published_group_count += 1
+            if self._published_group_count < group_size:
+                return
+            if self._published_group_count > group_size:
+                raise ROSRuntimeError(
+                    f"ROSPublishingHAL: tick {tick} published more than {group_size} slots"
+                )
+            self._published_group_tick = None
+            self._published_group_count = 0
+        tick_label = "action group tick" if group_size > 1 else "action tick"
         deadline = time.monotonic() + self._action_applied_timeout_s
         with self._applied_condition:
             while self._last_applied_tick < tick:
@@ -352,12 +369,12 @@ class ROSPublishingHAL:
                     )
                     raise ROSEStopRequested(
                         f"ROSPublishingHAL: safety stop latched ({safety_reason}) while "
-                        f"waiting for action group tick {tick} to be applied"
+                        f"waiting for {tick_label} {tick} to be applied"
                     )
                 remaining = deadline - time.monotonic()
                 if remaining <= 0.0:
                     raise ROSRuntimeError(
-                        f"ROSPublishingHAL: action group tick {tick} was not applied within "
+                        f"ROSPublishingHAL: {tick_label} {tick} was not applied within "
                         f"{self._action_applied_timeout_s:g} s"
                     )
                 self._applied_condition.wait(timeout=min(remaining, _SAFETY_ABORT_POLL_S))
@@ -389,13 +406,15 @@ class ROSPublishingHAL:
         position = list(getattr(msg, "position", []) or [])
         velocity = list(getattr(msg, "velocity", []) or [])
         effort = list(getattr(msg, "effort", []) or [])
-        self._last_state = JointState(
+        state = JointState(
             name=name,
             position=position,
             velocity=velocity,
             effort=effort,
             stamp_ns=time.time_ns(),
         )
+        self._last_state_received_s = time.monotonic()
+        self._last_state = state
 
     def _action_to_chunk(self, action: Action) -> object:
         """Serialise the typed ``Action`` into ``openral_msgs/ActionChunk``.

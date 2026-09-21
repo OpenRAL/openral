@@ -108,9 +108,9 @@ runtime:
   # moveit_config; deploy_e2e.launch spawns no move_group). Setting an
   # approach_skill_id here would make EVERY ExecuteRskill goal abort at the
   # pre-inference approach step ("fatal approach attempt failed"). The
-  # starting-pose reset instead rides the HAL's ResetToPose service —
-  # SO100FollowerHAL.reset_to_pose, the slow real-arm ramp. Wire approach
-  # only after an so101 MoveIt config + move_group land in the graph.
+  # starting-pose fallback is a bounded joint ramp published through the
+  # normal candidate-action -> safety-kernel -> safe-action path. Wire a
+  # MoveIt approach only after an SO-101 config + move_group land in the graph.
   approach_skill_id: null
 
 # NOTE: an earlier `extra_allowed_collision_pairs: [[base, lower_arm]]` ACM

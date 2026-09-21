@@ -247,20 +247,20 @@ if _ROS2_AVAILABLE:
             super().__init__(node_name)
             self.declare_parameter("rate_hz", 30.0)
             self.declare_parameter("action_applied_timeout_s", 5.0)
+            # Conservative speed for the kernel-checked move from the live pose to an
+            # rSkill's starting_pose. The gripper channel is normalised [0, 1], so the same
+            # bound treats one full jaw stroke like one radian: conservative and tunable.
+            self.declare_parameter("starting_pose_max_delta_per_s", 0.5)
+            self.declare_parameter("starting_pose_tolerance", 0.05)
             self.declare_parameter("estop_topic", "/openral/estop")
-            # Optional HAL service that snaps qpos to a manifest's
-            # ``starting_pose`` before the first inference tick.
-            # Empty string disables the call — useful for HALs that
-            # don't expose the service, or for tests. The OpenArm e2e
-            # launch overrides this to
-            # ``/openral/openarm/reset_to_pose``.
+            # Deprecated launch input retained until the CLI stops forwarding it. Starting
+            # poses now always move through candidate_action; this service is never called.
             self.declare_parameter("reset_to_pose_service", "")
             # MoveIt approach to the manifest ``starting_pose``. When
             # set, the runner dispatches this rSkill (the rskill-moveit-multi-joints-none
             # MoveGroup wrapper) retargeted at the next skill's starting_pose,
-            # preferred over ``reset_to_pose_service``; a failure ABORTS the goal
-            # (vs. the best-effort snap). ``openral deploy sim`` / ``deploy run``
-            # set it to ``rskills/rskill-moveit-joints``. Empty = legacy snap.
+            # preferred over the checked joint ramp. ``openral deploy sim`` /
+            # ``deploy run`` may set it to ``rskills/rskill-moveit-joints``.
             self.declare_parameter("approach_skill_id", "")
             self.declare_parameter("approach_skill_revision", "main")
             # ADR-0097 place-phase declaration for DIRECT dispatch — the
@@ -883,20 +883,24 @@ if _ROS2_AVAILABLE:
                 # Move the HAL to the manifest's in-distribution ``starting_pose`` before the
                 # first inference tick — a checkpoint trained from a specific pose otherwise
                 # sees an OOD state and drifts joints into their stops. Prefer the MoveIt
-                # approach skill (collision-free MoveGroup plan); a failure there is FATAL
-                # (abort the goal, never start from an unreachable/colliding state). The legacy
-                # ResetToPose snap stays best-effort (failure only warns).
+                # approach skill (collision-free MoveGroup plan); otherwise interpolate through
+                # the normal candidate_action -> kernel -> safe_action path. Both are fatal on
+                # failure: a policy must never start from an unverified pose.
                 #
-                # Record wall-clock just before the reset: /joint_states is timer-published
+                # Record wall-clock just before the move: /joint_states is timer-published
                 # (~30 Hz) and world_state re-stamps each JointState with wall-clock ARRIVAL
                 # time, so the aggregator cache can still hold the PRE-reset pose for up to one
-                # publish period + DDS + cross-node latency after ResetToPose returns (stale
-                # first observation → OOD → self-collision wedge). Gate the first tick on a
+                # publish period + DDS + cross-node latency after motion completes (stale first
+                # observation → OOD → self-collision wedge). Gate the first tick on a
                 # joint state stamped at/after this instant.
-                reset_wall_ns = time.time_ns()
+                starting_pose_wall_ns = time.time_ns()
                 self._hal.begin_goal()
                 if self._apply_starting_pose_or_abort(
-                    skill, goal_handle, result, span=span, reset_wall_ns=reset_wall_ns
+                    skill,
+                    goal_handle,
+                    result,
+                    span=span,
+                    starting_pose_wall_ns=starting_pose_wall_ns,
                 ):
                     return result
 
@@ -1283,13 +1287,12 @@ if _ROS2_AVAILABLE:
             result: Any,
             *,
             span: Any,
-            reset_wall_ns: int,
+            starting_pose_wall_ns: int,
         ) -> bool:
             """Run the whole starting-pose preamble; abort the goal on failure.
 
             Moves the HAL to the manifest ``starting_pose``, then waits for the
-            first ``/joint_states`` frame published after ``reset_wall_ns`` so
-            the policy's first observation is not the pre-reset pose.
+            first matching ``/joint_states`` frame published after the motion began.
 
             Args:
                 skill: The resolved rSkill whose manifest carries ``starting_pose``.
@@ -1297,20 +1300,22 @@ if _ROS2_AVAILABLE:
                 result: The ``ExecuteRskill.Result`` to stamp on abort.
                 span: The active ``rskill.execute`` span; a safety abort is
                     recorded on it so the trace shows the cause.
-                reset_wall_ns: ``time.time_ns()`` sampled immediately before the
-                    reset, the freshness cut-off for the post-reset joint state.
+                starting_pose_wall_ns: Freshness cut-off for pose verification.
 
             Returns:
                 ``True`` when the goal was aborted (the caller returns
                 ``result`` immediately), ``False`` to proceed with execution.
             """
-            from openral_core.exceptions import ROSEStopRequested
+            from openral_core.exceptions import ROSError, ROSEStopRequested, ROSSafetyViolation
 
             try:
-                failure = self._apply_starting_pose(skill)
+                failure = self._apply_starting_pose(skill, goal_handle)
                 if failure is None:
-                    self._wait_for_post_reset_joint_state(skill, reset_wall_ns)
-                    return False
+                    if self._wait_for_starting_pose(skill, goal_handle, starting_pose_wall_ns):
+                        return False
+                    from openral_msgs.action import ExecuteRskill
+
+                    failure = (int(ExecuteRskill.Result.FAILURE_CANCELLED), "cancelled")
             except ROSEStopRequested as exc:
                 # A safety stop latched while the preamble was blocked — inside
                 # the MoveIt approach replay or the post-reset joint-state wait.
@@ -1327,8 +1332,22 @@ if _ROS2_AVAILABLE:
                 self._finalize_goal(goal_handle, "abort")
                 self._reset_active_goal()
                 return True
+            except ROSSafetyViolation:
+                raise
+            except ROSError as exc:
+                failure = (_failure_kind_for_exception(exc), f"{type(exc).__name__}: {exc!s}")
             failure_kind, reason = failure
-            self.get_logger().error(f"rskill_runner.approach_failed: {reason}")
+            from openral_msgs.action import ExecuteRskill
+
+            if failure_kind == int(ExecuteRskill.Result.FAILURE_CANCELLED):
+                self._drain_and_idle_hold(skill)
+                result.success = False
+                result.failure_reason = "cancelled"
+                result.failure_kind = failure_kind
+                self._finalize_goal(goal_handle, "canceled")
+                self._reset_active_goal()
+                return True
+            self.get_logger().error(f"rskill_runner.starting_pose_failed: {reason}")
             result.success = False
             result.failure_reason = reason
             result.failure_kind = failure_kind
@@ -1393,88 +1412,79 @@ if _ROS2_AVAILABLE:
             """
             return RskillRunnerNode._classify_runtime_failure(exc)[0]
 
-        def _wait_for_post_reset_joint_state(
+        def _wait_for_starting_pose(
             self,
             skill: Any,
-            reset_wall_ns: int,
-        ) -> None:
-            """Block until the aggregator's joint state is newer than the reset.
-
-            Closes the cross-node staleness race after a ``starting_pose`` reset: the HAL
-            refreshes its proprio snapshot inside the ResetToPose handler, but
-            ``/joint_states`` is only re-published on the next publisher-thread tick (~30 Hz)
-            and must transit DDS + world_state's ``_on_joint_state`` before it lands in the
-            ``WorldStateAggregator`` cache the first inference reads.
-            ``WorldState.joint_state.stamp_ns`` is world_state's wall-clock ARRIVAL time, so any
-            value ``>= reset_wall_ns`` was published from the reset snapshot. No-op unless a
-            ``starting_pose`` reset fired; bounded by a short deadline → best-effort (mirrors the
-            reset's own posture; never wedges the goal).
-
-            Best-effort about *freshness* only, never safety: a latched HAL stops publishing
-            ``/joint_states`` altogether (``openral_hal.lifecycle._publish_joint_state`` skips
-            the timer while ``self._estopped``, unless a sim proprio snapshot backs it), so this
-            wait is one of the waits a latched safety layer starves.
-
-            Raises:
-                ROSEStopRequested: When a safety stop is in effect while this wait is parked
-                    (``_raise_if_safety_aborted``).
-            """
+            goal_handle: Any,
+            starting_pose_wall_ns: int,
+        ) -> bool:
+            """Require a fresh observed starting pose before policy inference."""
             manifest = getattr(skill, "manifest", None)
             pose = getattr(manifest, "starting_pose", None) if manifest is not None else None
             if not pose:
-                return
-            if not self.get_parameter("reset_to_pose_service").get_parameter_value().string_value:
-                return
+                return True
             if self._aggregator is None:
-                return
-            deadline = time.monotonic() + 1.0
+                return True
+            from openral_core.exceptions import ROSPerceptionStale
+
+            assert self._description is not None
+            names = [joint.name for joint in self._description.joints]
+            tolerance = float(self.get_parameter("starting_pose_tolerance").value)
+            deadline = time.monotonic() + float(
+                self.get_parameter("action_applied_timeout_s").value
+            )
             while time.monotonic() < deadline:
-                self._raise_if_safety_aborted("waiting for a post-starting-pose-reset joint state")
+                self._raise_if_safety_aborted("waiting for starting_pose verification")
+                if self._cancel_requested or goal_handle.is_cancel_requested:
+                    return False
                 js = self._aggregator.snapshot().joint_state
-                if js is not None and int(js.stamp_ns) >= reset_wall_ns:
+                if (
+                    js is not None
+                    and int(js.stamp_ns) >= starting_pose_wall_ns
+                    and max(
+                        abs(current - target)
+                        for current, target in zip(
+                            self._joint_positions_in_manifest_order(js, names), pose, strict=True
+                        )
+                    )
+                    <= tolerance
+                ):
                     self.get_logger().info(
-                        "rskill_runner.post_reset_joint_state_fresh "
+                        "rskill_runner.starting_pose_verified "
                         f"(age_ms={(time.time_ns() - int(js.stamp_ns)) / 1e6:.1f})"
                     )
-                    return
+                    return True
                 time.sleep(0.005)
-            self.get_logger().warning(
-                "rskill_runner.post_reset_joint_state_timeout: no joint state newer "
-                "than the reset within 1.0 s; proceeding with current cache."
+            raise ROSPerceptionStale(
+                "no fresh joint state reached starting_pose within "
+                f"{float(self.get_parameter('action_applied_timeout_s').value):g} s"
             )
 
-        def _apply_starting_pose(self, skill: Any) -> tuple[int, str] | None:
+        def _apply_starting_pose(self, skill: Any, goal_handle: Any) -> tuple[int, str] | None:
             """Move the HAL to the manifest ``starting_pose``.
 
-            Prefers the MoveIt approach skill (``approach_skill_id``) over the
-            legacy ``ResetToPose`` snap. Returns a ``(failure_kind, reason)`` pair
-            **only** when a fatal (approach) attempt failed — the caller then aborts
-            the ExecuteSkill goal with both fields set. The best-effort reset path
-            always returns ``None`` (a failure only warns), preserving the legacy
-            behaviour.
+            Prefers the MoveIt approach skill (``approach_skill_id``). The fallback
+            interpolates from live joint state and publishes each waypoint through
+            ``ROSPublishingHAL``, so the C++ kernel checks the entire move. Any failure
+            is fatal and cancellation is checked between waypoints.
             """
-            from openral_rskill_ros._starting_pose import resolve_starting_pose_action
-
             manifest = getattr(skill, "manifest", None)
             starting_pose = (
                 getattr(manifest, "starting_pose", None) if manifest is not None else None
             )
-            action = resolve_starting_pose_action(
-                approach_skill_id=self.get_parameter("approach_skill_id")
-                .get_parameter_value()
-                .string_value,
-                reset_to_pose_service=self.get_parameter("reset_to_pose_service")
-                .get_parameter_value()
-                .string_value,
-                starting_pose=starting_pose,
+            if not starting_pose:
+                return None
+            if self.get_parameter("approach_skill_id").get_parameter_value().string_value:
+                return self._dispatch_moveit_approach(
+                    [float(value) for value in starting_pose], goal_handle
+                )
+            return self._interpolate_starting_pose(
+                [float(value) for value in starting_pose], goal_handle
             )
-            if action.mode == "approach":
-                return self._dispatch_moveit_approach(action.pose)
-            if action.mode == "reset":
-                self._maybe_reset_hal_to_starting_pose(skill)
-            return None
 
-        def _dispatch_moveit_approach(self, pose: list[float]) -> tuple[int, str] | None:
+        def _dispatch_moveit_approach(
+            self, pose: list[float], goal_handle: Any
+        ) -> tuple[int, str] | None:
             """Run the MoveIt approach rSkill retargeted at ``pose``.
 
             Resolves the ``approach_skill_id`` rSkill (``rskill-moveit-multi-joints-none``)
@@ -1532,7 +1542,8 @@ if _ROS2_AVAILABLE:
                     prompt_metadata_json="",
                     goal_params_json=goal_params_json,
                 )
-                self._run_approach_skill(approach)
+                if not self._run_approach_skill(approach, goal_handle):
+                    return (int(ExecuteRskill.Result.FAILURE_CANCELLED), "cancelled")
             except ROSEStopRequested:
                 # A safety stop is not a planning failure. ``ROSEStopRequested``
                 # is a ``ROSError``, so without this it fell into the branch
@@ -1556,7 +1567,7 @@ if _ROS2_AVAILABLE:
             )
             return None
 
-        def _run_approach_skill(self, approach: rSkillBase) -> None:
+        def _run_approach_skill(self, approach: rSkillBase, goal_handle: Any) -> bool:
             """Tick the approach skill to completion, publishing each waypoint.
 
             Mirrors the inner loop of ``_run_until_done_or_deadline`` but for the pre-skill
@@ -1582,81 +1593,115 @@ if _ROS2_AVAILABLE:
             try:
                 for _ in range(_MAX_APPROACH_WAYPOINTS):
                     self._raise_if_safety_aborted("replaying the MoveIt approach to starting_pose")
+                    if self._cancel_requested or goal_handle.is_cancel_requested:
+                        return False
                     snapshot = self._aggregator.snapshot()
                     step_result = approach.step(snapshot)
                     actions = list(step_result) if isinstance(step_result, list) else [step_result]
+                    self._current_tick_index = self._next_tick_index
+                    self._next_tick_index += 1
                     for action in actions:
                         self._hal.send_action(action)
             except ROSRskillGoalSatisfied:
-                return
+                return True
             raise ROSRuntimeError(
                 f"MoveIt approach exceeded {_MAX_APPROACH_WAYPOINTS} waypoints without "
                 "completing — aborting (runaway guard)."
             )
 
-        def _maybe_reset_hal_to_starting_pose(self, skill: Any) -> None:
-            """Call the HAL's ResetToPose service if the manifest declares one.
+        def _interpolate_starting_pose(
+            self, pose: list[float], goal_handle: Any
+        ) -> tuple[int, str] | None:
+            """Publish a bounded starting-pose ramp through the safety kernel."""
+            from openral_core.exceptions import ROSConfigError
+            from openral_core.schemas import Action, ControlMode
+            from openral_msgs.action import ExecuteRskill
 
-            The service name is configurable via the
-            ``reset_to_pose_service`` ROS parameter (defaults to
-            empty, i.e. disabled). The OpenArm e2e launch sets it to
-            ``/openral/openarm/reset_to_pose``; HALs that don't expose
-            a pose-reset service leave it empty. Likewise, a manifest
-            with no ``starting_pose`` (or one whose length doesn't
-            match the robot's DoF count) is a no-op — only an explicit
-            maintainer-declared pose triggers a reset.
-            """
-            service_name: str = (
-                self.get_parameter("reset_to_pose_service").get_parameter_value().string_value
-            )
-            if not service_name:
-                return
-            manifest = getattr(skill, "manifest", None)
-            pose = getattr(manifest, "starting_pose", None) if manifest is not None else None
-            if not pose:
-                return
-            try:
-                from openral_msgs.srv import ResetToPose
-            except ImportError as exc:  # reason: build mismatch, surface and continue
-                self.get_logger().warning(
-                    f"ResetToPose IDL not importable ({exc!s}); skipping pose reset."
+            assert self._description is not None
+            assert self._hal is not None
+            names = [joint.name for joint in self._description.joints]
+            target = [float(value) for value in pose]
+            if len(target) != len(names):
+                raise ROSConfigError(
+                    f"starting_pose has {len(target)} values; robot {self._description.name!r} "
+                    f"has {len(names)} joints"
                 )
-                return
+            for joint, value in zip(self._description.joints, target, strict=True):
+                if not math.isfinite(value):
+                    raise ROSConfigError(f"starting_pose[{joint.name!r}] is not finite")
+                if joint.position_limits is not None and not (
+                    joint.position_limits[0] <= value <= joint.position_limits[1]
+                ):
+                    raise ROSConfigError(
+                        f"starting_pose[{joint.name!r}]={value:g} is outside "
+                        f"{joint.position_limits!r}"
+                    )
 
-            client = self.create_client(ResetToPose, service_name)
-            try:
-                if not client.wait_for_service(timeout_sec=1.0):
-                    self.get_logger().info(
-                        f"ResetToPose service {service_name!r} not available; "
-                        "HAL likely doesn't support pose reset. Continuing."
+            self._raise_if_safety_aborted("moving to starting_pose")
+            current = self._joint_positions_in_manifest_order(self._hal.read_state(), names)
+            deltas = [end - start for start, end in zip(current, target, strict=True)]
+            max_delta = max((abs(delta) for delta in deltas), default=0.0)
+            tolerance = float(self.get_parameter("starting_pose_tolerance").value)
+            max_delta_per_s = float(self.get_parameter("starting_pose_max_delta_per_s").value)
+            rate_hz = float(self.get_parameter("rate_hz").value)
+            if tolerance <= 0.0 or max_delta_per_s <= 0.0 or rate_hz <= 0.0:
+                raise ROSConfigError(
+                    "starting_pose_tolerance, starting_pose_max_delta_per_s, and rate_hz "
+                    "must be positive"
+                )
+            if max_delta <= tolerance:
+                return None
+
+            steps = max(math.ceil(max_delta / max_delta_per_s * rate_hz), 1)
+            self.get_logger().info(
+                "rskill_runner.starting_pose_ramp "
+                f"max_delta={max_delta:.3f} duration_s={steps / rate_hz:.2f} steps={steps}"
+            )
+            next_deadline = time.perf_counter()
+            for index in range(1, steps + 1):
+                self._raise_if_safety_aborted("moving to starting_pose")
+                if self._cancel_requested or goal_handle.is_cancel_requested:
+                    return (int(ExecuteRskill.Result.FAILURE_CANCELLED), "cancelled")
+                alpha = index / steps
+                waypoint = [
+                    start + delta * alpha for start, delta in zip(current, deltas, strict=True)
+                ]
+                self._current_tick_index = self._next_tick_index
+                self._next_tick_index += 1
+                self._hal.send_action(
+                    Action(
+                        control_mode=ControlMode.JOINT_POSITION,
+                        horizon=1,
+                        joint_targets=[waypoint],
+                        joint_names=names,
+                        stamp_ns=time.time_ns(),
                     )
-                    return
-                req = ResetToPose.Request()
-                req.pose = [float(v) for v in pose]
-                future = client.call_async(req)
-                # Block until the service responds. The action server's
-                # execute_cb already runs on a worker thread, so the
-                # node's main rclpy spin keeps servicing callbacks.
-                deadline = time.monotonic() + 5.0
-                while not future.done() and time.monotonic() < deadline:
-                    time.sleep(0.02)
-                if not future.done():
-                    self.get_logger().warning(
-                        "ResetToPose call timed out after 5 s; continuing with current HAL state."
-                    )
-                    return
-                resp = future.result()
-                if resp is None or not resp.success:
-                    reason = "unknown" if resp is None else resp.failure_reason
-                    self.get_logger().warning(
-                        f"ResetToPose failed: {reason}; continuing with current HAL state."
-                    )
-                else:
-                    self.get_logger().info(
-                        f"ResetToPose applied {len(req.pose)}-D manifest starting_pose."
-                    )
-            finally:
-                self.destroy_client(client)
+                )
+                next_deadline = _pace_tick(next_deadline, 1.0 / rate_hz)
+            return None
+
+        @staticmethod
+        def _joint_positions_in_manifest_order(state: Any, names: list[str]) -> list[float]:
+            """Read a typed joint state in ``RobotDescription.joints`` order."""
+            from openral_core.exceptions import ROSPerceptionStale
+
+            state_names = list(state.name or [])
+            positions = [float(value) for value in state.position]
+            if state_names:
+                if len(state_names) != len(positions) or len(set(state_names)) != len(state_names):
+                    raise ROSPerceptionStale("joint state has mismatched or duplicate names")
+                by_name = dict(zip(state_names, positions, strict=True))
+                missing = [name for name in names if name not in by_name]
+                if missing:
+                    raise ROSPerceptionStale(f"joint state is missing joints {missing!r}")
+                positions = [by_name[name] for name in names]
+            elif len(positions) != len(names):
+                raise ROSPerceptionStale(
+                    f"unnamed joint state has {len(positions)} values; expected {len(names)}"
+                )
+            if not all(math.isfinite(value) for value in positions):
+                raise ROSPerceptionStale("joint state contains a non-finite position")
+            return positions
 
         def _drain_and_idle_hold(self, skill: rSkillBase) -> None:
             """Honour the F1 cancel semantics: ≤100 ms drain + idle-hold.
@@ -3042,8 +3087,7 @@ def _make_policy_adapter_skill(
             self._prompt = prompt
             # Hold the full manifest so the F1 skill_runner can read
             # fields the rSkillBase ABC doesn't expose (e.g.
-            # ``starting_pose`` for the HAL ResetToPose call before
-            # the first inference tick).
+            # ``starting_pose`` for the checked pre-inference move).
             self.manifest = manifest
             # When the manifest declares a wrapped-task-space
             # layout AND its assembler is registered, _step_impl

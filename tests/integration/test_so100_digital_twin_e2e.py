@@ -107,6 +107,23 @@ def _local_skill_resolver(*_args: Any, **_kwargs: Any) -> Any:
     return _make_constant_skill()
 
 
+def _starting_pose_skill() -> Any:
+    """Constant real skill carrying the in-tree SO-101 starting pose."""
+    from pathlib import Path
+
+    from openral_rskill.loader import load_rskill_manifest
+
+    skill = _make_constant_skill()
+    skill.manifest = load_rskill_manifest(
+        str(
+            Path(__file__).resolve().parents[2]
+            / "rskills"
+            / "rskill-smolvla-so101-eraser_place-bf16"
+        )
+    )
+    return skill
+
+
 def _make_hal_bridge_node(hal_adapter: Any) -> Any:
     """Build a tiny ``rclpy.Node`` that bridges the SO-100 HAL onto ROS.
 
@@ -121,7 +138,7 @@ def _make_hal_bridge_node(hal_adapter: Any) -> Any:
     from rclpy.node import Node
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
     from sensor_msgs.msg import JointState as RosJointState
-    from std_msgs.msg import Empty
+    from std_msgs.msg import Empty, UInt64
 
     class _HALBridge(Node):  # type: ignore[misc]
         """Ad-hoc HAL bridge — production analog without USB."""
@@ -149,6 +166,9 @@ def _make_hal_bridge_node(hal_adapter: Any) -> Any:
 
             self._joint_state_pub = self.create_publisher(
                 RosJointState, "/joint_states", control_qos
+            )
+            self._action_applied_pub = self.create_publisher(
+                UInt64, "/openral/action_applied", control_qos
             )
             self._safe_sub = self.create_subscription(
                 ActionChunk,
@@ -178,6 +198,9 @@ def _make_hal_bridge_node(hal_adapter: Any) -> Any:
             try:
                 self._hal.send_action(action)
                 self.chunks_consumed += 1
+                applied = UInt64()
+                applied.data = int(getattr(msg, "tick_index", 0))
+                self._action_applied_pub.publish(applied)
             except Exception as exc:  # reason: log + survive
                 self.get_logger().warn(f"send_action failed: {exc}")
 
@@ -203,7 +226,9 @@ def _make_hal_bridge_node(hal_adapter: Any) -> Any:
 
 
 @contextmanager
-def _digital_twin_harness() -> Iterator[tuple[Any, Any, Any, Any, Any, list[Any], list[Any]]]:
+def _digital_twin_harness(
+    resolver: Any = _local_skill_resolver,
+) -> Iterator[tuple[Any, Any, Any, Any, Any, list[Any], list[Any]]]:
     """Compose every F1/F5/F8 node + an SO-100 HAL bridge wrapping the twin.
 
     Yields ``(executor, runtime, safety, hal_bridge, twin,
@@ -223,7 +248,7 @@ def _digital_twin_harness() -> Iterator[tuple[Any, Any, Any, Any, Any, list[Any]
     hal_adapter = SO100FollowerHAL(robot=twin)
     hal_adapter.connect()
 
-    runtime = compose_so100_runtime(skill_resolver=_local_skill_resolver)
+    runtime = compose_so100_runtime(skill_resolver=resolver)
     safety = SafetyPassthroughNode(node_name="openral_safety_e2e")
     safety.set_parameters([rclpy.parameter.Parameter("n_dof", value=6)])
     hal_bridge = _make_hal_bridge_node(hal_adapter)
@@ -358,3 +383,141 @@ def test_so100_digital_twin_end_to_end_action_chunk_moves_twin() -> None:
     last_state = observed_joint_states[-1]
     assert len(list(last_state.name)) == 6
     assert len(list(last_state.position)) == 6
+
+
+@pytest.mark.skipif(
+    not _lerobot_available(),
+    reason="lerobot not installed — SO100DigitalTwin needs it. "
+    "Run `just sync --all-packages --group hardware` to install.",
+)
+def test_starting_pose_ramp_is_kernel_checked_and_verified() -> None:
+    """The SO-101 start pose reaches the twin only through safe_action waypoints."""
+    import rclpy
+    from openral_msgs.action import ExecuteRskill
+    from rclpy.action import ActionClient
+
+    with _digital_twin_harness(resolver=lambda *_a, **_k: _starting_pose_skill()) as (
+        executor,
+        runtime,
+        _safety,
+        hal_bridge,
+        _twin,
+        observed_safe,
+        observed_joint_states,
+    ):
+        runtime.skill_runner_node.set_parameters(
+            [
+                rclpy.parameter.Parameter("starting_pose_max_delta_per_s", value=4.0),
+            ]
+        )
+        client = ActionClient(runtime.skill_runner_node, ExecuteRskill, "/openral/execute_rskill")
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        assert client.wait_for_server(timeout_sec=2.0)
+
+        goal = ExecuteRskill.Goal()
+        goal.rskill_id = "openral/test-so100-constant"
+        goal.prompt = "reach the eraser skill starting pose"
+        goal.deadline_s = 0.2
+        send = client.send_goal_async(goal)
+        deadline = time.monotonic() + 3.0
+        while not send.done() and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        handle = send.result()
+        assert handle is not None and handle.accepted
+
+        result = handle.get_result_async()
+        deadline = time.monotonic() + 10.0
+        while not result.done() and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        assert result.done(), "starting-pose goal did not finish"
+        result_msg = result.result()
+        assert result_msg is not None
+
+        target = list(runtime.skill_runner_node._resident_skill.manifest.starting_pose)
+        ticks = [int(chunk.tick_index) for chunk in observed_safe]
+        states = [list(state.position) for state in observed_joint_states]
+        consumed = hal_bridge.chunks_consumed
+
+    assert consumed >= 2, "starting pose was not interpolated"
+    assert ticks and all(tick > 0 for tick in ticks)
+    assert ticks == sorted(set(ticks)), ticks
+    assert list(observed_safe[0].flat) != pytest.approx(target)
+    reached = next(
+        i for i, chunk in enumerate(observed_safe) if list(chunk.flat) == pytest.approx(target)
+    )
+    assert reached > 0
+    assert any(position == pytest.approx(target, abs=0.05) for position in states)
+    assert any(list(chunk.flat) == pytest.approx(_TARGET) for chunk in observed_safe[reached + 1 :])
+
+
+@pytest.mark.skipif(
+    not _lerobot_available(),
+    reason="lerobot not installed — SO100DigitalTwin needs it. "
+    "Run `just sync --all-packages --group hardware` to install.",
+)
+def test_starting_pose_ramp_honors_action_cancel() -> None:
+    """Cancellation stops a long starting-pose ramp before the policy begins."""
+    import rclpy
+    from action_msgs.msg import GoalStatus
+    from openral_msgs.action import ExecuteRskill
+    from rclpy.action import ActionClient
+
+    with _digital_twin_harness(resolver=lambda *_a, **_k: _starting_pose_skill()) as (
+        executor,
+        runtime,
+        _safety,
+        _hal_bridge,
+        _twin,
+        observed_safe,
+        _observed_joint_states,
+    ):
+        runtime.skill_runner_node.set_parameters(
+            [
+                rclpy.parameter.Parameter("starting_pose_max_delta_per_s", value=0.1),
+            ]
+        )
+        client = ActionClient(runtime.skill_runner_node, ExecuteRskill, "/openral/execute_rskill")
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        assert client.wait_for_server(timeout_sec=2.0)
+
+        goal = ExecuteRskill.Goal()
+        goal.rskill_id = "openral/test-so100-constant"
+        goal.prompt = "cancel the starting pose move"
+        goal.deadline_s = 30.0
+        send = client.send_goal_async(goal)
+        deadline = time.monotonic() + 3.0
+        while not send.done() and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        handle = send.result()
+        assert handle is not None and handle.accepted
+
+        deadline = time.monotonic() + 5.0
+        while len(observed_safe) < 3 and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        assert len(observed_safe) >= 3
+        cancel = handle.cancel_goal_async()
+        while not cancel.done() and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        assert cancel.done()
+
+        result = handle.get_result_async()
+        deadline = time.monotonic() + 5.0
+        while not result.done() and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        assert result.done()
+        result_msg = result.result()
+        assert result_msg is not None
+        count_at_result = len(observed_safe)
+        end = time.monotonic() + 0.2
+        while time.monotonic() < end:
+            executor.spin_once(timeout_sec=0.02)
+
+    assert result_msg.status == GoalStatus.STATUS_CANCELED
+    assert not result_msg.result.success
+    assert result_msg.result.failure_reason == "cancelled"
+    assert result_msg.result.failure_kind == ExecuteRskill.Result.FAILURE_CANCELLED
+    assert len(observed_safe) == count_at_result

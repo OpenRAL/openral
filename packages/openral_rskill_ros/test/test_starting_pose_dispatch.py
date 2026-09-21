@@ -1,9 +1,4 @@
-"""Collision-aware approach-to-pose — the runner's pure starting-pose dispatch decision.
-
-Pins the precedence (approach > reset > none) and the fatal-on-failure contract
-that makes a failed collision-aware approach abort the ExecuteSkill goal while a
-failed legacy snap only warns. Pure — no ROS, always runs.
-"""
+"""Pure MoveIt starting-pose goal shaping."""
 
 from __future__ import annotations
 
@@ -21,56 +16,8 @@ assert _spec is not None and _spec.loader is not None
 _starting_pose = importlib.util.module_from_spec(_spec)
 sys.modules[_NAME] = _starting_pose  # slotted dataclass introspection needs this
 _spec.loader.exec_module(_starting_pose)
-resolve_starting_pose_action = _starting_pose.resolve_starting_pose_action
 joint_names_from_goal_json = _starting_pose.joint_names_from_goal_json
 moveit_joint_goal_override = _starting_pose.moveit_joint_goal_override
-
-_POSE = [0.0, -1.2, 1.2, -1.0, -1.4, 0.0]
-_APPROACH = "rskills/rskill-moveit-joints"
-
-
-def test_approach_preferred_and_fatal_when_both_wired() -> None:
-    action = resolve_starting_pose_action(
-        approach_skill_id=_APPROACH,
-        reset_to_pose_service="/openral/ur5e/reset_to_pose",
-        starting_pose=_POSE,
-    )
-    assert action.mode == "approach"
-    assert action.fatal_on_failure is True
-    assert action.pose == _POSE
-
-
-def test_reset_used_and_best_effort_when_only_reset_wired() -> None:
-    action = resolve_starting_pose_action(
-        approach_skill_id="",
-        reset_to_pose_service="/openral/ur5e/reset_to_pose",
-        starting_pose=_POSE,
-    )
-    assert action.mode == "reset"
-    assert action.fatal_on_failure is False
-
-
-def test_none_when_nothing_wired() -> None:
-    action = resolve_starting_pose_action(
-        approach_skill_id="",
-        reset_to_pose_service="",
-        starting_pose=_POSE,
-    )
-    assert action.mode == "none"
-
-
-def test_none_when_no_starting_pose_even_when_wired() -> None:
-    for empty in (None, []):
-        action = resolve_starting_pose_action(
-            approach_skill_id=_APPROACH,
-            reset_to_pose_service="/openral/ur5e/reset_to_pose",
-            starting_pose=empty,
-        )
-        assert action.mode == "none"
-        assert action.pose == []
-
-
-# ── MoveIt goal shaping (goal_builder joint block) ───────────────────────────
 
 _GOAL_JSON = (
     '{"joint": {"group_name": "panda_arm", '

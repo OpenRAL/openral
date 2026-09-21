@@ -339,13 +339,13 @@ class LaunchInvocation:
     controller can execute; real admits only the robot's declared
     ``supported_control_modes``)."""
     reset_to_pose_service: str
+    """Deprecated launch-compatibility value; startup motion uses checked actions."""
     approach_skill_id: str
     """MoveIt approach rSkill URI (e.g. ``rskills/rskill-moveit-joints``)
     forwarded into the launch as ``approach_skill_id:=…`` so the skill_runner
     plans a collision-free MoveGroup motion to the next skill's ``starting_pose``
-    instead of the teleport snap. Empty (the default) keeps the legacy
-    best-effort ``ResetToPose`` snap — opt in with ``--approach-skill-id`` once a
-    ``move_group`` is in the graph."""
+    instead of the runner's kernel-checked joint ramp. Empty (the default) uses
+    that ramp; opt in once a ``move_group`` is in the graph."""
     enable_slam: bool
     """Opt-in. Set by ``openral deploy sim --enable-slam``;
     forwarded into the launch as ``enable_slam:=true``."""
@@ -1414,8 +1414,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
                 hal_params.setdefault("scene_composition_json", scene_composition.model_dump_json())
 
     service = reset_to_pose_service or f"/openral/{robot_id}/reset_to_pose"
-    # Empty by default — the legacy ResetToPose snap stays until a move_group is
-    # wired into the graph; opt in with --approach-skill-id.
+    # Empty by default: the runner uses its checked joint ramp until a MoveIt
+    # approach is wired into the graph.
     approach_skill = approach_skill_id or ""
 
     argv_template: list[str] = [
@@ -2676,8 +2676,8 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
         None,
         "--reset-to-pose-service",
         help=(
-            "Override the HAL ``reset_to_pose`` service path. Defaults to "
-            "``/openral/<robot_id>/reset_to_pose``."
+            "Deprecated launch-compatibility option; startup motion now uses "
+            "kernel-checked actions."
         ),
     ),
     approach_skill_id: str | None = typer.Option(
@@ -2687,8 +2687,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             "MoveIt approach rSkill URI (e.g. "
             "``rskills/rskill-moveit-joints``). When set, the runner plans a "
             "collision-free MoveGroup motion to each skill's starting_pose "
-            "instead of the teleport snap (needs a running move_group). Empty "
-            "keeps the legacy ResetToPose snap."
+            "instead of the checked joint ramp (needs a running move_group)."
         ),
     ),
     dataset_out: str | None = typer.Option(

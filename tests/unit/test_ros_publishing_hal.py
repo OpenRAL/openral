@@ -24,12 +24,18 @@ from openral_core import (
     ControlMode,
     EmbodimentKind,
     JointSpec,
+    JointState,
     JointType,
     RobotCapabilities,
     RobotDescription,
     SafetyEnvelope,
 )
-from openral_core.exceptions import ROSConfigError, ROSEStopRequested, ROSRuntimeError
+from openral_core.exceptions import (
+    ROSConfigError,
+    ROSEStopRequested,
+    ROSPerceptionStale,
+    ROSRuntimeError,
+)
 from openral_runner.ros_publishing_hal import ROSPublishingHAL, _row_major_flatten
 
 
@@ -101,6 +107,31 @@ def test_send_action_before_connect_raises() -> None:
     )
     with pytest.raises(ROSRuntimeError, match=r"before connect"):
         hal.send_action(action)
+
+
+def test_read_state_rejects_stale_joint_state() -> None:
+    """A cached frame cannot keep a disconnected joint-state stream alive."""
+
+    class _StubNode:
+        pass
+
+    hal = ROSPublishingHAL(
+        node=_StubNode(),  # type: ignore[arg-type]
+        description=_so100_like_description(),
+        joint_state_staleness_limit_s=0.01,
+    )
+    hal._connected = True
+    hal._on_joint_state(
+        JointState(
+            name=[f"j{i}" for i in range(6)],
+            position=[0.0] * 6,
+            stamp_ns=time.time_ns(),
+        )
+    )
+    assert hal.read_state().position == [0.0] * 6
+    hal._last_state_received_s -= 0.02
+    with pytest.raises(ROSPerceptionStale, match=r"Joint state is .*\(limit 0.01 s\)"):
+        hal.read_state()
 
 
 def test_estop_raises_typed() -> None:
@@ -280,6 +311,107 @@ def test_grouped_action_waits_for_real_applied_ack() -> None:
     elapsed = time.monotonic() - started
     next_ack_thread.join(timeout=1.0)
     assert elapsed >= 0.04
+
+
+@pytest.mark.skipif(
+    not _rclpy_available(),
+    reason="rclpy / openral_msgs / std_msgs not on PYTHONPATH",
+)
+def test_single_action_waits_for_real_applied_ack() -> None:
+    """A one-slot SO-101-style tick waits for the HAL's application ack."""
+    from std_msgs.msg import UInt64
+
+    class _StubNode:
+        pass
+
+    hal = ROSPublishingHAL(
+        node=_StubNode(),  # type: ignore[arg-type]
+        description=_so100_like_description(),
+    )
+    action = Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        joint_targets=[[0.0] * 6],
+        tick_index=9,
+    )
+
+    def _ack_after_delay() -> None:
+        time.sleep(0.05)
+        hal._on_action_applied(UInt64(data=9))
+
+    ack_thread = threading.Thread(target=_ack_after_delay)
+    ack_thread.start()
+    started = time.monotonic()
+    hal._wait_for_group_applied(action)
+    elapsed = time.monotonic() - started
+    ack_thread.join(timeout=1.0)
+    assert elapsed >= 0.04
+
+
+def test_single_action_ack_timeout_is_bounded() -> None:
+    """A dead HAL stops a single-slot rollout at the configured deadline."""
+
+    class _StubNode:
+        pass
+
+    hal = ROSPublishingHAL(
+        node=_StubNode(),  # type: ignore[arg-type]
+        description=_so100_like_description(),
+        action_applied_timeout_s=0.01,
+    )
+    action = Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        joint_targets=[[0.0] * 6],
+        tick_index=10,
+    )
+    with pytest.raises(ROSRuntimeError, match=r"action tick 10 was not applied within 0.01 s"):
+        hal._wait_for_group_applied(action)
+
+
+@pytest.mark.skipif(
+    not _rclpy_available(),
+    reason="rclpy / openral_msgs / std_msgs not on PYTHONPATH",
+)
+def test_hal_lifecycle_publishes_single_action_ack() -> None:
+    """The HAL-side bridge acknowledges a singleton after send_action returns."""
+    import rclpy
+    from openral_hal.lifecycle import HALLifecycleNodeBase
+    from rclpy.lifecycle import LifecycleNode
+    from std_msgs.msg import UInt64
+
+    rclpy.init()
+    node: HALLifecycleNodeBase | None = None
+    peer: LifecycleNode | None = None
+    try:
+        node = HALLifecycleNodeBase("openral_single_action_ack_test")
+        peer = LifecycleNode("openral_single_action_ack_peer")
+        topic = "/openral/test/action_applied"
+        received: list[int] = []
+        node._action_applied_pub = node.create_publisher(UInt64, topic, 1)
+        peer.create_subscription(UInt64, topic, lambda msg: received.append(int(msg.data)), 1)
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and node.count_subscribers(topic) == 0:
+            rclpy.spin_once(node, timeout_sec=0.01)
+            rclpy.spin_once(peer, timeout_sec=0.01)
+        assert node.count_subscribers(topic) == 1
+
+        node._publish_action_applied_if_complete(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                joint_targets=[[0.0] * 6],
+                tick_index=11,
+            )
+        )
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not received:
+            rclpy.spin_once(peer, timeout_sec=0.02)
+        assert received == [11]
+    finally:
+        if peer is not None:
+            peer.destroy_node()
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
 
 
 @pytest.mark.skipif(
