@@ -22,6 +22,7 @@ from openral_core import (
     ROSRuntimeError,
     ROSSafetyViolation,
 )
+from openral_hal.protocol import EStopRecovery, LifecycleEStopHAL
 from openral_hal.so100_follower import (
     _SO100_JOINT_NAMES,
     SO100_DESCRIPTION,
@@ -347,7 +348,9 @@ class TestSO100FollowerHALEstop:
         with pytest.raises(ROSSafetyViolation):
             hal.estop()
 
-    def test_estop_disconnects(self, hal: SO100FollowerHAL) -> None:
+    def test_lifecycle_estop_disconnects(self, hal: SO100FollowerHAL) -> None:
+        assert isinstance(hal, LifecycleEStopHAL)
+        assert hal.estop_recovery is EStopRecovery.RESTART_REQUIRED
         with pytest.raises(ROSEStopRequested):
             hal.estop()
         assert hal._connected is False

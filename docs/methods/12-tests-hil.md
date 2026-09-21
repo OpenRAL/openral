@@ -50,10 +50,11 @@ connecting) run whenever the device node and calibration file are present,
 while the live-servo tier additionally requires a broadcast ping to find all
 six ids. The USB-serial adapter enumerates on 5 V, so an arm with its 12 V
 supply off leaves `/dev/ttyACM0` looking healthy and the bus completely
-silent — a skip, not a failure. **No motion commands by construction:** the
-powered tier calls only `connect()` / `read_state()` / `disconnect()`.
-`connect()` can re-enable torque, so a stale servo goal can still cause a
-twitch. Driven by `just hil-so101` and by
+silent — a skip, not a failure. **No position commands by construction:** the
+powered tier never calls `send_action()` or `reset_to_pose()`. Its terminal
+E-stop assertion disconnects the motor bus, so run it attended with the
+physical power switch within reach. `connect()` can re-enable torque, so a
+stale servo goal can still cause a twitch. Driven by `just hil-so101` and by
 `.github/workflows/hil-so101.yml` on a `[self-hosted, lab-so101]` runner.
 
 ### `tests/hil/_ros_control_transport.py`

@@ -23,10 +23,10 @@ Two tiers, deliberately separated (same shape as ``test_openarm_can_live``):
   enumerated and the bus completely dark, which is a **skip** and not a
   failure, because it is a fact about the bench and not about the code.
 
-NON-MOTION by construction. The powered tier calls ``connect()``,
-``read_state()`` and ``disconnect()`` and nothing else — never ``send_action``,
-never ``reset_to_pose``. Commanding the arm from a pytest process, unattended
-and with nobody on the E-stop, is not something this tier does.
+No position commands by construction. The powered tier never calls
+``send_action`` or ``reset_to_pose``. Its final test invokes ``estop()``, which
+disconnects the motor bus; run this attended with the physical power switch
+within reach.
 
 One caveat worth knowing before you run this on a live arm: lerobot's
 ``SOFollower.connect()`` ends in ``configure()``, which cycles torque off and
@@ -327,3 +327,25 @@ def test_the_committed_calibration_is_the_one_the_servos_are_running(
         assert actual.homing_offset == entry["homing_offset"], name
         assert actual.range_min == entry["range_min"], name
         assert actual.range_max == entry["range_max"], name
+
+
+@requires_rig
+@requires_live_servos
+def test_estop_disconnects_the_live_motor_bus(
+    live_hal: SO100FollowerHAL,
+) -> None:  # pragma: no cover
+    """The vendor E-stop must disconnect the real serial session.
+
+    This does not measure torque-off latency; it proves the connected SO-101
+    follows the lifecycle E-stop contract and leaves no reusable HAL session.
+    The fixture teardown calls ``disconnect()`` again, exercising its required
+    idempotence.
+    """
+    from openral_core.exceptions import ROSEStopRequested
+
+    assert live_hal._connected
+    with pytest.raises(ROSEStopRequested):
+        live_hal.estop()
+    assert not live_hal._connected
+    assert live_hal._robot is None
+    live_hal.disconnect()
