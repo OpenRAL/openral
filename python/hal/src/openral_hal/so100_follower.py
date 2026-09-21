@@ -63,6 +63,7 @@ from openral_core.schemas import (
 
 from openral_hal._base import HALBase
 from openral_hal._sensor_wiring import with_sensors
+from openral_hal.protocol import EStopRecovery
 
 if TYPE_CHECKING:
     # Import only for type checking — lerobot is optional at runtime.
@@ -325,6 +326,10 @@ class SO100FollowerHAL(HALBase):
         ROSConfigError: At ``connect()`` time if ``lerobot`` is not installed
             and no ``robot`` was injected.
     """
+
+    # ``estop()`` disconnects the motor bus, so recovery needs a fresh lifecycle
+    # start and arm alignment before it can accept commands again.
+    estop_recovery: EStopRecovery = EStopRecovery.RESTART_REQUIRED
 
     def __init__(
         self,

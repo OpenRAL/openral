@@ -98,8 +98,9 @@ them on replug.
 `just hil-so101` is the HIL gate. It opens the real serial bus, runs the
 pre-flight servo ping, and reads state back, asserting the joint names, shape,
 units and envelope against this manifest and that the committed calibration is
-the one loaded into the motors. It commands nothing — no `send_action`, no
-`reset_to_pose` — and skips with a reason when the arm is unplugged or its
+the one loaded into the motors. It sends no position command — no `send_action`, no
+`reset_to_pose` — then validates the terminal E-stop disconnects the motor bus;
+run it attended with the physical power switch within reach. It skips with a reason when the arm is unplugged or its
 12 V supply is off (the USB-serial adapter enumerates on 5 V alone, so the
 port looks healthy while every servo is dark). Running it from CI is manual
 dispatch only (Actions tab → "Run workflow") and needs a
