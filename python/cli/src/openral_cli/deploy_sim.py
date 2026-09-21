@@ -3048,7 +3048,7 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
     )
     _console.print(f"  robot_yaml:    {invocation.robot_yaml}")
     _console.print(f"  reset_service:    {invocation.reset_to_pose_service}")
-    _console.print(f"  approach_skill:   {invocation.approach_skill_id or '(snap)'}")
+    _console.print(f"  approach_skill:   {invocation.approach_skill_id or '(checked joint ramp)'}")
     _console.print(f"  hal_params:    {invocation.hal_params}")
     _console.print(
         "  slam:          "

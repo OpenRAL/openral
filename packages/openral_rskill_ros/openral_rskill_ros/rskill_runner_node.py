@@ -247,6 +247,7 @@ if _ROS2_AVAILABLE:
             super().__init__(node_name)
             self.declare_parameter("rate_hz", 30.0)
             self.declare_parameter("action_applied_timeout_s", 5.0)
+            self.declare_parameter("joint_state_staleness_limit_s", 0.5)
             # Conservative speed for the kernel-checked move from the live pose to an
             # rSkill's starting_pose. The gripper channel is normalised [0, 1], so the same
             # bound treats one full jaw stroke like one radian: conservative and tunable.
@@ -399,6 +400,9 @@ if _ROS2_AVAILABLE:
                 safety_abort_getter=self._safety_abort_reason,
                 action_applied_timeout_s=float(
                     self.get_parameter("action_applied_timeout_s").value
+                ),
+                joint_state_staleness_limit_s=float(
+                    self.get_parameter("joint_state_staleness_limit_s").value
                 ),
             )
             try:
@@ -1474,13 +1478,18 @@ if _ROS2_AVAILABLE:
             )
             if not starting_pose:
                 return None
-            if self.get_parameter("approach_skill_id").get_parameter_value().string_value:
-                return self._dispatch_moveit_approach(
-                    [float(value) for value in starting_pose], goal_handle
+            from openral_core.exceptions import ROSConfigError
+
+            target = [float(value) for value in starting_pose]
+            assert self._description is not None
+            if len(target) != len(self._description.joints):
+                raise ROSConfigError(
+                    f"starting_pose has {len(target)} values; robot {self._description.name!r} "
+                    f"has {len(self._description.joints)} joints"
                 )
-            return self._interpolate_starting_pose(
-                [float(value) for value in starting_pose], goal_handle
-            )
+            if self.get_parameter("approach_skill_id").get_parameter_value().string_value:
+                return self._dispatch_moveit_approach(target, goal_handle)
+            return self._interpolate_starting_pose(target, goal_handle)
 
         def _dispatch_moveit_approach(
             self, pose: list[float], goal_handle: Any

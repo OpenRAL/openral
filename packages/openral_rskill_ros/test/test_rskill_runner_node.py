@@ -133,6 +133,8 @@ def _make_named_skill(name: str) -> Any:
 @contextmanager
 def _compose_harness(
     resolver: Any = None,
+    *,
+    runner_parameters: dict[str, Any] | None = None,
 ) -> Iterator[tuple[Any, Any, Any, dict[str, list[Any]]]]:
     """Compose world_state + skill_runner in one process; bring up safety_node.
 
@@ -150,6 +152,13 @@ def _compose_harness(
 
     rclpy.init()
     runtime = compose_so100_runtime(skill_resolver=resolver or _local_skill_resolver)
+    if runner_parameters:
+        runtime.skill_runner_node.set_parameters(
+            [
+                rclpy.parameter.Parameter(name, value=value)
+                for name, value in runner_parameters.items()
+            ]
+        )
     safety = SafetyPassthroughNode(node_name="openral_safety_test")
     safety.set_parameters(
         [rclpy.parameter.Parameter("n_dof", value=6)],
@@ -244,6 +253,39 @@ def test_compose_factory_shares_one_aggregator() -> None:
         runtime.world_state_node.destroy_node()
         runtime.skill_runner_node.destroy_node()
     finally:
+        rclpy.shutdown()
+
+
+def test_runner_forwards_joint_state_staleness_limit() -> None:
+    with _compose_harness(runner_parameters={"joint_state_staleness_limit_s": 1.25}) as (
+        _executor,
+        runtime,
+        _safety,
+        _observed,
+    ):
+        assert runtime.skill_runner_node._hal._joint_state_staleness_limit_s == 1.25
+
+
+def test_moveit_starting_pose_rejects_robot_joint_count_mismatch() -> None:
+    import rclpy
+    from openral_core.exceptions import ROSConfigError
+    from openral_rskill_ros.compose import compose_so100_runtime
+
+    rclpy.init()
+    runtime = compose_so100_runtime()
+    try:
+        runner = runtime.skill_runner_node
+        runner.set_parameters(
+            [rclpy.parameter.Parameter("approach_skill_id", value="openral/test-approach")]
+        )
+        skill = _make_starting_pose_skill()
+        skill.manifest = skill.manifest.model_copy(update={"starting_pose": [0.0]})
+
+        with pytest.raises(ROSConfigError, match=r"has 1 values.*has 6 joints"):
+            runner._apply_starting_pose(skill, object())
+    finally:
+        runtime.world_state_node.destroy_node()
+        runtime.skill_runner_node.destroy_node()
         rclpy.shutdown()
 
 
