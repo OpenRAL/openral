@@ -108,8 +108,9 @@ dispatch only (Actions tab → "Run workflow") and needs a
 [`docs/contributing/development.md`](../../docs/contributing/development.md#registering-a-lab-so101-hil-runner).
 
 Motion on this arm — `openral deploy run` — is an attended operation. The
-deploy graph does not currently launch the deadman watchdog or human E-stop
-nodes, so the physical power switch is the E-stop.
+deploy graph launches the action-stream deadman watchdog and the dashboard /
+human E-stop forwarder. The hardware-pendant node stays unconfigured unless a
+supported device is supplied, so keep the physical power switch within reach.
 
 ## Pair with
 

@@ -36,14 +36,12 @@ has been seen, one that goes silent for more than 3 s (three missed 1 Hz
 liveness refreshes) is reported as *unknown, not safe* — hazard-log
 HZ-0096-1 mitigation 2, failing toward "assume unsafe".
 
-### The seam is read from every blocking wait, not just the apply-wait
+### The seam is read from every blocking wait
 
-`ROSPublishingHAL`'s apply-wait is only entered by an action with `tick_group_size > 1`. A
-single-surface policy (SmolVLA, ACT, diffusion — most of them) emits one `Action` per tick,
-so `send_action` published and returned without consulting the seam, leaving a latched or
-dead safety layer invisible until the execution budget lapsed and the goal aborted as
-`deadline_exceeded` / `FAILURE_DEADLINE_MISSED` — the reasoner's ladder then read "too slow"
-and retried the same skill into the same stopped safety layer.
+`ROSPublishingHAL` waits for `/openral/action_applied` after every active single-slot tick
+and after the final slot of an atomic group. The same bounded wait therefore catches a dead
+HAL for SmolVLA, ACT, diffusion, and multi-surface policies. The loop-level guard remains
+necessary before inference and for pre-goal waits that have no tick id to acknowledge.
 
 `_raise_if_safety_aborted(where)` is now the one guard every blocking
 wait on the dispatch path calls, all of them reading the same
@@ -51,9 +49,9 @@ wait on the dispatch path calls, all of them reading the same
 
 | wait | what a stopped safety layer starves | used to report |
 |---|---|---|
-| `ROSPublishingHAL._wait_for_group_applied` | `/openral/action_applied` goes silent | `action group tick N was not applied within 5.0 s` |
+| `ROSPublishingHAL._wait_for_group_applied` | `/openral/action_applied` goes silent | `action tick N…` (single) or `action group tick N…` |
 | rollout loop, before each inference tick | every chunk dropped, nothing to notice | nothing, until `deadline_exceeded` |
-| `_wait_for_post_reset_joint_state` | a latched HAL stops publishing `/joint_states` | a `post_reset_joint_state_timeout` warning, then the policy started anyway |
+| `_wait_for_starting_pose` | a latched HAL stops publishing `/joint_states` | a timeout warning, then the policy started anyway |
 | `_run_approach_skill`, per MoveIt waypoint | every replayed waypoint dropped | approach "succeeded"; policy started from a pose the arm never reached |
 
 All of them now raise `ROSEStopRequested` naming the reason and the wait,
@@ -65,10 +63,6 @@ Note the MoveIt approach in particular: `ROSEStopRequested` is a
 `FAILURE_PLANNING_ERROR` — the ladder replanning around an "unreachable"
 pose while the kernel was in fact latched.
 
-**Not instrumented, deliberately.** The `ResetToPose` service call's 1 s discovery wait and
-5 s response wait: no in-tree HAL withholds a `ResetToPose` response while latched
-(`ManifestHALLifecycleNode` answers regardless), so nothing here can starve them, and the
-abort surfaces one bounded step later at the post-reset joint-state wait.
 `_drain_and_idle_hold`'s fixed 100 ms sleep and `_pace_tick`'s period sleep wait on the
 clock, not the safety layer. `ROSActionRskill._poll_future` (a wrapped `ros_action`/
 `ros_service` skill blocking on its server's result — Nav2 will never arrive if the robot
@@ -129,8 +123,7 @@ One generic launch file ships with this package:
       hal_package:=openral_hal_openarm \
       hal_executable:=lifecycle_node.py \
       hal_node_name:=openral_hal_openarm \
-      hal_params_file:=/tmp/openral-hal-params-openarm.yaml \
-      reset_to_pose_service:=/openral/openarm/reset_to_pose
+      hal_params_file:=/tmp/openral-hal-params-openarm.yaml
   ```
 
 The launch keeps each piece in its own OS process — CLAUDE.md §1.5
@@ -167,14 +160,14 @@ runtime via `compose_so100_runtime`, brings up a real
    `failure_reason="safety_estop:…"` and
    `failure_kind=FAILURE_SAFETY_ESTOP`.
 4. A safety latch that lands **while the HAL is blocked** waiting for an
-   atomic action group to be applied is still reported as
+   active action tick to be applied is still reported as
    `safety_estop:…` (naming the typed fault from
    `/openral/safety_status`, `/openral/estop`, and the unapplied tick),
-   not as the `ROSPublishingHAL: action group tick N was not applied
-   within 5.0 s` timeout that a silenced `/openral/action_applied`
+   not as the `ROSPublishingHAL: action tick N…` / `action group tick N…`
+   timeout that a silenced `/openral/action_applied`
    produces on its own. The real `SafetyPassthroughNode` decides the
    violation and fires the estop itself in that test.
-4b. The same is true of the waits that carry no apply-ack. With the real
+4b. The same is true of pre-goal waits that carry no apply-ack. With the real
    `SafetyPassthroughNode` taken down mid-goal by its own lifecycle
    `deactivate` — no `/openral/estop` published, so the estop latch stays
    `False` — a single-slot policy aborts as

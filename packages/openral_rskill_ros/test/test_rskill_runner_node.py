@@ -146,6 +146,7 @@ def _compose_harness(
     from openral_safety.supervisor_node import SafetyPassthroughNode
     from rclpy.lifecycle import TransitionCallbackReturn
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    from std_msgs.msg import UInt64
 
     rclpy.init()
     runtime = compose_so100_runtime(skill_resolver=resolver or _local_skill_resolver)
@@ -174,9 +175,13 @@ def _compose_harness(
         observed["candidate"].append,
         chunk_qos,
     )
-    helper.create_subscription(
-        ActionChunk, "/openral/safe_action", observed["safe"].append, chunk_qos
-    )
+    applied_pub = helper.create_publisher(UInt64, "/openral/action_applied", chunk_qos)
+
+    def _on_safe_action(msg: Any) -> None:
+        observed["safe"].append(msg)
+        applied_pub.publish(UInt64(data=int(msg.tick_index)))
+
+    helper.create_subscription(ActionChunk, "/openral/safe_action", _on_safe_action, chunk_qos)
     from diagnostic_msgs.msg import DiagnosticArray
 
     helper.create_subscription(DiagnosticArray, "/diagnostics", observed["diag"].append, 20)
@@ -697,16 +702,11 @@ def _drop_the_safety_publisher(executor: Any, safety: Any, *, settle_s: float) -
 
 
 def test_safety_loss_aborts_ungrouped_dispatch_instead_of_the_deadline() -> None:
-    """A single-slot policy names the safety stop — it no longer dies of the budget.
+    """A single-slot policy names the safety stop from its bounded apply-wait.
 
-    The gap #115 could not reach: its check lives inside
-    ``ROSPublishingHAL._wait_for_group_applied``, entered only by an action carrying
-    ``tick_group_size > 1``. Every single-surface policy in the tree (SmolVLA, ACT, diffusion)
-    emits ONE ``Action`` per tick, so ``send_action`` publishes and returns without blocking,
-    the safety seam is never read, and a latched-or-dead safety layer is invisible: the loop
-    ticks into the void until the execution budget lapses and the goal aborts as
-    ``deadline_exceeded`` / ``FAILURE_DEADLINE_MISSED``. The reasoner's replanning ladder then
-    reads "too slow" and retries the same skill into the same stopped safety layer.
+    Every single-surface policy in the tree (SmolVLA, ACT, diffusion) emits one ``Action`` per
+    tick. ``ROSPublishingHAL`` now waits for the same HAL application acknowledgement used by
+    atomic groups, so a dead safety/HAL path aborts at that tick instead of at the goal budget.
 
     Real components throughout: the real ``SafetyPassthroughNode`` is taken down by its own
     lifecycle transition, and the real ``RskillRunnerNode`` notices through the
@@ -737,8 +737,6 @@ def test_safety_loss_aborts_ungrouped_dispatch_instead_of_the_deadline() -> None
     # The safety layer is named, and named as the CAUSE.
     assert reason.startswith("safety_estop:"), reason
     assert "/openral/safety_status:stale" in reason, reason
-    # ...against the tick it was about to dispatch, so the abort lines up with
-    # the trace the way the apply-wait's does.
     assert "inference tick" in reason, reason
     # The budget is emphatically not the story any more.
     assert "deadline_exceeded" not in reason, reason
@@ -754,8 +752,7 @@ def _make_starting_pose_skill() -> Any:
 
     ``rskills/rskill-smolvla-so101-eraser_place-bf16`` is an in-tree manifest
     whose 6-D ``starting_pose`` matches the harness's so100 6-DoF description,
-    which is what makes the runner run its starting-pose preamble at all
-    (``resolve_starting_pose_action`` needs a pose to act on). Real fixture, real
+    which is what makes the runner run its starting-pose preamble at all. Real fixture, real
     ``RSkillManifest`` — no hand-built placeholder (CLAUDE.md §1.11).
     """
     from openral_rskill.loader import load_rskill_manifest
@@ -768,25 +765,12 @@ def _make_starting_pose_skill() -> Any:
     return skill
 
 
-def test_safety_loss_aborts_the_post_reset_joint_state_wait() -> None:
-    """The starting-pose preamble's joint-state wait names the safety stop too.
+def test_safety_loss_aborts_the_starting_pose_move() -> None:
+    """The starting-pose preamble names an already-latched safety stop.
 
-    The earliest wait on the dispatch path, and the second one a stopped safety layer
-    starves: after the ``starting_pose`` reset the runner blocks for a ``/joint_states`` frame
-    newer than the reset, because a policy whose first observation is the PRE-reset pose is
-    out of distribution. On a real robot a latched HAL stops publishing ``/joint_states``
-    altogether (``openral_hal.lifecycle._publish_joint_state`` returns early while
-    ``self._estopped``), so the wait would sit out its full second, log
-    ``post_reset_joint_state_timeout`` as if the frame were merely late, and start the policy
-    regardless.
-
-    This harness has no HAL node, so the aggregator already holds a frame the wait accepts
-    immediately — what is under test is the guard, not the timeout: with a safety stop in
-    effect the runner must refuse to enter the policy at all, and must say which wait it
-    refused at. Asserting the wait by name matters because the rollout-loop guard would
-    otherwise catch the same condition one step later and hide which wait actually blocked.
+    With a safety stop in effect the runner must refuse both the startup move and policy
+    inference. The real fixture ensures the preamble is entered without hand-built schema data.
     """
-    import rclpy
     from openral_msgs.action import ExecuteRskill
     from rclpy.action import ActionClient
 
@@ -794,16 +778,6 @@ def test_safety_loss_aborts_the_post_reset_joint_state_wait() -> None:
         return _make_starting_pose_skill()
 
     with _compose_harness(resolver=_resolver) as (executor, runtime, safety, _observed):
-        # Wire the legacy ResetToPose snap. No HAL node serves it here, so the
-        # 1 s service-discovery wait lapses and the preamble falls through to
-        # the post-reset joint-state wait — the wait under test.
-        runtime.skill_runner_node.set_parameters(
-            [
-                rclpy.parameter.Parameter(
-                    "reset_to_pose_service", value="/openral/so100/reset_to_pose"
-                )
-            ]
-        )
         client = ActionClient(runtime.skill_runner_node, ExecuteRskill, "/openral/execute_rskill")
         _spin_for(executor, 0.5)
         assert client.wait_for_server(timeout_sec=2.0)
@@ -820,8 +794,7 @@ def test_safety_loss_aborts_the_post_reset_joint_state_wait() -> None:
     assert not result_msg.result.success
     assert reason.startswith("safety_estop:"), reason
     assert "/openral/safety_status:stale" in reason, reason
-    # The specific wait that was starved — not the rollout loop one step later.
-    assert "post-starting-pose-reset joint state" in reason, reason
+    assert "moving to starting_pose" in reason, reason
     assert result_msg.result.failure_kind == ExecuteRskill.Result.FAILURE_SAFETY_ESTOP, (
         result_msg.result.failure_kind
     )

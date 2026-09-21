@@ -39,7 +39,7 @@ streams). Every service below is read-only with respect to actuation.
 
 | File | Role |
 | --- | --- |
-| `ResetToPose.srv` | Snap a HAL-managed simulator to a manifest `starting_pose` before the skill runner's first inference tick, so a policy sees its training-distribution home pose. Called by `openral_rskill_ros.rskill_runner_node`. |
+| `ResetToPose.srv` | Explicit maintenance/test command that snaps a HAL-managed simulator or invokes a HAL-owned pose reset. The skill runner does not use it for startup motion. |
 | `LocateInView.srv` | Reasoner's read-only `locate_in_view` tool: ask an on-demand open-vocabulary locator (LocateAnything / OmDet-Turbo) whether a free-text object is in the current frame. Returns `ObjectsMetadata` as `metadata_json`. |
 | `QueryScene.srv` | Reasoner's read-only `query_scene` tool: ask a scene VLM (`kind: "vlm"`) an open-ended question about the current camera view; returns free text. |
 | `QueryTaskProgress.srv` | Reasoner's read-only `query_task_progress` tool: ask the reward monitor (`kind: "reward"`) for windowed progress/success over the co-active VLA's recent frames. Advisory only — never actuation. |

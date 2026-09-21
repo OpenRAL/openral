@@ -1011,24 +1011,27 @@ if _ROS2_AVAILABLE:
             self._publish_action_applied_if_complete(action)
 
         def _publish_action_applied_if_complete(self, action: Any) -> None:  # noqa: ANN401  # reason: typed Action is imported only on the ROS path
-            """Acknowledge a grouped tick only after its HAL application completes."""
+            """Acknowledge a tick only after its HAL application completes."""
             if self._action_applied_pub is None:
                 return
             group_size = int(action.tick_group_size)
             tick = int(action.tick_index)
-            if group_size <= 1 or tick <= 0 or tick <= self._last_action_applied_tick:
+            if tick <= 0 or tick <= self._last_action_applied_tick:
                 return
-            committed_tick = getattr(self._hal, "last_committed_tick", None)
-            if committed_tick is not None:
-                complete = int(committed_tick) == tick
+            if group_size <= 1:
+                complete = True
             else:
-                if self._safe_group_tick is None:
-                    self._safe_group_tick = tick
-                elif self._safe_group_tick != tick:
-                    self._safe_group_tick = tick
-                    self._safe_group_count = 0
-                self._safe_group_count += 1
-                complete = self._safe_group_count == group_size
+                committed_tick = getattr(self._hal, "last_committed_tick", None)
+                if committed_tick is not None:
+                    complete = int(committed_tick) == tick
+                else:
+                    if self._safe_group_tick is None:
+                        self._safe_group_tick = tick
+                    elif self._safe_group_tick != tick:
+                        self._safe_group_tick = tick
+                        self._safe_group_count = 0
+                    self._safe_group_count += 1
+                    complete = self._safe_group_count == group_size
             if not complete:
                 return
             if not self._attachment_perception_ready():

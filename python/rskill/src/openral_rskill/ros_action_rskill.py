@@ -82,7 +82,7 @@ _RESULT_DEADLINE_MULTIPLIER = 5.0
 _MIN_RESULT_DEADLINE_S = 2.0
 
 # Cadence at which we poll rclpy futures while the wrapped server runs.
-# Matches the cadence used by `rskill_runner_node._maybe_reset_hal_to_starting_pose`.
+# Matches the runner's bounded polling cadence.
 _FUTURE_POLL_INTERVAL_S = 0.02
 
 # Time we wait for the wrapped server to come up at configure time
@@ -783,9 +783,7 @@ class ROSActionRskill(rSkillBase):
     def _poll_future(self, future: Any, *, deadline_s: float, what: str) -> None:  # noqa: ANN401  # reason: rclpy.task.Future is untyped
         """Block (without spinning) until ``future.done()`` or deadline.
 
-        Mirrors the pattern in
-        ``rskill_runner_node._maybe_reset_hal_to_starting_pose``: the host
-        node's main rclpy spin services callbacks; we just poll
+        The host node's main rclpy spin services callbacks; we just poll
         ``done()`` here. Avoids re-entering ``rclpy.spin_until_future_complete``
         from a worker thread, which is unsafe with the default
         single-threaded executor.

@@ -2621,7 +2621,7 @@ def generate_launch_description() -> LaunchDescription:
                 "MoveIt approach rSkill URI (e.g. "
                 "rskills/rskill-moveit-joints) the skill_runner dispatches to "
                 "plan a collision-free motion to each skill's starting_pose. "
-                "Empty = legacy ResetToPose snap."
+                "Empty = kernel-checked joint ramp."
             ),
         ),
         DeclareLaunchArgument(
