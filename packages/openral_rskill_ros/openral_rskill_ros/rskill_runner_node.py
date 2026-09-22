@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
-from openral_runner.dataset_recorder_bridge import _sensor_name_to_slot as _sensor_name_to_vla_slot
+from openral_runner import sensor_name_to_slot
 
 if TYPE_CHECKING:
     from openral_core.schemas import RobotDescription
@@ -56,16 +56,16 @@ log = structlog.get_logger(__name__)
 def _cuda_allocated_mb() -> float | None:
     """Currently-allocated CUDA memory in MiB, or ``None`` off-GPU.
 
-    Thin wrapper over the shared ``openral_rskill._diagnostics._gpu_mb``
+    Thin wrapper over the shared ``openral_rskill._diagnostics.gpu_allocated_mb``
     probe (memory_allocated, never memory_reserved — "did the weights
     actually go away"), in ``no_import`` mode: this path must never import
     torch just to answer, and a host without it simply gets ``None``. One
     probe means eviction logs and phase-timer heartbeats can never disagree
     about how much VRAM a swap freed.
     """
-    from openral_rskill._diagnostics import _gpu_mb
+    from openral_rskill._diagnostics import gpu_allocated_mb
 
-    return _gpu_mb(no_import=True)
+    return gpu_allocated_mb(no_import=True)
 
 
 # Type for the injected skill resolver. Takes the goal's rskill_id /
@@ -2332,13 +2332,13 @@ def make_local_skill_resolver(
 def _vla_camera_slots(description: RobotDescription | None) -> tuple[str, ...]:
     """RGB sensor VLA slots (``camera1`` / ``camera2`` / ...) in manifest order.
 
-    The values of ``_sensor_name_to_vla_slot``, used as the adapter's
+    The values of ``sensor_name_to_slot``, used as the adapter's
     ``scene_cameras`` so ``resolve_camera_keys`` -> ``_camera_keys`` lands
     on the slots the checkpoint's ``cam_alias`` maps (``camera1 ->
     image``). Empty when the manifest declares no RGB sensors — callers
     then keep their existing ``scene_cameras``.
     """
-    return tuple(_sensor_name_to_vla_slot(description).values())
+    return tuple(sensor_name_to_slot(description).values())
 
 
 def _required_vla_camera_slots(
@@ -2383,7 +2383,7 @@ def _decode_image_frames(
 
     Each ``SensorFrame`` with inline ``data``
     is decoded into an ``HxWxC`` uint8 array and stored under its VLA slot
-    (``_sensor_name_to_vla_slot``). Sensors absent from
+    (``sensor_name_to_slot``). Sensors absent from
     ``sensor_to_slot`` pass through under their own name. Frames without
     inline pixels (``data is None`` — topic / handle delivery) are
     skipped — zero-copy handle frames travel via
@@ -2988,8 +2988,8 @@ def _make_policy_adapter_skill(
     )
     # Sensor-name -> VLA-slot map (camera1/camera2/...) so `_step_impl`
     # rekeys `obs["images"]` to what the adapter looks up. Built once at
-    # skill-build time; see `_sensor_name_to_vla_slot`.
-    sensor_to_slot = _sensor_name_to_vla_slot(description)
+    # skill-build time; see `sensor_name_to_slot`.
+    sensor_to_slot = sensor_name_to_slot(description)
     # Joint units govern the deg↔rad conversion at the policy boundary. Prefer the manifest's
     # EXPLICIT declaration (action_contract.joint_units) — issue #135: no runtime guess anymore.
     # The old stats-magnitude heuristic was fragile: it silently defaulted a degrees-trained
@@ -3318,7 +3318,7 @@ def _make_policy_adapter_skill(
             # sensor NAME; VLA adapters look up `obs["images"]` by the VLA
             # slot (camera1/camera2/...). `sensor_to_slot` realigns the two
             # so the adapter + `openral sim run` agree (see
-            # `_sensor_name_to_vla_slot` / `_decode_image_frames`).
+            # `sensor_name_to_slot` / `_decode_image_frames`).
             _assemble_obs_images(obs, world_state.image_frames, sensor_to_slot)
 
             action_array = self._adapter.step(obs, self._prompt)  # type: ignore[attr-defined]

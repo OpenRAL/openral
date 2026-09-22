@@ -105,9 +105,9 @@ def _load_inprocess_scorer_class() -> _RobometerScorerClass:
         raise ROSConfigError(f"could not import Robometer scorer from {scorer_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    scorer = getattr(module, "_Scorer", None)
+    scorer = getattr(module, "Scorer", None)
     if scorer is None:
-        raise ROSConfigError(f"Robometer scorer {scorer_path} does not expose _Scorer")
+        raise ROSConfigError(f"Robometer scorer {scorer_path} does not expose Scorer")
     return cast(_RobometerScorerClass, scorer)
 
 
@@ -147,7 +147,7 @@ def _validate_and_bound_frames(
 class RobometerInProcessReward:
     """In-process Robometer scorer for ``reward_monitor_node``.
 
-    Reuses ``tools/_robometer_scorer.py::_Scorer`` so deploy-sim/run get the
+    Reuses ``tools/_robometer_scorer.py::Scorer`` so deploy-sim/run get the
     native lerobot 0.6.0 + NF4 loader without an extra process boundary.
     """
 

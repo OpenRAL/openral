@@ -100,7 +100,7 @@ def _remap_backbone_key(key: str) -> str:
     return key
 
 
-class _Scorer:
+class Scorer:
     """Loads the NF4 Robometer model once and scores clips (discrete -> [0,1])."""
 
     def __init__(self, weights: str, device: str = "cuda") -> None:

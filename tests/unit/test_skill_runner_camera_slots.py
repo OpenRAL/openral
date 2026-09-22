@@ -47,7 +47,7 @@ def _load_skill_runner_module() -> ModuleType:
 _RUNNER = _load_skill_runner_module()
 _build_runtime_skill_from_manifest = _RUNNER._build_runtime_skill_from_manifest
 _decode_image_frames = _RUNNER._decode_image_frames
-_sensor_name_to_vla_slot = _RUNNER._sensor_name_to_vla_slot
+sensor_name_to_slot = _RUNNER.sensor_name_to_slot
 _vla_camera_slots = _RUNNER._vla_camera_slots
 
 
@@ -74,7 +74,7 @@ class TestVlaCameraSlots:
         assert _vla_camera_slots(_franka()) == ("camera1", "camera2", "camera3")
 
     def test_franka_name_to_slot_map(self) -> None:
-        assert _sensor_name_to_vla_slot(_franka()) == {
+        assert sensor_name_to_slot(_franka()) == {
             "top": "camera1",
             "wrist": "camera2",
             "front": "camera3",
@@ -82,7 +82,7 @@ class TestVlaCameraSlots:
 
     def test_none_description_is_empty(self) -> None:
         assert _vla_camera_slots(None) == ()
-        assert _sensor_name_to_vla_slot(None) == {}
+        assert sensor_name_to_slot(None) == {}
 
 
 class TestDecodeImageFrames:

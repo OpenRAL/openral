@@ -3082,10 +3082,10 @@ def _parse_rskill_cli_arg(raw: str) -> VLASpec:
     """
     from openral_core import VLASpec
     from openral_core.exceptions import ROSConfigError
-    from openral_rskill.loader import _validate_skill_ref, load_rskill_manifest
+    from openral_rskill.loader import load_rskill_manifest, validate_skill_ref
 
     try:
-        uri = _validate_skill_ref(raw)
+        uri = validate_skill_ref(raw)
     except ROSConfigError as exc:
         raise typer.BadParameter(str(exc)) from exc
     manifest = load_rskill_manifest(uri)
@@ -3843,9 +3843,9 @@ def deploy_list() -> None:
     Each entry is a paste-able `--config` path for `openral deploy run` or `deploy sim`.
     No hardware touch, no GPU.
     """
-    from openral_rskill.loader import _find_repo_root_from
+    from openral_rskill.loader import find_repo_root_from
 
-    repo_root = _find_repo_root_from(Path(__file__))
+    repo_root = find_repo_root_from(Path(__file__))
     if repo_root is None:
         console.print("[red]Could not locate repo root.[/red]")
         raise typer.Exit(code=1)

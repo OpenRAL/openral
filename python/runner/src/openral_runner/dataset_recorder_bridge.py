@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from openral_dataset import RolloutRecorder
     from openral_world_state.aggregator import WorldStateAggregator
 
-__all__ = ["DatasetRecorderBridge"]
+__all__ = ["DatasetRecorderBridge", "sensor_name_to_slot"]
 
 _log = structlog.get_logger(__name__)
 
@@ -63,7 +63,7 @@ ACTION_TOPIC_DEFAULT = "/openral/candidate_action"
 EPISODE_TOPIC_DEFAULT = "/openral/episode"
 
 
-def _sensor_name_to_slot(description: RobotDescription | None) -> dict[str, str]:
+def sensor_name_to_slot(description: RobotDescription | None) -> dict[str, str]:
     """Map each RGB sensor NAME to its VLA slot (``camera1`` / ``camera2`` / ...).
 
     The aggregator keys ``image_frames`` by sensor name; the dataset sink
@@ -127,7 +127,7 @@ class DatasetRecorderBridge:
         self._aggregator = aggregator
         self._recorder = recorder
         self._output_path = output_path
-        self._sensor_to_slot = _sensor_name_to_slot(robot)
+        self._sensor_to_slot = sensor_name_to_slot(robot)
         self._episode_open = False
         self._n_frames = 0
         # Run totals, reported at destroy() — including the zero case, which

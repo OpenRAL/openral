@@ -332,7 +332,7 @@ def _load_bf16_state_for_int8(policy: Any, repo_id: str, *, torch: Any) -> None:
     built on meta (``init_empty_weights``) and materialised to real CPU
     storage (``to_empty``); this fills that storage with the source bf16
     weights so the upcoming ``policy.to(<cuda>)`` has data for bnb's int8
-    pack. Routes through ``_hf_download_cached_first`` so
+    pack. Routes through ``hf_download_cached_first`` so
     ``local_files_only=True`` skips the HF Hub HEAD on a warm cache. Logs
     ``missing``/``unexpected`` key counts via structlog.
 
@@ -347,7 +347,7 @@ def _load_bf16_state_for_int8(policy: Any, repo_id: str, *, torch: Any) -> None:
     try:
         from huggingface_hub import hf_hub_download
         from huggingface_hub.errors import LocalEntryNotFoundError
-        from openral_rskill._vla_core import _hf_download_cached_first
+        from openral_rskill._vla_core import hf_download_cached_first
         from safetensors.torch import load_file
     except ImportError as exc:  # pragma: no cover
         raise ROSConfigError(
@@ -355,7 +355,7 @@ def _load_bf16_state_for_int8(policy: Any, repo_id: str, *, torch: Any) -> None:
             "install with: just sync --all-packages --group sim"
         ) from exc
 
-    weights_path = _hf_download_cached_first(
+    weights_path = hf_download_cached_first(
         hf_hub_download,
         LocalEntryNotFoundError,
         repo_id=repo_id,

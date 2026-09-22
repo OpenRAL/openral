@@ -370,9 +370,9 @@ def _load_or_build_env(args: SimpleNamespace) -> SimEnvironment:
     # cheap-to-detect error cases, so any failure here is genuinely
     # about the manifest itself. Bare names (e.g. `smolvla-libero` or
     # `OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16`) are accepted directly.
-    from openral_rskill.loader import _validate_skill_ref, load_rskill_manifest
+    from openral_rskill.loader import load_rskill_manifest, validate_skill_ref
 
-    rskill_uri = _validate_skill_ref(args.rskill)
+    rskill_uri = validate_skill_ref(args.rskill)
     manifest = load_rskill_manifest(rskill_uri)
 
     # Only `kind='vla'` skills carry a model_family; a detector / reward /
@@ -501,9 +501,9 @@ def _discover_sim_configs() -> list[Path]:
     call without any sim dependencies. Sorted by relative path so the
     listing is deterministic.
     """
-    from openral_rskill.loader import _find_repo_root_from
+    from openral_rskill.loader import find_repo_root_from
 
-    repo_root = _find_repo_root_from(Path(__file__))
+    repo_root = find_repo_root_from(Path(__file__))
     if repo_root is None:
         return []
     scenes_root = repo_root / "scenes"
@@ -519,9 +519,9 @@ def sim_list() -> None:
     Each entry is a paste-able ``--config`` path for ``openral sim run``. No
     rollout, no OTel span, no GPU — safe to run on any host.
     """
-    from openral_rskill.loader import _find_repo_root_from
+    from openral_rskill.loader import find_repo_root_from
 
-    repo_root = _find_repo_root_from(Path(__file__))
+    repo_root = find_repo_root_from(Path(__file__))
     configs = _discover_sim_configs()
     if not configs:
         print("<none>")
@@ -655,10 +655,10 @@ def _maybe_build_recorder(args: SimpleNamespace, env_cfg: SimEnvironment) -> Any
     state_shape_override: tuple[int, ...] | None = None
     action_dim_override: int | None = None
     if args.rskill is not None:
-        from openral_rskill.loader import _validate_skill_ref, load_rskill_manifest
+        from openral_rskill.loader import load_rskill_manifest, validate_skill_ref
 
         try:
-            uri = _validate_skill_ref(args.rskill)
+            uri = validate_skill_ref(args.rskill)
             manifest = load_rskill_manifest(uri)
         except Exception:
             manifest = None

@@ -50,7 +50,7 @@ def test_marker_search_finds_the_repo_root_from_both_layouts() -> None:
     launch file reuses that helper — if its markers change, this moves with it.
     """
     loader = pytest.importorskip("openral_rskill.loader")
-    find = loader._find_repo_root_from
+    find = loader.find_repo_root_from
 
     from_source = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch"
     assert find(from_source) == _REPO_ROOT

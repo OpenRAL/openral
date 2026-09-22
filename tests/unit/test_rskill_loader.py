@@ -46,9 +46,9 @@ from openral_core.schemas import (
 )
 from openral_rskill.loader import (
     InstalledRSkillEntry,
-    _validate_skill_ref,
     resolve_rskill_to_hf_with_revision,
     rSkill,
+    validate_skill_ref,
 )
 
 _DEFAULT_ACTUATORS: list[ActuatorRequirement] = [
@@ -1018,32 +1018,32 @@ class TestRepr:
         assert "apache-2.0" in r
 
 
-# ── _validate_skill_ref ───────────────────────────────────────────────────────
+# ── validate_skill_ref ───────────────────────────────────────────────────────
 
 
 class TestValidateSkillRef:
     """Exercises bare rSkill reference validation."""
 
     def test_bare_local_name_passes_through(self) -> None:
-        assert _validate_skill_ref("smolvla-libero") == "smolvla-libero"
+        assert validate_skill_ref("smolvla-libero") == "smolvla-libero"
 
     def test_bare_path_passes_through(self) -> None:
-        assert _validate_skill_ref("rskills/smolvla-libero") == "rskills/smolvla-libero"
+        assert validate_skill_ref("rskills/smolvla-libero") == "rskills/smolvla-libero"
 
     def test_hf_repo_id_passes_through(self) -> None:
         ref = "OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16"
-        assert _validate_skill_ref(ref) == ref
+        assert validate_skill_ref(ref) == ref
 
     def test_surrounding_whitespace_is_stripped(self) -> None:
-        assert _validate_skill_ref("  smolvla-libero  ") == "smolvla-libero"
+        assert validate_skill_ref("  smolvla-libero  ") == "smolvla-libero"
 
     def test_empty_string_rejected(self) -> None:
         with pytest.raises(ROSConfigError):
-            _validate_skill_ref("")
+            validate_skill_ref("")
 
     def test_whitespace_only_rejected(self) -> None:
         with pytest.raises(ROSConfigError):
-            _validate_skill_ref("   ")
+            validate_skill_ref("   ")
 
     @pytest.mark.parametrize(
         "bad",
@@ -1058,4 +1058,4 @@ class TestValidateSkillRef:
     def test_explicit_schemes_rejected(self, bad: str) -> None:
         """Explicit URI schemes are rejected — only bare refs are accepted."""
         with pytest.raises(ROSConfigError):
-            _validate_skill_ref(bad)
+            validate_skill_ref(bad)
