@@ -29,7 +29,7 @@ costmaps consume `/map` (nvblox's `static_occupancy_grid`, remapped) via
 `static_layer` with `map_subscribe_transient_local: False` (nvblox's `/map` is
 RELIABLE+VOLATILE, not latched), and the collision_monitor's `/scan` source is
 disabled. Everything else mirrors the lidar base — `nav2_visual.yaml` is
-**generated** from it by `tools/gen_nav2_visual.py` (re-run after editing the
+**generated** from it by `tools/gen_nav2_visual.py` (`just gen-nav2-visual`; re-run after editing the
 base).
 
 > 3D-lifted detected objects use the `map` **TF frame** (published by both

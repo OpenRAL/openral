@@ -658,12 +658,8 @@ _Exports `PekingU/rtdetr_r18vd_coco_o365` to ONNX matching `ObjectsDetector`'s c
 ### `tools/gen_nav2_visual.py`
 _Generates `packages/openral_nav2_bringup/config/nav2_visual.yaml` (the Nav2 costmap profile for the visual-SLAM backend — cuVSLAM + nvblox, `static_layer` off the backend-agnostic `/map` OccupancyGrid instead of ray-casting `/scan`) from the base lidar profile `nav2_panda_mobile.yaml`, so the two stay in sync. One-shot; re-run after editing the base config._
 
-- `main() -> int` — CLI entry, no arguments. (L50)
-
-### `tools/openpi_to_lerobot_pi05.py`
-_Converts an OpenPI π0.5 Orbax checkpoint (stacked JAX params, as the RoboCasa365 release ships) into a LeRobot PI05 checkpoint (unstacked PyTorch `model.safetensors` + policy processor sidecars). Deterministic format bridge only — quantization stays in `tools/quantize_rskill.py`._
-
-- `main() -> int` — CLI entry; downloads/restores Orbax params, maps state dict, copies sidecars, patches config, validates shapes. (L312)
+- `render(base_text: str) -> str` — The derived visual-SLAM profile text for a base-profile text; pure, so the sync test can diff it against the checked-in file. (L51)
+- `main(argv=None) -> int` — Writes the derived profile; `--check` exits 1 when the checked-in copy is stale (run by `just lint`). (L80)
 
 ### `tools/quantize_lingbot_vla2.py`
 _Pre-quantizes LingBot-VLA 2.0's Qwen3-VL backbone to an NF4 pack ahead of time (the sidecar normally does this at load) so deploys download ~7 GB instead of 25.5 GB and skip the per-boot conversion. Runs in the sidecar venv (torch 2.9 / transformers 4.57.3 / bitsandbytes) importing `tools/_lingbot_vla2_server.py`'s own helpers so the pack matches the runtime shells byte-for-byte. Frugal streaming keeps GPU peak at a few hundred MB and host peak at ~30 GB._

@@ -15,6 +15,7 @@ geometry / planner / controller / behaviour tuning mirrors the base.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import yaml
@@ -34,7 +35,7 @@ _HEADER = (
     "# allow_unknown, controller, behaviours) mirrors the base — see that file for\n"
     "# the tuning rationale. This makes Nav2 plan off `/map` regardless of HOW the\n"
     "# map was built (slam_toolbox lidar vs cuVSLAM+nvblox vision).\n"
-    "# Regenerate after editing the base: python tools/gen_nav2_visual.py\n\n"
+    "# Regenerate after editing the base: just gen-nav2-visual\n\n"
 )
 
 _STATIC_LAYER_ON_MAP = {
@@ -47,8 +48,9 @@ _STATIC_LAYER_ON_MAP = {
 }
 
 
-def main() -> int:
-    cfg = yaml.safe_load(_BASE.read_text())
+def render(base_text: str) -> str:
+    """Return the visual-SLAM profile derived from the base (lidar) profile text."""
+    cfg = yaml.safe_load(base_text)
 
     gc = cfg["global_costmap"]["global_costmap"]["ros__parameters"]
     gc["plugins"] = ["static_layer", "inflation_layer"]
@@ -72,9 +74,19 @@ def main() -> int:
     if "map_saver" in cfg:
         cfg["map_saver"]["ros__parameters"]["map_subscribe_transient_local"] = False
 
-    with _OUT.open("w") as f:
-        f.write(_HEADER)
-        yaml.safe_dump(cfg, f, default_flow_style=False, sort_keys=False, width=100)
+    return _HEADER + yaml.safe_dump(cfg, default_flow_style=False, sort_keys=False, width=100)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Write the derived profile, or with ``--check`` exit 1 if the checked-in copy is stale."""
+    check = "--check" in (argv if argv is not None else sys.argv[1:])
+    rendered = render(_BASE.read_text())
+    if check:
+        if _OUT.read_text() == rendered:
+            return 0
+        print(f"{_OUT} is stale — run `just gen-nav2-visual`", file=sys.stderr)
+        return 1
+    _OUT.write_text(rendered)
     print(f"wrote {_OUT}")
     return 0
 
