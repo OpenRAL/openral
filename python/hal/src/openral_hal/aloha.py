@@ -66,7 +66,6 @@ from typing import Protocol, runtime_checkable
 import structlog
 from openral_core.exceptions import (
     ROSConfigError,
-    ROSError,
     ROSEStopRequested,
     ROSPerceptionStale,
     ROSRuntimeError,
@@ -663,8 +662,8 @@ class AlohaHAL(HALBase):
                 ack = seam.torque_enable(
                     arm, group=_TORQUE_GROUP_ALL, enable=False, timeout_s=self._stop_timeout_s
                 )
-            except ROSError as exc:
-                ack = TriggerReport(success=False, message=str(exc))
+            except Exception as exc:  # reason: an rclpy fault on one arm must not skip the others
+                ack = TriggerReport(success=False, message=f"{type(exc).__name__}: {exc}")
             states[arm] = "torque_off" if ack.success else "torque_unknown"
             if not ack.success:
                 problems.append(f"{arm}: {ack.message or 'torque_enable not acknowledged'}")
