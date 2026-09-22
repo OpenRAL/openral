@@ -46,6 +46,31 @@ runner.
 | Sim test | none yet — `scenes/benchmark/metaworld_push.yaml` is referenced only by unit-level guard tests (`tests/unit/test_benchmark_scene_writeback_guard.py`, `tests/unit/test_sim_run_fixed_robot_guard.py`), not a closed-loop sim rollout test |
 | Example configs | [`scenes/benchmark/metaworld_push.yaml`](../../scenes/benchmark/metaworld_push.yaml) (pass `--rskill rskills/smolvla-metaworld`) |
 
+## E-stop and recovery
+
+`/openral/estop` reaches `SawyerRealHAL.estop()` through the lifecycle node
+(issue #295). Two steps, in order:
+
+1. `controller_manager/switch_controller` deactivates
+   `sawyer_arm_controller` (STRICT), read back via `list_controllers` — the
+   acknowledged half.
+2. `std_msgs/Empty` on `/robot/set_super_stop` — intera's super stop, the
+   software equivalent of the pendant e-stop ("Robot must be reset to clear
+   the stopped state"). The topic carries no acknowledgement; the stopped
+   state is observable on `/robot/state` (`RobotAssemblyState.stopped`).
+
+The outcome is on `/diagnostics` (`downstream_stop=acknowledged|unacknowledged`)
+and in the lifecycle log.
+
+**Recovery is `RESTART_REQUIRED`.** `/openral/estop_cleared` is rejected by
+this HAL. To resume: publish `/robot/set_super_reset`, re-enable the robot
+(`/robot/set_super_enable`), re-activate the controller, then relaunch the
+HAL lifecycle node and re-align.
+
+Evidence: `tests/unit/test_sawyer_real.py::TestSafety`,
+`tests/integration/test_real_hal_estop_ros2_control_live.py`, and the attended
+`tests/hil/test_sawyer.py::TestSawyerDownstreamEStop`.
+
 ## See also
 
 - The robot/sim split convention — robot-vs-sim split rationale.

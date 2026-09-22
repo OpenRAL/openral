@@ -34,7 +34,9 @@ satisfies it. There is no inheritance requirement.
 | `protocol.py` | The `HAL` Protocol — the canonical interface (RFC §8.2). |
 | `lifecycle.py` | Lifecycle state machine helpers shared by ROS 2 lifecycle adapters. |
 | `ros_control.py` | `RosControlHAL` — adapter on top of `ros2_control` (no real ROS 2 import; works against `SimTransport` for unit tests and the live transport at runtime). |
-| `sim_transport.py` | `SimTransport` — typed in-memory `ros2_control` transport for unit tests. |
+| `ros_control_transport.py` | `RosControlTransport` — the production `rclpy` transport every `RosControlHAL` robot moves through, and the `ControllerStopSeam` it stops through (`controller_manager` deactivate + confirm, vendor `Trigger` / `Empty`). |
+| `interbotix_transport.py` | `InterbotixXSTransport` — the production torque-off stop seam for the Interbotix XS arms (ALOHA). Stop only; the command path is #250. |
+| `sim_transport.py` | `SimTransport` — typed in-memory `ros2_control` transport **and** `ControllerStopSeam` (a simulated controller table) for unit tests; `SimTorqueSeam` — in-memory `InterbotixStopSeam`. |
 | `so100_follower.py` | `SO100FollowerHAL` + `SO100_DESCRIPTION` + `so100_with_sensors` — real SO-100 follower arm via the `lerobot` SDK. |
 | `galaxea_a1.py` | `GalaxeaA1HAL` + `GALAXEA_A1_DESCRIPTION` — real-only six-axis A1 and normalized gripper over a literal IPv4-loopback JSON-lines transport. The operator-provided ROS 1 SDK stays in an isolated sidecar; OpenRAL bundles no vendor code. |
 | `so100_sim.py` | `SO100DigitalTwin` + `SO100DigitalTwinConfig` — pure-Python in-process simulator (used by smoketests, sim tests, and as a stand-in when no hardware is connected). |
@@ -148,6 +150,32 @@ passive follower-finger slots (OpenArm).
 | bimanual + two `PASSTHROUGH` grippers + `mirror_actuator_index` + `keyframe_index` | `aloha_bimanual` |
 | bimanual + two `PASSTHROUGH` grippers + `joint_qpos_addr` override + `seed_ctrl_from_qpos` | `openarm` |
 
+## Lifecycle e-stop: what `/openral/estop` does to the robot
+
+The generic lifecycle node latches `/openral/estop` and forwards it to any HAL
+implementing `LifecycleEStopHAL` (issue #295 made every committed `hal.real`
+adapter one — `tests/unit/test_real_hal_estop_fleet_conformance.py` derives
+that from `robots/*/robot.yaml` and fails on a new adapter that omits it).
+Each adapter's downstream stop and declared `EStopRecovery`:
+
+| Adapter | Downstream stop (acknowledged by) | Vendor step | Recovery |
+| --- | --- | --- | --- |
+| `RosControlHAL` (generic) | `controller_manager` deactivates `controller_names()` (STRICT) → `list_controllers` reads `inactive` | — | `RESTART_REQUIRED` |
+| `UR5eRealHAL` / `UR10eRealHAL` | same | `/dashboard_client/stop` (`std_srvs/Trigger`) stops the pendant program | `RESTART_REQUIRED` |
+| `FrankaPandaRealHAL` | same (`franka_hardware.on_deactivate` → `stopRobot()`) | — (`/error_recovery` is a recovery, never called on stop) | `RESTART_REQUIRED` |
+| `SawyerRealHAL` | same | `std_msgs/Empty` on `/robot/set_super_stop` | `RESTART_REQUIRED` |
+| `OpenArmRealHAL` | same, all four controllers | — | `RESETTABLE` — `reset_estop` re-activates and reconnects only once confirmed `active` |
+| `AlohaHAL` | `/<arm>/torque_enable(enable=false)` per arm (`interbotix_xs_msgs`) | — | `RESTART_REQUIRED` |
+| `SO100FollowerHAL` | motor bus disconnected | — | `RESTART_REQUIRED` |
+| `GalaxeaA1HAL` | ROS 1 sidecar stopped (acked after driver + roscore exit) | — | `RESTART_REQUIRED` |
+
+A HAL records a `DownstreamStopReport`; the lifecycle node logs FATAL and
+publishes `downstream_stop=unacknowledged` on `/diagnostics` when the stop was
+not proven, and keeps its latch regardless. `RESETTABLE` adapters clear only
+after `reset_estop()` succeeds; `RESTART_REQUIRED` adapters reject
+`/openral/estop_cleared` and need a fresh lifecycle start and alignment — the
+procedure is in each `robots/<robot>/README.md` under "E-stop and recovery".
+
 ## Pairing with ROS 2 lifecycle nodes
 
 Each HAL adapter has (or will have) a thin ROS 2 lifecycle node under
@@ -157,9 +185,9 @@ Each HAL adapter has (or will have) a thin ROS 2 lifecycle node under
 | --- | --- | --- |
 | `openral_hal_so100` | `SO100FollowerHAL` | ✓ working (unit + sim coverage) |
 | `openral_hal_galaxea_a1` | `GalaxeaA1HAL` | ✓ real observation/hold/joint/gripper + full C++ kernel graph HIL |
-| `openral_hal_franka` | `FrankaPandaHAL` (planned) | skeleton |
-| `openral_hal_ur5e` | `UR5eHAL` (sim) / `UR5eRealHAL` (real HW) | skeleton |
-| `openral_hal_ur10e` | `UR10eHAL` (sim) / `UR10eRealHAL` (real HW) | skeleton |
+| `openral_hal_franka` | `FrankaPandaHAL` (sim) / `FrankaPandaRealHAL` (real HW) | lifecycle + e-stop path proven on a real `controller_manager` (`tests/integration/test_real_hal_estop_ros2_control_live.py`); real FCI pending HIL |
+| `openral_hal_ur5e` | `UR5eHAL` (sim) / `UR5eRealHAL` (real HW) | same; real arm pending HIL |
+| `openral_hal_ur10e` | `UR10eHAL` (sim) / `UR10eRealHAL` (real HW) | same; real arm pending HIL |
 
 See each ROS package's `README.md` for the lifecycle contract, parameters,
 and topic names.

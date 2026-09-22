@@ -26,7 +26,7 @@ Once filled in, the contract follows the SO-100 package (see
 | --- | --- |
 | Lifecycle states | `configure → activate → deactivate → cleanup` |
 | Pub topics | `/joint_states`, `~/joint_states` (`sensor_msgs/JointState`) |
-| Sub topics | `/openral/safe_action` (`openral_msgs/ActionChunk`), `/openral/estop` (`std_msgs/Empty`) |
+| Sub topics | `/openral/safe_action` (`openral_msgs/ActionChunk`), `/openral/estop` (`std_msgs/Empty`) — under `hal_mode:=real` the stop deactivates `scaled_joint_trajectory_controller` via `controller_manager` and calls `/dashboard_client/stop`; recovery is `RESTART_REQUIRED` (see [`robots/ur10e/README.md`](../../robots/ur10e/README.md#e-stop-and-recovery)) |
 | QoS | RELIABLE / VOLATILE / KEEP_LAST=10 (control-class) |
 | HAL backend | `openral_hal.ur.UR10eHAL` |
 

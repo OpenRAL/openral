@@ -26,7 +26,7 @@ Thin wrappers around the Python-layer adapters; each exposes a single
 - `main() -> None` (L21) — UR10e HAL.
 
 All four HAL `lifecycle_node.py` files share the same shape: import the
-matching Python HAL class and call `openral_hal.lifecycle.make_lifecycle_main(...)`. The generic wrapper at `python/hal/src/openral_hal/lifecycle.py` ships the F8 heartbeat, the `/openral/safe_action` consumer and the `/openral/estop` latch for franka / ur5e / ur10e.
+matching Python HAL class and call `openral_hal.lifecycle.make_lifecycle_main(...)`. The generic wrapper at `python/hal/src/openral_hal/lifecycle.py` ships the F8 heartbeat, the `/openral/safe_action` consumer and the `/openral/estop` latch for franka / ur5e / ur10e. Since issue #295 the latch also reaches the robot: under `hal_mode:=real` the node attaches the production `RosControlTransport` as the HAL's `ControllerStopSeam` (or `InterbotixXSTransport` for ALOHA), forwards `/openral/estop` to `hal.estop()`, and logs FATAL / publishes `downstream_stop=unacknowledged` on `/diagnostics` when the HAL's `DownstreamStopReport` says the controller did not acknowledge. `packages/openral_hal_ur5e/test/test_lifecycle_estop.py` drives that branching on the real `UR5eRealHAL` / `OpenArmRealHAL` with the in-memory seam; `tests/integration/test_real_hal_estop_ros2_control_live.py` does it against a real `controller_manager`.
 
 ### `packages/world_state/openral_world_state_ros/lifecycle_node.py`
 

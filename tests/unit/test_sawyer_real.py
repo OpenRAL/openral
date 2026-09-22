@@ -202,13 +202,29 @@ class TestSafety:
     # tests/unit/test_hal_protocol_conformance.py::test_estoprequested_is_safety_violation_subclass
     # (structural check that ROSEStopRequested subclasses ROSSafetyViolation).
 
-    def test_estop_publishes_to_super_stop_topic(
+    def test_estop_deactivates_the_controller_then_publishes_the_super_stop(
         self, hal: SawyerRealHAL, transport: SimTransport
     ) -> None:
+        """Controller deactivation first, then intera's super stop as std_msgs/Empty."""
+        hal.attach_controller_stop(transport)
         hal.connect()
         with pytest.raises(ROSEStopRequested):
             hal.estop()
-        assert any(topic == "/robot/set_super_stop" for topic, _msg in transport.calls)
+        assert transport.switch_calls == [("deactivate", ("sawyer_arm_controller",))]
+        assert transport.controller_state("sawyer_arm_controller") == "inactive"
+        assert transport.empty_publishes == ["/robot/set_super_stop"]
+        assert hal.vendor_stop_topics() == ["/robot/set_super_stop"]
+        report = hal.last_stop_report
+        assert report is not None and report.stopped
+        assert report.vendor_stop == "/robot/set_super_stop"
+
+    def test_recovery_policy_is_restart_required(self, hal: SawyerRealHAL) -> None:
+        from openral_hal.protocol import EStopRecovery, LifecycleEStopHAL
+
+        assert isinstance(hal, LifecycleEStopHAL)
+        assert hal.estop_recovery is EStopRecovery.RESTART_REQUIRED
+        with pytest.raises(ROSRuntimeError, match="in-process reset is forbidden"):
+            hal.reset_estop()
 
     # test_after_estop_send_action_fails moved to
     # tests/unit/test_hal_protocol_conformance.py::test_hal_send_action_after_estop_fails

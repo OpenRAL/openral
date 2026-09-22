@@ -34,11 +34,10 @@ Example:
 
 from __future__ import annotations
 
-import contextlib
 from collections.abc import Callable
 
 import structlog
-from openral_core.exceptions import ROSConfigError, ROSEStopRequested
+from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import (
     AssetRefs,
     ControlMode,
@@ -54,7 +53,8 @@ from openral_core.schemas import (
 )
 
 from openral_hal._real_description import make_real_description
-from openral_hal.ros_control import RosControlHAL
+from openral_hal.protocol import EStopRecovery
+from openral_hal.ros_control import ControllerStopSeam, RosControlHAL
 
 __all__ = ["SAWYER_DESCRIPTION", "SAWYER_REAL_DESCRIPTION", "SawyerRealHAL"]
 
@@ -206,8 +206,13 @@ _DEFAULT_SAWYER_CONTROLLER: str = "sawyer_arm_controller"
 # can override at construction time.
 _DEFAULT_SAWYER_JOINT_STATE_TOPIC: str = "/robot/joint_states"
 
-# Rethink's "halt" topic — publishing to it stops the arm and clears any
-# pending trajectory; analogous to franka_ros2's error_recovery.
+# Rethink's "super stop" topic (``std_msgs/Empty``). ``intera_interface``'s
+# ``RobotEnable.stop()`` publishes here and documents it as "Simulate an
+# e-stop button being pressed. Robot must be reset to clear the stopped
+# state" — the reset is ``/robot/set_super_reset`` followed by re-enabling,
+# an operator step, hence ``RESTART_REQUIRED``. The stopped state is
+# observable on ``/robot/state`` (``RobotAssemblyState.stopped``), which the
+# HIL gate reads when ``intera_core_msgs`` is installed.
 _DEFAULT_SAWYER_ESTOP_TOPIC: str = "/robot/set_super_stop"
 
 _PublishFn = Callable[[str, dict[str, object]], None]
@@ -225,6 +230,17 @@ class SawyerRealHAL(RosControlHAL):
     ``hal_mode:=real`` — a composed wrapper exposed none of that surface and
     was never wired, so a real Sawyer deploy published into a no-op logger.
 
+    **Lifecycle e-stop.** ``estop()`` first deactivates
+    ``sawyer_arm_controller`` through ``controller_manager`` (the generic
+    ``RosControlHAL`` stop), then publishes ``std_msgs/Empty`` on
+    ``estop_topic`` — intera's super stop, the software equivalent of the
+    pendant e-stop — on a publisher the transport created at wire-up. The
+    topic publish carries no service acknowledgement; the acknowledged part
+    of the report is the controller deactivation, and the HIL gate reads
+    ``/robot/state.stopped`` for the vendor half. Recovery is
+    ``RESTART_REQUIRED``: the operator publishes ``/robot/set_super_reset``,
+    re-enables the robot, restarts the HAL lifecycle node and re-aligns.
+
     Args:
         hostname: Hostname of the Sawyer's onboard PC, typically
             ``"sawyer.local"`` on a lab subnet.  Required; the upstream
@@ -239,8 +255,9 @@ class SawyerRealHAL(RosControlHAL):
             ``"/robot/joint_states"`` (the legacy intera_sdk topic name).
         command_topic: ROS 2 topic for joint trajectory commands.  Defaults
             to ``"/<controller_name>/joint_trajectory"``.
-        estop_topic: ROS 2 topic the safety supervisor publishes to on
-            ``estop()``.  Defaults to ``"/robot/set_super_stop"``.
+        estop_topic: ``std_msgs/Empty`` topic ``estop()`` publishes on after
+            deactivating the controller.  Defaults to
+            ``"/robot/set_super_stop"`` (intera's super stop).
         publish_fn: Callable forwarding messages to ROS 2 topics.
             Production use injects the lifecycle node's publisher; tests
             inject ``SimTransport.publish``.
@@ -268,6 +285,10 @@ class SawyerRealHAL(RosControlHAL):
         'sawyer'
         >>> hal.disconnect()
     """
+
+    #: The super stop must be cleared with ``set_super_reset`` + re-enable by
+    #: an operator; the lifecycle node must not re-arm in process.
+    estop_recovery: EStopRecovery = EStopRecovery.RESTART_REQUIRED
 
     def __init__(
         self,
@@ -320,25 +341,24 @@ class SawyerRealHAL(RosControlHAL):
         )
         super().connect()
 
-    def estop(self) -> None:
-        """Trigger an emergency stop on the Sawyer.
+    @property
+    def estop_topic(self) -> str:
+        """The ``std_msgs/Empty`` super-stop topic the vendor stop publishes on."""
+        return self._estop_topic
 
-        Publishes to the legacy intera_sdk halt topic, marks the adapter
-        disconnected, and raises ``ROSEStopRequested``.
+    # ── Lifecycle e-stop ─────────────────────────────────────────────────────
 
-        Raises:
-            ROSEStopRequested: Always.
-        """
+    def vendor_stop_topics(self) -> list[str]:
+        """The intera super-stop topic, so the transport creates its publisher at wire-up."""
+        return [self._estop_topic]
+
+    def _vendor_stop(self, seam: ControllerStopSeam) -> str:
+        """Publish intera's super stop after the controller is deactivated."""
+        seam.publish_empty(self._estop_topic)
         log.critical(
-            "hal.estop",
+            "hal.estop.vendor_stop",
             robot=self.description.name,
             hostname=self._hostname,
-            estop_topic=self._estop_topic,
+            topic=self._estop_topic,
         )
-        with contextlib.suppress(Exception):
-            self._publish_fn(
-                self._estop_topic,
-                {"reason": "openral_estop", "robot": self.description.name},
-            )
-        self._connected = False
-        raise ROSEStopRequested(f"Emergency stop triggered on Sawyer at host {self._hostname!r}.")
+        return self._estop_topic

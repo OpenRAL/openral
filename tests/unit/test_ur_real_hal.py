@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 from openral_core import Action, ControlMode
-from openral_core.exceptions import ROSPerceptionStale
+from openral_core.exceptions import ROSEStopRequested, ROSPerceptionStale, ROSRuntimeError
 from openral_core.schemas import RobotDescription
 from openral_hal.sim_transport import SimTransport
 from openral_hal.ur import UR5e_DESCRIPTION, UR10e_DESCRIPTION
@@ -194,3 +194,45 @@ class TestRobotManifestMetadata:
         meta = desc.onboard_compute
         assert meta.get("driver_license") == "BSD-3-Clause"
         assert meta.get("controller_name") == "scaled_joint_trajectory_controller"
+
+
+class TestURLifecycleEStop:
+    """`/openral/estop` → controller deactivation → dashboard `stop` (issue #295)."""
+
+    def test_ur5e_estop_deactivates_the_scaled_controller_then_stops_the_program(self) -> None:
+        hal, transport = _make_ur5e()
+        hal.attach_controller_stop(transport)
+        hal.connect()
+        with pytest.raises(ROSEStopRequested, match="downstream stop acknowledged"):
+            hal.estop()
+        assert transport.switch_calls == [("deactivate", ("scaled_joint_trajectory_controller",))]
+        assert transport.controller_state("scaled_joint_trajectory_controller") == "inactive"
+        assert transport.trigger_calls == ["/dashboard_client/stop"]
+        report = hal.last_stop_report
+        assert report is not None and report.stopped
+        assert report.vendor_stop == "/dashboard_client/stop"
+        assert hal.vendor_stop_services() == ["/dashboard_client/stop"]
+
+    def test_a_dashboard_that_refuses_to_stop_is_an_unacknowledged_stop(self) -> None:
+        transport = SimTransport(
+            n_joints=6, trigger_responses={"/dashboard_client/stop": (False, "not connected")}
+        )
+        hal = UR10eRealHAL(publish_fn=transport.publish, state_fn=transport.state)
+        hal.attach_controller_stop(transport)
+        hal.connect()
+        with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):
+            hal.estop()
+        # The controller was still deactivated — a refused vendor stop never skips it.
+        assert transport.controller_state("scaled_joint_trajectory_controller") == "inactive"
+        report = hal.last_stop_report
+        assert report is not None and not report.stopped
+        assert "not connected" in report.detail
+
+    def test_recovery_policy_is_restart_required(self) -> None:
+        from openral_hal.protocol import EStopRecovery, LifecycleEStopHAL
+
+        for hal, _ in (_make_ur5e(), _make_ur10e()):
+            assert isinstance(hal, LifecycleEStopHAL)
+            assert hal.estop_recovery is EStopRecovery.RESTART_REQUIRED
+            with pytest.raises(ROSRuntimeError, match="in-process reset is forbidden"):
+                hal.reset_estop()

@@ -129,3 +129,78 @@ class TestUR10eHIL:
         ur10e_hal._last_state_time -= ur10e_hal._staleness_limit_s + 0.1
         with pytest.raises(ROSPerceptionStale):
             ur10e_hal.read_state()
+
+
+# ── Downstream e-stop (issue #295) ───────────────────────────────────────────
+# Last in file on purpose: it stops the vendor controller and leaves the robot
+# needing an operator restart. Run attended, with the physical E-stop in reach.
+
+
+def _production_stop_seam(node_name: str, hal: object) -> tuple[object, object]:
+    """Attach the production ``RosControlTransport`` as the HAL's stop seam.
+
+    The HIL bridge above drives commands; the stop goes through the same
+    transport a real deploy uses, so what is exercised here is the production
+    ``controller_manager`` switch + confirmation, not a test-side re-creation.
+    """
+    import rclpy
+    from openral_hal.ros_control_transport import RosControlTransport
+
+    if not rclpy.ok():
+        rclpy.init()
+    node = rclpy.create_node(node_name)
+    transport = RosControlTransport(
+        node,
+        command_topics=list(hal.command_bindings()),  # type: ignore[attr-defined]  # reason: RosControlDrivable
+        joint_names=hal.ros2_control_joint_names(),  # type: ignore[attr-defined]
+        joint_state_topic=hal.joint_state_topic,  # type: ignore[attr-defined]
+        command_kinds=hal.command_bindings(),  # type: ignore[attr-defined]
+        controller_names=hal.controller_names(),  # type: ignore[attr-defined]  # reason: ControllerStoppable
+        trigger_services=hal.vendor_stop_services(),  # type: ignore[attr-defined]
+        empty_topics=hal.vendor_stop_topics(),  # type: ignore[attr-defined]
+    )
+    hal.attach_controller_stop(transport)  # type: ignore[attr-defined]
+    return node, transport
+
+
+class TestUR10eDownstreamEStop:
+    def test_zz_estop_stops_the_scaled_controller_and_the_pendant_program(
+        self, ur10e_hal: UR10eRealHAL
+    ) -> None:
+        """``/openral/estop`` must deactivate the controller AND stop the pendant program.
+
+        Asserts the actual downstream state, not only ``ROSEStopRequested``:
+        ``controller_manager`` lists ``scaled_joint_trajectory_controller`` as
+        ``inactive``, the dashboard acknowledged ``stop``, and — when the
+        driver's dashboard messages are installed — ``program_running`` reads
+        false. Recovery is ``RESTART_REQUIRED``: restart the program on the
+        pendant (``/dashboard_client/play`` + ``resend_robot_program``) and
+        relaunch the HAL node before the next run.
+        """
+        import importlib.util
+
+        from openral_hal.protocol import EStopRecovery
+
+        node, transport = _production_stop_seam("openral_hil_ur10e_stop", ur10e_hal)
+        try:
+            with pytest.raises(ROSEStopRequested, match="downstream stop acknowledged"):
+                ur10e_hal.estop()
+            report = ur10e_hal.last_stop_report
+            assert report is not None and report.stopped, report
+            assert report.vendor_stop == "/dashboard_client/stop"
+            states = transport.controller_states(timeout_s=5.0)  # type: ignore[attr-defined]
+            assert states.get("scaled_joint_trajectory_controller") == "inactive", states
+            assert ur10e_hal.estop_recovery is EStopRecovery.RESTART_REQUIRED
+            if importlib.util.find_spec("ur_dashboard_msgs") is not None:
+                import rclpy
+                from ur_dashboard_msgs.srv import IsProgramRunning
+
+                client = node.create_client(IsProgramRunning, "/dashboard_client/program_running")  # type: ignore[attr-defined]
+                assert client.wait_for_service(timeout_sec=5.0)
+                future = client.call_async(IsProgramRunning.Request())
+                rclpy.spin_until_future_complete(node, future, timeout_sec=5.0)
+                assert future.done() and future.result().success
+                assert not future.result().program_running, "pendant program still running"
+        finally:
+            transport.close()  # type: ignore[attr-defined]
+            node.destroy_node()  # type: ignore[attr-defined]

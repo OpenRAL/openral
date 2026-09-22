@@ -155,13 +155,37 @@ class TestSafety:
     # tests/unit/test_hal_protocol_conformance.py::test_estoprequested_is_safety_violation_subclass
     # (structural check that ROSEStopRequested subclasses ROSSafetyViolation).
 
-    def test_estop_publishes_recovery_message(
+    def test_estop_deactivates_the_franka_controller_and_never_publishes_recovery(
         self, hal: FrankaPandaRealHAL, transport: SimTransport
     ) -> None:
+        """The stop is the controller deactivation (franka_hardware then calls stopRobot()).
+
+        The earlier adapter published a dict to ``/error_recovery/goal`` on e-stop; that
+        is a *recovery* (it clears a reflex), and the production transport refused the
+        undeclared topic anyway, so it was a silent no-op. Nothing may be published on
+        e-stop now, and the recovery action stays an operator step recorded on the HAL.
+        """
+        hal.attach_controller_stop(transport)
         hal.connect()
         with pytest.raises(ROSEStopRequested):
             hal.estop()
-        assert any(topic == "/error_recovery/goal" for topic, _msg in transport.calls)
+        assert transport.switch_calls == [("deactivate", ("franka_arm_controller",))]
+        assert transport.controller_state("franka_arm_controller") == "inactive"
+        assert transport.calls == []
+        assert transport.empty_publishes == []
+        assert transport.trigger_calls == []
+        report = hal.last_stop_report
+        assert report is not None and report.stopped
+        assert report.vendor_stop == ""
+        assert hal.error_recovery_action == "/error_recovery"
+
+    def test_recovery_policy_is_restart_required(self, hal: FrankaPandaRealHAL) -> None:
+        from openral_hal.protocol import EStopRecovery, LifecycleEStopHAL
+
+        assert isinstance(hal, LifecycleEStopHAL)
+        assert hal.estop_recovery is EStopRecovery.RESTART_REQUIRED
+        with pytest.raises(ROSRuntimeError, match="in-process reset is forbidden"):
+            hal.reset_estop()
 
     # test_after_estop_send_action_fails moved to
     # tests/unit/test_hal_protocol_conformance.py::test_hal_send_action_after_estop_fails

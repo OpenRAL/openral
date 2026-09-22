@@ -31,6 +31,22 @@ split per limb each message carries only that limb's joints.
 Arrival time is tracked per message and surfaced via `last_arrival`, which is
 what lets `RosControlHAL.read_state` measure real staleness instead of time
 since `connect()`.
+
+**Stop seam.** The transport also implements `ControllerStopSeam`, which is
+how `/openral/estop` reaches the controller: `deactivate_controllers` calls
+`controller_manager`'s `switch_controller` (STRICT) for the HAL's
+`controller_names()` and then confirms through `list_controllers` that every
+one reads `inactive`; `activate_controllers` is the mirror for a `RESETTABLE`
+re-arm. Vendor stops go through `call_trigger` (`std_srvs/Trigger` clients)
+and `publish_empty` (`std_msgs/Empty` publishers), both created at wire-up
+from what the HAL declared in `vendor_stop_services()` /
+`vendor_stop_topics()`, so the stop path never creates an entity — and so a
+vendor stop on an undeclared name is refused rather than silently absent.
+
+Service calls run on a private helper node with its own executor: the e-stop
+callback runs on the lifecycle node's single-threaded executor, and a future
+issued from inside a callback can only complete if something *else* spins
+the client. Bounded by the HAL's `stop_timeout_s`.
 """
 
 from __future__ import annotations
@@ -41,12 +57,23 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
 
-from openral_hal.ros_control import ControllerKind
+from openral_hal.ros_control import ControllerKind, ControllerSwitchReport, TriggerReport
 
 if TYPE_CHECKING:  # pragma: no cover - import-time typing only
+    from collections.abc import Sequence
+
     from rclpy.node import Node
 
 __all__ = ["RosControlDrivable", "RosControlTransport"]
+
+#: `controller_manager` namespace every ros2_control robot in this repo runs
+#: its manager under. Overridable per transport for a namespaced manager.
+_DEFAULT_CONTROLLER_MANAGER = "/controller_manager"
+
+#: `controller_manager_msgs/srv/SwitchController` strictness: refuse the whole
+#: switch if any named controller cannot move. A best-effort stop that leaves
+#: one controller active is not a stop.
+_STRICT = 2
 
 
 @runtime_checkable
@@ -112,6 +139,14 @@ class RosControlTransport:
             A topic absent from the mapping defaults to
             `ControllerKind.JOINT_TRAJECTORY`, which is what every
             ros2_control robot in this repo runs.
+        controller_names: Controllers the stop seam switches, from
+            `hal.controller_names()`. Empty leaves the seam unwired (the HAL
+            then reports its stop as unproven).
+        trigger_services: `std_srvs/Trigger` services the HAL's vendor stop
+            may call, from `hal.vendor_stop_services()`.
+        empty_topics: `std_msgs/Empty` topics the HAL's vendor stop may
+            publish on, from `hal.vendor_stop_topics()`.
+        controller_manager: Namespace of the `controller_manager` node.
 
     Raises:
         ROSConfigError: If no command topic or no joint name was given — a HAL
@@ -127,6 +162,10 @@ class RosControlTransport:
         joint_names: list[str],
         joint_state_topic: str = "/joint_states",
         command_kinds: dict[str, ControllerKind] | None = None,
+        controller_names: Sequence[str] = (),
+        trigger_services: Sequence[str] = (),
+        empty_topics: Sequence[str] = (),
+        controller_manager: str = _DEFAULT_CONTROLLER_MANAGER,
     ) -> None:
         """Create one publisher per command topic and subscribe to the state topic."""
         # `openral_hal` must import without a ROS 2 install (unit tests, docs
@@ -194,11 +233,57 @@ class RosControlTransport:
         self._sub = node.create_subscription(
             RosJointState, joint_state_topic, self._on_joint_state, state_qos
         )
+
+        # ── Stop seam ────────────────────────────────────────────────────────
+        # Safety-class QoS (CLAUDE.md §2): RELIABLE, VOLATILE, KEEP_LAST=10.
+        stop_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+        from std_msgs.msg import Empty  # noqa: PLC0415  # reason: ROS-only dep
+
+        self._controller_names = tuple(controller_names)
+        self._controller_manager = controller_manager.rstrip("/")
+        self._empty_pubs = {
+            topic: node.create_publisher(Empty, topic, stop_qos) for topic in empty_topics
+        }
+        self._empty_type: Any = Empty
+        # Helper node + executor for service calls made from inside a callback
+        # of `node` (see module docstring). Same context, so the same graph.
+        import rclpy  # noqa: PLC0415  # reason: ROS-only dep
+        from controller_manager_msgs.srv import (  # noqa: PLC0415  # reason: ROS-only dep
+            ListControllers,
+            SwitchController,
+        )
+        from rclpy.executors import SingleThreadedExecutor  # noqa: PLC0415
+        from rclpy.node import Node as _Node  # noqa: PLC0415
+        from std_srvs.srv import Trigger  # noqa: PLC0415  # reason: ROS-only dep
+
+        self._rclpy = rclpy
+        self._switch_type: Any = SwitchController
+        self._list_type: Any = ListControllers
+        self._helper = _Node(f"{node.get_name()}_controller_stop", context=node.context)
+        self._executor = SingleThreadedExecutor(context=node.context)
+        self._executor.add_node(self._helper)
+        self._switch_client = self._helper.create_client(
+            SwitchController, f"{self._controller_manager}/switch_controller"
+        )
+        self._list_client = self._helper.create_client(
+            ListControllers, f"{self._controller_manager}/list_controllers"
+        )
+        self._trigger_clients: dict[str, Any] = {
+            service: self._helper.create_client(Trigger, service) for service in trigger_services
+        }
         log.info(
             "hal.transport.ready",
             command_topics=list(self._pubs),
             joint_state_topic=joint_state_topic,
             joints=len(self._joint_names),
+            stop_controllers=list(self._controller_names),
+            vendor_stop_services=list(self._trigger_clients),
+            vendor_stop_topics=list(self._empty_pubs),
         )
 
     # ── Injected callables ────────────────────────────────────────────────────
@@ -324,6 +409,142 @@ class RosControlTransport:
     def last_arrival(self) -> float:
         """`time.monotonic()` of the newest joint state; 0.0 if none has arrived."""
         return self._last_arrival
+
+    # ── ControllerStopSeam ────────────────────────────────────────────────────
+
+    def deactivate_controllers(
+        self, names: Sequence[str], *, timeout_s: float
+    ) -> ControllerSwitchReport:
+        """Deactivate `names` through `switch_controller` (STRICT), then confirm `inactive`.
+
+        A `JointTrajectoryController` that is deactivated holds its last
+        position command (zeroes velocity / effort ones), stops accepting
+        trajectories on its topic and writes nothing until re-activated —
+        verified against `ros2_controllers` jazzy — so this is the stop. The
+        report's `ok` is the manager's `ok` **and** the post-switch listing.
+        """
+        return self._switch(names, activate=False, timeout_s=timeout_s)
+
+    def activate_controllers(
+        self, names: Sequence[str], *, timeout_s: float
+    ) -> ControllerSwitchReport:
+        """Activate `names` through `switch_controller` (STRICT), then confirm `active`."""
+        return self._switch(names, activate=True, timeout_s=timeout_s)
+
+    def call_trigger(self, service: str, *, timeout_s: float) -> TriggerReport:
+        """Call one declared `std_srvs/Trigger` service and return its response.
+
+        Raises:
+            ROSConfigError: If `service` was not declared at wire-up.
+        """
+        from openral_core.exceptions import ROSConfigError  # noqa: PLC0415
+
+        client = self._trigger_clients.get(service)
+        if client is None:
+            raise ROSConfigError(
+                f"RosControlTransport has no Trigger client for {service!r}; the HAL calls a "
+                f"service it never declared in vendor_stop_services(). Declared: "
+                f"{sorted(self._trigger_clients)}"
+            )
+        if not client.wait_for_service(timeout_sec=timeout_s):
+            return TriggerReport(success=False, message=f"{service} not available")
+        future = client.call_async(client.srv_type.Request())
+        self._rclpy.spin_until_future_complete(
+            self._helper, future, executor=self._executor, timeout_sec=timeout_s
+        )
+        if not future.done():
+            return TriggerReport(success=False, message=f"{service} did not answer")
+        exc = future.exception()
+        if exc is not None:
+            return TriggerReport(success=False, message=f"{service}: {exc}")
+        response = future.result()
+        return TriggerReport(success=bool(response.success), message=str(response.message))
+
+    def publish_empty(self, topic: str) -> None:
+        """Publish one `std_msgs/Empty` on a declared vendor-stop topic.
+
+        Raises:
+            ROSConfigError: If `topic` was not declared at wire-up.
+        """
+        from openral_core.exceptions import ROSConfigError  # noqa: PLC0415
+
+        publisher = self._empty_pubs.get(topic)
+        if publisher is None:
+            raise ROSConfigError(
+                f"RosControlTransport has no Empty publisher for {topic!r}; the HAL publishes "
+                f"on a topic it never declared in vendor_stop_topics(). Declared: "
+                f"{sorted(self._empty_pubs)}"
+            )
+        publisher.publish(self._empty_type())
+
+    def controller_states(self, *, timeout_s: float) -> dict[str, str]:
+        """Return `{name: state}` from `list_controllers`; empty if the manager did not answer."""
+        if not self._list_client.wait_for_service(timeout_sec=timeout_s):
+            return {}
+        future = self._list_client.call_async(self._list_type.Request())
+        self._rclpy.spin_until_future_complete(
+            self._helper, future, executor=self._executor, timeout_sec=timeout_s
+        )
+        if not future.done() or future.exception() is not None:
+            return {}
+        return {str(c.name): str(c.state) for c in future.result().controller}
+
+    def close(self) -> None:
+        """Destroy the helper node (lifecycle cleanup)."""
+        self._executor.remove_node(self._helper)
+        self._helper.destroy_node()
+
+    def _switch(
+        self, names: Sequence[str], *, activate: bool, timeout_s: float
+    ) -> ControllerSwitchReport:
+        wanted = tuple(names)
+        target = "active" if activate else "inactive"
+        if not wanted:
+            return ControllerSwitchReport(
+                ok=False, controllers=wanted, detail="no controller names to switch"
+            )
+        deadline = time.monotonic() + timeout_s
+        manager = f"{self._controller_manager}/switch_controller"
+        if not self._switch_client.wait_for_service(timeout_sec=timeout_s):
+            return ControllerSwitchReport(
+                ok=False, controllers=wanted, detail=f"{manager} not available"
+            )
+        request = self._switch_type.Request()
+        if activate:
+            request.activate_controllers = list(wanted)
+        else:
+            request.deactivate_controllers = list(wanted)
+        request.strictness = _STRICT
+        request.activate_asap = True
+        request.timeout.sec = int(timeout_s)
+        request.timeout.nanosec = int((timeout_s - int(timeout_s)) * 1e9)
+        future = self._switch_client.call_async(request)
+        self._rclpy.spin_until_future_complete(
+            self._helper, future, executor=self._executor, timeout_sec=timeout_s
+        )
+        if not future.done():
+            return ControllerSwitchReport(
+                ok=False, controllers=wanted, detail=f"{manager} did not answer"
+            )
+        exc = future.exception()
+        if exc is not None:
+            return ControllerSwitchReport(ok=False, controllers=wanted, detail=f"{manager}: {exc}")
+        response = future.result()
+        remaining = max(0.5, deadline - time.monotonic())
+        states = self._controller_states_of(wanted, timeout_s=remaining)
+        confirmed = all(states.get(n) == target for n in wanted)
+        # `message` joined the response after Humble; read it defensively.
+        message = str(getattr(response, "message", "") or "")
+        detail = (
+            f"switch_controller ok={bool(response.ok)} {message}".strip() + f"; listed {states}"
+        )
+        return ControllerSwitchReport(
+            ok=bool(response.ok) and confirmed, controllers=wanted, states=states, detail=detail
+        )
+
+    def _controller_states_of(self, names: Sequence[str], *, timeout_s: float) -> dict[str, str]:
+        listed = self.controller_states(timeout_s=timeout_s)
+        return {n: listed.get(n, "not_listed") for n in names}
 
     # ── Introspection ─────────────────────────────────────────────────────────
 

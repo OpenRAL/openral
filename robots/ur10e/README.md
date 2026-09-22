@@ -50,6 +50,35 @@ both arms; only the URDF / per-joint envelope changes. Bring the driver
 up with `ur_type:=ur10e robot_ip:=$UR10E_HOST` and construct
 `UR10eRealHAL(robot_ip=$UR10E_HOST)`.
 
+## E-stop and recovery
+
+`/openral/estop` reaches `UR10eRealHAL.estop()` through the lifecycle node
+(issue #295). The stop is two acknowledged steps, in this order:
+
+1. `controller_manager/switch_controller` deactivates
+   `scaled_joint_trajectory_controller` (STRICT) and `list_controllers` is
+   read back until it reports `inactive` — a deactivated
+   `JointTrajectoryController` holds position, drops any trajectory it is
+   sent, and writes nothing until re-activated.
+2. `/dashboard_client/stop` (`std_srvs/Trigger`) stops the
+   `external_control` program on the pendant, so the robot performs a
+   controlled stop and the driver's control connection ends.
+
+The outcome is on `/diagnostics` (`downstream_stop=acknowledged|unacknowledged`)
+and in the lifecycle log; an unacknowledged stop is logged FATAL and the node
+stays latched either way.
+
+**Recovery is `RESTART_REQUIRED`.** `/openral/estop_cleared` is rejected by
+this HAL. To resume: on the pendant (or via `/dashboard_client/play` and
+`/io_and_status_controller/resend_robot_program`) restart the program, confirm
+`/dashboard_client/program_running`, then relaunch the HAL lifecycle node and
+re-align before the next `openral deploy run`.
+
+Evidence: `tests/unit/test_ur_real_hal.py::TestURLifecycleEStop` (in-memory
+controller simulator), `tests/integration/test_real_hal_estop_ros2_control_live.py`
+(real `controller_manager` + fake dashboard at the vendor boundary), and the
+attended `tests/hil/test_ur10e.py::TestUR10eDownstreamEStop`.
+
 ## See also
 
 - [`python/hal/README.md`](../../python/hal/README.md) — HAL Protocol + per-robot adapters.

@@ -93,7 +93,16 @@ from openral_hal.protocol import (
     ResettableLifecycleEStopHAL,
 )
 from openral_hal.resolver import build_hal
-from openral_hal.ros_control import ControllerKind, RosControlHAL
+from openral_hal.ros_control import (
+    ControllerKind,
+    ControllerStoppable,
+    ControllerStopSeam,
+    ControllerSwitchReport,
+    DownstreamStopReport,
+    DownstreamStopReporting,
+    RosControlHAL,
+    TriggerReport,
+)
 from openral_hal.sawyer_real import (
     SAWYER_DESCRIPTION,
     SAWYER_REAL_DESCRIPTION,
@@ -144,6 +153,11 @@ __all__ = [
     "AlohaMujocoHAL",
     "AnvilOpenArmV2MujocoHAL",
     "ControllerKind",
+    "ControllerStopSeam",
+    "ControllerStoppable",
+    "ControllerSwitchReport",
+    "DownstreamStopReport",
+    "DownstreamStopReporting",
     "EStopRecovery",
     "FrankaPandaHAL",
     "FrankaPandaRealHAL",
@@ -165,6 +179,7 @@ __all__ = [
     "SO100MujocoHAL",
     "SawyerRealHAL",
     "SimTransport",
+    "TriggerReport",
     "UR5eHAL",
     "UR5eRealHAL",
     "UR5e_DESCRIPTION",
