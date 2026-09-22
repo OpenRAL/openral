@@ -57,7 +57,6 @@ from openral_core import (
     EmbodimentKind,
     JointState,
     JointType,
-    ROSConfigError,
     ROSRuntimeError,
 )
 from openral_hal import H1_DESCRIPTION, H1MujocoHAL
@@ -204,15 +203,6 @@ def hal() -> H1MujocoHAL:
     return H1MujocoHAL(gravity_enabled=False, settle_steps=3000)
 
 
-def _zero_action(horizon: int = 1) -> Action:
-    return Action(
-        control_mode=ControlMode.JOINT_POSITION,
-        horizon=horizon,
-        joint_targets=[[0.0] * 19 for _ in range(horizon)],
-        stamp_ns=time.time_ns(),
-    )
-
-
 # ── Protocol conformance ──────────────────────────────────────────────────────
 
 
@@ -221,20 +211,6 @@ def _zero_action(horizon: int = 1) -> Action:
 # Shared protocol compliance and standard lifecycle tests are consolidated in
 # tests/sim/test_hal_protocol_contracts.py (parametrized across all MuJoCo HALs).
 # Keep only H1-specific tests here.
-
-
-class TestH1Lifecycle:
-    def test_connect_loads_mujoco_model(self, hal: H1MujocoHAL) -> None:
-        """H1-specific: verify 19 actuated joints + floating base in menagerie XML."""
-        hal.connect()
-        try:
-            assert hal._connected is True
-            assert hal._model is not None
-            assert hal._data is not None
-            assert hal._model.nu == 19  # 19 actuated joints
-            assert hal._model.njnt == 20  # +1 floating base
-        finally:
-            hal.disconnect()
 
 
 # ── read_state ────────────────────────────────────────────────────────────────
@@ -249,13 +225,6 @@ class TestReadState:
         assert len(state.position) == 19
         assert len(state.velocity) == 19
         assert state.stamp_ns > 0
-
-    def test_initial_positions_are_zero(self, connected_hal: H1MujocoHAL) -> None:
-        # The menagerie H1 MJCF has no keyframe; every actuated joint
-        # defaults to qpos=0 (upright neutral pose).
-        state = connected_hal.read_state()
-        for q in state.position:
-            assert abs(q) < 1e-3
 
     def test_perception_starvation_warns_not_latch_when_old(self, monkeypatch) -> None:
         """A starved servicing gap warns once and returns live state — never latches.
@@ -282,20 +251,6 @@ class TestReadState:
 # ── send_action ───────────────────────────────────────────────────────────────
 
 
-class TestSendAction:
-    def test_rejects_wrong_joint_count(self, connected_hal: H1MujocoHAL) -> None:
-        """H1-specific: verify 19-joint contract."""
-        # 18 values for a 19-joint robot.
-        bad = Action(
-            control_mode=ControlMode.JOINT_POSITION,
-            horizon=1,
-            joint_targets=[[0.0] * 18],
-            stamp_ns=time.time_ns(),
-        )
-        with pytest.raises(ROSConfigError, match="19 joints"):
-            connected_hal.send_action(bad)
-
-
 # ── estop ─────────────────────────────────────────────────────────────────────
 
 
@@ -312,13 +267,6 @@ class TestClosedLoopMujoco:
     across all 19 joints when gravity is off (without an S0 cerebellum
     the floating base falls instantly with gravity on — see the suite
     docstring)."""
-
-    def test_send_action_holds_zero_pose(
-        self, connected_hal: H1MujocoHAL, assert_send_action_holds_zero_pose
-    ) -> None:
-        # Commanding zero on every actuator should leave every joint at
-        # zero (the menagerie's default rest pose with gravity off).
-        assert_send_action_holds_zero_pose(connected_hal, _zero_action())
 
     def test_left_arm_converges_to_target(self, connected_hal: H1MujocoHAL) -> None:
         target = [0.0] * 19

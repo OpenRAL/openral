@@ -66,7 +66,6 @@ from openral_core import (
     ControlMode,
     EmbodimentKind,
     JointState,
-    ROSConfigError,
     ROSRuntimeError,
 )
 from openral_hal import ALOHA_DESCRIPTION, AlohaMujocoHAL
@@ -209,24 +208,9 @@ def _home_action(horizon: int = 1) -> Action:
 # ── Protocol conformance ──────────────────────────────────────────────────────
 
 
-# ── ALOHA-specific lifecycle tests ────────────────────────────────────────────
-#
-# Shared protocol compliance and standard lifecycle tests are consolidated in
+# Lifecycle, MJCF-shape and action-width contracts are consolidated in
 # tests/sim/test_hal_protocol_contracts.py (parametrized across all MuJoCo HALs).
 # Keep only ALOHA-specific tests here.
-
-
-class TestAlohaLifecycle:
-    def test_connect_loads_mujoco_model(self, hal: AlohaMujocoHAL) -> None:
-        """ALOHA-specific: verify 16 actuators (14 arm + 2 extra finger) in MJCF."""
-        hal.connect()
-        try:
-            assert hal._connected is True
-            assert hal._model is not None
-            assert hal._data is not None
-            assert hal._model.nu == 16  # 14 arm + 2 extra finger actuators
-        finally:
-            hal.disconnect()
 
 
 # ── read_state ────────────────────────────────────────────────────────────────
@@ -265,20 +249,6 @@ class TestReadState:
 
 
 # ── send_action ───────────────────────────────────────────────────────────────
-
-
-class TestSendAction:
-    def test_rejects_wrong_joint_count(self, connected_hal: AlohaMujocoHAL) -> None:
-        """ALOHA-specific: verify 14-joint contract."""
-        # 13 values for a 14-joint robot.
-        bad = Action(
-            control_mode=ControlMode.JOINT_POSITION,
-            horizon=1,
-            joint_targets=[[0.0] * 13],
-            stamp_ns=time.time_ns(),
-        )
-        with pytest.raises(ROSConfigError, match="14 joints"):
-            connected_hal.send_action(bad)
 
 
 # ── estop ─────────────────────────────────────────────────────────────────────

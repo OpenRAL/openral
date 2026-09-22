@@ -231,20 +231,6 @@ def _zero_action(horizon: int = 1) -> Action:
 # Keep only G1-specific tests here.
 
 
-class TestG1Lifecycle:
-    def test_connect_loads_mujoco_model(self, hal: G1MujocoHAL) -> None:
-        """G1-specific: verify 29 actuated joints + floating base in menagerie XML."""
-        hal.connect()
-        try:
-            assert hal._connected is True
-            assert hal._model is not None
-            assert hal._data is not None
-            assert hal._model.nu == 29  # 29 actuated joints
-            assert hal._model.njnt == 30  # +1 floating base
-        finally:
-            hal.disconnect()
-
-
 # ── read_state ────────────────────────────────────────────────────────────────
 
 
@@ -257,13 +243,6 @@ class TestReadState:
         assert len(state.position) == 29
         assert len(state.velocity) == 29
         assert state.stamp_ns > 0
-
-    def test_initial_positions_are_zero(self, connected_hal: G1MujocoHAL) -> None:
-        # The menagerie MJCF defaults every actuated joint to qpos=0
-        # (the upright neutral pose); no keyframe applied in connect.
-        state = connected_hal.read_state()
-        for q in state.position:
-            assert abs(q) < 1e-3
 
     def test_perception_starvation_warns_not_latch_when_old(self, monkeypatch) -> None:
         """A starved servicing gap warns once and returns live state — never latches.
@@ -290,20 +269,6 @@ class TestReadState:
 # ── send_action ───────────────────────────────────────────────────────────────
 
 
-class TestSendAction:
-    def test_rejects_wrong_joint_count(self, connected_hal: G1MujocoHAL) -> None:
-        """G1-specific: verify 29-joint contract."""
-        # 28 values for a 29-joint robot.
-        bad = Action(
-            control_mode=ControlMode.JOINT_POSITION,
-            horizon=1,
-            joint_targets=[[0.0] * 28],
-            stamp_ns=time.time_ns(),
-        )
-        with pytest.raises(ROSConfigError, match="29 joints"):
-            connected_hal.send_action(bad)
-
-
 # ── estop ─────────────────────────────────────────────────────────────────────
 # Standard estop contract is tested in test_hal_protocol_contracts.py (parametrized).
 # No G1-specific estop behavior to test.
@@ -317,13 +282,6 @@ class TestClosedLoopMujoco:
     across all 29 joints when gravity is off (without an S0 cerebellum
     the floating base falls instantly with gravity on — see the suite
     docstring)."""
-
-    def test_send_action_holds_zero_pose(
-        self, connected_hal: G1MujocoHAL, assert_send_action_holds_zero_pose
-    ) -> None:
-        # Commanding zero on every actuator should leave every joint at
-        # zero (the menagerie's default rest pose with gravity off).
-        assert_send_action_holds_zero_pose(connected_hal, _zero_action())
 
     def test_left_arm_converges_to_target(self, connected_hal: G1MujocoHAL) -> None:
         target = [0.0] * 29
