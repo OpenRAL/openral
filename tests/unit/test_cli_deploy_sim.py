@@ -1623,8 +1623,12 @@ def test_bh_prepare_launch_env_defaults_expandable_segments(
     `deploy sim` shells through deploy_sim_command's own inline env build — so the
     var never reached the runtime_node. Both paths now route through this helper.
     """
+    import openral_cli.deploy_sim as _ds
+
     monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
+    # A discrete-GPU host; the Tegra branch has its own test below.
+    monkeypatch.setattr(_ds, "_is_tegra_host", lambda: False)
     env = _prepare_launch_env()
     chosen = _alloc_conf_var()
     other = "PYTORCH_CUDA_ALLOC_CONF" if chosen == "PYTORCH_ALLOC_CONF" else "PYTORCH_ALLOC_CONF"
@@ -1634,6 +1638,31 @@ def test_bh_prepare_launch_env_defaults_expandable_segments(
 
     monkeypatch.setenv(chosen, "garbage_collection_threshold:0.9")
     assert _prepare_launch_env()[chosen] == "garbage_collection_threshold:0.9"
+
+
+def test_bh_prepare_launch_env_leaves_the_allocator_alone_on_tegra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a Jetson, expandable segments are NOT defaulted.
+
+    torch's expandable-segments allocator queries NVML GPU-fabric info on its
+    first allocation, which the integrated GPU cannot answer: on qorin1
+    (torch 2.13+cu130) the runtime_node raised ``Expected NVML_SUCCESS ==
+    ...nvmlDeviceGetGpuFabricInfoV_...`` 363 s into a policy load, while the
+    same load in the same venv without the variable succeeded. Unified memory
+    also makes the discrete-card fragmentation headroom moot. An operator's
+    explicit setting still passes through untouched.
+    """
+    import openral_cli.deploy_sim as _ds
+
+    chosen = _alloc_conf_var()
+    monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
+    monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
+    monkeypatch.setattr(_ds, "_is_tegra_host", lambda: True)
+    assert chosen not in _prepare_launch_env()
+
+    monkeypatch.setenv(chosen, "expandable_segments:True")
+    assert _prepare_launch_env()[chosen] == "expandable_segments:True"
 
 
 def test_bh_run_launch_invocation_sets_expandable_segments(

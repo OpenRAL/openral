@@ -1536,9 +1536,23 @@ def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:
     venv_bin = os.path.dirname(sys.executable)
     existing_path = env.get("PATH", "")
     env["PATH"] = f"{venv_bin}{os.pathsep}{existing_path}" if existing_path else venv_bin
-    env.setdefault(_alloc_conf_var(), "expandable_segments:True")
+    # Not on Tegra. A Jetson's integrated GPU shares system RAM, so the
+    # fragmentation headroom expandable segments buy on an 8 GiB discrete card
+    # is moot there — and torch's expandable path queries NVML GPU-fabric info,
+    # which the iGPU cannot answer: the first CUDA allocation in the
+    # runtime_node raised ``Expected NVML_SUCCESS ==
+    # DriverAPI::get()->nvmlDeviceGetGpuFabricInfoV_(...)`` (qorin1, torch
+    # 2.13+cu130, 2026-09-22), 363 s into a policy load, while the identical
+    # load in the same venv without the variable succeeded.
+    if not _is_tegra_host():
+        env.setdefault(_alloc_conf_var(), "expandable_segments:True")
     _apply_rmw_default(env)
     return env
+
+
+def _is_tegra_host() -> bool:
+    """True on an NVIDIA Jetson / L4T host (``/etc/nv_tegra_release`` present)."""
+    return Path("/etc/nv_tegra_release").exists()
 
 
 def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool = True) -> int:
