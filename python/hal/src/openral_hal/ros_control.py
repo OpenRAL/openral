@@ -245,6 +245,11 @@ class RosControlHAL(HALBase):
         """The aggregated ``sensor_msgs/JointState`` topic this HAL reads."""
         return self._joint_state_topic
 
+    @property
+    def controller_name(self) -> str:
+        """Name of the primary ``ros2_control`` controller this HAL commands."""
+        return self._controller_name
+
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
     def connect(self) -> None:

@@ -100,41 +100,33 @@ _Real-hardware HAL adapter for the Franka Emika Panda over the FCI._
 - module const `_DEFAULT_FRANKA_CONTROLLER: str = "franka_arm_controller"` (L57)
 - module const `_DEFAULT_FRANKA_JOINT_STATE_TOPIC: str = "/joint_states"` (L62)
 - module const `_DEFAULT_FRANKA_ESTOP_TOPIC: str = "/error_recovery/goal"` (L67)
-- `class FrankaPandaRealHAL` — Production adapter for a physical Panda over `franka_ros2` / FCI. Wraps `RosControlHAL` via composition. (L86)
-  - `__init__(*, fci_ip='172.16.0.2', controller_name='franka_arm_controller', joint_state_topic='/joint_states', command_topic=None, error_recovery_topic='/error_recovery/goal', publish_fn=None, state_fn=None, staleness_limit_s=0.2)` (L140)
-  - `description -> RobotDescription` [@property] — Returns `FRANKA_PANDA_REAL_DESCRIPTION`. (L176)
-  - `controller_name -> str` [@property] (L181)
-  - `fci_ip -> str` [@property] (L186)
-  - `connect() -> None` (L192)
-  - `disconnect() -> None` (L210)
-  - `read_state() -> JointState` (L216)
-  - `send_action(action) -> None` (L226)
-  - `estop() -> None` — Publishes to `/error_recovery/goal` then raises `ROSEStopRequested`. (L242)
+- `class FrankaPandaRealHAL(RosControlHAL)` — Production adapter for a physical Panda over `franka_ros2` / FCI. **Subclasses** `RosControlHAL` (the UR shape) so it is structurally `RosControlDrivable` and the lifecycle node attaches the production `RosControlTransport` under `hal_mode:=real`; the composed wrapper it replaced forwarded only the five HAL Protocol methods, exposed none of the drivable surface, and was never wired — a real Panda deploy published every command into `_default_publish`. (L86)
+  - `__init__(*, fci_ip='172.16.0.2', controller_name='franka_arm_controller', joint_state_topic='/joint_states', command_topic=None, error_recovery_topic='/error_recovery/goal', publish_fn=None, state_fn=None, staleness_limit_s=0.2)` (L144)
+  - `fci_ip -> str` [@property] (L177)
+  - `connect() -> None` — Logs the FCI target, then the base `connect`. (L183)
+  - `estop() -> None` — Publishes to `/error_recovery/goal` then raises `ROSEStopRequested`. (L203)
+  - Inherits `description` (= `FRANKA_PANDA_REAL_DESCRIPTION`), `controller_name`, `disconnect`, `read_state`, `send_action`, `command_bindings`, `attach_transport` from `RosControlHAL`.
 - const `FRANKA_PANDA_REAL_DESCRIPTION = make_real_description(FRANKA_PANDA_DESCRIPTION, sdk_kind="closed_with_api")` (L80) — inherits the shared `hal`; what `robots/franka_panda/robot.yaml` mirrors.
 
 ### `python/hal/src/openral_hal/sawyer_real.py`
 _Real-hardware HAL adapter for the Rethink Sawyer 7-DoF arm._
 
-- module const `_SAWYER_JOINT_NAMES: tuple[str, ...]` (L67) — 7 arm joint names.
-- module const `_SAWYER_POSITION_LIMITS: dict[str, tuple[float, float]]` (L80)
-- module const `_SAWYER_VELOCITY_LIMITS: dict[str, float]` (L90)
-- module const `_SAWYER_EFFORT_LIMITS: dict[str, float]` (L100)
-- module const `_DEFAULT_SAWYER_CONTROLLER: str = "sawyer_arm_controller"` (L204)
-- module const `_DEFAULT_SAWYER_JOINT_STATE_TOPIC: str = "/robot/joint_states"` (L209)
-- module const `_DEFAULT_SAWYER_ESTOP_TOPIC: str = "/robot/set_super_stop"` (L213)
-- `class SawyerRealHAL` — Production adapter for a physical Sawyer over `intera_sdk` / `sawyer_robot`. (L219)
-  - `__init__(*, hostname='sawyer.local', controller_name='sawyer_arm_controller', joint_state_topic='/robot/joint_states', command_topic=None, estop_topic='/robot/set_super_stop', publish_fn=None, state_fn=None, staleness_limit_s=0.2)` (L266)
-  - `description -> RobotDescription` [@property] — Mirrors `SAWYER_DESCRIPTION`. (L302)
-  - `hostname -> str` [@property] (L307)
-  - `controller_name -> str` [@property] (L312)
-  - `connect() -> None` (L316)
-  - `disconnect() -> None` (L330)
-  - `read_state() -> JointState` (L334)
-  - `send_action(action) -> None` (L344)
-  - `estop() -> None` (L354)
-- `_sawyer_joint_specs() -> list[JointSpec]` (L111)
-- const `SAWYER_DESCRIPTION = RobotDescription(...)` (L154) — sim baseline; `sdk_kind="open"`, `hal.sim=None` (no MuJoCo HAL adapter today) + `hal.real="openral_hal.sawyer_real:SawyerRealHAL"`.
-- const `SAWYER_REAL_DESCRIPTION = make_real_description(SAWYER_DESCRIPTION, sdk_kind="closed_with_api")` (L194) — inherits the shared `hal`; what `robots/sawyer/robot.yaml` mirrors.
+- module const `_SAWYER_JOINT_NAMES: tuple[str, ...]` (L65) — 7 arm joint names.
+- module const `_SAWYER_POSITION_LIMITS: dict[str, tuple[float, float]]` (L78)
+- module const `_SAWYER_VELOCITY_LIMITS: dict[str, float]` (L88)
+- module const `_SAWYER_EFFORT_LIMITS: dict[str, float]` (L98)
+- module const `_DEFAULT_SAWYER_CONTROLLER: str = "sawyer_arm_controller"` (L202)
+- module const `_DEFAULT_SAWYER_JOINT_STATE_TOPIC: str = "/robot/joint_states"` (L207)
+- module const `_DEFAULT_SAWYER_ESTOP_TOPIC: str = "/robot/set_super_stop"` (L211)
+- `class SawyerRealHAL(RosControlHAL)` — Production adapter for a physical Sawyer over `intera_sdk` / `sawyer_robot`. **Subclasses** `RosControlHAL` for the same reason as `FrankaPandaRealHAL`: the composed wrapper it replaced was not `RosControlDrivable`, so the lifecycle node never attached the production transport to it. (L217)
+  - `__init__(*, hostname='sawyer.local', controller_name='sawyer_arm_controller', joint_state_topic='/robot/joint_states', command_topic=None, estop_topic='/robot/set_super_stop', publish_fn=None, state_fn=None, staleness_limit_s=0.2)` (L272)
+  - `hostname -> str` [@property] (L305)
+  - `connect() -> None` (L309)
+  - `estop() -> None` (L323)
+  - Inherits `description` (= `SAWYER_REAL_DESCRIPTION`), `controller_name`, `disconnect`, `read_state`, `send_action`, `command_bindings`, `attach_transport` from `RosControlHAL`.
+- `_sawyer_joint_specs() -> list[JointSpec]` (L109)
+- const `SAWYER_DESCRIPTION = RobotDescription(...)` (L152) — sim baseline; `sdk_kind="open"`, `hal.sim=None` (no MuJoCo HAL adapter today) + `hal.real="openral_hal.sawyer_real:SawyerRealHAL"`.
+- const `SAWYER_REAL_DESCRIPTION = make_real_description(SAWYER_DESCRIPTION, sdk_kind="closed_with_api")` (L192) — inherits the shared `hal`; what `robots/sawyer/robot.yaml` mirrors.
 
 ### `python/hal/src/openral_hal/panda_mobile.py`
 _In-process digital-twin HAL for the `panda_mobile` embodiment (Franka 7-DoF arm on a holonomic 3-DoF base). Built by `build_hal` for the manifest-driven `ManifestHALLifecycleNode` and by tests; ROS node entrypoint in `packages/openral_hal_panda_mobile/`._
@@ -523,11 +515,12 @@ _RosControlHAL — `ros2_control`-backed HAL adapter._
   - `command_topics() -> list[str]` — Derived from `command_bindings()` so the topic list and declared formats cannot drift; override `command_bindings`, not this. (L226)
   - `ros2_control_joint_names() -> list[str]` — Joint names in ros2_control's namespace, action order; what `/joint_states` is keyed by. Overridden where URDF names differ from manifest names (OpenArm). (L234)
   - **(property)** `joint_state_topic -> str` — The aggregated `sensor_msgs/JointState` topic this HAL reads. (L244)
-  - `connect() -> None` (L250)
+  - **(property)** `controller_name -> str` — Name of the primary `ros2_control` controller this HAL commands (the one `command_topic` defaults from). Hoisted here from the Franka / Sawyer wrappers so every subclass answers it. (L249)
+  - `connect() -> None` (L255)
   - `disconnect() -> None` — inherited from `HALBase` (flag-and-log default; no extra teardown needed).
-  - `read_state() -> JointState` — Age is measured from `stamp_fn()` when a transport supplied one, else from `connect()`. (L270)
-  - `send_action(action) -> None` — Publish JointTrajectory; carries `joint_names` so no transport keeps a second copy of the mapping. (L312)
-  - `estop() -> None` (L347)
+  - `read_state() -> JointState` — Age is measured from `stamp_fn()` when a transport supplied one, else from `connect()`. (L275)
+  - `send_action(action) -> None` — Publish JointTrajectory; carries `joint_names` so no transport keeps a second copy of the mapping. (L317)
+  - `estop() -> None` (L352)
   - private: `_require_connected`, `_validate_action`
 - `_default_publish(topic, msg) -> None` — No-op publish when no real ROS 2 node. (L99)
 
