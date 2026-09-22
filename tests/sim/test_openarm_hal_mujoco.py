@@ -292,6 +292,77 @@ class TestReadState:
 # ── send_action ───────────────────────────────────────────────────────────────
 
 
+class TestSendAction:
+    def test_slot_group_is_reassembled_and_applied_once_the_last_slot_lands(
+        self, connected_hal: OpenArmMujocoHAL
+    ) -> None:
+        """ADR-0102 on the twin: four slot actions become one 16-DoF step.
+
+        The runner emits the OpenArm's bimanual contract as four typed actions
+        per inference tick — two 7-joint JOINT_POSITION slots padded to 16-D
+        and carrying ``joint_names``, two GRIPPER_POSITION slots addressed by
+        ``ee_name``. Until this landed the twin refused the gripper slots
+        (``only supports joint_position``) and the tick never completed
+        (qorin1, 2026-09-22). Nothing may move before the last slot arrives,
+        and ``last_committed_tick`` is what the lifecycle node acknowledges.
+        """
+        joints = connected_hal.description.joints
+        names = [j.name for j in joints]
+        left, left_grip = names[0:7], names[7]
+        right, right_grip = names[8:15], names[15]
+        before = list(connected_hal.read_state().position)
+
+        def _inside(name: str, value: float) -> float:
+            # The two sides mirror some joint conventions (see the robot README),
+            # so a target is only meaningful if it is inside THAT joint's range.
+            lims = joints[names.index(name)].position_limits
+            if lims is None:
+                return value
+            lo, hi = float(lims[0]), float(lims[1])
+            return min(max(value, lo + 0.05), hi - 0.05)
+
+        def _joint_slot(joint_names: list[str], value: float) -> Action:
+            padded = [0.0] * 16
+            for name in joint_names:
+                padded[names.index(name)] = _inside(name, value)
+            return Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[padded],
+                joint_names=joint_names,
+                tick_index=1,
+                tick_group_size=4,
+                stamp_ns=time.time_ns(),
+            )
+
+        def _gripper_slot(ee: str, value: float) -> Action:
+            return Action(
+                control_mode=ControlMode.GRIPPER_POSITION,
+                horizon=1,
+                gripper=[value],
+                ee_name=ee,
+                tick_index=1,
+                tick_group_size=4,
+                stamp_ns=time.time_ns(),
+            )
+
+        connected_hal.send_action(_joint_slot(left, 0.1))
+        connected_hal.send_action(_gripper_slot(left_grip, 0.4))
+        connected_hal.send_action(_joint_slot(right, -0.1))
+        assert connected_hal.last_committed_tick == 0
+        assert list(connected_hal.read_state().position) == pytest.approx(before, abs=1e-6)
+
+        connected_hal.send_action(_gripper_slot(right_grip, -0.4))
+        assert connected_hal.last_committed_tick == 1
+        after = connected_hal.read_state().position
+        for name in left:
+            assert after[names.index(name)] == pytest.approx(_inside(name, 0.1), abs=0.03), name
+        for name in right:
+            assert after[names.index(name)] == pytest.approx(_inside(name, -0.1), abs=0.03), name
+        assert after[names.index(left_grip)] == pytest.approx(0.4, abs=0.05)
+        assert after[names.index(right_grip)] == pytest.approx(-0.4, abs=0.05)
+
+
 # ── estop ─────────────────────────────────────────────────────────────────────
 # Standard estop contract is tested in test_hal_protocol_contracts.py (parametrized).
 # No OpenArm-specific estop behavior to test.
