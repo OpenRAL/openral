@@ -1,36 +1,24 @@
 # METHODS.md — Public Symbol Inventory (index)
 
-> **Last cleaned: 2026-09-22** — reconciled every layer file against the
-> source tree (174 files had no section; 58 entries pointed at symbols that
-> no longer existed while `--check` reported clean), made the checker fail
-> loudly, added `--coverage` and wired it into `just lint`, collapsed the
-> duplication watch to live guidance, and consolidated / promoted / deleted
-> the code the pass surfaced (openral PR #296). (Previous passes: 2026-06-11
-> split into per-layer files; 2026-05-16 repo-wide de-slop.)
+> **Last cleaned: 2026-09-22** (openral PR #296).
 >
-> **Purpose.** A flat, layer-ordered list of every class, function, method,
-> and module-level constant defined in the OpenRAL Python source tree
-> (`python/`, `packages/`, `tools/`), with signatures and one-line
-> descriptions, intended as a duplication / redundancy detector.
+> **Purpose.** A layer-ordered list of every class, function, method and
+> module-level constant under `python/`, `packages/` and `tools/`, one line
+> each, so you can find an existing helper before writing a new one.
 >
-> **How to search.** Grep the folder, not this index:
-> `grep -rn <symbol> docs/methods/`. Before writing a new helper, search
-> here first (CLAUDE.md §1.13); add/rename/move/remove a public symbol →
-> update the matching `docs/methods/` file in the same PR.
+> **How to search.** `grep -rn <symbol> docs/methods/`. Add, rename, move or
+> remove a public symbol → update the matching `docs/methods/` file in the
+> same PR.
 >
-> **This inventory is hand-curated** (generated once via `ast` and then
-> reorganised by hand). It is **not** normative — the authoritative
-> contracts remain `openral_core` schemas (Pydantic) and `openral_msgs`
-> IDL (per CLAUDE.md §1.3). When code drifts, the inventory drifts. Treat
-> a stale entry as a defect, not a source of truth. `(LNN)` line markers
-> are kept fresh with `python tools/refresh_methods_linenos.py`
-> (`--check` reports drift without writing; `--check --coverage` also lists
-> every public symbol under `python/`, `packages/`, `tools/` with no entry —
-> `just lint` runs it, so an undocumented symbol fails lint).
+> **Not normative.** The contracts are the `openral_core` schemas and the
+> `openral_msgs` IDL; a stale entry here is a defect, not a source of truth.
+> `tools/refresh_methods_linenos.py` refreshes the `(LNN)` line markers;
+> `--check --coverage` (run by `just lint`) fails on a stale marker, an
+> unresolvable entry, or a public symbol with no entry.
 >
-> **Format.** `name(args) -> ret` — first docstring line. `(LNN)` is the
-> source line number. Decorators are tagged in `[@…]`. Pydantic field
-> attrs are listed inline so cross-model duplication is visible.
+> **Format.** `name(args) -> ret` — one-line description. `(LNN)` is the
+> source line. Decorators are tagged `[@…]`; Pydantic fields are listed
+> inline so cross-model duplication is visible.
 
 ---
 

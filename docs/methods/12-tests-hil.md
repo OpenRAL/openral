@@ -5,12 +5,11 @@
 Lab-runner-only `rclpy` bridges that wire the real-HW HAL adapters
 (`UR5eRealHAL` / `UR10eRealHAL` / `FrankaPandaRealHAL` / `SawyerRealHAL` /
 `AlohaHAL`) onto a live controller stack via the HALs' injected
-`publish_fn` / `state_fn` callables. `ros2_control` for the four
-`RosControlHAL` arms; **not** for ALOHA — a real one runs
-`interbotix_xs_sdk`'s `xs_sdk`, and `AlohaHAL` plus its bridge target
-ros2_control topics no ALOHA exposes (issue #250). Off-lab they are guarded
-behind `importlib.util.find_spec("rclpy") is None` plus a per-robot env
-probe; the unit-lane conformance tests use `SimTransport` instead.
+`publish_fn` / `state_fn` callables. `ros2_control` covers the four
+`RosControlHAL` arms but not ALOHA, which runs `interbotix_xs_sdk` and
+exposes no ros2_control topics. Off-lab they are guarded behind
+`importlib.util.find_spec("rclpy") is None` plus a per-robot env probe;
+the unit-lane conformance tests use `SimTransport` instead.
 
 The Galaxea A1 uses an isolated ROS 1 sidecar rather than a
 `ros2_control` bridge. Its HAL-level gate lives in
@@ -67,10 +66,10 @@ _Single-controller bridge. Used by UR5e, UR10e, Franka Panda, Sawyer._
 ### `tests/hil/_openarm_ros_transport.py`
 _4-way fan-out bridge for the bimanual OpenArm v2 HAL — the only thing between `OpenArmRealHAL` and a physical arm._
 
-- `OpenArmHILTransport(node, joint_names, *, command_topics, joint_state_topic, time_from_start_s=0.8)` — Four `JointTrajectory` publishers plus one aggregated `JointState` subscriber. Simpler than the ALOHA bridge because ADR-0102 puts `joint_names` **in the message**, so the transport forwards them rather than keeping a second copy of the slice table that could drift. Build it from `OpenArmRealHAL.ros2_control_joint_names()` — the URDF namespace (`openarm_left_joint1`) that `/joint_states` is keyed by, **not** the manifest's (`left_joint1`). (L54)
+- `OpenArmHILTransport(node, joint_names, *, command_topics, joint_state_topic, time_from_start_s=0.8)` — Four `JointTrajectory` publishers plus one aggregated `JointState` subscriber. Simpler than the ALOHA bridge since ADR-0102 puts `joint_names` in the message, so the transport forwards them rather than keeping a second, driftable slice table. Build it from `OpenArmRealHAL.ros2_control_joint_names()` — the URDF namespace `/joint_states` is keyed by, not the manifest's. (L54)
 - `time_from_start_s` is a constructor argument, unlike the 100 ms the production transports hardcode. A `JointTrajectoryController` given an absolute target and a 100 ms deadline moves at `(target - current) / 0.1s`, so the rate is set by how wrong the command is. A longer window bounds it by construction; a test that cares about production timing passes 0.1.
 - `publish(topic, msg)` dispatches by topic match and raises on an unknown topic or a name/value width mismatch — silently dropping a command is the ADR-0102 failure mode itself. `state()` zero-fills joints it has never heard from; `missing_joints()` / `wait_for_every_joint()` are what let a caller tell that apart from a real pose.
-- Its own tests (`tests/hil/test_openarm_ros_transport.py`) need only a ROS install, not the cell: real publishers and real messages over DDS on an isolated domain with LOCALHOST discovery (#227 — a stray graph once reached a live OpenArm on another host, and this suite's whole subject is arm command topics).
+- Its own tests (`tests/hil/test_openarm_ros_transport.py`) need only a ROS install, not the cell: real publishers and real messages over DDS on an isolated domain with LOCALHOST discovery, since a stray graph could otherwise reach a live OpenArm on another host.
 
 ### `tests/hil/test_openarm_bringup_agreement.py`
 _`OpenArmRealHAL`'s controller/joint table vs `openarm_bringup`'s own YAML — no hardware, not even the CAN links._
