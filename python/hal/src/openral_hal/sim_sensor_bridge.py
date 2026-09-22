@@ -3410,11 +3410,23 @@ class SimSensorBridge:
 
     # -- Depth PointCloud2 --
     def _setup_attachment_state(self) -> None:
-        """Subscribe atomic attachment snapshots when the sim HAL supports them."""
-        update = getattr(self._hal, "update_attached_objects", None)
-        read = getattr(self._hal, "read_attached_objects", None)
-        if not callable(update) or not callable(read):
-            return
+        """Publish attachment snapshots; stage revisions when the sim HAL supports them.
+
+        Every sim HAL gets the publisher and its 5 Hz heartbeat. The deploy
+        launch enables the kernel's attached-payload check for every sim robot
+        with collision capsules, and that check is fail-closed on a payload it
+        cannot verify — including one it has *never heard about*: a world state
+        whose ``attachment_stamp_ns`` is still 0 is treated as unverifiable and
+        every JOINT chunk is dropped as ``attached_overflow``. A HAL without the
+        attachment API (``update_attached_objects`` / ``read_attached_objects``,
+        i.e. every ``MujocoArmHAL`` twin) has no attach mechanics at all, so
+        "nothing attached, fresh" is the exact truth for it, and saying so is
+        what lets the kernel certify its motion. Seen on the OpenArm twin,
+        qorin1 2026-09-22: zero publishers on ``/openral/attachment_state`` and
+        not one joint chunk ever reached the arm. Only the staging path — the
+        subscriptions and the MuJoCo evidence tracker that drive real
+        attach/release transitions — needs the API.
+        """
         from openral_msgs.msg import AttachmentState
         from rclpy.qos import (
             QoSDurabilityPolicy,
@@ -3427,6 +3439,19 @@ class SimSensorBridge:
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
             depth=1,
         )
+        self._attachment_pub = self._node.create_publisher(
+            AttachmentState,
+            "/openral/attachment_state",
+            qos,
+        )
+        self._attachment_timer = self._node.create_timer(
+            0.2,
+            self._publish_attachment_state,
+        )
+        update = getattr(self._hal, "update_attached_objects", None)
+        read = getattr(self._hal, "read_attached_objects", None)
+        if not callable(update) or not callable(read):
+            return
         self._attachment_sub = self._node.create_subscription(
             AttachmentState,
             "/openral/attachment_state",
@@ -3453,15 +3478,6 @@ class SimSensorBridge:
             "/openral/world_voxels",
             self._on_attachment_world_voxels,
             voxel_qos,
-        )
-        self._attachment_pub = self._node.create_publisher(
-            AttachmentState,
-            "/openral/attachment_state",
-            qos,
-        )
-        self._attachment_timer = self._node.create_timer(
-            0.2,
-            self._publish_attachment_state,
         )
         handles = getattr(self._hal, "mujoco_handles", lambda: None)()
         if handles is not None:
