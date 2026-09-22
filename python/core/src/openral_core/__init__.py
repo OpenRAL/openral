@@ -26,6 +26,7 @@ from openral_core.exceptions import (
     ROSSafetyViolation,
     ROSWorkspaceViolation,
 )
+from openral_core.gpu import detect_gpu_vram_gb
 from openral_core.loaders import load_benchmark_suite, load_scene_strict, raise_on_invalid_suite
 from openral_core.schemas import (
     ANTHROPIC_BASE_URL,
@@ -465,6 +466,7 @@ __all__ = [
     "canonical_slots_for_representation",
     "contains_rskill_template_sentinel",
     "control_modes_for_representation",
+    "detect_gpu_vram_gb",
     "expected_repo_name",
     "extract_base_sim_joint_names",
     "is_collective_target",

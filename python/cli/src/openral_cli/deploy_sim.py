@@ -54,6 +54,7 @@ from typing import TYPE_CHECKING, Final
 import typer
 import yaml
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
+from openral_core.gpu import detect_gpu_vram_gb
 from rich.console import Console
 
 if TYPE_CHECKING:
@@ -744,34 +745,6 @@ def _memory_bundle_launch_args(memory_dir: str) -> list[str]:
 _DEFAULT_REWARD_RSKILL_DIR = "robometer-4b"
 
 
-def _detect_gpu_vram_gb(field: str) -> float:
-    """VRAM (GB) of GPU 0 for an ``nvidia-smi`` field, or ``0.0`` when unavailable.
-
-    Torch-free probe (the CLI must not import torch just to size the GPU). Any
-    failure (no nvidia-smi, no GPU, parse error) returns ``0.0`` → the caller
-    skips the pair check rather than blocking a launch on a host where the budget
-    cannot be read. ``field`` is a ``--query-gpu`` column, e.g. ``memory.total`` or
-    ``memory.free``.
-    """
-    try:
-        out = subprocess.run(
-            ["nvidia-smi", f"--query-gpu={field}", "--format=csv,noheader,nounits"],
-            capture_output=True,
-            text=True,
-            timeout=5.0,
-            check=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return 0.0
-    lines = out.stdout.strip().splitlines()
-    if not lines:
-        return 0.0
-    try:
-        return float(lines[0].strip()) / 1024.0  # MiB → GiB
-    except ValueError:
-        return 0.0
-
-
 def _detect_gpu_free_vram_gb() -> float:
     """Free VRAM (GB) of GPU 0 at launch — the real pre-load budget for the VLA+reward pair.
 
@@ -782,7 +755,7 @@ def _detect_gpu_free_vram_gb() -> float:
     that OOMs the moment both models load (the failure mode `--no-enable-reward-monitor`
     masks by dropping the reward model).
     """
-    return _detect_gpu_vram_gb("memory.free")
+    return detect_gpu_vram_gb("memory.free")
 
 
 def _capability_matched_manifests(
