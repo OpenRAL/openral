@@ -102,6 +102,40 @@ octree behind a graph where every node reports healthy.
 > skill goal is accepted, and the other two have no producer on this cell, so
 > during `return_to_zero()` the hardware E-stop is the only independent stop.
 
+### Running the restock policy
+
+The cell's policy is `OpenRAL/rskill-pi05-openarm-restock_shelf-bf16`, a
+**private** OpenRAL Hub repo (lerobot-format π0.5, 8.3 GB BF16, three RGB
+views in, 35-step chunks of 16-D actions out), so it is installed per host
+rather than shipped in `rskills/`. The weights are π0.5 derivatives under PI's
+permissive-research terms, hence `--non-commercial` here and
+`OPENRAL_ALLOW_NONCOMMERCIAL=1` at load:
+
+```bash
+HF_TOKEN=<token with OpenRAL org access> \
+    openral rskill install OpenRAL/rskill-pi05-openarm-restock_shelf-bf16 --non-commercial --yes
+openral rskill check OpenRAL/rskill-pi05-openarm-restock_shelf-bf16 --robot robots/openarm/robot.yaml
+```
+
+The bench scene binds every stream the manifest requires: `top` is the ZED's
+rectified left image as `observation.images.context`, the two Arducams are
+`observation.images.wrist_left` / `wrist_right`. It keeps
+`runtime.enable_reasoner: false`, so nothing in the graph dispatches on its
+own; the operator sends the one goal directly, with the training instruction
+**verbatim** (a drifted prompt is an out-of-distribution instruction to real
+arms):
+
+```bash
+ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
+    "{rskill_id: OpenRAL/rskill-pi05-openarm-restock_shelf-bf16, prompt: restock-shelf-from-front-box}"
+```
+
+Arm joints come out of the checkpoint as per-step deltas and the grippers as
+absolutes; the integration to absolute targets happens inside lerobot's π0.5
+postprocessor (`use_relative_actions` with the gripper dims excluded by
+`action_feature_names`), not in the runner. Accepting the goal is what arms
+the deadman watchdog. This path has not been run on the cell yet.
+
 ## Action layout (16 DoF)
 
 | Slot | Joint | Unit | Range |

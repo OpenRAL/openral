@@ -229,10 +229,11 @@ runtime:
   # only the capsule-vs-voxel check is skipped.
   enable_octomap_kernel_check: false
 
-  # No reasoner, and therefore no path from this scene to a policy: without it
-  # no rSkill is ever selected or loaded. Bringup still energises the arm (see
-  # the header), but nothing in the OpenRAL graph can author a motion command.
-  # Turn it on only with a supervised operator present.
+  # No reasoner: nothing in the graph selects or dispatches a policy on its
+  # own. Bringup still energises the arm (see the header), but the only path to
+  # a motion command is an operator's explicit `/openral/execute_rskill` goal —
+  # see "Running the restock policy" in robots/openarm/README.md. Turn the
+  # reasoner on only with a supervised operator present.
   enable_reasoner: false
 
   # Fixed-base bimanual arm: no wheels, no lidar, nothing to localise.
