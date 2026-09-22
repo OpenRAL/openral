@@ -322,7 +322,7 @@ is a green no-op that proves nothing:
 | Both motor buses up, CAN FD 1 Mbit/5 Mbit | `ip -details link show openarm_left` (and `openarm_right`) — `state ERROR-ACTIVE`, `mtu 72` |
 | udev naming pinned by `dev_id`, not `canN` order | `openral detect` reports `bh_robot_type: openarm` |
 | `openarm_bringup` on the ament prefix path | `ros2 pkg prefix openarm_bringup` |
-| ZED SDK + `zed_wrapper` for the world-map assertions | `ros2 pkg prefix zed_wrapper` |
+| ZED SDK + `zed_wrapper` for the world-map assertions (the scene's `drivers:` block launches it, so its overlay must be sourced before `deploy run`) | `source ~/zed_ws/install/setup.bash && ros2 pkg prefix zed_wrapper` |
 | OpenRAL ROS overlay built | `just ros2-build` |
 
 ### Registering the runner
