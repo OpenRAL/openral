@@ -5,6 +5,7 @@
 ### `python/rskill/src/openral_rskill/base.py`
 _rSkillBase — abstract base class with lifecycle state machine._
 
+- const `_TRANSITIONS: dict[RSkillState, frozenset[RSkillState]] = {...}` — Legal lifecycle edges keyed by current state; `_require_transition` checks membership. (L59)
 - `class rSkillBase(abc.ABC)` — Abstract base class for all OpenRAL skills (rSkill is the official package-format name, CLAUDE.md §6.4). (L68)
   - `__init__(name, *, version='0.1.0', role='s1', embodiment_tags=None, latency_budget_ms=None)` — Init only; does not configure or load weights. (L98)
   - `info -> RSkillInfo` [@property] (L122)
@@ -26,33 +27,64 @@ _rSkillBase — abstract base class with lifecycle state machine._
 _Runtime Protocol and NullRuntime — inference backend contract._
 
 - `class Runtime(Protocol)` — Structural protocol for skill inference backends. (L24)
-  - `is_loaded -> bool` [@property] / `device -> str` [@property]
+  - `is_loaded -> bool` [@property] (L40)
+  - `device -> str` [@property] (L45)
   - `load(path) -> None` (L49)
   - `infer(inputs) -> dict[str, Any]` (L61)
   - `quantize(config: QuantizationConfig) -> None` (L76)
   - `warmup(inputs) -> None` (L88)
   - `unload() -> None` (L96)
-- `class NullRuntime` — No-op backend for testing. (L101) — same surface as `Runtime`.
+- `class NullRuntime` — No-op backend for testing; same surface as `Runtime`, every method a no-op. (L101)
+  - `__init__(device='cpu')` (L123)
+  - `is_loaded -> bool` [@property] (L133)
+  - `device -> str` [@property] (L138)
+  - `load(path) -> None` (L142)
+  - `infer(inputs) -> dict[str, Any]` (L150)
+  - `quantize(config) -> None` (L161)
+  - `warmup(inputs) -> None` (L168)
+  - `unload() -> None` (L175)
 
 ### `python/rskill/src/openral_rskill/runtime_pytorch.py`
+- const `_ALLOW_UNSAFE_PICKLE_ENV = "OPENRAL_ALLOW_UNSAFE_PICKLE"` — Env var gating `load()`'s pickle deserialization (C2). (L38)
 - `class PyTorchRuntime` — `torch`-backed `Runtime`. (L41)
-  - `__init__(device='cpu')`, `is_loaded`, `device`, `load(path)` (unpickles a full module — gated behind `OPENRAL_ALLOW_UNSAFE_PICKLE`, C2), `load_safetensors(path, *, model, strict=True)` (safe: loads a `state_dict` into a caller-supplied module, no code execution — preferred for new skills), `infer(inputs)`, `quantize(config)` (dynamic INT8 on Linear), `warmup(inputs)`, `unload()` (frees CUDA cache).
+  - `__init__(device='cpu')` (L70)
+  - `is_loaded -> bool` [@property] (L81)
+  - `device -> str` [@property] (L86)
+  - `load(path) -> None` — Unpickles a full module — gated behind `_ALLOW_UNSAFE_PICKLE_ENV`, C2. (L90)
+  - `load_safetensors(path, *, model, strict=True) -> None` — Safe: loads a `state_dict` into a caller-supplied module, no code execution — preferred for new skills. (L146)
+  - `infer(inputs) -> dict[str, Any]` (L202)
+  - `quantize(config) -> None` — Dynamic INT8 on Linear. (L229)
+  - `warmup(inputs) -> None` (L261)
+  - `unload() -> None` — Frees CUDA cache. (L273)
 
 ### `python/rskill/src/openral_rskill/runtime_onnx.py`
+- const `_CUDA_PROVIDERS = ["CUDAExecutionProvider", "CPUExecutionProvider"]` (L30)
+- const `_CPU_PROVIDERS = ["CPUExecutionProvider"]` (L31)
 - `class ONNXRuntime` — `onnxruntime`-backed `Runtime`. (L52)
-  - same surface as `Runtime`. `quantize(config)` always raises — ONNX quantization is pre-applied.
+  - `__init__(device='cpu')` (L80)
+  - `is_loaded -> bool` [@property] (L100)
+  - `device -> str` [@property] (L105)
+  - `load(path) -> None` (L109)
+  - `infer(inputs) -> dict[str, Any]` (L132)
+  - `quantize(config) -> None` — Always raises — ONNX quantization is pre-applied. (L157)
+  - `warmup(inputs) -> None` (L173)
+  - `unload() -> None` (L186)
 
 ### `python/rskill/src/openral_rskill/backend_registry.py`
 _Extraction seam: entry-point-based runtime-backend + policy-attach-hook registry._
 
-- `resolve_runtime_backend(kind: str) -> type[Runtime]` — built-in dict (`pytorch`→`PyTorchRuntime`, `onnx`→`ONNXRuntime`, `null`→`NullRuntime`) first, else looked up via the `openral.runtime_backends` entry-point group (e.g. `openral-pro-trt` registering `tensorrt`). Miss → `ROSConfigError` naming `openral-pro-trt`.
-- `maybe_attach_pro_hooks(policy_name: str, skill, **kwargs) -> bool` — generic policy-attach-hook lookup via the `openral.policy_attach_hooks` entry-point group (name = `policy_name`, e.g. `"smolvla"`/`"act"`). No hook installed → debug log + `False` (not a silent skip, CLAUDE.md §1.4); hook found → invoked as `hook(skill, **kwargs)`, `True`/info-log iff it reports attaching. Replaces the old hardcoded `try: from openral_rskill.smolvla_trt import ...` / `act_trt` call sites in `smolvla.py` / `openral_sim.policies.act`.
+- const `_RUNTIME_BACKENDS_GROUP = "openral.runtime_backends"` (L41)
+- const `_POLICY_ATTACH_HOOKS_GROUP = "openral.policy_attach_hooks"` (L42)
+- const `_BUILTIN_RUNTIME_BACKENDS: dict[str, str] = {...}` — Built-in `kind` → runtime-class-name map (`pytorch`/`onnx`/`null`). (L48)
+- `resolve_runtime_backend(kind: str) -> type[Runtime]` — built-in dict (`pytorch`→`PyTorchRuntime`, `onnx`→`ONNXRuntime`, `null`→`NullRuntime`) first, else looked up via the `openral.runtime_backends` entry-point group (e.g. `openral-pro-trt` registering `tensorrt`). Miss → `ROSConfigError` naming `openral-pro-trt`. (L55)
+- `maybe_attach_pro_hooks(policy_name: str, skill, **kwargs) -> bool` — generic policy-attach-hook lookup via the `openral.policy_attach_hooks` entry-point group (name = `policy_name`, e.g. `"smolvla"`/`"act"`). No hook installed → debug log + `False` (not a silent skip, CLAUDE.md §1.4); hook found → invoked as `hook(skill, **kwargs)`, `True`/info-log iff it reports attaching. Replaces the old hardcoded `try: from openral_rskill.smolvla_trt import ...` / `act_trt` call sites in `smolvla.py` / `openral_sim.policies.act`. (L106)
 
 > **Moved to OpenRAL Pro:** `runtime_tensorrt.py` (`TensorRTRuntime`), `smolvla_export.py`, `smolvla_trt.py`, and `act_trt.py` now live in the private `openral-pro-trt` package as `openral_pro_trt.*`, plugging in via the `openral.runtime_backends` / `openral.policy_attach_hooks` entry-point groups above.
 
 ### `python/rskill/src/openral_rskill/engine_cache.py`
 _Filesystem-based per-host engine cache for compiled skill runtimes._
 
+- const `DEFAULT_CACHE_DIR: Path = Path.home() / ".cache" / "openral" / "engines"` (L23)
 - `class EngineCache` — Filesystem-backed cache for compiled skill engine files. (L30)
   - `__init__(cache_dir=DEFAULT_CACHE_DIR)` (L49)
   - `cache_key(rskill_id, backend, config: QuantizationConfig) -> str` — Stable key for skill+runtime+quant. (L56)
@@ -65,13 +97,21 @@ _Filesystem-based per-host engine cache for compiled skill runtimes._
   - private: `_key_path`
 
 ### `python/rskill/src/openral_rskill/quantization.py`
+- const `_CC_BF16_MIN: int = 8` — Minimum CUDA compute-capability major version for bf16 auto-selection. (L23)
 - const `QUANT_PRESETS: dict[str, QuantizationConfig] = {...}` — Named quantization presets keyed by string id: `fp32`, `fp16`, `bf16`, `int8_dynamic`, `int8_dynamic_per_channel`, `int4`, `fp4_nvfp4` (TensorRT), `trt_fp8` (TensorRT-only — reaches the engine as explicit Q/DQ node pairs, no PyTorch-backend counterpart). (L26)
+- const `_GB = 1 << 30` — Bytes per GiB, used by `auto_select_quant`'s VRAM thresholds. (L76)
 - `auto_select_quant(device_info: DeviceInfo) -> QuantizationConfig` — Heuristic to pick dtype/backend. (L79)
 
 ### `python/rskill/src/openral_rskill/loader.py`
 _rSkill loader — HF Hub download, manifest validation, license guard, local registry._
 
+- const `_DATA_HOME = Path(os.environ.get("OPENRAL_DATA_HOME", ...))` — Base dir for the local rSkill registry. (L64)
+- const `_CACHE_HOME = Path(...)` — Base dir HF Hub downloads land under. (L65)
 - const `DEFAULT_REGISTRY_PATH: Path = _DATA_HOME / "rskills.json"` — Default JSON registry file written by `rSkill.from_pretrained`. (L69)
+- const `_RSKILL_MANIFEST_CACHE: dict[str, RSkillManifest] = {}` — In-process memoisation for `load_rskill_manifest`. (L74)
+- const `_ALLOW_NONCOMMERCIAL_ENV = "OPENRAL_ALLOW_NONCOMMERCIAL"` — Env var gating noncommercial-weight loads (CLAUDE.md §1.9). (L78)
+- const `_REQUIRE_SIGNED_ENV = "OPENRAL_REQUIRE_SIGNED_SKILLS"` — Env var that fails closed when provenance signing is unverified. (L83)
+- const `_EMBODIMENT_ANY_TAG: str = "any"` — Sentinel embodiment tag matching every robot. (L91)
 - `class InstalledRSkillEntry(BaseModel)` — One row in the local registry. (L97)
   fields: `repo_id, version, revision, local_dir, manifest_path, license, role, embodiment_tags, installed_at`
 - `class rSkill` — Packaged, signed, capability-tagged robot skill. (L141)
@@ -85,6 +125,8 @@ _rSkill loader — HF Hub download, manifest validation, license guard, local re
   - `check_runtime(manifest, robot_capabilities) -> None` [@staticmethod] — Verify `manifest.runtime` ∈ `gpu_supported_runtimes`; skipped when the legacy capability field is missing or empty (the GPU support fields moved to `ComputeSpec`, so missing means "unknown" for now). (L452)
   - `check_quantization_dtype(manifest, robot_capabilities) -> None` [@staticmethod] — Verify `manifest.quantization.dtype` ∈ `gpu_supported_dtypes`; skipped when the legacy capability field is missing or empty. (L481)
   - `check_capabilities(manifest, robot_capabilities) -> None` [@staticmethod] — Composition of the four narrower checks; raises on first failure. (L509)
+  - `check_sensors(manifest, robot_sensors) -> None` [@staticmethod] — Verify the robot exposes every `SensorRequirement` the manifest declares: a `vla_feature_key` requirement resolves to exactly one matching robot sensor, otherwise the robot must expose `count` sensors of the requested modality meeting any resolution minimum. `ROSCapabilityMismatch` on any unmet requirement. (L547)
+  - `check_compatibility(manifest, robot) -> None` [@staticmethod] — Umbrella entry point combining `check_capabilities` (embodiment tags + capability flags, with `compute=robot.compute_edge or robot.compute_local`) and `check_sensors` against `robot.sensors`. (L588)
   - `_check_license(manifest, *, commercial_use) -> None` [@staticmethod] — Enforce license guards (CLAUDE §7.4, §12). (L707)
   - `_validate_eval_jsons(skill_dir) -> None` [@staticmethod] — Validate every `<skill_dir>/eval/*.json` against `RSkillEvalResult` (CLAUDE §6.4). (L807)
   - `_register(entry, registry_path) -> None` [@staticmethod] (L833)
@@ -92,8 +134,8 @@ _rSkill loader — HF Hub download, manifest validation, license guard, local re
 - `resolve_rskill_local_dir(uri) -> Path | None` — Return the absolute on-disk directory of an in-tree rSkill referenced by a bare skill ref (bare name, `rskills/<name>`, or Hub repo id), or `None` for Hub-only refs with no in-tree shim. Used by `openral benchmark run` to write `<skill_dir>/eval/<id>.json` and update `<skill_dir>/rskill.yaml` regardless of cwd or which ref form the user typed. (L869)
 - `_candidate_local_paths(uri) -> list[Path]` — Enumerate on-disk candidates (cwd-relative + repo-root anchored) for a skill reference. Also unwraps HF Hub form `<org>/rskill-<name>` to in-tree `rskills/<name>`. (L890)
 - `discover_intree_rskills() -> list[tuple[str, RSkillManifest]]` — Walk `<repo>/rskills/*/rskill.yaml` and return `(name, manifest)` pairs. Malformed entries are skipped with a stderr warning. (L925)
-- `_find_repo_root_from(start) -> Path | None` — Walk up from `start` for the first ancestor containing both `pyproject.toml` and `rskills/`. (L956)
-- `_validate_skill_ref(raw) -> str` — Validate and return a bare rSkill reference unchanged. Accepts bare names, `rskills/<name>` paths, or HF repo ids; rejects inputs carrying a known URI scheme (`hf://`, `local://`, `file://`, `http(s)://`). Private — used internally by the CLI and loader. (L969)
+- `_find_repo_root_from(start) -> Path | None` — Walk up from `start` for the first ancestor containing both `pyproject.toml` and `rskills/`. **De-facto public:** imported across the package boundary by `openral_sim.cli`, `openral_cli.main`, and `packages/openral_rskill_ros/launch/deploy_e2e.launch.py` (promotion candidate — see report). (L956)
+- `_validate_skill_ref(raw) -> str` — Validate and return a bare rSkill reference unchanged. Accepts bare names, `rskills/<name>` paths, or HF repo ids; rejects inputs carrying a known URI scheme (`hf://`, `local://`, `file://`, `http(s)://`). **De-facto public:** imported across the package boundary by `openral_sim.cli` and `openral_cli.main` (promotion candidate — see report), in addition to internal use by the CLI and loader. (L969)
 - `load_rskill_manifest(uri) -> RSkillManifest` — Resolve a bare skill reference to a parsed manifest. Tries local path → in-tree mapping → HF Hub download. In-process memoised. (L1009)
 - `resolve_rskill_to_hf(uri) -> str` — Resolve a skill reference to either the underlying HF Hub repo id (`hf://...`) or an absolute local path (`local://...`); both forms are accepted by `from_pretrained` helpers. (L1081)
 - `resolve_rskill_to_hf_with_revision(uri) -> tuple[str, str | None]` — Like `resolve_rskill_to_hf` but splits the optional `@<branch-or-sha>` pin off an `hf://` `weights_uri` into a separate `revision` so loaders can pass it to `from_pretrained`/`snapshot_download` instead of gluing it onto the repo id where HF drops it (security audit 2026-06, H4). (L1115)
@@ -119,7 +161,8 @@ _GpuPassthroughSkill — minimal rSkill whose per-step image processing provably
 - `class GpuPassthroughSkill(rSkillBase)` — Uploads each `SensorFrame` to torch.cuda, runs per-channel mean reduction (with explicit `torch.cuda.synchronize`), emits result as `Action.confidence`. Refuses silent CPU fallback. (L55)
   - `__init__(sensor_id='wrist_rgb', n_joints=6, horizon=1, device='cuda', latency_budget_ms=None)` (L76)
   - `step_count -> int` [@property] (L104)
-  - `on_load_weights/on_quantize() -> None` — no-ops (skill is weight-less). (L110)
+  - `on_load_weights() -> None` — no-op (skill is weight-less). (L110)
+  - `on_quantize() -> None` — no-op (skill is weight-less). (L114)
   - `on_warmup() -> None` — Allocate the GPU input buffer + launch a kernel so the first step doesn't pay cudaMalloc latency. (L118)
   - `_configure_impl()` — Lazy-import torch, resolve device, raise if `cuda` requested and `torch.cuda.is_available()` is False. (L144)
   - `_activate_impl/_deactivate_impl/_shutdown_impl` (L169)
@@ -131,13 +174,16 @@ _GpuPassthroughSkill — minimal rSkill whose per-step image processing provably
 ### `python/rskill/src/openral_rskill/_diagnostics.py`
 _Shared load-phase instrumentation seam — generalises the inline `_heartbeat` originally inside `openral_sim.policies.pi05` so every VLA adapter's `_build_*` factory uses the same `<prefix>_<name>_{start,heartbeat,done}` event shape (CLAUDE.md §1.13 — single seam, no duplicates)._
 
+- const `_PAGE_SIZE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096` — Page size in bytes, for converting `/proc/self/statm`'s page count into `rss_mb`. (L45)
 - `phase_timer(name, *, prefix="phase", interval_s=15.0, log=None, gpu_mb=False, **fields) -> Iterator[None]` [@contextmanager] — Emits `<prefix>_<name>_start` / `..._heartbeat` every `interval_s` / `..._done` with `elapsed_s`. Heartbeat and done also carry `rss_mb` + `major_faults` (Linux, delta from phase entry) so a load that is slow while burning no CPU is attributable to page reclaim. `gpu_mb=True` attaches `torch.cuda.memory_allocated()` to the heartbeat for phases that move tensors to/from the GPU. Lazy torch import so CPU-only hosts still work. Consumed by `_pi05_phase` + `_smolvla_phase` in the sim adapters and by `tools/profile_policy_load.py`. (L135)
-- `_gpu_mb() -> float | None` — Cheap helper. (L48)
+- `_gpu_mb() -> float | None` — Cheap helper. **De-facto public:** imported across the package boundary by `packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py` (promotion candidate — see report). (L48)
 - `_rss_majflt() -> tuple[float, int] | None` — Process RSS (MB) + lifetime major-fault count from `/proc/self/{statm,stat}`; `None` off Linux. (L81)
+- const `_PAGE_SIZE: int = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096` — Page size in bytes used to convert `/proc/self/statm`'s page count into `rss_mb`. (L45)
 
 ### `python/rskill/src/openral_rskill/executor.py`
 _Action-chunk executor — promoted from `smolvla` so every chunked VLA family reuses one implementation. Also the home of Real-Time Chunking (RTC): with an enabled lerobot `RTCConfig` the buffer becomes an `ActionQueue` whose tail a landing prefetch replaces._
 
+- const `_CHUNK_TENSOR_RANK = 3` — Expected `(batch, chunk, action_dim)` tensor rank for a chunk producer's output. (L68)
 - `class ChunkedExecutor` — Owns the per-step action buffer for every chunked VLA family and optionally overlaps chunk N+1 inference with execution via a background daemon thread. The executor owns its buffer and calls `predict_action_chunk` directly; it never resets or consumes lerobot's mutable `select_action` queue from two threads. The former shared-queue design reset the live queue during prefetch, reordered commands, and blocked 0.42-0.77 s at every 50-step boundary. Default producer is `policy.predict_action_chunk`; a custom `chunk_fn(payload) -> chunk` supports adapters with autocast, decode, or non-lerobot APIs. Tensor chunks consume the configured prefix; sequence producers must return exactly `chunk_size`, keeping scheduling and telemetry aligned. `select_action(batch_or_fn)` materialises lazy payloads only when an inference launches. `prefetch_at=0` is synchronous; `stop()` waits for a running inference before teardown. **RTC mode** (an enabled lerobot `RTCConfig` via `rtc_config=`) swaps the deque for lerobot's `ActionQueue` and changes the merge rule from *append behind* to **replace the tail**: a prefetched chunk takes over the moment it lands, dropping the actions consumed during inference, and the producer is called with `inference_delay=` / `prev_chunk_left_over=` so the flow-matching guidance can blend the two chunks. RTC has no synchronous form — it needs a real overlap — so an effective `prefetch_at >= 1` is required. (L71)
   - `__init__(policy=None, *, chunk_fn=None, chunk_size=None, prefetch_at=20, rtc_config=None)` — policy OR chunk_fn+chunk_size; ValueError otherwise. Negative `prefetch_at` raises `ROSConfigError`; the value is clamped to `chunk_size - 1` at construction (logged as `chunked_executor.prefetch_at_clamped`). Twenty remaining 30 Hz steps provide ~667 ms for the measured 313-600 ms chunk inference. `rtc_config` is a lerobot `RTCConfig`; when enabled it requires a clamped `prefetch_at >= 1` (`ROSConfigError` otherwise) and warns `chunked_executor.rtc_prefetch_below_horizon` when the lead is shorter than `execution_horizon` — a degradation (the blend runs over `prefetch_at` steps instead), not an error. (L74)
   - `start() -> None` — Mark as running (call after policy is on-device). (L193)
@@ -150,9 +196,14 @@ _Action-chunk executor — promoted from `smolvla` so every chunked VLA family r
 ### `python/rskill/src/openral_rskill/ros_action_rskill.py`
 _ROS-wrapping rSkill adapter — bridges arbitrary ROS 2 action / service servers (MoveIt, Nav2, …) into the `rSkillBase` lifecycle. Selected by `make_default_skill_resolver` when `manifest.kind in {"ros_action", "ros_service"}`._
 
+- const `_RESULT_DEADLINE_MULTIPLIER = 5.0` (L77)
+- const `_MIN_RESULT_DEADLINE_S = 2.0` (L82)
+- const `_FUTURE_POLL_INTERVAL_S = 0.02` (L86)
+- const `_WAIT_FOR_SERVER_TIMEOUT_S = 15.0` (L94)
+- const `_GOAL_STATUS_LABELS: dict[int, str] = {...}` — Human-readable labels for `action_msgs/GoalStatus` codes, used in error/log messages. (L101)
 - `build_joint_permutation_from_names(*, source_names, target_names) -> list[int]` — Build the permutation that reorders a wrapped server's `JointTrajectory.positions` into the host `RobotDescription.joints` order. Raises `ROSConfigError` on set-inequality so a joint mismatch surfaces loudly instead of silently swapping bytes. (L172)
-- `CUMOTION_PIPELINE_ID = "isaac_ros_cumotion"` — the cuMotion MoveIt planning-pipeline id.
-- `maybe_inject_cumotion_pipeline(goal_dict, *, interface_type, capabilities) -> dict` — On a host that clears the cuMotion GPU floor (`RobotCapabilities.supports_cumotion()`), set `request.pipeline_id = CUMOTION_PIPELINE_ID` on a `MoveGroup` goal so MoveIt plans with cuMotion; no-op for non-MoveGroup actions, CPU/low-VRAM hosts (→ OMPL default), an already-set `pipeline_id`, or a goal with no `request` block. Pure; never mutates the input. Called by `_configure_impl` after the goal-merge.
+- const `CUMOTION_PIPELINE_ID = "isaac_ros_cumotion"` — the cuMotion MoveIt planning-pipeline id. (L141)
+- `maybe_inject_cumotion_pipeline(goal_dict, *, interface_type, capabilities) -> dict` — On a host that clears the cuMotion GPU floor (`RobotCapabilities.supports_cumotion()`), set `request.pipeline_id = CUMOTION_PIPELINE_ID` on a `MoveGroup` goal so MoveIt plans with cuMotion; no-op for non-MoveGroup actions, CPU/low-VRAM hosts (→ OMPL default), an already-set `pipeline_id`, or a goal with no `request` block. Pure; never mutates the input. Called by `_configure_impl` after the goal-merge. (L144)
 - `class ROSActionRskill(rSkillBase)` — `rSkillBase` shim wrapping a ROS 2 ActionClient (or service client). Two modes selected by `manifest.ros_integration.result_trajectory_field`: trajectory mode replays one waypoint per `step()` and raises `ROSRskillGoalSatisfied` after the last; result-only mode awaits the wrapped result and raises `ROSRskillGoalSatisfied` on success without emitting any `Action`. ROS imports are deferred to `_configure_impl` so the module imports cleanly without ROS sourced. (L299)
   - `__init__(*, manifest, ros_node, robot_description, prompt, prompt_metadata_json)` (L332)
   - `_configure_impl()` — Lazy-import IDL, build ActionClient/service client, parse `default_goal_json`. (L403)
@@ -163,27 +214,44 @@ _ROS-wrapping rSkill adapter — bridges arbitrary ROS 2 action / service server
 ### `python/rskill/src/openral_rskill/look_at_rskill.py`
 _Camera-aiming MoveGroup skill. Selected by `make_default_skill_resolver` when `manifest.ros_integration.goal_builder == "look_at"` (new `RosIntegration.goal_builder` field; `RSkillAction` gains `LOOK = "look"`)._
 
-- `resolve_camera_sensor(description, camera) -> SensorSpec` — Find the named camera in `RobotDescription.sensors`; `ROSConfigError` listing the available sensor names on a miss (explicit beats implicit — default camera is `"wrist"`).
-- `build_look_at_constraints(*, camera_goal: Pose6D, link_name, link_t_cam=None, position_tolerance_m=0.02, orientation_tolerance_rad=0.15) -> dict` — Lower a camera gaze pose into one MoveGroup `goal_constraints` entry — **delegates to `pose_goal_rskill.build_pose_constraints`** with the optical (z) axis tolerance set to π (roll free); the position/offset math lives there now. With `link_t_cam` the goal is re-expressed for the mount link; without it the camera frame is the constrained link.
-- `class LookAtRskill(ROSActionRskill)` — Consumes the merged goal's `look_at` block (`target_xyz` required; `frame_id`, `camera`, `standoff_m`, tolerances) instead of raw constraints. `_configure_impl` pops/validates the block, resolves the camera, builds a TF2 listener; the lowering runs lazily on the first `step()` (needs the camera's *current* TF pose): re-aim in place, or place the camera at `standoff_m` from the target along its current line of approach, then `compute_gaze_pose` (+z optical) → `build_pose_constraints` → constraints injected into `request.goal_constraints` before the parent dispatches. Trajectory replays waypoint-per-chunk through the safety supervisor; the manifest ships `plan_only: true` so MoveIt-side execution never bypasses the kernel.
+- const `_DEFAULT_CAMERA = "wrist"` (L46)
+- const `_DEFAULT_POSITION_TOLERANCE_M = 0.02` (L47)
+- const `_DEFAULT_ORIENTATION_TOLERANCE_RAD = 0.15` (L48)
+- const `_TF_LOOKUP_TIMEOUT_S = 5.0` (L49)
+- const `_XYZ_LEN = 3` (L50)
+- const `_MIN_DIRECTION_NORM = 1e-9` (L51)
+- `resolve_camera_sensor(description, camera) -> SensorSpec` — Find the named camera in `RobotDescription.sensors`; `ROSConfigError` listing the available sensor names on a miss (explicit beats implicit — default camera is `"wrist"`). (L54)
+- `build_look_at_constraints(*, camera_goal: Pose6D, link_name, link_t_cam=None, position_tolerance_m=0.02, orientation_tolerance_rad=0.15) -> dict` — Lower a camera gaze pose into one MoveGroup `goal_constraints` entry — **delegates to `pose_goal_rskill.build_pose_constraints`** with the optical (z) axis tolerance set to π (roll free); the position/offset math lives there now. With `link_t_cam` the goal is re-expressed for the mount link; without it the camera frame is the constrained link. (L100)
+- `class LookAtRskill(ROSActionRskill)` — Consumes the merged goal's `look_at` block (`target_xyz` required; `frame_id`, `camera`, `standoff_m`, tolerances) instead of raw constraints. `_configure_impl` pops/validates the block, resolves the camera, builds a TF2 listener; the lowering runs lazily on the first `step()` (needs the camera's *current* TF pose): re-aim in place, or place the camera at `standoff_m` from the target along its current line of approach, then `compute_gaze_pose` (+z optical) → `build_pose_constraints` → constraints injected into `request.goal_constraints` before the parent dispatches. Trajectory replays waypoint-per-chunk through the safety supervisor; the manifest ships `plan_only: true` so MoveIt-side execution never bypasses the kernel. (L132)
 
 ### `python/rskill/src/openral_rskill/pose_goal_rskill.py`
 _Generic Cartesian end-effector pose MoveGroup skill. Selected by `make_default_skill_resolver` when `ros_integration.goal_builder == "pose"`. Home of the shared pose→constraints lowering `LookAtRskill` reuses._
 
-- `build_pose_constraints(*, pose: Pose6D, link_name, link_t_target=None, position_tolerance_m=0.01, orientation_axis_tolerances_rad=(0.05, 0.05, 0.05)) -> dict` — Lower a target pose into one MoveGroup `goal_constraints` entry (sphere position region + per-axis orientation constraint). `link_t_target` re-expresses the goal for the constrained link (`goal_link = goal_target @ inv(link_t_target)`); the per-axis tolerance tuple lets a generic pose constrain all three axes while look-at frees the optical (z) axis at π. **Reuse watch:** the one place pose→MoveGroup-constraint math lives — do not re-implement.
-- `pose_from_block(block) -> tuple[Pose6D, str, float, float]` — Parse a `pose` goal block → `(pose, link_name, pos_tol, orient_tol)`. Orientation is a 4-float quaternion array; component order from `block["quaternion_order"]` (`"xyzw"` default / `"wxyz"`). `ROSConfigError` on missing/ill-typed fields or an unknown order.
-- `class PoseGoalRskill(ROSActionRskill)` — Consumes the merged goal's `pose` block; lowers it via `build_pose_constraints` (full orientation) on the first `step()`, then dispatches/replays like the parent. `link_t_target` is identity in v1 (the RobotDescription tool-frame offset is a later phase).
+- const `_SOLID_PRIMITIVE_SPHERE = 2` — `shape_msgs/SolidPrimitive.SPHERE`. (L40)
+- const `_DEFAULT_POSITION_TOLERANCE_M = 0.01` (L41)
+- const `_DEFAULT_ORIENTATION_TOLERANCE_RAD = 0.05` (L42)
+- const `_XYZ_LEN = 3` (L43)
+- const `_QUAT_LEN = 4` (L44)
+- const `_QUATERNION_ORDERS = ("xyzw", "wxyz")` (L45)
+- const `_TF_LOOKUP_TIMEOUT_S = 5.0` (L46)
+- `build_pose_constraints(*, pose: Pose6D, link_name, link_t_target=None, position_tolerance_m=0.01, orientation_axis_tolerances_rad=(0.05, 0.05, 0.05)) -> dict` — Lower a target pose into one MoveGroup `goal_constraints` entry (sphere position region + per-axis orientation constraint). `link_t_target` re-expresses the goal for the constrained link (`goal_link = goal_target @ inv(link_t_target)`); the per-axis tolerance tuple lets a generic pose constrain all three axes while look-at frees the optical (z) axis at π. **Reuse watch:** the one place pose→MoveGroup-constraint math lives — do not re-implement. (L49)
+- `pose_from_block(block) -> tuple[Pose6D, str, float, float]` — Parse a `pose` goal block → `(pose, link_name, pos_tol, orient_tol)`. Orientation is a 4-float quaternion array; component order from `block["quaternion_order"]` (`"xyzw"` default / `"wxyz"`). `ROSConfigError` on missing/ill-typed fields or an unknown order. (L141)
+- `class PoseGoalRskill(ROSActionRskill)` — Consumes the merged goal's `pose` block; lowers it via `build_pose_constraints` (full orientation) on the first `step()`, then dispatches/replays like the parent. `link_t_target` is identity in v1 (the RobotDescription tool-frame offset is a later phase). (L198)
 
 ### `python/rskill/src/openral_rskill/joint_goal_rskill.py`
 _Joint-space MoveGroup skill. Selected when `ros_integration.goal_builder == "joint"`. The LLM-facing replacement for hand-written `joint_constraints` JSON._
 
-- `joint_constraints_from_block(block) -> dict` — Lower a `joint` block (`joint_names`, `positions`, optional `position_tolerance_rad`) into one `goal_constraints` entry (`{"joint_constraints": [{joint_name, position, tolerance_above, tolerance_below, weight}, …]}`). `ROSConfigError` on missing/ill-typed fields or a name/position length mismatch.
-- `class JointGoalRskill(ROSActionRskill)` — Consumes the merged goal's `joint` block; lowers it into a `joint_constraints` goal at `_configure_impl`, then dispatches/replays like the parent.
+- const `_DEFAULT_JOINT_TOLERANCE_RAD = 0.001` (L23)
+- const `_JOINT_WEIGHT = 1.0` (L24)
+- `joint_constraints_from_block(block) -> dict` — Lower a `joint` block (`joint_names`, `positions`, optional `position_tolerance_rad`) into one `goal_constraints` entry (`{"joint_constraints": [{joint_name, position, tolerance_above, tolerance_below, weight}, …]}`). `ROSConfigError` on missing/ill-typed fields or a name/position length mismatch. (L27)
+- `class JointGoalRskill(ROSActionRskill)` — Consumes the merged goal's `joint` block; lowers it into a `joint_constraints` goal at `_configure_impl`, then dispatches/replays like the parent. (L69)
+  - `_configure_impl() -> None` (L77)
 
 ### `python/rskill/src/openral_rskill/smolvla.py`
 _SmolVLA adapter — rSkillBase implementation for the SmolVLA family of VLAs._
 
 - `from openral_rskill.executor import ChunkedExecutor` — re-exported via `__all__` for back-compat (`from openral_rskill.smolvla import ChunkedExecutor` still works after the move). (L53)
+- const `_SO100_JOINT_NAMES: tuple[str, ...] = (...)` — SO-100 6-DoF joint order used by `_so100_obs_fn`. (L63)
 - `class SmolVLAAdapter(rSkillBase)` — Drives any SmolVLA-family policy. (L76)
   - `__init__(repo_id, obs_fn, prompt, *, device='cuda:0', n_dof=6, n_cameras=None, prefetch_at=20, name='smolvla', version='0.1.0', embodiment_tags=None, latency_budget_ms=None)` — `n_cameras` (default `len(config.image_features)`) truncates warmup to the cameras the deploy feeds and threads to the TRT export (phantom-camera fix). (L121)
   - `on_load_weights() -> None` — Fetch checkpoint from HF Hub. (L159)
@@ -205,6 +273,9 @@ _Shared helpers for VLA adapters (Layer 3); internal — no public re-export._
 - `resolve_device(spec: VLASpec) -> str` — `"auto"` → `"cuda:0"` / `"mps"` / `"cpu"` against real torch. (L47)
 - `resolve_rskill_repo_id(weights_uri: str, *, adapter_name: str) -> str` — Validate skill reference and resolve to bare HF repo id; `adapter_name` is used in the `ROSConfigError` message. (L72)
 - `resolve_rskill_repo_revision(weights_uri: str, *, adapter_name: str) -> tuple[str, str | None]` — Like `resolve_rskill_repo_id` but also returns the optional `@<sha>` revision pin (threaded into `from_pretrained`/`snapshot_download` by the sim adapters) and warns `rskill.unpinned_weights` when an `hf://` skill is unpinned (security audit 2026-06, H4). (L103)
+- `resolve_image_preprocessing(manifest, spec_extra) -> ImagePreprocessing` — Build the `ImagePreprocessing` block an adapter applies, by strict precedence: `spec_extra` YAML override → `manifest.image_preprocessing` per-checkpoint contract → schema defaults. No auto-derivation from `policy.config.input_features` — missing hints surface as the schema default rather than a guessed heuristic. (L146)
+- `resolve_state_dim(manifest, spec_extra) -> int | None` — Per-checkpoint proprio state dimension: `spec_extra["state_dim"]` override → `manifest.state_contract.dim` → `None` (adapter falls back to the policy's own preprocessor width). (L237)
+- `resolve_camera_keys(manifest, spec_extra, *, scene_cameras=None, default=("camera1", "camera2")) -> tuple[str, ...]` — Resolve which scene camera keys an adapter pulls from the observation: `spec_extra["camera_keys"]` override → `scene_cameras` (the SimEnvironment YAML's `scene.cameras`) → `default`. (L258)
 - `apply_chunk_replay(policy, spec_extra) -> int` — Override `policy.config.n_action_steps` from `vla.extra` (default `chunk_size // 2`); used by all lerobot-style adapters (`smolvla`, `act`, `pi05`) to amortise the heavy chunk forward over multiple env steps. (L290)
 - `_CUDAGRAPH_COMPILE_MODES` — `frozenset({"reduce-overhead", "max-autotune"})`; the `torch.compile` modes that may capture CUDA graphs and therefore require output cloning (static replay buffers would otherwise be overwritten under lerobot's queued action views / `ChunkedExecutor` pre-fetch). (L349)
 - `_has_bnb_quantized_modules(policy) -> bool` — True when any submodule's class comes from `bitsandbytes` (`Linear4bit` / `Linear8bitLt` rewrites from `openral_sim._quantization`). Class-module-path check; never imports bnb. (L361)
@@ -213,22 +284,33 @@ _Shared helpers for VLA adapters (Layer 3); internal — no public re-export._
 - `run_inference(policy, batch, *, chunk_index=None, kind="single", chunk_size=None, engine=None, call=None, call_kwargs=None, synchronize=False) -> Tensor` — Single seam wrapping a policy inference call in `inference_span` + `torch.no_grad()`; the only place `inference.kind` / `chunk_index` / `chunk_size` / `inference.engine` / `inference.device` attributes are emitted across both eval and skill paths. `call` replaces the default `policy.select_action(batch)` for custom chunk producers. `call_kwargs` is splatted into `call` — the RTC executor threads `inference_delay` / `prev_chunk_left_over` through it; `None` (the default) calls `call(batch)` exactly as before, so non-RTC producers keep their 1-arg signature. An `inference_delay` entry is recorded on the span as `inference.rtc_delay`. `ChunkedExecutor` passes `synchronize=True` on its prefetch: CUDA launches are asynchronous, so without it the background thread signalled ready before kernels completed and the first foreground action still paid the full 0.42-0.82 s boundary stall (it also stops the span's timer at kernel-launch rather than at compute). `engine` defaults to `"torch"`; `device` is auto-lifted from `policy.device` when present. **`torch.no_grad()` here must not become `torch.inference_mode()`** — lerobot's RTC guidance calls `autograd.grad`, which raises under inference mode (pinned by `tests/sim/test_smolvla_rtc.py::test_inference_mode_would_break_the_guidance`). (L496)
 - `resolve_inference_engine(owner, declared=None) -> str` — Resolve the backend actually executing after optional runtime attachment. Explicit plugin marker `_openral_inference_engine` wins; the released `openral-pro-trt` callable module is recognized for backward compatibility; manifest names normalize `pytorch→torch` / `tensorrt→trt`. Used by both `run_inference` prefetch spans and the ROS runner's per-tick spans so the dashboard cannot keep reporting the pre-attachment manifest runtime. (L585)
 - `_RTC_ADAPTERS` — `frozenset({"smolvla", "pi05"})`; the flow-matching adapters whose lerobot policies carry an `rtc_config`. molmoact2 / pi0_fast support RTC upstream but are out of scope — extend this set *and* the adapter's chunk_fn kwargs pass-through together. (L625)
+- const `_RTC_KEYS` — `frozenset({"enabled", "execution_horizon", "max_guidance_weight", "prefix_attention_schedule", "debug"})`; the closed key set `_parse_rtc_config` accepts in a `policy_extras.rtc` block. (L632)
 - `_parse_rtc_config(spec_extra, *, adapter_name) -> RTCConfig | None` — Parse the manifest's `policy_extras.rtc` block into a lerobot `RTCConfig`; `None` when there is no block. Keys are the closed set `enabled` / `execution_horizon` / `max_guidance_weight` / `prefix_attention_schedule` / `debug` (defaults `true` / `10` / `10.0` / `exp` / `false`); the schedule is one of `zeros` / `ones` / `linear` / `exp` (lerobot's `RTCAttentionSchedule`). `ROSConfigError` on a non-mapping block, an unknown key or schedule, a non-positive horizon, `RTCConfig` post-init rejection, or an adapter outside `_RTC_ADAPTERS`. lerobot imports are deferred (heavy optional dep). (L637)
 - `rtc_enabled_in_extra(spec_extra, *, adapter_name) -> bool` — True only for a present, well-formed, **enabled** `rtc` block. For factories that must decide before the executor exists: smolvla skips `maybe_compile_chunk_forward` on it, since RTC and `torch.compile` rewrite the same flow-matching forward. Keyed on the parsed `enabled` flag, not the block's presence, so `rtc: {enabled: false}` still gets compiled. Re-raises the same `ROSConfigError` a malformed block would raise later in `build_chunk_executor`. (L702)
 - `build_chunk_executor(spec_extra, *, policy=None, chunk_fn=None, chunk_size=None, adapter_name="policy") -> ChunkedExecutor | None` — Shared executor construction. `chunk_prefetch` enables overlap; `chunk_prefetch_at` calibrates the lead in actions (default 20, clamped to the chunk). Single-step custom producers retain a synchronous buffer so their output contract is validated; single-step lerobot policies use their normal path. Diffusion Policy remains excluded because it consumes observation history every tick. An enabled `policy_extras.rtc` block additionally sets `policy.config.rtc_config` and calls `init_rtc_processor()` *before* the executor is built, then hands the same `RTCConfig` to it. RTC is refused — `ROSConfigError`, never a silent downgrade — on chunk size 1 (no previous tail exists), `chunk_prefetch: false` (no overlap to blend across), a policy without `init_rtc_processor`, or bitsandbytes-quantized weights (the guidance backpropagates through the denoiser each step). With no `rtc` block the construction, and the served actions, are byte-identical to before. Logs `vla.chunk_executor_enabled` with an `rtc` field. (L727)
 - `to_numpy_action(action_tensor) -> NDArray[np.float32]` — `(1, A)` torch tensor → 1-D float32 NumPy. (L847)
-- `release_torch_modules(owner, *attrs, device="") -> None` — Drop an adapter's references to its loaded torch modules, then `gc.collect()` and (on CUDA) `torch.cuda.empty_cache()`. **The order is the whole point.** `empty_cache()` returns only *already-free* cached blocks to the driver — it cannot free memory the allocator still considers live — so flushing while the adapter still holds the policy frees nothing. Measured on an RTX 4070 with a 768 MiB module resident: `empty_cache()` alone left it at 768.2 MiB; dropping the reference first returned it to 0.0 MiB. Every VLA adapter's `close()` did the former, which is why an rSkill swap never actually gave the card back and a second skill OOM'd on an 8 GB machine even though each fits alone. `gc.collect()` is not optional: a policy is typically part of a reference cycle (module ↔ parameters ↔ hooks), so dropping the last named reference does not necessarily run its finaliser on the spot. Best-effort by contract (teardown must always reach the code behind it), so a missing attribute or an unimportable torch is swallowed. Call sites: `close()` in all eight sim adapters — `smolvla` (after its NVMM encoder teardown), `pi05`, `act`, `xvla`, `diffusion`, `gr00t`, `molmoact2`, `openvla`.
-- `warm_up_lerobot_policy(adapter, *, prompt="", torch=None) -> bool` — Run one dummy forward so the first *real* control tick does not blow its deadline. The first CUDA inference pays cuDNN autotune, kernel JIT and lazy-module materialisation: measured on an RTX 4070 with the ACT so101-pen checkpoint (resnet18 + transformer, two 480x640 cameras) **call 1 = 330.4 ms vs 14.9 ms steady** — 10x the 33.3 ms budget at 30 Hz, so tick 1 was a guaranteed deadline miss and under `DeadlineOverrunPolicy.DROP` the robot's first commanded action was discarded. With the warm-up wired into `activate()` the same checkpoint's first real tick measured **14.9 ms**, inside budget; the 303 ms moved to where the operator is already waiting. Shapes are read from the policy's own `config` (`image_features[k].shape`, `input_features['observation.state']`) so the pass autotunes the exact kernels the real ticks use — a guessed resolution would warm the wrong ones. Honours an adapter's `_image_dtype` (SmolVLA casts images). Returns `False` and does nothing for adapters exposing no introspectable `_policy` (the HF-based `molmoact2` / `openvla`). Called from `_PolicyAdapterSkill.on_warmup`, which swallows and logs any failure — a warm-up is an optimisation and must never be why a skill fails to activate.
+- `rtc_enabled(policy) -> bool` — True when *policy* carries an enabled lerobot `RTCConfig` (`policy.config.rtc_config`); RTC-enabled policies reject `select_action` outright, so callers that warm or probe a policy must route through `predict_action_chunk` instead. (L1213)
+- `warm_up_lerobot_policy(adapter, *, prompt="", torch=None) -> bool` — Run one dummy forward so the first *real* control tick does not blow its deadline. The first CUDA inference pays cuDNN autotune, kernel JIT and lazy-module materialisation: measured on an RTX 4070 with the ACT so101-pen checkpoint (resnet18 + transformer, two 480x640 cameras) **call 1 = 330.4 ms vs 14.9 ms steady** — 10x the 33.3 ms budget at 30 Hz, so tick 1 was a guaranteed deadline miss and under `DeadlineOverrunPolicy.DROP` the robot's first commanded action was discarded. With the warm-up wired into `activate()` the same checkpoint's first real tick measured **14.9 ms**, inside budget; the 303 ms moved to where the operator is already waiting. Shapes are read from the policy's own `config` (`image_features[k].shape`, `input_features['observation.state']`) so the pass autotunes the exact kernels the real ticks use — a guessed resolution would warm the wrong ones. Honours an adapter's `_image_dtype` (SmolVLA casts images). Returns `False` and does nothing for adapters exposing no introspectable `_policy` (the HF-based `molmoact2` / `openvla`). Routes RTC-enabled policies through `predict_action_chunk` (via `rtc_enabled`) instead of `select_action`, which RTC hard-asserts against. Called from `_PolicyAdapterSkill.on_warmup`, which swallows and logs any failure — a warm-up is an optimisation and must never be why a skill fails to activate. (L1223)
+- `release_torch_modules(owner, *attrs, device="") -> None` — Drop an adapter's references to its loaded torch modules, then `gc.collect()` and (on CUDA) `torch.cuda.empty_cache()`. **The order is the whole point.** `empty_cache()` returns only *already-free* cached blocks to the driver — it cannot free memory the allocator still considers live — so flushing while the adapter still holds the policy frees nothing. Measured on an RTX 4070 with a 768 MiB module resident: `empty_cache()` alone left it at 768.2 MiB; dropping the reference first returned it to 0.0 MiB. Every VLA adapter's `close()` did the former, which is why an rSkill swap never actually gave the card back and a second skill OOM'd on an 8 GB machine even though each fits alone. `gc.collect()` is not optional: a policy is typically part of a reference cycle (module ↔ parameters ↔ hooks), so dropping the last named reference does not necessarily run its finaliser on the spot. Best-effort by contract (teardown must always reach the code behind it), so a missing attribute or an unimportable torch is swallowed. Call sites: `close()` in all eight sim adapters — `smolvla` (after its NVMM encoder teardown), `pi05`, `act`, `xvla`, `diffusion`, `gr00t`, `molmoact2`, `openvla`. (L1321)
 - `parse_hf_file_uri(uri: str) -> tuple[str, str | None, str]` — Splits `hf://owner/repo[@rev]/path/to/file.ext` into `(repo_id, revision, filename)` for per-file `hf_hub_download` calls. Rejects bare-repo URIs with a typed `ROSConfigError`. (L926)
 - `materialize_processor_dir(manifest: RSkillManifest) -> str` — Downloads the manifest's per-file `processors` artefacts (Gap 1+3 of the rSkill self-containment audit) via `hf_hub_download` calls and symlinks them under the lerobot-canonical filenames (`policy_preprocessor.json` / `policy_postprocessor.json`) in a fresh temp directory. Also walks each downloaded JSON's `steps[*]` and downloads any sibling `state_file` (normalizer / unnormalizer `.safetensors`) into the same staging dir so lerobot's `PolicyProcessorPipeline.from_pretrained(<dir>)` resolves every step locally without falling back to `hf_hub_download(repo_id=<dir>)`. Single seam used by the SmolVLA and modern-ACT adapters; raises `ROSConfigError` if `manifest.processors is None`. Every download is routed through `_hf_download_cached_first` so a cache-hit avoids the per-file HF HEAD validation that otherwise stacks 3–5 seconds onto every load. (L976)
-- `_hf_download_cached_first(hf_hub_download, local_not_found_exc, *, repo_id, filename, revision=None, **extra) -> str` — Cache-first wrapper around `huggingface_hub.hf_hub_download`. Tries `local_files_only=True` first; on `LocalEntryNotFoundError` falls back to the normal call. Eliminates the per-file HEAD validation that turns a "cached" load into 500 ms – 3 s × N files on a cold TLS connection. Set `HF_HUB_OFFLINE=1` to extend the same skip to the inner lerobot / transformers calls this helper does not wrap.
-- `suppress_hf_weight_init() -> Iterator[None]` — Context manager that patches `transformers.PreTrainedModel._init_weights` to a no-op for the duration. lerobot builds the SmolVLA backbone by calling `SmolVLMForConditionalGeneration(config=...)` directly (taken whenever the checkpoint sets `load_vlm_weights=False`, which every SmolVLA finetune does), so it pays a full random init of 507 M params, truncates half the text layers away, then overwrites the rest from the checkpoint. Measured on the SO-101 eraser-place checkpoint: `from_pretrained` 16.34 s → 7.99 s, weights bit-identical. Only sound when the checkpoint covers every parameter — pair with `assert_all_parameters_finite`. Process-global while active; the skill runner serialises loads behind its resident-skill lock.
-- `assert_all_parameters_finite(policy, *, repo_id) -> None` — Raises `ROSConfigError` if any floating-point parameter is NaN/Inf. The guard that makes `suppress_hf_weight_init` safe: uninitialised memory read as float is overwhelmingly non-finite, so this catches a checkpoint that failed to cover the graph. ~0.06 s on a 500 M-param policy.
-- `call_make_processors_cached_first(make_pre_post_processors, policy_config, *, pretrained_path, **kwargs) -> tuple[Any, Any]` — Wraps lerobot's `make_pre_post_processors` so the `TokenizerProcessorStep.__post_init__ → AutoTokenizer.from_pretrained` call skips its 5 HF HEAD / `tree/main` revalidations against the backbone tokenizer (`google/paligemma-3b-pt-224` for π0.5; SmolVLM for SmolVLA) when that tokenizer is already in the local HF cache. Reads `<pretrained_path>/policy_preprocessor.json`, probes for `tokenizer_config.json` via `huggingface_hub.try_to_load_from_cache`, and flips `huggingface_hub.constants.HF_HUB_OFFLINE` to `True` for the duration of the inner call (`transformers.utils.hub.is_offline_mode` delegates to the same constant). Passthrough on a cold cache or for adapters whose preprocessor has no tokenizer step (ACT, Diffusion Policy). Call sites: `openral_sim.policies.{pi05,smolvla,act,diffusion}._build_*`.
+- `_hf_download_cached_first(hf_hub_download, local_not_found_exc, *, repo_id, filename, revision=None, **extra) -> str` — Cache-first wrapper around `huggingface_hub.hf_hub_download`. Tries `local_files_only=True` first; on `LocalEntryNotFoundError` falls back to the normal call. Eliminates the per-file HEAD validation that turns a "cached" load into 500 ms – 3 s × N files on a cold TLS connection. Set `HF_HUB_OFFLINE=1` to extend the same skip to the inner lerobot / transformers calls this helper does not wrap. **De-facto public:** imported across the package boundary by `openral_sim._quantization` and `openral_sim.policies.pi05` (promotion candidate — see report). (L863)
+- `suppress_hf_weight_init() -> Iterator[None]` [@contextmanager] — Context manager that patches `transformers.PreTrainedModel._init_weights` to a no-op for the duration. lerobot builds the SmolVLA backbone by calling `SmolVLMForConditionalGeneration(config=...)` directly (taken whenever the checkpoint sets `load_vlm_weights=False`, which every SmolVLA finetune does), so it pays a full random init of 507 M params, truncates half the text layers away, then overwrites the rest from the checkpoint. Measured on the SO-101 eraser-place checkpoint: `from_pretrained` 16.34 s → 7.99 s, weights bit-identical. Only sound when the checkpoint covers every parameter — pair with `assert_all_parameters_finite`. Process-global while active; the skill runner serialises loads behind its resident-skill lock. (L1376)
+- `assert_all_parameters_finite(policy, *, repo_id) -> None` — Raises `ROSConfigError` if any floating-point parameter is NaN/Inf. The guard that makes `suppress_hf_weight_init` safe: uninitialised memory read as float is overwhelmingly non-finite, so this catches a checkpoint that failed to cover the graph. ~0.06 s on a 500 M-param policy. (L1450)
+- `call_make_processors_cached_first(make_pre_post_processors, policy_config, *, pretrained_path, **kwargs) -> tuple[Any, Any]` — Wraps lerobot's `make_pre_post_processors` so the `TokenizerProcessorStep.__post_init__ → AutoTokenizer.from_pretrained` call skips its 5 HF HEAD / `tree/main` revalidations against the backbone tokenizer (`google/paligemma-3b-pt-224` for π0.5; SmolVLM for SmolVLA) when that tokenizer is already in the local HF cache. Reads `<pretrained_path>/policy_preprocessor.json`, probes for `tokenizer_config.json` via `huggingface_hub.try_to_load_from_cache`, and flips `huggingface_hub.constants.HF_HUB_OFFLINE` to `True` for the duration of the inner call (`transformers.utils.hub.is_offline_mode` delegates to the same constant). Passthrough on a cold cache or for adapters whose preprocessor has no tokenizer step (ACT, Diffusion Policy). Call sites: `openral_sim.policies.{pi05,smolvla,act,diffusion}._build_*`. (L1126)
 - private: `_read_tokenizer_repo_from_preprocessor(pretrained_path) -> str | None` — Parses `<pretrained_path>/policy_preprocessor.json` for the `tokenizer_processor` step's `config.tokenizer_name`. Returns `None` on missing/malformed JSON or absent step (ACT / Diffusion Policy). Used by `call_make_processors_cached_first`.
 - private: `_hf_tokenizer_is_cached(repo_id) -> bool` — Probes `huggingface_hub.try_to_load_from_cache(repo_id, "tokenizer_config.json")` and returns `True` only when the result is a real cached path (`str`), not `None` or the `_CACHED_NO_EXIST` sentinel. Returns `False` on any import error so callers fall back to a normal online load.
+
+### `python/rskill/src/openral_rskill/testing.py`
+_Test helpers for skill latency-budget enforcement (CLAUDE.md §5.4)._
+
+- `class LatencyBudgetExceededError(AssertionError)` — Raised by `assert_within_budget` on overrun; a plain `AssertionError` subclass (not `ROSRuntimeError`) so pytest reports a crisp failure with the budget delta rather than the operational exception the safety supervisor would catch. (L42)
+  - `__init__(*, stage, measured_ms, budget_ms, rskill_id=None)` — Builds the failure message and stores `stage`/`measured_ms`/`budget_ms`/`rskill_id` on the instance. (L56)
+- `assert_within_budget(*, measured_ms, budget: RSkillLatencyBudget, stage="per_chunk", rskill_id=None, tolerance_pct=0.0) -> None` — Assert `measured_ms` does not exceed `budget`'s field for `stage` (`per_chunk_ms`/`warmup_ms`/`load_ms`), with an optional percent tolerance. Unset optional budget stages (`warmup_ms`/`load_ms` are `None`) pass silently — enforcement is opt-in per manifest. Raises `LatencyBudgetExceededError` on overrun, `ValueError` on a negative input. (L78)
 
 ### `python/rskill/src/openral_rskill/_lerobot_compat.py`
 _Compatibility shim for `lerobot.policies` import side-effects._
 
+- const `_STUB_NAME = "lerobot.policies.groot.modeling_groot"` (L32)
 - private: `_install_stub() -> None` (L35)
+- `sanitize_smolvla_config(repo_id, *, revision=None) -> None` — Strip config keys lerobot's `SmolVLAConfig` rejects (e.g. `pretrained_revision`) from a checkpoint's `config.json`, in place, before `SmolVLAPolicy.from_pretrained`. Idempotent; no-op when the config is already clean or lerobot/the config are unavailable. (L54)
