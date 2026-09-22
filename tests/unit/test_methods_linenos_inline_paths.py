@@ -96,7 +96,7 @@ def test_resolve_inline_path_falls_back_to_a_unique_suffix_match() -> None:
 def test_resolve_inline_path_finds_module_under_its_package() -> None:
     base = REPO_ROOT / "packages/openral_foxglove_bringup/"
     assert _resolve_inline_path("bucket2_markers.py", base) is not None
-    assert _resolve_inline_path("tools/demo_publisher.py", base) is not None
+    assert _resolve_inline_path("launch/bucket2.launch.py", base) is not None
     assert _resolve_inline_path("no_such_module.py", base) is None
 
 
