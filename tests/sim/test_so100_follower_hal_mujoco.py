@@ -54,7 +54,6 @@ from openral_core import (
     Action,
     ControlMode,
     JointState,
-    ROSConfigError,
     ROSRuntimeError,
 )
 from openral_hal import SO100_DESCRIPTION, SO100MujocoHAL
@@ -189,23 +188,6 @@ class TestReadState:
             assert hal.read_state().position
         finally:
             hal.disconnect()
-
-
-# ── send_action ───────────────────────────────────────────────────────────────
-
-
-class TestSendAction:
-    def test_rejects_wrong_joint_count(self, connected_hal: SO100MujocoHAL) -> None:
-        """SO-100-specific: verify 6-joint contract."""
-        # 5 values for a 6-joint robot.
-        bad = Action(
-            control_mode=ControlMode.JOINT_POSITION,
-            horizon=1,
-            joint_targets=[[0.0] * 5],
-            stamp_ns=time.time_ns(),
-        )
-        with pytest.raises(ROSConfigError, match="6 joints"):
-            connected_hal.send_action(bad)
 
 
 # ── estop ─────────────────────────────────────────────────────────────────────

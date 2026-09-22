@@ -43,14 +43,10 @@ def _franka() -> RobotDescription:
 
 
 class TestCanonicalSlotsForRepresentation:
-    def test_joint_representation_returns_none(self) -> None:
-        # Joint reps keep the legacy whole-vector JOINT_POSITION path.
-        assert (
-            canonical_slots_for_representation(
-                ActionRepresentation.JOINT_POSITIONS, dim=8, description=_franka()
-            )
-            is None
-        )
+    # test_joint_representation_returns_none moved to
+    # tests/unit/test_action_representation_slots.py
+    # ::test_joint_positions_returns_none_canonical_slots (identical body:
+    # same fixture, same call, same assertion).
 
     def test_delta_ee_6d_plus_gripper_layout(self) -> None:
         slots = canonical_slots_for_representation(

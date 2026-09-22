@@ -165,9 +165,16 @@ class TestSidecarRollout:
     """End-to-end client↔server over a real ZMQ socket — no Isaac."""
 
     def test_connect_pings_existing_sidecar(self, sidecar: _FakeSidecar) -> None:
+        # auto_spawn=False + a bogus launch_argv means connect() can only
+        # succeed by pinging the already-running fake — a real spawn attempt
+        # would try to exec "/bin/false" and fail. Assert on what that ping
+        # actually returned (the wire round trip, not just "no exception").
         scene, task = _scene_task()
         rollout = _make_rollout(sidecar.port, scene, task)
-        rollout.close()
+        try:
+            assert rollout.action_dim == 7
+        finally:
+            rollout.close()
 
     def test_action_dim_queried_from_ping(self, sidecar: _FakeSidecar) -> None:
         # SimAttachedHAL._probe_env_action_dim reads env.action_dim (deploy sim);

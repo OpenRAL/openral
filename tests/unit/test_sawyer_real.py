@@ -21,10 +21,8 @@ from openral_core import (
     ROSConfigError,
     ROSEStopRequested,
     ROSRuntimeError,
-    ROSSafetyViolation,
 )
 from openral_core.schemas import EmbodimentKind, JointState
-from openral_hal.protocol import HAL
 from openral_hal.sawyer_real import (
     SAWYER_DESCRIPTION,
     SAWYER_REAL_DESCRIPTION,
@@ -157,12 +155,12 @@ class TestConstruction:
 
 
 class TestProtocolConformance:
-    def test_satisfies_hal_protocol(self, hal: SawyerRealHAL) -> None:
-        assert isinstance(hal, HAL)
-
-    def test_read_state_before_connect_raises(self, hal: SawyerRealHAL) -> None:
-        with pytest.raises(ROSRuntimeError):
-            hal.read_state()
+    # test_satisfies_hal_protocol moved to
+    # tests/unit/test_hal_protocol_conformance.py::test_hal_satisfies_runtime_checkable_protocol
+    # (parametrized over HAL_BUILDERS, "SawyerRealHAL" included).
+    # test_read_state_before_connect_raises moved to
+    # tests/unit/test_hal_protocol_conformance.py::test_hal_read_state_before_connect_raises
+    # (parametrized over HAL_BUILDERS, "SawyerRealHAL" included).
 
     def test_send_action_before_connect_raises(self, hal: SawyerRealHAL) -> None:
         with pytest.raises(ROSRuntimeError):
@@ -197,15 +195,12 @@ class TestProtocolConformance:
 
 
 class TestSafety:
-    def test_estop_always_raises(self, hal: SawyerRealHAL) -> None:
-        hal.connect()
-        with pytest.raises(ROSEStopRequested):
-            hal.estop()
-
-    def test_estop_is_safety_violation(self, hal: SawyerRealHAL) -> None:
-        hal.connect()
-        with pytest.raises(ROSSafetyViolation):
-            hal.estop()
+    # test_estop_always_raises moved to
+    # tests/unit/test_hal_protocol_conformance.py::test_hal_estop_always_raises_estoprequested
+    # (parametrized over HAL_BUILDERS, "SawyerRealHAL" included).
+    # test_estop_is_safety_violation moved to
+    # tests/unit/test_hal_protocol_conformance.py::test_estoprequested_is_safety_violation_subclass
+    # (structural check that ROSEStopRequested subclasses ROSSafetyViolation).
 
     def test_estop_publishes_to_super_stop_topic(
         self, hal: SawyerRealHAL, transport: SimTransport
