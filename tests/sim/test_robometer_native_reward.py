@@ -77,7 +77,7 @@ def test_native_robometer_scores_real_clip() -> None:
     clip = np.stack(frames).astype(np.uint8)
     assert clip.shape == (_N_FRAMES, _RES, _RES, 3)
 
-    scorer = scorer_mod._Scorer(_WEIGHTS, device="cuda")
+    scorer = scorer_mod.Scorer(_WEIGHTS, device="cuda")
     progress, success = scorer.score(clip, "pick up the object and place it", num_bins=100)
 
     # Per-frame series, one value per input frame.

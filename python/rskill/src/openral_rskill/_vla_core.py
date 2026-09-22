@@ -1,6 +1,7 @@
 """Shared helpers for VLA adapters (Layer 3 — Skill / S1).
 
-Internal module. Not part of the public ``openral_rskill`` surface.
+Internal module. Only ``hf_download_cached_first`` is re-exported from the
+``openral_rskill`` package root; the rest stays internal.
 
 Every VLA family — SmolVLA, π0.5, xVLA, ACT, Diffusion Policy — needs the
 same three things at the boundary:
@@ -860,7 +861,7 @@ def to_numpy_action(action_tensor: Any) -> NDArray[np.float32]:
     return out
 
 
-def _hf_download_cached_first(
+def hf_download_cached_first(
     hf_hub_download: Any,
     local_not_found_exc: type[BaseException],
     *,
@@ -1023,14 +1024,14 @@ def materialize_processor_dir(manifest: RSkillManifest) -> str:
     pre_repo, pre_rev, pre_file = parse_hf_file_uri(manifest.processors.preprocessor_uri)
     post_repo, post_rev, post_file = parse_hf_file_uri(manifest.processors.postprocessor_uri)
 
-    pre_path = _hf_download_cached_first(
+    pre_path = hf_download_cached_first(
         hf_hub_download,
         LocalEntryNotFoundError,
         repo_id=pre_repo,
         filename=pre_file,
         revision=pre_rev,
     )
-    post_path = _hf_download_cached_first(
+    post_path = hf_download_cached_first(
         hf_hub_download,
         LocalEntryNotFoundError,
         repo_id=post_repo,
@@ -1056,7 +1057,7 @@ def materialize_processor_dir(manifest: RSkillManifest) -> str:
             state_file = step.get("state_file")
             if not state_file:
                 continue
-            state_local = _hf_download_cached_first(
+            state_local = hf_download_cached_first(
                 hf_hub_download,
                 LocalEntryNotFoundError,
                 repo_id=repo,

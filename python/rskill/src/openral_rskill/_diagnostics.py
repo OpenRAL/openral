@@ -1,6 +1,7 @@
 """Shared load-phase instrumentation for the rSkill / sim policy load path.
 
-Internal module. Not part of the public ``openral_rskill`` surface.
+Internal module. Only ``gpu_allocated_mb`` is re-exported from the ``openral_rskill``
+package root; ``phase_timer`` and the rest stay internal.
 
 ``phase_timer(name, prefix=..., gpu_mb=...)`` is the canonical seam every
 VLA adapter's ``_build_*`` factory wraps each load phase with, so a
@@ -40,12 +41,12 @@ from typing import Any
 
 import structlog
 
-__all__ = ["phase_timer"]
+__all__ = ["gpu_allocated_mb", "phase_timer"]
 
 _PAGE_SIZE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 
 
-def _gpu_mb(*, no_import: bool = False) -> float | None:
+def gpu_allocated_mb(*, no_import: bool = False) -> float | None:
     """Return current CUDA allocator usage in MB, or ``None`` if unavailable.
 
     Deliberately ``memory_allocated`` (live tensors), not ``memory_reserved``
@@ -215,7 +216,7 @@ def phase_timer(
             elapsed = time.monotonic() - start
             extra: dict[str, Any] = {"elapsed_s": round(elapsed, 1)}
             if gpu_mb:
-                mb = _gpu_mb()
+                mb = gpu_allocated_mb()
                 if mb is not None:
                     extra["gpu_mb"] = round(mb, 1)
             logger.info(event_heartbeat, **extra, **_mem_fields(), **fields)

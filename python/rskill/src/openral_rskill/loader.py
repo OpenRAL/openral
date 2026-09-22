@@ -906,7 +906,7 @@ def _candidate_local_paths(uri: str) -> list[Path]:
     add(candidate)
 
     # Re-anchor at the repo root so ``rskills/<name>`` works from any cwd.
-    repo_root = _find_repo_root_from(Path(__file__))
+    repo_root = find_repo_root_from(Path(__file__))
     if repo_root is not None:
         add(repo_root / candidate)
         # Bare-name form: ``smolvla-libero`` → ``<repo>/rskills/smolvla-libero``.
@@ -933,7 +933,7 @@ def discover_intree_rskills() -> list[tuple[str, RSkillManifest]]:
         List of ``(rskill_name, manifest)`` tuples, one per
         ``rskills/<name>/rskill.yaml`` on disk.
     """
-    repo_root = _find_repo_root_from(Path(__file__))
+    repo_root = find_repo_root_from(Path(__file__))
     if repo_root is None:
         return []
     rskills_dir = repo_root / "rskills"
@@ -953,7 +953,7 @@ def discover_intree_rskills() -> list[tuple[str, RSkillManifest]]:
     return out
 
 
-def _find_repo_root_from(start: Path) -> Path | None:
+def find_repo_root_from(start: Path) -> Path | None:
     """Locate the OpenRAL repo root by walking up from ``start``.
 
     Returns the first parent directory that contains both ``pyproject.toml``
@@ -966,7 +966,7 @@ def _find_repo_root_from(start: Path) -> Path | None:
     return None
 
 
-def _validate_skill_ref(raw: str) -> str:
+def validate_skill_ref(raw: str) -> str:
     """Validate and return a bare rSkill reference unchanged.
 
     Accepts any non-empty string that does not carry an explicit URI scheme:
@@ -987,9 +987,9 @@ def _validate_skill_ref(raw: str) -> str:
             a known URI scheme.
 
     Example:
-        >>> _validate_skill_ref("smolvla-libero")
+        >>> validate_skill_ref("smolvla-libero")
         'smolvla-libero'
-        >>> _validate_skill_ref("rskills/smolvla-libero")
+        >>> validate_skill_ref("rskills/smolvla-libero")
         'rskills/smolvla-libero'
     """
     cleaned = raw.strip()

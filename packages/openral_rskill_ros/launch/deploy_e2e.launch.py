@@ -94,7 +94,7 @@ def _resolve_repo_root() -> pathlib.Path:
     no such file), leaving the safety kernel and the reasoner parked
     unconfigured while every other node reported healthy.
 
-    Reuses ``openral_rskill.loader._find_repo_root_from`` — the repo already
+    Reuses ``openral_rskill.loader.find_repo_root_from`` — the repo already
     has this search (``pyproject.toml`` + ``rskills/``), and a second copy here
     would be a second thing to keep true. Falls back to the old arithmetic when
     no marked ancestor exists, which is the genuinely-installed-elsewhere case
@@ -102,10 +102,10 @@ def _resolve_repo_root() -> pathlib.Path:
     """
     here = pathlib.Path(__file__).resolve()
     try:
-        from openral_rskill.loader import _find_repo_root_from
+        from openral_rskill.loader import find_repo_root_from
     except ImportError:  # pragma: no cover  # reason: workspace not on the path
         return here.parents[3]
-    return _find_repo_root_from(here) or here.parents[3]
+    return find_repo_root_from(here) or here.parents[3]
 
 
 _REPO_ROOT = _resolve_repo_root()

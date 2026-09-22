@@ -697,7 +697,7 @@ validation-matrix-import round_dir *args:
 # end-to-end.
 #
 # HF_HUB_OFFLINE=1 additionally skips the per-file HEAD revalidation inside
-# lerobot/transformers that `_hf_download_cached_first` cannot wrap — worth
+# lerobot/transformers that `hf_download_cached_first` cannot wrap — worth
 # setting for a clean warm-cache number. Families whose adapter has no
 # `_<family>_phase` helper (xvla, diffusion) still report "no phase_timer
 # events captured"; the end-to-end total is valid regardless.

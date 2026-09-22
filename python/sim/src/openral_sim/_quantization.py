@@ -416,12 +416,12 @@ def detect_prequantized_nf4(spec: VLASpec) -> str | None:  # noqa: PLR0911  # re
             LocalEntryNotFoundError,
             RepositoryNotFoundError,
         )
-        from openral_rskill._vla_core import _hf_download_cached_first
+        from openral_rskill._vla_core import hf_download_cached_first
     except ImportError:  # pragma: no cover
         return None
 
     try:
-        meta_path = _hf_download_cached_first(
+        meta_path = hf_download_cached_first(
             hf_hub_download,
             LocalEntryNotFoundError,
             repo_id=target_repo,
@@ -504,12 +504,12 @@ def load_prequantized_state_for_rskill(  # noqa: PLR0911  # reason: linear early
             LocalEntryNotFoundError,
             RepositoryNotFoundError,
         )
-        from openral_rskill._vla_core import _hf_download_cached_first
+        from openral_rskill._vla_core import hf_download_cached_first
     except ImportError:  # pragma: no cover
         return
 
     try:
-        meta_path = _hf_download_cached_first(
+        meta_path = hf_download_cached_first(
             hf_hub_download,
             LocalEntryNotFoundError,
             repo_id=target_repo,
@@ -530,7 +530,7 @@ def load_prequantized_state_for_rskill(  # noqa: PLR0911  # reason: linear early
         source_revision=meta.get("source_revision"),
     )
 
-    weights_path = _hf_download_cached_first(
+    weights_path = hf_download_cached_first(
         hf_hub_download,
         LocalEntryNotFoundError,
         repo_id=target_repo,
@@ -579,7 +579,7 @@ def peek_safetensors_keys(repo_id: str, *, filename: str = "model.safetensors") 
 
     Reads only the safetensors header (~10 ms warm), so calling this
     eagerly during the build phase is cheap. Routes the file fetch
-    through ``_hf_download_cached_first`` so the
+    through ``hf_download_cached_first`` so the
     ``local_files_only=True`` fast path applies. Works for both
     prequantized packs (caller passes the nf4 prequant repo id) and
     bare source checkpoints (caller passes the bf16 source repo id —
@@ -604,13 +604,13 @@ def peek_safetensors_keys(repo_id: str, *, filename: str = "model.safetensors") 
             LocalEntryNotFoundError,
             RepositoryNotFoundError,
         )
-        from openral_rskill._vla_core import _hf_download_cached_first
+        from openral_rskill._vla_core import hf_download_cached_first
         from safetensors import safe_open
     except ImportError:  # pragma: no cover
         return None
 
     try:
-        weights_path = _hf_download_cached_first(
+        weights_path = hf_download_cached_first(
             hf_hub_download,
             LocalEntryNotFoundError,
             repo_id=repo_id,
