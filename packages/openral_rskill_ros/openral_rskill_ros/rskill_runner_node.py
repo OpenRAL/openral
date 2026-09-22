@@ -2518,16 +2518,17 @@ def _decode_image_frames(
     """
     import numpy as np
     from openral_core.schemas import FrameEncoding
+    from openral_runner.dataset_recorder_bridge import decode_inline_frame
 
     images: dict[str, Any] = {}
     for name, frame in image_frames.items():
-        if frame.data is None:
+        # One decoder for the runner and the dataset recorder: dtype comes
+        # from the encoding, so a DEPTH16 frame sitting next to the RGB
+        # slots (the OpenArm bench's `head_zed`) decodes as uint16 instead
+        # of aborting the whole observation.
+        arr = decode_inline_frame(frame)
+        if arr is None:
             continue
-        arr = np.frombuffer(frame.data, dtype=np.uint8).reshape(
-            int(frame.height),
-            int(frame.width),
-            int(frame.channels),
-        )
         # Policies are fed RGB. OpenCV readers publish BGR8, so reverse the
         # channel axis (contiguous: torch rejects negative strides) rather than
         # feed a real deploy swapped colours.
