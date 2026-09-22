@@ -65,7 +65,6 @@ from openral_core import (
     EmbodimentKind,
     JointState,
     JointType,
-    ROSConfigError,
     ROSRuntimeError,
 )
 from openral_hal import OPENARM_DESCRIPTION, OpenArmMujocoHAL
@@ -245,15 +244,6 @@ def hal() -> OpenArmMujocoHAL:
     return OpenArmMujocoHAL(gravity_enabled=False, settle_steps=2000)
 
 
-def _zero_action(horizon: int = 1) -> Action:
-    return Action(
-        control_mode=ControlMode.JOINT_POSITION,
-        horizon=horizon,
-        joint_targets=[[0.0] * 16 for _ in range(horizon)],
-        stamp_ns=time.time_ns(),
-    )
-
-
 # ── Protocol conformance ──────────────────────────────────────────────────────
 
 
@@ -262,38 +252,6 @@ def _zero_action(horizon: int = 1) -> Action:
 # Shared protocol compliance and standard lifecycle tests are consolidated in
 # tests/sim/test_hal_protocol_contracts.py (parametrized across all MuJoCo HALs).
 # Keep only OpenArm-specific tests here.
-
-
-class TestOpenArmLifecycle:
-    def test_connect_loads_mujoco_model(self, hal: OpenArmMujocoHAL) -> None:
-        """OpenArm-specific: verify 16 position actuators in menagerie XML."""
-        hal.connect()
-        try:
-            assert hal._connected is True
-            assert hal._model is not None
-            assert hal._data is not None
-            assert hal._model.nu == 16  # 16 position actuators in v2
-        finally:
-            hal.disconnect()
-
-    def test_connect_seeds_ctrl_from_qpos(self, hal: OpenArmMujocoHAL) -> None:
-        # connect() pre-loads ctrl with the current qpos so the v2
-        # position actuators hold the rest pose on the first mj_step
-        # rather than yanking toward ctrl=0.  Same pattern the
-        # upstream ``mujoco_launch.py`` uses.  Under the manifest-driven HAL this is
-        # driven by ``OPENARM_DESCRIPTION.sim.seed_ctrl_from_qpos=True``
-        # — see openral_hal._mujoco_arm.MujocoArmHAL.connect.
-        hal.connect()
-        try:
-            assert hal._data is not None
-            for name in hal._joint_names:
-                qpos_idx = hal._joint_qpos_addr[name]
-                act_idx = hal._actuator_index[name]
-                assert hal._data.ctrl[act_idx] == pytest.approx(
-                    float(hal._data.qpos[qpos_idx]), abs=1e-6
-                )
-        finally:
-            hal.disconnect()
 
 
 # ── read_state ────────────────────────────────────────────────────────────────
@@ -334,19 +292,6 @@ class TestReadState:
 # ── send_action ───────────────────────────────────────────────────────────────
 
 
-class TestSendAction:
-    def test_rejects_wrong_joint_count(self, connected_hal: OpenArmMujocoHAL) -> None:
-        """OpenArm-specific: verify 16-joint contract."""
-        bad = Action(
-            control_mode=ControlMode.JOINT_POSITION,
-            horizon=1,
-            joint_targets=[[0.0] * 15],
-            stamp_ns=time.time_ns(),
-        )
-        with pytest.raises(ROSConfigError, match="16 joints"):
-            connected_hal.send_action(bad)
-
-
 # ── estop ─────────────────────────────────────────────────────────────────────
 # Standard estop contract is tested in test_hal_protocol_contracts.py (parametrized).
 # No OpenArm-specific estop behavior to test.
@@ -364,11 +309,6 @@ class TestClosedLoopMujoco:
     brake the link inertia inside the actuator's saturated torque
     budget).
     """
-
-    def test_hold_zero_pose(
-        self, connected_hal: OpenArmMujocoHAL, assert_send_action_holds_zero_pose
-    ) -> None:
-        assert_send_action_holds_zero_pose(connected_hal, _zero_action())
 
     # 0.15 rad is the largest magnitude that fits inside every arm
     # joint's MJCF ctrlrange — ``left_joint2`` is bounded to

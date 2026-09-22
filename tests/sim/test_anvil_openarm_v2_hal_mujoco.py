@@ -66,7 +66,6 @@ from openral_core import (
     EmbodimentKind,
     JointState,
     JointType,
-    ROSConfigError,
     ROSRuntimeError,
 )
 from openral_hal import ANVIL_OPENARM_V2_DESCRIPTION, AnvilOpenArmV2MujocoHAL
@@ -269,34 +268,6 @@ def _action(target: list[float]) -> Action:
 # Keep only Anvil-specific tests here.
 
 
-class TestAnvilLifecycle:
-    def test_connect_loads_mujoco_model(self, hal: AnvilOpenArmV2MujocoHAL) -> None:
-        hal.connect()
-        try:
-            assert hal._connected is True
-            assert hal._model is not None
-            assert hal._data is not None
-            assert hal._model.nu == 16  # 16 position actuators, v2-era layout
-        finally:
-            hal.disconnect()
-
-    def test_connect_seeds_ctrl_from_qpos(self, hal: AnvilOpenArmV2MujocoHAL) -> None:
-        # Driven by ``ANVIL_OPENARM_V2_DESCRIPTION.sim.seed_ctrl_from_qpos``
-        # (ADR-0023) — the native <position> actuators must hold the
-        # rest pose on the first mj_step rather than yanking to ctrl=0.
-        hal.connect()
-        try:
-            assert hal._data is not None
-            for name in hal._joint_names:
-                qpos_idx = hal._joint_qpos_addr[name]
-                act_idx = hal._actuator_index[name]
-                assert hal._data.ctrl[act_idx] == pytest.approx(
-                    float(hal._data.qpos[qpos_idx]), abs=1e-6
-                )
-        finally:
-            hal.disconnect()
-
-
 # ── read_state ────────────────────────────────────────────────────────────────
 
 
@@ -316,18 +287,6 @@ class TestReadState:
 # ── send_action ───────────────────────────────────────────────────────────────
 
 
-class TestSendAction:
-    def test_rejects_wrong_joint_count(self, connected_hal: AnvilOpenArmV2MujocoHAL) -> None:
-        bad = Action(
-            control_mode=ControlMode.JOINT_POSITION,
-            horizon=1,
-            joint_targets=[[0.0] * 15],
-            stamp_ns=time.time_ns(),
-        )
-        with pytest.raises(ROSConfigError, match="16 joints"):
-            connected_hal.send_action(bad)
-
-
 # ── Closed-loop physics (native v2 PD — exact convergence) ───────────────────
 
 
@@ -337,12 +296,6 @@ class TestClosedLoopMujoco:
     closed-loop test asserts **exact** convergence to the commanded
     pose — the same bar the Enactic v2 suite sets.
     """
-
-    def test_hold_zero_pose(self, connected_hal: AnvilOpenArmV2MujocoHAL) -> None:
-        connected_hal.send_action(_action([0.0] * 16))
-        state = connected_hal.read_state()
-        for i, q in enumerate(state.position):
-            assert abs(q) < 5e-3, f"joint {state.name[i]!r} drifted to {q:.4f}"
 
     # 0.15 rad fits inside every arm joint's range on the side each
     # per-joint test commands it (J2's narrow side is ~0.17 rad).

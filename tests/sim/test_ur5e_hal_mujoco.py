@@ -48,7 +48,6 @@ from openral_core import (
     EmbodimentKind,
     JointState,
     JointType,
-    ROSConfigError,
     ROSRuntimeError,
 )
 from openral_hal import UR5e_DESCRIPTION, UR5eHAL
@@ -121,20 +120,6 @@ def hal() -> UR5eHAL:
 # Keep only UR5e-specific tests here.
 
 
-class TestUR5eLifecycle:
-    def test_connect_loads_mujoco_model(self, hal: UR5eHAL) -> None:
-        """UR5e-specific: verify 6-DoF actuator count in menagerie XML."""
-        hal.connect()
-        try:
-            assert hal._connected is True
-            assert hal._model is not None
-            assert hal._data is not None
-            # 6-DoF UR5e
-            assert hal._model.nu == 6
-        finally:
-            hal.disconnect()
-
-
 # ── read_state ────────────────────────────────────────────────────────────────
 
 
@@ -147,11 +132,6 @@ class TestReadState:
         assert len(state.position) == 6
         assert len(state.velocity) == 6
         assert state.stamp_ns > 0
-
-    def test_initial_positions_are_zero(self, connected_hal: UR5eHAL) -> None:
-        state = connected_hal.read_state()
-        for q in state.position:
-            assert abs(q) < 1e-6
 
     def test_perception_starvation_warns_not_latch_when_old(self, monkeypatch) -> None:
         """A starved servicing gap warns once and returns live state — never latches.
@@ -176,20 +156,6 @@ class TestReadState:
 
 
 # ── send_action ───────────────────────────────────────────────────────────────
-
-
-class TestSendAction:
-    def test_rejects_wrong_joint_count(self, connected_hal: UR5eHAL) -> None:
-        """UR5e-specific: verify 6-joint contract."""
-        # 5 values for a 6-joint robot.
-        bad = Action(
-            control_mode=ControlMode.JOINT_POSITION,
-            horizon=1,
-            joint_targets=[[0.0] * 5],
-            stamp_ns=time.time_ns(),
-        )
-        with pytest.raises(ROSConfigError, match="6 joints"):
-            connected_hal.send_action(bad)
 
 
 # ── estop ─────────────────────────────────────────────────────────────────────
