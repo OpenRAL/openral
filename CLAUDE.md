@@ -100,7 +100,7 @@ Re-read this file if >1 day or >1 PR since last; check [`docs/decisions.md`](doc
 - [ ] Schemas: real fixture validates; on-disk `schema_version` bumped + migrator shipped for any backward-incompatible change (post-publish — no longer frozen at `"0.1"`).
 - [ ] Layer boundary crossed → decision recorded in the private management decision log.
 - [ ] Tests: unit + integration + sim where applicable; HIL if a HAL changed. No new mocks/stubs/smoke tests (§1.11).
-- [ ] The matching `docs/methods/` file updated for every added/renamed/removed/moved public symbol (signature + line number + layer section); `tools/refresh_methods_linenos.py --check` clean. Searched first.
+- [ ] The matching `docs/methods/` file updated for every added/renamed/removed/moved public symbol (signature + line number + layer section); `tools/refresh_methods_linenos.py --check --coverage` clean (runs in `just lint`). Searched first.
 - [ ] Docs updated in the same PR (READMEs, `docs/`, ADRs) — no follow-up deferrals.
 - [ ] Pre-existing errors fixed in a separate prior `fix(...)` commit.
 - [ ] Repo state map updated when a module is added/renamed/removed/status-flipped.

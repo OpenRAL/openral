@@ -18,10 +18,12 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
+import refresh_methods_linenos as _rml  # noqa: E402  # reason: needs the sys.path insert above
 from refresh_methods_linenos import (  # noqa: E402  # reason: needs the sys.path insert above
     _DIR_HEADING_RE,
     _MARKER_RE,
     _resolve_inline_path,
+    coverage_report,
     refresh_file,
 )
 
@@ -122,6 +124,59 @@ def test_inline_path_marker_points_at_its_definition(
 def test_refresh_is_idempotent_on_the_real_inventory() -> None:
     """`--check` must be clean, which also proves inline markers survive a rewrite."""
     for md in sorted((REPO_ROOT / "docs" / "methods").glob("*.md")):
-        changed, unresolved = refresh_file(md, check=True)
+        changed, unresolved, _documented = refresh_file(md, check=True)
         assert changed == 0, f"{md.name} has {changed} stale marker(s)"
         assert not unresolved, f"{md.name}: {unresolved}"
+
+
+@pytest.fixture
+def mini_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A throwaway repo root with one module, so the tool's REPO_ROOT can be redirected."""
+    for root in ("python", "packages", "tools"):
+        (tmp_path / root).mkdir()
+    mod = tmp_path / "python" / "pkg" / "mod.py"
+    mod.parent.mkdir()
+    mod.write_text(
+        "def foo() -> None: ...\n"
+        "\n"
+        "def bar() -> None: ...\n"
+        "\n"
+        "class Baz:\n"
+        "    def qux(self) -> None: ...\n"
+        "\n"
+        "def _hidden() -> None: ...\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(_rml, "REPO_ROOT", tmp_path)
+    return tmp_path
+
+
+def test_level4_subheading_keeps_the_file_section_open(mini_repo: Path) -> None:
+    """A `####` topical subheading must not silently drop the bullets after it."""
+    md = mini_repo / "inv.md"
+    md.write_text(
+        "### `python/pkg/mod.py`\n"
+        "- `foo() -> None` — first. (L1)\n"
+        "#### Topical subheading\n"
+        "- `bar() -> None` — stale marker on purpose. (L99)\n",
+        encoding="utf-8",
+    )
+    changed, unresolved, documented = refresh_file(md, check=True)
+    assert changed == 1
+    assert unresolved == []
+    assert documented[mini_repo / "python" / "pkg" / "mod.py"] == {"foo", "bar"}
+
+
+def test_marker_outside_any_file_section_is_reported(mini_repo: Path) -> None:
+    md = mini_repo / "inv.md"
+    md.write_text("### Prose heading\n- `foo() -> None` — orphan. (L1)\n", encoding="utf-8")
+    _changed, unresolved, _documented = refresh_file(md, check=True)
+    assert unresolved == ["inv.md:2: `(L…)` marker outside any source-file section"]
+
+
+def test_coverage_report_lists_public_symbols_without_an_entry(mini_repo: Path) -> None:
+    mod = mini_repo / "python" / "pkg" / "mod.py"
+    (gap,) = coverage_report({mod: {"foo"}})
+    assert gap == "python/pkg/mod.py: Baz, Baz.qux, bar"
+    (gap,) = coverage_report({})
+    assert gap.endswith("(no section): Baz, Baz.qux, bar, foo")

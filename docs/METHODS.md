@@ -21,7 +21,9 @@
 > IDL (per CLAUDE.md §1.3). When code drifts, the inventory drifts. Treat
 > a stale entry as a defect, not a source of truth. `(LNN)` line markers
 > are kept fresh with `python tools/refresh_methods_linenos.py`
-> (`--check` reports drift without writing).
+> (`--check` reports drift without writing; `--check --coverage` also lists
+> every public symbol under `python/`, `packages/`, `tools/` with no entry —
+> `just lint` runs it, so an undocumented symbol fails lint).
 >
 > **Format.** `name(args) -> ret` — first docstring line. `(LNN)` is the
 > source line number. Decorators are tagged in `[@…]`. Pydantic field
