@@ -1,0 +1,45 @@
+{
+  "schema_version": "0.1",
+  "source": {
+    "paper": "https://arxiv.org/abs/2506.18088",
+    "arxiv": "https://arxiv.org/abs/2506.18088",
+    "model_variant": "smolvla",
+    "evaluated_by": "OpenRAL:openral benchmark run",
+    "reproduced_locally": true,
+    "reproduction_planned": null,
+    "reproduction_cli": "openral benchmark run --suite robotwin --rskill rskills/smolvla-robotwin",
+    "table": null,
+    "status": "reproduced"
+  },
+  "benchmark": {
+    "name": "RoboTwin 2.0 — dual-arm (aloha-agilex)",
+    "dataset": null,
+    "protocol": "1 episodes per task, success_key=is_success, max_steps=300",
+    "robot": "aloha_agilex",
+    "simulator": "RoboTwin 2.0 (SAPIEN), aloha-agilex"
+  },
+  "eval_config": {
+    "n_episodes": 1,
+    "seeds": [
+      0
+    ],
+    "success_key": "is_success",
+    "max_steps": 300,
+    "vla_id": "smolvla",
+    "weights_uri": "rskills/smolvla-robotwin"
+  },
+  "results": {
+    "robotwin/lift_pot_success_rate": 0.0,
+    "robotwin/handover_block_success_rate": 0.0,
+    "robotwin/stack_blocks_two_success_rate": 0.0,
+    "robotwin/beat_block_hammer_success_rate": 0.0,
+    "robotwin/place_empty_cup_success_rate": 0.0,
+    "avg_success_rate": 0.0,
+    "n_tasks": 5,
+    "n_episodes_per_task": 1,
+    "n_episodes_total": 5,
+    "mean_step_latency_ms_avg": 3.8961650520795956
+  },
+  "baselines": {},
+  "trace_id": null
+}

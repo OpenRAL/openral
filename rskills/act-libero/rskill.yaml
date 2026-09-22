@@ -114,3 +114,6 @@ action_contract:
   dim: 7
   # LIBERO action space is 6-D OSC end-effector delta + gripper.
   representation: "delta_ee_6d_plus_gripper"
+
+benchmarks:
+  libero_spatial: 0.5
