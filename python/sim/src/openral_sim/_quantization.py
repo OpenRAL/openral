@@ -568,6 +568,33 @@ def load_prequantized_state_for_rskill(  # noqa: PLR0911  # reason: linear early
     )
 
 
+def resolve_weights_file(repo_id: str, *, filename: str = "model.safetensors") -> str:
+    """Local path of ``filename`` for ``repo_id``, whether that is a directory or a Hub repo.
+
+    ``resolve_rskill_to_hf_with_revision`` hands adapters a *directory* for an
+    rSkill installed with ``openral rskill install`` (the snapshot under
+    ``~/.cache/openral/rskills``) and a bare repo id otherwise. Every weights
+    read that went straight to ``hf_hub_download`` broke on the directory
+    case; this is the one place that tells the two apart. A directory that
+    lacks the file falls through to the cached-first Hub download, so a
+    mixed layout still resolves.
+    """
+    from pathlib import Path
+
+    candidate = Path(repo_id)
+    if candidate.is_dir() and (candidate / filename).is_file():
+        return str(candidate / filename)
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
+    from openral_rskill._vla_core import hf_download_cached_first
+
+    return str(
+        hf_download_cached_first(
+            hf_hub_download, LocalEntryNotFoundError, repo_id=repo_id, filename=filename
+        )
+    )
+
+
 def peek_safetensors_keys(repo_id: str, *, filename: str = "model.safetensors") -> set[str] | None:
     """Return the key set of a safetensors file without loading tensors.
 
@@ -598,24 +625,13 @@ def peek_safetensors_keys(repo_id: str, *, filename: str = "model.safetensors") 
         to a full ``reset_parameters`` walk).
     """
     try:
-        from huggingface_hub import hf_hub_download
-        from huggingface_hub.errors import (
-            EntryNotFoundError,
-            LocalEntryNotFoundError,
-            RepositoryNotFoundError,
-        )
-        from openral_rskill._vla_core import hf_download_cached_first
+        from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
         from safetensors import safe_open
     except ImportError:  # pragma: no cover
         return None
 
     try:
-        weights_path = hf_download_cached_first(
-            hf_hub_download,
-            LocalEntryNotFoundError,
-            repo_id=repo_id,
-            filename=filename,
-        )
+        weights_path = resolve_weights_file(repo_id, filename=filename)
     except (EntryNotFoundError, RepositoryNotFoundError, OSError):
         return None
 
