@@ -28,16 +28,33 @@ _Inference runner Protocol. The structural contract every runner shape satisfies
 _rclpy → OTLP bridge rendering the octomap occupied-voxel cloud (`/octomap_point_cloud_centers`) as a robot-frame oblique "chase-view" PNG for the dashboard `world.pointcloud` card. Pure render core is rclpy-free (tested without ROS)._
 
 - module constant `WORLD_CLOUD_TOPIC_DEFAULT = "/octomap_point_cloud_centers"` — default occupied-voxel-centers PointCloud2 topic (octomap_server). (L48)
+- module constant `_DEFAULT_PUBLISH_INTERVAL_S = 1.0` (L53) — throttle so a busy octomap run doesn't flood the OTLP pipeline.
+- module constant `_DROP_WARN_BURST = 3` (L57) — oversize-cloud warnings emitted verbosely before dropping to a rate-limited cadence.
+- module constant `_DROP_WARN_RATE = 100` (L58) — the 1-in-N rate after `_DROP_WARN_BURST` is exceeded.
+- module constant `_CAM_BACK_M = 2.2` (L63) — oblique chase-camera offset behind the robot in `base_link`.
+- module constant `_CAM_UP_M = 1.6` (L64) — oblique chase-camera offset above the robot in `base_link`.
+- module constant `_CAM_PITCH_DOWN_RAD = 0.45` (L65) — oblique chase-camera downward tilt.
+- module constant `_FOCAL_PX = 320.0` (L66) — chase-camera focal length in pixels, tuned so a ~2 m local box fills a 480x360 frame.
+- module constant `_MIN_CAM_DEPTH_M = 1e-3` (L68) — camera-forward depth below which a point is treated as behind the lens.
+- module constant `_BG_RGB = (16, 20, 28)` (L70) — chase-view canvas background colour.
+- module constant `_ORIGIN_RGB = (240, 240, 255)` (L71) — chase-view origin-marker colour.
 - `crop_points_to_box(points, *, xy_m, z_min, z_max) -> NDArray[float32]` — keep `(N,3)` points inside the local box around base_link. (L74)
 - `distance_to_rgb(dist_m, *, range_max_m) -> tuple[int,int,int]` — near=warm→far=cool color ramp. (L90)
 - `encode_world_cloud_png(points_base, *, range_max_m=4.0, image_w=480, image_h=360, xy_m=2.0, z_min=-0.2, z_max=2.0) -> str` — crop→oblique-pinhole project→rasterize→base64 PNG. Pure; PIL-only. (L137)
 - `world_cloud_span_attributes(*, points_base, frame_id, source_node, range_max_m, xy_m, z_min, z_max) -> dict[str,Any]` — assemble the `openral.world_cloud.*` span attributes. (L210)
-- `class WorldCloudBridge` — constructed against a host `rclpy.node.Node`; subscribes the voxel cloud, TF2-transforms into `base_frame` (defaults to `base_link`; `compose_runtime` passes the **manifest's** `RobotDescription.base_frame`, since only a mobile base is called `base_link` — a fixed arm names its own root and the default silently dropped every cloud on a TF lookup), throttles to 1 Hz, emits a `world.pointcloud` span. Mirrors `SlamMapBridge`. `latched: bool = True` picks the subscription durability: `True` mirrors octomap's TRANSIENT_LOCAL centers topic; `False` (the mono visual-SLAM deploy) is VOLATILE for nvblox's un-latched ESDF cloud — a TRANSIENT_LOCAL sub is incompatible with a VOLATILE pub and receives nothing. An unreadable frame (empty/field-less cloud → `read_points_numpy` asserts) is warned + skipped, never crashing the shared executor. `destroy()` releases the subscription. (L256)
+- `class WorldCloudBridge` — constructed against a host `rclpy.node.Node`; subscribes the voxel cloud, TF2-transforms into `base_frame` (defaults to `base_link`; `compose_runtime` passes the **manifest's** `RobotDescription.base_frame`, since only a mobile base is called `base_link` — a fixed arm names its own root and the default silently dropped every cloud on a TF lookup), throttles to 1 Hz, emits a `world.pointcloud` span. Mirrors `SlamMapBridge`. `latched: bool = True` picks the subscription durability: `True` mirrors octomap's TRANSIENT_LOCAL centers topic; `False` (the mono visual-SLAM deploy) is VOLATILE for nvblox's un-latched ESDF cloud — a TRANSIENT_LOCAL sub is incompatible with a VOLATILE pub and receives nothing. An unreadable frame (empty/field-less cloud → `read_points_numpy` asserts) is warned + skipped, never crashing the shared executor. (L256)
+  - `destroy() -> None` (L333) — Releases the ROS subscription; safe to call multiple times.
 
 ### `python/runner/src/openral_runner/dataset_recorder_bridge.py`
 _Bus-attached LeRobot/rosbag recorder for the deploy graph (mirrors `WorldCloudBridge`)._
 
-- `class DatasetRecorderBridge(node, *, robot, aggregator, recorder, output_path=None, action_topic="/openral/candidate_action", episode_topic="/openral/episode")` — constructed against the shared runtime `rclpy.node.Node`; subscribes `Episode` (drives `recorder.episode_start/end`) + `ActionChunk` (RELIABLE depth 100). Per inference tick it joins the shared `WorldStateAggregator` snapshot (proprio + camera `image_frames`) with the tick's action, reassembling multi-slot chunks into one full action vector — grouped by `ActionChunk.tick_index` (1-based; slot-cycle on `(control_mode, ee_name)` is the fallback when `tick_index==0`). Writes via `Rosbag2Sink`. A reassembled shape the recorder rejects (vs a defined `action_spec.dim`) is logged, not raised. Logs `dataset_recorder.armed` (with `output_path`) at construction and, at `destroy()`, `dataset_recorder.summary` (episode + frame totals) or — when no episode marker ever fired, i.e. no rSkill executed — a `dataset_recorder.nothing_recorded` warning, so an empty recording is never silent. `destroy()` flushes the pending tick, closes the episode, finalizes the bag, releases the subscriptions; idempotent. (L86)
+- module constant `_PHASE_START = 0` (L59) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
+- module constant `_PHASE_END = 1` (L60) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
+- module constant `ACTION_TOPIC_DEFAULT = "/openral/candidate_action"` (L62) — default `ActionChunk` topic.
+- module constant `EPISODE_TOPIC_DEFAULT = "/openral/episode"` (L63) — default `Episode` marker topic.
+- `_sensor_name_to_slot(description) -> dict[str, str]` (L66) — Maps each RGB sensor name to its VLA slot (`camera1` / `camera2` / ...); the canonical copy — imported cross-package by `openral_rskill_ros.rskill_runner_node` as `_sensor_name_to_vla_slot` (`openral_rskill_ros` depends on `openral_runner`; the reverse direction stays forbidden per CLAUDE.md §3), so this private helper is de-facto API.
+- `class DatasetRecorderBridge(node, *, robot, aggregator, recorder, output_path=None, action_topic="/openral/candidate_action", episode_topic="/openral/episode")` — constructed against the shared runtime `rclpy.node.Node`; subscribes `Episode` (drives `recorder.episode_start/end`) + `ActionChunk` (RELIABLE depth 100). Per inference tick it joins the shared `WorldStateAggregator` snapshot (proprio + camera `image_frames`) with the tick's action, reassembling multi-slot chunks into one full action vector — grouped by `ActionChunk.tick_index` (1-based; slot-cycle on `(control_mode, ee_name)` is the fallback when `tick_index==0`). Writes via `Rosbag2Sink`. A reassembled shape the recorder rejects (vs a defined `action_spec.dim`) is logged, not raised. Logs `dataset_recorder.armed` (with `output_path`) at construction and, at `destroy()`, `dataset_recorder.summary` (episode + frame totals) or — when no episode marker ever fired, i.e. no rSkill executed — a `dataset_recorder.nothing_recorded` warning, so an empty recording is never silent. (L86)
+  - `destroy() -> None` (L183) — Flushes the pending tick, closes any open episode (marking it a failure), finalizes the recorder, releases the subscriptions; idempotent.
 
 ### `python/runner/src/openral_runner/sensor_reader.py`
 _``SensorReader`` Protocol — seam between per-sensor capture backends and the inference runner._
@@ -53,13 +70,13 @@ _``SensorReader`` Protocol — seam between per-sensor capture backends and the 
 _``OpenCVThreadSensorReader`` — default backend. Mirrors lerobot's per-camera-thread pattern._
 
 - module constant `_COLOR_NDIM = 3` — Number of dims for an OpenCV colour frame (`(H, W, 3)`); mono is `(H, W)`. Used to derive `SensorFrame.channels`. (L39)
-- module constant `_CROP_LEN = 4` — A crop is `(x, y, width, height)`.
+- module constant `_CROP_LEN = 4` (L41) — A crop is `(x, y, width, height)`.
 - `_validated_crop(sensor_id, crop) -> tuple[int, int, int, int] | None` — Normalise a crop from a tuple **or a YAML list** (scene `backend_params` arrive as lists) and reject a wrong length / negative origin / non-positive extent at construction, before any I/O.
 - `class OpenCVThreadSensorReader` — Per-camera background-thread reader on top of `cv2.VideoCapture`. Imports `cv2` lazily inside `open()` (the `opencv` optional-extra). (L84)
   - `__init__(*, sensor_id, device, fps=30, width=None, height=None, encoding=BGR8, crop=None, default_max_age_ms=100)` — Stash config; rejects non-positive `fps` / `default_max_age_ms` and a malformed `crop`.
   - `crop` exists for **side-by-side stereo**: a ZED Mini streams both lenses in one 1344×376 UVC frame, while a policy trained on the left lens expects 672×376. Handing it the doubled-width frame is silently out-of-distribution rather than an error, because the shape is still a valid image — so the slice is declared in the sensor binding, next to the device it belongs to. Applied in the capture thread (numpy view; the copy happens at `tobytes()` in `read_latest`), so the hot path pays nothing.
   - `_apply_crop(frame) -> frame | None` — Returns the sub-rectangle, or `None` (frame dropped + `crop_does_not_fit` logged at error) if the device changed mode mid-stream. It does **not** raise: killing the capture thread would leave the reader permanently stale with the reason only on stderr.
-  - `open() -> None` — Open `cv2.VideoCapture`, pin `cv2.setNumThreads(1)` (lerobot parity), validate any `crop` against the mode the device **actually negotiated** (`cap.set` is best-effort), spawn daemon thread. Idempotent. A crop that does not fit raises here, so a deploy refuses to start rather than starting blind.
+  - `open() -> None` (L161) — Open `cv2.VideoCapture`, pin `cv2.setNumThreads(1)` (lerobot parity), validate any `crop` against the mode the device **actually negotiated** (`cap.set` is best-effort), spawn daemon thread. Idempotent. A crop that does not fit raises here, so a deploy refuses to start rather than starting blind.
   - `close() -> None` — Stop event, join thread (2 s timeout), release capture. Idempotent. (L218)
   - `__enter__() / __exit__()` — Context-manager sugar; calls `open` / `close`. (L236)
   - `read_latest(max_age_ms: int | None = None) -> SensorFrame` — Lock-protected snapshot of the `_latest_frame` slot; constructs a `SensorFrame` with inlined raw bytes; raises `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on closed reader. (L247)
@@ -68,39 +85,53 @@ _``OpenCVThreadSensorReader`` — default backend. Mirrors lerobot's per-camera-
 ### `python/runner/src/openral_runner/backends/ros2_image.py`
 _``Ros2ImageSensorReader`` — the backend for streams a device cannot emit.  A StereoLabs ZED presents ONE side-by-side UVC node over USB; its depth is computed on the host GPU by the ZED SDK and only ever **published**.  Same for RealSense aligned depth.  The catalog's `stereolabs/zed_mini` bundle has always declared a depth stream; before this backend nothing could subscribe to it, so the declaration was undeliverable._
 
-- module constant `_DIRECT_ENCODINGS` — `sensor_msgs/Image.encoding` → `(FrameEncoding, numpy dtype, channels)` for `rgb8` / `bgr8` / `mono8` / `8UC1` / `8UC3` / `mono16` / `16UC1`. Anything not listed is refused **by name**, not misread as pixels.
-- module constant `_FLOAT_DEPTH_ENCODINGS = {"32FC1"}` — float metre depth (what the ZED SDK publishes), converted on the way in.
-- module constant `_DEPTH16_MAX_MM = 65535` — the uint16-millimetre ceiling of `FrameEncoding.DEPTH16`.
-- `_rows(raw, dtype, msg, height, width, channels) -> NDArray` — Unpacks an `Image` payload into pixels **honouring `msg.step`**, the published row stride. It equals the packed row length only when the publisher packs rows tightly: Isaac/NITROS hand out pitch-aligned buffers and an ROI crop keeps its parent's stride, and reading such a payload as `height x width` raises — which `_on_image` downgrades to a WARN, so the sensor goes permanently `ROSPerceptionStale` and reads like a dead camera. `step` is trusted only when it is at least the packed length, divides the item size, and the payload holds `height` such rows; otherwise the packed stride is used, so a publisher with a wrong `step` fails as before rather than silently yielding a skewed image.
-- `_depth32f_to_depth16(metres) -> NDArray[uint16]` — float32 metres → uint16 millimetres. `FrameEncoding` has no float-depth member and every downstream consumer (nvblox / octomap / the world-cloud bridge) speaks uint16 mm, so the conversion happens once here. Non-finite samples (`NaN` = a stereo matcher's "no match", `inf` = beyond range) and anything outside `[0, 65.535] m` become **0**, the ROS "no reading" value — the fail-safe direction, since a wrapped `uint16` would report a confident, wrong, *near* distance for something far away.
-- `class Ros2ImageSensorReader` — Subscribes to a driver topic, keeps the newest message in a one-slot buffer, serves it through the same non-blocking `read_latest` staleness contract as every other backend. Owns no device.
-  - `__init__(*, sensor_id, topic, default_max_age_ms=100, reliability="best_effort", qos_depth=5, node=None)` — Config only; rejects an empty `topic` and an unknown `reliability`. Node ownership mirrors `SensorRosPublisher`: a composed runtime injects its node, a standalone caller gets a private one.
-  - QoS defaults to the **sensor data** class (CLAUDE.md §2: `BEST_EFFORT`, `VOLATILE`, `KEEP_LAST=5`), which is also the compatible-in-both-directions choice — a `BEST_EFFORT` subscriber matches a `RELIABLE` publisher, while a `RELIABLE` subscriber receives **nothing** from a `BEST_EFFORT` one, a mismatch that reads exactly like a dead camera. `read_latest`'s no-frame-yet message names that trap.
-  - `open() / close()` — Create/destroy the subscription; when the reader owns its node it also spins a `SingleThreadedExecutor` daemon thread and only calls `rclpy.shutdown()` if it was the one that init'd. Both idempotent — `close` guards on each resource it releases rather than on `is_open`, which `open` sets **last**, so an `open` that failed after creating the node (or after `rclpy.init`) is still cleaned up. `rclpy` / `sensor_msgs` are lazy-imported so the runner stays importable without ROS.
-  - `read_latest(max_age_ms=None) -> SensorFrame` — Lock-protected snapshot; `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on a closed reader. Frames carry inlined `data` (**not** a `topic` reference) — every consumer needs the bytes.
-  - `_on_image(msg)` — Subscription callback. Conversion failures are counted + logged, never raised: this runs on the executor thread, where an exception would kill the spin loop and silently stop the camera. A stopped reader surfaces through the staleness contract instead.
-  - `_byte_order(msg)` — Honours `Image.is_bigendian`; a 16-bit depth image from a big-endian publisher read little-endian is byte-swapped garbage.
+- module constant `_DIRECT_ENCODINGS` (L57) — `sensor_msgs/Image.encoding` → `(FrameEncoding, numpy dtype, channels)` for `rgb8` / `bgr8` / `mono8` / `8UC1` / `8UC3` / `mono16` / `16UC1`. Anything not listed is refused **by name**, not misread as pixels.
+- module constant `_ALPHA_ENCODINGS: Final[dict[str, str]] = {"bgra8": "bgr8", "rgba8": "rgb8"}` (L76) — alpha-channel encodings accepted by dropping the alpha byte to their `_DIRECT_ENCODINGS` base.
+- module constant `_FLOAT_DEPTH_ENCODINGS = {"32FC1"}` (L81) — float metre depth (what the ZED SDK publishes), converted on the way in.
+- module constant `_DEPTH16_MAX_MM = 65535` (L85) — the uint16-millimetre ceiling of `FrameEncoding.DEPTH16`.
+- `_depth32f_to_depth16(metres) -> NDArray[uint16]` (L88) — float32 metres → uint16 millimetres. `FrameEncoding` has no float-depth member and every downstream consumer (nvblox / octomap / the world-cloud bridge) speaks uint16 mm, so the conversion happens once here. Non-finite samples (`NaN` = a stereo matcher's "no match", `inf` = beyond range) and anything outside `[0, 65.535] m` become **0**, the ROS "no reading" value — the fail-safe direction, since a wrapped `uint16` would report a confident, wrong, *near* distance for something far away.
+- `class Ros2ImageSensorReader` (L118) — Subscribes to a driver topic, keeps the newest message in a one-slot buffer, serves it through the same non-blocking `read_latest` staleness contract as every other backend. Owns no device.
+  - `__init__(*, sensor_id, topic, default_max_age_ms=100, reliability="best_effort", qos_depth=5, node=None)` (L146) — Config only; rejects an empty `topic` and an unknown `reliability`. Node ownership mirrors `SensorRosPublisher`: a composed runtime injects its node, a standalone caller gets a private one. QoS defaults to the **sensor data** class (CLAUDE.md §2: `BEST_EFFORT`, `VOLATILE`, `KEEP_LAST=5`), which is also the compatible-in-both-directions choice — a `BEST_EFFORT` subscriber matches a `RELIABLE` publisher, while a `RELIABLE` subscriber receives **nothing** from a `BEST_EFFORT` one, a mismatch that reads exactly like a dead camera. `read_latest`'s no-frame-yet message names that trap.
+  - `open() -> None` (L189) — Create the subscription; when the reader owns its node it also spins a `SingleThreadedExecutor` daemon thread. Idempotent — sets `is_open` **last**, so a failure after creating the node (or after `rclpy.init`) is still cleaned up.
+  - `close() -> None` (L252) — Destroy the subscription and only call `rclpy.shutdown()` if this reader initialised it. Idempotent — guards on each resource it releases rather than on `is_open`.
+  - `read_latest(max_age_ms=None) -> SensorFrame` (L301) — Lock-protected snapshot; `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on a closed reader. Frames carry inlined `data` (**not** a `topic` reference) — every consumer needs the bytes.
+  - `_on_image(msg) -> None` (L343) — Subscription callback. Conversion failures are counted + logged, never raised: this runs on the executor thread, where an exception would kill the spin loop and silently stop the camera. A stopped reader surfaces through the staleness contract instead.
+- `_rows(raw, dtype, msg, height, width, channels) -> NDArray` (L427) — Unpacks an `Image` payload into pixels **honouring `msg.step`**, the published row stride. It equals the packed row length only when the publisher packs rows tightly: Isaac/NITROS hand out pitch-aligned buffers and an ROI crop keeps its parent's stride, and reading such a payload as `height x width` raises — which `_on_image` downgrades to a WARN, so the sensor goes permanently `ROSPerceptionStale` and reads like a dead camera. `step` is trusted only when it is at least the packed length, divides the item size, and the payload holds `height` such rows; otherwise the packed stride is used, so a publisher with a wrong `step` fails as before rather than silently yielding a skewed image.
+- `_byte_order(msg) -> str` (L468) — Honours `Image.is_bigendian`; a 16-bit depth image from a big-endian publisher read little-endian is byte-swapped garbage.
 
 ### `python/runner/src/openral_runner/backends/galaxea_a1_camera_bridge.py`
 _Real-deploy reader for the public A1 Runtime paired-frame bridge. It never
 opens a camera device or imports the Runtime checkout; the A1 camera monitor
 stays the only RealSense owner._
 
-- `class GalaxeaA1CameraBridgeReader` — Reads either the `front` or `wrist`
+- module constant `_PROTOCOL_VERSION = 2` — wire version stamped on every request to the camera-bridge session. (L22)
+- module constant `_SOCKET_NAME = "a1-camera-bridge.sock"` — the shared session's Unix-socket name under `runtime_socket_path`. (L23)
+- module constant `_MAX_RESPONSE_BYTES = 128 * 1024 * 1024` — response-size ceiling passed to `RuntimeLocalClient`. (L24)
+- module constant `_SHA256_HEX_LENGTH = 64` — expected length of the session's `contract_digest`. (L25)
+- module constant `_COLOR_NDIM = 3` — expected rank of a `*_color_shape` tuple. (L26)
+- module constant `_COLOR_CHANNELS = 3` — expected channel count of a `*_color_shape` tuple. (L27)
+- `class GalaxeaA1CameraBridgeReader` (L187) — Reads either the `front` or `wrist`
   member of a native versioned Unix-socket session and returns an inline RGB8
   `SensorFrame`. The client discovers and pins the Runtime contract digest and
   camera shapes before reading; stale pairs, wrong shapes, and drift fail
   explicitly.
+  - `open() -> None` — Acquire the shared Runtime camera connection; idempotent. (L207)
+  - `close() -> None` — Release this view and close the connection after the last owner; idempotent. (L214)
+  - `read_latest(max_age_ms: int | None = None) -> SensorFrame` — Return the latest source-timestamped RGB frame. (L223)
 
 ### `python/runner/src/openral_runner/backends/galaxea_a1_ipc.py`
 _Shared native transport for public A1 Runtime local services._
 
-- `runtime_socket_path(name) -> Path` — Resolves a private per-user Runtime
+- module constant `_PACKET_LENGTH = struct.Struct("!I")` — the length-prefix codec shared by send/receive. (L16)
+- `runtime_socket_path(name) -> Path` (L19) — Resolves a private per-user Runtime
   endpoint from `A1_PROCESS_STATE_ROOT` or the standard runtime directory.
-- `class RuntimeLocalClient` — Bounded, synchronous length-prefixed MessagePack
+- `class RuntimeLocalClient` (L32) — Bounded, synchronous length-prefixed MessagePack
   client with typed connect-time and request-time failures.
-- `encode_array(value) -> dict[str, Any]` / `decode_array(...) -> NDArray` —
-  Exact shape/dtype/data ndarray wire helpers.
+  - `connect(*, timeout_s: float) -> None` — Connect to the Runtime-owned Unix socket. (L50)
+  - `call(request: dict[str, Any], *, timeout_s: float) -> dict[str, Any]` — Perform one bounded request and require an explicit success reply. (L68)
+  - `close() -> None` — Close the local connection idempotently. (L99)
+- `encode_array(value) -> dict[str, Any]` (L106) — Encode one contiguous ndarray with an explicit shape and dtype.
+- `decode_array(value, *, shape, dtype, label) -> NDArray` (L116) — Decode an exact ndarray payload and reject protocol drift.
 
 ### `python/runner/src/openral_runner/backends/__init__.py`
 _Per-backend `SensorReader` implementations. Default `OpenCVThreadSensorReader` is always available; `GStreamerSensorReader` gates on PyGObject and `Ros2ImageSensorReader` on a ROS 2 install (both lazy-imported at `open()`)._
@@ -114,6 +145,13 @@ _GStreamer pipeline-string builder + platform detection. Pure-Python — does **
 - `TEE_NAME: Final[str]` (L56) — `"openral_cam_tee"`. Name of the per-camera `tee` — the **perception-bus attach point** the runtime `TeeManager` looks up via `Gst.Bin.get_by_name` to request pads for reasoner-activated consumers at runtime.
 - `LEAKY_BRANCH_QUEUE: Final[str]` (L63) — `"queue leaky=downstream max-size-buffers=2"`. The single definition of the per-branch isolation policy, shared by the static builder and the runtime `TeeManager`.
 - `leaky_branch(elements, *, tee_name=TEE_NAME) -> str` (L66) — Returns one `tee` branch `<tee>. ! <leaky queue> ! <elements>`. The shared branch-construction primitive so the static builder and the dynamic `TeeManager` build branches identically.
+- module constant `_DEFAULT_APPSINK_NAME: Final[str] = "bh_sink"` (L48) — default name attached to the trailing appsink so the reader can look it up via `Gst.Bin.get_by_name`.
+- module constant `_TEGRA_RELEASE_PATH: Final[Path] = Path("/etc/nv_tegra_release")` (L92) — path read to identify a Tegra host (Jetson / Spark).
+- module constant `_GST_INSPECT_TIMEOUT_S: Final[float] = 5.0` (L97) — timeout for the `gst-inspect-1.0` probe.
+- module constant `_NVVIDEOCONVERT: Final[str] = "nvvideoconvert"` (L101) — the DeepStream NVMM colour-convert element.
+- module constant `_NVVIDCONV: Final[str] = "nvvidconv"` (L102) — the Tegra / L4T multimedia-stack NVMM colour-convert element.
+- module constant `_VIDEOCONVERT: Final[str] = "videoconvert"` (L103) — the stock system-memory / CPU colour-convert element.
+- module constant `_NVVIDCONV_BGR_BRIDGE_FORMAT: Final[str] = "BGRx"` (L107) — the closest packed format `nvvidconv` advertises; bridged to `BGR` via `bgr_convert_chain`.
 - `class PipelineSpec(BaseModel)` (L167) — Validated description of a GStreamer ingest pipeline. Fields: `source, device, width, height, fps, encoded, jpeg, enable_nvmm, enable_ros_tee, enable_event_tee, appsink_name, ros_appsink_name, event_appsink_name, event_rate_hz, max_buffers`. The three event-tee fields were added, along with `jpeg` (MJPG UVC cameras — USB-only, exclusive with `encoded`); the validator on `event_appsink_name` enforces valid GStreamer element names.
 - `class Platform(str, Enum)` (L110) — `TEGRA | NVIDIA_DEEPSTREAM | NVIDIA_DESKTOP | CPU_ONLY`. `NVIDIA_DEEPSTREAM` is the x86 `ds-on` image: the main reader pipeline goes NVMM-native (`nvjpegdec` decodes MJPG straight into NVMM, `nvvideoconvert` converts on-GPU, appsink negotiates `memory:NVMM` RGBA).
 - `class Source(str, Enum)` (L143) — `USB | CSI | RTSP | FILE | TESTSRC`.
@@ -130,30 +168,85 @@ _GStreamer pipeline-string builder + platform detection. Pure-Python — does **
 - `_build_convert(spec, platform) -> str` (L648) — The policy leg's conversion stage: the bare element on the NVMM path (`NV12`/`RGBA` are on its own src template), `bgr_convert_chain(...)` on the system-memory `BGR` path.
 - `_lift_convert(platform) -> str` (L751) — The chain a tee leg uses to lift NVMM → system-memory BGR: `_platform_convert_element` passed through `bgr_convert_chain`, so Tegra legs bridge via `BGRx` while DeepStream legs stay direct-to-`BGR`.
 
+### `python/runner/src/openral_runner/backends/gstreamer/reader.py`
+_GStreamer-backed `SensorReader` (CPU appsink path + NVMM zero-copy path). Mirrors the latest-only contract of `OpenCVThreadSensorReader`. Imports `gi.repository` at module load (the `gstreamer` extra); `Gst.init` runs immediately after the `gi` import, before any other import, to avoid a Fast-DDS/GStreamer thread-init SIGSEGV (PR I/8)._
+
+- module constant `_BUS_POLL_TIMEOUT_NS: Final[int] = 100_000_000` (L69) — bus poll timeout (100 ms) when listening for ERROR / EOS.
+- module constant `_DEFAULT_MAX_AGE_MS: Final[int] = 100` (L72) — default staleness budget; matches the OpenCV reader default.
+- module constant `_GST_FORMAT_TO_ENCODING: Final[dict[str, FrameEncoding]]` (L78) — maps GStreamer caps `format=...` (`BGR`/`RGB`/`GRAY8`) to `FrameEncoding` for the CPU path; NV12 is deliberately absent (handled by the NVMM path instead).
+- `class GStreamerSensorReader` (L85) — `SensorReader` backed by a GStreamer pipeline; construct from an explicit `pipeline=` string or a generated `spec=` (`PipelineSpec`). CPU path delivers `SensorFrame(data=bytes)`; NVMM/CUDA zero-copy populates `handle` + `encoding` ∈ `{CUDA_NV12, CUDA_RGBA}`.
+  - `open() -> None` (L200) — Initialise GStreamer, parse the pipeline, start the ROS tee (if enabled) and the bus-drain thread, transition to PLAYING. Idempotent.
+  - `close() -> None` (L301) — Stop the ROS publisher (if any), tear down the pipeline, join the bus thread, release the latched frame/handle. Idempotent.
+  - `__enter__() / __exit__()` (L333) — Context-manager sugar; calls `open` / `close`.
+  - `read_latest(max_age_ms: int | None = None) -> SensorFrame` (L349) — Non-blocking snapshot of the latched frame; raises `ROSRuntimeError` on a bus-reported error, `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on a closed reader.
+  - `_start_ros_publisher()` (L266) — Look up the `ros_sink` appsink and start a `RosImagePublisher`; tears the pipeline back down with an actionable `ROSConfigError` if `rclpy` is unavailable.
+  - `_on_new_sample(appsink) -> int` (L430) — Streaming-thread callback; branches on `memory:NVMM` caps features to the zero-copy or CPU handler.
+  - `_handle_cpu_buffer(buffer, structure) -> int` (L459) — Map → copy → latch `data`; unsupported format latches a bus error.
+  - `_handle_nvmm_buffer(buffer, structure) -> int` (L501) — Map → wrap as an `NvBufSurfaceHandle` (lazy `openral_pro_trt.nvbufsurface` import) → DtoD-mirror into a reader-owned `StableSurfaceMirror` → latch `handle`; an absent/unloadable NVMM backend latches a bus error rather than silently falling back.
+  - `_bus_loop()` (L608) — Background thread draining the GStreamer bus for ERROR / EOS.
+  - `_teardown_pipeline()` (L640) — Drop the pipeline and join the bus thread; shared by `close()` and `open()`'s rollback path.
+  - `_wrap_in_pipeline(element) -> Gst.Pipeline` (L652) [@staticmethod] — Wraps a bare `Gst.Element` from `Gst.parse_launch` in a `Pipeline` bin (single-element strings only).
+- module constant `_GST_INIT_LOCK` (L665) — one-shot-init guard lock.
+- module constant `_GST_INITIALISED` (L666) — one-shot-init guard flag.
+- `_ensure_gst_initialised() -> None` (L669) — Calls `Gst.init` exactly once per process, thread-safely.
+
+### `python/runner/src/openral_runner/backends/gstreamer/ros_tee.py`
+_ROS 2 image-publisher tee for `GStreamerSensorReader`. Republishes the `ros_sink` appsink branch as `sensor_msgs/Image` on a configurable topic, independently rate-limited from the inference loop. `rclpy` is lazy-imported inside `start()` so the module is import-safe without a sourced ROS env._
+
+- module constant `_DEFAULT_QOS_DEPTH: Final[int] = 5` (L47) — default QoS depth for the image publisher (mirrors gscam2's shallow, `BEST_EFFORT`-friendly default).
+- `class RosImagePublisher` (L50) — `__init__(*, sensor_id, appsink, topic, rate_hz=None, node_name=None, qos_depth=_DEFAULT_QOS_DEPTH)` — validates `topic` is absolute and `rate_hz` is positive or `None`; no ROS I/O until `start`.
+  - `is_started` [@property] (L105) — `True` between `start` and `stop`.
+  - `start() -> None` (L109) — Initialise rclpy (if needed), create the `sensor_msgs/Image` publisher (`BEST_EFFORT`+`VOLATILE`+`KEEP_LAST`), hook the appsink; raises `RuntimeError` if `rclpy` is unavailable.
+  - `stop() -> None` (L158) — Disconnect the signal, destroy the publisher, shut down rclpy if this instance initialised it. Idempotent.
+  - `_on_new_sample(appsink) -> int` (L183) — Rate-gate → map → build `sensor_msgs/Image` → publish.
+  - `_claim_rate_slot() -> bool` (L219) — Monotonic-clock token gate enforcing `rate_hz`.
+  - `_extract_image_payload(appsink, gst) -> tuple[bytes, int, int, str] | None` (L234) — Pull the latest sample; `None` on malformed sample / unsupported format / map failure.
+- `_gst_format_to_ros_encoding(gst_format) -> str | None` (L276) — Maps a GStreamer caps `format` (`BGR`/`RGB`/`GRAY8`) to a ROS `Image.encoding` (`bgr8`/`rgb8`/`mono8`).
+
 ### `python/runner/src/openral_runner/backends/gstreamer/perception_tee.py`
 _Perception event tee for `GStreamerSensorReader`. Pulls frames from the event leg's `appsink`, runs `EventDetector`s, publishes `openral_msgs/PromptStamped` on `/openral/perception/<kind>`. `rclpy` lazy-imported in `start()` so the module stays import-safe on hosts without a sourced ROS env._
 
 - module constant `TOPIC_PREFIX: Final[str] = "/openral/perception"` (L56) — Fixed value; full topic is `f"{TOPIC_PREFIX}/{detector.kind}"`.
-- `class EventDetector(Protocol)` (L69) — `kind: str`, `detect(frame_bgr, width, height, sensor_id) -> PerceptionEventMetadata | None`, `summarise(metadata) -> str`.
+- module constant `_DEFAULT_QOS_DEPTH: Final[int] = 10` (L61) — default QoS depth for the per-kind `PromptStamped` publisher (`BEST_EFFORT`+`VOLATILE`+`KEEP_LAST`).
+- module constant `_DEFAULT_RATE_HZ: Final[float] = 5.0` (L66) — default per-detector token-bucket rate cap.
+- `class EventDetector(Protocol)` (L69) — `kind: str`.
+  - `detect(frame_bgr, width, height, sensor_id) -> PerceptionEventMetadata | None` (L88) — Run one detection pass; `None` means no event this frame.
+  - `summarise(metadata) -> str` (L97) — Human-readable `PromptStamped.text` for `metadata`.
 - `class MotionDetector` (L101) — Pure-Python frame-diff motion detector over a BGR appsink (BT.601 luma, mean abs delta). Numpy lazy-imported in `detect`. `__init__(*, threshold=0.02, downsample=1)`.
+  - `detect(frame_bgr, width, height, sensor_id) -> PerceptionEventMetadata | None` (L139) — Mean abs luma delta vs the previous frame; emits `MotionMetadata` on threshold cross, with a tight axis-aligned bbox around moving pixels.
+  - `summarise(metadata) -> str` (L195) — One-line motion-event summary.
 - `class SceneChangeDetector` (L209) — Grayscale-histogram scene-change detector (`chisqr_alt` distance, 32 bins). `__init__(*, threshold=0.5)`.
+  - `detect(frame_bgr, width, height, sensor_id) -> PerceptionEventMetadata | None` (L243) — Chi-square-alt distance between consecutive 32-bin grayscale histograms; emits `SceneChangeMetadata` on threshold cross.
+  - `summarise(metadata) -> str` (L286) — One-line scene-change-event summary.
 - `class _TokenBucket` (L296) — Per-`(sensor, kind)` rate-limit primitive; mirrors `openral_observability.failure_bus._TokenBucket` but independently implemented to keep the runner free of an observability-package dep.
-- `class PerceptionEventPublisher` (L328) — Owns one event-sink appsink for one sensor; fans out to one `Publisher` per detector kind. Constructor enforces unique `kind`s, absolute `topic_prefix`, positive `rate_hz`. QoS: `BEST_EFFORT + VOLATILE + KEEP_LAST=10`. Methods: `start()`, `stop()`, `is_started` [property], `dropped_counts` [property].
+- `class PerceptionEventPublisher` (L328) — Owns one event-sink appsink for one sensor; fans out to one `Publisher` per detector kind. Constructor enforces unique `kind`s, absolute `topic_prefix`, positive `rate_hz`. QoS: `BEST_EFFORT + VOLATILE + KEEP_LAST=10`.
+  - `is_started` [@property] (L418) — `True` between `start` and `stop`.
+  - `dropped_counts` [@property] (L423) — Per-kind count of detections suppressed by the rate-limit gate.
+  - `start() -> None` (L427) — Initialise rclpy (if needed), create one publisher per detector kind, hook the appsink.
+  - `stop() -> None` (L482) — Disconnect the signal, destroy publishers, shut down rclpy (if this instance owns it). Idempotent.
 
 ### `python/runner/src/openral_runner/backends/gstreamer/tee_manager.py`
 _Runtime tee-branch manager for the GStreamer perception bus. Attaches / detaches consumer branches on a running pipeline's named `tee` (`pipeline.TEE_NAME`) via dynamic pad add/remove — the mechanism the S2 reasoner drives through `ExecuteRskill`. Imports `gi` at load (requires the `gstreamer` extra)._
 
+- module constant `_REQUEST_PAD_TEMPLATE: Final[str] = "src_%u"` (L56) — tee request-pad template name passed to `request_pad_simple`.
+- module constant `_DETACH_TIMEOUT_S: Final[float] = 5.0` (L61) — how long `detach` waits for the IDLE probe before raising (pipeline presumed stalled).
 - `class BranchHandle` (L65) — Opaque dataclass handle to an attached branch (`name` + the private `tee` pad / branch bin); returned by `attach`, passed back to `detach`.
-- `class TeeManager` (L83) — `__init__(pipeline, *, tee_name=TEE_NAME)` (raises `ROSConfigError` if the tee is absent). `branch_count` [property] (L117). `attach(elements, *, name) -> BranchHandle` (L122) — requests a tee pad, parses `LEAKY_BRANCH_QUEUE ! <elements>` into a bin, links + syncs it live; rolls back on link failure. `detach(handle)` (L81) — IDLE-probe unlink + release-pad + NULL teardown; idempotent, blocks until removed (bounded by `_DETACH_TIMEOUT_S`).
+- `class TeeManager` (L81) — `__init__(pipeline, *, tee_name=TEE_NAME)` — raises `ROSConfigError` if the tee is absent.
+  - `branch_count` [@property] (L115) — Number of currently attached branches.
+  - `attach(elements, *, name) -> BranchHandle` (L120) — requests a tee pad, parses `LEAKY_BRANCH_QUEUE ! <elements>` into a bin, links + syncs it live; rolls back on link failure.
+  - `detach(handle) -> None` (L190) — IDLE-probe unlink + release-pad + NULL teardown; idempotent, blocks until removed (bounded by `_DETACH_TIMEOUT_S`).
 
 ### `python/runner/src/openral_runner/backends/gstreamer/objects_detector.py`
 _CPU-tier object detector for the perception event tee. Implements `EventDetector` via ONNXRuntime on system-memory BGR frames (RT-DETR / D-FINE ONNX signature). `onnxruntime` lazy-imported at construction time. Zero-copy NVMM tiers are a planned follow-up; requesting them raises `ROSConfigError`._
 
+- module constant `_DETECTOR_TIERS_GROUP = "openral.detector_tiers"` (L74) — entry-point group name the `NVMM_AGGREGATOR` tier resolves against (registered by the private `openral-pro-trt` package).
 - `class DetectorTier(str, Enum)` (L80) — `CPU_ONNX = "cpu_onnx"`, `NVINFER = "nvinfer"`, `NVMM_AGGREGATOR = "nvmm_aggregator"`, `VLM_SIDECAR = "vlm_sidecar"`, `ZEROSHOT_HF = "zeroshot_hf"`. Execution tier for the object detector; `VLM_SIDECAR` is the out-of-process open-vocab VLM tier (2026-06-09 amendment) and `ZEROSHOT_HF` is the in-process Transformers zero-shot tier run over a fixed vocabulary (2026-06-12 amendment) — both reuse the `CPU_ONNX` BGR appsink branch.
 - `select_detector_tier(platform=None) -> DetectorTier` (L125) — Probes `gst-inspect-1.0 nvinfer` (→ `NVINFER`), then checks for `Platform.TEGRA` (→ `NVMM_AGGREGATOR`), else `CPU_ONNX`. `nvinfer` probe always wins over explicit `platform`.
 - `identify_rtdetr_outputs(named_shapes: list[tuple[str, tuple[Any, ...]]]) -> tuple[str, str]` (L213) — Tier-agnostic helper: from a list of `(name, shape)` output pairs, returns `(logits_name, boxes_name)`. Among 3-D outputs, the one with last-dim==4 is boxes; if both (or neither) end in 4, falls back to index order (0=logits, 1=boxes). Raises `ROSConfigError` if fewer than two 3-D outputs are present.
 - `postprocess_rtdetr(logits, boxes, *, labels, model_id, sensor_id, score_threshold, frame_width, frame_height) -> ObjectsMetadata | None` (L251) — Tier-agnostic decode (CLAUDE.md §13): sigmoid→argmax→threshold, cxcywh normalised→xyxy pixels, degenerate-bbox guard, label-index bounds check (warns), sorts descending by confidence, returns `None` on zero survivors. Accepts `(N,C)`/`(1,N,C)` logits and `(N,4)`/`(1,N,4)` boxes.
-- `class ObjectsDetector` (L350) — `EventDetector` implementation. `__init__(onnx_path, *, labels, model_id, input_size=(640,640), score_threshold=0.5, device="cpu")`. Delegates logits/boxes identification to `identify_rtdetr_outputs`. `detect(frame_bgr, width, height, sensor_id) -> ObjectsMetadata | None` — BGR→RGB, NN-resize, float32/255, NCHW, ORT inference, delegates postprocessing to `postprocess_rtdetr`. `summarise(metadata) -> str` — aggregates label counts as `"Nx label"` string.
+- `class ObjectsDetector` (L350) — `EventDetector` implementation. `__init__(onnx_path, *, labels, model_id, input_size=(640,640), score_threshold=0.5, device="cpu")`. Delegates logits/boxes identification to `identify_rtdetr_outputs`.
+  - `detect(frame_bgr, width, height, sensor_id) -> ObjectsMetadata | None` (L456) — BGR→RGB, NN-resize, float32/255, NCHW, ORT inference, delegates postprocessing to `postprocess_rtdetr`.
+  - `summarise(metadata) -> str` (L512) — Aggregates label counts as `"Nx label"` string.
 - `make_objects_detector(onnx_path, *, labels, model_id, tier=None, **kwargs) -> ObjectsDetector | object` (L553) — Auto-selects tier via `select_detector_tier()` when `tier=None`; returns `ObjectsDetector` for `CPU_ONNX`; for `NVMM_AGGREGATOR` resolves the factory registered under the `openral.detector_tiers` entry-point group (ships in the private `openral-pro-trt` package — miss raises `ROSConfigError` naming it); raises `ROSConfigError` for `NVINFER` and for unknown tiers.
 
 > **Moved to OpenRAL Pro:** the NVMM zero-copy consumers — `nvbufsurface.py`, `cuda_context.py`, `trt_nvmm.py` (`TrtNvmmExecutor`), `nvmm_detector.py` (`NvmmObjectsDetector`), `nvmm_vision_encoder.py`, `act_nvmm.py` — now live in the private `openral-pro-trt` package as `openral_pro_trt.*`; the `NVMM_AGGREGATOR` tier resolves via the `openral.detector_tiers` entry-point group. The open perception bus (`pipeline.py`, `reader.py`, `tee_manager.py`, CPU/VLM detector tiers) is unchanged.
@@ -163,14 +256,20 @@ _gi-free dispatch seam (2026-06-09 amendment) so the manifest→detector-backend
 
 - `weights_source_from_manifest(manifest) -> str` (L97) — Resolves the HF repo the backend loads: prefers `source_repo`, falls back to `weights_uri`, else `nvidia/LocateAnything-3B`; strips the `hf://` scheme and any `@revision` to a bare `org/name`.
 - `build_manifest_detector(manifest, *, onnx_path=None, tier=None) -> tuple[Any, DetectorTier]` (L125) — Dispatches on `manifest.detector.engine` first, then `manifest.runtime`: `engine: zeroshot_hf` → `OmDetTurboDetector` (lazy import) + `DetectorTier.ZEROSHOT_HF` (no `onnx_path`); else `runtime: pytorch` → `LocateAnythingDetector` (lazy import) + `DetectorTier.VLM_SIDECAR` (no `onnx_path`); `onnx`/`tensorrt` → `make_objects_detector(onnx_path, ..., input_size=(net_h,net_w), score_threshold=...)` + the resolved tier. Raises `ROSConfigError` if the manifest is not a `kind:detector` with a detector block, or an ONNX runtime is requested without an `onnx_path`.
-- `class DetectorNodeWiring` (frozen dataclass) + `detector_node_wiring(mode: DetectorMode) -> DetectorNodeWiring` — pure (rclpy-free, unit-testable) policy the perception node consumes: `continuous` → `run_continuous_leg=True, serve_on_demand=False` (publish leg, no query service); `on_demand` → `run_continuous_leg=False, serve_on_demand=True` (locate_in_view service + `detector_query` topic, no continuous publishing).
+- `class DetectorNodeWiring` (frozen dataclass) (L50) — `run_continuous_leg: bool`, `serve_on_demand: bool`; the perception node's wiring decision, pure and rclpy-free.
+- `detector_node_wiring(mode: DetectorMode) -> DetectorNodeWiring` (L69) — pure (rclpy-free, unit-testable) policy the perception node consumes: `continuous` → `run_continuous_leg=True, serve_on_demand=False` (publish leg, no query service); `on_demand` → `run_continuous_leg=False, serve_on_demand=True` (locate_in_view service + `detector_query` topic, no continuous publishing).
 
 ### `python/runner/src/openral_runner/backends/gstreamer/omdet_turbo_detector.py`
 _In-process Transformers open-vocabulary detector (2026-06-12 amendment) — `omlab/omdet-turbo-swin-tiny-hf` (Apache-2.0). One backend serves both detector modes (the manifest's `detector.mode` declares intent): `continuous` (fixed `labels`, unprompted background producer — `omdet-turbo-indoor`) or `on_demand` (prompted locator via `set_query`/`detect_with_query` — `omdet-turbo-locator`). Same `detect(frame_bgr, width, height, sensor_id) -> ObjectsMetadata | None` interface as `ObjectsDetector`, so it reuses the CPU BGR appsink branch (`DetectorTier.ZEROSHOT_HF`). Loads under the runtime's own `transformers>=5` (no sidecar). `torch`/`transformers`/`numpy`/`PIL` lazy-imported (the `omdet` group); conversion + query parsing are pure functions (unit-testable, no GPU)._
 
+- module constant `_MAX_AREA_FRAC = 0.98` (L55) — degenerate-box guard: drops detections covering ≥98% of the frame.
 - `build_objects_metadata_from_results(*, labels, scores, boxes_xyxy, width, height, model_id, sensor_id, score_threshold) -> ObjectsMetadata | None` (L58) — Pure (no torch): from decoded per-detection `labels`/`scores`/pixel `boxes_xyxy`, drops sub-threshold + degenerate/near-full-image (≥98%) boxes, clips + corner-orders to frame, sorts descending by confidence; `None` on zero survivors. Raises `ROSConfigError` on length mismatch.
 - `query_to_classes(query) -> list[str]` (L143) — Pure: parse a free-text on-demand query into OmDet's multi-label class list (split on commas / `</c>`; a single phrase is one class; whitespace dropped). Raises `ROSConfigError` if empty.
-- `class OmDetTurboDetector` (L175) — `__init__(*, labels, model_id, weights_source, score_threshold=0.3, nms_threshold=0.5, device="auto")` — stores config; model/processor load deferred to first `detect()` (lazy, side-effect-free; `device="auto"` → CUDA when available else CPU). `set_query(text)` — retarget the persistent vocabulary (the `detector_query` topic; on-demand). `detect(frame_bgr, width, height, sensor_id) -> ObjectsMetadata | None` — over the current vocabulary. `detect_with_query(frame_bgr, width, height, sensor_id, query) -> ObjectsMetadata | None` — one-shot detect for `query` WITHOUT mutating the persistent vocabulary (the read-only `locate_in_view` service). Both delegate to `_detect_classes` (BGR→RGB PIL, processor over the class list, `model(**inputs)` under `no_grad`, `post_process_grounded_object_detection`, → `build_objects_metadata_from_results`). `close()` — releases the model + `cuda.empty_cache()` if loaded on GPU; idempotent.
+- `class OmDetTurboDetector` (L175) — `__init__(*, labels, model_id, weights_source, score_threshold=0.3, nms_threshold=0.5, device="auto")` — stores config; model/processor load deferred to first `detect()` (lazy, side-effect-free; `device="auto"` → CUDA when available else CPU).
+  - `set_query(text) -> None` (L298) — Retarget the persistent vocabulary (the `detector_query` topic; on-demand), parsed via `query_to_classes`.
+  - `detect(frame_bgr, width, height, sensor_id) -> ObjectsMetadata | None` (L310) — Detect over the current (persistent) vocabulary.
+  - `detect_with_query(frame_bgr, width, height, sensor_id, query) -> ObjectsMetadata | None` (L327) — One-shot detect for `query` WITHOUT mutating the persistent vocabulary (the read-only `locate_in_view` service). Both `detect` and `detect_with_query` delegate to `_detect_classes` (BGR→RGB PIL, processor over the class list, `model(**inputs)` under `no_grad`, `post_process_grounded_object_detection`, → `build_objects_metadata_from_results`).
+  - `close() -> None` (L383) — Releases the model + `cuda.empty_cache()` if loaded on GPU; idempotent.
 
 ### `python/runner/src/openral_runner/backends/gstreamer/segmenter_factory.py`
 _gi-free dispatch seam for `kind: segmenter` rSkills — the sibling of `detector_factory.py`. Dispatch keys on `manifest.segmenter.engine`, which is REQUIRED (no legacy `runtime`-keyed fallback for this kind), so it never has to guess. Reuses `weights_source_from_manifest` from the detector factory rather than reimplementing the `hf://` stripping and immutable-revision rule (CLAUDE.md §1.13)._
@@ -180,10 +279,15 @@ _gi-free dispatch seam for `kind: segmenter` rSkills — the sibling of `detecto
 ### `python/runner/src/openral_runner/backends/gstreamer/sam2_segmenter.py`
 _In-process Transformers SAM 2.1 promptable segmenter — `facebook/sam2.1-hiera-small` (Apache-2.0, ~46 M params), the backend for `engine: sam2_hf`. Answers a **geometric** prompt (a point) with binary masks, where a detector answers a semantic one (a label) with scored boxes: no label vocabulary, no thresholdable confidence. Loads under the runtime's own `transformers>=5` (no sidecar, no quantization beyond the bf16 compute dtype); `torch`/`transformers`/`numpy`/`PIL` lazy-imported (the `sam2` group), so the pure helpers are unit-testable without a GPU. Measured on an RTX 4070 Laptop 8 GB: 74 MiB weights, 297 MiB peak, 53 ms warm, 742 ms cold; latency flat 46-52 ms from 224² to 1024² because `Sam2Processor` always resizes to 1024², so camera resolution is not a lever. Held resident and warmed at node activate — the cold call would not fit inside the HAL's ~100 ms deferred-ack barrier, the warm one fits with room to spare._
 
-- `class MaskCandidate` — Frozen dataclass: one mask hypothesis — `mask` (`(H, W)` bool at the source frame's resolution), `score_advisory` (the model's own IoU estimate, **advisory only**, never thresholded), `area_px`.
+- module constant `_DEPTH_EPS = 1e-6` (L65) — a point closer than this to the camera's optical plane has no meaningful projection.
+- `class MaskCandidate` (L69) — Frozen dataclass: one mask hypothesis — `mask` (`(H, W)` bool at the source frame's resolution), `score_advisory` (the model's own IoU estimate, **advisory only**, never thresholded), `area_px`.
 - `project_point_to_pixel(point_xyz, intrinsics) -> tuple[float, float] | None` (L92) — Pure: project a camera **optical**-frame point (REP-103) to continuous pixels. `None` when behind/on the optical plane or outside the image — the caller then has no usable prompt rather than a guessed one. This is where intrinsics are applied; the `SegmentInView` prompt crosses the HAL boundary as a 3-D point precisely so they stay on this side.
 - `build_mask_candidates(masks, *, scores, min_mask_area_px) -> list[MaskCandidate]` (L340) — Pure (no torch): drops masks below `min_mask_area_px` as degenerate and sorts survivors by **area ascending** (SAM 2's nested subpart → part → whole), **never** by score. Raises `ROSConfigError` on masks/scores length mismatch.
-- `class Sam2Segmenter` (L133) — `__init__(*, model_id, weights_source, max_prompt_points=8, multimask=True, min_mask_area_px=64, device="auto")` — stores config; the `Sam2Processor` + `Sam2Model` load is deferred to first use (bf16 on CUDA, fp32 on CPU). `warm_up(*, width=320, height=240)` — load and burn one forward pass at node activate, moving the ~742 ms cold call off the first real attach event; **not optional**. `segment(frame_bgr, width, height, *, positive_points, negative_points=()) -> list[MaskCandidate]` — one BGR frame plus pixel prompts (positive at the TCP, negative typically at the jaw tips) → surviving candidates, area ascending. Returns `[]` on a caps-mismatched buffer; raises `ROSConfigError` with no positive point or over `max_prompt_points`, `ROSRuntimeError` without the wheels. `close()` — releases the model + `cuda.empty_cache()` if loaded on GPU. **(property)** `model_id`.
+- `class Sam2Segmenter` (L133) — `__init__(*, model_id, weights_source, max_prompt_points=8, multimask=True, min_mask_area_px=64, device="auto")` — stores config; the `Sam2Processor` + `Sam2Model` load is deferred to first use (bf16 on CUDA, fp32 on CPU).
+  - `model_id` [@property] (L191) — Identifier recorded alongside every emitted mask.
+  - `warm_up(*, width=320, height=240) -> None` (L222) — Load and burn one forward pass at node activate, moving the ~742 ms cold call off the first real attach event; **not optional**.
+  - `segment(frame_bgr, width, height, *, positive_points, negative_points=()) -> list[MaskCandidate]` (L246) — One BGR frame plus pixel prompts (positive at the TCP, negative typically at the jaw tips) → surviving candidates, area ascending. Returns `[]` on a caps-mismatched buffer; raises `ROSConfigError` with no positive point or over `max_prompt_points`, `ROSRuntimeError` without the wheels.
+  - `close() -> None` (L331) — Releases the model + `cuda.empty_cache()` if loaded on GPU.
 
   Candidates are handed to the consumer rather than resolved here by score, because only geometry can pick between them: a mis-aimed point prompt on a real frame returned a mask covering 59.8% of the image at this model's **top** score of 0.977.
 
@@ -195,32 +299,68 @@ _Private. Shared ZMQ REQ/REP transport mixin for the two sidecar-client backends
 ### `python/runner/src/openral_runner/backends/gstreamer/locateanything_detector.py`
 _Open-vocabulary detector backend (2026-06-09 amendment) backed by the LocateAnything-3B sidecar. Same `detect(frame_bgr, width, height, sensor_id) -> ObjectsMetadata` interface as `ObjectsDetector`, so it reuses the CPU BGR appsink branch. Connects lazily on first `detect()`; auto-spawns the sidecar (ping → `Popen` → poll → `close`) mirroring the RLDX adapter. The model runs in an isolated `transformers==4.57.1` venv (`tools/locateanything_sidecar.py`); this is the ZMQ/msgpack client (transport shared via `ZmqSidecarMixin`). Parsing is pure-function + main-env (unit-testable, no GPU). No `zmq`/`numpy`/`PIL` at import (all lazy)._
 
+- module constant `_TOKEN_RE` (L45) — compiled regex matching `<ref>label</ref>` or a 4-coord `<box>` token (point boxes are ignored).
+- module constant `_MIN_SIDE_FRAC = 0.02` (L50) — drops boxes thinner than 2% of the image in either axis (degenerate-box guard).
+- module constant `_MAX_AREA_FRAC = 0.85` (L51) — drops boxes covering more than 85% of the image (degenerate-box guard).
 - `parse_grounding_answer(answer, *, fallback_label="object", norm=1000) -> list[tuple[str, tuple[int,int,int,int]]]` (L54) — Parses `<ref>label</ref>` + 4-coord `<box>` tokens in document order; each box binds to the most recent `<ref>`. Coords stay normalized `[0,norm]`, corner-ordered. Drops exact duplicates and degenerate boxes (side < 2% or area ≥ 85% of the image — the repeated-box tail a looping decode emits).
 - `build_objects_metadata(answer, *, width, height, model_id, sensor_id, fallback_label="object", norm=1000) -> ObjectsMetadata | None` (L96) — Scales `parse_grounding_answer` boxes into `width`×`height` pixels (clipped), builds `ObjectDetection2D` at `confidence=1.0` (grounding model — no per-box score, CLAUDE.md §1.2); `None` if no valid detections.
-- `class LocateAnythingDetector(ZmqSidecarMixin)` (L150) — `__init__(*, labels, model_id, weights_source="nvidia/LocateAnything-3B", host="127.0.0.1", port=5757, query=None, auto_spawn=True, boot_timeout_s=1200.0, request_timeout_s=180.0, max_side=1024, max_new_tokens=1024, mode="hybrid")` (L150) — stores config; static default `query = "</c>".join(labels)`; no connection (lazy). `set_query(text)` — runtime open-vocab override for the continuous leg. `detect(frame_bgr, width, height, sensor_id) -> ObjectsMetadata | None` — one-shot detect of the persistent query (delegates to `detect_with_query`). `detect_with_query(frame_bgr, width, height, sensor_id, query) -> ObjectsMetadata | None` — one-shot detect for `query` WITHOUT mutating the persistent query; used by the `locate_in_view` service so an on-demand reasoner query doesn't change what the continuous leg grounds. `close()` — closes the socket and terminates the sidecar if spawned; idempotent.
+- `class LocateAnythingDetector(ZmqSidecarMixin)` (L150) — `__init__(*, labels, model_id, weights_source="nvidia/LocateAnything-3B", host="127.0.0.1", port=5757, query=None, auto_spawn=True, boot_timeout_s=1200.0, request_timeout_s=180.0, max_side=1024, max_new_tokens=1024, mode="hybrid")` — stores config; static default `query = "</c>".join(labels)`; no connection (lazy).
+  - `set_query(text) -> None` (L262) — Runtime open-vocab override for the continuous leg.
+  - `detect(frame_bgr, width, height, sensor_id) -> ObjectsMetadata | None` (L268) — One-shot detect of the persistent query (delegates to `detect_with_query`).
+  - `detect_with_query(frame_bgr, width, height, sensor_id, query) -> ObjectsMetadata | None` (L274) — One-shot detect for `query` WITHOUT mutating the persistent query; used by the `locate_in_view` service so an on-demand reasoner query doesn't change what the continuous leg grounds.
+  - `close() -> None` (L314) — Closes the socket and terminates the sidecar if spawned; idempotent.
 
 ### `python/runner/src/openral_runner/backends/gstreamer/qwen_scene_vlm.py`
 
 _Scene-VLM backend backed by the Qwen3.5-4B sidecar — the scene-reasoning counterpart of `LocateAnythingDetector`. Returns **text**, not `ObjectsMetadata` (a reasoning aid for task-progress / success verification, not a localizer). Same ZMQ lifecycle (lazy connect, auto-spawn, teardown only the child), transport shared via `ZmqSidecarMixin`. No `zmq`/`numpy`/`PIL` at import (all lazy)._
 
-- `class QwenSceneVlm(ZmqSidecarMixin)` — `__init__(*, model_id, weights_source="Qwen/Qwen3.5-4B", host="127.0.0.1", port=5759, auto_spawn=True, boot_timeout_s=1200.0, request_timeout_s=180.0, max_side=1024, max_new_tokens=256)` — stores config; no connection (lazy). `query(frame_bgr, width, height, question) -> str` — encode BGR→PNG, RPC `{"op":"query",...}`, return the whitespace-stripped answer; raises `ROSConfigError` on empty question or sidecar error. `close()` — closes the socket + terminates the spawned sidecar; idempotent.
-- `build_scene_vlm(manifest, *, host="127.0.0.1", port=5759) -> QwenSceneVlm` — build from a `kind:"vlm"` manifest; `model_id=manifest.name`, `weights_source` from `weights_uri` (the deployable pre-quant checkpoint) stripped of `hf://`/`@rev`. Raises `ROSConfigError` if `manifest.kind != "vlm"`. Lazy.
+- `class QwenSceneVlm(ZmqSidecarMixin)` (L47) — `__init__(*, model_id, weights_source="Qwen/Qwen3.5-4B", host="127.0.0.1", port=5759, auto_spawn=True, boot_timeout_s=1200.0, request_timeout_s=180.0, max_side=1024, max_new_tokens=256)` — stores config; no connection (lazy).
+  - `query(frame_bgr, width, height, question) -> str` (L143) — Encode BGR→PNG, RPC `{"op":"query",...}`, return the whitespace-stripped answer; raises `ROSConfigError` on empty question or sidecar error.
+  - `close() -> None` (L184) — Closes the socket + terminates the spawned sidecar; idempotent.
+- `build_scene_vlm(manifest, *, host="127.0.0.1", port=5759) -> QwenSceneVlm` (L200) — build from a `kind:"vlm"` manifest; `model_id=manifest.name`, `weights_source` from `weights_uri` (the deployable pre-quant checkpoint) stripped of `hf://`/`@rev`. Raises `ROSConfigError` if `manifest.kind != "vlm"`. Lazy.
 
-### `openral_runner.backends.reward` (reward monitor)
+### `python/runner/src/openral_runner/backends/reward/frame_source.py`
+_Transport-agnostic rolling frame buffer for the reward monitor. Pure Python + stdlib only (no numpy/torch), so it unit-tests without ROS, torch, or a GPU._
 
-- `class Frame` (frozen dataclass) — one buffered camera frame: `stamp_ns: int`, `bgr: bytes`, `width: int`, `height: int`.
-- `class RollingFrameBuffer` — `__init__(*, window_s, max_frames=256, stale_after_s=3.0)` — transport-agnostic node-side ring of recent frames (sim + real). `push(frame)` — append + evict frames older than `window_s` relative to the newest / over `max_frames`. `window(seconds) -> list[Frame]` — frames within the last `seconds` (capped to `window_s`). `is_stale(now_ns) -> bool` — True if no fresh frame within `stale_after_s`. `__len__`. Pure stdlib (no numpy/torch); unit-tested without ROS.
-- `trend(series: list[float]) -> float` — least-squares slope per sample (0.0 for < 2 points); used for progress/success trend + `stalled`.
-- `assess_from_score(progress, success, *, success_threshold, frames_seen) -> dict` — shared `assess()` dict builder (`progress_now`/`success_now`/`progress_trend`/`success_trend`/`stalled`/`succeeded`/`frames_seen`); consolidated out of `RobometerInProcessReward.assess` and `TOPRewardMonitor.assess`, which were identical bodies (see `docs/methods/14-duplication-watch.md`).
-- `class RobometerInProcessReward` — `__init__(*, model_id, weights_source="OpenRAL/rskill-robometer_4b-any-general-nf4", num_bins=100, success_threshold=0.5, max_frames=8, device="cuda")` — default Robometer backend for `reward_monitor_node`: lazily imports `tools/_robometer_scorer.py::_Scorer`, meta-loads the prequantized NF4 checkpoint in the reward-monitor process, and scores BGR frames via the same native lerobot 0.6.0 `_compute_rbm_logits` + `decode_progress_outputs` path. `score(frames, task) -> (progress, success)` validates empty task/clip + frame sizes, evenly subsamples to `max_frames`, converts BGR→RGB, returns per-frame normalized arrays. `assess(...) -> dict` mirrors the reasoner contract.
-- `build_reward_monitor(manifest) -> RobometerInProcessReward | TOPRewardMonitor` — build from a `kind:"reward"` manifest; dispatches `reward.backend=="topreward"` to `TOPRewardMonitor` and defaults Robometer to `RobometerInProcessReward`. Raises `ROSConfigError` if `manifest.kind != "reward"`. Lazy.
-- `build_topreward_monitor(manifest, *, device="cuda") -> TOPRewardMonitor` — Build a `TOPRewardMonitor` from a `reward.backend == "topreward"` manifest (weights source, success threshold, target fps). Raises `ROSConfigError` on a non-reward manifest. (`python/runner/src/openral_runner/backends/reward/topreward_reward.py` L212)
-- `critic_score_from_assessment(assessment, *, threshold) -> tuple[float, float]` — Pure mapping from a reward assessment result to a generic `openral_msgs/CriticScore` `(score, threshold)`: uses `progress_now` (higher-is-better) as the score, clamped to `[0, 1]`, defaulting a missing/non-numeric/bool value to `0.0`. Lets `reward_monitor_node` feed the Tier-C critic producer. Pure, ROS-free, unit-tested.
+- module constant `_NS_PER_S = 1_000_000_000` (L20) — nanosecond/second conversion factor.
+- `class Frame` (frozen dataclass) (L24) — one buffered camera frame: `stamp_ns: int`, `bgr: bytes`, `width: int`, `height: int`.
+- `class RollingFrameBuffer` (L40) — `__init__(*, window_s, max_frames=256, stale_after_s=3.0)` — transport-agnostic node-side ring of recent frames (sim + real).
+  - `push(frame) -> None` (L79) — Append + evict frames older than `window_s` relative to the newest / over `max_frames`.
+  - `window(seconds) -> list[Frame]` (L88) — Frames within the last `seconds` (capped to `window_s`).
+  - `is_stale(now_ns) -> bool` (L99) — True if no fresh frame within `stale_after_s`.
+  - `__len__() -> int` (L105) — Number of frames currently buffered.
+- module constant `_MIN_POINTS_FOR_SLOPE = 2` (L111) — a least-squares slope needs at least two points.
+- `trend(series: list[float]) -> float` (L114) — least-squares slope per sample (0.0 for < 2 points); used for progress/success trend + `stalled`.
+- module constant `_STALL_TREND_EPS = 0.002` (L133) — |progress trend per sample| below this reads as "stalled"; shared by `RobometerInProcessReward.assess` and `TOPRewardMonitor.assess`.
+- `assess_from_score(progress, success, *, success_threshold, frames_seen) -> dict` (L136) — shared `assess()` dict builder (`progress_now`/`success_now`/`progress_trend`/`success_trend`/`stalled`/`succeeded`/`frames_seen`); consolidated out of `RobometerInProcessReward.assess` and `TOPRewardMonitor.assess`, which were identical bodies (see `docs/methods/14-duplication-watch.md`).
+
+### `python/runner/src/openral_runner/backends/reward/robometer_reward.py`
+_Robometer reward-monitor backend — loads lerobot 0.6.0's native Robometer model inside `reward_monitor_node` and scores clips on demand. Nothing here imports torch / transformers / numpy at module load._
+
+- `critic_score_from_assessment(assessment, *, threshold) -> tuple[float, float]` (L37) — Pure mapping from a reward assessment result to a generic `openral_msgs/CriticScore` `(score, threshold)`: uses `progress_now` (higher-is-better) as the score, clamped to `[0, 1]`, defaulting a missing/non-numeric/bool value to `0.0`. Lets `reward_monitor_node` feed the Tier-C critic producer. Pure, ROS-free, unit-tested.
+- `class RobometerInProcessReward` (L147) — `__init__(*, model_id, weights_source="OpenRAL/rskill-robometer_4b-any-general-nf4", num_bins=100, success_threshold=0.5, max_frames=8, device="cuda")` — default Robometer backend for `reward_monitor_node`: lazily imports `tools/_robometer_scorer.py::_Scorer`, meta-loads the prequantized NF4 checkpoint in the reward-monitor process, and scores BGR frames via the same native lerobot 0.6.0 `_compute_rbm_logits` + `decode_progress_outputs` path.
+  - `score(frames, task) -> (progress, success)` (L179) — Validates empty task/clip + frame sizes, evenly subsamples to `max_frames`, converts BGR→RGB, returns per-frame normalized arrays.
+  - `assess(frames, task) -> dict` (L191) — Scores `frames` and summarizes the window for the Reasoner; mirrors the reasoner contract.
+  - `close() -> None` (L200) — Releases the model + `cuda.empty_cache()` if loaded on GPU.
+- `build_reward_monitor(manifest) -> RobometerInProcessReward | TOPRewardMonitor` (L209) — build from a `kind:"reward"` manifest; dispatches `reward.backend=="topreward"` to `TOPRewardMonitor` and defaults Robometer to `RobometerInProcessReward`. Raises `ROSConfigError` if `manifest.kind != "reward"`. Lazy.
+
+### `python/runner/src/openral_runner/backends/reward/topreward_reward.py`
+_In-process TOPReward (arXiv 2602.19313) reward monitor — a zero-shot reward reading `P("True" | video, instruction)` from an off-the-shelf Qwen3-VL VLM, no fine-tuned checkpoint and no ZMQ sidecar. Nothing here imports torch / transformers at module load._
+
+- `class TOPRewardMonitor` (L36) — `__init__(*, model_id, weights_source, success_threshold=0.8, max_frames=8, num_samples=6, fps=2.0, device="cuda")` — stores config; the VLM is loaded lazily on first `score`.
+  - `score(frames, task) -> (progress, success)` (L134) — Prefix-sweep: scores `frames[:L]` at `num_samples` anchor lengths, min-max normalizes raw log-probs within the queried window, then interpolates to one value per frame. `success` mirrors `progress` (TOPReward has a single head).
+  - `assess(frames, task) -> dict` (L184) — Scores `frames` and summarizes the window for the Reasoner; same keys as `RobometerInProcessReward.assess`.
+  - `close() -> None` (L197) — Releases the in-process model + frees CUDA memory.
+- `build_topreward_monitor(manifest, *, device="cuda") -> TOPRewardMonitor` (L212) — Build a `TOPRewardMonitor` from a `reward.backend == "topreward"` manifest (weights source, success threshold, target fps). Raises `ROSConfigError` on a non-reward manifest.
 
 ### `python/runner/src/openral_runner/backends/gstreamer/detector_runner.py`
 _Runtime glue that wires a ``kind: detector`` rSkill to a live camera pipeline — loads the `DetectorContract`, delegates backend construction to `build_manifest_detector` (ONNX CPU/NVMM tiers or the `VLM_SIDECAR` open-vocab tier), attaches the appropriate branch to the bus tee via `TeeManager`, and fires the `on_detection` callback for each non-`None` `ObjectsMetadata`. Imports `gi` + `DetectorTier`/`build_manifest_detector` + `nvmm_convert_element` eagerly at load._
 
-- `class DetectorRunner` (L60) — `__init__(pipeline, manifest, *, onnx_path=None, sensor_id, on_detection, tee_name=TEE_NAME, tier=None)` (L101) — validates `manifest.kind == "detector"` + `manifest.detector is not None` (raises `ROSConfigError`); caches `_net_w`/`_net_h` from `DetectorContract.input_size` for the NVMM caps; delegates to `build_manifest_detector(manifest, onnx_path=onnx_path, tier=tier)` → `(detector, tier)` (gi-free dispatch; `onnx_path` optional, `None` for the VLM sidecar tier); creates `TeeManager`. `start()` (L178) — selects branch string + handler by tier: NVMM_AGGREGATOR resolves the platform's NVMM converter (`nvvideoconvert`/`nvvidconv`) via `nvmm_convert_element()` (raises `ROSConfigError` if neither registered) and attaches the NVMM RGBA appsink + `_on_sample_nvmm`; every other tier (CPU_ONNX, VLM_SIDECAR, ZEROSHOT_HF) attaches `videoconvert ! video/x-raw,format=BGR ! appsink` + `_on_sample_bgr`; raises `ROSRuntimeError` if appsink not found after attach. `_on_sample_bgr(appsink) -> int` (L242) — pulls BGR sample, format assert, buffer.map/unmap, calls `detector.detect`, fires `on_detection` on non-`None`; errors guarded. `_on_sample_nvmm(appsink) -> int` (L301) — pulls NVMM sample, `wrap_buffer` (lazy import from the private `openral_pro_trt.nvbufsurface`), calls the entry-point-resolved NVMM detector's `detect_nvmm`, fires `on_detection`; always unmaps; errors guarded. `stop()` (L59) — disconnects signal + detaches branch + calls `detector.close()` if present; idempotent.
+- `class DetectorRunner` (L59) — `__init__(pipeline, manifest, *, onnx_path=None, sensor_id, on_detection, tee_name=TEE_NAME, tier=None)` — validates `manifest.kind == "detector"` + `manifest.detector is not None` (raises `ROSConfigError`); caches `_net_w`/`_net_h` from `DetectorContract.input_size` for the NVMM caps; delegates to `build_manifest_detector(manifest, onnx_path=onnx_path, tier=tier)` → `(detector, tier)` (gi-free dispatch; `onnx_path` optional, `None` for the VLM sidecar tier); creates `TeeManager`.
+  - `start() -> None` (L156) — selects branch string + handler by tier: NVMM_AGGREGATOR resolves the platform's NVMM converter (`nvvideoconvert`/`nvvidconv`) via `nvmm_convert_element()` (raises `ROSConfigError` if neither registered) and attaches the NVMM RGBA appsink + `_on_sample_nvmm`; every other tier (CPU_ONNX, VLM_SIDECAR, ZEROSHOT_HF) attaches `videoconvert ! video/x-raw,format=BGR ! appsink` + `_on_sample_bgr`; raises `ROSRuntimeError` if appsink not found after attach.
+  - `_on_sample_bgr(appsink) -> int` (L220) — pulls BGR sample, format assert, buffer.map/unmap, calls `detector.detect`, fires `on_detection` on non-`None`; errors guarded.
+  - `_on_sample_nvmm(appsink) -> int` (L279) — pulls NVMM sample, `wrap_buffer` (lazy import from the private `openral_pro_trt.nvbufsurface`), calls the entry-point-resolved NVMM detector's `detect_nvmm`, fires `on_detection`; always unmaps; errors guarded.
+  - `stop() -> None` (L336) — disconnects signal + detaches branch + calls `detector.close()` if present; idempotent.
 
 ### `python/runner/src/openral_runner/__init__.py`
 _Public surface of the inference runner. Imports are PEP 562 lazy (M8 PR I/8): heavy symbols (`InferenceRunnerBase`, `factory.*`, `DeployRunner`, `safety.*`) are resolved on first attribute access so importing any subpackage does not eagerly drag in torch (582 modules) or trigger downstream glib conflicts._
@@ -242,13 +382,14 @@ _Library deploy runner used by runtime nodes; the public deploy CLI now shells t
 - `_make_galaxea_a1_camera_bridge_reader(cfg) -> SensorReader` — Builds the
   native A1 Runtime paired-camera connector. Accepts only `camera`; unknown
   values are rejected.
-- `make_sensor_readers(configs) -> list[SensorReader]` — Batch constructor that
+- `make_sensor_readers(configs) -> list[SensorReader]` (L245) — Batch constructor that
   preserves config order and shares one A1 paired-camera session across both
   views. Other backends still dispatch through `SENSOR_BACKEND_REGISTRY`.
 
 ### `python/runner/src/openral_runner/deploy_runner.py`
 _``DeployRunner`` — concrete `InferenceRunnerBase` subclass composing HAL + Skill + WorldStateAggregator + SensorReaders + SafetyClient._
 
+- module constant `_THUMBNAIL_HZ = 25.0` (L67) — fixed cadence for the dashboard JPEG thumbnail emission.
 - `class DeployRunner(InferenceRunnerBase)` — First end-to-end closer of the `WorldState → Skill → safety → HAL` loop on real hardware / digital twins. The runner is the safety-supervisor boundary per CLAUDE.md §10: catches `ROSSafetyViolation` from the SafetyClient, records it on the `TickResult`, withholds the `HAL.send_action` call (does not re-raise because withholding IS the mitigation today). (L72)
   - `__init__(*, hal, skill, aggregator, sensor_readers=(), safety_client=None, recorder=None, **base_kwargs)` — Caller must pre-`configure()`+`activate()` the skill; runner manages HAL + reader open/close. Defaults `safety_client` to `NullSafetyClient`. Dashboard JPEG thumbnails are emitted at a private fixed cadence. Optional `recorder` is a `openral_dataset.RolloutRecorder`; when set, `episode_start` / `episode_end` drive its lifecycle and every tick fans out via `record_frame`. (L114)
   - `episode_start(task_string: str) -> int` — Open a new episode on the attached recorder; returns the new `episode_idx` (or `-1` when no recorder is attached). Raises `RuntimeError` if called twice without `episode_end`. (L173)
@@ -272,6 +413,7 @@ _``SafetyClient`` stub — Python-side seam for the future C++ safety kernel (CL
 ### `python/runner/src/openral_runner/base.py`
 _Shared base for inference runners. Subclasses override `_tick_impl`._
 
+- module constant `_DEADLINE_LOG_PERIOD_S = 5.0` (L44) — minimum spacing between consecutive deadline-miss WARN log lines (rate-limit period consumed by `_deadline_log_due`).
 - `_percentile(samples: list[float], q: float) -> float` — Linear-interpolation percentile (`0.0` for empty list). Used by `_build_run_result`. (L47)
 - `class InferenceRunnerBase(ABC)` — Owns the rate-limited loop, `rskill.tick` OTel parent span, `RunResult` aggregation, deadline-overrun policy. (L65)
   - `__init__(*, rate_hz=30.0, deadline_overrun_policy=WARN, runner_name="inference_runner", latency_budget_ms=None, save_dir=None)` — Reject `rate_hz <= 0`. (L101)
