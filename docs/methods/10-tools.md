@@ -76,15 +76,15 @@ _Real GPU rollout audit for every YAML under `scenes/`. Operator-driven, one epi
 - `RunMode = Literal["sim", "benchmark", "deploy"]` (L46) — Tier selector on each `ConfigSpec` row; drives `_run_one` vs `_run_one_deploy` dispatch.
 - `@dataclass(frozen=True) class ConfigSpec(config, rskill, uv_group, run_mode)` (L50) — One row in the audit catalogue; `rskill` is empty for deploy rows since the reasoner picks at runtime. Only holds pairs that actually exist in the tree.
 - `CATALOGUE: tuple[ConfigSpec, ...]` (L78) — Explicit (YAML → rSkill → uv group → run_mode) mapping for every config currently in the tree: 13 sim + 7 benchmark + 4 deploy = 24 rows.
-- `@dataclass class AuditRow(config, rskill, status, exit_code, wall_s, peak_vram_mib, tail)` (L174) — One result. `status` ∈ {`pass`, `pass-compat`, `fail-oom`, `fail-asset`, `fail-sidecar`, `fail-timeout`, `fail-other`, `fail-compat`, `skipped-opt-dep`, `skipped-host-setup`}.
-- `_classify(returncode: int, tail: str) -> str` (L225) — Maps a subprocess result to a status by matching stderr against known OOM/asset/sidecar/opt-dep/host-setup patterns; a known MuJoCo/GL exit code is treated as pass when no error pattern appears.
-- `class _VramSampler` (L264) — Background `nvidia-smi --query-gpu=memory.used` poller, 200 ms cadence; `peak_mib` reported on `.stop()`. No-op without `nvidia-smi` on `$PATH`.
-- `_check_compat(spec: ConfigSpec) -> AuditRow` (L309) — `--check-compatibility` gate: load scene via `openral_core.load_scene_strict`, validate rSkill manifest (sim/benchmark) or assert robot resolves in `openral_cli.deploy_sim._ROBOT_HAL_REGISTRY` (deploy). No subprocess, no GPU. Returns `pass-compat` / `fail-compat`.
-- `_build_run_cmd(spec: ConfigSpec) -> list[str]` (L397) — Build the `uv run … openral <sim|benchmark> …` argv for sim/benchmark rows. Refactored out of `_run_one` so the deploy path can stay focused on lifecycle teardown.
-- `_run_one_deploy(spec, *, alive_grace_s, shutdown_grace_s, timeout_s) -> AuditRow` (L446) — Tier-2 deploy launch via `openral deploy sim`: runs in its own process group, waits `alive_grace_s`, sends SIGINT to the group, waits `shutdown_grace_s`, then escalates to SIGKILL. Passes when the startup banner appears and the exit reflects a clean or SIGINT/SIGTERM shutdown.
-- `_classify_or_fallback(returncode, tail, spec, wall_s, peak_vram) -> AuditRow` (L617) — Deploy-mode wrapper around `_classify` that defaults to `fail-other` when no pattern matches (sim path defaults to `pass`).
-- `_run_one(spec: ConfigSpec, timeout_s: int) -> AuditRow` (L656) — Tier-3 sim/benchmark rollout via `_build_run_cmd(spec)` with `MUJOCO_GL=egl` and `OPENRAL_SIM_SEQUENTIAL_INIT=1`.
-- `main(argv) -> int` (L794) — CLI entry; flags `--timeout` / `--deploy-alive-grace` / `--deploy-shutdown-grace` / `--check-compatibility` / `--report`. Returns 0 on all-pass, 1 if any config failed, 2 on filter mismatch.
+- `@dataclass class AuditRow(config, rskill, status, exit_code, wall_s, peak_vram_mib, tail)` (L168) — One result. `status` ∈ {`pass`, `pass-compat`, `fail-oom`, `fail-asset`, `fail-sidecar`, `fail-timeout`, `fail-other`, `fail-compat`, `skipped-opt-dep`, `skipped-host-setup`}.
+- `_classify(returncode: int, tail: str) -> str` (L219) — Maps a subprocess result to a status by matching stderr against known OOM/asset/sidecar/opt-dep/host-setup patterns; a known MuJoCo/GL exit code is treated as pass when no error pattern appears.
+- `class _VramSampler` (L258) — Background `nvidia-smi --query-gpu=memory.used` poller, 200 ms cadence; `peak_mib` reported on `.stop()`. No-op without `nvidia-smi` on `$PATH`.
+- `_check_compat(spec: ConfigSpec) -> AuditRow` (L303) — `--check-compatibility` gate: load scene via `openral_core.load_scene_strict`, validate rSkill manifest (sim/benchmark) or assert robot resolves in `openral_cli.deploy_sim._ROBOT_HAL_REGISTRY` (deploy). No subprocess, no GPU. Returns `pass-compat` / `fail-compat`.
+- `_build_run_cmd(spec: ConfigSpec) -> list[str]` (L391) — Build the `uv run … openral <sim|benchmark> …` argv for sim/benchmark rows. Refactored out of `_run_one` so the deploy path can stay focused on lifecycle teardown.
+- `_run_one_deploy(spec, *, alive_grace_s, shutdown_grace_s, timeout_s) -> AuditRow` (L440) — Tier-2 deploy launch via `openral deploy sim`: runs in its own process group, waits `alive_grace_s`, sends SIGINT to the group, waits `shutdown_grace_s`, then escalates to SIGKILL. Passes when the startup banner appears and the exit reflects a clean or SIGINT/SIGTERM shutdown.
+- `_classify_or_fallback(returncode, tail, spec, wall_s, peak_vram) -> AuditRow` (L611) — Deploy-mode wrapper around `_classify` that defaults to `fail-other` when no pattern matches (sim path defaults to `pass`).
+- `_run_one(spec: ConfigSpec, timeout_s: int) -> AuditRow` (L650) — Tier-3 sim/benchmark rollout via `_build_run_cmd(spec)` with `MUJOCO_GL=egl` and `OPENRAL_SIM_SEQUENTIAL_INIT=1`.
+- `main(argv) -> int` (L788) — CLI entry; flags `--timeout` / `--deploy-alive-grace` / `--deploy-shutdown-grace` / `--check-compatibility` / `--report`. Returns 0 on all-pass, 1 if any config failed, 2 on filter mismatch.
 
 ### `tools/validation_matrix.py`
 _The four-scene collision-stack validation matrix as one versioned command, emitting both `NOTES.md` and a machine-readable `verdicts.json` per round. Backs `just validation-matrix` / `-verdicts` / `-diff`. See [`docs/contributing/validation-matrix.md`](../contributing/validation-matrix.md) and the ledger it feeds, [`docs/reference/collision-validation-evidence.md`](../reference/collision-validation-evidence.md)._
@@ -639,15 +639,6 @@ _Refreshes the `(LNN)` line citations in the `docs/methods/` inventory; `--check
 - `refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str], dict[Path, set[str]]]` — Rewrite one inventory file's markers; returns the changed-marker count, the unresolved-entry descriptions, and the symbols each source file has an entry for. (L194)
 - `coverage_report(documented: dict[Path, set[str]]) -> list[str]` — Public symbols under `python/`, `packages/`, `tools/` (tests, `setup.py`, `conftest.py` excluded) with no inventory entry, one line per file. (L365)
 - `main(argv: list[str] | None = None) -> int` (L378) — CLI entry; `--check` / `--coverage` flags.
-
-### `tools/topreward_per_frame_demo.py`
-_Per-frame TOPReward progress over one recorded episode, rendered as an overlay video. NF4 on an 8 GB GPU._
-
-- `class NF4TOPRewardModel(TOPRewardModel)` — TOPReward whose Qwen3-VL backbone loads in NF4 to fit 8 GB; overrides lerobot's `__init__`, which hard-codes `model_kwargs` with no quantization knob. (L56)
-- `per_frame_progress(*, dataset_repo_id, episode, vlm_name, image_key, ...) -> NDArray` — Score every frame of one episode. (L85)
-- `render_overlay(frame, value, task) -> NDArray[np.uint8]` — Draw a progress bar, the value and the task caption under an RGB frame. (L157)
-- `write_media(frames, progress, task, media_dir) -> None` — Write `progress.mp4` plus start/mid/end stills carrying the overlay. (L191)
-- `main() -> int` (L217) — CLI; `--dataset`/`--episode`/`--vlm` (default `Qwen/Qwen3-VL-4B-Instruct`)/`--image-key`/`--num-samples`/`--max-frames`/`--out`/`--media-dir`; skips with `SKIP: no CUDA GPU` when CUDA is unavailable.
 
 ### `tools/build_robometer_nf4_checkpoint.py`
 _Builds the publishable pre-quantized Robometer-4B NF4 checkpoint: loads the upstream bf16 model, quantizes in place, and saves a self-contained directory the scorer can meta-load directly as 4-bit. Uploads to `OpenRAL/rskill-robometer_4b-any-general-nf4`._
