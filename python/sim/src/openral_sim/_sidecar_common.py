@@ -56,6 +56,27 @@ def opt_num(
         return default
 
 
+def sidecar_port_for_key(
+    key: str,
+    *,
+    port_min: int = 20_000,
+    port_max: int = 40_000,
+    algorithm: str = "sha256",
+) -> int:
+    """Deterministic default ZMQ port in ``[port_min, port_max)`` derived from ``key``.
+
+    One sidecar serves one scene/checkpoint, so ``key`` is whatever identifies
+    "the same sidecar" for the caller (task + robot + layout, model +
+    embodiment, …); distinct identities land on distinct ports and an explicit
+    operator-supplied port always wins. A ``hashlib`` digest, not the builtin
+    per-process-salted ``hash``, so the spawn process and a later client agree.
+    ``algorithm="sha1"`` reproduces the ``rldx`` policy's original derivation so
+    an already-running sidecar's port does not shift.
+    """
+    digest = hashlib.new(algorithm, key.encode("utf-8")).digest()
+    return port_min + (int.from_bytes(digest[:4], "big") % (port_max - port_min))
+
+
 # Where each booted sidecar records *what* it is serving, so the openral-side
 # adapter can refuse to silently reuse a sidecar that belongs to a different
 # checkpoint / family (the "always RLDX" cross-process-sharing bug — two

@@ -64,7 +64,6 @@ the MoE expert in bf16 (``--quantization nf4``, the default); ``none`` for
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import os
 import sys
 from collections import deque
@@ -78,6 +77,7 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
 
+from openral_sim._sidecar_common import sidecar_port_for_key
 from openral_sim.registry import POLICIES
 from openral_sim.sidecar import SidecarClient
 
@@ -124,11 +124,11 @@ def _policy_default_port(model_id: str, robo_name: str, variant: str = "v2") -> 
 
     Two runs of the same checkpoint + embodiment share one sidecar; distinct
     checkpoints (and variants) land on distinct ports so they never adopt each
-    other's server.
+    other's server. See ``sidecar_port_for_key`` for the shared derivation.
     """
-    key = f"lingbot_{variant}|{model_id}|{robo_name}".encode()
-    digest = int.from_bytes(hashlib.sha256(key).digest()[:4], "big")
-    return _PORT_MIN + (digest % (_PORT_MAX - _PORT_MIN))
+    return sidecar_port_for_key(
+        f"lingbot_{variant}|{model_id}|{robo_name}", port_min=_PORT_MIN, port_max=_PORT_MAX
+    )
 
 
 def _resolve_camera_keys(env_cfg: SimEnvironment, extra: dict[str, Any]) -> tuple[str, ...]:

@@ -62,7 +62,7 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 
-from openral_sim._sidecar_common import ensure_pip_venv, run_cmd
+from openral_sim._sidecar_common import ensure_pip_venv, run_cmd, sidecar_port_for_key
 from openral_sim._sidecar_common import opt_num as _opt_num
 from openral_sim.registry import SCENES
 from openral_sim.sidecar import SidecarClient, SidecarSimRollout
@@ -130,19 +130,14 @@ def _scene_default_port(task_id: str, robot_id: str, layout: str) -> int:
     """Deterministic per-scene ZMQ port, stable across processes.
 
     Mirrors ``policies.rldx._derive_sidecar_port`` (policy identity) for the
-    scene-identity case. Uses a ``hashlib`` digest (NOT the builtin ``hash``,
-    which is salted per process via ``PYTHONHASHSEED``) so the port the sidecar
-    binds in its spawn process matches the one a later client process probes for
-    the same scene. Distinct scenes map to distinct ports with overwhelming
-    probability; any residual collision is caught loudly by the identity-checked
-    ping handshake (``SidecarClient.expected_identity``), never served as wrong
-    data. SHA-256 is used only to spread identities, never as a security boundary.
+    scene-identity case. Any residual hash collision is caught loudly by the
+    identity-checked ping handshake (``SidecarClient.expected_identity``),
+    never served as wrong data. See ``sidecar_port_for_key`` for the shared
+    derivation.
     """
-    import hashlib
-
-    key = f"{task_id}|{robot_id}|{layout}".encode()
-    digest = int.from_bytes(hashlib.sha256(key).digest()[:4], "big")
-    return _SIDECAR_PORT_MIN + (digest % (_SIDECAR_PORT_MAX - _SIDECAR_PORT_MIN))
+    return sidecar_port_for_key(
+        f"{task_id}|{robot_id}|{layout}", port_min=_SIDECAR_PORT_MIN, port_max=_SIDECAR_PORT_MAX
+    )
 
 
 # REQ recv timeout for a steady-state step (Omniverse PhysX + RTX render of one
