@@ -297,6 +297,24 @@ def _system_memory_mib() -> tuple[int, int] | None:
     return total_mib, avail_mib
 
 
+def _unified_memory_vram_fallback(warnings: list[str], *, subject: str) -> tuple[int, int] | None:
+    """Unified-memory-SoC (GB10 / Thor) VRAM fallback shared by both NVIDIA probes.
+
+    No discrete pool reported → report ``_system_memory_mib()`` as
+    ``(total_mib, free_mib)`` with a warning, or ``None`` (and a warning) when
+    even that is unreadable. ``subject`` names the device in both warnings.
+    """
+    system_mem = _system_memory_mib()
+    if system_mem is None:
+        warnings.append(f"{subject} reports no VRAM and system memory is unreadable; skipping")
+        return None
+    warnings.append(
+        f"{subject} has no discrete VRAM pool (unified memory) — reporting "
+        f"{system_mem[0]} MiB of system RAM, which is shared with the OS"
+    )
+    return system_mem
+
+
 # ── NVIDIA discrete via pynvml ────────────────────────────────────────────────
 
 
@@ -342,20 +360,12 @@ def _probe_nvidia_pynvml(warnings: list[str]) -> list[NvidiaGpuInfo]:
             vram_total_mib = int(mem.total // (1024 * 1024))
             vram_free_mib = int(mem.free // (1024 * 1024))
         except Exception:
-            # Unified-memory SoC (GB10 / Thor): no discrete pool to report.
-            system_mem = _system_memory_mib()
+            system_mem = _unified_memory_vram_fallback(
+                warnings, subject=f"gpu.nvml: device {i} ({name})"
+            )
             if system_mem is None:
-                warnings.append(
-                    f"gpu.nvml: device {i} ({name}) reports no VRAM and system "
-                    "memory is unreadable; skipping"
-                )
                 continue
             vram_total_mib, vram_free_mib = system_mem
-            warnings.append(
-                f"gpu.nvml: device {i} ({name}) has no discrete VRAM pool "
-                f"(unified memory) — reporting {vram_total_mib} MiB of system "
-                "RAM, which is shared with the OS"
-            )
 
         bus_id = ""
         try:
@@ -430,17 +440,11 @@ def _probe_nvidia_smi(warnings: list[str]) -> list[NvidiaGpuInfo]:
             vram_total = int(parts[2])
             vram_free = int(parts[3])
         except ValueError:
-            # `[N/A]` — unified-memory SoC with no discrete pool (see
-            # _system_memory_mib). Same fallback as the NVML path.
-            system_mem = _system_memory_mib()
+            # `[N/A]` — unified-memory SoC with no discrete pool.
+            system_mem = _unified_memory_vram_fallback(warnings, subject=f"gpu.nvidia-smi: {name}")
             if system_mem is None:
-                warnings.append(f"gpu.nvidia-smi: no VRAM and no system memory in row {line!r}")
                 continue
             vram_total, vram_free = system_mem
-            warnings.append(
-                f"gpu.nvidia-smi: {name} reports no discrete VRAM pool (unified "
-                f"memory) — reporting {vram_total} MiB of system RAM, shared with the OS"
-            )
         cc = (cc_major, cc_minor)
         out.append(
             NvidiaGpuInfo(

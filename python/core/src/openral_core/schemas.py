@@ -5669,14 +5669,6 @@ class ControlModeSemantics(BaseModel):
     reference_frame: str | None = None
 
 
-_GRIPPER_KINDS: frozenset[ControlMode] = frozenset(
-    {ControlMode.GRIPPER_BINARY, ControlMode.GRIPPER_POSITION}
-)
-_CARTESIAN_KINDS: frozenset[ControlMode] = frozenset(
-    {ControlMode.CARTESIAN_POSE, ControlMode.CARTESIAN_DELTA, ControlMode.CARTESIAN_TWIST}
-)
-
-
 class ActuatorRequirement(BaseModel):
     """One actuator slot an rSkill emits actions for.
 
@@ -5745,8 +5737,8 @@ class ActuatorRequirement(BaseModel):
         3. ``mode`` itself is always required (enforced by typing).
         """
         sem = self.control_mode_semantics
-        is_gripper = self.kind in _GRIPPER_KINDS
-        is_cartesian = self.kind in _CARTESIAN_KINDS
+        is_gripper = self.kind in _GRIPPER_MODES
+        is_cartesian = self.kind in _CARTESIAN_MODES
 
         if is_gripper and sem.gripper_convention is None:
             raise ValueError(

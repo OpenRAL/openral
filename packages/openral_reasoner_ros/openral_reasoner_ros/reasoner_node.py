@@ -35,7 +35,6 @@ import contextlib
 import datetime
 import json
 import pathlib
-import subprocess
 import sys
 import time
 from collections import deque
@@ -73,6 +72,7 @@ from openral_core import (
     WaitTool,
     assert_vla_reward_fits,
     control_modes_for_representation,
+    detect_gpu_vram_gb,
     is_collective_target,
 )
 from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError, ROSReasonerInvalidPlan
@@ -346,40 +346,13 @@ from openral_core import WRAPPED_TASK_SPACE_LAYOUTS as _WRAPPED_TASK_SPACE_LAYOU
 # E-stopping mid-run.
 
 
-def _query_gpu_gb(field: str) -> float:
-    """One ``nvidia-smi --query-gpu=<field>`` value for GPU 0 in GB, or ``0.0``.
-
-    Deliberately torch-free (the reasoner_node stays cheap to import — torch is
-    only pulled lazily for the skill loader). Any failure (no nvidia-smi, no
-    GPU, parse error) returns ``0.0`` → callers skip their check rather than
-    blocking dispatch on a host where the value can't be read.
-    """
-    try:
-        out = subprocess.run(
-            ["nvidia-smi", f"--query-gpu={field}", "--format=csv,noheader,nounits"],
-            capture_output=True,
-            text=True,
-            timeout=5.0,
-            check=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return 0.0
-    first = out.stdout.strip().splitlines()
-    if not first:
-        return 0.0
-    try:
-        return float(first[0].strip()) / 1024.0  # MiB → GiB
-    except ValueError:
-        return 0.0
-
-
 def _detect_gpu_total_vram_gb() -> float:
     """Total VRAM (GB) of GPU 0, or ``0.0`` when unavailable.
 
     Used by the VLA/reward VRAM-fit pre-dispatch pair check when the
     ``gpu_total_vram_gb`` param is unset.
     """
-    return _query_gpu_gb("memory.total")
+    return detect_gpu_vram_gb("memory.total")
 
 
 def _detect_gpu_free_vram_gb() -> float:
@@ -392,7 +365,7 @@ def _detect_gpu_free_vram_gb() -> float:
     dispatch burned ~30 s in a CUDA OOM abort. Probed per dispatch (the
     dispatch path is slow-path; one nvidia-smi call is ~100 ms).
     """
-    return _query_gpu_gb("memory.free")
+    return detect_gpu_vram_gb("memory.free")
 
 
 def _required_control_modes(manifest: RSkillManifest) -> set[ControlMode]:
