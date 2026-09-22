@@ -3147,15 +3147,52 @@ def _make_policy_adapter_skill(
             cannot be introspected (the HF-based molmoact2 / openvla) are
             skipped silently by the helper.
             """
-            from openral_rskill._vla_core import warm_up_lerobot_policy
-
+            # Warm the EXACT path a tick runs — `adapter.step` with a
+            # synthetic observation shaped like the cell's cameras and state —
+            # not a bare policy forward. `warm_up_lerobot_policy` ran the
+            # policy's `select_action` on the main thread and the first real
+            # tick still cost 306-357 s on a Jetson AGX Orin under a live
+            # graph (2026-09-22): the chunk executor's background thread,
+            # its autocast context, the preprocessor on real-sized frames and
+            # the RTC/prefetch plumbing all pay their own first-call costs,
+            # and the deadman's 120 s first-chunk window cannot absorb them.
+            # A warm second dispatch in the same process took 426 ms, which
+            # is the number this has to move into the preload.
             try:
-                warmed = warm_up_lerobot_policy(self._adapter, prompt=self._prompt or "")
+                obs = self._warmup_observation()
+                self._adapter.step(obs, self._prompt or "")
+                if hasattr(self._adapter, "reset"):
+                    # Drop the synthetic chunk (and join any prefetch it
+                    # launched) so tick 1 starts from a clean buffer.
+                    self._adapter.reset()  # type: ignore[attr-defined]
             except Exception as exc:  # reason: an optimisation must never block activate
                 log.warning("rskill_runner.warmup_failed", skill=self.name, error=str(exc))
                 return
-            if warmed:
-                log.info("rskill_runner.warmed_up", skill=self.name)
+            log.info("rskill_runner.warmed_up", skill=self.name, path="adapter.step")
+
+        def _warmup_observation(self) -> dict[str, Any]:
+            """A zero observation with the cell's camera sizes and the policy's state width."""
+            import numpy as np
+
+            sizes: dict[str, tuple[int, int]] = {}
+            for sensor in getattr(description, "sensors", []) or []:
+                intr = getattr(sensor, "intrinsics", None)
+                if intr is not None and getattr(sensor, "modality", None) == "rgb":
+                    sizes[sensor.name] = (int(intr.height), int(intr.width))
+            required = required_vla_camera_slots(self.manifest, description)
+            images: dict[str, Any] = {}
+            for sensor_name, slot in sensor_to_slot.items():
+                if required and slot not in required:
+                    continue
+                h, w = sizes.get(sensor_name, (224, 224))
+                images[slot] = np.zeros((h, w, 3), dtype=np.uint8)
+            contract = getattr(self.manifest, "state_contract", None)
+            state_dim = int(getattr(contract, "dim", 0) or 0) or len(description.joints)
+            return {
+                "task": self._prompt or "",
+                "state": np.zeros(state_dim, dtype=np.float32),
+                "images": images,
+            }
 
         def _activate_impl(self) -> None:
             """Reset the adapter's per-episode state (action queue, RNG)."""
