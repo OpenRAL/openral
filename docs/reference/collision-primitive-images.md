@@ -2,7 +2,7 @@
 
 > **Status: measurement only.** No kernel, manifest or schema change. This page
 > renders the geometry that
-> [the collision-primitive study](https://github.com/OpenRAL/openral/pull/157) (PR #157) argues about in
+> [the collision-primitive study](https://github.com/OpenRAL/openral/pull/157) (PR #157) argues in
 > prose, and re-derives its fit numbers from the meshes independently.
 >
 > Everything below is `panda_mobile`'s `collision_geometry` — `panda_link1` …
@@ -20,12 +20,11 @@ frame and compared against the half-extents and `origin_xyz_rpy` committed in
 
 ![Corner protrusion against a voxel cell and the three characterised stops](images/collision-primitives/scale-and-recovery.png)
 
-The slop is real and it is large: the worst box (`panda_link4`) stands **76.7 mm**
-proud of its own link at the corner — three voxel cells. But the sphere-swept box
-only shortens the *corner*, and on the three links that actually reported stops
-it hands back 7.8, 13.0 and 1.9 mm against penetrations of 20.9, 17.3 and
-24.7 mm. **None of the three stops clears.** That is the study's §6 result, drawn
-to scale.
+The worst box (`panda_link4`) stands **76.7 mm** proud of its own link at the
+corner — three voxel cells. The sphere-swept box only shortens the *corner*, and
+on the three links that reported stops it hands back 7.8, 13.0 and 1.9 mm
+against penetrations of 20.9, 17.3 and 24.7 mm. **None of the three stops
+clears** — the study's §6 result, drawn to scale.
 
 ---
 
@@ -52,10 +51,9 @@ Each figure has three parts:
 
 Two things fall out of the pictures that the table cannot show.
 
-**The maximum is at an exact box corner on all seven links.** Not near one — at
-one. The face-distance panels make this obvious: the faces are near-white
-(the box is fitted tight against them, to within tens of microns) and the slop
-piles up entirely in the eight corners.
+**The maximum is at an exact box corner on all seven links.** The face-distance
+panels show it: the faces are near-white (fitted tight to within tens of
+microns) and the slop piles up entirely in the eight corners.
 
 **`panda_link1` is the odd one out.** Its `+y` face panel shows a dark *band*,
 not dark corners, because link1 is the one genuinely non-convex link in the set
@@ -71,10 +69,9 @@ convex hulls). Its cross-section shows the concavity directly.
 ![Sphere-swept box on the three worst links](images/collision-primitives/swept-box-comparison.png)
 
 The construction is `a = h − r` swept by a ball of radius `r`, so every face
-plane stays exactly where it is today. The dashed lines in each panel are the
-four face planes: both the blue rectangle and the green rounded outline are
-tangent to all four. Only the corners move, and only inward — the shaded green
-slivers.
+plane stays where it is today. The dashed lines in each panel are the four face
+planes: both the blue rectangle and the green rounded outline are tangent to all
+four, and only the corners move, inward — the shaded green slivers.
 
 `r` is the largest sweep radius that still provably contains **every vertex** of
 the collision mesh, found by bisection at 0.1 mm and verified by containment,
@@ -116,31 +113,28 @@ corners *exactly* in addition to a face grid. Since the maximum provably sits at
 a corner on every link, the exact evaluation is the tighter and more correct
 number, and the gap is one-directional and small (0.4–3.2 mm).
 
-**The swept-box row is a real error in #157, and it can be settled without any
-sampling at all.** Let `c` be the OBB corner realising the OBB's max protrusion
-`P`, and `S = Box(h − r) ⊕ B(r)`. The point of `S` nearest to `c` is exactly
+**The swept-box row is a real error in #157, settled without sampling.** Let `c`
+be the OBB corner realising the OBB's max protrusion `P`, and
+`S = Box(h − r) ⊕ B(r)`. The point of `S` nearest to `c` is exactly
 `|c − s| = sdf_box(c, h − r) − r` away, and distance-to-a-mesh is 1-Lipschitz,
-so `S` must protrude by at least `P − |c − s|`. That is the italic row above.
-
+so `S` must protrude by at least `P − |c − s|` — the italic row above.
 **#157's swept-box figures fall below that bound on six of seven links** — by
-14.2 mm on link3 and 13.9 mm on link4 — and they fall below it even when the
-bound is computed from #157's *own* (lower) OBB numbers on links 3, 4, 5 and 6.
-Every value measured here sits just above the bound, which is the expected
-signature of a boundary sampler that is finding the true maximum.
+14.2 mm on link3 and 13.9 mm on link4 — and fall below it even when the bound is
+computed from #157's *own* (lower) OBB numbers on links 3, 4, 5 and 6. Every
+value measured here sits just above the bound, the expected signature of a
+boundary sampler finding the true maximum.
 
-The likely mechanism is #157's swept-boundary sampler: it pushed box-surface
-points along *random* outward directions and kept only those landing at distance
-exactly `r`, which under-covers the rounded corner shell — precisely where the
+The mechanism is #157's swept-boundary sampler: it pushed box-surface points
+along *random* outward directions and kept only those landing at distance
+exactly `r`, under-covering the rounded corner shell — precisely where the
 maximum lives, and worst on the links with the largest `r` (link3 and link4, at
-39 and 42 mm). This measurement instead bisects along a 24 000-direction set with
-the eight corner directions inserted explicitly.
+39 and 42 mm). This measurement bisects along a 24 000-direction set with the
+eight corner directions inserted explicitly.
 
-**What this changes, and what it does not.** It makes the swept box *less*
-attractive, not more: the real tightening on link3 is 76.0 → 48.0 mm (37 %), not
-74.0 → 33.2 mm (55 %). The study's §6 recovery analysis is untouched, because
-that argument runs on **corner reach**, which reproduces exactly. So §8.1's
-recommendation — do not make the primitive change yet — stands, and stands on
-slightly firmer ground.
+**What this changes.** It makes the swept box *less* attractive: the real
+tightening on link3 is 76.0 → 48.0 mm (37 %), not 74.0 → 33.2 mm (55 %). The
+study's §6 recovery analysis is untouched, because that argument runs on
+**corner reach**, which reproduces exactly — so §8.1's recommendation stands.
 
 ---
 
@@ -152,10 +146,10 @@ these differences, all of which move the numbers in the conservative direction:
 
 * **Mesh placement.** Vertices come from `mesh_vert` placed by the geom
   transform **only**. MuJoCo recentres asset vertices at compile time and folds
-  the compensating transform into the geom frame — for this MJCF `geom_pos` /
-  `geom_quat` come out exactly equal to `mesh_pos` / `mesh_quat`, so applying
-  both double-counts it and puts the mesh 80–180 mm out of frame. Verified
-  against the raw STL assets to 7 × 10⁻⁹ m.
+  the compensating transform into the geom frame — here `geom_pos` / `geom_quat`
+  come out exactly equal to `mesh_pos` / `mesh_quat`, so applying both
+  double-counts it and puts the mesh 80–180 mm out of frame. Verified against
+  the raw STL assets to 7 × 10⁻⁹ m.
 * **OBB boundary sampling.** A 60 × 60 grid per face (21 600 points) plus all 12
   edges and, decisively, the 8 corners evaluated exactly.
 * **Swept boundary sampling.** Bisection along a 24 000-point Fibonacci

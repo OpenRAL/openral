@@ -1,21 +1,17 @@
 # The staged hull narrow phase — what shipped, what it cost, and what it did not do
 
 > **Status: implemented, safety-WG review pending — hazard-log Entry 018.**
-> (Drafted as Entry 014; renumbered because 014 was already taken by the
-> 2026-08-16 Panda box→capsule entry in the private log.) This is the change record for
-> the staged 26-DOP → exact-convex-hull narrow phase in
-> `check_voxel_collision`'s box pass. It is scoped to **arm-link vs
-> world-voxel** checks only.
+> (Drafted as Entry 014; renumbered because 014 was already taken.) This is the
+> change record for the staged 26-DOP → exact-convex-hull narrow phase in
+> `check_voxel_collision`'s box pass, scoped to **arm-link vs world-voxel**
+> checks only.
 >
 > **Extended 2026-09-02 by [issue #191](https://github.com/OpenRAL/openral/issues/191)**
 > to `check_self_collision`'s box↔box pass, which is why §9 exists. That
-> extension is what retired the `panda_link5`↔`panda_link7` ACM exemption — the
-> one open item the collision-safety alternatives survey §2.2 left on the ACM
-> theme ("#169 changed no manifest, so the unsafe exemption is still in the
-> manifests"). `panda_link5` and `panda_link7` now declare
-> `tight_geometry` too, so §5.1's "today that is link1 and link2" reads
-> link1, link2, link3, link4, link5, link6 and link7 — all seven since
-> 2026-09-07 (§5.2).
+> extension retired the `panda_link5`↔`panda_link7` ACM exemption — the one open
+> item the collision-safety alternatives survey §2.2 left on the ACM theme.
+> `panda_link5` and `panda_link7` now declare `tight_geometry` too, so §5.1's
+> "today that is link1 and link2" reads all seven links since 2026-09-07 (§5.2).
 >
 > The evidence this rests on was produced by four earlier studies and is cited,
 > not re-argued: the [collision-primitive study](collision-primitive-study.md)
@@ -36,33 +32,30 @@ than primitives, and deprecate the primitive code — if it is faster and more
 precise.*
 
 **More precise: yes, unconditionally.** The shipped OBB over-reports the link's
-reach by 53.27 mm on `panda_link1` and 46.83 mm on `panda_link2`. The 26-DOP
-cuts that to 25.69 mm and 23.01 mm; the exact convex hull cuts it to **0.00 mm**,
-by definition (`h_hull(u) = h_mesh(u)`).
+reach by 53.27 mm on `panda_link1` and 46.83 mm on `panda_link2`; the 26-DOP cuts
+that to 25.69 mm and 23.01 mm, and the exact convex hull to **0.00 mm**, by
+definition (`h_hull(u) = h_mesh(u)`).
 
 **Faster: yes, but only when the exact stage is bounded** — and the bounds are
-the substance of this change, not an afterthought:
+the substance of this change:
 
 * the **26-DOP** stage is 8.5–10× cheaper per query than `box_box_distance`
   (30–36 ns against 307 ns) and is the reason the whole thing pays;
-* the **exact hull** stage is 2–2.5× *more* expensive per query than the routine
-  it replaces, so it is affordable only because it runs on the small minority of
-  cells the DOP cannot clear;
+* the **exact hull** stage is 2–2.5× *more* expensive per query, so it is
+  affordable only because it runs on the small minority of cells the DOP cannot
+  clear;
 * an **unbounded** exact hull is a straightforward loss. `panda_link1`'s hull is
   1588 vertices and measured **0.77× the shipped routine's speed** at 400
   occupied cells. The study predicted this (§12.2: "Do not ship the raw
   1588-vertex hull on an always-on path") and the implementation refuses it.
 
-**Deprecate the primitive code: no, and a blanket removal would be wrong.** §5
-sets out exactly what was replaced and what was not, and why the "not" list is
-longer than the "yes" list.
+**Deprecate the primitive code: no, and a blanket removal would be wrong** (§5).
 
-**One result came out against the framing and against my own expectation**, and
-it changed the implementation: a 26-DOP is a strictly smaller solid than the OBB
-that contains it, but it does **not** follow that its separating-axis bound is
-always the larger number. See §4.2. The kernel now folds the shipped bound back
-in, and the change is provably unable to introduce a stop that does not already
-happen today.
+**One result came out against the framing**, and it changed the implementation: a
+26-DOP is a strictly smaller solid than the OBB that contains it, but it does
+**not** follow that its separating-axis bound is always the larger number (§4.2).
+The kernel folds the shipped bound back in, and the change is provably unable to
+introduce a stop that does not already happen today.
 
 ---
 
@@ -70,9 +63,8 @@ happen today.
 
 Max support excess `max_u [h_C(u) - h_mesh(u)]` over a 20 000-direction
 Fibonacci set, against robosuite 1.5.2's `link<N>_collision` meshes placed by
-the geom transform only ([#161 §11](collision-tight-geometry.md)). Reproduced on
-this machine; it matches #161 §3 to 0.1 mm on all seven links, which is the
-cross-check that the pipeline measures the same thing.
+the geom transform only ([#161 §11](collision-tight-geometry.md)), matching
+#161 §3 to 0.1 mm on all seven links.
 
 | link | shipped OBB | 26-DOP (stage 1) | exact hull (stage 2) |
 |---|---:|---:|---:|
@@ -84,11 +76,9 @@ cross-check that the pipeline measures the same thing.
 | link6 | 52.70 | 21.53 | 0.00 |
 | link7 | 28.25 | 12.97 | 0.00 |
 
-Links 3–7 are measured but **not shipped** — see §5.2.
-
-`tests/unit/test_collision_tight_geometry.py` pins the `link1`/`link2` rows, so
-a change that quietly stopped tightening fails rather than passing every
-containment test and going unnoticed.
+Links 3–7 were measured but not shipped when this was written — see §5.2.
+`tests/unit/test_collision_tight_geometry.py` pins the `link1`/`link2` rows, so a
+change that quietly stopped tightening fails rather than going unnoticed.
 
 ---
 
@@ -96,16 +86,12 @@ containment test and going unnoticed.
 
 **Host**: Intel Core i5-8600K, 6C/6T, 4.2 GHz sustained, x86_64, Linux 6.8.0-137,
 `g++ 13.3.0`, `-std=c++17 -O2 -g -DNDEBUG`, no `-march` — the kernel's real
-flags (`CMakeLists.txt` defaults `CMAKE_BUILD_TYPE` to `RelWithDebInfo`). This
-is the same machine #161 measured on, and `box_box_distance` reproduces there at
-307.0 ns against its published 304.0 ns.
-
-`taskset`-pinned, median of 151 repetitions, all fixtures pre-built. **Allocation
-freedom was verified, not assumed**: global `operator new`/`new[]` were replaced
-with counting wrappers and the count sampled either side of every timed region —
-**0 allocations inside every timed region** in the benchmark, and pinned in CI by
-`NoAlloc.ForwardKinematicsAndSelfCollisionAreAllocationFree`, which now drives the
-staged path (GJK simplex included) 10 000 times under the same counter.
+flags, the same machine #161 measured on, where `box_box_distance` reproduces at
+307.0 ns against its published 304.0 ns. `taskset`-pinned, median of 151
+repetitions. **Allocation freedom was verified, not assumed**: **0 allocations
+inside every timed region**, pinned in CI by
+`NoAlloc.ForwardKinematicsAndSelfCollisionAreAllocationFree`, which now drives
+the staged path (GJK simplex included) 10 000 times under the same counter.
 
 ### 3.1 Per query
 
@@ -120,21 +106,17 @@ streaming pattern.
 | stage 2 — GJK on `link2`'s 152-vertex hull, warm | ~590–740 | 1.9–2.4× slower |
 | stage 2 — GJK on `link1`'s 1588-vertex hull, warm | ~3 700 | 12× slower |
 
-Stage 1 is cheaper than #161's published 62.8 ns because every term that depends
-only on the link pose — the 13 axes in the base frame, their dot with the box
-origin, the cell's support radius on each — is hoisted out of the cell loop by
-`tight_pose_init`. The kernel streams cell centres against a fixed pose, so that
-hoist is free.
+Stage 1 beats #161's published 62.8 ns because every term depending only on the
+link pose is hoisted out of the cell loop by `tight_pose_init` — free, because
+the kernel streams cell centres against a fixed pose.
 
 ### 3.2 End to end, through the real `check_voxel_collision`
 
 Seven-link Panda at a mid-reach configuration, 96×96×60 grid at 25 mm (a
-room-sized 0.55 MB map), 10 475 cells across the seven link windows. Occupancy
-is the *N cells closest to the arm*, ranked by the shipped routine so every
-variant sees an identical grid — deliberately adverse, since real clutter is
-spread out rather than pressed against every link.
-
-`world_voxel_margin_m` is **0.0 in sim** and **0.02 on real hardware**
+room-sized 0.55 MB map), **10 475 cells across the seven link windows**.
+Occupancy is the *N cells closest to the arm*, ranked by the shipped routine so
+every variant sees an identical grid — deliberately adverse. `world_voxel_margin_m`
+is **0.0 in sim** and **0.02 on real hardware**
 (`packages/openral_rskill_ros/launch/deploy_e2e.launch.py`), so both are measured.
 
 **At the sim margin (0.0 m) — the configuration `panda_mobile` actually runs:**
@@ -157,20 +139,18 @@ spread out rather than pressed against every link.
 | 1200 | 841.99 | 823.08 (1.02×) |
 
 **Read the second table as the standing caveat it is.** A wider margin pushes
-more cells past stage 1's clear test and into stage 2, and stage 2 is the
-expensive half. `panda_mobile` is sim-only (`hal.real: null`), so the shipped
-configuration is the first table — but **any real-HAL rollout of tight geometry
-must re-measure at that robot's own margin before enabling it**, and that
-condition belongs in the hazard entry rather than in a footnote here.
+more cells past stage 1's clear test into stage 2, the expensive half.
+`panda_mobile` is sim-only (`hal.real: null`), so the shipped configuration is
+the first table — but **any real-HAL rollout must re-measure at that robot's own
+margin before enabling it**, a condition that belongs in the hazard entry.
 
 ### 3.3 Why the totals move so little
 
 Because the empty-cell scan dominates, exactly as #161 §9.2 found: at 20
 occupied cells in a 10 475-cell window, more than 99.8 % of the loop is the
-`if (occupancy[idx] == 0) continue;` fast path. Making the narrow phase 10×
-cheaper moves a term that is a third of the cost. **This confirms #161 §12.7
-from the implementation side: the remaining work is on the world grid, not the
-robot**, and nothing here should be read as contradicting that.
+`if (occupancy[idx] == 0) continue;` fast path, so a 10× cheaper narrow phase
+moves a term that is a third of the cost. **This confirms #161 §12.7 from the
+implementation side: the remaining work is on the world grid, not the robot.**
 
 ---
 
@@ -182,8 +162,7 @@ robot**, and nothing here should be read as contradicting that.
 link mesh  ⊆  exact convex hull  ⊆  26-DOP  ⊆  shipped OBB
 ```
 
-Every link is **definitional, not fitted** — there is no optimiser tolerance
-anywhere in the argument:
+Every link is **definitional, not fitted** — no optimiser tolerance anywhere:
 
 | link | why it holds | where it is proved |
 |---|---|---|
@@ -194,39 +173,29 @@ anywhere in the argument:
 Measured inward margin of the DOP inside the shipped box: **0.0831 mm on
 `link1`, 0.0546 mm on `link2`** — reproducing #157 §7.3's observation that the
 shipped boxes carry 0.055–0.132 mm of accidental headroom and nothing may
-consume it.
-
-The one place a floating-point tolerance appears is `hull ⊆ DOP`, at
-`kTightContainmentEpsilonM = 1e-9` m. That relation is an *equality* on at least
-one vertex per axis by construction, so the only open question is evaluation
-order; one nanometre buys numerical agreement, not geometric room.
+consume it. The one floating-point tolerance is `hull ⊆ DOP`, at
+`kTightContainmentEpsilonM = 1e-9` m: that relation is an *equality* on at least
+one vertex per axis by construction, so one nanometre buys numerical agreement,
+not geometric room.
 
 ### 4.2 The result that changed the design
 
-`check_voxel_collision` sizes its broad-phase window from `half_extents` alone.
-#157 identified this as the one place a representation change can make the
-kernel **unsafe** rather than merely tighter: an under-sized window never visits
-cells that genuinely intersect the solid, and the check silently returns clear.
-Because both stages are proved subsets of the shipped OBB **at configure time**,
-that window is not touched — not widened, not narrowed, not restated. The
-formula at `collision.cpp` remains `Σ_j |R_kj|·he_j` about the box origin, and
-the trap cannot fire.
+`check_voxel_collision` sizes its broad-phase window from `half_extents` alone —
+#157's one place where a representation change can make the kernel **unsafe**
+rather than merely tighter, since an under-sized window never visits cells that
+genuinely intersect the solid. Because both stages are proved subsets of the
+shipped OBB **at configure time**, that window is not touched: the formula at
+`collision.cpp` remains `Σ_j |R_kj|·he_j` about the box origin.
 
-What did not survive contact with a test is a weaker, more tempting claim:
-*"the DOP is a smaller solid, so its bound must be at least as large as the
-box's."* **That is false.** The DOP's 16 separating axes (13 body + 3 world) are
-not a superset of `box_box_distance`'s 15 (6 face + 9 edge-cross); the box SAT's
-edge-cross axes beat every DOP axis at some cells, so the *tighter solid* can
-still yield the *looser bound*. A test written to assert the intuition failed on
-real `panda_link1` geometry at the first rotated pose.
-
-The consequence is behavioural, not unsafe — a smaller reported distance is more
-conservative — but it would mean **new false stops**, which is a regression even
-though it is a safe one, and it would undercut the entire justification for
-touching this code. So `check_voxel_collision` folds `box_box_distance` back in
-for any cell the staged path is about to stop on, and takes the maximum. The
-maximum of two lower bounds is a lower bound, so this costs no soundness and
-buys a strong property:
+What did not survive contact with a test is the weaker claim that *"the DOP is a
+smaller solid, so its bound must be at least as large as the box's."* **That is
+false**: the DOP's 16 separating axes (13 body + 3 world) are not a superset of
+`box_box_distance`'s 15 (6 face + 9 edge-cross), so the *tighter solid* can yield
+the *looser bound*. That is not unsafe — a smaller reported distance is more
+conservative — but it would mean **new false stops**. So `check_voxel_collision`
+folds `box_box_distance` back in for any cell the staged path is about to stop on
+and takes the maximum; the maximum of two lower bounds is a lower bound, so this
+costs no soundness and buys a strong property:
 
 > **The staged path can never stop where the shipped path would not have.**
 > It removes stops the box was causing; it cannot add one.
@@ -238,17 +207,14 @@ fails if the fold ever *becomes* redundant so nobody deletes it as dead weight.
 
 ### 4.3 Conservatism, stated in the right direction
 
-This is easy to state backwards, so plainly:
-
 * **Against the true geometry**, the staged path never over-reports clearance.
   Every value it can return — stage 1's SAT bound, stage 2's converged distance,
   stage 2's truncated bound, the overlap fallback, the budget-exhausted fallback
-  — is a lower bound on the true link-mesh-to-cell distance. That is the safety
-  property, and it is what the tests check.
+  — is a lower bound on the true link-mesh-to-cell distance.
 * **Against the shipped OBB**, it deliberately reports *more* clearance, by up
-  to 53 mm on `link1`. Removing excess conservatism is the change. Keeping the
-  kernel sound is the constraint. A hazard entry that blurred these two would be
-  the failure mode CLAUDE.md §1.2 exists to prevent.
+  to 53 mm on `link1`. Removing excess conservatism is the change; keeping the
+  kernel sound is the constraint. A hazard entry blurring the two would be the
+  failure mode CLAUDE.md §1.2 exists to prevent.
 
 Every early exit is conservative by construction, which is what makes the
 real-time bounds safe rather than merely convenient:
@@ -263,15 +229,14 @@ real-time bounds safe rather than merely convenient:
 
 ### 4.4 Why the support scan is exhaustive
 
-`hull_cell_distance`'s support function is a linear scan of the vertex list, and
-that is a deliberate refusal of the standard optimisation. Hill-climbing over
-the hull's edge graph is the usual way to make GJK cheap on large hulls, and
-under exact arithmetic it is correct for a convex polytope. Under floating point
-it can stop one vertex short of the true support — and a support that is not the
-true maximum turns the supporting-hyperplane bound from a lower bound into an
+`hull_cell_distance`'s support function is a linear scan of the vertex list, a
+deliberate refusal of the standard optimisation. Hill-climbing over the hull's
+edge graph is correct for a convex polytope under exact arithmetic, but under
+floating point it can stop one vertex short of the true support — and a support
+that is not the true maximum turns the supporting-hyperplane bound into an
 **over-report of clearance**. The kernel buys soundness with a linear scan and
-bounds the cost with `kMaxTightHullVertices` instead. That trade is the direct
-cause of `panda_link1` shipping stage 1 only (§5.2).
+bounds the cost with `kMaxTightHullVertices` instead, which is the direct cause
+of `panda_link1` shipping stage 1 only (§5.2).
 
 ---
 
@@ -279,14 +244,11 @@ cause of `panda_link1` shipping stage 1 only (§5.2).
 
 ### 5.1 Replaced
 
-Two call sites, both gated on a manifest declaring `tight_geometry`:
-
-* the `box_box_distance` in `check_voxel_collision`'s **box pass** (this
-  document's original scope) — `panda_link1` (stage 1) and `panda_link2`
-  (stages 1 and 2);
-* the `box_box_distance` in `check_self_collision`'s **box↔box pass**, added by
-  #191 and described in §9 — `panda_link5` and `panda_link7` (stages 1 and 2)
-  joined the first two for this.
+Two call sites, both gated on a manifest declaring `tight_geometry`: the
+`box_box_distance` in `check_voxel_collision`'s **box pass** (this document's
+original scope) — `panda_link1` (stage 1) and `panda_link2` (stages 1 and 2) —
+and the `box_box_distance` in `check_self_collision`'s **box↔box pass**, added by
+#191 and described in §9, which `panda_link5` and `panda_link7` joined for.
 
 ### 5.2 Not replaced, and why
 
@@ -301,10 +263,10 @@ Two call sites, both gated on a manifest declaring `tight_geometry`:
 
 > `check_self_collision` was in this table as "out of the asked scope" until
 > #191, on the reasoning that leaving it untouched kept
-> `check_attached_self_collision`'s conservatism unchanged. That reasoning has
-> now been overtaken twice: #191 moved the self path (§9), and #266 moved the
-> attached **world-voxel** path (§10). `check_attached_self_collision` itself is
-> still box↔box — it is 3 % of the measured stops, and its adjudication budget
+> `check_attached_self_collision`'s conservatism unchanged. That has been
+> overtaken twice: #191 moved the self path (§9) and #266 the attached
+> **world-voxel** path (§10). `check_attached_self_collision` itself is still
+> box↔box — 3 % of the measured stops, and its adjudication budget
 > (`attached_payload_mesh_slop`) is stated against exactly that box.
 
 `box_box_distance` itself is **not deprecated**. It remains the narrow phase for
@@ -315,51 +277,43 @@ posture, not dead code.
 
 ### 5.3 What #171 measured against the live map, and what it means for this change
 
-[PR #171](world-map-fidelity.md) landed after this work and re-scored the
-question against the **live** octomap rather than an idealised grid, apportioning
-each stop by whether exact link geometry clears it. Its numbers are the best
-available statement of what this change is worth, and they cut both ways:
+[PR #171](world-map-fidelity.md) re-scored the question against the **live**
+octomap rather than an idealised grid, apportioning each stop by whether exact
+link geometry clears it:
 
 | | n | share |
 |---|---:|---:|
 | **link-side** — exact geometry clears it | 6 | **26 %** |
 | **world-side** — exact geometry still stops | 17 | **74 %** |
 
-*(23 live stops across four scenes.)* And within the world-side residue, **11
+*(23 live stops across four scenes.)* Within the world-side residue, **11
 stops — 48 % of all stops — are held by the octree→grid bridge's rasterisation
-dilation**: a cell that contains nothing, sits in no leaf, with real surface
-about one cell away. `rasterize_octree_to_grid` marks a base-frame cell whenever
-its cube *shares volume* with an occupied leaf's cube, and the two lattices have
-an arbitrary relative phase (and yaw, on a mobile base), so one leaf generically
-lights up to eight cells. That is [issue #173][i173] — a separate safety-WG
-decision, and the single largest term in the whole apportionment. The other
-world-side mechanism, non-collidable geometry being real to the depth camera, is
-[issue #174][i174].
+dilation**: `rasterize_octree_to_grid` marks a base-frame cell whenever its cube
+*shares volume* with an occupied leaf's cube, and the two lattices have an
+arbitrary relative phase (and yaw, on a mobile base), so one leaf generically
+lights up to eight cells — [issue #173][i173], the single largest term in the
+apportionment. The other world-side mechanism, non-collidable geometry being real
+to the depth camera, is [issue #174][i174].
 
 [i173]: https://github.com/OpenRAL/openral/issues/173
 [i174]: https://github.com/OpenRAL/openral/issues/174
 
 **So this change is necessary and correct, and it is not sufficient.** It fixes
 the link-side term exactly; the majority term is elsewhere and now has an owner.
-Neither fact argues against the other: the link-side excess #171 removes is
-large (median **28.72 mm**, up to 42.56 mm on `panda_link2`), and it is real
-clearance the robot has today and is not being credited with.
+The link-side excess #171 removes is large (median **28.72 mm**, up to 42.56 mm
+on `panda_link2`), and it is real clearance the robot has today and is not being
+credited with.
 
 #### The utensil scene: a measured recovery attributable to this change
 
-`robocasa_drawer_utensil` at its shipped pin takes a marginal initial-configuration
-stop the ideal-grid census never saw: the live map reads **−1.94 mm**, and the
-same state under exact geometry reads **+20.01 mm**. #171 calls it *entirely
-link-side* and names this PR as removing it with no scene change.
-
-But **the stop is on `panda_link1`, the link that ships stage 1 only.** #171's EXACT column is the
-convex-hull surface — what stage 2 reaches — and `link1` does not get stage 2
-here. So the question is whether the **26-DOP alone** clears it.
-
-Decomposing as `d_C = d_true − E_C(u*)`: the exact reading gives
-`d_true = +20.01 mm`, so the shipped box's realised excess along the approach
-direction is `E_OBB(u*) = 21.95 mm`, and the DOP clears the stop iff
-`E_DOP(u*) < 20.01 mm`. `u*` is not published, so it was bracketed over a
+`robocasa_drawer_utensil` at its shipped pin takes a marginal
+initial-configuration stop the ideal-grid census never saw: the live map reads
+**−1.94 mm**, the same state under exact geometry **+20.01 mm**, and #171 calls
+it *entirely link-side*. But **the stop is on `panda_link1`, the link that ships
+stage 1 only**, so the question is whether the **26-DOP alone** clears it.
+Decomposing as `d_C = d_true − E_C(u*)`, the shipped box's realised excess along
+the approach direction is `E_OBB(u*) = 21.95 mm` and the DOP clears iff
+`E_DOP(u*) < 20.01 mm`; `u*` is not published, so it was bracketed over a
 200 000-direction Fibonacci set on the real `link1` mesh:
 
 | direction set | n | max `E_DOP` | median | clears? |
@@ -368,37 +322,27 @@ direction is `E_OBB(u*) = 21.95 mm`, and the DOP clears the stop iff
 | `E_OBB(u) ≥ 20.01 mm` (a strictly larger, more adverse set) | 155 529 | 25.70 mm | 4.95 mm | not guaranteed |
 | all directions | 200 000 | 25.70 mm | 4.40 mm | not guaranteed |
 
-The first row is the one conditioned on what was actually measured, and every
-direction consistent with `E_OBB(u*) = 21.95 mm` leaves the DOP under the
-threshold. The rows below it are reported because they are the honest
-sensitivity: they include directions where the box is far prouder than it was
-at this state, and the DOP's worst case does reach its full 25.70 mm there.
-
-**Three caveats keep this a strong expectation rather than a proof.** The 1.97 mm
-of spare is a *geometry* term; the DOP's own separating-axis deficit eats into it,
-and #161 §6.2 measures that deficit at mean 0.159 mm near contact (exact 80.2 %
-of the time) but with a 22.5 mm tail. The decomposition assumes the approach
-direction is the same for both representations. And #171's EXACT column is a
-**densely sampled** surface distance (5 mm step) — an upper bound on the true
-gap, conservative in the safe direction, but it means the `+20.01 mm` input is
-itself bracketed rather than exact. (It is *not* affected by the
-`mj_geomDistance` defect #170 fixed: #171 never used that probe, and #175
-records that nothing on that page needs redoing.) The floor is firm
-regardless: the kernel folds `box_box_distance` back in, so the reported
-distance is never worse than today's −1.94 mm. For a state stopping on
-`panda_link2` the same argument is a guarantee rather than an expectation,
-because there the shipped representation *is* exact.
+The first row is conditioned on what was actually measured; the rows below it
+are the honest sensitivity. **Three caveats keep this a strong expectation rather
+than a proof**: the 1.97 mm of spare is a *geometry* term and the DOP's own
+separating-axis deficit eats into it (#161 §6.2 measures mean 0.159 mm near
+contact, exact 80.2 % of the time, with a 22.5 mm tail); the decomposition
+assumes the approach direction is the same for both representations; and #171's
+EXACT column is a **densely sampled** surface distance, bracketed rather than
+exact (it is not affected by the `mj_geomDistance` defect #170 fixed: #171
+never used that probe). The floor is firm regardless, because the kernel folds `box_box_distance`
+back in and the reported distance is never worse than today's −1.94 mm.
 
 ### 5.4 What this does **not** buy
 
 #161 §7.3 is the honest ceiling and it has not moved: **perfect link geometry
 recovers 27 of the census's 72 stopping states; 45 are held by the world grid.**
 The recommended configuration (exact hull on link1 *and* link2) scores 25/72;
-what shipped here is less than that, because `link1` gets the DOP rather than its
-hull. This change is justified by **cost and correctness**, not by unblocking
-scenes, and it should not be described as unblocking anything. The 25 mm voxel
-grid — its resolution, its 20.3 mm lattice-phase swing (#161 §7.5), and the
-map-fidelity term #160 measured — is still where the remaining recovery lives.
+what shipped here is less, because `link1` gets the DOP rather than its hull.
+This change is justified by **cost and correctness**, not by unblocking scenes,
+and it should not be described as unblocking anything. The 25 mm voxel grid — its
+resolution, its 20.3 mm lattice-phase swing (#161 §7.6), and the map-fidelity
+term #160 measured — is still where the remaining recovery lives.
 
 ---
 
@@ -407,23 +351,20 @@ map-fidelity term #160 measured — is still where the remaining recovery lives.
 Entry 012 obliges the kernel's `support_contact_exempts` and the octomap
 bridge's `payload_clearing.support_patch_withholds` to move in lockstep so
 `withheld ⊆ exempt` holds by construction. #157 and #161 both concluded it is not
-engaged by a robot-link representation change. Re-verified here **against what
+engaged by a robot-link representation change; re-verified here **against what
 was actually written**, not inherited:
 
-* `support_contact_exempts` takes an `AttachedObject`, its attested support
-  plane, a cell centre and a resolution. It receives no `CollisionModel`, and
-  this change added no argument to it.
-* `support_patch_withholds` keys on `SupportPatch` only; the bridge's
-  `surface_distance` and `bounding_radius` switch on the **attached payload's**
-  wire primitives, which this change does not touch.
+* `support_contact_exempts` receives no `CollisionModel` and gained no argument;
+  `support_patch_withholds` keys on `SupportPatch` only, and the bridge switches
+  on the **attached payload's** wire primitives.
 * `check_attached_voxel_collision`'s `CollisionModel` parameter is still
   literally unnamed.
 * `check_attached_self_collision` **does** read robot link boxes — and still
-  reads exactly the boxes it read before. Tight geometry lives in `box_hull` /
-  `hulls` / `hull_vertices` and is consulted at **one** call site, the box pass
-  of `check_voxel_collision`. So unlike the change #161 costed, this one does not
-  make `check_attached_self_collision` less conservative at all; its conservatism
-  is bit-identical.
+  reads exactly the boxes it read before, because tight geometry lives in
+  `box_hull` / `hulls` / `hull_vertices` and is consulted at **one** call site,
+  the box pass of `check_voxel_collision`. So unlike the change #161 costed, this
+  one does not make it less conservative at all; its conservatism is
+  bit-identical.
 
 **Verdict: Entry 012 is not engaged, and the payload-vs-robot check named in
 #161 §10.5 item 6 is not affected either.**
@@ -432,23 +373,18 @@ was actually written**, not inherited:
 
 [PR #169](https://github.com/OpenRAL/openral/pull/169) added
 `packages/openral_safety/openral_safety/kernel_predicates.py`, a line-by-line
-Python mirror of the kernel's narrow phase, and a duplication-watch obligation
-that it move in lockstep with `collision.cpp` — naming this PR explicitly.
-
-Checked rather than complied with: the mirror exists so the **offline ACM
-sweep** asks the kernel's own question, and the ACM sweep is about
-**link-vs-link self-collision**. `shape_distance` reproduces
-`check_self_collision`'s type routing, nothing else. This change is confined to
-`check_voxel_collision`'s box pass — `check_self_collision`, `box_box_distance`,
-`box_capsule_distance` and `capsule_distance` are byte-identical on this branch,
-so an ACM regenerated with or without it is the same matrix.
-
-`kernel_predicates.py` is therefore **unchanged, deliberately**, and
-`docs/methods/14-duplication-watch.md` item 12 was corrected to scope the
-obligation to the narrow phase it actually mirrors — in both directions, so a
-future change to the *self* path still owes it an update however small. The broad-phase reach formula,
-stated explicitly as the brief requires: for a link transform `(R, t)`, per world
-axis `k`, the window half-reach is
+Python mirror of the kernel's narrow phase, with a duplication-watch obligation
+to move in lockstep with `collision.cpp`, naming this PR explicitly. Checked
+rather than complied with: the mirror exists so the **offline ACM sweep** asks
+the kernel's own question, and that sweep is about **link-vs-link
+self-collision**. This change is confined to `check_voxel_collision`'s box pass —
+`check_self_collision`, `box_box_distance`, `box_capsule_distance` and
+`capsule_distance` are byte-identical on this branch, so an ACM regenerated with
+or without it is the same matrix. `kernel_predicates.py` is therefore
+**unchanged, deliberately**, and `docs/methods/14-duplication-watch.md` item 12
+was corrected to scope the obligation to the narrow phase it actually mirrors, in
+both directions. The broad-phase reach formula, stated explicitly: for a link
+transform `(R, t)`, per world axis `k`, the window half-reach is
 
 ```
 e_k = Σ_j |R_kj| · half_extents_j          (about t, plus margin + half_side)
@@ -477,8 +413,7 @@ The benchmark in §3 is not checked in (CLAUDE.md §1.11 keeps fixtures for test
 not studies). It builds `cpp/openral_safety_kernel/src/collision.cpp` with the
 flags above against a generated fixture holding the shipped OBBs, the hulls, and
 MuJoCo-computed link world poses at robosuite's `init_qpos`; occupancy is the N
-cells nearest the arm ranked by `box_box_distance`; global `operator new` is
-replaced with a counting wrapper and sampled either side of each timed region.
+cells nearest the arm ranked by `box_box_distance`.
 
 ---
 
@@ -487,32 +422,15 @@ replaced with a counting wrapper and sampled either side of each timed region.
 Restating #161 §10.5 against what actually shipped, so a reviewer checks claims
 rather than intentions:
 
-1. **Containment is proved per link, not sampled** — `mesh ⊆ hull ⊆ DOP ⊆ OBB`,
-   with the achieved margin reported (0.0831 mm / 0.0546 mm) and re-derived from
-   the real mesh in CI. ✔ §4.1
-2. **The broad phase was verified, not merely left alone** — the reach formula is
-   unchanged and the subset property is asserted at load, fail-closed. ✔ §6
-3. **The narrow phase's conservatism direction is declared, in both directions**
-   — never over-reports against the truth; deliberately less conservative than
-   the shipped box. ✔ §4.3
-4. **The change cannot add a stop** — proved by construction and pinned by test.
-   ✔ §4.2
-5. **Every real-time bound fails conservative** — iteration cap, refinement
-   budget, vertex ceiling, overlap fallback. ✔ §4.3
-6. **`check_attached_self_collision` is unaffected**, unlike the change #161
-   costed. ✔ §6
-7. **The recovery claim is the one the evidence supports** — this is a cost and
-   correctness change. Against the live map #171 apportions **26 % link-side /
-   74 % world-side**, with 48 % of all stops held by the octree→grid
-   rasterisation rule (issue #173). ✔ §5.3, §5.4
-8. **The real-HAL margin is an open condition.** §3.2 measures 0.82× at
-   `world_voxel_margin_m = 0.02` with clutter pressed against the arm.
-   `panda_mobile` is sim-only so nothing ships into that regime today, and the
-   entry should make re-measurement a precondition for any robot that would.
-9. ~~**Issue #155 sequencing is unchanged** — this change regenerates no ACM and
-   does not re-lower any manifest.~~ **Superseded by #191**, which regenerates
-   the `panda_mobile` / `panda_mobile_vslam` ACM precisely so that it stops
-   carrying the exemption. §9.
+1. **Containment is proved per link, not sampled** — `mesh ⊆ hull ⊆ DOP ⊆ OBB`, margin 0.0831 / 0.0546 mm, re-derived from the real mesh in CI. ✔ §4.1
+2. **The broad phase was verified, not merely left alone** — reach formula unchanged, subset property asserted at load, fail-closed. ✔ §6
+3. **Conservatism is declared in both directions** — never over-reports against the truth; deliberately less conservative than the shipped box. ✔ §4.3
+4. **The change cannot add a stop** — by construction, pinned by test. ✔ §4.2
+5. **Every real-time bound fails conservative** — iteration cap, refinement budget, vertex ceiling, overlap fallback. ✔ §4.3
+6. **`check_attached_self_collision` is unaffected**, unlike the change #161 costed. ✔ §6
+7. **The recovery claim is the one the evidence supports** — a cost and correctness change; #171 apportions **26 % link-side / 74 % world-side**, 48 % of all stops held by the octree→grid rasterisation (issue #173). ✔ §5.3, §5.4
+8. **The real-HAL margin is an open condition** — §3.2 measures 0.82× at `world_voxel_margin_m = 0.02`; re-measurement is a precondition for any robot that would ship there.
+9. ~~**Issue #155 sequencing is unchanged**~~ **Superseded by #191**, which regenerates the `panda_mobile` / `panda_mobile_vslam` ACM precisely so that it stops carrying the exemption. §9.
 
 ---
 
@@ -527,11 +445,9 @@ a manifest declaring no tight geometry is bit-for-bit unchanged.
 
 `panda_link5`↔`panda_link7` shipped **ACM-exempted** from
 [#155](https://github.com/OpenRAL/openral/issues/155) and stayed that way through
-[#169](https://github.com/OpenRAL/openral/pull/169), which proved by
-branch-and-bound (not sampling) that the pair genuinely interpenetrates and then
-changed no manifest byte. Measured over the pair's **entire** relative-DoF
-subspace — `panda_joint6` × `panda_joint7`, the only two joints that move it, on
-the same 121 × 121 = 14 641 grid #169 used, at `self_collision_margin_m = 0`:
+[#169](https://github.com/OpenRAL/openral/pull/169). Measured over the pair's
+**entire** relative-DoF subspace — `panda_joint6` × `panda_joint7`, on the same
+121 × 121 = 14 641 grid #169 used, at `self_collision_margin_m = 0`:
 
 | representation | fires | of which real | false |
 |---|---:|---:|---:|
@@ -540,14 +456,12 @@ the same 121 × 121 = 14 641 grid #169 used, at `self_collision_margin_m = 0`:
 
 and no margin separates the OBB's populations: the deepest **real** collision
 sits at a box gap of −8.37 mm while the shallowest **false** one is at
-−36.64 mm. The hull is not merely tighter here, it is exact: the Panda's link5
-and link7 collision meshes are convex to 1e-4 in volume ratio
+−36.64 mm. **The boxes cannot separate that pair at any margin; the hulls
+separate it exactly** — link5 and link7 are convex to 1e-4 in volume ratio
 ([primitive study §4.3](collision-primitive-study.md)), so `conv(mesh)` **is**
-the mesh for this pair and the hull verdict is the mesh verdict.
-
-Tightening the boxes was the retirement path the SRDF comment named, and it does
-not reach: #157 §4.3 measures the achievable corner-reach reduction at 7.5 mm on
-link5 and 1.9 mm on link7, against the ~28 mm the separation needs.
+the mesh here and the hull verdict is the mesh verdict. Tightening the boxes,
+the retirement path the SRDF comment named, does not reach: #157 §4.3 measures
+7.5 mm on link5 and 1.9 mm on link7 against the ~28 mm needed.
 
 ### 9.2 What the un-exempted pair costs at box fidelity
 
@@ -576,11 +490,10 @@ the exemption was hiding.
 | C — Option A (pair checked, no hulls) | 0.820 | 1.08× |
 
 The multiplier is large because the routine it sits in is small: +1.545 µs, or
-24.7 µs over a 16-step horizon, 0.25 % of a 10 ms budget. It is close to the
-sustained cost rather than a spike — this pair's boxes fail to clear on 86.38 %
-of its configuration space, so the GJK runs on nearly every call. The next lever,
-if a future robot makes that bite, is a DOP-vs-DOP stage 1 in front of the GJK,
-not a cheaper support function (§4.4).
+24.7 µs over a 16-step horizon, 0.25 % of a 10 ms budget. It is sustained rather
+than a spike, since this pair's boxes fail to clear on 86.38 % of its
+configuration space. The next lever, if a future robot makes that bite, is a
+DOP-vs-DOP stage 1 in front of the GJK, not a cheaper support function (§4.4).
 
 ### 9.4 The interaction with #188's graded velocity band
 
@@ -591,16 +504,12 @@ visited and only their minimum is reported. Here the answer **is** the reported
 genuinely 60.0 mm apart: sound, but it would crawl the arm past a clear pose.
 
 More consequently, the self-collision check's `sweep_min_distance` is **no
-longer folded into the graded band's slack at all**. A robot's tightest self-pair
-is a property of how it is built, not of where it is going: over all 14 641
-poses, `panda_link5`↔`panda_link7` never opens past **22.72 mm**, and **zero**
-of them clear a 50 mm band, let alone a 100 mm one. Folding it in pinned the
-scale at a constant — measured at 0.21 on the live kernel at a 100 mm band with
-k = 20 — after which the world term, the one a chunk can actually act on, only
-mattered below 22 mm. That is a permanent speed limit, not a slowdown. The
-self-collision **latch** is untouched; only its contribution to the velocity band
-is dropped, which restores the pre-#188 rate on the self path and leaves the
-world path doing what #188 built it for. Pinned by
+longer folded into the graded band's slack at all**. Over all 14 641 poses,
+`panda_link5`↔`panda_link7` never opens past **22.72 mm** and **zero** clear a
+50 mm band, so folding it in pinned the scale at a constant — 0.21 on the live
+kernel at a 100 mm band with k = 20 — after which the world term, the one a chunk
+can act on, only mattered below 22 mm: a permanent speed limit, not a slowdown.
+The self-collision **latch** is untouched. Pinned by
 `LifecycleKernelTest.GradedScalingIgnoresTheRobotsOwnSelfClearance` and
 `…TheSelfCollisionLatchSurvivesTheBandExclusion`.
 
@@ -608,30 +517,24 @@ world path doing what #188 built it for. Pinned by
 
 **The all-zero Panda arm self-collides for real** — 5.65 mm at its own collision
 meshes. Two existing kernel tests flew that configuration and only passed because
-the pair was exempt; both now seed `panda_joint6` at the SRDF's own `ready`
-value. This is the "new stop class" #191 asked to be quantified, and it is a true
+the pair was exempt; both now seed `panda_joint6` at the SRDF's `ready` value.
+This is the "new stop class" #191 asked to be quantified, and it is a true
 positive, not a regression.
 
 **The cuMotion emitter needed its own matrix.** `render_cumotion_config` lowers
 each link to a *containing* capsule, and for that geometry the pair really is
-always-colliding: it overlaps at **100.00 %** of the same grid, the shallowest by
-1.03 mm. Copying the kernel's matrix would have handed cuRobo a constraint that
-rejects `ready`. Given the URDF the emitter now re-derives the ACM against the
-spheres it actually writes (`sphere_model_geometry` + `acm_for_geometry`), so the
-planner's model stays **looser** than the kernel's — never tighter, which is the
-only safe direction for a planner (#169). Fixing that surfaced a second defect
-the same measurement explains: the emitter was sourcing its spheres from
-`LoweredCollisionModel.collision_geometry` — what the lowering tool would
-*write*, a PCA capsule for a mesh collision (#157 §8.5) — rather than from the
-manifest the kernel checks. It now prefers the manifest.
-
-Symmetrically, `_certified_always_colliding` **withholds** for any pair whose
-links both declare `tight_geometry`: it reasons with `shape_distance`, the box,
-and `hull_gap >= box_gap` everywhere, so "the boxes always overlap" no longer
-implies "the kernel always trips". Certifying on it would grant an ACM entry
-that hides a live check. No shipped robot loses an entry to this today — every
-`panda_mobile` ACM row is adjacent or SRDF-sourced — so it is a fail-closed
-guard, not a behaviour change.
+always-colliding — **100.00 %** of the same grid, shallowest by 1.03 mm — so
+copying the kernel's matrix would have handed cuRobo a constraint that rejects
+`ready`. The emitter now re-derives the ACM against the spheres it actually
+writes (`sphere_model_geometry` + `acm_for_geometry`), keeping the planner's
+model **looser** than the kernel's, the only safe direction (#169). It also now
+sources those spheres from the manifest the kernel checks rather than from
+`LoweredCollisionModel.collision_geometry`, a PCA capsule for a mesh collision
+(#157 §8.5). Symmetrically, `_certified_always_colliding` **withholds** for any
+pair whose links both declare `tight_geometry`, since it reasons with the box and
+`hull_gap >= box_gap` everywhere, so "the boxes always overlap" no longer implies
+"the kernel always trips". No shipped robot loses an entry to this today: a
+fail-closed guard, not a behaviour change.
 
 ### 9.6 Reproducing §9
 
@@ -645,13 +548,10 @@ just safety-kernel-build && ./build/openral_safety_kernel/test_collision \
     --gtest_filter='SelfCollisionHull.*'
 ```
 
-The 14 641-pose sweep and the §9.3 benchmark are one-shot analysis and are not
-checked in (§7). The sweep drives `openral_hal.convex_distance` — GJK with a
-separating-axis certificate, plus exact SAT on overlap — over MuJoCo FK of
+The 14 641-pose sweep and the §9.3 benchmark are one-shot analysis, not checked
+in (§7). The sweep drives `openral_hal.convex_distance` over MuJoCo FK of
 robosuite's Panda at every node of the `(joint6, joint7)` grid, comparing
-`kernel_predicates.box_box_distance` on the shipped OBBs against `conv(mesh)` for
-the same poses. The benchmark inlines the manifest's boxes, hulls and ACM into a
-standalone `main` linked against `collision.cpp` at `-O3`.
+`kernel_predicates.box_box_distance` on the shipped OBBs against `conv(mesh)`.
 
 ---
 
@@ -666,12 +566,9 @@ bit-for-bit unchanged.
 ### 10.1 Why — the term that was left standing
 
 Robot links got stage 2 in #166. Attached payloads never did:
-`extract_body_primitives` lowered a carried **mesh** geom to its local AABB, and
-that was not a fallback after a failed refinement — it was the only lowering a
-carried mesh had.
-
-Measured across all 80 rounds of the 2026-09-10 resolution A/B (424 samples, 4
-scenes), identical in every scene:
+`extract_body_primitives` lowered a carried **mesh** geom to its local AABB, the
+only lowering a carried mesh had. Measured across all 80 rounds of the
+2026-09-10 resolution A/B (424 samples, 4 scenes), identical in every scene:
 
 | payload box corner slop | value |
 | --- | ---: |
@@ -679,10 +576,10 @@ scenes), identical in every scene:
 | max | **88.22 mm** |
 
 For scale, the world-voxel half-diagonal that [#253](https://github.com/OpenRAL/openral/issues/253)
-proposed to shrink is **21.65 mm** at 25 mm cells and **12.99 mm** at 15 mm. The
-payload box contributed **2.3–3.9× the entire quantisation term** — which is why
-that A/B ran clean (80 rounds, 79 valid, 0 bond teardowns, pairing exact) and
-returned a null:
+proposed to shrink is **21.65 mm** at 25 mm cells and **12.99 mm** at 15 mm, so
+the payload box contributed **2.3–3.9× the entire quantisation term** — which is
+why that A/B ran clean (80 rounds, 79 valid, 0 bond teardowns) and returned a
+null:
 
 ```
 same-party paired shift   +5.9 mm   95% CI [-5.7, +17.7]
@@ -690,17 +587,13 @@ predicted                 -8.66 mm  → OUTSIDE the interval, 2.6 se away
 sign test                 11 neg / 12 pos,  p = 1.000
 ```
 
-Stop composition says the same thing from the other side: payload-vs-world was
-**27/34 (79 %)** of stops at 25 mm and **36/37 (97 %)** at 15 mm. And roughly
-half of those stops were not contacts at all — true certified clearance at the
-moment the kernel stopped was **>10 mm** for 9 of 19 payload stops at 25 mm and
-16 of 32 at 15 mm, median true gap 9.6 mm in both arms. Exactly what a 50 mm box
-bound predicts.
-
-**The check stays.** The ≤2 mm bucket contains real interpenetration (−7.7,
-−1.7, −1.5, −1.3 mm) — the check catching a carried object already in contact.
-Deleting payload-vs-world would recover most of the gate-off/gate-on ceiling gap
-*and* let those through. The fix is fidelity, not removal.
+Stop composition says the same from the other side: payload-vs-world was **27/34
+(79 %)** of stops at 25 mm and **36/37 (97 %)** at 15 mm, and roughly half were
+not contacts at all — true certified clearance at the moment of the stop was
+**>10 mm** for 9 of 19 payload stops at 25 mm and 16 of 32 at 15 mm, median true
+gap 9.6 mm. Exactly what a 50 mm box bound predicts. **The check stays**: the
+≤2 mm bucket contains real interpenetration (−7.7, −1.7, −1.5, −1.3 mm). The fix
+is fidelity, not removal.
 
 ### 10.2 What changed
 
@@ -717,14 +610,13 @@ Both sides share `validate_tight_hull` (the kernel) and
 `openral_core.check_tight_geometry_fits_box` (the schema), so a payload hull is
 never held to a weaker standard than a link's.
 
-**Fail-down, not fail-closed, and why.** A robot's hulls are fixed, shipped and
-validated once; a payload's arrive on every world-state message from a live
-producer. Refusing the whole attachment over an unprovable refinement would drop
-the payload's geometry entirely — the *unsafe* direction. Dropping only the
-refinement leaves the primitive checked as the plain box, i.e. exactly the
-pre-#266 behaviour. An over-budget hull is refused **whole**, never truncated to
-the first `kMaxTightHullVertices`, because a truncated hull no longer contains
-its mesh.
+**Fail-down, not fail-closed, and why.** A payload's hulls arrive on every
+world-state message from a live producer, and refusing the whole attachment over
+an unprovable refinement would drop the payload's geometry entirely — the
+*unsafe* direction — while dropping only the refinement leaves the primitive
+checked as the plain box, exactly the pre-#266 behaviour. An over-budget hull is
+refused **whole**, never truncated to the first `kMaxTightHullVertices`, because
+a truncated hull no longer contains its mesh.
 
 ### 10.3 The safety case
 
@@ -735,58 +627,39 @@ geometry is derived online rather than shipped:
 mesh  ⊆  hull = conv(surface points)  ⊆  26-DOP  ⊆  local AABB (the box)
 ```
 
-Every link is definitional, not fitted. The slabs are tangent halfspaces
-`u·x ≤ max over the same points of u·x`; the hull is the convex hull of those
-points; the box is the points' own AABB grown by 1e-4 m. No optimiser tolerance
-appears anywhere, so the broad-phase window — sized from the box alone — never
-moves.
+Every link is definitional, not fitted: the slabs are tangent halfspaces, the
+hull is the convex hull of those points, the box is the points' own AABB grown
+by 1e-4 m. No optimiser tolerance appears anywhere, so the broad-phase window —
+sized from the box alone — never moves.
 
 **The first link holds only for a POLYTOPE, and that is not a technicality.**
 `solid ⊆ conv(sampled surface points)` is an equality for a mesh or a box and
-runs *the wrong way* for anything curved. `geom_surface_points` samples a
-sphere at its six axis poles, so the support of those points along the 26-DOP's
-first corner axis is `r/√3 = 0.577 r` while the sphere reaches `r` — a 50 mm
-sphere cut **21.13 mm inside its own surface**, larger than the 12.99 mm
-half-diagonal of a 15 mm voxel. The kernel would then report the payload
-farther from an occupied cell than it is: a *missed* stop, the one direction
-this change must never produce.
-
-Nothing downstream can catch it. The schema validator and `validate_tight_hull`
-compare only the three box axes, and the ten diagonal slabs have no box bound
-to violate. So it is refused at the last place that still knows what the
-geometry *is*: `geom_is_polytope` gates both lowering paths, and **one
-ungroundable geom disqualifies its whole cluster** — a DOP is a single solid
-bounding all of them and cannot be sound for only some. Costless in practice
-(a payload lowered one geom at a time never reaches the cluster path, and the
-four A/B scenes cluster meshes only) and pinned by
-`test_a_curved_geom_never_grounds_a_refinement`, which asserts the 21.13 mm
-deficit rather than describing it.
-
-The kernel adds the one degeneracy the slabs can express and the proof cannot
-exclude: 13 zero `lo` and 13 zero `hi` are finite, not inverted, and inside any
-box, yet collapse the payload to a **point**. Reachable from a producer that
-resized the arrays and forgot to fill them, so `validate_tight_hull` requires
-positive extent on the three box axes and falls back to the box.
+runs *the wrong way* for anything curved. `geom_surface_points` samples a sphere
+at its six axis poles, so the support of those points along the 26-DOP's first
+corner axis is `r/√3 = 0.577 r` while the sphere reaches `r` — a 50 mm sphere
+cut **21.13 mm inside its own surface**, larger than the 12.99 mm half-diagonal
+of a 15 mm voxel, which would make the kernel report the payload farther from an
+occupied cell than it is: a *missed* stop. Nothing downstream can catch it, since
+the schema validator and `validate_tight_hull` compare only the three box axes.
+So `geom_is_polytope` gates both lowering paths, and **one ungroundable geom
+disqualifies its whole cluster**, since a DOP is a single solid bounding all of
+them. Pinned by `test_a_curved_geom_never_grounds_a_refinement`, which asserts
+the 21.13 mm deficit rather than describing it. `validate_tight_hull` also
+requires positive extent on the three box axes, rejecting the one degeneracy the
+slabs can express and the proof cannot exclude — 13 zero `lo` and 13 zero `hi`,
+finite and inside any box, yet collapsing the payload to a **point**.
 
 Conservatism, stated in the right direction: every stage is a **lower bound** on
-the true mesh-to-cell clearance, and the kernel takes the max of the ones it
-computed. A max of lower bounds is a lower bound. So the refinement can only
-ever **raise** the reported clearance, and therefore only ever **remove** a stop,
-never add one. `AttachedVoxelTightGeometry.RefiningAPayloadOnlyEverRemovesStops`
-pins that through the shipped entry point over a sweep of single-cell grids.
+the true mesh-to-cell clearance and the kernel takes the max of the ones it
+computed, so the refinement can only ever **raise** the reported clearance and
+therefore only ever **remove** a stop, never add one.
+`AttachedVoxelTightGeometry.RefiningAPayloadOnlyEverRemovesStops` pins that
+through the shipped entry point over a sweep of single-cell grids.
 
-No convex-hull solver runs. The kernel's stage 2 is a support-function scan, and
-the support of `conv(V)` is the support of `V`, so the **deduplicated surface
-points** are already a correct stage-2 representation — a true hull would only
-drop interior points, a cost reduction rather than a correctness one. It is not
-worth computing here: MuJoCo compiles a collision mesh to its convex hull
-already, so measured across all four A/B scenes every real payload mesh has *n*
-hull vertices for *n* vertices (749–3319 of them) and SciPy returns the input
-unchanged, at 4–17 ms per call against 0.4 ms for the whole rest of the
-lowering — paid, on this producer, at world-state rate. The deduplicating sort
-is bounded for the same reason (`_HULL_DEDUP_CEILING`): it exists to bring a
-*nearly* fitting point set under the ceiling, and a set already twice over will
-not get there.
+No convex-hull solver runs: stage 2 is a support-function scan and the support of
+`conv(V)` is the support of `V`, so the **deduplicated surface points** are
+already a correct stage-2 representation and a SciPy hull would cost 4–17 ms per
+call to return the input unchanged.
 
 ### 10.4 What actually fires, measured
 
@@ -807,23 +680,18 @@ Support excess is the max over 4 000 random unit directions of
 `support(model, u) − support(payload surface, u)`, measured against the payload's
 whole surface point cloud in each primitive's own box frame; corner slop is
 `attached_payload_mesh_slop`'s own metric. A negative hull figure is the
-multi-primitive artefact of that shared point cloud, not a containment failure —
-containment is proved separately, by construction and again at ingest.
+multi-primitive artefact of that shared point cloud, not a containment failure.
 
-Three things this says plainly:
-
-1. **Stage 1 does the work.** A real RoboCasa collision mesh carries 749–3319
-   vertices and is already convex, so three of these eight payloads are over
-   `MAX_TIGHT_HULL_VERTICES` and ship the DOP alone — the same representation,
-   for the same reason, that `panda_link1` ships. Stage 2 fires for the small
-   meshes. The DOP is the uncapped stage, and it is **tangent to the real
-   surface along all 13 axes**, which is exactly where the corner slop lives.
-2. **13–23 mm of corner slop, and 8–14 mm of worst-direction support excess, is
-   what the box was adding in these scenes.** These are the shipped scenes at
-   seed 1, not the A/B's own payload set (median 50.78 mm) — those rounds are
-   gitignored on q-laptop, and re-scoring them is §10.8's owed work.
-3. **The wire costs 0.4–21 kB per payload**, and the producer went 0.37–0.44 ms
-   → 0.51–1.10 ms per lowering.
+**Stage 1 does the work.** A real RoboCasa collision mesh carries 749–3319
+vertices and is already convex, so three of these eight payloads are over
+`MAX_TIGHT_HULL_VERTICES` and ship the DOP alone — the same representation, for
+the same reason, that `panda_link1` ships. The DOP is the uncapped stage and it
+is **tangent to the real surface along all 13 axes**, which is exactly where the
+corner slop lives. **13–23 mm of corner slop, and 8–14 mm of worst-direction
+support excess, is what the box was adding in these scenes** — the shipped scenes
+at seed 1, not the A/B's own payload set (median 50.78 mm), whose re-scoring is
+§10.8's owed work. The wire costs 0.4–21 kB per payload, and the producer went
+0.37–0.44 ms → 0.51–1.10 ms per lowering.
 
 ### 10.5 What the real kernel gives back, measured
 
@@ -831,91 +699,52 @@ Three things this says plainly:
 binary: real `safety_kernel_node`, real `openral_msgs` IDL, a real dense
 occupancy grid, and a real RoboCasa payload's lowered primitives on a 1-DoF
 prismatic carriage, so the commanded joint value *is* the payload's position.
-Zero margins and no declaration, so the refusal boundary is purely geometric —
-"where does the kernel's model of the payload first claim contact with the
-cell". Swept twice against byte-identical everything else: once with the wire's
-`tight_*` fields stripped (the pre-#266 box), once with them.
+Zero margins and no declaration, so the refusal boundary is purely geometric.
+Swept twice against byte-identical everything else — **identical payload poses
+through every condition, no policy in the loop** — once with the wire's `tight_*`
+fields stripped (the pre-#266 box), once with them. 16 orientations each, rotated
+about the primitive's own centre so the sweep measures the *shape*; boundary
+located by ascending scan to 0.1 mm.
 
 | payload | stage | recovered travel: min / **median** / max |
 |---|---|---|
 | `PickPlaceCounterToCabinet` `obj_main` (1 primitive, 98-vertex hull) | 1 + 2 | 5.10 / **17.65** / 28.40 mm |
 | `PickPlaceCounterToSink` `obj_main` (2 primitives, over budget → DOP only) | 1 only | 0.00 / **8.75** / 18.70 mm |
 
-16 orientations each (index 0 as produced, the rest uniform random), rotated
-about the primitive's own centre so the sweep measures the *shape* rather than
-the payload's internal offset; boundary located by ascending scan to 0.1 mm.
+**The recovery is real and it is the right size**: [#253](https://github.com/OpenRAL/openral/issues/253)
+was shrinking the small term, its predicted gain **8.66 mm**, and it measured
+null; the stage-1-only payload here — the *field-typical* case, since a real
+collision mesh is over the vertex budget — gives back **8.75 mm median** through
+the same kernel, and stage 2 roughly doubles that. **Never negative, 32
+orientations out of 32**, which is §10.3's soundness argument observed rather
+than argued. **0.00 mm happens and is correct**: at a face-on approach the box is
+already tight, so the median matters and the minimum is not a defect.
 
-Three things worth reading off it:
-
-1. **The recovery is real and it is the right size.** §10.1's whole point is
-   that [#253](https://github.com/OpenRAL/openral/issues/253) was shrinking the
-   small term: its predicted gain was **8.66 mm**, and it measured null. The
-   stage-1-only payload here — the *field-typical* case, since a real
-   collision mesh is over the vertex budget — gives back **8.75 mm median**
-   through the same kernel. Stage 2 roughly doubles that.
-2. **Never negative, 32 orientations out of 32.** The refinement never stopped
-   the carriage earlier than the box did. That is §10.3's soundness argument
-   observed rather than argued, on the shipped binary.
-3. **0.00 mm happens, and is correct.** At a face-on approach the box is
-   already tight — a box is only loose at its corners — so there is nothing
-   to give back. The median matters; the minimum is not a defect.
-
-**What this is not.** One occupied cell is not a kitchen, and a carriage is not
-a policy. It measures the size of the conservatism removed, not how often that
-conservatism was costing a task. The stop-rate and completion-rate questions
-are still §10.8's owed work.
+**What this is not.** One occupied cell is not a kitchen and a carriage is not a
+policy: it measures the size of the conservatism removed, not how often it was
+costing a task. Stop-rate and completion-rate are still §10.8's owed work.
 
 Reproduce (one-shot analysis, not checked in — §7's rule): dump a payload's
-lowered primitives with `extract_body_primitives` against a RoboCasa scene,
-then drive `start_kernel` / `activate_kernel_node` from
+lowered primitives with `extract_body_primitives` against a RoboCasa scene, then
+drive `start_kernel` / `activate_kernel_node` from
 `tests/sim/safety/_kernel_subprocess.py` with the carriage rig of
-`tests/integration/test_safety_kernel_place_allowance_band.py`. Two traps cost
-a rebuild each: the occupancy grid has a **deadline**, and a sweep that outlives
-it turns every chunk into a `voxel_unavailable` refusal that reads exactly like
-a geometric one (assert `FailureTrigger.KIND_COLLISION`, never a bare refusal);
-and the kernel **latches** on refusal, so a reset is only evidence the latch is
-gone once a known-safe chunk is accepted again.
+`tests/integration/test_safety_kernel_place_allowance_band.py`. Two traps cost a
+rebuild each: the occupancy grid has a **deadline**, and a sweep that outlives it
+turns every chunk into a `voxel_unavailable` refusal that reads exactly like a
+geometric one (assert `FailureTrigger.KIND_COLLISION`, never a bare refusal); and
+the kernel **latches** on refusal, so a reset is only evidence the latch is gone
+once a known-safe chunk is accepted again.
 
 ### 10.6 The live A/B, and why it answered nothing
 
-Run 2026-09-11 on q-laptop: 4 scenes x 5 rounds x 2 arms, gate ON, 25 mm,
-one graph at a time with the arms alternating round by round. **Arms are two
-worktrees, not an env var** — #266 changes the producer, the wire, the kernel
-*and* the adjudication budget, so a flag could only switch a fraction of it and
-would quietly attribute the rest to nothing. Nothing was added to the product to
-make the experiment possible.
-
-**Primary endpoint (paired over-approximation shift): null.**
-
-```
-median  -2.83 mm    mean  -6.91 mm
-95% CI  [-22.09, +8.26] mm
-sign test  6 negative / 5 positive        n = 11 pairs
-```
-
-**It is a null that proves nothing, and the fault is the experiment's.** The
-paired difference has sd = 25.7 mm, so at n = 11 the power is **0.20** against
-the DOP-only recovery and 0.63 against the hull's. Detecting 8.75 mm at 80 %
-would need ~68 pairs, i.e. ~250 rounds, ~14 h. `tools/resolution_ab.sh` warns in
-its own header against running an endpoint that can only report a null; this
-run did it anyway.
-
-**The deeper problem is the pairing, and more rounds would not fix it.** #253's
-two arms ran the *same code* and differed by one env var, so the same policy
-produced closely-matched trajectories and the pairing was real. Here the arms
-are different code: the refinement changes *when* the kernel stops, which
-changes the trajectory from that moment on, so `base r03` and `hull r03` are not
-the same event. Pairing by round index buys almost nothing, which is exactly why
-sd is 25.7 mm against a 9-18 mm effect.
-
-**The right instrument is replay, not a battery** — identical inputs through
-both kernels, which is what §10.5's carriage sweep is: same payload, same cell,
-same pose, box vs refined, zero policy noise, 17.65 mm median and never negative
-in 32 of 32. A live battery adds stochasticity that swamps the very quantity it
-is trying to measure. Extending §10.5 to replay *recorded field poses* would
-scale that instrument to the field without inheriting the noise.
-
-What the battery **did** establish, none of it needing the paired endpoint:
+Run 2026-09-11 on q-laptop (4 scenes x 5 rounds x 2 arms, gate ON, 25 mm, the
+arms being two worktrees rather than an env var), the primary endpoint — paired
+over-approximation shift — came back a null that proves nothing: median
+−2.83 mm, 95 % CI [−22.09, +8.26], 6 neg / 5 pos over n = 11 pairs, sd = 25.7 mm
+giving power **0.20** against the DOP-only recovery. More rounds would not fix
+it, because the arms are different code and the refinement changes *when* the
+kernel stops, so **the right instrument is replay, not a battery** — which is
+what §10.5's carriage sweep is.
 
 | | base (`f06ac63`) | hull (`438516d`) |
 |---|---:|---:|
@@ -923,73 +752,50 @@ What the battery **did** establish, none of it needing the paired endpoint:
 | budget charged, median | 88.22 mm | **34.45 mm** |
 | verdicts (wq / fp / rc / unadj) | 12 / 1 / 2 / 3 | 9 / 1 / 3 / 3 |
 
-The budget column is §10.7's fix working on live rounds: 88.22 mm was
-`panda_link4`'s corner slop being charged to stops no robot link is party to.
-Verdict counts are otherwise comparable — the tighter budget did not make the
-rounds less adjudicable.
-
-**And it earned its cost by finding a bug in that fix.** The first scoring pass
-flagged **6 of 16** hull-arm stops `false-positive`. Every one was an artifact:
-`estop_ground_truth_snapshot` fills `voxel_half_diagonal_m` only from an
-`evidence_voxel` it was handed, and these rounds' monitor delivered none, so the
-payload budget composed as `overhang + 0`. On the top-level block that omission
-hides behind a 45-88 mm link term; on the payload block the overhang is
-8.9-19.9 mm, the *same order* as the 21.65 mm dropped, so the budget roughly
-halved and convicted correct stops. The term is now re-derived from the round's
-known resolution (6 `false-positive` -> 1, the base arm's own count), and with
-no resolution to re-derive from the budget is `None` — `unadjudicated` ("I
-cannot judge this") rather than a number that convicts. No unit test had caught
-it; the live round did.
+The budget column is §10.8's fix working on live rounds, and the round also found
+a bug in that fix: `estop_ground_truth_snapshot` fills `voxel_half_diagonal_m`
+only from an `evidence_voxel` it was handed, so with none delivered the payload
+budget composed as `overhang + 0` and convicted 6 correct stops as
+`false-positive`; the term is now re-derived from the round's known resolution,
+and with none to re-derive from the budget is `None` — `unadjudicated` rather
+than a number that convicts.
 
 ### 10.7 What is deliberately untouched
 
-* **ADR-0098's place-target adjudication.** Its `target_distance ≤ d + allowance`
-  bound keeps reading the **shipped box** distance. That bound is calibrated
-  against the box model the declaration's geometry is adjudicated on; letting a
-  tighter payload widen it would hand the receptacle branch relief nothing in
-  ADR-0098 measured. #266 removes stops *outside* that branch and changes
-  nothing inside it.
+* **ADR-0098's place-target adjudication**, whose `target_distance ≤ d +
+  allowance` bound keeps reading the **shipped box** distance — the model the
+  declaration's geometry is adjudicated on.
 * **`check_attached_self_collision`** (payload OBB ↔ link OBB) and
-  **`check_attached_world_collision`** (payload ↔ world capsule). 3 % of the
-  measured stops, and `attached_payload_mesh_slop`'s budget is stated against
-  exactly the box those still use.
-* **`support_witness_still_in_contact`.** The witness *exempts* cells, so a
-  tighter payload would shorten the exemption's life. Left on the box, which is
-  today's behaviour.
+  **`check_attached_world_collision`** (payload ↔ world capsule): 3 % of measured
+  stops, and `attached_payload_mesh_slop`'s budget is stated against exactly the
+  box those still use.
+* **`support_witness_still_in_contact`** — the witness *exempts* cells, so a
+  tighter payload would shorten the exemption's life.
 
 ### 10.8 Adjudicating a round after this change
 
 `attached_payload_mesh_slop` now publishes **`n_stage2_primitives`** per object.
-`corner_slop_m` remains the right budget for an attached-payload **self** stop.
-Charging it to a **world-voxel** payload stop over-budgets a refined primitive by
-exactly what the refinement recovered — which is how a real defect hides behind a
+`corner_slop_m` remains the right budget for an attached-payload **self** stop;
+charging it to a **world-voxel** payload stop over-budgets a refined primitive by
+exactly what the refinement recovered, which is how a real defect hides behind a
 generous gap. This is the `has_stage2_hull` lesson of
-[#260](https://github.com/OpenRAL/openral/issues/260), on the payload side: the
+[#260](https://github.com/OpenRAL/openral/issues/260) on the payload side: the
 fact is published rather than inferred from the round's date.
 
 **Landed, and it was a fix rather than an addition.** There was no
 payload-vs-world block at all: `hal_admissible_gap_m` routed that class to the
 **top-level** one, which composes the worst *robot link*'s corner slop with the
-cell half-diagonal — a budget for a pair the stop is not about. On the
-2026-08-23 rounds that is 88.22 mm (`panda_link4`) where the payload's own model
-needs ~31 mm, and it is **97 %** of the 15 mm A/B's stops. An over-large budget
-does not fail loudly; it silently excuses, which is the direction that hides a
-real defect.
-
+cell half-diagonal — 88.22 mm (`panda_link4`) on the 2026-08-23 rounds where the
+payload's own model needs ~31 mm, and **97 %** of the 15 mm A/B's stops. An
+over-large budget does not fail loudly; it silently excuses.
 `adjudication_budget.payload_world_voxel` now carries
-`payload_model_overhang + voxel_half_diagonal`. The overhang is measured over
+`payload_model_overhang + voxel_half_diagonal`, the overhang measured over
 whichever solid the kernel *actually checks* — the refinement's DOP where one
-ships, the box otherwise — by enumerating that solid's **vertices**, because
-distance to a convex set is a convex function and its maximum over a polytope is
-attained at one. The 26-DOP's vertices come from direct enumeration of its 2600
-plane triples, vectorised; no halfspace-intersection library and no new
-dependency.
-
-Deliberately the DOP and **not** the stage-2 hull, even where a hull ships: the
-hull is budget-capped (`kMaxStage2PerCheck`) and the kernel falls back to the
-DOP whenever the cap binds, so the DOP is the bound that always holds. Charging
-the hull's tighter number would under-budget exactly the stops that exhausted
-the cap.
+ships, the box otherwise — by enumerating that solid's **vertices**, because the
+maximum of a convex function over a polytope is attained at one. Deliberately the
+DOP and **not** the stage-2 hull: the hull is budget-capped
+(`kMaxStage2PerCheck`) and the kernel falls back to the DOP whenever the cap
+binds, so the DOP is the bound that always holds.
 
 Measured on three real RoboCasa payloads at 25 mm:
 
@@ -1002,12 +808,10 @@ Measured on three real RoboCasa payloads at 25 mm:
 (The "was" column is the *payload*-termed composition; the shipped behaviour was
 looser still, at the link's 88.22 mm.) Two independent routes agree on the
 magnitude: the 8.7–10.2 mm overhang measured here against the mesh, and the
-8.75 mm median recovery §10.5 measured through the live kernel.
-
-A snapshot recorded before the block existed still resolves to the old number
-rather than losing its budget — absence must read as "this round predates the
-block", never as "this stop has no budget", which would turn every archived
-payload-world stop `unadjudicated` at a stroke (#260's lesson, again).
+8.75 mm median recovery §10.5 measured through the live kernel. A snapshot
+recorded before the block existed still resolves to the old number rather than
+losing its budget — absence must read as "this round predates the block", never
+as "this stop has no budget" (#260's lesson, again).
 
 ### 10.9 Relationship to the other open items
 
