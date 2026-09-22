@@ -167,21 +167,9 @@ def test_verdict_ambiguous_band_returns_vlm_check() -> None:
     assert action == "vlm_check"
 
 
-def test_verdict_not_ok_falls_through_to_retry_then_abandon() -> None:
-    # ok=False (stale/errored reward) is treated as "not verified": retry until
-    # the attempt cap, then abandon — never an accidental complete or vlm_check.
-    assert (
-        evaluate_task_verdict(
-            ok=False, progress_now=0.0, success_threshold=0.8, check_floor=0.5, attempts=1
-        )[0]
-        == "retry"
-    )
-    assert (
-        evaluate_task_verdict(
-            ok=False, progress_now=0.0, success_threshold=0.8, check_floor=0.5, attempts=3
-        )[0]
-        == "abandon"
-    )
+# test_verdict_not_ok_falls_through_to_retry_then_abandon moved to
+# tests/unit/test_evaluate_task_verdict_three_tier.py
+# ::test_ok_false_retry_until_exhausted_then_abandon (byte-identical body).
 
 
 # ── subdivide_active (#123 — flat-splice subdivision) ─────────────────────────

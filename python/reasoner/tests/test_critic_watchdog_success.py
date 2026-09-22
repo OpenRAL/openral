@@ -115,17 +115,9 @@ def test_stall_still_fires_after_stall_patience() -> None:
     assert wd.observe(0.4) is None
 
 
-def test_stall_latch_independent_of_success_latch() -> None:
-    """A success fire does not accidentally clear the stall latch or vice-versa."""
-    wd = _wd(threshold=0.8, stall_patience=2)
-    # Accumulate two stalls → stall fires.
-    assert wd.observe(0.3) is None
-    assert isinstance(wd.observe(0.3), CriticEvidence)
-    # Stall latch is set; success latch is NOT set (score never crossed threshold).
-    assert wd.observe(0.3) is None  # stall-latched, returns None
-    # Score crosses threshold — stall latch should also clear, and success fires once.
-    assert isinstance(wd.observe(0.9), CriticEvidence)  # success fire
-    assert wd.observe(0.9) is None  # success-latched
+# test_stall_latch_independent_of_success_latch removed: byte-identical
+# (once comments/docstring are stripped) to test_success_fires_after_stall_recovery
+# above — same wd config, same observe() sequence, same assertions.
 
 
 # ── progress below threshold — neither path fires ──────────────────────────────

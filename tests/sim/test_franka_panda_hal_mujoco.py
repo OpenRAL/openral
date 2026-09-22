@@ -36,7 +36,6 @@ from openral_core import (
     ROSConfigError,
     ROSEStopRequested,
     ROSRuntimeError,
-    ROSSafetyViolation,
 )
 from openral_hal import (
     FRANKA_PANDA_DESCRIPTION,
@@ -239,9 +238,9 @@ class TestActionValidation:
 
 
 class TestSafety:
-    def test_estop_raises_safety_violation(self, connected_hal: FrankaPandaHAL) -> None:
-        with pytest.raises(ROSSafetyViolation):
-            connected_hal.estop()
+    # test_estop_raises_safety_violation moved to
+    # tests/sim/test_hal_protocol_contracts.py::TestSafety::test_estop_raises_safety_violation
+    # (parametrized over _HAL_CLASSES, FrankaPandaHAL included).
 
     def test_estop_releases_state(self, hal: FrankaPandaHAL) -> None:
         hal.connect()

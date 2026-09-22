@@ -28,11 +28,9 @@ from openral_core import (
     ROSEStopRequested,
     ROSPerceptionStale,
     ROSRuntimeError,
-    ROSSafetyViolation,
 )
 from openral_core.schemas import EmbodimentKind, Hand, JointState
 from openral_hal.aloha import ALOHA_DESCRIPTION, ALOHA_REAL_DESCRIPTION, AlohaHAL
-from openral_hal.protocol import HAL
 from openral_hal.sim_transport import SimTransport
 
 _N_JOINTS = len(ALOHA_DESCRIPTION.joints)
@@ -148,12 +146,12 @@ class TestAlohaDescription:
 
 
 class TestProtocolConformance:
-    def test_satisfies_hal_protocol(self, hal: AlohaHAL) -> None:
-        assert isinstance(hal, HAL)
-
-    def test_read_state_before_connect_raises(self, hal: AlohaHAL) -> None:
-        with pytest.raises(ROSRuntimeError):
-            hal.read_state()
+    # test_satisfies_hal_protocol moved to
+    # tests/unit/test_hal_protocol_conformance.py::test_hal_satisfies_runtime_checkable_protocol
+    # (parametrized over HAL_BUILDERS, "AlohaHAL" included).
+    # test_read_state_before_connect_raises moved to
+    # tests/unit/test_hal_protocol_conformance.py::test_hal_read_state_before_connect_raises
+    # (parametrized over HAL_BUILDERS, "AlohaHAL" included).
 
     def test_send_action_before_connect_raises(self, hal: AlohaHAL) -> None:
         with pytest.raises(ROSRuntimeError):
@@ -291,15 +289,12 @@ class TestSendActionSplit:
 
 
 class TestSafety:
-    def test_estop_always_raises(self, hal: AlohaHAL) -> None:
-        hal.connect()
-        with pytest.raises(ROSEStopRequested):
-            hal.estop()
-
-    def test_estop_is_safety_violation(self, hal: AlohaHAL) -> None:
-        hal.connect()
-        with pytest.raises(ROSSafetyViolation):
-            hal.estop()
+    # test_estop_always_raises moved to
+    # tests/unit/test_hal_protocol_conformance.py::test_hal_estop_always_raises_estoprequested
+    # (parametrized over HAL_BUILDERS, "AlohaHAL" included).
+    # test_estop_is_safety_violation moved to
+    # tests/unit/test_hal_protocol_conformance.py::test_estoprequested_is_safety_violation_subclass
+    # (structural check that ROSEStopRequested subclasses ROSSafetyViolation).
 
     def test_estop_publishes_to_estop_topic(self, hal: AlohaHAL, transport: SimTransport) -> None:
         hal.connect()
