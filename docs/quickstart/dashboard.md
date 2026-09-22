@@ -13,7 +13,7 @@ exporter, so instrumented workloads stay decoupled from the debug UI.
 The dashboard is a `openral` subcommand. The HTTP port serves the UI, the
 SSE event stream, **and** an embedded OTLP/HTTP receiver. The default
 port is **4318** (the OTLP/HTTP standard) — `8000` collided with
-`mkdocs serve` (`just docs`) and most FastAPI demos (issue #132).
+`mkdocs serve` (`just docs`) and most FastAPI demos.
 
 ```bash
 openral dashboard            # binds 127.0.0.1:4318 by default
@@ -129,8 +129,8 @@ draining (no `Connection refused` retries on the way down).
   values still render as the second trace on the joints card.
 - **Metrics** — every histogram, counter, and gauge that comes over
   the wire, with p50/p95 (for histograms) and a sparkline of the
-  last ~600 samples. Empty until a workload starts emitting; PR #108
-  adds `openral.tick.duration`, `openral.inference.duration`,
+  last ~600 samples. Empty until a workload starts emitting; the runner
+  also emits `openral.tick.duration`, `openral.inference.duration`,
   `openral.hal.*.duration`, etc. Hover any sparkline for the exact
   value + clock time of the nearest sample (a white-ringed marker
   snaps to the point); each graph carries its own min/max Y labels and
@@ -201,9 +201,9 @@ of the dashboard expects one endpoint at a time.)
 ## Why this exists
 
 OpenRAL emits all the right OTel spans and metrics by design — the
-inference runner carries its own tracing contract, and PR #108 added
-the metric surface — and Jaeger renders them beautifully — **after** the run.
-For the Day 30 demo and for on-robot debugging, the operator wants
+inference runner carries its own tracing contract and metric surface —
+and Jaeger renders them beautifully — **after** the run.
+For on-robot debugging, the operator wants
 a *live* pane that updates as the robot moves. `openral dashboard` is
 that pane; it does not replace Jaeger for post-hoc analysis.
 

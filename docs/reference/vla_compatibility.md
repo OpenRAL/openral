@@ -208,7 +208,7 @@ therefore not packaged as an rSkill and cannot be claimed as real-robot ready.
 
 ### 4.1 LIBERO eval CLI
 
-The lerobot `lerobot-eval` CLI drives LIBERO natively. Verified against `huggingface/lerobot` main as of 2026-05-05:
+The lerobot `lerobot-eval` CLI drives LIBERO natively. Verified against `huggingface/lerobot` main:
 
 ```bash
 # Single suite
@@ -242,7 +242,7 @@ Note: `libero_10` is the lerobot/upstream name for LIBERO-Long. `LiberoProcessor
 
 - **Checkpoint normalisation requires `snapshot_download`**: `lerobot/smolvla_libero` bundles normalisation statistics in `policy_preprocessor_step_5_normalizer_processor.safetensors`. A bare `from_pretrained` call that only fetches `model.safetensors` + `config.json` will fail at inference time. Use `snapshot_download(repo_id="lerobot/smolvla_libero")` or `hf_hub_download` for the preprocessor file explicitly.
 
-- **GR00T weights — license is version-specific**: GR00T **N1 / N1.5 / N1.6** ship under the NVIDIA OneWay Noncommercial License. Any checkpoint that builds on those bases (e.g., `ar0s/groot_libero`) inherits the non-commercial restriction even if the fine-tune layer is Apache-2.0 — the rSkill manifest sets `license: nvidia_non_commercial` and the loader requires `OPENRAL_ALLOW_NONCOMMERCIAL=1` for a commercial deployment. GR00T **N1.7+** ship under the **NVIDIA Open Model License**, which permits commercial use — those manifests set `license: nvidia_open_model` (e.g., `rskills/gr00t-n17-libero`) and load without the guard. GR00T N1.7 runs **in-process** under the workspace's Python 3.12 via lerobot 0.6.0's native `GrootPolicy` with backbone-only NF4 (as of the 2026-07-07 amendment); the older Python-3.10 ZMQ sidecar is deleted. RLDX-1 (a GR00T-N1.5 finetune) still runs on its own ZMQ sidecar.
+- **GR00T weights — license is version-specific**: GR00T **N1 / N1.5 / N1.6** ship under the NVIDIA OneWay Noncommercial License. Any checkpoint that builds on those bases (e.g., `ar0s/groot_libero`) inherits the non-commercial restriction even if the fine-tune layer is Apache-2.0 — the rSkill manifest sets `license: nvidia_non_commercial` and the loader requires `OPENRAL_ALLOW_NONCOMMERCIAL=1` for a commercial deployment. GR00T **N1.7+** ship under the **NVIDIA Open Model License**, which permits commercial use — those manifests set `license: nvidia_open_model` (e.g., `rskills/gr00t-n17-libero`) and load without the guard. GR00T N1.7 runs **in-process** under the workspace's Python 3.12 via lerobot 0.6.0's native `GrootPolicy` with backbone-only NF4; the older Python-3.10 ZMQ sidecar is deleted. RLDX-1 (a GR00T-N1.5 finetune) still runs on its own ZMQ sidecar.
 
 - **π0 / π0.5 weights are "permissive research", not full Apache-2.0**: The code under `lerobot/` is Apache-2.0; the *weights* for `pi0` and `pi05` checkpoints carry a Physical Intelligence permissive-research license that is not equivalent to Apache-2.0 for commercial deployment. The corresponding rSkill manifests set `commercial_use_allowed: false`. See `CLAUDE.md §7.4` for the full VLA license matrix.
 

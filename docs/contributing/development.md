@@ -169,6 +169,7 @@ one place that decides what runs — and to the `paths:` filter in
 `.github/workflows/docker-build.yml`, so a diff touching only that test still
 triggers the build that runs it. `tests/unit/test_ros_live_targets.py` fails the
 unit suite if a gated file under `tests/integration/` is missing from `TARGETS`.
+
 The `docker-build` workflow is the only CI surface with a real ROS 2 install;
 the `test-selective` runner has none, so anything not listed there silently
 `importorskip`s in CI — and a live test parked under `tests/unit/` runs on no
@@ -190,9 +191,9 @@ test` runs it on a host that has the `gstreamer` extra installed.
 Seven tests under `tests/sim/` are gated on `importorskip("robocasa")` and need
 three things at once: the colcon overlay (they spawn the real
 `safety_kernel_node`), MuJoCo, and a provisioned RoboCasa kitchen backend. They
-are the geometry-and-kernel evidence behind issues #102 and #108 — the layout
-pins, the certified distance instrument, the support-contact witness, the depth
-synth, and the HAL's camera / body-twist paths on a real kitchen.
+are the geometry-and-kernel evidence for the layout pins, the certified
+distance instrument, the support-contact witness, the depth synth, and the
+HAL's camera / body-twist paths on a real kitchen.
 
 `scripts/robocasa_sim_tests.sh` holds the target list, and `just
 test-robocasa-sim` is its only caller:
@@ -222,25 +223,28 @@ geom_distance`.
 *Disk.* RoboCasa's assets are 23 GB — `objects/aigen_objs` 13 GB,
 `objects/objaverse` 6.2 GB, `objects/lightwheel` 1.5 GB, `fixtures` 1.4 GB,
 `generative_textures` 1.2 GB, `textures` 521 MB — downloaded per-bundle from
-utexas.box.com with no sub-bundle granularity. The only hosted CI surface with
-a colcon overlay is the `docker-build` image, already 25.2 GB, building on a
-runner that has to `rm -rf` dotnet, android and CodeQL to reclaim its ~14 GB.
-Even a trimmed set (fixtures + textures + one object bundle, ~8 GB) is past
-that runner's whole disk. No GPU is needed, so the constraint is disk alone.
+utexas.box.com with no sub-bundle granularity.
+
+The only hosted CI surface with a colcon overlay is the `docker-build` image,
+already 25.2 GB, building on a runner that has to `rm -rf` dotnet, android and
+CodeQL to reclaim its ~14 GB. Even a trimmed set (fixtures + textures + one
+object bundle, ~8 GB) is past that runner's whole disk. No GPU is needed, so
+the constraint is disk alone.
 
 *Security.* A self-hosted runner was built, registered, and then removed: it is
 not a safe option for this repository. **A runner label is a routing request
 made by a workflow, not an access control enforced by the runner.** A repository-scoped
 self-hosted runner accepts jobs from *any* workflow in that repository naming
 its labels, and for a `pull_request` event GitHub executes the workflow
-definition from the **fork's** ref. `OpenRAL/openral` is public and has three
-fork-reachable `pull_request` workflows (`dco.yml`, `quality.yml`,
-`test-selective.yml`), so a fork PR can edit one to
-`runs-on: [self-hosted, <label>]` with arbitrary `run:` steps and execute code
-on the runner host — with that user's SSH keys, `gh` credentials and LAN access
-to the lab robots. Restricting a runner to selected workflows requires an
-organisation runner group, which this org's GitHub Free plan does not offer, so
-no native control makes the label mean anything.
+definition from the **fork's** ref.
+
+`OpenRAL/openral` is public and has three fork-reachable `pull_request`
+workflows (`dco.yml`, `quality.yml`, `test-selective.yml`), so a fork PR can
+edit one to `runs-on: [self-hosted, <label>]` with arbitrary `run:` steps and
+execute code on the runner host — with that user's SSH keys, `gh` credentials
+and LAN access to the lab robots. Restricting a runner to selected workflows
+requires an organisation runner group, which this org's GitHub Free plan does
+not offer, so no native control makes the label mean anything.
 
 Note what does *not* help: giving the protected workflow safe triggers. The
 exposed asset is the runner, not the workflow. Reasoning about the triggers of
@@ -249,9 +253,7 @@ the file you are adding is the mistake that makes this look safe.
 **What holds the suite together instead.** `tests/unit/test_robocasa_sim_targets.py`
 fails the unit suite if a RoboCasa-gated file is missing from `TARGETS`. With no
 CI lane, that list is the only definition of what the suite is, and that guard
-is the only thing that notices when a test drifts out of it — which is exactly
-what happened to `test_kernel_fridge_layout_pin_start_state.py` between #224 and
-#232.
+is the only thing that notices when a test drifts out of it.
 
 The rest of `tests/sim/` is manual by declared policy
 (`.github/workflows/test-selective.yml`).
@@ -299,9 +301,11 @@ labels. The SO-101 bench is the first of these with a physical rig behind it:
 `openral deploy validate` plus the non-motion serial gate
 (`tests/hil/test_so101_serial_live.py`) on manual dispatch (Actions tab →
 "Run workflow") — there is no schedule trigger, since the bench arm is not
-permanently attached to a runner. It is **inert** until a runner carrying
-both labels exists; with no such runner a dispatched run just queues and
-expires. Nothing else in CI depends on it.
+permanently attached to a runner.
+
+It is **inert** until a runner carrying both labels exists; with no such
+runner a dispatched run just queues and expires. Nothing else in CI depends
+on it.
 
 Registering the runner is an org/repo **settings** action and is deliberately
 not automated from this repo. On the host with the arm attached:
@@ -377,10 +381,12 @@ reviewer, with stale approvals dismissed on every push. GitHub does not allow
 a PR author to approve their own PR, so with today's single code owner the
 maintainer's own PRs merge via the ruleset's `OrganizationAdmin` bypass
 instead of a satisfying review — expected, not a workaround; a second code
-owner would remove the need for it. `heavy-lanes` (the opt-in dependency lanes: LIBERO,
-RoboCasa, GR00T, ManiSkill3, …) does not start until a maintainer approves the
-`heavy-lanes` GitHub Environment's pending deployment (the PR's checks list, or
-the workflow run page → "Review pending deployments"); one approval unlocks
+owner would remove the need for it.
+
+`heavy-lanes` (the opt-in dependency lanes: LIBERO, RoboCasa, GR00T,
+ManiSkill3, …) does not start until a maintainer approves the `heavy-lanes`
+GitHub Environment's pending deployment (the PR's checks list, or the
+workflow run page → "Review pending deployments"); one approval unlocks
 every lane selected by that push, running in parallel. A push after approval
 re-waits — that's the same "re-approve what changed" semantics as the review
 requirement itself, not a bug.

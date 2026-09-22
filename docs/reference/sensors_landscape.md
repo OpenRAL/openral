@@ -252,7 +252,7 @@ manifest or HAL adapter today.  Each entry is addressable by stable id (`<vendor
 through the `SensorCatalog` registry and surfaced via the `openral sensor list /
 show` CLI.  Speculative entries (extra RealSense SKUs, Orbbec, Logitech C922 /
 Brio, Arducam, every 2D / 3D LiDAR, standalone IMUs, ATI / Bota / OnRobot F/T,
-GelSight DIGIT, XELA, AnySkin) were dropped in the cleanup pass; reintroduce
+GelSight DIGIT, XELA, AnySkin) are intentionally excluded; reintroduce
 them only when a robot manifest or HAL factory needs them.
 
 Robot-mounted physical sensors in `robots/<id>/robot.yaml` should set
@@ -355,5 +355,5 @@ Every new module follows the conventions used by `realsense.py`,
 
 ---
 
-*Last reviewed: 2026-05-06. Re-review whenever a new humanoid platform ships
-or a major depth/lidar vendor changes status.*
+*Re-review whenever a new humanoid platform ships or a major depth/lidar
+vendor changes status.*

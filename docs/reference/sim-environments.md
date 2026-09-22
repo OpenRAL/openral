@@ -13,22 +13,25 @@ Scene dependencies are auto-installed on first use (auto-install is on by
 default; set `OPENRAL_AUTO_INSTALL_DEPS=0` to be prompted instead, e.g. when
 *not* in CI). Most scenes need an opt-in dependency group first — sync it with
 `just sync --group <name>` (`sim` / `libero` / `robocasa` / `metaworld` /
-`maniskill3`), **never** a bare `uv sync`. RoboCasa is a special case: `just
-sync --group robocasa` provides only robosuite + deps, while the RoboCasa fork
-itself is git-cloned + installed editable at runtime by the HAL
-(`ensure_backend_deps('robocasa_kitchen')`). LIBERO and RoboCasa pin
-conflicting robosuite versions, so swap groups per task. Full recipe →
-[Managing the Python environment & dependency
+`maniskill3`), **never** a bare `uv sync`.
+
+RoboCasa is a special case: `just sync --group robocasa` provides only
+robosuite + deps, while the RoboCasa fork itself is git-cloned + installed
+editable at runtime by the HAL (`ensure_backend_deps('robocasa_kitchen')`).
+LIBERO and RoboCasa pin conflicting robosuite versions, so swap groups per
+task. Full recipe → [Managing the Python environment & dependency
 groups](../contributing/toolchain.md#managing-the-python-environment-dependency-groups).
 
 An install step's output streams to your terminal as it runs, and the tail of
 it is quoted back inside the `ROSConfigError` if the step fails — so when a
 backend or sidecar won't provision, read the quoted lines rather than the exit
 code. That matters most when the step ran *inside a ROS node*, where the raw
-output is scattered through the launch log: the reasoner reports the failure as
-`goal_rejected`, and the quoted tail is the only place the cause travels with
-it. A sidecar pinned to wheels that don't exist for your platform (aarch64 is
-the common case) shows up there as a `uv` "no source distribution or wheel for
+output is scattered through the launch log: the reasoner reports the failure
+as `goal_rejected`, and the quoted tail is the only place the cause travels
+with it.
+
+A sidecar pinned to wheels that don't exist for your platform (aarch64 is the
+common case) shows up there as a `uv` "no source distribution or wheel for
 the current platform" line naming the offending package — see [aarch64 CUDA
 hosts](aarch64-support.md) for the per-sidecar status on GB10 / DGX Spark and
 Jetson Thor.
@@ -199,9 +202,3 @@ metrics. `just sim-eval` runs the full benchmark suites end-to-end.
 - [Tutorial — Create a sim environment](../tutorials/sim/create-a-sim-environment.md)
   — long-form YAML authoring guide (new scene adapter, new robot manifest,
   custom policy).
-- The original scene/eval design established the base `sim run` +
-  eval-layer split.
-- A later decision introduced the three-tier
-  hierarchy (`DeployScene ⊆ SimScene ⊆ BenchmarkScene`) + loader strictness.
-- Another decision separated
-  `sim run` (debug) from `benchmark *` (paper-comparable eval).
