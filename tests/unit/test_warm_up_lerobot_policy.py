@@ -191,3 +191,26 @@ def test_preprocessed_cpu_tensors_are_moved_to_the_policy_device() -> None:
     assert policy.seen is not None
     assert str(policy.seen["observation.language.tokens"].device).startswith("cuda")
     assert str(policy.seen["observation.state"].device).startswith("cuda")
+
+
+def test_warm_up_runs_under_the_adapters_autocast_context() -> None:
+    """The real tick runs under ``adapter._autocast_ctx()``; the warm-up must too.
+
+    Without it a bf16 π0.5 raised ``mat1 and mat2 must have the same dtype``
+    in the warm-up only (qorin1, 2026-09-22) — a warm-up that autotunes
+    kernels the real path never uses, or raises, warms nothing.
+    """
+    import contextlib
+
+    policy = _Policy(6, {"observation.images.wrist": (3, 224, 224)})
+    adapter = _Adapter(policy)
+    entered: list[bool] = []
+
+    @contextlib.contextmanager
+    def _ctx() -> Any:
+        entered.append(True)
+        yield
+
+    adapter._autocast_ctx = _ctx  # type: ignore[attr-defined]
+    assert warm_up_lerobot_policy(adapter, prompt="x") is True
+    assert entered == [True]

@@ -1449,7 +1449,12 @@ def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = No
     # pays the full cold-start (524 ms measured on the SO-101 eraser
     # checkpoint against a 400 ms budget). Found on a live deploy run.
     warm_call = policy.predict_action_chunk if rtc_enabled(policy) else policy.select_action
-    with torch.no_grad():
+    # Same mixed-precision context the real tick uses (`_autocast_ctx` on the
+    # π0.5 / SmolVLA adapters): bf16 weights with an fp32 activation raised
+    # "mat1 and mat2 must have the same dtype" here while `step()` ran fine.
+    autocast_ctx = getattr(adapter, "_autocast_ctx", None)
+    ctx = autocast_ctx() if callable(autocast_ctx) else contextlib.nullcontext()
+    with torch.no_grad(), ctx:
         warm_call(batch)
     if device.startswith("cuda"):
         torch.cuda.synchronize()
