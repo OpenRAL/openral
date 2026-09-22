@@ -229,6 +229,18 @@ runtime:
   # only the capsule-vs-voxel check is skipped.
   enable_octomap_kernel_check: false
 
+  # The cell's policy, loaded by the skill_runner right after it activates —
+  # in a worker thread, before any goal exists. A goal's acceptance is what
+  # arms the deadman watchdog's 120 s first-chunk window, and this 3.6 B π0.5
+  # takes ~350 s to load on the Orin (measured 2026-09-22), so a cold load
+  # inside a goal is E-stopped every time, correctly. Goals are rejected
+  # until `rskill_runner.preload_done` is logged. The prompt is the training
+  # instruction verbatim and MUST match the goal's prompt character for
+  # character: the resident key is (id, revision, prompt), and a mismatch
+  # evicts the warm skill and pays the cold load inside the watchdog window.
+  preload_rskill_id: OpenRAL/rskill-pi05-openarm-restock_shelf-bf16
+  preload_prompt: restock-shelf-from-front-box
+
   # No reasoner: nothing in the graph selects or dispatches a policy on its
   # own. Bringup still energises the arm (see the header), but the only path to
   # a motion command is an operator's explicit `/openral/execute_rskill` goal —

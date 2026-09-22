@@ -9194,6 +9194,21 @@ class DeployRuntime(BaseModel):
     in-tree ``rskills/qwen35-4b-nf4``. Ignored unless ``enable_scene_vlm``."""
     spatial_memory_ingest: bool | None = None
     approach_skill_id: str | None = None
+    preload_rskill_id: str | None = None
+    """rSkill the skill_runner resolves and loads right after it activates, so
+    the first ``execute_rskill`` goal finds it GPU-resident. The deadman
+    watchdog opens its first-chunk window when a goal is accepted; a 3.6 B
+    π0.5 needs ~350 s to load on a Jetson AGX Orin against a 120 s window,
+    so a cold load inside a goal is E-stopped — correctly. Loading before any
+    goal exists keeps the watchdog exactly as strict. Goals are rejected
+    while the preload is in flight (``rskill_runner.preload_done`` marks the
+    end). Any resolvable id: an installed Hub repo id or an in-tree name."""
+    preload_prompt: str | None = None
+    """Exact prompt the preloaded skill is bound to. The runner's resident
+    key is ``(rskill_id, revision, prompt)``, so a goal whose prompt differs
+    by one character evicts the preloaded skill and pays the cold load inside
+    its own watchdog window. For a single-instruction finetune this is the
+    training string, verbatim."""
     slam_visual_impl: Literal["isaac_ros", "pycuvslam"] | None = None
     """Which cuVSLAM implementation the visual SLAM backend composes when
     ``slam_backend`` resolves to ``"visual"`` (``capabilities.has_vision_slam``,
