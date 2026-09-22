@@ -71,7 +71,7 @@ draining (no `Connection refused` retries on the way down).
 ## What you see
 
 - **Top bar** — service name, run mode (`sim` / `hardware` /
-  `benchmark` once PR #108 lands), short run id, connection status.
+  `benchmark`), short run id, connection status.
 - **Reasoner · mission** — the reasoner's active task queue,
   rendered from `reasoner.mission_json` as an ordered checklist: each
   subtask shows its status (done ✓ / active ▶ / verifying ? / abandoned ✗
