@@ -260,7 +260,8 @@ def test_the_tightening_is_real_and_measured(panda: RobotDescription) -> None:
     46.8->23.0 link2, 45.2->19.0 link5, 28.3->13.0 link7. link3/4/6 added 2026-09-07:
     75.6->23.8, 76.1->23.2, 52.7->21.5 mm. link6 dominates 18 of 29 link-class stops
     in the 120-run #204 battery; its 31.2 mm recovery is close to the 33.1 mm median
-    link-class excess once the voxel term is removed (PLAN.md §5).
+    link-class excess once the voxel term is removed (the programme note §5,
+    docs/reference/collision-validation-evidence.md).
     """
     gen = _mesh_tools()
     import numpy as np

@@ -1,6 +1,7 @@
 """How much of a kernel stop's over-approximation is the voxel grid, and how much is geometry?
 
-`PLAN.md` §5 turns on one table: kernel-reported depth vs. certified mesh gap,
+The programme note §5 (`docs/reference/collision-validation-evidence.md`)
+turns on one table: kernel-reported depth vs. certified mesh gap,
 with the 25 mm grid's 21.65 mm half-diagonal subtracted. That decomposition
 struck two levers and promoted a third; like ADR-0101's 94%, it had no
 producer in the repo until now::

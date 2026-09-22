@@ -240,7 +240,8 @@ def test_tight_geometry_lowers_csr_parallel_to_the_box_arrays() -> None:
     # link2/link3/link4/link5 ship their exact 152-vertex hulls; link6 and link7
     # their 102-vertex ones. link5 + link7 are what the self-collision
     # refinement needs (#191); link3/link4/link6 were added 2026-09-07 for the
-    # link-class excess the #204 battery measured (PLAN.md §5).
+    # link-class excess the #204 battery measured (the programme note §5,
+    # docs/reference/collision-validation-evidence.md).
     assert sorted(params["collision_hull_vertex_count"]) == [0, 102, 102, 152, 152, 152, 152]
 
 

@@ -1,6 +1,7 @@
 """The decomposition that decides which collision levers are worth pulling.
 
-`PLAN.md` §5 struck two levers and promoted a third on one quantity: a stop
+The programme note §5 (`docs/reference/collision-validation-evidence.md`)
+struck two levers and promoted a third on one quantity: a stop
 class's median excess *beyond* the voxel half-diagonal. A class at or below zero
 has no geometry headroom, so no tighter envelope can recover anything there.
 Getting that arithmetic or its guards wrong redirects the whole programme.

@@ -214,10 +214,10 @@ def _octomap_resolution(hal_mode: str) -> float:
     """Use manipulation-scale voxels in sim without changing real maps.
 
     ``OPENRAL_OCTOMAP_RESOLUTION_M`` overrides it, for the resolution battery in
-    ``PLAN.md`` §5. Same mechanism as the #188 graded band's
-    ``OPENRAL_COLLISION_SCALE_*``: an env var the launch reads and
-    ``validation_matrix.py`` records, so a round that changed it can never be
-    mistaken afterwards for one that did not.
+    the programme note §5 (``docs/reference/collision-validation-evidence.md``).
+    Same mechanism as the #188 graded band's ``OPENRAL_COLLISION_SCALE_*``: an
+    env var the launch reads and ``validation_matrix.py`` records, so a round
+    that changed it can never be mistaken afterwards for one that did not.
 
     **A finer grid is LESS conservative**, not more: the cell half-diagonal is
     the kernel's quantisation term, so shrinking it makes the kernel stop later

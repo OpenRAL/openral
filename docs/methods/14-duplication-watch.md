@@ -889,7 +889,9 @@ pattern in `tools/schema_export.py`.*
     body-diagonal; `tools/stop_ee_speed.py::QUANTISATION_GAIN_M` writes out
     the *difference* of two of them for 25 and 15 mm. Same reason as 42 (two
     standalone scripts, no shared module) and the same failure mode — 8.66 mm
-    is what every staleness figure in `PLAN.md` §5 is weighed against, so a
+    is what every staleness figure in the Programme status note (formerly
+    `PLAN.md`) §5 in `docs/reference/collision-validation-evidence.md` is
+    weighed against, so a
     silent drift would re-argue the lever on a wrong number.
     `test_the_quantisation_gain_matches_the_matrix_budget_it_is_derived_from`
     pins it.

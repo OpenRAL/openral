@@ -1,6 +1,7 @@
 """How fast was the arm actually moving when the kernel stopped it?
 
-This settles the trade `PLAN.md`'s 25 → 15 mm lever turns on. A finer world grid
+This settles the trade the 25 → 15 mm lever turns on (the programme note §5,
+`docs/reference/collision-validation-evidence.md`). A finer world grid
 buys **8.66 mm** of static quantisation (21.65 → 12.99 mm half-diagonal) and pays
 in map **age**: the wire measurement puts a 2.80 MB grid at +15 ms of staleness
 at the median and +50–60 ms at p99, against 0.61 MB today. Age is millimetres

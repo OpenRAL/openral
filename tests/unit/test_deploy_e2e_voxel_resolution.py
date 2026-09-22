@@ -8,7 +8,8 @@ reserving too few cells rejects every grid it is sent, which reads as an empty
 world and is a fail-**open** on the world check.
 
 These pin the derivation against the constant it replaced, and pin the override
-that PLAN.md §5's resolution battery runs behind.
+that the programme note §5's resolution battery runs behind
+(``docs/reference/collision-validation-evidence.md``).
 """
 
 from __future__ import annotations
@@ -148,7 +149,8 @@ def test_the_quantisation_gain_matches_the_matrix_budget_it_is_derived_from() ->
     """8.66 mm is the difference of two half body-diagonals, not a typed-in constant.
 
     ``stop_ee_speed.QUANTISATION_GAIN_M`` is what every staleness figure in
-    PLAN.md §5 is weighed against, and ``validation_matrix.quantization_budget_m``
+    the programme note §5 (``docs/reference/collision-validation-evidence.md``) is
+    weighed against, and ``validation_matrix.quantization_budget_m``
     is the canonical form of the same derivation. They are written out
     separately, so they can drift apart silently.
     """
