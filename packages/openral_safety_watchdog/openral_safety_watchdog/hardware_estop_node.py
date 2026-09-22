@@ -113,22 +113,13 @@ class HardwareEstopNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy u
             )
             return TransitionCallbackReturn.FAILURE
         from openral_msgs.msg import FailureTrigger
-        from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
         from std_msgs.msg import Empty
 
-        estop_qos = QoSProfile(
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.VOLATILE,
-            depth=10,
-        )
-        failure_qos = QoSProfile(
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.VOLATILE,
-            depth=50,
-        )
-        self._estop_pub = self.create_publisher(Empty, "/openral/estop", estop_qos)
+        from openral_safety_watchdog._qos import estop_qos, failure_qos
+
+        self._estop_pub = self.create_publisher(Empty, "/openral/estop", estop_qos())
         self._failure_pub = self.create_publisher(
-            FailureTrigger, "/openral/failure/safety", failure_qos
+            FailureTrigger, "/openral/failure/safety", failure_qos()
         )
 
         rate = self.get_parameter("poll_rate_hz").get_parameter_value().double_value

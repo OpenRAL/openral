@@ -166,33 +166,26 @@ class DeadmanWatchdogNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy
         from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
         from std_msgs.msg import Empty
 
+        from openral_safety_watchdog._qos import estop_qos, failure_qos
+
         chunk_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.VOLATILE,
             depth=1,
         )
-        estop_qos = QoSProfile(
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.VOLATILE,
-            depth=10,
-        )
-        failure_qos = QoSProfile(
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.VOLATILE,
-            depth=50,
-        )
 
         self._safe_sub = self.create_subscription(
             ActionChunk, "/openral/safe_action", self._on_safe_action, chunk_qos
         )
-        self._estop_pub = self.create_publisher(Empty, "/openral/estop", estop_qos)
+        estop = estop_qos()
+        self._estop_pub = self.create_publisher(Empty, "/openral/estop", estop)
         self._failure_pub = self.create_publisher(
-            FailureTrigger, "/openral/failure/safety", failure_qos
+            FailureTrigger, "/openral/failure/safety", failure_qos()
         )
         # Latch behind an estop from any source so this node never storms the
         # topic behind the kernel. Released by _on_safety_status.
         self._estop_sub = self.create_subscription(
-            Empty, "/openral/estop", self._on_external_estop, estop_qos
+            Empty, "/openral/estop", self._on_external_estop, estop
         )
 
         arm_status_topic = self.get_parameter("arm_status_topic").get_parameter_value().string_value

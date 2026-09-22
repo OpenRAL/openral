@@ -43,6 +43,7 @@ import math
 from typing import TYPE_CHECKING, Any
 
 from openral_nav2_bringup._footprint_geometry import (
+    _MIN_POLYGON_VERTICES,
     SHAPE_BOX,
     SHAPE_CAPSULE,
     SHAPE_SPHERE,
@@ -134,9 +135,6 @@ def points_in_primitive(
         return np.all(np.abs(local) <= half, axis=1)
 
     raise ValueError(f"unknown attached-primitive shape_type {shape_type!r}")
-
-
-_MIN_POLYGON_VERTICES = 3
 
 
 def points_in_convex_polygon(
