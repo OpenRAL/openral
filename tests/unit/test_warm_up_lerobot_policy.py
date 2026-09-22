@@ -154,3 +154,40 @@ def test_a_policy_without_reset_still_warms() -> None:
 
     assert warm_up_lerobot_policy(_Adapter(policy), prompt="x") is True
     assert policy.seen is not None
+
+
+def _tokenising_preprocessor(batch: dict[str, Any]) -> dict[str, Any]:
+    """What lerobot's π0.5 pipeline does: tokenise ``task`` onto the CPU, leave state float32."""
+    batch["observation.language.tokens"] = torch.zeros(1, 8, dtype=torch.long)
+    return batch
+
+
+def test_preprocessed_batch_is_cast_to_the_adapters_input_dtype() -> None:
+    """The real path casts floating tensors after preprocessing; so must the warm-up."""
+    policy = _Policy(6, {"observation.images.wrist": (3, 224, 224)})
+    adapter = _Adapter(policy)
+    adapter._preprocessor = _tokenising_preprocessor  # type: ignore[attr-defined]
+    adapter._input_dtype = torch.bfloat16  # type: ignore[attr-defined]
+    policy.linear.to(torch.bfloat16)
+    assert warm_up_lerobot_policy(adapter, prompt="x") is True
+    assert policy.seen is not None
+    assert policy.seen["observation.state"].dtype == torch.bfloat16
+    # Integer tokens are not floating point and must not be cast.
+    assert policy.seen["observation.language.tokens"].dtype == torch.long
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+def test_preprocessed_cpu_tensors_are_moved_to_the_policy_device() -> None:
+    """A CPU token tensor left in a CUDA batch made the warm-up raise and warm nothing.
+
+    Live on qorin1 (2026-09-22): ``rskill_runner.warmup_failed error='Expected all
+    tensors to be on the same device'`` and the first real π0.5 tick then paid
+    15.3 s. Every tensor the preprocessor returns has to end up on the device.
+    """
+    policy = _Policy(6, {"observation.images.wrist": (3, 224, 224)}).to("cuda:0")
+    adapter = _Adapter(policy, device="cuda:0")
+    adapter._preprocessor = _tokenising_preprocessor  # type: ignore[attr-defined]
+    assert warm_up_lerobot_policy(adapter, prompt="x") is True
+    assert policy.seen is not None
+    assert str(policy.seen["observation.language.tokens"].device).startswith("cuda")
+    assert str(policy.seen["observation.state"].device).startswith("cuda")

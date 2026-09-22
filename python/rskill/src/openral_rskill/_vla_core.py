@@ -1414,6 +1414,30 @@ def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = No
     preprocessor = getattr(adapter, "_preprocessor", None)
     if callable(preprocessor):
         batch = preprocessor(batch)
+    # The preprocessor can hand back CPU tensors even for a CUDA batch — the
+    # π0.5 tokenizer step emits `observation.language.tokens` on the CPU —
+    # and lerobot's forward then raises "Expected all tensors to be on the
+    # same device". `_PI05Adapter._prepared_batch` moves and casts every
+    # tensor after preprocessing for exactly this reason; the warm-up has to
+    # do the same or it warms nothing, and tick 1 pays the cold start (15.3 s
+    # measured on a Jetson AGX Orin against a 600 ms budget, 2026-09-22).
+    device_kind = device.split(":", 1)[0]
+    input_dtype = getattr(adapter, "_input_dtype", None)
+    for key, original in list(batch.items()):
+        moved = original
+        value_device = getattr(moved, "device", None)
+        if value_device is not None and not str(value_device).startswith(device_kind):
+            moved = moved.to(device)
+        value_dtype = getattr(moved, "dtype", None)
+        if (
+            input_dtype is not None
+            and value_dtype is not None
+            and getattr(value_dtype, "is_floating_point", False)
+            and value_dtype != input_dtype
+        ):
+            moved = moved.to(input_dtype)
+        if moved is not original:
+            batch[key] = moved
 
     with contextlib.suppress(AttributeError, TypeError):
         policy.reset()
