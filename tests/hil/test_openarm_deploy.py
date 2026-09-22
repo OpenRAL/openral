@@ -30,12 +30,11 @@ The last one is why `scenes/deploy/openarm_bench.yaml` exists. The manifest's
 its sim-only launch default unless the scene pins it, and the result is an
 empty octree behind an entirely healthy-looking graph.
 
-Operator procedure (three terminals, one `ROS_DOMAIN_ID`, unique per run --
+Operator procedure (two terminals, one `ROS_DOMAIN_ID`, unique per run --
 a finished graph leaves Fast-DDS shm segments that poison the next run on the
-same domain into silent zero traffic)::
+same domain into silent zero traffic; the scene's `drivers:` block launches
+`zed_wrapper` itself, so source the ZED overlay before `deploy run`)::
 
-    ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedm \
-        publish_tf:=false publish_map_tf:=false
     openral deploy run --config scenes/deploy/openarm_bench.yaml   # MOVES THE ARM
     OPENARM_DEPLOY_HIL=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
         pytest -q tests/hil/test_openarm_deploy.py

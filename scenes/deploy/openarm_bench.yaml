@@ -17,9 +17,13 @@
 # non-moving real bringup for this arm.
 #
 # So: clear the cell, keep a hand on the hardware E-stop, and start the graph
-# with the arms already near zero. The deploy graph does NOT currently launch a
-# deadman watchdog or a human E-stop node, so the hardware E-stop is the only
-# independent stop in the loop.
+# with the arms already near zero. The deploy graph launches three independent
+# /openral/estop sources (deadman watchdog, hardware_estop bridge, human_estop
+# forwarder), but none of them covers bringup: the watchdog arms only once an
+# ExecuteRskill goal is accepted, the hardware_estop node stays UNCONFIGURED
+# without a `hardware_estop_device` (this repo ships no pendant driver), and
+# the forwarder has no in-repo producer. During return_to_zero() the hardware
+# E-stop is the only independent stop in the loop.
 #
 # ─── HAL BINDING ──────────────────────────────────────────────────────────────
 # Deliberately no `hal:` block. Unlike `so101_bench.yaml` (whose serial port and
@@ -53,21 +57,47 @@ robot_id: openarm
 # not assumed: ONE StereoLabs ZED-M and TWO Arducam B0495, i.e. a depth sensor
 # and TWO RGB cameras. The manifest declares three RGB — `top` has no device on
 # this cell and is left unbound on purpose (see below).
+# Vendor sensor driver this cell needs on the bus. `head_zed` below subscribes
+# `/zed/zed_node/...` and `runtime.octomap_cloud_topic` names the wrapper's
+# cloud; this is what publishes both, so `openral deploy run` starts the ZED
+# itself instead of an operator starting it in a second terminal (forget, and
+# the camera panel and the octree are silently empty).
+#
+# `publish_tf:=false` suppresses only the wrapper's visual-odometry
+# odom->zed_camera_link; the internal zed_camera_link -> zed_left_camera_frame
+# chain comes from the wrapper's own state publisher and is NOT gated by it —
+# octomap_server needs that chain to resolve the cloud's frame. The mount
+# (openarm_base -> zed_camera_link) is the manifest's job, not the wrapper's.
+#
+# The override file is load-bearing on THIS cell, not a tidy-up: at the
+# wrapper's default HD1080 the ZED-M, sharing one 5 Gbit/s hub uplink with both
+# Arducams, opened and then dropped in a "CAMERA REBOOTING" loop with no frame
+# ever reaching the bus (qorin1, 2026-09-08 log); and with positional tracking
+# at its default `zed_camera_link` gets a second TF parent and octomap drops
+# every cloud. `*_path` args are scene-relative (`deploy_e2e.launch.py`).
+# Camera-only check with exactly these args on qorin1, 2026-09-22: HD720,
+# positional tracking FALSE, `cloud_registered` 9.9 Hz, `depth_registered`
+# 29.7 Hz, zero reboots — measured with the arms untouched.
+#
+# `zed_wrapper` is built in its own colcon workspace, so source that overlay
+# too (`source ~/zed_ws/install/setup.bash`), not just the OpenRAL one; an
+# unresolvable package is refused at launch-parse time.
+drivers:
+  - package: zed_wrapper
+    launch_file: zed_camera.launch.py
+    args:
+      camera_model: zedm
+      publish_tf: "false"
+      publish_map_tf: "false"
+      ros_params_override_path: drivers/zedm_openarm_override.yaml
+
 sensors:
   # head_zed — the ZED-M's depth is COMPUTED BY THE SDK on the host GPU; the
   # device itself only presents a side-by-side UVC node, so no `/dev/video*`
   # read can reach it and `opencv_thread` is not an option. `ros2_image`
-  # subscribes to what `zed_wrapper` publishes. Bring the driver up on the same
-  # ROS_DOMAIN_ID FIRST:
-  #
-  #     ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedm \
-  #         publish_tf:=false publish_map_tf:=false
-  #
-  # `publish_tf:=false` is load-bearing: otherwise the wrapper publishes its own
-  # odom->zed_camera_link from visual odometry while the manifest also parents
-  # zed_camera_link to `openarm_base`. Two parents is not a tree, tf2 lookups go
-  # order-dependent, and octomap_server silently drops every cloud. The camera
-  # is bolted to the rig, so its pose belongs to the robot's tree, not to VO.
+  # subscribes to what `zed_wrapper` publishes, and the `drivers:` block above
+  # is what launches it — `deploy run` brings the ZED up itself on the graph's
+  # ROS_DOMAIN_ID, so there is no second terminal to forget.
   #
   # POSE AND INTRINSICS ARE STILL THE MANIFEST'S UNCALIBRATED APPROXIMATION
   # (0.20 m above the shoulder midpoint, pitched 45 deg down, fx/fy from the

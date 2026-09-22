@@ -96,9 +96,11 @@ octree behind a graph where every node reports healthy.
 > and then `return_to_zero()`: an unramped MIT position command to 0.0 on all
 > seven joints per side, issued before the current pose is sampled, then a
 > 200 x 10 ms ramp to zero. There is no non-moving real bringup for this robot.
-> Clear the cell and keep a hand on the hardware E-stop. Note also that the
-> deploy graph does not currently launch a deadman watchdog or a human E-stop
-> node, so the hardware E-stop is the only independent stop in the loop.
+> Clear the cell and keep a hand on the hardware E-stop. The deploy graph's
+> three software E-stop sources (deadman watchdog, `hardware_estop` bridge,
+> `human_estop` forwarder) do not cover bringup: the watchdog arms only once a
+> skill goal is accepted, and the other two have no producer on this cell, so
+> during `return_to_zero()` the hardware E-stop is the only independent stop.
 
 ## Action layout (16 DoF)
 
