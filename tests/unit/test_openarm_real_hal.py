@@ -355,6 +355,39 @@ class TestSafety:
         assert isinstance(hal, LifecycleEStopHAL)
         assert hal.estop_recovery is EStopRecovery.RESETTABLE
 
+    def test_estop_deactivates_all_four_controllers_and_reset_reactivates_them(
+        self, both_buses_up: Path
+    ) -> None:
+        """The stop covers every controller the fan-out publishes to (issue #295)."""
+        from openral_hal.sim_transport import SimTransport
+
+        names = [
+            "left_joint_trajectory_controller",
+            "left_gripper_controller",
+            "right_joint_trajectory_controller",
+            "right_gripper_controller",
+        ]
+        transport = SimTransport(n_joints=16, controllers=names)
+        hal = OpenArmRealHAL(require_can_links=False)
+        hal.attach_transport(transport.publish, transport.state)
+        hal.attach_controller_stop(transport)
+        hal.connect()
+        assert hal.controller_names() == names
+        assert [t.strip("/").split("/")[0] for t in hal.command_topics()] == names
+
+        with pytest.raises(ROSEStopRequested, match="downstream stop acknowledged"):
+            hal.estop()
+        assert transport.switch_calls == [("deactivate", tuple(names))]
+        assert all(transport.controller_state(n) == "inactive" for n in names)
+        with pytest.raises(ROSRuntimeError):
+            hal.send_action(_action())
+
+        hal.reset_estop()
+        assert transport.switch_calls[-1] == ("activate", tuple(names))
+        assert all(transport.controller_state(n) == "active" for n in names)
+        hal.send_action(_action())
+        assert transport.call_count == 4
+
 
 # ── Manifest wiring ───────────────────────────────────────────────────────────
 

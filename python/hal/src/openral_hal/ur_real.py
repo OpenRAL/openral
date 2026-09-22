@@ -35,11 +35,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import structlog
+from openral_core.exceptions import ROSRuntimeError
 from openral_core.schemas import RobotDescription
 
 from openral_hal._real_description import make_real_description
-from openral_hal.ros_control import RosControlHAL
+from openral_hal.protocol import EStopRecovery
+from openral_hal.ros_control import ControllerStopSeam, RosControlHAL
 from openral_hal.ur import UR5e_DESCRIPTION, UR10e_DESCRIPTION
+
+log = structlog.get_logger(__name__)
 
 __all__ = [
     "UR5eRealHAL",
@@ -55,6 +60,13 @@ __all__ = [
 _UR_CONTROLLER_NAME = "scaled_joint_trajectory_controller"
 _UR_JOINT_STATE_TOPIC = "/joint_states"
 _UR_DEADMAN_TOPIC = "/io_and_status_controller/safety_mode"
+# ``ur_robot_driver``'s dashboard client: ``stop`` (``std_srvs/Trigger``) stops
+# the program running on the teach pendant — the ``external_control`` URCap
+# program that streams our joint commands — so the arm performs a controlled
+# stop and the driver's control connection ends. Recovery is an operator
+# action on the pendant / dashboard (``play`` + ``resend_robot_program``) and a
+# fresh lifecycle start, hence ``RESTART_REQUIRED``.
+_UR_DASHBOARD_STOP_SERVICE = "/dashboard_client/stop"
 
 
 # ── Real-HW RobotDescription constants ───────────────────────────────────────
@@ -84,6 +96,18 @@ class _URRealHAL(RosControlHAL):
     CLAUDE.md §7.7 the HAL never silences a ``ROSEStopRequested`` raised by
     ``estop``.
 
+    **Lifecycle e-stop.** ``estop()`` first deactivates the
+    ``scaled_joint_trajectory_controller`` through ``controller_manager``
+    (the generic ``RosControlHAL`` stop — the controller holds position and
+    drops late trajectories), then calls ``ur_robot_driver``'s
+    ``/dashboard_client/stop`` (``std_srvs/Trigger``), which stops the
+    ``external_control`` program on the pendant so the robot itself performs
+    a controlled stop and the driver's control connection ends. Both
+    acknowledgements go into ``last_stop_report``. Recovery is
+    ``RESTART_REQUIRED``: the operator restarts the program on the pendant
+    (or ``/dashboard_client/play`` + ``resend_robot_program``), then restarts
+    the HAL lifecycle node and re-aligns.
+
     Args:
         description: One of ``UR5e_REAL_DESCRIPTION`` /
             ``UR10e_REAL_DESCRIPTION`` (or any UR-shaped
@@ -105,7 +129,14 @@ class _URRealHAL(RosControlHAL):
             cut motor power when a deadman / E-stop is released.  Defaults to
             ``/io_and_status_controller/safety_mode`` (the topic the UR
             driver publishes ``ur_msgs/msg/SafetyMode`` on).
+        dashboard_stop_service: The ``std_srvs/Trigger`` service ``estop``
+            calls to stop the pendant program. Defaults to
+            ``/dashboard_client/stop``.
     """
+
+    #: The dashboard ``stop`` ends the pendant program; only an operator can
+    #: start it again, so the lifecycle node must not re-arm in process.
+    estop_recovery: EStopRecovery = EStopRecovery.RESTART_REQUIRED
 
     def __init__(
         self,
@@ -118,6 +149,7 @@ class _URRealHAL(RosControlHAL):
         state_fn: Callable[[], dict[str, object]] | None = None,
         staleness_limit_s: float = 0.5,
         deadman_topic: str = _UR_DEADMAN_TOPIC,
+        dashboard_stop_service: str = _UR_DASHBOARD_STOP_SERVICE,
     ) -> None:
         super().__init__(
             description,
@@ -129,6 +161,34 @@ class _URRealHAL(RosControlHAL):
         )
         self.robot_ip = robot_ip
         self.deadman_topic = deadman_topic
+        self.dashboard_stop_service = dashboard_stop_service
+
+    # ── Lifecycle e-stop ─────────────────────────────────────────────────────
+
+    def vendor_stop_services(self) -> list[str]:
+        """The dashboard ``stop`` Trigger the vendor stop calls."""
+        return [self.dashboard_stop_service]
+
+    def _vendor_stop(self, seam: ControllerStopSeam) -> str:
+        """Stop the pendant program via ``ur_robot_driver``'s dashboard client.
+
+        Raises:
+            ROSRuntimeError: If the dashboard did not acknowledge the stop.
+        """
+        ack = seam.call_trigger(self.dashboard_stop_service, timeout_s=self._stop_timeout_s)
+        log.critical(
+            "hal.estop.vendor_stop",
+            robot=self.description.name,
+            service=self.dashboard_stop_service,
+            success=ack.success,
+            message=ack.message,
+        )
+        if not ack.success:
+            raise ROSRuntimeError(
+                f"{self.dashboard_stop_service} refused to stop the pendant program: "
+                f"{ack.message or 'no message'}"
+            )
+        return self.dashboard_stop_service
 
 
 class UR5eRealHAL(_URRealHAL):

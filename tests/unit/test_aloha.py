@@ -296,11 +296,70 @@ class TestSafety:
     # tests/unit/test_hal_protocol_conformance.py::test_estoprequested_is_safety_violation_subclass
     # (structural check that ROSEStopRequested subclasses ROSSafetyViolation).
 
-    def test_estop_publishes_to_estop_topic(self, hal: AlohaHAL, transport: SimTransport) -> None:
+    def test_estop_cuts_torque_on_both_arms_and_publishes_nothing(
+        self, hal: AlohaHAL, transport: SimTransport
+    ) -> None:
+        """The downstream stop is xs_sdk's torque_enable(false) per arm, not a topic.
+
+        The earlier adapter published on ``/aloha/estop`` for a watchdog node that does not
+        exist in this repo — a stop request nothing consumed. Now every arm namespace gets
+        a ``torque_enable`` call for the ``all`` group and the report is acknowledged only
+        when every arm answered.
+        """
+        from openral_hal.sim_transport import SimTorqueSeam
+
+        seam = SimTorqueSeam(arms=["follower_left", "follower_right"])
+        hal.attach_torque_stop(seam)
         hal.connect()
         with pytest.raises(ROSEStopRequested):
             hal.estop()
-        assert any(topic == "/aloha/estop" for topic, _ in transport.calls)
+        assert seam.calls == [
+            ("follower_left", "all", False),
+            ("follower_right", "all", False),
+        ]
+        assert not seam.torque("follower_left") and not seam.torque("follower_right")
+        assert transport.calls == []
+        report = hal.last_stop_report
+        assert report is not None and report.stopped
+        assert report.controller_states == {
+            "follower_left": "torque_off",
+            "follower_right": "torque_off",
+        }
+        with pytest.raises(ROSRuntimeError):
+            hal.send_action(
+                Action(
+                    control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[[0.0] * 14]
+                )
+            )
+
+    def test_one_arm_refusing_torque_off_is_reported_not_hidden(self, hal: AlohaHAL) -> None:
+        from openral_hal.sim_transport import SimTorqueSeam
+
+        seam = SimTorqueSeam(arms=["follower_left", "follower_right"], failing=["follower_right"])
+        hal.attach_torque_stop(seam)
+        hal.connect()
+        with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):
+            hal.estop()
+        # The left arm was still torqued off — a refusal on one side never skips the other.
+        assert not seam.torque("follower_left")
+        report = hal.last_stop_report
+        assert report is not None and not report.stopped
+        assert "follower_right" in report.detail
+
+    def test_without_a_seam_the_stop_is_reported_unproven(self, hal: AlohaHAL) -> None:
+        hal.connect()
+        with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):
+            hal.estop()
+        report = hal.last_stop_report
+        assert report is not None and not report.stopped
+        assert "no torque stop seam" in report.detail
+
+    def test_recovery_policy_is_restart_required(self, hal: AlohaHAL) -> None:
+        from openral_hal.protocol import EStopRecovery, LifecycleEStopHAL
+
+        assert isinstance(hal, LifecycleEStopHAL)
+        assert hal.estop_recovery is EStopRecovery.RESTART_REQUIRED
+        assert hal.arm_namespaces() == ["follower_left", "follower_right"]
 
 
 # ── Staleness guard ───────────────────────────────────────────────────────────

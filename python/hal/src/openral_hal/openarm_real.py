@@ -160,8 +160,10 @@ class OpenArmRealHAL(RosControlHAL):
     """
 
     #: The lifecycle node may re-arm this HAL in place after an e-stop: the
-    #: controllers hold position and the CAN bus stays configured, so recovery
-    #: does not require a process restart.
+    #: four deactivated controllers hold position and the CAN bus stays
+    #: configured, so ``reset_estop`` re-activates them through the same
+    #: ``controller_manager`` seam the stop used and reconnects only once
+    #: every one is confirmed ``active``.
     estop_recovery: EStopRecovery = EStopRecovery.RESETTABLE
 
     _EXPECTED_JOINT_COUNT = 16
@@ -219,6 +221,12 @@ class OpenArmRealHAL(RosControlHAL):
             )
         self._ros2_names: list[str] = [str(j.sim_joint_name) for j in desc.joints]
 
+        self._controller_names = [
+            left_arm_controller,
+            left_gripper_controller,
+            right_arm_controller,
+            right_gripper_controller,
+        ]
         # (command topic, action slice, ros2_control joint names) per controller.
         self._command_groups: tuple[tuple[str, slice, list[str]], ...] = (
             (
@@ -276,6 +284,16 @@ class OpenArmRealHAL(RosControlHAL):
             '/left_gripper_controller/joint_trajectory'
         """
         return {topic: ControllerKind.JOINT_TRAJECTORY for topic, _, _ in self._command_groups}
+
+    def controller_names(self) -> list[str]:
+        """Return the four controllers ``estop`` deactivates, in fan-out order.
+
+        Example:
+            >>> from openral_hal.openarm_real import OpenArmRealHAL
+            >>> OpenArmRealHAL(require_can_links=False).controller_names()[1]
+            'left_gripper_controller'
+        """
+        return list(self._controller_names)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -456,11 +474,12 @@ class OpenArmRealHAL(RosControlHAL):
         """Trigger an emergency stop, dropping any half-staged slot group.
 
         ``SlotGroupStager.reset`` is documented as the disconnect/estop path,
-        but the base ``estop`` only clears the connection flag and raises — it
-        never routes through ``disconnect``. Without this override a slot
-        staged when the stop landed would survive the stop, and the first tick
-        of the resumed run would be spent raising the incomplete-group error
-        against a tick from before the e-stop.
+        but the base ``estop`` never routes through ``disconnect``. Without
+        this override a slot staged when the stop landed would survive the
+        stop, and the first tick of the resumed run would be spent raising the
+        incomplete-group error against a tick from before the e-stop. The
+        downstream stop itself — deactivating all four controllers through
+        ``controller_manager`` — is the base implementation's.
 
         Raises:
             ROSEStopRequested: Always, from the base implementation.

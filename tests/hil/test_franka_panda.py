@@ -34,7 +34,7 @@ from collections.abc import Iterator
 import pytest
 from openral_core import Action, ControlMode
 from openral_core.exceptions import (
-    ROSEStopRequested,  # noqa: F401  # reason: re-exported for safety
+    ROSEStopRequested,  # reason: re-exported for safety
 )
 from openral_hal.franka_panda import FRANKA_PANDA_DESCRIPTION
 from openral_hal.franka_panda_real import FrankaPandaRealHAL
@@ -136,3 +136,61 @@ class TestFrankaPandaHIL:
                 f"Joint moved {abs(after - before):.4f} during hold "
                 f"(before={before:.3f}, after={after:.3f})"
             )
+
+
+# ── Downstream e-stop (issue #295) ───────────────────────────────────────────
+# Last in file on purpose: it stops the vendor controller and leaves the robot
+# needing an operator restart. Run attended, with the physical E-stop in reach.
+
+
+def _production_stop_seam(node_name: str, hal: object) -> tuple[object, object]:
+    """Attach the production ``RosControlTransport`` as the HAL's stop seam.
+
+    The HIL bridge above drives commands; the stop goes through the same
+    transport a real deploy uses, so what is exercised here is the production
+    ``controller_manager`` switch + confirmation, not a test-side re-creation.
+    """
+    import rclpy
+    from openral_hal.ros_control_transport import RosControlTransport
+
+    if not rclpy.ok():
+        rclpy.init()
+    node = rclpy.create_node(node_name)
+    transport = RosControlTransport(
+        node,
+        command_topics=list(hal.command_bindings()),  # type: ignore[attr-defined]  # reason: RosControlDrivable
+        joint_names=hal.ros2_control_joint_names(),  # type: ignore[attr-defined]
+        joint_state_topic=hal.joint_state_topic,  # type: ignore[attr-defined]
+        command_kinds=hal.command_bindings(),  # type: ignore[attr-defined]
+        controller_names=hal.controller_names(),  # type: ignore[attr-defined]  # reason: ControllerStoppable
+        trigger_services=hal.vendor_stop_services(),  # type: ignore[attr-defined]
+        empty_topics=hal.vendor_stop_topics(),  # type: ignore[attr-defined]
+    )
+    hal.attach_controller_stop(transport)  # type: ignore[attr-defined]
+    return node, transport
+
+
+class TestFrankaDownstreamEStop:
+    def test_zz_estop_deactivates_the_arm_controller(self, franka_hal: FrankaPandaRealHAL) -> None:
+        """``/openral/estop`` must deactivate ``franka_arm_controller``.
+
+        Deactivation is what makes ``franka_hardware`` call ``libfranka``'s
+        ``stopRobot()``; this asserts the manager's own listing, not only the
+        exception. Recovery is ``RESTART_REQUIRED``: release the user stop, run
+        the ``/error_recovery`` action, relaunch the HAL node.
+        """
+        from openral_hal.protocol import EStopRecovery
+
+        node, transport = _production_stop_seam("openral_hil_franka_stop", franka_hal)
+        try:
+            with pytest.raises(ROSEStopRequested, match="downstream stop acknowledged"):
+                franka_hal.estop()
+            report = franka_hal.last_stop_report
+            assert report is not None and report.stopped, report
+            assert report.vendor_stop == ""
+            states = transport.controller_states(timeout_s=5.0)  # type: ignore[attr-defined]
+            assert states.get(franka_hal.controller_name) == "inactive", states
+            assert franka_hal.estop_recovery is EStopRecovery.RESTART_REQUIRED
+        finally:
+            transport.close()  # type: ignore[attr-defined]
+            node.destroy_node()  # type: ignore[attr-defined]

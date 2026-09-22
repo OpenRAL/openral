@@ -43,7 +43,7 @@ from collections.abc import Iterator
 import pytest
 from openral_core import Action, ControlMode
 from openral_core.exceptions import (
-    ROSEStopRequested,  # noqa: F401  # reason: re-exported for safety
+    ROSEStopRequested,  # reason: re-exported for safety
 )
 from openral_hal.aloha import ALOHA_DESCRIPTION, AlohaHAL
 
@@ -143,3 +143,38 @@ class TestAlohaHIL:
             assert abs(after - before) < 0.02, (
                 f"ALOHA joint moved {abs(after - before):.4f} during hold"
             )
+
+
+# ── Downstream e-stop (issue #295) ───────────────────────────────────────────
+# Last in file on purpose: torque off leaves both ViperX arms limp, so they will
+# settle under gravity. Run attended, with the arms over a clear bench.
+
+
+class TestAlohaDownstreamEStop:
+    def test_zz_estop_cuts_torque_on_both_arms(self, aloha_hal: AlohaHAL) -> None:
+        """``/openral/estop`` must call ``torque_enable(false)`` on every arm and be acknowledged.
+
+        Goes through the production ``InterbotixXSTransport`` (real
+        ``interbotix_xs_msgs/srv/TorqueEnable`` clients). Recovery is
+        ``RESTART_REQUIRED``: re-torque and re-home with the Interbotix
+        tooling, then relaunch the HAL node.
+        """
+        import rclpy
+        from openral_hal.interbotix_transport import InterbotixXSTransport
+        from openral_hal.protocol import EStopRecovery
+
+        if not rclpy.ok():
+            rclpy.init()
+        node = rclpy.create_node("openral_hil_aloha_stop")
+        transport = InterbotixXSTransport(node, arm_namespaces=aloha_hal.arm_namespaces())
+        aloha_hal.attach_torque_stop(transport)
+        try:
+            with pytest.raises(ROSEStopRequested, match="downstream stop acknowledged"):
+                aloha_hal.estop()
+            report = aloha_hal.last_stop_report
+            assert report is not None and report.stopped, report
+            assert set(report.controller_states.values()) == {"torque_off"}
+            assert aloha_hal.estop_recovery is EStopRecovery.RESTART_REQUIRED
+        finally:
+            transport.close()
+            node.destroy_node()

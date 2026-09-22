@@ -131,6 +131,28 @@ and RIGHT homologous slots is therefore inherently a kinematically
 mirrored pose — not a HAL bug. Tests validate each side
 independently or use sign-aware sentinels.
 
+## E-stop and recovery
+
+`/openral/estop` reaches `OpenArmRealHAL.estop()` through the lifecycle node
+(issue #295). The stop deactivates all four controllers —
+`left_joint_trajectory_controller`, `left_gripper_controller`,
+`right_joint_trajectory_controller`, `right_gripper_controller` — in one
+STRICT `controller_manager/switch_controller`, read back via
+`list_controllers`; a deactivated `JointTrajectoryController` holds
+position, drops any trajectory it is sent, and writes nothing until
+re-activated. Any half-staged ADR-0102 slot group is dropped first.
+
+**Recovery is `RESETTABLE`.** The controllers hold and the CAN buses stay
+configured, so `/openral/estop_cleared` (published by the reset authority
+after the kernel's cooldown-gated `estop_reset` succeeds) makes the node call
+`reset_estop()`, which re-activates the four controllers through the same
+seam and reconnects the HAL **only** once the manager confirms every one
+`active`. A refused re-activation keeps the latch.
+
+Evidence: `tests/unit/test_openarm_real_hal.py::TestSafety`,
+`tests/integration/test_real_hal_estop_ros2_control_live.py` (the RESETTABLE
+branch), and — for the bus itself — `tests/hil/test_openarm_can_live.py`.
+
 ## See also
 
 - [openarm.dev](https://openarm.dev/) — project landing page.

@@ -49,6 +49,31 @@ has been retired.
 | Sim test (LIBERO + VLA) | `tests/sim/test_franka_panda_smolvla_libero.py`, `test_xvla_libero.py` (and skill-level π0.5 LIBERO test) |
 | Example configs | `scenes/{smolvla,xvla,pi05}_libero_spatial.yaml` |
 
+## E-stop and recovery
+
+`/openral/estop` reaches `FrankaPandaRealHAL.estop()` through the lifecycle
+node (issue #295). The stop is the acknowledged deactivation of
+`franka_arm_controller` through `controller_manager/switch_controller`
+(STRICT, read back via `list_controllers`): `franka_hardware`'s
+`on_deactivate` calls `libfranka`'s `stopRobot()`, so the FCI control loop
+ends and the arm holds. There is no separate vendor stop, and the
+`/error_recovery` action is deliberately **not** invoked on e-stop — it clears
+a reflex, which is a recovery step.
+
+The outcome is on `/diagnostics` (`downstream_stop=acknowledged|unacknowledged`)
+and in the lifecycle log; an unacknowledged stop is logged FATAL and the node
+stays latched either way.
+
+**Recovery is `RESTART_REQUIRED`.** `/openral/estop_cleared` is rejected by
+this HAL. To resume: release the Franka user stop, run `franka_ros2`'s
+`/error_recovery` action (`franka_msgs/action/ErrorRecovery`), re-activate
+the controller (`ros2 control set_controller_state franka_arm_controller
+active`), then relaunch the HAL lifecycle node and re-align.
+
+Evidence: `tests/unit/test_franka_panda_real.py::TestSafety`,
+`tests/integration/test_real_hal_estop_ros2_control_live.py`, and the attended
+`tests/hil/test_franka_panda.py::TestFrankaDownstreamEStop`.
+
 ## See also
 
 - [`python/hal/README.md`](../../python/hal/README.md) — HAL Protocol + per-robot adapters.

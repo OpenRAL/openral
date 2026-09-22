@@ -37,14 +37,14 @@ Example:
 
 from __future__ import annotations
 
-import contextlib
 from collections.abc import Callable
 
 import structlog
-from openral_core.exceptions import ROSConfigError, ROSEStopRequested
+from openral_core.exceptions import ROSConfigError
 
 from openral_hal._real_description import make_real_description
 from openral_hal.franka_panda import FRANKA_PANDA_DESCRIPTION
+from openral_hal.protocol import EStopRecovery
 from openral_hal.ros_control import RosControlHAL
 
 __all__ = ["FRANKA_PANDA_REAL_DESCRIPTION", "FrankaPandaRealHAL"]
@@ -61,10 +61,12 @@ _DEFAULT_FRANKA_CONTROLLER: str = "franka_arm_controller"
 # managed by ``controller_manager``).
 _DEFAULT_FRANKA_JOINT_STATE_TOPIC: str = "/joint_states"
 
-# Default e-stop / error-recovery topic used by ``franka_ros2`` controllers.
-# Publishing to this topic resets the FCI from a reflex-triggered halt; the
-# safety supervisor uses it after handling an ``ROSEStopRequested``.
-_DEFAULT_FRANKA_ESTOP_TOPIC: str = "/error_recovery/goal"
+# ``franka_ros2``'s error-recovery *action* (``franka_msgs/action/ErrorRecovery``).
+# Recorded as the recovery step the operator runs after an e-stop; it is a
+# recovery, not a stop, and ``estop()`` never publishes to it. (An earlier
+# version published a dict to ``/error_recovery/goal`` on e-stop; that went to
+# an undeclared topic the transport refused, so it was a silent no-op.)
+_DEFAULT_FRANKA_ERROR_RECOVERY: str = "/error_recovery"
 
 _PublishFn = Callable[[str, dict[str, object]], None]
 _StateFn = Callable[[], dict[str, object]]
@@ -95,6 +97,17 @@ class FrankaPandaRealHAL(RosControlHAL):
     composed wrapper exposed none of that surface and was never wired, so a
     real Panda deploy published into a no-op logger.
 
+    **Lifecycle e-stop.** The stop *is* the generic ``RosControlHAL`` one:
+    deactivating ``franka_arm_controller`` through ``controller_manager``
+    makes ``franka_hardware``'s ``on_deactivate`` call ``libfranka``'s
+    ``stopRobot()``, so the FCI control loop ends and the arm holds. There is
+    no separate vendor stop service, and the error-recovery action is
+    deliberately **not** invoked here — it clears a reflex, which is a
+    recovery step, not a stop. Recovery is ``RESTART_REQUIRED``: the operator
+    releases the Franka user stop, runs ``error_recovery_action``
+    (``franka_msgs/action/ErrorRecovery``), restarts the HAL lifecycle node
+    and re-aligns.
+
     Args:
         fci_ip: Hostname or IP of the Franka FCI (the robot's "control" port,
             typically ``172.16.0.2`` for the default lab subnet).  Required;
@@ -109,9 +122,10 @@ class FrankaPandaRealHAL(RosControlHAL):
         command_topic: ROS 2 topic for joint trajectory commands.  Defaults
             to ``"/<controller_name>/joint_trajectory"`` (set by
             ``RosControlHAL``).
-        error_recovery_topic: ROS 2 topic the safety supervisor publishes to
-            after handling an ``ROSEStopRequested`` so the FCI clears
-            its reflex state.  Defaults to ``"/error_recovery/goal"``.
+        error_recovery_action: Name of ``franka_ros2``'s error-recovery
+            action the operator runs before re-arming after an e-stop.
+            Recorded for diagnostics and bring-up docs; never called by
+            ``estop()``.  Defaults to ``"/error_recovery"``.
         publish_fn: Callable forwarding messages to ROS 2 topics.  Production
             use injects the lifecycle node's publisher; tests inject
             ``SimTransport.publish``.
@@ -141,6 +155,10 @@ class FrankaPandaRealHAL(RosControlHAL):
         >>> hal.disconnect()
     """
 
+    #: ``stopRobot()`` ends the FCI session; the reflex must be cleared and
+    #: the FCI re-armed by the operator before any command may flow.
+    estop_recovery: EStopRecovery = EStopRecovery.RESTART_REQUIRED
+
     def __init__(
         self,
         *,
@@ -148,7 +166,7 @@ class FrankaPandaRealHAL(RosControlHAL):
         controller_name: str = _DEFAULT_FRANKA_CONTROLLER,
         joint_state_topic: str = _DEFAULT_FRANKA_JOINT_STATE_TOPIC,
         command_topic: str | None = None,
-        error_recovery_topic: str = _DEFAULT_FRANKA_ESTOP_TOPIC,
+        error_recovery_action: str = _DEFAULT_FRANKA_ERROR_RECOVERY,
         publish_fn: _PublishFn | None = None,
         state_fn: _StateFn | None = None,
         staleness_limit_s: float = 0.2,
@@ -169,7 +187,7 @@ class FrankaPandaRealHAL(RosControlHAL):
             staleness_limit_s=staleness_limit_s,
         )
         self._fci_ip = fci_ip
-        self._error_recovery_topic = error_recovery_topic
+        self._error_recovery_action = error_recovery_action
 
     # ── Franka-specific metadata ──────────────────────────────────────────
 
@@ -177,6 +195,11 @@ class FrankaPandaRealHAL(RosControlHAL):
     def fci_ip(self) -> str:
         """Hostname / IP of the FCI; consumed by ``franka_hardware``."""
         return self._fci_ip
+
+    @property
+    def error_recovery_action(self) -> str:
+        """``franka_ros2`` error-recovery action the operator runs before re-arming."""
+        return self._error_recovery_action
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -197,35 +220,3 @@ class FrankaPandaRealHAL(RosControlHAL):
             controller=self._controller_name,
         )
         super().connect()
-
-    # ── Safety ────────────────────────────────────────────────────────────
-
-    def estop(self) -> None:
-        """Trigger an emergency stop on the FCI.
-
-        Publishes a zero-velocity hold to the controller, marks the adapter
-        disconnected, and raises ``ROSEStopRequested`` so the safety
-        supervisor can log the incident.  The supervisor is responsible for
-        calling ``error_recovery`` (via ``error_recovery_topic``) before
-        re-arming the robot.
-
-        Raises:
-            ROSEStopRequested: Always.
-        """
-        log.critical(
-            "hal.estop",
-            robot=self.description.name,
-            fci_ip=self._fci_ip,
-            recovery_topic=self._error_recovery_topic,
-        )
-        with contextlib.suppress(Exception):
-            self._publish_fn(
-                self._error_recovery_topic,
-                {"reason": "openral_estop", "robot": self.description.name},
-            )
-        # Mirror SO100/UR estop semantics: drop the connection then raise so
-        # subsequent ``read_state`` / ``send_action`` calls fail fast.
-        self._connected = False
-        raise ROSEStopRequested(
-            f"Emergency stop triggered on Franka Panda at FCI {self._fci_ip!r}."
-        )

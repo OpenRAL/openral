@@ -59,13 +59,14 @@ Example:
 
 from __future__ import annotations
 
-import contextlib
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from typing import Protocol, runtime_checkable
 
 import structlog
 from openral_core.exceptions import (
     ROSConfigError,
+    ROSError,
     ROSEStopRequested,
     ROSPerceptionStale,
     ROSRuntimeError,
@@ -93,12 +94,16 @@ from openral_core.schemas import (
 from openral_hal._base import HALBase, _raw_floats
 from openral_hal._mujoco_arm import MujocoArmHAL
 from openral_hal._real_description import make_real_description
+from openral_hal.protocol import EStopRecovery
+from openral_hal.ros_control import DownstreamStopReport, TriggerReport
 
 __all__ = [
     "ALOHA_DESCRIPTION",
     "ALOHA_REAL_DESCRIPTION",
     "AlohaHAL",
     "AlohaMujocoHAL",
+    "InterbotixStopSeam",
+    "InterbotixStoppable",
 ]
 
 log = structlog.get_logger(__name__)
@@ -335,13 +340,46 @@ _DEFAULT_RIGHT_GRIPPER_CONTROLLER: str = "right_arm/gripper_controller"
 # states under its own namespace, then a top-level remap gathers them.
 _DEFAULT_ALOHA_JOINT_STATE_TOPIC: str = "/joint_states"
 
-# Trossen Interbotix XS exposes a torque-disable service per arm; the
-# safety supervisor calls it on E-stop.  We publish a typed estop message
-# to a shared topic so a watchdog node can react to either side.
-_DEFAULT_ALOHA_ESTOP_TOPIC: str = "/aloha/estop"
+# Interbotix XS exposes one ``torque_enable`` service per arm
+# (``/<robot_name>/torque_enable``, ``interbotix_xs_msgs/srv/TorqueEnable``:
+# ``cmd_type='group'``, ``name='all'``, ``enable=false`` cuts torque to every
+# motor of that arm). That is the downstream stop: with torque off the
+# ``xs_sdk`` node cannot move the arm, whatever trajectory it still holds.
+# The two follower arms of a real ALOHA run under these namespaces (#250).
+_DEFAULT_ALOHA_ARM_NAMESPACES: tuple[str, str] = ("follower_left", "follower_right")
+_TORQUE_GROUP_ALL = "all"
 
 _PublishFn = Callable[[str, dict[str, object]], None]
 _StateFn = Callable[[], dict[str, object]]
+
+
+@runtime_checkable
+class InterbotixStopSeam(Protocol):
+    """What a transport must expose for ``AlohaHAL`` to cut torque on its arms.
+
+    The production implementation is ``InterbotixXSTransport`` (real
+    ``interbotix_xs_msgs/srv/TorqueEnable`` clients on a live graph); unit
+    tests use ``SimTorqueSeam`` from ``openral_hal.sim_transport``.
+    """
+
+    def torque_enable(
+        self, robot_name: str, *, group: str, enable: bool, timeout_s: float
+    ) -> TriggerReport:
+        """Call ``/<robot_name>/torque_enable`` for one joint group; report the ack."""
+        ...
+
+
+@runtime_checkable
+class InterbotixStoppable(Protocol):
+    """HALs the lifecycle node hands an ``InterbotixStopSeam`` under ``hal_mode:=real``."""
+
+    def arm_namespaces(self) -> list[str]:
+        """Every ``xs_sdk`` robot namespace whose torque the stop cuts."""
+        ...
+
+    def attach_torque_stop(self, seam: InterbotixStopSeam) -> None:
+        """Bind the live torque seam after construction."""
+        ...
 
 
 class AlohaHAL(HALBase):
@@ -370,9 +408,10 @@ class AlohaHAL(HALBase):
         joint_state_topic: ROS 2 topic publishing aggregated joint state.
             No real ALOHA publishes one — each arm publishes under its own
             namespace (#250).
-        estop_topic: ROS 2 topic the safety supervisor publishes to on
-            ``estop()``.  A watchdog node downstream is expected to call
-            the per-arm torque-disable service.
+        arm_namespaces: The ``xs_sdk`` robot namespaces of the two follower
+            arms; ``estop()`` calls ``/<namespace>/torque_enable`` on each.
+            Defaults to ``("follower_left", "follower_right")``.
+        stop_timeout_s: How long ``estop`` waits for each torque-off call.
         publish_fn: Callable forwarding messages to ROS 2 topics.
             Production use injects the lifecycle node's publisher; tests
             inject ``SimTransport.publish``.
@@ -381,6 +420,16 @@ class AlohaHAL(HALBase):
             callback; tests inject ``SimTransport.state``.
         staleness_limit_s: Maximum age of a ``read_state()`` reading
             before ``ROSPerceptionStale`` is raised.
+
+    **Lifecycle e-stop.** ``estop()`` calls ``torque_enable(enable=false)``
+    for the ``all`` group of every namespace in ``arm_namespaces`` through
+    the attached ``InterbotixStopSeam`` and records a
+    ``DownstreamStopReport`` — ``stopped`` only when every arm acknowledged.
+    Torque off means the ViperX arms go limp (Dynamixels have no brakes), so
+    they will settle under gravity; that is the same outcome as the rig's
+    hardware e-stop and is the only stop ``xs_sdk`` offers. Recovery is
+    ``RESTART_REQUIRED``: re-torque and re-home the arms with the Interbotix
+    tooling, then restart the HAL lifecycle node.
 
     Example:
         >>> from openral_hal.aloha import AlohaHAL
@@ -393,8 +442,14 @@ class AlohaHAL(HALBase):
         >>> hal.connect()
         >>> hal.description.name
         'aloha_bimanual'
+        >>> hal.arm_namespaces()
+        ['follower_left', 'follower_right']
         >>> hal.disconnect()
     """
+
+    #: Torque-off leaves the arms limp; only an operator can re-torque and
+    #: re-home them, so the lifecycle node must not re-arm in process.
+    estop_recovery: EStopRecovery = EStopRecovery.RESTART_REQUIRED
 
     def __init__(
         self,
@@ -404,26 +459,56 @@ class AlohaHAL(HALBase):
         left_gripper_controller: str = _DEFAULT_LEFT_GRIPPER_CONTROLLER,
         right_gripper_controller: str = _DEFAULT_RIGHT_GRIPPER_CONTROLLER,
         joint_state_topic: str = _DEFAULT_ALOHA_JOINT_STATE_TOPIC,
-        estop_topic: str = _DEFAULT_ALOHA_ESTOP_TOPIC,
+        arm_namespaces: Sequence[str] = _DEFAULT_ALOHA_ARM_NAMESPACES,
         publish_fn: _PublishFn | None = None,
         state_fn: _StateFn | None = None,
         staleness_limit_s: float = 0.2,
+        stop_timeout_s: float = 5.0,
     ) -> None:
         """Initialise the adapter; no transport is opened until ``connect()``."""
+        if not arm_namespaces:
+            raise ROSConfigError("AlohaHAL needs at least one arm namespace to stop.")
         self.description: RobotDescription = ALOHA_REAL_DESCRIPTION
         self._left_arm_controller = left_arm_controller
         self._right_arm_controller = right_arm_controller
         self._left_gripper_controller = left_gripper_controller
         self._right_gripper_controller = right_gripper_controller
         self._joint_state_topic = joint_state_topic
-        self._estop_topic = estop_topic
+        self._arm_namespaces = [str(ns) for ns in arm_namespaces]
         self._publish_fn: _PublishFn = publish_fn or _default_publish
         self._state_fn: _StateFn | None = state_fn
         self._staleness_limit_s = staleness_limit_s
+        self._stop_timeout_s = stop_timeout_s
+        self._torque_seam: InterbotixStopSeam | None = None
+        self._last_stop_report: DownstreamStopReport | None = None
 
         self._connected: bool = False
         self._last_state_time: float = 0.0
         self._joint_names: list[str] = list(_ALOHA_JOINT_NAMES)
+
+    # ── Lifecycle e-stop wiring ───────────────────────────────────────────
+
+    def arm_namespaces(self) -> list[str]:
+        """The ``xs_sdk`` namespaces ``estop`` cuts torque on."""
+        return list(self._arm_namespaces)
+
+    def attach_torque_stop(self, seam: InterbotixStopSeam) -> None:
+        """Bind the live torque seam (the lifecycle node under ``hal_mode:=real``).
+
+        Raises:
+            ROSConfigError: If ``seam`` does not satisfy ``InterbotixStopSeam``.
+        """
+        if not isinstance(seam, InterbotixStopSeam):
+            raise ROSConfigError(
+                f"attach_torque_stop() needs an InterbotixStopSeam (torque_enable); "
+                f"got {type(seam).__name__}."
+            )
+        self._torque_seam = seam
+
+    @property
+    def last_stop_report(self) -> DownstreamStopReport | None:
+        """Report of the most recent ``estop()``; ``None`` before it."""
+        return self._last_stop_report
 
     # ── HAL Protocol ──────────────────────────────────────────────────────
 
@@ -535,28 +620,69 @@ class AlohaHAL(HALBase):
         )
 
     def estop(self) -> None:
-        """Trigger an emergency stop on both arms.
+        """Trigger an emergency stop: drop the connection, cut torque on every arm, raise.
 
-        Publishes a structured estop message; downstream watchdog node
-        calls the per-arm Interbotix torque-disable service.
+        The connection flag drops first so nothing more leaves this HAL, then
+        ``torque_enable(enable=false)`` is called for the ``all`` group of
+        every arm namespace. Every arm is attempted even if an earlier one
+        failed, and the report names each acknowledgement. With no seam
+        attached the report says so and ``stopped`` is ``False`` — a local
+        latch is never reported as a downstream stop.
 
         Raises:
             ROSEStopRequested: Always.
         """
-        log.critical(
-            "hal.estop",
-            robot=self.description.name,
-            estop_topic=self._estop_topic,
-        )
-        with contextlib.suppress(Exception):
-            self._publish_fn(
-                self._estop_topic,
-                {"reason": "openral_estop", "robot": self.description.name},
-            )
+        log.critical("hal.estop", robot=self.description.name, arms=self._arm_namespaces)
         self._connected = False
+        report = self._cut_torque()
+        self._last_stop_report = report
+        verdict = "acknowledged" if report.stopped else "NOT acknowledged"
         raise ROSEStopRequested(
-            f"Emergency stop triggered on ALOHA bimanual ('{self.description.name}')."
+            f"Emergency stop triggered on ALOHA bimanual ('{self.description.name}') "
+            f"(downstream stop {verdict}: {report.detail})."
         )
+
+    def _cut_torque(self) -> DownstreamStopReport:
+        arms = tuple(self._arm_namespaces)
+        seam = self._torque_seam
+        if seam is None:
+            log.critical(
+                "hal.estop.unproven",
+                robot=self.description.name,
+                reason="no InterbotixStopSeam attached; only the local latch holds",
+            )
+            return DownstreamStopReport(
+                stopped=False,
+                controllers=arms,
+                detail="no torque stop seam attached; only the local latch holds",
+            )
+        states: dict[str, str] = {}
+        problems: list[str] = []
+        for arm in arms:
+            try:
+                ack = seam.torque_enable(
+                    arm, group=_TORQUE_GROUP_ALL, enable=False, timeout_s=self._stop_timeout_s
+                )
+            except ROSError as exc:
+                ack = TriggerReport(success=False, message=str(exc))
+            states[arm] = "torque_off" if ack.success else "torque_unknown"
+            if not ack.success:
+                problems.append(f"{arm}: {ack.message or 'torque_enable not acknowledged'}")
+        report = DownstreamStopReport(
+            stopped=not problems,
+            controllers=arms,
+            controller_states=states,
+            vendor_stop="torque_enable",
+            detail="; ".join(problems) if problems else "torque off on every arm",
+        )
+        log.critical(
+            "hal.estop.downstream_stopped"
+            if report.stopped
+            else "hal.estop.downstream_unacknowledged",
+            robot=self.description.name,
+            **report.fields(),
+        )
+        return report
 
 
 def _default_publish(topic: str, msg: dict[str, object]) -> None:  # pragma: no cover

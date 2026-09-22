@@ -368,6 +368,7 @@ if _ROS2_AVAILABLE:
             #: Live ros2_control bridge for a real-HW `RosControlHAL`; None for
             #: sim HALs and for robots that own their own bus (SO-100/SO-101).
             self._ros_control_transport: Any = None
+            self._interbotix_transport: Any = None
             self._policy_state_pub: Any = None
             # Identity of the last ProprioFrame whose policy_state was
             # published. Frames are immutable and freshly constructed per
@@ -461,7 +462,12 @@ if _ROS2_AVAILABLE:
                 return (
                     Level.ERROR,
                     "estop latched",
-                    {"robot": robot_name, "estopped": "true", **extras},
+                    {
+                        "robot": robot_name,
+                        "estopped": "true",
+                        **extras,
+                        **self._downstream_stop_fields(),
+                    },
                 )
             if self._hal is None:
                 return Level.ERROR, "hal disconnected", {"robot": robot_name, **extras}
@@ -747,6 +753,13 @@ if _ROS2_AVAILABLE:
             if self._hal is not None:
                 self._hal.disconnect()
                 self._hal = None
+            # The stop seams own a helper node each; release them with the HAL
+            # so a CLEANUP + CONFIGURE cycle does not leak participants.
+            for transport in (self._ros_control_transport, self._interbotix_transport):
+                if transport is not None and callable(getattr(transport, "close", None)):
+                    transport.close()
+            self._ros_control_transport = None
+            self._interbotix_transport = None
             return TransitionCallbackReturn.SUCCESS
 
         def on_shutdown(self, state: object) -> TransitionCallbackReturn:
@@ -1210,9 +1223,37 @@ if _ROS2_AVAILABLE:
             try:
                 self._hal.estop()
             except ROSEStopRequested as exc:
-                self.get_logger().error(f"hardware estop completed: {exc}")
+                # The Protocol promises this exception from every estop(); whether
+                # the downstream controller actually acknowledged the stop is in
+                # the HAL's report, and an unacknowledged stop is a FATAL — the
+                # local latch drops commands, but the physical robot is unproven.
+                fields = self._downstream_stop_fields()
+                if fields.get("downstream_stop") == "acknowledged":
+                    self.get_logger().error(f"hardware estop completed: {exc}")
+                else:
+                    self.get_logger().fatal(
+                        f"hardware estop NOT acknowledged downstream — only the local latch "
+                        f"holds: {exc} {fields}"
+                    )
             except Exception as exc:  # reason: latch must survive a vendor stop-path failure
                 self.get_logger().fatal(f"hardware estop failed: {exc}")
+
+        def _downstream_stop_fields(self) -> dict[str, str]:
+            """Flatten the HAL's last ``DownstreamStopReport`` for logs and ``/diagnostics``.
+
+            ``downstream_stop`` reads ``acknowledged`` only when the HAL proved
+            its controller / vendor stop, ``unacknowledged`` when it tried and
+            was refused, and ``unproven`` for a HAL that cannot report (a
+            latch-only legacy adapter, or one that has not e-stopped yet).
+            """
+            from openral_hal.ros_control import DownstreamStopReporting
+
+            hal = self._hal
+            if isinstance(hal, DownstreamStopReporting):
+                report = hal.last_stop_report
+                if report is not None:
+                    return report.fields()
+            return {"downstream_stop": "unproven"}
 
         def _emit_estop_telemetry(self) -> None:
             """Report the e-stop on the OTLP path: span event + counter.
@@ -1516,6 +1557,7 @@ if _ROS2_AVAILABLE:
             """
             assert self._hal is not None
             self._attach_ros_control_transport()
+            self._attach_interbotix_transport()
             if not callable(getattr(self._hal, "reset_to_pose", None)):
                 return TransitionCallbackReturn.SUCCESS
             from pathlib import Path
@@ -1569,18 +1611,49 @@ if _ROS2_AVAILABLE:
             if hal_mode != "real":
                 return
 
+            from openral_core.exceptions import ROSConfigError
+
+            from openral_hal.ros_control import ControllerStoppable
             from openral_hal.ros_control_transport import RosControlTransport
 
+            # A ros2_control robot that can be driven but not stopped from
+            # /openral/estop must not come up (issue #295). `RosControlHAL`
+            # answers the stop surface, so this only trips on a HAL that
+            # reimplements the fan-out without it.
+            if not isinstance(hal, ControllerStoppable):
+                raise ROSConfigError(
+                    f"{type(hal).__name__} is RosControlDrivable but not ControllerStoppable "
+                    "(controller_names / vendor_stop_services / vendor_stop_topics / "
+                    "attach_controller_stop): /openral/estop could not stop its controllers, "
+                    "so the real HAL is refused."
+                )
+
             bindings = hal.command_bindings()
+            controllers = hal.controller_names()
             transport = RosControlTransport(
                 self,
                 command_topics=list(bindings),
                 joint_names=hal.ros2_control_joint_names(),
                 joint_state_topic=hal.joint_state_topic,
                 command_kinds=bindings,
+                controller_names=controllers,
+                trigger_services=hal.vendor_stop_services(),
+                empty_topics=hal.vendor_stop_topics(),
             )
             hal.attach_transport(transport.publish, transport.state, transport.last_arrival)
+            hal.attach_controller_stop(transport)
             self._ros_control_transport = transport
+            # Informational only: the manager may still be spawning controllers
+            # at configure time, so absence here is a warning, not a refusal —
+            # the stop path itself verifies at e-stop time.
+            listed = transport.controller_states(timeout_s=1.0)
+            missing = [c for c in controllers if listed.get(c) != "active"]
+            if missing:
+                self.get_logger().warning(
+                    f"controller_manager does not (yet) list {missing} as active "
+                    f"(seen: {listed or 'no answer'}); /openral/estop will deactivate "
+                    f"{controllers} and report whether the manager acknowledged."
+                )
 
             # The vendor's `joint_state_broadcaster` owns the global
             # `/joint_states` on real hardware, and the transport now reads it.
@@ -1605,7 +1678,37 @@ if _ROS2_AVAILABLE:
             self.get_logger().info(
                 f"ros2_control transport attached: {len(bindings)} command topic(s) "
                 f"[{kinds}], reading {hal.joint_state_topic}; global /joint_states left to "
-                "the controller's joint_state_broadcaster."
+                f"the controller's joint_state_broadcaster; /openral/estop deactivates "
+                f"{controllers} (recovery: {getattr(hal, 'estop_recovery', 'undeclared')})."
+            )
+
+        def _attach_interbotix_transport(self) -> None:
+            """Give a real Interbotix-XS HAL (ALOHA) its torque-off stop seam.
+
+            The ALOHA's real HAL is not ros2_control (issue #250), so the
+            transport above never touches it; what a real ALOHA does expose is
+            ``xs_sdk``'s per-arm ``torque_enable`` service, and cutting torque is
+            its downstream stop. Wired under ``hal_mode:=real`` for any HAL that
+            is structurally ``InterbotixStoppable``.
+            """
+            from openral_hal.aloha import InterbotixStoppable
+
+            hal = self._hal
+            if not isinstance(hal, InterbotixStoppable):
+                return
+            hal_mode = self.get_parameter("hal_mode").get_parameter_value().string_value or "sim"
+            if hal_mode != "real":
+                return
+
+            from openral_hal.interbotix_transport import InterbotixXSTransport
+
+            arms = hal.arm_namespaces()
+            transport = InterbotixXSTransport(self, arm_namespaces=arms)
+            hal.attach_torque_stop(transport)
+            self._interbotix_transport = transport
+            self.get_logger().info(
+                f"Interbotix torque-stop attached: /openral/estop cuts torque on {arms} "
+                f"(recovery: {getattr(hal, 'estop_recovery', 'undeclared')})."
             )
 
         def _handle_reset_to_pose(self, request: object, response: object) -> object:

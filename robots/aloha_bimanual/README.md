@@ -56,6 +56,30 @@ just sim-act-aloha
 #     openral sim run --config scenes/benchmark/aloha_transfer_cube.yaml --rskill rskills/act-aloha --save-video
 ```
 
+## E-stop and recovery
+
+`/openral/estop` reaches `AlohaHAL.estop()` through the lifecycle node
+(issue #295). A real ALOHA runs `xs_sdk` per follower arm — no
+`controller_manager` — so the stop is Interbotix's own:
+`/<namespace>/torque_enable` (`interbotix_xs_msgs/srv/TorqueEnable`,
+`cmd_type='group'`, `name='all'`, `enable=false`) on each of
+`follower_left` and `follower_right`, through the production
+`InterbotixXSTransport`. Every arm is attempted even if one refuses, and the
+report is acknowledged only when every arm answered. **Torque off leaves the
+ViperX arms limp** (Dynamixels have no brakes): they settle under gravity,
+the same outcome as the rig's hardware e-stop and the only stop the SDK offers.
+
+The outcome is on `/diagnostics` (`downstream_stop=acknowledged|unacknowledged`,
+per-arm `torque_off` / `torque_unknown`) and in the lifecycle log.
+
+**Recovery is `RESTART_REQUIRED`.** Re-torque and re-home both arms with the
+Interbotix tooling, then relaunch the HAL lifecycle node. The command / state
+wiring of this HAL is still the #250 on-rig work; the e-stop path is
+independent of it.
+
+Evidence: `tests/unit/test_aloha.py::TestSafety` (in-memory torque seam) and
+the attended `tests/hil/test_aloha.py::TestAlohaDownstreamEStop`.
+
 ## See also
 
 - [`rskills/act-aloha/README.md`](../../rskills/act-aloha/README.md) — ACT rSkill.

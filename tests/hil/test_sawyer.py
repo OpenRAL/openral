@@ -30,7 +30,7 @@ from collections.abc import Iterator
 import pytest
 from openral_core import Action, ControlMode
 from openral_core.exceptions import (
-    ROSEStopRequested,  # noqa: F401  # reason: re-exported for safety
+    ROSEStopRequested,  # reason: re-exported for safety
 )
 from openral_hal.sawyer_real import SAWYER_DESCRIPTION, SawyerRealHAL
 
@@ -122,3 +122,78 @@ class TestSawyerHIL:
             assert abs(after - before) < 0.02, (
                 f"Sawyer joint moved {abs(after - before):.4f} rad during hold"
             )
+
+
+# ── Downstream e-stop (issue #295) ───────────────────────────────────────────
+# Last in file on purpose: it stops the vendor controller and leaves the robot
+# needing an operator restart. Run attended, with the physical E-stop in reach.
+
+
+def _production_stop_seam(node_name: str, hal: object) -> tuple[object, object]:
+    """Attach the production ``RosControlTransport`` as the HAL's stop seam.
+
+    The HIL bridge above drives commands; the stop goes through the same
+    transport a real deploy uses, so what is exercised here is the production
+    ``controller_manager`` switch + confirmation, not a test-side re-creation.
+    """
+    import rclpy
+    from openral_hal.ros_control_transport import RosControlTransport
+
+    if not rclpy.ok():
+        rclpy.init()
+    node = rclpy.create_node(node_name)
+    transport = RosControlTransport(
+        node,
+        command_topics=list(hal.command_bindings()),  # type: ignore[attr-defined]  # reason: RosControlDrivable
+        joint_names=hal.ros2_control_joint_names(),  # type: ignore[attr-defined]
+        joint_state_topic=hal.joint_state_topic,  # type: ignore[attr-defined]
+        command_kinds=hal.command_bindings(),  # type: ignore[attr-defined]
+        controller_names=hal.controller_names(),  # type: ignore[attr-defined]  # reason: ControllerStoppable
+        trigger_services=hal.vendor_stop_services(),  # type: ignore[attr-defined]
+        empty_topics=hal.vendor_stop_topics(),  # type: ignore[attr-defined]
+    )
+    hal.attach_controller_stop(transport)  # type: ignore[attr-defined]
+    return node, transport
+
+
+class TestSawyerDownstreamEStop:
+    def test_zz_estop_deactivates_the_controller_and_super_stops(
+        self, sawyer_hal: SawyerRealHAL
+    ) -> None:
+        """``/openral/estop`` must deactivate ``sawyer_arm_controller`` and super-stop the robot.
+
+        The controller half is acknowledged by ``controller_manager``; the
+        intera half is observed on ``/robot/state`` (``stopped == true``) when
+        ``intera_core_msgs`` is installed. Recovery is ``RESTART_REQUIRED``:
+        publish ``/robot/set_super_reset``, re-enable, relaunch the HAL node.
+        """
+        import importlib.util
+        import time
+
+        from openral_hal.protocol import EStopRecovery
+
+        node, transport = _production_stop_seam("openral_hil_sawyer_stop", sawyer_hal)
+        try:
+            with pytest.raises(ROSEStopRequested, match="downstream stop acknowledged"):
+                sawyer_hal.estop()
+            report = sawyer_hal.last_stop_report
+            assert report is not None and report.stopped, report
+            assert report.vendor_stop == "/robot/set_super_stop"
+            states = transport.controller_states(timeout_s=5.0)  # type: ignore[attr-defined]
+            assert states.get(sawyer_hal.controller_name) == "inactive", states
+            assert sawyer_hal.estop_recovery is EStopRecovery.RESTART_REQUIRED
+            if importlib.util.find_spec("intera_core_msgs") is not None:
+                import rclpy
+                from intera_core_msgs.msg import RobotAssemblyState
+
+                seen: list[bool] = []
+                node.create_subscription(  # type: ignore[attr-defined]
+                    RobotAssemblyState, "/robot/state", lambda m: seen.append(bool(m.stopped)), 10
+                )
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline and not (seen and seen[-1]):
+                    rclpy.spin_once(node, timeout_sec=0.1)
+                assert seen and seen[-1], "intera never reported stopped=true on /robot/state"
+        finally:
+            transport.close()  # type: ignore[attr-defined]
+            node.destroy_node()  # type: ignore[attr-defined]
