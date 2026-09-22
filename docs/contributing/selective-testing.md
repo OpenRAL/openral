@@ -259,7 +259,7 @@ can no longer report the same thing.
 ```bash
 # What would run for the current branch vs origin/master?
 just test-changed                       # prints the plan
-uv run python tools/select_tests.py --files python/wam/src/openral_wam/core.py
+uv run python tools/select_tests.py --files python/state_adapter/src/openral_state_adapter/core.py
 uv run python tools/select_tests.py --base origin/master --head HEAD
 
 # Actually run only the affected tests:
@@ -351,7 +351,7 @@ parallel, in their own jobs, and only after a maintainer approves them (see
 
 | Change | Result |
 | --- | --- |
-| `python/wam/src/openral_wam/core.py` | `python/wam/tests` only (leaf package) |
+| `python/state_adapter/src/openral_state_adapter/core.py` | `python/state_adapter/tests` only (leaf package) |
 | `python/core/src/openral_core/schemas.py` | broad — core fans out to ~every package's tests |
 | `packages/openral_hal_so100/**` | `packages/openral_hal_so100/test` |
 | `rskills/act-aloha/**` | unit fixture checks + ALOHA sim tests, with the `sim` dependency lane |

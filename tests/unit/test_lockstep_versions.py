@@ -45,7 +45,8 @@ def _root_version() -> str:
 
 def test_package_dirs_discovered() -> None:
     """Guard the parametrisation itself — an empty sweep would pass vacuously."""
-    assert len(PACKAGE_DIRS) >= 14, f"expected the full workspace, found {PACKAGE_DIRS}"
+    # 13 members since python/wam left the workspace (ADR-0104).
+    assert len(PACKAGE_DIRS) >= 13, f"expected the full workspace, found {PACKAGE_DIRS}"
 
 
 @pytest.mark.parametrize("pkg_dir", PACKAGE_DIRS, ids=lambda p: p.name)

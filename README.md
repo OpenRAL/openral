@@ -96,7 +96,7 @@ The public repo stays Apache-2.0 and ships the protocols plus extension seams. P
 | TensorRT engine runtime for SmolVLA / ACT fast paths | entry-point seam only; PyTorch / ONNX stay open-core |
 | GStreamer / DeepStream NVMM zero-copy detector path | deploy-scene knobs only; DeepStream binaries are not bundled |
 | DeepStream deploy image | built in `openral-pro` from this repo's x86 image |
-| Concrete WAM adapters | `WorldModel` protocol + `NullWorldModel` here; implementations live outside this repo |
+| World Action Model (WAM) implementations | not shipped here (ADR-0104); no `WorldModel` protocol/scaffold in this repo |
 | Fleet/cloud dispatch and premium rSkills | not shipped here |
 
 ## Supported platforms

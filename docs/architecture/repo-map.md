@@ -19,8 +19,8 @@ openral/                      ← THIS monorepo
 │  ├─ runner/       (openral_runner)      ← `InferenceRunner` Protocol + `DeployRunner` + `GStreamerSensorReader` + `NullSafetyClient` ✓
 │  ├─ reasoner/     (openral_reasoner)    ← S2 LLM reasoner/supervisor core — `ReasonerCore`, `ReasonerToolCall` palette, bounded replanning ladder ✓
 │  ├─ dataset/      (openral_dataset)     ← rosbag2 ↔ LeRobotDataset v3 bridge ✓
-│  ├─ wam/          (openral_wam)         ← World Action Model protocol (mental-simulation gating) — optional, not one of the seven core layers — scaffold ◐
 │  └─ observability/ (openral_observability) ← OTel SDK + OTLP exporter, span helpers, structlog↔OTel bridge ✓
+│  World Action Model (WAM) implementations: removed (ADR-0104) — they live in the private OpenRAL Pro monorepo, not this repo
 │  Planned: dispatcher (edge/cloud/split)
 ├─ packages/                      ← ROS 2 packages (colcon build)
 │  ├─ msgs/         (openral_msgs)        ← IDL (.msg, .action) — normative; WorldStateStamped carries detected_objects ✓

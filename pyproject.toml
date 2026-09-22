@@ -177,7 +177,6 @@ openral-sim = { workspace = true }
 openral-observability = { workspace = true }
 openral-runner = { workspace = true } # reason: inference runner — InferenceRunner + SensorReader + clock
 openral-reasoner = { workspace = true } # reason: S2 reasoner — LLMClient + Reasoner Protocols + Plan/ToolCall schemas
-openral-wam = { workspace = true } # reason: CLAUDE.md §6.3 World Action Model layer — WorldModel Protocol + Rollout schema
 openral-dataset = { workspace = true } # reason: rosbag2 ↔ LeRobotDataset v3 bridge — RolloutRecorder + LeRobotDatasetSink + Rosbag2Sink + Rosbag2ToLeRobotConverter
 openral-state-adapter = { workspace = true } # reason: layout adapter registry — per-checkpoint state-vector assemblers
 

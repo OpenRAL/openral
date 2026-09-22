@@ -206,9 +206,9 @@ This integration touches **Layer 4 (Reasoning) only** — a new
 moved. Two adjacent opportunities are intentionally *not* part of it:
 
 - **WAM (Layer 5):** Cosmos 3's generator tower is an action-conditioned
-  world model — exactly the `openral_wam` protocol's planned
-  mental-simulation backend (the roadmap already names Cosmos Predict; the
-  unified Cosmos 3 generator supersedes it). Separate decision + PR.
+  world model — a mental-simulation backend. WAM implementations live in
+  the private OpenRAL Pro monorepo (ADR-0104), not here. Separate decision
+  + PR.
 - **S1 policy rSkill:** `nvidia/Cosmos3-Edge-Policy-DROID` emits action
   chunks for DROID-format single-arm embodiments and could be packaged as
   an rSkill via the existing VLA adapter machinery. Separate decision + PR.

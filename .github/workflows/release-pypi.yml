@@ -151,7 +151,6 @@ jobs:
           - python/sim
           - python/rskill
           - python/reasoner
-          - python/wam
           - python/dataset
           - python/state_adapter
     steps:
