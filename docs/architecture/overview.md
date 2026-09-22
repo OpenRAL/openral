@@ -14,20 +14,15 @@ OpenRAL uses a seven-layer architecture. Each layer has a single responsibility 
 6  Observability        python/observability/                       ✓ shipped (OTel SDK + OTLP exporter + structlog↔OTel bridge)
 ```
 
-Layers 0–3 and Observability (Layer 6) ship today: the Python HAL/sensors
-adapters, the World State aggregator (plus its ROS 2 lifecycle node), the
-`Skill` ABC, the `rSkill` loader (manifest validation, license guard,
-capability matching) with policy adapters for SmolVLA, ACT, Diffusion
-Policy, π0.5, and xVLA, the `openral_rskill_ros` action server, and the
-OpenTelemetry instrumentation. Reasoning (Layer 4) and Safety (Layer 5)
-have **initial ROS 2 implementations** — an LLM reasoner/supervisor graph
-(`openral_reasoner_ros` + `openral_prompt_router`) and a Python safety
-supervisor with independent deadman/E-stop forwarder processes (`openral_safety`,
-`openral_safety_watchdog`, `openral_human_estop`) — with the
-certifiable **C++ safety kernel** (Layer 5) still
-planned; the prose below describes their target shape. The cross-cutting
-eval layer (`python/sim/`) is shipped and drives the closed-loop
-sim today via `openral sim run` against the configs under `scenes/`.
+Layers 0–3 and Observability (Layer 6) ship today; the `rSkill` loader's
+policy adapters cover SmolVLA, ACT, Diffusion Policy, π0.5, and xVLA.
+Reasoning (Layer 4) and Safety (Layer 5) have **initial ROS 2
+implementations** — with the certifiable **C++ safety kernel** (Layer 5)
+still planned; the prose below describes their target shape.
+
+The cross-cutting eval layer (`python/sim/`) is shipped and drives the
+closed-loop sim today via `openral sim run` against the configs under
+`scenes/`.
 
 ## Layer contracts
 
@@ -51,4 +46,4 @@ Every robot agent has:
 The safety kernel is a **separate C++ process** with a watchdog. It is deny-by-default.
 Python proposes actions; C++ disposes them. `ROSSafetyViolation` is never silently caught.
 
-See [CLAUDE.md](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) (§1 operating principles, §3 architecture discipline) for the full architectural discipline and the eight operating principles.
+See [CLAUDE.md](https://github.com/OpenRAL/openral/blob/master/CLAUDE.md) (§1 operating principles, §3 architecture discipline) for the full architectural discipline and the operating principles.

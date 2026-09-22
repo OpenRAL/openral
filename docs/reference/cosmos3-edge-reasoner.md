@@ -2,17 +2,15 @@
 
 > Assessment + integration record for the curated `cosmos3-edge` reasoner model
 > (`OPENRAL_REASONER_MODEL=cosmos3-edge`,
-> `openral_reasoner.cosmos3.Cosmos3ToolUseClient`). Last reviewed
-> 2026-07-20 — the day the Edge weights shipped; recheck the
+> `openral_reasoner.cosmos3.Cosmos3ToolUseClient`). Recheck the
 > [Validation status](#validation-status) table before relying on
 > anything marked unverified.
 
 ## What it is
 
 [Cosmos 3](https://github.com/nvidia/cosmos) is NVIDIA's omnimodal
-world-model family (announced 2026-05-31; the Edge tier launched
-2026-07-15 and its weights landed on Hugging Face 2026-07-20 at
-[`nvidia/Cosmos3-Edge`](https://huggingface.co/nvidia/Cosmos3-Edge)). One
+world-model family; weights are on Hugging Face at
+[`nvidia/Cosmos3-Edge`](https://huggingface.co/nvidia/Cosmos3-Edge). One
 Mixture-of-Transformers model, two towers:
 
 - **Reasoner tower** — autoregressive VLM: text/image/video in → text out.
@@ -78,25 +76,25 @@ completion-adjudication gate (`describe_image`). Against that contract:
 ## Expected footprint
 
 The reasoner tower is ~3B params; at BF16 (the only officially-tested
-precision) it loaded at **~6.4 GB resident on the 8 GB RTX 4070** with an
-8192-token KV cache — a genuine fit, not a projection, but a *tight* one.
-`--enforce-eager` (skip CUDA-graph capture) is load-bearing on 8 GB, and the
-8192 window needs `OPENRAL_COSMOS3_GPU_MEM_UTIL=0.95` on this card. Note the
-reasoner's own system prompt + tool schemas already run ~7.7K tokens, so a
-sub-8192 window rejects a real tick — which puts **8 GB at the practical
-floor**: it works, but with no room for a co-resident S1 VLA and little KV
-headroom. A **≥12 GB card is the comfortable minimum**; Jetson Thor T3000
-(32 GB) / T2000 (16 GB) — Edge's actual targets — have ample room, and the
-sidecar's 0.90 default suits them. The model supports up to 131K context,
-KV-VRAM permitting.
+precision) it loaded at **~6.4 GB resident on an 8 GB GPU** with an
+8192-token KV cache — a genuine fit, but a *tight* one. `--enforce-eager`
+(skip CUDA-graph capture) is load-bearing at 8 GB, and the 8192 window needs
+`OPENRAL_COSMOS3_GPU_MEM_UTIL=0.95` there. The reasoner's own system prompt
+plus tool schemas already run ~7.7K tokens, so a sub-8192 window rejects a
+real tick — which puts **8 GB at the practical floor**: it works, but with
+no room for a co-resident S1 VLA and little KV headroom.
+
+A **≥12 GB card is the comfortable minimum**; Jetson Thor T3000 (32 GB) /
+T2000 (16 GB) — Edge's actual targets — have ample room, and the sidecar's
+0.90 default suits them. The model supports up to 131K context, KV-VRAM
+permitting.
 
 ## Risks and open questions
 
 0. **BLOCKER (live-confirmed): vLLM cannot yet run a forward pass on
-   `cosmos3_edge`.** See the validation ledger — the served engine boots but
-   500s on the first request via an upstream `get_rope_index` shape bug. This
-   is the one thing standing between "boots" and "works", and it is not
-   OpenRAL's to fix. Everything below assumes that clears.
+   `cosmos3_edge`.** The served engine boots but 500s on the first request
+   via an upstream `get_rope_index` shape bug — not OpenRAL's to fix.
+   Everything below assumes that clears.
 1. **Tool-calling reliability of a 4B world model is unproven.** Cosmos 3's
    reasoner is trained for physical reasoning and grounding, not
    function-calling agent traces. The palette's `execute_rskill__*` /
@@ -129,40 +127,35 @@ KV-VRAM permitting.
 ## Validation status
 
 Honesty ledger (CLAUDE.md §1.2). Validated live on an **RTX 4070 Laptop
-(8 GB, CUDA 13.0)**: 2026-07-20 (day the Edge weights shipped — pinned
-stable stack) and 2026-07-21 (vLLM `main` nightly — first working
-end-to-end tick). The aarch64 rows are from a **Jetson AGX Thor**
-(JetPack 7, 122 GiB unified) on 2026-09-07, where cosmos3-edge now serves
-and tool-calls for real.
+(8 GB, CUDA 13.0)** on the pinned stable stack, then again on vLLM `main`
+nightly for the first working end-to-end tick. The aarch64 rows are from a
+**Jetson AGX Thor** (JetPack 7, 122 GiB unified), where cosmos3-edge now
+serves and tool-calls for real.
 
-**Superseded on 2026-09-14 — x86_64 now serves natively too.** The split
-below was never upstream: the sidecar lock was compiled from a checkout, so
-uv applied the *workspace's* `[tool.uv] constraint-dependencies`
-(`torchcodec<0.10` on x86, which pairs torchcodec's ABI with the main env's
-torch 2.9.1) to a venv that exists precisely to be isolated from that torch.
-That capped x86 at vLLM 0.24.0 — below #48291 — while aarch64 resolved
-0.28.0. Compiling *and installing* with `--no-config` removes it; the lock now
-pins `vllm==0.28.0` universally, reproducing the aarch64-validated environment
+**x86_64 now serves natively too.** The sidecar lock previously picked up
+the workspace's `torchcodec<0.10` constraint, which capped x86 at vLLM
+0.24.0 (below the release with native Edge support) while aarch64 resolved
+0.28.0. Compiling the lock in isolation fixes this: it now pins
+`vllm==0.28.0` universally, reproducing the aarch64-validated environment
 (torch 2.13.0, torchcodec 0.16.0) on every platform. Verified live on an
-RTX 5070 8 GB x86_64 host: `vllm_has_native_edge_model()` → `True`,
-`Resolved architecture: Cosmos3EdgeForConditionalGeneration`, and **4/4
-`select_tool` ticks through the real `Cosmos3ToolUseClient` returned a
-validated `ReasonerToolCall`**. The x86 ❌ rows below are kept as the
-historical record of the pinned-0.24.0 configuration; they no longer describe
-the shipped one.
+8 GB x86_64 host: native architecture resolves, and **4/4 `select_tool`
+ticks** through the real `Cosmos3ToolUseClient` returned a validated
+`ReasonerToolCall`. The x86 ❌ rows below reflect the earlier pinned-0.24.0
+configuration and no longer apply.
 
-**Sizing, measured on that 8 GB card.** The reasoner's prompt is much larger
-than this page previously implied: the system prompt alone tokenizes to
-**2,804** tokens, and the per-skill tool schemas add **7,154** for a 4-skill
+**Sizing on an 8 GB card.** The system prompt alone tokenizes to **2,804**
+tokens, and the per-skill tool schemas add **7,154** for a 4-skill
 `so100_follower` palette (~10.2 K total in flight) or **17,248** for a
 14-skill `franka_panda` one (~20 K). The sidecar's `--max-model-len` default
-of 8192 therefore 400s on *any* real palette. A working 8 GB recipe is
-`--max-model-len 12288 --gpu-memory-utilization 0.97 --kv-cache-dtype fp8`
-(13,568 KV tokens), which fits the small palette with room for the reply but
-not the 14-skill one. The defaults are deliberately left alone: 12288 at the
-default 0.90 utilisation refuses to start ("0.66 GiB KV cache is needed …
-available 0.2 GiB"), and raising utilisation by default would be hostile to a
-GPU that also drives a display.
+of 8192 therefore 400s on *any* real palette.
+
+A working 8 GB recipe is `--max-model-len 12288 --gpu-memory-utilization
+0.97 --kv-cache-dtype fp8` (13,568 KV tokens), which fits the small palette
+with room for the reply but not the 14-skill one. The defaults are
+deliberately left alone: 12288 at the default 0.90 utilisation refuses to
+start ("0.66 GiB KV cache is needed … available 0.2 GiB"), and raising
+utilisation by default would be hostile to a GPU that also drives a
+display.
 
 | Item | Status |
 |---|---|
@@ -192,7 +185,7 @@ GPU that also drives a display.
 
 ### Upstream timeline & what unblocks the pinned sidecar
 
-* **vLLM [#48291](https://github.com/vllm-project/vllm/pull/48291)** (merged 2026-07-14, **in no release** — v0.25.1 was cut 40 min after the merge without it): native Edge reasoner; bypasses the buggy fallback and loads the diffusers layout directly.
+* **vLLM [#48291](https://github.com/vllm-project/vllm/pull/48291)** (merged, **in no release yet**): native Edge reasoner; bypasses the buggy fallback and loads the diffusers layout directly.
 * **vLLM [#49190](https://github.com/vllm-project/vllm/pull/49190)** (open): skips the generator-tower `k_norm_und_for_gen` tensors (without it the native loader errors on weight mapping) + video-processing fixes. The weight-filter half is required for Edge; validated here as a one-line local patch.
 * **transformers**: `cosmos3_edge` still release-less (5.14.1 lacks it); the SHA-pinned overlay remains required for config parsing on every path.
 * **Nightly caveat**: the current vLLM nightly wheel's metadata carries a self-contradictory `torchcodec` constraint on x86 Linux (resolver-breaking); it installs only with `--no-deps` over an existing 0.24.0 dep tree — fine for validation, not lockable.

@@ -307,7 +307,7 @@ JSON-lines sidecar. No vendor source, binary, or message package is distributed.
   ownership, loopback port, container name, and process lock without opening the
   serial device or starting a container.
 
-Galaxea A1 hardware bring-up and the LingBot-VA rSkill deploy runbook moved to [`robots/galaxea_a1/README.md`](../../robots/galaxea_a1/README.md).
+Galaxea A1 hardware bring-up and the LingBot-VA rSkill deploy runbook moved to [`robots/galaxea_a1/README.md`](https://github.com/OpenRAL/openral/blob/master/robots/galaxea_a1/README.md).
 
 ### `python/hal/src/openral_hal/h1.py`
 _MuJoCo digital twin for the Unitree H1 humanoid (Menagerie MJCF). Contract validator only — falls without an S0 cerebellum, so gravity must stay disabled in closed-loop tests. Unlike G1/UR/Franka/SO-100, the H1 menagerie ships torque actuators, so this HAL runs a software PD position loop every physics step._

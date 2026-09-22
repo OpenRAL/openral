@@ -54,7 +54,9 @@ aarch64 torch wheel is CPU-only, so the root `pyproject.toml` pins torch +
 torchvision to the `cu128` index (and raises `nvidia-cuda-nvrtc-cu12`) under a
 `platform_machine == 'aarch64'` marker; without it every in-process policy runs
 on CPU on a DGX Spark / Jetson. x86_64 resolution is untouched and never
-contacts that host. Upgrading an *existing* aarch64 venv also needs a one-time
+contacts that host.
+
+Upgrading an *existing* aarch64 venv also needs a one-time
 `uv sync --frozen --reinstall-package torchvision`, because both torchvision
 builds share the version string. Full detail →
 [aarch64 CUDA hosts](../reference/aarch64-support.md).
@@ -145,7 +147,9 @@ executable on install" never happens and the libexec entry inherits the source
 file's mode. `launch_ros` resolves `executable=` with `shutil.which()` over that
 directory, gets `None` for a 0644 file, and raises `executable '<name>' not
 found on the libexec directory` — abandoning the **entire** launch description,
-not just the one node. A `chmod +x` alone is not enough (it leaves a 100644 blob
+not just the one node.
+
+A `chmod +x` alone is not enough (it leaves a 100644 blob
 in the commit); use `git update-index --chmod=+x <file>`.
 `tests/unit/test_ros_node_exec_bits.py` enforces this for every package.
 
@@ -182,10 +186,9 @@ openral collision lower --robot robots/<robot>/robot.yaml \
 Isaac ROS 4.4+ cuMotion is a **self-contained C++/CUDA apt package** (ships a
 native `libcumotion.so.1` and uses the CUDA 13 runtime) — there is **no Python
 cuRobo to install** and no `uv`/`pip` group. The apt packages are the supported
-path on OpenRAL's Python 3.12 + Jazzy stack. *Verified 2026-06-22 on an RTX 4070
-(Ada): the planner node loads the panda config and solves a joint-space plan in
-~0.12 s.* cuMotion never bypasses the safety kernel: planned trajectories still
-replay through `/openral/candidate_action` and are validated waypoint-by-waypoint.
+path on OpenRAL's Python 3.12 + Jazzy stack. cuMotion never bypasses the safety
+kernel: planned trajectories still replay through `/openral/candidate_action`
+and are validated waypoint-by-waypoint.
 
 ## Sim
 
@@ -227,7 +230,7 @@ The wrapper sources the ROS 2 distro overlay and the colcon workspace overlay be
 
 ### Which checkout does `openral` run? (`OPENRAL_REPO_ROOT`)
 
-The wrapper bakes in the checkout that generated it. That is the right default for a single clone, but it is a **provenance hazard** the moment you have two — a git worktree used for validation, say. Without an override the wrapper would exec the *generating* checkout's venv, colcon overlay and `robots/` manifests no matter where you invoked it from, so a run could be attributed to the wrong branch with nothing in the log to show it (this happened for real on a DGX Spark).
+The wrapper bakes in the checkout that generated it. That is the right default for a single clone, but it is a **provenance hazard** the moment you have two — a git worktree used for validation, say. Without an override the wrapper would exec the *generating* checkout's venv, colcon overlay and `robots/` manifests no matter where you invoked it from, so a run could be attributed to the wrong branch with nothing in the log to show it.
 
 `OPENRAL_REPO_ROOT` is the escape hatch, and the behaviour is:
 

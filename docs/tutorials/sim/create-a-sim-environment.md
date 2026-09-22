@@ -185,8 +185,6 @@ obscure a profiling investigation), set
 OPENRAL_SIM_SEQUENTIAL_INIT=1 openral sim run --config scenes/sim/libero_spatial.yaml --rskill pi05-libero-int8
 ```
 
-See [GH-134](https://github.com/OpenRAL/openral/issues/134).
-
 ---
 
 ## 2. Author a SimScene YAML
@@ -194,6 +192,7 @@ See [GH-134](https://github.com/OpenRAL/openral/issues/134).
 The on-disk shape is a [`SimScene`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py)
 — `(robot × scene × task)` — defined in `python/core/src/openral_core/schemas.py`
 (search for `class SimScene`).
+
 At runtime the CLI composes it with the rSkill manifest (`--rskill`) into a
 [`SimEnvironment`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py)
 (`schemas.py` — search for `class SimEnvironment`) that adapter factories consume. Loading a YAML that
@@ -725,7 +724,7 @@ Banner steps (kitchen variant):
 
 1. `uv sync --all-packages --group robocasa`
 2. `mkdir -p ~/.cache/openral/repos`
-3. `git clone https://github.com/ARISE-Initiative/robosuite.git ~/.cache/openral/repos/robosuite` (idempotent, master branch — kitchen needs the master tip, not the 1.5.2 PyPI wheel. Master adds `make mink optional` (commit `95743f6`, 3 commits past the v1.5.2 tag) so `mink` stays in `extras_require`; without that, `mink==0.0.5`'s `numpy<2` pin would wedge the workspace. The lockfile-honest `[tool.uv.sources] robosuite = { git = "…", rev = "…" }` entry in `pyproject.toml` pins the exact commit `_robocasa_kitchen_plan` reinstalls editable here.)
+3. `git clone https://github.com/ARISE-Initiative/robosuite.git ~/.cache/openral/repos/robosuite` (idempotent, master branch — kitchen needs the master tip, not the 1.5.2 PyPI wheel. Master adds `make mink optional` so `mink` stays in `extras_require`; without that, `mink==0.0.5`'s `numpy<2` pin would wedge the workspace. The lockfile-honest `[tool.uv.sources] robosuite = { git = "…", rev = "…" }` entry in `pyproject.toml` pins the exact commit `_robocasa_kitchen_plan` reinstalls editable here.)
 4. patch the clone: `touch robosuite/examples/__init__.py`, `touch robosuite/examples/third_party_controller/__init__.py`, `touch robosuite/macros_private.py` (upstream `find_packages()` drops the `examples/` directory + the macros nag is silenced by an empty `macros_private.py`)
 5. `uv pip install --force-reinstall --no-deps -e ~/.cache/openral/repos/robosuite`
 6. `uv pip install --no-deps "robosuite-models @ git+..."`
@@ -860,7 +859,9 @@ fork — a soft fork of robocasa that NVIDIA shipped alongside the
 tabletop tasks on the Fourier GR-1 humanoid (the
 `GR1ArmsAndWaistFourierHands` composition: 7-DoF right arm + 7-DoF
 left arm + 3-DoF waist + two 6-DoF Fourier dex hands, leg and head
-actuation disabled). The bot-harness sim layer exposes them as
+actuation disabled).
+
+The bot-harness sim layer exposes them as
 `robocasa/gr1/<TaskName>` scene ids pinned to the `gr1` robot
 manifest (`robots/gr1/robot.yaml`).
 
@@ -931,15 +932,5 @@ The auto-install prompts fire from the benchmark runner's path too —
   `openral rskill list`.
 - The cookbook of existing configs and a per-backend ID table:
   [`scenes/README.md`](https://github.com/OpenRAL/openral/blob/master/scenes/README.md).
-- Design background: the original scene/eval design renamed
-  `SceneEnvironment` to `SimScene` and later split it into the
-  three-tier `DeployScene ⊆ SimScene ⊆ BenchmarkScene` hierarchy (with
-  per-tier loader strictness) that also underlies the `openral sim run`
-  vs `openral benchmark run` split. RoboCasa arrived as a MuJoCo backend
-  with custom tasks over five PRs per
-  [issue #88](https://github.com/OpenRAL/openral/issues/88); all of it has
-  landed — the `RoboCasaBackendOptions` validator, the
-  `[dependency-groups].robocasa` extras group, the adapter itself, and the
-  procedural-kitchen walkthrough in §7.
 - The public-symbol inventory for the sim layer:
   [`docs/METHODS.md`](../../METHODS.md), section **Eval (sim)**.

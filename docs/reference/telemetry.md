@@ -72,12 +72,11 @@ quiet until deliberately promoted. Every span is still indexed in full for
 | `physics.step` | Sim | `sim/sim_runner.py:671` | per step | debug | — |
 | `reasoner.skill_failure` | Reasoning | `reasoner_node.py:4890` | per failure | **error** | Event Log, failure counter |
 
-> **Why the allow-list.** It replaced a deny-list that named only the three
-> obvious 30 Hz spans and missed four more ticking at the same rate. Measured on
-> one second of a real 30 Hz two-camera deploy, the Event Log took **121 info
-> rows/s**, cycling its 200-slot ring every **1.65 s** — so every lifecycle line
-> an operator needed scrolled away before it could be read. Inverted, routine
-> traffic contributes **0** info rows.
+> **Why the allow-list.** A deny-list missed several 30 Hz spans ticking at
+> the same rate. On one second of a real 30 Hz two-camera deploy, the Event
+> Log took **121 info rows/s**, cycling its 200-slot ring every **1.65 s** —
+> every lifecycle line an operator needed scrolled away before it could be
+> read. Inverted, routine traffic contributes **0** info rows.
 
 ### `rskill.chunk_inference` attributes
 
@@ -110,14 +109,12 @@ and `snapshot()` merges all three deduped:
 | `_error_events` | 64 | errors + fatals, plus `skill_failure` even when downgraded to warn |
 | `_headline_events` | 64 | the remaining non-debug rows (`deploy.bringup`, `reasoner.tick`, `world.scene_objects` …) |
 
-**The two lanes are separate on purpose.** Mirroring all non-debug traffic into
-the single error lane let routine info evict the safety events those 64 slots
-exist to preserve: `world.scene_objects` alone ran at ~0.10/s (it is
-change-gated with a 60 s keepalive now, but the isolation argument stands for
-any headline span), so the shared
-lane fully cycled in ~11 minutes of an otherwise idle scene and a minute-one
-`safety.violation` was gone by minute twelve — the exact "counter goes up, no
-trace" failure the protected lane was added to prevent. One budget each means
+**The two lanes are separate on purpose.** Mirroring all non-debug traffic
+into a single lane lets routine info evict the safety events the protected
+64 slots exist for: `world.scene_objects` alone ran at ~0.10/s (now
+change-gated to a 60 s keepalive, but the isolation argument still holds),
+enough to fully cycle a shared lane in ~11 minutes of an idle scene — long
+enough to evict a `safety.violation` before it is read. One budget each means
 neither class can starve the other.
 
 ---
@@ -173,36 +170,29 @@ attributes and are stripped by the store so they cannot fragment a series.
 
 > **Latency metrics are emitted by the span helpers, not their callers.**
 > `inference.duration` comes from `inference_span`; the two `hal.*.duration`
-> histograms from `_hal_duration_metric`, paired with the spans in the shared
-> HAL lifecycle base. They used to be recorded only inside
-> `openral_runner.InferenceRunnerBase` / `DeployRunner`, which the ROS deploy
-> graph never instantiates — so a live `deploy run` produced the spans and no
-> histograms at all. Emitting both from one seam makes them impossible to
-> diverge. `openral.tick.duration` is deliberately left alone: its unit is the
-> library runner's whole tick (sensors + HAL + skill + safety) and no such unit
+> histograms from `_hal_duration_metric`, both paired with the spans in the
+> shared HAL lifecycle base rather than recorded only inside
+> `openral_runner.InferenceRunnerBase` / `DeployRunner` (which the ROS deploy
+> graph never instantiates) — so the metric now works under both runtimes.
+> `openral.tick.duration` is deliberately left alone: its unit is the library
+> runner's whole tick (sensors + HAL + skill + safety), and no such unit
 > exists on the ROS graph, where those are four separate processes.
 >
-> `InferenceRunnerBase` used to record `inference.duration` **as well**, from
-> `result.inference_ms`. That was removed: `inference_ms` is `Skill.step`
-> wall-time — the chunk *dispatch* cost, near-zero on the ticks a
-> `ChunkedExecutor` spends replaying a cached action — not the inference. Same
-> instrument, two meanings, two disjoint label sets (`{rskill.id}` vs `{kind}`),
-> so the eval/sim path doubled its sample count and computed p95 over a mixed
-> population. The dispatch cost stays on the tick span as `rskill.inference_ms`
-> and in the run summary's avg/p99, where it is unambiguous.
+> `InferenceRunnerBase` used to also record `inference.duration`, from
+> `result.inference_ms` — but that is `Skill.step` wall-time (the chunk
+> *dispatch* cost, near-zero when a `ChunkedExecutor` replays a cached
+> action), not the inference itself. Same instrument, two meanings, two
+> disjoint label sets (`{rskill.id}` vs `{kind}`), which doubled the eval/sim
+> path's sample count and computed p95 over a mixed population. It was
+> removed; the dispatch cost now lives only on the tick span as
+> `rskill.inference_ms` and in the run summary's avg/p99.
 >
-> **A single seam is only safe while it is universal.** Removing the runner's
-> record exposed five sidecar adapters that never opened the span at all —
-> `behavior_groot`, `internvla_n1`, `lingbot_va_a1`, `lingbot_vla2`,
-> `rlbench_3dda`, all of whose inference is one `SidecarClient.call()` — so
-> they had been reporting latency only through the runner's proxy. They are now
-> instrumented (`engine="sidecar"`), and
+> **A single seam is only safe while every adapter uses it.**
 > `tests/unit/test_every_adapter_is_instrumented.py` is a source-level canary
-> that fails if a future adapter defines `step()` without reaching
-> `inference_span`, `run_inference`, or `build_chunk_executor` (whose
-> `ChunkedExecutor` calls `run_inference` for you). The canary caught `xr1`
-> on the merge that brought it in — it was the sixth sidecar adapter with an
-> unspanned `SidecarClient.call()`.
+> that fails if an adapter defines `step()` without reaching `inference_span`,
+> `run_inference`, or `build_chunk_executor` (whose `ChunkedExecutor` calls
+> `run_inference` for you) — it has already caught sidecar adapters that were
+> reporting latency only through the runner's proxy.
 
 The system metrics come from a 1 Hz daemon thread
 (`start_system_metrics_collector`) started automatically by
@@ -257,13 +247,12 @@ nothing at all — "unknown" is never reported as failure.
 
 The terminal line reaches **both** teardown paths. `rclpy` answers SIGINT by
 shutting the context down and raising out of `spin` without requesting the
-lifecycle `shutdown` transition, and `openral deploy sim` ends every session
-exactly that way (`_terminate_launch_group` SIGINTs the launch's process
-group) — so while `disconnect` was reachable only from `on_cleanup` /
-`on_shutdown`, no real run ever emitted the verdict. `HALLifecycleNodeBase.shutdown_hal`,
-called from the `finally` of both HAL `main()` factories, closes that gap; it
-is idempotent with the transition path, so exactly one line is emitted either
-way. A SIGKILLed process still emits nothing — the signal is uncatchable.
+lifecycle `shutdown` transition — the way `openral deploy sim` ends every
+session (`_terminate_launch_group` SIGINTs the launch's process group).
+`HALLifecycleNodeBase.shutdown_hal`, called from the `finally` of both HAL
+`main()` factories, covers that path too; it is idempotent with the
+transition path, so exactly one line is emitted either way. A SIGKILLed
+process still emits nothing — the signal is uncatchable.
 
 The logger name is `openral.sim.task_success`, deliberately dotted under
 `openral.` so it propagates to the stdlib logger the OTel bridge is attached to
@@ -292,13 +281,13 @@ all joined by `stop_seq`, all `error`-level, all emitted through the node logger
 | `sim.estop_initial_configuration` | only when the stop fired **before any action reached the HAL** | `violation: "initial_configuration"`, `stop_seq`, `candidate_chunks_seen`, `sim_time_s`, `nearest_robot_world_pair`, `detail` |
 
 The kernel's own `CollisionEvidence` additionally carries `joint_positions_rad`
-(#187) — the configuration forward kinematics was actually run on for the
+— the configuration forward kinematics was actually run on for the
 reported `horizon_step`, serialized at `max_digits10` so it round-trips exactly.
 For a *predicted* step that configuration exists in no other artifact, so
 without it such a stop can only be adjudicated against the measured joints,
 which is a different pose.
 
-### Graded velocity scaling (#188)
+### Graded velocity scaling
 
 Off by default (`collision_scale_proximity_m: 0.0`). When armed, an **accepted**
 chunk near an obstacle is republished with its rate columns scaled, and that is
@@ -334,11 +323,6 @@ configuration the kernel refused is the one the **scene reset produced**. The
 robot is not doing something unsafe; it was *spawned* somewhere unsafe, and no
 policy, chunk, or margin change can clear it: the remedy is a scene-config one
 (a different seed, or pinned `backend_options.layout_ids` / `style_ids`).
-
-The 2026-08-22 `robocasa/PickPlaceFridgeShelfToDrawer` seed-1 round is the case
-that motivated it — an E-stop at sim `t=4.85 s` with zero chunks applied and
-`robot0_link6` 0.000 m from `fridge_main_group_freezer_door`, which read as a
-policy failure for a full debugging round.
 
 `candidate_chunks_seen` is reported but deliberately does **not** gate the
 classification: a chunk the kernel *rejected* never reached `send_action`, so
@@ -424,8 +408,7 @@ uv run tools/profile_policy_load.py --rskill rskills/<dir>
 
 ## Declared but not emitted
 
-These names exist in `semconv` / `metrics` but **nothing produces them** (six, after `estop_requested` / `hal.estop.count` were wired and the
-`inference.timeouts` contract was deleted with `ROSInferenceTimeout`, issue #49). They
+These names exist in `semconv` / `metrics` but **nothing produces them**. They
 are kept because each records an intended contract, and annotated in-place so
 the modules do not read as an inventory of what actually works. A source-scanning
 test (`python/observability/tests/test_declared_not_emitted.py`) pins this list
@@ -439,36 +422,31 @@ updated.
 | `openral.event.episode_closed` | Intended to let a Jaeger query pivot from a skill execution to the produced dataset row; `RolloutRecorder` closes episodes without it, so that pivot does not work. |
 
 **Removed: `openral.safety.clamps` / `safety.clamped`.** The attribute was
-written in four places and was a literal `False` in every one; no code path ever
-set it `True`. That is not an oversight — the *envelope* layer is deny-by-default
-and `compute_intersection` "rejects (never clamps)" any envelope field that would
-loosen the robot ceiling. The counter therefore measured an operation the system
-did not perform, and the attribute cost a constant on every `safety.check` span
-at 30 Hz. (HAL adapters *do* saturate commands into an actuator's physical range
-— the Franka gripper maps `[0, 1]` onto its travel — but that is device
-range-mapping, not a safety correction.)
+always `False` — no code path ever set it `True`. That is not an oversight:
+the *envelope* layer is deny-by-default, and `compute_intersection` "rejects
+(never clamps)" any envelope field that would loosen the robot ceiling. The
+counter measured an operation the system never performs, at a constant cost
+on every `safety.check` span at 30 Hz. (HAL adapters *do* saturate commands
+into an actuator's physical range — the Franka gripper maps `[0, 1]` onto its
+travel — but that is device range-mapping, not a safety correction.)
 
-**Since #188 the blanket claim "OpenRAL never clamps" is no longer true**, and
-the replacement is deliberately a different signal rather than a revival of this
-one. Distance-graded velocity scaling *does* modify a commanded value: an
-accepted chunk near an obstacle is republished with its rate columns multiplied
-by a scale in `(0, 1]`. It is reported by
-`safety.velocity_scale` / `safety.scale_slack_m` (below), which carry *how much*
-and *why*, where `safety.clamped` carried only a boolean. The envelope layer
-still never clamps; what changed is that a second, separately-named mechanism
-sits beside it.
+**With graded velocity scaling, the blanket claim "OpenRAL never clamps" is
+no longer true**, and the replacement is deliberately a different signal
+rather than a revival of this one. Distance-graded velocity scaling *does*
+modify a commanded value: an accepted chunk near an obstacle is republished
+with its rate columns multiplied by a scale in `(0, 1]`, reported by
+`safety.velocity_scale` / `safety.scale_slack_m` (below), which carry *how
+much* and *why* — `safety.clamped` carried only a boolean. The envelope layer
+still never clamps; a second, separately-named mechanism now sits beside it.
 
-**Fixed: the e-stop latch now self-clears.** `store.py` cleared
-`topics.safety.estopped` only on `safety.severity == "ok"`, which no emitter has
-ever produced — the C++ kernel sends `info` on a pass, `warn` while latched and
-`violation` on a drop. The latch could only be set, never cleared, so the code
-comment claiming it "self-corrects after a reset" was false and `estopped` stuck
-true until an explicit `POST /api/estop_reset`. It now clears on a clean pass
-from a real kernel, which is proof the kernel is not latched (it returns early
-with `estop_latched` while `fault_latch_` is set). The null client is excluded:
-it emits `info` unconditionally without checking anything, so treating that as
-evidence of a clear would let a no-op client unlatch the UI. Dashboard-side
-only — no safety code changed.
+**The e-stop latch self-clears.** `topics.safety.estopped` clears only on a
+clean pass from a real kernel (`safety.severity == "ok"`; the C++ kernel
+sends `info` on a pass, `warn` while latched, `violation` on a drop) — proof
+the kernel itself is not latched (it returns early with `estop_latched` while
+`fault_latch_` is set). The null client is excluded: it emits `info`
+unconditionally without checking anything, so treating that as evidence of a
+clear would let a no-op client unlatch the UI. Dashboard-side only — no
+safety code changed.
 
 ---
 

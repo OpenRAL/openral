@@ -41,12 +41,13 @@ merge PRs to master  →  release-please computes the bump  →  release PR
    version bump`, pushed by the same workflow. release-please only substitutes
    text in the files `extra-files` names, and `uv.lock` is generated — it
    records every workspace member's version, so a bump that stops at the
-   pyprojects leaves the lock a release behind (v0.3.0 and v0.3.1 both did:
-   master ran 0.3.1 pyprojects against a lock still saying 0.2.0, and
-   `uv sync --frozen` installed that stale metadata). The step runs `uv lock`
-   on the release branch; without `--upgrade` it rewrites only the 15 version
-   lines and leaves third-party pins alone. `test_lockstep_versions.py` fails
-   if the lock and the tree ever disagree again.
+   pyprojects leaves the lock a release behind and `uv sync --frozen`
+   installs stale metadata.
+
+   The step runs `uv lock` on the release branch; without `--upgrade` it
+   rewrites only the 15 version lines and leaves third-party pins alone.
+   `test_lockstep_versions.py` fails if the lock and the tree ever disagree
+   again.
 
    Its CI is deliberately thin. `test-selective` short-circuits on the
    `release-please--*` branch and selects nothing: rewriting all 15 pyprojects
@@ -55,6 +56,7 @@ merge PRs to master  →  release-please computes the bump  →  release PR
    opt-in dependency lane — including `isaacsim` / `robotwin` / `gr00t`, whose
    sidecars a hosted runner cannot provision — for a diff that cannot change
    behaviour. Every commit the release covers already passed on its own PR.
+
    The job still *runs* and reports green, because it is a required check and
    a skipped required check is never reported. `quality` and `DCO` are
    unaffected, and `release-pypi.yml` re-runs the full `precheck` gate against
@@ -74,18 +76,17 @@ containing source syntax is enough — the expansion is **dropped silently**.
 The commit's own subject still lands, so the failure looks like a normal
 one-line entry rather than an error.
 
-A real example on this repo: `cc6182a` (PR #43) is a 3658-line squash of ~150
-sub-commits whose body fails to parse on the line
+A large squash can drop dozens of sub-commits silently. One body failed to
+parse on a line like:
 
 ```
 isinstance(x, (int, float)) admits bool
 ```
 
-In the 0.3.0 changelog it appears as a single line under **Changed** — its
-own subject, `perf(sensors): 9x faster skill load…`. The ~150 sub-commits are
-absent, and so is the `refactor(reasoner)!` sub-commit's `BREAKING CHANGE:`
-footer: 0.3.0 has no "⚠ BREAKING CHANGES" section even though the release
-removes the `OPENRAL_REASONER_LLM_*` contract. Nothing warns you.
+The changelog then showed only the squash commit's own subject, and the
+dropped sub-commits' `BREAKING CHANGE:` footer went with them — a release
+can end up with no "⚠ BREAKING CHANGES" section even though it removes a
+public contract. Nothing warns you.
 
 So before merging a release PR, diff its changelog against the range it
 covers:
@@ -103,8 +104,7 @@ message cannot be corrected without rewriting `master`.
 
 A merge commit needs the same care in the other direction: keep its message
 free of any `type(scope): subject` line, or release-please parses the merge
-*and* the branch commit and the entry appears twice. The 0.3.0 changelog
-carries exactly that duplicate for `feat(release)` (`f1d1b1f` and `5ba709a`).
+*and* the branch commit and the entry appears twice.
 
 Two habits keep this rare: prefer several focused PRs over one very large
 squash, and keep code snippets out of commit bodies (describe the fix in
@@ -115,9 +115,8 @@ prose, or fence the snippet in a PR comment instead).
 release-please can find a merged release PR it cannot build a release from, and
 then decline to open a new one — logging `There are untagged, merged release
 PRs outstanding - aborting`. It emits no outputs in that state, which is
-byte-for-byte what "nothing releasable merged" looks like. v0.3.0 sat stalled
-across two runs before this was noticed; no tag was created, so nothing
-published.
+byte-for-byte what "nothing releasable merged" looks like: no tag is created,
+so nothing publishes, and nothing else warns you.
 
 The `summarise` step in [`release-please.yml`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/release-please.yml)
 now distinguishes them by asking the repository rather than the action: a
@@ -155,9 +154,9 @@ around them puts the manifest and the tree out of sync.
 Nothing under `src/` carries a version either. Every package's `__version__`
 reads `importlib.metadata` for its own distribution, so it follows the
 pyproject release-please just rewrote. Hardcoded literals used to sit in
-eleven `__init__.py` files and nothing bumped them — the runtime announced
-0.2.0 out of a 0.3.1 wheel until this was fixed. `test_lockstep_versions.py`
-rejects a literal reintroduced there.
+eleven `__init__.py` files and nothing bumped them, so a wheel could announce
+a stale version. `test_lockstep_versions.py` rejects a literal reintroduced
+there.
 
 ## Adding a package
 
@@ -203,8 +202,8 @@ curl -s https://test.pypi.org/pypi/openral-cli/<version>/json \
   | python3 -c "import sys,json;[print(r) for r in json.load(sys.stdin)['info']['requires_dist']]"
 ```
 
-The 0.2.0 trial confirmed every `openral-*` sibling carries its `==` pin, with
-extras and markers intact (`openral-observability[dashboard]==0.2.0`,
+A trial run should confirm every `openral-*` sibling carries its `==` pin,
+with extras and markers intact (e.g. `openral-observability[dashboard]==0.2.0`,
 `pygobject>=3.42; extra == "gstreamer"`). Neither `uv lock --check` nor the
 unit tests can show that — they read source, and `[tool.uv.sources]` is
 stripped at build time.

@@ -37,15 +37,9 @@ suite.
    try to be clever about a wide-blast change; a wrong *negative* would silently
    skip a regression.
 
-   A full run expands **every opt-in dependency lane** as well (rule 6). It did
-   not always: `requirement_targets` was left empty on both full-run exits, so a
-   blast-radius diff ran *zero* lanes and the job reported success having
-   executed none of them — indistinguishable from a run that executed them all
-   and passed ([#163](https://github.com/OpenRAL/openral/issues/163)). The
-   effect was the exact inverse of the intent: the widest diffs got the least
-   verification, and a red PR could be turned green by also touching
-   `pyproject.toml`. A root-`pyproject.toml`/`uv.lock` change is a *dependency*
-   change, which is precisely what the lanes exist to check.
+   A full run expands **every opt-in dependency lane** as well (rule 6): a
+   root-`pyproject.toml`/`uv.lock` change is a *dependency* change, which is
+   precisely what the lanes exist to check.
 
    The one exception is release-please's release PR, and it is handled in the
    workflow rather than here — precisely so the selector keeps no special
@@ -71,10 +65,9 @@ suite.
    deliberately reaches **outside** `tests/unit` into the `packages/**` test
    files that load a real `robots/<id>/robot.yaml`: those dirs are otherwise
    selected only by a `packages/<pkg>/**` change, so a manifest edit could —
-   and did — break a ROS package's test with nothing on any lane to see it
-   (#103's capsule→`BoxShape` conversion of `panda_mobile` against
-   `openral_slam_bringup`'s height-band derivation). Adding a `packages/**`
-   test that reads a real manifest means adding it there too.
+   and did — break a ROS package's test with nothing on any lane to see it.
+   Adding a `packages/**` test that reads a real manifest means adding it
+   there too.
 6. **Dependency lanes.** Selected targets matching `requirement_globs` in
    `tools/test_selection.toml` are also emitted per opt-in dependency group
    (`sim`, `libero`, `robocasa`, `robocasa-gr1`, `maniskill3`, `simpler-env`,
@@ -93,10 +86,8 @@ suite.
 
    A lane declared with an **empty** glob list can never run — `run_lane`
    returns at its `[ -z "$targets" ]` guard, logging nothing, and looks exactly
-   like a lane that simply was not selected. `rldx` sat in that state from the
-   day it was added; its real test is covered by `sidecar-wire` (the group
-   `rldx` merely includes), so the empty lane was removed and
-   `tests/unit/test_lane_report.py` now fails any lane declared with no globs.
+   like a lane that simply was not selected. `tests/unit/test_lane_report.py`
+   now fails any lane declared with no globs.
 
    **A selected directory counts as selecting the lane files inside it.**
    `targets` mixes files (from the import scan) with directories (a package's
@@ -104,11 +95,10 @@ suite.
    directory string never `fnmatch`es a file glob. So a lane-owned file only
    reachable *inside* a directory target used to drop out of its lane while
    still being "selected": it ran in the cheap partition, skipped for want of
-   the optional stack, and reported green. That is the exact failure this
-   mechanism exists to prevent, and it is why the only `python/hal/tests` files
-   ever reaching the `libero` lane were the two in `isolate_globs` (peeling
-   makes them explicit file targets). The selector now expands directory targets
-   to the concrete lane files beneath them, so containment is enough. Practical
+   the optional stack, and reported green.
+
+   The selector now expands directory targets to the concrete lane files
+   beneath them, so containment is enough. Practical
    effect: a `robots/**` diff (which selects `tests/unit`) now also reruns the
    `clip`, `opencv`, `onnx-export` and `sidecar-wire` lanes it always implicitly
    selected but never actually exercised.
@@ -121,8 +111,9 @@ suite.
    `libero` lane the LIBERO half imported robosuite 1.4 first, and the OpenArm
    half then hit `openral_sim._deps._assert_no_live_dependency_swap`, which
    correctly refuses to swap robosuite underneath live objects — so it *failed*
-   rather than ran, on every PR whose diff reached `python/hal/tests`. The
-   OpenArm test now lives in its own file
+   rather than ran, on every PR whose diff reached `python/hal/tests`.
+
+   The OpenArm test now lives in its own file
    (`python/hal/tests/test_sim_attached_openarm_action_dim.py`) on the `robocasa`
    lane. When you add a test needing a different optional stack from its file's
    neighbours, give it its own file.
@@ -139,8 +130,7 @@ suite.
      already spun up numpy/pyarrow/torch threadpools — the fork happens in a
      multi-threaded interpreter and a forked child / C-extension `atexit` handler
      crashes during Python finalization: the process exits non-zero **after** an
-     all-pass summary, turning green tests into red CI
-     ([issue #24](https://github.com/OpenRAL/openral/issues/24)).
+     all-pass summary, turning green tests into red CI.
    - **EGL/robosuite env creators** (`test_sim_attached_action_dim.py`,
      `test_sim_attached_idle_step.py`) each spin up a real LIBERO /
      robosuite-MJCF `OffScreenRenderEnv`. A robosuite/MuJoCo EGL context does not
@@ -159,8 +149,8 @@ suite.
    lane (e.g. `rclpy` on the no-ROS libero lane host), so its run is judged by
    exit code — a real failure fails the lane; an all-/partial-skip does not.
 
-   The `robocasa` and `robocasa-gr1` lanes need robosuite 1.5.2 from the git pin
-   (`232ce7d4`). Each opt-in lane is its own CI job with its own runner and
+   The `robocasa` and `robocasa-gr1` lanes need robosuite 1.5.2 from a git pin
+   (no PyPI release). Each opt-in lane is its own CI job with its own runner and
    venv (`lane` in `test-selective.yml`), so the cross-lane contamination this
    guard originally targeted — the `libero` lane leaving robosuite 1.4.0
    behind for a *later* lane sharing the same job/venv — cannot happen any
@@ -181,7 +171,7 @@ the old rule ("a lane must have passing tests and must not skip **at all**")
 could not survive that. A GitHub-hosted `ubuntu-24.04` runner has no NVIDIA GPU,
 no Vulkan ICD, and no proprietary simulator sidecars. Tests gated on those skip
 there **forever**, so the blunt rule reddened lanes that had in fact done real
-work — the `sim` lane ran 162 passing tests on PR #153 and was failed anyway by
+work — the `sim` lane ran 162 passing tests and was failed anyway by
 13 `requires CUDA` skips.
 
 Three options were on the table, and only one is honest:
@@ -214,8 +204,8 @@ The mechanism is a **declared capability allowlist**, not a blanket tolerance:
   The verdict is deliberately about what the diff *selected*, not a lane's full
   potential. `sim` yields 162 passing tests when all seven of its files are
   selected, but a diff touching only `rskills/act-aloha/**` selects just
-  `test_aloha_bimanual_act_aloha.py`, whose six tests are all CUDA-gated
-  (observed on proof run 32815008771). Failing that would punish a PR for
+  `test_aloha_bimanual_act_aloha.py`, whose six tests are all CUDA-gated.
+  Failing that would punish a PR for
   touching a GPU-only file — precisely the breakage this policy exists to
   remove. There is deliberately **no** hand-maintained list of "lanes that
   cannot run here": that would be a second source of truth that rots, while the
@@ -235,8 +225,7 @@ ledgers and attest lane coverage" step downloads every lane's artifact,
 concatenates them into one ledger, and cross-checks it against the selector's
 own output. It fails when:
 
-- a `full_run` diff expanded to **zero** lanes — the #163 regression, guarded
-  directly;
+- a `full_run` diff expanded to **zero** lanes;
 - a lane the selector **selected** produced no ledger record ("selected but
   never executed");
 - any lane record is a failure.
