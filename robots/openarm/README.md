@@ -197,6 +197,20 @@ is the command→motion gate and is double-gated on
 `OPENRAL_OPENARM_ALLOW_MOTION=1` + `OPENRAL_OPENARM_ATTENDED=1`; it has no
 recorded run. Nothing in CI runs `tests/hil/`.
 
+`test_openarm_deploy.py` is the full-graph gate and **passed green on the
+wired cell for the first time on 2026-09-22** (qorin1, attended, hand on the
+hardware E-stop): 7 passed in 28.5 s against a live `deploy run` of
+`scenes/deploy/openarm_bench.yaml`. What that run proved, on real hardware —
+all four `JointTrajectoryController`s plus `joint_state_broadcaster` active;
+`/joint_states` carrying all 16 ros2_control joints at 684 Hz; the TF tree
+complete to both end effectors; the C++ kernel ACTIVE at 16 DoF with
+self-collision armed over 19 links and emitting no `safe_action` unbidden;
+and a non-empty `/openral/world_voxels` fed by the real ZED cloud, which is
+the silent `octomap_cloud_topic` failure the bench scene exists to pin. The
+scene's `drivers:` block brought the ZED up as part of the graph, so there
+was no second terminal. The gate's teardown E-stop latched the HAL
+(`hal.estop`) as designed.
+
 ## Asymmetric joint conventions
 
 OpenArm v2 mirrors arm joint ranges across L/R (e.g.
