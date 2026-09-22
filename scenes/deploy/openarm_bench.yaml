@@ -54,9 +54,9 @@ robot_id: openarm
 # for frames, intrinsics and mounts — `merge_deploy_sensors`).
 #
 # INVENTORY, verified on the rig 2026-09-16 (`lsusb`, `ls -l /dev/v4l/by-id`),
-# not assumed: ONE StereoLabs ZED-M and TWO Arducam B0495, i.e. a depth sensor
-# and TWO RGB cameras. The manifest declares three RGB — `top` has no device on
-# this cell and is left unbound on purpose (see below).
+# not assumed: ONE StereoLabs ZED-M and TWO Arducam B0495. The ZED serves twice:
+# its SDK depth as `head_zed` and its rectified left image as `top`, the
+# policy's `context` view — so all three manifest RGB slots are bound.
 # Vendor sensor driver this cell needs on the bus. `head_zed` below subscribes
 # `/zed/zed_node/...` and `runtime.octomap_cloud_topic` names the wrapper's
 # cloud; this is what publishes both, so `openral deploy run` starts the ZED
@@ -149,12 +149,49 @@ sensors:
         height: 480
         fps: 30
 
-  # `top` (the manifest's third RGB) is NOT bound: it is `vendor: sim,
-  # model: mujoco_top`, the overview camera of the MuJoCo tabletop, and this
-  # cell has no third RGB device. A spec without a `deploy_binding` is skipped
-  # by the sensor leg (`sensor_leg.build_sensor_legs`), so the entry stays inert
-  # rather than failing or inventing a stream. Bind it here if an overview
-  # camera is ever added to the cell.
+  # top — the ZED-M's rectified LEFT image, bound as the policy's `context`
+  # view. The manifest's `top` is the MuJoCo overview camera
+  # (`observation.images.base`); this entry replaces it wholesale (same name ->
+  # `merge_deploy_sensors` takes the scene entry field-wise), and the one field
+  # that must not drift is `vla_feature_key`: the OpenArm restock policy
+  # (`OpenRAL/rskill-pi05-openarm-restock_shelf-bf16`) was trained on
+  # `observation.images.context` and reads by feature key, not sensor name.
+  # Leave it at `base` and the skill is refused as incompatible; point it at
+  # `base` with a `context` alias and the policy silently gets an OOD stream.
+  #
+  # Same UVC device as `head_zed`, so it is NOT opened here — the wrapper owns
+  # it and publishes the rectified left frame; `ros2_image` subscribes. Frame is
+  # the wrapper's own optical frame, whose chain up to `zed_camera_link` comes
+  # from the wrapper's state publisher; no `parent_frame` here on purpose, so
+  # the launch publishes no second mount transform for it.
+  #
+  # width/height are what the wrapper publishes at the override's HD720. fx/fy
+  # follow from StereoLabs' published 90 deg HFOV, cx/cy are the image centre:
+  # UNCALIBRATED, and inert here — a VLA conditions on pixels — but not if
+  # anything geometric is ever pointed at this entry.
+  - name: top
+    modality: rgb
+    frame_id: zed_left_camera_optical_frame
+    rate_hz: 30.0
+    encoding: bgr8
+    vla_feature_key: "observation.images.context"
+    intrinsics:
+      width: 1280
+      height: 720
+      fx: 640.0
+      fy: 640.0
+      cx: 640.0
+      cy: 360.0
+    catalog_id: "stereolabs/zed_mini"
+    vendor: StereoLabs
+    model: ZED Mini
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/rgb/color/rect/image
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 200
 
 runtime:
   # The octomap leg is the reason this scene exists as a separate file.
