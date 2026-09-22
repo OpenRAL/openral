@@ -1,8 +1,8 @@
 """Shared unit + cadence conversions for the raw-MuJoCo SO-ARM bench scenes.
 
-The native SO-101 scenes (``so101_eraser``, ``so101_box``) drive the same
-upstream MJCF from the same LeRobot-trained checkpoint convention, so the two
-conversions live here once:
+The native SO-101 scene (``backends/so101_box``) drives the upstream MJCF from
+the LeRobot-trained checkpoint convention, so the two conversions live here
+once:
 
 * **Control cadence** — one policy action covers a control PERIOD of physics
   (``round(1 / (control_hz * timestep))`` ``mj_step`` calls), not a single

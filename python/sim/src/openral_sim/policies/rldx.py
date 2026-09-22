@@ -67,7 +67,6 @@ from __future__ import annotations
 
 import collections
 import contextlib
-import hashlib
 import io
 import math
 import os
@@ -86,6 +85,7 @@ from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_observability import inference_span
 
 from openral_sim._quantization import resolve_quant_plan
+from openral_sim._sidecar_common import sidecar_port_for_key
 from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.policies.gr00t import _env_bool
 from openral_sim.registry import POLICIES
@@ -375,9 +375,9 @@ def _derive_sidecar_port(
     the port range; it never guards a security boundary.
     """
     key = "|".join((family, model, embodiment_tag, quantization, layout))
-    digest = hashlib.sha1(key.encode("utf-8")).digest()
-    span = _SIDECAR_PORT_MAX - _SIDECAR_PORT_MIN
-    return _SIDECAR_PORT_MIN + (int.from_bytes(digest[:4], "big") % span)
+    return sidecar_port_for_key(
+        key, port_min=_SIDECAR_PORT_MIN, port_max=_SIDECAR_PORT_MAX, algorithm="sha1"
+    )
 
 
 def _resolve_sidecar_port(

@@ -34,7 +34,6 @@ when it is absent.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import os
 import shutil
 from dataclasses import dataclass
@@ -45,6 +44,7 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 
+from openral_sim._sidecar_common import sidecar_port_for_key
 from openral_sim.registry import SCENES
 from openral_sim.rollout import StepResult
 from openral_sim.sidecar import SidecarClient
@@ -78,10 +78,13 @@ _RENDER_CAMERA = "front"
 
 
 def _scene_default_port(rlbench_task: str, variation: int) -> int:
-    """Deterministic per-task ZMQ port, stable across processes (SHA-256, not ``hash``)."""
-    key = f"rlbench|{rlbench_task}|{variation}".encode()
-    digest = int.from_bytes(hashlib.sha256(key).digest()[:4], "big")
-    return _PORT_MIN + (digest % (_PORT_MAX - _PORT_MIN))
+    """Deterministic per-task ZMQ port, stable across processes.
+
+    See ``sidecar_port_for_key`` for the shared derivation.
+    """
+    return sidecar_port_for_key(
+        f"rlbench|{rlbench_task}|{variation}", port_min=_PORT_MIN, port_max=_PORT_MAX
+    )
 
 
 def _opt_int(value: object, default: int) -> int:
