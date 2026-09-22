@@ -1,400 +1,417 @@
 # Duplication & Reuse Watch
 
-> Part of the OpenRAL [public-symbol inventory](../METHODS.md). Hand-curated; `(LNN)` markers are refreshed by `tools/refresh_methods_linenos.py`.
+> Part of the OpenRAL [public-symbol inventory](../METHODS.md). Hand-curated. **Last cleaned 2026-09-22** (openral PR #296): every resolved item collapsed to one line, stale references removed, this pass's findings added. Cite code here as `module.py::symbol`, never with a bare `(LNN)` marker — this file has no source-file sections for the refresher to resolve them against.
 
-This is the user-facing deliverable for the goal of "ensure there are no
-duplication or redundancy of methods". Each item is something a future
-contributor should look at before adding similar code.
+This is the user-facing deliverable for the goal of "ensure there is no duplication or redundancy of methods". The mechanical half of that goal now lives in `tools/refresh_methods_linenos.py --check --coverage` (run by `just lint`): every public symbol must have an inventory entry, so a new helper is visible next to its siblings before it is merged. This file carries what a checker cannot: the mirrors that must move in lockstep, the look-alikes that must stay apart, and the copies waiting for a third caller.
 
-### Confirmed redundancy candidates
+### Deliberate mirrors — update in lockstep
 
-1. **Sensor `_spec()` private factory helpers — *retired.*** The seven-way
-   `_spec()` duplication this item originally tracked is gone: the
-   `imu` / `livox` / `ouster` / `hokuyo` / `slamtec` modules no longer
-   exist under `python/sensors/src/openral_sensors/`. The surviving spec
-   factories (e.g. `force_torque.robotiq_ft300s_spec`) are one-per-file
-   public API, not duplication.
+Each of these is the same logic on two sides of a boundary that must not be crossed by an import (real-time C++ vs Python, an isolated sidecar venv vs the workspace, a producer vs the kernel that checks it). The drift consequence is named per item; read it before touching either side.
 
-2. **Three parallel registries** with the same lookup-by-string pattern:
-   - `python/rskill/src/openral_rskill/loader.py:114` — `rSkill` +
-     `InstalledRSkillEntry` JSON file registry.
-   - `python/sensors/src/openral_sensors/catalog.py:85` —
-     `SensorCatalog` in-memory dict.
-   - `python/sim/src/openral_sim/registry.py:43` — `_Registry[T]`
-     decorator-driven dict.
+- **BEHAVIOR R1Pro wire constants — *resolved in-process, mirrored
+  cross-venv.*** The evaluator's raw observation keys and the 61-D/23-D
+  contract widths were hand-copied in three importable modules; they now
+  live once in `python/sim/src/openral_sim/_behavior_wire.py`
+  (`STATE_KEY` / `STATE_DIM` / `ACTION_DIM` / `CAMERA_SENSORS` /
+  `CAMERA_RGB_KEYS` / `explicit_port`), imported by the scene backend,
+  the `behavior_groot` policy adapter, and `openral_cli.behavior`. The
+  sidecar scripts under `tools/behavior_*_sidecar.py` run in isolated
+  venvs that cannot import `openral_sim` — their copies are a deliberate
+  wire-contract MIRROR: update them in lockstep with `_behavior_wire`.
 
-   These are different in lifecycle (file-backed vs. in-memory) and
-   value type (skill vs. sensor entry vs. factory), so deep
-   consolidation is not warranted. **Worth aligning method names
-   though** — `SensorCatalog.list_ids()`, `_Registry.names()`, and
-   `rSkill.list_installed()` all answer the same question with
-   different verbs. A future ADR could standardise on one verb.
+- **Support-contact patch predicate — *deliberate cross-package mirror,
+  update in lockstep.*** `support_contact_exempts`
+  (`cpp/openral_safety_kernel/src/collision.cpp`) and
+  `support_patch_withholds`
+  (`packages/openral_octomap_bridge/src/payload_clearing.cpp`) evaluate
+  the same attested support plane with the same two exact
+  discretisation pads (the voxel cube's half-width projected on the
+  support normal, and its circumradius laterally) and the same one voxel
+  of co-planar headroom on the along-normal bound (added to both sides
+  on 2026-08-15, hazard log Entry 012's "Calibration 2026-08-15"). They are not
+  consolidated because consolidating them would make a Layer-2
+  perception bridge link the Layer-6 safety kernel's collision core —
+  the wrong dependency direction, and one that would put `octomap` and
+  `tf2` a link away from the real-time kernel. The mirror is safe in
+  one direction only and must stay that way: the bridge evaluates the
+  bound with **zero slack** while the kernel adds
+  `attached_contact_tolerance`, so what the bridge withholds is a
+  subset of what the kernel exempts **for the object that attested it**
+  (the two scope conditions are in
+  `packages/openral_octomap_bridge/README.md`).
+  Both predicates bound the along-normal coordinate: the withheld set is
+  the support HALF-SPACE below the attested plane plus one projected
+  cube half-width of slab above it, never the whole patch cylinder.
+  Changing either predicate without the other breaks the partition — the
+  failure mode is the 2026-08-14 witness/clearing defect.
+  `SupportContactWitness.ThePartitionedClearingLeavesTheWitnessItsEvidence`
+  (kernel) and `PayloadClearing.TheAttestedSupportSurfaceSurvivesThe
+  Clearing` (bridge) pin the two halves;
+  `PayloadClearing.WithholdingIsTheKernelsExemptionPredicateAtZeroSlack`
+  pins the mirror itself, evaluating the bridge predicate against a
+  term-for-term transcription of the kernel's on the same cells, so a
+  drift on either side fails a test instead of a run.
+  Both predicates are also **phase-blind** (ADR-0097): neither reads
+  `support_id` or `evidence_kind`, so the place-phase witness reuses
+  both unchanged and neither side gained a place-specific branch.
+  `PayloadClearing.APlacePhaseWitnessIsWithheldExactlyAsAPickPhaseOneIs`
+  pins that identity — keep it that way, because a phase-aware branch on
+  one side only is exactly how this mirror would drift.
 
-3. **VLA adapter boundary helpers** — *resolved.* `resolve_device`,
-   `resolve_rskill_repo_id`, `run_inference`, `to_numpy_action`,
-   `parse_hf_file_uri`, and `materialize_processor_dir` now live in
-   `python/rskill/src/openral_rskill/_vla_core.py`. All five eval
-   adapters (`smolvla`, `pi05`, `xvla`, `act`, `diffusion`) and the
-   skill-side `ChunkedExecutor` route through it. The
-   `diffusion` / `xvla` / `pi05` adapters now go through the small
-   `python/sim/src/openral_sim/policies/_processors.py::resolve_processor_dir`
-   helper, which delegates to `materialize_processor_dir` when the
-   weights URI resolves to a manifest that declares a `processors`
-   block, falling back to `snapshot_download` for legacy `hf://`
-   shapes — the three sister TODOs on the audit closed 2026-05-18.
-   **When adding a new VLA family, do NOT re-implement device or
-   rSkill resolution; do NOT wrap `policy.select_action` in your own
-   `inference_span` block — call `run_inference` so the OTel span
-   fires uniformly. For loading the lerobot
-   `PolicyProcessorPipeline`, call `_processors.resolve_processor_dir`
-   (sim-layer) or `materialize_processor_dir(manifest)` (skill-layer)
-   — do NOT call `snapshot_download` directly.** (The two remaining
-   direct `snapshot_download` calls — `policies/diffusion.py`
-   norm-stat loading and the exempted `act.py` adapter — are weight/
-   norm-stat fetches, not processor-dir resolution; they are not
-   regressions of this item.)
+- **Support-witness acceptance caps — *deliberate C++/Python mirror, update
+  in lockstep.*** The kernel's two ingest caps on what a
+  `SupportContactWitness` may claim are ROS parameters declared with their
+  defaults in
+  `cpp/openral_safety_kernel/src/lifecycle_kernel.cpp` —
+  `support_witness_max_patch_radius_m` (`0.5`) and
+  `support_witness_max_penetration_m` (`0.01`) — and the *producer* refuses
+  at the same two numbers, written independently as
+  `_SUPPORT_MAX_PATCH_RADIUS_M = 0.5` and
+  `_SUPPORT_MAX_PENETRATION_M = 0.01` in
+  `python/hal/src/openral_hal/_sim_attachment_evidence.py:51-52`. They are
+  not consolidated because the kernel must not trust a producer-supplied
+  bound — the cap is exactly the thing the kernel applies to a message it
+  did not author, and a shared constant would make the check circular.
+  **The drift consequence is asymmetric and both directions are bad.**
+  Loosen the producer past the kernel and the kernel fails the whole
+  attachment message closed (`ROSSafetyViolation`-class drop, not a
+  silent one) — noisy, but conservative. Tighten the producer below the
+  kernel and the shortfall is invisible: legitimate contact is never
+  attested, the witness never arms, and the robot stops on ordinary
+  support contact with nothing in the logs naming a cap as the reason.
+  **When either number moves, move both in the same PR** and re-run the
+  kernel's ingest gtests together with the producer's refusal tests.
 
-4. **SmolVLA skill-side `SmolVLAAdapter` vs eval-side `_SmolVLAAdapter` —
-   *not a duplication target.*** The two have incompatible input
-   contracts on purpose: the skill takes `WorldState` and emits an
-   `Action` inside the ROS2 lifecycle (Layer 3, S1 runtime); the eval
-   adapter takes a dict `Observation` and emits a flat numpy array
-   (Layer 8, sim driver). Collapsing them would force either
-   ceremonial Pydantic wrapping in the sim hot loop or widening
-   `Skill.step()` to accept dicts (breaks §6.1). With `_vla_core`
-   absorbing the cross-cutting seams, residual overlap (checkpoint
-   load + processor factory, ~30 LOC each side) is below the
-   abstraction-cost threshold. Keep them separate.
+- **Place-region bounds — *deliberate C++/Pydantic mirror, update in
+  lockstep.*** `kMaxPlaceRegionHalfExtentM = 1.5` and
+  `kMaxPlaceRegionVolumeM3 = 8.0`
+  (`cpp/openral_safety_kernel/include/openral_safety_kernel/collision.hpp`)
+  are the kernel's bounds on the ADR-0097 approach region, and
+  `PlaceRegion.MAX_HALF_EXTENT_M = 1.5` / `PlaceRegion.MAX_VOLUME_M3 = 8.0`
+  (`python/core/src/openral_core/schemas.py`, enforced in
+  `_validate_region`) are the schema's. The double check is deliberate and
+  is named in `PlaceRegion`'s own docstring: an over-large region is
+  "rejected here and again in the kernel, both times toward *no
+  allowance*". Since this bound gates a **margin reduction**, both sides
+  fail closed and neither may be deleted in favour of the other — the
+  kernel cannot assume the Pydantic validator ran (the message may reach
+  it from a producer that never constructed the model), and the schema
+  must still refuse locally so a bad region is a producer-side error
+  rather than a kernel-side refusal log. **The drift consequence:** raise
+  the Pydantic ceiling without the kernel's and every oversize region is
+  accepted by the producer and then silently discarded by the kernel, so
+  the place phase runs with **no** allowance while every log line says the
+  declaration is live — the exact failure the ADR-0097 amendment's
+  clock-domain bug already produced once. Raise the kernel's without the
+  schema's and the extra room is unreachable. `PlaceRegionStatus::kOversize`
+  is the kernel-side refusal to grep for.
 
-5. **`_build_libero_scene` / `_build_metaworld_scene` / `_build_mock_scene`**
-   in `python/sim/src/openral_sim/{policies,backends}/{libero,metaworld,mock}.py`
-   share the same structure: lazy-import a backend module, instantiate a
-   `_*Sim` wrapper, return it. Already correctly DRY through the
-   `SCENES.register(...)` decorator pattern; do **not** consolidate
-   further.
+- **`FailureTrigger` / `SafetyStatus` `KIND_*` numbers — *three-way
+  mirror, now pinned on every leg.*** The numbers are declared in
+  `packages/msgs/msg/FailureTrigger.msg`, **redeclared** in
+  `packages/msgs/msg/SafetyStatus.msg` (ROS IDL has no cross-message
+  constant reuse), and mirrored a third time as plain Python ints in
+  `python/observability/src/openral_observability/failure_bus.py` so
+  callers can publish typed failure events without a sourced ROS install.
+  The C++ `ViolationKind` enum
+  (`cpp/openral_safety_kernel/include/openral_safety_kernel/validator.hpp`)
+  is a fourth partial copy of the same numbering, and `reasoner_node.py`
+  keeps a fifth, private two-kind copy (`_KIND_TIMEOUT` / `_KIND_CONTROLLER`)
+  of the kinds it emits itself.
+  `tests/unit/test_safety_status_msg.py` pins the two IDL blocks against
+  each other and pins `DROP_*` disjoint from `KIND_*`; a kernel gtest
+  (`ViolationKindMapping.EnumValuesMatchFailureTriggerConstants`) pins the
+  enum. The `failure_bus.py` leg was the unpinned one, and it *had* drifted:
+  it stopped at `KIND_REASONER_TIMEOUT = 9` (plus
+  `KIND_SUPPRESSED_SUMMARY = 254`) and never grew `KIND_COLLISION = 10`,
+  which the IDL, the kernel enum and the kernel's
+  `publish_collision_failure` all carry — so the whole collision stack
+  produced the one kind no ROS-free caller could name, and the callers that
+  needed it hard-coded the literal `10`
+  (`tests/unit/test_reasoner_context.py` did exactly that).
+  **Closed 2026-08-22**: the constant is mirrored, and
+  `tests/unit/test_failure_bus_idl_mirror.py` now pins that leg the way the
+  other two are pinned — it scrapes every `KIND_*` / `SEVERITY_*` off the
+  colcon-generated `FailureTrigger` and asserts the Python mirror matches
+  name-for-name and value-for-value **in both directions** (an IDL constant
+  with no mirror fails; a mirrored name with no IDL counterpart fails; an
+  unexported one fails). Both it and `test_safety_status_msg.py` are in
+  `scripts/ros_live_tests.sh`, because the docker image is the only CI
+  surface with the overlay these contracts read.
+  **When a `KIND_*` number is added, all four sites still move together** —
+  the difference is that three of them now say so with a red test rather
+  than an audit.
 
-6. **Policy load-phase heartbeat — *resolved.*** The original threaded
-   heartbeat (`pi05._heartbeat`) lived inline in the pi05 adapter and
-   hard-coded the `pi05_*` event prefix, the daemon thread plumbing,
-   and the GPU memory probe. It now lives once in
-   `python/rskill/src/openral_rskill/_diagnostics.py::phase_timer(name,
-   *, prefix, gpu_mb, **fields)` and the pi05 / smolvla adapters apply
-   it through one-line per-adapter shortcuts (`_pi05_phase` /
-   `_smolvla_phase`). **When adding a new VLA family, do NOT roll your
-   own heartbeat thread** — wrap every load phase
-   (`imports` / `from_pretrained` / `to_device` / `processor_dir` /
-   `make_processors` / family-specific quant or compile phases) with a
-   thin `_<family>_phase` shortcut so `tools/profile_policy_load.py`
-   and `openral dashboard` see the same event shape across all adapters.
+- **Kernel narrow-phase predicates — *deliberate C++/Python mirror, update
+  in lockstep.*** `packages/openral_safety/openral_safety/kernel_predicates.py`
+  is a line-by-line port of the narrow phase in
+  `cpp/openral_safety_kernel/src/collision.cpp`: `box_box_distance` ↔ L327
+  (15-axis SAT), `box_capsule_distance` ↔ L293 (ternary search),
+  `capsule_distance` ↔ L252 (segment pair), and `shape_distance` ↔
+  `check_self_collision`'s type routing at L527.
+  The mirror exists because the offline ACM sweep decides **what the kernel
+  will do**, and anything that answers that question with a different
+  predicate is reasoning about a robot that does not exist. That is not
+  hypothetical: issue #155 was precisely this drift — the sweep modelled a
+  `BoxShape` as its inscribed sphere while the kernel checked the true
+  oriented box, and the two disagreed about `panda_link5`↔`panda_link7` in
+  opposite directions.
+  The Python side is pinned to the C++ **by construction and by test**: the
+  predicates were verified equal to the pre-existing mirrors to machine
+  precision (2.2e-16 against `tests/unit/test_so101_base_box_collision._box_box`
+  and `mjcf_lowering._seg_seg_distance`), and every `isinstance` chain is
+  exhaustive over `CollisionShape` with a typed raise, so a new primitive
+  cannot pass silently. **When the narrow phase this mirrors changes, this
+  file changes in the same PR, or the generated ACM starts describing a
+  different robot.**
+  Read "the narrow phase this mirrors" strictly: it is
+  `check_self_collision`'s **link-vs-link** routing, because that is the only
+  question the ACM sweep asks. #166's staged 26-DOP/hull path was checked
+  against this obligation and does **not** engage it — it is confined to
+  `check_voxel_collision`'s box pass (arm-link vs **world voxel**), and
+  `check_self_collision`, `box_box_distance`, `box_capsule_distance` and
+  `capsule_distance` are byte-identical on that branch. An ACM regenerated
+  with or without #166 is the same matrix. The distinction is worth keeping
+  sharp in both directions: a future change to the *self* narrow phase owes
+  this file an update even if it looks small, and a change to the *voxel*
+  narrow phase owes it nothing however large it looks.
+  `tests/unit/test_so101_base_box_collision._box_box` is a *third* copy of
+  the box SAT and should be collapsed onto this module next time that file
+  is touched.
 
-7. **BEHAVIOR R1Pro wire constants — *resolved in-process, mirrored
-   cross-venv.*** The evaluator's raw observation keys and the 61-D/23-D
-   contract widths were hand-copied in three importable modules; they now
-   live once in `python/sim/src/openral_sim/_behavior_wire.py`
-   (`STATE_KEY` / `STATE_DIM` / `ACTION_DIM` / `CAMERA_SENSORS` /
-   `CAMERA_RGB_KEYS` / `explicit_port`), imported by the scene backend,
-   the `behavior_groot` policy adapter, and `openral_cli.behavior`. The
-   sidecar scripts under `tools/behavior_*_sidecar.py` run in isolated
-   venvs that cannot import `openral_sim` — their copies are a deliberate
-   wire-contract MIRROR: update them in lockstep with `_behavior_wire`.
+- **`_seg_seg_distance` — *two Python copies, one batched.***
+  `kernel_predicates._seg_seg_distance` (vectorised over a configuration
+  batch) and `mjcf_lowering._seg_seg_distance` (scalar) are the same
+  clamped-parametric segment solve (Ericson §5.1.9). The split is deliberate
+  — the MJCF path evaluates one pose at a time under mujoco FK and the ACM
+  certificate evaluates hundreds of thousands at once — and the batched copy
+  names the scalar one in a comment. They are pinned equal to 2.2e-16 in
+  `test_urdf_lowering_always_colliding`. **Low risk, but if a third copy
+  appears, collapse all three.**
 
-8. **Support-contact patch predicate — *deliberate cross-package mirror,
-   update in lockstep.*** `support_contact_exempts`
-   (`cpp/openral_safety_kernel/src/collision.cpp`) and
-   `support_patch_withholds`
-   (`packages/openral_octomap_bridge/src/payload_clearing.cpp`) evaluate
-   the same attested support plane with the same two exact
-   discretisation pads (the voxel cube's half-width projected on the
-   support normal, and its circumradius laterally) and the same one voxel
-   of co-planar headroom on the along-normal bound (added to both sides
-   on 2026-08-15, hazard log Entry 012's "Calibration 2026-08-15"). They are not
-   consolidated because consolidating them would make a Layer-2
-   perception bridge link the Layer-6 safety kernel's collision core —
-   the wrong dependency direction, and one that would put `octomap` and
-   `tf2` a link away from the real-time kernel. The mirror is safe in
-   one direction only and must stay that way: the bridge evaluates the
-   bound with **zero slack** while the kernel adds
-   `attached_contact_tolerance`, so what the bridge withholds is a
-   subset of what the kernel exempts **for the object that attested it**
-   (the two scope conditions are in
-   `packages/openral_octomap_bridge/README.md`).
-   Both predicates bound the along-normal coordinate: the withheld set is
-   the support HALF-SPACE below the attested plane plus one projected
-   cube half-width of slab above it, never the whole patch cylinder.
-   Changing either predicate without the other breaks the partition — the
-   failure mode is the 2026-08-14 witness/clearing defect.
-   `SupportContactWitness.ThePartitionedClearingLeavesTheWitnessItsEvidence`
-   (kernel) and `PayloadClearing.TheAttestedSupportSurfaceSurvivesThe
-   Clearing` (bridge) pin the two halves;
-   `PayloadClearing.WithholdingIsTheKernelsExemptionPredicateAtZeroSlack`
-   pins the mirror itself, evaluating the bridge predicate against a
-   term-for-term transcription of the kernel's on the same cells, so a
-   drift on either side fails a test instead of a run.
-   Both predicates are also **phase-blind** (ADR-0097): neither reads
-   `support_id` or `evidence_kind`, so the place-phase witness reuses
-   both unchanged and neither side gained a place-specific branch.
-   `PayloadClearing.APlacePhaseWitnessIsWithheldExactlyAsAPickPhaseOneIs`
-   pins that identity — keep it that way, because a phase-aware branch on
-   one side only is exactly how this mirror would drift.
+- **Convex distance — *three implementations, three different questions.
+  Collapsing them produces a green that confirms itself.*** Read the
+  consequence first, because this entry exists to survive a refactor that
+  looks correct: the validation matrix works by comparing what the **kernel**
+  computed against what the **geometry** actually is. Route both sides
+  through one implementation and the matrix keeps reporting agreement while
+  measuring nothing — the kernel would be checked against its own arithmetic,
+  every stop would adjudicate `within-quantization`, and the failure would be
+  invisible precisely because everything went green. That is strictly worse
+  than an ordinary duplication bug, which at least announces itself. Entry 12
+  already flags a third box-SAT copy for collapse onto `kernel_predicates`,
+  so someone reaching for a fourth is a live risk, not a hypothetical.
 
-9. **Support-witness acceptance caps — *deliberate C++/Python mirror, update
-   in lockstep.*** The kernel's two ingest caps on what a
-   `SupportContactWitness` may claim are ROS parameters declared with their
-   defaults in
-   `cpp/openral_safety_kernel/src/lifecycle_kernel.cpp` —
-   `support_witness_max_patch_radius_m` (`0.5`) and
-   `support_witness_max_penetration_m` (`0.01`) — and the *producer* refuses
-   at the same two numbers, written independently as
-   `_SUPPORT_MAX_PATCH_RADIUS_M = 0.5` and
-   `_SUPPORT_MAX_PENETRATION_M = 0.01` in
-   `python/hal/src/openral_hal/_sim_attachment_evidence.py:51-52`. They are
-   not consolidated because the kernel must not trust a producer-supplied
-   bound — the cap is exactly the thing the kernel applies to a message it
-   did not author, and a shared constant would make the check circular.
-   **The drift consequence is asymmetric and both directions are bad.**
-   Loosen the producer past the kernel and the kernel fails the whole
-   attachment message closed (`ROSSafetyViolation`-class drop, not a
-   silent one) — noisy, but conservative. Tighten the producer below the
-   kernel and the shortfall is invisible: legitimate contact is never
-   attested, the witness never arms, and the robot stops on ordinary
-   support contact with nothing in the logs naming a cap as the reason.
-   **When either number moves, move both in the same PR** and re-run the
-   kernel's ingest gtests together with the producer's refusal tests.
+  They look like duplicates and are not:
+  - `cpp/openral_safety_kernel/src/collision.cpp` + its Python mirror
+    `kernel_predicates` answer **"what will the kernel do?"** — manifest
+    OBBs and capsules, a *lower* bound on true surface distance by
+    construction, which is why the kernel never under-reports a collision.
+    Entry 12 governs them.
+  - `openral_hal.convex_distance` answers **"where is the geometry
+    actually?"** — MuJoCo's own collision hulls, *exact* and certified, on
+    the evidence path only. It is the ground truth the first pair is
+    *measured against*, so making either one call the other would collapse
+    the comparison the whole validation matrix is built on: a kernel checked
+    against its own arithmetic proves nothing.
+  - `tests/unit/test_so101_base_box_collision._box_box` is the third box-SAT
+    copy entry 12 already flags for collapse — onto `kernel_predicates`, not
+    onto this module.
 
-10. **Place-region bounds — *deliberate C++/Pydantic mirror, update in
-    lockstep.*** `kMaxPlaceRegionHalfExtentM = 1.5` and
-    `kMaxPlaceRegionVolumeM3 = 8.0`
-    (`cpp/openral_safety_kernel/include/openral_safety_kernel/collision.hpp`)
-    are the kernel's bounds on the ADR-0097 approach region, and
-    `PlaceRegion.MAX_HALF_EXTENT_M = 1.5` / `PlaceRegion.MAX_VOLUME_M3 = 8.0`
-    (`python/core/src/openral_core/schemas.py`, enforced in
-    `_validate_region`) are the schema's. The double check is deliberate and
-    is named in `PlaceRegion`'s own docstring: an over-large region is
-    "rejected here and again in the kernel, both times toward *no
-    allowance*". Since this bound gates a **margin reduction**, both sides
-    fail closed and neither may be deleted in favour of the other — the
-    kernel cannot assume the Pydantic validator ran (the message may reach
-    it from a producer that never constructed the model), and the schema
-    must still refuse locally so a bad region is a producer-side error
-    rather than a kernel-side refusal log. **The drift consequence:** raise
-    the Pydantic ceiling without the kernel's and every oversize region is
-    accepted by the producer and then silently discarded by the kernel, so
-    the place phase runs with **no** allowance while every log line says the
-    declaration is live — the exact failure the ADR-0097 amendment's
-    clock-domain bug already produced once. Raise the kernel's without the
-    schema's and the extra room is unreachable. `PlaceRegionStatus::kOversize`
-    is the kernel-side refusal to grep for.
+  The shared *mathematics* (SAT over face normals + edge-edge crossings) is
+  genuinely the same and that is the trap. `convex_distance._sat_penetration_depth`
+  generalises it to arbitrary polytopes because a mesh hull has hundreds of
+  faces, where `box_box_distance`'s 6 + 9 axes are the closed form for a box
+  pair. **If the kernel's narrow phase gains a primitive, entry 12 applies and
+  this module does not need to change** — it never reads a `CollisionShape`,
+  only MuJoCo geoms. Conversely, changing this module cannot change what the
+  kernel does, which is the property that makes it usable as an instrument.
 
-11. **`FailureTrigger` / `SafetyStatus` `KIND_*` numbers — *three-way
-    mirror, now pinned on every leg.*** The numbers are declared in
-    `packages/msgs/msg/FailureTrigger.msg`, **redeclared** in
-    `packages/msgs/msg/SafetyStatus.msg` (ROS IDL has no cross-message
-    constant reuse), and mirrored a third time as plain Python ints in
-    `python/observability/src/openral_observability/failure_bus.py` so
-    callers can publish typed failure events without a sourced ROS install.
-    The C++ `ViolationKind` enum
-    (`cpp/openral_safety_kernel/include/openral_safety_kernel/validator.hpp`)
-    is a fourth partial copy of the same numbering, and `reasoner_node.py`
-    keeps a fifth, private two-kind copy (`_KIND_TIMEOUT` / `_KIND_CONTROLLER`)
-    of the kinds it emits itself.
-    `tests/unit/test_safety_status_msg.py` pins the two IDL blocks against
-    each other and pins `DROP_*` disjoint from `KIND_*`; a kernel gtest
-    (`ViolationKindMapping.EnumValuesMatchFailureTriggerConstants`) pins the
-    enum. The `failure_bus.py` leg was the unpinned one, and it *had* drifted:
-    it stopped at `KIND_REASONER_TIMEOUT = 9` (plus
-    `KIND_SUPPRESSED_SUMMARY = 254`) and never grew `KIND_COLLISION = 10`,
-    which the IDL, the kernel enum and the kernel's
-    `publish_collision_failure` all carry — so the whole collision stack
-    produced the one kind no ROS-free caller could name, and the callers that
-    needed it hard-coded the literal `10`
-    (`tests/unit/test_reasoner_context.py` did exactly that).
-    **Closed 2026-08-22**: the constant is mirrored, and
-    `tests/unit/test_failure_bus_idl_mirror.py` now pins that leg the way the
-    other two are pinned — it scrapes every `KIND_*` / `SEVERITY_*` off the
-    colcon-generated `FailureTrigger` and asserts the Python mirror matches
-    name-for-name and value-for-value **in both directions** (an IDL constant
-    with no mirror fails; a mirrored name with no IDL counterpart fails; an
-    unexported one fails). Both it and `test_safety_status_msg.py` are in
-    `scripts/ros_live_tests.sh`, because the docker image is the only CI
-    surface with the overlay these contracts read.
-    **When a `KIND_*` number is added, all four sites still move together** —
-    the difference is that three of them now say so with a red test rather
-    than an audit.
+- **26-DOP axis table + tight-geometry bounds — *deliberate C++/Python
+  mirror, update in lockstep.*** `kDopAxis[kDopAxes][3]`,
+  `kMaxTightHullVertices = 320` and `kTightContainmentEpsilonM = 1e-9`
+  (`cpp/openral_safety_kernel/include/openral_safety_kernel/collision.hpp`)
+  are the kernel's side of the staged world-voxel narrow phase;
+  `DOP_AXES`, `MAX_TIGHT_HULL_VERTICES` and `TIGHT_CONTAINMENT_EPSILON_M`
+  (`python/core/src/openral_core/schemas.py`, consumed by
+  `TightCollisionGeometry` and by `tools/generate_tight_geometry.py`) are the
+  manifest's. They are not consolidated for the same reason as items 9 and 10
+  — a real-time C++ kernel cannot import a Pydantic module, and it must not
+  trust a producer-supplied bound for a check it applies to a manifest it did
+  not author.
+  **The axis table is the load-bearing half, and its drift consequence is
+  silent.** `dop_lo_m[i]` / `dop_hi_m[i]` are *positional*: they carry no
+  axis of their own, only an index into this table. The manifest and the
+  kernel must therefore index the same slab with the same direction — same
+  order **and** same sign. Reorder the table on one side, or flip one axis's
+  sign, and every slab still validates (the bounds are finite and
+  non-inverted, and the first three axes still look like the box's own), the
+  kernel still loads the model, and `validate_tight_geometry` still returns
+  `kOk` — but the polytope the kernel intersects is no longer the one the
+  offline producer proved contains the link mesh. The containment proof does
+  not transfer, and what the kernel calls a "tighter lower bound" becomes an
+  **over**-report of clearance: a stop that should have fired does not. The
+  first three axes are the worst case precisely because they are the box's
+  own, so the DOP-inside-the-OBB check keeps passing while the remaining ten
+  slabs are attributed to the wrong directions.
+  Nothing in the kernel can catch this — it never sees a mesh, only the
+  slabs. The catch lives offline instead: `generate_tight_geometry check`
+  re-derives the slabs from the real mesh through `DOP_AXES` and refuses at
+  exit 3, and `tests/unit/test_collision_tight_geometry.py` re-proves mesh
+  containment against the same table. **When either table moves, move both in
+  the same PR and re-run both**, and treat the two scalar bounds the same way:
+  `kMaxTightHullVertices` raised only in Python lets a manifest ship a hull
+  the kernel refuses (fail-closed — the whole model drops back to the shipped
+  OBB narrow phase, quietly losing the tightening), while raising it only in
+  C++ leaves the extra budget unreachable.
 
-12. **Kernel narrow-phase predicates — *deliberate C++/Python mirror, update
-    in lockstep.*** `packages/openral_safety/openral_safety/kernel_predicates.py`
-    is a line-by-line port of the narrow phase in
-    `cpp/openral_safety_kernel/src/collision.cpp`: `box_box_distance` ↔ L327
-    (15-axis SAT), `box_capsule_distance` ↔ L293 (ternary search),
-    `capsule_distance` ↔ L252 (segment pair), and `shape_distance` ↔
-    `check_self_collision`'s type routing at L527.
-    The mirror exists because the offline ACM sweep decides **what the kernel
-    will do**, and anything that answers that question with a different
-    predicate is reasoning about a robot that does not exist. That is not
-    hypothetical: issue #155 was precisely this drift — the sweep modelled a
-    `BoxShape` as its inscribed sphere while the kernel checked the true
-    oriented box, and the two disagreed about `panda_link5`↔`panda_link7` in
-    opposite directions.
-    The Python side is pinned to the C++ **by construction and by test**: the
-    predicates were verified equal to the pre-existing mirrors to machine
-    precision (2.2e-16 against `tests/unit/test_so101_base_box_collision._box_box`
-    and `mjcf_lowering._seg_seg_distance`), and every `isinstance` chain is
-    exhaustive over `CollisionShape` with a typed raise, so a new primitive
-    cannot pass silently. **When the narrow phase this mirrors changes, this
-    file changes in the same PR, or the generated ACM starts describing a
-    different robot.**
-    Read "the narrow phase this mirrors" strictly: it is
-    `check_self_collision`'s **link-vs-link** routing, because that is the only
-    question the ACM sweep asks. #166's staged 26-DOP/hull path was checked
-    against this obligation and does **not** engage it — it is confined to
-    `check_voxel_collision`'s box pass (arm-link vs **world voxel**), and
-    `check_self_collision`, `box_box_distance`, `box_capsule_distance` and
-    `capsule_distance` are byte-identical on that branch. An ACM regenerated
-    with or without #166 is the same matrix. The distinction is worth keeping
-    sharp in both directions: a future change to the *self* narrow phase owes
-    this file an update even if it looks small, and a change to the *voxel*
-    narrow phase owes it nothing however large it looks.
-    `tests/unit/test_so101_base_box_collision._box_box` is a *third* copy of
-    the box SAT and should be collapsed onto this module next time that file
-    is touched.
+- **The world-voxel grid derivation, in three places — *left duplicated,
+  pinned by test.*** `deploy_e2e.launch.py::_world_voxel_max_cells` derives
+  `(2R/res + 1)^3` from `_octomap_coverage_radius()`, and
+  `tools/voxel_transport_probe.py::per_axis` re-derives it from its own
+  `RADIUS_M = 1.05` literal. Neither can import the other — the launch file
+  is not an importable package, and the probe must run standalone under a
+  sourced overlay. Consolidating needs a new shared module for four lines.
+  The drift is the danger, not the repetition: a probe sizing its message
+  off a stale radius would time the wrong grid and still report a clean
+  number, and the wire latency it reports is what the 25 -> 15 mm trade is
+  settled on. `test_deploy_e2e_voxel_resolution.py::test_the_transport_probe_sizes_the_grid_the_kernel_reserves`
+  pins the two together instead.
 
-13. **`_seg_seg_distance` — *two Python copies, one batched.***
-    `kernel_predicates._seg_seg_distance` (vectorised over a configuration
-    batch) and `mjcf_lowering._seg_seg_distance` (scalar) are the same
-    clamped-parametric segment solve (Ericson §5.1.9). The split is deliberate
-    — the MJCF path evaluates one pose at a time under mujoco FK and the ACM
-    certificate evaluates hundreds of thousands at once — and the batched copy
-    names the scalar one in a comment. They are pinned equal to 2.2e-16 in
-    `test_urdf_lowering_always_colliding`. **Low risk, but if a third copy
-    appears, collapse all three.**
+- **The quantisation budget, twice — *left duplicated, pinned by test.***
+  `tools/validation_matrix.py::quantization_budget_m` is the canonical half
+  body-diagonal; `tools/stop_ee_speed.py::QUANTISATION_GAIN_M` writes out
+  the *difference* of two of them for 25 and 15 mm. Same reason as 42 (two
+  standalone scripts, no shared module) and the same failure mode — 8.66 mm
+  is what every staleness figure in the Programme status note (formerly
+  `PLAN.md`) §5 in `docs/reference/collision-validation-evidence.md` is
+  weighed against, so a
+  silent drift would re-argue the lever on a wrong number.
+  `test_the_quantisation_gain_matches_the_matrix_budget_it_is_derived_from`
+  pins it.
 
-14. **Convex distance — *three implementations, three different questions.
-    Collapsing them produces a green that confirms itself.*** Read the
-    consequence first, because this entry exists to survive a refactor that
-    looks correct: the validation matrix works by comparing what the **kernel**
-    computed against what the **geometry** actually is. Route both sides
-    through one implementation and the matrix keeps reporting agreement while
-    measuring nothing — the kernel would be checked against its own arithmetic,
-    every stop would adjudicate `within-quantization`, and the failure would be
-    invisible precisely because everything went green. That is strictly worse
-    than an ordinary duplication bug, which at least announces itself. Entry 12
-    already flags a third box-SAT copy for collapse onto `kernel_predicates`,
-    so someone reaching for a fourth is a live risk, not a hypothetical.
+### Deliberately not consolidated
 
-    They look like duplicates and are not:
-    - `cpp/openral_safety_kernel/src/collision.cpp` + its Python mirror
-      `kernel_predicates` answer **"what will the kernel do?"** — manifest
-      OBBs and capsules, a *lower* bound on true surface distance by
-      construction, which is why the kernel never under-reports a collision.
-      Entry 12 governs them.
-    - `openral_hal.convex_distance` answers **"where is the geometry
-      actually?"** — MuJoCo's own collision hulls, *exact* and certified, on
-      the evidence path only. It is the ground truth the first pair is
-      *measured against*, so making either one call the other would collapse
-      the comparison the whole validation matrix is built on: a kernel checked
-      against its own arithmetic proves nothing.
-    - `tests/unit/test_so101_base_box_collision._box_box` is the third box-SAT
-      copy entry 12 already flags for collapse — onto `kernel_predicates`, not
-      onto this module.
+Repeated bodies that consolidation would make worse: different contracts, illegal imports, or a green that would confirm itself.
 
-    The shared *mathematics* (SAT over face normals + edge-edge crossings) is
-    genuinely the same and that is the trap. `convex_distance._sat_penetration_depth`
-    generalises it to arbitrary polytopes because a mesh hull has hundreds of
-    faces, where `box_box_distance`'s 6 + 9 axes are the closed form for a box
-    pair. **If the kernel's narrow phase gains a primitive, entry 12 applies and
-    this module does not need to change** — it never reads a `CollisionShape`,
-    only MuJoCo geoms. Conversely, changing this module cannot change what the
-    kernel does, which is the property that makes it usable as an instrument.
+- **Three parallel registries** with the same lookup-by-string pattern:
+  - `python/rskill/src/openral_rskill/loader.py::rSkill` — `rSkill` +
+    `InstalledRSkillEntry` JSON file registry.
+  - `python/sensors/src/openral_sensors/catalog.py::SensorCatalog` —
+    `SensorCatalog` in-memory dict.
+  - `python/sim/src/openral_sim/registry.py::_Registry` — `_Registry[T]`
+    decorator-driven dict.
 
-15. **26-DOP axis table + tight-geometry bounds — *deliberate C++/Python
-    mirror, update in lockstep.*** `kDopAxis[kDopAxes][3]`,
-    `kMaxTightHullVertices = 320` and `kTightContainmentEpsilonM = 1e-9`
-    (`cpp/openral_safety_kernel/include/openral_safety_kernel/collision.hpp`)
-    are the kernel's side of the staged world-voxel narrow phase;
-    `DOP_AXES`, `MAX_TIGHT_HULL_VERTICES` and `TIGHT_CONTAINMENT_EPSILON_M`
-    (`python/core/src/openral_core/schemas.py`, consumed by
-    `TightCollisionGeometry` and by `tools/generate_tight_geometry.py`) are the
-    manifest's. They are not consolidated for the same reason as items 9 and 10
-    — a real-time C++ kernel cannot import a Pydantic module, and it must not
-    trust a producer-supplied bound for a check it applies to a manifest it did
-    not author.
-    **The axis table is the load-bearing half, and its drift consequence is
-    silent.** `dop_lo_m[i]` / `dop_hi_m[i]` are *positional*: they carry no
-    axis of their own, only an index into this table. The manifest and the
-    kernel must therefore index the same slab with the same direction — same
-    order **and** same sign. Reorder the table on one side, or flip one axis's
-    sign, and every slab still validates (the bounds are finite and
-    non-inverted, and the first three axes still look like the box's own), the
-    kernel still loads the model, and `validate_tight_geometry` still returns
-    `kOk` — but the polytope the kernel intersects is no longer the one the
-    offline producer proved contains the link mesh. The containment proof does
-    not transfer, and what the kernel calls a "tighter lower bound" becomes an
-    **over**-report of clearance: a stop that should have fired does not. The
-    first three axes are the worst case precisely because they are the box's
-    own, so the DOP-inside-the-OBB check keeps passing while the remaining ten
-    slabs are attributed to the wrong directions.
-    Nothing in the kernel can catch this — it never sees a mesh, only the
-    slabs. The catch lives offline instead: `generate_tight_geometry check`
-    re-derives the slabs from the real mesh through `DOP_AXES` and refuses at
-    exit 3, and `tests/unit/test_collision_tight_geometry.py` re-proves mesh
-    containment against the same table. **When either table moves, move both in
-    the same PR and re-run both**, and treat the two scalar bounds the same way:
-    `kMaxTightHullVertices` raised only in Python lets a manifest ship a hull
-    the kernel refuses (fail-closed — the whole model drops back to the shipped
-    OBB narrow phase, quietly losing the tightening), while raising it only in
-    C++ leaves the extra budget unreachable.
+  These are different in lifecycle (file-backed vs. in-memory) and
+  value type (skill vs. sensor entry vs. factory), so deep
+  consolidation is not warranted. **Worth aligning method names
+  though** — `SensorCatalog.list_ids()`, `_Registry.names()`, and
+  `rSkill.list_installed()` all answer the same question with
+  different verbs. A future ADR could standardise on one verb.
 
-16. **`_load_manifest_for_spec` — *resolved.*** `backends/libero.py` carried an
-    identical copy of `policies/act.py`'s helper; `libero.py` now imports it
-    from `act.py` (both eagerly loaded by `openral_sim/__init__.py`, so no new
-    import-order cost). `_policy_loading.load_manifest_for_spec` stays the
-    separate canonical helper for `smolvla`/`gr00t`/`openvla`/`pi05`/`rldx` —
-    not touched, since it treats an empty `weights_uri` differently (`None`
-    vs. falling through to `load_rskill_manifest("")`).
-17. **`_coerce_sim_time_ns` / `_opt_num` — *resolved.*** Identical copies in
-    `backends/isaac_sim.py` and `backends/robotwin.py` promoted to
-    `sidecar.py::coerce_sim_time_ns` (decodes a sidecar wire reply — fits the
-    module's existing `require_key`/`SidecarClient` charter) and
-    `_sidecar_common.py::opt_num` (decodes `backend_options` launch config,
-    alongside the module's other sidecar-provisioning helpers).
-18. **`_env_bool` — *resolved.*** Identical copies in `policies/gr00t.py` and
-    `policies/rldx.py`; `rldx.py` now imports it from `gr00t.py` (no cycle —
-    both are leaf policy modules already eagerly registered together).
-19. **`_sensor_name_to_slot` / `_sensor_name_to_vla_slot` — *resolved.***
-    Identical bodies in `openral_runner.dataset_recorder_bridge` and
-    `openral_rskill_ros.rskill_runner_node`; the ROS package already
-    `exec_depend`s `python3-openral-runner`, so `rskill_runner_node` now
-    imports the runner's copy instead of carrying its own.
-20. **`UsbDevice` / `UsbDeviceRecord` — *not consolidated, deliberately
-    different types.*** `openral_cli.autodetect.UsbDevice` is a `NamedTuple`
-    (lightweight, hot in OS-probing loops); `openral_detect.report.UsbDeviceRecord`
-    is a Pydantic `BaseModel` (CLAUDE.md §2's contract for the JSON/YAML report
-    boundary). Same fields, same reason to stay two types.
-21. **`camera_info_from_intrinsics` — *not consolidated, illegal import.***
-    `openral_hal.depth_cloud` and `openral_perception_ros.depth_convert` carry
-    near-identical builders, but `openral_perception_ros/package.xml` does not
-    depend on `openral_hal` (only `python3-openral-runner`), so the ROS
-    package cannot legally import the HAL's copy without a new dependency.
-22. **Test scaffolding — *resolved via fixtures.*** `_av` (3 copies,
-    `python/observability/tests/`), `_find_metric` (2 copies, same dir),
-    `_zero_frame` (2 copies, `python/dataset/tests/`), `_build_so101_hal` (2
-    copies, `python/hal/tests/`) each moved into their tier's `conftest.py` as
-    a fixture returning the callable (`--import-mode=importlib` blocks
-    `from conftest import x`). `_import_launch_module` (2 of 7 copies —
-    `test_kernel_params_no_empty_lists.py` / `test_no_dashboard_otlp_env.py`
-    only, per scope) moved to a new same-package
-    `packages/openral_rskill_ros/test/_launch_test_common.py` +
-    sys.path-injecting `conftest.py`, mirroring `python/hal/tests/conftest.py`.
-    Five more `_import_launch_module` copies remain in sibling
-    `test_deploy_e2e_*.py` files — out of this pass's scope, worth a follow-up.
+- **SmolVLA skill-side `SmolVLAAdapter` vs eval-side `_SmolVLAAdapter` —
+  *not a duplication target.*** The two have incompatible input
+  contracts on purpose: the skill takes `WorldState` and emits an
+  `Action` inside the ROS2 lifecycle (Layer 3, S1 runtime); the eval
+  adapter takes a dict `Observation` and emits a flat numpy array
+  (Layer 8, sim driver). Collapsing them would force either
+  ceremonial Pydantic wrapping in the sim hot loop or widening
+  `Skill.step()` to accept dicts (breaks §6.1). With `_vla_core`
+  absorbing the cross-cutting seams, residual overlap (checkpoint
+  load + processor factory, ~30 LOC each side) is below the
+  abstraction-cost threshold. Keep them separate.
 
-23. **Reward-monitor `assess()` — *resolved.*** `RobometerInProcessReward.assess`
-    (`backends/reward/robometer_reward.py`) and `TOPRewardMonitor.assess`
-    (`backends/reward/topreward_reward.py`) carried identical bodies (and each
-    its own copy of `_STALL_TREND_EPS = 0.002`). Both now call
-    `frame_source.assess_from_score(progress, success, *, success_threshold,
-    frames_seen)`, the module `trend` already lived in and both files already
-    imported from.
+- **`_build_libero_scene` / `_build_metaworld_scene` / `_build_mock_scene`**
+  in `python/sim/src/openral_sim/{policies,backends}/{libero,metaworld,mock}.py`
+  share the same structure: lazy-import a backend module, instantiate a
+  `_*Sim` wrapper, return it. Already correctly DRY through the
+  `SCENES.register(...)` decorator pattern; do **not** consolidate
+  further.
+
+- **`UsbDevice` / `UsbDeviceRecord` — *not consolidated, deliberately
+  different types.*** `openral_cli.autodetect.UsbDevice` is a `NamedTuple`
+  (lightweight, hot in OS-probing loops); `openral_detect.report.UsbDeviceRecord`
+  is a Pydantic `BaseModel` (CLAUDE.md §2's contract for the JSON/YAML report
+  boundary). Same fields, same reason to stay two types.
+
+- **`camera_info_from_intrinsics` — *not consolidated, illegal import.***
+  `openral_hal.depth_cloud` and `openral_perception_ros.depth_convert` carry
+  near-identical builders, but `openral_perception_ros/package.xml` does not
+  depend on `openral_hal` (only `python3-openral-runner`), so the ROS
+  package cannot legally import the HAL's copy without a new dependency.
+
+- **Deliberately not consolidated.** Each of these is a repeated body that
+  consolidation would make worse, not better:
+  - `camera_info_from_intrinsics` — `openral_hal.depth_cloud` and
+    `openral_perception_ros.depth_convert`. The ROS package does not depend
+    on `openral_hal` (`package.xml`), so the import would be illegal.
+  - `UsbDevice` / `UsbDeviceRecord` — a `NamedTuple` in `openral_cli` and a
+    Pydantic model in `openral_detect`. Same fields, different contracts
+    (CLAUDE.md §2: Pydantic at boundaries, dataclass inside a module).
+  - The MJCF compile trio — `sim` / `_compiled` / `_model_data` in
+    `test_sim_attachment_evidence.py`, `test_sim_estop_payload_slop.py`,
+    `test_sim_estop_voxel_backing.py`. Four identical lines, each bound to
+    its own module's `_MJCF`; sharing needs a parameter every call site must
+    then pass.
+  - `_wait_until` — `test_hal_attachment_barrier_live.py` and
+    `test_estop_voxel_backing_live.py`. A seven-line spin-wait; hoisting it
+    costs a 21-call-site refactor of live-ROS tests.
+  - `isolated_ros` — `test_ros2_image_sensor_reader.py` (domain 91) and
+    `tests/hil/test_openarm_ros_transport.py` (domain 92). The differing
+    domain is the point.
+  - Per-package ROS test clones (`captured_spans`, `_spin_until`, the
+    `*_sigint_shape.py` families, the `openral_hal_*` lifecycle tests, the
+    `slam_bringup` launch tests). colcon builds and tests each package
+    standalone, so a shared helper would need a new shared package.
+
+- **`load_manifest_for_spec` — one copy left, on purpose.** Ten adapters
+  (`smolvla`, `pi05`, `gr00t`, `rldx`, `xr1`, `openvla`, `molmoact2`,
+  `lingbot_vla2`, `internvla_n1`, plus `_policy_loading` itself) call
+  `policies/_policy_loading.load_manifest_for_spec`. `policies/act.py` keeps
+  a private `_load_manifest_for_spec`, which `backends/libero.py` imports.
+  The bodies differ in one reachable case: the shared version guards
+  `if not weights_uri`, so an empty `weights_uri` returns `None`; act's
+  falls through to `load_rskill_manifest("")` and raises `ROSConfigError`.
+  `VLASpec(id=..., weights_uri="")` is constructible, and
+  `libero._control_mode` calls the loader directly, so switching it would
+  turn a loud config error into a silent fall-back to `"relative"` control
+  mode. **Removing this duplicate is a behaviour change, not a refactor.**
+  Decide the empty-URI contract first (CLAUDE.md §1.4 favours the loud
+  version), then make all eleven call sites agree.
+
+- **`_connect` / `_rpc` in `locateanything_detector.py` / `qwen_scene_vlm.py`
+  — *not consolidated, no shared home.*** AST-identical ZMQ REQ-socket
+  bodies, but neither module imports from a shared `backends/gstreamer`
+  module, and the same shape also appears in `omdet_turbo_detector.py`,
+  `sam2_segmenter.py`, and the reward backends — a two-file extraction
+  would miss the real six-way duplication and force a new module for two
+  callers. Leave as-is; a future pass consolidating all sidecar clients
+  into one `ZmqSidecarClient` base should take all six at once.
+
+- **`_find_metric` (`python/observability/tests/conftest.py` fixture vs.
+  `tests/unit/test_runner_observability.py` module function) — *left
+  alone, no shared home.*** Different installable-package test tiers, each
+  with its own `conftest.py`; a shared helper would need a new top-level
+  module reachable from both, which the no-new-top-level-modules rule
+  forbids. Two copies, below the threshold to justify that module.
+  module both imported (for `sim_time_ns_from_mujoco_handles`).
+
+- **`close` (`omdet_turbo_detector.py::OmDetTurboDetector` vs.
+  `sam2_segmenter.py::Sam2Segmenter`) — *left alone, deliberate keep.***
+  Byte-identical six-line in-process CUDA teardown (drop model, drop
+  processor, `torch.cuda.empty_cache()`), but the two classes share no
+  other structure (one is a detector sidecar-less transformers wrapper,
+  the other a promptable segmenter) — a shared base for six lines would
+  cost more to read than the duplication it removes.
+
+- **`SensorSpec`-by-name search — two ROS packages, deliberately.** The `SensorSpec`-by-name search exists as
+  a private `_sensor_spec` in `packages/world_state/…/lifecycle_node.py` and as
+  `sensor_spec_by_name` in `segmenter_node.py`. Two call sites in two ROS
+  packages, one of them already private; promoting it means adding public
+  surface to `openral_core.schemas`, which is worth doing when a third caller
+  appears and not before.
+
+---
 
 ### Already correctly DRY (do not flag)
 
@@ -485,24 +502,7 @@ contributor should look at before adding similar code.
   overridden by H1 to recompute `tau = kp*(target-q) - kv*dq` every
   step) — that PD behavior is H1-specific cerebellar substitute, not
   arm-data, and stays in code.
-- **Policy adapter loader seams — *resolved.*** The 2026-05 cleanup
-  pulled three parallel copies of `_load_manifest_for_spec` (one each
-  in `policies/smolvla.py`, `policies/rldx.py`, `policies/pi05.py`)
-  and one copy of the lerobot lazy-import + `ROSConfigError` install
-  hint into a new
-  `python/sim/src/openral_sim/policies/_policy_loading.py` —
-  `load_manifest_for_spec(spec)` and
-  `lazy_import_lerobot(adapter_name, *, install_hint=...)`.
-  Similarly, the four dtype helpers that used to live in
-  `policies/pi05.py` (`_manifest_dtype`, `_normalise_manifest_dtype`,
-  `_torch_dtype_for`, `_default_dtype`) were lifted into
-  `python/sim/src/openral_sim/_quantization.py` as public
-  `manifest_dtype`, `normalise_manifest_dtype`, `torch_dtype_for`,
-  `default_dtype_for_device`. The `act.py` adapter still carries
-  its own `_load_manifest_for_spec` because the rest of its load
-  path is structured around a snapshot of the policy weights; if a
-  fifth adapter ever needs the same shape, route it through
-  `_policy_loading.load_manifest_for_spec`.
+
 - **Humanoid contract validators vs useful humanoid sims** —
   `H1MujocoHAL` and G1's default joint-position path are contract validators.
   Both robots' floating bases fall without an S0 cerebellar balance controller
@@ -525,6 +525,7 @@ contributor should look at before adding similar code.
   H1 menagerie's torque actuators into the position-target contract
   every other `MujocoArmHAL` subclass implements, and mirrors what
   `unitree_sdk2` does on real hardware.
+
 - **Deliberate digital-twin gaps** — `Sawyer` and `GR1` intentionally
   ship without a MuJoCo HAL twin:
   - **Sawyer**: Rethink Robotics is defunct; no real Sawyer hardware
@@ -538,6 +539,7 @@ contributor should look at before adding similar code.
     an `openral_sim` rollout robot.
   These are documented absences, **not** missing work; do not add HAL
   twins for them speculatively.
+
 - **Real-HW manifest derivation** — every real-HW adapter publishes a
   `*_REAL_DESCRIPTION` constant derived from a sim-side baseline via
   `openral_hal._real_description.make_real_description(base, sdk_kind=...)`.
@@ -549,6 +551,7 @@ contributor should look at before adding similar code.
   whole `RobotDescription` constructor. The UR real-HW module (`ur_real.py`)
   uses this helper to derive `UR5e_REAL_DESCRIPTION` /
   `UR10e_REAL_DESCRIPTION` from `UR{5,10}e_DESCRIPTION`.
+
 - **HAL adapters (real-HW)** — three shapes coexist on purpose:
   - `FrankaPandaRealHAL` and `SawyerRealHAL` **compose** `RosControlHAL`
     (delegating wrapper) and add robot-specific structlog metadata + a
@@ -571,6 +574,7 @@ contributor should look at before adding similar code.
     `RosControlHAL`-wrapping logic into a `_RealHALMixin`; adding a
     second multi-controller adapter is the trigger to hoist AlohaHAL's
     fan-out into a `MultiRosControlHAL`.
+
 - **HIL transport bridges (real-HW HALs)** — the single-controller
   `RosControlHILTransport` (`tests/hil/_ros_control_transport.py`) is the
   source of truth for the trajectory wiring; `AlohaHILTransport`
@@ -581,6 +585,7 @@ contributor should look at before adding similar code.
   `joint_names`, `wait_for_first_state` helper).  Adding a third HIL
   bridge variant is the trigger to extract the shared subscriber half
   into a `_JointStateCache` mixin.
+
 - **Kernel-twin sim tests** — the four `tests/sim/safety/test_kernel_with_<robot>_*.py`
   files (`so100_digital_twin`, `openarm_twin`, `rizon4_twin`,
   `h1_humanoid_twin`) used to each open-code the subprocess + lifecycle
@@ -591,6 +596,7 @@ contributor should look at before adding similar code.
   per-test action / state vectors. Adding a fifth robot's kernel-twin
   test means one new short test file that calls the same four
   helpers — do NOT re-roll the lifecycle ceremony.
+
 - **rSkillBase subclasses** — `GpuPassthroughSkill`,
   `SmolVLAAdapter`, `SO100SmolVLASkill` all override the same five
   `_*_impl` hooks. The duplicated method *names* are the contract from
@@ -600,10 +606,12 @@ contributor should look at before adding similar code.
   prototyping a torch.cuda-based Skill that consumes a CPU
   `SensorFrame.data: bytes` and needs to be explicit about device
   placement (raises on missing CUDA rather than silently falling back).
+
 - **Runtime backends** — `NullRuntime`, `PyTorchRuntime`, `ONNXRuntime` (plus
   `TensorRTRuntime` in the private `openral-pro-trt` package)
   all implement the `Runtime` Protocol surface
   (`load/infer/quantize/warmup/unload`). Same situation as Skill.
+
 - **`backends/so100_robosuite/`** — `_So100Lift` extends
   `robosuite.environments.manipulation.lift.Lift` rather than
   reimplementing the arena / reward / observable / placement
@@ -620,12 +628,6 @@ contributor should look at before adding similar code.
   ranges — do not write a JOINT_POSITION + custom-IK stack like
   the early `so100_robosuite` drafts did.
 
-- **`NDArrayOrNone = Any` alias — *resolved.*** Was defined identically in
-    both `python/rskill/src/openral_rskill/pose_goal_rskill.py` and
-    `look_at_rskill.py`; the latter now imports it from
-    `pose_goal_rskill` (which it already imports `build_pose_constraints`
-    from) instead of redefining it.
-
 ### Watch list (not yet a problem, but worth tracking)
 
 - **Pinhole back-projection of a `32FC1` depth raster** now exists twice:
@@ -637,40 +639,34 @@ contributor should look at before adding similar code.
   different packages — a third copy is the trigger to hoist a typed
   `deproject_depth(...)` into `openral_core.geometry` and route all of
   them through it.
-- **`_validate_action()`** appears in both `MujocoArmHAL` (L296) and
-  `RosControlHAL` (L250). They validate different invariants today
+
+- **`_validate_action()`** appears in both `_mujoco_arm.py::MujocoArmHAL` and
+  `ros_control.py::RosControlHAL`. They validate different invariants today
   (MuJoCo: `joint_targets` rank; ros2_control: control mode). If a
   third HAL grows a third `_validate_action`, lift the common parts
   into a free function in `openral_hal.protocol`.
-- **`_require_connected()`** appears in `MujocoArmHAL` (L289),
-  `SO100FollowerHAL` (L386), `RosControlHAL` (L243), and `AlohaHAL`
-  (L426). Four is over the threshold — the next HAL adapter that adds
+
+- **`_require_connected()`** appears in `_mujoco_arm.py::MujocoArmHAL`,
+  `so100_follower.py::SO100FollowerHAL`, `ros_control.py::RosControlHAL`, and `aloha.py::AlohaHAL`. Four is over the threshold — the next HAL adapter that adds
   a fifth `_require_connected` is the trigger to hoist this into a
   base mixin (`openral_hal._lifecycle.RequireConnectedMixin`).
   `FrankaPandaRealHAL` / `SawyerRealHAL` deliberately delegate the
   check to their inner `RosControlHAL` rather than duplicating it.
-- **`from_yaml(cls, path)` classmethods — *resolved.*** The pattern had
-  grown to six copies (`RobotDescription`, `RSkillManifest`,
-  `DeployScene`, `SimScene`, `BenchmarkScene`);
-  all now share `openral_core.schemas._load_yaml_model(cls, path)`,
-  and the byte-identical `SimScene` / `BenchmarkScene` overrides were
-  deleted (they inherit `DeployScene.from_yaml`, which returns `Self`).
-  A new `from_yaml` on a schemas-module model should be a one-line
-  delegation to `_load_yaml_model`.
+
 - **LeRobot SO-ARM unit + cadence conversions in the native MuJoCo
   scenes — consolidated** into
   `openral_sim/backends/_so_arm_units.py`
   (`steps_per_control_period`, `lerobot_action_to_radians`,
-  `radians_to_lerobot_state`): `so101_eraser` and `so101_box` each
-  carried their own copy of the degrees-mode affine and physics-stepping
-  loop, and the copies drifted — `so101_box` shipped a
-  single-`mj_step`-per-action cadence and a gripper-as-degrees mapping
-  that `so101_eraser` had already fixed. **A new raw-MuJoCo scene that
-  accepts LeRobot-convention actions must route through this module**,
-  not re-derive the conversions. (`tabletop_push` keeps its own
+  `radians_to_lerobot_state`). Its one importer today is
+  `backends/so101_box/env.py` (the `so101_box` deploy scene and the
+  `so101_tube_insertion` sim scene); the former `so101_eraser` copy that
+  drifted from it is gone. **A new raw-MuJoCo scene that accepts
+  LeRobot-convention actions must route through this module**, not
+  re-derive the conversions. (`tabletop_push` keeps its own
   `_joint_scales` affine + `settle_steps` knob on purpose: it is
   robot-agnostic, so it cannot assume the SO-ARM "last channel is a
   [0, 100] gripper" convention.)
+
 - **Rotation/quaternion math scattered across packages** — the **yaw
   family is now consolidated** into `openral_core.geometry`
   (`yaw_to_quat_xyzw`, `yaw_to_quat_wxyz`, `quat_xyzw_to_yaw`): the five
@@ -694,204 +690,75 @@ contributor should look at before adding similar code.
     `openral_core.geometry` and is only worth it once a *second* caller
     appears. Add that set (and route new code through it) at that point.
 
-## Resolved by the SAM 2.1 vision-attachment work
+- **`_TokenBucket` twice** — `openral_runner.backends.gstreamer.perception_tee.PerceptionEventPublisher._TokenBucket` and `openral_observability.failure_bus._TokenBucket` are the same rate limiter, implemented independently on purpose (the runner must not import the observability bus's ROS-facing module for a 20-line primitive). A third copy is the trigger to hoist it into `openral_core`.
 
-- **`_resolve_cameras` (perception nodes)** — `ros_image_detector_node`,
-  `scene_vlm_node` and `reward_monitor_node` each carried a byte-identical
-  eight-line copy of the `"id=topic"` → map resolution. All three (and the new
-  `segmenter_node`) now delegate to
-  `openral_perception_ros.camera_topics.resolve_camera_topics`, which is pure,
-  ROS-free and unit-tested (`tests/unit/test_perception_camera_topics.py`).
-- **`homogeneous_from_quat_xyz`** — was the TF→4x4 step private to
-  `openral_world_state.object_lift` (layer 2). The layer-0 HAL's vision
-  attachment bridge needs the same step and must not depend on layer 2, so the
-  math moved to `openral_core.geometry` and the world-state name became a thin
-  wrapper preserving its `ObjectsLiftError` contract. This is the "second
-  caller appears" trigger the quat→matrix note above anticipated, for the
-  `xyzw`-quaternion-plus-translation shape specifically; the remaining
-  `_quat_to_matrix` / `_rpy_to_*` cases listed there are unchanged.
-- **Still duplicated, deliberately**: the `SensorSpec`-by-name search exists as
-  a private `_sensor_spec` in `packages/world_state/…/lifecycle_node.py` and as
-  `sensor_spec_by_name` in `segmenter_node.py`. Two call sites in two ROS
-  packages, one of them already private; promoting it means adding public
-  surface to `openral_core.schemas`, which is worth doing when a third caller
-  appears and not before.
+- **`_canonicalize_quat_xyzw` (`openral_state_adapter.layouts.human300_16d`) vs `_canonicalize_quat_xyzw_np` (`openral_sim.backends.robocasa`)** — the sim copy is a float32 numpy mirror kept for byte parity between the deploy and benchmark paths (its docstring says so). Update in lockstep; do not merge unless the parity test moves with it.
+
+- **`tools/rldx_sidecar.py` constants mirrored in `openral_sim._deps`** — same cross-venv wire-contract mirror as the BEHAVIOR sidecars above: the sidecar runs where `openral_sim` cannot be imported. Update both in one PR.
+
+- **msgpack `_encode_ndarray` / `_decode_ndarray` in nine `tools/_*_server.py` sidecars** — structurally forced: each server runs in its own isolated venv and must not import the workspace. A shared file copied into each sidecar's venv at provisioning time is the only consolidation that would not break isolation; not done.
+
+- **`_sim_attachment_evidence._tight_geometry_from_points` vs `tools/generate_tight_geometry.derive_tight_geometry`** — intentional online/offline twins of the DOP + hull refinement (same two stages, same `MAX_TIGHT_HULL_VERTICES` ceiling); the offline one is the certificate, the online one the evidence. Keep both, keep them equal.
+
+- **`openral_human_estop.forwarder_node` QoS copy** — byte-identical to the watchdog package's `_qos` helpers, left in place because sharing needs a package edge (`openral_human_estop → openral_safety_watchdog` or `→ openral_observability`) that neither `package.xml` declares. Adding that edge is a decision, not a cleanup.
+
+- **Image-subscription QoS in `openral_perception_ros`** (`ros_image_detector_node`, `scene_vlm_node`, `reward_monitor_node`, `segmenter_node`) — built inline four times with the same parameters. Same package, so a `_qos.py` there is the obvious next step when any of them is next touched.
+
+- **`openral_cli.deploy_sim._ROBOT_HAL_REGISTRY`** is imported by `tools/audit_sim_configs.py` — a private constant with an external consumer. `tools/` is not a distribution package, so it was not promoted; a read-only accessor is the right shape if a second consumer appears.
+
+- **`openral_nav2_bringup._footprint_geometry`** is a private module reached from `tools/_nav2_costmap_silhouette_probe.py` and an integration test. Its public names (`convex_hull_2d`, `base_footprint_polygon`, `SHAPE_*`) are de-facto API; drop the module's underscore when it is next touched.
+
+- **`openral_reasoner.spatial_query.ApproachRefiner`** — live (it types `refine_approach` on the two exported query functions), but `reasoner_node.py` passes its callback as `Any` with a comment instead of importing the alias. Import it.
+
+- **`openral_rskill_ros.make_local_skill_resolver`** — exported, documented for `openral sim run`, and called only from inside its own module today. Public with no external consumer stays public; revisit if the docstring's use case never materialises.
+
+- **`openral_safety.supervisor_node.SafetySupervisorNode`** — back-compat alias of `SafetyPassthroughNode` with zero references outside its own package's `__init__` docstring. Removing it touches `packages/openral_safety/` (safety-WG review + hazard log), so it is recorded here rather than deleted by a cleanup PR.
+
+- **`openral_wam`** (`NullWorldModel`, `Rollout`, `WorldModel` Protocol) — no consumer outside the package, its own tests, the Justfile lint/doctest lists and the docs. The WAM implementations live in OpenRAL Pro; whether the open placeholder package stays is a TSC decision pending on PR #296.
+
+### Resolved in the 2026-09-22 cleanup (openral PR #296)
+
+- **`_h1_group` / `_g1_group`** — one `_mujoco_arm._kinematic_group(joint_name, groups, *, robot)`; each robot keeps its group tuple.
+- **Sidecar port derivation ×5** (`isaac_sim`, `robotwin`, `rlbench` `_scene_default_port`; `lingbot_vla2._policy_default_port`; `rldx._derive_sidecar_port`) — `_sidecar_common.sidecar_port_for_key(key, *, port_min, port_max, algorithm)`; callers keep their names as thin wrappers and their exact ports (`tests/unit/test_sidecar_common.py` pins them; rldx was SHA-1, now an explicit argument).
+- **`_CARTESIAN_KINDS` / `_GRIPPER_KINDS`** — byte-identical to `_CARTESIAN_MODES` / `_GRIPPER_MODES` in `schemas.py`; deleted, second validator uses the surviving pair.
+- **Torch-free GPU VRAM probe** (`openral_cli.deploy_sim._detect_gpu_vram_gb` / `openral_reasoner_ros.reasoner_node._query_gpu_gb`) — `openral_core.detect_gpu_vram_gb(field)` (ADR-0103).
+- **Unified-memory-SoC VRAM fallback** in `openral_detect.probes.gpu` (`_probe_nvidia_pynvml` / `_probe_nvidia_smi`) — one `_unified_memory_vram_fallback` helper.
+- **`_MIN_POLYGON_VERTICES`** — `payload_scan_filter_node` imports `_footprint_geometry`'s.
+- **E-stop / failure `QoSProfile`s** in `deadman_watchdog_node` / `hardware_estop_node` — `openral_safety_watchdog._qos.estop_qos()` / `failure_qos()` (the `openral_human_estop` forwarder's copy stays, see below).
+- **Cross-package private imports promoted** — `openral_rskill.hf_download_cached_first`, `gpu_allocated_mb` (was `_gpu_mb`), `find_repo_root_from`, `validate_skill_ref`; `openral_runner.sensor_name_to_slot`; `tools/_robometer_scorer.Scorer`.
+- **Dead code removed** — `packages/openral_foxglove_bringup/tools/demo_publisher.py` and `tools/_verify_lingbot_nf4.py` (no invocation site anywhere outside this inventory).
+- **`_CARTESIAN_MODES`-style bundled inventory bullets** — every `docs/methods` bullet now names one symbol with one resolvable marker, so `refresh_methods_linenos.py --check --coverage` (in `just lint`) can see it; that gate, not this file, is now the primary duplication detector.
+
+### Retired (resolved earlier; one line each)
+
+- **Sensor `_spec()` private factory helpers — the seven vendor modules were deleted; one-per-file public spec factories remain** (was item 1).
+- **VLA adapter boundary helpers — `resolve_device` / `resolve_rskill_repo_id` / `run_inference` / `to_numpy_action` / `parse_hf_file_uri` / `materialize_processor_dir` live once in `openral_rskill._vla_core`; processor dirs resolve through `_processors.resolve_processor_dir`** (was item 3).
+- **Policy load-phase heartbeat — `openral_rskill._diagnostics.phase_timer`, applied per adapter through a one-line `_<family>_phase` shortcut** (was item 6).
+- **`_load_manifest_for_spec` — `backends/libero.py` imports `policies/act.py`'s copy** (was item 16).
+- **`_coerce_sim_time_ns` / `_opt_num` — `sidecar.coerce_sim_time_ns` and `_sidecar_common.opt_num`** (was item 17).
+- **`_env_bool` — `policies/rldx.py` imports `policies/gr00t.py`'s** (was item 18).
+- **`_sensor_name_to_slot` / `_sensor_name_to_vla_slot` — the ROS node imports the runner's copy, now public as `openral_runner.sensor_name_to_slot`** (was item 19).
+- **Test scaffolding (`_av`, `_find_metric`, `_zero_frame`, `_build_so101_hal`, two of seven `_import_launch_module`) — tier `conftest.py` fixtures; five `_import_launch_module` copies remain in `test_deploy_e2e_*.py`** (was item 22).
+- **Reward-monitor `assess()` — both monitors call `frame_source.assess_from_score`** (was item 23).
+- **Test-tier fixture duplication — tier-wide fixtures live in `tests/unit/conftest.py` / `tests/sim/conftest.py`** (was item 24).
+- **`disconnect()` / `_floats` in `AlohaHAL` / `RosControlHAL` — `HALBase.disconnect` default and `_base._raw_floats`** (was item 27).
+- **Sidecar scene/socket duplication — `sidecar.SidecarSimRollout`, `sidecar.open_req_socket`, `rollout.render_named_rgb_mujoco`** (was item 29).
+- **`connected_hal` leftover shadows in two sim HAL tests — deleted, conftest fixture used** (was item 30).
+- **HIL transport `state` / `_on_joint_state` / `wait_for_first_state` — `_JointStateCache` + `_PolledJointStateMixin`** (was item 31).
+- **Safety-kernel place-\* live test harness closures — three factory fixtures in `tests/integration/conftest.py`** (was item 32).
+- **`test_disconnect_idempotent` per real HAL — already covered by `test_hal_protocol_conformance`** (was item 33).
+- **`test_after_estop_send_action_fails` — parametrized in `test_hal_protocol_conformance`** (was item 34).
+- **`test_manifest_has_latency_budget` ×3 — `tests/sim/conftest.py::assert_manifest_has_latency_budget`** (was item 35).
+- **`test_send_action_holds_zero_pose` / `test_hold_zero_pose` — `tests/sim/conftest.py::assert_send_action_holds_zero_pose`** (was item 36).
+- **`_expand` PEP 735 walker ×2 — `tests/unit/conftest.py::expand_dependency_group`** (was item 37).
+- **`_CaptureProcessor` shadow in `test_reasoner_core.py` — deleted, conftest one imported** (was item 38).
+- **`_connect` / `_rpc` / `_try_ping` (`LocateAnythingDetector` / `QwenSceneVlm`) — `backends/gstreamer/_zmq_sidecar.ZmqSidecarMixin`** (was item 40).
+- **Policy adapter loader seams** — `policies/_policy_loading.load_manifest_for_spec` / `lazy_import_lerobot` and the `_quantization` dtype helpers; see the DRY section.
+- **`NDArrayOrNone` alias** — `look_at_rskill` imports `pose_goal_rskill`'s.
+- **`from_yaml(cls, path)` ×6** — `openral_core.schemas._load_yaml_model`; `SimScene` / `BenchmarkScene` inherit `DeployScene.from_yaml`.
+- **`_resolve_cameras` in three perception nodes** — `openral_perception_ros.camera_topics.resolve_camera_topics`.
+- **`homogeneous_from_quat_xyz`** — moved from `openral_world_state.object_lift` to `openral_core.geometry`; world-state keeps a thin wrapper.
 
 ---
 
-*Generated and curated 2026-05-08 from a single AST pass over
-`python/`, `packages/`, and `tools/`. Re-run `python3 -c "import ast"`-based
-extraction whenever a module is added or renamed; this file is hand-edited
-afterwards. If a future contributor automates regeneration, mirror the
-pattern in `tools/schema_export.py`.*
-
-24. **Test-tier fixture duplication — *resolved.*** `memory_exporter`,
-    `memory_metric_reader`, `exporter`, the rclpy context, the span-capture
-    processor, `_CylinderShape`, the RT-DETR ONNX writer and the fake OpenAI
-    client now live once in `tests/unit/conftest.py`; the MuJoCo
-    `connected_hal` / `hal` pair and the LIBERO / RoboCasa / Isaac availability
-    probes live once in `tests/sim/conftest.py`. Per-file copies that shadowed
-    those fixtures were removed. **Add a new tier-wide fixture to the tier's
-    conftest, not to the test file that needs it first.**
-
-25. **Deliberately not consolidated.** Each of these is a repeated body that
-    consolidation would make worse, not better:
-    - `camera_info_from_intrinsics` — `openral_hal.depth_cloud` and
-      `openral_perception_ros.depth_convert`. The ROS package does not depend
-      on `openral_hal` (`package.xml`), so the import would be illegal.
-    - `UsbDevice` / `UsbDeviceRecord` — a `NamedTuple` in `openral_cli` and a
-      Pydantic model in `openral_detect`. Same fields, different contracts
-      (CLAUDE.md §2: Pydantic at boundaries, dataclass inside a module).
-    - The MJCF compile trio — `sim` / `_compiled` / `_model_data` in
-      `test_sim_attachment_evidence.py`, `test_sim_estop_payload_slop.py`,
-      `test_sim_estop_voxel_backing.py`. Four identical lines, each bound to
-      its own module's `_MJCF`; sharing needs a parameter every call site must
-      then pass.
-    - `_wait_until` — `test_hal_attachment_barrier_live.py` and
-      `test_estop_voxel_backing_live.py`. A seven-line spin-wait; hoisting it
-      costs a 21-call-site refactor of live-ROS tests.
-    - `isolated_ros` — `test_ros2_image_sensor_reader.py` (domain 91) and
-      `tests/hil/test_openarm_ros_transport.py` (domain 92). The differing
-      domain is the point.
-    - Per-package ROS test clones (`captured_spans`, `_spin_until`, the
-      `*_sigint_shape.py` families, the `openral_hal_*` lifecycle tests, the
-      `slam_bringup` launch tests). colcon builds and tests each package
-      standalone, so a shared helper would need a new shared package.
-
-26. **`load_manifest_for_spec` — one copy left, on purpose.** Ten adapters
-    (`smolvla`, `pi05`, `gr00t`, `rldx`, `xr1`, `openvla`, `molmoact2`,
-    `lingbot_vla2`, `internvla_n1`, plus `_policy_loading` itself) call
-    `policies/_policy_loading.load_manifest_for_spec`. `policies/act.py` keeps
-    a private `_load_manifest_for_spec`, which `backends/libero.py` imports.
-    The bodies differ in one reachable case: the shared version guards
-    `if not weights_uri`, so an empty `weights_uri` returns `None`; act's
-    falls through to `load_rskill_manifest("")` and raises `ROSConfigError`.
-    `VLASpec(id=..., weights_uri="")` is constructible, and
-    `libero._control_mode` calls the loader directly, so switching it would
-    turn a loud config error into a silent fall-back to `"relative"` control
-    mode. **Removing this duplicate is a behaviour change, not a refactor.**
-    Decide the empty-URI contract first (CLAUDE.md §1.4 favours the loud
-    version), then make all eleven call sites agree.
-
-27. **`disconnect()` / `_floats` in `AlohaHAL` / `RosControlHAL` — *resolved.***
-    Both were byte-identical (flag-and-log). `disconnect` moved to `HALBase`
-    as the default — subclasses with real teardown (`SO100FollowerHAL`,
-    `GalaxeaA1HAL`, `MujocoArmHAL`) still override it. The nested `_floats`
-    closure in each `read_state` became `_base.py::_raw_floats(raw, key, width)`.
-28. **`_connect` / `_rpc` in `locateanything_detector.py` / `qwen_scene_vlm.py`
-    — *not consolidated, no shared home.*** AST-identical ZMQ REQ-socket
-    bodies, but neither module imports from a shared `backends/gstreamer`
-    module, and the same shape also appears in `omdet_turbo_detector.py`,
-    `sam2_segmenter.py`, and the reward backends — a two-file extraction
-    would miss the real six-way duplication and force a new module for two
-    callers. Leave as-is; a future pass consolidating all sidecar clients
-    into one `ZmqSidecarClient` base should take all six at once.
-
-29. **Sidecar scene/socket duplication — *resolved.*** `_IsaacSimSidecar` and
-    `_RoboTwinSimSidecar` were the same dataclass with byte-identical
-    `reset`/`step`/`sim_time_ns`/`render`/`close`; both now subclass
-    `sidecar.SidecarSimRollout`, which owns those fields and methods (each
-    backend keeps only `_wrap_obs` and its docstring-carrying `action_dim`).
-    `SidecarClient._init_socket` and the RLDX-1 adapter's own `_init_socket`
-    (`policies/rldx.py`) were also byte-identical; both now call
-    `sidecar.open_req_socket`. `tabletop_push/env.py` and `so101_box/env.py`'s
-    `_render_named_rgb` were byte-identical too; both now call
-    `rollout.render_named_rgb_mujoco` — `rollout.py` was already the shared
-    module both imported (for `sim_time_ns_from_mujoco_handles`).
-
-30. **`connected_hal` leftover shadows — *resolved.*** `test_so100_follower_hal_mujoco.py`
-    and `test_openarm_hal_mujoco.py` each still defined the same
-    connect/disconnect wrapper `tests/sim/conftest.py:236` already provides.
-    Both local copies deleted; the conftest fixture resolves against each
-    file's own `hal` fixture.
-31. **HIL transport `state`/`_on_joint_state`/`wait_for_first_state` —
-    *resolved.*** Byte-identical across `_ros_control_transport.py`,
-    `_aloha_ros_transport.py`, `_openarm_ros_transport.py`. Split into
-    `_JointStateCache` (`state()`, all three) and `_PolledJointStateMixin`
-    (the other two, in `_ros_control_transport.py`) — OpenArm keeps its own
-    `_on_joint_state`/`spin_once` (executor-bound, waits for all 16 joints).
-32. **Safety-kernel place-\* live test harness `publish_grid` /
-    `publish_joint_state` / `reset_estop` — *resolved.*** Byte-identical
-    closures in the allowance-band and target-geometry live tests. Moved to
-    `tests/integration/conftest.py` as three factory fixtures
-    (`publish_occupancy_grid`, `publish_carriage_joint_state`,
-    `reset_kernel_estop`) returning callables; each test still owns its
-    `helper`/publishers/`spin` and passes them in explicitly — no change to
-    any topic, joint order, timeout or QoS.
-33. **`test_disconnect_idempotent` (Franka/Aloha/Sawyer real HALs) —
-    *resolved, was already redundant.*** `tests/unit/test_hal_protocol_conformance.py::test_hal_disconnect_is_idempotent`
-    already parametrizes over `HAL_BUILDERS`, which already includes
-    `FrankaPandaRealHAL`/`SawyerRealHAL`/`AlohaHAL` built with the same
-    args as each file's own `hal` fixture. Deleted the three per-file copies.
-34. **`test_after_estop_send_action_fails` (Franka/Sawyer real HALs) —
-    *resolved.*** No existing parametrized home (unlike #33), so added
-    `test_hal_send_action_after_estop_fails` to
-    `test_hal_protocol_conformance.py`, parametrized over just these two
-    names (not all of `HAL_BUILDERS` — the other builders were never proven
-    to share this "estop leaves send_action failing until reconnect" contract).
-35. **`test_manifest_has_latency_budget` (pusht/diffusion, franka_panda/smolvla/libero,
-    aloha/act sim suites) — *resolved.*** Same one-line manifest-contract
-    assertion three times. `tests/sim/conftest.py::assert_manifest_has_latency_budget`
-    is now the shared body; each file keeps its own test method (and its own
-    `skill_manifest` fixture loading its own rSkill), so a failure still
-    names the file/class it came from.
-36. **`test_send_action_holds_zero_pose` (H1/G1) / `test_hold_zero_pose`
-    (OpenArm) — *resolved.*** Identical "zero action → every joint stays
-    near zero" body. `tests/sim/conftest.py::assert_send_action_holds_zero_pose`
-    is now the shared assertion; each file still calls it with its own
-    `connected_hal` and `_zero_action()`, keeping its own test name/class.
-37. **`_expand` PEP 735 `include-group` walker — *resolved.*** Identical
-    recursive closure in `test_qwen_scene_vlm.py` and
-    `test_locateanything_detector.py`. Moved to
-    `tests/unit/conftest.py::expand_dependency_group`, a factory fixture
-    returning `expand(groups, name) -> list[str]`.
-38. **`_CaptureProcessor.__call__` in `test_reasoner_core.py` — *resolved,
-    leftover shadow.*** The whole class duplicated `tests/unit/conftest.py`'s
-    `_CaptureProcessor` (used by the `cap` fixture there). Deleted the local
-    class; `test_reasoner_core.py`'s `log_cap` fixture now imports the
-    conftest one and keeps its own extra `openral_reasoner.core.log` rebind.
-39. **`_find_metric` (`python/observability/tests/conftest.py` fixture vs.
-    `tests/unit/test_runner_observability.py` module function) — *left
-    alone, no shared home.*** Different installable-package test tiers, each
-    with its own `conftest.py`; a shared helper would need a new top-level
-    module reachable from both, which the no-new-top-level-modules rule
-    forbids. Two copies, below the threshold to justify that module.
-    module both imported (for `sim_time_ns_from_mujoco_handles`).
-40. **`_connect` / `_rpc` / `_try_ping` (`LocateAnythingDetector` vs.
-    `QwenSceneVlm`, both in `backends/gstreamer/`) — *resolved.*** All three
-    were byte-identical ZMQ REQ/REP transport methods (~30 lines) across two
-    production classes. Moved to a new private
-    `backends/gstreamer/_zmq_sidecar.py::ZmqSidecarMixin`, which both classes
-    now inherit; `_spawn_and_wait`, `_ensure_ready` and `close` stay on each
-    class since they genuinely differ (boot command, port, error text).
-41. **`close` (`omdet_turbo_detector.py::OmDetTurboDetector` vs.
-    `sam2_segmenter.py::Sam2Segmenter`) — *left alone, deliberate keep.***
-    Byte-identical six-line in-process CUDA teardown (drop model, drop
-    processor, `torch.cuda.empty_cache()`), but the two classes share no
-    other structure (one is a detector sidecar-less transformers wrapper,
-    the other a promptable segmenter) — a shared base for six lines would
-    cost more to read than the duplication it removes.
-
-42. **The world-voxel grid derivation, in three places — *left duplicated,
-    pinned by test.*** `deploy_e2e.launch.py::_world_voxel_max_cells` derives
-    `(2R/res + 1)^3` from `_octomap_coverage_radius()`, and
-    `tools/voxel_transport_probe.py::per_axis` re-derives it from its own
-    `RADIUS_M = 1.05` literal. Neither can import the other — the launch file
-    is not an importable package, and the probe must run standalone under a
-    sourced overlay. Consolidating needs a new shared module for four lines.
-    The drift is the danger, not the repetition: a probe sizing its message
-    off a stale radius would time the wrong grid and still report a clean
-    number, and the wire latency it reports is what the 25 -> 15 mm trade is
-    settled on. `test_deploy_e2e_voxel_resolution.py::test_the_transport_probe_sizes_the_grid_the_kernel_reserves`
-    pins the two together instead.
-43. **The quantisation budget, twice — *left duplicated, pinned by test.***
-    `tools/validation_matrix.py::quantization_budget_m` is the canonical half
-    body-diagonal; `tools/stop_ee_speed.py::QUANTISATION_GAIN_M` writes out
-    the *difference* of two of them for 25 and 15 mm. Same reason as 42 (two
-    standalone scripts, no shared module) and the same failure mode — 8.66 mm
-    is what every staleness figure in the Programme status note (formerly
-    `PLAN.md`) §5 in `docs/reference/collision-validation-evidence.md` is
-    weighed against, so a
-    silent drift would re-argue the lever on a wrong number.
-    `test_the_quantisation_gain_matches_the_matrix_budget_it_is_derived_from`
-    pins it.
+*Curated by hand since 2026-05-08. Regenerate the inventory files with `tools/refresh_methods_linenos.py`; this file is prose and is edited directly.*
