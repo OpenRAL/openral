@@ -30,7 +30,9 @@ from openral_core.exceptions import (
     ROSRuntimeError,
 )
 from openral_core.schemas import Action
-from openral_hal._mujoco_arm import MujocoArmHAL
+from openral_hal._mujoco_arm import MujocoArmHAL, _kinematic_group
+from openral_hal.g1 import _G1_GROUPS
+from openral_hal.h1 import _H1_GROUPS
 
 # ── Description fixtures ─────────────────────────────────────────────────────
 
@@ -229,3 +231,26 @@ def test_constructor_gravity_enabled_override_is_stored() -> None:
 def test_constructor_staleness_limit_default_is_half_second() -> None:
     arm = _make_arm()
     assert arm._staleness_limit_s == 0.5  # type: ignore[attr-defined]
+
+
+# ── _kinematic_group (shared by the G1/H1 humanoid adapters) ────────────────
+#
+# Real joint names lifted from ``robots/h1/robot.yaml`` and
+# ``robots/g1/robot.yaml`` — H1 has no ``_joint`` suffix, G1 does.
+
+
+def test_kinematic_group_h1_real_joint_names() -> None:
+    assert _kinematic_group("left_hip_yaw", _H1_GROUPS, robot="H1") == "hip"
+    assert _kinematic_group("right_ankle", _H1_GROUPS, robot="H1") == "ankle"
+    assert _kinematic_group("left_elbow", _H1_GROUPS, robot="H1") == "elbow"
+
+
+def test_kinematic_group_g1_real_joint_names() -> None:
+    assert _kinematic_group("left_hip_pitch_joint", _G1_GROUPS, robot="G1") == "hip"
+    assert _kinematic_group("waist_yaw_joint", _G1_GROUPS, robot="G1") == "waist"
+    assert _kinematic_group("right_wrist_roll_joint", _G1_GROUPS, robot="G1") == "wrist"
+
+
+def test_kinematic_group_unknown_joint_raises_rosconfigerror() -> None:
+    with pytest.raises(ROSConfigError, match="Unknown H1 joint group for joint 'neck_yaw'"):
+        _kinematic_group("neck_yaw", ("hip", "knee"), robot="H1")

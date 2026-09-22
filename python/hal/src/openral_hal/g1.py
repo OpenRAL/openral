@@ -73,7 +73,7 @@ from openral_core.schemas import (
 )
 
 from openral_hal._g1_walking import G1WalkingController, ensure_g1_walking_assets
-from openral_hal._mujoco_arm import MujocoArmHAL
+from openral_hal._mujoco_arm import MujocoArmHAL, _kinematic_group
 
 # Twist components a kinematic-glide base does not actuate (linear-z,
 # angular-x, angular-y).  Mirrors ``panda_mobile._PLANAR_TWIST_EPS``.
@@ -203,12 +203,12 @@ _G1_EFFORT_LIMITS_BY_GROUP: dict[str, float] = {
 }
 
 
+_G1_GROUPS = ("hip", "knee", "ankle", "waist", "shoulder", "elbow", "wrist")
+
+
 def _g1_group(joint_name: str) -> str:
     """Return the kinematic group for *joint_name* (``hip`` / ``knee`` / ``wrist`` / …)."""
-    for token in ("hip", "knee", "ankle", "waist", "shoulder", "elbow", "wrist"):
-        if token in joint_name:
-            return token
-    raise ROSConfigError(f"Unknown G1 joint group for joint {joint_name!r}.")
+    return _kinematic_group(joint_name, _G1_GROUPS, robot="G1")
 
 
 def _g1_parent_child(joint_name: str) -> tuple[str, str]:

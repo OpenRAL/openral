@@ -108,6 +108,28 @@ def _resolve_mjcf_path(desc: RobotDescription) -> str:
     return str(path)
 
 
+def _kinematic_group(joint_name: str, groups: Sequence[str], *, robot: str) -> str:
+    """Return the first entry of *groups* that is a substring of *joint_name*.
+
+    Shared by the G1 and H1 humanoid adapters to classify a joint name
+    (``"left_hip_yaw"``, ``"left_wrist_roll_joint"``, …) into one of the
+    robot's kinematic groups for velocity/effort/PD-gain lookup tables keyed
+    by group rather than by individual joint.
+
+    Args:
+        joint_name: The joint name to classify.
+        groups: Candidate group tokens, checked in order.
+        robot: Robot name, used only in the error message.
+
+    Raises:
+        ROSConfigError: No entry of *groups* is a substring of *joint_name*.
+    """
+    for token in groups:
+        if token in joint_name:
+            return token
+    raise ROSConfigError(f"Unknown {robot} joint group for joint {joint_name!r}.")
+
+
 # Upper bound on how much sim time one idle tick may advance, in physics
 # steps. Guards the wall-time catch-up below: if the executor stalls (a long
 # render, a GC pause) the next tick must not fast-forward the world by seconds.

@@ -50,7 +50,6 @@ Example:
 
 from __future__ import annotations
 
-from openral_core.exceptions import ROSConfigError
 from openral_core.schemas import (
     AssetRefs,
     ControlMode,
@@ -65,7 +64,7 @@ from openral_core.schemas import (
     UrdfAsset,
 )
 
-from openral_hal._mujoco_arm import MujocoArmHAL
+from openral_hal._mujoco_arm import MujocoArmHAL, _kinematic_group
 
 __all__ = ["H1_DESCRIPTION", "H1MujocoHAL"]
 
@@ -184,12 +183,12 @@ _H1_VELOCITY_LIMITS_BY_GROUP: dict[str, float] = {
 }
 
 
+_H1_GROUPS = ("hip", "knee", "ankle", "torso", "shoulder", "elbow")
+
+
 def _h1_group(joint_name: str) -> str:
     """Return the kinematic group for *joint_name*."""
-    for token in ("hip", "knee", "ankle", "torso", "shoulder", "elbow"):
-        if token in joint_name:
-            return token
-    raise ROSConfigError(f"Unknown H1 joint group for joint {joint_name!r}.")
+    return _kinematic_group(joint_name, _H1_GROUPS, robot="H1")
 
 
 def _h1_parent_child(joint_name: str) -> tuple[str, str]:
