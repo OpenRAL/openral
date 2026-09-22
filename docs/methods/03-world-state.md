@@ -5,28 +5,38 @@
 ### `python/state_adapter/src/openral_state_adapter/`
 _Layout adapter registry. Assembles per-checkpoint state vectors from manifest-declared `StateContractBindings` + live `/tf` + live `/joint_states`. Pure-Python, rclpy-free; the skill_runner wraps `tf2_ros.Buffer.lookup_transform` into the `TfLookup` Protocol at call time._
 
-- `@dataclass TransformView` — rclpy-free view of a `geometry_msgs/TransformStamped`. Fields: `position: tuple[float, float, float]`, `quaternion_xyzw: tuple[float, float, float, float]`.
-- `Protocol TfLookup` — `__call__(target_frame: str, source_frame: str) -> TransformView`. Implementations MUST raise on missing transforms — assembler never silently substitutes identity.
-- `Protocol Assembler` — `__call__(bindings: StateContractBindings, joint_positions: dict[str, float], tf_lookup: TfLookup) -> NDArray[float32]`. Pure-function signature every layout file implements.
-- `register(layout: StateLayout, assembler: Assembler) -> None` — Bind `assembler` to `layout` in the package-global registry. Layout files call this at module load.
-- `registered_layouts() -> frozenset[StateLayout]` — Snapshot of currently-registered layouts. Reasoner palette filter consults this to admit wrapped-task-space rSkills.
-- `assemble_state(layout, bindings, joint_positions, tf_lookup) -> NDArray[float32]` — Look up the assembler for `layout` and run it, after checking every bound joint is present. Raises `ROSConfigError` when no assembler is registered, or when the robot publishes joints but not the bound ones; `ROSPerceptionStale` when no joint frame has arrived at all. The config-error message names what the robot *does* publish, which is how a second robot on the same DDS graph was identified (2026-09-05).
-- `assemble_human300_16d(bindings, joint_positions, tf_lookup) -> NDArray[float32]` — RoboCasa365 / pi05_pretrain_human300 layout: `[base_to_eef.pos(3), base_to_eef.quat(4), world_to_base.pos(3), world_to_base.quat(4), gripper_qpos(2)] = 16`. Registered as `"human300_16d"` at import.
-- `assemble_libero_eef8d(bindings, joint_positions, tf_lookup) -> NDArray[float32]` — LIBERO task-space layout: `[eef_pos(3), eef_axisangle(3), gripper_qpos(2)] = 8`, world-frame EE pose via `tf_lookup(bindings.world_frame, bindings.eef_frame)` + axis-angle (byte-matching the benchmark `openral_sim.backends.libero._quat_to_axisangle`, `[x,y,z,w]`→`axis·2·acos(w)`) + gripper (1 joint mirrored to `[v,-v]` or 2 per-finger). Registered as `"libero_eef8d"` at import. Lets `openral deploy sim` feed the lerobot/smolvla_libero (and pi05-/xvla-libero) checkpoints the same task-space proprio they get in the benchmark (else the runner falls back to raw joint-space state and the policy fails). `world_frame` defaults to `"map"` (SLAM root) on the binding — LIBERO manifests MUST set it to the HAL sim root.
+- `@dataclass TransformView` (_protocol.py L21) — rclpy-free view of a `geometry_msgs/TransformStamped`. Fields: `position: tuple[float, float, float]`, `quaternion_xyzw: tuple[float, float, float, float]`.
+- `Protocol TfLookup` (_protocol.py L36) — `__call__(target_frame: str, source_frame: str) -> TransformView`. Implementations MUST raise on missing transforms — assembler never silently substitutes identity.
+- `Protocol Assembler` (_protocol.py L49) — `__call__(bindings: StateContractBindings, joint_positions: dict[str, float], tf_lookup: TfLookup) -> NDArray[float32]`. Pure-function signature every layout file implements.
+- const `_LAYOUT_ASSEMBLERS: dict[StateLayout, Assembler]` (_registry.py L27) — Package-global `layout → assembler` map; layout files populate it at import via `register`.
+- `register(layout: StateLayout, assembler: Assembler) -> None` (_registry.py L30) — Bind `assembler` to `layout` in the package-global registry. Layout files call this at module load.
+- `registered_layouts() -> frozenset[StateLayout]` (_registry.py L41) — Snapshot of currently-registered layouts. Reasoner palette filter consults this to admit wrapped-task-space rSkills.
+- `assemble_state(layout, bindings, joint_positions, tf_lookup) -> NDArray[float32]` (_registry.py L53) — Look up the assembler for `layout` and run it, after checking every bound joint is present. Raises `ROSConfigError` when no assembler is registered, or when the robot publishes joints but not the bound ones; `ROSPerceptionStale` when no joint frame has arrived at all. The config-error message names what the robot *does* publish, which is how a second robot on the same DDS graph was identified (2026-09-05).
+- const `_DIM = 16` (layouts/human300_16d.py L35) — Output vector width.
+- const `_N_GRIPPER_JOINTS = 2` (layouts/human300_16d.py L36) — Per-finger gripper-joint count.
+- `assemble_human300_16d(bindings, joint_positions, tf_lookup) -> NDArray[float32]` (layouts/human300_16d.py L86) — RoboCasa365 / pi05_pretrain_human300 layout: `[base_to_eef.pos(3), base_to_eef.quat(4), world_to_base.pos(3), world_to_base.quat(4), gripper_qpos(2)] = 16`. Registered as `"human300_16d"` at import.
+- const `_DIM = 8` (layouts/libero_eef8d.py L41) — Output vector width.
+- const `_N_GRIPPER_JOINTS = 2` (layouts/libero_eef8d.py L42) — Per-finger gripper-joint count.
+- const `_EPS = 1e-10` (layouts/libero_eef8d.py L43) — Near-identity threshold below which `_quat_xyzw_to_axisangle` returns the zero vector rather than dividing by a ~zero norm.
+- `assemble_libero_eef8d(bindings, joint_positions, tf_lookup) -> NDArray[float32]` (layouts/libero_eef8d.py L67) — LIBERO task-space layout: `[eef_pos(3), eef_axisangle(3), gripper_qpos(2)] = 8`, world-frame EE pose via `tf_lookup(bindings.world_frame, bindings.eef_frame)` + axis-angle (byte-matching the benchmark `openral_sim.backends.libero._quat_to_axisangle`, `[x,y,z,w]`→`axis·2·acos(w)`) + gripper (1 joint mirrored to `[v,-v]` or 2 per-finger). Registered as `"libero_eef8d"` at import. Lets `openral deploy sim` feed the lerobot/smolvla_libero (and pi05-/xvla-libero) checkpoints the same task-space proprio they get in the benchmark (else the runner falls back to raw joint-space state and the policy fails). `world_frame` defaults to `"map"` (SLAM root) on the binding — LIBERO manifests MUST set it to the HAL sim root.
+- `rc365` layout (`layouts/rc365.py`) registers `assemble_human300_16d` above under the `"rc365"` key — same 16-D vector, re-sliced downstream by the RLDX-1 policy adapter (`openral_sim.policies.rldx`); no separate assembler.
 
 ### `python/world_state/src/openral_world_state/aggregator.py`
 _WorldStateAggregator — tf2-aware, injectable snapshot producer._
 
 - const `DEFAULT_RATE_HZ: float = 30.0` — Advertised default snapshot rate. (L89)
+- const `DEFAULT_STALENESS_S: float = 0.5` — General component staleness window (covers every heterogeneous-rate component — 30 Hz joint state, 10 Hz cameras/depth — with margin over the slowest expected stream); a freshness indicator, not a safety gate. (L96)
+- const `DEFAULT_POLICY_STATE_STALENESS_S: float = 5.0` — Staleness window for `policy_state`, which is step-locked rather than rate-locked; wide enough to cover a heavy sidecar sim stepping at ~1 s wall while still flagging a wedged sidecar faster than its 120 s ZMQ timeout. (L103)
 - `class WorldStateAggregator` — Aggregates sensor data and produces `WorldState` snapshots. (L106)
   - `__init__(description, *, staleness_limit_s=DEFAULT_STALENESS_S, image_staleness_limit_s=None, policy_state_staleness_limit_s=DEFAULT_POLICY_STATE_STALENESS_S, clock_fn=None)` — camera and policy-state streams have independent staleness windows. `image_staleness_limit_s` defaults to the general window; deploy sim passes 5.0 s for slow rendered frames while real deploys keep 0.5 s. `policy_state` defaults to 5.0 s because it is step-locked and heavy sidecar sims legitimately step at ~1 s wall. (L166)
   - `update_joint_state(state) -> None` — Record a fresh joint reading. (L274)
-  - `update_policy_state(values) -> None` — Store a defensive copy of simulator-native checkpoint proprioception for `WorldState.policy_state`.
+  - `update_policy_state(values) -> None` — Store a defensive copy of simulator-native checkpoint proprioception for `WorldState.policy_state`. (L297)
+  - `update_image_frame(sensor_name, frame: SensorFrame) -> None` — Record an inline pixel payload for a named sensor (unlike `update_image`, which stores only the topic ref). (L308)
   - `update_image(sensor_name, topic, stamp_ns) -> None` — Record image arrival. (L285)
   - `update_ee_pose(ee_name, pose) -> None` — Record EE pose from tf2. (L342)
   - `update_base_pose(pose, twist=None) -> None` — Record base pose (and optional twist). (L356)
   - `update_battery(pct) -> None` — Record battery %. (L373)
-  - `update_attached_objects(objects: list[AttachedCollisionObject], *, revision=0, stamp_ns=None, place_declaration: PlaceDeclaration | None = None) -> None` — Atomically replace the complete attached-payload set; duplicate ids or backwards revisions raise `ValueError`. Snapshots emit attachments deterministically and preserve the producer timestamp so a dead evidence source cannot be made fresh by 30 Hz WorldState republishing. `place_declaration` (ADR-0097 + its 2026-08-14 amendment) is replaced in the same atomic step as the payload it is scoped to, so the kernel can never apply a region and an attachment snapshot that disagree; a declaration that is already retracted or past its backstop is stored as `None`. Liveness is judged against **`stamp_ns` — the stream's own clock**, never `clock_fn`: the declaration is stamped by the dispatching rSkill runner's ROS clock (simulator time under `use_sim_time`, order 1e9 ns) while `clock_fn` defaults to wall `time.time_ns` (order 1.79e18 ns), so re-checking at snapshot time against `clock_fn` put every sim-stamped declaration ~57 years past its backstop and published `place_declaration=None` forever. This is the single evaluation point; `snapshot` publishes what is stored. HZ-0097-3 expiry stays World State's responsibility via the producer's attachment heartbeat, each beat re-running the backstop against a fresh stream stamp; a stream that stops cannot advance the stream clock here, but it also starves the kernel's `attached_collision_deadline_s` freshness gate, which then refuses every candidate action rather than just the allowance.
+  - `update_attached_objects(objects: list[AttachedCollisionObject], *, revision=0, stamp_ns=None, place_declaration: PlaceDeclaration | None = None) -> None` — Atomically replace the complete attached-payload set; duplicate ids or backwards revisions raise `ValueError`. Snapshots emit attachments deterministically and preserve the producer timestamp so a dead evidence source cannot be made fresh by 30 Hz WorldState republishing. `place_declaration` (ADR-0097 + its 2026-08-14 amendment) is replaced in the same atomic step as the payload it is scoped to, so the kernel can never apply a region and an attachment snapshot that disagree; a declaration that is already retracted or past its backstop is stored as `None`. Liveness is judged against **`stamp_ns` — the stream's own clock**, never `clock_fn`: the declaration is stamped by the dispatching rSkill runner's ROS clock (simulator time under `use_sim_time`, order 1e9 ns) while `clock_fn` defaults to wall `time.time_ns` (order 1.79e18 ns), so re-checking at snapshot time against `clock_fn` put every sim-stamped declaration ~57 years past its backstop and published `place_declaration=None` forever. This is the single evaluation point; `snapshot` publishes what is stored. HZ-0097-3 expiry stays World State's responsibility via the producer's attachment heartbeat, each beat re-running the backstop against a fresh stream stamp; a stream that stops cannot advance the stream clock here, but it also starves the kernel's `attached_collision_deadline_s` freshness gate, which then refuses every candidate action rather than just the allowance. (L397)
   - `set_error(component, status='error') -> None` — Latch a forced diagnostic. (L455)
   - `clear_error(component) -> None` — Remove a forced diagnostic. (L471)
   - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock). Emits a `world_state.snapshot` OTel span with `openral.world_state.components_stale` + `openral.world_state.has_latched_error` attributes, fires `openral.event.staleness_latched` / `openral.event.error_latched` events on first transition (`staleness_latched` only for a component that has had data — a never-received one is `"stale"` in `diag` and counted in `components_stale`, but has not *latched*, so bringup no longer emits a WARN before the HAL's first publish), records per-component `openral.world_state.staleness_ms` histogram + `openral.world_state.components_stale` up-down counter. (L482)
@@ -36,16 +46,24 @@ _WorldStateAggregator — tf2-aware, injectable snapshot producer._
 ### `python/world_state/src/openral_world_state/spatial_memory.py`
 _SpatialMemory — persistent object-centric scene-graph memory (advisory; never a safety input)._
 
-- `compute_approach_viewpoint(target, *, standoff_m=DEFAULT_STANDOFF_M, camera_frame_id=DEFAULT_CAMERA_FRAME, approach_from=None) -> ApproachViewpoint` — Standoff pose `standoff_m` from `target` (on the `approach_from` side, else −X), yawed so the gripper camera faces it.
-- `class SpatialMemory` — Accumulates `WorldState.detected_objects` into a queryable `SceneGraph`; pure-Python (typed BFS for traversal, JSON persistence — no graph-engine dep).
-  - `__init__(*, assoc_distance_m=DEFAULT_ASSOC_DISTANCE_M, default_standoff_m=DEFAULT_STANDOFF_M, camera_frame_id=DEFAULT_CAMERA_FRAME, map_frame=DEFAULT_MAP_FRAME, embedder=None, min_text_similarity=DEFAULT_MIN_TEXT_SIMILARITY)` — `embedder` (optional `TextEmbedder`) enables open-vocab matching: object labels are embedded on creation and free-text queries match by CLIP cosine ≥ `min_text_similarity`.
-  - `upsert_node(node) -> None` / `add_edge(src, dst, kind) -> None` — Mutators (edge endpoints must exist).
-  - `ingest_detected_objects(objects, *, now_ns) -> list[str]` — Fold detections into object nodes; instance association by `track_id` else label+proximity (`assoc_distance_m`); updates pose/last_seen/observation_count, keeps higher confidence; embeds the label when an embedder is set. Returns touched node ids.
-  - `recall_object(query: RecallObjectQuery, *, now_ns) -> RecallObjectResult` — Rank object nodes by `max(label-match, CLIP-cosine)` × confidence (proximity/recency tiebreak); an embedding hit needs cosine ≥ `min_text_similarity`, a label substring always qualifies. Each match carries an `ApproachViewpoint` + `inside_container_id`. Empty result = unknown (caller may raise `ROSObjectNotInMemory`).
-  - `resolve_place(query: ResolvePlaceQuery, *, from_node_id=None) -> ResolvePlaceResult` — Resolve a place/room/agent reference to a goal pose (an object resolves to its `at_place`) + a `traversable_to` BFS path. Raises `ROSObjectNotInMemory` when unresolved.
-  - `to_scene_graph() -> SceneGraph` / `from_scene_graph(graph, *, embedder=None) -> SpatialMemory` (classmethod) — Snapshot / rebuild; rebuild re-embeds labels when an embedder is given (embeddings aren't serialized).
-  - `save(path) -> None` / `load(path, *, embedder=None) -> SpatialMemory` (classmethod) — JSON persistence via the `SceneGraph` contract.
-  - Module constants: `DEFAULT_ASSOC_DISTANCE_M`, `DEFAULT_STANDOFF_M`, `DEFAULT_CAMERA_FRAME`, `DEFAULT_MAP_FRAME`, `DEFAULT_MIN_TEXT_SIMILARITY`.
+- `compute_approach_viewpoint(target, *, standoff_m=DEFAULT_STANDOFF_M, camera_frame_id=DEFAULT_CAMERA_FRAME, approach_from=None) -> ApproachViewpoint` — Standoff pose `standoff_m` from `target` (on the `approach_from` side, else −X), yawed so the gripper camera faces it. (L97)
+- `class SpatialMemory` — Accumulates `WorldState.detected_objects` into a queryable `SceneGraph`; pure-Python (typed BFS for traversal, JSON persistence — no graph-engine dep). (L140)
+  - `__init__(*, assoc_distance_m=DEFAULT_ASSOC_DISTANCE_M, default_standoff_m=DEFAULT_STANDOFF_M, camera_frame_id=DEFAULT_CAMERA_FRAME, map_frame=DEFAULT_MAP_FRAME, embedder=None, min_text_similarity=DEFAULT_MIN_TEXT_SIMILARITY)` — `embedder` (optional `TextEmbedder`) enables open-vocab matching: object labels are embedded on creation and free-text queries match by CLIP cosine ≥ `min_text_similarity`. (L151)
+  - `upsert_node(node) -> None` — Mutator; add or replace a node. (L187)
+  - `add_edge(src, dst, kind) -> None` — Mutator; both endpoints must already exist. (L191)
+  - `ingest_detected_objects(objects, *, now_ns) -> list[str]` — Fold detections into object nodes; instance association by `track_id` else label+proximity (`assoc_distance_m`); updates pose/last_seen/observation_count, keeps higher confidence; embeds the label when an embedder is set. Returns touched node ids. (L199)
+  - `recall_object(query: RecallObjectQuery, *, now_ns) -> RecallObjectResult` — Rank object nodes by `max(label-match, CLIP-cosine)` × confidence (proximity/recency tiebreak); an embedding hit needs cosine ≥ `min_text_similarity`, a label substring always qualifies. Each match carries an `ApproachViewpoint` + `inside_container_id`. Empty result = unknown (caller may raise `ROSObjectNotInMemory`). (L290)
+  - `resolve_place(query: ResolvePlaceQuery, *, from_node_id=None) -> ResolvePlaceResult` — Resolve a place/room/agent reference to a goal pose (an object resolves to its `at_place`) + a `traversable_to` BFS path. Raises `ROSObjectNotInMemory` when unresolved. (L341)
+  - `to_scene_graph() -> SceneGraph` — Snapshot the current graph. (L439)
+  - `from_scene_graph(graph, *, embedder=None) -> SpatialMemory` (classmethod) — Rebuild from a snapshot; re-embeds labels when an embedder is given (embeddings aren't serialized). (L444)
+  - `save(path) -> None` — JSON persistence via the `SceneGraph` contract. (L461)
+  - `load(path, *, embedder=None) -> SpatialMemory` (classmethod) — Inverse of `save`; re-embeds labels when an embedder is given. (L466)
+- const `DEFAULT_ASSOC_DISTANCE_M` (L74) — Default `assoc_distance_m` (see field docstring in the source for calibration).
+- const `DEFAULT_STANDOFF_M` (L77) — Default `default_standoff_m`.
+- const `DEFAULT_CAMERA_FRAME` (L80) — Default `camera_frame_id`.
+- const `DEFAULT_MAP_FRAME` (L83) — Default `map_frame`.
+- const `DEFAULT_MIN_TEXT_SIMILARITY` (L86) — Default `min_text_similarity`; min CLIP cosine for an embedding-only match (calibrated for ViT-B/32 openai) — an exact/substring label match always qualifies regardless.
+- const `_MIN_DIR_NORM = 1e-6` (L93) — Below this horizontal distance, `compute_approach_viewpoint`'s approach direction is treated as degenerate.
 
 ### `python/world_state/src/openral_world_state/geometry.py`
 _Shared rotation geometry. **Relocated to `openral_core.geometry`**; this module is now a thin re-export shim so `from openral_world_state.geometry import …` keeps working. Canonical entries (`ViewAxis`, `look_at_quat_wxyz`, `compute_gaze_pose`, `rotation_to_quat_wxyz`, `yaw_to_quat_xyzw`, `yaw_to_quat_wxyz`, `quat_xyzw_to_yaw`) are documented under [00-core-schemas.md](00-core-schemas.md)._
@@ -53,30 +71,42 @@ _Shared rotation geometry. **Relocated to `openral_core.geometry`**; this module
 ### `python/world_state/src/openral_world_state/grid.py`
 _Occupancy-grid queries + approach-pose refinement (planning-layer proposal; the kernel `check_nav_goal` gate stays the enforcement)._
 
-- `FREE_MAX` (module constant, `25`) — Highest `nav_msgs/OccupancyGrid` value still treated as free; `-1` unknown and anything above block placement and sight (conservative).
-- `class OccupancyGridIndex` — Queryable view over one grid snapshot; ROS-free (`from_msg` duck-types the message). `__init__(data (h,w) int8, *, resolution_m, origin_xy, origin_yaw=0.0)`; handles rotated origins.
-  - `from_msg(msg) -> OccupancyGridIndex` (classmethod) — decode a (duck-typed) `nav_msgs/OccupancyGrid`.
-  - `world_to_cell(x, y) -> tuple[row, col] | None` — `None` off-grid. `resolution_m` property.
-  - `is_free(x, y, *, inflation_m=0.0) -> bool` — point + world-space inflation disc all free; off-grid (or disc off-grid) counts blocked.
-  - `line_of_sight(a_xy, b_xy) -> bool` — Bresenham; every cell strictly before the endpoint free (the target's own footprint cell is exempt — a mug shares its cell with its counter).
-- `refine_approach_pose(grid, viewpoint, target_xyz, *, inflation_m=0.25, max_radius_m=2.0, min_standoff_m=None, max_standoff_m=None) -> ApproachViewpoint | None` — Return the viewpoint unchanged when already free + sighted; else ring-search outward for the nearest admissible point (standoff within `[0.5x, 2.0x]` ideal by default), re-aim via `compute_approach_viewpoint`. `None` = no reachable viewpoint (caller reports honestly, never fabricates).
+- const `_GRID_NDIM = 2` (L33) — Required `data.ndim` for `OccupancyGridIndex.__init__`'s validation guard.
+- `FREE_MAX` (module constant, `25`) — Highest `nav_msgs/OccupancyGrid` value still treated as free; `-1` unknown and anything above block placement and sight (conservative). (L34)
+- `class OccupancyGridIndex` — Queryable view over one grid snapshot; ROS-free (`from_msg` duck-types the message). `__init__(data (h,w) int8, *, resolution_m, origin_xy, origin_yaw=0.0)`; handles rotated origins. (L39)
+  - `from_msg(msg) -> OccupancyGridIndex` (classmethod) — decode a (duck-typed) `nav_msgs/OccupancyGrid`. (L79)
+  - `resolution_m` (property) — Cell edge length in metres. (L98)
+  - `world_to_cell(x, y) -> tuple[row, col] | None` — `None` off-grid. (L102)
+  - `is_free(x, y, *, inflation_m=0.0) -> bool` — point + world-space inflation disc all free; off-grid (or disc off-grid) counts blocked. (L114)
+  - `line_of_sight(a_xy, b_xy) -> bool` — Bresenham; every cell strictly before the endpoint free (the target's own footprint cell is exempt — a mug shares its cell with its counter). (L148)
+- `refine_approach_pose(grid, viewpoint, target_xyz, *, inflation_m=0.25, max_radius_m=2.0, min_standoff_m=None, max_standoff_m=None) -> ApproachViewpoint | None` — Return the viewpoint unchanged when already free + sighted; else ring-search outward for the nearest admissible point (standoff within `[0.5x, 2.0x]` ideal by default), re-aim via `compute_approach_viewpoint`. `None` = no reachable viewpoint (caller reports honestly, never fabricates). (L183)
 
 ### `python/world_state/src/openral_world_state/scene_objects_span.py`
 _Publish the durable object nodes as a dashboard OTel span (advisory; never a safety input)._
 
-- `scene_objects_payload(graph) -> list[dict[str, object]]` — Project a `SceneGraph`'s `object`-kind nodes to JSON-friendly dicts (`id,label,x,y,z,frame_id,confidence,last_seen_ns,observation_count,is_container`); non-object nodes skipped.
-- `emit_scene_objects_span(graph, *, source_node) -> int` — Emit one `world.scene_objects` span carrying the object list (attrs under `openral.world_state.scene_objects.*`); returns the object count. Emitted by the Reasoner from its preloaded map today; the World-State node post-producer (PR #229).
+- const `_DEFAULT_FRAME = "map"` (L27) — Default frame name used by callers building `SceneGraph` nodes for this emitter (the SLAM 2D map frame the dashboard overlays markers on).
+- `scene_objects_payload(graph) -> list[dict[str, object]]` — Project a `SceneGraph`'s `object`-kind nodes to JSON-friendly dicts (`id,label,x,y,z,frame_id,confidence,last_seen_ns,observation_count,is_container`); non-object nodes skipped. (L30)
+- `emit_scene_objects_span(graph, *, source_node) -> int` — Emit one `world.scene_objects` span carrying the object list (attrs under `openral.world_state.scene_objects.*`); returns the object count. Emitted by the Reasoner from its preloaded map today; the World-State node post-producer (PR #229). (L66)
 
 ### `python/world_state/src/openral_world_state/embedder.py`
 _Open-vocabulary text embedder (optional; `uv sync --group clip`)._
 
-- `class TextEmbedder(Protocol)` — `dim: int` + `embed_text(texts) -> NDArray[float32]` (L2-normalized).
-- `class OpenClipEmbedder` — OpenCLIP `ViT-B-32-quickgelu` / `openai` weights (MIT). `__init__(*, model_name=DEFAULT_CLIP_MODEL, pretrained=DEFAULT_CLIP_PRETRAINED, device=None)` raises `ROSConfigError` if open-clip-torch/torch missing or weights unfetchable; lazy-imports torch/open_clip so the base install stays light. `dim` (512); `embed_text(texts)`.
-- Module constants: `DEFAULT_CLIP_MODEL` (`"ViT-B-32-quickgelu"`), `DEFAULT_CLIP_PRETRAINED` (`"openai"`).
+- const `DEFAULT_CLIP_MODEL = "ViT-B-32-quickgelu"` (L33)
+- const `DEFAULT_CLIP_PRETRAINED = "openai"` (L37)
+- `class TextEmbedder(Protocol)` — Text-embedding interface open-vocab matching consumes. (L42)
+  - `dim` (property) — Embedding width. (L46)
+  - `embed_text(texts) -> NDArray[float32]` — L2-normalized embeddings, one row per input text. (L50)
+- `class OpenClipEmbedder` — OpenCLIP `ViT-B-32-quickgelu` / `openai` weights (MIT). `__init__(*, model_name=DEFAULT_CLIP_MODEL, pretrained=DEFAULT_CLIP_PRETRAINED, device=None)` raises `ROSConfigError` if open-clip-torch/torch missing or weights unfetchable; lazy-imports torch/open_clip so the base install stays light. (L55)
+  - `dim` (property) — 512. (L102)
+  - `embed_text(texts) -> NDArray[float32]` — L2-normalized CLIP text embeddings. (L106)
 
 ### `python/world_state/src/openral_world_state/object_lift.py`
 _2D→3D object-center lift helpers — pure, ROS-free, unit-testable._
 
+- const `_DEPTH_EPS = 1e-6` (L35) — Minimum +z (metres) for a voxel/point to count as "in front of" the camera.
+- const `_QUAT_NORM_TOL = 1e-6` (L39) — Tolerance on `|q|^2` for a grid orientation quaternion; wide enough for one that has been through a wire round-trip, far too tight for the all-zero value an unset field carries.
+- const `_DEPTH_EPS = 1e-6` (L35) — Minimum +z (metres) for a voxel/point to count as "in front of" the camera.
+- const `_QUAT_NORM_TOL = 1e-6` (L39) — Tolerance on `|q|^2` for a grid orientation quaternion; wide enough for one that has been through a wire round-trip, far too tight for the all-zero value an unset field carries.
 - `class ObjectsLiftError(ValueError)` — Raised by geometry helpers on degenerate inputs (zero-norm quaternion; occupancy buffer size mismatch). (L42)
 - `homogeneous_from_quat_xyz(translation, quat_xyzw) -> NDArray[np.float64]` — Build a 4×4 homogeneous transform from a translation + xyzw quaternion (normalised). Raises `ObjectsLiftError` if the quaternion norm is effectively zero. **Thin wrapper since the SAM 2.1 attachment work**: the math lives in `openral_core.geometry.homogeneous_from_quat_xyz` (the layer-0 HAL needs the same TF→matrix step and must not depend on layer 2), and this function re-raises the core `ROSConfigError` as the world-state-local `ObjectsLiftError` so every caller here is unaffected. (L46)
 - `decode_occupied_centers(*, origin, resolution, size_xyz, occupancy, orientation_xyzw=(0,0,0,1)) -> NDArray[np.float64]` — Occupied voxel centres `(N, 3)` in the grid's reference frame; row-major x-fastest. Centre of cell `(ix, iy, iz)` = `origin + R * ((index + 0.5) * resolution)`, where `R` is `orientation_xyzw`: `OccupancyVoxels` is an **oriented** lattice whose cell axes are the source map's, not `header.frame_id`'s, so dropping the rotation lifts every object into a place the obstacle is not whenever the base is not map-aligned. Returns `(0, 3)` when none are occupied. Raises `ObjectsLiftError` if `len(occupancy) != size_x * size_y * size_z`, or if `orientation_xyzw` is not a unit quaternion — the all-zero value an unset field carries is refused, never read as identity. (L76)
