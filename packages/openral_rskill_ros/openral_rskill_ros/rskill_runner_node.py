@@ -2030,8 +2030,10 @@ def _default_skill_resolver(
     description: RobotDescription | None,
     commercial_deployment: bool,
     ros_node: Any = None,
+    scene_cameras: Sequence[str] = (),
+    tf_lookup: Any = None,
 ) -> rSkillBase:
-    """Production resolver: pull from HF Hub via ``rSkill.from_pretrained``.
+    """Production resolver: HF Hub fetch, then bind the weights to a runtime skill.
 
     Kept as a module-level callable so tests can swap it via
     ``RskillRunnerNode(..., skill_resolver=local_resolver)`` without
@@ -2045,8 +2047,13 @@ def _default_skill_resolver(
 
     ``goal_params_json`` is accepted but unused — VLA
     skills consume the ``prompt`` as their structured input.
+
+    ``scene_cameras`` and ``tf_lookup`` are forwarded to the policy shim
+    exactly as ``make_local_skill_resolver`` forwards them for an in-tree
+    manifest; both default to the empty/None case so an older caller that
+    does not pass them keeps working.
     """
-    del prompt, prompt_metadata_json, goal_params_json, description, ros_node
+    del prompt_metadata_json, goal_params_json, ros_node
     from openral_rskill.loader import rSkill
 
     handle = rSkill.from_pretrained(
@@ -2054,15 +2061,23 @@ def _default_skill_resolver(
         revision=revision or None,
         commercial_use=commercial_deployment,
     )
-    # ``rSkill.from_pretrained`` returns a packaging-format handle, not
-    # the runtime ``rSkillBase``. Production use will route through the
-    # loader's instantiation helpers (the F1 design defers the
-    # exact runtime-binding to a follow-up that lands alongside the
-    # reasoner — F4 — when the loader-to-runtime seam is finalised).
-    # For now we expose the handle as the resolver's return value and
-    # let the production deployment configuration provide a richer
-    # wrapper.
-    return handle  # type: ignore[return-value]  # see comment above
+    # ``rSkill.from_pretrained`` returns a packaging-format handle — manifest
+    # plus snapshot directory — and NOT a runtime ``rSkillBase``. Returning it
+    # raw is what made every Hub-hosted VLA undispatchable: the runner's very
+    # next step reads ``skill.info``, which the handle does not have.
+    #
+    # Bind it the same way an in-tree manifest is bound. The snapshot is
+    # guaranteed to contain ``rskill.yaml`` because ``from_pretrained``
+    # fetches and validates that exact file before downloading any weights,
+    # so this is the manifest it already license-checked, not a second read
+    # of something that might differ.
+    return _build_runtime_skill_from_manifest(
+        yaml_path=handle.local_dir / "rskill.yaml",
+        prompt=prompt,
+        scene_cameras=tuple(str(c) for c in scene_cameras),
+        description=description,
+        tf_lookup=tf_lookup,
+    )
 
 
 def _ros_action_adapter_cls(builder: str | None) -> type:
@@ -2184,6 +2199,11 @@ def make_default_skill_resolver(
         if manifest is None:
             # No in-tree match → must be a VLA on HF Hub. Wrapped-ROS
             # skills have no HF-Hub fallback path (no weights to fetch).
+            # Resolve tf_lookup lazily, for the same reason the in-tree
+            # resolver does: captured at factory time it would still be None,
+            # and a wrapped-task-space layout would silently fall back to the
+            # raw joint-state slice.
+            hub_tf_lookup = tf_lookup_getter() if tf_lookup_getter is not None else tf_lookup
             return _default_skill_resolver(
                 rskill_id=rskill_id,
                 revision=revision,
@@ -2193,6 +2213,8 @@ def make_default_skill_resolver(
                 description=description,
                 commercial_deployment=commercial_deployment,
                 ros_node=ros_node_captured,
+                scene_cameras=scene_cameras,
+                tf_lookup=hub_tf_lookup,
             )
 
         if manifest.kind == "vla":
