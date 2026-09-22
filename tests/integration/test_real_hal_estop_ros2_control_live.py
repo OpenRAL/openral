@@ -294,10 +294,10 @@ def test_estop_reaches_and_stops_the_downstream_controller(
     joints: list[str] = adapter["joints"]
     controllers: list[str] = adapter["controllers"]
     h = _Harness(adapter["robot"], adapter["manifest"])
+    # Own node + executor thread, like the separate driver process it stands in for: the
+    # e-stop callback blocks the harness executor while waiting for this Trigger.
     dashboard = (
-        FakeURDashboard(h.helper)
-        if "/dashboard_client/stop" in adapter["vendor_services"]
-        else None
+        FakeURDashboard() if "/dashboard_client/stop" in adapter["vendor_services"] else None
     )
     try:
         h.start()
@@ -379,6 +379,8 @@ def test_estop_reaches_and_stops_the_downstream_controller(
                 f"after reset the chunk never reached the controller: {h.positions(joints)}"
             )
     finally:
+        if dashboard is not None:
+            dashboard.close()
         h.close()
 
 
@@ -396,7 +398,7 @@ def test_a_refused_vendor_stop_is_reported_unacknowledged_and_still_latches(
     config = write_controller_config(tmp_path / "controllers.yaml", controllers)
     with bring_up(tmp_path, urdf=urdf, config=config, controllers=list(controllers)):
         h = _Harness("ur5e_refused", _manifest_for("ur5e", tmp_path))
-        dashboard = FakeURDashboard(h.helper, refuse=True)
+        dashboard = FakeURDashboard(refuse=True, name="fake_ur_dashboard_refusing")
         try:
             h.start()
             joints = hal.ros2_control_joint_names()
@@ -413,4 +415,5 @@ def test_a_refused_vendor_stop_is_reported_unacknowledged_and_still_latches(
             assert message == "estop latched"
             assert fields["downstream_stop"] == "unacknowledged"
         finally:
+            dashboard.close()
             h.close()
