@@ -74,6 +74,11 @@ class SimTransport:
         trigger_responses: Per-service ``(success, message)`` a
             ``call_trigger`` returns, to simulate e.g. a UR dashboard whose
             ``stop`` refuses. Unlisted services succeed.
+        switch_faults: Per-operation (``"deactivate"`` / ``"activate"``)
+            exception the switch **raises** instead of answering — the
+            rclpy-shaped fault (executor or context shut down, a dead
+            client handle) a real ``controller_manager`` call can die with.
+            The HAL must contain it in its stop report.
 
     Example:
         >>> transport = SimTransport(n_joints=2)
@@ -101,6 +106,7 @@ class SimTransport:
         *,
         controllers: Sequence[str] | None = None,
         trigger_responses: Mapping[str, tuple[bool, str]] | None = None,
+        switch_faults: Mapping[str, Exception] | None = None,
     ) -> None:
         """Initialise zeroed joint state for *n_joints* joints."""
         self._n_joints = n_joints
@@ -113,6 +119,7 @@ class SimTransport:
         self._controller_states: dict[str, str] = {name: "active" for name in controllers or ()}
         self._switches: list[tuple[str, tuple[str, ...]]] = []
         self._trigger_responses = dict(trigger_responses or {})
+        self._switch_faults = dict(switch_faults or {})
         self._triggers: list[str] = []
         self._empties: list[str] = []
 
@@ -234,6 +241,8 @@ class SimTransport:
         if not wanted:
             raise ROSConfigError(f"SimTransport.{op}_controllers(): no controller names given.")
         self._switches.append((op, wanted))
+        if op in self._switch_faults:
+            raise self._switch_faults[op]
         unknown = [n for n in wanted if self._state_of(n) == "unloaded"]
         if unknown:
             return ControllerSwitchReport(
@@ -264,6 +273,9 @@ class SimTorqueSeam:
             reports ``success=False`` — an absent service, not a stop.
         failing: Arms whose ``torque_enable`` refuses, to simulate one side's
             SDK node being down at e-stop time.
+        faults: Per-arm exception ``torque_enable`` **raises** instead of
+            answering — the rclpy-shaped fault a real service call can die
+            with. The HAL must contain it and still stop the other arms.
 
     Example:
         >>> from openral_hal.sim_transport import SimTorqueSeam
@@ -276,10 +288,17 @@ class SimTorqueSeam:
         False
     """
 
-    def __init__(self, *, arms: Sequence[str], failing: Sequence[str] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        arms: Sequence[str],
+        failing: Sequence[str] = (),
+        faults: Mapping[str, Exception] | None = None,
+    ) -> None:
         """Every listed arm starts torqued on."""
         self._torque: dict[str, bool] = {arm: True for arm in arms}
         self._failing = set(failing)
+        self._faults = dict(faults or {})
         self._calls: list[tuple[str, str, bool]] = []
 
     def torque_enable(
@@ -287,6 +306,8 @@ class SimTorqueSeam:
     ) -> TriggerReport:
         """Record the call and flip the arm's torque unless it is absent or failing."""
         self._calls.append((robot_name, group, enable))
+        if robot_name in self._faults:
+            raise self._faults[robot_name]
         if robot_name not in self._torque:
             return TriggerReport(
                 success=False, message=f"/{robot_name}/torque_enable not available"
