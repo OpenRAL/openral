@@ -210,6 +210,79 @@ class TestBuildRuntimeSkillSceneCameras:
             "chunk_prefetch": True,
         }
 
+    def test_activate_warms_the_adapters_real_step_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The preload's warm-up runs `adapter.step` on a cell-shaped observation, then resets.
+
+        A bare policy forward left the first real tick paying 306-357 s on a
+        Jetson AGX Orin under a live graph (2026-09-22) — the chunk executor,
+        its autocast and the preprocessor on real-sized frames all have their
+        own first-call costs — while the deadman's first-chunk window is 120 s.
+        Warming through `step` moves that into the preload, where the operator
+        is already waiting.
+        """
+        import openral_sim.factory as _sim_factory
+
+        yaml_path = _REPO_ROOT / "rskills" / "lingbot-va-galaxea-a1-fruit-placement" / "rskill.yaml"
+        description = RobotDescription.from_yaml(
+            str(_REPO_ROOT / "robots" / "galaxea_a1" / "robot.yaml")
+        )
+        manifest = RSkillManifest.from_yaml(str(yaml_path))
+
+        class _RecordingAdapter:
+            """A real PolicyAdapter: zero actions, remembers what it was fed."""
+
+            def __init__(self, env_cfg: object) -> None:
+                self.spec = env_cfg.vla  # type: ignore[attr-defined]
+                self.device = "cpu"
+                self.steps: list[tuple[dict[str, object], str]] = []
+                self.resets = 0
+
+            def reset(self) -> None:
+                self.resets += 1
+
+            def step(self, observation: dict[str, object], instruction: str) -> np.ndarray:
+                self.steps.append((observation, instruction))
+                return np.zeros(int(manifest.action_contract.dim), dtype=np.float32)
+
+            def close(self) -> None:
+                pass
+
+        built: list[_RecordingAdapter] = []
+
+        def _make(env_cfg: object) -> _RecordingAdapter:
+            adapter = _RecordingAdapter(env_cfg)
+            built.append(adapter)
+            return adapter
+
+        monkeypatch.setattr(_sim_factory, "make_policy", _make)
+        skill = _build_runtime_skill_from_manifest(
+            yaml_path=yaml_path,
+            prompt="put the mango into the blue bowl",
+            scene_cameras=("front", "wrist"),
+            description=description,
+        )
+        from openral_rskill.base import RSkillState
+
+        assert skill.info.state is RSkillState.ACTIVE
+        (adapter,) = built
+        # One warm-up step during activate, then a reset so tick 1 starts clean
+        # (the activate-time reset plus the warm-up's own).
+        assert len(adapter.steps) == 1
+        obs, instruction = adapter.steps[0]
+        assert instruction == "put the mango into the blue bowl"
+        assert obs["task"] == instruction
+        assert obs["state"].shape == (int(manifest.state_contract.dim),)  # type: ignore[union-attr]
+        rgb = {s.name: s for s in description.sensors if getattr(s, "modality", None) == "rgb"}
+        slots = sensor_name_to_slot(description)
+        for name, sensor in rgb.items():
+            image = obs["images"][slots[name]]  # type: ignore[index]
+            assert image.shape == (sensor.intrinsics.height, sensor.intrinsics.width, 3)
+            assert image.dtype == np.uint8
+        assert adapter.resets >= 1
+        skill.shutdown()
+
     def test_smolvla_deploy_enables_realtime_chunk_prefetch(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
