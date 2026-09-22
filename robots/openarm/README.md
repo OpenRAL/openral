@@ -102,6 +102,16 @@ octree behind a graph where every node reports healthy.
 > skill goal is accepted, and the other two have no producer on this cell, so
 > during `return_to_zero()` the hardware E-stop is the only independent stop.
 
+The manifest's hand-authored capsules are what the C++ kernel checks every
+chunk against, and `tests/unit/test_collision_geometry_zero_pose.py` now
+asserts that no non-allowed pair interpenetrates at the zero configuration.
+It exists because the first policy dispatch on this cell was refused for a
+right link 3 / link 5 self-collision of exactly −0.04575 m — at the real zero
+pose and at the twin's bent-elbow pose alike. A distance that ignores the
+elbow angle is a modelling error, not a hazard: link 3's capsule was 0.22 m
+long from a joint 0.154 m above the elbow, reaching 6.6 cm past joint 4 into
+link 5's capsule. It now ends at the elbow, which link 4's capsule covers.
+
 ### Running the restock policy
 
 The cell's policy is `OpenRAL/rskill-pi05-openarm-restock_shelf-bf16`, a
@@ -120,35 +130,60 @@ openral rskill check OpenRAL/rskill-pi05-openarm-restock_shelf-bf16 --robot robo
 The bench scene binds every stream the manifest requires: `top` is the ZED's
 rectified left image as `observation.images.context`, the two Arducams are
 `observation.images.wrist_left` / `wrist_right`. `openral rskill check`
-against that merged sensor set reports compatible.
+against that merged sensor set reports compatible. The PaliGemma tokenizer
+(`google/paligemma-3b-pt-224`) must also be in the default Hugging Face
+cache for an offline load; `openral rskill install` does not fetch it.
 
-> **The graph cannot execute a Hub VLA today — verified on qorin1
-> 2026-09-22.** A goal naming this skill is accepted, the manifest resolves
-> and the license is surfaced, and then the runner aborts inside
-> `_resolve_and_check_skill`. `_default_skill_resolver` returns what
-> `rSkill.from_pretrained` gives it, which is a packaging-format handle and
-> not a runtime `rSkillBase` — its own comment says the loader-to-runtime
-> binding is deferred — and the embodiment gate immediately dereferences
-> `skill.info`, which that handle does not have. The goal comes back
-> `ABORTED` with an **empty** `failure_reason` and `failure_kind: 0`, so
-> neither an operator nor the reasoner's replanning ladder learns why.
-> Until that seam lands, installing and checking the skill is as far as this
-> cell goes; no π0.5 chunk has ever reached the safety kernel here.
+**Preload, not dispatch-time load.** The bench scene pins
+`runtime.preload_rskill_id` and `preload_prompt`, so the skill runner
+resolves and loads the policy right after it activates, in a worker thread,
+and rejects goals until `rskill_runner.preload_done` is logged. This is not
+an optimisation: the deadman watchdog opens its 120 s first-chunk window
+the moment a goal is accepted, and this 3.6 B checkpoint takes ~350 s to
+load on the Orin with the graph idle and ~1230 s with the ZED depth engine
+and the 750 Hz controller manager competing for it (measured 2026-09-22),
+so a cold load inside a goal is E-stopped every time — correctly. The
+preload prompt must equal the goal's prompt character for character: the
+resident key is `(id, revision, prompt)` and a mismatch evicts the warm
+skill and pays the cold load inside the watchdog window. Expect the
+preload to take 20+ minutes on a live cell; `preload_done` names the time.
+
+Once it is resident, the operator dispatches the single goal directly, with
+the training instruction **verbatim** — a drifted prompt is an
+out-of-distribution instruction to real arms:
+
+```bash
+ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
+    "{rskill_id: OpenRAL/rskill-pi05-openarm-restock_shelf-bf16, prompt: restock-shelf-from-front-box, deadline_s: 60.0}"
+```
 
 Arm joints come out of the checkpoint as per-step deltas and the grippers as
 absolutes; the integration to absolute targets happens inside lerobot's π0.5
 postprocessor (`use_relative_actions` with the gripper dims excluded by
-`action_feature_names`), not in the runner. Once the runtime binding exists,
-the operator dispatches the single goal directly, with the training
-instruction **verbatim** — a drifted prompt is an out-of-distribution
-instruction to real arms:
+`action_feature_names`), not in the runner. The runner's slot dispatch then
+clamps every joint target strictly inside the manifest's joint limits before
+proposing it — the C++ kernel validates open intervals, and the policy's very
+first tick put one joint 0.019 rad past its limit — and the kernel remains the
+authority on what actually reaches the arm.
 
-```bash
-ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
-    "{rskill_id: OpenRAL/rskill-pi05-openarm-restock_shelf-bf16, prompt: restock-shelf-from-front-box}"
-```
-
-Accepting that goal is what arms the deadman watchdog.
+**What has run, and where each layer was proven (2026-09-22).** Until this
+branch no VLA had ever produced a chunk through the deploy graph on any
+robot: the Hub resolver returned a packaging handle instead of a runtime
+skill, and the goal aborted with an empty `failure_reason`. Getting the
+first chunk to the kernel took seven stacked fixes, each masked by the one
+before it (resolver binding, the rSkill cache split, the preload above, the
+expandable-segments allocator on Tegra, the warm-up's device/dtype and
+autocast, the slot-dispatch clamp, and for the MuJoCo twin its slot-group
+reassembly plus the attachment heartbeat). On the digital twin the chain
+now runs goal → preloaded policy → 35×16 chunk → slot dispatch → kernel,
+where the kernel's self-collision check refuses the first chunk: the
+tabletop twin starts with both elbows at −π/2 and the policy sees a MuJoCo
+table instead of the real shelf, so its actions are out of distribution
+there. The real cell is the only in-distribution proving ground; its first
+dispatch aborted in the observation decoder on the ZED depth frame, which
+is fixed (`decode_inline_frame`). The first-inference latency on the Orin is
+~11.7 s against the manifest's 600 ms budget (measured on a Thor), warm-up
+included — open.
 
 ## Action layout (16 DoF)
 

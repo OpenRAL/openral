@@ -597,8 +597,13 @@ collision_geometry:
     shape: { shape: "capsule", radius_m: 0.045, length_m: 0.12 }
     origin_xyz_rpy: [0.0, 0.0, -0.06, 0.0, 0.0, 0.0]
   - link_name: "openarm_left_link3"
-    shape: { shape: "capsule", radius_m: 0.04, length_m: 0.22 }
-    origin_xyz_rpy: [0.0, 0.0, -0.11, 0.0, 0.0, 0.0]
+    # Upper arm: joint3 -> joint4 is 0.15375 m. The former 0.22 m capsule
+    # reached 6.6 cm past the elbow into link5's capsule (a constant
+    # -0.04575 m at EVERY elbow angle), so the kernel refused every chunk
+    # near the rest pose — qorin1, 2026-09-22, twin and real cell alike.
+    # link4's capsule already covers the elbow region.
+    shape: { shape: "capsule", radius_m: 0.04, length_m: 0.15 }
+    origin_xyz_rpy: [0.0, 0.0, -0.075, 0.0, 0.0, 0.0]
   - link_name: "openarm_left_link4"
     shape: { shape: "capsule", radius_m: 0.04, length_m: 0.12 }
     origin_xyz_rpy: [0.0, 0.0, -0.06, 0.0, 0.0, 0.0]
@@ -622,8 +627,13 @@ collision_geometry:
     shape: { shape: "capsule", radius_m: 0.045, length_m: 0.12 }
     origin_xyz_rpy: [0.0, 0.0, -0.06, 0.0, 0.0, 0.0]
   - link_name: "openarm_right_link3"
-    shape: { shape: "capsule", radius_m: 0.04, length_m: 0.22 }
-    origin_xyz_rpy: [0.0, 0.0, -0.11, 0.0, 0.0, 0.0]
+    # Upper arm: joint3 -> joint4 is 0.15375 m. The former 0.22 m capsule
+    # reached 6.6 cm past the elbow into link5's capsule (a constant
+    # -0.04575 m at EVERY elbow angle), so the kernel refused every chunk
+    # near the rest pose — qorin1, 2026-09-22, twin and real cell alike.
+    # link4's capsule already covers the elbow region.
+    shape: { shape: "capsule", radius_m: 0.04, length_m: 0.15 }
+    origin_xyz_rpy: [0.0, 0.0, -0.075, 0.0, 0.0, 0.0]
   - link_name: "openarm_right_link4"
     shape: { shape: "capsule", radius_m: 0.04, length_m: 0.12 }
     origin_xyz_rpy: [0.0, 0.0, -0.06, 0.0, 0.0, 0.0]
