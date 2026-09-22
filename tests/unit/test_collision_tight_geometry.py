@@ -46,9 +46,21 @@ pytest.importorskip("numpy", reason="numpy is required to check mesh containment
 def _mesh_tools():
     """Import the generator + its mesh dependencies, or skip."""
     pytest.importorskip("mujoco", reason="mujoco is the mesh source for the containment proof")
-    pytest.importorskip("robosuite", reason="robosuite ships the Panda collision meshes")
+    robosuite = pytest.importorskip(
+        "robosuite", reason="robosuite ships the Panda collision meshes"
+    )
     pytest.importorskip("scipy", reason="scipy.spatial.ConvexHull is the hull reference")
     import sys
+
+    panda_xml = (
+        Path(robosuite.__file__).parent / "models" / "assets" / "robots" / "panda" / "robot.xml"
+    )
+    if "link7_collision" not in panda_xml.read_text(encoding="utf-8"):
+        pytest.skip(
+            f"robosuite {robosuite.__version__} ships the upstream Panda MJCF without the "
+            "`*_collision` mesh geoms; the RoboCasa robosuite fork is the mesh source "
+            "(just sync --group robocasa), and the LIBERO-pinned 1.4.x shadows it"
+        )
 
     sys.path.insert(0, str(REPO_ROOT / "tools"))
     import generate_tight_geometry as gen
