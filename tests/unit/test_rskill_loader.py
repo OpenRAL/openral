@@ -1059,3 +1059,34 @@ class TestValidateSkillRef:
         """Explicit URI schemes are rejected — only bare refs are accepted."""
         with pytest.raises(ROSConfigError):
             validate_skill_ref(bad)
+
+
+# ── snapshot directories resolve to themselves ──────────────────────────────
+
+
+def test_snapshot_dir_with_weights_resolves_to_itself(tmp_path: Path) -> None:
+    """A directory holding ``rskill.yaml`` + ``model.safetensors`` is the weights.
+
+    This is what ``rSkill.from_pretrained`` leaves in ``~/.cache/openral/rskills``.
+    Following its manifest's ``hf://`` pointer from there re-resolves a repo that
+    was just downloaded through the *default* HF cache — a second fetch online, a
+    hard failure offline (observed on the OpenArm cell, 2026-09-22).
+    """
+    from openral_rskill.loader import resolve_rskill_to_hf, resolve_rskill_to_hf_with_revision
+
+    manifest_src = Path(__file__).resolve().parents[2] / "rskills" / "act-libero" / "rskill.yaml"
+    snapshot = tmp_path / "snapshots" / "abc123"
+    snapshot.mkdir(parents=True)
+    (snapshot / "rskill.yaml").write_text(manifest_src.read_text(encoding="utf-8"))
+
+    # Without weights next to it, an rSkill directory still follows weights_uri
+    # (this is every in-tree ``rskills/<name>/``).
+    repo_id, revision = resolve_rskill_to_hf_with_revision(str(snapshot))
+    assert not repo_id.startswith("/"), repo_id
+    assert revision is None
+
+    (snapshot / "model.safetensors").write_bytes(b"")
+    repo_id, revision = resolve_rskill_to_hf_with_revision(str(snapshot))
+    assert repo_id == str(snapshot.resolve())
+    assert revision is None
+    assert resolve_rskill_to_hf(str(snapshot)) == str(snapshot.resolve())
