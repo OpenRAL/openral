@@ -51,11 +51,9 @@ export OPENRAL_REASONER_MODEL=claude-opus-4-8   # or gpt-5.5 / gpt-5.6 / cosmos3
 export OPENRAL_REASONER_API_KEY=sk-ant-...      # only where the endpoint needs it
 ```
 
-| Model | Hosting | Auth |
-| --- | --- | --- |
-| `claude-opus-4-8` | Anthropic cloud | required |
-| `gpt-5.5`, `gpt-5.6` | OpenRouter cloud | required |
-| `cosmos3-edge` | managed local vLLM sidecar (`127.0.0.1:8901`) | none — needs ~8 GB of *free* VRAM |
+Full model/endpoint matrix, the uncurated escape hatch, and what `openral
+doctor`'s `Reasoner LLM` row checks: [reasoner
+reference](../../reference/reasoner.md#reasoner-model-selection).
 
 `cosmos3-edge` is the on-device option — no key, no cloud. Budget the whole
 GPU for it: the checkpoint is 8.6 GB on disk (a 6.3 GB reasoner tower plus a
@@ -76,13 +74,6 @@ see any of this — the `Reasoner LLM` row reports `ok` because the *model
 resolves*; only a live tick exercises the sidecar. Sizing, platform status and
 the live-validation record:
 [`docs/reference/cosmos3-edge-reasoner.md`](../../reference/cosmos3-edge-reasoner.md).
-
-`openral doctor` reports the resolved model, endpoint and whether a key is set
-as its `Reasoner LLM` row; an unset model shows `absent`. An uncurated raw model id
-works too, but needs an explicit `OPENRAL_REASONER_ENDPOINT` and
-`OPENRAL_REASONER_DIALECT`, and warns on every tick. Full matrix:
-[`packages/openral_reasoner_ros/README.md`](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md)
-and the [reasoner reference](../../reference/reasoner.md).
 
 ## 1. Write a `DeployScene` config
 
@@ -228,16 +219,15 @@ runtime:
   octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
 ```
 
-Both shipped OpenArm scenes make the choice explicitly, and they are the two
-worked examples: [`scenes/deploy/openarm_zed_octomap.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_zed_octomap.yaml)
+Two worked examples make the choice explicitly:
+[`scenes/deploy/openarm_zed_octomap.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_zed_octomap.yaml)
 sets `enable_octomap` and `octomap_cloud_topic` together, and
 [`scenes/deploy/openarm_tabletop.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_tabletop.yaml)
-pins `enable_octomap: false` rather than inherit the auto-enable that the
-manifest's `head_zed` depth `SensorSpec` would otherwise trigger (`deploy run`
-resolves that auto-enable through the same code path as `deploy sim`). Both are
-`deploy sim` scenes — `openarm_zed_octomap.yaml` pairs a real ZED with the
-MuJoCo twin so no motor is commanded — but the octomap pair is written the same
-way under `hal_mode:=real`. Copy one of them; never leave it half-set.
+pins `enable_octomap: false` to override the auto-enable that the manifest's
+`head_zed` depth `SensorSpec` would otherwise trigger (`deploy run` resolves
+that auto-enable through the same code path as `deploy sim`). Both are
+`deploy sim` scenes, but the same fields apply unchanged under
+`hal_mode:=real`. Copy one of them; never leave it half-set.
 
 That is deliberate reuse rather than a new node: `zed_wrapper` (and the RealSense
 and Orbbec drivers) already stereo-match and project on the GPU, so composing a

@@ -50,18 +50,16 @@ is **event-driven with a slow heartbeat**:
   `EmitPromptTool`, plus the read-only query/memory tools below) — Pydantic-validated
   structured output, never free-form JSON.
 
-**Execution model (#21).** The blocking LLM round-trip (`select_tool`, and the
-VLM gate's `describe_image` — each on its own dedicated single worker, so a
-safety tick never queues behind an adjudication call) runs off the rclpy
-executor. A tick is phased: `ReasonerCore.prepare_tick` (gates +
-context render, executor thread) → `run_prepared_llm` (worker) →
-`finish_tick` (bookkeeping + dispatch, marshaled back via a guard condition).
-One worker = one outstanding LLM call; ticks requested mid-flight coalesce and
-replay (the single-flight trampoline). This is what makes "event-driven
-preemption" real: while the LLM thinks for 10–60 s, goal results, patience
-timers, and Tier-A preemptions still run on time (pre-#21, a 10 s patience
-timer was observed firing at 76 s because the timer callback queued behind the
-LLM call). Events that arrive mid-flight were not in the model's context, so
+**Execution model.** The blocking LLM round-trip (`select_tool`, and the VLM
+gate's `describe_image` — each on its own dedicated worker, so a safety tick
+never queues behind an adjudication call) runs off the rclpy executor. A tick
+is phased: `ReasonerCore.prepare_tick` (gates + context render, executor
+thread) → `run_prepared_llm` (worker) → `finish_tick` (bookkeeping + dispatch,
+marshaled back via a guard condition). One worker = one outstanding LLM call;
+ticks requested mid-flight coalesce and replay (the single-flight trampoline).
+This is what makes "event-driven preemption" real: while the LLM thinks for
+10–60 s, goal results, patience timers, and Tier-A preemptions still run on
+time. Events that arrive mid-flight were not in the model's context, so
 `finish_tick` marks seen/drains only the prepare-time snapshot — a mid-flight
 operator prompt survives for the next tick.
 
@@ -221,19 +219,16 @@ VLA. Pairing used to be an implicit deploy flag decoupled from which VLA the
 reasoner picks at runtime, and nothing guaranteed both fit on the GPU before
 loading — you'd discover the mismatch as a mid-run CUDA OOM.
 
-**Solution.** A VLA
-manifest **names its reward model** (`reward_rskill_name`, allowed only for
-`kind == "vla"`; `None` = deployment default) and declares per-dtype VRAM
-(`min_vram_gb`, read by `active_min_vram_gb()`). A pure helper
-`assert_vla_reward_fits(vla, reward, gpu_total_gb, margin_gb=0.5)` raises
-`ROSConfigError` (undeclared) or `ROSGPUMemoryError` (won't fit). It runs at two
-points: the reasoner's `_refuse_unfittable_vla` drops a non-fitting VLA from the
-palette so it's never dispatched, and (defense-in-depth) the runner re-checks
-before `from_pretrained`. The deploy CLI adds a **pre-launch** preflight
-(`_preflight_reward_vram_fit`, torch-free `nvidia-smi` probe) that hard-exits only
-when *no* capability-matched VLA fits — **`deploy sim` / `deploy run` only**, not
-`benchmark` / `sim run`. (Eviction of *other* peers — detectors before the VLA —
-is handled by a complementary decision.)
+**Solution.** A VLA manifest **names its reward model** (`reward_rskill_name`,
+`kind == "vla"` only; `None` = deployment default) and declares per-dtype VRAM
+(`min_vram_gb`). A pure helper `assert_vla_reward_fits(vla, reward,
+gpu_total_gb, margin_gb=0.5)` raises `ROSConfigError` (undeclared) or
+`ROSGPUMemoryError` (won't fit), checked twice: the reasoner's
+`_refuse_unfittable_vla` drops a non-fitting VLA from the palette, and the
+runner re-checks before `from_pretrained` as defense-in-depth. The deploy CLI
+adds a **pre-launch** preflight (`_preflight_reward_vram_fit`, torch-free
+`nvidia-smi` probe) that hard-exits only when *no* capability-matched VLA
+fits — **`deploy sim` / `deploy run` only**, not `benchmark` / `sim run`.
 
 **Why.** A VLA without a reward model is blind to its own success, so it should
 never run alone. Sizes are knowable from the manifests; an oversized pair should
@@ -309,22 +304,19 @@ goal, §3) is genuinely reasoning-heavy. Weak/cheap models follow the one-tool-
 per-tick contract fine but **over-locate and never call `decompose_mission`**;
 the library must stay provider-agnostic (no cloud lock-in).
 
-**Solution.** Selection is model-first (ADR-0088). `OPENRAL_REASONER_MODEL`
-names a curated `ReasonerModel`; the registry resolves dialect, endpoint, auth,
-hosting, and local-compute requirements. Endpoint location is orthogonal via
-`OPENRAL_REASONER_ENDPOINT`, so Ollama/vLLM/cloud placement is not encoded in a
-misleading provider enum. The *library* factory has **no default** and refuses
-to guess. The *deploy-sim launch* defaults to the curated `gpt-5.5` entry, with
+**Solution.** Selection is model-first (ADR-0088) — see [`reasoner.md`
+§Reasoner model selection](reasoner.md#reasoner-model-selection) for the env
+vars and the registry. The *library* factory has **no default** and refuses to
+guess. The *deploy-sim launch* defaults to the curated `gpt-5.5` entry, with
 `OPENRAL_REASONER_MAX_TOKENS=16384` so a reasoning model does not reserve its
-full window and get 402'd on a metered key. The default needs an API key and
-fails loudly without it. Raw uncurated models require an explicit endpoint +
-dialect and emit a warning; the old provider-first env remains a one-release shim.
+full window and get 402'd on a metered key; the default needs an API key and
+fails loudly without it.
 
 **Why.** In live deploy testing GPT-5.5 was the only model that *reliably*
 decomposed the collective goal (glm-5.2 over-located and never decomposed; Opus
 4.8 worked but needed nudges; the OpenRouter `:free` tier emitted the placeholder
-skill id). Simpler single-object goals run fine on the cheaper baselines in the
-[README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md#baseline-llm-recommended-configurations).
+skill id). Simpler single-object goals run fine on the cheaper baselines — see
+the [README](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md#curated-reasoner-models).
 
 ---
 

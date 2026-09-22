@@ -95,13 +95,13 @@ never the robot. They are advisory and hold no actuation authority.
 
 Three S2 capabilities layer on top of the tool surface:
 
-- **Playbooks (`kind: playbook`).** At palette-seed time the reasoner
-  gathers installed, capability-matched playbook rSkills, reads their
-  `PLAYBOOK.md` bodies, and appends a `## PLAYBOOKS` section to the system prompt
-  — so the LLM follows the relevant authored decision procedure when its trigger
-  matches the goal. Playbooks are `role: s2` content, never in the ExecuteRskill
-  palette; every motion still crosses `execute_rskill` + the C++ safety kernel.
-  Six ship in-tree: `decompose-mission`, `verify-outcome`, `clarify-ambiguity`,
+- **Playbooks (`kind: playbook`).** At palette-seed time the reasoner gathers
+  installed, capability-matched playbook rSkills, reads their `PLAYBOOK.md`
+  bodies, and appends a `## PLAYBOOKS` section to the system prompt so the LLM
+  follows the matching decision procedure. Playbooks are `role: s2` content,
+  never in the ExecuteRskill palette; every motion still crosses
+  `execute_rskill` + the C++ safety kernel. Six ship in-tree:
+  `decompose-mission`, `verify-outcome`, `clarify-ambiguity`,
   `preflight-reach`, `stage-for-manipulation`, `find-object`.
 - **Self-maintained `MEMORY.md`.** A persistent semantic memory
   (`MemoryStore` / `MemoryEntry`) the reasoner reads each tick and edits through
@@ -145,69 +145,21 @@ capability-matched, and licensed.
 
 ## Reasoner model selection
 
-Selection is model-first (ADR-0088). `OPENRAL_REASONER_MODEL` names a curated
-`openral_core.REASONER_MODELS` entry; registry membership means the model has
-passed OpenRAL's robotics tool-calling contract. The entry resolves the client
-dialect, served model id, endpoint, auth, hosting mode, and local-compute floor.
-The library has no default; `openral deploy sim` defaults to `gpt-5.5`.
-
-| Registry key | Served model | Hosting |
-|---|---|---|
-| `claude-opus-4-8` | `claude-opus-4-8` | Anthropic cloud |
-| `gpt-5.5` | `openai/gpt-5.5` | OpenRouter cloud |
-| `gpt-5.6` | `openai/gpt-5.6` | OpenRouter cloud |
-| `cosmos3-edge` | `nvidia/Cosmos3-Edge` | managed local vLLM |
-
-Other env: `OPENRAL_REASONER_ENDPOINT` (optional location override),
-`OPENRAL_REASONER_API_KEY` (conditional), and
-`OPENRAL_REASONER_{MAX_TOKENS,TIMEOUT_S}`. A raw uncurated model id also needs
-`OPENRAL_REASONER_ENDPOINT`; doctor reports it as unverified.
-
-`ENDPOINT` takes a **named endpoint** as well as a URL:
-
-| name | base URL | dialect | key | first-call timeout |
-|---|---|---|---|---|
-| `anthropic` | SDK default | anthropic | required | 10 s |
-| `openrouter` | `https://openrouter.ai/api/v1` | openai | required | 10 s |
-| `gemini` | `…/v1beta/openai/` | openai | required | 10 s |
-| `xai` | `https://api.x.ai/v1` | openai | required | 10 s |
-| `deepseek` | `https://api.deepseek.com` | openai | required | 10 s |
-| `huggingface` | `https://router.huggingface.co/v1` | openai | required | 60 s |
-| `ollama` | `http://localhost:11434/v1` | openai | optional | 60 s |
-| `vllm` | `http://localhost:8000/v1` | openai | optional | 60 s |
-
-A name carries its own dialect, so `OPENRAL_REASONER_DIALECT=anthropic|openai`
-is needed only for a **bare URL** — nothing can classify one. Set it anyway to
-override a preset sitting behind a translating proxy. The 60 s rows are the
-endpoints that materialise a model on the first call (a cold Ollama/vLLM
-daemon, the HF serverless router); `huggingface` additionally downgrades
-`tool_choice` to `auto`, which is the only value its router accepts.
+Selection is model-first (ADR-0088): `OPENRAL_REASONER_MODEL` names a curated
+`openral_core.REASONER_MODELS` entry (registry membership means the model
+cleared OpenRAL's robotics tool-calling contract), and the orthogonal
+`OPENRAL_REASONER_ENDPOINT` overrides where it runs. The library has no
+default.
 
 ```bash
-# Curated cloud
 export OPENRAL_REASONER_MODEL=gpt-5.5
 export OPENRAL_REASONER_API_KEY=sk-or-...
-
-# Curated managed local
-export OPENRAL_REASONER_MODEL=cosmos3-edge
-
-# Uncurated on a named endpoint — no dialect needed
-export OPENRAL_REASONER_MODEL=qwen3:8b
-export OPENRAL_REASONER_ENDPOINT=ollama
-
-# Uncurated on a bare URL — dialect required
-export OPENRAL_REASONER_MODEL=qwen3:8b
-export OPENRAL_REASONER_ENDPOINT=http://10.0.0.5:11434/v1
-export OPENRAL_REASONER_DIALECT=openai
 ```
 
-The old `OPENRAL_REASONER_LLM_*` provider-first contract was removed in 0.3.0;
-see the migration table in
-[`packages/openral_reasoner_ros/README.md`](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md).
-`openral doctor` resolves the model registry directly,
-checks auth, and probes loopback endpoints; a down managed-local endpoint is
-informational only while autostart is enabled. Tests use the deterministic
-`FakeToolUseClient` process-boundary double (CLAUDE.md §1.11).
+Full model/endpoint matrix, named endpoints, the dialect rule, the legacy
+migration table, and what `openral doctor`'s `Reasoner LLM` row checks:
+[`openral_reasoner_ros` README §Reasoner model
+registry](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md#reasoner-model-registry).
 
 ---
 
