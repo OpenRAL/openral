@@ -206,13 +206,6 @@ def test_sim_transport_satisfies_the_seam_protocol_structurally() -> None:
     assert isinstance(SimTransport(n_joints=1), ControllerStopSeam)
 
 
-class _ExplodingSeam(SimTransport):
-    """A seam whose controller switch dies with an rclpy-shaped plain Exception."""
-
-    def deactivate_controllers(self, names, *, timeout_s):  # type: ignore[no-untyped-def]  # reason: mirrors the base signature
-        raise RuntimeError("executor was shut down")
-
-
 class _VendorStopHAL(RosControlHAL):
     """The generic adapter with a vendor step, to prove the step still runs after a fault."""
 
@@ -231,7 +224,11 @@ def test_a_plain_exception_from_the_seam_is_contained_in_the_report() -> None:
     and break the Protocol's "estop() always raises ROSEStopRequested" promise — the
     lifecycle node would then log a bare "hardware estop failed" with no downstream verdict.
     """
-    transport = _ExplodingSeam(n_joints=2, controllers=[_CONTROLLER])
+    transport = SimTransport(
+        n_joints=2,
+        controllers=[_CONTROLLER],
+        switch_faults={"deactivate": RuntimeError("executor was shut down")},
+    )
     hal = _VendorStopHAL(_description(), controller_name=_CONTROLLER)
     hal.attach_transport(transport.publish, transport.state)
     hal.attach_controller_stop(transport)

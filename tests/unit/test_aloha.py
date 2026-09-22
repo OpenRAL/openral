@@ -350,15 +350,10 @@ class TestSafety:
         """An rclpy-shaped plain Exception on one arm is recorded, never lets the loop escape."""
         from openral_hal.sim_transport import SimTorqueSeam
 
-        class _LeftArmExplodes(SimTorqueSeam):
-            def torque_enable(self, robot_name, *, group, enable, timeout_s):  # type: ignore[no-untyped-def]  # reason: mirrors the base signature
-                if robot_name == "follower_left":
-                    raise RuntimeError("context has been shut down")
-                return super().torque_enable(
-                    robot_name, group=group, enable=enable, timeout_s=timeout_s
-                )
-
-        seam = _LeftArmExplodes(arms=["follower_left", "follower_right"])
+        seam = SimTorqueSeam(
+            arms=["follower_left", "follower_right"],
+            faults={"follower_left": RuntimeError("context has been shut down")},
+        )
         hal.attach_torque_stop(seam)
         hal.connect()
         with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):
