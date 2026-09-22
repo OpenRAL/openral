@@ -111,15 +111,6 @@ def hal() -> UR5eHAL:
     return UR5eHAL(gravity_enabled=False, settle_steps=2000)
 
 
-def _zero_action(horizon: int = 1) -> Action:
-    return Action(
-        control_mode=ControlMode.JOINT_POSITION,
-        horizon=horizon,
-        joint_targets=[[0.0] * 6 for _ in range(horizon)],
-        stamp_ns=time.time_ns(),
-    )
-
-
 # ── Protocol conformance ──────────────────────────────────────────────────────
 
 
