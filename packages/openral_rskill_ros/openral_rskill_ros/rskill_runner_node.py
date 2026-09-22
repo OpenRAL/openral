@@ -1054,7 +1054,22 @@ if _ROS2_AVAILABLE:
             # embodiment tags. Skip when the resolver returned a Skill
             # with no declared tags (test harness path).
             assert self._description is not None  # invariant from on_configure
-            tags = list(getattr(skill, "info", None).embodiment_tags or [])
+            # `.info` is the rSkillBase contract, so its absence means the
+            # resolver returned something that is not a runtime skill at all.
+            # Dereferencing the `getattr` default here raised a bare
+            # AttributeError, which escapes the ROSError surface and reaches
+            # the operator as an ABORTED goal with an EMPTY failure_reason and
+            # failure_kind 0 — no typed cause for the reasoner's replanning
+            # ladder either (CLAUDE.md §5). Name the contract violation instead.
+            info = getattr(skill, "info", None)
+            if info is None:
+                raise ROSConfigError(
+                    f"resolver returned {type(skill).__name__} for "
+                    f"rskill_id={rskill_id!r}, which has no `.info` and is "
+                    "therefore not an rSkillBase; a resolver must return a "
+                    "configured, activated runtime skill"
+                )
+            tags = list(info.embodiment_tags or [])
             if tags:
                 allowed = set(self._description.capabilities.embodiment_tags or [])
                 if allowed and not any(t in allowed for t in tags):
