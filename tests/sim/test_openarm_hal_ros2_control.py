@@ -48,7 +48,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _URDF = _REPO_ROOT / "robots" / "openarm" / "openarm.urdf"
 
 #: The `<ros2_control>` block this test brings up, and the controller spawned over it.
-_HARDWARE_COMPONENT = "left_hardware_interface"
+_HARDWARE_COMPONENT = "openarm_left_hardware_interface"
 _ARM_CONTROLLER = "left_joint_trajectory_controller"
 
 #: How long the stack gets to come up. Generous because the first `ros2 run` on a cold host
