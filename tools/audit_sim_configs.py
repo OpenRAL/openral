@@ -89,12 +89,6 @@ CATALOGUE: Final[tuple[ConfigSpec, ...]] = (
         "sim",
     ),
     ConfigSpec(
-        "scenes/sim/franka_libero_pnp.yaml",
-        "rskills/pi05-libero-int8",
-        "libero",
-        "sim",
-    ),
-    ConfigSpec(
         "scenes/sim/robocasa_pnp.yaml",
         "rskills/rldx1-ft-rc365-nf4",
         "robocasa",
