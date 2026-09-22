@@ -119,22 +119,36 @@ openral rskill check OpenRAL/rskill-pi05-openarm-restock_shelf-bf16 --robot robo
 
 The bench scene binds every stream the manifest requires: `top` is the ZED's
 rectified left image as `observation.images.context`, the two Arducams are
-`observation.images.wrist_left` / `wrist_right`. It keeps
-`runtime.enable_reasoner: false`, so nothing in the graph dispatches on its
-own; the operator sends the one goal directly, with the training instruction
-**verbatim** (a drifted prompt is an out-of-distribution instruction to real
-arms):
+`observation.images.wrist_left` / `wrist_right`. `openral rskill check`
+against that merged sensor set reports compatible.
+
+> **The graph cannot execute a Hub VLA today — verified on qorin1
+> 2026-09-22.** A goal naming this skill is accepted, the manifest resolves
+> and the license is surfaced, and then the runner aborts inside
+> `_resolve_and_check_skill`. `_default_skill_resolver` returns what
+> `rSkill.from_pretrained` gives it, which is a packaging-format handle and
+> not a runtime `rSkillBase` — its own comment says the loader-to-runtime
+> binding is deferred — and the embodiment gate immediately dereferences
+> `skill.info`, which that handle does not have. The goal comes back
+> `ABORTED` with an **empty** `failure_reason` and `failure_kind: 0`, so
+> neither an operator nor the reasoner's replanning ladder learns why.
+> Until that seam lands, installing and checking the skill is as far as this
+> cell goes; no π0.5 chunk has ever reached the safety kernel here.
+
+Arm joints come out of the checkpoint as per-step deltas and the grippers as
+absolutes; the integration to absolute targets happens inside lerobot's π0.5
+postprocessor (`use_relative_actions` with the gripper dims excluded by
+`action_feature_names`), not in the runner. Once the runtime binding exists,
+the operator dispatches the single goal directly, with the training
+instruction **verbatim** — a drifted prompt is an out-of-distribution
+instruction to real arms:
 
 ```bash
 ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
     "{rskill_id: OpenRAL/rskill-pi05-openarm-restock_shelf-bf16, prompt: restock-shelf-from-front-box}"
 ```
 
-Arm joints come out of the checkpoint as per-step deltas and the grippers as
-absolutes; the integration to absolute targets happens inside lerobot's π0.5
-postprocessor (`use_relative_actions` with the gripper dims excluded by
-`action_feature_names`), not in the runner. Accepting the goal is what arms
-the deadman watchdog. This path has not been run on the cell yet.
+Accepting that goal is what arms the deadman watchdog.
 
 ## Action layout (16 DoF)
 
