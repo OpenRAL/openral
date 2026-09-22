@@ -408,9 +408,10 @@ TEST(OctreeToGrid, AnAbsurdSpecIsRefusedRatherThanAllocated) {
 }
 
 TEST(OctreeToGrid, RasterizationCostAcrossTreeResolutions) {
-  // The PRODUCER half of the 25 -> 15 mm lever. `PLAN.md` §5 un-struck that
-  // lever after measuring the kernel CONSUMING a finer grid (p99 0.825 ms at
-  // 15 mm, against a 26.7 ms estimate) and named this as the other half: the
+  // The PRODUCER half of the 25 -> 15 mm lever. The programme note §5 in
+  // docs/reference/collision-validation-evidence.md un-struck that lever after
+  // measuring the kernel CONSUMING a finer grid (p99 0.825 ms at 15 mm, against
+  // a 26.7 ms estimate) and named this as the other half: the
   // bridge rebuilds the grid on every publish, and the grid's resolution IS the
   // octree's, so a finer kernel grid means a finer TREE.
   //

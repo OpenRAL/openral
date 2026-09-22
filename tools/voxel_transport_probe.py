@@ -1,6 +1,7 @@
 """What a finer world-voxel grid costs on the wire, at each candidate resolution.
 
-The third and last cost term on `PLAN.md`'s 25 → 15 mm lever. The other two are
+The third and last cost term on the 25 → 15 mm lever (the programme note §5,
+`docs/reference/collision-validation-evidence.md`). The other two are
 measured and both cheap — the kernel *consuming* a 15 mm grid is p99 0.825 ms,
 and `openral_octomap_bridge` *producing* one is 1.60 ms against a 100 ms publish
 period. Neither touches the term that actually grows: `OccupancyVoxels.occupancy`

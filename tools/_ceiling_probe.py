@@ -11,7 +11,8 @@ file, launch default or manifest.
 Answers: of the runs the kernel stops, how many would have succeeded anyway?
 120 runs at 5-10% completion (gate on), median true clearance 20.1 mm at the
 stop — the ceiling could be 12% or 60%, and that number decides whether the
-collision programme continues (``PLAN.md`` §4). External analogue: PACS
+collision programme continues (the programme note §4, ``docs/reference/collision-validation-evidence.md``).
+External analogue: PACS
 (arXiv:2511.06385 Table I, unfiltered 0.70 vs binary-filtered 0.04).
 
 One worker = one scene/gate/N rounds, launched in parallel by

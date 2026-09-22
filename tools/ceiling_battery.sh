@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The ceiling battery — both arms at once, on spark.
 #
-# Answers PLAN.md §4: what does XR-1 complete on these four scenes with the
+# Answers the programme note §4 (docs/reference/collision-validation-evidence.md): what does XR-1 complete on
+# these four scenes with the
 # world-voxel gate OFF vs ON, same commit and host.
 #
 # 4 scenes x 2 arms; WORKERS (default 2) run at once, both arms interleaved
