@@ -52,7 +52,7 @@ _Bus-attached LeRobot/rosbag recorder for the deploy graph (mirrors `WorldCloudB
 - module constant `_PHASE_END = 1` (L60) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
 - module constant `ACTION_TOPIC_DEFAULT = "/openral/candidate_action"` (L62) — default `ActionChunk` topic.
 - module constant `EPISODE_TOPIC_DEFAULT = "/openral/episode"` (L63) — default `Episode` marker topic.
-- `_sensor_name_to_slot(description) -> dict[str, str]` (L66) — Maps each RGB sensor name to its VLA slot (`camera1` / `camera2` / ...); the canonical copy — imported cross-package by `openral_rskill_ros.rskill_runner_node` as `_sensor_name_to_vla_slot` (`openral_rskill_ros` depends on `openral_runner`; the reverse direction stays forbidden per CLAUDE.md §3), so this private helper is de-facto API.
+- `sensor_name_to_slot(description) -> dict[str, str]` (L66) — Maps each RGB sensor name to its VLA slot (`camera1` / `camera2` / ...); the canonical copy. **Public**, re-exported from `openral_runner.__init__` (promoted from `_sensor_name_to_slot`): imported cross-package by `openral_rskill_ros.rskill_runner_node` under the local alias `_sensor_name_to_vla_slot` (`openral_rskill_ros` depends on `openral_runner`; the reverse direction stays forbidden per CLAUDE.md §3).
 - `class DatasetRecorderBridge(node, *, robot, aggregator, recorder, output_path=None, action_topic="/openral/candidate_action", episode_topic="/openral/episode")` — constructed against the shared runtime `rclpy.node.Node`; subscribes `Episode` (drives `recorder.episode_start/end`) + `ActionChunk` (RELIABLE depth 100). Per inference tick it joins the shared `WorldStateAggregator` snapshot (proprio + camera `image_frames`) with the tick's action, reassembling multi-slot chunks into one full action vector — grouped by `ActionChunk.tick_index` (1-based; slot-cycle on `(control_mode, ee_name)` is the fallback when `tick_index==0`). Writes via `Rosbag2Sink`. A reassembled shape the recorder rejects (vs a defined `action_spec.dim`) is logged, not raised. Logs `dataset_recorder.armed` (with `output_path`) at construction and, at `destroy()`, `dataset_recorder.summary` (episode + frame totals) or — when no episode marker ever fired, i.e. no rSkill executed — a `dataset_recorder.nothing_recorded` warning, so an empty recording is never silent. (L86)
   - `destroy() -> None` (L183) — Flushes the pending tick, closes any open episode (marking it a failure), finalizes the recorder, releases the subscriptions; idempotent.
 
@@ -366,8 +366,8 @@ _Runtime glue that wires a ``kind: detector`` rSkill to a live camera pipeline �
 _Public surface of the inference runner. Imports are PEP 562 lazy (M8 PR I/8): heavy symbols (`InferenceRunnerBase`, `factory.*`, `DeployRunner`, `safety.*`) are resolved on first attribute access so importing any subpackage does not eagerly drag in torch (582 modules) or trigger downstream glib conflicts._
 
 - light eager imports: `precise_sleep`, `sleep_until`, `InferenceRunner` (Protocol), `SensorReader` (Protocol).
-- `_LAZY_ATTRS: dict[str, tuple[str, str]]` — `attr → (module, name)` map driving the `__getattr__` resolver. (L70)
-- `__getattr__(name) -> Any` — Resolves heavy symbols on first access (torch / glib-sensitive deferral). (L84)
+- `_LAZY_ATTRS: dict[str, tuple[str, str]]` — `attr → (module, name)` map driving the `__getattr__` resolver. (L74)
+- `__getattr__(name) -> Any` — Resolves heavy symbols on first access (torch / glib-sensitive deferral). (L88)
 
 ### `python/runner/src/openral_runner/factory.py`
 _Library deploy runner used by runtime nodes; the public deploy CLI now shells the ROS graph from a `DeployScene`._

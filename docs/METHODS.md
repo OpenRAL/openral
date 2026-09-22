@@ -1,9 +1,12 @@
 # METHODS.md — Public Symbol Inventory (index)
 
-> **Last cleaned: 2026-06-11** — split the single-file inventory into
-> per-layer files under [`docs/methods/`](https://github.com/OpenRAL/openral/tree/master/docs/methods/) and refreshed every
-> `(LNN)` citation via `tools/refresh_methods_linenos.py`. (Previous pass
-> 2026-05-16: repo-wide de-slop, ADR renumber, `skills/` → `rskills/`.)
+> **Last cleaned: 2026-09-22** — reconciled every layer file against the
+> source tree (174 files had no section; 58 entries pointed at symbols that
+> no longer existed while `--check` reported clean), made the checker fail
+> loudly, added `--coverage` and wired it into `just lint`, collapsed the
+> duplication watch to live guidance, and consolidated / promoted / deleted
+> the code the pass surfaced (openral PR #296). (Previous passes: 2026-06-11
+> split into per-layer files; 2026-05-16 repo-wide de-slop.)
 >
 > **Purpose.** A flat, layer-ordered list of every class, function, method,
 > and module-level constant defined in the OpenRAL Python source tree
