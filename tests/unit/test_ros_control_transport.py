@@ -384,6 +384,34 @@ def test_membership_is_structural_not_by_ancestry() -> None:
     assert isinstance(OptsInWithoutInheriting(), RosControlDrivable)
 
 
+@pytest.mark.parametrize(
+    "entry_point",
+    [
+        "openral_hal.ur_real:UR5eRealHAL",
+        "openral_hal.ur_real:UR10eRealHAL",
+        "openral_hal.franka_panda_real:FrankaPandaRealHAL",
+        "openral_hal.sawyer_real:SawyerRealHAL",
+    ],
+)
+def test_every_single_controller_real_adapter_is_drivable(entry_point: str) -> None:
+    """The four single-controller real arms must all reach the production transport.
+
+    `FrankaPandaRealHAL` and `SawyerRealHAL` used to *wrap* a `RosControlHAL` and forward
+    only the five HAL Protocol methods, so they exposed none of the `RosControlDrivable`
+    surface. `_attach_ros_control_transport` skipped them, and a real Panda or Sawyer deploy
+    published every command into `_default_publish` — the exact no-op the transport docstring
+    says it fixed for "OpenArm, UR5e, UR10e, Franka, Sawyer". Constructed through the same
+    `hal.real` entry-point string the manifests carry, so a rename shows up here too.
+    """
+    from openral_hal.resolver import _import_object
+    from openral_hal.ros_control_transport import RosControlDrivable
+
+    hal = _import_object(entry_point)()  # type: ignore[operator]  # reason: entry point resolves to a HAL class
+    assert isinstance(hal, RosControlDrivable), entry_point
+    assert hal.command_topics() == [f"/{hal.controller_name}/joint_trajectory"]  # type: ignore[attr-defined]  # reason: every listed adapter pins controller_name
+    assert hal.ros2_control_joint_names() == [j.name for j in hal.description.joints]
+
+
 def test_a_hal_missing_the_surface_is_not_drivable() -> None:
     """The serial arms own their own bus and must not be handed a ros2_control transport."""
     from openral_hal.ros_control_transport import RosControlDrivable

@@ -40,7 +40,6 @@ from collections.abc import Callable
 import structlog
 from openral_core.exceptions import ROSConfigError, ROSEStopRequested
 from openral_core.schemas import (
-    Action,
     AssetRefs,
     ControlMode,
     EmbodimentKind,
@@ -48,7 +47,6 @@ from openral_core.schemas import (
     HalEntrypoints,
     Hand,
     JointSpec,
-    JointState,
     JointType,
     RobotCapabilities,
     RobotDescription,
@@ -216,8 +214,16 @@ _PublishFn = Callable[[str, dict[str, object]], None]
 _StateFn = Callable[[], dict[str, object]]
 
 
-class SawyerRealHAL:
+class SawyerRealHAL(RosControlHAL):
     """HAL adapter for a physical Rethink Sawyer over ``intera_sdk`` / ROS 2.
+
+    A ``RosControlHAL`` subclass (the same shape as the UR adapters) pinning
+    the ``sawyer_robot`` controller name, the legacy intera joint-state
+    topic and the vendor halt topic. Subclassing rather than wrapping is what
+    makes this adapter structurally ``RosControlDrivable``, so the lifecycle
+    node attaches the production ``RosControlTransport`` to it under
+    ``hal_mode:=real`` — a composed wrapper exposed none of that surface and
+    was never wired, so a real Sawyer deploy published into a no-op logger.
 
     Args:
         hostname: Hostname of the Sawyer's onboard PC, typically
@@ -251,7 +257,7 @@ class SawyerRealHAL:
     Example:
         >>> from openral_hal.sawyer_real import SawyerRealHAL
         >>> from openral_hal.sim_transport import SimTransport
-        >>> transport = SimTransport(n_joints=7)
+        >>> transport = SimTransport(n_joints=8)
         >>> hal = SawyerRealHAL(
         ...     hostname="sawyer.local",
         ...     publish_fn=transport.publish,
@@ -281,12 +287,7 @@ class SawyerRealHAL:
                 "SawyerRealHAL requires a non-empty hostname "
                 "(e.g. 'sawyer.local' or the robot's IP)."
             )
-        self._hostname = hostname
-        self._controller_name = controller_name
-        self._estop_topic = estop_topic
-        self._publish_fn: _PublishFn | None = publish_fn
-
-        self._inner = RosControlHAL(
+        super().__init__(
             SAWYER_REAL_DESCRIPTION,
             controller_name=controller_name,
             joint_state_topic=joint_state_topic,
@@ -295,23 +296,15 @@ class SawyerRealHAL:
             state_fn=state_fn,
             staleness_limit_s=staleness_limit_s,
         )
+        self._hostname = hostname
+        self._estop_topic = estop_topic
 
-    # ── HAL Protocol ──────────────────────────────────────────────────────
-
-    @property
-    def description(self) -> RobotDescription:
-        """Normative ``RobotDescription`` for the Sawyer."""
-        return self._inner.description
+    # ── Sawyer-specific metadata ──────────────────────────────────────────
 
     @property
     def hostname(self) -> str:
         """Hostname / IP of the Sawyer's onboard PC."""
         return self._hostname
-
-    @property
-    def controller_name(self) -> str:
-        """Name of the ``ros2_control`` joint trajectory controller."""
-        return self._controller_name
 
     def connect(self) -> None:
         """Open the ROS 2 transport to the ``sawyer_robot`` controller.
@@ -325,37 +318,13 @@ class SawyerRealHAL:
             hostname=self._hostname,
             controller=self._controller_name,
         )
-        self._inner.connect()
-
-    def disconnect(self) -> None:
-        """Close the ROS 2 transport.  Idempotent."""
-        self._inner.disconnect()
-
-    def read_state(self) -> JointState:
-        """Return the latest joint state for all 7 description joints.
-
-        Raises:
-            ROSRuntimeError: If not connected.
-            ROSPerceptionStale: If the last reading is older than
-                ``staleness_limit_s``.
-        """
-        return self._inner.read_state()
-
-    def send_action(self, action: Action) -> None:
-        """Forward an action chunk to the ``sawyer_robot`` controller.
-
-        Raises:
-            ROSRuntimeError: If not connected.
-            ROSConfigError: If ``action.control_mode`` is not in the
-                description's ``supported_control_modes``.
-        """
-        self._inner.send_action(action)
+        super().connect()
 
     def estop(self) -> None:
         """Trigger an emergency stop on the Sawyer.
 
-        Publishes to the legacy intera_sdk halt topic, marks the inner
-        adapter disconnected, and raises ``ROSEStopRequested``.
+        Publishes to the legacy intera_sdk halt topic, marks the adapter
+        disconnected, and raises ``ROSEStopRequested``.
 
         Raises:
             ROSEStopRequested: Always.
@@ -366,12 +335,10 @@ class SawyerRealHAL:
             hostname=self._hostname,
             estop_topic=self._estop_topic,
         )
-        if self._publish_fn is not None:
-            with contextlib.suppress(Exception):
-                self._publish_fn(
-                    self._estop_topic,
-                    {"reason": "openral_estop", "robot": self.description.name},
-                )
         with contextlib.suppress(Exception):
-            self._inner.disconnect()
+            self._publish_fn(
+                self._estop_topic,
+                {"reason": "openral_estop", "robot": self.description.name},
+            )
+        self._connected = False
         raise ROSEStopRequested(f"Emergency stop triggered on Sawyer at host {self._hostname!r}.")

@@ -13,11 +13,12 @@ commercial); ``franka_ros2`` is Apache-2.0. The manifest declares
 ``sdk_kind: "closed_with_api"`` and sets ``hal.real`` to this adapter.
 
 Transport: the hot path is ``ros2_control``; this module does not import
-``rclpy`` and instead delegates to ``openral_hal.ros_control.RosControlHAL``,
+``rclpy`` and instead subclasses ``openral_hal.ros_control.RosControlHAL``,
 which takes injected ``publish_fn``/``state_fn`` callables. The lifecycle
-node in ``packages/openral_hal_franka`` wires real publishers/subscribers at
-runtime; unit tests inject ``SimTransport`` for the same code path
-without ROS 2 installed.
+node in ``packages/openral_hal_franka`` attaches the production
+``RosControlTransport`` at runtime (the adapter is structurally
+``RosControlDrivable``); unit tests inject ``SimTransport`` for the same code
+path without ROS 2 installed.
 
 Example:
     >>> from openral_hal.franka_panda_real import FrankaPandaRealHAL
@@ -41,7 +42,6 @@ from collections.abc import Callable
 
 import structlog
 from openral_core.exceptions import ROSConfigError, ROSEStopRequested
-from openral_core.schemas import Action, JointState, RobotDescription
 
 from openral_hal._real_description import make_real_description
 from openral_hal.franka_panda import FRANKA_PANDA_DESCRIPTION
@@ -83,13 +83,17 @@ FRANKA_PANDA_REAL_DESCRIPTION = make_real_description(
 )
 
 
-class FrankaPandaRealHAL:
+class FrankaPandaRealHAL(RosControlHAL):
     """HAL adapter for a physical Franka Emika Panda over the FCI.
 
-    The adapter wraps ``RosControlHAL`` and adds Franka-specific
-    configuration: the FCI hostname, the ``franka_ros2`` controller name, and
-    an explicit error-recovery topic used by the safety supervisor after
-    ``estop()``.
+    A ``RosControlHAL`` subclass (the same shape as the UR adapters) that pins
+    the Franka-specific configuration: the FCI hostname, the ``franka_ros2``
+    controller name, and the error-recovery action the operator runs after an
+    e-stop. Subclassing rather than wrapping is what makes this adapter
+    structurally ``RosControlDrivable``, so the lifecycle node attaches the
+    production ``RosControlTransport`` to it under ``hal_mode:=real`` — a
+    composed wrapper exposed none of that surface and was never wired, so a
+    real Panda deploy published into a no-op logger.
 
     Args:
         fci_ip: Hostname or IP of the Franka FCI (the robot's "control" port,
@@ -155,12 +159,7 @@ class FrankaPandaRealHAL:
                 "FrankaPandaRealHAL requires a non-empty fci_ip "
                 "(the robot's FCI hostname or IP, e.g. '172.16.0.2')."
             )
-        self._fci_ip = fci_ip
-        self._controller_name = controller_name
-        self._error_recovery_topic = error_recovery_topic
-        self._publish_fn: _PublishFn | None = publish_fn
-
-        self._inner = RosControlHAL(
+        super().__init__(
             FRANKA_PANDA_REAL_DESCRIPTION,
             controller_name=controller_name,
             joint_state_topic=joint_state_topic,
@@ -169,18 +168,10 @@ class FrankaPandaRealHAL:
             state_fn=state_fn,
             staleness_limit_s=staleness_limit_s,
         )
+        self._fci_ip = fci_ip
+        self._error_recovery_topic = error_recovery_topic
 
-    # ── Public attributes mandated by the HAL Protocol ────────────────────
-
-    @property
-    def description(self) -> RobotDescription:
-        """Normative ``RobotDescription`` for the Franka Panda."""
-        return self._inner.description
-
-    @property
-    def controller_name(self) -> str:
-        """Name of the ``ros2_control`` joint trajectory controller."""
-        return self._controller_name
+    # ── Franka-specific metadata ──────────────────────────────────────────
 
     @property
     def fci_ip(self) -> str:
@@ -193,8 +184,8 @@ class FrankaPandaRealHAL:
         """Open the ROS 2 transport to the ``franka_ros2`` controller.
 
         The actual ``libfranka`` TCP socket is owned by ``franka_hardware``
-        inside the lifecycle node; this call only attaches the adapter to
-        the injected publisher / subscriber pair.
+        inside the lifecycle node; this call only marks the adapter live on
+        the injected / attached transport.
 
         Raises:
             ROSRuntimeError: If already connected.
@@ -205,48 +196,18 @@ class FrankaPandaRealHAL:
             fci_ip=self._fci_ip,
             controller=self._controller_name,
         )
-        self._inner.connect()
-
-    def disconnect(self) -> None:
-        """Close the ROS 2 transport.  Idempotent."""
-        self._inner.disconnect()
-
-    # ── Hot path ──────────────────────────────────────────────────────────
-
-    def read_state(self) -> JointState:
-        """Return the latest joint state for all 8 description joints.
-
-        Raises:
-            ROSRuntimeError: If not connected.
-            ROSPerceptionStale: If the last reading is older than
-                ``staleness_limit_s``.
-        """
-        return self._inner.read_state()
-
-    def send_action(self, action: Action) -> None:
-        """Forward an action chunk to the ``franka_ros2`` controller.
-
-        Args:
-            action: The ``Action`` produced by the Skill or safety
-                shaper.
-
-        Raises:
-            ROSRuntimeError: If not connected.
-            ROSConfigError: If ``action.control_mode`` is not in the
-                description's ``supported_control_modes``.
-        """
-        self._inner.send_action(action)
+        super().connect()
 
     # ── Safety ────────────────────────────────────────────────────────────
 
     def estop(self) -> None:
         """Trigger an emergency stop on the FCI.
 
-        Publishes a zero-velocity hold to the controller, marks the inner
-        adapter disconnected, and raises ``ROSEStopRequested`` so the
-        safety supervisor can log the incident.  The supervisor is
-        responsible for calling ``error_recovery`` (via
-        ``error_recovery_topic``) before re-arming the robot.
+        Publishes a zero-velocity hold to the controller, marks the adapter
+        disconnected, and raises ``ROSEStopRequested`` so the safety
+        supervisor can log the incident.  The supervisor is responsible for
+        calling ``error_recovery`` (via ``error_recovery_topic``) before
+        re-arming the robot.
 
         Raises:
             ROSEStopRequested: Always.
@@ -257,16 +218,14 @@ class FrankaPandaRealHAL:
             fci_ip=self._fci_ip,
             recovery_topic=self._error_recovery_topic,
         )
-        if self._publish_fn is not None:
-            with contextlib.suppress(Exception):
-                self._publish_fn(
-                    self._error_recovery_topic,
-                    {"reason": "openral_estop", "robot": self.description.name},
-                )
+        with contextlib.suppress(Exception):
+            self._publish_fn(
+                self._error_recovery_topic,
+                {"reason": "openral_estop", "robot": self.description.name},
+            )
         # Mirror SO100/UR estop semantics: drop the connection then raise so
         # subsequent ``read_state`` / ``send_action`` calls fail fast.
-        with contextlib.suppress(Exception):
-            self._inner.disconnect()
+        self._connected = False
         raise ROSEStopRequested(
             f"Emergency stop triggered on Franka Panda at FCI {self._fci_ip!r}."
         )
