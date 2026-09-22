@@ -3023,7 +3023,7 @@ runs **40× under** it, and the one it called "over" runs 39× under.
 **Why the estimate failed — two errors, compounding.**
 
 1. *The baseline was never the kernel.* 5.8 ms came from the shipped hull
-   microbenchmark (`collision-hull-narrow-phase.md` §4), not from a round trip
+   microbenchmark (`collision-hull-narrow-phase.md` §3.2), not from a round trip
    under a real grid — which had no latency surface until one was built the same
    day the strike was written. The real baseline is 0.517 ms, 11× lower.
 2. *The cubic factor was applied to the wrong term.* The window loop
@@ -3682,6 +3682,160 @@ no longer the small one.
 
 Data: `outputs/resolution-ab/2026-09-10-serial` on q-laptop (`outputs/` is
 gitignored); per-stop rows in its `report.json`.
+
+### 2026-09-22 — harness rules and the rounds that produced them
+
+Not a validation round. Nearly every rule in
+[the validation matrix](../contributing/validation-matrix.md) exists because a
+round was lost to its absence. That page is a guide to running a round; this
+entry is the history it used to carry. Rule → the round it closed → where that
+round is recorded.
+
+**Why the harness exists at all.** For roughly seventeen rounds over ten days
+(2026-08-13 … 2026-08-22) the four-scene matrix was driven by tooling that lived
+**only** in `spark:~/openral-runs/<date>-<name>/scripts/` — `run_matrix.sh`,
+`drive_round.sh`, `attach_monitor4.py`, `postprocess.sh`, `adjudicate.py`,
+`verdict_table.py`, and a per-scene copy of each scene YAML. Nothing was in the
+repo. Rounds were reproducible only by their operator; comparing two meant an
+agent re-reading two multi-megabyte logs and writing prose; several of those
+rounds have no written summary at all and survive only as constants in code
+comments; and each round re-derived the tooling with drift.
+
+**Guardrails.**
+
+- `assert_worktree_clean` — a pre-harness round run from uncommitted changes:
+  its recorded SHA describes code nobody can check out. 2026-08-13 … 2026-08-22,
+  the entries above.
+- `assert_sha` and `resolve_launcher` — the wrong-checkout round.
+  `~/.local/bin/openral` is a wrapper that hardcodes
+  `_OPENRAL_DIR=~/workspace/openral` and execs the **parent** checkout's venv,
+  overlay and `robots/` manifests, so a round in a worktree validated something
+  else. Named in the 2026-08-26 entry, `master-baseline` vs `oriented-grid-2`.
+- `assert_overlay_fresh` — 2026-08-26: checking out `master` rewrote source
+  mtimes while colcon skipped unchanged packages, leaving the overlay older than
+  its sources. The guardrail refused the first `master-baseline` attempt, which
+  is the wrong-checkout incident one class over. Same entry. A related
+  first-attempt loss in that round: `deploy_e2e.launch.py` spawns
+  `octomap_server` and no `package.xml` declared it, so
+  `scripts/check_ros_build_deps.sh` cleared a host that could not launch, and
+  all four scenes bucketed `harness-error`.
+- `assert_sidecar_wire` — a pre-harness round whose sync recipe was `just sync
+  --group robocasa` **without** `--group sidecar-wire`: it uninstalled `pyzmq`
+  and broke the XR-1 adapter mid-round. 2026-08.
+- `assert_no_safety_overrides`, `assert_scene_safety_unmoved` — no incident;
+  a standing prohibition (CLAUDE.md §1.1, §3). The scene guard exists because
+  the resolved scene copy is the control surface argv inspection cannot see.
+- `gpu_status` — the validation host is shared, and shared-host load has already
+  produced a published number that was not a policy property: see the 2026-09-09
+  entry, `correction: the "18–27 % carry-phase yield" was q-laptop's load`.
+
+**Scene pins.**
+
+- `fridge` pinned to `layout_ids: [47]` — unpinned at seed 1 the scene draws
+  layout 29, a side-by-side fridge, and spawns `robot0_link7_collision` at
+  0.000 m from the closed freezer door: the arm starts inside the kernel's world
+  model and the run E-stops before applying a single action chunk. Of 40 of the
+  60 layouts swept, only six start clear of the 25 mm occupancy grid by mesh
+  distance (18, 20, 21, 22, 30, 36), so ~85 % of this task's kitchens have the
+  same defect. The pin was `[30]` from #154 until #171 moved it to `[47]`: mesh
+  clearance is not the kernel's criterion, and scored the way the kernel
+  actually scores — link OBB against 25 mm voxels — layout 30 sits at
+  **−23.47 mm** and still stops, while layout 47 clears at **+19.34 mm** across
+  two captures 68 % apart in map density. Layouts 18 and 21 are traps: clear on
+  the ideal grid, refuted live. Full record in
+  `scenes/deploy/robocasa_fridge_drawer.yaml` and the 2026-09-05 entries,
+  `the fridge layout pin put under a test (#102)` and `the colliding half of
+  that pair, at zero margin (#102)`.
+- `utensil` pinned to `layout_ids: [3]` — reproducibility only. That scene
+  starts 43.3 mm clear unpinned and has **no** initial-configuration defect;
+  layout 3 starts 77.5 mm clear. Its 2026-08-23 stop was a false positive of the
+  *adjudication*, not a scene problem (below).
+- Per-layout measurements for all four scenes:
+  [`robocasa-start-state-census.md`](robocasa-start-state-census.md).
+
+**Stack pinning.** The harness originally pinned `--no-enable-reasoner`, a flag
+that does not exist; its first live round died in all four scenes in under a
+second. `enable_reasoner` is spliced into the resolved scene copy instead. See
+the 2026-08-22 entry, `harness-1` / `harness-2`, the harness's first live use.
+
+**The `harness-error` bucket, and each way a dead run looked like a deadline.**
+
+- Click's usage error *is* log lines, so `bool(deploy_lines)` was never the
+  test: that first live round reported all four scenes as `deadline-no-grasp`
+  with exit 0. 2026-08-22, same entry.
+- `[ERROR] [launch]: Caught exception in launch` leaves no marker file and no
+  usage banner — the nodes launch already spawned keep running and keep logging.
+  At `87dcda1` a missing `payload_footprint_node.py` produced exactly that and
+  the scene was bucketed `deadline-no-grasp` with `harness_error_reason` and
+  `dispatch_failure_reason` both empty. 2026-08-23, `nav143-s1`.
+- A Nav2 `lifecycle_manager_navigation` bond-heartbeat loss tears the whole
+  navigation stack down and leaves a *healthy-looking* log: no traceback,
+  nothing exits non-zero, the graph goes inert and idles out its deadline. It
+  scored as `deadline-no-grasp` for **31 of the 89 valid runs** in the
+  2026-09-06 ceiling battery, 25 of them naming `controller_server` (#256). The
+  same message also appears late in runs that did their work, so the test is
+  *when*, against a measured 99 s gap. `BOND_TIMEOUT_S` in
+  `openral_nav2_bringup/launch/nav2.launch.py` raised Nav2's 4 s default to 30 s.
+  See the 2026-09-09 entry, `the ceiling battery's deadline-no-grasp bucket was
+  a Nav2 teardown, not a policy failure`.
+- A lifecycle node that never completed a transition (`did not advance the FSM
+  within 300.0s`) is loud, but still produces absence: **12 more** of those same
+  89 runs. Same entry.
+
+**Adjudication.**
+
+- The admissible-gap budget (`adjudication_budget`, #144 / `ea1b7e8`,
+  2026-08-22) — applying the voxel term alone is roughly a factor of four too
+  narrow and turned conservative, correct stops into false positives: the
+  2026-08-23 `utensil` stop read `robot0_link1` at −17.3 mm against a genuinely
+  43.3 mm-clear pose. The 2026-08-22 `utensil` stop is the proof of the
+  asymmetry: byte-identical to a 2026-08-23 rerun that publishes an 88.2 mm gap
+  and comes out `within-quantization`. No `false-positive` from a round before
+  #144 can be re-derived from its own artifacts — "Standing caveats" §6.
+- Solid-geom attestation on **both** sides of a 0 m pair — earlier probes
+  filtered the world side only and really did rank visual geometry first: the
+  2026-08-23 `fridge` stop was adjudicated `real-contact` off `robot0_g42_vis`
+  at 0.000 m while the same link's collision geom was 2.5 mm clear, and the
+  2026-08-22 `sink_cup` stop off `obj_reg_bbox`, the payload's own region
+  marker. Those stops re-derive as `unadjudicated` — "Standing caveats" §5.
+- Adjudicate from the distance probes, never MuJoCo's contact count: the
+  `fridge` scene reports `payload_contacts == 0` alongside a link at 0.000 m.
+  2026-08-23.
+- Monitor attach timing — a scene that trips before the monitor has seen a voxel
+  grid has no fallback term: the 2026-08-22 `utensil` scene tripped at sim
+  t≈4.7 s and recorded zero snapshots, a null resolution and `unadjudicated`.
+  Moving the attach earlier then hit the deploy CLI's DDS purge: the 2026-08-23
+  round attached ~6 ms in and all 24 of its `run_monitor.jsonl` files contain
+  exactly `monitor_started` and `monitor_stopped`. The monitor is now gated on
+  `dds_transport_ready:`. 2026-08-23 entry, and the 2026-09-07 entry, `the
+  harness could not see the graph it launched, and had not since #231`.
+- `ros_domain_id` / `ros_automatic_discovery_range` recorded from #227 — before
+  that the DDS scope was captured nowhere, which is why the 2026-09-04
+  `post200-2` fridge round's `deadline-no-grasp` is recorded as *cause not
+  established* rather than blamed on anything. 2026-09-04 entries, and the
+  2026-09-07 entry above.
+- Payload-vs-link self stops (#228) — the rule branched on `involves_payload`
+  and compared a −1.55 mm kernel depth against the payload's **166 mm** clearance
+  to a *countertop*, a 167 mm discrepancy against the world budget, for a pair
+  the world probe never measured. The snapshot already carried
+  `nearest_payload_robot_pairs` (`obj_main`↔`robot0_link1`, certified GJK,
+  **+65.5 mm**); only the pair *selection* ignored it. The three
+  payload-vs-`panda_link1` stops of the 2026-09-05 #204 A/B re-derive from
+  `false-positive` to `within-quantization` — 67 mm of discrepancy against a
+  124.6 mm attached-payload self budget. 2026-09-04/05 entries.
+- Link-vs-link self stops took four changes to become scorable: **#208** stopped
+  them being scored against world geometry (`panda_link5`↔`panda_link7` at
+  −31.97 mm had been adjudicated against link5's 212 mm clearance to a kitchen
+  island; it became `unadjudicated` — honest, but not an answer); **#213** made
+  the kernel disclose `depth_is_box_bound`, because GJK proves an overlap but
+  does not size one; **#216** gave the HAL a `nearest_link_link_pairs` probe;
+  **#221** measured the hull case's missing term as
+  `TightCollisionGeometry.hull_overhang_m`.
+
+**Diffing.** A seed-1-vs-seed-2 pair at one SHA was once labelled
+`reproducibility` on the SHA alone; it compares two different scenes, because
+the seed decides the initial configuration. Equal SHA **and** equal seed is now
+the test.
 
 ## Programme status note
 
