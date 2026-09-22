@@ -8,7 +8,7 @@
 # allow_unknown, controller, behaviours) mirrors the base — see that file for
 # the tuning rationale. This makes Nav2 plan off `/map` regardless of HOW the
 # map was built (slam_toolbox lidar vs cuVSLAM+nvblox vision).
-# Regenerate after editing the base: python tools/gen_nav2_visual.py
+# Regenerate after editing the base: just gen-nav2-visual
 
 amcl:
   ros__parameters:
