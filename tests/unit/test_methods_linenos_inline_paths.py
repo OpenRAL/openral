@@ -23,6 +23,7 @@ from refresh_methods_linenos import (  # noqa: E402  # reason: needs the sys.pat
     _DIR_HEADING_RE,
     _MARKER_RE,
     _resolve_inline_path,
+    _symbols_from_span,
     coverage_report,
     refresh_file,
 )
@@ -42,6 +43,10 @@ def _definition_lines(path: Path) -> dict[int, str]:
                     table.setdefault(node.lineno, target.id)
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             table.setdefault(node.lineno, node.target.id)
+        elif isinstance(node, ast.Import | ast.ImportFrom):
+            # A re-export entry cites the import line, exactly as the refresher resolves it.
+            for alias in node.names:
+                table.setdefault(node.lineno, alias.asname or alias.name)
     return table
 
 
@@ -112,8 +117,10 @@ def test_inline_path_marker_points_at_its_definition(
     base = REPO_ROOT / section_dir if section_dir else None
     source = _resolve_inline_path(rel, base)
     assert source is not None, f"{doc}:{doc_line} cites a missing module: {rel}"
-    name = re.sub(r"^(class |@dataclass\s+class |def )", "", span).split("(")[0]
-    name = name.split(":")[0].strip()
+    # Resolve the span exactly as the refresher does (`Protocol X`, `@dataclass X`,
+    # `NAME = value`, `class X(...)` all name one symbol); the test must not carry a
+    # second, weaker parser of the inventory's own grammar.
+    name = _symbols_from_span(span)[0].rsplit(".", 1)[-1]
     table = _definition_lines(source)
     assert table.get(cited) == name, (
         f"{doc}:{doc_line} cites {rel} L{cited} for `{name}`, but L{cited} defines "
