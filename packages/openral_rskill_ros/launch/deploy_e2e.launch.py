@@ -842,6 +842,8 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     hal_params_file = LaunchConfiguration("hal_params_file").perform(context)
     reset_to_pose_service = LaunchConfiguration("reset_to_pose_service").perform(context)
     approach_skill_id = LaunchConfiguration("approach_skill_id").perform(context)
+    preload_rskill_id = LaunchConfiguration("preload_rskill_id").perform(context)
+    preload_prompt = LaunchConfiguration("preload_prompt").perform(context)
     place_declaration_json = LaunchConfiguration("place_declaration_json").perform(context)
     # Record the deploy session to a rosbag2 mcap.
     dataset_out = LaunchConfiguration("dataset_out").perform(context)
@@ -1500,6 +1502,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 "rskill_search_paths": [_RSKILLS_DIR],
                 "reset_to_pose_service": reset_to_pose_service,
                 "approach_skill_id": approach_skill_id,
+                # Load the scene's policy before any goal exists, so the
+                # deadman watchdog's first-chunk window (armed on goal accept)
+                # never has to cover a multi-minute cold load. Empty = the
+                # first goal loads its own skill, as before.
+                "preload_rskill_id": preload_rskill_id,
+                "preload_prompt": preload_prompt,
                 # ADR-0097 — the scene's committed place-phase declaration for a
                 # direct dispatch. Empty (every scene today) = no declaration, so
                 # no place witness can arm and payload contact mid-carry stops.
@@ -2620,6 +2628,27 @@ def generate_launch_description() -> LaunchDescription:
                 "rskills/rskill-moveit-joints) the skill_runner dispatches to "
                 "plan a collision-free motion to each skill's starting_pose. "
                 "Empty = kernel-checked joint ramp."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "preload_rskill_id",
+            default_value="",
+            description=(
+                "rSkill the skill_runner resolves and loads right after "
+                "activation (worker thread), so the first goal finds it "
+                "GPU-resident instead of paying a multi-minute cold load "
+                "inside the deadman watchdog's first-chunk window. Goals "
+                "are rejected until rskill_runner.preload_done is logged. "
+                "Empty = no preload."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "preload_prompt",
+            default_value="",
+            description=(
+                "Exact prompt the preloaded skill is bound to; the resident "
+                "key is (rskill_id, revision, prompt), so a later goal must "
+                "send the same string or the skill is evicted and reloaded."
             ),
         ),
         DeclareLaunchArgument(

@@ -2680,3 +2680,37 @@ def test_an_unpinned_octomap_cloud_topic_leaves_the_launch_default(tmp_path: Pat
     assert invocation.enable_octomap is True
     assert invocation.octomap_cloud_topic is None
     assert "octomap_cloud_topic:=" not in " ".join(invocation.argv_template)
+
+
+def test_scene_preload_pair_is_forwarded_only_when_the_scene_sets_it() -> None:
+    """``DeployRuntime.preload_rskill_id`` / ``preload_prompt`` → ``preload_*:=`` launch args.
+
+    The OpenArm bench scene pins its policy so the skill_runner loads it right
+    after activation, outside any goal's deadman first-chunk window; the
+    tabletop scene pins nothing and must forward nothing (ros2 launch rejects an
+    empty ``name:=``).
+    """
+    bench = _REPO_ROOT / "scenes" / "deploy" / "openarm_bench.yaml"
+    invocation = resolve_launch_invocation(
+        config=bench,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        hal_mode="real",
+    )
+    assert invocation.preload_rskill_id == "OpenRAL/rskill-pi05-openarm-restock_shelf-bf16"
+    assert invocation.preload_prompt == "restock-shelf-from-front-box"
+    joined = " ".join(invocation.argv_template)
+    assert "preload_rskill_id:=OpenRAL/rskill-pi05-openarm-restock_shelf-bf16" in joined
+    assert "preload_prompt:=restock-shelf-from-front-box" in joined
+
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.preload_rskill_id == ""
+    assert "preload_rskill_id:=" not in " ".join(invocation.argv_template)

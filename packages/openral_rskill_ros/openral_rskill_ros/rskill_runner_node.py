@@ -264,6 +264,18 @@ if _ROS2_AVAILABLE:
             # preferred over the checked joint ramp. ``openral deploy sim`` /
             # ``deploy run`` may set it to ``rskills/rskill-moveit-joints``.
             self.declare_parameter("approach_skill_id", "")
+            # Preload: resolve + load one rSkill right after on_activate, in a
+            # worker thread, so the first goal finds it GPU-resident. The
+            # deadman watchdog opens its first-chunk window the moment a goal
+            # is ACCEPTED, and a 3.6 B π0.5 takes ~350 s to load on a Jetson
+            # AGX Orin (measured 2026-09-22) against a 120 s window — so a cold
+            # load inside a goal is E-stopped every time, correctly. Loading
+            # before any goal exists is the only path that keeps the watchdog
+            # as strict as it is. The prompt must be the exact string later
+            # goals will send: the resident key is (id, revision, prompt).
+            self.declare_parameter("preload_rskill_id", "")
+            self.declare_parameter("preload_rskill_revision", "")
+            self.declare_parameter("preload_prompt", "")
             self.declare_parameter("approach_skill_revision", "main")
             # ADR-0097 place-phase declaration for DIRECT dispatch — the
             # deploy scene's own `place_declaration`, serialised, injected by
@@ -332,6 +344,13 @@ if _ROS2_AVAILABLE:
             # flight) — switch to reject-when-busy in _goal_cb if external
             # clients ever stack goals.
             self._execute_serial = threading.Lock()
+            # Set while the preload worker holds ``_execute_serial``; goals are
+            # REJECTED (not accepted-then-queued) while it is set, because an
+            # accepted goal arms the watchdog's first-chunk window even though
+            # it could only wait on the lock.
+            self._preload_in_flight = threading.Event()
+            self._preload_thread: threading.Thread | None = None
+            self._lifecycle_active = False
 
         # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -610,15 +629,91 @@ if _ROS2_AVAILABLE:
 
         @log_lifecycle_errors
         def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
-            """Start the diagnostics heartbeat."""
+            """Start the diagnostics heartbeat and, if configured, the skill preload."""
             del state
+            self._lifecycle_active = True
             if self._heartbeat is not None:
                 self._heartbeat.start()
+            preload_id = str(self.get_parameter("preload_rskill_id").value or "")
+            if preload_id:
+                # Off the lifecycle thread: the orchestrator bounds each
+                # transition, and a transition that takes minutes reads as a
+                # hung node. The worker takes ``_execute_serial`` itself.
+                self._preload_in_flight.set()
+                self._preload_thread = threading.Thread(
+                    target=self._preload_resident_skill,
+                    kwargs={
+                        "rskill_id": preload_id,
+                        "revision": str(self.get_parameter("preload_rskill_revision").value or ""),
+                        "prompt": str(self.get_parameter("preload_prompt").value or ""),
+                    },
+                    name="rskill_preload",
+                    daemon=True,
+                )
+                self._preload_thread.start()
             return TransitionCallbackReturn.SUCCESS
+
+        def _preload_resident_skill(self, *, rskill_id: str, revision: str, prompt: str) -> None:
+            """Worker body: make ``rskill_id`` the GPU-resident skill before any goal.
+
+            Goes through ``_acquire_skill`` so it is the same resolve, the same
+            gates and the same cache key a goal would use. A failure is logged
+            with its typed kind and the node stays up: the next goal simply
+            pays the cold load itself (and meets the watchdog), which is the
+            pre-preload behaviour, not a new failure mode.
+            """
+            import time as _time
+
+            from openral_core.exceptions import ROSError, ROSSafetyViolation
+
+            t0 = _time.monotonic()
+            self.get_logger().info(
+                f"rskill_runner.preload_start: {rskill_id!r} revision={revision!r} "
+                f"prompt={prompt!r}; goals are rejected until it is resident"
+            )
+            try:
+                with self._execute_serial:
+                    self._acquire_skill(
+                        rskill_id=rskill_id,
+                        revision=revision,
+                        prompt=prompt,
+                        prompt_metadata_json="",
+                        goal_params_json="",
+                    )
+                    if not self._lifecycle_active:
+                        # Deactivated while loading: on_cleanup's eviction ran
+                        # before the skill existed, so evict it here instead of
+                        # leaving 9 GB resident on an inactive node.
+                        self._evict_resident_skill()
+                        return
+                self.get_logger().info(
+                    f"rskill_runner.preload_done: {rskill_id!r} resident after "
+                    f"{_time.monotonic() - t0:.1f} s"
+                )
+            except ROSSafetyViolation:
+                raise
+            except ROSError as exc:
+                self.get_logger().error(
+                    f"rskill_runner.preload_failed: kind={type(exc).__name__} "
+                    f"rskill_id={rskill_id!r} reason={exc!s}"
+                )
+            except Exception as exc:  # reason: a preload must never take the node down
+                import traceback as _traceback
+
+                # Untyped means it escaped the OpenRAL exception surface, so
+                # the reason alone rarely says where; carry the frames.
+                self.get_logger().error(
+                    f"rskill_runner.preload_failed: kind=unexpected "
+                    f"({type(exc).__name__}) rskill_id={rskill_id!r} reason={exc!s}\n"
+                    f"{_traceback.format_exc()}"
+                )
+            finally:
+                self._preload_in_flight.clear()
 
         def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
             """Stop the heartbeat. Cancels any in-flight goal."""
             del state
+            self._lifecycle_active = False
             with self._goal_lock:
                 self._cancel_requested = True
             if self._heartbeat is not None:
@@ -686,6 +781,14 @@ if _ROS2_AVAILABLE:
 
             req_key = (rskill_id, revision, prompt)
             if self._resident_skill is not None and self._resident_key != req_key:
+                # Loud on purpose: a preloaded skill is only reused when
+                # rskill_id, revision AND prompt match exactly, and the cost
+                # of a mismatch is the full cold load — inside the goal's
+                # watchdog window this time.
+                self.get_logger().warning(
+                    f"rskill_runner.resident_key_mismatch: resident={self._resident_key!r} "
+                    f"requested={req_key!r} — evicting and reloading"
+                )
                 self._evict_resident_skill()
             if self._resident_skill is not None and self._resident_key == req_key:
                 resident = cast("rSkillBase", self._resident_skill)
@@ -762,6 +865,17 @@ if _ROS2_AVAILABLE:
             Result message instead of refusing to even start the goal.
             """
             if self._estop_latched:
+                return GoalResponse.REJECT
+            if self._preload_in_flight.is_set():
+                # Not accept-and-wait: acceptance is what arms the deadman
+                # watchdog's first-chunk window, and a goal parked on
+                # ``_execute_serial`` behind a multi-minute load would be
+                # E-stopped for producing nothing. ROS 2 rejections carry no
+                # reason, so the log line is the operator's only explanation.
+                self.get_logger().warning(
+                    "rskill_runner.goal_rejected: preload in flight — re-send once "
+                    "rskill_runner.preload_done is logged"
+                )
                 return GoalResponse.REJECT
             return GoalResponse.ACCEPT
 

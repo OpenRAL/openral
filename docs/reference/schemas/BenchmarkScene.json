@@ -484,6 +484,30 @@
           "default": null,
           "title": "Approach Skill Id"
         },
+        "preload_rskill_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preload Rskill Id"
+        },
+        "preload_prompt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Preload Prompt"
+        },
         "slam_visual_impl": {
           "anyOf": [
             {

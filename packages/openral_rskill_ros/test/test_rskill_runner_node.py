@@ -140,7 +140,9 @@ def _compose_harness(
 
     Yields ``(executor, runtime, safety_node, observed)`` where
     ``observed`` is a dict of typed message lists subscribed by the
-    helper node. ``resolver`` overrides the default constant-skill resolver.
+    helper node. ``resolver`` overrides the default constant-skill resolver;
+    ``runner_parameters`` are set on the skill_runner node before it is configured
+    (e.g. the ``preload_*`` parameters read at on_activate).
     """
     import rclpy
     from openral_msgs.msg import ActionChunk
@@ -1181,3 +1183,78 @@ def test_successful_goal_reports_failure_kind_none() -> None:
     assert result.success, result.failure_reason
     assert result.failure_reason == ""
     assert result.failure_kind == ExecuteRskill.Result.FAILURE_NONE
+
+
+def test_non_skill_resolver_result_carries_config_error_kind() -> None:
+    """A resolver returning something that is not an rSkillBase → FAILURE_CONFIG_ERROR.
+
+    This is what the production Hub resolver did until it bound the fetched
+    weights to a runtime skill: it handed back the ``rSkill`` packaging handle.
+    The embodiment gate then dereferenced ``getattr(skill, "info", None)`` and
+    the goal came back ABORTED with an EMPTY failure_reason and failure_kind 0.
+    The contract violation must be a typed, named failure.
+    """
+    from openral_msgs.action import ExecuteRskill
+
+    class _NotASkill:
+        """Has neither .info nor .step — the shape of the packaging handle."""
+
+    result = _dispatch_and_get_result(lambda *_a, **_k: _NotASkill())
+    assert not result.success
+    assert result.failure_reason.startswith("ROSConfigError:"), result.failure_reason
+    assert "not an rSkillBase" in result.failure_reason
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_CONFIG_ERROR
+
+
+def test_preload_loads_the_skill_before_the_first_goal_and_rejects_goals_meanwhile() -> None:
+    """``preload_rskill_id`` resolves at on_activate; goals during it are REJECTED, not queued.
+
+    The deadman watchdog opens its first-chunk window on goal ACCEPT, so a
+    goal parked behind a multi-minute cold load would be braked for producing
+    nothing. The preload has to happen with no goal in existence, and a goal
+    that arrives mid-load must be refused outright. Once resident, the goal
+    with the same (id, revision, prompt) reuses it — the resolver runs once.
+    """
+    from openral_msgs.action import ExecuteRskill
+    from rclpy.action import ActionClient
+
+    built: list[Any] = []
+
+    def _slow_resolver(*_args: Any, **kwargs: Any) -> Any:
+        time.sleep(1.5)  # stands in for the cold load
+        skill = _make_named_skill(kwargs.get("rskill_id", "openral/unknown"))
+        built.append(skill)
+        return skill
+
+    params = {"preload_rskill_id": "openral/skill-a", "preload_prompt": "drive"}
+    with _compose_harness(resolver=_slow_resolver, runner_parameters=params) as (
+        executor,
+        runtime,
+        _s,
+        _o,
+    ):
+        node = runtime.skill_runner_node
+        client = ActionClient(node, ExecuteRskill, "/openral/execute_rskill")
+        _spin_for(executor, 0.2)
+        assert client.wait_for_server(timeout_sec=2.0)
+
+        # Mid-preload: the goal is refused at goal_callback, so it never
+        # reaches ACCEPTED and never arms the watchdog.
+        goal = ExecuteRskill.Goal()
+        goal.rskill_id = "openral/skill-a"
+        goal.prompt = "drive"
+        goal.deadline_s = 0.4
+        send_future = client.send_goal_async(goal)
+        deadline = time.monotonic() + 3.0
+        while not send_future.done() and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        handle = send_future.result()
+        assert handle is not None and not handle.accepted, "goal was accepted mid-preload"
+
+        # Let the preload finish; the resolver has now run exactly once.
+        _spin_for(executor, 2.5)
+        assert len(built) == 1, "preload should have resolved the skill once"
+
+        # Same key → resident skill reused; no second resolve.
+        _run_goal(executor, node, "openral/skill-a")
+        assert len(built) == 1, "a goal matching the preload key must not reload"

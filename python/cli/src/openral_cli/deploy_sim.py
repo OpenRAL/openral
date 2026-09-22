@@ -151,6 +151,13 @@ class LaunchInvocation:
     plans a collision-free MoveGroup motion to the next skill's ``starting_pose``
     instead of the runner's kernel-checked joint ramp. Empty (the default) uses
     that ramp; opt in once a ``move_group`` is in the graph."""
+    preload_rskill_id: str
+    """``DeployRuntime.preload_rskill_id`` forwarded as ``preload_rskill_id:=…``
+    so the skill_runner loads the scene's policy right after activation, outside
+    any goal's watchdog window. Empty = no preload."""
+    preload_prompt: str
+    """``DeployRuntime.preload_prompt`` forwarded as ``preload_prompt:=…``; must
+    be the exact prompt later goals send (resident key = id, revision, prompt)."""
     enable_slam: bool
     """Opt-in. Set by ``openral deploy sim --enable-slam``;
     forwarded into the launch as ``enable_slam:=true``."""
@@ -882,6 +889,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # DeployScene.runtime — the committed deploy posture. Field-by-field
     # precedence: explicit CLI flag > scene runtime > auto/built-in default
     # (the per-feature autos below). None on both = auto, as before.
+    # Scene-only, no CLI flag: which policy a cell keeps warm is a property
+    # of the workcell, not of one invocation.
+    preload_rskill_id = ""
+    preload_prompt = ""
     rt = deploy_scene.runtime if deploy_scene is not None else None
     if rt is not None:
         scene_dir = config.parent if config is not None else None
@@ -925,6 +936,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         if spatial_memory_ingest is None:
             spatial_memory_ingest = rt.spatial_memory_ingest
         approach_skill_id = approach_skill_id or rt.approach_skill_id
+        preload_rskill_id = rt.preload_rskill_id or ""
+        preload_prompt = rt.preload_prompt or ""
         if slam_visual_impl is None:
             slam_visual_impl = rt.slam_visual_impl
         if slam_stereo_cameras is None:
@@ -1301,6 +1314,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # defaults ``approach_skill_id`` to "").
     if approach_skill:
         argv_template.append(f"approach_skill_id:={approach_skill}")
+    # Same rule for the preload pair: forwarded only when the scene sets it.
+    if preload_rskill_id:
+        argv_template.append(f"preload_rskill_id:={preload_rskill_id}")
+        if preload_prompt:
+            argv_template.append(f"preload_prompt:={preload_prompt}")
     # only forward the stereo rig when the scene pins it (empty default; the
     # launch file defaults the visual impl's own left/right topics otherwise).
     if slam_stereo_cameras is not None:
@@ -1388,6 +1406,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         hal_mode=hal_mode,
         reset_to_pose_service=service,
         approach_skill_id=approach_skill,
+        preload_rskill_id=preload_rskill_id,
+        preload_prompt=preload_prompt,
         enable_foxglove=enable_foxglove,
         foxglove_port=foxglove_port,
         initial_task_prompt=_resolved_initial_prompt,
