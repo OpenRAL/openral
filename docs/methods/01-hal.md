@@ -29,28 +29,29 @@ _Internal MuJoCo-backed HAL implementation shared by UR / Franka / SO-100 / G1 /
 
 - `class _MujocoArmInitKwargs(TypedDict)` — Typed shape of the kwargs accepted by `MujocoArmHAL.__init__`. (L61) Lets `MujocoArmHAL._sim_kwargs_for` return a value that unpacks cleanly into the constructor under `mypy --strict` without the `# type: ignore[arg-type]` hatch every thin subclass used to need. Fields: `mjcf_path, joint_qpos_addr, joint_qvel_addr, actuator_index, grippers, keyframe_index, seed_ctrl_from_qpos, settle_steps, gravity_enabled, staleness_limit_s`.
 - `_resolve_mjcf_path(desc: RobotDescription) -> str` [private] — Resolve `desc.assets.mjcf` to an absolute MJCF path via `openral_core.assets.resolve_asset`; raises `ROSConfigError` when the ref is unset or unresolvable. Replaced the former public `resolve_mjcf_uri` / `SimDescription.mjcf_uri`. (L81)
+- `_kinematic_group(joint_name, groups, *, robot) -> str` [private] (L111) — Returns the first entry of `groups` that is a substring of `joint_name`, else raises `ROSConfigError` naming `robot`. Shared by the G1 (`g1.py`) and H1 (`h1.py`) humanoid adapters to classify a joint name (`"left_hip_yaw"`, `"left_wrist_roll_joint"`, …) into one of the robot's kinematic groups for velocity/effort/PD-gain lookup tables keyed by group rather than by individual joint.
 - `build_hal(description, *, mode: Literal["sim","real"], transport=None, sim_env_yaml=None) -> HAL` — Single seam for constructing a robot's simulation or real-hardware HAL from its manifest (`resolver.py` L39). `mode="sim"` + `sim_env_yaml` set → calls `build_sim_env_from_yaml` and returns a `SimAttachedHAL` wrapping the scene's `SimRollout`; bypasses the bare-twin / `hal.sim` class entirely. `mode="sim"` without `sim_env_yaml` builds `description.hal.sim` or derives `MujocoArmHAL.from_description` when it is null + a `sim:` block exists. `mode="real"` imports `description.hal.real` and threads `transport` kwargs (real HALs take `port` / `robot_ip` / `fci_ip` and embed their own description). Both modes merge `description.hal.parameters.defaults` **underneath** the explicit `transport` so the manifest carries a robot's construction kwargs; unaccepted keys are dropped. `sim_env_yaml` + `mode="real"` → `ROSConfigError`. Missing HAL for the mode → `ROSCapabilityMismatch`; malformed/unresolvable entry → `ROSConfigError`. Routed by `deploy sim` (sim) and `deploy run` (real).
   - `_import_object(path: str) -> object` [private] — Resolve a `"module.path:Attribute"` import string; raises `ROSConfigError` on malformed/unimportable/missing. **Reuse watch:** the canonical entrypoint-string importer for HAL classes — do not hand-roll `importlib` in HAL callers.
-- `class MujocoArmHAL` — Generic MuJoCo-backed HAL adapter for position-controlled arms (and, via the `_per_step_update` hook, torque-controlled humanoids like the H1). (L119)
-  - `read_images() -> dict[str, NDArray]` (L377) — Render the manifest's RGB `SensorSpec`s off the live MJCF, keyed by sensor `name` (issue #191 Phase 3b). Same contract `SimAttachedHAL.read_images` exposes, so `SimSensorBridge` publishes a composed-scene arm's cameras (openarm) through the shared path. Renders the MJCF camera `sim_camera_name or name` **at that sensor's own `intrinsics` resolution** — one `mujoco.Renderer` is cached per distinct `(height, width)`, so e.g. a 256×256 wrist camera alongside a 640×480 overhead publishes 256×256 (not a shared max); the published frame size always matches the sensor's camera model. A missing camera / render error is skipped with a one-shot warning (never raises). Renderers are created lazily per resolution so each EGL context binds on the caller (executor) thread. Returns `{}` when disconnected / no RGB sensors / after a renderer failure.
-  - `__init__(description, *, mjcf_path, joint_qpos_addr, actuator_index, joint_qvel_addr=None, grippers=(), keyframe_index=None, seed_ctrl_from_qpos=False, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Init only; MJCF is not loaded until `connect()`. `joint_qvel_addr` defaults to `joint_qpos_addr` (correct for arms without a floating base) and is passed explicitly by humanoid HALs like `G1MujocoHAL` / `H1MujocoHAL` where the free joint shifts the qvel indices by 1. `grippers` is a sequence of `SimGripperDescription` entries; single-arm robots ship one (or none), bimanual robots (Aloha, OpenArm) ship two. (L169)
+- `class MujocoArmHAL` — Generic MuJoCo-backed HAL adapter for position-controlled arms (and, via the `_per_step_update` hook, torque-controlled humanoids like the H1). (L141)
+  - `read_images() -> dict[str, NDArray]` (L399) — Render the manifest's RGB `SensorSpec`s off the live MJCF, keyed by sensor `name` (issue #191 Phase 3b). Same contract `SimAttachedHAL.read_images` exposes, so `SimSensorBridge` publishes a composed-scene arm's cameras (openarm) through the shared path. Renders the MJCF camera `sim_camera_name or name` **at that sensor's own `intrinsics` resolution** — one `mujoco.Renderer` is cached per distinct `(height, width)`, so e.g. a 256×256 wrist camera alongside a 640×480 overhead publishes 256×256 (not a shared max); the published frame size always matches the sensor's camera model. A missing camera / render error is skipped with a one-shot warning (never raises). Renderers are created lazily per resolution so each EGL context binds on the caller (executor) thread. Returns `{}` when disconnected / no RGB sensors / after a renderer failure.
+  - `__init__(description, *, mjcf_path, joint_qpos_addr, actuator_index, joint_qvel_addr=None, grippers=(), keyframe_index=None, seed_ctrl_from_qpos=False, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Init only; MJCF is not loaded until `connect()`. `joint_qvel_addr` defaults to `joint_qpos_addr` (correct for arms without a floating base) and is passed explicitly by humanoid HALs like `G1MujocoHAL` / `H1MujocoHAL` where the free joint shifts the qvel indices by 1. `grippers` is a sequence of `SimGripperDescription` entries; single-arm robots ship one (or none), bimanual robots (Aloha, OpenArm) ship two. (L191)
   - `_per_step_update(targets) -> None` — Hook invoked before every `mj_step` inside the settle loop. Default no-op; subclasses driving torque-mode actuators (`H1MujocoHAL`) override to recompute the actuator torque each step from the current `qpos` / `qvel`.
-  - `connect() -> None` (L245) — Load MJCF, prepare `MjData` buffer. Before compiling, runs the generic camera rig (`_camera_rig.rig_cameras_into_mjcf`): if the MJCF lacks a manifest RGB camera that declares a `sim_placement`, it splices the camera (+ visual-only floor + fill light) into a sibling `<name>_camrig.xml` and loads that — so a bare-arm deploy twin (so100/so101) renders its declared cameras without a scene composer. Idempotent: a scene-attached / composed MJCF that already has the cameras loads unchanged.
-  - `disconnect() -> None` (L321) — Release the MuJoCo model (idempotent).
-  - `mujoco_handles() -> tuple[Any, Any] | None` (L334) — Expose the live MuJoCo `(model, data)` for the bare-twin arm; mirrors `SimAttachedHAL.mujoco_handles` so `SimSensorBridge`'s offscreen cinecam can render a 3rd-person view of a composed-scene arm (openarm/so101/franka bare twins). `None` until connected.
-  - `read_state() -> JointState` (L465) — Joint state in description-joint order. Reads live in-process `MjData` (always current), so it **never latches `ROSPerceptionStale`**: a gap > `staleness_limit_s` since the last service means the single-threaded executor was starved (e.g. a slow camera render), not bad data — it emits a one-shot `hal.read_state.starved` WARNING and returns the live state (re-armed on the next healthy read). The prior behaviour raised *before* refreshing the clock, so one transient stall bricked the HAL permanently (the deploy-sim "Joint state is X s old" loop). Async live-feedback staleness is policed by the subscription HALs (`ros_control`/`aloha`), not here.
-  - `send_action(action: Action) -> None` (L550) — Forward last waypoint to MuJoCo and step. Stamps `_last_action_ns` so the idle stepper yields to a recent command.
-  - `sim_time_ns() -> int | None` (L346) — Bare-twin MuJoCo elapsed time in ns, read from live `MjData.time`; `None` before connect / after disconnect or e-stop. This is the `/clock` seam for OpenArm / SO-100 / SO-101 deploy-sim graphs, matching `SimAttachedHAL.sim_time_ns()` for scene-attached rollouts.
-  - `clock_authority() -> ClockAuthority` (L363) — Return `ClockAuthority.simulation("mujoco", timestep_s=model.opt.timestep)` while connected, otherwise `ClockAuthority.host_wall()`.
-  - `idle_step(wall_dt_s=None) -> bool` (L689) — **Sim-only** HOLD stepper that gives a bare `MujocoArmHAL` the cameras-stay-live treatment, plus joint_state published off the executor via `ProprioSnapshot` + dedicated thread, that the lifecycle node gates on a *callable* `idle_step`. Leaves `ctrl` untouched (it already holds the last commanded / seeded pose). With `wall_dt_s`, advances that wall-time slice (bounded to `_IDLE_STEP_CAP` physics steps); without it, advances one legacy `mj_step`. Bare MuJoCo arms set the internal `_step_while_active` capability so this wall-time integrator continues during active skills: `send_action()` advances only one physics tick, and yielding the stepper previously collapsed `/clock` and top/wrist camera publication to ~0.25 Hz during rollout. Returns `False` after disconnect/e-stop, so it can never autonomously drive an e-stopped robot.
-  - **(property)** `last_action_ns -> int` (L680) — `time.monotonic_ns()` of the last `send_action` (`0` if never actuated → idle-stepping starts immediately). The `SimSensorBridge` reads it (`should_idle_step`) to yield the idle stepper to a recently-commanded skill. Mirrors `SimAttachedHAL.last_action_ns`.
-  - `reset_to_pose(pose: list[float]) -> None` — Explicit maintenance/test snap of `qpos` with `ctrl` re-seeded. Gripper entries use the HAL's public units: normalized values are mapped through `SimGripperDescription.ctrl_range`, so SO-101 `0.0195` reads back as `0.0195` rather than being mistaken for raw jaw radians. Skill startup instead uses the runner's checked action ramp or a configured MoveIt approach. (L592)
-  - `estop() -> None` (L665) — Zero `ctrl` and raise `ROSEStopRequested`.
-  - **(classmethod)** `from_description(description, *, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, mjcf_path_override=None) -> MujocoArmHAL` — Manifest-driven constructor. Reads `description.sim` and builds the HAL with the right MJCF path, qpos/qvel/actuator maps and gripper config. Removes the need for per-robot Python subclasses. (L944)
-  - **(staticmethod)** `_sim_kwargs_for(description, *, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, mjcf_path_override=None) -> _MujocoArmInitKwargs` — Translate `description.sim` into the `__init__` kwarg dict.  Default 1:1 joint→qpos/actuator mapping is derived from `description.joints`, offset by 7 (qpos) / 6 (qvel) when `sim.floating_base=True`.  Used by both `from_description`, `_init_from_description`, and any caller that wants to post-process the kwargs. (L868)
-  - **(instance method)** `_init_from_description(description, *, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5) -> None` — Seam every thin per-robot subclass (UR5e/UR10e, Franka, ALOHA, OpenArm, Rizon4, G1, H1, SO-100) uses to drop the boilerplate `super().__init__(DESC, **MujocoArmHAL._sim_kwargs_for(DESC, …))` dance. Subclasses keep their typed `__init__(*, mjcf_path, settle_steps, gravity_enabled, staleness_limit_s)` signature (so IDEs still surface the four user-tunable knobs) and forward straight to here. (L997)
+  - `connect() -> None` (L267) — Load MJCF, prepare `MjData` buffer. Before compiling, runs the generic camera rig (`_camera_rig.rig_cameras_into_mjcf`): if the MJCF lacks a manifest RGB camera that declares a `sim_placement`, it splices the camera (+ visual-only floor + fill light) into a sibling `<name>_camrig.xml` and loads that — so a bare-arm deploy twin (so100/so101) renders its declared cameras without a scene composer. Idempotent: a scene-attached / composed MJCF that already has the cameras loads unchanged.
+  - `disconnect() -> None` (L343) — Release the MuJoCo model (idempotent).
+  - `mujoco_handles() -> tuple[Any, Any] | None` (L356) — Expose the live MuJoCo `(model, data)` for the bare-twin arm; mirrors `SimAttachedHAL.mujoco_handles` so `SimSensorBridge`'s offscreen cinecam can render a 3rd-person view of a composed-scene arm (openarm/so101/franka bare twins). `None` until connected.
+  - `read_state() -> JointState` (L487) — Joint state in description-joint order. Reads live in-process `MjData` (always current), so it **never latches `ROSPerceptionStale`**: a gap > `staleness_limit_s` since the last service means the single-threaded executor was starved (e.g. a slow camera render), not bad data — it emits a one-shot `hal.read_state.starved` WARNING and returns the live state (re-armed on the next healthy read). The prior behaviour raised *before* refreshing the clock, so one transient stall bricked the HAL permanently (the deploy-sim "Joint state is X s old" loop). Async live-feedback staleness is policed by the subscription HALs (`ros_control`/`aloha`), not here.
+  - `send_action(action: Action) -> None` (L572) — Forward last waypoint to MuJoCo and step. Stamps `_last_action_ns` so the idle stepper yields to a recent command.
+  - `sim_time_ns() -> int | None` (L368) — Bare-twin MuJoCo elapsed time in ns, read from live `MjData.time`; `None` before connect / after disconnect or e-stop. This is the `/clock` seam for OpenArm / SO-100 / SO-101 deploy-sim graphs, matching `SimAttachedHAL.sim_time_ns()` for scene-attached rollouts.
+  - `clock_authority() -> ClockAuthority` (L385) — Return `ClockAuthority.simulation("mujoco", timestep_s=model.opt.timestep)` while connected, otherwise `ClockAuthority.host_wall()`.
+  - `idle_step(wall_dt_s=None) -> bool` (L711) — **Sim-only** HOLD stepper that gives a bare `MujocoArmHAL` the cameras-stay-live treatment, plus joint_state published off the executor via `ProprioSnapshot` + dedicated thread, that the lifecycle node gates on a *callable* `idle_step`. Leaves `ctrl` untouched (it already holds the last commanded / seeded pose). With `wall_dt_s`, advances that wall-time slice (bounded to `_IDLE_STEP_CAP` physics steps); without it, advances one legacy `mj_step`. Bare MuJoCo arms set the internal `_step_while_active` capability so this wall-time integrator continues during active skills: `send_action()` advances only one physics tick, and yielding the stepper previously collapsed `/clock` and top/wrist camera publication to ~0.25 Hz during rollout. Returns `False` after disconnect/e-stop, so it can never autonomously drive an e-stopped robot.
+  - **(property)** `last_action_ns -> int` (L702) — `time.monotonic_ns()` of the last `send_action` (`0` if never actuated → idle-stepping starts immediately). The `SimSensorBridge` reads it (`should_idle_step`) to yield the idle stepper to a recently-commanded skill. Mirrors `SimAttachedHAL.last_action_ns`.
+  - `reset_to_pose(pose: list[float]) -> None` — Explicit maintenance/test snap of `qpos` with `ctrl` re-seeded. Gripper entries use the HAL's public units: normalized values are mapped through `SimGripperDescription.ctrl_range`, so SO-101 `0.0195` reads back as `0.0195` rather than being mistaken for raw jaw radians. Skill startup instead uses the runner's checked action ramp or a configured MoveIt approach. (L614)
+  - `estop() -> None` (L687) — Zero `ctrl` and raise `ROSEStopRequested`.
+  - **(classmethod)** `from_description(description, *, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, mjcf_path_override=None) -> MujocoArmHAL` — Manifest-driven constructor. Reads `description.sim` and builds the HAL with the right MJCF path, qpos/qvel/actuator maps and gripper config. Removes the need for per-robot Python subclasses. (L966)
+  - **(staticmethod)** `_sim_kwargs_for(description, *, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5, mjcf_path_override=None) -> _MujocoArmInitKwargs` — Translate `description.sim` into the `__init__` kwarg dict.  Default 1:1 joint→qpos/actuator mapping is derived from `description.joints`, offset by 7 (qpos) / 6 (qvel) when `sim.floating_base=True`.  Used by both `from_description`, `_init_from_description`, and any caller that wants to post-process the kwargs. (L890)
+  - **(instance method)** `_init_from_description(description, *, mjcf_path=None, settle_steps=None, gravity_enabled=True, staleness_limit_s=0.5) -> None` — Seam every thin per-robot subclass (UR5e/UR10e, Franka, ALOHA, OpenArm, Rizon4, G1, H1, SO-100) uses to drop the boilerplate `super().__init__(DESC, **MujocoArmHAL._sim_kwargs_for(DESC, …))` dance. Subclasses keep their typed `__init__(*, mjcf_path, settle_steps, gravity_enabled, staleness_limit_s)` signature (so IDEs still surface the four user-tunable knobs) and forward straight to here. (L1019)
   - private: `_require_connected`, `_validate_action`, `_last_arm_targets`, `_apply_arm_targets`, `_apply_gripper_targets`, `_read_gripper_value`, `_gripper_command_to_raw`, `_reset_gripper_qpos`, `_effective_actuator_index_for`
-- module const `_IDLE_STEP_CAP = 200` (L114) — Upper bound (physics steps) on how much sim time one `idle_step` wall-time tick may advance, so an executor stall cannot fast-forward the world by seconds.
+- module const `_IDLE_STEP_CAP = 200` (L136) — Upper bound (physics steps) on how much sim time one `idle_step` wall-time tick may advance, so an executor stall cannot fast-forward the world by seconds.
 
 ### `python/hal/src/openral_hal/_base.py`
 _Shared HAL mixin — `_connected` flag, validation helpers, and a default `disconnect`._
@@ -326,228 +327,31 @@ JSON-lines sidecar. No vendor source, binary, or message package is distributed.
   cache parent, serial ownership, loopback port, container name, and process
   lock without opening the serial device or starting a container.
 
-#### Galaxea A1 hardware bring-up
-
-The first session is observation-only until the HAL graph is healthy. Ensure no
-other process/container owns the serial device, the arm workspace is clear, and
-the physical e-stop is reachable.
-
-```bash
-# One-time: build OpenRAL's vendor-free Noetic runtime image. The official SDK
-# is mounted at run time and is never copied into the image.
-docker build \
-  -t openral/galaxea-a1-sidecar:noetic \
-  docker/galaxea_a1_sidecar
-
-# One-time: build OpenRAL's standard public x86 deploy image (Jazzy/Python 3.12).
-just docker-build-x86
-
-# Read-only gate — checks the image, SDK, serial ownership, port, and lock.
-tools/run_galaxea_a1_sidecar.sh \
-  --image openral/galaxea-a1-sidecar:noetic \
-  --sdk-root /absolute/path/to/A1_SDK \
-  --serial /dev/a1 \
-  --check-only
-
-# Terminal 1 — isolated ROS 1 bridge network; only TCP 46011 reaches loopback.
-tools/run_galaxea_a1_sidecar.sh \
-  --image openral/galaxea-a1-sidecar:noetic \
-  --sdk-root /absolute/path/to/A1_SDK \
-  --serial /dev/a1
-
-# Terminal 2 — OpenRAL's standard real-hardware path. The OpenRAL container uses
-# host networking only for ROS 2 DDS and the sidecar's loopback TCP port; it owns
-# no Galaxea serial device and cannot see the ROS 1 master inside the sidecar.
-docker run --rm --name openral-galaxea-a1 --network host \
-  --volume "$(pwd)/robots:/workspace/robots:ro" \
-  --volume "$(pwd)/scenes:/workspace/scenes:ro" \
-  --volume "$(pwd)/tests:/workspace/tests:ro" \
-  openral:x86 \
-  --config scenes/deploy/galaxea_a1_bench.yaml
-
-# Terminal 3 — observation gate: six named joints update; diagnostics are clean.
-docker exec openral-galaxea-a1 bash -lc \
-  'source /opt/ros/jazzy/setup.bash && source /workspace/install/setup.bash && \
-   ros2 topic echo /joint_states --once && ros2 topic echo /diagnostics --once'
-```
-
-An optional HAL-level HIL gate can run between Terminal 1 and the full deploy.
-It opens one sidecar session, validates three fresh finite named-joint samples
-plus cached motor health, and ends by verifying that downstream e-stop stops the
-owned ROS 1 stack. Restart Terminal 1 afterwards:
-
-```bash
-GALAXEA_A1_HIL=1 just hil galaxea_a1
-```
-
-Only after that observation-only run passes, opt into a measured-current-pose
-hold. Feedback within the tracked 0.01 rad endpoint tolerance is projected to
-the exact command limit; any larger projection fails before publication. The
-test also waits for the sidecar relay to report `ACTIVE`, proving the official
-tracker has converged from its compiled `task.info` initial pose before any
-host motor command is forwarded:
-
-```bash
-GALAXEA_A1_HIL=1 GALAXEA_A1_ALLOW_HOLD=1 just hil galaxea_a1
-```
-
-After the hold passes, a separate lab opt-in moves `arm_joint1` by +0.01 rad,
-requires it to settle within 0.008 rad (covering the measured 0.007 rad
-small-command residual), continuously bounds all six joint excursions, returns
-to the measured start, and then performs the same downstream e-stop:
-
-```bash
-GALAXEA_A1_HIL=1 GALAXEA_A1_ALLOW_NUDGE=1 just hil galaxea_a1
-```
-
-The G2 gripper has its own opt-in. It uses the vendor example's 10 mm step,
-mapped through the normalized `0..1` contract over the configured 104 mm
-stroke, chooses the direction away from the nearest endpoint, verifies feedback
-within the measured 2.5 mm steady-state tolerance, and returns to the measured
-opening even when the outbound-leg assertion fails:
-
-```bash
-GALAXEA_A1_HIL=1 GALAXEA_A1_ALLOW_GRIPPER=1 just hil galaxea_a1
-```
-
-After the HAL-level gates pass, the full-graph HIL runs inside the deploy
-container. It captures the current named-joint feedback itself, requires the
-C++ kernel and real HAL to be active while the relay is still `LOCKED`, then
-publishes only that measured hold through `candidate_action`. It verifies the
-matching `safe_action`, exact staged/forwarded targets, zero kernel drops, and
-less than one degree of drift. Its `finally` path publishes `/openral/estop`
-three times and requires the HAL diagnostics to confirm the latch:
-
-```bash
-docker exec \
-  --env GALAXEA_A1_DEPLOY_HIL=1 \
-  --env GALAXEA_A1_ALLOW_HOLD=1 \
-  openral-galaxea-a1 \
-  bash -lc 'source /opt/ros/jazzy/setup.bash && \
-    source /workspace/install/setup.bash && \
-    pytest -q /workspace/tests/hil/test_galaxea_a1_deploy.py'
-```
-
-After the current-pose full-graph gate passes, the same fixture has a separate
-motion opt-in. It moves `arm_joint1` by +0.01 rad through
-`candidate_action -> C++ safety kernel -> safe_action`, bounds all six joint
-excursions, and returns to the measured start before the downstream e-stop:
-
-```bash
-docker exec \
-  --env GALAXEA_A1_DEPLOY_HIL=1 \
-  --env GALAXEA_A1_ALLOW_HOLD=1 \
-  --env GALAXEA_A1_ALLOW_NUDGE=1 \
-  openral-galaxea-a1 \
-  bash -lc 'source /opt/ros/jazzy/setup.bash && \
-    source /workspace/install/setup.bash && \
-    pytest -q /workspace/tests/hil/test_galaxea_a1_deploy.py'
-```
-
-This test intentionally ends the hardware session. Restart both the sidecar
-and deploy container before any later motion test.
-
-Do not start a policy on the first pass. Stop both commands and investigate if
-feedback/status becomes stale, a motor code other than the manifest's explicit
-idle/gripper masks appears, joint order differs, the sidecar exits, or the arm
-moves before an approved safe action. Motion validation then proceeds with a
-current-pose hold and a single <=0.01 rad joint increment through OpenRAL's
-standard candidate-action → C++ kernel → safe-action path, then return-to-start;
-only afterwards run an A1-specific rSkill.
-
-#### LingBot-VA rSkill through the complete OpenRAL path
-
-`rskills/lingbot-va-galaxea-a1-fruit-placement/rskill.yaml` is the first
-checkpoint-specific A1 rSkill. The dependency direction is deliberate:
-
-```text
-A1 Camera Bridge -> OpenRAL WorldState -> LingBot-VA rSkill
-  -> A1 Runtime policy gateway (model contract + EEF/cache + IK)
-  -> OpenRAL candidate_action -> C++ safety kernel -> safe_action
-  -> GalaxeaA1HAL -> isolated ROS 1 sidecar -> official A1 driver
-```
-
-The A1 Runtime is a public capability provider, not a second controller:
-start only its persistent camera owner, LingBot policy server, and OpenRAL
-policy gateway. The gateway has no ROS imports or command publisher. Do not
-start its LingBot ROS execution bridge or A1 joint runtime while OpenRAL owns
-the deployment. The rSkill owns its `policy_extras.max_joint_substep_rad` replay
-setting and reads the independent `max_target_step_rad` ceiling from the same
-`RobotDescription` used to construct the HAL. Startup rejects a policy bound
-that exceeds either the HAL's live target-step ceiling or locked-relay
-alignment tolerance. The policy bound is 0.045 rad, below the 0.05 rad
-locked-relay alignment threshold; the independent HAL/sidecar live limit is
-0.08 rad. The gateway constructs Runtime's IK implementation with the active
-OpenRAL `RobotDescription`'s ordered command limits after verifying they are no
-wider than Runtime's envelope. Runtime calibration margins therefore cannot
-widen the typed OpenRAL, safety-kernel, or official sidecar command envelope.
-
-The gateway emits one bounded target per 30 Hz control tick. When its IK
-solution is farther than 0.045 rad from fresh feedback, it keeps advancing
-toward that same solved target on subsequent ticks and only consumes the next
-model action after the solved target has been dispatched. The FK of the actual
-dispatched target is written into the KV cache, so the policy state reflects
-what OpenRAL commanded rather than an unreachable ideal. The official tracker's
-steady-state error cannot widen the command envelope or bypass the bounded
-step. The A1 Runtime's 1.70 rad IK-solution validation remains an upstream
-reachability check, not a motor-command step limit.
-
-```bash
-# Terminal A — A1 Runtime capability providers only (no ROS command publisher).
-cd /absolute/path/to/A1-Research
-just cameras start
-scripts/apps/lingbot/a1_lingbot_runtime.sh server
-uv run galaxea-a1-openral-policy \
-  --config configs/deployments/lingbot/fruit_placement_eef.toml \
-  --repo-root .
-
-# Terminal B — official ROS 1 sidecar, as in the bring-up section above.
-cd /absolute/path/to/OpenRAL
-tools/run_galaxea_a1_sidecar.sh \
-  --image openral/galaxea-a1-sidecar:noetic \
-  --sdk-root /absolute/path/to/A1_SDK \
-  --serial /dev/a1
-
-# Terminal C — the complete OpenRAL real deployment.
-cd /absolute/path/to/OpenRAL
-uv run --group lingbot openral deploy run \
-  --config scenes/deploy/galaxea_a1_bench.yaml
-```
-
-Submit the exact trained prompt (for example, `put the red mango into the blue
-plate`) through the dashboard. Before allowing a task motion, first repeat the
-observation, hold, joint-nudge, gripper, and full-graph gates above. Stop the
-LingBot server afterwards with
-`scripts/apps/lingbot/a1_lingbot_runtime.sh server-stop`.
-
-The A1 opts into hardware-downstream e-stop: `/openral/estop` stops the
-sidecar-owned tracker and driver immediately. The generic
-`/openral/estop_cleared` broadcast cannot re-arm this HAL; restart the lifecycle
-and sidecar, re-read motor health, and repeat initial alignment instead.
+Galaxea A1 hardware bring-up and the LingBot-VA rSkill deploy runbook moved to [`robots/galaxea_a1/README.md`](../../robots/galaxea_a1/README.md).
 
 ### `python/hal/src/openral_hal/h1.py`
 _MuJoCo digital twin for the Unitree H1 humanoid (Menagerie MJCF). Contract validator only — falls without an S0 cerebellum; gravity must be disabled in closed-loop tests (CLAUDE.md §6.2). Unlike the G1 / UR / Franka / SO-100 MJCFs, the H1 menagerie ships ``motor`` (torque) actuators, so this HAL runs a software PD position loop every physics step._
 
-- `class H1MujocoHAL(MujocoArmHAL)` — 19-DoF humanoid HAL driving `mujoco_menagerie/unitree_h1/h1.xml`. Joint inventory: 5 leg + 5 leg + 1 torso + 4 arm + 4 arm (no wrists). Thin manifest-driven wrapper around `MujocoArmHAL`; `__init__` forwards to `self._init_from_description(H1_DESCRIPTION, …)`. Inherits `connect/disconnect/read_state/estop`; overrides `_apply_arm_targets` to a no-op and `_per_step_update` to compute `tau = kp*(target - q) - kv*dq` clamped to `ctrlrange` so the public action contract stays "position targets in radians". Mirrors how `unitree_sdk2` wraps motor-level torque control in a position loop on real hardware. (L330)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L370)
+- `class H1MujocoHAL(MujocoArmHAL)` — 19-DoF humanoid HAL driving `mujoco_menagerie/unitree_h1/h1.xml`. Joint inventory: 5 leg + 5 leg + 1 torso + 4 arm + 4 arm (no wrists). Thin manifest-driven wrapper around `MujocoArmHAL`; `__init__` forwards to `self._init_from_description(H1_DESCRIPTION, …)`. Inherits `connect/disconnect/read_state/estop`; overrides `_apply_arm_targets` to a no-op and `_per_step_update` to compute `tau = kp*(target - q) - kv*dq` clamped to `ctrlrange` so the public action contract stays "position targets in radians". Mirrors how `unitree_sdk2` wraps motor-level torque control in a position loop on real hardware. (L329)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L369)
   - `_per_step_update(targets) -> None` — Recomputes PD torque every `mj_step`.
   - `_apply_arm_targets(targets) -> None` — No-op (PD loop runs per-step instead).
-- module const `_H1_LEFT_LEG_JOINTS: tuple[str, ...]` (L81) — left-leg joint names.
-- module const `_H1_RIGHT_LEG_JOINTS: tuple[str, ...]` (L88) — right-leg joint names.
-- module const `_H1_TORSO_JOINTS: tuple[str, ...]` (L95) — torso joint name(s).
-- module const `_H1_LEFT_ARM_JOINTS: tuple[str, ...]` (L96) — left-arm joint names.
-- module const `_H1_RIGHT_ARM_JOINTS: tuple[str, ...]` (L102) — right-arm joint names.
-- module const `_H1_JOINT_NAMES: tuple[str, ...]` (L108) — full 19-DoF joint order (legs + torso + arms).
-- module const `_H1_POSITION_LIMITS: dict[str, tuple[float, float]]` (L123) — per-joint position limits.
-- module const `_H1_EFFORT_LIMITS: dict[str, float]` (L150) — per-joint actuator effort ceiling used to clamp the software PD loop's torque.
-- module const `_H1_VELOCITY_LIMITS_BY_GROUP: dict[str, float]` (L177) — per-kinematic-group velocity limits.
-- module const `_H1_KP_BY_GROUP: dict[str, float]` (L310) — per-kinematic-group PD proportional gain.
-- module const `_H1_KV_BY_GROUP: dict[str, float]` (L318) — per-kinematic-group PD derivative gain.
-- `_h1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `torso` / `shoulder` / `elbow`) for `joint_name`. (L187)
-- `_h1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for an H1 joint. (L195)
-- `_h1_joint_specs() -> list[JointSpec]` — Build the 19 `JointSpec`s from the joint-name tuples + the per-joint limit tables. (L231)
-- `_h1_pd_gains() -> dict[str, tuple[float, float]]` — Per-joint `(kp, kv)` for the software PD loop (kv = 0.05*kp; kp sized so a 1-rad error roughly saturates each actuator's ctrlrange). (L321)
-- const `H1_DESCRIPTION = RobotDescription(...)` (L254) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.h1:H1MujocoHAL"` + `hal.real=None` (sim-only until M2). All MuJoCo wiring (MJCF URI, floating-base joint offsets +7/+6, PD gains) lives in `H1_DESCRIPTION.sim`. Drift-guarded against `robots/h1/robot.yaml` by `tests/unit/test_robot_manifests_match_hal_constants.py`.
+- module const `_H1_LEFT_LEG_JOINTS: tuple[str, ...]` (L80) — left-leg joint names.
+- module const `_H1_RIGHT_LEG_JOINTS: tuple[str, ...]` (L87) — right-leg joint names.
+- module const `_H1_TORSO_JOINTS: tuple[str, ...]` (L94) — torso joint name(s).
+- module const `_H1_LEFT_ARM_JOINTS: tuple[str, ...]` (L95) — left-arm joint names.
+- module const `_H1_RIGHT_ARM_JOINTS: tuple[str, ...]` (L101) — right-arm joint names.
+- module const `_H1_JOINT_NAMES: tuple[str, ...]` (L107) — full 19-DoF joint order (legs + torso + arms).
+- module const `_H1_POSITION_LIMITS: dict[str, tuple[float, float]]` (L122) — per-joint position limits.
+- module const `_H1_EFFORT_LIMITS: dict[str, float]` (L149) — per-joint actuator effort ceiling used to clamp the software PD loop's torque.
+- module const `_H1_VELOCITY_LIMITS_BY_GROUP: dict[str, float]` (L176) — per-kinematic-group velocity limits.
+- module const `_H1_KP_BY_GROUP: dict[str, float]` (L309) — per-kinematic-group PD proportional gain.
+- module const `_H1_KV_BY_GROUP: dict[str, float]` (L317) — per-kinematic-group PD derivative gain.
+- `_h1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `torso` / `shoulder` / `elbow`) for `joint_name`. (L189)
+- `_h1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for an H1 joint. (L194)
+- `_h1_joint_specs() -> list[JointSpec]` — Build the 19 `JointSpec`s from the joint-name tuples + the per-joint limit tables. (L230)
+- `_h1_pd_gains() -> dict[str, tuple[float, float]]` — Per-joint `(kp, kv)` for the software PD loop (kv = 0.05*kp; kp sized so a 1-rad error roughly saturates each actuator's ctrlrange). (L320)
+- const `H1_DESCRIPTION = RobotDescription(...)` (L253) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.h1:H1MujocoHAL"` + `hal.real=None` (sim-only until M2). All MuJoCo wiring (MJCF URI, floating-base joint offsets +7/+6, PD gains) lives in `H1_DESCRIPTION.sim`. Drift-guarded against `robots/h1/robot.yaml` by `tests/unit/test_robot_manifests_match_hal_constants.py`.
 
 ### `python/hal/src/openral_hal/flexiv_rizon4.py`
 _MuJoCo digital twin for the Flexiv Rizon 4 — 7-DoF cobot with whole-body force sensitivity (0.1 N).  Structurally identical to the UR / Franka sim HALs: position actuators, no gripper, no floating base, no PD-loop overrides — a clean `MujocoArmHAL` subclass._
@@ -685,7 +489,7 @@ _MuJoCo digital twin for the Unitree G1 humanoid. The default stock-Menagerie pa
 - module const `_G1_POSITION_LIMITS: dict[str, tuple[float, float]]` (L150) — per-joint position limits.
 - module const `_G1_VELOCITY_LIMITS_BY_GROUP: dict[str, float]` (L186) — per-kinematic-group velocity limits.
 - module const `_G1_EFFORT_LIMITS_BY_GROUP: dict[str, float]` (L195) — per-kinematic-group effort limits.
-- `_g1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `waist` / `shoulder` / `elbow` / `wrist`) for `joint_name`. (L206)
+- `_g1_group(joint_name) -> str` — Return the kinematic group token (`hip` / `knee` / `ankle` / `waist` / `shoulder` / `elbow` / `wrist`) for `joint_name`. (L209)
 - `_g1_parent_child(joint_name) -> tuple[str, str]` — Return `(parent_link, child_link)` for a G1 joint, following the menagerie URDF convention. (L214)
 - `_g1_joint_specs() -> list[JointSpec]` — Build the 29 `JointSpec`s from the joint-name tuples and the per-joint limit tables. (L264)
 - const `G1_DESCRIPTION = RobotDescription(...)` (L292) — sim baseline; `sdk_kind="open"`, `hal.sim="openral_hal.g1:G1MujocoHAL"` + `hal.real=None` (sim-only until M2). Advertises `supported_control_modes=[joint_position, body_twist]`, `embodiment_tags` incl. `mobile_base`, and a forward `head` RGB camera (`vla_feature_key=observation.images.head`, rigged onto `torso_link` via the ADR-0086 camera rig) so BODY_TWIST nav skills (InternVLA-N1 VLN) match. All MuJoCo wiring (MJCF URI, floating-base joint offsets) lives in `G1_DESCRIPTION.sim`. Drift-guarded against `robots/g1/robot.yaml` by `tests/unit/test_robot_manifests_match_hal_constants.py`.
