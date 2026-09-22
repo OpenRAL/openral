@@ -46,7 +46,6 @@ from typing import Protocol, runtime_checkable
 import structlog
 from openral_core.exceptions import (
     ROSConfigError,
-    ROSError,
     ROSEStopRequested,
     ROSPerceptionStale,
     ROSRuntimeError,
@@ -623,19 +622,28 @@ class RosControlHAL(HALBase):
                 detail="no controller stop seam attached; only the local latch holds",
             )
 
+        # Both steps catch *every* exception, not only ``ROSError``: the seam
+        # runs on rclpy, whose ``ShutdownException`` /
+        # ``ExternalShutdownException`` / ``InvalidHandle`` are plain
+        # ``Exception`` subclasses. One escaping here would skip the vendor
+        # step, leave ``last_stop_report`` unassigned and break the Protocol's
+        # "always ``ROSEStopRequested``" promise — the failure is recorded in
+        # the report instead, never swallowed.
         problems: list[str] = []
         try:
             switch = seam.deactivate_controllers(names, timeout_s=self._stop_timeout_s)
-        except ROSError as exc:
-            switch = ControllerSwitchReport(ok=False, controllers=names, detail=str(exc))
+        except Exception as exc:  # reason: a seam fault must land in the report, not escape estop()
+            switch = ControllerSwitchReport(
+                ok=False, controllers=names, detail=f"{type(exc).__name__}: {exc}"
+            )
         if not switch.ok:
             problems.append(f"controller deactivation not acknowledged: {switch.detail}")
 
         vendor = ""
         try:
             vendor = self._vendor_stop(seam)
-        except ROSError as exc:
-            problems.append(f"vendor stop failed: {exc}")
+        except Exception as exc:  # reason: a seam fault must land in the report, not escape estop()
+            problems.append(f"vendor stop failed: {type(exc).__name__}: {exc}")
 
         report = DownstreamStopReport(
             stopped=not problems,

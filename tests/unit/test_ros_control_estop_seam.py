@@ -204,3 +204,47 @@ def test_a_refused_reactivation_leaves_the_hal_disconnected() -> None:
 
 def test_sim_transport_satisfies_the_seam_protocol_structurally() -> None:
     assert isinstance(SimTransport(n_joints=1), ControllerStopSeam)
+
+
+class _ExplodingSeam(SimTransport):
+    """A seam whose controller switch dies with an rclpy-shaped plain Exception."""
+
+    def deactivate_controllers(self, names, *, timeout_s):  # type: ignore[no-untyped-def]  # reason: mirrors the base signature
+        raise RuntimeError("executor was shut down")
+
+
+class _VendorStopHAL(RosControlHAL):
+    """The generic adapter with a vendor step, to prove the step still runs after a fault."""
+
+    def vendor_stop_topics(self) -> list[str]:
+        return ["/vendor/halt"]
+
+    def _vendor_stop(self, seam: ControllerStopSeam) -> str:
+        seam.publish_empty("/vendor/halt")
+        return "/vendor/halt"
+
+
+def test_a_plain_exception_from_the_seam_is_contained_in_the_report() -> None:
+    """rclpy raises plain Exceptions (ShutdownException, InvalidHandle); they must not escape.
+
+    An escaping exception would skip the vendor step, leave ``last_stop_report`` unassigned
+    and break the Protocol's "estop() always raises ROSEStopRequested" promise — the
+    lifecycle node would then log a bare "hardware estop failed" with no downstream verdict.
+    """
+    transport = _ExplodingSeam(n_joints=2, controllers=[_CONTROLLER])
+    hal = _VendorStopHAL(_description(), controller_name=_CONTROLLER)
+    hal.attach_transport(transport.publish, transport.state)
+    hal.attach_controller_stop(transport)
+    hal.connect()
+
+    with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):
+        hal.estop()
+
+    report = hal.last_stop_report
+    assert report is not None and not report.stopped
+    assert "RuntimeError: executor was shut down" in report.detail
+    # The vendor step still ran after the controller step blew up.
+    assert transport.empty_publishes == ["/vendor/halt"]
+    assert report.vendor_stop == "/vendor/halt"
+    with pytest.raises(ROSRuntimeError):
+        hal.send_action(_move(0.1))

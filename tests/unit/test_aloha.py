@@ -346,6 +346,29 @@ class TestSafety:
         assert report is not None and not report.stopped
         assert "follower_right" in report.detail
 
+    def test_an_exception_on_one_arm_still_torques_off_the_other(self, hal: AlohaHAL) -> None:
+        """An rclpy-shaped plain Exception on one arm is recorded, never lets the loop escape."""
+        from openral_hal.sim_transport import SimTorqueSeam
+
+        class _LeftArmExplodes(SimTorqueSeam):
+            def torque_enable(self, robot_name, *, group, enable, timeout_s):  # type: ignore[no-untyped-def]  # reason: mirrors the base signature
+                if robot_name == "follower_left":
+                    raise RuntimeError("context has been shut down")
+                return super().torque_enable(
+                    robot_name, group=group, enable=enable, timeout_s=timeout_s
+                )
+
+        seam = _LeftArmExplodes(arms=["follower_left", "follower_right"])
+        hal.attach_torque_stop(seam)
+        hal.connect()
+        with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):
+            hal.estop()
+        assert not seam.torque("follower_right")
+        report = hal.last_stop_report
+        assert report is not None and not report.stopped
+        assert "follower_left: RuntimeError: context has been shut down" in report.detail
+        assert report.controller_states["follower_right"] == "torque_off"
+
     def test_without_a_seam_the_stop_is_reported_unproven(self, hal: AlohaHAL) -> None:
         hal.connect()
         with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):
