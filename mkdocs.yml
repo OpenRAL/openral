@@ -4,12 +4,10 @@ repo_url: https://github.com/OpenRAL/openral
 edit_uri: edit/master/docs/
 
 # Files reachable by link rather than the nav tree. `docs/methods/*` is the
-# per-layer public-symbol inventory browsed via `METHODS.md`; `docs/audit/` holds
-# historical audit snapshots, not living docs. Listing them here keeps
-# `mkdocs build --strict` green without cluttering the top-level nav.
+# per-layer public-symbol inventory browsed via `METHODS.md`. Listing it here
+# keeps `mkdocs build --strict` green without cluttering the top-level nav.
 not_in_nav: |
   /methods/
-  /audit/
 
 theme:
   name: material

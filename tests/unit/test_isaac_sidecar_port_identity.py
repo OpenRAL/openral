@@ -9,7 +9,9 @@ frame size). Two defences, both exercised here without booting Isaac:
 2. ``SidecarClient._assert_identity`` rejects an existing sidecar whose
    ``ping`` identity contradicts the requested scene.
 
-See ``docs/audit/test-audit-report.md`` §5a.
+All three Isaac scenes used to default to ZMQ port 5757, so a lingering
+sidecar from a prior test file's scene would get silently reused and serve
+its wrong layout to the next scene (fixed in PR #323).
 """
 
 from __future__ import annotations
