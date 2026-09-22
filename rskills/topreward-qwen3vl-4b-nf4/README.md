@@ -48,8 +48,7 @@ Qwen3-VL-4B backbone (peak **3.13 GB**, RTX 4070 Laptop 8 GB):
 > HF model cards render images but do not embed HTML5 `<video>`, so the three
 > frames above (start / middle / end) stand in for the clip. The full overlay
 > video is **[`media/progress.mp4`](media/progress.mp4)** in this repo
-> (143 frames, downloadable). Regenerate everything with
-> `tools/topreward_per_frame_demo.py --media-dir media`.
+> (143 frames, downloadable).
 
 ## Quick Start
 
@@ -114,8 +113,7 @@ buffer the co-active VLA uses.
 - **Backbone:** `Qwen/Qwen3-VL-4B-Instruct` (zero-shot; no fine-tuned weights).
 - **Quantization:** NF4 (bitsandbytes, double-quant, bf16 compute). lerobot's
   `TOPRewardModel` loads bf16 with no quant knob, so the OpenRAL backend
-  subclasses it to inject a `BitsAndBytesConfig`
-  (see `tools/topreward_per_frame_demo.py::NF4TOPRewardModel`).
+  subclasses it to inject a `BitsAndBytesConfig`.
 - **transformers:** 5.x works directly — no version downgrade pin.
 
 ## Runtime
@@ -134,7 +132,7 @@ Qwen3-VL video activation on 8 GB.
 ### Validated live
 
 Run on **RTX 4070 Laptop (8 GB)** against real LIBERO `libero_object` episode 0
-(143 frames, a success demo) via `tools/topreward_per_frame_demo.py`:
+(143 frames, a success demo):
 
 | Metric | Value |
 | --- | --- |
