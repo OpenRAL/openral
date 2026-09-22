@@ -44,7 +44,7 @@
 | [06-reasoning-wam-safety-observability.md](methods/06-reasoning-wam-safety-observability.md) | CLAUDE.md layers 4–6 — Reasoner core/tool-use, WAM (optional, not a core layer), safety supervisor, observability |
 | [07-eval-sim.md](methods/07-eval-sim.md) | Eval (sim) — scene/robot registries, SimRunner, scene + policy adapters, benchmark suites |
 | [08-cli.md](methods/08-cli.md) | CLI — `openral` command tree |
-| [09-auto-provisioning.md](methods/09-auto-provisioning.md) | Auto-provisioning (detection) — GStreamer perception bus, detector tiers |
+| [09-auto-provisioning.md](methods/09-auto-provisioning.md) | Auto-provisioning (detection) — `python/detect` hardware probes (USB/CAN/DDS/GPU/camera/network), `RobotDescription` assembly, `openral detect`, rSkill compatibility checks |
 | [10-tools.md](methods/10-tools.md) | Tools — `tools/*.py` dev utilities (quantization, sidecars, publishers, this file's refresher) |
 | [11-ros2-nodes.md](methods/11-ros2-nodes.md) | ROS 2 lifecycle nodes (`packages/`) |
 | [12-tests-hil.md](methods/12-tests-hil.md) | Tests · HIL bridges |
