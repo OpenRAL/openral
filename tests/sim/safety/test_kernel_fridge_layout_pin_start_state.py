@@ -642,7 +642,7 @@ def test_the_narrow_phase_meets_the_chunk_budget_on_a_real_grid(pinned: _StartSt
     no ``collision_geometry``, so the staged 26-DOP → hull narrow phase never
     executes. Its pass is therefore vacuous for any change to that phase, which
     is the kernel's dominant cost: the shipped benchmark
-    (``docs/reference/collision-hull-narrow-phase.md`` §4) puts the seven link
+    (``docs/reference/collision-hull-narrow-phase.md`` §3.2) puts the seven link
     windows at 10 475 cells and ~5.8 ms, against ~8.8 µs on an empty grid. The
     same class of hole #183 found in the Nav2 live tests.
 
