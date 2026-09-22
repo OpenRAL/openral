@@ -149,8 +149,7 @@ export OPENRAL_REASONER_MODEL=claude-opus-4-8   # or gpt-5.5 / gpt-5.6 / cosmos3
 export OPENRAL_REASONER_API_KEY=sk-ant-...      # only where the endpoint needs it
 ```
 
-Full model / endpoint matrix: [`packages/openral_reasoner_ros/README.md`](https://github.com/OpenRAL/openral/blob/master/packages/openral_reasoner_ros/README.md)
-and the [reasoner reference](../reference/reasoner.md).
+Full model / endpoint matrix: [reasoner reference](../reference/reasoner.md#reasoner-model-selection).
 
 ---
 
