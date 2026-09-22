@@ -14,7 +14,7 @@ tuning in the base file, not robot identity.
 
 Unlike slam_toolbox (idles until the Reasoner activates it), Nav2 is always-on: each sub-node is a
 ``LifecycleNode`` driven by ``lifecycle_manager_navigation`` (``autostart=true``). The Reasoner
-triggers navigation by dispatching the ``OpenRAL/rskill-nav2-mobile_base-navigate_to_pose-none``
+triggers navigation by dispatching the ``OpenRAL/rskill-nav2-mobile_base-navigate_to_pose``
 wrapped-action rSkill (``NavigateToPose`` goal to ``/navigate_to_pose``), not by
 lifecycle-transitioning the planner.
 
