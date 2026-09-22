@@ -399,9 +399,10 @@ Detects and repairs `$LIBERO_CONFIG_PATH/config.yaml` (default `~/.libero/config
 - `main() -> int` — argparse entry point; flags `--dry-run`, `--verbose`. Returns 0 when the config matches or after rewriting. (L91)
 
 ### `tools/refresh_methods_linenos.py`
-_Refreshes the `(LNN)` line citations in the `docs/methods/` inventory; `--check` reports drift and exits 1._
+_Refreshes the `(LNN)` line citations in the `docs/methods/` inventory; `--check` reports drift or unresolved entries and exits 1; `--coverage` lists undocumented public symbols (wired into `just lint`)._
 
-- `refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]` — Rewrite one inventory file's markers; returns the changed-marker count and the unresolved-entry descriptions. (L187)
+- `refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str], dict[Path, set[str]]]` — Rewrite one inventory file's markers; returns the changed-marker count, the unresolved-entry descriptions, and the symbols each source file has an entry for. (L194)
+- `coverage_report(documented: dict[Path, set[str]]) -> list[str]` — Public symbols under `python/`, `packages/`, `tools/` (tests, `setup.py`, `conftest.py` excluded) with no inventory entry, one line per file. (L361)
 
 ### `tools/topreward_per_frame_demo.py`
 _Per-frame TOPReward progress over one recorded episode, rendered as an overlay video. NF4 on an 8 GB GPU._

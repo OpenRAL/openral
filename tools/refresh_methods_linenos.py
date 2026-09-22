@@ -18,9 +18,13 @@ Usage::
 
     uv run python tools/refresh_methods_linenos.py            # rewrite in place
     uv run python tools/refresh_methods_linenos.py --check    # report drift, exit 1
+    uv run python tools/refresh_methods_linenos.py --check --coverage  # + undocumented symbols
 
 ``--check`` exits 1 on stale markers *and* on entries it cannot resolve; a stale
-entry is a defect, not a warning.
+entry is a defect, not a warning. ``--coverage`` walks ``python/``, ``packages/``
+and ``tools/`` (tests, ``setup.py`` and ``conftest.py`` excluded) and lists every
+public module-level def / class / ``UPPER`` constant / public method with no
+inventory entry, so the inventory cannot silently drift behind the code.
 
 Not part of the runtime; CI-adjacent doc tooling only.
 """
@@ -187,10 +191,11 @@ def _resolve_inline_path(rel: str, base_dir: Path | None) -> Path | None:
     return hits[0] if len(hits) == 1 else None
 
 
-def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]:
+def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str], dict[Path, set[str]]]:
     """Rewrite the markers in one inventory file.
 
-    Returns (number of changed markers, list of unresolved-entry descriptions).
+    Returns (number of changed markers, list of unresolved-entry descriptions,
+    the symbols each source file has an entry for).
     """
     lines = md_path.read_text(encoding="utf-8").splitlines(keepends=True)
     current_file: Path | None = None
@@ -200,6 +205,7 @@ def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]:
     scope: str | None = None
     changed = 0
     unresolved: list[str] = []
+    documented: dict[Path, set[str]] = {}
 
     for i, line in enumerate(lines):
         dir_heading = _DIR_HEADING_RE.match(line)
@@ -274,6 +280,9 @@ def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]:
         file_index_for_line, import_names_for_line = bullet_index, bullet_imports
 
         symbols = _symbols_from_span(span_match.group(1))
+        documented.setdefault(bullet_file, set()).update(
+            f"{scope}.{sym}" if indent and scope and "." not in sym else sym for sym in symbols
+        )
         resolved = _resolve(symbols, scope if indent else None, file_index_for_line)
         if not resolved:
             # Fallback for spans like `SCENES.register("x")(_build_x_scene)`:
@@ -307,7 +316,63 @@ def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]:
 
     if changed and not check:
         md_path.write_text("".join(lines), encoding="utf-8")
-    return changed, unresolved
+    return changed, unresolved, documented
+
+
+_SOURCE_ROOTS = ("python", "packages", "tools")
+_SOURCE_SKIP = {".git", ".venv", "build", "install", "log", "site", "__pycache__", ".claude"}
+
+
+def _public_symbols(path: Path) -> set[str]:
+    """Public module-level defs/classes/constants plus public methods of public classes."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name.startswith("_"):
+                continue
+            out.add(node.name)
+            if isinstance(node, ast.ClassDef):
+                out.update(
+                    f"{node.name}.{m.name}"
+                    for m in node.body
+                    if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and not m.name.startswith("_")
+                )
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            out.update(
+                t.id
+                for t in targets
+                if isinstance(t, ast.Name) and t.id.isupper() and not t.id.startswith("_")
+            )
+    return out
+
+
+def _source_files() -> list[Path]:
+    files: list[Path] = []
+    for root in _SOURCE_ROOTS:
+        for path in sorted((REPO_ROOT / root).rglob("*.py")):
+            parts = set(path.relative_to(REPO_ROOT).parts)
+            if parts & _SOURCE_SKIP or {"tests", "test"} & parts:
+                continue
+            if path.name in {"setup.py", "conftest.py"}:
+                continue
+            files.append(path)
+    return files
+
+
+def coverage_report(documented: dict[Path, set[str]]) -> list[str]:
+    """Public symbols under the source roots that have no inventory entry."""
+    gaps: list[str] = []
+    for path in _source_files():
+        missing = sorted(_public_symbols(path) - documented.get(path, set()))
+        if not missing:
+            continue
+        rel = path.relative_to(REPO_ROOT)
+        tag = "" if path in documented else " (no section)"
+        gaps.append(f"{rel}{tag}: {', '.join(missing)}")
+    return gaps
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -316,14 +381,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--check", action="store_true", help="report drift without writing; exit 1 on drift"
     )
+    parser.add_argument(
+        "--coverage",
+        action="store_true",
+        help="also list public symbols under python/, packages/, tools/ with no entry; exit 1 if any",
+    )
     args = parser.parse_args(argv)
 
     total_changed = 0
     all_unresolved: list[str] = []
+    documented: dict[Path, set[str]] = {}
     for md_path in sorted(METHODS_DIR.glob("*.md")):
-        changed, unresolved = refresh_file(md_path, check=args.check)
+        changed, unresolved, file_documented = refresh_file(md_path, check=args.check)
         total_changed += changed
         all_unresolved.extend(unresolved)
+        for path, symbols in file_documented.items():
+            documented.setdefault(path, set()).update(symbols)
         if changed:
             verb = "drifted" if args.check else "rewrote"
             print(f"{md_path.name}: {verb} {changed} marker(s)")
@@ -337,6 +410,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         for item in all_unresolved:
             print(f"  {item}", file=sys.stderr)
+    if args.coverage:
+        gaps = coverage_report(documented)
+        if gaps:
+            failed = True
+            print(
+                f"\n{len(gaps)} source file(s) have undocumented public symbols:", file=sys.stderr
+            )
+            for item in gaps:
+                print(f"  {item}", file=sys.stderr)
     if args.check and total_changed:
         failed = True
         print(
