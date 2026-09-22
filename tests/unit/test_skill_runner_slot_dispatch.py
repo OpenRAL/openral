@@ -312,7 +312,9 @@ def test_degrees_slot_manifest_reaches_the_wire_in_radians(runner_mod: ModuleTyp
 
     manifest, description = _so101_degrees_slot_manifest()
     codec = PolicyIOCodec.from_manifest(manifest, description)
-    policy_action = np.array([90.0, -45.0, 30.0, 0.0, 180.0, 50.0], dtype=np.float32)
+    # In-range values: the slot path now also pre-clamps to the joint envelope
+    # (wrist_roll tops out at 2.7925 rad), and this test pins the unit codec.
+    policy_action = np.array([90.0, -45.0, 30.0, 0.0, 90.0, 50.0], dtype=np.float32)
     actions = runner_mod._policy_action_to_actions(
         policy_action,
         codec=codec,
@@ -324,7 +326,7 @@ def test_degrees_slot_manifest_reaches_the_wire_in_radians(runner_mod: ModuleTyp
     assert joint.control_mode is ControlMode.JOINT_POSITION
     np.testing.assert_allclose(
         joint.joint_targets[0],
-        [math.pi / 2, -math.pi / 4, math.pi / 6, 0.0, math.pi, 0.0],
+        [math.pi / 2, -math.pi / 4, math.pi / 6, 0.0, math.pi / 2, 0.0],
         rtol=1e-5,
         atol=1e-6,
     )
@@ -354,3 +356,46 @@ def test_joint_path_converts_and_clamps(runner_mod: ModuleType) -> None:
     assert targets[0] == pytest.approx(math.radians(10.0), rel=1e-5)
     assert targets[1] < 1.7453  # 500 deg clamped inside the envelope
     assert targets[5] == pytest.approx(0.5)
+
+
+def test_joint_position_slots_are_clamped_inside_the_robots_joint_limits(
+    runner_mod: ModuleType,
+) -> None:
+    """A JOINT_POSITION slot target past a joint limit is pulled strictly inside it.
+
+    Real fixture: the OpenArm v2 manifest and its 16-D bimanual slot contract.
+    On qorin1 (2026-09-22) the restock π0.5's first tick proposed left_joint5 at
+    -1.58973 rad against a -1.5708 limit; the kernel E-stopped. The
+    single-surface path already clamps with a 1e-3 epsilon (the kernel checks
+    open intervals); slot dispatch now does the same for named joints.
+    """
+    import yaml
+    from openral_core import RobotDescription
+
+    repo_root = Path(__file__).resolve().parents[2]
+    desc = RobotDescription.model_validate(
+        yaml.safe_load((repo_root / "robots" / "openarm" / "robot.yaml").read_text())
+    )
+    left = [f"left_joint{i}" for i in range(1, 8)]
+    right = [f"right_joint{i}" for i in range(1, 8)]
+    slots = [
+        ActionSlot(range=(0, 6), control_mode=ControlMode.JOINT_POSITION, joint_names=left),
+        ActionSlot(range=(7, 7), control_mode=ControlMode.GRIPPER_POSITION, ee="left_gripper"),
+        ActionSlot(range=(8, 14), control_mode=ControlMode.JOINT_POSITION, joint_names=right),
+        ActionSlot(range=(15, 15), control_mode=ControlMode.GRIPPER_POSITION, ee="right_gripper"),
+    ]
+    lo, hi = desc.joints[[j.name for j in desc.joints].index("left_joint5")].position_limits
+    assert lo == pytest.approx(-1.5708, abs=1e-4)
+
+    vec = np.zeros(16, dtype=np.float32)
+    vec[4] = -1.58973  # left_joint5, 0.019 rad past its limit
+    vec[12] = float(hi) + 0.5  # right_joint5, well past the other end
+    actions = runner_mod._dispatch_slots(slots, vec, description=desc)
+
+    left_action = next(a for a in actions if a.joint_names == left)
+    right_action = next(a for a in actions if a.joint_names == right)
+    assert left_action.joint_targets[0][4] == pytest.approx(float(lo) + 1e-3)
+    assert right_action.joint_targets[0][12] == pytest.approx(float(hi) - 1e-3)
+    # An in-range target is untouched, and nothing is clamped onto the limit itself.
+    assert left_action.joint_targets[0][0] == 0.0
+    assert left_action.joint_targets[0][4] > float(lo)

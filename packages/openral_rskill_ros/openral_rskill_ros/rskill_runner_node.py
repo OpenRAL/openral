@@ -2763,6 +2763,38 @@ def _pad_joint_payload(
     return padded
 
 
+def _clamp_joint_position_slice(
+    values: list[float], joint_names: list[str] | None, description: Any | None
+) -> list[float]:
+    """Pull a JOINT_POSITION slot's targets strictly inside the robot's joint limits.
+
+    The single-surface dispatch path has always done this for the whole
+    vector; slot dispatch (ADR-0102) clipped only to a slot's declared
+    ``input_bounds`` and proposed everything else raw. The OpenArm restock
+    π0.5 showed why that matters: on its first tick it put one joint
+    0.019 rad past its limit, the C++ kernel refused the chunk and
+    E-stopped — correct, but a 1-degree overshoot from a policy's delta
+    integration is not a fault worth stopping the cell for. Same epsilon
+    as the single-surface path: the kernel validates open intervals, so a
+    target exactly on the limit still trips it. The kernel remains the
+    authority — this only stops proposing what it will certainly refuse.
+    ``joint_names`` empty or no description → unchanged.
+    """
+    if not joint_names or description is None:
+        return values
+    limits = {j.name: j.position_limits for j in description.joints}
+    clamp_eps = 1e-3
+    out: list[float] = []
+    for name, value in zip(joint_names, values, strict=False):
+        lims = limits.get(name)
+        if lims is None:
+            out.append(value)
+            continue
+        lo_safe, hi_safe = float(lims[0]) + clamp_eps, float(lims[1]) - clamp_eps
+        out.append(min(max(value, lo_safe), hi_safe))
+    return out
+
+
 def _slot_joint_names(slot: Any) -> list[str] | None:
     """The slot's declared joint names, or ``None`` when it declares none.
 
@@ -2841,6 +2873,7 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
         sl = [float(v) for v in policy_action[lo : hi + 1].tolist()]
         mode = slot.control_mode
         if mode is ControlMode.JOINT_POSITION:
+            sl = _clamp_joint_position_slice(sl, slot.joint_names, description)
             payload = _pad_joint_payload(sl, slot.joint_names, joint_name_to_idx, n_dof_total)
             out.append(
                 Action(
