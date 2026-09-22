@@ -122,6 +122,11 @@ catalogue and reports row-by-row latency + success metrics.
 
 ## Adding a new YAML
 
+A real-hardware `DeployScene` with a StereoLabs ZED (driver block, RGB + depth
+bindings, octomap topic, TF and USB-hub pitfalls) is worked through in
+[the deploy tutorial](../docs/tutorials/deploy/deploy-run-and-dashboard.md#cameras-whose-stream-only-exists-as-a-ros-topic-ros2_image);
+`scenes/deploy/openarm_bench.yaml` is the verified instance.
+
 See [Create a sim environment](../docs/tutorials/sim/create-a-sim-environment.md)
 for the long-form tutorial covering YAML authoring, adding a new robot
 manifest, and writing custom scene / policy adapters.

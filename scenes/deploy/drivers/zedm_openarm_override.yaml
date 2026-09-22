@@ -1,4 +1,9 @@
-# zed_wrapper parameter override for the OpenArm cell.
+# zed_wrapper parameter override for a ZED-M bolted to a robot.
+#
+# Named for the cell it was measured on, but nothing in it is OpenArm-specific:
+# any deploy scene whose `drivers:` block launches zed_wrapper can point its
+# `ros_params_override_path` here (see the ZED recipe in
+# docs/tutorials/deploy/deploy-run-and-dashboard.md).
 #
 # Referenced from `scenes/deploy/openarm_bench.yaml`'s `drivers:` entry
 # as a scene-relative path, so the setting travels with the scene instead of

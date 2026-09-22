@@ -145,51 +145,85 @@ depth at all. The ZED SDK rectifies and stereo-matches on the **host GPU**, and
 `zed_wrapper` publishes the result. So a host without the SDK sees one wide RGB
 camera and nothing else — which is exactly what `openral detect` reports.
 
-Bind those streams with the `ros2_image` backend:
+Bind those streams with the `ros2_image` backend — and let the scene start the
+driver, so there is no second terminal to forget. This is the recipe verified on
+the OpenArm bench (`scenes/deploy/openarm_bench.yaml`, ZED-M, SDK 5.4.1) and it
+is not OpenArm-specific: any cell with a ZED bolted to the robot uses it as is.
 
 ```yaml
+# The scene launches zed_wrapper itself (real path only; `deploy sim` renders).
+drivers:
+  - package: zed_wrapper
+    launch_file: zed_camera.launch.py
+    args:
+      camera_model: zedm            # zed / zedm / zed2 / zed2i / zedx …
+      # The camera is bolted to the robot, so its pose belongs to the robot's
+      # TF tree (the manifest's mount), not to the wrapper's visual odometry.
+      # With these on, zed_camera_link gets a SECOND parent, tf2 lookups go
+      # order-dependent and octomap silently drops every cloud.
+      publish_tf: "false"
+      publish_map_tf: "false"
+      # Scene-relative. Pins HD720 (the ZED-M shares a USB hub with other
+      # cameras and reboots in a loop at HD1080), turns positional tracking
+      # off and depth stabilization to 0 (the SDK force-enables tracking
+      # otherwise, defeating the setting above).
+      ros_params_override_path: drivers/zedm_openarm_override.yaml
+
 sensors:
-  # Left eye as RGB — still fine over UVC with a crop.
-  # Same name as the manifest's sim `top` camera, so the policy keeps its `top`
-  # slot (leave `vla_feature_key` unset). Restate every hardware field: the
-  # merge keeps any the scene omits, so the sim camera's 640x480 intrinsics and
-  # `frame_id: world` would otherwise describe the ZED.
+  # RGB: the wrapper's rectified left image. It is published as `bgra8`; the
+  # reader drops the constant alpha plane and delivers `bgr8`, so declare the
+  # encoding you want to RECEIVE, not the wire layout.
+  # Same name as the manifest's `top` camera. Restate every hardware field the
+  # ZED changes: the merge keeps any the scene omits, so the manifest's sim
+  # intrinsics would otherwise describe the ZED.
   - name: top
     modality: rgb
-    frame_id: openarm_head_camera_optical_frame
-    parent_frame: openarm_base
+    frame_id: zed_left_camera_optical_frame   # the wrapper's own frame; no parent_frame
     rate_hz: 30.0
     encoding: bgr8
-    # Width/height match the crop below; take fx/fy/cx/cy from your unit's
-    # ZED calibration (these are placeholders at the WVGA scale).
-    intrinsics: { width: 672, height: 376, fx: 336.0, fy: 336.0, cx: 336.0, cy: 188.0 }
-    vendor: StereoLabs
-    model: ZED Mini
-    deploy_binding:
-      backend: opencv_thread
-      backend_params: { device: /dev/camera_head_stereo, width: 1344, height: 376,
-                        crop: [0, 0, 672, 376] }
-
-  # Depth — SDK-computed, so it arrives as a topic, not a device.
-  - name: head_depth
-    modality: depth
-    frame_id: openarm_head_camera_optical_frame
-    parent_frame: openarm_base
-    rate_hz: 30.0
-    encoding: 32FC1
+    vla_feature_key: "observation.images.context"
+    intrinsics: { width: 1280, height: 720, fx: 640.0, fy: 640.0, cx: 640.0, cy: 360.0 }
     deploy_binding:
       backend: ros2_image
       backend_params:
-        # Verified against a running zed_wrapper (ZED-M, SDK 5.4.1): the
-        # default topic root is /<camera_name>/<node_name>/, so the node
-        # name is part of the path. It is NOT /zed/depth/....
+        topic: /zed/zed_node/rgb/color/rect/image
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 200
+
+  # Depth: SDK-computed, so it exists only as a topic. `32FC1` metres on the
+  # wire (or `16UC1` millimetres with `openni_depth_mode: true`) — either way
+  # it reaches the world state as DEPTH16, uint16 millimetres.
+  - name: head_zed
+    modality: depth
+    frame_id: zed_camera_link
+    rate_hz: 10.0
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        # Verified against a running zed_wrapper: the topic root is
+        # /<camera_name>/<node_name>/, so the node name is part of the path.
         topic: /zed/zed_node/depth/depth_registered
         # best_effort (the default) also matches a RELIABLE publisher; a
         # `reliable` subscriber gets NOTHING from a best-effort one.
         reliability: best_effort
         qos_depth: 5
-      max_age_ms: 200
+      max_age_ms: 500
+
+runtime:
+  # A depth SensorSpec with intrinsics auto-enables the octomap leg, but the
+  # cloud topic keeps a sim-only launch default unless the scene pins it —
+  # leaving the octree empty behind a healthy-looking graph.
+  enable_octomap: true
+  octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
 ```
+
+Every frame in the world state, RGB and depth alike, is decoded by its
+encoding (`decode_inline_frame`): the depth frame rides along in the policy's
+observation as a `uint16` `(H, W, 1)` array under its own sensor name, and an
+RGB-only policy simply never reads it. Until 2026-09-22 the runner read every
+frame as `uint8`, and a ZED depth frame next to the RGB slots aborted the first
+real OpenArm dispatch with `cannot reshape array of size 1843200`.
 
 Prerequisites on the host: the **ZED SDK** installed, and `zed_wrapper` running
 and publishing. Without them the reader opens fine and then every `read_latest`

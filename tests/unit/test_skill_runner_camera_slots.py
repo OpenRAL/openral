@@ -118,6 +118,48 @@ class TestDecodeImageFrames:
         img = _decode_image_frames({"top": frame}, {"top": "camera1"})["camera1"]
         assert img[0, 0].tolist() == [0, 0, 200]
 
+    def test_a_depth16_frame_decodes_as_uint16_beside_the_rgb_slots(self) -> None:
+        """The first real OpenArm dispatch aborted on exactly this frame mix.
+
+        `head_zed` arrives as 16UC1 (two bytes per pixel, one channel); read as
+        uint8 the reshape raised `ValueError: cannot reshape array of size
+        1843200 into shape (720,1280,1)` and the policy never saw the RGB
+        frames next to it (qorin1, 2026-09-22).
+        """
+        depth = np.full((2, 2, 1), 1234, dtype=np.uint16)
+        frames = {
+            "wrist_left": _rgb_frame("wrist_left", fill=3),
+            "head_zed": SensorFrame(
+                sensor_id="head_zed",
+                stamp_monotonic_ns=1,
+                stamp_wall_ns=2,
+                encoding=FrameEncoding.DEPTH16,
+                width=2,
+                height=2,
+                channels=1,
+                data=depth.tobytes(),
+            ),
+        }
+        images = _decode_image_frames(frames, {"wrist_left": "camera1"})
+        assert images["camera1"].dtype == np.uint8
+        assert images["camera1"].shape == (2, 2, 3)
+        assert images["head_zed"].dtype == np.uint16
+        assert images["head_zed"].shape == (2, 2, 1)
+        assert int(images["head_zed"][0, 0, 0]) == 1234
+
+    def test_compressed_frames_are_skipped_not_misreshaped(self) -> None:
+        frame = SensorFrame(
+            sensor_id="cam",
+            stamp_monotonic_ns=1,
+            stamp_wall_ns=2,
+            encoding=FrameEncoding.JPEG,
+            width=640,
+            height=480,
+            channels=3,
+            data=b"\xff\xd8\xff\xe0not-really-a-jpeg",
+        )
+        assert _decode_image_frames({"cam": frame}, {"cam": "camera1"}) == {}
+
     def test_frames_without_data_are_skipped(self) -> None:
         frame = SensorFrame(
             sensor_id="front",
