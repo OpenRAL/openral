@@ -78,10 +78,12 @@ def _constant_skill_resolver() -> Any:
 def _harness(place_declaration_json: str) -> Iterator[tuple[Any, Any, list[Any]]]:
     """Compose the real runtime with a scene-committed declaration installed."""
     import rclpy
+    from openral_msgs.msg import ActionChunk
     from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
     from openral_rskill_ros.compose import compose_so100_runtime
     from rclpy.lifecycle import TransitionCallbackReturn
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    from std_msgs.msg import UInt64
 
     rclpy.init()
     runtime = compose_so100_runtime(skill_resolver=_constant_skill_resolver())
@@ -94,6 +96,22 @@ def _harness(place_declaration_json: str) -> Iterator[tuple[Any, Any, list[Any]]
     executor.add_node(runtime.skill_runner_node)
     helper = rclpy.create_node("openral_place_declaration_test_helper")
     executor.add_node(helper)
+
+    # Stand in for the HAL at the wire: the publishing HAL blocks each tick until
+    # ``/openral/action_applied`` reports it (startup liveness), and this harness
+    # composes no HAL node, so echo every published tick back as applied.
+    chunk_qos = QoSProfile(
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.VOLATILE,
+        depth=10,
+    )
+    applied_pub = helper.create_publisher(UInt64, "/openral/action_applied", chunk_qos)
+    helper.create_subscription(
+        ActionChunk,
+        "/openral/candidate_action",
+        lambda msg: applied_pub.publish(UInt64(data=int(msg.tick_index))),
+        chunk_qos,
+    )
 
     seen: list[Any] = []
     helper.create_subscription(
@@ -320,10 +338,12 @@ def test_an_exception_escaping_the_executor_still_retracts() -> None:
     would have armed an exemption for whatever ran next.
     """
     import rclpy
+    from openral_msgs.msg import ActionChunk
     from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
     from openral_rskill_ros.compose import compose_so100_runtime
     from rclpy.lifecycle import TransitionCallbackReturn
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    from std_msgs.msg import UInt64
 
     def _exploding_resolver(*_args: Any, **_kwargs: Any) -> Any:
         raise TypeError("resolver blew up")
@@ -338,6 +358,22 @@ def test_an_exception_escaping_the_executor_still_retracts() -> None:
     executor.add_node(runtime.skill_runner_node)
     helper = rclpy.create_node("openral_place_declaration_explode_helper")
     executor.add_node(helper)
+    # Stand in for the HAL at the wire: the publishing HAL blocks each tick until
+    # ``/openral/action_applied`` reports it (startup liveness), and this harness
+    # composes no HAL node, so echo every published tick back as applied.
+    chunk_qos = QoSProfile(
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.VOLATILE,
+        depth=10,
+    )
+    applied_pub = helper.create_publisher(UInt64, "/openral/action_applied", chunk_qos)
+    helper.create_subscription(
+        ActionChunk,
+        "/openral/candidate_action",
+        lambda msg: applied_pub.publish(UInt64(data=int(msg.tick_index))),
+        chunk_qos,
+    )
+
     seen: list[Any] = []
     helper.create_subscription(
         PlaceDeclarationMsg,
