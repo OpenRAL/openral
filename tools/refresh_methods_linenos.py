@@ -19,6 +19,9 @@ Usage::
     uv run python tools/refresh_methods_linenos.py            # rewrite in place
     uv run python tools/refresh_methods_linenos.py --check    # report drift, exit 1
 
+``--check`` exits 1 on stale markers *and* on entries it cannot resolve; a stale
+entry is a defect, not a warning.
+
 Not part of the runtime; CI-adjacent doc tooling only.
 """
 
@@ -225,8 +228,13 @@ def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]:
             scope = None
             continue
         if line.startswith("#"):
-            current_file = None
-            base_dir = None
+            # A `####` topical subheading (e.g. "Persistent spatial memory") sits
+            # *inside* a file section; only a `###`-or-higher heading closes it.
+            # Closing on every heading silently skipped every bullet after such a
+            # subheading, so `--check` passed while the entries rotted.
+            if not line.startswith("####"):
+                current_file = None
+                base_dir = None
             scope = None
             continue
 
@@ -259,6 +267,9 @@ def refresh_file(md_path: Path, *, check: bool) -> tuple[int, list[str]]:
             bullet_file = resolved_path
             bullet_index, bullet_imports = _index_python_file(resolved_path)
         if bullet_file is None:
+            unresolved.append(
+                f"{md_path.name}:{i + 1}: `(L…)` marker outside any source-file section"
+            )
             continue
         file_index_for_line, import_names_for_line = bullet_index, bullet_imports
 
@@ -317,7 +328,9 @@ def main(argv: list[str] | None = None) -> int:
             verb = "drifted" if args.check else "rewrote"
             print(f"{md_path.name}: {verb} {changed} marker(s)")
 
+    failed = False
     if all_unresolved:
+        failed = True
         print(
             f"\n{len(all_unresolved)} entr(ies) could not be resolved (fix by hand):",
             file=sys.stderr,
@@ -325,13 +338,13 @@ def main(argv: list[str] | None = None) -> int:
         for item in all_unresolved:
             print(f"  {item}", file=sys.stderr)
     if args.check and total_changed:
+        failed = True
         print(
             f"\n{total_changed} marker(s) stale — run `uv run python tools/refresh_methods_linenos.py`."
         )
-        return 1
     if not args.check:
         print(f"\nDone: {total_changed} marker(s) updated.")
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
