@@ -97,6 +97,9 @@ _ROBOTWIN_BASE_DEPS = (
     "cuda-bindings==12.8.0",
     "open3d",
     "h5py",
+    # RoboTwin 2.0's task base (`envs/_base_task.py`) imports these at module load.
+    "trimesh",
+    "imageio",
     "pyzmq",
     "msgpack",
     "requests==2.32.5",
@@ -307,8 +310,23 @@ def _provision_robotwin_venv() -> Path:
     _patch_robotwin_checkout(root)
     assets = root / "assets" / "objects" / "objaverse" / "list.json"
     if not assets.is_file():
-        run_cmd("robotwin-assets", ["bash", "script/_download_assets.sh"], cwd=root)
+        run_cmd("robotwin-assets", ["bash", _download_assets_script(root)], cwd=root)
     return py
+
+
+def _download_assets_script(root: Path) -> str:
+    """Path (relative to ``root``) of RoboTwin's asset download script.
+
+    Upstream renamed ``script/`` to ``scripts/`` in 2026; an operator checkout may be
+    either vintage, so both are accepted.
+    """
+    for candidate in ("scripts/_download_assets.sh", "script/_download_assets.sh"):
+        if (root / candidate).is_file():
+            return candidate
+    raise ROSConfigError(
+        f"RoboTwin checkout at {root} has no scripts/_download_assets.sh; remove the "
+        "checkout and rerun provisioning."
+    )
 
 
 def _sidecar_python() -> Path:
@@ -344,7 +362,7 @@ def _sidecar_python() -> Path:
         "  uv pip install --python ~/.cache/openral/robotwin-sidecar/.venv/bin/python "
         "lerobot==0.6.0 sapien mplib pyzmq msgpack\n"
         "  git clone https://github.com/RoboTwin-Platform/RoboTwin.git\n"
-        "  cd RoboTwin && bash script/_download_assets.sh\n"
+        "  cd RoboTwin && bash scripts/_download_assets.sh\n"
         f"  export {_ROBOTWIN_ROOT_ENV}=$(pwd)  # checkout + assets path for the sidecar\n"
         "  export OPENRAL_ROBOTWIN_SIDECAR_PYTHON=$(which python)"
     )
@@ -387,7 +405,7 @@ def _robotwin_root() -> Path:
     assets = root / "assets" / "objects" / "objaverse" / "list.json"
     if not assets.is_file():
         raise ROSConfigError(
-            f"RoboTwin assets not found at {assets}. Run script/_download_assets.sh in "
+            f"RoboTwin assets not found at {assets}. Run scripts/_download_assets.sh in "
             f"the RoboTwin checkout, then set {_ROBOTWIN_ROOT_ENV}={root}."
         )
     return root.resolve()
