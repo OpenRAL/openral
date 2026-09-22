@@ -29,6 +29,11 @@ _spec.loader.exec_module(select_tests)
 
 CONFIG = select_tests.load_config(REPO_ROOT / "tools" / "test_selection.toml")
 
+# openral_state_adapter is a real leaf package (depends only on openral_core;
+# nothing in the workspace depends back on it) — used as the "leaf change"
+# fixture below.
+_LEAF_PACKAGE_FILE = "python/state_adapter/src/openral_state_adapter/core.py"
+
 
 def test_config_has_blast_radius_and_ignores() -> None:
     assert "pyproject.toml" in CONFIG.full_run_globs
@@ -55,10 +60,16 @@ def test_transitive_dependents_includes_chain() -> None:
 
 
 def test_leaf_package_selects_only_its_own_tests() -> None:
-    result = select_tests.select(REPO_ROOT, ["python/wam/src/openral_wam/core.py"], CONFIG)
+    result = select_tests.select(REPO_ROOT, [_LEAF_PACKAGE_FILE], CONFIG)
     assert not result.full_run
-    assert result.affected_packages == ["openral_wam"]
-    assert result.targets == ["python/wam/tests"]
+    assert result.affected_packages == ["openral_state_adapter"]
+    # state_adapter has no other package depending on it, so the blast radius
+    # stays narrow: its own package tests dir plus the one top-level unit test
+    # that imports it directly (unlike test_core_change_fans_out_widely below).
+    assert result.targets == [
+        "python/state_adapter/tests",
+        "tests/unit/test_state_adapter_input_readiness.py",
+    ]
 
 
 def test_core_change_fans_out_widely() -> None:
@@ -223,7 +234,7 @@ def test_full_run_still_reports_isolated_targets() -> None:
 def test_unrelated_change_does_not_isolate_fork_test() -> None:
     # A leaf change that never reaches the fork tests leaves them out entirely —
     # isolating un-selected tests would defeat selective execution.
-    result = select_tests.select(REPO_ROOT, ["python/wam/src/openral_wam/core.py"], CONFIG)
+    result = select_tests.select(REPO_ROOT, [_LEAF_PACKAGE_FILE], CONFIG)
     assert result.isolated_targets == []
 
 
@@ -251,9 +262,9 @@ def test_lane_file_inside_a_selected_directory_reaches_its_lane() -> None:
 
 def test_directory_expansion_does_not_invent_unselected_lane_files() -> None:
     # Expansion must stay inside the selected directories: a leaf change that
-    # selects only python/wam's own tests must not drag in another dir's lane
+    # selects only python/state_adapter's own tests must not drag in another dir's lane
     # files. Widening here would defeat selective execution.
-    result = select_tests.select(REPO_ROOT, ["python/wam/src/openral_wam/core.py"], CONFIG)
+    result = select_tests.select(REPO_ROOT, [_LEAF_PACKAGE_FILE], CONFIG)
     assert _OPENARM_HAL_TEST not in result.requirement_targets.get("robocasa", [])
 
 

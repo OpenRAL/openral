@@ -48,7 +48,6 @@ convention = "google"
 "python/hal/tests/**" = ["D", "ANN", "PLR2004", "PLR0915", "PLR0912", "PLC0415", "SIM105", "SIM115", "RUF001", "RUF002", "RUF003"]  # mirror the repo-wide tests/** ignore set (new package test dir)
 "python/observability/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror the repo-wide tests/** ignore set
 "python/reasoner/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror the repo-wide tests/** ignore set
-"python/wam/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror the repo-wide tests/** ignore set
 "python/state_adapter/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror the repo-wide tests/** ignore set (layout-adapter package)
 "python/dataset/src/**" = ["ANN401", "PLC0415", "PLR0912"]  # lerobot is a heavy optional dep deferred inside LeRobotDatasetSink; Any types come from untyped lerobot API (no py.typed); features_from_robot's branch count is intentional (state/action/camera resolution paths)
 "python/dataset/tests/**" = ["D", "ANN", "PLR2004", "PLC0415"]  # mirror the repo-wide tests/** ignore set

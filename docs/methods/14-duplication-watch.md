@@ -714,8 +714,6 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 - **`openral_safety.supervisor_node.SafetySupervisorNode`** — back-compat alias of `SafetyPassthroughNode` with zero references outside its own package's `__init__` docstring. Removing it touches `packages/openral_safety/` (safety-WG review + hazard log), so it is recorded here rather than deleted by a cleanup PR.
 
-- **`openral_wam`** (`NullWorldModel`, `Rollout`, `WorldModel` Protocol) — no consumer outside the package, its own tests, the Justfile lint/doctest lists and the docs. The WAM implementations live in OpenRAL Pro; whether the open placeholder package stays is a TSC decision pending on PR #296.
-
 ### Resolved in the 2026-09-22 cleanup (openral PR #296)
 
 - **`_h1_group` / `_g1_group`** — one `_mujoco_arm._kinematic_group(joint_name, groups, *, robot)`; each robot keeps its group tuple.
@@ -727,6 +725,7 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 - **E-stop / failure `QoSProfile`s** in `deadman_watchdog_node` / `hardware_estop_node` — `openral_safety_watchdog._qos.estop_qos()` / `failure_qos()` (the `openral_human_estop` forwarder's copy stays, see below).
 - **Cross-package private imports promoted** — `openral_rskill.hf_download_cached_first`, `gpu_allocated_mb` (was `_gpu_mb`), `find_repo_root_from`, `validate_skill_ref`; `openral_runner.sensor_name_to_slot`; `tools/_robometer_scorer.Scorer`.
 - **Dead code removed** — `packages/openral_foxglove_bringup/tools/demo_publisher.py` and `tools/_verify_lingbot_nf4.py` (no invocation site anywhere outside this inventory).
+- **`openral_wam` removed** (ADR-0104) — `NullWorldModel`, `Rollout` and the `WorldModel` Protocol had no consumer in the open repo; the Protocol lives with its implementations in OpenRAL Pro.
 - **`_CARTESIAN_MODES`-style bundled inventory bullets** — every `docs/methods` bullet now names one symbol with one resolvable marker, so `refresh_methods_linenos.py --check --coverage` (in `just lint`) can see it; that gate, not this file, is now the primary duplication detector.
 
 ### Retired (resolved earlier; one line each)

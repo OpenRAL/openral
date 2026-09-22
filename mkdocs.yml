@@ -48,7 +48,6 @@ plugins:
             - python/observability/src
             - python/sim/src
             - python/reasoner/src
-            - python/wam/src
             - python/dataset/src
             - python/detect/src
           options:

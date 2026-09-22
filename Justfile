@@ -141,7 +141,7 @@ sync *args:
 lint:
     uv run ruff check .
     uv run ruff format --check .
-    uv run mypy --strict -p openral_core -p openral_cli -p openral_sim -p openral_observability -p openral_runner -p openral_reasoner -p openral_wam -p openral_hal
+    uv run mypy --strict -p openral_core -p openral_cli -p openral_sim -p openral_observability -p openral_runner -p openral_reasoner -p openral_hal
     uv run mypy --strict tools/
     uv run python tools/refresh_methods_linenos.py --check --coverage
 
@@ -268,8 +268,7 @@ test-doctest:
         python/world_state/src/openral_world_state \
         python/hal/src/openral_hal \
         python/rskill/src/openral_rskill \
-        python/reasoner/src/openral_reasoner \
-        python/wam/src/openral_wam
+        python/reasoner/src/openral_reasoner
 
 # Sim integration tests: real HF weights + GPU + simulated robots/envs (slow, opt-in)
 # `-p no:launch_testing -p no:launch_ros`: same ROS-env workaround as

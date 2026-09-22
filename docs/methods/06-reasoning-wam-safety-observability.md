@@ -1,8 +1,8 @@
-# Layer 4–6 — Reasoning, Safety, Observability (plus WAM)
+# Layer 4–6 — Reasoning, Safety, Observability
 
 > Part of the OpenRAL [public-symbol inventory](../METHODS.md). Hand-curated; `(LNN)` markers are refreshed by `tools/refresh_methods_linenos.py`.
 
-Layer 6 (Observability) is fully shipped — traces + metrics + structlog→OTLP log bridge, with W3C TraceContext propagation helpers for cross-process correlation (Python ↔ ROS 2 ↔ C++ safety kernel). Layer 4 (Reasoner) ships the live `ReasonerCore` direct-dispatch loop below; Layer 5 (C++ safety kernel) is still planned. This file also covers the WAM Protocol package (`python/wam/`) — an optional planning-layer component, not one of the seven core layers.
+Layer 6 (Observability) is fully shipped — traces + metrics + structlog→OTLP log bridge, with W3C TraceContext propagation helpers for cross-process correlation (Python ↔ ROS 2 ↔ C++ safety kernel). Layer 4 (Reasoner) ships the live `ReasonerCore` direct-dispatch loop below; Layer 5 (C++ safety kernel) is still planned.
 
 ### `python/reasoner/src/openral_reasoner/tool_use.py`
 _Typed LLM tool-use clients (direct-dispatch surface). CLAUDE.md §6.2 / §7.6 amended in the same PR. The direct typed `ReasonerToolCall` surface is the sole planner output._
@@ -264,27 +264,6 @@ _Tier-C critic progress-stall / success watchdog — default decision core for t
   - `observe(self, *, critic_id, score, threshold) -> CriticEvidence | None` (L302) — lazily creates a watchdog per `critic_id` (binding `threshold` on first sight, held stable) and delegates.
   - `known_critics(self) -> frozenset[str]` (L328) — Return the `critic_id` set seen since construction / last reset.
   - `reset(self, critic_id=None) -> None` (L332) — drop one critic's watchdog (rebinds its threshold) or all.
-
-### `python/wam/src/openral_wam/protocol.py`
-_World Action Model Protocol (CLAUDE.md §6.3). This package ships the Protocol/contract
-surface only (`WorldModel`, `Rollout`, `NullWorldModel`); concrete generative WAM adapters
-(Cosmos Predict, UnifoLM-WMA-0, IRASim) ship as separate downstream packages in the private
-OpenRAL Pro monorepo._
-
-- `class WorldModel(Protocol)` — Generative simulator used by the planning layer for the three integration patterns (gating / failure anticipation / replanning). Attribute: `max_horizon`. (L29)
-  - `rollout(self, world_state, action_chunk, horizon) -> Rollout` (L46) — predict `horizon` steps of future state; raises `ROSConfigError` (horizon exceeds max).
-
-### `python/wam/src/openral_wam/rollout.py`
-_Pydantic v2 schema for a WAM's predicted trajectory._
-
-- `class Rollout(BaseModel)` — Predicted trajectory from one `WorldModel.rollout` call. Fields: `predicted_states: list[WorldState] (min_length=1)`, `predicted_rewards: list[float] | None`, `horizon: int (>0)`, `latency_ms: float (≥0.0)`, `confidence: float ∈ [0.0, 1.0]`. `extra="forbid"`. (L24)
-
-### `python/wam/src/openral_wam/null_wam.py`
-_Identity stub satisfying the `WorldModel` Protocol (for plumbing tests; not a production fallback)._
-
-- `class NullWorldModel` — Returns `horizon` copies of the input `WorldState`, no rewards, 0.0 ms latency, confidence 1.0. Attribute: `max_horizon`. (L27)
-  - `__init__(max_horizon=16) -> None` — Raises `ValueError` if `max_horizon <= 0`. (L54)
-  - `rollout(world_state, action_chunk, horizon) -> Rollout` — Replays the input state. Raises `ValueError` for `horizon ∉ (0, max_horizon]`. (L60)
 
 ### `packages/openral_safety/openral_safety/supervisor_node.py`
 _Day-1 Python safety envelope: `candidate_action` → `safe_action` pass-through with real per-control-mode envelope checks, the estop latch/reset pair, and the ADR-0096 latched SafetyStatus topic. Reserves the node name and topic surface for the future C++ kernel (CLAUDE.md §3); any addition of enforcement beyond this file requires safety-WG sign-off._

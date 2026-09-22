@@ -22,7 +22,7 @@ uv run pytest -k so100          # filter by keyword
 just lint                       # ruff check + ruff format --check + mypy --strict
                                 # (mypy targets: openral_core, openral_cli, openral_sim,
                                 #  openral_observability, openral_runner, openral_reasoner,
-                                #  openral_wam, openral_hal, tools/)
+                                #  openral_hal, tools/)
 uv run ruff check . --fix       # autofix
 uv run ruff format .            # format
 ```

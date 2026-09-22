@@ -35,7 +35,6 @@
         "python/sensors/pyproject.toml",
         "python/sim/pyproject.toml",
         "python/state_adapter/pyproject.toml",
-        "python/wam/pyproject.toml",
         "python/world_state/pyproject.toml"
       ]
     }

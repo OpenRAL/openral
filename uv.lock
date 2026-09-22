@@ -35,7 +35,6 @@ members = [
     "openral-sensors",
     "openral-sim",
     "openral-state-adapter",
-    "openral-wam",
     "openral-workspace",
     "openral-world-state",
 ]
@@ -3225,25 +3224,6 @@ dependencies = [
 requires-dist = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "openral-core", editable = "python/core" },
-]
-
-[[package]]
-name = "openral-wam"
-version = "0.3.1"
-source = { editable = "python/wam" }
-dependencies = [
-    { name = "openral-core" },
-    { name = "openral-observability" },
-    { name = "pydantic" },
-    { name = "structlog" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "openral-core", editable = "python/core" },
-    { name = "openral-observability", editable = "python/observability" },
-    { name = "pydantic", specifier = ">=2.5" },
-    { name = "structlog", specifier = ">=24.1" },
 ]
 
 [[package]]
