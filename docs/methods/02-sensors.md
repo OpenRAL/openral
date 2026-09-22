@@ -41,6 +41,10 @@ _Sensor catalog — vendor-agnostic registry of `SensorSpec` / `SensorBundle` fa
 ### Sensor `SensorBundle` factories — multi-modality
 
 #### `python/sensors/src/openral_sensors/realsense.py`
+- const `_D435_RGB_INTRINSICS = IntrinsicsPinhole(...)` — Nominal D435 RGB intrinsics at 640×480, from the Intel RealSense D400 Series Datasheet rev 9 (2023) §4.3. (L58)
+- const `_D435_DEPTH_INTRINSICS = IntrinsicsPinhole(...)` — Nominal D435 depth intrinsics at 640×480. (L68)
+- const `_D415_RGB_INTRINSICS = IntrinsicsPinhole(...)` — Nominal D415 RGB intrinsics at 640×480 (rolling-shutter IR-stereo, 65°×40°). (L79)
+- const `_D415_DEPTH_INTRINSICS = IntrinsicsPinhole(...)` — Nominal D415 depth intrinsics at 640×480. (L89)
 - `realsense_d435_bundle(name='realsense', parent_frame='base_link', serial_no='', rgb_rate_hz=30.0, depth_rate_hz=30.0, imu_rate_hz=400.0) -> SensorBundle` (L104)
 - `realsense_d435i_bundle(...) -> SensorBundle` — D435 + Bosch BMI085 IMU; delegates to `realsense_d435_bundle`. (L421)
 - `realsense_d415_bundle(...) -> SensorBundle` — rolling-shutter IR stereo, 65°×40°, no IMU. (L456)
@@ -49,24 +53,46 @@ _Sensor catalog — vendor-agnostic registry of `SensorSpec` / `SensorBundle` fa
 - `calibrate_camera_cmd(sensor, chessboard_cols=8, chessboard_rows=6, square_size_m=0.025) -> list[str]` — Build `ros2 run camera_calibration cameracalibrator` argv. (L346)
 
 #### `python/sensors/src/openral_sensors/luxonis.py`
+- const `_OAK_D_PRO_RGB_INTRINSICS = IntrinsicsPinhole(...)` — Nominal RGB (IMX378) intrinsics at 1920×1080, from the OAK-D Pro datasheet (95° HFoV). (L48)
+- const `_OAK_D_PRO_DEPTH_INTRINSICS = IntrinsicsPinhole(...)` — Nominal stereo-depth (OV9282) intrinsics at 1280×800, 71.86° HFoV, 7.5 cm baseline. (L60)
 - `oak_d_pro_bundle(name='oak', parent_frame='base_link', mxid='', rgb_rate_hz=30.0, depth_rate_hz=30.0, imu_rate_hz=400.0, rgb_width=1920, rgb_height=1080, depth_width=1280, depth_height=800) -> SensorBundle` — Luxonis OAK-D Pro RGB + global-shutter stereo depth (0.20–19 m, 71.86°×56°) + BNO086 IMU bundle, with nominal IMX378 / OV9282 intrinsics from the datasheet, linearly rescaled to non-default stream resolutions. Registered in the catalog as `luxonis/oak_d_pro`; recommended overhead RGB-D for the `so101_box` scene. (L75)
 - `_scale_intrinsics(base, width, height) -> IntrinsicsPinhole` — Thin wrapper delegating to `openral_core.scale_intrinsics_to`; lets a caller pick a non-default stream resolution and still get a self-consistent (fx, fy, cx, cy). (L187)
 
 #### `python/sensors/src/openral_sensors/stereolabs.py`
+- const `_ZED_MINI_EYE_INTRINSICS = IntrinsicsPinhole(...)` — Nominal per-eye intrinsics at the HD720 default (1280×720). (L51)
+- const `_ZED_MINI_BASELINE_M = 0.063` — Stereo baseline, metres. (L62)
+- const `_ZED_MINI_DEPTH_MIN_M = 0.10` — Minimum reported depth range, metres. (L63)
+- const `_ZED_MINI_DEPTH_MAX_M = 15.0` — Maximum reported depth range, metres. (L64)
+- const `_ZED_MINI_FOV_H_DEG = 90.0` — Horizontal FOV, degrees. (L65)
+- const `_ZED_MINI_FOV_V_DEG = 60.0` — Vertical FOV, degrees. (L66)
 - `zed_mini_bundle(name='zed', parent_frame='base_link', serial='', rgb_rate_hz=30.0, depth_rate_hz=30.0, imu_rate_hz=400.0, width=1280, height=720) -> SensorBundle` — StereoLabs ZED Mini: left + right rectified RGB, host-computed stereo depth (0.10–15 m, 90°×60°), integrated 6-DoF IMU. Passive stereo — no IR pattern, so it degrades on untextured surfaces but never interferes with an active depth camera aimed at the same workspace. Over USB the camera is a **single** UVC node streaming both eyes side-by-side in one YUYV frame (2560×720 at HD720); rectification and depth run on the host GPU via the ZED SDK, recorded as `metadata.sdk_required`. Registered as `stereolabs/zed_mini`. (L69)
 
 #### `python/sensors/src/openral_sensors/arducam.py`
+- const `_B0495_NATIVE_WIDTH = 1920` — Native stream width, read off the device with `VIDIOC_ENUM_FRAMESIZES`. (L47)
+- const `_B0495_NATIVE_HEIGHT = 1200` — Native stream height. (L48)
+- const `_B0495_MAX_RATE_HZ = 50.0` — Max frame rate at native resolution. (L49)
 - `arducam_b0495_spec(name='arducam', parent_frame='base_link', rate_hz=30.0, width=1920, height=1200, hfov_deg=None, serial='') -> SensorSpec` — Arducam B0495: 2.3 MP AR0234 **global-shutter** colour over USB 3.0 UVC (Cypress FX3); 1920×1200 @ 50 fps, 960×600 @ 80 fps, YUYV — read off the device with `VIDIOC_ENUM_*`, not a datasheet. Global shutter is why this is not a `usb_uvc` entry: a rolling-shutter webcam smears the frame during arm motion, corrupting exactly the wrist views a VLA conditions on. `intrinsics` is left **unset** unless the caller supplies `hfov_deg` — the board ships with an M12 mount, so optics belong to the integrator and a default pinhole model would be a fabricated number. Registered as `arducam/b0495`. (L52)
 
 ### `python/sensors/src/openral_sensors/ros_publisher.py`
 _Generalised sensor → ROS 2 image publisher; non-GStreamer fallback to `RosImagePublisher`._
 
+- const `_DEFAULT_QOS_DEPTH: Final[int] = 5` — Default image-publisher QoS depth; matches gscam2's `sensor_data`-style default. (L50)
+- const `_THREAD_JOIN_TIMEOUT_S: Final[float] = 2.0` — Join timeout for the background pump thread on `stop()`. (L55)
+- const `_OPENRAL_TO_ROS_ENCODING: Final[dict[FrameEncoding, str]] = {...}` — Maps `FrameEncoding` to the `sensor_msgs/Image.encoding` string; CPU-side encodings only. (L60)
 - `class SensorRosPublisher(*, reader, topic, rate_hz, node_name=None, frame_id=None, qos_depth=5, camera_info=None, info_topic=None, node=None, max_size=None)` — Background-thread publisher that polls any `SensorReader.read_latest()` and republishes as `sensor_msgs/Image`. Lazy-imports rclpy; raises `RuntimeError` at `start()` with install hint when ROS 2 isn't sourced. Optional `CameraInfo` companion (from an `IntrinsicsPinhole`) with RELIABLE QoS on `info_topic` — `None` derives `<topic>/camera_info` (camera_info_manager convention); the deploy sensor leg overrides it to the OpenRAL sibling layout `/openral/cameras/<name>/camera_info` so real cameras match the sim HAL (mono visual SLAM subscribes there). Optional `max_size=(w, h)` ceiling downscales the published image (aspect-preserving, BILINEAR) and rescales `CameraInfo` `k`/`p` by the same factor — every publish hands rclpy a full-resolution buffer whose Python→C conversion holds the GIL for the whole copy (~30 ms per 640x480 frame). `_publish_camera_info` always scales intrinsics from the spec's calibrated resolution to the published one, so a manifest whose declared geometry disagrees with the sensor no longer ships silently-wrong `k`/`p`. Reader lifecycle (open/close) is owned by the caller. (L68)
+  - `prepare() -> None` — Create ROS resources without starting the frame-pump thread; multi-camera callers `prepare()` every publisher before starting any background pump, avoiding concurrent rclpy setup. (L194)
   - `start() -> None` — Init rclpy if needed, create publishers, spawn the pump thread. (L252)
   - `stop() -> None` — Signal the pump thread, tear down publishers + node; idempotent. (L273)
-  - prop `is_started`, `n_published`, `n_stale_skipped`, `topic`, `info_topic` — Diagnostics surface consumed by the `openral_sensors_ros` lifecycle node. (L170)
+  - `is_started -> bool` [@property] — `True` between `start` and `stop`. (L170)
+  - `n_published -> int` [@property] — Number of image messages successfully published since `start`. (L175)
+  - `n_stale_skipped -> int` [@property] — Number of ticks the reader had no fresh frame and publish was skipped. (L180)
+  - `topic -> str` [@property] — The configured image topic (read-only). (L185)
+  - `info_topic -> str` [@property] — The configured `CameraInfo` companion topic (read-only). (L190)
 
 ### `python/sensors/src/openral_sensors/_reader_protocol.py`
 _Internal Protocol shim mirroring `openral_runner.SensorReader` to avoid a sensors↔runner import cycle._
 
 - `class SensorReaderLike(Protocol)` — Structural alias with `sensor_id`, `is_open`, `open`, `close`, `read_latest`. (L27)
+  - `open() -> None` — Acquire the capture device and start any background workers. (L39)
+  - `close() -> None` — Release the capture device. Idempotent. (L42)
+  - `read_latest(max_age_ms=None) -> SensorFrame` — Return the most recent buffered `SensorFrame`. Non-blocking. (L45)
