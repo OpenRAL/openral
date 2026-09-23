@@ -9174,6 +9174,18 @@ class DeployRuntime(BaseModel):
     rather than adding a conversion node: ``zed_wrapper`` emits
     ``/<name>/point_cloud/cloud_registered``, RealSense ``/camera/depth/color/points``.
     Only meaningful when ``enable_octomap`` resolves true."""
+    joint_states_topic: str | None = None
+    """``sensor_msgs/JointState`` topic the in-process world state ingests.
+    ``None`` = ``/joint_states``.
+
+    On a ros2_control arm that topic is the ``joint_state_broadcaster``'s,
+    published at the controller manager's rate (750 Hz on the OpenArm). Every
+    message wakes the deploy runtime's Python executor, and that loop plus the
+    per-message callback held ~half of the process's GIL on an AGX Orin — the
+    in-process inference thread got under 2 % and a 1.6 s π0.5 forward took
+    322 s. Point this at the HAL's own ``~/joint_states`` republish (30 Hz,
+    e.g. ``/openral_hal_openarm/joint_states``) so the C++ safety kernel keeps
+    the full-rate topic and Python sees the rate it can afford."""
     enable_object_detector: bool | None = None
     object_detector_onnx: str | None = None
     object_detector_manifest: str | None = None

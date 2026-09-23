@@ -258,6 +258,14 @@ if _ROS2_AVAILABLE:
             # Deprecated launch input retained until the CLI stops forwarding it. Starting
             # poses now always move through candidate_action; this service is never called.
             self.declare_parameter("reset_to_pose_service", "")
+            # ``sensor_msgs/JointState`` topic ``ROSPublishingHAL`` caches for its
+            # ``get_joint_state``. ``""`` = ``/joint_states``. On a ros2_control arm
+            # that is the broadcaster's full-rate stream (750 Hz on the OpenArm);
+            # every message woke this node's Python executor and held half of the
+            # process's GIL on an AGX Orin — the in-process inference thread got
+            # <2 %. Set from ``DeployRuntime.joint_states_topic`` by ``runtime_node``
+            # to the HAL's 30 Hz republish, the same topic world_state ingests.
+            self.declare_parameter("joint_states_topic", "")
             # MoveIt approach to the manifest ``starting_pose``. When
             # set, the runner dispatches this rSkill (the rskill-moveit-multi-joints-none
             # MoveGroup wrapper) retargeted at the next skill's starting_pose,
@@ -408,6 +416,10 @@ if _ROS2_AVAILABLE:
             self._hal = ROSPublishingHAL(
                 node=self,
                 description=self._description,
+                joint_state_topic=(
+                    self.get_parameter("joint_states_topic").get_parameter_value().string_value
+                    or "/joint_states"
+                ),
                 skill_id_getter=lambda: self._active_skill_id,
                 skill_revision_getter=lambda: self._active_skill_revision,
                 tick_index_getter=lambda: self._current_tick_index,

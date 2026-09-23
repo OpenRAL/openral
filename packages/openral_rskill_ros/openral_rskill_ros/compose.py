@@ -78,6 +78,43 @@ class ComposedRuntime:
     caller must invoke ``.destroy()`` on teardown so the bag is finalized."""
 
 
+def start_world_state_executor(world_state_node: Any) -> Callable[[], None] | None:
+    """Spin ``world_state_node`` on rclpy's C++ ``EventsExecutor`` in a daemon thread.
+
+    The Python ``MultiThreadedExecutor`` rebuilds its wait set in Python on
+    every wake-up, walking every entity of every node it holds. With the
+    world-state node's ~40 topics, TF and lifecycle services on it, that loop
+    alone held 64 % of the deploy runtime's GIL on an AGX Orin — starving the
+    in-process π0.5 inference thread (1.6 s idle, ~300 s live). The events
+    executor is event-driven in C++ and only enters Python to run the
+    callbacks themselves; the world-state callbacks are all short, so a single
+    thread is enough. The skill runner stays on the multi-threaded executor,
+    whose reentrant group keeps ``execute_rskill``'s accept/cancel/result live
+    while a goal blocks a worker.
+
+    Returns:
+        A stop callable (shuts the executor down and joins the thread), or
+        ``None`` when this rclpy has no ``rclpy.experimental.EventsExecutor``
+        (pre-Jazzy 7.1) — the caller then adds the node to its own executor.
+    """
+    try:
+        from rclpy.experimental import EventsExecutor
+    except ImportError:
+        return None
+    import threading
+
+    executor = EventsExecutor()
+    executor.add_node(world_state_node)
+    thread = threading.Thread(target=executor.spin, name="world-state-events", daemon=True)
+    thread.start()
+
+    def _stop() -> None:
+        executor.shutdown()
+        thread.join(timeout=5.0)
+
+    return _stop
+
+
 def compose_runtime(
     robot_yaml: str | pathlib.Path,
     *,
