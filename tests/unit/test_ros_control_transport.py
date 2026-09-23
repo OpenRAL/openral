@@ -560,8 +560,12 @@ def test_a_stalled_controller_manager_cannot_stretch_the_stop_past_its_budget() 
             controller_manager="/cm",
         )
         # Let discovery settle first so the budget below is spent on the stall, not on DDS.
+        # Both services are probed: an undiscovered `/stall/stop` would fail as "not
+        # available" instead of exercising the stalled-call path measured below.
         probe = node.create_client(SwitchController, "/cm/switch_controller")
         assert probe.wait_for_service(timeout_sec=10.0), "stalled manager never discovered"
+        stop_probe = node.create_client(Trigger, "/stall/stop")
+        assert stop_probe.wait_for_service(timeout_sec=10.0), "stalled stop never discovered"
         t0 = time.monotonic()
         report = tr.deactivate_controllers(["c"], timeout_s=budget_s)
         elapsed = time.monotonic() - t0
