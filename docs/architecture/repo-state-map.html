@@ -1559,6 +1559,13 @@ const CROSS = [
     outputs: ["docs/reference/schemas/*.json"],
   },
   {
+    title: "tools/gen_ros_topic_graph.py",
+    pkg: "tools/gen_ros_topic_graph.py",
+    status: "green",
+    desc: "Regenerates docs/topics/README.md — the ROS 2 topic / service / action graph the Python import graph cannot show. Statically joins every create_publisher / create_subscription / create_service / create_client / ActionServer / ActionClient (Python, incl. tools/) and create_*&lt;T&gt; (C++) on its resolved name (literals, f-strings, module and class constants, declare_parameter and argparse defaults), plus launch-file remappings; runtime-only names are listed as their source expression, never guessed. Tests excluded. Pre-commit rewrites the page; just lint and the quality workflow fail when it is stale. Tested against the real tree in tests/unit/test_gen_ros_topic_graph.py.",
+    outputs: ["docs/topics/README.md"],
+  },
+  {
     title: "tools/validation_matrix.py",
     pkg: "tools",
     status: "green",

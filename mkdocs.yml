@@ -80,6 +80,7 @@ nav:
     - Overview: architecture/overview.md
     - Repo map: architecture/repo-map.md
     - Methods inventory: METHODS.md
+    - ROS 2 topic graph: topics/README.md
     # The repo state map ships as a static .html under docs/architecture/ —
     # mkdocs nav only renders Markdown, so it is linked from
     # architecture/overview.md instead of listed here. mkdocs copies it to

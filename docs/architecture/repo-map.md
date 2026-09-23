@@ -45,7 +45,7 @@ openral/                      ← THIS monorepo
 ├─ robots/                        ← canonical RobotDescription manifests ✓
 ├─ tests/{unit,integration,sim,hil}/  ← all four trees ✓
 ├─ docs/                          ← mkdocs-material; decision log lives in the private OpenRAL/management repo ✓
-├─ tools/                         ← schema_export.py, skill_publisher.py ✓
+├─ tools/                         ← schema_export.py, skill_publisher.py, gen_ros_topic_graph.py ✓
 ├─ scripts/                       ← install.sh (Tier-0 curl-bash) + repair/dev helpers ✓
 │  Note: bootstrap_ubuntu.sh / bootstrap_macos.sh live in
 │  python/cli/src/openral_cli/bootstrap/ so they ship in the openral-cli

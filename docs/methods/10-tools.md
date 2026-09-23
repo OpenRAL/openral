@@ -684,6 +684,18 @@ _Generates `packages/openral_nav2_bringup/config/nav2_visual.yaml` (the Nav2 cos
 - `render(base_text: str) -> str` — The derived visual-SLAM profile text for a base-profile text; pure, so the sync test can diff it against the checked-in file. (L51)
 - `main(argv=None) -> int` — Writes the derived profile; `--check` exits 1 when the checked-in copy is stale (run by `just lint`). (L80)
 
+### `tools/gen_ros_topic_graph.py`
+_Generates `docs/topics/README.md`, the ROS 2 topic / service / action graph, by statically joining every publisher, subscriber, server and client in `python/`, `packages/`, `tools/` and `cpp/` (tests excluded) on its resolved name, plus launch-file remappings. Pre-commit rewrites the page; `just lint` and the quality workflow run `--check`._
+
+- `prop REPO_ROOT, OUT_PATH, SCAN_ROOTS` (L42–44) — Repo root, the generated page (`docs/topics/README.md`), and the scanned top-level trees (`python`, `packages`, `cpp`, `tools`).
+- `class Endpoint` — One side of a connection: `kind` (topic/service/action), `role`, resolved `name` (or the source expression), `resolved`, canonical `pkg/Type`, and `where` (`path (Class.method)` plus a `[param `x`]` note). (L80)
+- `extract_python(files) -> list[Endpoint]` — Endpoints from Python sources; names resolve through literals, f-strings, enclosing-scope and module constants (across `from x import`), class and `self._x` attributes, parameter defaults, `declare_parameter` defaults and argparse `add_argument(default=...)`. (L369)
+- `extract_cpp(files) -> list[Endpoint]` — Endpoints from C++ sources; a name resolves from a string literal or a `declare_parameter<T>("x", "default")` variable. (L412)
+- `extract_remappings(files) -> list[tuple[str, str, str]]` — `(from, to, launch file)` for every `remappings=` pair. (L441)
+- `render(endpoints, remaps) -> str` — The Markdown page: topics, services, actions, unresolved endpoints, remappings. (L473)
+- `build() -> str` — Scans the tree and renders the page. (L533)
+- `main(argv=None) -> int` — Writes the page; `--check` exits 1 when the checked-in copy is stale. (L541)
+
 ### `tools/quantize_lingbot_vla2.py`
 _Pre-quantizes LingBot-VLA 2.0's Qwen3-VL backbone to an NF4 pack ahead of time (the sidecar normally does this at load) so deploys download ~7 GB instead of 25.5 GB and skip the per-boot conversion. Runs in the sidecar venv (torch 2.9 / transformers 4.57.3 / bitsandbytes) importing `tools/_lingbot_vla2_server.py`'s own helpers so the pack matches the runtime shells byte-for-byte. Frugal streaming keeps GPU peak at a few hundred MB and host peak at ~30 GB._
 

@@ -49,6 +49,15 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      # Regenerates docs/topics/README.md in place (so a commit that rewires a
+      # topic fails once, with the updated page ready to stage). `just lint` and
+      # the quality workflow run the same script with --check.
+      - id: ros-topic-graph
+        name: regenerate ROS topic graph
+        entry: uv run python tools/gen_ros_topic_graph.py
+        language: system
+        pass_filenames: false
+        files: ^(python|packages|cpp|tools)/
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v18.1.8
     hooks:
