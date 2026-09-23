@@ -11,7 +11,7 @@ sync by hand and by the schema-export drift check
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-just ros2-build      # builds openral_msgs (alongside hal_so100, world_state)
+just ros2-build      # builds openral_msgs (alongside hal_node, world_state)
 ros2 interface show openral_msgs/msg/ActionChunk
 ros2 interface show openral_msgs/action/ExecuteRskill
 ```

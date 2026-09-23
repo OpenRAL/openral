@@ -133,7 +133,7 @@ evicted, re-run the `ensure_backend_deps('robocasa_kitchen')` line from point 5.
 ## ROS 2
 
 ```bash
-just ros2-build                 # colcon build (msgs + hal_so100 + world_state + reasoner_ros
+just ros2-build                 # colcon build (msgs + hal_node + world_state + reasoner_ros
                                 # + prompt_router + safety + safety_watchdog + safety_kernel
                                 # + human_estop + skill_ros)
 just ros2-test                  # colcon test + colcon test-result --verbose

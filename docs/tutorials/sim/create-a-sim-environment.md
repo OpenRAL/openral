@@ -491,6 +491,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
+from pydantic import BaseModel, ConfigDict
 
 from openral_sim.registry import SCENES
 from openral_sim.rollout import Observation, StepResult

@@ -36,6 +36,8 @@ from openral_sim.factory import make_env, make_policy, make_robot
 from openral_sim.rollout import EpisodeResult, env_action_dim
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from openral_core import RobotDescription, RSkillManifest, SimEnvironment
     from openral_dataset import RolloutRecorder
 
@@ -939,7 +941,10 @@ _MOCK_PLACEHOLDER_URI = "placeholder"
 
 
 def _check_policy_units_owned(
-    manifest: RSkillManifest, robot: RobotDescription, scene_id: str
+    manifest: RSkillManifest,
+    robot: RobotDescription,
+    scene_id: str,
+    backend_options: Mapping[str, object] | None = None,
 ) -> None:
     """Fail loud when the policy needs a unit/order conversion no one on ``sim run`` does.
 
@@ -950,17 +955,31 @@ def _check_policy_units_owned(
     non-identity codec on a non-converting scene would silently drive
     degrees as radians, so it is a ``ROSConfigError`` here — not a
     conversion (that would double-convert on the scenes that own it).
+    A converting scene must also be configured for the checkpoint's units:
+    its ``backend_options.joint_units`` (default ``radians``) has to match
+    the codec, or degrees would still reach the sim as radians.
 
     Raises:
         ROSConfigError: the manifest's codec is non-identity and ``scene_id``
-            does not declare ``converts_policy_units``.
+            does not declare ``converts_policy_units``, or the scene's
+            ``joint_units`` disagrees with the codec.
     """
     from openral_rskill._policy_io import PolicyIOCodec
 
     from openral_sim.registry import SCENES
 
     codec = PolicyIOCodec.from_manifest(manifest, robot)
-    if codec.is_identity or SCENES.meta(scene_id).get("converts_policy_units") is True:
+    if SCENES.meta(scene_id).get("converts_policy_units") is True:
+        scene_units = str((backend_options or {}).get("joint_units", "radians")).lower()
+        if codec.joint_units_are_degrees == (scene_units == "degrees"):
+            return
+        raise ROSConfigError(
+            f"rSkill {manifest.name!r} emits "
+            f"{'degrees' if codec.joint_units_are_degrees else 'radians'} but scene "
+            f"{scene_id!r} is configured with backend_options.joint_units={scene_units!r}; "
+            "set joint_units to match the checkpoint."
+        )
+    if codec.is_identity:
         return
     raise ROSConfigError(
         f"rSkill {manifest.name!r} needs a policy<->robot conversion "
@@ -1094,7 +1113,7 @@ def _check_rskill_compatibility(
     robot = robot.model_copy(update={"sensors": synced_sensors})
 
     rSkill.check_compatibility(manifest, robot)
-    _check_policy_units_owned(manifest, robot, str(env_cfg.scene.id))
+    _check_policy_units_owned(manifest, robot, str(env_cfg.scene.id), env_cfg.scene.backend_options)
     _log.info(
         "rskill_compat_ok",
         skill=manifest.name,

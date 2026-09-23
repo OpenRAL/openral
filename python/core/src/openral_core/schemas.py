@@ -1066,10 +1066,10 @@ class ObservationSpec(BaseModel):
         state_key: Observation dict key for the state vector.
         state_shape: Shape of the state tensor, e.g. ``(6,)`` for 6-D EEF.
         state_representation: How the state vector is encoded.
-        image_flip_180: **Deprecated, read by no code.** The live knob is
-            the per-checkpoint ``RSkillManifest.image_preprocessing.flip_180``.
-            Kept so existing manifests still load; setting it emits a
-            ``DeprecationWarning``.
+        image_flip_180: **Deprecated; has no effect on image processing.** The
+            live knob is the per-checkpoint
+            ``RSkillManifest.image_preprocessing.flip_180``. Kept so existing
+            manifests still load; setting it emits a ``FutureWarning``.
     """
 
     state_key: str = "observation.state"
@@ -1082,9 +1082,11 @@ class ObservationSpec(BaseModel):
     def _warn_deprecated_image_flip_180(cls, v: bool) -> bool:
         """Warn when a manifest sets the dead ``image_flip_180`` field (§1.4).
 
-        A stdlib ``DeprecationWarning`` (stderr), not a log line: ``openral_core``
+        A stdlib ``FutureWarning`` (stderr), not a log line: ``openral_core``
         has no logging dependency, and an unconfigured structlog prints to stdout,
-        which corrupts ``--json`` CLI output.
+        which corrupts ``--json`` CLI output. ``FutureWarning`` because manifest
+        authors are end users: Python hides ``DeprecationWarning`` outside
+        ``__main__`` by default, so ``sim run`` would never show it.
         """
         if not v:  # `false` is the no-op default; model_dump() round-trips carry it
             return v
@@ -1093,7 +1095,7 @@ class ObservationSpec(BaseModel):
         warnings.warn(
             "RobotDescription.observation_spec.image_flip_180 is deprecated and ignored; "
             "set RSkillManifest.image_preprocessing.flip_180 instead",
-            DeprecationWarning,
+            FutureWarning,
             stacklevel=2,
         )
         return v
@@ -1953,9 +1955,8 @@ class HalEntrypoints(BaseModel):
         real_bringup: Optional vendor ``ros2_control`` bringup that
             ``deploy run`` includes next to the real HAL, as
             ``"<ros_package>:<file>.launch.py"`` (resolved under that
-            package's ``share/<pkg>/launch/``). ``None`` falls back to the
-            convention: the HAL ROS package's own ``launch/real_bringup.launch.py``
-            if it ships one.
+            package's ``share/<pkg>/launch/``). ``None`` means no bringup is
+            included; there is no convention-based fallback.
 
     Example:
         >>> HalEntrypoints(real="openral_hal.ur_real:UR5eRealHAL").sim is None

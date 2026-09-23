@@ -277,3 +277,23 @@ def test_diffusion_batch_renames_the_slot_to_the_checkpoint_key() -> None:
     )
     batch = adapter._build_batch({"images": _frames("camera1"), "state": [0.0, 0.0]}, "push")
     assert "observation.image" in batch
+
+
+def test_two_slots_on_one_checkpoint_key_raise() -> None:
+    """A dict-built batch would silently drop one camera; the rename rule refuses."""
+    ip = ImagePreprocessing(aliases={"camera1": "image", "camera2": "image"})
+    with pytest.raises(ROSConfigError, match="duplicate checkpoint keys"):
+        checkpoint_image_keys(ip, ("camera1", "camera2"))
+
+
+def test_rldx_layout_refuses_too_few_or_duplicate_slots() -> None:
+    """RC365 reads three slots positionally; a short or colliding list fails before boot."""
+    from openral_sim.policies.rldx import _resolve_video_keys
+
+    with pytest.raises(ROSConfigError, match="needs 3 distinct camera slots"):
+        _resolve_video_keys("rc365", ImagePreprocessing(), ("camera1",))
+    ip = ImagePreprocessing(
+        input_template="video.{cam}", aliases={"camera2": "wrist", "camera3": "wrist"}
+    )
+    with pytest.raises(ROSConfigError, match="duplicate video keys"):
+        _resolve_video_keys("rc365", ip, ("camera1", "camera2", "camera3"))

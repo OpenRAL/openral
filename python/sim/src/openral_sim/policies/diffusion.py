@@ -102,9 +102,9 @@ class _DiffusionAdapter:
 
     def _normalize_inplace(self, batch: dict[str, Any]) -> None:
         torch = self._torch
-        img = batch.get("observation.image")
+        img = batch.get(self._batch_key)
         if img is not None and self._image_mean is not None:
-            batch["observation.image"] = (img - self._image_mean) / self._image_std
+            batch[self._batch_key] = (img - self._image_mean) / self._image_std
         state = batch.get("observation.state")
         if state is not None and self._state_min is not None:
             denom = self._state_max - self._state_min

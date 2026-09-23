@@ -3270,7 +3270,11 @@ def benchmark_scene(  # noqa: PLR0915  # reason: linear CLI flow of guards and p
     from openral_core import BenchmarkScene, load_scene_strict
 
     scene = load_scene_strict(str(config), BenchmarkScene)
-    SCENES.validate_options(scene.scene.id, scene.scene.backend_options)
+    try:
+        SCENES.validate_options(scene.scene.id, scene.scene.backend_options)
+    except ROSConfigError as exc:
+        console.print(f"[red]✗ config:[/red] {exc}")
+        raise typer.Exit(code=1) from exc
     if n_episodes is not None:
         scene = scene.model_copy(update={"n_episodes": n_episodes})
 

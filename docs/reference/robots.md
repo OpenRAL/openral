@@ -4,10 +4,11 @@ Every embodiment is a typed `RobotDescription` manifest under `robots/<robot_id>
 
 ## Supported robots
 
-Every robot runs the one generic ROS 2 HAL lifecycle node,
+Every robot launched by `openral deploy sim|run` runs the one generic ROS 2 HAL lifecycle node,
 [`packages/openral_hal_node`](https://github.com/OpenRAL/openral/tree/master/packages/openral_hal_node/),
 under the node name `openral_hal_<robot_id>`; the HAL column names the Python
-adapter it builds from the manifest.
+adapter it builds from the manifest. Eval-only entries (`sim run`, benchmarks) build
+their environment directly and start no lifecycle node.
 
 | Robot | Manifest | HAL | Status |
 |---|---|---|---|
