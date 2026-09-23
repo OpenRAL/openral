@@ -325,13 +325,30 @@ def _resolve_video_keys(
         >>> ip = ImagePreprocessing(input_template="video.{cam}", aliases={"camera2": "wrist"})
         >>> _resolve_video_keys("libero", ip, ("camera1", "camera2"))
         ('video.image', 'video.wrist')
+
+    Raises:
+        ROSConfigError: fewer distinct slots than the layout reads, or two
+            slots resolving to one video key.
     """
     layout_keys = _RLDX_LAYOUT_VIDEO_KEYS.get(layout, _RLDX_LAYOUT_VIDEO_KEYS["libero"])
+    if len(set(camera_keys)) < len(layout_keys):
+        # The obs builders index slots positionally; a short list is an
+        # IndexError after the multi-minute sidecar boot.
+        raise ROSConfigError(
+            f"rldx layout {layout!r} needs {len(layout_keys)} distinct camera slots, "
+            f"got {list(camera_keys)}."
+        )
     ip = image_preprocessing
-    return tuple(
+    keys = tuple(
         ip.input_template.format(cam=ip.aliases[slot]) if slot in ip.aliases else default
         for slot, default in zip(camera_keys, layout_keys, strict=False)
     )
+    if len(set(keys)) != len(keys):
+        raise ROSConfigError(
+            f"rldx camera slots {list(camera_keys)} resolve to duplicate video keys "
+            f"{list(keys)}; fix image_preprocessing.aliases."
+        )
+    return keys
 
 
 # Deterministic per-identity default port range. When the user pins neither

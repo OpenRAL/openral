@@ -195,6 +195,11 @@ def test_lifecycle_emits_hal_send_action_span(captured_spans: InMemorySpanExport
             chunk.horizon = 1
             chunk.flat = [0.1] * n_joints
             chunk.rskill_id = "openral/test-generic-hal-span"
+            # A volatile sample published before discovery is lost; wait for the match.
+            deadline = time.monotonic() + 5.0
+            while pub.get_subscription_count() == 0 and time.monotonic() < deadline:
+                executor.spin_once(timeout_sec=0.02)
+            assert pub.get_subscription_count() > 0, "HAL node never subscribed to safe_action"
             pub.publish(chunk)
             deadline = time.monotonic() + 0.5
             while time.monotonic() < deadline:

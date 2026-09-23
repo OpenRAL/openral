@@ -94,7 +94,7 @@ snapshot consumed by S1 / S2.
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-just ros2-build       # includes world_state alongside msgs + hal_so100
+just ros2-build       # includes world_state alongside msgs + hal_node
 just ros2-test        # colcon test
 just test-integration # PYTHONPATH-aware pytest run for the launch tests
 ```

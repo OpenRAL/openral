@@ -34,6 +34,22 @@ def test_non_converting_scene_raises() -> None:
 
 
 @pytest.mark.parametrize("scene_id", ["so101_box", "tabletop_push", "openarm_tabletop_pnp"])
-def test_converting_scene_passes(scene_id: str) -> None:
+def test_converting_scene_passes_when_units_match(scene_id: str) -> None:
     assert SCENES.meta(scene_id).get("converts_policy_units") is True
-    _check_policy_units_owned(_MANIFEST, _ROBOT, scene_id)
+    _check_policy_units_owned(_MANIFEST, _ROBOT, scene_id, {"joint_units": "degrees"})
+
+
+@pytest.mark.parametrize("scene_id", ["so101_box", "tabletop_push", "openarm_tabletop_pnp"])
+def test_converting_scene_left_in_radians_raises_for_a_degrees_checkpoint(scene_id: str) -> None:
+    with pytest.raises(ROSConfigError, match="joint_units='radians'"):
+        _check_policy_units_owned(_MANIFEST, _ROBOT, scene_id, {})
+
+
+def test_radians_checkpoint_on_a_degrees_scene_raises() -> None:
+    with pytest.raises(ROSConfigError, match="emits radians"):
+        _check_policy_units_owned(
+            _MANIFEST.model_copy(update={"action_contract": None}),
+            _ROBOT,
+            "so101_box",
+            {"joint_units": "degrees"},
+        )

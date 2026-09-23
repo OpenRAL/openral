@@ -193,7 +193,7 @@ For each layer (per repo state map) and cross-cutting surface:
 | --- | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
 | L0 HAL — `RosControlHAL`, `SO100FollowerHAL`, UR / Franka, `SO100DigitalTwin` | ✓ (Protocol conformance × 10 HALs in `test_hal_protocol_conformance.py`) | ✗ | ✓ | ✓ (so100) | ✓ (descriptions) | ✓ (UR / Panda / so100_sim / so100_follower / ros_control) | n/a |
 | L0 HAL — `protocol.HAL`, `sim_transport`, `_mujoco_arm`, `franka_panda` | ✓ (Protocol contract pinned + `_mujoco_arm` direct test) | ✗ | ◐ | ✗ | n/a | ✓ (`protocol`, `sim_transport`, `franka_panda`) | n/a |
-| L0 HAL — ROS 2 lifecycle nodes (`hal_so100`, `hal_ur5e`, `hal_ur10e`, `hal_franka`) | ✓ (per-package `colcon test` lifecycle smokes for `franka` / `ur5e` / `ur10e`; `so100` covered by unit/integration/sim) | ✓ (colcon + lifecycle smokes drive `unconfigured → … → shutdown` and assert joint-state publication) | ✗ | ✓ (UR / Franka live gates) | n/a | ✗ | n/a |
+| L0 HAL — ROS 2 lifecycle node (`openral_hal_node`, one package for every robot) | ✓ (`colcon test` lifecycle cycle parametrised over every in-tree sim-twin manifest; `so100` also covered by unit/integration/sim) | ✓ (colcon + lifecycle smokes drive `unconfigured → … → shutdown` and assert joint-state publication) | ✗ | ✓ (UR / Franka live gates) | n/a | ✗ | n/a |
 | L1 Sensors — vendor adapters + `SensorCatalog` | ✓ | ✗ | ✗ | ◐ (Jetson live probe) | ✓ | ✓ (curated set) | n/a |
 | L2 World State — `WorldStateAggregator` | ✓ (`test_world_state.py`) | ◐ (in-process) | ✗ | ✗ | ✓ | ✓ (root conftest silences structlog) | n/a |
 | L2 World State — ROS 2 lifecycle node | ✗ | ✓ (5 `rclpy`-driven scenarios in `test_world_state_integration.py`) | ✗ | ✗ | n/a | ✗ | n/a |

@@ -336,9 +336,19 @@ def checkpoint_image_keys(
         >>> ip = ImagePreprocessing(input_template="video.{cam}", aliases={"camera1": "image"})
         >>> checkpoint_image_keys(ip, ("camera1", "camera2"))
         ('video.image', 'video.camera2')
+
+    Raises:
+        ROSConfigError: two slots resolve to the same checkpoint key.
     """
     ip = image_preprocessing
-    return tuple(ip.input_template.format(cam=ip.aliases.get(k, k)) for k in camera_keys)
+    keys = tuple(ip.input_template.format(cam=ip.aliases.get(k, k)) for k in camera_keys)
+    if len(set(keys)) != len(keys):
+        # Two slots on one key: a dict-built batch would silently drop a camera.
+        raise ROSConfigError(
+            f"camera slots {list(camera_keys)} resolve to duplicate checkpoint keys "
+            f"{list(keys)}; fix image_preprocessing.aliases so each slot is distinct."
+        )
+    return keys
 
 
 def resolve_n_action_steps(

@@ -23,7 +23,7 @@ def test_image_flip_180_warns_but_loads(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "robot.yaml"
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
 
-    with pytest.warns(DeprecationWarning, match="image_flip_180 is deprecated"):
+    with pytest.warns(FutureWarning, match="image_flip_180 is deprecated"):
         desc = RobotDescription.from_yaml(str(path))
 
     assert desc.observation_spec is not None
@@ -32,5 +32,5 @@ def test_image_flip_180_warns_but_loads(tmp_path: pathlib.Path) -> None:
 
 def test_manifest_without_image_flip_180_is_silent() -> None:
     with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
+        warnings.simplefilter("error", FutureWarning)
         RobotDescription.from_yaml(str(_MANIFEST))
