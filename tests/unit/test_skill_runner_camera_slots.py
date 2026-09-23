@@ -103,6 +103,23 @@ class TestDecodeImageFrames:
         assert set(images) == {"extra_cam"}
         assert int(images["extra_cam"][0, 0, 0]) == 7
 
+    def test_bgr8_frames_are_fed_to_the_policy_as_rgb(self) -> None:
+        # OpenCVThreadSensorReader publishes BGR8; the policy must see RGB.
+        bgr = np.zeros((2, 2, 3), dtype=np.uint8)
+        bgr[..., 0] = 200  # blue channel in BGR order
+        frame = SensorFrame(
+            sensor_id="top",
+            stamp_monotonic_ns=1,
+            stamp_wall_ns=2,
+            encoding=FrameEncoding.BGR8,
+            width=2,
+            height=2,
+            channels=3,
+            data=bgr.tobytes(),
+        )
+        img = _decode_image_frames({"top": frame}, {"top": "camera1"})["camera1"]
+        assert img[0, 0].tolist() == [0, 0, 200]
+
     def test_frames_without_data_are_skipped(self) -> None:
         frame = SensorFrame(
             sensor_id="front",

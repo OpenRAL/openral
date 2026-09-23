@@ -125,14 +125,29 @@ def _make_opencv_thread_reader(cfg: SensorReaderConfig) -> SensorReader:
         if height_param is not None
         else None
     )
-    return OpenCVThreadSensorReader(
-        sensor_id=cfg.sensor_id,
-        device=device,
-        fps=fps,
-        width=width,
-        height=height,
-        default_max_age_ms=cfg.max_age_ms,
-    )
+    # ``crop`` arrives as a YAML/JSON list ``[x, y, width, height]`` from the
+    # sensor's ``deploy_binding.backend_params`` (e.g. the left lens of a ZED
+    # Mini's side-by-side frame); the reader validates the values themselves.
+    crop_param = params.get("crop")
+    if crop_param is not None and not isinstance(crop_param, (list, tuple)):
+        raise ROSConfigError(
+            f"SensorReaderConfig({cfg.sensor_id!r}).backend_params.crop must be a "
+            f"[x, y, width, height] list; got {crop_param!r}"
+        )
+    try:
+        return OpenCVThreadSensorReader(
+            sensor_id=cfg.sensor_id,
+            device=device,
+            fps=fps,
+            width=width,
+            height=height,
+            crop=[_to_int(v, field="crop", sensor_id=cfg.sensor_id) for v in crop_param]
+            if crop_param is not None
+            else None,
+            default_max_age_ms=cfg.max_age_ms,
+        )
+    except ValueError as exc:
+        raise ROSConfigError(str(exc)) from exc
 
 
 def _make_gstreamer_reader(cfg: SensorReaderConfig) -> SensorReader:

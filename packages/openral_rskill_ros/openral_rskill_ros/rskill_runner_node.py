@@ -2390,6 +2390,7 @@ def _decode_image_frames(
     ``_collect_image_handles`` instead (the zero-copy vision path).
     """
     import numpy as np
+    from openral_core.schemas import FrameEncoding
 
     images: dict[str, Any] = {}
     for name, frame in image_frames.items():
@@ -2400,7 +2401,12 @@ def _decode_image_frames(
             int(frame.width),
             int(frame.channels),
         )
-        images[sensor_to_slot.get(name, name)] = arr
+        # Policies are fed RGB. OpenCV readers publish BGR8, so reverse the
+        # channel axis (contiguous: torch rejects negative strides) rather than
+        # feed a real deploy swapped colours.
+        bgr = frame.encoding == FrameEncoding.BGR8
+        slot = sensor_to_slot.get(name, name)
+        images[slot] = np.ascontiguousarray(arr[..., ::-1]) if bgr else arr
     return images
 
 

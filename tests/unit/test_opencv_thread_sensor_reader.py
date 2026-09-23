@@ -326,3 +326,33 @@ def test_crop_larger_than_the_negotiated_mode_fails_at_open(half_split_video: Pa
     with pytest.raises(ValueError, match="does not fit"):
         reader.open()
     assert not reader.is_open
+
+
+def test_factory_forwards_crop_from_backend_params(half_split_video: Path) -> None:
+    # `deploy_binding.backend_params.crop` (a YAML list) must reach the reader.
+    from openral_core import SensorReaderBackend, SensorReaderConfig
+    from openral_runner.factory import make_sensor_readers
+
+    cfg = SensorReaderConfig(
+        sensor_id="cam",
+        backend=SensorReaderBackend.OPENCV_THREAD,
+        backend_params={"device": str(half_split_video), "fps": _FPS, "crop": [0, 0, _W // 2, _H]},
+    )
+    (reader,) = make_sensor_readers([cfg])
+    with reader:
+        frame = _first_frame(reader)  # type: ignore[arg-type]
+    assert (frame.width, frame.height) == (_W // 2, _H)
+
+
+def test_factory_rejects_a_malformed_crop() -> None:
+    from openral_core import SensorReaderBackend, SensorReaderConfig
+    from openral_core.exceptions import ROSConfigError
+    from openral_runner.factory import make_sensor_readers
+
+    cfg = SensorReaderConfig(
+        sensor_id="cam",
+        backend=SensorReaderBackend.OPENCV_THREAD,
+        backend_params={"device": 0, "crop": [0, 0, 10]},
+    )
+    with pytest.raises(ROSConfigError, match="x, y, width, height"):
+        make_sensor_readers([cfg])
