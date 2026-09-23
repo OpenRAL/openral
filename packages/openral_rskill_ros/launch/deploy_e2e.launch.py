@@ -1490,7 +1490,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         parameters=[
             {
                 "robot_yaml": robot_yaml,
-                "camera_names": rgb_camera_names,
+                # `[""]` is the node's own "no cameras" default: launch_ros cannot
+                # type an empty list and refuses it when the node starts.
+                "camera_names": rgb_camera_names or [""],
                 # 512 px RoboCasa renders can arrive at ~0.6 Hz wall time while
                 # idle. Keep joint/EE diagnostics at 0.5 s, but give simulated
                 # cameras enough room for one slow frame without stale flapping.

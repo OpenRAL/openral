@@ -901,10 +901,21 @@ def sidecar_quant_token(plan: QuantPlan, accepted: frozenset[str], family: str) 
         ...     QuantPlan("bf16", False, "env", {}), frozenset({"none", "nf4"}), "lingbot_vla2"
         ... )
         'none'
+        >>> try:
+        ...     sidecar_quant_token(QuantPlan(None, False, "default", {}), frozenset({"nf4"}), "x")
+        ... except ROSConfigError as exc:
+        ...     print(str(exc).split(";")[0])
+        x sidecar cannot load dtype None (from default)
     """
     supported = accepted | {"bf16"} if "none" in accepted else accepted
     require_supported_dtype(plan, supported, family)
-    return "none" if plan.dtype in (None, "bf16") else str(plan.dtype)
+    token = "none" if plan.dtype in (None, "none", "bf16") else str(plan.dtype)
+    if token not in accepted:  # an unset / "none" plan on a sidecar with no "none" mode
+        raise ROSConfigError(
+            f"{family} sidecar cannot load dtype {plan.dtype!r} (from {plan.source}); "
+            f"accepted: {sorted(accepted)}."
+        )
+    return token
 
 
 def default_dtype_for_device(device: str) -> str:

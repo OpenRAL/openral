@@ -196,3 +196,35 @@ def test_a_scene_only_rgb_camera_is_not_subscribed_in_sim(tmp_path: Path) -> Non
 
     assert "workcell_rgb" not in names
     assert "top" in names  # the manifest camera SimSensorBridge does render
+
+
+def test_a_robot_without_rgb_gets_a_typed_empty_camera_list() -> None:
+    """launch_ros cannot type ``[]`` and refuses it at node start; UR5e has no RGB camera."""
+    from launch import LaunchContext
+    from launch.actions import DeclareLaunchArgument
+    from launch_ros.actions import Node
+    from launch_ros.utilities import evaluate_parameters
+
+    module = _import_launch_module()
+    ctx = LaunchContext()
+    cfg = ctx.launch_configurations
+    cfg["robot_yaml"] = str(_REPO_ROOT / "robots" / "ur5e" / "robot.yaml")
+    cfg["hal_package"] = "openral_hal_node"
+    cfg["hal_executable"] = "lifecycle_node.py"
+    cfg["hal_node_name"] = "openral_hal_ur5e"
+    cfg["hal_params_file"] = "/tmp/openral-test-hal-params.yaml"
+    for entity in module.generate_launch_description().entities:  # type: ignore[attr-defined]
+        if isinstance(entity, DeclareLaunchArgument):
+            entity.execute(ctx)
+    cfg["hal_mode"] = "sim"
+    for leg in ("slam", "nav2", "octomap", "object_detector", "dashboard"):
+        cfg[f"enable_{leg}"] = "false"
+    entities = list(module.compose_runtime_graph(ctx))  # type: ignore[attr-defined]
+
+    assert _runtime_camera_names(entities) == [""]
+    runtime = next(
+        e
+        for e in entities
+        if isinstance(e, Node) and getattr(e, "_Node__node_executable", None) == "runtime_node"
+    )
+    evaluate_parameters(ctx, runtime._Node__parameters)  # type: ignore[attr-defined]  # raises on []
