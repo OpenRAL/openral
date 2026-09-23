@@ -180,6 +180,7 @@ class TestSafety:
         assert hal.error_recovery_action == "/error_recovery"
 
     def test_recovery_policy_is_restart_required(self, hal: FrankaPandaRealHAL) -> None:
+        """Recovery policy is restart required."""
         from openral_hal.protocol import EStopRecovery, LifecycleEStopHAL
 
         assert isinstance(hal, LifecycleEStopHAL)

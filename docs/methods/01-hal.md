@@ -196,10 +196,10 @@ _HAL adapter for the Trossen ALOHA bimanual setup, plus the MuJoCo digital twin.
 - `class InterbotixStoppable(Protocol)` — `arm_namespaces()` + `attach_torque_stop(seam)`; what the lifecycle node's `_attach_interbotix_transport` reflects on. (L372)
   - `arm_namespaces() -> list[str]` (L375)
   - `attach_torque_stop(seam) -> None` (L379)
-- `class AlohaMujocoHAL(MujocoArmHAL)` — MuJoCo digital twin for the 14-DoF bimanual ALOHA; thin manifest-driven wrapper around `MujocoArmHAL` (bimanual amendment). All wiring lives in `ALOHA_DESCRIPTION.sim`: `gym_aloha:bimanual_viperx_transfer_cube` URI, explicit `joint_qpos_addr` / `actuator_index` (left arm 0-5, left gripper 6, right arm 8-13, right gripper 14 — skipping the negative-finger slots), two `PASSTHROUGH` grippers with `mirror_actuator_index` (positive finger + negative finger), `keyframe_index: 0` (seeds the fingers inside `ctrlrange=[0.021, 0.057]`). (L699)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(ALOHA_DESCRIPTION, …)`. (L734)
+- `class AlohaMujocoHAL(MujocoArmHAL)` — MuJoCo digital twin for the 14-DoF bimanual ALOHA; thin manifest-driven wrapper around `MujocoArmHAL` (bimanual amendment). All wiring lives in `ALOHA_DESCRIPTION.sim`: `gym_aloha:bimanual_viperx_transfer_cube` URI, explicit `joint_qpos_addr` / `actuator_index` (left arm 0-5, left gripper 6, right arm 8-13, right gripper 14 — skipping the negative-finger slots), two `PASSTHROUGH` grippers with `mirror_actuator_index` (positive finger + negative finger), `keyframe_index: 0` (seeds the fingers inside `ctrlrange=[0.021, 0.057]`). (L700)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(ALOHA_DESCRIPTION, …)`. (L735)
 - `_aloha_joint_specs() -> list[JointSpec]` (L165)
-- `_default_publish(topic, msg) -> None` (L687)
+- `_default_publish(topic, msg) -> None` (L688)
 - module const `_ALOHA_LEFT_ARM_JOINTS: tuple[str, ...]` (L114) — left-arm joint names, ViperX 300 order.
 - module const `_ALOHA_LEFT_GRIPPER_JOINT: str` (L122) — left gripper joint name.
 - module const `_ALOHA_RIGHT_ARM_JOINTS: tuple[str, ...]` (L123) — right-arm joint names.
@@ -241,11 +241,11 @@ _HAL adapters for the Universal Robots UR5e and UR10e arms (sim, MuJoCo)._
 ### `python/hal/src/openral_hal/ur_real.py`
 _Real-hardware HAL adapters for UR5e / UR10e via `ros2_control` + `ur_robot_driver` (URCap / RTDE)._
 
-- `class UR5eRealHAL(_URRealHAL)` — Real UR5e via `ur_robot_driver`. (L194)
-- `class UR10eRealHAL(_URRealHAL)` — Real UR10e via `ur_robot_driver`. (L246)
+- `class UR5eRealHAL(_URRealHAL)` — Real UR5e via `ur_robot_driver`. (L195)
+- `class UR10eRealHAL(_URRealHAL)` — Real UR10e via `ur_robot_driver`. (L247)
 - `class _URRealHAL(RosControlHAL)` — Shared real-HW base (controller / topic defaults + `deadman_topic` + `dashboard_stop_service`). `estop_recovery = RESTART_REQUIRED`. (L87)
-  - `vendor_stop_services() -> list[str]` — `[dashboard_stop_service]` (default `/dashboard_client/stop`). (L168)
-  - `_vendor_stop(seam) -> str` — After the base deactivated `scaled_joint_trajectory_controller`, calls the dashboard `stop` (`std_srvs/Trigger`), which stops the `external_control` program on the pendant so the robot performs a controlled stop and the driver's control connection ends; a refused Trigger raises `ROSRuntimeError` so the report reads unacknowledged. Recovery: operator restarts the program (`/dashboard_client/play` + `resend_robot_program`), relaunches the HAL node, re-aligns. (L172)
+  - `vendor_stop_services() -> list[str]` — `[dashboard_stop_service]` (default `/dashboard_client/stop`). (L169)
+  - `_vendor_stop(seam) -> str` — After the base deactivated `scaled_joint_trajectory_controller`, calls the dashboard `stop` (`std_srvs/Trigger`), which stops the `external_control` program on the pendant so the robot performs a controlled stop and the driver's control connection ends; a refused Trigger raises `ROSRuntimeError` so the report reads unacknowledged. Recovery: operator restarts the program (`/dashboard_client/play` + `resend_robot_program`), relaunches the HAL node, re-aligns. (L173)
 - module const `_UR_CONTROLLER_NAME: str` (L60) — default `ur_robot_driver` `JointTrajectoryController` name.
 - module const `_UR_JOINT_STATE_TOPIC: str` (L61)
 - module const `_UR_DEADMAN_TOPIC: str` (L62)
@@ -586,14 +586,14 @@ _Production `rclpy` transport shared by every real `RosControlHAL` robot._
   - `controller_states(*, timeout_s) -> dict[str, str]` — `{name: state}` from `list_controllers`; `{}` if the manager did not answer. The lifecycle node logs a warning at wire-up when the HAL's controllers are not yet listed active. (L480)
   - `close() -> None` — Destroy the helper node the service clients live on (lifecycle cleanup). (L492)
   - `__init__` also takes `controller_names`, `trigger_services`, `empty_topics` (from `hal.controller_names()` / `vendor_stop_services()` / `vendor_stop_topics()`) and `controller_manager='/controller_manager'`. Service calls run on a private helper node + executor because the e-stop callback runs on the lifecycle node's single-threaded executor and a future issued from inside a callback can only complete if something else spins the client.
-  - `seen_joints() -> set[str]` (L551)
-  - `missing_joints() -> list[str]` (L555)
+  - `seen_joints() -> set[str]` (L553)
+  - `missing_joints() -> list[str]` (L557)
   - private: `_time_from_start_s`, `_on_joint_state`
 - module const `_COMMAND_DEPTH = 1` (L120) — command QoS depth (RELIABLE, VOLATILE, shallow — CLAUDE.md §2).
 - module const `_STATE_DEPTH = 10` (L125) — state QoS depth.
-- module const `_DEFAULT_TIME_FROM_START_S` (L591) — default `time_from_start` for a published `JointTrajectoryPoint` when the caller supplies none.
+- module const `_DEFAULT_TIME_FROM_START_S` (L593) — default `time_from_start` for a published `JointTrajectoryPoint` when the caller supplies none.
 - module const `_STRICT = 2` (L76) — `controller_manager_msgs/SwitchController.STRICT`: a switch that cannot fully apply is refused rather than partially applied.
-- `_message_type(kind) -> type` — The one place a `ControllerKind` becomes a ROS message class. Adding an enum member without extending this raises at wire-up rather than publishing a plausible-but-wrong type onto the actuation path; `tests/unit/test_ros_control_transport.py::test_every_controller_kind_maps_to_a_message_type` pins that. (L594)
+- `_message_type(kind) -> type` — The one place a `ControllerKind` becomes a ROS message class. Adding an enum member without extending this raises at wire-up rather than publishing a plausible-but-wrong type onto the actuation path; `tests/unit/test_ros_control_transport.py::test_every_controller_kind_maps_to_a_message_type` pins that. (L596)
 
 ### `python/hal/src/openral_hal/interbotix_transport.py`
 _Production `rclpy` torque-stop seam for the Interbotix XS arms (ALOHA) — the stop only, not the command path (#250)._
@@ -621,10 +621,10 @@ _SimTransport — in-memory simulated `ros2_control` transport **and** `Controll
   - `switch_calls -> list[tuple]` [@property] — Every `("deactivate" | "activate", names)` switch, in order. (L216)
   - `trigger_calls -> list[str]` [@property] — Every `std_srvs/Trigger` service called, in order. (L221)
   - `empty_publishes -> list[str]` [@property] — Every `std_msgs/Empty` topic published on, in order. (L226)
-- `class SimTorqueSeam` — In-memory `InterbotixStopSeam`: a simulated `xs_sdk` torque table. `torque_enable(robot_name, *, group, enable, timeout_s) -> TriggerReport` flips the arm's torque, refuses an arm not in `arms` (absent service) or listed in `failing`, and raises the exception `faults` maps an arm to (the rclpy-shaped fault the HAL must contain while still stopping the other arms); `torque(name)` / `calls` for assertions. (L264)
-  - `torque_enable(robot_name, *, group, enable, timeout_s) -> TriggerReport` — Record the call and flip the arm's torque unless it is absent, listed in `failing`, or mapped in `faults` (then raise that exception). (L304)
-  - `torque(robot_name) -> bool` — Whether the arm is currently torqued on. (L320)
-  - `calls -> list[tuple[str, str, bool]]` [@property] — Every `(robot_name, group, enable)` call, in order. (L325)
+- `class SimTorqueSeam` — In-memory `InterbotixStopSeam`: a simulated `xs_sdk` torque table. `torque_enable(robot_name, *, group, enable, timeout_s) -> TriggerReport` flips the arm's torque, refuses an arm not in `arms` (absent service) or listed in `failing`, and raises the exception `faults` maps an arm to (the rclpy-shaped fault the HAL must contain while still stopping the other arms); `torque(name)` / `calls` for assertions. (L266)
+  - `torque_enable(robot_name, *, group, enable, timeout_s) -> TriggerReport` — Record the call and flip the arm's torque unless it is absent, listed in `failing`, or mapped in `faults` (then raise that exception). (L306)
+  - `torque(robot_name) -> bool` — Whether the arm is currently torqued on. (L322)
+  - `calls -> list[tuple[str, str, bool]]` [@property] — Every `(robot_name, group, enable)` call, in order. (L327)
 
 ### `python/hal/src/openral_hal/lifecycle.py`
 _Generic ROS 2 managed lifecycle node wrapper for every HAL adapter — UR5e / UR10e / Franka / SO-100 / OpenArm / H1 / future HALs all share the same publish / subscribe / heartbeat / OTel-span wiring._

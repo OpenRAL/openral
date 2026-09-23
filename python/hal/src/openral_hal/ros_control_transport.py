@@ -497,6 +497,7 @@ class RosControlTransport:
     def _switch(
         self, names: Sequence[str], *, activate: bool, timeout_s: float
     ) -> ControllerSwitchReport:
+        """One STRICT ``switch_controller`` call, confirmed via ``list_controllers``."""
         wanted = tuple(names)
         target = "active" if activate else "inactive"
         if not wanted:
@@ -543,6 +544,7 @@ class RosControlTransport:
         )
 
     def _controller_states_of(self, names: Sequence[str], *, timeout_s: float) -> dict[str, str]:
+        """Return ``{name: state}`` for ``names``, ``not_listed`` for any the manager omits."""
         listed = self.controller_states(timeout_s=timeout_s)
         return {n: listed.get(n, "not_listed") for n in names}
 

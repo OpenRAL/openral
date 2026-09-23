@@ -28,6 +28,7 @@ _UR_CONTROLLER = "scaled_joint_trajectory_controller"
 
 
 def _ur5e(transport: SimTransport) -> UR5eRealHAL:
+    """A connected ``UR5eRealHAL`` with ``transport`` as both drive and stop seam."""
     hal = UR5eRealHAL(publish_fn=transport.publish, state_fn=transport.state)
     hal.attach_controller_stop(transport)
     hal.connect()
@@ -35,6 +36,7 @@ def _ur5e(transport: SimTransport) -> UR5eRealHAL:
 
 
 def test_ur5e_estop_is_acknowledged_on_the_heartbeat_and_clear_is_rejected() -> None:
+    """Ur5e estop is acknowledged on the heartbeat and clear is rejected."""
     rclpy.init()
     try:
         node = ManifestHALLifecycleNode("openral_hal_ur5e_estop")
@@ -63,6 +65,7 @@ def test_ur5e_estop_is_acknowledged_on_the_heartbeat_and_clear_is_rejected() -> 
 
 
 def test_a_refused_dashboard_stop_reads_unacknowledged_but_stays_latched() -> None:
+    """A refused dashboard stop reads unacknowledged but stays latched."""
     rclpy.init()
     try:
         node = ManifestHALLifecycleNode("openral_hal_ur5e_estop_refused")
@@ -88,6 +91,7 @@ def test_a_refused_dashboard_stop_reads_unacknowledged_but_stays_latched() -> No
 
 
 def test_openarm_clears_only_after_all_four_controllers_are_reactivated() -> None:
+    """Openarm clears only after all four controllers are reactivated."""
     from openral_hal.openarm_real import OpenArmRealHAL
 
     rclpy.init()
@@ -116,6 +120,7 @@ def test_openarm_clears_only_after_all_four_controllers_are_reactivated() -> Non
 
 
 def test_openarm_stays_latched_when_reactivation_is_refused() -> None:
+    """Openarm stays latched when reactivation is refused."""
     from openral_hal.openarm_real import OpenArmRealHAL
 
     rclpy.init()

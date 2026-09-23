@@ -23,5 +23,4 @@ _A real `ros2_control` graph with only the motors left out — `controller_manag
 - `spawn(argv, log, env)` / `terminate(process)` — One ROS node per process group; SIGINT → SIGKILL teardown that takes `ros2 run`'s child with it. (L140)
 - `bring_up(tmp, *, urdf, config, controllers)` [contextmanager] — `robot_state_publisher` + `ros2_control_node`, then the spawner per controller (its exit code is the readiness signal). Children inherit `ROS_DOMAIN_ID`; never sets `ROS_AUTOMATIC_DISCOVERY_RANGE` (see `tests/sim/conftest.py` for the hang). (L163)
 - `driver_node(name)` [contextmanager] — `(node, spin)` on a private rclpy context. (L235)
-- `wait_until(spin, predicate, timeout_s) -> bool` — Poll, never a bare sleep; DDS discovery takes a beat. (L266)
-
+- `wait_until(spin, predicate, timeout_s) -> bool` — Poll, never a bare sleep; DDS discovery takes a beat. (L267)

@@ -138,6 +138,7 @@ class _Harness:
     """The production node plus the observer / publisher side, on one spinning executor."""
 
     def __init__(self, robot: str, manifest: Path) -> None:
+        """Build the production node, the observer node and their shared executor."""
         import rclpy
         from controller_manager_msgs.srv import ListControllers
         from openral_hal.lifecycle import ManifestHALLifecycleNode
@@ -204,18 +205,22 @@ class _Harness:
         self._thread = threading.Thread(target=self._spin, daemon=True)
 
     def _count_super_stop(self) -> None:
+        """Count one intera super-stop publish."""
         self.super_stops += 1
 
     def _spin(self) -> None:
+        """Executor loop for both nodes until ``close``."""
         while not self._stop.is_set():
             self.executor.spin_once(timeout_sec=0.05)
 
     def start(self) -> None:
+        """Start spinning, then configure + activate the production node."""
         self._thread.start()
         assert str(self.node.trigger_configure()).endswith("SUCCESS"), "configure failed"
         assert str(self.node.trigger_activate()).endswith("SUCCESS"), "activate failed"
 
     def close(self) -> None:
+        """Deactivate + cleanup the node, stop spinning, tear rclpy down."""
         with suppress(Exception):
             self.node.trigger_deactivate()
             self.node.trigger_cleanup()
@@ -230,6 +235,7 @@ class _Harness:
     # ── stimuli ────────────────────────────────────────────────────────────
 
     def publish_chunk(self, targets: list[float]) -> None:
+        """Publish one ``ActionChunk`` with ``targets`` on ``/openral/safe_action``."""
         chunk = self._chunk()
         chunk.n_dof = len(targets)
         chunk.horizon = 1
@@ -238,14 +244,17 @@ class _Harness:
         self._chunk_pub.publish(chunk)
 
     def estop(self) -> None:
+        """Publish ``/openral/estop``."""
         self._estop_pub.publish(self._empty())
 
     def estop_cleared(self) -> None:
+        """Publish ``/openral/estop_cleared``."""
         self._cleared_pub.publish(self._empty())
 
     # ── observations ───────────────────────────────────────────────────────
 
     def positions(self, joints: list[str]) -> dict[str, float] | None:
+        """Latest ``/joint_states`` positions for ``joints``; ``None`` before the first message."""
         if not self.joint_states:
             return None
         msg = self.joint_states[-1]
@@ -263,6 +272,7 @@ class _Harness:
         return {str(c.name): str(c.state) for c in future.result().controller}
 
     def wait(self, predicate: Any, timeout_s: float) -> bool:
+        """Poll ``predicate`` until true or ``timeout_s`` elapses."""
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             if predicate():
@@ -272,6 +282,7 @@ class _Harness:
 
 
 def _reached(h: _Harness, joints: list[str], target: list[float]) -> bool:
+    """True once every joint reads within 1e-3 rad of ``target``."""
     got = h.positions(joints)
     if got is None or len(got) != len(joints):
         return False
@@ -279,6 +290,7 @@ def _reached(h: _Harness, joints: list[str], target: list[float]) -> bool:
 
 
 def _hal_report(h: _Harness) -> Any:
+    """The node's HAL's ``last_stop_report`` (the evidence under test)."""
     hal = h.node._hal
     return hal.last_stop_report
 

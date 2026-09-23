@@ -230,6 +230,7 @@ class SimTransport:
     # -- Internals ------------------------------------------------------------
 
     def _state_of(self, name: str) -> str:
+        """Return a controller's table state, registering it ``active`` unless STRICT."""
         if name not in self._controller_states:
             if self._strict:
                 return "unloaded"
@@ -237,6 +238,7 @@ class SimTransport:
         return self._controller_states[name]
 
     def _switch(self, op: str, names: Sequence[str], target: str) -> ControllerSwitchReport:
+        """Flip ``names`` to ``target``; STRICT refuses unloaded names; may raise the fault."""
         wanted = tuple(names)
         if not wanted:
             raise ROSConfigError(f"SimTransport.{op}_controllers(): no controller names given.")

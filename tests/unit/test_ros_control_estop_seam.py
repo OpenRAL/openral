@@ -39,6 +39,7 @@ _CONTROLLER = "arm_controller"
 
 
 def _description(n_joints: int = 2) -> RobotDescription:
+    """A minimal two-joint ``RobotDescription`` for the generic adapter."""
     return RobotDescription(
         name="seam_robot",
         embodiment_kind=EmbodimentKind.MANIPULATOR,
@@ -65,6 +66,7 @@ class _ResettableHAL(RosControlHAL):
 def _wired(
     *, controllers: list[str] | None = None, cls: type[RosControlHAL] = RosControlHAL
 ) -> tuple[RosControlHAL, SimTransport]:
+    """A connected ``RosControlHAL`` with a ``SimTransport`` as drive and stop seam."""
     transport = SimTransport(n_joints=2, controllers=controllers)
     hal = cls(_description(), controller_name=_CONTROLLER)
     hal.attach_transport(transport.publish, transport.state)
@@ -74,10 +76,12 @@ def _wired(
 
 
 def _move(v: float) -> Action:
+    """A one-step ``JOINT_POSITION`` action to ``(v, -v)``."""
     return Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[[v, -v]])
 
 
 def test_the_generic_adapter_declares_the_lifecycle_contract() -> None:
+    """The generic adapter declares the lifecycle contract."""
     hal = RosControlHAL(_description(), controller_name=_CONTROLLER)
     assert isinstance(hal, LifecycleEStopHAL)
     assert isinstance(hal, ControllerStoppable)
@@ -89,6 +93,7 @@ def test_the_generic_adapter_declares_the_lifecycle_contract() -> None:
 
 
 def test_estop_deactivates_the_controller_and_the_report_is_acknowledged() -> None:
+    """Estop deactivates the controller and the report is acknowledged."""
     hal, transport = _wired(controllers=[_CONTROLLER])
     hal.send_action(_move(0.3))
     assert transport.state()["position"] == [0.3, -0.3]
@@ -136,6 +141,7 @@ def test_a_controller_the_manager_does_not_list_is_an_unacknowledged_stop() -> N
 
 
 def test_without_a_seam_the_stop_is_reported_unproven_never_as_stopped() -> None:
+    """Without a seam the stop is reported unproven never as stopped."""
     transport = SimTransport(n_joints=2)
     hal = RosControlHAL(_description(), controller_name=_CONTROLLER)
     hal.attach_transport(transport.publish, transport.state)
@@ -149,6 +155,7 @@ def test_without_a_seam_the_stop_is_reported_unproven_never_as_stopped() -> None
 
 
 def test_attaching_something_that_is_not_a_seam_is_refused_at_wire_up() -> None:
+    """Attaching something that is not a seam is refused at wire up."""
     hal = RosControlHAL(_description(), controller_name=_CONTROLLER)
 
     class NotASeam:
@@ -159,6 +166,7 @@ def test_attaching_something_that_is_not_a_seam_is_refused_at_wire_up() -> None:
 
 
 def test_restart_required_refuses_an_in_process_reset() -> None:
+    """Restart required refuses an in process reset."""
     hal, _ = _wired(controllers=[_CONTROLLER])
     with pytest.raises(ROSEStopRequested):
         hal.estop()
@@ -169,6 +177,7 @@ def test_restart_required_refuses_an_in_process_reset() -> None:
 
 
 def test_resettable_reconnects_only_after_the_controllers_are_confirmed_active() -> None:
+    """Resettable reconnects only after the controllers are confirmed active."""
     hal, transport = _wired(controllers=[_CONTROLLER], cls=_ResettableHAL)
     assert isinstance(hal, ResettableLifecycleEStopHAL)
     with pytest.raises(ROSEStopRequested):
@@ -203,6 +212,7 @@ def test_a_refused_reactivation_leaves_the_hal_disconnected() -> None:
 
 
 def test_sim_transport_satisfies_the_seam_protocol_structurally() -> None:
+    """Sim transport satisfies the seam protocol structurally."""
     assert isinstance(SimTransport(n_joints=1), ControllerStopSeam)
 
 
@@ -210,9 +220,11 @@ class _VendorStopHAL(RosControlHAL):
     """The generic adapter with a vendor step, to prove the step still runs after a fault."""
 
     def vendor_stop_topics(self) -> list[str]:
+        """Declare the halt topic so the seam creates its publisher."""
         return ["/vendor/halt"]
 
     def _vendor_stop(self, seam: ControllerStopSeam) -> str:
+        """Publish the halt topic and return its label."""
         seam.publish_empty("/vendor/halt")
         return "/vendor/halt"
 

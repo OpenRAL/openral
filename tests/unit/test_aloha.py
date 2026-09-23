@@ -333,6 +333,7 @@ class TestSafety:
             )
 
     def test_one_arm_refusing_torque_off_is_reported_not_hidden(self, hal: AlohaHAL) -> None:
+        """One arm refusing torque off is reported not hidden."""
         from openral_hal.sim_transport import SimTorqueSeam
 
         seam = SimTorqueSeam(arms=["follower_left", "follower_right"], failing=["follower_right"])
@@ -365,6 +366,7 @@ class TestSafety:
         assert report.controller_states["follower_right"] == "torque_off"
 
     def test_without_a_seam_the_stop_is_reported_unproven(self, hal: AlohaHAL) -> None:
+        """Without a seam the stop is reported unproven."""
         hal.connect()
         with pytest.raises(ROSEStopRequested, match="NOT acknowledged"):
             hal.estop()
@@ -373,6 +375,7 @@ class TestSafety:
         assert "no torque stop seam" in report.detail
 
     def test_recovery_policy_is_restart_required(self, hal: AlohaHAL) -> None:
+        """Recovery policy is restart required."""
         from openral_hal.protocol import EStopRecovery, LifecycleEStopHAL
 
         assert isinstance(hal, LifecycleEStopHAL)

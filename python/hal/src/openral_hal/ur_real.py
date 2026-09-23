@@ -151,6 +151,7 @@ class _URRealHAL(RosControlHAL):
         deadman_topic: str = _UR_DEADMAN_TOPIC,
         dashboard_stop_service: str = _UR_DASHBOARD_STOP_SERVICE,
     ) -> None:
+        """Initialise with ``ur_robot_driver``'s controller, topic and dashboard defaults."""
         super().__init__(
             description,
             controller_name=controller_name,
