@@ -50,12 +50,12 @@ _Bus-attached LeRobot/rosbag recorder for the deploy graph (mirrors `WorldCloudB
 
 - `decode_inline_frame(frame: SensorFrame) -> np.ndarray | None` — Decode one aggregator `SensorFrame` with inline `data` into an `HxWxC` array whose **dtype comes from `frame.encoding`** (`DEPTH16` → uint16 millimetres; `BGR8` / `RGB8` / `MONO8` / `RAW` → uint8); `None` for topic/handle delivery or a compressed / device-handle encoding (JPEG, PNG, CUDA_*) rather than a mis-reshape. Shared by the recorder's `_decode_images` — which additionally keeps only `(H, W, 3) uint8` frames, the contract of `DatasetRecorder.record_frame`, so a depth or mono frame in the same world state is skipped rather than rejected per frame — and the runner's `_decode_image_frames`, where the depth frame rides along under its own sensor name as `uint16 (H, W, 1)`. Reading everything as uint8 aborted the first real-hardware OpenArm dispatch (qorin1, 2026-09-22): the ZED depth sensor's `16UC1` 1280x720 frame is two bytes per pixel and `reshape(720, 1280, 1)` raised `ValueError: cannot reshape array of size 1843200`, killing the observation the policy's RGB slots were in.
 
-- module constant `_PHASE_START = 0` (L60) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
-- module constant `_PHASE_END = 1` (L61) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
-- module constant `ACTION_TOPIC_DEFAULT = "/openral/candidate_action"` (L63) — default `ActionChunk` topic.
-- module constant `EPISODE_TOPIC_DEFAULT = "/openral/episode"` (L64) — default `Episode` marker topic.
-- `class DatasetRecorderBridge(node, *, robot, aggregator, recorder, output_path=None, action_topic="/openral/candidate_action", episode_topic="/openral/episode")` — Subscribes `Episode` (drives `recorder.episode_start/end`) and `ActionChunk`, joins each tick's action with the `WorldStateAggregator` snapshot, and writes frames via `Rosbag2Sink`. Logs `dataset_recorder.nothing_recorded` at `destroy()` if no episode marker ever fired, so an empty recording is never silent. (L67)
-  - `destroy() -> None` (L164) — Flushes the pending tick, closes any open episode (marking it a failure), finalizes the recorder, releases the subscriptions; idempotent.
+- module constant `_PHASE_START = 0` (L61) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
+- module constant `_PHASE_END = 1` (L62) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
+- module constant `ACTION_TOPIC_DEFAULT = "/openral/candidate_action"` (L64) — default `ActionChunk` topic.
+- module constant `EPISODE_TOPIC_DEFAULT = "/openral/episode"` (L65) — default `Episode` marker topic.
+- `class DatasetRecorderBridge(node, *, robot, aggregator, recorder, output_path=None, action_topic="/openral/candidate_action", episode_topic="/openral/episode")` — Subscribes `Episode` (drives `recorder.episode_start/end`) and `ActionChunk`, joins each tick's action with the `WorldStateAggregator` snapshot, and writes frames via `Rosbag2Sink`. Logs `dataset_recorder.nothing_recorded` at `destroy()` if no episode marker ever fired, so an empty recording is never silent. (L110)
+  - `destroy() -> None` (L207) — Flushes the pending tick, closes any open episode (marking it a failure), finalizes the recorder, releases the subscriptions; idempotent.
 
 ### `python/runner/src/openral_runner/sensor_reader.py`
 _``SensorReader`` Protocol — seam between per-sensor capture backends and the inference runner._
@@ -97,8 +97,8 @@ _``Ros2ImageSensorReader`` — backend for a stream a device only publishes over
   - `close() -> None` (L252) — Destroys the subscription; calls `rclpy.shutdown()` only if this reader initialised it. Idempotent, guarding per-resource rather than on `is_open`.
   - `read_latest(max_age_ms=None) -> SensorFrame` (L301) — Lock-protected snapshot; `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on a closed reader. Frames carry inlined `data`, not a `topic` reference.
   - `_on_image(msg) -> None` (L343) — Subscription callback; conversion failures are counted and logged, never raised, since an exception here would kill the spin loop and silently stop the camera.
-- `_rows(raw, dtype, msg, height, width, channels) -> NDArray` (L427) — Unpacks an `Image` payload honouring `msg.step` (row stride), needed when a publisher hands out pitch-aligned buffers (e.g. Isaac/NITROS) or a cropped ROI. An implausible `step` falls back to the packed stride, so a wrong value fails loud rather than yielding a skewed image.
-- `_byte_order(msg) -> str` (L468) — Honours `Image.is_bigendian`; a 16-bit depth image from a big-endian publisher read little-endian is byte-swapped garbage.
+- `_rows(raw, dtype, msg, height, width, channels) -> NDArray` (L445) — Unpacks an `Image` payload honouring `msg.step` (row stride), needed when a publisher hands out pitch-aligned buffers (e.g. Isaac/NITROS) or a cropped ROI. An implausible `step` falls back to the packed stride, so a wrong value fails loud rather than yielding a skewed image.
+- `_byte_order(msg) -> str` (L486) — Honours `Image.is_bigendian`; a 16-bit depth image from a big-endian publisher read little-endian is byte-swapped garbage.
 
 ### `python/runner/src/openral_runner/backends/galaxea_a1_camera_bridge.py`
 _Real-deploy reader for the public A1 Runtime paired-frame bridge. It never
