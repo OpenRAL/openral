@@ -151,6 +151,72 @@ def test_procedural_scene_id_registered() -> None:
     assert SCENES.fixed_robot("robocasa") == "panda_mobile"
 
 
+def test_any_robocasa_task_resolves_by_prefix_to_one_registration() -> None:
+    """Tasks are data in the id: two registrations cover every kitchen/GR1 task."""
+    assert [n for n in SCENES.names() if n.startswith("robocasa")] == ["robocasa", "robocasa/gr1"]
+    # Not in the curated tuple, still a runnable scene id.
+    assert "robocasa/TurnOnSinkFaucet" in SCENES
+    assert SCENES.get("robocasa/TurnOnSinkFaucet") is SCENES.get("robocasa")
+    assert SCENES.get("robocasa/gr1/PnPCanToDrawerClose") is SCENES.get("robocasa/gr1")
+    assert SCENES.provision("robocasa/gr1/PnPCanToDrawerClose") is not SCENES.provision(
+        "robocasa/OpenDrawer"
+    )
+    assert SCENES.meta("robocasa/OpenDrawer")["sequential_init"] is True
+
+
+def test_robocasa_robot_binding() -> None:
+    """Kitchens build panda_mobile (+ its VSLAM variant); GR1 tasks build gr1 only."""
+    assert SCENES.resolve_robot("robocasa/PickPlaceCounterToCabinet", None) == "panda_mobile"
+    assert (
+        SCENES.resolve_robot("robocasa/PickPlaceCounterToCabinet", "panda_mobile_vslam")
+        == "panda_mobile_vslam"
+    )
+    assert SCENES.resolve_robot("robocasa/gr1/PnPCupToDrawerClose", None) == "gr1"
+    with pytest.raises(ROSConfigError, match="can only instantiate"):
+        SCENES.resolve_robot("robocasa/PickPlaceCounterToCabinet", "franka_panda")
+    with pytest.raises(ROSConfigError, match="can only instantiate"):
+        SCENES.resolve_robot("robocasa/gr1/PnPCupToDrawerClose", "panda_mobile")
+
+
+def test_typo_task_is_a_typed_config_error() -> None:
+    """Prefix fallback accepts any task id, so the typo surfaces at build, typed."""
+    pytest.importorskip("robocasa")
+    from openral_sim.backends.robocasa import _require_registered_env
+
+    _require_registered_env("PickPlaceCounterToCabinet")
+    with pytest.raises(ROSConfigError, match="not a registered robosuite env"):
+        _require_registered_env("PickPlaceCounterToCabinett")
+
+
+@pytest.mark.parametrize(
+    ("rskill", "expected"),
+    [
+        ("rskills/rldx1-ft-rc365-nf4", "human300_16d"),  # state_contract.layout: rc365
+        ("rskills/rldx1-ft-gr1-nf4", "gr1"),
+        ("rskills/xr1-robocasa", "human300_16d"),  # no layout -> schema default
+    ],
+)
+def test_state_layout_follows_the_rskill_contract(rskill: str, expected: str) -> None:
+    """One scene serves every rSkill: the manifest's state_contract picks the layout."""
+    from openral_core import SimEnvironment, TaskSpec, VLASpec
+    from openral_sim.backends.robocasa import _resolve_state_layout
+
+    env_cfg = SimEnvironment(
+        robot_id="panda_mobile",
+        scene=_make_scene("robocasa/OpenDrawer", {"prebuilt_task": "OpenDrawer"}),
+        task=TaskSpec(id="robocasa/OpenDrawer/0", scene_id="robocasa/OpenDrawer", instruction=""),
+        vla=VLASpec(id="rldx", weights_uri=rskill),
+    )
+    opts = _validate_backend_options(env_cfg.scene)
+    assert _resolve_state_layout(env_cfg, opts) == expected
+    # An explicit YAML pin still wins over the manifest.
+    pinned_scene = _make_scene(
+        "robocasa/OpenDrawer", {"prebuilt_task": "OpenDrawer", "state_layout": "xr1_8d"}
+    )
+    pinned = _validate_backend_options(pinned_scene)
+    assert _resolve_state_layout(env_cfg, pinned) == "xr1_8d"
+
+
 def test_xr1_robocasa_state_uses_arm_and_one_gripper_value() -> None:
     state = _xr1_robocasa_state(
         {

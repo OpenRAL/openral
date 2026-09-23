@@ -87,6 +87,31 @@ def render_named_rgb_mujoco(
     return renderer, np.asarray(renderer.render(), dtype=np.uint8).copy()
 
 
+def env_action_dim(env: object) -> int | None:
+    """Return the flat action width a ``SimRollout`` accepts, or ``None``.
+
+    Probes, in order: ``env.action_dim`` (the attribute backends expose),
+    ``env._env.action_dim`` (a wrapped raw robosuite env), and the last axis
+    of ``env._env.action_space.shape`` (a wrapped gym ``Box`` env). Never
+    guesses — ``None`` means the width is not introspectable.
+
+    Example:
+        >>> class _Env:
+        ...     action_dim = 7
+        >>> env_action_dim(_Env())
+        7
+    """
+    if hasattr(env, "action_dim"):
+        return int(env.action_dim)
+    inner = getattr(env, "_env", None)
+    if inner is None:
+        return None
+    if hasattr(inner, "action_dim"):
+        return int(inner.action_dim)
+    shape = getattr(getattr(inner, "action_space", None), "shape", None)
+    return int(shape[-1]) if shape else None
+
+
 Observation = dict[str, Any]
 """Free-form observation dict — keys are adapter-specific.
 

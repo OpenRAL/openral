@@ -280,9 +280,11 @@ the reasoner select policy at runtime.
 ## 3. Add a new robot manifest
 
 Robots are auto-registered from `robots/<id>/robot.yaml` at import time — no
-Python edit required. The discovery loop lives at
+Python edit required, for `openral sim run` **and** `openral deploy sim|run`.
+The discovery loop lives at
 [`python/sim/src/openral_sim/policies/robots.py`](https://github.com/OpenRAL/openral/blob/master/python/sim/src/openral_sim/policies/robots.py)
-(`_discover_robot_ids` → `_resolve_manifest` → `_make_factory`).
+(`_discover_robot_ids` → `resolve_robot_manifest` → `_make_factory`); `deploy`
+resolves the manifest through the same `resolve_robot_manifest`.
 The search path is, in order:
 
 1. `$OPENRAL_ROBOTS_DIR/<id>/robot.yaml` (if the env var is set)
@@ -393,6 +395,26 @@ mkdir -p robots/my_arm
 $EDITOR robots/my_arm/robot.yaml        # copy & adapt so100_follower/robot.yaml
 $EDITOR robots/my_arm/README.md         # pair the manifest with adapter notes
 ```
+
+The manifest is the runtime source of truth for the HAL too: leave
+`hal.sim: null` and `build_hal` derives `MujocoArmHAL.from_description` from
+your `sim:` block (every `sensors:` / `collision_geometry:` edit reaches the
+running twin). Name a class in `hal.sim` only when the robot needs real
+behaviour beyond the data (a walking controller, a torque hook); that class
+must accept `description=` so it binds the loaded manifest. `hal.real` names
+the real-hardware HAL, and its constructor kwargs come from
+`hal.parameters.defaults` (overridable per workcell by a DeployScene `hal:`
+block or `--hal key=value`, all forwarded to the constructor). A vendor
+ros2_control bringup is declared as `hal.real_bringup: "<pkg>:<file>.launch.py"`.
+
+`openral deploy sim --config <scene.yaml>` / `deploy run --robot my_arm` then
+work with no Python registry entry and no ROS package: the generic
+`openral_hal_scene_attached` manifest-driven node hosts the HAL (a
+`packages/openral_hal_my_arm` package is used instead only if you ship one).
+Whether `deploy sim` builds a bare MuJoCo twin or scene-attaches is the
+scene's call: a DeployScene with its own `composition:`, or whose `scene.id` is
+not a registered `openral_sim` scene, gets a bare twin; otherwise the HAL
+attaches to the scene's `SimRollout`.
 
 ### Verify it registered
 

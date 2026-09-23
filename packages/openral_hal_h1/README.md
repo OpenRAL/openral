@@ -5,8 +5,10 @@ Unitree H1 humanoid (19-DoF) can participate in the `openral deploy sim` graph
 (`deploy_e2e.launch.py` → C++ safety kernel → HAL).
 
 Spawned by `openral deploy sim --robot h1` via
-`_ROBOT_HAL_REGISTRY["h1"]` (see
-`python/cli/src/openral_cli/deploy_sim.py`).
+`_derive_hal_spec` (see `python/cli/src/openral_cli/deploy_sim.py`): a
+robot's own `openral_hal_<robot_id>` package hosts it when one ships, else
+the generic `openral_hal_scene_attached` node — both run the same
+manifest-driven node, so `robots/<id>/robot.yaml` is the only per-robot input.
 
 The HAL is MuJoCo-backed; `HAL.connect()` pulls the MJCF from
 `robot_descriptions` on first use.

@@ -42,6 +42,7 @@ from openral_rskill._vla_core import (
 )
 from openral_rskill.backend_registry import maybe_attach_pro_hooks
 
+from openral_sim._quantization import require_supported_dtype, resolve_quant_plan
 from openral_sim.registry import POLICIES
 
 if TYPE_CHECKING:
@@ -324,7 +325,11 @@ def _maybe_build_act_nvmm(
     return executor
 
 
-@POLICIES.register("act")
+@POLICIES.register(
+    "act",
+    install_groups=("sim",),
+    required_imports=("lerobot.policies.act.modeling_act",),
+)
 def _build_act(env_cfg: Any) -> _ACTAdapter:
     """Load an ACTPolicy checkpoint."""
     spec = env_cfg.vla
@@ -343,6 +348,9 @@ def _build_act(env_cfg: Any) -> _ACTAdapter:
 
     repo_id, revision = resolve_rskill_repo_revision(spec.weights_uri, adapter_name="ACT")
     manifest = _load_manifest_for_spec(spec)
+    # Loads at the checkpoint's stored precision; there is no cast or packing
+    # path, so any other requested dtype fails here instead of being ignored.
+    require_supported_dtype(resolve_quant_plan(spec, manifest), frozenset({"fp32"}), "act")
     # Snapshot first so we can (a) probe for modern processor sidecars
     # below and (b) sanitize a ``config.json`` that may carry training-only
     # fields the installed lerobot ACTConfig doesn't recognize (e.g.

@@ -321,6 +321,9 @@ class SO100FollowerHAL(HALBase):
             provided, ``connect()`` calls ``robot.connect()`` directly instead
             of constructing a ``SO100Follower`` and opening the serial port.
             Intended for testing via ``SO100DigitalTwin``.
+        description: The loaded ``robots/<id>/robot.yaml`` manifest
+            (threaded by ``build_hal``). ``None`` falls back to the
+            in-code ``SO100_DESCRIPTION`` mirror.
 
     Raises:
         ROSConfigError: At ``connect()`` time if ``lerobot`` is not installed
@@ -341,6 +344,7 @@ class SO100FollowerHAL(HALBase):
         max_relative_target: float | dict[str, float] | None = None,
         staleness_limit_s: float = 0.5,
         robot: _LeRobotRobot | None = None,
+        description: RobotDescription | None = None,
     ) -> None:
         """Initialise the adapter; does not open any connection yet.
 
@@ -357,7 +361,9 @@ class SO100FollowerHAL(HALBase):
         (``lerobot-calibrate --robot.id=<id>``), e.g. via the deploy config's
         ``hal.params.id`` + ``hal.params.calibration_dir``.
         """
-        self.description: RobotDescription = SO100_DESCRIPTION
+        # The loaded manifest (build_hal threads it) wins — so101_follower
+        # reuses this class and must report its own name/limits.
+        self.description: RobotDescription = description or SO100_DESCRIPTION
         self._port = port
         self._calibrate_on_connect = calibrate_on_connect
         self._id = id

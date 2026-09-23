@@ -44,8 +44,8 @@ openral rskill new pi05-pick-cube
 Valid `--family` values: `act | smolvla | pi05 | xvla | diffusion`.
 `--license` is one of `apache-2.0 | mit | bsd | permissive_research |
 nvidia_non_commercial | proprietary | unknown`. `--embodiment-tag` must be a
-canonical `EmbodimentTag` literal (e.g. `so100_follower`, `franka_panda`,
-`aloha`). This writes `rskills/pi05-pick-cube/{rskill.yaml,README.md,eval/}`.
+tag some `robots/*/robot.yaml` declares, or `any` / `custom` / `multi`
+(e.g. `so100_follower`, `franka_panda`, `aloha`). This writes `rskills/pi05-pick-cube/{rskill.yaml,README.md,eval/}`.
 
 ## 2. Fill in the manifest
 
@@ -67,6 +67,7 @@ Open `rskills/<id>/rskill.yaml`. The fields that matter most for consumers
 | `chunk_size` / `n_action_steps` | Action-chunk size and replan cadence. |
 | `latency_budget.per_chunk_ms` | Contractual — enforced by sim-tier latency tests. |
 | `actions` / `objects` / `scenes` | Vocabulary the reasoner's LLM palette uses to pick the skill. |
+| `sensors_required` / `image_preprocessing.aliases` | Each RGB entry's `vla_feature_key` suffix (`observation.images.camera1` → `camera1`) is a **VLA slot**. `aliases` keys are slots — never robot sensor names (`top`) or scene camera names — mapped to the checkpoint's view names (`camera1: image`). `openral sim run`, `deploy sim` and `deploy run` all feed the policy slot-keyed images, so the same alias means the same camera everywhere; a key no `sensors_required` entry declares fails the load. |
 
 The full schema is
 [`openral_core.schemas.RSkillManifest`](https://github.com/OpenRAL/openral/blob/master/python/core/src/openral_core/schemas.py).
@@ -96,7 +97,7 @@ plain `split("-")`. Two shapes:
 | Axis | Vocabulary | Example |
 | --- | --- | --- |
 | `<model>` | `CANONICAL_MODEL_TOKENS` — a versioned checkpoint token | `smolvla`, `gr00t_n17`, `lingbot_vla2`, `omdet_turbo` |
-| `<robot>` | `EmbodimentTag` values incl. `any` + `multi` (>1 concrete robot) | `franka_panda`, `aloha_agilex`, `any`, `multi` |
+| `<robot>` | a robot-declared embodiment tag, or `any` / `multi` (>1 concrete robot); shape-checked by the publisher, vocabulary-checked in CI | `franka_panda`, `aloha_agilex`, `any`, `multi` |
 | `<task>` | **author-chosen**, validated by shape `^[a-z0-9][a-z0-9_]*$` only | `libero_spatial`, `pen`, `pick_place_pen`, `locator` |
 | `<quantization>` | `{fp32, fp16, bf16, int8, nf4}` (schema `int4` → `nf4`); **omitted** for weightless ROS wrappers | `bf16`, `int8`, `nf4` |
 

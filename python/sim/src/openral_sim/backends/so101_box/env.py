@@ -559,7 +559,7 @@ class _So101BoxRollout:
         return xmat @ np.array([0.0, 0.0, 1.0], dtype=np.float64)
 
 
-@SCENES.register("so101_box", fixed_robot="so101_follower")
+@SCENES.register("so101_box", fixed_robot="so101_follower", sim_clock=True)
 def build_so101_box_scene(env_cfg: SimEnvironment) -> _So101BoxRollout:
     """Build the so101_box rollout from a composed ``SimEnvironment``.
 

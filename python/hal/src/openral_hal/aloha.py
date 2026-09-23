@@ -245,7 +245,7 @@ ALOHA_DESCRIPTION = RobotDescription(
         deadman_required=False,
     ),
     sdk_kind="open",
-    hal=HalEntrypoints(sim="openral_hal.aloha:AlohaMujocoHAL", real="openral_hal.aloha:AlohaHAL"),
+    hal=HalEntrypoints(sim=None, real="openral_hal.aloha:AlohaHAL"),
     # MuJoCo wiring for the gym-aloha sim twin.  Two passthrough grippers
     # with mirror_actuator_index (positive finger + mirror to negative
     # finger).  keyframe_index=0 seeds the fingers inside their
@@ -419,6 +419,9 @@ class AlohaHAL(HALBase):
             callback; tests inject ``SimTransport.state``.
         staleness_limit_s: Maximum age of a ``read_state()`` reading
             before ``ROSPerceptionStale`` is raised.
+        description: The loaded ``robots/<id>/robot.yaml`` manifest
+            (threaded by ``build_hal``). ``None`` falls back to the
+            in-code ``ALOHA_REAL_DESCRIPTION`` mirror.
 
     **Lifecycle e-stop.** ``estop()`` calls ``torque_enable(enable=false)``
     for the ``all`` group of every namespace in ``arm_namespaces`` through
@@ -463,11 +466,12 @@ class AlohaHAL(HALBase):
         state_fn: _StateFn | None = None,
         staleness_limit_s: float = 0.2,
         stop_timeout_s: float = 5.0,
+        description: RobotDescription | None = None,
     ) -> None:
         """Initialise the adapter; no transport is opened until ``connect()``."""
         if not arm_namespaces:
             raise ROSConfigError("AlohaHAL needs at least one arm namespace to stop.")
-        self.description: RobotDescription = ALOHA_REAL_DESCRIPTION
+        self.description: RobotDescription = description or ALOHA_REAL_DESCRIPTION
         self._left_arm_controller = left_arm_controller
         self._right_arm_controller = right_arm_controller
         self._left_gripper_controller = left_gripper_controller

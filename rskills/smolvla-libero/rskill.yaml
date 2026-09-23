@@ -78,13 +78,12 @@ processors:
   preprocessor_uri: "hf://lerobot/smolvla_libero/policy_preprocessor.json"
   postprocessor_uri: "hf://lerobot/smolvla_libero/policy_postprocessor.json"
 # Per-checkpoint knobs the processor JSONs don't encode. SmolVLA on
-# LIBERO uses the same 180° H/W flip + camera1/2 alias remap as the pi05
-# LIBERO checkpoint, and the same 8-D proprio state contract.
+# LIBERO uses the same 180° H/W flip as the pi05 LIBERO checkpoint, and the
+# same 8-D proprio state contract. No camera aliases: the slots camera1/camera2
+# are fed as observation.images.camera1/2, which is what the checkpoint's
+# preprocessor rename_map (image -> camera1, image2 -> camera2) produces anyway.
 image_preprocessing:
   flip_180: true
-  aliases:
-    top: "image"
-    wrist: "image2"
 state_contract:
   # the LIBERO checkpoint trains on 8-D TASK-SPACE proprio
   # (eef_pos ‖ eef_axisangle ‖ gripper). The benchmark (`openral sim run`)
@@ -109,10 +108,12 @@ state_contract:
       - "panda_gripper"
 
 # ── Execution semantics ────────────────────────────────────────────────────
-chunk_size: 16
+# lerobot/smolvla_libero config.json: chunk_size=50 (this field previously said
+# 16, which the adapter never used — apply_chunk_replay clamps against the
+# checkpoint's own chunk_size, so the effective replay has always been 25).
+chunk_size: 50
 # Half-chunk replan — closed-loop replanning every 25 env steps; paper-faithful
-# for the validated 3/3 success run on libero_10/4. Clamped to chunk_size at
-# apply_chunk_replay (effective replay length = min(25, 16) = 16).
+# for the validated 3/3 success run on libero_10/4.
 n_action_steps: 25
 latency_budget:
   per_chunk_ms: 150.0   # SmolVLA inference at bf16 on a desktop GPU ≈ 80–120 ms

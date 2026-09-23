@@ -157,7 +157,9 @@ sdk_kind: "open"
 # Sim-only today → real: null (build_hal(mode="real") raises ROSCapabilityMismatch
 # until the flexiv_rdk wrapper lands).
 hal:
-  sim: "openral_hal.flexiv_rizon4:Rizon4MujocoHAL"
+  # null → build_hal derives MujocoArmHAL.from_description(this manifest)
+  # from the `sim:` block below; no per-robot Python class is involved.
+  sim: null
   real: null
 
 # MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``.

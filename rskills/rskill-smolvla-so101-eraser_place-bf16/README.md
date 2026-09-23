@@ -216,7 +216,7 @@ median sits at 56.70 — and the last-frame median independently agrees.
 - the five arm joints convert degrees → radians;
 - the checkpoint's **gripper channel is lerobot `[0, 100]`, not an angle**,
   while OpenRAL's HAL surface is normalized `[0, 1]`. The manifest's
-  `policy_extras.gripper_scale: 100` converts both directions at the policy
+  `action_contract.gripper_scale: 100` converts both directions at the policy
   boundary. `SO100FollowerHAL._obs_to_positions` and `MujocoArmHAL`'s
   `AFFINE_LOW_HIGH` read mode expose the same `[0, 1]` public surface. So
   lerobot 1.95 → `0.0195` (jaws essentially closed), **not**

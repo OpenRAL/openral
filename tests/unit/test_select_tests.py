@@ -68,6 +68,7 @@ def test_leaf_package_selects_only_its_own_tests() -> None:
     # that imports it directly (unlike test_core_change_fans_out_widely below).
     assert result.targets == [
         "python/state_adapter/tests",
+        "tests/unit/test_manifest_registry_ids.py",
         "tests/unit/test_state_adapter_input_readiness.py",
     ]
 

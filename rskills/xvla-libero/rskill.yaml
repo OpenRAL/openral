@@ -49,7 +49,10 @@ sim_env_control_mode: "absolute"
 # ── Runtime / weights ──────────────────────────────────────────────────────
 runtime: "pytorch"
 quantization:
-  dtype: "bf16"
+  # The checkpoint is stored F32 and its config.dtype is float32, which is what
+  # the xvla adapter loads (it has no cast path). The name's `-bf16` predates
+  # this correction.
+  dtype: "fp32"
   backend: "pytorch"
 # Pin to the HEAD SHA at packaging time for reproducibility (principle 8).
 weights_uri: "hf://lerobot/xvla-libero"

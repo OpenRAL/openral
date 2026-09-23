@@ -22,7 +22,8 @@ Usage
 Naming (CLAUDE.md §3, hyphens are segment separators only, tokens use
 underscores): ``<owner>/rskill-<model>-<robot>-<task>-<quantization>``
 (weight-bearing kinds — ``<model>`` ∈ ``CANONICAL_MODEL_TOKENS``, consistent
-with ``model_family`` for a VLA; ``<robot>`` ∈ ``EmbodimentTag`` incl.
+with ``model_family`` for a VLA; ``<robot>`` shape-checked (an open
+robot id; CI checks in-tree names against ``robots/*/robot.yaml``) incl.
 ``any``/``multi``; ``<task>`` author-chosen, shape ``^[a-z0-9][a-z0-9_]*$``;
 ``<quantization>`` ∈ ``{fp32, fp16, bf16, int8, nf4}``, schema ``int4`` maps
 to ``nf4``); ``<owner>/rskill-<model>-<robot>-<task>`` for

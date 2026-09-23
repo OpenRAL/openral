@@ -38,8 +38,13 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
-from openral_rskill._vla_core import resolve_camera_keys, resolve_image_preprocessing
+from openral_rskill._vla_core import (
+    resolve_camera_keys,
+    resolve_image_preprocessing,
+    resolve_n_action_steps,
+)
 
+from openral_sim._quantization import resolve_quant_plan, sidecar_quant_token
 from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.registry import POLICIES
 from openral_sim.sidecar import SidecarClient
@@ -171,17 +176,19 @@ def _resolve_model_id(spec: VLASpec) -> str:
     return f"hf://{target}@{revision}"
 
 
-def _quantization_mode(manifest: RSkillManifest) -> str:
-    dtype = manifest.quantization.dtype.value
-    if dtype == "int4":
-        if manifest.policy_extras.get("prequantized_nf4") is True:
-            return "prequantized_nf4"
-        return "nf4"
-    if dtype == "bf16":
-        return "none"
-    raise ROSConfigError(
-        f"XR-1 supports manifest quantization.dtype 'int4' (NF4) or 'bf16', got {dtype!r}."
+def _quantization_mode(spec: VLASpec, manifest: RSkillManifest) -> str:
+    """Resolve the sidecar's ``--quantization`` via the shared resolver.
+
+    ``nf4`` becomes ``prequantized_nf4`` when the manifest ships a packed
+    checkpoint (``policy_extras.prequantized_nf4``); ``bf16`` maps to ``none``;
+    anything else raises.
+    """
+    token = sidecar_quant_token(
+        resolve_quant_plan(spec, manifest), frozenset({"none", "nf4"}), "xr1"
     )
+    if token == "nf4" and manifest.policy_extras.get("prequantized_nf4") is True:
+        return "prequantized_nf4"
+    return token
 
 
 def _extra_int(extra: dict[str, object], key: str, default: int) -> int:
@@ -377,7 +384,15 @@ class _XR1Adapter:
             raise ROSConfigError("XR-1 sidecar returned an empty action chunk.")
 
 
-@POLICIES.register("xr1")
+@POLICIES.register(
+    "xr1",
+    install_groups=("sidecar-wire",),
+    required_imports=("zmq", "msgpack"),
+    install_note=(
+        "XR-1 itself runs in an auto-provisioned torch-2.9.1 / transformers-4.57.1 "
+        "sidecar because its pinned stack cannot coexist with the workspace."
+    ),
+)
 def _build_xr1(env_cfg: SimEnvironment) -> _XR1Adapter:
     _require_remote_code_ack()
     spec = env_cfg.vla
@@ -391,7 +406,7 @@ def _build_xr1(env_cfg: SimEnvironment) -> _XR1Adapter:
     if manifest is None:
         raise ROSConfigError("XR-1 requires a locally resolvable rSkill manifest.")
     model_id = _resolve_model_id(spec)
-    quantization = _quantization_mode(manifest)
+    quantization = _quantization_mode(spec, manifest)
     scene_cameras = getattr(env_cfg.scene, "cameras", None)
     camera_keys = resolve_camera_keys(
         load_manifest_for_spec(spec),
@@ -403,7 +418,7 @@ def _build_xr1(env_cfg: SimEnvironment) -> _XR1Adapter:
 
     port = _extra_int(extra, "port", _profile_port(model_id, profile))
     timeout_ms = _extra_int(extra, "timeout_ms", _DEFAULT_TIMEOUT_MS)
-    replan_steps = _extra_int(extra, "replan_steps", _PROFILE_REPLAN_STEPS[profile])
+    replan_steps = resolve_n_action_steps(manifest, extra, default=_PROFILE_REPLAN_STEPS[profile])
     crop_ratio = _extra_float(extra, "crop_ratio", _PROFILE_CROP_RATIOS[profile])
     if crop_ratio > 1.0:
         raise ROSConfigError("XR-1 policy_extras.crop_ratio must be <= 1.0.")

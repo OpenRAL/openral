@@ -164,7 +164,7 @@ RIZON4_DESCRIPTION = RobotDescription(
     # will derive its ``RobotDescription`` from this sim baseline via
     # ``make_real_description``, matching the UR / Franka / Sawyer /
     # ALOHA pattern.
-    hal=HalEntrypoints(sim="openral_hal.flexiv_rizon4:Rizon4MujocoHAL", real=None),
+    hal=HalEntrypoints(sim=None, real=None),
     assets=AssetRefs(
         urdf=UrdfAsset(ref="file:rizon4.urdf"),
         mjcf="rd:rizon4_mj_description",

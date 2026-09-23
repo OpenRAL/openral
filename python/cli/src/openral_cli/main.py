@@ -2288,7 +2288,7 @@ def rskill_new(
     embodiment_tag: str | None = typer.Option(
         None,
         "--embodiment-tag",
-        help="One of the canonical EmbodimentTag literals (see CLAUDE.md §6.4).",
+        help="An embodiment tag declared by a robots/*/robot.yaml, or any | custom | multi.",
     ),
     family: str | None = typer.Option(
         None,
@@ -2352,13 +2352,12 @@ def rskill_new(
         >>> # openral rskill new pi05-pick-cube --family pi05 --embodiment-tag franka_panda
         >>> # openral rskill new act-aloha-insertion --owner foo --embodiment-tag aloha
     """
-    from typing import get_args
-
-    from openral_core.schemas import EmbodimentTag, RSkillLicensePosture
+    from openral_core.schemas import RSkillLicensePosture
+    from openral_rskill.loader import intree_embodiment_tags
 
     from openral_cli._rskill_scaffolder import scaffold_rskill
 
-    valid_tags = list(get_args(EmbodimentTag))
+    valid_tags = sorted(intree_embodiment_tags())
     valid_licenses = [v.value for v in RSkillLicensePosture]
 
     resolved_owner = _resolve_or_prompt(
@@ -2408,7 +2407,7 @@ def rskill_new(
             out_dir=resolved_out,
             owner=resolved_owner,
             license_=license_enum,
-            embodiment_tag=cast(EmbodimentTag, resolved_embodiment),
+            embodiment_tag=resolved_embodiment,
             family=resolved_family,
             patch=intel_patch,
             overwrite=overwrite,
@@ -3369,7 +3368,7 @@ def benchmark_scene(
 
     if update_manifest and not _scene_id_is_benchmark_suite(scene.scene.id):
         # The rskill.yaml `benchmarks:` block holds canonical SUITE headlines
-        # (RSkillManifest.benchmarks is keyed by the BenchmarkName literal).
+        # (RSkillManifest.benchmarks is keyed by BenchmarkName suite ids).
         # A single scene whose id is not itself a suite id (e.g. 'metaworld',
         # 'robocasa/PickPlaceCounterToCabinet') has no headline slot — writing
         # it would raise ROSConfigError. The per-scene result is already
@@ -3405,21 +3404,20 @@ def benchmark_scene(
 
 
 def _scene_id_is_benchmark_suite(scene_id: str) -> bool:
-    """True iff ``scene_id`` is a canonical ``BenchmarkName`` suite id.
+    """True iff ``scene_id`` is a benchmark id the checkout defines.
 
     ``openral benchmark scene`` only writes ``rskill.yaml``'s ``benchmarks:``
-    block (the suite-headline map keyed by the ``BenchmarkName`` literal) when
-    the scene's id IS one of those suite ids — e.g. ``"pusht"``,
+    block (the suite-headline map keyed by ``BenchmarkName`` ids,
+    ``openral_rskill.loader.known_benchmark_ids``) when the scene's id IS one
+    of those ids — e.g. ``"pusht"``,
     ``"libero_spatial"``. Arbitrary single-scene ids such as ``"metaworld"``
     (suite is ``"metaworld_mt50"``) or ``"robocasa/PickPlaceCounterToCabinet"``
     have no headline slot, so the manifest write is skipped (the per-scene
     eval JSON still records the result).
     """
-    from typing import get_args
+    from openral_rskill.loader import known_benchmark_ids
 
-    from openral_core import BenchmarkName
-
-    return scene_id in set(get_args(BenchmarkName))
+    return scene_id in (known_benchmark_ids() or frozenset())
 
 
 def _persist_scene_eval(result: RSkillEvalResult, out_path: Path, *, write_eval: bool) -> bool:

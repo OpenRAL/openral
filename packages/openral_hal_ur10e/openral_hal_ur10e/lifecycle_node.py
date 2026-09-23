@@ -5,7 +5,7 @@ Manifest-driven node: builds its sim or real HAL via
 ``openral_hal.lifecycle.make_lifecycle_main_from_manifest``, which reads
 the ``robot_yaml`` + ``hal_mode`` ROS parameters and routes through
 ``openral_hal.build_hal``. ``openral deploy sim`` injects ``hal_mode:=sim``
-(→ ``UR10eHAL``); ``openral deploy run`` injects ``hal_mode:=real``
+(→ derived ``MujocoArmHAL``); ``openral deploy run`` injects ``hal_mode:=real``
 (→ ``UR10eRealHAL``).
 
 Usage::

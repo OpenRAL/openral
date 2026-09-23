@@ -49,14 +49,15 @@ def _compose(scene_yaml: Path, *, backend_overrides: dict[str, object]) -> Any:
     """Build the scene the way ``openral deploy sim`` builds it.
 
     Mirrors ``openral_hal.sim_bringup.build_sim_env_from_yaml``: load the
-    DeployScene, force ``ignore_done`` on for continuous stepping, synthesise
-    the noop TaskSpec the HAL never reads, and call the registered factory.
+    DeployScene, synthesise the noop TaskSpec the HAL never reads, and call
+    the registered factory (``ignore_done`` is pinned here too; in deploy the
+    backend's ``enable_continuous`` sets it on the live env).
     """
     deploy = DeployScene.model_validate(yaml.safe_load(scene_yaml.read_text()))
     options = {**(deploy.scene.backend_options or {}), "ignore_done": True, **backend_overrides}
     scene = deploy.scene.model_copy(update={"backend_options": options})
     sim_env = SimEnvironment(
-        robot_id=deploy.robot_id or SCENES.fixed_robot(scene.id),
+        robot_id=SCENES.resolve_robot(scene.id, deploy.robot_id),
         scene=scene,
         task=TaskSpec(
             id=f"{scene.id}/_hal_deploy_noop",

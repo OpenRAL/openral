@@ -9,7 +9,6 @@ scene:
     prebuilt_task: CloseBlenderLid
     robots: ["PandaMobile"]
     controller: OSC_POSE
-    state_layout: human300_16d
     horizon: 150
 
 task:

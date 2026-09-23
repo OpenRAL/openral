@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 from openral_core import BenchmarkScene, DeployScene, RoboCasaBackendOptions, SimScene
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -140,24 +141,27 @@ def test_robocasa_scene_id_is_registered(yaml_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "yaml_path",
-    _yamls("sim"),
+    _yamls("sim") + _yamls("benchmark") + _yamls("deploy"),
     ids=lambda p: p.relative_to(REPO_ROOT).as_posix(),
 )
-def test_sim_scene_omits_robot_id_when_robot_is_fixed(yaml_path: Path) -> None:
-    """A fixed-robot sim scene must NOT carry ``robot_id:``.
+def test_scene_robot_id_is_one_the_scene_can_instantiate(yaml_path: Path) -> None:
+    """Every in-tree scene binds a robot through ``SCENES.resolve_robot``.
 
-    ``openral sim run`` raises ``ROSConfigError`` ("hard-fixes") when a
-    scene whose backend hard-wires the physics robot (LIBERO, MetaWorld,
-    PushT, ALOHA, RoboCasa) also carries a ``robot_id:`` — so such a YAML
-    is unrunnable via ``sim run`` even though it loads as a SimScene.
-    ``robot_id:`` is reserved for free-axis scenes (``SCENES.fixed_robot``
-    is ``None``). See tests/unit/test_sim_run_fixed_robot_guard.py.
+    That one rule gates ``sim run``, ``benchmark``, ``deploy sim`` and the sim
+    HAL alike, so a YAML naming a robot its backend cannot build (e.g.
+    ``robot_id: ur5e`` on LIBERO) is unrunnable everywhere. Fixed scenes may
+    omit ``robot_id`` (their default is used); free-axis scenes must set it,
+    except deploy scenes, where ``--robot`` may supply it. Scene ids outside
+    the sim registry (real-robot deploy scenes) are skipped.
+    See tests/unit/test_sim_run_fixed_robot_guard.py.
     """
     from openral_sim.registry import SCENES
 
-    scene = SimScene.from_yaml(str(yaml_path))
-    if SCENES.fixed_robot(scene.scene.id) is not None:
-        assert scene.robot_id is None, (
-            f"{yaml_path.name}: scene {scene.scene.id!r} hard-fixes its robot; "
-            f"drop `robot_id: {scene.robot_id}` (sim run rejects it)."
-        )
+    raw = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    scene_id, robot_id = raw["scene"]["id"], raw.get("robot_id")
+    if scene_id not in SCENES:
+        pytest.skip(f"{scene_id!r} is not a sim scene")
+    if robot_id is None and SCENES.allowed_robots(scene_id) is None:
+        assert yaml_path.parent.name == "deploy", f"{yaml_path.name}: free-axis needs robot_id"
+        return
+    SCENES.resolve_robot(scene_id, robot_id)

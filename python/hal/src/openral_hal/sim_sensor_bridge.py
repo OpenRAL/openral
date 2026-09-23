@@ -25,6 +25,8 @@ import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
+from openral_core import sensor_name_to_slot
+
 from openral_hal.convex_distance import ConvexDistance, convex_geom_distance
 from openral_hal.mobile_base_bridge import describes_mobile_base
 
@@ -185,23 +187,6 @@ def should_idle_step(
         False
     """
     return step_while_active or now_ns - last_action_ns >= idle_hold_ns
-
-
-def _obs_key_for_sensor(sensor: Any) -> str:
-    """Key into ``read_images()`` for a manifest RGB sensor.
-
-    Scenes key rendered frames by the VLA camera slot (``camera1``,
-    ``camera2``, ...): LIBERO emits only those; robocasa emits them as
-    aliases alongside the real camera name. So resolve the obs key from the
-    sensor's ``vla_feature_key`` suffix (``observation.images.camera1`` ->
-    ``camera1``), falling back to the sensor name (robocasa real-name keys, or
-    sensors with no ``vla_feature_key``). The published topic stays
-    ``/openral/cameras/<sensor.name>/image`` regardless.
-    """
-    vfk = getattr(sensor, "vla_feature_key", None)
-    if vfk:
-        return str(vfk).rsplit(".", 1)[-1]
-    return str(sensor.name)
 
 
 def _frame_for_camera(images: dict[str, Any], obs_key: str, name: str) -> Any:
@@ -806,7 +791,11 @@ def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]
     for entry in entries:
         name = str(entry.link_name)
         body_id = bodies.get(name)
-        half = np.asarray(entry.shape.half_extents_m, dtype=np.float64)
+        # The corner-slop budget is an OBB notion: a capsule / sphere link (the
+        # OpenArm manifest) has no corners to measure, so it stays unresolved
+        # (no budget, conservative) rather than crashing the E-stop snapshot.
+        half_extents = getattr(entry.shape, "half_extents_m", None)
+        half = np.asarray(half_extents if half_extents is not None else [], dtype=np.float64)
         if body_id is None or half.size != _XYZ:
             unresolved.append(name)
             continue
@@ -2822,8 +2811,11 @@ class SimSensorBridge:
         # advertising eagerly would publish a permanently silent
         # ``/openral/cameras/head/image`` that reads to any subscriber as a
         # live stream merely slow — waiting forever instead of failing.
+        # Scenes key rendered frames by VLA slot (LIBERO emits only those;
+        # robocasa also aliases them) — ``_frame_for_camera`` falls back to the
+        # sensor name. The topic stays ``/openral/cameras/<sensor.name>/image``.
+        self._image_obs_key.update(sensor_name_to_slot(self._description))
         for s in rgb:
-            self._image_obs_key[s.name] = _obs_key_for_sensor(s)
             self._camera_info_specs[s.name] = s
         self._image_timer = self._node.create_timer(
             1.0 / max(self._camera_rate_hz, 1.0), self._publish_images

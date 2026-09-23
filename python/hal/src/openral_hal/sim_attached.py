@@ -548,12 +548,9 @@ class SimAttachedHAL:
     def _probe_env_action_dim(self) -> int:
         """Return the env's flat action dimensionality, or raise.
 
-        Two probe paths, in order: (1) ``self._env.action_dim`` — the direct
-        attribute every backend exposes (robosuite/robocasa natively; the
-        native MuJoCo backends ``so101_box`` / ``tabletop_push`` /
-        ``openarm_tabletop_pnp`` as a property reporting their true ``step``
-        width); (2) ``self._env._env.action_dim`` — robocasa wraps the raw
-        robosuite env on ``_env`` for gymnasium-shaped/kitchen envs.
+        Delegates to ``openral_sim.rollout.env_action_dim`` (the one probe
+        the sim runner's mock policies also size from): ``env.action_dim``,
+        then ``env._env.action_dim``, then a wrapped gym ``Box`` shape.
 
         If neither resolves and no ``env_action_dim`` override was supplied
         to the constructor, raises ``ROSConfigError`` naming the
@@ -565,11 +562,11 @@ class SimAttachedHAL:
             ROSConfigError: the env exposes no introspectable ``action_dim``
                 and no ``env_action_dim`` override was supplied.
         """
-        if hasattr(self._env, "action_dim"):
-            return int(self._env.action_dim)
-        inner = getattr(self._env, "_env", None)
-        if inner is not None and hasattr(inner, "action_dim"):
-            return int(inner.action_dim)
+        from openral_sim.rollout import env_action_dim  # noqa: PLC0415  # reason: optional dep
+
+        dim = env_action_dim(self._env)
+        if dim is not None:
+            return dim
         backend = type(self._env).__name__
         raise ROSConfigError(
             f"SimAttachedHAL: cannot resolve the env action width — backend "

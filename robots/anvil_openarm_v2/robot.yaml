@@ -331,7 +331,9 @@ sdk_kind: "open"
 # ADR-0031 — explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
 # Sim-only today → real: null until the Anvil driver wrapper lands.
 hal:
-  sim: "openral_hal.anvil_openarm_v2:AnvilOpenArmV2MujocoHAL"
+  # null → build_hal derives MujocoArmHAL.from_description(this manifest)
+  # from the `sim:` block below; no per-robot Python class is involved.
+  sim: null
   real: null
   # AnvilOpenArmV2MujocoHAL construction kwargs, threaded by build_hal so
   # the manifest-driven node needs no bespoke ROS params (ADR-0029).

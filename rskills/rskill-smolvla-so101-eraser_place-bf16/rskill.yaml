@@ -118,9 +118,6 @@ image_preprocessing:
 state_contract:
   dim: 6
 policy_extras:
-  # LeRobot SO-101 datasets store the gripper motor on [0, 100], while the
-  # OpenRAL HAL contract is normalized [0, 1]. Arm channels still use degrees.
-  gripper_scale: 100.0
   # Real-Time Chunking (lerobot RTC): the prefetched chunk is guided inside the
   # flow-matching denoiser to blend with the executing chunk's unconsumed tail.
   # chunk_prefetch is declared explicitly rather than inherited: only the deploy
@@ -180,3 +177,6 @@ action_contract:
   # converts deg<->rad at the policy boundary. Declared so the runner does NOT
   # rely on the stats-magnitude heuristic.
   joint_units: "degrees"
+  # LeRobot SO-101 datasets store the gripper motor on [0, 100], while the
+  # OpenRAL HAL contract is normalized [0, 1]. Arm channels still use degrees.
+  gripper_scale: 100.0

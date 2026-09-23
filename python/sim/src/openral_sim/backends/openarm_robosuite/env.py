@@ -887,4 +887,10 @@ def _build_openarm_tabletop_scene(env_cfg: SimEnvironment) -> _OpenArmTabletopRo
 
 
 _SCENE_ID = "openarm_tabletop_pnp"
-SCENES.register(_SCENE_ID)(_build_openarm_tabletop_scene)
+SCENES.register(
+    _SCENE_ID,
+    fixed_robot="openarm",
+    sequential_init=True,  # env thread imports robosuite -> transformers
+    sim_clock=True,
+    base_pose=True,  # mandatory mounting pose read off SimEnvironment.base_pose
+)(_build_openarm_tabletop_scene)

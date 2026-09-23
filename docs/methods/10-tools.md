@@ -79,12 +79,12 @@ _Real GPU rollout audit for every YAML under `scenes/`. Operator-driven, one epi
 - `@dataclass class AuditRow(config, rskill, status, exit_code, wall_s, peak_vram_mib, tail)` (L168) — One result. `status` ∈ {`pass`, `pass-compat`, `fail-oom`, `fail-asset`, `fail-sidecar`, `fail-timeout`, `fail-other`, `fail-compat`, `skipped-opt-dep`, `skipped-host-setup`}.
 - `_classify(returncode: int, tail: str) -> str` (L219) — Maps a subprocess result to a status by matching stderr against known OOM/asset/sidecar/opt-dep/host-setup patterns; a known MuJoCo/GL exit code is treated as pass when no error pattern appears.
 - `class _VramSampler` (L258) — Background `nvidia-smi --query-gpu=memory.used` poller, 200 ms cadence; `peak_mib` reported on `.stop()`. No-op without `nvidia-smi` on `$PATH`.
-- `_check_compat(spec: ConfigSpec) -> AuditRow` (L303) — `--check-compatibility` gate: load scene via `openral_core.load_scene_strict`, validate rSkill manifest (sim/benchmark) or assert robot resolves in `openral_cli.deploy_sim._ROBOT_HAL_REGISTRY` (deploy). No subprocess, no GPU. Returns `pass-compat` / `fail-compat`.
-- `_build_run_cmd(spec: ConfigSpec) -> list[str]` (L391) — Build the `uv run … openral <sim|benchmark> …` argv for sim/benchmark rows. Refactored out of `_run_one` so the deploy path can stay focused on lifecycle teardown.
-- `_run_one_deploy(spec, *, alive_grace_s, shutdown_grace_s, timeout_s) -> AuditRow` (L440) — Tier-2 deploy launch via `openral deploy sim`: runs in its own process group, waits `alive_grace_s`, sends SIGINT to the group, waits `shutdown_grace_s`, then escalates to SIGKILL. Passes when the startup banner appears and the exit reflects a clean or SIGINT/SIGTERM shutdown.
-- `_classify_or_fallback(returncode, tail, spec, wall_s, peak_vram) -> AuditRow` (L611) — Deploy-mode wrapper around `_classify` that defaults to `fail-other` when no pattern matches (sim path defaults to `pass`).
-- `_run_one(spec: ConfigSpec, timeout_s: int) -> AuditRow` (L650) — Tier-3 sim/benchmark rollout via `_build_run_cmd(spec)` with `MUJOCO_GL=egl` and `OPENRAL_SIM_SEQUENTIAL_INIT=1`.
-- `main(argv) -> int` (L788) — CLI entry; flags `--timeout` / `--deploy-alive-grace` / `--deploy-shutdown-grace` / `--check-compatibility` / `--report`. Returns 0 on all-pass, 1 if any config failed, 2 on filter mismatch.
+- `_check_compat(spec: ConfigSpec) -> AuditRow` (L303) — `--check-compatibility` gate: load scene via `openral_core.load_scene_strict`, validate rSkill manifest (sim/benchmark) or assert the robot manifest resolves via `openral_sim.policies.robots.resolve_robot_manifest` and loads (deploy). No subprocess, no GPU. Returns `pass-compat` / `fail-compat`.
+- `_build_run_cmd(spec: ConfigSpec) -> list[str]` (L381) — Build the `uv run … openral <sim|benchmark> …` argv for sim/benchmark rows. Refactored out of `_run_one` so the deploy path can stay focused on lifecycle teardown.
+- `_run_one_deploy(spec, *, alive_grace_s, shutdown_grace_s, timeout_s) -> AuditRow` (L430) — Tier-2 deploy launch via `openral deploy sim`: runs in its own process group, waits `alive_grace_s`, sends SIGINT to the group, waits `shutdown_grace_s`, then escalates to SIGKILL. Passes when the startup banner appears and the exit reflects a clean or SIGINT/SIGTERM shutdown.
+- `_classify_or_fallback(returncode, tail, spec, wall_s, peak_vram) -> AuditRow` (L601) — Deploy-mode wrapper around `_classify` that defaults to `fail-other` when no pattern matches (sim path defaults to `pass`).
+- `_run_one(spec: ConfigSpec, timeout_s: int) -> AuditRow` (L640) — Tier-3 sim/benchmark rollout via `_build_run_cmd(spec)` with `MUJOCO_GL=egl` and `OPENRAL_SIM_SEQUENTIAL_INIT=1`.
+- `main(argv) -> int` (L778) — CLI entry; flags `--timeout` / `--deploy-alive-grace` / `--deploy-shutdown-grace` / `--check-compatibility` / `--report`. Returns 0 on all-pass, 1 if any config failed, 2 on filter mismatch.
 
 ### `tools/validation_matrix.py`
 _The four-scene collision-stack validation matrix as one versioned command, emitting both `NOTES.md` and a machine-readable `verdicts.json` per round. Backs `just validation-matrix` / `-verdicts` / `-diff`. See [`docs/contributing/validation-matrix.md`](../contributing/validation-matrix.md) and the ledger it feeds, [`docs/reference/collision-validation-evidence.md`](../reference/collision-validation-evidence.md)._
@@ -333,19 +333,19 @@ _Query-time joiner for rosbag2 (mcap) ↔ OTel spans. Backs `openral replay` + `
 ### `tools/rskill_publisher.py`
 _Package and publish a local rSkill directory to the HF Hub._
 
-- `_REPO_ROOT: Path` (L58) — Repo root, derived from `__file__`.
-- `_REQUIRED_FILES: list[str]` (L81) — `["rskill.yaml"]`, the minimum a directory must contain to be a candidate rSkill.
-- `public_visibility_error(manifest, public) -> str | None` (L84) — License gate (pure, no network): returns an error string when `--public` is requested for a non-commercial-licensed skill, so `main` can fail fast before any HF call.
-- `_resolve_token(token_arg) -> str` — Prefer CLI arg, fall back to env. (L129)
-- `_validate_manifest(skill_dir) -> RSkillManifest` (L148)
+- `_REPO_ROOT: Path` (L59) — Repo root, derived from `__file__`.
+- `_REQUIRED_FILES: list[str]` (L82) — `["rskill.yaml"]`, the minimum a directory must contain to be a candidate rSkill.
+- `public_visibility_error(manifest, public) -> str | None` (L85) — License gate (pure, no network): returns an error string when `--public` is requested for a non-commercial-licensed skill, so `main` can fail fast before any HF call.
+- `_resolve_token(token_arg) -> str` — Prefer CLI arg, fall back to env. (L130)
+- `_validate_manifest(skill_dir) -> RSkillManifest` (L149)
 - `_validate_docs(skill_dir, manifest) -> DocValidationReport` — Print + return the README / manifest documentation report via `_rskill_doc_validator.validate_rskill_docs`. Runs in both dry-run and `--publish` paths; the caller decides whether to exit on errors.
 - `_rewrite_manifest_name(manifest_path, old_name, new_name) -> None` — Rewrite the top-level `name:` value of `rskill.yaml` in place (column-0 line only, so nested `name:` keys are untouched; preserves quotes + trailing comment). Exits 1 if the line isn't found exactly once. Backs `--fix-name`.
 - `_enforce_repo_name(skill_dir, manifest, *, fix_name) -> RSkillManifest` — Enforces the ratified rSkill naming grammar; no kind is exempt. `fix_name=True` rewrites to the expected name and reloads, `fix_name=False` hard-fails printing the suggested name.
-- `_bump_revision(manifest_path, weights_uri_base, token) -> str` — Resolve latest weights commit, patch `rskill.yaml`. (L336)
-- `_ensure_private(api, repo_id) -> None` — Abort if the repo is public. (L387)
+- `_bump_revision(manifest_path, weights_uri_base, token) -> str` — Resolve latest weights commit, patch `rskill.yaml`. (L337)
+- `_ensure_private(api, repo_id) -> None` — Abort if the repo is public. (L388)
 - `_ensure_public(api, repo_id) -> None` — The `--public` counterpart: abort if the (reused) repo is private, so a `--public` publish never lands in a private repo.
 - `_publish(skill_dir, manifest, token, *, public=False) -> str` — Create the HF repo (private unless `public`) and upload; runs the matching visibility gate (`_ensure_public` / `_ensure_private`) after `create_repo`.
-- `main() -> None` (L528) — Entry point: validate manifest → enforce repo name → validate task space → validate docs → license-visibility gate → optional `--bump-revision` → `--publish` (private unless `--public`).
+- `main() -> None` (L529) — Entry point: validate manifest → enforce repo name → validate task space → validate docs → license-visibility gate → optional `--bump-revision` → `--publish` (private unless `--public`).
 
 ### `tools/voxel_transport_probe.py`
 
@@ -436,9 +436,9 @@ _Answers how many validation-matrix runs a comparison needs, before a battery is
 _Standalone argparse wrapper around `openral_cli._rskill_scaffolder.scaffold_rskill`._
 Mirrors `openral rskill new`; exists so power users can scaffold without installing the CLI distribution.
 
-- `_REPO_ROOT: Path` (L27) — Repo root, derived from `__file__`; used to add `python/<pkg>/src` onto `sys.path` before importing the CLI package.
+- `_REPO_ROOT: Path` (L26) — Repo root, derived from `__file__`; used to add `python/<pkg>/src` onto `sys.path` before importing the CLI package.
 - `_parse_args(argv) -> argparse.Namespace` — argparse setup. (L35)
-- `main(argv=None) -> int` — Entry point; returns a process exit code. (L77)
+- `main(argv=None) -> int` — Entry point; returns a process exit code. (L78)
 
 ### `tools/generate_rskill_skillmd.py`
 _Generate the standard agent-skill `SKILL.md` discovery view for every in-tree rSkill from its `rskill.yaml`._

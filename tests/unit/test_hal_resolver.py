@@ -34,11 +34,22 @@ class TestSimMode:
     """``mode="sim"`` always yields a simulation HAL."""
 
     def test_explicit_sim_subclass(self) -> None:
-        """franka names ``FrankaPandaHAL`` explicitly → that class is built."""
-        from openral_hal.franka_panda import FrankaPandaHAL
+        """h1 names ``H1MujocoHAL`` explicitly → that class is built, bound to the manifest."""
+        from openral_hal.h1 import H1MujocoHAL
 
-        hal = build_hal(_load("franka_panda"), mode="sim")
-        assert isinstance(hal, FrankaPandaHAL)
+        desc = _load("h1")
+        hal = build_hal(desc, mode="sim")
+        assert isinstance(hal, H1MujocoHAL)
+        assert hal.description is desc
+
+    def test_pure_data_arm_derives_mujoco_arm_hal(self) -> None:
+        """franka's ``hal.sim`` is null → the generic ``MujocoArmHAL`` over the manifest."""
+        from openral_hal._mujoco_arm import MujocoArmHAL
+
+        desc = _load("franka_panda")
+        hal = build_hal(desc, mode="sim")
+        assert type(hal) is MujocoArmHAL
+        assert hal.description is desc
 
     def test_derived_mujoco_arm_when_sim_entry_null(self) -> None:
         """so100 leaves ``hal.sim`` null + has a ``sim:`` block → MujocoArmHAL."""
@@ -54,17 +65,16 @@ class TestSimMode:
         hal = build_hal(_load("panda_mobile"), mode="sim")
         assert isinstance(hal, PandaMobileHAL)
 
-    def test_anvil_openarm_v2_explicit_sim_subclass(self) -> None:
-        """The Anvil OpenARM 2.0 manifest names its thin subclass explicitly.
+    def test_anvil_openarm_v2_derives_from_manifest(self) -> None:
+        """The Anvil OpenARM 2.0 manifest has ``hal.sim: null`` → derived ``MujocoArmHAL``.
 
         Construction is lazy (the pinned MJCF clone happens at connect()),
-        so this pins the YAML ``hal.sim`` entrypoint → class seam without
-        any network access.
+        so this pins the manifest → HAL seam without any network access.
         """
-        from openral_hal.anvil_openarm_v2 import AnvilOpenArmV2MujocoHAL
+        from openral_hal._mujoco_arm import MujocoArmHAL
 
         hal = build_hal(_load("anvil_openarm_v2"), mode="sim")
-        assert isinstance(hal, AnvilOpenArmV2MujocoHAL)
+        assert type(hal) is MujocoArmHAL
 
     def test_anvil_openarm_v2_threads_manifest_defaults(self) -> None:
         """``hal.parameters.defaults`` reach the constructed HAL (ADR-0029).

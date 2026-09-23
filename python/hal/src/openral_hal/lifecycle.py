@@ -1404,6 +1404,13 @@ if _ROS2_AVAILABLE:
             # ambient HF cache (which may hold several stale `<id>.json` for one
             # arm). Empty string = unset (lerobot's default HF cache dir).
             self.declare_parameter("calibration_dir", "")
+            # Generic HAL constructor kwargs as a JSON object. `openral deploy
+            # sim|run` fills it from the merged `DeployScene.hal.defaults` +
+            # `--hal` overrides, so a new robot's transport kwarg (galaxea
+            # `host`, openarm `left_can_interface`, …) reaches build_hal without
+            # a new declared param here. The named params above win per-key;
+            # build_hal drops keys the constructor does not accept. "" = none.
+            self.declare_parameter("hal_transport_json", "")
             # Scene-level MJCF composition (a `SceneComposition` as
             # JSON). `openral deploy sim` forwards the DeployScene's `composition`
             # here so the SCENE (not the robot manifest) owns its arena. Takes
@@ -1489,9 +1496,19 @@ if _ROS2_AVAILABLE:
             # wins over the robot manifest's `scene_defaults.composition` — the
             # scene owns its arena, the robot manifest describes the robot.
             # The manifest fallback is retained for back-compat.
+            import json
+
             from openral_core.schemas import SceneComposition
 
-            transport: dict[str, object] = {}
+            transport_json = (
+                self.get_parameter("hal_transport_json").get_parameter_value().string_value
+            )
+            transport: dict[str, object] = json.loads(transport_json) if transport_json else {}
+            if not isinstance(transport, dict):
+                raise ROSConfigError(
+                    f"{self._node_name}: 'hal_transport_json' must be a JSON object, "
+                    f"got {type(transport).__name__}."
+                )
             scene_comp_json = (
                 self.get_parameter("scene_composition_json").get_parameter_value().string_value
             )

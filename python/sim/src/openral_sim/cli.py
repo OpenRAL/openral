@@ -333,38 +333,28 @@ def _load_or_build_env(args: SimpleNamespace) -> SimEnvironment:
     scene_env = load_scene_strict(str(args.config), SimScene)
 
     # Robot guard runs FIRST -- it depends only on the scene, not on the
-    # manifest. Surfacing this error before the (potentially slow / network-
-    # backed) manifest load gives a fast, accurate failure when the user
-    # passed --robot on a fixed-robot scene or left robot_id in the YAML.
+    # manifest, so a robot the scene cannot instantiate fails fast, before
+    # the (potentially slow / network-backed) manifest load. The binding rule
+    # is SCENES.resolve_robot -- the same one `benchmark`, `deploy sim` and the
+    # sim HAL use.
     from openral_sim.registry import SCENES
 
-    fixed = SCENES.fixed_robot(scene_env.scene.id)
-    if fixed is not None:
-        if args.robot is not None:
-            raise ROSConfigError(
-                f"scene {scene_env.scene.id!r} hard-fixes the physics robot to "
-                f"{fixed!r}; --robot must not be passed."
-            )
-        if scene_env.robot_id is not None:
-            raise ROSConfigError(
-                f"scene {scene_env.scene.id!r} hard-fixes the physics robot to "
-                f"{fixed!r}; drop `robot_id: {scene_env.robot_id}` from the YAML."
-            )
-        if scene_env.base_pose is not None:
-            raise ROSConfigError(
-                f"scene {scene_env.scene.id!r} hard-fixes the physics robot to "
-                f"{fixed!r}; `base_pose:` is honoured by free-axis scenes only "
-                "and must be dropped from the YAML."
-            )
-        resolved_robot: str = fixed
-    else:
-        chosen = args.robot or scene_env.robot_id
-        if not chosen:
-            raise ROSConfigError(
-                f"scene {scene_env.scene.id!r} does not hard-fix a robot; "
-                "set `robot_id:` in the YAML or pass --robot <robot_id>."
-            )
-        resolved_robot = chosen
+    requested = args.robot or scene_env.robot_id
+    if args.robot is not None and scene_env.robot_id not in (None, args.robot):
+        raise ROSConfigError(
+            f"--robot {args.robot!r} contradicts `robot_id: {scene_env.robot_id}` in "
+            f"{args.config}; drop one of them."
+        )
+    resolved_robot = SCENES.resolve_robot(scene_env.scene.id, requested)
+    if (
+        scene_env.base_pose is not None
+        and SCENES.meta(scene_env.scene.id).get("base_pose") is not True
+    ):
+        raise ROSConfigError(
+            f"scene {scene_env.scene.id!r} does not honour `base_pose:` (only scenes that "
+            "compose the robot into their own world do -- registered with base_pose=True, "
+            "e.g. free-axis tabletop_push, openarm_tabletop_pnp); drop it from the YAML."
+        )
 
     # Now load the manifest -- robot guard above already rejected the
     # cheap-to-detect error cases, so any failure here is genuinely
@@ -436,7 +426,7 @@ def _load_or_build_env(args: SimpleNamespace) -> SimEnvironment:
         manifest_version=manifest.version,
         model_family=manifest.model_family,
         scene_id=scene_env.scene.id,
-        scene_fixed_robot=fixed,
+        scene_allowed_robots=sorted(SCENES.allowed_robots(scene_env.scene.id) or ()),
         resolved_robot=resolved_robot,
         task_id=task.id,
         max_steps=task.max_steps,

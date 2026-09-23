@@ -6,6 +6,13 @@ This package wraps `openral_hal.so100_follower.SO100FollowerHAL` as a managed
 ROS 2 lifecycle node. It is the **shipped** path: see
 `openral_hal_so100/lifecycle_node.py` for the full implementation.
 
+> **`openral deploy sim|run` no longer spawns this package.** `_derive_hal_spec`
+> (`python/cli/src/openral_cli/deploy_sim.py`) only picks a robot's own
+> `openral_hal_<robot_id>` package, and the robot id is `so100_follower` / `so101_follower`, so deploy
+> runs the generic `openral_hal_scene_attached` node — the same
+> manifest-driven node shipped here. `ros2 run` of this package still works.
+> Retiring it needs a recorded decision.
+
 ## Synopsis
 
 ```bash

@@ -2826,7 +2826,7 @@
         },
         "HalEntrypoints": {
           "additionalProperties": false,
-          "description": "Per-robot simulation and real-hardware HAL import strings.\n\nThe two HALs a robot can expose, declared independently so the choice of\nHAL *type* lives in the manifest (never in environment config or runtime\nparams). Each value is a ``\"module:Attr\"`` import string resolved by\n``openral_hal.build_hal``, or ``None`` when the robot has no HAL of\nthat kind (sim-only / real-only / scene-only).\n\nAttributes:\n    sim: Import string for the simulation HAL. When ``None`` **and**\n        ``RobotDescription.sim`` is populated, the resolver derives\n        ``MujocoArmHAL.from_description`` \u2014 so every plain arm\n        leaves this null. Set it explicitly only for a non-generic sim\n        HAL (e.g. ``\"openral_hal.panda_mobile:PandaMobileHAL\"``, which has\n        no ``sim:`` block to derive from).\n    real: Import string for the real-hardware HAL (e.g.\n        ``\"openral_hal.ur_real:UR5eRealHAL\"``). ``None`` for sim-only\n        robots; the resolver raises ``ROSCapabilityMismatch`` if\n        ``mode=\"real\"`` is requested on a robot whose ``real`` is ``None``.\n    parameters: Per-robot HAL construction defaults (serial ``port``,\n        ``robot_ip``, \u2026) merged into the constructor by\n        ``openral_hal.build_hal``. Empty by default.\n\nExample:\n    >>> HalEntrypoints(real=\"openral_hal.ur_real:UR5eRealHAL\").sim is None\n    True",
+          "description": "Per-robot simulation and real-hardware HAL import strings.\n\nThe two HALs a robot can expose, declared independently so the choice of\nHAL *type* lives in the manifest (never in environment config or runtime\nparams). Each value is a ``\"module:Attr\"`` import string resolved by\n``openral_hal.build_hal``, or ``None`` when the robot has no HAL of\nthat kind (sim-only / real-only / scene-only).\n\nAttributes:\n    sim: Import string for the simulation HAL. When ``None`` **and**\n        ``RobotDescription.sim`` is populated, the resolver derives\n        ``MujocoArmHAL.from_description`` \u2014 so every plain arm\n        leaves this null. Set it explicitly only for a non-generic sim\n        HAL (e.g. ``\"openral_hal.panda_mobile:PandaMobileHAL\"``, which has\n        no ``sim:`` block to derive from).\n    real: Import string for the real-hardware HAL (e.g.\n        ``\"openral_hal.ur_real:UR5eRealHAL\"``). ``None`` for sim-only\n        robots; the resolver raises ``ROSCapabilityMismatch`` if\n        ``mode=\"real\"`` is requested on a robot whose ``real`` is ``None``.\n    parameters: Per-robot HAL construction defaults (serial ``port``,\n        ``robot_ip``, \u2026) merged into the constructor by\n        ``openral_hal.build_hal``. Empty by default.\n    real_bringup: Optional vendor ``ros2_control`` bringup that\n        ``deploy run`` includes next to the real HAL, as\n        ``\"<ros_package>:<file>.launch.py\"`` (resolved under that\n        package's ``share/<pkg>/launch/``). ``None`` falls back to the\n        convention: the HAL ROS package's own ``launch/real_bringup.launch.py``\n        if it ships one.\n\nExample:\n    >>> HalEntrypoints(real=\"openral_hal.ur_real:UR5eRealHAL\").sim is None\n    True\n    >>> HalEntrypoints(real_bringup=\"openral_hal_openarm:real_bringup.launch.py\").real_bringup\n    'openral_hal_openarm:real_bringup.launch.py'",
           "properties": {
             "sim": {
               "anyOf": [
@@ -2854,6 +2854,19 @@
             },
             "parameters": {
               "$ref": "#/$defs/HalParameters"
+            },
+            "real_bringup": {
+              "anyOf": [
+                {
+                  "pattern": "^[A-Za-z0-9_]+:[A-Za-z0-9_.\\-]+\\.launch\\.py$",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Real Bringup"
             }
           },
           "title": "HalEntrypoints",
@@ -5104,7 +5117,7 @@
       "$defs": {
         "ActionContract": {
           "additionalProperties": false,
-          "description": "Per-rSkill action-vector contract.\n\nMirrors ``StateContract`` for the action side. Carries the\noutput dimensionality the checkpoint emits so the dataset bridge\n(and any downstream consumer) can bind the LeRobot v3 ``action``\nfeature shape without consulting the sim or hardware adapter.\n\nThe sim-specific action contract belongs on the\nper-checkpoint rSkill manifest, not on the physical\n``RobotDescription`` (the same Franka emits 7-D delta-EEF on\nLIBERO vs 8-D joint pos on a hardware deploy).\n\nAttributes:\n    dim: Dimensionality of the action vector emitted by\n        ``Skill.step()`` / ``PolicyAdapter.step()``. Required when\n        this contract is set.\n    representation: Optional named representation (mirrors\n        ``ActionSpec.representation``). When set, downstream\n        consumers can map between equivalent representations\n        (e.g. ``joint_positions`` \u2192 ``delta_ee_6d_plus_gripper``).\n    slots: Declarative slot layout. When set, every\n        index in ``[0, dim)`` must be covered by exactly one\n        ``ActionSlot`` (no gaps, no overlaps). The\n        skill_runner reads this to dispatch slices of the policy\n        vector onto typed ``Action`` objects. When ``None``,\n        the runner falls back to the legacy single-Action path\n        (one implicit ``JOINT_POSITION`` slot covering the whole\n        vector). Manifests carrying ``slots`` are exempt from the\n        ``dim <= len(robot.joints)`` invariant because\n        the slot decoder gives a typed contract per slice instead.\n    cartesian_delta_scale: Per-axis physical range for a normalized\n        Cartesian controller. Predictive safety applies\n        ``clip(raw, -1, 1) * scale``. ``None`` means identity (the policy\n        already emits physical units).",
+          "description": "Per-rSkill action-vector contract.\n\nMirrors ``StateContract`` for the action side. Carries the\noutput dimensionality the checkpoint emits so the dataset bridge\n(and any downstream consumer) can bind the LeRobot v3 ``action``\nfeature shape without consulting the sim or hardware adapter.\n\nThe sim-specific action contract belongs on the\nper-checkpoint rSkill manifest, not on the physical\n``RobotDescription`` (the same Franka emits 7-D delta-EEF on\nLIBERO vs 8-D joint pos on a hardware deploy).\n\nAttributes:\n    dim: Dimensionality of the action vector emitted by\n        ``Skill.step()`` / ``PolicyAdapter.step()``. Required when\n        this contract is set.\n    representation: Optional named representation (mirrors\n        ``ActionSpec.representation``). When set, downstream\n        consumers can map between equivalent representations\n        (e.g. ``joint_positions`` \u2192 ``delta_ee_6d_plus_gripper``).\n    slots: Declarative slot layout. When set, every\n        index in ``[0, dim)`` must be covered by exactly one\n        ``ActionSlot`` (no gaps, no overlaps). The\n        skill_runner reads this to dispatch slices of the policy\n        vector onto typed ``Action`` objects. When ``None``,\n        the runner falls back to the legacy single-Action path\n        (one implicit ``JOINT_POSITION`` slot covering the whole\n        vector). Manifests carrying ``slots`` are exempt from the\n        ``dim <= len(robot.joints)`` invariant because\n        the slot decoder gives a typed contract per slice instead.\n    cartesian_delta_scale: Per-axis physical range for a normalized\n        Cartesian controller. Predictive safety applies\n        ``clip(raw, -1, 1) * scale``. ``None`` means identity (the policy\n        already emits physical units).\n    joint_names: The checkpoint's joint order on the whole-vector joint\n        path, spelled as ``RobotDescription.joints`` names (matched BY NAME\n        by ``openral_rskill._policy_io.PolicyIOCodec``). ``None`` means the\n        codec derives the order from the checkpoint's own feature names, or\n        identity. Forbidden together with ``slots`` (each JOINT_* slot\n        carries its own ``joint_names``).\n    gripper_scale: Policy-unit gripper value per robot-unit value. The HAL\n        gripper contract is a normalized ``[0, 1]`` jaw fraction; a LeRobot\n        SO-ARM checkpoint's gripper channel is ``[0, 100]`` \u2192 ``100.0``.\n        Applied by the codec on BOTH the joint and the slot path.",
           "properties": {
             "dim": {
               "exclusiveMinimum": 0,
@@ -5151,6 +5164,27 @@
               ],
               "default": null,
               "title": "Cartesian Delta Scale"
+            },
+            "joint_names": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Joint Names"
+            },
+            "gripper_scale": {
+              "default": 1.0,
+              "exclusiveMinimum": 0.0,
+              "title": "Gripper Scale",
+              "type": "number"
             },
             "joint_units": {
               "anyOf": [
@@ -5526,7 +5560,7 @@
         },
         "ImagePreprocessing": {
           "additionalProperties": false,
-          "description": "Per-rSkill image preprocessing contract.\n\nProperties of how the *checkpoint* was trained against image frames,\nsurfaced on the manifest so the sim adapter does not have to learn\nthem from a YAML override. ``vla.extra`` overrides on the eval\nconfig still win \u2014 see ``openral_rskill._vla_core.resolve_image_preprocessing``.\n\nAttributes:\n    flip_180: Apply ``torch.flip(t, dims=[1, 2])`` (H+W reversal) to\n        every camera frame before the policy forward. SmolVLA / pi05\n        LIBERO checkpoints want this on; the RoboCasa checkpoints\n        published by RoMALab / DAVIAN-Robotics want it off.\n    flip_vertical: Apply ``img[::-1, :, :]`` (vertical-only, H-axis\n        reversal) BEFORE any 180\u00b0 rotation. Mirrors\n        ``robocasa.wrappers.gym_wrapper.RoboCasaGymEnv.process_img``,\n        which the canonical openpi-robocasa eval applies before\n        feeding frames to the policy. Required for\n        ``robocasa/robocasa365_checkpoints/pi05_pretrain_human300``\n        and its lerobot-converted siblings; the RoMALab MG_300\n        checkpoint does NOT want this flip.\n    input_template: Format string used to name image tensors in the\n        policy input batch \u2014 for example ``\"observation.images.{cam}\"``\n        for SmolVLA / pi05 RoMALab vs ``\"observation.image.{cam}\"``\n        for ruiname/pi05-robocasa-10tasks-200k.\n    aliases: Per-checkpoint rename map from the *scene* / *robot* raw\n        camera key (e.g. robosuite's ``robot0_agentview_left_image``)\n        to the *model*'s expected input feature name (e.g.\n        ``agentview``). Empty means pass through unchanged. SmolVLA\n        LIBERO usually wants ``{\"camera1\": \"image\", \"camera2\": \"image2\"}``.\n    norm_tag: Normalization statistics tag for policies that use\n        multiple checkpoints or training distributions (e.g. MolmoAct2\n        with ``norm_tag=\"so100_so101_molmoact2\"`` for SO-100/101\n        finetuned weights). Optional; ``None`` means the adapter's\n        default tag applies. Used by ``predict_action`` methods to\n        select the right norm_stats entry at inference time.\n    image_max_crops: Cap on the number of image tiles a multi-crop\n        image processor (Molmo / MolmoAct2 family) produces per camera\n        frame. Each extra 378px crop adds ~182 pooled image tokens and\n        attention cost is quadratic in the token count, so this is the\n        primary *activation*-memory lever (the NF4 weights are fixed at\n        ~3.5 GiB; what overflows an 8 GiB card is the crop activations).\n        Optional; ``None`` keeps the checkpoint's own default (8 for\n        MolmoAct2). A per-rollout ``vla.extra[\"image_max_crops\"]`` (or\n        the ``OPENRAL_MOLMOACT2_MAX_CROPS`` env) still overrides this\n        per-checkpoint default. Must be ``>= 1`` when set.\n    resize_width: Exact checkpoint input width. When set with\n        ``resize_height``, adapters resize the source frame before\n        policy inference. This lets a high-resolution detector feed coexist\n        with a policy trained at a lower native render size.\n    resize_height: Exact checkpoint input height; must be set together\n        with ``resize_width``.",
+          "description": "Per-rSkill image preprocessing contract.\n\nProperties of how the *checkpoint* was trained against image frames,\nsurfaced on the manifest so the sim adapter does not have to learn\nthem from a YAML override. ``vla.extra`` overrides on the eval\nconfig still win \u2014 see ``openral_rskill._vla_core.resolve_image_preprocessing``.\n\nAttributes:\n    flip_180: Apply ``torch.flip(t, dims=[1, 2])`` (H+W reversal) to\n        every camera frame before the policy forward. SmolVLA / pi05\n        LIBERO checkpoints want this on; the RoboCasa checkpoints\n        published by RoMALab / DAVIAN-Robotics want it off.\n    flip_vertical: Apply ``img[::-1, :, :]`` (vertical-only, H-axis\n        reversal) BEFORE any 180\u00b0 rotation. Mirrors\n        ``robocasa.wrappers.gym_wrapper.RoboCasaGymEnv.process_img``,\n        which the canonical openpi-robocasa eval applies before\n        feeding frames to the policy. Required for\n        ``robocasa/robocasa365_checkpoints/pi05_pretrain_human300``\n        and its lerobot-converted siblings; the RoMALab MG_300\n        checkpoint does NOT want this flip.\n    input_template: Format string used to name image tensors in the\n        policy input batch \u2014 for example ``\"observation.images.{cam}\"``\n        for SmolVLA / pi05 RoMALab vs ``\"observation.image.{cam}\"``\n        for ruiname/pi05-robocasa-10tasks-200k.\n    aliases: Per-checkpoint rename map from a VLA *slot* (the\n        ``vla_feature_key`` suffix a ``sensors_required`` entry names,\n        e.g. ``camera1``) to the *model*'s expected input feature name\n        (e.g. ``image``). Keys are slots \u2014 never sensor or scene camera\n        names \u2014 so the map means the same thing on ``openral sim run``,\n        ``deploy sim`` and ``deploy run`` (see ``sensor_name_to_slot``);\n        ``unknown_alias_slots`` reports keys that break this rule. Empty\n        means pass through unchanged. SmolVLA / pi05 LIBERO want\n        ``{\"camera1\": \"image\", \"camera2\": \"image2\"}``.\n    norm_tag: Normalization statistics tag for policies that use\n        multiple checkpoints or training distributions (e.g. MolmoAct2\n        with ``norm_tag=\"so100_so101_molmoact2\"`` for SO-100/101\n        finetuned weights). Optional; ``None`` means the adapter's\n        default tag applies. Used by ``predict_action`` methods to\n        select the right norm_stats entry at inference time.\n    image_max_crops: Cap on the number of image tiles a multi-crop\n        image processor (Molmo / MolmoAct2 family) produces per camera\n        frame. Each extra 378px crop adds ~182 pooled image tokens and\n        attention cost is quadratic in the token count, so this is the\n        primary *activation*-memory lever (the NF4 weights are fixed at\n        ~3.5 GiB; what overflows an 8 GiB card is the crop activations).\n        Optional; ``None`` keeps the checkpoint's own default (8 for\n        MolmoAct2). A per-rollout ``vla.extra[\"image_max_crops\"]`` (or\n        the ``OPENRAL_MOLMOACT2_MAX_CROPS`` env) still overrides this\n        per-checkpoint default. Must be ``>= 1`` when set.\n    resize_width: Exact checkpoint input width. When set with\n        ``resize_height``, adapters resize the source frame before\n        policy inference. This lets a high-resolution detector feed coexist\n        with a policy trained at a lower native render size.\n    resize_height: Exact checkpoint input height; must be set together\n        with ``resize_width``.",
           "properties": {
             "flip_180": {
               "default": false,
@@ -6347,15 +6381,7 @@
             "layout": {
               "anyOf": [
                 {
-                  "enum": [
-                    "smolvla_9d",
-                    "human300_16d",
-                    "gr1",
-                    "rc365",
-                    "simpler_widowx",
-                    "simpler_google",
-                    "libero_eef8d"
-                  ],
+                  "pattern": "^[a-z][a-z0-9_]*$",
                   "type": "string"
                 },
                 {
@@ -6505,23 +6531,7 @@
         "model_family": {
           "anyOf": [
             {
-              "enum": [
-                "smolvla",
-                "pi05",
-                "xvla",
-                "xr1",
-                "act",
-                "diffusion",
-                "rldx",
-                "molmoact2",
-                "gr00t",
-                "diffuser_actor",
-                "openvla",
-                "lingbot_vla2",
-                "lingbot_vla",
-                "lingbot_va_a1",
-                "internvla_n1"
-              ],
+              "pattern": "^[a-z][a-z0-9_]*$",
               "type": "string"
             },
             {
@@ -6533,31 +6543,7 @@
         },
         "embodiment_tags": {
           "items": {
-            "enum": [
-              "aloha",
-              "aloha_agilex",
-              "any",
-              "custom",
-              "franka_panda",
-              "g1",
-              "galaxea_a1",
-              "google_robot",
-              "gr1",
-              "h1",
-              "mobile_base",
-              "multi",
-              "openarm",
-              "panda_mobile",
-              "pusht",
-              "rizon4",
-              "r1pro",
-              "sawyer",
-              "so100_follower",
-              "so101_follower",
-              "ur10e",
-              "ur5e",
-              "widowx"
-            ],
+            "pattern": "^[a-z][a-z0-9_]*$",
             "type": "string"
           },
           "title": "Embodiment Tags",
@@ -6668,29 +6654,10 @@
           "title": "Fallback Skill Id"
         },
         "benchmarks": {
-          "additionalProperties": {
-            "type": "number"
-          },
-          "propertyNames": {
-            "enum": [
-              "aloha",
-              "aloha_insertion",
-              "aloha_transfer_cube",
-              "behavior",
-              "gr1_tabletop",
-              "libero_10",
-              "libero_goal",
-              "libero_object",
-              "libero_spatial",
-              "maniskill3_panda",
-              "metaworld_mt10",
-              "metaworld_mt50",
-              "pusht",
-              "rlbench",
-              "robocasa_pnp",
-              "robotwin",
-              "simpler_env_widowx"
-            ]
+          "patternProperties": {
+            "^[a-z][a-z0-9_]*$": {
+              "type": "number"
+            }
           },
           "title": "Benchmarks",
           "type": "object"

@@ -15,7 +15,7 @@ from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_observability import inference_span
 
 from openral_sim import _behavior_wire
-from openral_sim._quantization import resolve_quant_plan
+from openral_sim._quantization import resolve_quant_plan, sidecar_quant_token
 from openral_sim.sidecar import SidecarClient
 
 if TYPE_CHECKING:
@@ -39,7 +39,6 @@ _PORT_MIN = 22_000
 _PORT_MAX = 22_999
 _DEFAULT_TIMEOUT_MS = 120_000
 _DEFAULT_BOOT_TIMEOUT_S = 600.0
-_IMPLEMENTATION = "behavior_b1k_sidecar"
 
 _STATE_KEY = _behavior_wire.STATE_KEY
 _CAMERA_KEYS = _behavior_wire.CAMERA_RGB_KEYS
@@ -222,19 +221,10 @@ def build_behavior_groot_policy(
     task = str(extra.get("task", "turning_on_radio"))
     instruction = str(extra.get("instruction", task.replace("_", " ")))
     control_mode = str(extra.get("control_mode", "temporal_ensemble"))
-    # Shared resolver: $OPENRAL_QUANTIZATION_DTYPE > spec.extra["dtype"] >
-    # manifest.quantization.dtype > nf4. The sidecar's argparse only accepts
-    # ("none", "nf4", "int8"), which is why the resolver normalises the
-    # schema's `int4` onto `nf4` rather than passing the enum value through.
-    # An explicit override can still resolve to a plain precision (`bf16` /
-    # `fp16` / `fp32`) to turn packing off — the sidecar has no dtype token
-    # for that, only "none" (load unquantized), so anything that isn't a
-    # packing format collapses to "none" rather than crashing the sidecar's
-    # argparse.
-    plan = resolve_quant_plan(spec, manifest, default="nf4", manifest_dtype_is_storage=True)
-    quantization = plan.dtype or "nf4"
-    if quantization not in ("none", "nf4", "int8"):
-        quantization = "none"
+    # Shared resolver; the sidecar's argparse accepts ("none", "nf4", "int8")
+    # and "none" loads the stored bf16 checkpoint as-is.
+    plan = resolve_quant_plan(spec, manifest, default="nf4")
+    quantization = sidecar_quant_token(plan, frozenset({"none", "nf4", "int8"}), "gr00t_b1k")
     nf4_min_params = _opt_int(plan.extra.get("nf4_min_params"), 4_000_000)
     host = os.environ.get(_HOST_ENV, str(extra.get("host", _DEFAULT_HOST)))
     checkpoint = _checkpoint_path(manifest)

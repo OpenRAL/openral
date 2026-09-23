@@ -63,12 +63,13 @@ from openral_rskill._vla_core import (
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
+    resolve_n_action_steps,
     resolve_rskill_repo_id,
 )
 
 from openral_sim._quantization import (
-    default_dtype_for_device,
-    manifest_dtype,
+    require_supported_dtype,
+    resolve_quant_plan,
 )
 from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.registry import POLICIES
@@ -718,7 +719,7 @@ def _load_openvla_model(
     dtype_str: str | None,
 ) -> tuple[Any, Any]:
     """Load the OpenVLA model + processor, NF4-quantized when requested."""
-    use_nf4 = (dtype_str or "").lower() in {"nf4", "int4"} and device.startswith("cuda")
+    use_nf4 = dtype_str == "nf4"
     common = {"trust_remote_code": True, "revision": revision}
 
     with _openvla_phase("processor"):
@@ -786,7 +787,11 @@ def _seed_torch_for_sampling(torch: Any, seed: int | None) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-@POLICIES.register("openvla")
+@POLICIES.register(
+    "openvla",
+    install_groups=("sim",),
+    required_imports=("transformers", "bitsandbytes"),
+)
 def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
     """Load an OpenVLA / OpenVLA-OFT checkpoint as a transformers custom-code model."""
     spec = env_cfg.vla
@@ -811,7 +816,18 @@ def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
     repo_id, revision = _strip_hf_uri(manifest.weights_uri, field_name="weights_uri")
     _require_remote_code_ack(repo_id, revision)
 
-    dtype_str = manifest_dtype(spec, manifest=manifest) or default_dtype_for_device(device)
+    # The load is bf16 (optionally NF4-packed via bitsandbytes on CUDA); there
+    # is no int8 / fp16 / fp32 path, and NF4 needs CUDA.
+    plan = resolve_quant_plan(
+        spec, manifest, default="nf4" if device.startswith("cuda") else "bf16"
+    )
+    require_supported_dtype(plan, frozenset({"nf4", "bf16", "none"}), "openvla")
+    dtype_str = plan.dtype
+    if dtype_str == "nf4" and not device.startswith("cuda"):
+        raise ROSConfigError(
+            f"nf4 quantization for OpenVLA requires a CUDA device; got device={device!r}. "
+            "Set OPENRAL_QUANTIZATION_DTYPE=bf16 to load on CPU."
+        )
     model, processor = _load_openvla_model(
         torch=torch,
         auto_model_cls=auto_model_cls,
@@ -861,7 +877,7 @@ def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
     adapter._chunk_executor = build_chunk_executor(
         spec.extra,
         chunk_fn=adapter._chunk_forward,
-        chunk_size=int(manifest.n_action_steps or 1),
+        chunk_size=resolve_n_action_steps(manifest, dict(spec.extra or {}), default=1),
         adapter_name="openvla",
     )
     return adapter

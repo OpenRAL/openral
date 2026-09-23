@@ -243,3 +243,94 @@ def test_returned_actions_are_action_instances(runner_mod: ModuleType) -> None:
     assert all(isinstance(a, Action) for a in actions)
     # Each Action carries horizon=1 — single-step chunks.
     assert all(a.horizon == 1 for a in actions)
+
+
+# ─── The slot path applies the SAME policy<->robot codec as the joint path ───
+
+
+def _so101_degrees_slot_manifest() -> tuple[object, object]:
+    """Real SO-101 degrees checkpoint, redeclared with a two-slot contract.
+
+    Validating it through ``RSkillManifest`` pins that ``joint_units: degrees``
+    together with ``slots`` is a legal manifest — legal only because the runner
+    now converts the slot path too.
+    """
+    from openral_core import RobotDescription, RSkillManifest
+
+    description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    raw = RSkillManifest.from_yaml(
+        "rskills/rskill-smolvla-so101-eraser_place-bf16/rskill.yaml"
+    ).model_dump(mode="json")
+    raw["action_contract"]["slots"] = [
+        {
+            "range": [0, 4],
+            "control_mode": "joint_position",
+            "joint_names": [
+                "shoulder_pan",
+                "shoulder_lift",
+                "elbow_flex",
+                "wrist_flex",
+                "wrist_roll",
+            ],
+        },
+        {"range": [5, 5], "control_mode": "gripper_position", "ee": "gripper"},
+    ]
+    manifest = RSkillManifest.model_validate(raw)
+    assert manifest.action_contract is not None
+    assert manifest.action_contract.joint_units is not None
+    assert manifest.action_contract.joint_units.value == "degrees"
+    return manifest, description
+
+
+def test_degrees_slot_manifest_reaches_the_wire_in_radians(runner_mod: ModuleType) -> None:
+    """A degrees checkpoint with slots: radians on the wire, gripper descaled.
+
+    Before the codec the slot path handed the RAW policy vector to
+    ``_dispatch_slots`` — 90 (degrees) went out as 90 rad and cleared nothing.
+    """
+    from openral_rskill._policy_io import PolicyIOCodec
+
+    manifest, description = _so101_degrees_slot_manifest()
+    codec = PolicyIOCodec.from_manifest(manifest, description)
+    policy_action = np.array([90.0, -45.0, 30.0, 0.0, 180.0, 50.0], dtype=np.float32)
+    actions = runner_mod._policy_action_to_actions(
+        policy_action,
+        codec=codec,
+        slots=manifest.action_contract.slots,
+        description=description,
+        cartesian_delta_scale=None,
+    )
+    joint, grip = actions
+    assert joint.control_mode is ControlMode.JOINT_POSITION
+    np.testing.assert_allclose(
+        joint.joint_targets[0],
+        [math.pi / 2, -math.pi / 4, math.pi / 6, 0.0, math.pi, 0.0],
+        rtol=1e-5,
+        atol=1e-6,
+    )
+    assert grip.control_mode is ControlMode.GRIPPER_POSITION
+    assert grip.gripper == pytest.approx([0.5])
+
+
+def test_joint_path_converts_and_clamps(runner_mod: ModuleType) -> None:
+    """Without slots the whole vector is converted, then pre-clamped to the envelope."""
+    from openral_core import RobotDescription, RSkillManifest
+    from openral_rskill._policy_io import PolicyIOCodec
+
+    description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    manifest = RSkillManifest.from_yaml(
+        "rskills/rskill-smolvla-so101-eraser_place-bf16/rskill.yaml"
+    )
+    codec = PolicyIOCodec.from_manifest(manifest, description)
+    action = runner_mod._policy_action_to_actions(
+        np.array([10.0, 500.0, 0.0, 0.0, 0.0, 50.0], dtype=np.float32),
+        codec=codec,
+        slots=None,
+        description=description,
+        cartesian_delta_scale=None,
+    )
+    assert action.control_mode is ControlMode.JOINT_POSITION
+    targets = action.joint_targets[0]
+    assert targets[0] == pytest.approx(math.radians(10.0), rel=1e-5)
+    assert targets[1] < 1.7453  # 500 deg clamped inside the envelope
+    assert targets[5] == pytest.approx(0.5)

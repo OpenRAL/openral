@@ -48,13 +48,12 @@ _rclpy → OTLP bridge rendering the octomap occupied-voxel cloud (`/octomap_poi
 ### `python/runner/src/openral_runner/dataset_recorder_bridge.py`
 _Bus-attached LeRobot/rosbag recorder for the deploy graph (mirrors `WorldCloudBridge`)._
 
-- module constant `_PHASE_START = 0` (L59) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
-- module constant `_PHASE_END = 1` (L60) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
-- module constant `ACTION_TOPIC_DEFAULT = "/openral/candidate_action"` (L62) — default `ActionChunk` topic.
-- module constant `EPISODE_TOPIC_DEFAULT = "/openral/episode"` (L63) — default `Episode` marker topic.
-- `sensor_name_to_slot(description) -> dict[str, str]` (L66) — Maps each RGB sensor name to its VLA slot (`camera1` / `camera2` / ...); the canonical copy. Public; also imported by `openral_rskill_ros` (dependency runs one-way — `openral_runner` never depends back on it).
-- `class DatasetRecorderBridge(node, *, robot, aggregator, recorder, output_path=None, action_topic="/openral/candidate_action", episode_topic="/openral/episode")` — Subscribes `Episode` (drives `recorder.episode_start/end`) and `ActionChunk`, joins each tick's action with the `WorldStateAggregator` snapshot, and writes frames via `Rosbag2Sink`. Logs `dataset_recorder.nothing_recorded` at `destroy()` if no episode marker ever fired, so an empty recording is never silent. (L86)
-  - `destroy() -> None` (L183) — Flushes the pending tick, closes any open episode (marking it a failure), finalizes the recorder, releases the subscriptions; idempotent.
+- module constant `_PHASE_START = 0` (L60) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
+- module constant `_PHASE_END = 1` (L61) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
+- module constant `ACTION_TOPIC_DEFAULT = "/openral/candidate_action"` (L63) — default `ActionChunk` topic.
+- module constant `EPISODE_TOPIC_DEFAULT = "/openral/episode"` (L64) — default `Episode` marker topic.
+- `class DatasetRecorderBridge(node, *, robot, aggregator, recorder, output_path=None, action_topic="/openral/candidate_action", episode_topic="/openral/episode")` — Subscribes `Episode` (drives `recorder.episode_start/end`) and `ActionChunk`, joins each tick's action with the `WorldStateAggregator` snapshot, and writes frames via `Rosbag2Sink`. Logs `dataset_recorder.nothing_recorded` at `destroy()` if no episode marker ever fired, so an empty recording is never silent. (L67)
+  - `destroy() -> None` (L164) — Flushes the pending tick, closes any open episode (marking it a failure), finalizes the recorder, releases the subscriptions; idempotent.
 
 ### `python/runner/src/openral_runner/sensor_reader.py`
 _``SensorReader`` Protocol — seam between per-sensor capture backends and the inference runner._
@@ -366,23 +365,23 @@ _Runtime glue that wires a ``kind: detector`` rSkill to a live camera pipeline �
 _Public surface of the inference runner. Imports are PEP 562 lazy: heavy symbols (`InferenceRunnerBase`, `factory.*`, `DeployRunner`, `safety.*`) are resolved on first attribute access so importing any subpackage does not eagerly drag in torch or trigger downstream glib conflicts._
 
 - light eager imports: `precise_sleep`, `sleep_until`, `InferenceRunner` (Protocol), `SensorReader` (Protocol).
-- `_LAZY_ATTRS: dict[str, tuple[str, str]]` — `attr → (module, name)` map driving the `__getattr__` resolver. (L74)
-- `__getattr__(name) -> Any` — Resolves heavy symbols on first access (torch / glib-sensitive deferral). (L88)
+- `_LAZY_ATTRS: dict[str, tuple[str, str]]` — `attr → (module, name)` map driving the `__getattr__` resolver. (L70)
+- `__getattr__(name) -> Any` — Resolves heavy symbols on first access (torch / glib-sensitive deferral). (L84)
 
 ### `python/runner/src/openral_runner/factory.py`
 _Library deploy runner used by runtime nodes; the public deploy CLI now shells the ROS graph from a `DeployScene`._
 
 - `SKILL_REGISTRY: dict[str, Callable[[dict[str, object]], rSkillBase]]` — `vla.id` → skill factory. Today: `hello`, `gpu_passthrough`. (L92)
-- `SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]` — `backend` id → reader factory. Today: `opencv_thread`, `ros2_image`, `gstreamer`, `galaxea_a1_camera_bridge`. (`ros2_image` was in the `SensorReaderBackend` enum but absent here, so selecting it raised `unknown sensor reader backend`.) (L362)
+- `SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]` — `backend` id → reader factory. Today: `opencv_thread`, `ros2_image`, `gstreamer`, `galaxea_a1_camera_bridge`. (`ros2_image` was in the `SensorReaderBackend` enum but absent here, so selecting it raised `unknown sensor reader backend`.) (L377)
 - `_to_int(value, *, field, sensor_id) -> int` — YAML `object` → `int` coercion helper used across factories; rejects bools explicitly. (L48)
 - `_make_gpu_passthrough_skill(extra) -> rSkillBase` — Builds `GpuPassthroughSkill`; recognised `extra`: `sensor_id` (default `"wrist_rgb"`), `n_joints`, `horizon`, `device` (default `"cuda"`, raises if unavailable). (L69)
-- `_make_opencv_thread_reader(cfg) -> SensorReader` — Builds `OpenCVThreadSensorReader` from a `SensorReaderConfig`; requires `backend_params.device`.
-- `_make_ros2_image_reader(cfg) -> SensorReader` — Builds `Ros2ImageSensorReader`; requires `backend_params.topic` (e.g. `/zed/depth/depth_registered`), optional `reliability` (`best_effort` default / `reliable`) and `qos_depth` (default 5). `cfg.max_age_ms` becomes the reader's staleness budget. Imported lazily so the factory module stays importable without ROS. (L325)
-- `_make_gstreamer_reader(cfg) -> SensorReader` — Builds `GStreamerSensorReader` from a `SensorReaderConfig`. Translates `publish_to_ros` / `publish_topic` / `publish_rate_hz` → `PipelineSpec.enable_ros_tee`. (L138)
+- `_make_opencv_thread_reader(cfg) -> SensorReader` — Builds `OpenCVThreadSensorReader` from a `SensorReaderConfig`; requires `backend_params.device`, forwards optional `fps`/`width`/`height`/`crop` (`[x, y, width, height]`); an invalid value raises `ROSConfigError`.
+- `_make_ros2_image_reader(cfg) -> SensorReader` — Builds `Ros2ImageSensorReader`; requires `backend_params.topic` (e.g. `/zed/depth/depth_registered`), optional `reliability` (`best_effort` default / `reliable`) and `qos_depth` (default 5). `cfg.max_age_ms` becomes the reader's staleness budget. Imported lazily so the factory module stays importable without ROS. (L340)
+- `_make_gstreamer_reader(cfg) -> SensorReader` — Builds `GStreamerSensorReader` from a `SensorReaderConfig`. Translates `publish_to_ros` / `publish_topic` / `publish_rate_hz` → `PipelineSpec.enable_ros_tee`. (L153)
 - `_make_galaxea_a1_camera_bridge_reader(cfg) -> SensorReader` — Builds the
   native A1 Runtime paired-camera connector. Accepts only `camera`; unknown
   values are rejected.
-- `make_sensor_readers(configs) -> list[SensorReader]` (L245) — Batch constructor that
+- `make_sensor_readers(configs) -> list[SensorReader]` (L260) — Batch constructor that
   preserves config order and shares one A1 paired-camera session across both
   views. Other backends still dispatch through `SENSOR_BACKEND_REGISTRY`.
 

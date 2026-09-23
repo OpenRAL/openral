@@ -5,7 +5,7 @@ Launches each catalogue entry through its tier CLI (``openral sim run`` /
 a full ROS-graph launch + SIGINT teardown, classifies the outcome from exit
 code + stderr tail, and writes a JSON report + Markdown table. Default mode
 does a full rollout (30 s-10 min/row); ``--check-compatibility`` is a cheap
-in-process schema/manifest/HAL-registry check only (no subprocess, no GPU).
+in-process schema/manifest/robot-manifest check only (no subprocess, no GPU).
 
 Usage::
 
@@ -306,7 +306,9 @@ def _check_compat(spec: ConfigSpec) -> AuditRow:
     Sim/benchmark rows: load the YAML via ``openral_core.load_scene_strict``,
     then validate the rSkill manifest via ``openral_core.RSkillManifest``.
     Deploy rows: load as ``openral_core.DeployScene`` and assert
-    ``robot_id`` resolves in ``openral_cli.deploy_sim._ROBOT_HAL_REGISTRY``.
+    ``robot_id`` resolves to a loadable robot manifest
+    (``openral_sim.policies.robots.resolve_robot_manifest`` — the same lookup
+    ``deploy sim`` uses; there is no per-robot HAL table).
 
     Returns:
         An ``AuditRow`` with ``status="pass-compat"`` on success or
@@ -348,30 +350,18 @@ def _check_compat(spec: ConfigSpec) -> AuditRow:
                 raise FileNotFoundError(f"rSkill manifest not found: {manifest_path}")
             RSkillManifest.model_validate(yaml.safe_load(manifest_path.read_text()))
 
-        # Deploy-tier HAL-registry lookup.
+        # Deploy-tier robot-manifest lookup.
         if spec.run_mode == "deploy":
             assert isinstance(scene, DeployScene)
-            # Resolve robot_id either from the explicit field or via the
-            # scene registry's fixed_robot mapping (so101_box →
-            # so101_follower, libero_spatial → franka_panda, etc.).
-            robot_id = scene.robot_id
-            if robot_id is None:
-                from openral_sim.registry import SCENES
+            # Same binding rule `deploy sim` uses (SCENES.resolve_robot):
+            # validates an explicit robot_id, else the fixed scene's default.
+            from openral_sim.registry import SCENES
 
-                robot_id = SCENES.fixed_robot(scene.scene.id)
-                if robot_id is None:
-                    raise ValueError(
-                        f"DeployScene {spec.config!r} has no `robot_id` and the scene "
-                        f"id {scene.scene.id!r} is not registered with a fixed_robot."
-                    )
-            from openral_cli.deploy_sim import _ROBOT_HAL_REGISTRY
+            robot_id = SCENES.resolve_robot(scene.scene.id, scene.robot_id)
+            from openral_core import RobotDescription
+            from openral_sim.policies.robots import resolve_robot_manifest
 
-            if robot_id not in _ROBOT_HAL_REGISTRY:
-                supported = ", ".join(sorted(_ROBOT_HAL_REGISTRY))
-                raise KeyError(
-                    f"robot {robot_id!r} from {spec.config!r} has no HAL entry "
-                    f"in _ROBOT_HAL_REGISTRY (supported: {supported})."
-                )
+            RobotDescription.from_yaml(str(resolve_robot_manifest(robot_id)))
 
         wall_s = time.monotonic() - started
         return AuditRow(spec.config, spec.rskill, "pass-compat", 0, wall_s, None, "")
@@ -824,8 +814,8 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Cheap in-process gate: load each scene YAML via "
             "`openral_core.load_scene_strict`, validate the matching rSkill "
-            "manifest, and (for deploy rows) assert the robot resolves in "
-            "`_ROBOT_HAL_REGISTRY`. No subprocess, no GPU, no env build."
+            "manifest, and (for deploy rows) assert the robot manifest "
+            "resolves and loads. No subprocess, no GPU, no env build."
         ),
     )
     parser.add_argument(

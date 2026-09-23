@@ -6,10 +6,10 @@ an extras group that isn't installed in this venv. The skill_runner
 calls ``model_family_install_hint`` to translate runtime
 ``ImportError`` into actionable error messages.
 
-Both contracts share ``_FAMILY_INSTALL_HINTS`` /
-``_FAMILY_REQUIRED_IMPORTS`` — a half-registered family (one dict
-updated but not the other) fails these tests rather than at the
-operator's first ``openral deploy sim``.
+Both contracts read the facts each family declares on its
+``@POLICIES.register(...)`` call — a family registered without them
+fails these tests rather than at the operator's first ``openral deploy
+sim``.
 """
 
 from __future__ import annotations
@@ -19,9 +19,6 @@ from dataclasses import dataclass
 
 import pytest
 from openral_sim.policy_deps import (
-    _FAMILY_INSTALL_GROUPS,
-    _FAMILY_INSTALL_HINTS,
-    _FAMILY_REQUIRED_IMPORTS,
     can_import_policy_family,
     can_import_policy_manifest,
     filter_importable_manifests,
@@ -31,6 +28,13 @@ from openral_sim.policy_deps import (
     model_family_required_imports,
     purge_partial_imports,
 )
+from openral_sim.registry import POLICIES
+
+
+def _fake_family(monkeypatch: pytest.MonkeyPatch, name: str, **meta: object) -> None:
+    """Register a throwaway family for one test (undone by monkeypatch)."""
+    monkeypatch.setitem(POLICIES._items, name, lambda _env: None)
+    monkeypatch.setitem(POLICIES._meta, name, meta)
 
 
 @dataclass
@@ -42,27 +46,30 @@ class _StubManifest:
     policy_extras: dict[str, object] | None = None
 
 
-def test_install_hints_and_required_imports_cover_the_same_families() -> None:
-    """A new family must land in BOTH dicts, or the reasoner's pre-flight filter keeps
-    it while skill_runner has no install hint to surface (or vice versa)."""
-    hint_keys = set(_FAMILY_INSTALL_HINTS)
-    import_keys = set(_FAMILY_REQUIRED_IMPORTS)
-    groups_keys = set(_FAMILY_INSTALL_GROUPS)
-    assert hint_keys == import_keys == groups_keys, (
-        f"families in _FAMILY_INSTALL_HINTS but not _FAMILY_REQUIRED_IMPORTS: "
-        f"{hint_keys - import_keys}; "
-        f"families in _FAMILY_REQUIRED_IMPORTS but not _FAMILY_INSTALL_HINTS: "
-        f"{import_keys - hint_keys}; "
-        f"families missing from _FAMILY_INSTALL_GROUPS: "
-        f"{(hint_keys | import_keys) - groups_keys}"
-    )
+def test_every_registered_family_declares_its_deps() -> None:
+    """Each registered policy carries both facts, so no family is silently treated as
+    always-importable. Regression: molmoact2 / openvla / lingbot_vla had no entry in
+    the old parallel dicts, and ``mock`` was keyed though the ids are zero/random."""
+    missing = [
+        name
+        for name in POLICIES.names()
+        if not {"install_groups", "required_imports"} <= set(POLICIES.meta(name))
+    ]
+    assert missing == [], f"families registered without dependency facts: {missing}"
+    for name in POLICIES.names():
+        if model_family_install_groups(name):
+            assert model_family_required_imports(name), name
+            assert "just sync --all-packages" in manifest_install_hint(
+                _StubManifest(name="x", model_family=name)
+            )
 
 
 def test_model_family_install_groups_returns_empty_for_unknown() -> None:
     """Unknown families produce an empty tuple — caller falls back to the hint string."""
     assert model_family_install_groups("not_a_real_family") == ()
-    # Mock family is deliberately empty (no extras needed).
-    assert model_family_install_groups("mock") == ()
+    # The no-op policies are deliberately empty (no extras needed).
+    assert model_family_install_groups("zero") == ()
+    assert model_family_install_groups("random") == ()
 
 
 def test_model_family_install_groups_returns_uv_groups_for_known_families() -> None:
@@ -70,8 +77,10 @@ def test_model_family_install_groups_returns_uv_groups_for_known_families() -> N
     assert set(model_family_install_groups("pi05")) == {"sim", "libero"}
     assert set(model_family_install_groups("rldx")) == {"rldx"}
     assert set(model_family_install_groups("xr1")) == {"sidecar-wire"}
-    for fam in ("smolvla", "act", "diffusion", "xvla"):
+    for fam in ("smolvla", "act", "diffusion", "xvla", "openvla"):
         assert set(model_family_install_groups(fam)) == {"sim"}
+    assert model_family_install_groups("molmoact2") == ("libero",)
+    assert model_family_install_groups("lingbot_vla") == ("lingbot",)
 
 
 def test_model_family_required_imports_returns_empty_for_unknown() -> None:
@@ -98,7 +107,7 @@ def test_can_import_policy_family_succeeds_for_stdlib_smoke(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A family whose required-imports are all stdlib modules probes OK."""
-    monkeypatch.setitem(_FAMILY_REQUIRED_IMPORTS, "_test_stdlib", ("json", "math"))
+    _fake_family(monkeypatch, "_test_stdlib", required_imports=("json", "math"))
     ok, reason = can_import_policy_family("_test_stdlib")
     assert ok is True
     assert reason is None
@@ -108,10 +117,8 @@ def test_can_import_policy_family_fails_for_missing_module(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Missing required import → ``(False, ImportError reason)`` + purges sys.modules."""
-    monkeypatch.setitem(
-        _FAMILY_REQUIRED_IMPORTS,
-        "_test_missing",
-        ("__definitely_not_a_real_module__",),
+    _fake_family(
+        monkeypatch, "_test_missing", required_imports=("__definitely_not_a_real_module__",)
     )
     ok, reason = can_import_policy_family("_test_missing")
     assert ok is False
@@ -122,7 +129,7 @@ def test_can_import_policy_family_fails_for_missing_module(
 
 def test_filter_importable_manifests_keeps_known_good() -> None:
     """A manifest whose family probes OK survives the filter."""
-    kept = filter_importable_manifests([_StubManifest(name="x", model_family="mock")])
+    kept = filter_importable_manifests([_StubManifest(name="x", model_family="zero")])
     assert len(kept) == 1
     assert kept[0].name == "x"
 
@@ -131,20 +138,16 @@ def test_filter_importable_manifests_drops_unimportable_and_calls_logger(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Unimportable manifests are dropped and the logger is told why + how."""
-    monkeypatch.setitem(
-        _FAMILY_INSTALL_HINTS,
+    _fake_family(
+        monkeypatch,
         "_test_broken",
-        "Install the broken extras: `uv sync --group broken`.",
-    )
-    monkeypatch.setitem(
-        _FAMILY_REQUIRED_IMPORTS,
-        "_test_broken",
-        ("__definitely_not_a_real_module__",),
+        install_groups=("broken",),
+        required_imports=("__definitely_not_a_real_module__",),
     )
     logged: list[str] = []
     kept = filter_importable_manifests(
         [
-            _StubManifest(name="ok-skill", model_family="mock"),
+            _StubManifest(name="ok-skill", model_family="zero"),
             _StubManifest(name="broken-skill", model_family="_test_broken"),
         ],
         log_fn=logged.append,
@@ -152,7 +155,7 @@ def test_filter_importable_manifests_drops_unimportable_and_calls_logger(
     assert [m.name for m in kept] == ["ok-skill"]
     assert len(logged) == 1
     assert "broken-skill" in logged[0]
-    assert "uv sync --group broken" in logged[0]
+    assert "just sync --all-packages --group broken" in logged[0]
     assert "_test_broken" in logged[0]
 
 
@@ -164,29 +167,17 @@ def test_filter_importable_manifests_keeps_unknown_families() -> None:
     assert len(kept) == 1
 
 
-def test_behavior_groot_manifest_uses_sidecar_wire_profile() -> None:
-    """Behavior-GR00T's manifest routes to the sidecar-wire profile.
-
-    ``can_import_policy_manifest`` special-cases this manifest to probe
-    ``zmq``/``msgpack`` directly (``_is_behavior_groot_manifest``), which are
-    real ``sidecar-wire``-group packages, not stdlib fakes — unlike
-    ``test_can_import_policy_family_succeeds_for_stdlib_smoke`` above, there
-    is no ``_FAMILY_REQUIRED_IMPORTS`` entry to monkeypatch here, since the
-    dispatch is on ``policy_extras``, not ``model_family``. So, like its
-    sibling ``test_xr1_probe_uses_only_the_sidecar_wire`` below, this test
-    only asserts the environment-independent naming contract
-    (install group / hint) and leaves the *actual* import outcome to
-    ``pytest.importorskip`` — asserting ``ok is True`` unconditionally here
-    means this test would fail on any host without the opt-in
-    ``sidecar-wire`` group installed, which the core test-selective jobs
-    never install (only opt-in dependency lanes do, and this file isn't one
-    of them — see ``[requirement_globs]`` in tools/test_selection.toml).
+def test_behavior_groot_is_its_own_family() -> None:
+    """The B1K checkpoint is the registered ``gr00t_b1k`` family (it used to hide
+    inside ``gr00t`` behind ``policy_extras.implementation``), so its dependency
+    facts come from the same registry as every other family. Only the
+    environment-independent naming contract is asserted; the real import outcome
+    needs the opt-in ``behavior-groot`` group (see ``pytest.importorskip``).
     """
-    manifest = _StubManifest(
-        name="behavior",
-        model_family="gr00t",
-        policy_extras={"implementation": "behavior_b1k_sidecar"},
-    )
+    from openral_rskill.loader import load_rskill_manifest
+
+    manifest = load_rskill_manifest("rskills/gr00t-n17-b1k-turning-on-radio")
+    assert manifest.model_family == "gr00t_b1k"
     assert manifest_install_groups(manifest) == ("behavior-groot",)
     assert "behavior-groot" in manifest_install_hint(manifest)
 
@@ -226,7 +217,7 @@ def test_fast_probe_does_not_import_the_deep_module(
     as stand-in so the assertion holds without the lerobot extras installed.
     """
     deep = "email.mime.audio"
-    monkeypatch.setitem(_FAMILY_REQUIRED_IMPORTS, "_test_deep", (deep,))
+    _fake_family(monkeypatch, "_test_deep", required_imports=(deep,))
     purge_partial_imports((deep,))
 
     ok, reason = can_import_policy_family("_test_deep")
@@ -248,7 +239,7 @@ def test_strict_probe_env_restores_the_deep_import(
     dependency, so it has to stay reachable.
     """
     deep = "email.mime.audio"
-    monkeypatch.setitem(_FAMILY_REQUIRED_IMPORTS, "_test_deep", (deep,))
+    _fake_family(monkeypatch, "_test_deep", required_imports=(deep,))
     monkeypatch.setenv("OPENRAL_STRICT_POLICY_PROBE", "1")
     purge_partial_imports((deep,))
 
@@ -263,10 +254,10 @@ def test_fast_probe_rejects_a_missing_top_level_of_a_dotted_requirement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A dotted requirement whose root is absent still fails, with the root named."""
-    monkeypatch.setitem(
-        _FAMILY_REQUIRED_IMPORTS,
+    _fake_family(
+        monkeypatch,
         "_test_missing_top",
-        ("__definitely_not_a_real_module__.policies.modeling",),
+        required_imports=("__definitely_not_a_real_module__.policies.modeling",),
     )
 
     ok, reason = can_import_policy_family("_test_missing_top")

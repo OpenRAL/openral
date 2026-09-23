@@ -360,7 +360,14 @@ class _SimplerEnvSim:
         }
 
 
-@SCENES.register(_SIMPLER_ENV_SCENE_ID)
+@SCENES.register(
+    _SIMPLER_ENV_SCENE_ID,
+    # Only the WidowX bridge tasks are registered end-to-end in MS3 (the
+    # google_robot envs raise NameNotFound upstream -- see module docstring).
+    fixed_robot="widowx",
+    sequential_init=True,  # SAPIEN gym.make races the policy bf16 dtype window
+    sim_clock=True,
+)
 def _build_simpler_env_scene(env_cfg: SimEnvironment) -> _SimplerEnvSim:
     """Lazily import ``simpler_env`` and build a ``_SimplerEnvSim``.
 

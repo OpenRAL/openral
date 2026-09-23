@@ -98,13 +98,7 @@ def compose_sim_env(
 
     scene_env = load_scene_strict(str(config_path), SimScene)
 
-    fixed = SCENES.fixed_robot(scene_env.scene.id)
-    resolved_robot = fixed or robot_id or scene_env.robot_id
-    if resolved_robot is None:
-        raise RuntimeError(
-            f"scene {scene_env.scene.id!r} has no fixed robot; pass `robot_id=` "
-            f"to compose_sim_env()."
-        )
+    resolved_robot = SCENES.resolve_robot(scene_env.scene.id, robot_id or scene_env.robot_id)
 
     manifest = load_rskill_manifest(rskill_uri)
 

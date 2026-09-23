@@ -228,7 +228,9 @@ def test_sim_sdk_pointer_resolves_to_franka_panda_hal() -> None:
     PR #60's UR adapters (``UR5e_DESCRIPTION``/``UR5e_REAL_DESCRIPTION``).
     """
     assert FRANKA_PANDA_DESCRIPTION.sdk_kind == "open"
-    assert FRANKA_PANDA_DESCRIPTION.hal.sim == "openral_hal.franka_panda:FrankaPandaHAL"
+    # hal.sim is null: build_hal derives MujocoArmHAL from the `sim:` block.
+    assert FRANKA_PANDA_DESCRIPTION.hal.sim is None
+    assert FRANKA_PANDA_DESCRIPTION.sim is not None
 
 
 def test_real_sdk_pointer_resolves_to_franka_panda_real_hal() -> None:

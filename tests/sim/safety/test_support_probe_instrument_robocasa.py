@@ -162,7 +162,7 @@ def recorded_stop() -> tuple[Any, Any, dict[str, Any]]:
     )
     sim = SCENES.get(scene.id)(
         SimEnvironment(
-            robot_id=deploy.robot_id or SCENES.fixed_robot(scene.id),
+            robot_id=SCENES.resolve_robot(scene.id, deploy.robot_id),
             scene=scene,
             task=TaskSpec(
                 id=f"{scene.id}/_support_probe_instrument",

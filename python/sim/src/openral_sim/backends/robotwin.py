@@ -434,7 +434,12 @@ def provision_robotwin() -> None:
     _sidecar_python()
 
 
-@SCENES.register(_ROBOTWIN_SCENE_ID, fixed_robot=_ROBOTWIN_ROBOT_ID, provision=provision_robotwin)
+@SCENES.register(
+    _ROBOTWIN_SCENE_ID,
+    fixed_robot=_ROBOTWIN_ROBOT_ID,
+    provision=provision_robotwin,
+    sim_clock=True,
+)
 def _build_robotwin_scene(env_cfg: SimEnvironment) -> _RoboTwinSimSidecar:
     """Build a RoboTwin 2.0 SAPIEN scene behind the out-of-process sidecar.
 

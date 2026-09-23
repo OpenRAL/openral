@@ -36,7 +36,6 @@ from openral_core.exceptions import ROSConfigError
 from openral_sim.policy import PolicyAdapter
 from openral_sim.rollout import SimRollout
 from openral_sim.sim_runner import (
-    _RACE_PRONE_SCENE_PREFIXES,
     _SEQUENTIAL_INIT_ENV,
     _build_env_and_policy,
     _scene_requires_sequential_init,
@@ -186,17 +185,12 @@ def test_sequential_init_propagates_unknown_vla_error() -> None:
 # ── Race-prone scene auto-detection ─────────────────────────────────────────
 
 
-def test_race_prone_prefix_catalogue_is_non_empty() -> None:
-    """The catalogue must list at least one prefix — guards against a typo."""
-    assert _RACE_PRONE_SCENE_PREFIXES
-    assert all(isinstance(p, str) and p for p in _RACE_PRONE_SCENE_PREFIXES)
-
-
 @pytest.mark.parametrize(
     ("scene_id", "expected"),
     [
         ("openarm_tabletop_pnp", True),
-        ("openarm_other_scene", True),
+        # Unregistered look-alikes do not inherit the flag.
+        ("openarm_other_scene", False),
         # tabletop_push races: its env factory resolves `assets.mjcf`, which
         # imports `openral_hal._mujoco_arm` → `_base` → transformers on the env
         # thread, concurrent with the policy thread's lerobot→transformers load.
@@ -212,11 +206,11 @@ def test_race_prone_prefix_catalogue_is_non_empty() -> None:
         # `openral benchmark run --suite maniskill3_panda`
         # — the policy thread's transient `torch.set_default_dtype(bfloat16)`
         # leaks into the env thread's SAPIEN gym.make. See
-        # `_RACE_PRONE_SCENE_PREFIXES` for the full diagnosis.
+        # the `sequential_init` comment in sim_runner for the full diagnosis.
         ("maniskill3", True),
-        ("maniskill3_v3", True),
+        ("maniskill3_v3", False),
         ("simpler_env", True),
-        ("simpler_env_widowx", True),
+        ("simpler_env_widowx", False),
         ("libero_spatial", False),
         ("metaworld", False),
         # robocasa is race-prone: its env factory imports robosuite
@@ -224,12 +218,11 @@ def test_race_prone_prefix_catalogue_is_non_empty() -> None:
         # `robosuite/__init__`) concurrently with the policy thread, tripping
         # CPython's `_load_unlocked` `sys.modules.pop` → `KeyError:
         # 'robosuite.renderers.viewer.mjviewer_renderer'`. Both kitchen and GR1
-        # task ids start with `robocasa/`.
+        # task ids resolve (by `/`-prefix) to a `sequential_init=True` scene.
         ("robocasa/PickPlaceCounterToCabinet", True),
         ("robocasa/gr1/PnPCupToDrawerClose", True),
         ("robocasa/NavigateKitchen", True),
-        # `robocasa_pnp` is a scene FILE name, never a scene id — guard that the
-        # prefix is `robocasa/` (slash), so an id like this would NOT match.
+        # Prefix resolution splits on `/` only, so a look-alike id does NOT match.
         ("robocasana_lookalike", False),
         ("pusht", False),
         ("aloha_transfer_cube", False),
@@ -238,6 +231,6 @@ def test_race_prone_prefix_catalogue_is_non_empty() -> None:
     ],
 )
 def test_scene_requires_sequential_init(scene_id: str, expected: bool) -> None:
-    """Only scene ids whose prefix is catalogued race-prone return True."""
+    """Only scenes registered with ``sequential_init=True`` return True."""
     env_cfg = _mock_env(scene_id=scene_id)
     assert _scene_requires_sequential_init(env_cfg) is expected

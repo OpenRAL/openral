@@ -8,10 +8,10 @@ the bus, which is exactly what `openral_cli._dds_scope` refuses to launch over
 (#227) — so the documented path needed that guard disarmed by an env var to work
 at all. With the bringup inside the graph the refusal became unwaivable.
 
-The wiring is a convention, not a manifest field: a HAL package that ships
+The manifest's `hal.real_bringup` (`"<pkg>:<file>.launch.py"`) names the
+bringup explicitly; without it the convention applies: a HAL package that ships
 `launch/real_bringup.launch.py` declares by that fact alone which controller
-graph its real HAL publishes to. `hal_package` is already threaded into the
-launch file, so nothing new has to be declared anywhere.
+graph its real HAL publishes to.
 
 These tests cover the resolution rule. That the OpenArm bringup's own arguments
 agree with `OpenArmRealHAL`'s constants is
@@ -103,3 +103,26 @@ def test_package_without_a_bringup_yields_no_include() -> None:
     # bringup launch — the "resolves, but nothing to include" branch.
     pytest.importorskip("openral_msgs")
     assert deploy_e2e._build_real_bringup_include("openral_msgs") is None  # type: ignore[attr-defined]  # reason: as above
+
+
+def test_openarm_manifest_declares_its_bringup() -> None:
+    """`robots/openarm/robot.yaml` names the bringup explicitly via `hal.real_bringup`.
+
+    The declared file must exist in-repo, so the manifest field and the shipped
+    launch file cannot drift apart. Holds without ROS sourced.
+    """
+    from openral_core import RobotDescription
+
+    desc = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "openarm" / "robot.yaml"))
+    assert desc.hal.real_bringup is not None
+    pkg, _, launch_file = desc.hal.real_bringup.partition(":")
+    assert (_REPO_ROOT / "packages" / pkg / "launch" / launch_file).is_file()
+
+
+def test_declared_bringup_of_missing_package_raises() -> None:
+    """An explicit `hal.real_bringup` that is not installed fails loud (§1.4)."""
+    deploy_e2e = _load_deploy_e2e()
+    with pytest.raises(RuntimeError, match="not installed"):
+        deploy_e2e._build_real_bringup_include(  # type: ignore[attr-defined]  # reason: as above
+            "openral_msgs", "no_such_hal_package_exists:real_bringup.launch.py"
+        )

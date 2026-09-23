@@ -6,6 +6,13 @@
 # the same so100 lifecycle node serves both so100 and so101 manifests
 # (issue #191 Phase 3b — manifest-driven, bare twin).
 #
+# Bare twin, explicitly: ``composition`` below makes ``deploy sim`` build the
+# arm's own ``MujocoArmHAL`` twin inside the composed box arena (a registered
+# scene id with no ``composition`` would scene-attach instead). Scene-attach is
+# not usable here: the so101_box rollout packs JOINT_POSITION as 5 arm joints,
+# so the SO-101's 6-wide (arm + gripper) actions are rejected. Before this
+# block existed ``deploy sim`` built the bare arm with no box at all.
+#
 # All ``BoxSceneOptions`` defaults apply (box geometry, camera poses, tube
 # and slotted-block dimensions). The reasoner picks the active rSkill at
 # runtime from ``rskills/`` — no scene-level task is prescribed.
@@ -24,3 +31,8 @@ robot_id: so101_follower
 safety:
   workspace_box_min_xyz: [-0.3, -0.3, 0.02]
   workspace_box_max_xyz: [0.3, 0.3, 0.45]
+# The box arena (walls, overhead ``oak_top`` camera, block + tube), composed
+# around the robot's own MJCF with ``BoxSceneOptions`` defaults.
+composition:
+  composer: "openral_sim.backends.so101_box._assets:compose_so101_box_mjcf"
+  params: {}

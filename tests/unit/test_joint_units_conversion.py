@@ -17,14 +17,47 @@ from __future__ import annotations
 
 import math
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
-from openral_core import RobotDescription
-from openral_rskill_ros.rskill_runner_node import (
-    _build_joint_permutation,
-    _policy_action_to_robot,
-    _robot_state_to_policy,
-)
+import pytest
+from numpy.typing import NDArray
+from openral_core import RobotDescription, RSkillManifest
+from openral_core.exceptions import ROSConfigError
+from openral_rskill._policy_io import PolicyIOCodec
+from pydantic import ValidationError
+
+_SO101_SMOLVLA = "rskills/rskill-smolvla-so101-eraser_place-bf16/rskill.yaml"
+_SO101_MOLMOACT2 = "rskills/molmoact2-so101-nf4/rskill.yaml"
+
+
+def _codec(
+    robot_to_policy: list[int] | None,
+    joint_units_are_degrees: bool,
+    policy_is_gripper: list[bool],
+    policy_gripper_scale: float = 1.0,
+) -> PolicyIOCodec:
+    return PolicyIOCodec(
+        robot_to_policy=robot_to_policy,
+        joint_units_are_degrees=joint_units_are_degrees,
+        policy_is_gripper=policy_is_gripper,
+        gripper_scale=policy_gripper_scale,
+    )
+
+
+def _robot_state_to_policy(state: NDArray[Any], *args: Any, **kwargs: Any) -> NDArray[Any]:
+    return _codec(*args, **kwargs).to_policy_state(state)
+
+
+def _policy_action_to_robot(action: NDArray[Any], *args: Any, **kwargs: Any) -> NDArray[Any]:
+    return _codec(*args, **kwargs).to_robot_action(action)
+
+
+def _build_joint_permutation(
+    *, adapter: object, description: RobotDescription
+) -> tuple[list[int] | None, list[bool]]:
+    codec = PolicyIOCodec.from_manifest(None, description, adapter=adapter)
+    return codec.robot_to_policy, codec.policy_is_gripper
 
 
 def test_degrees_state_converts_rad_to_deg() -> None:
@@ -144,3 +177,118 @@ def test_adapter_without_a_policy_passes_through_instead_of_raising() -> None:
 
     assert permutation is None
     assert grippers == []
+
+
+# ─── Codec built from the manifest + robot description ──────────────────────
+
+
+def test_so101_manifests_declare_gripper_scale_in_the_action_contract() -> None:
+    """Both SO-101 checkpoints carry the LeRobot [0, 100] gripper as a typed field.
+
+    ``molmoact2-so101-nf4``'s norm_stats gripper q01..q99 is 0.94..44.1 (max 118) —
+    the same [0, 100] motor range as the SmolVLA eraser checkpoint, which used to be
+    the only one declaring it (as an untyped ``policy_extras`` key).
+    """
+    for path in (_SO101_SMOLVLA, _SO101_MOLMOACT2):
+        manifest = RSkillManifest.from_yaml(path)
+        assert manifest.action_contract is not None
+        assert manifest.action_contract.gripper_scale == 100.0, path
+        assert "gripper_scale" not in manifest.policy_extras, path
+
+
+def test_codec_from_real_so101_manifest_converts_degrees_and_gripper() -> None:
+    manifest = RSkillManifest.from_yaml(_SO101_SMOLVLA)
+    description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    codec = PolicyIOCodec.from_manifest(manifest, description)
+    assert codec.joint_units_are_degrees
+    assert codec.gripper_scale == 100.0
+    state = np.array([math.pi / 2, 0.0, 0.0, 0.0, -math.pi / 4, 0.25])
+    policy_state = codec.to_policy_state(state)
+    np.testing.assert_allclose(policy_state, [90.0, 0.0, 0.0, 0.0, -45.0, 25.0])
+    np.testing.assert_allclose(codec.to_robot_action(policy_state), state)
+
+
+def test_manifest_joint_names_permute_by_name() -> None:
+    """``action_contract.joint_names`` is the policy order, matched BY NAME.
+
+    Replaces the runner's old OpenArm-only ``openarm_`` prefix strip: a checkpoint
+    whose feature names differ from ``robot.yaml`` declares the policy order in
+    robot joint names instead.
+    """
+    description = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+    robot_names = [j.name for j in description.joints]
+    policy_names = robot_names[8:] + robot_names[:8]  # right-first checkpoint
+    manifest = RSkillManifest.from_yaml(_SO101_SMOLVLA)
+    raw = manifest.model_dump(mode="json")
+    raw["action_contract"] = {
+        "dim": 16,
+        "representation": "joint_positions",
+        "joint_units": "radians",
+        "joint_names": policy_names,
+    }
+    raw["state_contract"] = None
+    manifest = RSkillManifest.model_validate(raw)
+    codec = PolicyIOCodec.from_manifest(manifest, description)
+    assert codec.policy_joint_names == policy_names
+    policy_action = np.arange(16, dtype=np.float32)  # value == policy index
+    robot_action = codec.to_robot_action(policy_action)
+    # robot left_joint1 (index 0) is policy index 8; right_joint1 (8) is policy 0.
+    assert robot_action[0] == 8.0
+    assert robot_action[8] == 0.0
+    # grippers follow the robot role through the permutation
+    assert codec.policy_is_gripper[7] and codec.policy_is_gripper[15]
+
+
+def test_manifest_joint_names_not_on_the_robot_is_a_config_error() -> None:
+    description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    manifest = RSkillManifest.from_yaml(_SO101_SMOLVLA)
+    raw = manifest.model_dump(mode="json")
+    raw["action_contract"]["joint_names"] = [
+        "openarm_left_joint1",
+        "shoulder_lift",
+        "elbow_flex",
+        "wrist_flex",
+        "wrist_roll",
+        "gripper",
+    ]
+    with pytest.raises(ROSConfigError, match="joint_names"):
+        PolicyIOCodec.from_manifest(RSkillManifest.model_validate(raw), description)
+
+
+def test_legacy_policy_extras_gripper_scale_still_honoured() -> None:
+    """One-release deprecation: the old untyped key still converts (with a warning)."""
+    description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    raw = RSkillManifest.from_yaml(_SO101_SMOLVLA).model_dump(mode="json")
+    raw["action_contract"]["gripper_scale"] = 1.0
+    raw["policy_extras"]["gripper_scale"] = 100.0
+    codec = PolicyIOCodec.from_manifest(RSkillManifest.model_validate(raw), description)
+    assert codec.gripper_scale == 100.0
+
+
+def test_conflicting_gripper_scales_are_a_config_error() -> None:
+    description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    raw = RSkillManifest.from_yaml(_SO101_SMOLVLA).model_dump(mode="json")
+    raw["policy_extras"]["gripper_scale"] = 50.0  # contract says 100
+    with pytest.raises(ROSConfigError, match="gripper_scale"):
+        PolicyIOCodec.from_manifest(RSkillManifest.model_validate(raw), description)
+
+
+def test_action_contract_rejects_bad_gripper_scale_and_joint_names() -> None:
+    raw = RSkillManifest.from_yaml(_SO101_SMOLVLA).model_dump(mode="json")
+    for bad in (
+        {"gripper_scale": 0.0},
+        {"joint_names": ["shoulder_pan"]},  # len != dim
+        {"joint_names": ["gripper"] * 6},  # duplicates
+    ):
+        broken = {**raw, "action_contract": {**raw["action_contract"], **bad}}
+        with pytest.raises(ValidationError):
+            RSkillManifest.model_validate(broken)
+
+
+def test_clamp_pulls_inside_the_robot_limits() -> None:
+    description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    codec = PolicyIOCodec.from_manifest(None, description)
+    out = codec.clamp(np.array([5.0, -5.0, 0.0, 0.0, 0.0, 2.0]))
+    assert out[0] < 1.9199 and out[1] > -1.7453
+    assert out[2] == 0.0
+    assert 0.0 < out[5] < 1.0

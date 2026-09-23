@@ -42,6 +42,7 @@ from openral_rskill._vla_core import (
 )
 from openral_rskill.backend_registry import maybe_attach_pro_hooks
 
+from openral_sim._quantization import require_supported_dtype, resolve_quant_plan
 from openral_sim.policies._policy_loading import (
     lazy_import_lerobot,
     load_manifest_for_spec,
@@ -553,7 +554,11 @@ def _resolve_smolvla_processors(
         )
 
 
-@POLICIES.register("smolvla")
+@POLICIES.register(
+    "smolvla",
+    install_groups=("sim",),
+    required_imports=("transformers", "lerobot.policies.smolvla.modeling_smolvla"),
+)
 def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
     """Load a SmolVLA-compatible lerobot policy from HF Hub."""
     spec = env_cfg.vla
@@ -579,6 +584,10 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
             "the lerobot PolicyProcessorPipeline). Explicit-scheme URIs (hf://, "
             "local://, etc.) are not accepted by the sim layer."
         )
+
+    # SmolVLA runs its checkpoint-native split (bf16 VLM backbone, fp32 action
+    # path, pinned below); there is no cast or packing path for any other dtype.
+    require_supported_dtype(resolve_quant_plan(spec, manifest), frozenset({"bf16"}), "smolvla")
 
     # ``SmolVLAPolicy.from_pretrained`` allocates the full graph on CPU,
     # downloads + mmaps the safetensors, and (cold HF connection) HEAD-

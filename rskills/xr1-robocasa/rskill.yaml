@@ -42,7 +42,6 @@ latency_budget:
 
 policy_extras:
   xr1_profile: "robocasa_mg"
-  replan_steps: 10
   crop_ratio: 0.95
   prequantized_nf4: true
 

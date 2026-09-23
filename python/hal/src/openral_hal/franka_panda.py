@@ -210,7 +210,8 @@ FRANKA_PANDA_DESCRIPTION = RobotDescription(
     # ``sdk_kind``). ``robots/franka_panda/robot.yaml`` mirrors the real one.
     sdk_kind="open",
     hal=HalEntrypoints(
-        sim="openral_hal.franka_panda:FrankaPandaHAL",
+        # sim=None: build_hal derives MujocoArmHAL.from_description(manifest).
+        sim=None,
         real="openral_hal.franka_panda_real:FrankaPandaRealHAL",
     ),
     assets=AssetRefs(

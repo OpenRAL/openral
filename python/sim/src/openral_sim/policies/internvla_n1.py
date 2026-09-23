@@ -43,6 +43,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
 from openral_rskill._vla_core import resolve_rskill_repo_id
 
+from openral_sim._quantization import resolve_quant_plan, sidecar_quant_token
 from openral_sim.da3_depth import DEFAULT_DA3_PORT, Da3DepthClient
 from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.registry import POLICIES
@@ -164,12 +165,20 @@ class _InternVLAN1Adapter:
             self._da3.close()
 
 
-@POLICIES.register("internvla_n1")
+@POLICIES.register(
+    "internvla_n1",
+    install_groups=("rldx",),
+    required_imports=("zmq", "msgpack"),
+    install_note=(
+        "The policy runs in tools/internvla_n1_sidecar.py's own auto-provisioned "
+        "Python 3.11 venv (transformers 4.51 pin)."
+    ),
+)
 def _build_internvla_n1(env_cfg: SimEnvironment) -> _InternVLAN1Adapter:
     """Build the InternVLA-N1 adapter behind its auto-spawned sidecar.
 
-    Resolves the checkpoint repo + quantization from the rSkill manifest
-    (``vla.quantization`` overrides), derives a per-identity port so two
+    Resolves the checkpoint repo from the rSkill manifest and the
+    quantization via ``resolve_quant_plan`` (shared precedence), derives a per-identity port so two
     checkpoints never share a sidecar, and connects (spawning
     ``tools/internvla_n1_sidecar.py`` under the current interpreter when no
     sidecar answers).
@@ -183,12 +192,11 @@ def _build_internvla_n1(env_cfg: SimEnvironment) -> _InternVLAN1Adapter:
         )
     repo = resolve_rskill_repo_id(str(env_cfg.vla.weights_uri), adapter_name="InternVLA-N1")
 
-    quant_cfg = env_cfg.vla.quantization or manifest.quantization
-    # ``dtype`` is a QuantizationDtype str-enum whose ``str()`` is
-    # ``"QuantizationDtype.INT4"`` — take ``.value`` (falls back to a plain str).
-    dt = getattr(quant_cfg, "dtype", None)
-    dtype = str(getattr(dt, "value", dt) or "none").lower()
-    quantization = {"int4": "nf4", "nf4": "nf4", "int8": "int8"}.get(dtype, "none")
+    quantization = sidecar_quant_token(
+        resolve_quant_plan(env_cfg.vla, manifest, default="nf4"),
+        frozenset({"none", "nf4", "int8"}),
+        "internvla_n1",
+    )
 
     camera_keys = env_cfg.vla.extra.get("camera_keys")
     if isinstance(camera_keys, (list, tuple)) and camera_keys:

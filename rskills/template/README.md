@@ -108,8 +108,8 @@ surfacing, latency budgets, and local registry integration. It does
 ## Supported robots
 
 <!-- TODO: One row per embodiment you have validated. The first column
-     must match an `EmbodimentTag` literal so `openral rskill check`
-     accepts it. -->
+     must be an embodiment tag some robots/*/robot.yaml declares (or
+     any / custom / multi) so `openral rskill check` accepts it. -->
 
 | Robot | Embodiment tag | Status | Notes |
 | --- | --- | --- | --- |
@@ -126,6 +126,10 @@ surfacing, latency budgets, and local registry integration. It does
 | `observation.images.camera1` | RGB | <!-- TODO: 224 × 224 --> | `float32` |
 | `observation.images.camera2` | RGB | <!-- TODO --> | `float32` |
 | `observation.state`          | proprioception | <!-- TODO: (D,) --> | `float32` |
+
+`image_preprocessing.aliases` in `rskill.yaml` is keyed by these slots
+(`camera1` = the suffix of `observation.images.camera1`), never by robot
+sensor or scene camera names; values are the checkpoint's view names.
 
 ## Manifest summary
 

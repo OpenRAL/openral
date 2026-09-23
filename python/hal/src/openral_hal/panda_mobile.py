@@ -140,13 +140,29 @@ class PandaMobileHAL:
         *,
         initial_pose: list[float] | None = None,
         dt_s: float = 0.05,
+        description: RobotDescription | None = None,
     ) -> None:
-        """Latch initial 10-DoF state. No I/O until ``connect``."""
+        """Latch initial 10-DoF state. No I/O until ``connect``.
+
+        ``description`` is the loaded manifest (``build_hal`` threads it, so
+        ``panda_mobile_vslam`` reports its own sensors); ``None`` falls back
+        to ``robots/panda_mobile/robot.yaml``. The joint layout (base from
+        ``base_joints``, arm/gripper from joint ``role``) is read from it.
+        """
+        # `HALLifecycleNodeBase._publish_joint_state` reads
+        # `self._hal.description` for OTel span attributes + per-joint
+        # limit population.
+        self.description: RobotDescription = description or PANDA_MOBILE_DESCRIPTION
+        base = list(self.description.base_joints or [])
+        arm = [j.name for j in self.description.joints if j.role == "arm"]
+        gripper = next(j.name for j in self.description.joints if j.role == "gripper")
+        self._n_base, self._n_arm = len(base), len(arm)
+        self._joint_names: list[str] = [*base, *arm, gripper]
         if initial_pose is None:
-            self._qpos: list[float] = [0.0] * len(PANDA_MOBILE_JOINT_NAMES)
-        elif len(initial_pose) == len(PANDA_MOBILE_BASE_JOINT_NAMES):
-            self._qpos = [*initial_pose, *([0.0] * len(_PANDA_MOBILE_ARM_JOINT_NAMES))]
-        elif len(initial_pose) == len(PANDA_MOBILE_JOINT_NAMES):
+            self._qpos: list[float] = [0.0] * len(self._joint_names)
+        elif len(initial_pose) == self._n_base:
+            self._qpos = [*initial_pose, *([0.0] * self._n_arm)]
+        elif len(initial_pose) == len(self._joint_names):
             self._qpos = list(initial_pose)
         else:
             raise ROSConfigError(
@@ -168,12 +184,6 @@ class PandaMobileHAL:
             0.0,
             0.0,
         )
-        # `HALLifecycleNodeBase._publish_joint_state` reads
-        # `self._hal.description` for OTel span attributes + per-joint
-        # limit population. Bind the canonical RobotDescription so
-        # downstream observability surfaces the right names / limits
-        # without a separate registry lookup.
-        self.description: RobotDescription = PANDA_MOBILE_DESCRIPTION
 
     # ── HAL Protocol surface ────────────────────────────────────────────
 
@@ -192,10 +202,10 @@ class PandaMobileHAL:
         import time  # noqa: PLC0415
 
         return JointState(
-            name=list(PANDA_MOBILE_JOINT_NAMES),
+            name=list(self._joint_names),
             position=list(self._qpos),
-            velocity=[0.0] * len(PANDA_MOBILE_JOINT_NAMES),
-            effort=[0.0] * len(PANDA_MOBILE_JOINT_NAMES),
+            velocity=[0.0] * len(self._joint_names),
+            effort=[0.0] * len(self._joint_names),
             stamp_ns=time.time_ns(),
         )
 
@@ -336,9 +346,9 @@ class PandaMobileHAL:
         11 (base + arm + gripper — canonical width matching
         ``robots/panda_mobile/robot.yaml``).
         """
-        n_arm = len(_PANDA_MOBILE_ARM_JOINT_NAMES)
-        n_base = len(PANDA_MOBILE_BASE_JOINT_NAMES)
-        n_all = len(PANDA_MOBILE_JOINT_NAMES)
+        n_arm = self._n_arm
+        n_base = self._n_base
+        n_all = len(self._joint_names)
         if len(row) == n_arm:
             for i, v in enumerate(row):
                 self._qpos[n_base + i] = float(v)
@@ -387,5 +397,5 @@ class PandaMobileHAL:
         already clamps via ``gripper_min`` / ``gripper_max`` when
         configured, so the HAL trusts its input.
         """
-        gripper_idx = len(PANDA_MOBILE_JOINT_NAMES) - 1
+        gripper_idx = len(self._joint_names) - 1
         self._qpos[gripper_idx] = float(width)

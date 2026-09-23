@@ -6,8 +6,10 @@ can participate in the `openral deploy sim` graph (`deploy_e2e.launch.py` → C+
 safety kernel → HAL).
 
 Spawned by `openral deploy sim --robot panda_mobile` via
-`_ROBOT_HAL_REGISTRY["panda_mobile"]` (see
-`python/cli/src/openral_cli/deploy_sim.py`). Subscribes `/openral/safe_action`
+`_derive_hal_spec` (see `python/cli/src/openral_cli/deploy_sim.py`): a
+robot's own `openral_hal_<robot_id>` package hosts it when one ships, else
+the generic `openral_hal_scene_attached` node — both run the same
+manifest-driven node, so `robots/<id>/robot.yaml` is the only per-robot input. Subscribes `/openral/safe_action`
 + `/openral/estop`, publishes `/joint_states`, `/openral/candidate_action`,
 `/cmd_vel` (base), and — under sim scene-attach — `/openral/cameras/*`
 (incl. a depth `PointCloud2` + `/scan` for the octomap/Nav2 leg).

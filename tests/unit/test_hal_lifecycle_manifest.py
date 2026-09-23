@@ -44,9 +44,41 @@ class TestManifestNode:
     """sim_mode → sim HAL; real_mode → real HAL; missing → typed errors."""
 
     def test_sim_mode_builds_sim_hal(self) -> None:
-        from openral_hal.franka_panda import FrankaPandaHAL
+        from openral_hal._mujoco_arm import MujocoArmHAL
 
-        assert isinstance(_build("t_franka_sim", "franka_panda", "sim"), FrankaPandaHAL)
+        assert type(_build("t_franka_sim", "franka_panda", "sim")) is MujocoArmHAL
+
+    def test_hal_transport_json_reaches_the_hal(self) -> None:
+        """An un-allowlisted kwarg (galaxea ``host``) is forwarded, not dropped."""
+        node = _ManifestHALLifecycleNode("t_galaxea_json")
+        node.set_parameters(
+            [
+                Parameter("robot_yaml", value=str(REPO_ROOT / "robots/galaxea_a1/robot.yaml")),
+                Parameter("hal_mode", value="real"),
+                Parameter("hal_transport_json", value='{"host": "127.0.0.2", "port": 46099}'),
+            ]
+        )
+        try:
+            hal = node._create_hal()
+        finally:
+            node.destroy_node()
+        assert hal._host == "127.0.0.2"  # type: ignore[attr-defined] # reason: HAL-private introspection
+        assert hal._port == 46099  # type: ignore[attr-defined] # reason: HAL-private introspection
+
+    def test_hal_transport_json_must_be_an_object(self) -> None:
+        node = _ManifestHALLifecycleNode("t_bad_json")
+        node.set_parameters(
+            [
+                Parameter("robot_yaml", value=str(REPO_ROOT / "robots/galaxea_a1/robot.yaml")),
+                Parameter("hal_mode", value="real"),
+                Parameter("hal_transport_json", value="[1, 2]"),
+            ]
+        )
+        try:
+            with pytest.raises(ROSConfigError, match="JSON object"):
+                node._create_hal()
+        finally:
+            node.destroy_node()
 
     def test_real_mode_builds_real_hal(self) -> None:
         from openral_hal.franka_panda_real import FrankaPandaRealHAL

@@ -373,16 +373,19 @@ class H1MujocoHAL(MujocoArmHAL):
         settle_steps: int = 1,
         gravity_enabled: bool = True,
         staleness_limit_s: float = 0.5,
+        description: RobotDescription | None = None,
     ) -> None:
         """Initialise the H1 HAL; no MuJoCo state is created until ``connect()``.
 
         All MuJoCo wiring (MJCF URI, floating-base offsets) lives in
         ``H1_DESCRIPTION.sim``.  The software PD gains
         stay here because they are H1-specific cerebellar substitute
-        behavior, not arm-data.
+        behavior, not arm-data. ``description`` is the loaded
+        ``robots/h1/robot.yaml`` manifest (threaded by ``build_hal``);
+        ``None`` falls back to the in-code ``H1_DESCRIPTION`` mirror.
         """
         self._init_from_description(
-            H1_DESCRIPTION,
+            description or H1_DESCRIPTION,
             mjcf_path=mjcf_path,
             settle_steps=settle_steps,
             gravity_enabled=gravity_enabled,

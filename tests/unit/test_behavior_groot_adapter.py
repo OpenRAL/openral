@@ -18,17 +18,22 @@ _RSKILL = _REPO_ROOT / "rskills" / "gr00t-n17-b1k-turning-on-radio"
 
 def test_behavior_groot_rskill_manifest_loads() -> None:
     manifest = load_rskill_manifest(str(_RSKILL))
-    assert manifest.model_family == "gr00t"
+    # Its own registered family (not a hidden `implementation` switch inside
+    # `gr00t`), so the dependency probe and the dispatch agree.
+    assert manifest.model_family == "gr00t_b1k"
+    assert "implementation" not in manifest.policy_extras
     assert manifest.license == "unknown"
     assert manifest.state_contract is not None
     assert manifest.state_contract.dim == 61
     assert manifest.action_contract is not None
     assert manifest.action_contract.dim == 23
-    assert manifest.policy_extras["implementation"] == "behavior_b1k_sidecar"
     # Packing knobs live under `quantization.extra`, not `policy_extras`: one
     # home shared with the GR00T and RLDX families.
     assert manifest.quantization.extra["quantize_scope"] == "model"
     assert manifest.quantization.extra["nf4_min_params"] == 1_000_000
+    # `dtype` is what runs (NF4 at load); the stored precision is recorded.
+    assert manifest.quantization.dtype.value == "int4"
+    assert manifest.quantization.extra["stored_dtype"] == "bf16"
 
 
 def test_behavior_wire_observation_preserves_official_payload() -> None:
@@ -93,7 +98,7 @@ def test_behavior_policy_ports_are_stable_and_config_specific() -> None:
     assert port() != port(quant="int8")
 
 
-def test_gr00t_factory_dispatches_behavior_sidecar(
+def test_gr00t_b1k_factory_dispatches_behavior_sidecar(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from openral_sim.policies import gr00t
@@ -105,13 +110,13 @@ def test_gr00t_factory_dispatches_behavior_sidecar(
         lambda _env, _manifest, _extra: sentinel,
     )
     env = SimpleNamespace(
-        vla=VLASpec(id="gr00t", weights_uri=str(_RSKILL)),
+        vla=VLASpec(id="gr00t_b1k", weights_uri=str(_RSKILL)),
         scene=SimpleNamespace(cameras=["head", "left_wrist", "right_wrist"]),
     )
-    assert gr00t._build_gr00t(env) is sentinel
+    assert gr00t._build_gr00t_b1k(env) is sentinel
 
 
-def test_gr00t_factory_reports_missing_organizer_checkpoint(
+def test_gr00t_b1k_factory_reports_missing_organizer_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -120,23 +125,22 @@ def test_gr00t_factory_reports_missing_organizer_checkpoint(
     monkeypatch.setenv(behavior_groot._CHECKPOINT_ENV, str(tmp_path / "missing-checkpoint"))
     monkeypatch.setenv(behavior_groot._AUTO_SPAWN_ENV, "1")
     env = SimpleNamespace(
-        vla=VLASpec(id="gr00t", weights_uri=str(_RSKILL)),
+        vla=VLASpec(id="gr00t_b1k", weights_uri=str(_RSKILL)),
         scene=SimpleNamespace(cameras=["head", "left_wrist", "right_wrist"]),
     )
     with pytest.raises(ROSConfigError, match="checkpoint not found"):
-        gr00t._build_gr00t(env)
+        gr00t._build_gr00t_b1k(env)
 
 
-def test_plain_precision_override_collapses_to_none_for_sidecar(
+def test_bf16_override_maps_to_the_sidecars_unquantized_mode(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """`OPENRAL_QUANTIZATION_DTYPE=bf16` must not crash the sidecar's argparse.
+    """`OPENRAL_QUANTIZATION_DTYPE=bf16` loads the stored bf16 checkpoint.
 
-    The resolver's contract is that an explicit override always wins,
-    including a plain precision to turn packing off — but the sidecar CLI
-    only accepts ("none", "nf4", "int8"). A raw "bf16" reaching argparse is
-    a `SystemExit(2)`, so the adapter must collapse it to "none" first.
+    The sidecar CLI only accepts ("none", "nf4", "int8") and its "none" mode
+    loads the checkpoint as stored (bf16), so bf16 maps onto "none". A raw
+    "bf16" reaching argparse would be a `SystemExit(2)`.
     """
     from openral_sim._quantization import QUANTIZATION_DTYPE_ENV
 
@@ -161,12 +165,23 @@ def test_plain_precision_override_collapses_to_none_for_sidecar(
     monkeypatch.setattr(behavior_groot, "SidecarClient", _StubClient)
 
     manifest = load_rskill_manifest(str(_RSKILL))
-    env_cfg = SimpleNamespace(vla=VLASpec(id="gr00t", weights_uri=str(_RSKILL)))
+    env_cfg = SimpleNamespace(vla=VLASpec(id="gr00t_b1k", weights_uri=str(_RSKILL)))
     behavior_groot.build_behavior_groot_policy(env_cfg, manifest, {})
 
     assert "--quantization" in captured["launch_argv"]  # type: ignore[operator]
     argv = list(captured["launch_argv"])  # type: ignore[arg-type]
     assert argv[argv.index("--quantization") + 1] == "none"
+
+
+def test_precision_the_sidecar_cannot_load_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """fp32 has no sidecar mode; it must fail loudly, not collapse to "none"."""
+    from openral_sim._quantization import QUANTIZATION_DTYPE_ENV
+
+    monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "fp32")
+    manifest = load_rskill_manifest(str(_RSKILL))
+    env_cfg = SimpleNamespace(vla=VLASpec(id="gr00t_b1k", weights_uri=str(_RSKILL)))
+    with pytest.raises(ROSConfigError, match="gr00t_b1k cannot load dtype 'fp32'"):
+        behavior_groot.build_behavior_groot_policy(env_cfg, manifest, {})
 
 
 def test_sidecar_parses_int8_quantization() -> None:

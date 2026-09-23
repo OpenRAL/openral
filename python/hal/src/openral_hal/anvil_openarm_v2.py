@@ -292,7 +292,8 @@ ANVIL_OPENARM_V2_DESCRIPTION = RobotDescription(
     ),
     sdk_kind="open",
     hal=HalEntrypoints(
-        sim="openral_hal.anvil_openarm_v2:AnvilOpenArmV2MujocoHAL",
+        # sim=None: build_hal derives MujocoArmHAL.from_description(manifest).
+        sim=None,
         real=None,
         # Same manifest-driven construction defaults as the Enactic v2
         # arm; threaded by build_hal (ADR-0029).

@@ -9,7 +9,7 @@ metadata:
   manifest: ./rskill.yaml
   role: s1
   kind: vla
-  model_family: gr00t
+  model_family: gr00t_b1k
   embodiment_tags: [r1pro]
   actions: [rotate, push]
   objects: [radio, dial, button]
@@ -18,7 +18,7 @@ metadata:
   state_dim: 61
   action_dim: 23
   runtime: pytorch
-  quantization: bf16/pytorch
+  quantization: int4/pytorch
   chunk_size: 16
   n_action_steps: 1
   latency_budget: {per_chunk_ms: 1500.0}

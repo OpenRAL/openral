@@ -1,4 +1,4 @@
-"""SimSensorBridge resolves camera obs-key via vla_feature_key suffix.
+"""SimSensorBridge resolves camera obs-key via ``openral_core.sensor_name_to_slot``.
 
 Also covers the dual-keying fallback (issue #88): a frame dict may be keyed by
 the VLA slot (``camera1`` — SimAttachedHAL) or by the sensor name (``front`` —
@@ -8,24 +8,24 @@ the MujocoArmHAL bare/composed twin), and the bridge must resolve both.
 from __future__ import annotations
 
 import numpy as np
-from openral_core import RobotDescription
-from openral_hal.sim_sensor_bridge import _frame_for_camera, _obs_key_for_sensor
+from openral_core import RobotDescription, sensor_name_to_slot
+from openral_hal.sim_sensor_bridge import _frame_for_camera
 
 
 def test_franka_sensors_map_to_vla_feature_key_suffix() -> None:
     desc = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
-    by_name = {s.name: s for s in desc.sensors if s.modality == "rgb"}
-    assert _obs_key_for_sensor(by_name["top"]) == "camera1"
-    assert _obs_key_for_sensor(by_name["wrist"]) == "camera2"
+    slots = sensor_name_to_slot(desc)
+    assert slots["top"] == "camera1"
+    assert slots["wrist"] == "camera2"
 
 
 def test_so101_sensors_map_name_to_vla_slot() -> None:
     # so101's sensor names (top / wrist) differ from their VLA slots
     # (camera1 / camera2) — the mismatch that hid issue #88's frame lookup.
     desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
-    by_name = {s.name: s for s in desc.sensors if s.modality == "rgb"}
-    assert _obs_key_for_sensor(by_name["top"]) == "camera1"
-    assert _obs_key_for_sensor(by_name["wrist"]) == "camera2"
+    slots = sensor_name_to_slot(desc)
+    assert slots["top"] == "camera1"
+    assert slots["wrist"] == "camera2"
 
 
 def test_frame_lookup_prefers_vla_slot_key() -> None:

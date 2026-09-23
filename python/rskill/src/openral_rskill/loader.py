@@ -254,6 +254,7 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
 
         # ── 3. License guard ───────────────────────────────────────────────────
         cls._check_license(manifest, commercial_use=commercial_use)
+        _warn_unknown_benchmarks(manifest, source=repo_id)
 
         # ── 4. Provenance guard (signatures not yet verified) ───────────────────
         cls._check_provenance(manifest, source=repo_id)
@@ -964,6 +965,56 @@ def find_repo_root_from(start: Path) -> Path | None:
         if (ancestor / "pyproject.toml").is_file() and (ancestor / "rskills").is_dir():
             return ancestor
     return None
+
+
+SKILL_ONLY_EMBODIMENT_TAGS: frozenset[str] = frozenset({"any", "custom", "multi"})
+"""Embodiment tags valid on an rSkill manifest that no robot declares: the
+``any`` wildcard, the ``custom`` escape hatch and the ``multi`` name aggregate."""
+
+
+def intree_embodiment_tags() -> frozenset[str]:
+    """Return the embodiment tags an in-tree rSkill manifest may declare.
+
+    ``SKILL_ONLY_EMBODIMENT_TAGS`` plus every
+    ``capabilities.embodiment_tags`` entry of the checkout's
+    ``robots/*/robot.yaml``. ``openral_core.EmbodimentTag`` is an open id, so
+    this is the typo guard the ``openral rskill new`` scaffolder and CI use.
+    Without a checkout only ``SKILL_ONLY_EMBODIMENT_TAGS`` is returned.
+    """
+    tags = set(SKILL_ONLY_EMBODIMENT_TAGS)
+    repo_root = find_repo_root_from(Path(__file__))
+    if repo_root is not None:
+        for path in sorted((repo_root / "robots").glob("*/robot.yaml")):
+            tags.update(RobotDescription.from_yaml(str(path)).capabilities.embodiment_tags)
+    return frozenset(tags)
+
+
+def known_benchmark_ids() -> frozenset[str] | None:
+    """Return the benchmark ids the checkout defines, or ``None`` without one.
+
+    The ``benchmarks/*.yaml`` suite stems plus the ``scenes/benchmark/*.yaml``
+    scene stems (which include the task-level ``aloha_insertion`` /
+    ``aloha_transfer_cube`` ids). ``openral_core.BenchmarkName`` is an open id;
+    this is the set ``RSkillManifest.benchmarks`` keys are checked against.
+    """
+    repo_root = find_repo_root_from(Path(__file__))
+    if repo_root is None:
+        return None
+    return frozenset(
+        p.stem for d in ("benchmarks", "scenes/benchmark") for p in (repo_root / d).glob("*.yaml")
+    )
+
+
+def _warn_unknown_benchmarks(manifest: RSkillManifest, *, source: str) -> None:
+    """Warn (never fail) when a manifest cites a benchmark the checkout lacks.
+
+    A Hub manifest may cite a suite added after this checkout, or be installed
+    with no checkout at all, so an unknown key is surfaced, not refused.
+    """
+    known = known_benchmark_ids()
+    unknown = sorted(set(manifest.benchmarks) - known) if known is not None else []
+    if unknown:
+        log.warning("rskill.unknown_benchmarks", repo=manifest.name, source=source, unknown=unknown)
 
 
 def validate_skill_ref(raw: str) -> str:

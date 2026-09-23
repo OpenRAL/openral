@@ -99,12 +99,13 @@ processors:
   postprocessor_uri: "hf://OpenRAL/rskill-pi05-franka_panda-libero_spatial-int8/policy_postprocessor.json"
 # The pi05 LIBERO finetune wants the default LIBERO image preprocessing
 # (180° rotation + camera1/2 alias remap to image/image2) and the canonical
-# LIBERO 8-D proprio state.
+# LIBERO 8-D proprio state. Alias keys are VLA slots (the sensors_required
+# vla_feature_key suffix), never sensor or scene camera names.
 image_preprocessing:
   flip_180: true
   aliases:
-    top: "image"
-    wrist: "image2"
+    camera1: "image"
+    camera2: "image2"
 state_contract:
   # LIBERO checkpoints train on 8-D TASK-SPACE proprio
   # (eef_pos ‖ eef_axisangle ‖ gripper). `openral sim run` supplies it directly;

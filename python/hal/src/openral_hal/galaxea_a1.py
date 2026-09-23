@@ -593,8 +593,15 @@ class GalaxeaA1HAL(HALBase):
         gripper_stroke_max_mm: float = 104.0,
         connect_timeout_s: float = 10.0,
         transport: _A1Transport | None = None,
+        description: RobotDescription | None = None,
     ) -> None:
-        """Configure the sidecar endpoint and explicit safety deadlines."""
+        """Configure the sidecar endpoint and explicit safety deadlines.
+
+        ``description`` is the loaded manifest (threaded by ``build_hal``);
+        ``None`` keeps the in-code ``GALAXEA_A1_DESCRIPTION`` mirror.
+        """
+        if description is not None:
+            self.description = description
         if not isinstance(host, str):
             raise ROSConfigError("GalaxeaA1HAL requires a literal IPv4 loopback address.")
         try:

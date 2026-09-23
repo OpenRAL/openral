@@ -61,13 +61,9 @@ processors:
 # whose lerobot env does NOT pre-flip (so those rSkills need flip_180: true).
 image_preprocessing:
   flip_180: false
-  # The metaworld backend keys the observation image by the scene's camera name
-  # ("front"); rename it to this checkpoint's input-feature name
-  # (observation.images.camera1). lerobot 0.6.0's smolvla forward validates the
-  # batch against config.image_features, so without this alias the batch key
-  # observation.images.front is unseen → "all image features missing" ValueError.
-  aliases:
-    front: "camera1"
+  # No aliases: the metaworld backend keys the image by the scene camera name
+  # ("front"), which the sim runner rekeys to sawyer's VLA slot camera1 — the
+  # checkpoint's input feature (observation.images.camera1) already.
 state_contract:
   dim: 4
 

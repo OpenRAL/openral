@@ -84,7 +84,7 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_observability import inference_span
 
-from openral_sim._quantization import resolve_quant_plan
+from openral_sim._quantization import resolve_quant_plan, sidecar_quant_token
 from openral_sim._sidecar_common import sidecar_port_for_key
 from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.policies.gr00t import _env_bool
@@ -1702,7 +1702,11 @@ def _rldx_gripper_to_libero(gripper: NDArray[np.float32]) -> NDArray[np.float32]
 _RLDXSidecarAdapter = _Gr00tFamilySidecarAdapter
 
 
-@POLICIES.register("rldx")  # type: ignore[arg-type]
+@POLICIES.register(  # type: ignore[arg-type]
+    "rldx",
+    install_groups=("rldx",),
+    required_imports=("zmq", "msgpack"),
+)
 def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
     """Build the auto-managed RLDX-1 adapter from a SimEnvironment.
 
@@ -1755,25 +1759,15 @@ def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
     # Port is resolved *after* layout/embodiment/model below, so the
     # per-identity default can hash them in. Explicit env / vla.extra pins
     # still win.
-    # Replan precedence: vla.extra.replan_steps > manifest.n_action_steps >
-    # half-chunk default (`_RLDX_CHUNK_LEN // 2 = 8`) — lets a checkpoint
-    # ship its own tested cadence (e.g. 16 = full chunk replay, half the
-    # inference round-trips, twice the open-loop horizon).
-    #
-    # Half-chunk fallback is still reachable in production:
-    # `rskills/rldx1-ft-libero-nf4`, `rldx1-ft-gr1-nf4`, and
-    # `rldx1-ft-rc365-nf4` omit `n_action_steps` (their manifest comment
-    # "equals chunk_size" is not schema-enforced —
-    # `RSkillManifest.n_action_steps` defaults to `None`, not
-    # `chunk_size`) and have no `vla.extra.replan_steps` override, so
-    # they depend on this 8-step default to replay at all.
-    _manifest = load_manifest_for_spec(spec)
-    _manifest_steps = getattr(_manifest, "n_action_steps", None) if _manifest else None
-    replan_steps = int(
-        extra.get(
-            "replan_steps",
-            _manifest_steps if _manifest_steps is not None else _RLDX_CHUNK_LEN // 2,
-        )
+    # Replan cadence via the shared rule (`resolve_n_action_steps`): --n-action-steps >
+    # manifest.n_action_steps > deprecated vla.extra.replan_steps > half-chunk default
+    # (`_RLDX_CHUNK_LEN // 2 = 8`). The half-chunk default is still reachable:
+    # `rldx1-ft-libero-nf4`, `rldx1-ft-gr1-nf4` and `rldx1-ft-rc365-nf4` omit
+    # `n_action_steps`.
+    from openral_rskill._vla_core import resolve_n_action_steps
+
+    replan_steps = resolve_n_action_steps(
+        load_manifest_for_spec(spec), extra, default=_RLDX_CHUNK_LEN // 2
     )
     image_size = int(extra.get("image_size", 256))
     timeout_ms = int(extra.get("timeout_ms", 60_000))
@@ -1795,13 +1789,12 @@ def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
     boot_timeout_s = float(
         os.environ.get("OPENRAL_RLDX_BOOT_TIMEOUT_S") or extra.get("boot_timeout_s", 900.0)
     )
-    # Shared resolver (openral_sim._quantization): $OPENRAL_QUANTIZATION_DTYPE
-    # > spec.extra["dtype"] > manifest.quantization.dtype > this adapter's nf4
-    # default. Normalises the schema's `int4` onto the `nf4` token the sidecar
-    # CLI expects, logs the source, and warns on a declared/resolved mismatch.
-    quantization = (
-        resolve_quant_plan(spec, _manifest, default="nf4", manifest_dtype_is_storage=True).dtype
-        or "nf4"
+    # Shared resolver; normalises the schema's `int4` onto the `nf4` token the
+    # sidecar CLI expects ("none" keeps the backbone at bf16).
+    quantization = sidecar_quant_token(
+        resolve_quant_plan(spec, load_manifest_for_spec(spec), default="nf4"),
+        frozenset({"none", "nf4", "int8"}),
+        "rldx",
     )
     embodiment_tag = str(
         os.environ.get("OPENRAL_RLDX_EMBODIMENT_TAG")

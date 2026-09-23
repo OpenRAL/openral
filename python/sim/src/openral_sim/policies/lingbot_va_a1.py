@@ -16,6 +16,7 @@ from openral_runner.backends.galaxea_a1_ipc import (
     encode_array,
 )
 
+from openral_sim._quantization import require_supported_dtype, resolve_quant_plan
 from openral_sim.registry import POLICIES
 
 _PROTOCOL_VERSION = "galaxea_a1_openral_policy_v1"
@@ -248,8 +249,25 @@ def _rgb_image(value: Any, *, name: str) -> NDArray[np.uint8]:
     return image
 
 
-@POLICIES.register("lingbot_va_a1")
+@POLICIES.register(
+    "lingbot_va_a1",
+    install_groups=("lingbot",),
+    required_imports=("websockets", "msgpack"),
+    install_note=(
+        "Then start the A1 Runtime camera bridge, contract-checked LingBot server, "
+        "and OpenRAL policy gateway."
+    ),
+)
 def _build_lingbot_va_a1(env_cfg: Any) -> _LingBotVaA1Adapter:
+    from openral_sim.policies._policy_loading import load_manifest_for_spec
+
+    # The model runs in the operator-started LingBot server at bf16; OpenRAL
+    # cannot change its precision, so any other request fails here.
+    require_supported_dtype(
+        resolve_quant_plan(env_cfg.vla, load_manifest_for_spec(env_cfg.vla)),
+        frozenset({"bf16"}),
+        "lingbot_va_a1",
+    )
     return _LingBotVaA1Adapter(
         env_cfg.vla,
         robot_description=getattr(env_cfg, "robot_description", None),

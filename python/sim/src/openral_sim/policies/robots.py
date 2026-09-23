@@ -84,14 +84,36 @@ def _discover_robot_ids() -> list[str]:
     )
 
 
-def _resolve_manifest(robot_id: str) -> Path:
-    """Return the absolute path to ``<robot_id>/robot.yaml`` on the search path."""
+def resolve_robot_manifest(robot_id: str, *, repo_root: Path | None = None) -> Path:
+    """Return the absolute path to ``<robot_id>/robot.yaml`` on the search path.
+
+    The one robot-manifest lookup shared by ``openral sim run`` (via the
+    ``ROBOTS`` factories below) and ``openral deploy sim|run``, so both honour
+    ``$OPENRAL_ROBOTS_DIR`` identically.
+
+    Args:
+        robot_id: Directory name under the robots tree (``robots/<robot_id>/``).
+        repo_root: In-tree fallback root. ``None`` walks up from this module
+            (a source checkout); ``deploy`` passes its own resolved root so a
+            wheel install honours ``$OPENRAL_REPO_ROOT`` / the cwd checkout.
+
+    Returns:
+        ``$OPENRAL_ROBOTS_DIR/<id>/robot.yaml`` when that file exists, else
+        ``<repo_root>/robots/<id>/robot.yaml``.
+
+    Raises:
+        ROSConfigError: Neither location holds the manifest.
+
+    Example:
+        >>> resolve_robot_manifest("so101_follower").name
+        'robot.yaml'
+    """
     override = os.environ.get("OPENRAL_ROBOTS_DIR")
     if override:
         candidate = Path(override) / robot_id / "robot.yaml"
         if candidate.is_file():
             return candidate
-    root = _find_repo_root()
+    root = repo_root if repo_root is not None else _find_repo_root()
     if root is not None:
         in_tree = root / "robots" / robot_id / "robot.yaml"
         if in_tree.is_file():
@@ -113,7 +135,7 @@ def _make_factory(robot_id: str) -> Callable[[], RobotDescription]:
 
     def factory() -> RobotDescription:
         if robot_id not in cache:
-            cache[robot_id] = RobotDescription.from_yaml(str(_resolve_manifest(robot_id)))
+            cache[robot_id] = RobotDescription.from_yaml(str(resolve_robot_manifest(robot_id)))
         return cache[robot_id]
 
     factory.__name__ = f"_load_{robot_id}_manifest"

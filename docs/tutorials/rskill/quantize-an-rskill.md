@@ -92,19 +92,14 @@ that fit it on an 8 GB host (the other is dropping the Qwen3-VL `lm_head`,
 which its wrapper never reads). Set it in the manifest's `quantization.extra`
 — scope has no runtime override.
 
-### Declared dtype: storage or runtime?
+### Declared dtype is the runtime dtype
 
-The two are not the same, and the manifest field means different things per
-family:
-
-- **pi05 / MolmoAct2 / OpenVLA** — `quantization.dtype` *is* the runtime dtype.
-  Declare `int8` and it loads at int8.
-- **GR00T / RLDX / BEHAVIOR** — the checkpoint ships `bf16` (and the rSkill is
-  *named* `…-bf16`), and the adapter NF4-packs it on load. Here the declared
-  dtype describes storage, so a plain precision does not switch packing off;
-  only a declared packing token (`int4` / `int8`) pins the runtime.
-
-Either way an explicit override wins, which is what the next section is for.
+`quantization.dtype` always declares what **runs**, for every family — it is
+what `rSkill.check_quantization_dtype` and the VRAM preflight
+(`active_min_vram_gb`) key on. A checkpoint stored at a different precision
+records that in `quantization.extra.stored_dtype`: the GR00T skills are stored
+(and *named*) `…-bf16` but NF4-packed on load, so they declare
+`dtype: "int4"` with `extra: {stored_dtype: "bf16"}`.
 
 ### One override for every family
 
@@ -112,10 +107,26 @@ Either way an explicit override wins, which is what the next section is for.
 OPENRAL_QUANTIZATION_DTYPE=bf16 openral sim run --config … --rskill …
 ```
 
-Resolution order is `$OPENRAL_QUANTIZATION_DTYPE` → `spec.extra["dtype"]` →
-`quantization.dtype` → the adapter's default. Set it to `bf16` / `fp16` /
-`fp32` / `none` to turn packing off on a bigger card, or to `nf4` / `int8` to
-force it on.
+Resolution order is `$OPENRAL_QUANTIZATION_DTYPE` → `VLASpec.quantization`
+(typed) → `spec.extra["dtype"]` → `quantization.dtype` → the adapter's default.
+
+Each family then checks the result against what its load path can actually do
+and raises `ROSConfigError` (naming the family, the token, its source, and the
+supported set) instead of silently loading something else:
+
+| Family | Accepts |
+|---|---|
+| pi05 | nf4 / int8 / bf16 / fp16 / fp32 / none |
+| molmoact2 | nf4 / bf16 / fp16 / fp32 / none |
+| openvla | nf4 (CUDA only) / bf16 / none |
+| gr00t (in-process) | nf4 / fp32 / none (an unpacked load runs fp32 params) |
+| smolvla | bf16 (checkpoint-native split) |
+| act / diffusion / xvla / diffuser_actor | fp32 |
+| lingbot_va_a1 | bf16 (the external server's precision) |
+| rldx / gr00t_b1k / internvla_n1 | nf4 / int8 / none (bf16 → none) |
+| xr1 / lingbot_vla / lingbot_vla2 | nf4 / none (bf16 → none) |
+
+Sidecars load their `none` mode at bf16, so `bf16` maps onto it.
 
 Every load logs which source won. When the resolved dtype differs from the
 manifest's declared one you get a **WARNING** naming both, because the
@@ -123,8 +134,8 @@ package's recorded `benchmarks:` numbers describe the declared dtype, not what
 you just ran.
 
 > This replaced the per-family `OPENRAL_GR00T_QUANTIZATION` /
-> `OPENRAL_RLDX_QUANTIZATION`, which only ever covered the two sidecar
-> adapters.
+> `OPENRAL_RLDX_QUANTIZATION` / `OPENRAL_LINGBOT_VLA{,2}_QUANTIZATION`, which
+> only ever covered their own sidecar adapters.
 
 ---
 

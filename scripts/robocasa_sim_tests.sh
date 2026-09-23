@@ -68,6 +68,7 @@ TARGETS=(
     tests/sim/test_panda_mobile_hal_robocasa_cameras.py
     tests/sim/test_panda_mobile_hal_robocasa_body_twist.py
     tests/sim/test_panda_mobile_hal_robocasa_layout_pin.py
+    tests/sim/test_panda_mobile_hal_robocasa_continuous.py
 )
 # tests/unit/test_robocasa_sim_targets.py asserts every file gated on
 # `importorskip("robocasa")` appears above — a gated test missing from this

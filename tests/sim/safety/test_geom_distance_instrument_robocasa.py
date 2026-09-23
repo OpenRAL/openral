@@ -86,7 +86,7 @@ def kitchen() -> tuple[Any, Any]:
     scene = deploy.scene.model_copy(update={"backend_options": options})
     sim = SCENES.get(scene.id)(
         SimEnvironment(
-            robot_id=deploy.robot_id or SCENES.fixed_robot(scene.id),
+            robot_id=SCENES.resolve_robot(scene.id, deploy.robot_id),
             scene=scene,
             task=TaskSpec(
                 id=f"{scene.id}/_instrument_probe",

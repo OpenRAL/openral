@@ -20,13 +20,13 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from openral_core.schemas import (
     _MODERN_PROCESSOR_FAMILIES,
+    _REGISTRY_ID_PATTERN,
     Action,
     ActuatorRequirement,
     ApproachViewpoint,
     AttachedCollisionObject,
     AttachedCollisionPrimitive,
     AttachmentEvidenceKind,
-    BenchmarkName,
     BoxShape,
     CameraSimPlacement,
     CapsuleShape,
@@ -40,7 +40,6 @@ from openral_core.schemas import (
     DetectedObject,
     DeviceInfo,
     EmbodimentKind,
-    EmbodimentTag,
     EndEffectorSpec,
     FrameEncoding,
     GripperConvention,
@@ -52,7 +51,6 @@ from openral_core.schemas import (
     JointState,
     JointType,
     LinkCollisionGeometry,
-    ModelFamily,
     OccupancyGridRef,
     PhysicsBackend,
     Pose6D,
@@ -685,16 +683,18 @@ _semver = st.builds(
     st.integers(min_value=0, max_value=999),
 )
 
-# V1/V2: closed Literal sets — sample directly from get_args. Exclude
-# "custom" from the embodiment-tag fuzz: it triggers the
-# embodiment_extra cross-validator + per-actuator n_dof / vla_action_key
-# requirement, which has its own coverage in
-# test_rskill_manifest.py. Fuzzing it here would degenerate into a
-# filter against the cross-validator.
-_NON_CUSTOM_EMBODIMENT_TAGS = [t for t in get_args(EmbodimentTag) if t != "custom"]
-_embodiment_tag = st.sampled_from(_NON_CUSTOM_EMBODIMENT_TAGS)
-_benchmark_name = st.sampled_from(list(get_args(BenchmarkName)))
-_model_family = st.sampled_from(list(get_args(ModelFamily)))
+# V1/V2: open registry ids (EmbodimentTag / BenchmarkName / ModelFamily) —
+# any string matching the schema's pattern; membership is a registry / CI
+# concern (tests/unit/test_manifest_registry_ids.py). Exclude "custom" from
+# the embodiment-tag fuzz: it triggers the embodiment_extra cross-validator +
+# per-actuator n_dof / vla_action_key requirement, which has its own coverage
+# in test_rskill_manifest.py. Fuzzing it here would degenerate into a filter
+# against the cross-validator.
+_registry_id = st.from_regex(_REGISTRY_ID_PATTERN, fullmatch=True)
+_embodiment_tag = _registry_id.filter(lambda t: t != "custom")
+_benchmark_name = _registry_id
+# Mix the modern-processor families in so their processors branch is drawn.
+_model_family = st.one_of(st.sampled_from(sorted(_MODERN_PROCESSOR_FAMILIES)), _registry_id)
 
 # V1: weights_uri is a bare rSkill ref (name, path, or HF repo ID). Build bare names for fuzz.
 _weights_uri = st.builds(lambda owner, repo: f"hf://{owner}/{repo}", _hub_segment, _hub_segment)

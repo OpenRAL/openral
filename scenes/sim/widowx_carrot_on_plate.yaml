@@ -7,7 +7,7 @@ robot_id: widowx
 
 scene:
   id: simpler_env
-  backend: mujoco            # SAPIEN/ManiSkill3 under the hood
+  backend: sapien            # ManiSkill3 on SAPIEN
   observation_height: 480
   observation_width: 640
   cameras: ["top"]

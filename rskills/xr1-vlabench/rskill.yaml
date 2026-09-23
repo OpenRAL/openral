@@ -44,7 +44,6 @@ latency_budget:
 
 policy_extras:
   xr1_profile: "vlabench_choice"
-  replan_steps: 5
   crop_ratio: 1.0
   prequantized_nf4: true
 

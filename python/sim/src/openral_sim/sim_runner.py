@@ -20,18 +20,23 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import structlog
 from numpy.typing import NDArray
-from openral_core import DeadlineOverrunPolicy, TickResult
+from openral_core import (
+    DeadlineOverrunPolicy,
+    TickResult,
+    required_vla_camera_slots,
+    sensor_name_to_slot,
+)
 from openral_core.exceptions import ROSConfigError
 from openral_observability import metrics as ral_metrics
 from openral_observability import semconv
 from openral_runner.base import InferenceRunnerBase
 from opentelemetry import trace
 
-from openral_sim.factory import make_env, make_policy
-from openral_sim.rollout import EpisodeResult
+from openral_sim.factory import make_env, make_policy, make_robot
+from openral_sim.rollout import EpisodeResult, env_action_dim
 
 if TYPE_CHECKING:
-    from openral_core import RSkillManifest, SimEnvironment
+    from openral_core import RobotDescription, RSkillManifest, SimEnvironment
     from openral_dataset import RolloutRecorder
 
     from openral_sim.policy import PolicyAdapter
@@ -199,6 +204,50 @@ def _resolve_step_instruction(
     return task_instruction
 
 
+def _policy_scene_cameras(
+    scene_cameras: list[str],
+    description: RobotDescription | None,
+    manifest: RSkillManifest | None,
+) -> tuple[list[str], dict[str, str]]:
+    """Camera keys the policy is built on, plus the obs rekey (scene name -> slot).
+
+    Mirrors the deploy chain so ``image_preprocessing.aliases`` (slot-keyed)
+    means the same thing under ``openral sim run``:
+
+    * every ``scene.cameras`` entry is a robot RGB sensor name -> the policy
+      gets their VLA slots (``sensor_name_to_slot``) and each obs is rekeyed;
+    * ``scene.cameras`` is empty -> the rSkill's required slots on this robot
+      (``required_vla_camera_slots``, what deploy feeds). The env keeps
+      emitting its own keys (LIBERO: ``camera1`` / ``camera2``);
+    * otherwise (scene names the robot does not declare) -> unchanged.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/aloha_agilex/robot.yaml")
+        >>> _policy_scene_cameras(["top", "wrist_left"], desc, None)
+        (['camera1', 'camera2'], {'top': 'camera1', 'wrist_left': 'camera2'})
+    """
+    if not scene_cameras:
+        if manifest is None or description is None:
+            return [], {}
+        return list(required_vla_camera_slots(manifest, description)), {}
+    name_to_slot = sensor_name_to_slot(description)
+    if not all(cam in name_to_slot for cam in scene_cameras):
+        return list(scene_cameras), {}
+    rekey = {cam: name_to_slot[cam] for cam in scene_cameras if name_to_slot[cam] != cam}
+    return [name_to_slot[cam] for cam in scene_cameras], rekey
+
+
+def _rekey_obs_images(obs: Observation, rekey: dict[str, str]) -> Observation:
+    """Return ``obs`` with ``images`` rekeyed scene-name -> VLA slot (renamed keys win)."""
+    images = obs.get("images") if rekey and isinstance(obs, dict) else None
+    if not isinstance(images, dict):
+        return obs
+    out = {k: v for k, v in images.items() if k not in rekey}
+    out.update({rekey[k]: v for k, v in images.items() if k in rekey})
+    return {**obs, "images": out}
+
+
 def _count_policy_input_cameras(policy: object, env_cfg: SimEnvironment) -> int:
     """Best-effort count of distinct camera streams consumed by the policy."""
     camera_keys = getattr(policy, "_camera_keys", None)
@@ -342,6 +391,8 @@ class SimRunner(InferenceRunnerBase):
         self._env: SimRollout | None = None
         self._policy: PolicyAdapter | None = None
         self._obs: Observation = {}
+        # Scene camera name -> VLA slot, applied to every obs (see `_policy_scene_cameras`).
+        self._image_rekey: dict[str, str] = {}
         self._viewer: Any = None
         # True when the scene adapter draws its own window inside env.step /
         # env.reset (e.g. gym_pusht with render_mode="human"). Suppresses
@@ -397,8 +448,24 @@ class SimRunner(InferenceRunnerBase):
         prev_view_env = os.environ.get(_VIEW_ENV)
         if self._view:
             os.environ[_VIEW_ENV] = "1"
+        # The policy sees VLA slots, like `deploy sim` / `deploy run`; the env
+        # keeps rendering under the scene's own camera names and each obs is
+        # rekeyed to slots in `_reset_tick` / `_step_tick`.
+        policy_cameras, self._image_rekey = _policy_scene_cameras(
+            list(self._env_cfg.scene.cameras), make_robot(self._env_cfg), self.manifest
+        )
+        policy_cfg = self._env_cfg
+        if policy_cameras != list(self._env_cfg.scene.cameras):
+            _log.info(
+                "sim_policy_cameras_slotted",
+                scene_cameras=list(self._env_cfg.scene.cameras),
+                policy_cameras=policy_cameras,
+            )
+            policy_cfg = self._env_cfg.model_copy(
+                update={"scene": self._env_cfg.scene.model_copy(update={"cameras": policy_cameras})}
+            )
         try:
-            self._env, self._policy = _build_env_and_policy(self._env_cfg)
+            self._env, self._policy = _build_env_and_policy(self._env_cfg, policy_cfg)
         finally:
             if prev_view_env is None:
                 os.environ.pop(_VIEW_ENV, None)
@@ -550,8 +617,12 @@ class SimRunner(InferenceRunnerBase):
 
         seed = self._env_cfg.seed + self._episode_idx
         _seed_global_rngs(seed)
-        self._obs = self._env.reset(seed=seed)
+        self._obs = _rekey_obs_images(self._env.reset(seed=seed), self._image_rekey)
         self._policy.reset()
+        # Mock policies (zero/random) without an explicit width size to the env,
+        # after reset: robosuite only reports `action_dim` once its robots load.
+        if getattr(self._policy, "action_dim", 0) is None:
+            self._policy.action_dim = env_action_dim(self._env)  # type: ignore[attr-defined]  # reason: mock-only field, checked above
         self._step_idx = 0
         self._needs_reset = False
 
@@ -667,7 +738,7 @@ class SimRunner(InferenceRunnerBase):
                     self._buf.frames,
                     step_result.info.get(_VIDEO_FRAMES_INFO_KEY),
                 )
-            self._obs = step_result.observation
+            self._obs = _rekey_obs_images(step_result.observation, self._image_rekey)
             self._buf.total_reward += step_result.reward
             self._buf.max_step_reward = max(self._buf.max_step_reward, step_result.reward)
             self._step_idx += 1
@@ -1010,10 +1081,11 @@ _SEQUENTIAL_INIT_ENV = "OPENRAL_SIM_SEQUENTIAL_INIT"
 # ``_open_viewer_and_pacing`` and so ignore this var.
 _VIEW_ENV = "OPENRAL_SIM_VIEW"
 
-# Scene-id prefixes known to race the lerobot/transformers import chain when
-# `make_env` / `make_policy` run on parallel threads. Three race classes:
+# Scenes registered with `sequential_init=True` (see `SCENES.meta`) race the
+# lerobot/transformers import chain when `make_env` / `make_policy` run on
+# parallel threads. Two race classes:
 #
-# 1. `openarm_` / `tabletop_push` / `robocasa/`: the env factory imports
+# 1. `openarm_tabletop_pnp` / `tabletop_push` / `robocasa*`: the env factory imports
 #    robosuite (directly for openarm_/robocasa, or via
 #    `openral_hal._mujoco_arm` -> `openral_hal._base` for tabletop_push's
 #    `resolve_asset`), which transitively pulls `transformers` onto the env
@@ -1036,27 +1108,22 @@ _VIEW_ENV = "OPENRAL_SIM_VIEW"
 #    seen via `openral benchmark run --suite maniskill3_panda` and
 #    `openral sim run --config scenes/simpler_env_widowx_*` with a bf16 policy.
 #
-# Forced sequential for any scene id starting with one of these prefixes;
+# Forced sequential for any scene registered with `sequential_init=True`;
 # `OPENRAL_SIM_SEQUENTIAL_INIT=1` remains a manual override for uncatalogued
 # combos. Always-sequential would cost LIBERO/MetaWorld their ~5-10s
-# parallel-init win, so new prefixes are added only as races surface.
-_RACE_PRONE_SCENE_PREFIXES: tuple[str, ...] = (
-    "openarm_",
-    "tabletop_push",
-    "maniskill3",
-    "simpler_env",
-    "robocasa/",
-)
+# parallel-init win, so scenes opt in only as races surface.
 
 
 def _scene_requires_sequential_init(env_cfg: SimEnvironment) -> bool:
-    """Return True when ``env_cfg.scene.id`` matches a known race-prone prefix."""
-    scene_id = str(env_cfg.scene.id)
-    return any(scene_id.startswith(prefix) for prefix in _RACE_PRONE_SCENE_PREFIXES)
+    """Return True when the scene is registered with ``sequential_init=True``."""
+    from openral_sim.registry import SCENES
+
+    return SCENES.meta(str(env_cfg.scene.id)).get("sequential_init") is True
 
 
 def _build_env_and_policy(
     env_cfg: SimEnvironment,
+    policy_cfg: SimEnvironment | None = None,
 ) -> tuple[SimRollout, PolicyAdapter]:
     """Build (env, policy) — concurrently by default, sequentially on opt-out.
 
@@ -1068,6 +1135,9 @@ def _build_env_and_policy(
 
     Args:
         env_cfg: Validated ``openral_core.SimEnvironment``.
+        policy_cfg: Config ``make_policy`` sees, when it differs from
+            ``env_cfg`` (scene cameras rewritten to VLA slots). Defaults to
+            ``env_cfg``.
 
     Returns:
         ``(env, policy)``, both fully constructed.
@@ -1091,7 +1161,7 @@ def _build_env_and_policy(
         env = make_env(env_cfg)
         env_ms = (time.perf_counter() - env_t0) * 1000.0
         policy_t0 = time.perf_counter()
-        policy = make_policy(env_cfg)
+        policy = make_policy(policy_cfg or env_cfg)
         policy_ms = (time.perf_counter() - policy_t0) * 1000.0
         total_ms = (time.perf_counter() - t0) * 1000.0
         _log.info(
@@ -1110,7 +1180,7 @@ def _build_env_and_policy(
         env_t0 = time.perf_counter()
         policy_t0 = time.perf_counter()
         env_future = pool.submit(make_env, env_cfg)
-        policy_future = pool.submit(make_policy, env_cfg)
+        policy_future = pool.submit(make_policy, policy_cfg or env_cfg)
         try:
             env = env_future.result()
         except BaseException:

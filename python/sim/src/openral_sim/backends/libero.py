@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
 
 _LIBERO_SUITES = ("libero_spatial", "libero_object", "libero_goal", "libero_10")
+_DEPLOY_NOOP_TASK = "_hal_deploy_noop"
 
 
 def _resolve_control_mode(env_cfg: SimEnvironment) -> str:
@@ -74,7 +75,9 @@ def _parse_task_id(task_id: str, scene_id: str) -> int:
         scene_id: Expected suite name from ``SceneSpec.id``.
 
     Returns:
-        The integer task index.
+        The integer task index. The taskless deploy id
+        ``"<suite>/_hal_deploy_noop"`` maps to task ``0`` — each LIBERO task
+        is a distinct scene, so deploy boots the suite's first one.
 
     Raises:
         ROSConfigError: If the format is wrong or the suite mismatches.
@@ -88,6 +91,8 @@ def _parse_task_id(task_id: str, scene_id: str) -> int:
         raise ROSConfigError(
             f"libero task suite ({suite!r}) does not match scene id ({scene_id!r})"
         )
+    if idx == _DEPLOY_NOOP_TASK:
+        return 0
     try:
         return int(idx)
     except ValueError as exc:
@@ -504,4 +509,4 @@ for _suite in _LIBERO_SUITES:
     # LIBERO's MuJoCo physics hard-wire the Franka Panda; the scene rejects
     # any robot_id that disagrees so users get a typed ROSConfigError rather
     # than a silently-swapped robot.
-    SCENES.register(_suite, fixed_robot="franka_panda")(_build_libero_scene)
+    SCENES.register(_suite, fixed_robot="franka_panda", sim_clock=True)(_build_libero_scene)

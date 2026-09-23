@@ -57,8 +57,8 @@ robot config shipped upstream (``configs/robot_configs/robotwin.yaml`` +
 
 Quantization: the 8 GB-class dev GPU cannot hold the 6.38 B model (fp32 25.5 GB
 / bf16 12.8 GB), so the sidecar NF4-quantizes the Qwen3-VL backbone and keeps
-the MoE expert in bf16 (``--quantization nf4``, the default); ``none`` for
-≥16 GB cards.
+the MoE expert in bf16 (``--quantization nf4``, the default); ``none`` (request
+``bf16``) for ≥16 GB cards.
 """
 
 from __future__ import annotations
@@ -77,6 +77,7 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
 
+from openral_sim._quantization import resolve_quant_plan, sidecar_quant_token
 from openral_sim._sidecar_common import sidecar_port_for_key
 from openral_sim.registry import POLICIES
 from openral_sim.sidecar import SidecarClient
@@ -297,14 +298,22 @@ def _build_lingbot(env_cfg: SimEnvironment, *, variant: str) -> _LingBotVla2Adap
     contract, and adapter; only the sidecar's repo + venv + server variant differ.
 
     YAML knobs (``vla.extra``): ``model_id``, ``robo_name``, ``camera_keys``,
-    ``quantization`` (``nf4`` default / ``none``), ``device`` (``cuda`` default /
-    ``cpu``), ``attn`` (v2 ``sdpa`` / v1 ``eager``), ``port``, ``replan_steps``,
-    ``auto_spawn``. Environment overrides use the variant prefix
-    (``OPENRAL_LINGBOT_VLA2_*`` for v2, ``OPENRAL_LINGBOT_VLA_*`` for v1):
-    ``{QUANTIZATION,DEVICE,ATTN,PORT,TIMEOUT_MS,AUTO_SPAWN}``. ``device=cpu`` runs
-    the model in bf16 on the CPU (NF4 needs CUDA), freeing the GPU for a
-    co-resident SAPIEN sim on an 8 GB card; pair it with a raised ``TIMEOUT_MS``.
+    ``device`` (``cuda`` default / ``cpu``), ``attn`` (v2 ``sdpa`` / v1
+    ``eager``), ``port``, ``auto_spawn``; replay cadence is ``n_action_steps``
+    (``resolve_n_action_steps``). Quantization comes
+    from the shared resolver (``$OPENRAL_QUANTIZATION_DTYPE`` > ``vla.quantization``
+    > ``vla.extra.dtype`` > manifest ``quantization.dtype`` > ``nf4``); ``bf16``
+    maps to the sidecar's unquantized ``none`` mode. Environment overrides use the
+    variant prefix (``OPENRAL_LINGBOT_VLA2_*`` for v2, ``OPENRAL_LINGBOT_VLA_*``
+    for v1): ``{DEVICE,ATTN,PORT,TIMEOUT_MS,AUTO_SPAWN}``. ``device=cpu`` runs
+    the model in bf16 on the CPU (NF4 needs CUDA, so pair it with
+    ``OPENRAL_QUANTIZATION_DTYPE=bf16``), freeing the GPU for a co-resident
+    SAPIEN sim on an 8 GB card; pair it with a raised ``TIMEOUT_MS``.
     """
+    from openral_rskill._vla_core import resolve_n_action_steps
+
+    from openral_sim.policies._policy_loading import load_manifest_for_spec
+
     env_prefix = "OPENRAL_LINGBOT_VLA2" if variant == "v2" else "OPENRAL_LINGBOT_VLA"
     default_model_id = _DEFAULT_MODEL_ID if variant == "v2" else _DEFAULT_MODEL_ID_V1
     default_attn = "sdpa" if variant == "v2" else "eager"
@@ -314,15 +323,19 @@ def _build_lingbot(env_cfg: SimEnvironment, *, variant: str) -> _LingBotVla2Adap
 
     model_id = _resolve_model_id(spec, extra, default_model_id)
     robo_name = str(extra.get("robo_name") or _DEFAULT_ROBO_NAME)
-    quantization = str(
-        os.environ.get(f"{env_prefix}_QUANTIZATION") or extra.get("quantization", "nf4")
-    ).lower()
+    quantization = sidecar_quant_token(
+        resolve_quant_plan(spec, load_manifest_for_spec(spec), default="nf4"),
+        frozenset({"none", "nf4"}),
+        "lingbot_vla2" if variant == "v2" else "lingbot_vla",
+    )
     attn = str(os.environ.get(f"{env_prefix}_ATTN") or extra.get("attn", default_attn)).lower()
     # Inference device. ``cpu`` runs the model in bf16 on the CPU (NF4 needs
     # CUDA), freeing the GPU for a co-resident SAPIEN sim on an 8 GB card — at a
     # large latency cost, so pair it with a raised timeout below.
     device = str(os.environ.get(f"{env_prefix}_DEVICE") or extra.get("device", "cuda")).lower()
-    replan_steps = _opt_int(extra.get("replan_steps"), _DEFAULT_REPLAN_STEPS)
+    replan_steps = resolve_n_action_steps(
+        load_manifest_for_spec(spec), extra, default=_DEFAULT_REPLAN_STEPS
+    )
     camera_keys = _resolve_camera_keys(env_cfg, extra)
     # A single CPU forward runs to minutes, far past the GPU-tuned default; let the
     # operator raise the REQ recv timeout so a slow (but live) CPU chunk is not
@@ -385,13 +398,21 @@ def _build_lingbot(env_cfg: SimEnvironment, *, variant: str) -> _LingBotVla2Adap
     )
 
 
-@POLICIES.register("lingbot_vla2")
+@POLICIES.register(
+    "lingbot_vla2",
+    install_groups=("lingbot",),
+    required_imports=("zmq", "msgpack"),
+)
 def _build_lingbot_vla2(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
     """LingBot-VLA 2.0 (6B Qwen3-VL MoE) — see ``_build_lingbot``."""
     return _build_lingbot(env_cfg, variant="v2")
 
 
-@POLICIES.register("lingbot_vla")
+@POLICIES.register(
+    "lingbot_vla",
+    install_groups=("lingbot",),
+    required_imports=("zmq", "msgpack"),
+)
 def _build_lingbot_vla(env_cfg: SimEnvironment) -> _LingBotVla2Adapter:
     """LingBot-VLA 1.0 (4B Qwen2.5-VL dense expert / posttrain-robotwin).
 

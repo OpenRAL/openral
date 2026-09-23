@@ -415,7 +415,14 @@ def _extract_state(flat: Any) -> NDArray[np.float32]:
     return np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32)
 
 
-@SCENES.register(_MANISKILL3_SCENE_ID)
+@SCENES.register(
+    _MANISKILL3_SCENE_ID,
+    # The robot is `backend_options.robot_uids` (panda / panda_wristcam); every
+    # in-tree ManiSkill3 agent is a Franka Panda.
+    fixed_robot="franka_panda",
+    sequential_init=True,  # SAPIEN gym.make races the policy bf16 dtype window
+    sim_clock=True,
+)
 def _build_maniskill3_scene(env_cfg: SimEnvironment) -> _ManiSkill3Sim:
     """Lazily import ``mani_skill`` and build a ``_ManiSkill3Sim``."""
     from openral_sim._deps import ensure_backend_deps

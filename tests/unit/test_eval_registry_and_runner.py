@@ -110,6 +110,48 @@ def test_registry_duplicate_registration_rejected() -> None:
         reg.register("a")(lambda: 2)
 
 
+def test_scene_id_resolves_to_longest_registered_prefix() -> None:
+    """A family registers once; ``<family>/<task>`` ids resolve to it by prefix."""
+    assert SCENES.get("robocasa/gr1/AnyTask") is SCENES.get("robocasa/gr1")
+    assert SCENES.get("robocasa/AnyTask") is SCENES.get("robocasa")
+    assert "robocasa_lookalike" not in SCENES  # splits on `/` only
+    with pytest.raises(ROSConfigError, match="unknown scene id"):
+        SCENES.get("not_a_backend/task")
+
+
+def test_resolve_robot_single_rule() -> None:
+    """Fixed scenes default/validate; free-axis scenes demand a robot."""
+    assert SCENES.resolve_robot("libero_spatial", None) == "franka_panda"
+    assert SCENES.resolve_robot("libero_spatial", "franka_panda") == "franka_panda"
+    with pytest.raises(ROSConfigError, match="can only instantiate"):
+        SCENES.resolve_robot("libero_spatial", "ur5e")
+    assert SCENES.resolve_robot("tabletop_push", "so101_follower") == "so101_follower"
+    with pytest.raises(ROSConfigError, match="does not fix a robot"):
+        SCENES.resolve_robot("tabletop_push", None)
+    assert SCENES.fixed_robot("tabletop_push") is None
+    assert SCENES.allowed_robots("openarm_tabletop_pnp") == frozenset({"openarm"})
+
+
+def test_sim_runner_sizes_mock_policy_to_the_env() -> None:
+    """With no explicit width the zero policy takes the built env's ``action_dim``."""
+    from openral_sim.policies.mock import _resolve_action_dim
+
+    env_cfg = _runnable_env(
+        scene=SceneSpec(
+            id="mock", backend=PhysicsBackend.MOCK, backend_options={"success_step": 2}
+        ),
+        vla=VLASpec(id="zero", weights_uri="placeholder"),
+    )
+    assert _resolve_action_dim(env_cfg) is None  # no per-scene width table
+    runner = SimRunner(env_cfg)
+    runner.activate()
+    try:
+        runner.run(max_ticks=env_cfg.task.max_steps + 1)
+    finally:
+        runner.deactivate()
+    assert runner.episode_results[0].success is True
+
+
 def test_make_env_and_make_policy_roundtrip_mock() -> None:
     env_cfg = _mock_env()
     sim = make_env(env_cfg)

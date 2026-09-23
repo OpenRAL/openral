@@ -17,11 +17,12 @@ from pathlib import Path
 
 import pytest
 from openral_core import VLASpec
+from openral_core.exceptions import ROSConfigError
 from openral_rskill.loader import load_rskill_manifest
 from openral_sim._quantization import (
     default_dtype_for_device,
-    manifest_dtype,
     normalise_manifest_dtype,
+    resolve_quant_plan,
     torch_dtype_for,
 )
 from openral_sim.policies._policy_loading import load_manifest_for_spec
@@ -116,16 +117,16 @@ class TestManifestDtype:
             weights_uri=str(_PI05_LIBERO),
             extra={"dtype": "bf16"},
         )
-        assert manifest_dtype(spec, manifest=manifest) == "bf16"
+        assert resolve_quant_plan(spec, manifest).dtype == "bf16"
 
     def test_manifest_used_when_no_extra(self) -> None:
         manifest = load_rskill_manifest(str(_PI05_LIBERO))
         spec = VLASpec(id="pi05", weights_uri=str(_PI05_LIBERO))
-        assert manifest_dtype(spec, manifest=manifest) == "int8"
+        assert resolve_quant_plan(spec, manifest).dtype == "int8"
 
     def test_none_when_neither_source_has_dtype(self) -> None:
         spec = VLASpec(id="pi05", weights_uri="")
-        assert manifest_dtype(spec, manifest=None) is None
+        assert resolve_quant_plan(spec, None).dtype is None
 
     def test_rldx_libero_int4_normalises_to_the_nf4_token(self) -> None:
         """rldx1-ft-libero-nf4 pins the schema's `int4`; callers get `nf4`.
@@ -138,7 +139,7 @@ class TestManifestDtype:
         manifest = load_rskill_manifest(str(_RLDX_LIBERO))
         spec = VLASpec(id="rldx", weights_uri=str(_RLDX_LIBERO))
         assert manifest.quantization.dtype.value == "int4"
-        assert manifest_dtype(spec, manifest=manifest) == "nf4"
+        assert resolve_quant_plan(spec, manifest).dtype == "nf4"
 
 
 # ── torch dtype mapping ───────────────────────────────────────────────────────
@@ -168,15 +169,19 @@ class TestTorchDtypeFor:
         assert torch_dtype_for(torch_mod, None, "cuda") is torch_mod.bfloat16  # type: ignore[attr-defined]
         assert torch_dtype_for(torch_mod, None, "cpu") is torch_mod.float32  # type: ignore[attr-defined]
 
-    def test_unrecognised_dtype_falls_through_to_default(self, torch_mod: object) -> None:
-        """``"nf4"`` / ``"int8"`` are quantization schemes, not torch dtypes.
+    def test_packing_or_unknown_token_raises(self, torch_mod: object) -> None:
+        """``"nf4"`` / ``"int8"`` are packing schemes, not torch dtypes.
 
-        They must fall through to the device-aware default so the
-        adapter's *compute* dtype lands correctly even when the headline
-        dtype is one bnb consumes directly.
+        Falling through to the device default is how MolmoAct2 used to load an
+        ``int8`` request as bf16. Packing adapters pass ``None`` for their
+        compute dtype; anything else unmapped raises.
         """
-        assert torch_dtype_for(torch_mod, "nf4", "cuda") is torch_mod.bfloat16  # type: ignore[attr-defined]
-        assert torch_dtype_for(torch_mod, "int8", "cpu") is torch_mod.float32  # type: ignore[attr-defined]
+        for token in ("nf4", "int8", "fp8"):
+            with pytest.raises(ROSConfigError, match="not a torch compute dtype"):
+                torch_dtype_for(torch_mod, token, "cuda")
+
+    def test_none_token_is_the_device_default(self, torch_mod: object) -> None:
+        assert torch_dtype_for(torch_mod, "none", "cuda") is torch_mod.bfloat16  # type: ignore[attr-defined]
 
 
 # ── Default dtype per device ──────────────────────────────────────────────────

@@ -4,7 +4,7 @@ version: "0.1.0"
 license: "unknown"
 role: "s1"
 kind: "vla"
-model_family: "gr00t"
+model_family: "gr00t_b1k"
 
 embodiment_tags:
   - "r1pro"
@@ -62,12 +62,13 @@ actuators_required:
 
 runtime: "pytorch"
 quantization:
-  # bf16 is the STORED checkpoint (and what this rSkill's name records); the
-  # sidecar NF4-packs it on load, like every other GR00T skill. The packing
-  # knobs below used to sit in policy_extras alongside unrelated settings.
-  dtype: "bf16"
+  # `dtype` is what RUNS: the sidecar NF4-packs the checkpoint on load (int4 is
+  # the schema's spelling of bitsandbytes NF4). The checkpoint is STORED bf16 —
+  # that is what this rSkill's name records.
+  dtype: "int4"
   backend: "pytorch"
   extra:
+    stored_dtype: "bf16"
     # Whole model (backbone + DiT head), not backbone-only.
     quantize_scope: "model"
     # Lower than the 4M default: this checkpoint's head needs the smaller
@@ -76,7 +77,6 @@ quantization:
 weights_uri: "local://checkpoints/behavior-groot-turning-on-radio"
 
 policy_extras:
-  implementation: "behavior_b1k_sidecar"
   task: "turning_on_radio"
   instruction: "turn on the radio"
   control_mode: "temporal_ensemble"

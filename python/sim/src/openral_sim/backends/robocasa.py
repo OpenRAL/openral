@@ -96,16 +96,17 @@ def _arm_part_config(controller_name: str) -> dict[str, Any]:
     return _json.loads(fname.read_text())  # type: ignore[no-any-return]
 
 
-# Tasks registered with ``robocasa/<task>`` scene ids at import time. Names
-# match the keys robosuite uses for ``robosuite.make(env_name=...)``; PickPlace
-# envs use current upstream names, not the shorter PnP aliases from the
-# original issue draft. Sourced from
+# Known-good ``robocasa/<task>`` kitchen tasks (the benchmark/integration
+# targets). Names match the keys robosuite uses for
+# ``robosuite.make(env_name=...)``; PickPlace envs use current upstream names,
+# not the shorter PnP aliases from the original issue draft. Sourced from
 # robocasa/environments/kitchen/atomic/*.py at robocasa 1.0.1.
 #
-# Keep this list curated so `openral sim list` stays legible; any other task
-# is still reachable via `scene.id: robocasa/<task>` (the adapter resolves any
-# robosuite-registered env_name) -- promote it here when it becomes a
-# benchmark/integration target.
+# Documentation only -- NOT a registration list. The registry holds ONE
+# `robocasa` entry and resolves any `robocasa/<task>` to it by `/`-prefix, so
+# every robosuite-registered env_name is reachable without editing this tuple;
+# an unknown one fails at build time with a typed ROSConfigError
+# (`_require_registered_env`).
 _CURATED_PREBUILT_TASKS: tuple[str, ...] = (
     "CloseBlenderLid",
     "PickPlaceCounterToCabinet",
@@ -206,14 +207,13 @@ def _xr1_robocasa_state(raw: dict[str, Any]) -> NDArray[np.float32]:
 # https://github.com/robocasa/robocasa-gr1-tabletop-tasks. Each name is
 # the **robosuite env class** (defined under
 # robocasa/environments/tabletop/*.py in the fork), NOT the gymnasium
-# id used by the GR00T inference service. We register one scene id per
-# task as ``robocasa/gr1/<TaskName>`` and pair it with the
-# `gr1` RobotDescription. The GR1 fork only exposes the
-# tabletop catalogue (no kitchen envs) so a host installs **either**
-# the upstream `robocasa` kitchen package **or** the GR1 fork --
-# never both -- and the two task families coexist in this curated
-# tuple purely for ergonomics: the unavailable one raises a typed
-# robosuite "unknown env_name" at adapter build time.
+# id used by the GR00T inference service. Any ``robocasa/gr1/<TaskName>``
+# resolves (by prefix) to the single `robocasa/gr1` registration, paired
+# with the `gr1` RobotDescription; this tuple is documentation only. The
+# GR1 fork only exposes the tabletop catalogue (no kitchen envs) so a host
+# installs **either** the upstream `robocasa` kitchen package **or** the
+# GR1 fork -- never both; the unavailable family raises a typed
+# ``ROSConfigError`` at adapter build time (`_require_registered_env`).
 _GR1_TABLETOP_TASKS: tuple[str, ...] = (
     "PnPCupToDrawerClose",
     "PnPPotatoToMicrowaveClose",
@@ -310,8 +310,36 @@ class _RoboCasaSim:
     _pinned_style_id: int | None = None
 
     def enable_continuous(self) -> None:
-        """Disable task evaluation/terminal synthesis for ``deploy sim``."""
+        """Run continuously for ``deploy sim``: no task evaluation, no horizon.
+
+        Also sets robosuite's ``ignore_done`` on the live env so a step past
+        ``horizon`` does not hard-raise "executing action in terminated
+        episode" (the robocasa env is built eagerly, so one assignment holds
+        across resets). Walks ``.env`` so the gymnasium-wrapped GR1 env reaches
+        its inner robosuite env too.
+        """
         self._continuous = True
+        obj: Any = self._env
+        for _ in range(8):  # wrapper depth bound; robocasa nests at most ~4
+            if obj is None or hasattr(obj, "ignore_done"):
+                break
+            obj = getattr(obj, "env", None)
+        if obj is None or not hasattr(obj, "ignore_done"):
+            import structlog
+
+            structlog.get_logger(__name__).warning(
+                "robocasa.enable_continuous.no_robosuite_env",
+                hint="ignore_done not applied; a post-horizon step will raise",
+            )
+            return
+        obj.ignore_done = True
+
+    @property
+    def action_dim(self) -> int:
+        """Flat action width ``step`` accepts (GR1: the 29-D BASIC composite)."""
+        if self._is_gymnasium_wrapped:
+            return _GR1_BASIC_DIM
+        return int(self._env.action_dim)
 
     def reset(self, seed: int | None = None) -> Observation:
         if seed is not None and hasattr(self._env, "rng"):
@@ -1748,6 +1776,69 @@ def provision_robocasa(backend_id: str) -> None:
     ensure_robocasa_assets()
 
 
+# rSkill `state_contract.layout` (StateLayout) -> the RoboCasa obs layout that
+# emits it. `rc365` (RoboCasa365 checkpoints) is the same 16-D base-frame
+# composite as `human300_16d`. `xr1_8d` has no StateLayout literal yet, so an
+# XR-1 RoboCasa scene still pins it in its YAML.
+_MANIFEST_TO_ROBOCASA_LAYOUT: dict[str, str] = {
+    "smolvla_9d": "smolvla_9d",
+    "human300_16d": "human300_16d",
+    "rc365": "human300_16d",
+    "gr1": "gr1",
+}
+
+# weights_uri schemes that name no in-tree rSkill manifest to read.
+_NO_MANIFEST_SCHEMES = ("hf://", "local://", "file://", "http://", "https://", "mock://")
+
+
+def _resolve_state_layout(env_cfg: SimEnvironment, opts: RoboCasaBackendOptions) -> str:
+    """Pick the obs ``state_layout``: YAML pin, else the rSkill's contract, else default.
+
+    The policy's ``state_contract.layout`` is the source of truth for the
+    proprio shape it was trained on, so one scene YAML serves every rSkill;
+    ``backend_options.state_layout`` stays as an explicit override.
+    """
+    if "state_layout" in opts.model_fields_set:
+        return opts.state_layout
+    # Mock policies (zero/random) and scheme URIs carry no in-tree manifest.
+    if env_cfg.vla.id in {"zero", "random"} or env_cfg.vla.weights_uri.startswith(
+        _NO_MANIFEST_SCHEMES
+    ):
+        return opts.state_layout
+    from openral_sim.policies.act import _load_manifest_for_spec
+
+    manifest = _load_manifest_for_spec(env_cfg.vla)
+    contract = getattr(manifest, "state_contract", None)
+    layout = getattr(contract, "layout", None)
+    return _MANIFEST_TO_ROBOCASA_LAYOUT.get(str(layout), opts.state_layout)
+
+
+def _require_registered_env(env_name: str, *, gym_env_id: str | None = None) -> None:
+    """Refuse an unknown task with a typed error before robosuite/gym raise bare ones.
+
+    Every ``robocasa/<task>`` id reaches this backend via the registry's
+    prefix fallback, so a typo'd task name lands here rather than at
+    ``SCENES.get``.
+    """
+    if gym_env_id is not None:
+        import gymnasium as gym
+
+        if gym_env_id not in gym.registry:
+            raise ROSConfigError(
+                f"RoboCasa GR1 task {env_name!r} is not registered (no gym id "
+                f"{gym_env_id!r}); check the task name in scene.id or install the "
+                "robocasa-gr1-tabletop-tasks fork."
+            )
+        return
+    from robosuite.environments.base import REGISTERED_ENVS
+
+    if env_name not in REGISTERED_ENVS:
+        raise ROSConfigError(
+            f"RoboCasa task {env_name!r} is not a registered robosuite env; check the "
+            "task name in scene.id (`robocasa/<TaskName>`)."
+        )
+
+
 def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / camera / state-layout branching is intrinsic to the GR1 vs kitchen split; factoring out would just add indirection
     env_cfg: SimEnvironment, *, scene_id: str | None = None
 ) -> _RoboCasaSim:
@@ -1891,11 +1982,13 @@ def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / cam
         import robocasa.utils.gym_utils.gymnasium_groot  # noqa: F401  # reason: import IS the registration
 
         gym_env_id = f"gr1_unified/{env_name}_{opts.robots[0]}_Env"
+        _require_registered_env(env_name, gym_env_id=gym_env_id)
         env = gym.make(gym_env_id, enable_render=True, seed=int(env_cfg.seed))
         is_gymnasium_wrapped = True
     else:
         import robosuite  # reason: provisioned above; robocasa pins its own fork
 
+        _require_registered_env(env_name)
         env = robosuite.make(
             env_name=env_name,
             robots=opts.robots,
@@ -1917,7 +2010,7 @@ def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / cam
         task=env_cfg.task,
         _env=env,
         _camera_keys=camera_keys,
-        _state_layout=opts.state_layout,
+        _state_layout=_resolve_state_layout(env_cfg, opts),
         _is_gymnasium_wrapped=is_gymnasium_wrapped,
         _robots=tuple(opts.robots),
         _pinned_layout_id=_single_scene_pin(opts.layout_ids),
@@ -1925,54 +2018,39 @@ def _build_robocasa_sim(  # noqa: PLR0915  # reason: the controller-config / cam
     )
 
 
-def _make_prebuilt_factory(scene_id: str) -> Any:
-    """Bind ``scene_id`` into the factory closure for the registry decorator."""
-
-    def _factory(env_cfg: SimEnvironment) -> _RoboCasaSim:
-        return _build_robocasa_sim(env_cfg, scene_id=scene_id)
-
-    _factory.__name__ = f"_build_robocasa_{scene_id.replace('/', '_')}"
-    _factory.__qualname__ = _factory.__name__
-    _factory.__module__ = __name__
-    return _factory
+# RoboCasa kitchens build a PandaMobile; the VSLAM variant is the same
+# physics robot with a stereo rig declared (scenes/deploy/robocasa_vslam*.yaml).
+_KITCHEN_ROBOTS = frozenset({"panda_mobile", "panda_mobile_vslam"})
 
 
-# Register the curated prebuilt tasks. We do NOT enumerate every
-# robocasa env (the upstream catalogue includes hundreds when you count
-# composite tasks); the curated tuple covers the atomic benchmarks that
-# would appear on a roadmap leaderboard. Users authoring a different
-# `robocasa/<TaskName>` via `scene.id` get a clean adapter-level error
-# from `_resolve_env_name` (and can patch the tuple in their fork).
-for _task in _CURATED_PREBUILT_TASKS:
-    _scene = f"{_PREBUILT_SCENE_PREFIX}/{_task}"
-    SCENES.register(
-        _scene,
-        fixed_robot="panda_mobile",
-        provision=partial(provision_robocasa, "robocasa_kitchen"),
-    )(_make_prebuilt_factory(_scene))
-
-
-# Register the GR1 tabletop tasks against the `gr1` robot.
-# These envs come from the `robocasa-gr1-tabletop-tasks` fork; the
-# upstream kitchen `robocasa` package does NOT ship them. The two
-# python packages share the name `robocasa` so a host installs one or
-# the other -- our adapter exposes both task families regardless and
-# the missing one fails at `robosuite.make()` with a clean
-# "unknown env_name" rather than at import time.
-for _task in _GR1_TABLETOP_TASKS:
-    _scene = f"{_GR1_SCENE_PREFIX}/{_task}"
-    SCENES.register(
-        _scene,
-        fixed_robot="gr1",
-        provision=partial(provision_robocasa, "robocasa_gr1"),
-    )(_make_prebuilt_factory(_scene))
-
-
+# ONE registration per task family. `robocasa` owns the procedural surface
+# AND every `robocasa/<Task>` kitchen id (registry prefix fallback);
+# `robocasa/gr1` owns every `robocasa/gr1/<Task>` tabletop id. The factory
+# reads the full id off `env_cfg.scene.id`, so the task stays data.
+# sequential_init: the env thread imports robosuite -> transformers, racing
+# the policy thread's lerobot import (see sim_runner._build_env_and_policy).
 @SCENES.register(
     _PROCEDURAL_SCENE_ID,
-    fixed_robot="panda_mobile",
+    fixed_robot=_KITCHEN_ROBOTS,
     provision=partial(provision_robocasa, "robocasa_kitchen"),
+    sequential_init=True,
+    sim_clock=True,
 )
-def _build_robocasa_procedural(env_cfg: SimEnvironment) -> _RoboCasaSim:
-    """Procedural scenario surface -- (style x layout x fixtures x objects x verb)."""
+def _build_robocasa_kitchen(env_cfg: SimEnvironment) -> _RoboCasaSim:
+    """Kitchen scenes: procedural (``robocasa``) or prebuilt (``robocasa/<Task>``)."""
+    return _build_robocasa_sim(env_cfg)
+
+
+# GR1 tabletop tasks come from the `robocasa-gr1-tabletop-tasks` fork; the
+# upstream kitchen package does NOT ship them (both install as `robocasa`,
+# so a host has one or the other and the missing family fails at build).
+@SCENES.register(
+    _GR1_SCENE_PREFIX,
+    fixed_robot="gr1",
+    provision=partial(provision_robocasa, "robocasa_gr1"),
+    sequential_init=True,
+    sim_clock=True,
+)
+def _build_robocasa_gr1(env_cfg: SimEnvironment) -> _RoboCasaSim:
+    """GR1 tabletop scenes (``robocasa/gr1/<Task>``)."""
     return _build_robocasa_sim(env_cfg)
