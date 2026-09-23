@@ -1465,10 +1465,15 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # In sim the publishers are SimSensorBridge's renders of the manifest's RGB
     # sensors (deploy_binding or not) — exactly `rgb_camera_names`, which already
     # leaves out scene-only hardware cameras there.
+    # On real, read the merged list: a scene entry overrides the manifest sensor
+    # of the same name, so the raw pair could list a camera twice or keep one
+    # whose binding the scene replaced.
+    from openral_rskill_ros.sensor_leg import merge_deploy_sensors
+
     bound_rgb_camera_names = (
         [
             s.name
-            for s in (*description.sensors, *scene_sensors)
+            for s in merge_deploy_sensors(description.sensors, scene_sensors)
             if s.modality == "rgb" and getattr(s, "deploy_binding", None) is not None
         ]
         if hal_mode == "real"
