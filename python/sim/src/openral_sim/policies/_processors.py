@@ -55,6 +55,7 @@ def resolve_processor_dir(spec: VLASpec | Any, repo_id: str) -> str:
         if manifest.processors is not None:
             return materialize_processor_dir(manifest)
 
-    from huggingface_hub import snapshot_download
+    from openral_rskill import local_snapshot_dir
 
-    return str(snapshot_download(repo_id=repo_id, ignore_patterns=["*.md"]))
+    # Directory-aware: an installed rSkill snapshot resolves to itself.
+    return local_snapshot_dir(repo_id)
