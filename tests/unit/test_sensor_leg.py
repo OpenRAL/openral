@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from openral_core import (
@@ -474,20 +475,46 @@ def _rgb_frame(width: int = 64, height: int = 48, *, value: int = 0):
     )
 
 
-def test_pump_emits_a_real_jpeg_thumbnail_for_the_dashboard() -> None:
+def _exported_thumbnail(exporter: Any) -> bytes:
+    import base64
+
+    from openral_observability import semconv
+
+    (span,) = exporter.get_finished_spans()
+    return base64.b64decode(str(span.attributes[semconv.SENSORS_THUMBNAIL_JPEG_B64]))
+
+
+def test_pump_emits_a_real_jpeg_thumbnail_for_the_dashboard(memory_exporter: Any) -> None:
     """The span carries a decodable JPEG, not an empty attribute."""
-    from openral_observability import producer as ral_producer
     from openral_rskill_ros.sensor_leg import _emit_frame_observability
 
-    frame = _rgb_frame()
-    thumb = ral_producer.encode_frame_thumbnail(frame)
-    assert thumb is not None and thumb[:2] == b"\xff\xd8", "expected a JPEG SOI marker"
-
-    # The emit path itself must complete against the real tracer/producer.
-    _emit_frame_observability("top", frame, flip_180=False)
+    _emit_frame_observability("top", _rgb_frame(), flip_180=False)
+    assert _exported_thumbnail(memory_exporter)[:2] == b"\xff\xd8", "expected a JPEG SOI marker"
 
 
-def test_pump_flip_180_rotates_the_thumbnail_but_not_the_policy_frame() -> None:
+def test_no_exporter_means_no_encode_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no recording provider the emit returns before the flip and JPEG.
+
+    At 30 Hz per camera that work held ~25 % of the deploy runtime's GIL on an
+    AGX Orin while nothing consumed it (no OTLP endpoint, dashboard off).
+    """
+    from openral_observability import producer as ral_producer
+    from openral_rskill_ros.sensor_leg import _emit_frame_observability
+    from opentelemetry import trace
+
+    def _reached(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("thumbnail encoded for a span nobody records")
+
+    monkeypatch.setattr(ral_producer, "encode_frame_thumbnail", _reached)
+    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
+    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    trace.set_tracer_provider(trace.NoOpTracerProvider())
+    _emit_frame_observability("top", _rgb_frame(), flip_180=True)
+
+
+def test_pump_flip_180_rotates_the_thumbnail_but_not_the_policy_frame(
+    memory_exporter: Any,
+) -> None:
     """``OPENRAL_DASHBOARD_FLIP_180`` is display-only, and it really does flip.
 
     Guards the failure recorded in the dashboard-flip incident: flipping the
@@ -514,6 +541,7 @@ def test_pump_flip_180_rotates_the_thumbnail_but_not_the_policy_frame() -> None:
 
     _emit_frame_observability("top", frame, flip_180=True)
     assert frame.data == original, "flip leaked into the frame the policy reads"
+    assert _exported_thumbnail(memory_exporter) == flipped, "dashboard thumbnail was not flipped"
 
 
 def test_pump_feeds_aggregator_even_when_the_thumbnail_path_fails(
