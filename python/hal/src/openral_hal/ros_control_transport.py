@@ -600,8 +600,10 @@ class RosControlTransport:
         self._last_arrival = time.monotonic()
 
 
-#: Default trajectory deadline. Matches the 100 ms the production HALs assume
-#: for a single-step command; overridden per message via `time_from_start_s`.
+#: Fallback trajectory deadline for a manifest with no `action_spec.control_freq_hz`.
+#: A `RosControlHAL` that knows its rate sends `time_from_start_s` per message
+#: instead (issue #303: at 30 Hz this 100 ms default re-plans a steep segment
+#: every 33 ms and amplifies each step between consecutive targets).
 _DEFAULT_TIME_FROM_START_S = 0.1
 
 

@@ -68,6 +68,8 @@ from __future__ import annotations
 from openral_core.exceptions import ROSRuntimeError
 from openral_core.schemas import (
     Action,
+    ActionRepresentation,
+    ActionSpec,
     AssetRefs,
     ControlMode,
     EmbodimentKind,
@@ -328,6 +330,14 @@ OPENARM_DESCRIPTION = RobotDescription(
         deadman_required=True,
     ),
     sdk_kind="open",
+    # The robot's single control-rate declaration: the runner ticks at it, the
+    # dataset recorder stamps it as fps, and the real HAL derives every
+    # trajectory point's time_from_start from it (issue #303).
+    action_spec=ActionSpec(
+        dim=16,
+        representation=ActionRepresentation.JOINT_POSITIONS,
+        control_freq_hz=30.0,
+    ),
     hal=HalEntrypoints(
         # sim=None: build_hal derives MujocoArmHAL.from_description(manifest).
         sim=None,

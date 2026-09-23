@@ -347,6 +347,18 @@ sdk_kind: "open"
 #                  → controller_manager (400 Hz, C++)
 #                  → openarm_hardware SystemInterface
 #                  → openarm_can → SocketCAN → Damiao motors.
+# The one place this robot's control rate lives. The skill runner ticks at
+# it (`rate_hz` ROS param 0 = read this), the dataset recorder stamps it as
+# fps, and the real HAL sets every trajectory point's
+# time_from_start = horizon / control_freq_hz so the controller reaches each
+# target exactly when the next command is due. Before it was declared the
+# transport's 100 ms default re-planned a steep segment every 33 ms and
+# amplified each step between targets (issue #303).
+action_spec:
+  dim: 16
+  representation: "joint_positions"
+  control_freq_hz: 30.0
+
 hal:
   # null → build_hal derives MujocoArmHAL.from_description(this manifest)
   # from the `sim:` block below; no per-robot Python class is involved.
