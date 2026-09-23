@@ -425,8 +425,11 @@ sensors:
   # mounts sit at (0,+/-0.031,0)), pitched 45deg down. fx/fy from StereoLabs'
   # published 90deg horizontal FOV at HD1080 depth (fx=(1920/2)/tan(45deg)=960,
   # same basis a real deploy scene's `context` override would use). Good
-  # enough to prove the pipeline; run `openral calibrate camera` before
-  # projecting anything geometric.
+  # enough to prove the pipeline, not to project anything geometric. What a
+  # geometric consumer (the kernel's world-voxel check) depends on is the
+  # EXTRINSIC below, not these intrinsics: the ZED SDK builds its cloud from
+  # its own factory calibration. `openral calibrate camera` measures
+  # intrinsics only (a monocular checkerboard fit) and cannot fix this pose.
   #
   # A depth sensor with intrinsics auto-enables the octomap leg, so every
   # in-tree OpenArm scene pins `runtime.enable_octomap` explicitly and must

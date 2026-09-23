@@ -83,9 +83,11 @@ runtime:
   # --no-enable-octomap baseline, never below it.
   #
   # Set this TRUE on any scene where the camera actually observes the robot's
-  # own workspace — AND only after `openral calibrate camera`, because
-  # head_zed's pose is an uncalibrated approximation and a mis-framed cloud
-  # becomes an E-stop rather than a bad picture.
+  # own workspace — AND only once head_zed's EXTRINSIC (its mount pose) is
+  # measured, because the manifest's is an uncalibrated approximation and a
+  # mis-framed cloud becomes an E-stop rather than a bad picture (or moves a
+  # real obstacle away from where it is). `openral calibrate camera` does not
+  # measure that: it fits intrinsics, which the ZED SDK already supplies.
   enable_octomap_kernel_check: false
 
   enable_slam: false
