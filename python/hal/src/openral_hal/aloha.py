@@ -72,6 +72,8 @@ from openral_core.exceptions import (
 )
 from openral_core.schemas import (
     Action,
+    ActionRepresentation,
+    ActionSpec,
     AssetRefs,
     ControlMode,
     EmbodimentKind,
@@ -243,8 +245,21 @@ ALOHA_DESCRIPTION = RobotDescription(
         max_ee_speed_m_s=1.0,
         max_joint_speed_factor=0.5,
         deadman_required=False,
+        # provisional: former schema default, not measured on this rig — see issue #303
+        max_force_n=50.0,
+        max_torque_nm=10.0,
+        max_ee_accel_m_s2=1.0,
+        contact_force_threshold_n=30.0,
+        self_collision_margin_m=0.0,
     ),
     sdk_kind="open",
+    # Control rate: the runner ticks at it, the HAL node publishes proprio at
+    # it, and the recorder stamps it as fps (issue #303). Mirrors the YAML.
+    action_spec=ActionSpec(
+        dim=14,
+        representation=ActionRepresentation.JOINT_POSITIONS,
+        control_freq_hz=50.0,
+    ),
     hal=HalEntrypoints(sim=None, real="openral_hal.aloha:AlohaHAL"),
     # MuJoCo wiring for the gym-aloha sim twin.  Two passthrough grippers
     # with mirror_actuator_index (positive finger + mirror to negative

@@ -328,6 +328,10 @@ OPENARM_DESCRIPTION = RobotDescription(
         max_force_n=40.0,
         max_torque_nm=40.0,
         deadman_required=True,
+        # provisional: former schema default, not measured on this rig — see issue #303
+        max_ee_accel_m_s2=1.0,
+        contact_force_threshold_n=30.0,
+        self_collision_margin_m=0.0,
     ),
     sdk_kind="open",
     # The robot's single control-rate declaration: the runner ticks at it, the

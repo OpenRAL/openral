@@ -33,6 +33,7 @@ from openral_core.schemas import (
     EmbodimentKind,
     EndEffectorSpec,
     HalEntrypoints,
+    HalParameters,
     JointSpec,
     JointType,
     RobotCapabilities,
@@ -182,6 +183,10 @@ UR5e_DESCRIPTION = RobotDescription(
         max_force_n=150.0,
         max_torque_nm=150.0,
         deadman_required=True,
+        # provisional: former schema default, not measured on this rig — see issue #303
+        max_ee_accel_m_s2=1.0,
+        contact_force_threshold_n=30.0,
+        self_collision_margin_m=0.0,
     ),
     sdk_kind="open",
     # Control rate: the runner ticks at it and the real HAL sets every
@@ -192,7 +197,14 @@ UR5e_DESCRIPTION = RobotDescription(
         representation=ActionRepresentation.JOINT_POSITIONS,
         control_freq_hz=30.0,
     ),
-    hal=HalEntrypoints(sim=None, real="openral_hal.ur_real:UR5eRealHAL"),
+    hal=HalEntrypoints(
+        sim=None,
+        real="openral_hal.ur_real:UR5eRealHAL",
+        # Max age of a read_state() reading before ROSPerceptionStale. Mirrors
+        # the YAML; provisional: former constructor default, not measured on
+        # this rig — see issue #303.
+        parameters=HalParameters(defaults={"staleness_limit_s": 0.5}),
+    ),
     assets=AssetRefs(
         urdf=UrdfAsset(
             ref="file:ur5e.urdf",
@@ -234,6 +246,10 @@ UR10e_DESCRIPTION = RobotDescription(
         max_force_n=330.0,
         max_torque_nm=330.0,
         deadman_required=True,
+        # provisional: former schema default, not measured on this rig — see issue #303
+        max_ee_accel_m_s2=1.0,
+        contact_force_threshold_n=30.0,
+        self_collision_margin_m=0.0,
     ),
     sdk_kind="open",
     # Control rate: the runner ticks at it and the real HAL sets every
@@ -244,7 +260,14 @@ UR10e_DESCRIPTION = RobotDescription(
         representation=ActionRepresentation.JOINT_POSITIONS,
         control_freq_hz=30.0,
     ),
-    hal=HalEntrypoints(sim=None, real="openral_hal.ur_real:UR10eRealHAL"),
+    hal=HalEntrypoints(
+        sim=None,
+        real="openral_hal.ur_real:UR10eRealHAL",
+        # Max age of a read_state() reading before ROSPerceptionStale. Mirrors
+        # the YAML; provisional: former constructor default, not measured on
+        # this rig — see issue #303.
+        parameters=HalParameters(defaults={"staleness_limit_s": 0.5}),
+    ),
     assets=AssetRefs(
         urdf=UrdfAsset(
             ref="file:ur10e.urdf",

@@ -1494,6 +1494,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # idle. Keep joint/EE diagnostics at 0.5 s, but give simulated
                 # cameras enough room for one slow frame without stale flapping.
                 "image_staleness_limit_s": 5.0 if hal_mode == "sim" else 0.5,
+                # Joint state older than this aborts the blocking wait as a
+                # perception fault. The node has no default: this is the one
+                # place the window is declared. 0.5 s is the former node default,
+                # kept until a rig measurement says otherwise (issue #303).
+                "joint_state_staleness_limit_s": 0.5,
                 # One grouped action may synchronously attach a payload, then
                 # wait for a transparent depth frame + the next OctoMap raster
                 # before acknowledging application. Real HALs keep the 5 s

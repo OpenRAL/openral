@@ -30,6 +30,7 @@ from openral_core.schemas import (
     EmbodimentKind,
     EndEffectorSpec,
     HalEntrypoints,
+    HalParameters,
     Hand,
     JointSpec,
     JointType,
@@ -203,6 +204,10 @@ FRANKA_PANDA_DESCRIPTION = RobotDescription(
         max_force_n=100.0,
         max_torque_nm=87.0,
         deadman_required=True,
+        # provisional: former schema default, not measured on this rig — see issue #303
+        max_ee_accel_m_s2=1.0,
+        contact_force_threshold_n=30.0,
+        self_collision_margin_m=0.0,
     ),
     # The shared ``hal`` block names both the sim HAL
     # (``FrankaPandaHAL``) and the real-HW HAL (``FrankaPandaRealHAL``);
@@ -223,6 +228,10 @@ FRANKA_PANDA_DESCRIPTION = RobotDescription(
         # sim=None: build_hal derives MujocoArmHAL.from_description(manifest).
         sim=None,
         real="openral_hal.franka_panda_real:FrankaPandaRealHAL",
+        # Max age of a read_state() reading before ROSPerceptionStale. Mirrors
+        # the YAML; provisional: former constructor default, not measured on
+        # this rig — see issue #303.
+        parameters=HalParameters(defaults={"staleness_limit_s": 0.5}),
     ),
     assets=AssetRefs(
         urdf=UrdfAsset(ref="rd:panda_description"),

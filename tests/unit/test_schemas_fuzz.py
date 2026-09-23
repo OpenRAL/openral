@@ -234,7 +234,10 @@ _robot_description_st = st.builds(
     capabilities=_capabilities_st,
     safety=_safety_st,
     sdk_kind=st.sampled_from(["open", "closed_with_api", "closed"]),
-    hal=_hal_entrypoints_st,
+    # Sim-only: a manifest with `hal.real` must also declare its control rate,
+    # every kernel-read safety field and joint velocity limits (the real-hardware
+    # contract), which tests/unit/test_robot_description_real_contract.py pins.
+    hal=st.builds(HalEntrypoints, sim=st.none() | _name, real=st.none()),
     compute_edge=st.one_of(st.none(), _compute_spec_st),
     compute_local=st.one_of(st.none(), _compute_spec_st),
     compute_cloud=st.one_of(st.none(), _compute_spec_st),

@@ -147,6 +147,10 @@ safety:
   max_force_n: 330.0
   max_torque_nm: 330.0
   deadman_required: true
+  # provisional: former schema default, not measured on this rig — see issue #303
+  max_ee_accel_m_s2: 1.0
+  contact_force_threshold_n: 30.0
+  self_collision_margin_m: 0.0
 
 sdk_kind: "closed"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
@@ -164,6 +168,11 @@ hal:
   # from the `sim:` block below; no per-robot Python class is involved.
   sim: null
   real: "openral_hal.ur_real:UR10eRealHAL"
+  parameters:
+    defaults:
+      # Max age of a read_state() reading before ROSPerceptionStale.
+      # provisional: former constructor default, not measured on this rig — see issue #303
+      staleness_limit_s: 0.5
 
 # MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``
 # for the sim baseline.  Source: ``universal_robots_ur10e/ur10e.xml`` in
