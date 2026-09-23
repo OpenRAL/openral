@@ -202,6 +202,8 @@ def _make_gstreamer_reader(cfg: SensorReaderConfig) -> SensorReader:
             pipeline=pipeline_param,
             ros_topic=ros_topic,
             ros_rate_hz=ros_rate,
+            ros_frame_id=cfg.publish_frame_id,
+            ros_camera_info=cfg.publish_camera_info,
             default_max_age_ms=cfg.max_age_ms,
         )
 
@@ -211,6 +213,8 @@ def _make_gstreamer_reader(cfg: SensorReaderConfig) -> SensorReader:
         spec=spec,
         ros_topic=ros_topic,
         ros_rate_hz=ros_rate,
+        ros_frame_id=cfg.publish_frame_id,
+        ros_camera_info=cfg.publish_camera_info,
         default_max_age_ms=cfg.max_age_ms,
     )
 

@@ -10,9 +10,11 @@ Physical ``/dev/video*`` devices are described by ``SensorSpec.deploy_binding``
 
 * ``gstreamer`` — native in-pipeline ROS tee.
 * ``opencv_thread`` (or any tee-less backend) — wrapped in a polling
-  ``SensorRosPublisher``. Calibrated ``intrinsics`` also
-  publish ``CameraInfo`` on ``<topic_prefix>/<name>/camera_info`` (sim HAL's layout), enabling
-  mono visual SLAM on real hardware.
+  ``SensorRosPublisher``.
+
+On both paths, calibrated ``intrinsics`` also publish ``CameraInfo`` on
+``<topic_prefix>/<name>/camera_info`` (sim HAL's layout), stamped with the spec's
+``frame_id`` — enabling mono visual SLAM on real hardware.
 
 **Direct aggregator path (zero-copy vision path).** When ``aggregator`` is passed (reader,
 aggregator, and skill runner share one process), an ``_AggregatorPump`` per reader writes
@@ -572,6 +574,11 @@ def open_deploy_sensor_readers(
                     publish_to_ros=native_tee,
                     publish_topic=topic if native_tee else None,
                     publish_rate_hz=_publish_rate_hz(spec) if native_tee else None,
+                    # Same TF frame + companion CameraInfo the opencv_thread
+                    # SensorRosPublisher emits, so GStreamer cameras feed mono
+                    # visual SLAM (cuVSLAM / nvblox) too.
+                    publish_frame_id=spec.frame_id if native_tee else None,
+                    publish_camera_info=spec.intrinsics if native_tee else None,
                 ),
                 native_tee,
             )

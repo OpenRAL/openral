@@ -7,7 +7,10 @@ pipeline at a ``tee`` element with two named appsink branches:
 * ``bh_sink`` — the inference-path appsink the reader uses.
 * ``ros_sink`` — the ROS-side appsink fed into this module's
   ``RosImagePublisher``, which republishes frames as
-  ``sensor_msgs/Image`` on a configurable topic.
+  ``sensor_msgs/Image`` on a configurable topic and, when manifest
+  intrinsics are supplied, a companion ``sensor_msgs/CameraInfo`` on the
+  sibling topic (``openral_sensors.ros_publisher.camera_info_topic_for``),
+  built by the same ``build_camera_info_msg`` the opencv_thread path uses.
 
 The ROS branch always lifts frames to system memory before this
 appsink (see ``pipeline._build_ros_tee_branch``), so the publisher and
@@ -35,6 +38,7 @@ from typing import TYPE_CHECKING, Any, Final
 import structlog
 
 if TYPE_CHECKING:
+    from openral_core import IntrinsicsPinhole
     from rclpy.node import Node
     from rclpy.publisher import Publisher
 
@@ -55,12 +59,18 @@ class RosImagePublisher:
             multi-camera processes from clashing.
         appsink: The ``ros_sink`` ``Gst.Element`` (typed ``Any``
             here to avoid importing ``gi`` at module load).
-        topic: ROS topic to publish on (e.g. ``/cameras/wrist_rgb/image_raw``).
+        topic: ROS topic to publish on (e.g. ``/openral/cameras/wrist_rgb/image``).
         rate_hz: Maximum publish rate. Frames that arrive faster than
             this are dropped. ``None`` means "publish every frame".
         node_name: Optional override for the ROS node name; defaults to
             ``bh_ros_tee_<sensor_id>``.
         qos_depth: Depth of the publisher's QoS history queue.
+        frame_id: ``header.frame_id`` for ``Image`` and ``CameraInfo``
+            (``SensorSpec.frame_id``); defaults to ``sensor_id``.
+        camera_info: Manifest intrinsics. When set, a ``CameraInfo`` is
+            published (``RELIABLE``/``VOLATILE``/``KEEP_LAST=1``) on
+            ``camera_info_topic_for(topic)`` beside every ``Image``, scaled to
+            the frame's width/height and carrying the same stamp.
 
     Raises:
         RuntimeError: When ``start`` is called but ``rclpy`` is
@@ -76,6 +86,8 @@ class RosImagePublisher:
         rate_hz: float | None = None,
         node_name: str | None = None,
         qos_depth: int = _DEFAULT_QOS_DEPTH,
+        frame_id: str | None = None,
+        camera_info: IntrinsicsPinhole | None = None,
     ) -> None:
         """Stash configuration; no ROS I/O until ``start``."""
         if not topic.startswith("/"):
@@ -91,10 +103,13 @@ class RosImagePublisher:
         self._rate_hz = rate_hz
         self._node_name = node_name or f"bh_ros_tee_{sensor_id}"
         self._qos_depth = qos_depth
+        self._frame_id = frame_id or sensor_id
+        self._camera_info = camera_info
 
         # Populated by start().
         self._node: Node | None = None
         self._publisher: Publisher | None = None
+        self._info_publisher: Publisher | None = None
         self._signal_handler_id: int | None = None
         self._last_publish_monotonic_ns: int = 0
         self._publish_lock = threading.Lock()
@@ -143,6 +158,21 @@ class RosImagePublisher:
             durability=QoSDurabilityPolicy.VOLATILE,
         )
         self._publisher = self._node.create_publisher(Image, self._topic, qos)
+        if self._camera_info is not None:
+            from openral_sensors.ros_publisher import camera_info_topic_for  # noqa: PLC0415
+            from sensor_msgs.msg import CameraInfo  # noqa: PLC0415
+
+            # CameraInfo: RELIABLE, KEEP_LAST=1 (camera_info_manager convention),
+            # same profile as SensorRosPublisher.
+            info_qos = QoSProfile(
+                history=QoSHistoryPolicy.KEEP_LAST,
+                depth=1,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.VOLATILE,
+            )
+            self._info_publisher = self._node.create_publisher(
+                CameraInfo, camera_info_topic_for(self._topic), info_qos
+            )
 
         self._appsink.set_property("emit-signals", True)
         self._appsink.set_property("sync", False)
@@ -153,6 +183,7 @@ class RosImagePublisher:
             sensor_id=self.sensor_id,
             topic=self._topic,
             rate_hz=self._rate_hz,
+            has_camera_info=self._info_publisher is not None,
         )
 
     def stop(self) -> None:
@@ -163,9 +194,12 @@ class RosImagePublisher:
             with contextlib.suppress(Exception):  # reason: defensive cleanup
                 self._appsink.disconnect(self._signal_handler_id)
         self._signal_handler_id = None
-        if self._publisher is not None and self._node is not None:
-            self._node.destroy_publisher(self._publisher)
+        if self._node is not None:
+            for pub in (self._publisher, self._info_publisher):
+                if pub is not None:
+                    self._node.destroy_publisher(pub)
         self._publisher = None
+        self._info_publisher = None
         if self._node is not None:
             self._node.destroy_node()
         self._node = None
@@ -181,7 +215,7 @@ class RosImagePublisher:
     # ── GStreamer callback ──────────────────────────────────────────────────
 
     def _on_new_sample(self, appsink: Any) -> int:  # noqa: ANN401  # reason: GstApp.AppSink — duck-typed
-        """Pull a sample and publish it as a sensor_msgs/Image.
+        """Pull a sample and publish it as a sensor_msgs/Image (+ CameraInfo).
 
         Runs on a GStreamer streaming thread; the work is bounded:
         rate-gate → map → numpy view → ``sensor_msgs.msg.Image`` →
@@ -205,7 +239,7 @@ class RosImagePublisher:
 
         msg = Image()
         msg.header.stamp = self._node.get_clock().now().to_msg()
-        msg.header.frame_id = self.sensor_id
+        msg.header.frame_id = self._frame_id
         msg.height = int(height)
         msg.width = int(width)
         msg.encoding = encoding
@@ -214,6 +248,18 @@ class RosImagePublisher:
         msg.step = int(width) * channels
         msg.data = payload
         self._publisher.publish(msg)
+        if self._info_publisher is not None and self._camera_info is not None:
+            from openral_sensors.ros_publisher import build_camera_info_msg  # noqa: PLC0415
+
+            self._info_publisher.publish(
+                build_camera_info_msg(
+                    self._camera_info,
+                    width=int(width),
+                    height=int(height),
+                    stamp=msg.header.stamp,
+                    frame_id=self._frame_id,
+                )
+            )
         return ok_flow
 
     def _claim_rate_slot(self) -> bool:

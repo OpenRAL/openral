@@ -76,18 +76,20 @@ _Sensor catalog — vendor-agnostic registry of `SensorSpec` / `SensorBundle` fa
 ### `python/sensors/src/openral_sensors/ros_publisher.py`
 _Generalised sensor → ROS 2 image publisher; non-GStreamer fallback to `RosImagePublisher`._
 
-- const `_DEFAULT_QOS_DEPTH: Final[int] = 5` — Default image-publisher QoS depth; matches gscam2's `sensor_data`-style default. (L50)
-- const `_THREAD_JOIN_TIMEOUT_S: Final[float] = 2.0` — Join timeout for the background pump thread on `stop()`. (L55)
-- const `_OPENRAL_TO_ROS_ENCODING: Final[dict[FrameEncoding, str]] = {...}` — Maps `FrameEncoding` to the `sensor_msgs/Image.encoding` string; CPU-side encodings only. (L60)
-- `class SensorRosPublisher(*, reader, topic, rate_hz, node_name=None, frame_id=None, qos_depth=5, camera_info=None, info_topic=None, node=None, max_size=None)` — Background-thread publisher that polls a `SensorReader` and republishes frames as `sensor_msgs/Image`, with an optional `CameraInfo` companion and an optional `max_size` downscale that rescales intrinsics to match. Lazy-imports rclpy, raises `RuntimeError` at `start()` if ROS 2 isn't sourced; reader lifecycle (open/close) is owned by the caller. (L68)
-  - `prepare() -> None` — Create ROS resources without starting the pump thread; multi-camera callers prepare every publisher first to avoid concurrent rclpy setup. (L194)
-  - `start() -> None` — Init rclpy if needed, create publishers, spawn the pump thread. (L252)
-  - `stop() -> None` — Signal the pump thread, tear down publishers + node; idempotent. (L273)
-  - `is_started -> bool` [@property] — `True` between `start` and `stop`. (L170)
-  - `n_published -> int` [@property] — Number of image messages successfully published since `start`. (L175)
-  - `n_stale_skipped -> int` [@property] — Number of ticks the reader had no fresh frame and publish was skipped. (L180)
-  - `topic -> str` [@property] — The configured image topic (read-only). (L185)
-  - `info_topic -> str` [@property] — The configured `CameraInfo` companion topic (read-only). (L190)
+- const `_DEFAULT_QOS_DEPTH: Final[int] = 5` — Default image-publisher QoS depth; matches gscam2's `sensor_data`-style default. (L51)
+- const `_THREAD_JOIN_TIMEOUT_S: Final[float] = 2.0` — Join timeout for the background pump thread on `stop()`. (L56)
+- const `_OPENRAL_TO_ROS_ENCODING: Final[dict[FrameEncoding, str]] = {...}` — Maps `FrameEncoding` to the `sensor_msgs/Image.encoding` string; CPU-side encodings only. (L61)
+- `class SensorRosPublisher(*, reader, topic, rate_hz, node_name=None, frame_id=None, qos_depth=5, camera_info=None, info_topic=None, node=None, max_size=None)` — Background-thread publisher that polls a `SensorReader` and republishes frames as `sensor_msgs/Image`, with an optional `CameraInfo` companion and an optional `max_size` downscale that rescales intrinsics to match. Lazy-imports rclpy, raises `RuntimeError` at `start()` if ROS 2 isn't sourced; reader lifecycle (open/close) is owned by the caller. (L69)
+  - `prepare() -> None` — Create ROS resources without starting the pump thread; multi-camera callers prepare every publisher first to avoid concurrent rclpy setup. (L195)
+  - `start() -> None` — Init rclpy if needed, create publishers, spawn the pump thread. (L253)
+  - `stop() -> None` — Signal the pump thread, tear down publishers + node; idempotent. (L274)
+  - `is_started -> bool` [@property] — `True` between `start` and `stop`. (L171)
+  - `n_published -> int` [@property] — Number of image messages successfully published since `start`. (L176)
+  - `n_stale_skipped -> int` [@property] — Number of ticks the reader had no fresh frame and publish was skipped. (L181)
+  - `topic -> str` [@property] — The configured image topic (read-only). (L186)
+  - `info_topic -> str` [@property] — The configured `CameraInfo` companion topic (read-only). (L191)
+- `camera_info_topic_for(image_topic: str) -> str` — The `CameraInfo` topic beside an image topic: `.../<name>/image` → `.../<name>/camera_info` (OpenRAL/sim-HAL sibling layout), anything else → `<topic>/camera_info`. Used by the GStreamer ROS tee. (L480)
+- `build_camera_info_msg(spec: IntrinsicsPinhole, *, width, height, stamp, frame_id) -> CameraInfo` — The one `sensor_msgs/CameraInfo` builder both real-camera ROS paths use (`SensorRosPublisher` and the GStreamer `RosImagePublisher`): intrinsics rescaled to `width x height` via `openral_core.scale_intrinsics_to` (degenerate spec verbatim), identity `r`, monocular `p`. `sensor_msgs` lazy-imported. (L499)
 
 ### `python/sensors/src/openral_sensors/_reader_protocol.py`
 _Internal Protocol shim mirroring `openral_runner.SensorReader` to avoid a sensors↔runner import cycle._

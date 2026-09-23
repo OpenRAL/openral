@@ -281,11 +281,18 @@ from openral_core import SensorDeployBinding, SensorSpec
 from openral_rskill_ros.sensor_leg import open_deploy_sensor_readers
 
 rclpy.init()
+from openral_core import RobotDescription
+
+description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+# Real manifest intrinsics (640x480, fx=fy=480) — the tee must rescale them
+# to the 320x240 test frames and publish CameraInfo on the sibling topic.
+intrinsics = next(s.intrinsics for s in description.sensors if s.intrinsics is not None)
 spec = SensorSpec(
     name="testcam",
     modality="rgb",
-    frame_id="testcam",
+    frame_id="testcam_optical_frame",
     rate_hz=10.0,
+    intrinsics=intrinsics,
     deploy_binding=SensorDeployBinding(
         backend="gstreamer",
         backend_params={"source": "testsrc", "width": 320, "height": 240, "fps": 10},
@@ -294,10 +301,7 @@ spec = SensorSpec(
 # Phase 3: the shared aggregator receives frames straight from
 # the reader (no ROS hop). Subclass the REAL aggregator only to observe
 # the write (super() still runs) — no behaviour is faked.
-from openral_core import RobotDescription
 from openral_world_state import WorldStateAggregator
-
-description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
 
 class _CountingAggregator(WorldStateAggregator):
     def __init__(self, desc):
@@ -345,10 +349,21 @@ try:
     # on the leg's topic (same profile world_state requests) receives a
     # sensor_msgs/Image from the in-pipeline ROS tee.
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
-    from sensor_msgs.msg import Image
+    from sensor_msgs.msg import CameraInfo, Image
 
     got = []
+    infos = []
     sub_node = rclpy.create_node("probe_subscriber")
+    sub_node.create_subscription(
+        CameraInfo,
+        "/openral/cameras/testcam/camera_info",
+        infos.append,
+        QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            depth=1,
+        ),
+    )
     sub_node.create_subscription(
         Image,
         "/openral/cameras/testcam/image",
@@ -360,11 +375,18 @@ try:
         ),
     )
     deadline = time.time() + 10.0
-    while time.time() < deadline and not got:
+    while time.time() < deadline and not (got and infos):
         rclpy.spin_once(sub_node, timeout_sec=0.2)
     sub_node.destroy_node()
     assert got, "no Image arrived on /openral/cameras/testcam/image within 10 s"
     assert got[0].height == 240 and got[0].width == 320, (got[0].height, got[0].width)
+    assert got[0].header.frame_id == "testcam_optical_frame", got[0].header.frame_id
+    assert infos, "no CameraInfo arrived on /openral/cameras/testcam/camera_info within 10 s"
+    info = infos[0]
+    assert (info.width, info.height) == (320, 240), (info.width, info.height)
+    assert info.header.frame_id == "testcam_optical_frame", info.header.frame_id
+    # 640x480 manifest intrinsics scaled to the 320x240 frame: halved.
+    assert list(info.k) == [240.0, 0.0, 160.0, 0.0, 240.0, 120.0, 0.0, 0.0, 1.0], list(info.k)
 finally:
     leg.close()
     rclpy.try_shutdown()
