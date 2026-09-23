@@ -187,7 +187,8 @@ visits cells that genuinely intersect the solid, and the check silently returns
 clear, a missed collision rather than a lost conservatism.
 The hazard is **three windows** wide: `collision.cpp:656-662` (capsule pass),
 `:697-703` (box pass), and `:803-837` (`primitive_cell_box`, attached payloads);
-`check_self_collision` and `check_world_collision` have no broad phase at all.
+`check_self_collision` has no broad phase at all (nor had `check_world_collision`, retired
+2026-09-23 with the capsule world phase, ADR-0109).
 So one measurement is decisive: **is each candidate a subset of the shipped
 OBB?**
 

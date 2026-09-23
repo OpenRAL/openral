@@ -4,12 +4,11 @@
 Two things were missing on the real OpenArm cell, both invisible from inside the
 graph — every node healthy, every panel empty:
 
-* **The Bucket-2 converter was never spawned.** The layout's collision and voxel
-  panels read `/openral/world_collisions_markers` and
-  `/openral/world_voxels_cloud`, which are `visualization_msgs` / `sensor_msgs`
-  re-publications of the custom `openral_msgs` world types. Foxglove renders the
-  standard types natively and the custom ones not at all, and nothing else in
-  the graph produces them, so those panels could never fill on any deploy.
+* **The Bucket-2 converter was never spawned.** The layout's voxel panels read
+  `/openral/world_voxels_cloud`, a `sensor_msgs` re-publication of the custom
+  `openral_msgs/OccupancyVoxels`. Foxglove renders the standard type natively
+  and the custom one not at all, and nothing else in the graph produces it, so
+  those panels could never fill on any deploy.
 
 * **Camera slots were a guess.** They are sensor names from the robot manifest
   and the deploy scene, and they differ per robot. A declared RGB sensor only
@@ -248,7 +247,7 @@ def test_both_3d_panels_follow_the_same_frame() -> None:
     """The Bucket-2 panel had `base_link` hardcoded past the parameter.
 
     Threading `follow_frame` only into the hero panel would have left the
-    collision/voxel panel — the one whose entire job is to show the world model
+    voxel panel — the one whose entire job is to show the world model
     — blank on exactly the robots the fix was for.
     """
     layout = pytest.importorskip("openral_foxglove_bringup.layout")

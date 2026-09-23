@@ -395,7 +395,8 @@ between `margin + proximity_threshold` and `margin`; the latch at true penetrati
 
 > **Correction (2026-09-04). The "converts the 9-of-15 stops" claim is withdrawn.** Those stops are
 > recorded at **−0.29…−11.34 mm**, `hit.min_distance` is the reported pair's *true surface
-> distance*, and both `world_collision_margin_m` and `world_voxel_margin_m` default to **0.0**, so
+> distance*, and both `world_collision_margin_m` (retired with the capsule world phase on
+> 2026-09-23, ADR-0109) and `world_voxel_margin_m` default to **0.0**, so
 > the band is `[0, proximity_threshold]` in positive surface distance and all nine sit **below**
 > it. Path A can honestly claim only that it slows the *approach*; converting them would mean
 > grading into **negative** surface distance, which needs Safety-WG sign-off and a hazard entry.
@@ -655,8 +656,8 @@ dispersion + r_filter + sphere slop`; **(b)** yes; **(c)** no.
 
 **Verdict: adopt — the strongest candidate on this page for the world side.** A `PointCloudWorld`
 sibling to `VoxelGrid` behind a `check_point_cloud_collision` entry point shaped like
-`check_voxel_collision` (`collision.hpp:766`) — not `check_world_collision`, which consumes a
-`WorldModel` of base-frame capsules (`collision.hpp:715`). Costs any ADR must state: boolean, not
+`check_voxel_collision` (`collision.hpp:766`) — not `check_world_collision`, which consumed a
+`WorldModel` of base-frame capsules (`collision.hpp:715`; both retired 2026-09-23, ADR-0109). Costs any ADR must state: boolean, not
 signed distance (the advisory band and witness machinery need distance); per-frame superlinear
 construction; and a point cloud is a *surface sample* with no free-space/unknown distinction.
 

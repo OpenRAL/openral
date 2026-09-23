@@ -429,8 +429,8 @@ OpenRAL's safety posture is **"Python proposes, C++ disposes."** A candidate act
 
 - **Envelope limits** — joint position, joint velocity, joint torque (plus a global torque cap), Cartesian workspace AABB, end-effector linear/angular speed.
 - **Sanity** — NaN/Inf rejection, action-dimension and n-DoF validation, fail-closed on an unconfigured envelope.
-- **Geometric collision** — self-collision, world-obstacle collision, and voxel/occupancy-grid collision, including predictive checks over the action horizon (velocity integration and Cartesian-delta IK).
-- **Freshness gates** — stale measured state / world model / voxel grid drops the chunk (fail-closed).
+- **Geometric collision** — self-collision, attached-payload collision, and voxel/occupancy-grid world collision, including predictive checks over the action horizon (velocity integration and Cartesian-delta IK).
+- **Freshness gates** — stale measured state / attached-payload set / voxel grid drops the chunk (fail-closed).
 - **Defense in depth** — an independent **deadman** watchdog process (safe-action staleness) that survives a kernel crash, and which the deploy graph will not start without; an E-stop latches and requires an explicit, cooldown-gated reset. A **hardware E-stop** bridge ships alongside it, but no per-vendor pendant driver does: without one the node reports not-ready rather than posing as an armed source.
 
 `ROSSafetyViolation` is never silently caught. Acceleration/jerk limits and formal certification are the remaining work. See the safety hazard log (private `OpenRAL/management` repo).

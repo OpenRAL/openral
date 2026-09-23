@@ -65,7 +65,6 @@ DEPTH_TOPICS: list[str] = [
 #: (``launch/bucket2.launch.py``) so Foxglove renders them natively.
 #: Read-only viz, not actuation.
 BUCKET2_TOPICS: list[str] = [
-    r"/openral/world_collisions_markers",  # visualization_msgs/MarkerArray — capsule obstacles
     r"/openral/world_voxels_cloud",  # sensor_msgs/PointCloud2 — occupied voxel centres
 ]
 

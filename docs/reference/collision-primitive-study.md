@@ -79,7 +79,7 @@ the change that can make the kernel unsafe rather than merely tighter.
 
 `struct Obb` (`collision.hpp`) gains `double radius{0.0}`; six sites in
 `collision.cpp` subtract it — `check_self_collision` box↔capsule (570) and
-box↔box (581), `check_world_collision` (617), `check_voxel_collision` box↔voxel
+box↔box (581), `check_world_collision` (617; retired 2026-09-23, ADR-0109), `check_voxel_collision` box↔voxel
 (716), `check_attached_self_collision` payload↔link-box (1369-1374), and the
 voxel **broad phase** (689-697), which *adds* it to `reach` (§2.3);
 `lifecycle_kernel.cpp:169,1364,1426` declare and load a `collision_box_radius`

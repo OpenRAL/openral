@@ -42,9 +42,6 @@
      "colorMap": "turbo",
      "pointSize": 0.04
     },
-    "/openral/world_collisions_markers": {
-     "visible": true
-    },
     "/odom": {
      "visible": true
     },
@@ -122,11 +119,6 @@
     "far": 5000
    },
    "topics": {
-    "/openral/world_collisions_markers": {
-     "visible": true,
-     "colorField": "z",
-     "colorMode": "rgba"
-    },
     "/openral/world_voxels_cloud": {
      "visible": true,
      "colorField": "z",
@@ -244,7 +236,7 @@
      "layout": "Plot!joints"
     },
     {
-     "title": "Collisions \u00b7 voxels",
+     "title": "World voxels",
      "layout": "3D!bucket2"
     },
     {

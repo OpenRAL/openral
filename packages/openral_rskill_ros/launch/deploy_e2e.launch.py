@@ -2615,14 +2615,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 flush=True,
             )
 
-        # Bucket-2 converter. The layout's collision/voxel panels read
-        # `/openral/world_collisions_markers` + `/openral/world_voxels_cloud`,
-        # which are `visualization_msgs` / `sensor_msgs` re-publications of the
-        # custom `openral_msgs` world types — Foxglove renders the standard
-        # types natively and the custom ones not at all. Nothing else in the
-        # graph produces them, so without this the panels sit empty on every
+        # Bucket-2 converter. The layout's voxel panels read
+        # `/openral/world_voxels_cloud`, a `sensor_msgs` re-publication of the
+        # custom `openral_msgs/OccupancyVoxels` — Foxglove renders the standard
+        # type natively and the custom one not at all. Nothing else in the
+        # graph produces it, so without this the panels sit empty on every
         # deploy while the underlying world state is perfectly healthy.
-        # Read-only viz: it subscribes two topics and publishes two, and
+        # Read-only viz: it subscribes one topic and publishes one, and
         # actuates nothing.
         nodes.append(
             Node(
