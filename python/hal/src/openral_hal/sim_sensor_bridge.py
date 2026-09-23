@@ -25,7 +25,7 @@ import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
-from openral_core import sensor_name_to_slot
+from openral_core import CameraTopicKind, camera_topic, sensor_name_to_slot
 
 from openral_hal.convex_distance import ConvexDistance, convex_geom_distance
 from openral_hal.mobile_base_bridge import describes_mobile_base
@@ -2861,15 +2861,13 @@ class SimSensorBridge:
         from sensor_msgs.msg import CameraInfo
         from sensor_msgs.msg import Image as RosImage
 
-        pub = self._node.create_publisher(
-            RosImage, f"/openral/cameras/{name}/image", self._camera_qos
-        )
+        pub = self._node.create_publisher(RosImage, camera_topic(name), self._camera_qos)
         self._image_pubs[name] = pub
         self._camera_info_pubs[name] = self._node.create_publisher(
-            CameraInfo, f"/openral/cameras/{name}/camera_info", self._camera_qos
+            CameraInfo, camera_topic(name, CameraTopicKind.CAMERA_INFO), self._camera_qos
         )
         self._node.get_logger().info(
-            f"SimSensorBridge: advertising /openral/cameras/{name}/image "
+            f"SimSensorBridge: advertising {camera_topic(name)} "
             f"(obs key '{self._image_obs_key.get(name, name)}')"
         )
         return pub
@@ -2916,7 +2914,7 @@ class SimSensorBridge:
                         f"SimSensorBridge: no frame for camera '{name}' "
                         f"(expected obs key '{obs_key}' or name '{name}'); "
                         f"available keys: {sorted(images.keys())}. "
-                        f"/openral/cameras/{name}/image stays unadvertised "
+                        f"{camera_topic(name)} stays unadvertised "
                         "until a frame arrives. Check the scene's --robot "
                         "override matches sensor layout, and whether this "
                         "camera is opt-in (robocasa's synthetic 'head' nav cam "
@@ -3818,16 +3816,15 @@ class SimSensorBridge:
             depth=1,
         )
         for spec in depth_specs:
-            base = f"/openral/cameras/{spec.name}"
             self._depth_pubs[spec.name] = self._node.create_publisher(
-                PointCloud2, f"{base}/points", depth_qos
+                PointCloud2, camera_topic(spec.name, CameraTopicKind.POINTS), depth_qos
             )
             # Dense depth image + CameraInfo for nvblox's depth integrator.
             self._depth_image_pubs[spec.name] = self._node.create_publisher(
-                Image, f"{base}/depth/image", depth_qos
+                Image, camera_topic(spec.name, CameraTopicKind.DEPTH_IMAGE), depth_qos
             )
             self._depth_info_pubs[spec.name] = self._node.create_publisher(
-                CameraInfo, f"{base}/depth/camera_info", info_qos
+                CameraInfo, camera_topic(spec.name, CameraTopicKind.DEPTH_CAMERA_INFO), info_qos
             )
         self._depth_timer = self._node.create_timer(
             1.0 / max(self._depth_rate_hz, 1.0), self._publish_depth_clouds

@@ -966,7 +966,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             f"[yellow]warning:[/yellow] --robot {robot_override!r} overrides the scene's "
             f"declared robot_id {scene_robot_id!r}; the scene's cameras + asset mounts are "
             f"authored for {scene_robot_id!r} and may not match {robot_override!r} (expect "
-            "empty /openral/cameras/* for non-matching sensors). Override only with a "
+            "empty camera topics for non-matching sensors). Override only with a "
             "kinematically-compatible arm on a free-axis scene."
         )
 

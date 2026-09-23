@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from openral_cli.main import app
+from openral_core import CameraTopicKind, camera_topic
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -240,7 +241,7 @@ def test_record_profiles_capture_the_camera_topics_the_graph_publishes() -> None
 
     slim = [re.compile(r) for r in RECORD_PROFILES["slim"]["regex"]]
     full = [re.compile(r) for r in RECORD_PROFILES["full"]["regex"]]
-    assert any(r.fullmatch("/openral/cameras/top/image/compressed") for r in slim)
-    assert not any(r.fullmatch("/openral/cameras/top/image") for r in slim)
-    assert any(r.fullmatch("/openral/cameras/top/image") for r in full)
-    assert any(r.fullmatch("/openral/cameras/top/depth/image") for r in full)
+    assert any(r.fullmatch(camera_topic("top") + "/compressed") for r in slim)
+    assert not any(r.fullmatch(camera_topic("top")) for r in slim)
+    assert any(r.fullmatch(camera_topic("top")) for r in full)
+    assert any(r.fullmatch(camera_topic("top", CameraTopicKind.DEPTH_IMAGE)) for r in full)

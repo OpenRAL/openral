@@ -41,6 +41,10 @@ _VSLAM_PACKAGE = "isaac_ros_visual_slam"
 _VSLAM_PLUGIN = "nvidia::isaac_ros::visual_slam::VisualSlamNode"
 
 
+#: Suffix of every camera-topic launch argument: the caller supplies it (ADR-0108).
+_REQUIRED = " Required: deploy_e2e passes ``openral_core.camera_topic(<sensor>, ...)``."
+
+
 def _default_params_path() -> str:
     share = get_package_share_directory("openral_slam_bringup")
     return os.path.join(share, "config", "cuvslam.yaml")
@@ -73,27 +77,29 @@ def generate_launch_description() -> LaunchDescription:
             description="Pass-through to cuVSLAM's `use_sim_time`.",
         ),
         # Camera-bus remappings: OpenRAL publishes RGB on
-        # `/openral/cameras/<name>/image`; the operator points cuVSLAM's
-        # stereo inputs at the robot's left/right (or RGB-D) streams.
+        # `openral_core.camera_topic(<name>)`; deploy_e2e points cuVSLAM's stereo
+        # inputs at the robot's streams (``slam_stereo_cameras``). No defaults
+        # (ADR-0108): an empty remap makes the container refuse the component
+        # instead of subscribing to a guessed ``left``/``right`` name.
         DeclareLaunchArgument(
             "image_0_topic",
-            default_value="/openral/cameras/left/image",
-            description="Stereo-left (or mono / RGB) image → visual_slam/image_0.",
+            default_value="",
+            description="Stereo-left (or mono / RGB) image → visual_slam/image_0." + _REQUIRED,
         ),
         DeclareLaunchArgument(
             "camera_info_0_topic",
-            default_value="/openral/cameras/left/camera_info",
-            description="Calibration for image_0 → visual_slam/camera_info_0.",
+            default_value="",
+            description="Calibration for image_0 → visual_slam/camera_info_0." + _REQUIRED,
         ),
         DeclareLaunchArgument(
             "image_1_topic",
-            default_value="/openral/cameras/right/image",
-            description="Stereo-right image → visual_slam/image_1 (stereo rigs).",
+            default_value="",
+            description="Stereo-right image → visual_slam/image_1 (stereo rigs)." + _REQUIRED,
         ),
         DeclareLaunchArgument(
             "camera_info_1_topic",
-            default_value="/openral/cameras/right/camera_info",
-            description="Calibration for image_1 → visual_slam/camera_info_1.",
+            default_value="",
+            description="Calibration for image_1 → visual_slam/camera_info_1." + _REQUIRED,
         ),
         DeclareLaunchArgument(
             "imu_topic",

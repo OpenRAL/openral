@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from openral_core import RobotDescription
+from openral_core import CameraTopicKind, RobotDescription, camera_topic
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAUNCH = REPO_ROOT / "packages/openral_rskill_ros/launch/deploy_e2e.launch.py"
@@ -53,17 +53,16 @@ def test_primary_rgb_camera_follows_the_manifest(
 
 
 @pytest.mark.parametrize(
-    ("robot", "topic"),
-    [
-        ("panda_mobile", "/openral/cameras/front_depth/points"),
-        ("openarm", "/openral/cameras/head_zed/points"),
-        ("so101_follower", ""),
-    ],
+    ("robot", "camera"),
+    [("panda_mobile", "front_depth"), ("openarm", "head_zed"), ("so101_follower", "")],
 )
 def test_depth_points_topic_names_the_manifests_depth_sensor(
-    launch_module: object, robot: str, topic: str
+    launch_module: object, robot: str, camera: str
 ) -> None:
-    assert launch_module._depth_points_topic(_robot(robot)) == topic  # type: ignore[attr-defined]
+    description = _robot(robot)
+    assert launch_module._depth_camera(description) == camera  # type: ignore[attr-defined]
+    topic = camera_topic(camera, CameraTopicKind.POINTS) if camera else ""
+    assert launch_module._depth_points_topic(description) == topic  # type: ignore[attr-defined]
 
 
 def test_the_launch_no_longer_hardcodes_either_camera() -> None:

@@ -6,12 +6,12 @@ Physical ``/dev/video*`` devices are described by ``SensorSpec.deploy_binding``
 ``DeployScene.sensors`` for workcell-mounted ones (overhead/front).
 
 ``open_deploy_sensor_readers`` opens one reader per bound spec and publishes to
-``<topic_prefix>/<name>/image`` (BEST_EFFORT QoS, matching WorldState's subscription):
+``camera_topic(name)`` (BEST_EFFORT QoS, matching WorldState's subscription):
 
 * ``gstreamer`` — native in-pipeline ROS tee.
 * ``opencv_thread`` (or any tee-less backend) — wrapped in a polling
   ``SensorRosPublisher``. Calibrated ``intrinsics`` also
-  publish ``CameraInfo`` on ``<topic_prefix>/<name>/camera_info`` (sim HAL's layout), enabling
+  publish ``CameraInfo`` on ``camera_topic(name, CAMERA_INFO)`` (sim HAL's layout), enabling
   mono visual SLAM on real hardware.
 
 **Direct aggregator path (zero-copy vision path).** When ``aggregator`` is passed (reader,
@@ -37,6 +37,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Final
 
 import structlog
+from openral_core import CameraTopicKind, camera_topic
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable
@@ -52,9 +53,6 @@ __all__ = [
 ]
 
 log = structlog.get_logger(__name__)
-
-#: WorldState's camera subscription prefix (`<prefix>/<name>/image`).
-DEFAULT_TOPIC_PREFIX = "/openral/cameras"
 
 #: Publish cadence when the binding's backend_params carry no fps.
 #: Matches the WorldStateAggregator staleness-gate expectation (10 Hz cameras).
@@ -500,7 +498,6 @@ def _await_first_frame(
 def open_deploy_sensor_readers(
     sensors: Iterable[SensorSpec],
     *,
-    topic_prefix: str = DEFAULT_TOPIC_PREFIX,
     aggregator: Any | None = None,  # reason: WorldStateAggregator — deferred import
     ros_node: Any | None = None,  # reason: composed rclpy node — deferred import
     uncapped_sensors: Collection[str] = (),
@@ -511,8 +508,6 @@ def open_deploy_sensor_readers(
     Args:
         sensors: Robot-manifest sensors plus ``DeployScene.sensors`` (caller concatenates).
             Specs without a ``SensorSpec.deploy_binding`` are skipped.
-        topic_prefix: WorldState's ``camera_topic_prefix``. Final topic is
-            ``<topic_prefix>/<spec.name>/image``.
         aggregator: The composed runtime's shared ``WorldStateAggregator``. When set, each
             opened reader also gets an in-process ``_AggregatorPump`` (zero-copy NVMM
             handles intact), and the sensor is recorded in ``SensorLeg.direct_sensors`` —
@@ -558,7 +553,7 @@ def open_deploy_sensor_readers(
         binding = spec.deploy_binding
         if binding is None:
             continue
-        topic = f"{topic_prefix}/{spec.name}/image"
+        topic = camera_topic(spec.name)
         native_tee = binding.backend == SensorReaderBackend.GSTREAMER
         prepared.append(
             (
@@ -611,7 +606,7 @@ def open_deploy_sensor_readers(
                     max_size=None if spec.name in uncapped_sensors else topic_max_size,
                     frame_id=spec.frame_id,
                     camera_info=spec.intrinsics,
-                    info_topic=f"{topic_prefix}/{spec.name}/camera_info",
+                    info_topic=camera_topic(spec.name, CameraTopicKind.CAMERA_INFO),
                     node=ros_node,
                 )
                 leg.publishers.append(publisher)

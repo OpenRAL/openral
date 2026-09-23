@@ -77,7 +77,7 @@ class SensorRosPublisher:
             node) owns the reader's lifecycle so the publisher can be
             attached to an already-open reader.
         topic: ROS topic to publish on (must be absolute, e.g.
-            ``/cameras/wrist_rgb/image_raw``).
+            ``openral_core.camera_topic("wrist_rgb")``).
         rate_hz: Publish cadence in Hz. Frames are pulled from the
             reader at this rate; intermediate frames the reader
             buffers are dropped at the ``read_latest`` call (which is
@@ -98,7 +98,7 @@ class SensorRosPublisher:
         info_topic: Companion ``CameraInfo`` topic. ``None`` derives
             ``<topic>/camera_info`` (camera_info_manager convention);
             the deploy sensor leg overrides it to the OpenRAL sibling
-            layout ``/openral/cameras/<name>/camera_info`` so real
+            ``camera_topic(<name>, CameraTopicKind.CAMERA_INFO)`` so real
             cameras match the sim HAL's topics (mono visual SLAM
             subscribes there).
         max_size: Optional ``(width, height)`` ceiling for the published

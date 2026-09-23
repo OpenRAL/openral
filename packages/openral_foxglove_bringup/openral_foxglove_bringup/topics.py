@@ -14,19 +14,26 @@ actuation/command plane (``/openral/estop``, ``/openral/safe_action``,
 
 from __future__ import annotations
 
+import re
+
+from openral_core import CAMERA_TOPIC_PREFIX
+
+#: Regex-escaped camera layout root (ADR-0108: spelled only by ``openral_core``).
+_CAMERAS = re.escape(CAMERA_TOPIC_PREFIX)
+
 #: **Scene** — the geometry a viewer needs to draw the robot in its world.
 #: These feed the 3D and Image panels natively, with no converter.
 SCENE_TOPICS: list[str] = [
-    r"/openral/cameras/.*/image",  # sensor_msgs/Image  — camera panels
+    _CAMERAS + r"/.*/image",  # sensor_msgs/Image  — camera panels
     # ``image_transport`` compressed siblings (opt-in republisher), ~1/10th
     # the raw bandwidth; Foxglove renders natively in the Image panel.
-    r"/openral/cameras/.*/image/compressed",  # sensor_msgs/CompressedImage
-    r"/openral/cameras/.*/image/compressedDepth",  # sensor_msgs/CompressedImage (depth)
+    _CAMERAS + r"/.*/image/compressed",  # sensor_msgs/CompressedImage
+    _CAMERAS + r"/.*/image/compressedDepth",  # sensor_msgs/CompressedImage (depth)
     # Intrinsics for the cameras above. Foxglove's Image panel needs a
     # CameraInfo to undistort, and the 3D panel needs one to draw the camera
     # frustum and project the image into the scene — neither works from the
     # Image topic alone.
-    r"/openral/cameras/.*/camera_info",  # sensor_msgs/CameraInfo
+    _CAMERAS + r"/.*/camera_info",  # sensor_msgs/CameraInfo
     r"/map",  # nav_msgs/OccupancyGrid — 2D nav map
     r"/octomap_point_cloud_centers",  # sensor_msgs/PointCloud2 — voxels
     r"/scan",  # sensor_msgs/LaserScan — optional 2D laser
@@ -47,9 +54,9 @@ SCENE_TOPICS: list[str] = [
 #: ``slam_mono_camera`` scene, an nvblox graph); absent otherwise, in which
 #: case the panels sit empty rather than erroring.
 DEPTH_TOPICS: list[str] = [
-    r"/openral/cameras/.*/depth/image",  # sensor_msgs/Image — per-camera depth
-    r"/openral/cameras/.*/depth/camera_info",  # sensor_msgs/CameraInfo
-    r"/openral/cameras/.*/points",  # sensor_msgs/PointCloud2 — back-projected RGBD
+    _CAMERAS + r"/.*/depth/image",  # sensor_msgs/Image — per-camera depth
+    _CAMERAS + r"/.*/depth/camera_info",  # sensor_msgs/CameraInfo
+    _CAMERAS + r"/.*/points",  # sensor_msgs/PointCloud2 — back-projected RGBD
     r"/openral/depth/image",  # sensor_msgs/Image — DA3 metric-depth sidecar
     r"/openral/depth/camera_info",  # sensor_msgs/CameraInfo
     r"/openral/nvblox/depth_filtered/image",  # sensor_msgs/Image
