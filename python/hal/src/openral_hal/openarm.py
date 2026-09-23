@@ -273,7 +273,7 @@ OPENARM_DESCRIPTION = RobotDescription(
                 width=640, height=480, fx=640.0, fy=640.0, cx=320.0, cy=240.0
             ),
             encoding="rgb8",
-            vla_feature_key="observation.images.base",
+            vla_feature_key="observation.images.top",
             vendor="sim",
             model="mujoco_top",
         ),
