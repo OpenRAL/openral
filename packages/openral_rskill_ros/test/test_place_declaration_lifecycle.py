@@ -87,8 +87,13 @@ def _harness(place_declaration_json: str) -> Iterator[tuple[Any, Any, list[Any]]
 
     rclpy.init()
     runtime = compose_so100_runtime(skill_resolver=_constant_skill_resolver())
+    # The runner has no staleness window of its own (issue #303); deploy_e2e.launch.py
+    # declares it in production, so this harness plays the launch's role.
     runtime.skill_runner_node.set_parameters(
-        [rclpy.parameter.Parameter("place_declaration_json", value=place_declaration_json)]
+        [
+            rclpy.parameter.Parameter("place_declaration_json", value=place_declaration_json),
+            rclpy.parameter.Parameter("joint_state_staleness_limit_s", value=0.5),
+        ]
     )
 
     executor = rclpy.executors.MultiThreadedExecutor(num_threads=4)
@@ -350,8 +355,13 @@ def test_an_exception_escaping_the_executor_still_retracts() -> None:
 
     rclpy.init()
     runtime = compose_so100_runtime(skill_resolver=_exploding_resolver)
+    # The runner has no staleness window of its own (issue #303); deploy_e2e.launch.py
+    # declares it in production, so this harness plays the launch's role.
     runtime.skill_runner_node.set_parameters(
-        [rclpy.parameter.Parameter("place_declaration_json", value=_scene_declaration_json())]
+        [
+            rclpy.parameter.Parameter("place_declaration_json", value=_scene_declaration_json()),
+            rclpy.parameter.Parameter("joint_state_staleness_limit_s", value=0.5),
+        ]
     )
     executor = rclpy.executors.MultiThreadedExecutor(num_threads=4)
     executor.add_node(runtime.world_state_node)
