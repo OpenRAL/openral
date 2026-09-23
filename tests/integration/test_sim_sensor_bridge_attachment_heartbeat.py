@@ -1,25 +1,25 @@
-"""A sim HAL without attach mechanics still reports "nothing attached, fresh".
+"""Every sim HAL heartbeats a fresh, empty attachment set — not only the ones with attach mechanics.
 
-The deploy launch enables the C++ kernel's attached-payload check for every
+The deploy launch enables the kernel's attached-payload check for every
 sim robot with collision capsules, and that check is fail-closed on a payload
-it cannot verify — including one it has never heard about: a world state whose
-``attachment_stamp_ns`` is still 0 drops every JOINT chunk as
-``attached_overflow``. Until 2026-09-22 the bridge only published
-``/openral/attachment_state`` for a HAL with the attachment API, so the OpenArm
-MuJoCo twin (a plain ``MujocoArmHAL``, no attach mechanics) had zero publishers
-on that topic and not one joint chunk ever reached the arm.
+it cannot verify — including one it has never heard about: a world state
+whose ``attachment_stamp_ns`` is still 0 is unverifiable, so every joint
+chunk is dropped as ``attached_overflow``. A ``MujocoArmHAL`` twin has no
+attachment API at all, so "nothing attached, fresh" is the exact truth for
+it, and saying so is what lets the kernel certify its motion. Seen on the
+OpenArm twin (qorin1, 2026-09-22): zero publishers on
+``/openral/attachment_state`` and not one joint chunk reached the arm.
 
-Real bridge, real rclpy node, real ``OpenArmMujocoHAL``; lives in
-``tests/integration/`` because test-selective has no ``rclpy``::
-
-    source install/setup.bash
-    OPENRAL_TEST_ROS_LIVE=1 pytest tests/integration/test_sim_sensor_bridge_attachment_heartbeat.py
+Real ``SimSensorBridge`` on a real rclpy node against real MuJoCo twins of
+three different robots, so the guarantee is the bridge's, not one HAL's.
 """
 
 from __future__ import annotations
 
 import os
 import time
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 
@@ -30,22 +30,44 @@ _LIVE_ROS_REASON = (
 )
 
 
+def _openarm() -> Any:
+    from openral_hal.openarm import OpenArmMujocoHAL
+
+    return OpenArmMujocoHAL(gravity_enabled=False)
+
+
+def _so100() -> Any:
+    from openral_hal.so100_mujoco import SO100MujocoHAL
+
+    return SO100MujocoHAL(gravity_enabled=False)
+
+
+def _franka() -> Any:
+    from openral_hal.franka_panda import FrankaPandaHAL
+
+    return FrankaPandaHAL(gravity_enabled=False)
+
+
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
-def test_a_hal_without_the_attachment_api_still_heartbeats_an_empty_fresh_set() -> None:
+@pytest.mark.parametrize(
+    "make_hal", [_openarm, _so100, _franka], ids=["openarm_v2", "so100", "franka_panda"]
+)
+def test_a_hal_without_the_attachment_api_still_heartbeats_an_empty_fresh_set(
+    make_hal: Callable[[], Any],
+) -> None:
     rclpy = pytest.importorskip("rclpy")
 
-    from openral_hal.openarm import OPENARM_DESCRIPTION, OpenArmMujocoHAL
     from openral_hal.sim_sensor_bridge import SimSensorBridge
     from openral_msgs.msg import AttachmentState
     from rclpy.node import Node
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
 
-    hal = OpenArmMujocoHAL(gravity_enabled=False)
+    hal = make_hal()
     assert not hasattr(hal, "update_attached_objects"), "fixture must lack the attachment API"
 
     rclpy.init()
     try:
-        node = Node("test_attachment_heartbeat")
+        node = Node(f"test_attachment_heartbeat_{hal.description.name}")
         try:
             received: list[AttachmentState] = []
             node.create_subscription(
@@ -61,7 +83,7 @@ def test_a_hal_without_the_attachment_api_still_heartbeats_an_empty_fresh_set() 
             # Same order as the HAL lifecycle node: connect, then activate the
             # bridge's streams via ``setup()``.
             hal.connect()
-            bridge = SimSensorBridge(node, hal, OPENARM_DESCRIPTION, viewer_enabled=False)
+            bridge = SimSensorBridge(node, hal, hal.description, viewer_enabled=False)
             try:
                 bridge.setup()
                 # Publisher and heartbeat exist; the staging path (which needs
