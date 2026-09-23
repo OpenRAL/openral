@@ -52,6 +52,57 @@ def test_rope_and_position_buffers_are_rebuilt() -> None:
     assert torch.allclose(m.rope.inv_freq, expected)
 
 
+def test_real_gemma_modules_rebuild_to_their_constructed_values() -> None:
+    """The buffers PaliGemma / gemma_expert actually carry, via meta init + ``to_empty``.
+
+    ``embed_scale`` is the one the restock checkpoint ran with as garbage
+    (cosine 0.03 vs ``from_pretrained``, Thor 2026-09-23): every token
+    embedding is multiplied by it. Real transformers modules, a non-default
+    ``rope_theta`` so the config lookup is what is tested, no lerobot policy.
+    """
+    accelerate = pytest.importorskip("accelerate")
+    gemma = pytest.importorskip("transformers.models.gemma.modeling_gemma")
+    from transformers import GemmaConfig
+
+    cfg = GemmaConfig(
+        vocab_size=64, hidden_size=32, num_attention_heads=4, head_dim=8, rope_theta=50000.0
+    )
+
+    class _Stack(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.embed_tokens = gemma.GemmaTextScaledWordEmbedding(
+                cfg.vocab_size, cfg.hidden_size, 0, embed_scale=cfg.hidden_size**0.5
+            )
+            self.rotary_emb = gemma.GemmaRotaryEmbedding(cfg)
+
+    reference = _Stack()
+    with accelerate.init_empty_weights():
+        meta = _Stack()
+    meta.to_empty(device="cpu")
+    with torch.no_grad():
+        _init_rope_and_position_buffers(meta, torch=torch)
+    assert torch.equal(meta.embed_tokens.embed_scale, reference.embed_tokens.embed_scale)
+    assert torch.allclose(meta.rotary_emb.inv_freq, reference.rotary_emb.inv_freq)
+    assert torch.allclose(meta.rotary_emb.original_inv_freq, reference.rotary_emb.original_inv_freq)
+    # The rebuild used the config's theta, not the 10000 fallback.
+    default = 1.0 / (10000.0 ** (torch.arange(0, 8, 2).float() / 8))
+    assert not torch.allclose(meta.rotary_emb.inv_freq, default)
+
+
+def test_an_unknown_non_persistent_buffer_is_refused() -> None:
+    from openral_core.exceptions import ROSRuntimeError
+
+    class _Mystery(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.register_buffer("attention_scale", torch.tensor(float("nan")), persistent=False)
+            self.register_buffer("kept", torch.zeros(2))  # persistent: loaded from the file
+
+    with pytest.raises(ROSRuntimeError, match="attention_scale"):
+        _init_rope_and_position_buffers(_Mystery(), torch=torch)
+
+
 def _write_state(tmp_path: Path, model: torch.nn.Module) -> Path:
     snapshot = tmp_path / "snapshots" / "abc"
     snapshot.mkdir(parents=True)
