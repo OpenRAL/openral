@@ -19,7 +19,10 @@ queued, running, or finished (other than ``cancelled``) for that SHA is left
 alone. A failed lane is re-run from the Actions page, not re-dispatched.
 
 Fork PRs are reported and skipped: ``workflow_dispatch`` can only target a
-branch of this repository.
+branch of this repository, so nothing can post ``heavy-lanes`` on a fork head.
+A maintainer runs the lanes for a fork PR by pushing its head to a branch of
+this repository and dispatching ``heavy-lanes.yml`` there (the check lands on
+the same commit SHA), or merges through the ruleset bypass.
 
 Run (from ``.github/workflows/heavy-lanes-trigger.yml``)::
 
@@ -125,7 +128,10 @@ def readiness(pr: PullRequestState, required_checks: list[str]) -> Verdict:
     if pr.draft:
         reasons.append("draft PR")
     if not pr.same_repo:
-        reasons.append("fork PR — workflow_dispatch cannot target a fork branch")
+        reasons.append(
+            "fork PR — workflow_dispatch cannot target a fork branch; push its head to a "
+            "branch of this repo and dispatch heavy-lanes.yml there"
+        )
     if any(r.status != "completed" or r.conclusion != "cancelled" for r in pr.lane_runs):
         reasons.append("heavy lanes already started for this head commit")
     if pr.behind_by > 0:
@@ -277,6 +283,12 @@ def main(argv: list[str] | None = None) -> int:
     for raw in prs:
         if raw["state"] != "open":
             continue
+        # Drafts and forks are rejected by `readiness` anyway; skipping them
+        # before `fetch` saves its 4 REST + 1 GraphQL calls per PR, per sweep.
+        head_repo = raw["head"]["repo"]
+        if raw["draft"] or not head_repo or head_repo["full_name"] != args.repo:
+            print(f"PR #{raw['number']}: waiting — draft or fork PR")
+            continue
         try:
             pr = gh.fetch(raw)
         except (urllib.error.URLError, GitHubAPIError) as exc:
@@ -291,7 +303,12 @@ def main(argv: list[str] | None = None) -> int:
             continue
         # workflow_dispatch runs the branch TIP, so a push since `fetch` would
         # start the lanes on a commit nobody evaluated. The next sweep handles it.
-        if gh.get(f"pulls/{pr.number}")["head"]["sha"] != pr.head_sha:
+        try:
+            current_sha = gh.get(f"pulls/{pr.number}")["head"]["sha"]
+        except urllib.error.URLError as exc:
+            print(f"::warning::PR #{pr.number}: {_describe(exc)}")
+            continue
+        if current_sha != pr.head_sha:
             print(f"PR #{pr.number}: head moved since evaluation — deferring to the next sweep")
             continue
         try:

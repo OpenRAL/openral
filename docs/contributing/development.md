@@ -398,8 +398,14 @@ re-checks each open PR whenever a PR workflow finishes and every 10 minutes
 can take up to ~10 min to be noticed). It starts the lanes once per head
 commit; a new push waits for the conditions again. Until then the check shows
 "Expected — waiting" and blocks the merge. A failed lane is re-run from its
-Actions run page. Fork PRs are not dispatched automatically
-(`workflow_dispatch` cannot target a fork branch).
+Actions run page.
+
+**Fork PRs:** `workflow_dispatch` cannot target a fork branch, so nothing can
+post `heavy-lanes` on a fork head and the check stays "Expected — waiting". A
+maintainer runs the lanes by pushing the fork's head commit to a branch of this
+repository (`git push origin <sha>:refs/heads/fork/<pr>`) and dispatching
+**heavy-lanes** on that branch — the check lands on the same commit SHA, so the
+PR picks it up — or merges through the ruleset bypass.
 
 This keeps the expensive lanes — 19 parallel jobs — for PRs that are otherwise
 mergeable, instead of paying for them on every push.
