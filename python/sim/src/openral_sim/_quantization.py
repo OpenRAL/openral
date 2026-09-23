@@ -568,7 +568,9 @@ def load_prequantized_state_for_rskill(  # noqa: PLR0911  # reason: linear early
     )
 
 
-def resolve_weights_file(repo_id: str, *, filename: str = "model.safetensors") -> str:
+def resolve_weights_file(
+    repo_id: str, *, filename: str = "model.safetensors", revision: str | None = None
+) -> str:
     """Local path of ``filename`` for ``repo_id``, whether that is a directory or a Hub repo.
 
     ``resolve_rskill_to_hf_with_revision`` hands adapters a *directory* for an
@@ -577,7 +579,9 @@ def resolve_weights_file(repo_id: str, *, filename: str = "model.safetensors") -
     read that went straight to ``hf_hub_download`` broke on the directory
     case; this is the one place that tells the two apart. A directory that
     lacks the file falls through to the cached-first Hub download, so a
-    mixed layout still resolves.
+    mixed layout still resolves. ``revision`` is the pinned Hub revision the
+    adapter resolved for ``config.json``; the Hub path forwards it so the
+    weights can never come from a different revision than the config.
     """
     from pathlib import Path
 
@@ -590,7 +594,11 @@ def resolve_weights_file(repo_id: str, *, filename: str = "model.safetensors") -
 
     return str(
         hf_download_cached_first(
-            hf_hub_download, LocalEntryNotFoundError, repo_id=repo_id, filename=filename
+            hf_hub_download,
+            LocalEntryNotFoundError,
+            repo_id=repo_id,
+            filename=filename,
+            revision=revision,
         )
     )
 

@@ -403,7 +403,18 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
     # World state spins on the C++ events executor (see
     # ``start_world_state_executor``); only the skill runner stays on the
     # Python multi-threaded one, whose reentrant group the action server needs.
-    stop_world_state_executor = start_world_state_executor(runtime.world_state_node)
+    # A world-state callback that raises would otherwise end only that thread
+    # while the runner kept executing on stale state: stop this executor too,
+    # and leave with a distinct exit code below.
+    world_state_failure: list[BaseException] = []
+
+    def _on_world_state_failure(exc: BaseException) -> None:
+        world_state_failure.append(exc)
+        executor.shutdown()
+
+    stop_world_state_executor = start_world_state_executor(
+        runtime.world_state_node, on_failure=_on_world_state_failure
+    )
     if stop_world_state_executor is None:
         print(
             "runtime_node: rclpy has no EventsExecutor; world_state shares the "
@@ -480,6 +491,13 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
         # Idempotent — no-op when the SIGINT handler (or whoever fired
         # ExternalShutdownException) already shut down the context.
         rclpy.try_shutdown()
+    if world_state_failure:
+        exc = world_state_failure[0]
+        print(
+            f"runtime_node: world_state executor died: {type(exc).__name__}: {exc!s}",
+            file=sys.stderr,
+        )
+        return 7
     return 0
 
 

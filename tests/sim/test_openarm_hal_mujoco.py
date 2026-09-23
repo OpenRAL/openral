@@ -362,6 +362,66 @@ class TestSendAction:
         assert after[names.index(left_grip)] == pytest.approx(0.4, abs=0.05)
         assert after[names.index(right_grip)] == pytest.approx(-0.4, abs=0.05)
 
+    @staticmethod
+    def _zero_tick(hal: OpenArmMujocoHAL, tick: int) -> list[Action]:
+        """The four slots of one grouped tick, every target at zero."""
+        names = [j.name for j in hal.description.joints]
+        left, left_grip, right, right_grip = names[0:7], names[7], names[8:15], names[15]
+
+        def _joints(joint_names: list[str]) -> Action:
+            return Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[[0.0] * 16],
+                joint_names=joint_names,
+                tick_index=tick,
+                tick_group_size=4,
+                stamp_ns=time.time_ns(),
+            )
+
+        def _gripper(ee: str) -> Action:
+            return Action(
+                control_mode=ControlMode.GRIPPER_POSITION,
+                horizon=1,
+                gripper=[0.0],
+                ee_name=ee,
+                tick_index=tick,
+                tick_group_size=4,
+                stamp_ns=time.time_ns(),
+            )
+
+        return [_joints(left), _gripper(left_grip), _joints(right), _gripper(right_grip)]
+
+    def test_a_tick_at_or_below_the_last_committed_one_is_refused(
+        self, connected_hal: OpenArmMujocoHAL
+    ) -> None:
+        """A whole group of an already-committed tick would replay stale targets.
+
+        The stager only guards the tick in flight, and the lifecycle node's
+        monotonic acknowledgement would hide the replay; the HAL refuses it
+        before staging. A reconnect restarts the numbering.
+        """
+        for slot in self._zero_tick(connected_hal, 1):
+            connected_hal.send_action(slot)
+        assert connected_hal.last_committed_tick == 1
+
+        stale = self._zero_tick(connected_hal, 1)[0]
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            connected_hal.send_action(stale)
+        assert connected_hal.last_committed_tick == 1
+
+        # The next tick is unaffected by the refusal.
+        connected_hal.send_action(self._zero_tick(connected_hal, 2)[0])
+        assert connected_hal.last_committed_tick == 1
+
+        connected_hal.disconnect()
+        assert connected_hal.last_committed_tick == 0
+
+    def test_a_slot_is_refused_while_disconnected(self, hal: OpenArmMujocoHAL) -> None:
+        """An incomplete group used to return success on a disconnected twin and keep the slot."""
+        with pytest.raises(ROSRuntimeError, match="not connected"):
+            hal.send_action(self._zero_tick(hal, 1)[0])
+
 
 # ── estop ─────────────────────────────────────────────────────────────────────
 # Standard estop contract is tested in test_hal_protocol_contracts.py (parametrized).

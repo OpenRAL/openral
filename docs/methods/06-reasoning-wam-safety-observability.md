@@ -505,9 +505,9 @@ _`openral prompt "do X"` CLI adapter. Publishes a one-shot `PromptStamped` onto 
 _Idempotent OTel SDK setup + flush helper._
 
 - `configure_observability(*, service_name="openral", endpoint=None, sample_ratio=None) -> bool` — Install OTLP/gRPC tracer + meter + logger providers; reads `OTEL_EXPORTER_OTLP_ENDPOINT` when `endpoint` is None; `True` if exporters were installed, `False` for the no-op path. On success also starts the system-metrics collector and registers `shutdown_observability` via `atexit`. `sample_ratio` (or `OPENRAL_OTEL_SAMPLE_RATIO`) selects the trace sampler: `None`/`1.0` → always-on, else a parent-based ratio sampler. (L115)
-- `configure_worker_observability(service_name, *, endpoint=None, sample_ratio=None) -> bool` — Cross-process bootstrap for a spawned worker: calls `configure_observability` then attaches the parent trace context from env, so a child spawned with `env={**os.environ, **traceparent_env()}` joins the parent trace. (L238)
-- `_resolve_sampler(sample_ratio) -> Sampler` — Resolve the trace sampler from arg + env, defaulting to always-on; a garbage env value also falls back to always-on rather than silently dropping every span. (L351)
-- `shutdown_observability() -> None` — Flush + shut down all three providers; idempotent and safe with no exporter installed. Stops the system-metrics collector before draining the meter so the final sample lands in the export batch. (L408)
+- `configure_worker_observability(service_name, *, endpoint=None, sample_ratio=None) -> bool` — Cross-process bootstrap for a spawned worker: calls `configure_observability` then attaches the parent trace context from env, so a child spawned with `env={**os.environ, **traceparent_env()}` joins the parent trace. (L240)
+- `_resolve_sampler(sample_ratio) -> Sampler` — Resolve the trace sampler from arg + env, defaulting to always-on; a garbage env value also falls back to always-on rather than silently dropping every span. (L353)
+- `shutdown_observability() -> None` — Flush + shut down all three providers; idempotent and safe with no exporter installed. Stops the system-metrics collector before draining the meter so the final sample lands in the export batch. (L410)
 
 ### `python/observability/src/openral_observability/tracing.py`
 _Span-context-manager helpers; safe to call before `configure_observability`._

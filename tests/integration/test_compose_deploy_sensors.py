@@ -60,15 +60,19 @@ def test_scene_feature_keys_reach_the_runner_and_recorder_slots(scene_path: Path
     import rclpy  # type: ignore[import-untyped]
     from openral_core import sensor_name_to_slot
 
-    rclpy.init()
-    scene, runtime = _compose(scene_path)
-    expected = {
-        s.name: s.vla_feature_key.rsplit(".", 1)[-1]
-        for s in scene.sensors
-        if s.vla_feature_key and s.modality == "rgb"
-    }
-    assert expected, f"{scene_path.name} declares no RGB feature key; selection is wrong"
+    runtime = None
     try:
+        # init and compose inside the try: a compose failure must still reach
+        # try_shutdown, or every later scene fails at init with "already
+        # initialized" and hides the real error.
+        rclpy.init()
+        scene, runtime = _compose(scene_path)
+        expected = {
+            s.name: s.vla_feature_key.rsplit(".", 1)[-1]
+            for s in scene.sensors
+            if s.vla_feature_key and s.modality == "rgb"
+        }
+        assert expected, f"{scene_path.name} declares no RGB feature key; selection is wrong"
         # One description for every consumer: the runner builds its camera
         # slots from it, the aggregator and the recorder read the same object.
         assert runtime.skill_runner_node._description is runtime.description
@@ -79,7 +83,10 @@ def test_scene_feature_keys_reach_the_runner_and_recorder_slots(scene_path: Path
         names = [s.name for s in runtime.description.sensors]
         assert len(names) == len(set(names)), f"a sensor survived the merge twice: {names}"
     finally:
-        _destroy(runtime)
+        if runtime is not None:
+            _destroy(runtime)
+        else:
+            rclpy.try_shutdown()
 
 
 @pytest.mark.parametrize("scene_path", _SCENES_WITH_SENSORS, ids=lambda p: p.stem)
@@ -95,9 +102,10 @@ def test_merging_a_scene_never_drops_or_renames_a_manifest_slot(scene_path: Path
     import rclpy  # type: ignore[import-untyped]
     from openral_core import RobotDescription, sensor_name_to_slot
 
-    rclpy.init()
-    scene, runtime = _compose(scene_path)
+    runtime = None
     try:
+        rclpy.init()
+        scene, runtime = _compose(scene_path)
         manifest_only = RobotDescription.from_yaml(
             str(_REPO / "robots" / scene.robot_id / "robot.yaml")
         )
@@ -119,4 +127,7 @@ def test_merging_a_scene_never_drops_or_renames_a_manifest_slot(scene_path: Path
         for s in scene.sensors:
             assert s.name in names
     finally:
-        _destroy(runtime)
+        if runtime is not None:
+            _destroy(runtime)
+        else:
+            rclpy.try_shutdown()

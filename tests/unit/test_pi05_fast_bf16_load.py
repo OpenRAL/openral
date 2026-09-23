@@ -151,3 +151,54 @@ def test_streamed_weights_land_in_place_with_the_targets_dtype(tmp_path: Path) -
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
 def test_streamed_weights_land_on_cuda_without_a_cpu_copy(tmp_path: Path) -> None:
     _stream_and_check("cuda:0", tmp_path)
+
+
+def test_hub_weights_resolve_at_the_pinned_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bare repo id forwards ``revision``, so weights and config share one pin."""
+    import openral_rskill._vla_core as vla_core
+
+    seen: dict[str, object] = {}
+
+    def _capture(*_args: object, **kwargs: object) -> str:
+        seen.update(kwargs)
+        return "/cache/model.safetensors"
+
+    monkeypatch.setattr(vla_core, "hf_download_cached_first", _capture)
+    assert resolve_weights_file("OpenRAL/some-rskill", revision="abc123") == (
+        "/cache/model.safetensors"
+    )
+    assert seen["repo_id"] == "OpenRAL/some-rskill"
+    assert seen["filename"] == "model.safetensors"
+    assert seen["revision"] == "abc123"
+
+
+class _Tied(torch.nn.Module):
+    """An embedding whose weight is tied to an output head, PaliGemma-style."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.embed = torch.nn.Embedding(6, 4)
+        self.head = torch.nn.Linear(4, 6, bias=False)
+        self.head.weight = self.embed.weight
+
+
+def test_a_checkpoint_may_name_a_tied_weight_by_either_alias(tmp_path: Path) -> None:
+    """``named_parameters()`` de-duplicates tied weights; the loader must not.
+
+    PaliGemma ties ``embed_tokens.weight`` to ``lm_head.weight``. A checkpoint
+    that carries only the head's spelling used to be reported ``unexpected``
+    and the shared storage stayed at its reset value.
+    """
+    values = torch.randn(6, 4)
+    snapshot = tmp_path / "snapshots" / "tied"
+    snapshot.mkdir(parents=True)
+    safetensors_torch.save_file(
+        {"head.weight": values.clone()}, str(snapshot / "model.safetensors")
+    )
+
+    target = _Tied().to(torch.bfloat16)
+    with torch.no_grad():
+        target.embed.weight.zero_()
+    _stream_bf16_state_to_device(target, str(snapshot), device="cpu", torch=torch)
+    assert torch.equal(target.embed.weight.float(), values.to(torch.bfloat16).float())
+    assert target.head.weight.data_ptr() == target.embed.weight.data_ptr()

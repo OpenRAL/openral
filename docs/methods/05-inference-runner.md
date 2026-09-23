@@ -54,8 +54,8 @@ _Bus-attached LeRobot/rosbag recorder for the deploy graph (mirrors `WorldCloudB
 - module constant `_PHASE_END = 1` (L62) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
 - module constant `ACTION_TOPIC_DEFAULT = "/openral/candidate_action"` (L64) — default `ActionChunk` topic.
 - module constant `EPISODE_TOPIC_DEFAULT = "/openral/episode"` (L65) — default `Episode` marker topic.
-- `class DatasetRecorderBridge(node, *, robot, aggregator, recorder, output_path=None, action_topic="/openral/candidate_action", episode_topic="/openral/episode")` — Subscribes `Episode` (drives `recorder.episode_start/end`) and `ActionChunk`, joins each tick's action with the `WorldStateAggregator` snapshot, and writes frames via `Rosbag2Sink`. Logs `dataset_recorder.nothing_recorded` at `destroy()` if no episode marker ever fired, so an empty recording is never silent. (L110)
-  - `destroy() -> None` (L207) — Flushes the pending tick, closes any open episode (marking it a failure), finalizes the recorder, releases the subscriptions; idempotent.
+- `class DatasetRecorderBridge(node, *, robot, aggregator, recorder, output_path=None, action_topic="/openral/candidate_action", episode_topic="/openral/episode")` — Subscribes `Episode` (drives `recorder.episode_start/end`) and `ActionChunk`, joins each tick's action with the `WorldStateAggregator` snapshot, and writes frames via `Rosbag2Sink`. Logs `dataset_recorder.nothing_recorded` at `destroy()` if no episode marker ever fired, so an empty recording is never silent. (L115)
+  - `destroy() -> None` (L212) — Flushes the pending tick, closes any open episode (marking it a failure), finalizes the recorder, releases the subscriptions; idempotent.
 
 ### `python/runner/src/openral_runner/sensor_reader.py`
 _``SensorReader`` Protocol — seam between per-sensor capture backends and the inference runner._

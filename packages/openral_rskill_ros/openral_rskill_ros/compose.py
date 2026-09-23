@@ -24,6 +24,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import structlog
 from openral_core import RobotDescription
 from openral_world_state import WorldStateAggregator
 
@@ -79,7 +80,12 @@ class ComposedRuntime:
     caller must invoke ``.destroy()`` on teardown so the bag is finalized."""
 
 
-def start_world_state_executor(world_state_node: Any) -> Callable[[], None] | None:
+log = structlog.get_logger(__name__)
+
+
+def start_world_state_executor(
+    world_state_node: Any, *, on_failure: Callable[[BaseException], None] | None = None
+) -> Callable[[], None] | None:
     """Spin ``world_state_node`` on rclpy's C++ ``EventsExecutor`` in a daemon thread.
 
     The Python ``MultiThreadedExecutor`` rebuilds its wait set in Python on
@@ -92,6 +98,18 @@ def start_world_state_executor(world_state_node: Any) -> Callable[[], None] | No
     thread is enough. The skill runner stays on the multi-threaded executor,
     whose reentrant group keeps ``execute_rskill``'s accept/cancel/result live
     while a goal blocks a worker.
+
+    A world-state callback that raises ends ``spin`` on this thread, and a
+    daemon thread has nothing above it: ingestion would stop while the skill
+    runner kept executing on stale world state. So an exception that is not
+    the stop callable's own shutdown is logged as ``world_state.executor_died``
+    and handed to ``on_failure`` (the runtime uses it to stop its own executor
+    and exit non-zero); without a handler it is re-raised on this thread.
+
+    Args:
+        world_state_node: The node to spin.
+        on_failure: Called with the exception that ended ``spin``, unless the
+            stop callable asked for the shutdown.
 
     Returns:
         A stop callable (shuts the executor down and joins the thread), or
@@ -106,10 +124,24 @@ def start_world_state_executor(world_state_node: Any) -> Callable[[], None] | No
 
     executor = EventsExecutor()
     executor.add_node(world_state_node)
-    thread = threading.Thread(target=executor.spin, name="world-state-events", daemon=True)
+    stopping = threading.Event()
+
+    def _spin() -> None:
+        try:
+            executor.spin()
+        except Exception as exc:  # reason: the thread's boundary; nothing above it
+            if stopping.is_set():
+                return
+            log.error("world_state.executor_died", kind=type(exc).__name__, error=str(exc))
+            if on_failure is None:
+                raise
+            on_failure(exc)
+
+    thread = threading.Thread(target=_spin, name="world-state-events", daemon=True)
     thread.start()
 
     def _stop() -> None:
+        stopping.set()
         executor.shutdown()
         thread.join(timeout=5.0)
 

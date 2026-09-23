@@ -102,9 +102,10 @@ def _segment_distance(p1: np.ndarray, q1: np.ndarray, p2: np.ndarray, q2: np.nda
     return float(np.linalg.norm((p1 + d1 * s) - (p2 + d2 * t)))
 
 
-def _capsules_at_zero(manifest: dict[str, Any]) -> dict[str, tuple[np.ndarray, np.ndarray, float]]:
+def _capsules_at_zero(manifest: dict[str, Any]) -> list[tuple[str, np.ndarray, np.ndarray, float]]:
+    """Every capsule as ``(link_name, a, b, radius)`` — a link may declare several."""
     poses = _link_poses_at_zero(manifest)
-    out: dict[str, tuple[np.ndarray, np.ndarray, float]] = {}
+    out: list[tuple[str, np.ndarray, np.ndarray, float]] = []
     for entry in manifest.get("collision_geometry", []):
         shape = entry["shape"]
         if shape.get("shape") != "capsule" or entry["link_name"] not in poses:
@@ -114,7 +115,7 @@ def _capsules_at_zero(manifest: dict[str, Any]) -> dict[str, tuple[np.ndarray, n
         half = shape["length_m"] / 2.0
         a = (c @ np.array([0.0, 0.0, -half, 1.0]))[:3]
         b = (c @ np.array([0.0, 0.0, half, 1.0]))[:3]
-        out[entry["link_name"]] = (a, b, float(shape["radius_m"]))
+        out.append((entry["link_name"], a, b, float(shape["radius_m"])))
     return out
 
 
@@ -157,11 +158,13 @@ def test_no_non_allowed_capsule_pair_interpenetrates_at_zero(manifest_path: Path
     except LookupError as unrooted:
         pytest.skip(f"links not rooted at base_frame, FK unvalidated here: {unrooted.args[0]}")
     overlaps = []
-    for a, b in itertools.combinations(sorted(capsules), 2):
-        if frozenset((a, b)) in allowed:
+    # The kernel keeps every capsule and checks pairs on different links, so
+    # a link with two capsules contributes both; same-link pairs are skipped.
+    for (a, p1, q1, r1), (b, p2, q2, r2) in itertools.combinations(
+        sorted(capsules, key=lambda c: c[0]), 2
+    ):
+        if a == b or frozenset((a, b)) in allowed:
             continue
-        p1, q1, r1 = capsules[a]
-        p2, q2, r2 = capsules[b]
         surface = _segment_distance(p1, q1, p2, q2) - r1 - r2
         if surface < 0.0:
             overlaps.append((a, b, round(surface, 4)))

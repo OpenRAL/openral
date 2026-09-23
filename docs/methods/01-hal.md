@@ -356,27 +356,27 @@ _MuJoCo digital twin for the Flexiv Rizon 4 — 7-DoF cobot with whole-body forc
 ### `python/hal/src/openral_hal/openarm.py`
 _MuJoCo digital twin for the Enactic OpenArm **v2** bimanual humanoid arm.  Fresh `HALBase` subclass — v2's native `<position>` actuators with per-class PD baked into the MJCF mean the HAL just writes target → ctrl and steps, no software PD loop needed._
 
-- `class OpenArmMujocoHAL(MujocoArmHAL)` (L435) — 16-DoF (7 arm + 1 gripper per side) bimanual HAL driving `enactic/openarm_mujoco/v2/openarm_v20_bimanual.xml`; thin manifest-driven wrapper around `MujocoArmHAL`. All wiring (MJCF URI fetched via `ensure_openarm_v2_mjcf`, joint/actuator maps, gripper config) lives in `OPENARM_DESCRIPTION.sim`. (L435) **ADR-0102 slot groups (2026-09-22):** `send_action(action)` stages a slot action (`tick_group_size > 1`) in a `SlotGroupStager` and, once the tick's last slot lands, composes the four typed actions into one 16-DoF `JOINT_POSITION` step via `compose_slot_group` — the same reassembly `OpenArmRealHAL` does for its four controllers — so one arm never moves on a new chunk while the other holds a stale one; `last_committed_tick -> int` is what the HAL lifecycle node acknowledges on `/openral/action_applied`. `disconnect()` / `estop()` drop a half-staged tick. Before this the twin refused every gripper slot (`only supports joint_position`) and a slot policy's tick never completed.
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(OPENARM_DESCRIPTION, …)`. (L470)
-  - `last_committed_tick() -> int` (L505) — Inference tick of the last slot group applied to MuJoCo (0 = none); the HAL lifecycle node acknowledges a grouped tick on `/openral/action_applied` only once every slot has landed.
-  - `send_action(action) -> None` (L513) — Applies a whole-robot action, or stages one slot of a grouped tick (`tick_group_size > 1`) until the tick is complete, then composes the slots into one 16-DoF `JOINT_POSITION` action.
-  - `disconnect() -> None` (L542) — Drops any half-staged tick before releasing the twin.
-  - `estop() -> None` (L547) — Drops any half-staged tick; the survivors must never be committed later.
+- `class OpenArmMujocoHAL(MujocoArmHAL)` (L435) — 16-DoF (7 arm + 1 gripper per side) bimanual HAL driving `enactic/openarm_mujoco/v2/openarm_v20_bimanual.xml`; thin manifest-driven wrapper around `MujocoArmHAL`. All wiring (MJCF URI fetched via `ensure_openarm_v2_mjcf`, joint/actuator maps, gripper config) lives in `OPENARM_DESCRIPTION.sim`. (L436) **ADR-0102 slot groups (2026-09-22):** `send_action(action)` stages a slot action (`tick_group_size > 1`) in a `SlotGroupStager` and, once the tick's last slot lands, composes the four typed actions into one 16-DoF `JOINT_POSITION` step via `compose_slot_group` — the same reassembly `OpenArmRealHAL` does for its four controllers — so one arm never moves on a new chunk while the other holds a stale one; `last_committed_tick -> int` is what the HAL lifecycle node acknowledges on `/openral/action_applied`. `disconnect()` / `estop()` drop a half-staged tick. Before this the twin refused every gripper slot (`only supports joint_position`) and a slot policy's tick never completed.
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(OPENARM_DESCRIPTION, …)`. (L471)
+  - `last_committed_tick() -> int` (L506) — Inference tick of the last slot group applied to MuJoCo (0 = none); the HAL lifecycle node acknowledges a grouped tick on `/openral/action_applied` only once every slot has landed.
+  - `send_action(action) -> None` (L514) — Applies a whole-robot action, or stages one slot of a grouped tick (`tick_group_size > 1`) until the tick is complete, then composes the slots into one 16-DoF `JOINT_POSITION` action.
+  - `disconnect() -> None` (L558) — Drops any half-staged tick before releasing the twin.
+  - `estop() -> None` (L564) — Drops any half-staged tick; the survivors must never be committed later.
 - `_openarm_arm_joint_specs(names, position_limits, side) -> list[JointSpec]`, `_openarm_gripper_joint_spec(name, side, position_limits) -> JointSpec`, `_openarm_joint_specs() -> list[JointSpec]` (L167, L190, L206)
-- module const `_OPENARM_LEFT_ARM_JOINTS: tuple[str, ...]` (L104) — left-arm joint names.
-- module const `_OPENARM_RIGHT_ARM_JOINTS: tuple[str, ...]` (L105) — right-arm joint names.
-- module const `_OPENARM_LEFT_GRIPPER_JOINT: str` (L106) — left gripper joint name.
-- module const `_OPENARM_RIGHT_GRIPPER_JOINT: str` (L107) — right gripper joint name.
-- module const `_OPENARM_JOINT_NAMES: tuple[str, ...]` (L109) — full 16-DoF joint order.
-- module const `_OPENARM_LEFT_ARM_POSITION_LIMITS: dict[str, tuple[float, float]]` (L120)
-- module const `_OPENARM_RIGHT_ARM_POSITION_LIMITS: dict[str, tuple[float, float]]` (L129)
-- module const `_OPENARM_LEFT_GRIPPER_POSITION_LIMITS: tuple[float, float]` (L141)
-- module const `_OPENARM_RIGHT_GRIPPER_POSITION_LIMITS: tuple[float, float]` (L142)
-- module const `_OPENARM_ARM_EFFORT_LIMITS: dict[str, float]` (L148)
-- module const `_OPENARM_GRIPPER_EFFORT_LIMIT: float` (L164)
-- module const `_OPENARM_ARM_VELOCITY_LIMIT: float` (L167)
-- module const `_OPENARM_GRIPPER_VELOCITY_LIMIT: float` (L168)
-- const `OPENARM_DESCRIPTION = RobotDescription(...)` (L237) — Shared baseline for sim **and** real (`name="openarm_v2"`, 16 revolute joints). `sdk_kind="open"` (the whole real path — `openarm_can` + `openarm_ros2` — is Apache-2.0, unlike UR/Franka's closed vendor runtime). `hal.sim=None` (derived `MujocoArmHAL`, so the manifest's `head_zed` sensor and `collision_geometry` reach the twin) + `hal.real_bringup="openral_hal_openarm:real_bringup.launch.py"`. One flat `hal.parameters.defaults` block serves both entrypoints; `build_hal` drops the keys each constructor doesn't accept. Drift-guarded against `robots/openarm/robot.yaml`.
+- module const `_OPENARM_LEFT_ARM_JOINTS: tuple[str, ...]` (L105) — left-arm joint names.
+- module const `_OPENARM_RIGHT_ARM_JOINTS: tuple[str, ...]` (L106) — right-arm joint names.
+- module const `_OPENARM_LEFT_GRIPPER_JOINT: str` (L107) — left gripper joint name.
+- module const `_OPENARM_RIGHT_GRIPPER_JOINT: str` (L108) — right gripper joint name.
+- module const `_OPENARM_JOINT_NAMES: tuple[str, ...]` (L110) — full 16-DoF joint order.
+- module const `_OPENARM_LEFT_ARM_POSITION_LIMITS: dict[str, tuple[float, float]]` (L121)
+- module const `_OPENARM_RIGHT_ARM_POSITION_LIMITS: dict[str, tuple[float, float]]` (L130)
+- module const `_OPENARM_LEFT_GRIPPER_POSITION_LIMITS: tuple[float, float]` (L142)
+- module const `_OPENARM_RIGHT_GRIPPER_POSITION_LIMITS: tuple[float, float]` (L143)
+- module const `_OPENARM_ARM_EFFORT_LIMITS: dict[str, float]` (L149)
+- module const `_OPENARM_GRIPPER_EFFORT_LIMIT: float` (L165)
+- module const `_OPENARM_ARM_VELOCITY_LIMIT: float` (L168)
+- module const `_OPENARM_GRIPPER_VELOCITY_LIMIT: float` (L169)
+- const `OPENARM_DESCRIPTION = RobotDescription(...)` (L238) — Shared baseline for sim **and** real (`name="openarm_v2"`, 16 revolute joints). `sdk_kind="open"` (the whole real path — `openarm_can` + `openarm_ros2` — is Apache-2.0, unlike UR/Franka's closed vendor runtime). `hal.sim=None` (derived `MujocoArmHAL`, so the manifest's `head_zed` sensor and `collision_geometry` reach the twin) + `hal.real_bringup="openral_hal_openarm:real_bringup.launch.py"`. One flat `hal.parameters.defaults` block serves both entrypoints; `build_hal` drops the keys each constructor doesn't accept. Drift-guarded against `robots/openarm/robot.yaml`.
 
 ### `python/hal/src/openral_hal/openarm_real.py`
 _Real-hardware adapter for the Enactic OpenArm v2. Commands `openarm_bringup`'s ros2_control stack (400 Hz) rather than SocketCAN directly: Skill → Action → this adapter → four command topics → controller_manager → `openarm_hardware` SystemInterface → `openarm_can` → SocketCAN → Damiao motors._

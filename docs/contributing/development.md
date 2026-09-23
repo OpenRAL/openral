@@ -305,7 +305,9 @@ bimanual arm.
 Registering a runner on a lab host is therefore gated on **one** of:
 
 1. an **organisation runner group** restricted to selected repositories and
-   selected workflows (needs a paid GitHub plan — Free does not offer it), or
+   selected workflows (the selected-workflows restriction needs GitHub
+   Enterprise Cloud or Enterprise Server; Free and Team can create runner
+   groups but cannot pin them to workflows), or
 2. moving HIL to a **private** mirror repository with no fork-reachable
    `pull_request` triggers, dispatched only by `workflow_dispatch` /
    `repository_dispatch`.
@@ -334,11 +336,21 @@ curl -fsSLo runner.tar.gz \
     https://github.com/actions/runner/releases/download/v2.330.0/actions-runner-linux-arm64-2.330.0.tar.gz
 tar xzf runner.tar.gz
 
-# Token from Settings -> Actions -> Runners -> New self-hosted runner.
-./config.sh --url https://github.com/OpenRAL/openral \
+# ORGANISATION registration, never repository: the URL is the org, the token
+# comes from the org's Settings -> Actions -> Runners -> New runner, and
+# --runnergroup names the restricted group from the gate above. A runner
+# registered against the repository URL lands in the default group, which
+# every fork-reachable workflow can request.
+./config.sh --url https://github.com/OpenRAL \
+    --token "$ORG_RUNNER_TOKEN" \
+    --runnergroup lab-openarm \
     --labels self-hosted,lab-openarm \
     --name qorin1-openarm --work _work --unattended
 
+# Before connecting the cell: confirm the runner sits in `lab-openarm` and that
+# the group is restricted to selected repositories AND selected workflows
+# (Organisation -> Settings -> Actions -> Runner groups). If either
+# restriction is missing, remove the runner (`./config.sh remove`) first.
 sudo ./svc.sh install "$USER" && sudo ./svc.sh start
 ```
 
