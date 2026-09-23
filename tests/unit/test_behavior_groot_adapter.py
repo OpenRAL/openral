@@ -22,7 +22,8 @@ def test_behavior_groot_rskill_manifest_loads() -> None:
     # `gr00t`), so the dependency probe and the dispatch agree.
     assert manifest.model_family == "gr00t_b1k"
     assert "implementation" not in manifest.policy_extras
-    assert manifest.license == "unknown"
+    assert manifest.license == "nvidia_open_model"
+    assert manifest.is_commercial_use_allowed
     assert manifest.state_contract is not None
     assert manifest.state_contract.dim == 61
     assert manifest.action_contract is not None
