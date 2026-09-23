@@ -17,8 +17,8 @@
 #   is a PUBLIC repo; a runner label is a routing request, not access
 #   control — any workflow naming the label can claim the runner, and for
 #   `pull_request` GitHub executes the workflow definition from the fork's
-#   ref. Three fork-reachable `pull_request` workflows exist (`dco.yml`,
-#   `quality.yml`, `test-selective.yml`); a fork PR could retarget one to
+#   ref. Fork-reachable `pull_request` workflows exist (`dco.yml`,
+#   `quality.yml`, `test-selective.yml`, `heavy-lanes.yml`); a fork PR could retarget one to
 #   `runs-on: [self-hosted, <label>]` for arbitrary code with the runner's
 #   SSH keys, `gh` credentials, and LAN access to the lab robots. Fixing
 #   this needs an org runner group, unavailable on this org's GitHub Free

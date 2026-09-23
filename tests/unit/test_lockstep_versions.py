@@ -202,30 +202,44 @@ def test_selective_tests_short_circuit_the_release_pr() -> None:
     Rewriting all 15 pyprojects matches the ``pyproject.toml`` full-run glob and
     marks every package changed, which would otherwise select the whole suite
     plus every opt-in lane — including ones whose sidecars a hosted runner
-    cannot provision. The guard lives in the ``select`` job, which every other
-    job (``core_full``, ``core_selected``, ``lane``) and both required gates
-    (``select-and-test``, ``heavy-lanes``) key off via ``needs.select.outputs``.
+    cannot provision. The guard lives in the shared ``select-tests`` composite
+    action, which both workflows' ``select`` jobs run and every downstream job
+    (``core_full``, ``core_selected``, ``lane``) and gate (``select-and-test``,
+    ``heavy-lanes``) keys off via ``needs.select.outputs``.
 
-    Both gates use ``if: always()`` rather than skipping outright: a job
-    skipped by an ``if:`` still reports "success" to required-status-check
-    evaluation (that part is fine either way), but a *workflow* skipped by
-    path/branch filtering leaves its checks "Pending" forever and blocks the
-    merge — which is the actual trap this repo avoids by never adding
-    ``paths-ignore`` to the ``pull_request`` trigger (see the workflow header).
+    Both gates use ``always()`` rather than skipping outright: a job skipped
+    by an ``if:`` reports "success" to required-status-check evaluation, so a
+    failed ``select`` must not auto-skip them. ``heavy-lanes`` additionally
+    skips when ``select`` itself was skipped — that is how the opt-in lanes
+    stay hidden until requested — and a *workflow* skipped by path/branch
+    filtering leaves its checks "Pending" forever, which is why neither
+    workflow filters its ``pull_request`` trigger.
     """
-    path = REPO_ROOT / ".github/workflows/test-selective.yml"
-    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-    jobs = workflow["jobs"]
+    selective = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/test-selective.yml").read_text(encoding="utf-8")
+    )
+    heavy = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/heavy-lanes.yml").read_text(encoding="utf-8")
+    )
 
-    for gate in ("select-and-test", "heavy-lanes"):
-        assert jobs[gate]["if"] == "always()", (
-            f"{gate} is a required check; without `if: always()` a failed "
-            "dependency (e.g. `select`) makes GitHub auto-skip this job — "
-            "and a skipped job reports success, silently passing the gate."
+    assert selective["jobs"]["select-and-test"]["if"] == "always()", (
+        "select-and-test is a required check; without `if: always()` a failed "
+        "`select` makes GitHub auto-skip it — and a skipped job reports success."
+    )
+    assert heavy["jobs"]["heavy-lanes"]["if"] == ("always() && needs.select.result != 'skipped'"), (
+        "heavy-lanes must still run (and fail) when `select` fails"
+    )
+
+    for workflow in (selective, heavy):
+        steps = workflow["jobs"]["select"]["steps"]
+        assert any(s.get("uses") == "./.github/actions/select-tests" for s in steps), (
+            "every select job must go through the shared select-tests action"
         )
 
-    select_job = jobs["select"]
-    select = next(s for s in select_job["steps"] if s.get("id") == "select")
+    action = yaml.safe_load(
+        (REPO_ROOT / ".github/actions/select-tests/action.yml").read_text(encoding="utf-8")
+    )
+    select = next(s for s in action["runs"]["steps"] if s.get("id") == "select")
     assert select["env"]["HEAD_REF"] == "${{ github.head_ref }}", (
         "the release-PR guard reads the head branch from HEAD_REF"
     )
@@ -240,6 +254,42 @@ def test_selective_tests_short_circuit_the_release_pr() -> None:
             f"the guard must emit {output!r} — core_full is gated on full_run "
             "alone, lane on lanes, everything else on any."
         )
+
+
+def test_heavy_lanes_run_only_on_request() -> None:
+    """The opt-in lanes run only for the ``heavy-lanes`` label or a manual dispatch.
+
+    They used to sit behind the ``heavy-lanes`` GitHub Environment's approval,
+    which left the required ``heavy-lanes`` check red or pending on nearly every
+    PR. No environment gate may creep back, and the label must be read from the
+    PR (not the event) so an unrelated label cannot flip the verdict.
+    """
+    heavy = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/heavy-lanes.yml").read_text(encoding="utf-8")
+    )
+    # PyYAML parses the bare `on:` key as boolean True.
+    triggers = heavy[True]
+    assert "workflow_dispatch" in triggers
+    assert {"labeled", "unlabeled", "synchronize"} <= set(triggers["pull_request"]["types"])
+    assert "paths" not in triggers["pull_request"]
+    assert "paths-ignore" not in triggers["pull_request"]
+
+    gate = heavy["jobs"]["select"]["if"]
+    assert "github.event_name == 'workflow_dispatch'" in gate
+    assert "contains(github.event.pull_request.labels.*.name, 'heavy-lanes')" in gate
+    assert "github.event.label" not in gate
+
+    for workflow in ("heavy-lanes.yml", "test-selective.yml"):
+        jobs = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
+        )["jobs"]
+        assert all("environment" not in job for job in jobs.values()), (
+            f"{workflow}: lanes are opt-in by label/dispatch, not an environment gate"
+        )
+    selective = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/test-selective.yml").read_text(encoding="utf-8")
+    )
+    assert "lane" not in selective["jobs"] and "heavy-lanes" not in selective["jobs"]
 
 
 def test_release_please_reports_a_stalled_release() -> None:

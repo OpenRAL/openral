@@ -1,0 +1,110 @@
+name: Select tests for the diff
+description: >
+  Shared `select` step for test-selective.yml and heavy-lanes.yml: runs
+  tools/select_tests.py over the diff and exposes its outputs, with the
+  release-please short-circuit. Only needs pydantic + stdlib, so it runs in
+  an isolated `uv run --with pydantic` env in a few seconds, without a
+  workspace sync. Does NOT check out the repo — the calling job must run
+  `actions/checkout` with `fetch-depth: 0` first so `git diff <base>...<head>`
+  (merge-base) resolves.
+outputs:
+  any:
+    description: "true when at least one target was selected"
+    value: ${{ steps.select.outputs.any }}
+  full_run:
+    description: "true on a blast-radius diff (run the whole tests/unit/ suite)"
+    value: ${{ steps.select.outputs.full_run }}
+  targets:
+    description: "space-separated pytest targets"
+    value: ${{ steps.select.outputs.targets }}
+  isolated_targets:
+    description: "targets that must run one-per-process"
+    value: ${{ steps.select.outputs.isolated_targets }}
+  requirement_targets_json:
+    description: "per-lane requirement targets, for the heavy-lanes attest step"
+    value: ${{ steps.select.outputs.requirement_targets_json }}
+  lanes:
+    description: "JSON matrix `include` list, one entry per opt-in dependency lane"
+    value: ${{ steps.select.outputs.lanes }}
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+      with:
+        # No uv cache: this action only runs `uv run --isolated --with
+        # pydantic`, never touches uv.lock or the workspace env. Enabling the
+        # cache here would pay ~80s to restore 3.7 GB it never reads.
+        enable-cache: false
+
+    - run: uv python install 3.12
+      shell: bash
+
+    - name: Resolve diff range
+      id: range
+      shell: bash
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        PR_BASE: ${{ github.event.pull_request.base.sha }}
+        PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        INPUT_BASE: ${{ github.event.inputs.base }}
+        INPUT_HEAD: ${{ github.event.inputs.head }}
+      run: |
+        if [ "$EVENT_NAME" = "pull_request" ]; then
+          echo "base=$PR_BASE" >> "$GITHUB_OUTPUT"
+          echo "head=$PR_HEAD" >> "$GITHUB_OUTPUT"
+        else
+          echo "base=${INPUT_BASE:-origin/master}" >> "$GITHUB_OUTPUT"
+          echo "head=${INPUT_HEAD:-HEAD}" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Select tests for the diff
+      id: select
+      shell: bash
+      env:
+        HEAD_REF: ${{ github.head_ref }}
+        BASE: ${{ steps.range.outputs.base }}
+        HEAD: ${{ steps.range.outputs.head }}
+      run: |
+        set -euo pipefail
+        # release-please's release PR is pure mechanical version churn: it
+        # rewrites `version =` and the `openral-*==` pins across all 15
+        # pyprojects and regenerates CHANGELOG.md, nothing else. Root
+        # `pyproject.toml` is a full-run glob, so the selector would force
+        # the ENTIRE suite plus every opt-in dependency lane — including
+        # isaacsim / robotwin / gr00t, whose sidecars a hosted runner
+        # cannot provision — for a diff that cannot change behaviour.
+        # Every commit the release covers already passed this job on its
+        # own PR.
+        #
+        # Emit an empty selection here rather than a job-level `if:` on
+        # `select-and-test` / `heavy-lanes`: both are required checks, and
+        # while a *job* skipped by `if:` still reports success, keeping the
+        # select job itself green end-to-end is simpler than reasoning about
+        # which downstream `if:` combination produces the same result.
+        # `full_run` and `lanes` must be set too: `core_full` is gated on
+        # `full_run` alone, `lane` on `lanes`, everything else on `any`.
+        #
+        # Prefix per release-please's RELEASE_PLEASE_BRANCH_PREFIX
+        # ("release-please--branches"); the glob also covers the
+        # --components-- variant if separate-pull-requests is ever enabled.
+        case "${HEAD_REF:-}" in
+          release-please--*)
+            echo "::notice::release-please PR — lockstep version churn only, no tests selected."
+            {
+              echo "any=false"
+              echo "full_run=false"
+              echo "lanes=[]"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+            ;;
+        esac
+        uv run --isolated --with pydantic --python 3.12 \
+          python tools/select_tests.py \
+          --base "$BASE" \
+          --head "$HEAD" \
+          --github-output
+
+    - name: No affected tests
+      if: steps.select.outputs.any != 'true'
+      shell: bash
+      run: echo "::notice::No code paths affected by this diff — no tests selected."
