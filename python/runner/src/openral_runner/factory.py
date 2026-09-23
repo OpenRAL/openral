@@ -52,6 +52,12 @@ def _to_int(value: object, *, field: str, sensor_id: str) -> int:
             f"SensorReaderConfig({sensor_id!r}).backend_params.{field} must be "
             f"an integer, not a bool"
         )
+    if isinstance(value, float) and not value.is_integer():
+        # int() would truncate 640.5 to 640 and silently apply a different value.
+        raise ROSConfigError(
+            f"SensorReaderConfig({sensor_id!r}).backend_params.{field}={value!r} "
+            "must be a whole number"
+        )
     if isinstance(value, (int, float, str)):
         try:
             return int(value)

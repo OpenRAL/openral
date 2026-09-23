@@ -155,3 +155,44 @@ def test_without_a_scene_the_manifest_mounts_still_publish() -> None:
     `assets.urdf` bridge; that transform must exist with or without a scene.
     """
     assert _mount_for(_compose(None), "openarm_base", "world") is not None
+
+
+def _runtime_camera_names(entities: list[object]) -> list[str]:
+    """``camera_names`` of the runtime node, rendered from launch_ros's normalized params."""
+    import yaml
+    from launch_ros.actions import Node
+
+    def text(subs: object) -> str:
+        return "".join(getattr(sub, "text", "") for sub in subs)  # type: ignore[attr-defined]
+
+    for entity in entities:
+        if not isinstance(entity, Node):
+            continue
+        if getattr(entity, "_Node__node_executable", None) != "runtime_node":
+            continue
+        for params in getattr(entity, "_Node__parameters", None) or ():
+            for key, value in params.items() if isinstance(params, dict) else ():
+                if text(key) == "camera_names":
+                    return [str(yaml.safe_load(text(item))) for item in value]
+    raise AssertionError("runtime_node with camera_names not found in the composed graph")
+
+
+def test_a_scene_only_rgb_camera_is_not_subscribed_in_sim(tmp_path: Path) -> None:
+    """In sim nothing renders a scene-only camera; subscribing would be stale forever."""
+    scene = tmp_path / "workcell_rgb.yaml"
+    scene.write_text(
+        _SCENE_YAML
+        + """  - name: workcell_rgb
+    modality: rgb
+    frame_id: workcell_rgb_optical_frame
+    parent_frame: openarm_base
+    static_transform_xyz_rpy: [0.0, 0.3, 0.5, 0.0, 0.5, 0.0]
+    rate_hz: 15.0
+""",
+        encoding="utf-8",
+    )
+
+    names = _runtime_camera_names(_compose(scene))
+
+    assert "workcell_rgb" not in names
+    assert "top" in names  # the manifest camera SimSensorBridge does render

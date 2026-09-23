@@ -598,9 +598,28 @@ class GalaxeaA1HAL(HALBase):
         """Configure the sidecar endpoint and explicit safety deadlines.
 
         ``description`` is the loaded manifest (threaded by ``build_hal``);
-        ``None`` keeps the in-code ``GALAXEA_A1_DESCRIPTION`` mirror.
+        ``None`` keeps the in-code ``GALAXEA_A1_DESCRIPTION`` mirror. The sidecar
+        handshake and every command check use the adapter's own arm limits, so a
+        manifest whose arm joints or position limits differ is refused rather
+        than silently overridden.
+
+        Raises:
+            ROSConfigError: ``description`` disagrees with the adapter's arm
+                joint names or position limits.
         """
         if description is not None:
+            declared = {j.name: j.position_limits for j in description.joints}
+            for name, (lower, upper) in zip(_JOINT_NAMES, _JOINT_LIMITS, strict=True):
+                got = declared.get(name)
+                if got is None or not (
+                    math.isclose(got[0], lower, abs_tol=1e-6)
+                    and math.isclose(got[1], upper, abs_tol=1e-6)
+                ):
+                    raise ROSConfigError(
+                        f"GalaxeaA1HAL enforces {name} limits {(lower, upper)}, but the "
+                        f"manifest declares {got}; this adapter cannot honour different "
+                        "arm limits — fix the manifest or the adapter."
+                    )
             self.description = description
         if not isinstance(host, str):
             raise ROSConfigError("GalaxeaA1HAL requires a literal IPv4 loopback address.")

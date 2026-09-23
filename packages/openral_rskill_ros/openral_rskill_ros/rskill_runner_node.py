@@ -2630,6 +2630,21 @@ def _slot_joint_names(slot: Any) -> list[str] | None:
     return list(names) if names else None
 
 
+def _clip_input_bounds(slots: Sequence[ActionSlot], policy_action: Any) -> Any:
+    """Clip each slot with ``input_bounds`` to its native controller-input range.
+
+    The bounds are in the policy's normalized units (the native controllers clip before
+    physical scaling), so this runs on the raw policy vector, before the codec converts
+    units. Physical safety bounds remain supervisor-owned.
+    """
+    out = policy_action.copy()
+    for slot in slots:
+        if slot.input_bounds is not None and not slot.discard:
+            lo, hi = slot.range
+            out[lo : hi + 1] = out[lo : hi + 1].clip(*slot.input_bounds)
+    return out
+
+
 def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot control mode; flat dispatch mirrors the manifest's slot list
     slots: list,
     policy_action: Any,
@@ -2646,10 +2661,9 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
 
     Args:
         slots: ``manifest.action_contract.slots``, a list of ``openral_core.ActionSlot``.
-        policy_action: Raw 1-D ``np.float32`` policy vector from ``adapter.step()``, indexed
-            directly per slot range. A slot with declared ``input_bounds`` is clipped to the
-            native controller's accepted input range before safety/HAL dispatch; physical
-            safety bounds remain supervisor-owned.
+        policy_action: 1-D ``np.float32`` vector in policy order, indexed directly per slot
+            range (already clipped by ``_clip_input_bounds`` and converted to robot units by
+            the codec on the runtime path).
         cartesian_delta_scale: Optional per-axis conversion from the policy's native Cartesian
             values to physical metres/radians for predictive safety. Raw policy bytes unchanged.
         description: Optional ``RobotDescription`` used to pad sub-slot JOINT_* chunks to
@@ -2674,9 +2688,6 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
             continue
         lo, hi = slot.range
         sl = [float(v) for v in policy_action[lo : hi + 1].tolist()]
-        if slot.input_bounds is not None:
-            input_min, input_max = slot.input_bounds
-            sl = [max(input_min, min(input_max, value)) for value in sl]
         mode = slot.control_mode
         if mode is ControlMode.JOINT_POSITION:
             payload = _pad_joint_payload(sl, slot.joint_names, joint_name_to_idx, n_dof_total)
@@ -2781,7 +2792,8 @@ def _policy_action_to_actions(
     and a ``[0, 100]`` gripper as a ``[0, 1]`` fraction whether or not the manifest
     declares slots (the slot path used to receive the raw vector):
 
-    * ``slots`` → per-slot unit conversion in policy order, then ``_dispatch_slots``
+    * ``slots`` → ``input_bounds`` clip in policy units, per-slot unit conversion in
+      policy order, then ``_dispatch_slots``
       (one ``Action`` per non-discard slot; JOINT_* slots padded to full dof).
     * no slots → permute to robot order + convert, pre-clamp strictly inside the
       ``RobotDescription`` position limits (so an OOD target the kernel would reject
@@ -2795,7 +2807,7 @@ def _policy_action_to_actions(
     if slots:
         return _dispatch_slots(
             list(slots),
-            codec.to_robot_action(policy_action, slots=slots),
+            codec.to_robot_action(_clip_input_bounds(slots, policy_action), slots=slots),
             description=description,
             cartesian_delta_scale=cartesian_delta_scale,
         )

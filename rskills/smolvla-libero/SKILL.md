@@ -1,7 +1,7 @@
 ---
 name: smolvla-libero
 description: >-
-  S1 Vision-Language-Action policy. Capabilities: pick, place, open, close on bowl, cup, drawer, object. SmolVLA finetuned on the LIBERO task suite (Apache-2.0). Action chunks of length 16 across two RGB camera views (wrist + overhead) matching the original LIBERO dataset convention. The lerobot checkpoint wrapped here matches the paper's reported configuration on all five architecture fields — see header comment for the rejected sibling. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
+  S1 Vision-Language-Action policy. Capabilities: pick, place, open, close on bowl, cup, drawer, object. SmolVLA finetuned on the LIBERO task suite (Apache-2.0). Action chunks of length 50, of which 25 steps are replayed per inference, across two RGB camera views (wrist + overhead) matching the original LIBERO dataset convention. The lerobot checkpoint wrapped here matches the paper's reported configuration on all five architecture fields — see header comment for the rejected sibling. Discovery view of an OpenRAL rSkill — NOT directly runnable by an agent harness; it runs via rSkill.from_pretrained + the robot HAL.
 metadata:
   openral_rskill: true            # generated discovery view of an rSkill
   schema_version: 0.1
@@ -41,7 +41,7 @@ metadata:
 
 ## What it is
 
-An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). SmolVLA finetuned on the LIBERO task suite (Apache-2.0). Action chunks of length 16 across two RGB camera views (wrist + overhead) matching the original LIBERO dataset convention. The lerobot checkpoint wrapped here matches the paper's reported configuration on all five architecture fields — see header comment for the rejected sibling.
+An OpenRAL **Vision-Language-Action policy** (`role: s1`, `kind: vla`). SmolVLA finetuned on the LIBERO task suite (Apache-2.0). Action chunks of length 50, of which 25 steps are replayed per inference, across two RGB camera views (wrist + overhead) matching the original LIBERO dataset convention. The lerobot checkpoint wrapped here matches the paper's reported configuration on all five architecture fields — see header comment for the rejected sibling.
 
 ## Capabilities
 

@@ -830,8 +830,8 @@ def require_supported_dtype(plan: QuantPlan, supported: frozenset[str], family: 
     :func:`canonical_quant_token`) its load path honours, so a request it
     would otherwise silently reinterpret — ``int8`` loading as bf16, ``bf16``
     loading as fp32 — fails at build time instead (CLAUDE.md §1.4). An unset
-    plan (``dtype is None``) means the adapter's own default applies and is
-    always accepted.
+    plan (``dtype is None``) or an explicit ``"none"`` (do not quantize) means
+    the adapter's own native precision applies and is always accepted.
 
     Raises:
         ROSConfigError: Naming the family, the requested token, where it came
@@ -844,8 +844,13 @@ def require_supported_dtype(plan: QuantPlan, supported: frozenset[str], family: 
         ... except ROSConfigError as exc:
         ...     print(str(exc).split(";")[0])
         molmoact2 cannot load dtype 'int8' (from env)
+        >>> require_supported_dtype(
+        ...     QuantPlan(dtype="none", quantize=False, source="env", extra={}),
+        ...     frozenset({"fp32"}),
+        ...     "xvla",
+        ... )
     """
-    if plan.dtype is None or plan.dtype in supported:
+    if plan.dtype in (None, "none") or plan.dtype in supported:
         return
     raise ROSConfigError(
         f"{family} cannot load dtype {plan.dtype!r} (from {plan.source}); "

@@ -371,17 +371,17 @@ _Public surface of the inference runner. Imports are PEP 562 lazy: heavy symbols
 ### `python/runner/src/openral_runner/factory.py`
 _Library deploy runner used by runtime nodes; the public deploy CLI now shells the ROS graph from a `DeployScene`._
 
-- `SKILL_REGISTRY: dict[str, Callable[[dict[str, object]], rSkillBase]]` — `vla.id` → skill factory. Today: `hello`, `gpu_passthrough`. (L92)
-- `SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]` — `backend` id → reader factory. Today: `opencv_thread`, `ros2_image`, `gstreamer`, `galaxea_a1_camera_bridge`. (`ros2_image` was in the `SensorReaderBackend` enum but absent here, so selecting it raised `unknown sensor reader backend`.) (L377)
+- `SKILL_REGISTRY: dict[str, Callable[[dict[str, object]], rSkillBase]]` — `vla.id` → skill factory. Today: `hello`, `gpu_passthrough`. (L98)
+- `SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]` — `backend` id → reader factory. Today: `opencv_thread`, `ros2_image`, `gstreamer`, `galaxea_a1_camera_bridge`. (`ros2_image` was in the `SensorReaderBackend` enum but absent here, so selecting it raised `unknown sensor reader backend`.) (L383)
 - `_to_int(value, *, field, sensor_id) -> int` — YAML `object` → `int` coercion helper used across factories; rejects bools explicitly. (L48)
-- `_make_gpu_passthrough_skill(extra) -> rSkillBase` — Builds `GpuPassthroughSkill`; recognised `extra`: `sensor_id` (default `"wrist_rgb"`), `n_joints`, `horizon`, `device` (default `"cuda"`, raises if unavailable). (L69)
+- `_make_gpu_passthrough_skill(extra) -> rSkillBase` — Builds `GpuPassthroughSkill`; recognised `extra`: `sensor_id` (default `"wrist_rgb"`), `n_joints`, `horizon`, `device` (default `"cuda"`, raises if unavailable). (L75)
 - `_make_opencv_thread_reader(cfg) -> SensorReader` — Builds `OpenCVThreadSensorReader` from a `SensorReaderConfig`; requires `backend_params.device`, forwards optional `fps`/`width`/`height`/`crop` (`[x, y, width, height]`); an invalid value raises `ROSConfigError`.
-- `_make_ros2_image_reader(cfg) -> SensorReader` — Builds `Ros2ImageSensorReader`; requires `backend_params.topic` (e.g. `/zed/depth/depth_registered`), optional `reliability` (`best_effort` default / `reliable`) and `qos_depth` (default 5). `cfg.max_age_ms` becomes the reader's staleness budget. Imported lazily so the factory module stays importable without ROS. (L340)
-- `_make_gstreamer_reader(cfg) -> SensorReader` — Builds `GStreamerSensorReader` from a `SensorReaderConfig`. Translates `publish_to_ros` / `publish_topic` / `publish_rate_hz` → `PipelineSpec.enable_ros_tee`. (L153)
+- `_make_ros2_image_reader(cfg) -> SensorReader` — Builds `Ros2ImageSensorReader`; requires `backend_params.topic` (e.g. `/zed/depth/depth_registered`), optional `reliability` (`best_effort` default / `reliable`) and `qos_depth` (default 5). `cfg.max_age_ms` becomes the reader's staleness budget. Imported lazily so the factory module stays importable without ROS. (L346)
+- `_make_gstreamer_reader(cfg) -> SensorReader` — Builds `GStreamerSensorReader` from a `SensorReaderConfig`. Translates `publish_to_ros` / `publish_topic` / `publish_rate_hz` → `PipelineSpec.enable_ros_tee`. (L159)
 - `_make_galaxea_a1_camera_bridge_reader(cfg) -> SensorReader` — Builds the
   native A1 Runtime paired-camera connector. Accepts only `camera`; unknown
   values are rejected.
-- `make_sensor_readers(configs) -> list[SensorReader]` (L260) — Batch constructor that
+- `make_sensor_readers(configs) -> list[SensorReader]` (L266) — Batch constructor that
   preserves config order and shares one A1 paired-camera session across both
   views. Other backends still dispatch through `SENSOR_BACKEND_REGISTRY`.
 

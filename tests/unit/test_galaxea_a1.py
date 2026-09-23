@@ -856,3 +856,19 @@ def test_estop_stops_transport_and_always_raises() -> None:
     assert transport.estopped
     with pytest.raises(ROSRuntimeError):
         hal.read_state()
+
+
+def test_a_manifest_with_different_arm_limits_is_refused() -> None:
+    """The adapter checks commands against its own limits; a tighter manifest must not pass."""
+    from openral_core import RobotDescription
+
+    manifest = RobotDescription.from_yaml("robots/galaxea_a1/robot.yaml")
+    GalaxeaA1HAL(description=manifest)  # the tracked manifest matches
+
+    joints = [
+        j.model_copy(update={"position_limits": (-1.0, 1.0)}) if j.name == "arm_joint1" else j
+        for j in manifest.joints
+    ]
+    tighter = manifest.model_copy(update={"joints": joints})
+    with pytest.raises(ROSConfigError, match="arm_joint1"):
+        GalaxeaA1HAL(description=tighter)

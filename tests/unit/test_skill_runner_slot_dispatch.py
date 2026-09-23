@@ -173,11 +173,31 @@ def test_declared_input_bounds_clip_before_joint_velocity_dispatch(
             input_bounds=(-1.0, 1.0),
         )
     ]
-    actions = runner_mod._dispatch_slots(
-        slots,
-        np.array([1.015625, -1.25, 0.5], dtype=np.float32),
-    )
+    clipped = runner_mod._clip_input_bounds(slots, np.array([1.015625, -1.25, 0.5], np.float32))
+    actions = runner_mod._dispatch_slots(slots, clipped)
     assert actions[0].joint_velocities == [[1.0, -1.0, 0.5]]
+
+
+def test_input_bounds_clip_in_policy_units_before_conversion(runner_mod: ModuleType) -> None:
+    """Bounds are policy units: clip 150 to 100, then scale to 1.0 (not 1.5 unclipped)."""
+    from openral_rskill._policy_io import PolicyIOCodec
+
+    slots = [
+        ActionSlot(
+            range=(0, 0),
+            control_mode=ControlMode.GRIPPER_POSITION,
+            ee="g",
+            input_bounds=(0.0, 100.0),
+        )
+    ]
+    actions = runner_mod._policy_action_to_actions(
+        np.array([150.0], dtype=np.float32),
+        codec=PolicyIOCodec(gripper_scale=100.0),
+        slots=slots,
+        description=None,
+        cartesian_delta_scale=None,
+    )
+    assert actions[0].gripper == [1.0]
 
 
 def test_cartesian_twist_routes_correctly(runner_mod: ModuleType) -> None:
