@@ -356,27 +356,27 @@ _MuJoCo digital twin for the Flexiv Rizon 4 — 7-DoF cobot with whole-body forc
 ### `python/hal/src/openral_hal/openarm.py`
 _MuJoCo digital twin for the Enactic OpenArm **v2** bimanual humanoid arm.  Fresh `HALBase` subclass — v2's native `<position>` actuators with per-class PD baked into the MJCF mean the HAL just writes target → ctrl and steps, no software PD loop needed._
 
-- `class OpenArmMujocoHAL(MujocoArmHAL)` (L435) — 16-DoF (7 arm + 1 gripper per side) bimanual HAL driving `enactic/openarm_mujoco/v2/openarm_v20_bimanual.xml`; thin manifest-driven wrapper around `MujocoArmHAL`. All wiring (MJCF URI fetched via `ensure_openarm_v2_mjcf`, joint/actuator maps, gripper config) lives in `OPENARM_DESCRIPTION.sim`. (L436) **ADR-0102 slot groups (2026-09-22):** `send_action(action)` stages a slot action (`tick_group_size > 1`) in a `SlotGroupStager` and, once the tick's last slot lands, composes the four typed actions into one 16-DoF `JOINT_POSITION` step via `compose_slot_group` — the same reassembly `OpenArmRealHAL` does for its four controllers — so one arm never moves on a new chunk while the other holds a stale one; `last_committed_tick -> int` is what the HAL lifecycle node acknowledges on `/openral/action_applied`. `disconnect()` / `estop()` drop a half-staged tick. Before this the twin refused every gripper slot (`only supports joint_position`) and a slot policy's tick never completed.
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(OPENARM_DESCRIPTION, …)`. (L471)
-  - `last_committed_tick() -> int` (L506) — Inference tick of the last slot group applied to MuJoCo (0 = none); the HAL lifecycle node acknowledges a grouped tick on `/openral/action_applied` only once every slot has landed.
-  - `send_action(action) -> None` (L514) — Applies a whole-robot action, or stages one slot of a grouped tick (`tick_group_size > 1`) until the tick is complete, then composes the slots into one 16-DoF `JOINT_POSITION` action.
-  - `disconnect() -> None` (L558) — Drops any half-staged tick before releasing the twin.
-  - `estop() -> None` (L564) — Drops any half-staged tick; the survivors must never be committed later.
+- `class OpenArmMujocoHAL(MujocoArmHAL)` (L435) — 16-DoF (7 arm + 1 gripper per side) bimanual HAL driving `enactic/openarm_mujoco/v2/openarm_v20_bimanual.xml`; thin manifest-driven wrapper around `MujocoArmHAL`. All wiring (MJCF URI fetched via `ensure_openarm_v2_mjcf`, joint/actuator maps, gripper config) lives in `OPENARM_DESCRIPTION.sim`. (L446) **ADR-0102 slot groups (2026-09-22):** `send_action(action)` stages a slot action (`tick_group_size > 1`) in a `SlotGroupStager` and, once the tick's last slot lands, composes the four typed actions into one 16-DoF `JOINT_POSITION` step via `compose_slot_group` — the same reassembly `OpenArmRealHAL` does for its four controllers — so one arm never moves on a new chunk while the other holds a stale one; `last_committed_tick -> int` is what the HAL lifecycle node acknowledges on `/openral/action_applied`. `disconnect()` / `estop()` drop a half-staged tick. Before this the twin refused every gripper slot (`only supports joint_position`) and a slot policy's tick never completed.
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` — Forwards to `self._init_from_description(OPENARM_DESCRIPTION, …)`. (L481)
+  - `last_committed_tick() -> int` (L516) — Inference tick of the last slot group applied to MuJoCo (0 = none); the HAL lifecycle node acknowledges a grouped tick on `/openral/action_applied` only once every slot has landed.
+  - `send_action(action) -> None` (L524) — Applies a whole-robot action, or stages one slot of a grouped tick (`tick_group_size > 1`) until the tick is complete, then composes the slots into one 16-DoF `JOINT_POSITION` action.
+  - `disconnect() -> None` (L568) — Drops any half-staged tick before releasing the twin.
+  - `estop() -> None` (L574) — Drops any half-staged tick; the survivors must never be committed later.
 - `_openarm_arm_joint_specs(names, position_limits, side) -> list[JointSpec]`, `_openarm_gripper_joint_spec(name, side, position_limits) -> JointSpec`, `_openarm_joint_specs() -> list[JointSpec]` (L167, L190, L206)
-- module const `_OPENARM_LEFT_ARM_JOINTS: tuple[str, ...]` (L105) — left-arm joint names.
-- module const `_OPENARM_RIGHT_ARM_JOINTS: tuple[str, ...]` (L106) — right-arm joint names.
-- module const `_OPENARM_LEFT_GRIPPER_JOINT: str` (L107) — left gripper joint name.
-- module const `_OPENARM_RIGHT_GRIPPER_JOINT: str` (L108) — right gripper joint name.
-- module const `_OPENARM_JOINT_NAMES: tuple[str, ...]` (L110) — full 16-DoF joint order.
-- module const `_OPENARM_LEFT_ARM_POSITION_LIMITS: dict[str, tuple[float, float]]` (L121)
-- module const `_OPENARM_RIGHT_ARM_POSITION_LIMITS: dict[str, tuple[float, float]]` (L130)
-- module const `_OPENARM_LEFT_GRIPPER_POSITION_LIMITS: tuple[float, float]` (L142)
-- module const `_OPENARM_RIGHT_GRIPPER_POSITION_LIMITS: tuple[float, float]` (L143)
-- module const `_OPENARM_ARM_EFFORT_LIMITS: dict[str, float]` (L149)
-- module const `_OPENARM_GRIPPER_EFFORT_LIMIT: float` (L165)
-- module const `_OPENARM_ARM_VELOCITY_LIMIT: float` (L168)
-- module const `_OPENARM_GRIPPER_VELOCITY_LIMIT: float` (L169)
-- const `OPENARM_DESCRIPTION = RobotDescription(...)` (L238) — Shared baseline for sim **and** real (`name="openarm_v2"`, 16 revolute joints). `sdk_kind="open"` (the whole real path — `openarm_can` + `openarm_ros2` — is Apache-2.0, unlike UR/Franka's closed vendor runtime). `hal.sim=None` (derived `MujocoArmHAL`, so the manifest's `head_zed` sensor and `collision_geometry` reach the twin) + `hal.real_bringup="openral_hal_openarm:real_bringup.launch.py"`. One flat `hal.parameters.defaults` block serves both entrypoints; `build_hal` drops the keys each constructor doesn't accept. Drift-guarded against `robots/openarm/robot.yaml`.
+- module const `_OPENARM_LEFT_ARM_JOINTS: tuple[str, ...]` (L107) — left-arm joint names.
+- module const `_OPENARM_RIGHT_ARM_JOINTS: tuple[str, ...]` (L108) — right-arm joint names.
+- module const `_OPENARM_LEFT_GRIPPER_JOINT: str` (L109) — left gripper joint name.
+- module const `_OPENARM_RIGHT_GRIPPER_JOINT: str` (L110) — right gripper joint name.
+- module const `_OPENARM_JOINT_NAMES: tuple[str, ...]` (L112) — full 16-DoF joint order.
+- module const `_OPENARM_LEFT_ARM_POSITION_LIMITS: dict[str, tuple[float, float]]` (L123)
+- module const `_OPENARM_RIGHT_ARM_POSITION_LIMITS: dict[str, tuple[float, float]]` (L132)
+- module const `_OPENARM_LEFT_GRIPPER_POSITION_LIMITS: tuple[float, float]` (L144)
+- module const `_OPENARM_RIGHT_GRIPPER_POSITION_LIMITS: tuple[float, float]` (L145)
+- module const `_OPENARM_ARM_EFFORT_LIMITS: dict[str, float]` (L151)
+- module const `_OPENARM_GRIPPER_EFFORT_LIMIT: float` (L167)
+- module const `_OPENARM_ARM_VELOCITY_LIMIT: float` (L170)
+- module const `_OPENARM_GRIPPER_VELOCITY_LIMIT: float` (L171)
+- const `OPENARM_DESCRIPTION = RobotDescription(...)` (L240) — Shared baseline for sim **and** real (`name="openarm_v2"`, 16 revolute joints). `sdk_kind="open"` (the whole real path — `openarm_can` + `openarm_ros2` — is Apache-2.0, unlike UR/Franka's closed vendor runtime). `hal.sim=None` (derived `MujocoArmHAL`, so the manifest's `head_zed` sensor and `collision_geometry` reach the twin) + `hal.real_bringup="openral_hal_openarm:real_bringup.launch.py"`. One flat `hal.parameters.defaults` block serves both entrypoints; `build_hal` drops the keys each constructor doesn't accept. Drift-guarded against `robots/openarm/robot.yaml`.
 
 ### `python/hal/src/openral_hal/openarm_real.py`
 _Real-hardware adapter for the Enactic OpenArm v2. Commands `openarm_bringup`'s ros2_control stack (400 Hz) rather than SocketCAN directly: Skill → Action → this adapter → four command topics → controller_manager → `openarm_hardware` SystemInterface → `openarm_can` → SocketCAN → Damiao motors._
@@ -400,11 +400,11 @@ _Real-hardware adapter for the Enactic OpenArm v2. Commands `openarm_bringup`'s 
   - `estop_recovery = RESETTABLE` — the deactivated controllers hold and the CAN bus stays configured, so the inherited `reset_estop` re-activates all four through the same `controller_manager` seam and reconnects only once the manager confirms every one `active`.
   - `read_state() -> JointState` (L333) — Matches `/joint_states` by ros2_control joint name and returns manifest order; raises rather than zero-filling when a joint is absent.
   - `command_bindings() -> dict[str, ControllerKind]` (L273) — The four `/…/joint_trajectory` topics, all `JOINT_TRAJECTORY`: `openarm_bringup` configures each gripper as a 1-DoF `JointTrajectoryController`, so grippers and arms take the same message.
-  - `health() -> HALHealthReport` (L524) — Cached per-bus state from `connect()`; performs no I/O.
-  - `send_action(action)` (L388) — ADR-0102 slot groups: a `tick_group_size > 1` action is staged (`SlotGroupStager`) and composed into one 16-DoF action by `_compose_group` before the same all-or-nothing publish. A standalone gripper action raises `ROSConfigError` — the four bimanual controllers share one joint vector, so there's nowhere to route it.
+  - `health() -> HALHealthReport` (L523) — Cached per-bus state from `connect()`; performs no I/O.
+  - `send_action(action)` (L388) — ADR-0102 slot groups: a `tick_group_size > 1` action is staged (`SlotGroupStager`) and composed into one 16-DoF action by `_compose_group` before the same all-or-nothing publish. A standalone gripper action raises `ROSConfigError` — the four bimanual controllers share one joint vector, so there's nowhere to route it. All four messages carry the same `time_from_start_s` from `RosControlHAL.time_from_start_s` (issue #303).
   - `_compose_group(group) -> Action` — Delegates to `compose_slot_group` over `description.joints`; logs `hal.send_action.slot_group`.
-  - `estop() -> None` (L473) — Resets the stager before delegating, so a slot staged when the stop landed cannot outlive it and corrupt the first post-e-stop tick. The downstream stop itself (all four controllers deactivated and confirmed) is the base implementation's.
-  - `disconnect() -> None` (L463) — Also resets the stager, so a slot staged before disconnect cannot raise an incomplete-group error on the first tick after reconnect.
+  - `estop() -> None` (L472) — Resets the stager before delegating, so a slot staged when the stop landed cannot outlive it and corrupt the first post-e-stop tick. The downstream stop itself (all four controllers deactivated and confirmed) is the base implementation's.
+  - `disconnect() -> None` (L462) — Also resets the stager, so a slot staged before disconnect cannot raise an incomplete-group error on the first tick after reconnect.
 - **Real hardware needs an upstream patch.** `openarm_bringup` generates the real `robot_description` via xacro, and on OpenArm **v2.0** the `left_can_interface`/`right_can_interface` arguments are silently dropped, falling back to `can1`/`can0` (v1.0 is unaffected). Unpatched, the arms don't move and the CAN preflight passes because those buses really are up — it's the description pointing elsewhere. `robots/openarm/patches/` carries the fix and an idempotent `apply.sh`.
 - The bus preflight is not implemented here — `connect()` delegates to `openral_core.can.preflight_can_links`, passing the two udev-named interfaces and OpenArm-specific remedy text; the mechanism lives in layer 0 for other CAN robots to reach. Narrower than `openral_detect.probes.can`, the richer read behind `openral detect`.
 - const `OPENARM_REAL_DESCRIPTION = make_real_description(OPENARM_DESCRIPTION, sdk_kind="open")` (L117) — Shares kinematics, safety envelope and HAL entrypoints with the sim baseline.
@@ -547,27 +547,28 @@ _RosControlHAL — `ros2_control`-backed HAL adapter, plus the typed downstream 
 - `class DownstreamStopReporting(Protocol)` — `last_stop_report -> DownstreamStopReport | None` property; what the lifecycle heartbeat and FATAL log read. (L228)
   - **(property)** `last_stop_report -> DownstreamStopReport | None` (L232)
 - `class RosControlHAL` — `ros2_control`-backed HAL adapter. Implements `LifecycleEStopHAL` with `estop_recovery = RESTART_REQUIRED` by default (the conservative policy; OpenArm opts into `RESETTABLE`). (L259)
-  - `__init__(description, controller_name, *, joint_state_topic='/joint_states', command_topic=None, publish_fn=None, state_fn=None, staleness_limit_s=0.5, stop_timeout_s=5.0)` (L308)
-  - `attach_transport(publish_fn, state_fn, stamp_fn=None) -> None` — Bind a live transport after construction; `build_hal` runs before any ROS node exists, so a real deployment cannot pass one to `__init__`. `stamp_fn` is the transport's per-message arrival clock and is what makes the staleness check a freshness check rather than a time-since-connect check. Rejects a non-callable `stamp_fn` at wire-up. (L347)
-  - `attach_controller_stop(seam) -> None` — Bind the `ControllerStopSeam` (same rationale as `attach_transport`); rejects a non-seam at wire-up with `ROSConfigError`. (L386)
-  - `controller_names() -> list[str]` — Every `controller_manager` controller `estop` deactivates; `[controller_name]` by default, overridden by the bimanual OpenArm alongside `command_bindings`. (L409)
-  - `vendor_stop_services() -> list[str]` — `std_srvs/Trigger` services and `std_msgs/Empty` topics the vendor stop uses; declared up front so the transport creates the clients/publishers at wire-up and refuses an undeclared name loudly. Empty in the base. (L418)
-  - `vendor_stop_topics() -> list[str]` — `std_msgs/Empty` topics the vendor stop publishes on, declared for the same reason. Empty in the base; Sawyer overrides. (L427)
-  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L432)
-  - `command_bindings() -> dict[str, ControllerKind]` — Every controller topic this HAL publishes to, each with the wire format its controller speaks; one entry becomes one typed transport publisher. Insertion order is the `send_action` fan-out order. **This is the override point for a new robot** — overridden by the bimanual OpenArm (4 topics, all `JOINT_TRAJECTORY`). (L436)
-  - `command_topics() -> list[str]` — Derived from `command_bindings()` so the topic list and the declared formats cannot drift; override `command_bindings`, not this. (L450)
-  - `ros2_control_joint_names() -> list[str]` — Joint names in ros2_control's namespace, action order; what `/joint_states` is keyed by. Overridden where URDF names differ from manifest names (OpenArm). (L458)
-  - **(property)** `joint_state_topic -> str` — The aggregated `sensor_msgs/JointState` topic this HAL reads. (L468)
-  - **(property)** `controller_name -> str` — Name of the primary `ros2_control` controller this HAL commands (the one `command_topic` defaults from). Hoisted here from the Franka / Sawyer wrappers so every subclass answers it. (L473)
-  - `connect() -> None` (L479)
+  - `__init__(description, controller_name, *, joint_state_topic='/joint_states', command_topic=None, publish_fn=None, state_fn=None, staleness_limit_s=0.5, stop_timeout_s=5.0)` (L319) — Reads the control rate from `description.action_spec.control_freq_hz` (the field the runner ticks at and the recorder stamps as fps; OpenArm: 30 Hz); `ROSConfigError` if it is declared but not positive.
+  - `attach_transport(publish_fn, state_fn, stamp_fn=None) -> None` — Bind a live transport after construction; `build_hal` runs before any ROS node exists, so a real deployment cannot pass one to `__init__`. `stamp_fn` is the transport's per-message arrival clock and is what makes the staleness check a freshness check rather than a time-since-connect check. Rejects a non-callable `stamp_fn` at wire-up. (L368)
+  - `attach_controller_stop(seam) -> None` — Bind the `ControllerStopSeam` (same rationale as `attach_transport`); rejects a non-seam at wire-up with `ROSConfigError`. (L407)
+  - `controller_names() -> list[str]` — Every `controller_manager` controller `estop` deactivates; `[controller_name]` by default, overridden by the bimanual OpenArm alongside `command_bindings`. (L430)
+  - `vendor_stop_services() -> list[str]` — `std_srvs/Trigger` services and `std_msgs/Empty` topics the vendor stop uses; declared up front so the transport creates the clients/publishers at wire-up and refuses an undeclared name loudly. Empty in the base. (L439)
+  - `vendor_stop_topics() -> list[str]` — `std_msgs/Empty` topics the vendor stop publishes on, declared for the same reason. Empty in the base; Sawyer overrides. (L448)
+  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L453)
+  - `command_bindings() -> dict[str, ControllerKind]` — Every controller topic this HAL publishes to, each with the wire format its controller speaks; one entry becomes one typed transport publisher. Insertion order is the `send_action` fan-out order. **This is the override point for a new robot** — overridden by the bimanual OpenArm (4 topics, all `JOINT_TRAJECTORY`). (L457)
+  - `command_topics() -> list[str]` — Derived from `command_bindings()` so the topic list and the declared formats cannot drift; override `command_bindings`, not this. (L471)
+  - `ros2_control_joint_names() -> list[str]` — Joint names in ros2_control's namespace, action order; what `/joint_states` is keyed by. Overridden where URDF names differ from manifest names (OpenArm). (L479)
+  - **(property)** `joint_state_topic -> str` — The aggregated `sensor_msgs/JointState` topic this HAL reads. (L489)
+  - **(property)** `controller_name -> str` — Name of the primary `ros2_control` controller this HAL commands (the one `command_topic` defaults from). Hoisted here from the Franka / Sawyer wrappers so every subclass answers it. (L494)
+  - `connect() -> None` (L500)
   - `disconnect() -> None` — inherited from `HALBase` (flag-and-log default; no extra teardown needed).
-  - `read_state() -> JointState` — Age is measured from `stamp_fn()` when a transport supplied one, else from `connect()`. (L499)
-  - `send_action(action) -> None` — Publish JointTrajectory; carries `joint_names` so no transport keeps a second copy of the mapping. (L541)
-  - `estop() -> None` — Drop the connection flag **first** (nothing more leaves this HAL), then `_stop_downstream()`, then raise `ROSEStopRequested` whose message says whether the downstream stop was acknowledged. The outcome lives in `last_stop_report`, not the exception type, so the HAL Protocol's "always `ROSEStopRequested`" holds. With no seam attached the report is `stopped=False` / "no controller stop seam attached" — never a claimed stop. (L576)
-  - `_stop_downstream() -> DownstreamStopReport` [private] — Deactivates `controller_names()` through the seam (STRICT switch + listing confirmation), then runs `_vendor_stop`; both are attempted even if the first fails, so the report names everything that did and did not acknowledge. (L609)
-  - `_vendor_stop(seam) -> str` [hook] — Vendor-specific stop beyond controller deactivation; returns its label for the report or raises a `ROSError`. Base: none (for a plain ros2_control robot deactivation *is* the stop; for `franka_hardware` it is what calls `libfranka`'s `stopRobot()`). Overridden by UR (dashboard `stop` Trigger) and Sawyer (super-stop Empty). (L667)
-  - `_vendor_reset(seam) -> None` [hook] — Vendor re-arm before controllers are re-activated; no-op by default. (L679)
-  - `reset_estop() -> None` — Only for `RESETTABLE` adapters: `_vendor_reset`, then `activate_controllers` through the seam, and only once the manager confirms every controller `active` is the HAL marked connected again. Raises `ROSRuntimeError` for a `RESTART_REQUIRED` policy ("in-process reset is forbidden"), a missing seam, or an unacknowledged re-activation — so the lifecycle latch can never clear ahead of the vendor reset. (L683)
+  - `read_state() -> JointState` — Age is measured from `stamp_fn()` when a transport supplied one, else from `connect()`. (L520)
+  - `send_action(action) -> None` — Publish JointTrajectory; carries `joint_names` so no transport keeps a second copy of the mapping, and `time_from_start_s` from `time_from_start_s(action)` when a control rate is configured. (L562)
+  - `time_from_start_s(action) -> float | None` — Trajectory deadline `horizon / action_spec.control_freq_hz`: a chunk is reached just as its replacement is due. `None` for a manifest without the field (the transport's 100 ms default then applies). Issue #303: at 30 Hz that default re-planned a steep segment every 33 ms and amplified each step between targets. (L598)
+  - `estop() -> None` — Drop the connection flag **first** (nothing more leaves this HAL), then `_stop_downstream()`, then raise `ROSEStopRequested` whose message says whether the downstream stop was acknowledged. The outcome lives in `last_stop_report`, not the exception type, so the HAL Protocol's "always `ROSEStopRequested`" holds. With no seam attached the report is `stopped=False` / "no controller stop seam attached" — never a claimed stop. (L624)
+  - `_stop_downstream() -> DownstreamStopReport` [private] — Deactivates `controller_names()` through the seam (STRICT switch + listing confirmation), then runs `_vendor_stop`; both are attempted even if the first fails, so the report names everything that did and did not acknowledge. (L657)
+  - `_vendor_stop(seam) -> str` [hook] — Vendor-specific stop beyond controller deactivation; returns its label for the report or raises a `ROSError`. Base: none (for a plain ros2_control robot deactivation *is* the stop; for `franka_hardware` it is what calls `libfranka`'s `stopRobot()`). Overridden by UR (dashboard `stop` Trigger) and Sawyer (super-stop Empty). (L715)
+  - `_vendor_reset(seam) -> None` [hook] — Vendor re-arm before controllers are re-activated; no-op by default. (L727)
+  - `reset_estop() -> None` — Only for `RESETTABLE` adapters: `_vendor_reset`, then `activate_controllers` through the seam, and only once the manager confirms every controller `active` is the HAL marked connected again. Raises `ROSRuntimeError` for a `RESTART_REQUIRED` policy ("in-process reset is forbidden"), a missing seam, or an unacknowledged re-activation — so the lifecycle latch can never clear ahead of the vendor reset. (L731)
   - private: `_require_connected`, `_validate_action`
 
 ### `python/hal/src/openral_hal/ros_control_transport.py`
@@ -595,10 +596,10 @@ _Production `rclpy` transport shared by every real `RosControlHAL` robot._
   - private: `_time_from_start_s`, `_on_joint_state`
 - module const `_COMMAND_DEPTH = 1` (L120) — command QoS depth (RELIABLE, VOLATILE, shallow — CLAUDE.md §2).
 - module const `_STATE_DEPTH = 10` (L125) — state QoS depth.
-- module const `_DEFAULT_TIME_FROM_START_S` (L605) — default `time_from_start` for a published `JointTrajectoryPoint` when the caller supplies none.
+- module const `_DEFAULT_TIME_FROM_START_S` (L607) — fallback `time_from_start` for a published `JointTrajectoryPoint` when the HAL's manifest declares no `action_spec.control_freq_hz`; a `RosControlHAL` that knows its rate sends `time_from_start_s` per message instead (issue #303).
 - module const `_STRICT = 2` (L76) — `controller_manager_msgs/SwitchController.STRICT`: a switch that cannot fully apply is refused rather than partially applied.
-- `_left(deadline) -> float` — Seconds left before a `time.monotonic()` deadline, floored at zero; every stop-seam phase (`wait_for_service`, the call, the confirmation) is budgeted through it. (L608)
-- `_message_type(kind) -> type` — The one place a `ControllerKind` becomes a ROS message class. Adding an enum member without extending this raises at wire-up rather than publishing a plausible-but-wrong type onto the actuation path; `tests/unit/test_ros_control_transport.py::test_every_controller_kind_maps_to_a_message_type` pins that. (L613)
+- `_left(deadline) -> float` — Seconds left before a `time.monotonic()` deadline, floored at zero; every stop-seam phase (`wait_for_service`, the call, the confirmation) is budgeted through it. (L610)
+- `_message_type(kind) -> type` — The one place a `ControllerKind` becomes a ROS message class. Adding an enum member without extending this raises at wire-up rather than publishing a plausible-but-wrong type onto the actuation path; `tests/unit/test_ros_control_transport.py::test_every_controller_kind_maps_to_a_message_type` pins that. (L615)
 
 ### `python/hal/src/openral_hal/interbotix_transport.py`
 _Production `rclpy` torque-stop seam for the Interbotix XS arms (ALOHA) — the stop only, not the command path (#250)._

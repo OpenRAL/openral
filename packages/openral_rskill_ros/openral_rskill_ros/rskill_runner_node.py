@@ -246,7 +246,10 @@ if _ROS2_AVAILABLE:
         ) -> None:
             """Store references; opens no ROS resources until ``on_configure``."""
             super().__init__(node_name)
-            self.declare_parameter("rate_hz", 30.0)
+            # 0 = the manifest's `action_spec.control_freq_hz` (issue #303: the
+            # HAL derives every trajectory deadline from that field, so the
+            # runner must tick at the same value), else 30 Hz.
+            self.declare_parameter("rate_hz", 0.0)
             self.declare_parameter("action_applied_timeout_s", 5.0)
             self.declare_parameter("joint_state_staleness_limit_s", 0.5)
             # Conservative speed for the kernel-checked move from the live pose to an
@@ -1335,7 +1338,7 @@ if _ROS2_AVAILABLE:
             assert self._aggregator is not None  # invariant set in on_configure
             assert self._hal is not None
 
-            rate_hz: float = self.get_parameter("rate_hz").get_parameter_value().double_value
+            rate_hz = self._control_rate_hz()
             period_s = 1.0 / max(rate_hz, 1.0)
             start = time.monotonic()
             # Absolute deadlines absorb tick work into the configured period.
@@ -1818,7 +1821,7 @@ if _ROS2_AVAILABLE:
             max_delta = max((abs(delta) for delta in deltas), default=0.0)
             tolerance = float(self.get_parameter("starting_pose_tolerance").value)
             max_delta_per_s = float(self.get_parameter("starting_pose_max_delta_per_s").value)
-            rate_hz = float(self.get_parameter("rate_hz").value)
+            rate_hz = self._control_rate_hz()
             if tolerance <= 0.0 or max_delta_per_s <= 0.0 or rate_hz <= 0.0:
                 raise ROSConfigError(
                     "starting_pose_tolerance, starting_pose_max_delta_per_s, and rate_hz "
@@ -1854,6 +1857,12 @@ if _ROS2_AVAILABLE:
                 )
                 next_deadline = _pace_tick(next_deadline, 1.0 / rate_hz)
             return None
+
+        def _control_rate_hz(self) -> float:
+            """The tick rate: the `rate_hz` param, else the manifest's control rate."""
+            return resolve_control_rate_hz(
+                float(self.get_parameter("rate_hz").value), self._description
+            )
 
         @staticmethod
         def _joint_positions_in_manifest_order(state: Any, names: list[str]) -> list[float]:
@@ -2515,6 +2524,31 @@ def make_local_skill_resolver(
         )
 
     return _resolver
+
+
+def resolve_control_rate_hz(param_hz: float, description: RobotDescription | None) -> float:
+    """Pick the runner's tick rate: an explicit param, else the manifest, else 30 Hz.
+
+    ``rate_hz > 0`` wins. Otherwise the robot's ``action_spec.control_freq_hz``
+    is the rate — the field the real ros2_control HAL derives every trajectory
+    deadline from (issue #303), so runner and HAL cannot disagree unless an
+    operator overrides the param on purpose. 30 Hz only for a manifest that
+    declares no control rate.
+
+    Example:
+        >>> from openral_core.schemas import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> resolve_control_rate_hz(0.0, desc)
+        30.0
+        >>> resolve_control_rate_hz(15.0, desc)
+        15.0
+    """
+    if param_hz > 0.0:
+        return float(param_hz)
+    spec = None if description is None else description.action_spec
+    if spec is not None and spec.control_freq_hz is not None and spec.control_freq_hz > 0.0:
+        return float(spec.control_freq_hz)
+    return 30.0
 
 
 def _pace_tick(prev_deadline_s: float, period_s: float) -> float:

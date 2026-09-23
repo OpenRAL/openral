@@ -30,6 +30,7 @@ import pytest
 from openral_core.exceptions import ROSConfigError, ROSPerceptionStale
 from openral_core.schemas import (
     Action,
+    ActionSpec,
     ControlMode,
     EmbodimentKind,
     JointSpec,
@@ -47,10 +48,15 @@ requires_rclpy = pytest.mark.skipif(
 )
 
 
-def _description(n_joints: int = 2) -> RobotDescription:
+def _description(n_joints: int = 2, *, control_freq_hz: float | None = None) -> RobotDescription:
     return RobotDescription(
         name="bench_arm",
         embodiment_kind=EmbodimentKind.MANIPULATOR,
+        action_spec=(
+            None
+            if control_freq_hz is None
+            else ActionSpec(dim=n_joints, control_freq_hz=control_freq_hz)
+        ),
         joints=[
             JointSpec(
                 name=f"j{i}",
@@ -65,8 +71,12 @@ def _description(n_joints: int = 2) -> RobotDescription:
     )
 
 
-def _hal(**kw: object) -> RosControlHAL:
-    return RosControlHAL(_description(), controller_name="joint_trajectory_controller", **kw)  # type: ignore[arg-type]  # reason: kwargs are the documented optional transport knobs
+def _hal(control_freq_hz: float | None = None, **kw: object) -> RosControlHAL:
+    return RosControlHAL(
+        _description(control_freq_hz=control_freq_hz),
+        controller_name="joint_trajectory_controller",
+        **kw,  # type: ignore[arg-type]  # reason: kwargs are the documented optional transport knobs
+    )
 
 
 # ── The generalisation surface ────────────────────────────────────────────────
@@ -145,6 +155,39 @@ def test_send_action_carries_joint_names_so_the_transport_needs_no_mapping() -> 
         Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[[0.1, 0.2]])
     )
     assert sent[0][1]["joint_names"] == ["j0", "j1"]
+
+
+def test_send_action_carries_the_deadline_the_control_rate_implies() -> None:
+    """`time_from_start` is one control period per step, not the transport's 100 ms (#303)."""
+    sent: list[tuple[str, dict[str, object]]] = []
+    hal = _hal(control_freq_hz=50.0)
+    hal.attach_transport(lambda t, m: sent.append((t, m)), lambda: {}, None)
+    hal.connect()
+    hal.send_action(
+        Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[[0.1, 0.2]])
+    )
+    hal.send_action(
+        Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            horizon=4,
+            joint_targets=[[0.1, 0.2]] * 4,
+        )
+    )
+    assert sent[0][1]["time_from_start_s"] == pytest.approx(0.02)
+    assert sent[1][1]["time_from_start_s"] == pytest.approx(0.08)
+
+
+def test_a_hal_with_no_rate_sends_no_deadline_and_a_bad_rate_is_refused() -> None:
+    sent: list[tuple[str, dict[str, object]]] = []
+    hal = _hal()
+    hal.attach_transport(lambda t, m: sent.append((t, m)), lambda: {}, None)
+    hal.connect()
+    hal.send_action(
+        Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[[0.1, 0.2]])
+    )
+    assert "time_from_start_s" not in sent[0][1]
+    with pytest.raises(ROSConfigError, match="control_freq_hz"):
+        _hal(control_freq_hz=0.0)
 
 
 # ── The watchdog ──────────────────────────────────────────────────────────────
