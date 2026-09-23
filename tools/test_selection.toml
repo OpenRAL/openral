@@ -102,6 +102,12 @@ isolate_globs = [
 # pytest targets. CLAUDE.md §1.11 — these fixtures are loaded for real by the
 # listed tests, so a fixture edit must re-run them.
 [extra_triggers]
+# `.yml` is not a source suffix, and heavy-lanes-trigger.yml is deliberately
+# not a full-run glob (it never runs tests) — but its guard tests must run.
+".github/workflows/heavy-lanes-trigger.yml" = [
+  "tests/unit/test_heavy_lanes_trigger.py",
+  "tests/unit/test_lockstep_versions.py",
+]
 "scenes/**" = ["tests/unit/test_examples_sim_configs_load.py"]
 "scenes/benchmark/aloha*.yaml" = ["tests/sim/test_aloha_bimanual_act_aloha.py"]
 "scenes/benchmark/pusht.yaml" = ["tests/sim/test_pusht_2d_diffusion_pusht.py"]

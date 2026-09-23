@@ -335,7 +335,9 @@ composite action.
    lanes on a PR's branch once the head commit is **0 commits behind its base**,
    **every other check is green** (and `select-and-test`, `quality`,
    `Verify Signed-off-by` have reported), **every review thread is resolved**,
-   the PR is not a draft and not from a fork — once per head commit. Until then
+   the PR is not a draft and not from a fork (a fork head cannot be
+   dispatched; see [Review policy](development.md#review-policy)) — once per
+   head commit. Until then
    `heavy-lanes` shows "Expected — waiting" and blocks the merge.
    `select-and-test` never waits on the lanes.
 7. **`robot_descriptions` / openarm asset clones are cached** across runs

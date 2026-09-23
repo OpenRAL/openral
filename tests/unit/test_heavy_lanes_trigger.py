@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 import yaml
+from hypothesis import given
+from hypothesis import strategies as st
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
@@ -28,8 +30,11 @@ from tools.heavy_lanes_trigger import (  # noqa: E402
     CheckRunState,
     LaneRunState,
     PullRequestState,
+    Verdict,
     readiness,
 )
+
+MODELS = (CheckRunState, LaneRunState, PullRequestState, Verdict)
 
 REQUIRED = list(DEFAULT_REQUIRED_CHECKS)
 
@@ -153,3 +158,30 @@ def test_own_checks_and_cancelled_runs_do_not_block() -> None:
     runs = [LaneRunState(status="completed", conclusion="cancelled")]
     verdict = readiness(_ready_pr(checks=checks, lane_runs=runs), REQUIRED)
     assert verdict.ready, verdict.reasons
+
+
+@pytest.mark.parametrize("model", MODELS)
+def test_model_json_schema(
+    model: type[CheckRunState | LaneRunState | PullRequestState | Verdict],
+) -> None:
+    assert model.model_json_schema()["type"] == "object"
+
+
+@given(st.builds(CheckRunState))
+def test_check_run_state_round_trip(state: CheckRunState) -> None:
+    assert CheckRunState.model_validate_json(state.model_dump_json()) == state
+
+
+@given(st.builds(LaneRunState))
+def test_lane_run_state_round_trip(run: LaneRunState) -> None:
+    assert LaneRunState.model_validate_json(run.model_dump_json()) == run
+
+
+@given(st.builds(PullRequestState))
+def test_pull_request_state_round_trip(pr: PullRequestState) -> None:
+    assert PullRequestState.model_validate_json(pr.model_dump_json()) == pr
+
+
+@given(st.builds(Verdict))
+def test_verdict_round_trip(verdict: Verdict) -> None:
+    assert Verdict.model_validate_json(verdict.model_dump_json()) == verdict
