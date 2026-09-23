@@ -509,3 +509,78 @@ def test_a_kind_naming_no_declared_topic_is_rejected_at_wire_up() -> None:
     finally:
         node.destroy_node()
         ctx.shutdown()
+
+
+@requires_rclpy
+def test_a_stalled_controller_manager_cannot_stretch_the_stop_past_its_budget() -> None:
+    """Discovery, the switch and its confirmation share one `timeout_s` deadline.
+
+    A `switch_controller` that accepts the request and never answers is the worst case
+    for the e-stop path: the old per-phase timeouts let the stop take a full window for
+    the switch **and** another for confirmation, so the lifecycle node's FATAL came late.
+    A real `switch_controller` service that sleeps past the budget stands in for that
+    manager; the stop must still return inside `timeout_s` and report the miss.
+    """
+    import threading
+
+    import rclpy
+    from openral_hal.ros_control_transport import RosControlTransport
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
+
+    try:
+        from controller_manager_msgs.srv import SwitchController
+        from std_srvs.srv import Trigger
+    except ImportError:
+        pytest.skip("controller_manager_msgs / std_srvs not importable — source ros2_control")
+
+    budget_s = 1.0
+    ctx = rclpy.Context()
+    ctx.init()
+    node = Node("t_budget", context=ctx)
+    manager = Node("t_budget_manager", context=ctx)
+
+    def _stall(_request: object, response: object) -> object:
+        time.sleep(budget_s * 2)
+        return response
+
+    manager.create_service(SwitchController, "/cm/switch_controller", _stall)
+    manager.create_service(Trigger, "/stall/stop", _stall)
+    executor = SingleThreadedExecutor(context=ctx)
+    executor.add_node(manager)
+    spinner = threading.Thread(target=executor.spin, daemon=True)
+    spinner.start()
+    try:
+        tr = RosControlTransport(
+            node,
+            command_topics=["/c/joint_trajectory"],
+            joint_names=["j0"],
+            controller_names=["c"],
+            trigger_services=["/stall/stop"],
+            controller_manager="/cm",
+        )
+        # Let discovery settle first so the budget below is spent on the stall, not on DDS.
+        probe = node.create_client(SwitchController, "/cm/switch_controller")
+        assert probe.wait_for_service(timeout_sec=10.0), "stalled manager never discovered"
+        t0 = time.monotonic()
+        report = tr.deactivate_controllers(["c"], timeout_s=budget_s)
+        elapsed = time.monotonic() - t0
+        assert not report.ok
+        assert "did not answer" in report.detail
+        assert elapsed < budget_s * 1.3, f"stop took {elapsed:.2f}s against a {budget_s}s budget"
+
+        t0 = time.monotonic()
+        trig = tr.call_trigger("/stall/stop", timeout_s=budget_s)
+        elapsed = time.monotonic() - t0
+        assert not trig.success
+        assert "did not answer" in trig.message
+        assert elapsed < budget_s * 1.3, f"trigger took {elapsed:.2f}s against {budget_s}s"
+        tr.close()
+    finally:
+        # The stalled callbacks are still sleeping on the spinner; let them drain before the
+        # nodes go away, so teardown never races a callback that holds the service.
+        executor.shutdown(timeout_sec=budget_s * 6)
+        spinner.join(timeout=budget_s * 6)
+        node.destroy_node()
+        manager.destroy_node()
+        ctx.shutdown()

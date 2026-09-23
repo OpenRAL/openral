@@ -434,6 +434,8 @@ class RosControlTransport:
     def call_trigger(self, service: str, *, timeout_s: float) -> TriggerReport:
         """Call one declared `std_srvs/Trigger` service and return its response.
 
+        Discovery and the call share one ``timeout_s`` deadline.
+
         Raises:
             ROSConfigError: If `service` was not declared at wire-up.
         """
@@ -446,11 +448,12 @@ class RosControlTransport:
                 f"service it never declared in vendor_stop_services(). Declared: "
                 f"{sorted(self._trigger_clients)}"
             )
+        deadline = time.monotonic() + timeout_s
         if not client.wait_for_service(timeout_sec=timeout_s):
             return TriggerReport(success=False, message=f"{service} not available")
         future = client.call_async(client.srv_type.Request())
         self._rclpy.spin_until_future_complete(
-            self._helper, future, executor=self._executor, timeout_sec=timeout_s
+            self._helper, future, executor=self._executor, timeout_sec=_left(deadline)
         )
         if not future.done():
             return TriggerReport(success=False, message=f"{service} did not answer")
@@ -479,11 +482,12 @@ class RosControlTransport:
 
     def controller_states(self, *, timeout_s: float) -> dict[str, str]:
         """Return `{name: state}` from `list_controllers`; empty if the manager did not answer."""
+        deadline = time.monotonic() + timeout_s
         if not self._list_client.wait_for_service(timeout_sec=timeout_s):
             return {}
         future = self._list_client.call_async(self._list_type.Request())
         self._rclpy.spin_until_future_complete(
-            self._helper, future, executor=self._executor, timeout_sec=timeout_s
+            self._helper, future, executor=self._executor, timeout_sec=_left(deadline)
         )
         if not future.done() or future.exception() is not None:
             return {}
@@ -497,7 +501,11 @@ class RosControlTransport:
     def _switch(
         self, names: Sequence[str], *, activate: bool, timeout_s: float
     ) -> ControllerSwitchReport:
-        """One STRICT ``switch_controller`` call, confirmed via ``list_controllers``."""
+        """One STRICT ``switch_controller`` call, confirmed via ``list_controllers``.
+
+        Service discovery, the switch and its confirmation share **one** ``timeout_s``
+        deadline, so the call returns within the budget however the manager stalls.
+        """
         wanted = tuple(names)
         target = "active" if activate else "inactive"
         if not wanted:
@@ -517,11 +525,14 @@ class RosControlTransport:
             request.deactivate_controllers = list(wanted)
         request.strictness = _STRICT
         request.activate_asap = True
+        # The manager's own switch timeout stays the full budget: `0` would mean "wait
+        # forever" to controller_manager, and a manager that aborts a nearly-applied stop
+        # because *our* budget is nearly spent helps nobody. Our wait below is what is bounded.
         request.timeout.sec = int(timeout_s)
         request.timeout.nanosec = int((timeout_s - int(timeout_s)) * 1e9)
         future = self._switch_client.call_async(request)
         self._rclpy.spin_until_future_complete(
-            self._helper, future, executor=self._executor, timeout_sec=timeout_s
+            self._helper, future, executor=self._executor, timeout_sec=_left(deadline)
         )
         if not future.done():
             return ControllerSwitchReport(
@@ -531,8 +542,9 @@ class RosControlTransport:
         if exc is not None:
             return ControllerSwitchReport(ok=False, controllers=wanted, detail=f"{manager}: {exc}")
         response = future.result()
-        remaining = max(0.5, deadline - time.monotonic())
-        states = self._controller_states_of(wanted, timeout_s=remaining)
+        # Confirmation gets only what is left of `timeout_s`: the whole stop is bounded by
+        # the caller's budget, never a full extra window per phase.
+        states = self._controller_states_of(wanted, timeout_s=_left(deadline))
         confirmed = all(states.get(n) == target for n in wanted)
         # `message` joined the response after Humble; read it defensively.
         message = str(getattr(response, "message", "") or "")
@@ -591,6 +603,11 @@ class RosControlTransport:
 #: Default trajectory deadline. Matches the 100 ms the production HALs assume
 #: for a single-step command; overridden per message via `time_from_start_s`.
 _DEFAULT_TIME_FROM_START_S = 0.1
+
+
+def _left(deadline: float) -> float:
+    """Seconds left before a ``time.monotonic()`` deadline, floored at zero."""
+    return max(0.0, deadline - time.monotonic())
 
 
 def _message_type(kind: ControllerKind) -> type:
