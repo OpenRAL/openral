@@ -45,3 +45,35 @@ def test_every_ros2_control_robot_declares_its_rate(robot: str) -> None:
     """Their real HALs refuse to build without it, so the committed manifests must carry it."""
     desc = RobotDescription.from_yaml(str(REPO_ROOT / f"robots/{robot}/robot.yaml"))
     assert runner.resolve_control_rate_hz(0.0, desc) == 30.0
+
+
+# ── Starting-pose ramp: derived from the manifest, not from constants ─────────
+
+
+def test_the_ramp_speed_is_the_slowest_joint_scaled_by_the_safety_factor() -> None:
+    desc = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
+    slowest = min(j.velocity_limit for j in desc.joints if j.velocity_limit)
+    speed, tolerance = runner.resolve_starting_pose_ramp(0.0, 0.0, 30.0, desc)
+    assert speed == pytest.approx(slowest * desc.safety.max_joint_speed_factor)
+    # "arrived" = within one control period of motion at that speed.
+    assert tolerance == pytest.approx(speed / 30.0)
+
+
+def test_explicit_ramp_params_win() -> None:
+    desc = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
+    assert runner.resolve_starting_pose_ramp(0.2, 0.01, 30.0, desc) == (0.2, 0.01)
+    speed, tolerance = runner.resolve_starting_pose_ramp(0.2, 0.0, 50.0, desc)
+    assert (speed, tolerance) == (0.2, pytest.approx(0.2 / 50.0))
+
+
+def test_a_manifest_without_velocity_limits_cannot_derive_the_ramp() -> None:
+    from openral_core.exceptions import ROSConfigError
+
+    desc = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
+    limitless = desc.model_copy(
+        update={"joints": [j.model_copy(update={"velocity_limit": None}) for j in desc.joints]}
+    )
+    with pytest.raises(ROSConfigError, match="velocity_limit"):
+        runner.resolve_starting_pose_ramp(0.0, 0.0, 30.0, limitless)
+    with pytest.raises(ROSConfigError, match="control rate"):
+        runner.resolve_starting_pose_ramp(0.0, 0.0, 0.0, desc)

@@ -191,6 +191,8 @@ safety:
   max_force_n: 10.0
   max_torque_nm: 3.0
   deadman_required: true
+  # provisional: former schema default, not measured on this rig — see issue #303
+  self_collision_margin_m: 0.0
   contact_force_threshold_n: 5.0
 
 sdk_kind: "open"

@@ -4117,7 +4117,10 @@ def deploy_validate(  # noqa: PLR0915  # reason: linear readiness checklist; eac
             hal_mode="real",
             enable_dashboard=False,
         )
-    except (ROSConfigError, ROSCapabilityMismatch) as exc:
+    except (ROSConfigError, ROSCapabilityMismatch, ValidationError) as exc:
+        # ValidationError: the robot manifest failed its real-hardware contract
+        # (control rate, explicit safety limits, joint velocity limits) — the
+        # message names every missing value.
         console.print(f"[red]✗ resolve:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 

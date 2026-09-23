@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from openral_core import required_vla_camera_slots, sensor_name_to_slot
+from openral_core.exceptions import ROSConfigError
 
 if TYPE_CHECKING:
     from openral_core.schemas import Action, ActionSlot, RobotDescription, RSkillManifest
@@ -251,12 +252,18 @@ if _ROS2_AVAILABLE:
             # runner must tick at the same value), else 30 Hz.
             self.declare_parameter("rate_hz", 0.0)
             self.declare_parameter("action_applied_timeout_s", 5.0)
-            self.declare_parameter("joint_state_staleness_limit_s", 0.5)
+            # No default: the launch declares it with its rationale, and configure
+            # refuses an unset value rather than guessing a staleness window.
+            self.declare_parameter("joint_state_staleness_limit_s", 0.0)
             # Conservative speed for the kernel-checked move from the live pose to an
             # rSkill's starting_pose. The gripper channel is normalised [0, 1], so the same
             # bound treats one full jaw stroke like one radian: conservative and tunable.
-            self.declare_parameter("starting_pose_max_delta_per_s", 0.5)
-            self.declare_parameter("starting_pose_tolerance", 0.05)
+            # 0 = derive from the manifest: ramp speed is the slowest joint's
+            # `velocity_limit` scaled by `safety.max_joint_speed_factor`; the
+            # arrival tolerance is one control period of that motion. Both were
+            # bare constants (0.5 rad/s, 0.05 rad) that came from nowhere.
+            self.declare_parameter("starting_pose_max_delta_per_s", 0.0)
+            self.declare_parameter("starting_pose_tolerance", 0.0)
             self.declare_parameter("estop_topic", "/openral/estop")
             # Deprecated launch input retained until the CLI stops forwarding it. Starting
             # poses now always move through candidate_action; this service is never called.
@@ -436,8 +443,8 @@ if _ROS2_AVAILABLE:
                 action_applied_timeout_s=float(
                     self.get_parameter("action_applied_timeout_s").value
                 ),
-                joint_state_staleness_limit_s=float(
-                    self.get_parameter("joint_state_staleness_limit_s").value
+                joint_state_staleness_limit_s=_require_positive_param(
+                    self, "joint_state_staleness_limit_s"
                 ),
             )
             try:
@@ -1602,7 +1609,7 @@ if _ROS2_AVAILABLE:
 
             assert self._description is not None
             names = [joint.name for joint in self._description.joints]
-            tolerance = float(self.get_parameter("starting_pose_tolerance").value)
+            _, tolerance = self._starting_pose_ramp()
             deadline = time.monotonic() + float(
                 self.get_parameter("action_applied_timeout_s").value
             )
@@ -1819,14 +1826,8 @@ if _ROS2_AVAILABLE:
             current = self._joint_positions_in_manifest_order(self._hal.read_state(), names)
             deltas = [end - start for start, end in zip(current, target, strict=True)]
             max_delta = max((abs(delta) for delta in deltas), default=0.0)
-            tolerance = float(self.get_parameter("starting_pose_tolerance").value)
-            max_delta_per_s = float(self.get_parameter("starting_pose_max_delta_per_s").value)
+            max_delta_per_s, tolerance = self._starting_pose_ramp()
             rate_hz = self._control_rate_hz()
-            if tolerance <= 0.0 or max_delta_per_s <= 0.0 or rate_hz <= 0.0:
-                raise ROSConfigError(
-                    "starting_pose_tolerance, starting_pose_max_delta_per_s, and rate_hz "
-                    "must be positive"
-                )
             if max_delta <= tolerance:
                 return None
 
@@ -1857,6 +1858,15 @@ if _ROS2_AVAILABLE:
                 )
                 next_deadline = _pace_tick(next_deadline, 1.0 / rate_hz)
             return None
+
+        def _starting_pose_ramp(self) -> tuple[float, float]:
+            """(max joint speed, arrival tolerance) for the starting-pose move."""
+            return resolve_starting_pose_ramp(
+                float(self.get_parameter("starting_pose_max_delta_per_s").value),
+                float(self.get_parameter("starting_pose_tolerance").value),
+                self._control_rate_hz(),
+                self._description,
+            )
 
         def _control_rate_hz(self) -> float:
             """The tick rate: the `rate_hz` param, else the manifest's control rate.
@@ -2561,10 +2571,72 @@ def resolve_control_rate_hz(param_hz: float, description: RobotDescription | Non
     """
     if param_hz > 0.0:
         return float(param_hz)
-    spec = None if description is None else description.action_spec
-    if spec is not None and spec.control_freq_hz is not None and spec.control_freq_hz > 0.0:
-        return float(spec.control_freq_hz)
-    return None
+    return None if description is None else description.control_rate_hz
+
+
+def resolve_starting_pose_ramp(
+    param_max_delta_per_s: float,
+    param_tolerance_rad: float,
+    rate_hz: float,
+    description: RobotDescription | None,
+) -> tuple[float, float]:
+    """Ramp speed and arrival tolerance for the move to a skill's starting pose.
+
+    An explicit positive param wins. Otherwise both come from the manifest, so
+    no constant is invented: the speed is the slowest joint's ``velocity_limit``
+    scaled by ``safety.max_joint_speed_factor`` (the same cap the kernel
+    applies), and the tolerance is the distance that speed covers in one
+    control period — "arrived" means within one tick of the target.
+
+    Raises:
+        ROSConfigError: If a value must be derived and the manifest has no
+            joint with a positive ``velocity_limit``, or ``rate_hz`` is not
+            positive.
+
+    Example:
+        >>> from openral_core.schemas import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> speed, tol = resolve_starting_pose_ramp(0.0, 0.0, 30.0, desc)
+        >>> speed > 0 and abs(tol - speed / 30.0) < 1e-12
+        True
+        >>> resolve_starting_pose_ramp(0.2, 0.01, 30.0, desc)
+        (0.2, 0.01)
+    """
+    if rate_hz <= 0.0:
+        raise ROSConfigError(f"starting-pose ramp needs a positive control rate; got {rate_hz}")
+    max_delta_per_s = float(param_max_delta_per_s)
+    if max_delta_per_s <= 0.0:
+        limits = (
+            []
+            if description is None
+            else [
+                float(j.velocity_limit)
+                for j in description.joints
+                if j.velocity_limit is not None and j.velocity_limit > 0.0
+            ]
+        )
+        if not limits or description is None:
+            raise ROSConfigError(
+                "starting_pose_max_delta_per_s is unset and the manifest declares no joint "
+                "with a positive velocity_limit to derive it from; declare the limits or "
+                "pass the param."
+            )
+        max_delta_per_s = min(limits) * float(description.safety.max_joint_speed_factor)
+    tolerance = float(param_tolerance_rad)
+    if tolerance <= 0.0:
+        tolerance = max_delta_per_s / rate_hz
+    return max_delta_per_s, tolerance
+
+
+def _require_positive_param(node: Any, name: str) -> float:  # reason: rclpy Node is untyped
+    """Read a float ROS param that the launch must set; refuse a missing or non-positive one."""
+    value = float(node.get_parameter(name).value)
+    if value <= 0.0:
+        raise ROSConfigError(
+            f"rskill_runner_node param {name!r} is {value}; it has no default on purpose — "
+            "the launch declares it with its rationale. Set it > 0."
+        )
+    return value
 
 
 def _pace_tick(prev_deadline_s: float, period_s: float) -> float:

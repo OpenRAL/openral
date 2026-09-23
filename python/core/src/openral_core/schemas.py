@@ -2103,6 +2103,77 @@ class RobotDescription(BaseModel):
     # without this field load with the default below.
     schema_version: Literal["0.1"] = "0.1"
 
+    #: `SafetyEnvelope` fields the safety kernel's envelope loader reads and
+    #: that carry a schema default. A real robot must declare every one of them
+    #: itself: a schema default is a number nobody measured on that rig, and it
+    #: would otherwise reach the kernel silently (issue #303 follow-up).
+    REAL_HARDWARE_SAFETY_FIELDS: ClassVar[tuple[str, ...]] = (
+        "max_ee_speed_m_s",
+        "max_ee_accel_m_s2",
+        "max_joint_speed_factor",
+        "max_force_n",
+        "max_torque_nm",
+        "contact_force_threshold_n",
+        "deadman_required",
+        "self_collision_margin_m",
+    )
+
+    @property
+    def control_rate_hz(self) -> float | None:
+        """The robot's declared control rate, ``action_spec.control_freq_hz``, or ``None``.
+
+        The one place a robot's rate lives: the skill runner ticks at it, the
+        HAL node publishes proprio at it, the real ros2_control HAL derives every
+        trajectory deadline from it, and the recorder stamps it as fps.
+
+        Example:
+            >>> RobotDescription.from_yaml("robots/openarm/robot.yaml").control_rate_hz
+            30.0
+        """
+        spec = self.action_spec
+        if spec is None or spec.control_freq_hz is None or spec.control_freq_hz <= 0.0:
+            return None
+        return float(spec.control_freq_hz)
+
+    @model_validator(mode="after")
+    def _validate_real_hardware_contract(self) -> RobotDescription:
+        """A manifest with a real HAL must declare every value the real path consumes.
+
+        Only robots with ``hal.real`` set are held to this; a sim-only manifest
+        keeps the schema defaults. Every gap is reported at once, so one load
+        names everything the rig still has to declare:
+
+        * ``action_spec.control_freq_hz`` > 0 — the runner tick and every
+          trajectory deadline (issue #303).
+        * every field in ``REAL_HARDWARE_SAFETY_FIELDS`` set explicitly in
+          ``safety`` (an explicit value equal to the default is fine; what is
+          refused is silently inheriting it).
+        * ``velocity_limit`` > 0 on every joint — the starting-pose ramp speed
+          is derived from it.
+        """
+        if not self.hal.real:
+            return self
+        missing: list[str] = []
+        if self.control_rate_hz is None:
+            missing.append("action_spec.control_freq_hz (> 0 Hz)")
+        declared = self.safety.model_fields_set
+        missing.extend(
+            f"safety.{name}" for name in self.REAL_HARDWARE_SAFETY_FIELDS if name not in declared
+        )
+        missing.extend(
+            f"joints[{j.name}].velocity_limit (> 0)"
+            for j in self.joints
+            if j.velocity_limit is None or j.velocity_limit <= 0.0
+        )
+        if missing:
+            raise ValueError(
+                f"robot {self.name!r} declares a real HAL ({self.hal.real}) but not every "
+                "value the real path consumes. A schema default is a number nobody "
+                "measured on this rig, so each must be declared in the manifest: "
+                + ", ".join(missing)
+            )
+        return self
+
     @model_validator(mode="after")
     def _validate_footprint_polygon(self) -> RobotDescription:
         """A declared footprint polygon needs >= 3 vertices with finite coords."""
