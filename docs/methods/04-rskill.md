@@ -309,11 +309,11 @@ _Shared helpers for VLA adapters (Layer 3); internal — no public re-export._
 ### `python/rskill/src/openral_rskill/_policy_io.py`
 _The one policy <-> robot I/O codec (joint order, deg<->rad, gripper scale, clamp), applied on every deploy dispatch path; internal — no public re-export._
 
-- `class PolicyIOCodec(BaseModel)` — Frozen codec built once per skill from the manifest's `action_contract` (`joint_units`, `joint_names`, `gripper_scale`, legacy `policy_extras.gripper_scale` with a deprecation warning) + the `RobotDescription`. State: permute robot→policy order, then `gripper * gripper_scale` / `degrees(joint)`. Action: `gripper / gripper_scale` / `radians(joint)` back in robot order; on the slot path the same per-channel conversion in policy order per slot (JOINT_POSITION/JOINT_VELOCITY + GRIPPER_POSITION), no permutation. (L94)
-  - `from_manifest(manifest, description, *, adapter=None) -> PolicyIOCodec` — Joint order: `action_contract.joint_names` (robot names in policy order; unknown name → `ROSConfigError`) > the adapter's `policy.config.action_feature_names` (`.pos`/`_joint_` normalised; mismatch → identity + `policy_io.feature_names_unmatched`) > identity. `ROSConfigError` for a joint-position contract without `joint_units` or a legacy extras scale contradicting the contract. (L130)
-  - `to_policy_state(robot_state) -> NDArray` — Robot-order radians → policy order + units. (L263)
-  - `to_robot_action(policy_action, *, slots=None) -> NDArray` — Policy action → robot units (+ robot order without slots). (L276)
-  - `clamp(robot_action) -> NDArray` — Pull each joint strictly (1e-3) inside `RobotDescription` position limits; no-op on a width mismatch. (L324)
+- `class PolicyIOCodec(BaseModel)` — Frozen codec built once per skill from the manifest's `action_contract` (`joint_units`, `joint_names`, `gripper_scale`, legacy `policy_extras.gripper_scale` with a deprecation warning) + the `RobotDescription`. State: permute robot→policy order, then `gripper * gripper_scale` / `degrees(joint)`. Action: `gripper / gripper_scale` / `radians(joint)` back in robot order; on the slot path the same per-channel conversion in policy order per slot (JOINT_POSITION/JOINT_VELOCITY + GRIPPER_POSITION), no permutation. (L98)
+  - `from_manifest(manifest, description, *, adapter=None) -> PolicyIOCodec` — Joint order: `action_contract.joint_names` (robot names in policy order; unknown name → `ROSConfigError`) > the adapter's `policy.config.action_feature_names` (`.pos`/`_joint_` normalised; mismatch → identity + `policy_io.feature_names_unmatched`) > identity. `ROSConfigError` for a joint-position contract without `joint_units` or a legacy extras scale contradicting the contract. (L134)
+  - `to_policy_state(robot_state) -> NDArray` — Robot-order radians → policy order + units. (L267)
+  - `to_robot_action(policy_action, *, slots=None) -> NDArray` — Policy action → robot units (+ robot order without slots). (L280)
+  - `clamp(robot_action) -> NDArray` — Pull each joint strictly (1e-3) inside `RobotDescription` position limits; no-op on a width mismatch. (L328)
 - private: `_effective_perm(robot_to_policy, n) -> list[int]` — Identity unless a valid length-`n` permutation, so unit conversion runs on the no-reorder path too. (L57)
 
 ### `python/rskill/src/openral_rskill/testing.py`

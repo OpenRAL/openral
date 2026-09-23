@@ -67,8 +67,12 @@ def _effective_perm(robot_to_policy: list[int] | None, n: int) -> list[int]:
 
 
 def _is_gripper_joint(joint: JointSpec) -> bool:
+    """An explicit ``role`` wins; the name heuristic only covers untagged joints."""
     role = getattr(joint, "role", None)
-    return getattr(role, "value", role) == "gripper" or "gripper" in joint.name.lower()
+    role = getattr(role, "value", role)
+    if role not in (None, "unknown"):
+        return role == "gripper"
+    return "gripper" in joint.name.lower()
 
 
 def _normalize_feature_name(name: str) -> str:

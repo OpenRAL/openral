@@ -792,8 +792,11 @@ def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]
         name = str(entry.link_name)
         body_id = bodies.get(name)
         # The corner-slop budget is an OBB notion: a capsule / sphere link (the
-        # OpenArm manifest) has no corners to measure, so it stays unresolved
-        # (no budget, conservative) rather than crashing the E-stop snapshot.
+        # OpenArm manifest) has no corners to measure, so it joins
+        # `unresolved_links` rather than crashing the E-stop snapshot. Like a
+        # link with no MuJoCo body, it adds nothing to `max_corner_slop_m`, so
+        # the published budget covers resolved links only; a consumer must
+        # check `unresolved_links` before scoring a stop against it.
         half_extents = getattr(entry.shape, "half_extents_m", None)
         half = np.asarray(half_extents if half_extents is not None else [], dtype=np.float64)
         if body_id is None or half.size != _XYZ:

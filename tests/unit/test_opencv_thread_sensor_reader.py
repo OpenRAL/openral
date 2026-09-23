@@ -356,3 +356,18 @@ def test_factory_rejects_a_malformed_crop() -> None:
     )
     with pytest.raises(ROSConfigError, match="x, y, width, height"):
         make_sensor_readers([cfg])
+
+
+def test_factory_rejects_a_fractional_crop_value() -> None:
+    """``640.5`` must not be truncated to ``640`` and applied silently."""
+    from openral_core import SensorReaderBackend, SensorReaderConfig
+    from openral_core.exceptions import ROSConfigError
+    from openral_runner.factory import make_sensor_readers
+
+    cfg = SensorReaderConfig(
+        sensor_id="cam",
+        backend=SensorReaderBackend.OPENCV_THREAD,
+        backend_params={"device": 0, "crop": [0, 0, 640.5, 480]},
+    )
+    with pytest.raises(ROSConfigError, match="whole number"):
+        make_sensor_readers([cfg])

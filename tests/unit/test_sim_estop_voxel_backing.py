@@ -1057,6 +1057,13 @@ def test_collision_model_slop_skips_capsule_links_instead_of_crashing() -> None:
     assert all(
         getattr(e.shape, "half_extents_m", None) is None for e in description.collision_geometry
     ), "this test wants a non-box collision model; the openarm manifest changed"
+    from openral_core.exceptions import ROSConfigError
+    from openral_hal._openarm_v2_assets import ensure_openarm_v2_mjcf
+
+    try:
+        ensure_openarm_v2_mjcf()  # a git fetch on a cold cache
+    except ROSConfigError as exc:
+        pytest.skip(f"OpenArm v2 MJCF unavailable: {exc}")
     hal = build_hal(description, mode="sim")
     hal.connect()
     try:

@@ -1449,7 +1449,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     rgb_camera_names = [s.name for s in description.sensors if s.modality == "rgb"]
     # Workcell-mounted cameras (DeployScene.sensors) publish on the same
     # `/openral/cameras/<name>/image` prefix via the real-deploy sensor
-    # leg — WorldState must subscribe to them too.
+    # leg — WorldState must subscribe to them too, but only on `hal_mode:=real`:
+    # in sim, SimSensorBridge renders the manifest's cameras only, so a
+    # scene-only camera would be a subscription with no publisher (a stale
+    # diagnostic forever).
     scene_sensors: list[SensorSpec] = []
     scene_drivers: list = []  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, deferred import
     if deploy_config:
@@ -1458,10 +1461,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         _scene = DeployScene.from_yaml(deploy_config)
         scene_sensors = list(_scene.sensors)
         scene_drivers = list(_scene.drivers)
-        scene_rgb = [
-            s.name for s in scene_sensors if s.modality == "rgb" and s.name not in rgb_camera_names
-        ]
-        rgb_camera_names = [*rgb_camera_names, *scene_rgb]
+        if hal_mode == "real":
+            scene_rgb = [
+                s.name
+                for s in scene_sensors
+                if s.modality == "rgb" and s.name not in rgb_camera_names
+            ]
+            rgb_camera_names = [*rgb_camera_names, *scene_rgb]
 
     # Cameras that will actually publish on a real deploy: a declared RGB sensor
     # only gets a reader (and therefore a topic) when it carries a

@@ -292,3 +292,16 @@ def test_clamp_pulls_inside_the_robot_limits() -> None:
     assert out[0] < 1.9199 and out[1] > -1.7453
     assert out[2] == 0.0
     assert 0.0 < out[5] < 1.0
+
+
+def test_explicit_non_gripper_role_beats_a_gripper_name() -> None:
+    """A wrist tagged ``role: arm`` but named ``gripper_roll`` is a joint, not a gripper."""
+    from openral_core.schemas import JointSpec
+    from openral_rskill._policy_io import _is_gripper_joint
+
+    base = RobotDescription.from_yaml("robots/so101_follower/robot.yaml").joints[0]
+    wrist = base.model_copy(update={"name": "gripper_roll", "role": "arm"})
+    untagged = base.model_copy(update={"name": "gripper_roll", "role": "unknown"})
+    assert isinstance(wrist, JointSpec)
+    assert _is_gripper_joint(wrist) is False
+    assert _is_gripper_joint(untagged) is True

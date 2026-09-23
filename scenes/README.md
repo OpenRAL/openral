@@ -185,9 +185,9 @@ raises `ROSConfigError` at config-build time (the message lists the allowed
 robots); a matching one is accepted; an omitted one takes the scene's default.
 Free-axis scenes (`tabletop_push`, `isaac_sim`, `mock`) require a robot.
 
-## Placing robots in free-axis scenes (`base_pose:`)
+## Placing robots with `base_pose:`
 
-Scenes registered with `base_pose=True` (`tabletop_push`, `openarm_tabletop_pnp`) accept an optional `base_pose:` block that anchors the robot
+Scenes registered with `base_pose=True` (free-axis `tabletop_push`; scene-fixed `openarm_tabletop_pnp`) accept an optional `base_pose:` block that anchors the robot
 in the scene's world frame. Adapters write the `world → base_frame` transform
 (from the robot manifest's `RobotDescription.base_frame`) into the scene's
 MJCF at load. Example:
@@ -210,8 +210,9 @@ base_pose:
   frame_id: world
 ```
 
-Setting `base_pose:` on a fixed-robot scene is a `ROSConfigError` — those
-scenes ship their own MJCF and the field has no physical meaning there. See
+Setting `base_pose:` on a scene not registered with `base_pose=True` is a
+`ROSConfigError` — those scenes ship their own MJCF and the field has no
+physical meaning there. See
 the mandatory-mounting-pose design note for the rationale.
 
 ## rSkill compatibility check

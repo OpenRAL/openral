@@ -139,7 +139,8 @@ source_repo: "hf://lerobot/smolvla_libero"
 
 description: >
   SmolVLA finetuned on the LIBERO task suite (Apache-2.0). Action chunks
-  of length 16 across two RGB camera views (wrist + overhead) matching
+  of length 50, of which 25 steps are replayed per inference, across two
+  RGB camera views (wrist + overhead) matching
   the original LIBERO dataset convention. The lerobot checkpoint wrapped
   here matches the paper's reported configuration on all five
   architecture fields — see header comment for the rejected sibling.

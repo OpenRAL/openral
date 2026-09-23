@@ -1077,8 +1077,18 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         resolved_object_detector_manifest = ""
         resolved_object_detector_onnx = default_rtdetr_onnx
 
+    detector_defaulted = enable_object_detector is None
     if enable_object_detector is None:
         enable_object_detector = True
+    # The detector reads one of the robot's own RGB cameras; the launch refuses a
+    # robot with none. Only the implicit default is downgraded — an explicit
+    # --object-detector still fails loud there.
+    if detector_defaulted and not any(s.modality == "rgb" for s in description.sensors):
+        _console.print(
+            f"[yellow]robot {description.name!r} declares no RGB sensor; "
+            "disabling the object detector leg.[/yellow]"
+        )
+        enable_object_detector = False
     # Downgrade to off (rather than let the node hard-fail at backend build) when
     # the detector is requested but no usable backend is present — a checkout that
     # has neither the omdet deps nor the gitignored RT-DETR ONNX weights.
