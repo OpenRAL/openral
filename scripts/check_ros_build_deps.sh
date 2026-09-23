@@ -4,7 +4,7 @@
 #
 # Without this the build runs ~45s, dies in CMake on the first missing
 # find_package(), and aborts every remaining package -- a wall of
-# "Aborted <<< openral_hal_*" burying the one real cause, e.g.:
+# "Aborted <<< openral_*" burying the one real cause, e.g.:
 #   CMake Error at CMakeLists.txt:20 (find_package):
 #     Could not find a package configuration file provided by "octomap_msgs"
 #

@@ -342,7 +342,7 @@ parallel, in their own jobs, and only after a maintainer approves them (see
 | --- | --- |
 | `python/state_adapter/src/openral_state_adapter/core.py` | `python/state_adapter/tests` only (leaf package) |
 | `python/core/src/openral_core/schemas.py` | broad — core fans out to ~every package's tests |
-| `packages/openral_hal_so100/**` | `packages/openral_hal_so100/test` |
+| `packages/openral_hal_node/**` | `packages/openral_hal_node/test` |
 | `rskills/act-aloha/**` | unit fixture checks + ALOHA sim tests, with the `sim` dependency lane |
 | `pyproject.toml` / `uv.lock` / shared `conftest.py` | **full run** |
 | `cpp/openral_safety_kernel/**` | nothing (covered by `test-ros2`) |

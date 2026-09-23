@@ -54,6 +54,11 @@ weights_uri: "hf://RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX"
 processors:
   preprocessor_uri: "hf://RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX/policy_preprocessor.json"
   postprocessor_uri: "hf://RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX/policy_postprocessor.json"
+# Slot -> sidecar video key (the simpler_widowx layout's key, stated explicitly).
+image_preprocessing:
+  input_template: "video.{cam}"
+  aliases:
+    camera1: "image_0"
 state_contract:
   # SimplerEnv WidowX (bridge_orig) wire schema: 8 scalar state keys
   # (x/y/z + bridge-rotation-corrected roll/pitch/yaw + pad + gripper),

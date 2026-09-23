@@ -3290,7 +3290,7 @@ class SimSensorBridge:
     def _publish_scan(self) -> None:
         """Construct + publish a /scan message (live MJCF ray-cast or synthetic no-hit).
 
-        Lifted from ``openral_hal_panda_mobile.lifecycle_node._publish_scan`` /
+        Lifted from the retired panda_mobile node's ``_publish_scan`` /
         ``_compute_scan_ranges``. Uses the same
         ``openral_sim.backends.robocasa.synthesize_laser_scan_2d`` call
         and identical no-hit fallback so nav-stack behaviour is bit-identical
@@ -3329,7 +3329,7 @@ class SimSensorBridge:
     def _compute_scan_ranges(self, *, n_beams: int, max_range_m: float) -> list[float]:
         """Return scan ranges — live MJCF ray-cast if handles are bound, else no-hit fan.
 
-        Mirrors ``openral_hal_panda_mobile.lifecycle_node._compute_scan_ranges``
+        Mirrors the retired panda_mobile node's ``_compute_scan_ranges``
         exactly: tries ``hal.mujoco_handles()``, falls back to a
         ``max_range_m``-clamped no-hit list so slam_toolbox / Nav2 treat every
         beam as "nothing in front of me" rather than NaN-poisoning their grids.
@@ -3779,7 +3779,7 @@ class SimSensorBridge:
         no timer, no TF broadcaster. This lets arm-only robots use the bridge
         without advertising any depth topics.
 
-        Lifted from ``openral_hal_panda_mobile.lifecycle_node._setup_depth_publishers``.
+        Lifted from the retired panda_mobile node's ``_setup_depth_publishers``.
         QoS matches panda_mobile's BEST_EFFORT depth QoS.
         """
         # Publish if the HAL ray-casts depth (MuJoCo) OR surfaces ready clouds in
@@ -3938,7 +3938,7 @@ class SimSensorBridge:
         derived from it; synthesising the cloud separately cast every ray twice
         for numbers that are equal by construction.
 
-        Lifted from ``openral_hal_panda_mobile.lifecycle_node._publish_depth_clouds``.
+        Lifted from the retired panda_mobile node's ``_publish_depth_clouds``.
         The self-body exclusion, the range filtering, and the TF broadcast are
         unchanged.
         """

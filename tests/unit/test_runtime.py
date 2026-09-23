@@ -1,5 +1,4 @@
-"""Unit tests for the Runtime layer: Protocol, NullRuntime, quantization registry,
-auto_select_quant, and EngineCache.
+"""Unit tests for the Runtime layer: Protocol, NullRuntime, and the quantization schemas.
 
 PyTorchRuntime and ONNXRuntime tests are skipped when the respective packages
 are not installed (marked with pytest.importorskip inside each test method).
@@ -9,7 +8,6 @@ from __future__ import annotations
 
 import importlib.util
 import pathlib
-from typing import ClassVar
 
 import pytest
 from openral_core import (
@@ -19,14 +17,7 @@ from openral_core import (
     QuantizationDtype,
     ROSRuntimeError,
 )
-from openral_rskill import (
-    DEFAULT_CACHE_DIR,
-    QUANT_PRESETS,
-    EngineCache,
-    NullRuntime,
-    Runtime,
-    auto_select_quant,
-)
+from openral_rskill import NullRuntime, Runtime
 
 _GB = 1 << 30
 
@@ -161,6 +152,11 @@ class TestQuantizationEnums:
         assert QuantizationDtype.INT4.value == "int4"
         assert QuantizationDtype.FP4_NVFP4.value == "fp4_nvfp4"
 
+    def test_fp8_wire_value_is_pinned_and_distinct_from_int8(self) -> None:
+        # Serialized into rSkill manifests; FP8 (E4M3) must never alias INT8.
+        assert QuantizationDtype("fp8") is QuantizationDtype.FP8
+        assert QuantizationDtype.FP8 is not QuantizationDtype.INT8
+
     def test_backend_values(self) -> None:
         assert QuantizationBackend.PYTORCH.value == "pytorch"
         assert QuantizationBackend.ONNX.value == "onnx"
@@ -222,229 +218,6 @@ class TestDeviceInfo:
             cuda_compute_capability=(8, 9),
         )
         assert info.cuda_compute_capability == (8, 9)
-
-
-# ── QUANT_PRESETS ─────────────────────────────────────────────────────────────
-
-
-class TestQuantPresets:
-    _EXPECTED_KEYS: ClassVar[set[str]] = {
-        "fp32",
-        "fp16",
-        "bf16",
-        "int8_dynamic",
-        "int8_dynamic_per_channel",
-        "int4",
-        "fp4_nvfp4",
-        "onnx_int8",
-        "trt_int8",
-        "trt_fp8",
-    }
-
-    def test_all_keys_present(self) -> None:
-        assert set(QUANT_PRESETS.keys()) == self._EXPECTED_KEYS
-
-    def test_all_values_are_quant_config(self) -> None:
-        for key, val in QUANT_PRESETS.items():
-            assert isinstance(val, QuantizationConfig), key
-
-    def test_fp32_preset(self) -> None:
-        assert QUANT_PRESETS["fp32"].dtype is QuantizationDtype.FP32
-        assert QUANT_PRESETS["fp32"].backend is QuantizationBackend.PYTORCH
-
-    def test_int8_dynamic_preset(self) -> None:
-        p = QUANT_PRESETS["int8_dynamic"]
-        assert p.dtype is QuantizationDtype.INT8
-        assert p.per_channel is False
-
-    def test_int8_per_channel_preset(self) -> None:
-        p = QUANT_PRESETS["int8_dynamic_per_channel"]
-        assert p.dtype is QuantizationDtype.INT8
-        assert p.per_channel is True
-
-    def test_fp4_nvfp4_uses_tensorrt_backend(self) -> None:
-        assert QUANT_PRESETS["fp4_nvfp4"].backend is QuantizationBackend.TENSORRT
-
-    def test_onnx_int8_uses_onnx_backend(self) -> None:
-        assert QUANT_PRESETS["onnx_int8"].backend is QuantizationBackend.ONNX
-
-
-# ── auto_select_quant ─────────────────────────────────────────────────────────
-
-
-class TestAutoSelectQuant:
-    def test_cpu_only_returns_int8_dynamic(self) -> None:
-        info = DeviceInfo(device_str="cpu", gpu_memory_bytes=0)
-        cfg = auto_select_quant(info)
-        assert cfg.dtype is QuantizationDtype.INT8
-        assert cfg.backend is QuantizationBackend.PYTORCH
-
-    def test_apple_silicon_returns_bf16(self) -> None:
-        info = DeviceInfo(device_str="mps", arch="apple_silicon", gpu_memory_bytes=0)
-        cfg = auto_select_quant(info)
-        assert cfg.dtype is QuantizationDtype.BF16
-
-    def test_small_gpu_under_4gb_returns_int4(self) -> None:
-        info = DeviceInfo(device_str="cuda:0", gpu_memory_bytes=2 * _GB)
-        cfg = auto_select_quant(info)
-        assert cfg.dtype is QuantizationDtype.INT4
-
-    def test_mid_gpu_4_to_8gb_returns_fp16(self) -> None:
-        for gb in (4, 6, 8):
-            info = DeviceInfo(device_str="cuda:0", gpu_memory_bytes=gb * _GB)
-            cfg = auto_select_quant(info)
-            assert cfg.dtype is QuantizationDtype.FP16, f"gb={gb}"
-
-    def test_large_gpu_ampere_plus_returns_bf16(self) -> None:
-        info = DeviceInfo(
-            device_str="cuda:0",
-            gpu_memory_bytes=24 * _GB,
-            cuda_compute_capability=(8, 6),
-        )
-        cfg = auto_select_quant(info)
-        assert cfg.dtype is QuantizationDtype.BF16
-
-    def test_large_gpu_volta_returns_fp16(self) -> None:
-        info = DeviceInfo(
-            device_str="cuda:0",
-            gpu_memory_bytes=16 * _GB,
-            cuda_compute_capability=(7, 0),
-        )
-        cfg = auto_select_quant(info)
-        assert cfg.dtype is QuantizationDtype.FP16
-
-    def test_large_gpu_no_cc_returns_fp16(self) -> None:
-        info = DeviceInfo(
-            device_str="cuda:0",
-            gpu_memory_bytes=12 * _GB,
-            cuda_compute_capability=None,
-        )
-        cfg = auto_select_quant(info)
-        assert cfg.dtype is QuantizationDtype.FP16
-
-    def test_exactly_4gb_boundary_is_fp16(self) -> None:
-        info = DeviceInfo(device_str="cuda:0", gpu_memory_bytes=4 * _GB)
-        assert auto_select_quant(info).dtype is QuantizationDtype.FP16
-
-    def test_exactly_8gb_boundary_is_fp16(self) -> None:
-        info = DeviceInfo(device_str="cuda:0", gpu_memory_bytes=8 * _GB)
-        assert auto_select_quant(info).dtype is QuantizationDtype.FP16
-
-
-# ── EngineCache ───────────────────────────────────────────────────────────────
-
-
-@pytest.fixture()
-def cache(tmp_path: pathlib.Path) -> EngineCache:
-    return EngineCache(cache_dir=tmp_path / "cache")
-
-
-@pytest.fixture()
-def cfg() -> QuantizationConfig:
-    return QuantizationConfig(dtype=QuantizationDtype.INT8)
-
-
-class TestEngineCache:
-    def test_default_cache_dir_is_path(self) -> None:
-        assert isinstance(DEFAULT_CACHE_DIR, pathlib.Path)
-
-    def test_init_creates_directory(self, tmp_path: pathlib.Path) -> None:
-        subdir = tmp_path / "nested" / "cache"
-        EngineCache(cache_dir=subdir)
-        assert subdir.is_dir()
-
-    def test_cache_key_is_deterministic(self, cache: EngineCache, cfg: QuantizationConfig) -> None:
-        k1 = cache.cache_key("my/skill", "pytorch", cfg)
-        k2 = cache.cache_key("my/skill", "pytorch", cfg)
-        assert k1 == k2
-
-    def test_cache_key_length(self, cache: EngineCache, cfg: QuantizationConfig) -> None:
-        k = cache.cache_key("my/skill", "pytorch", cfg)
-        assert len(k) == 16
-
-    def test_cache_key_differs_by_skill_id(
-        self, cache: EngineCache, cfg: QuantizationConfig
-    ) -> None:
-        k1 = cache.cache_key("skill_a", "pytorch", cfg)
-        k2 = cache.cache_key("skill_b", "pytorch", cfg)
-        assert k1 != k2
-
-    def test_cache_key_differs_by_backend(
-        self, cache: EngineCache, cfg: QuantizationConfig
-    ) -> None:
-        k1 = cache.cache_key("skill", "pytorch", cfg)
-        k2 = cache.cache_key("skill", "tensorrt", cfg)
-        assert k1 != k2
-
-    def test_cache_key_differs_by_quant(self, cache: EngineCache) -> None:
-        k1 = cache.cache_key("skill", "pytorch", QuantizationConfig(dtype=QuantizationDtype.FP16))
-        k2 = cache.cache_key("skill", "pytorch", QuantizationConfig(dtype=QuantizationDtype.INT8))
-        assert k1 != k2
-
-    def test_get_miss_returns_none(self, cache: EngineCache, cfg: QuantizationConfig) -> None:
-        key = cache.cache_key("skill", "pytorch", cfg)
-        assert cache.get(key) is None
-
-    def test_put_and_get_hit(
-        self, cache: EngineCache, cfg: QuantizationConfig, tmp_path: pathlib.Path
-    ) -> None:
-        src = tmp_path / "model.engine"
-        src.write_bytes(b"fake engine data")
-        key = cache.cache_key("skill", "tensorrt", cfg)
-        dest = cache.put(key, src)
-        assert dest.exists()
-        got = cache.get(key)
-        assert got is not None
-        assert got.read_bytes() == b"fake engine data"
-
-    def test_put_raises_on_missing_source(
-        self, cache: EngineCache, cfg: QuantizationConfig, tmp_path: pathlib.Path
-    ) -> None:
-        key = cache.cache_key("skill", "pytorch", cfg)
-        with pytest.raises(FileNotFoundError):
-            cache.put(key, tmp_path / "nonexistent.engine")
-
-    def test_invalidate_removes_entry(
-        self, cache: EngineCache, cfg: QuantizationConfig, tmp_path: pathlib.Path
-    ) -> None:
-        src = tmp_path / "m.engine"
-        src.write_bytes(b"x")
-        key = cache.cache_key("skill", "pytorch", cfg)
-        cache.put(key, src)
-        cache.invalidate(key)
-        assert cache.get(key) is None
-
-    def test_invalidate_miss_is_noop(self, cache: EngineCache, cfg: QuantizationConfig) -> None:
-        cache.invalidate("0000000000000000")  # must not raise
-
-    def test_clear_removes_all_entries(self, cache: EngineCache, tmp_path: pathlib.Path) -> None:
-        for i in range(3):
-            src = tmp_path / f"m{i}.engine"
-            src.write_bytes(b"x")
-            cache.put(str(i) * 16, src)
-        cache.clear()
-        assert cache.entry_count == 0
-
-    def test_size_bytes_empty(self, cache: EngineCache) -> None:
-        assert cache.size_bytes == 0
-
-    def test_size_bytes_after_put(
-        self, cache: EngineCache, cfg: QuantizationConfig, tmp_path: pathlib.Path
-    ) -> None:
-        data = b"engine" * 100
-        src = tmp_path / "m.engine"
-        src.write_bytes(data)
-        key = cache.cache_key("skill", "pytorch", cfg)
-        cache.put(key, src)
-        assert cache.size_bytes == len(data)
-
-    def test_entry_count(self, cache: EngineCache, tmp_path: pathlib.Path) -> None:
-        assert cache.entry_count == 0
-        for i in range(4):
-            src = tmp_path / f"e{i}.engine"
-            src.write_bytes(b"y")
-            cache.put(str(i) * 16, src)
-        assert cache.entry_count == 4
 
 
 # ── PyTorchRuntime (skipped without torch) ────────────────────────────────────

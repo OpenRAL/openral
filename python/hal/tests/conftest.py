@@ -5,7 +5,7 @@ The repo runs pytest with ``--import-mode=importlib`` (see the ``addopts`` in
 directory into ``sys.path``.  Without that injection a test module here cannot
 ``from _renderer_probe import ...`` its sibling helper, so this shim adds the
 directory explicitly — the same trick the sibling ROS package test roots use
-(``packages/openral_hal_scene_attached/test/conftest.py`` and friends).
+(``packages/openral_hal_node/test/conftest.py`` and friends).
 
 Importing the helper through ``conftest`` itself is *not* an option: the
 repo-root ``conftest.py`` already owns the top-level module name ``conftest``,

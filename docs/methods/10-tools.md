@@ -48,9 +48,9 @@ _Two modes: `emit --robot <path>` prints the YAML fragment to paste into the man
 ### `tools/schema_export.py`
 _Generates JSON Schema files for every public `openral_core` model._
 
-- `_enum_schema(cls) -> dict[str, Any]` — Minimal JSON Schema for a `str` Enum. (L179)
-- `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L191)
-- `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L243)
+- `_enum_schema(cls) -> dict[str, Any]` — Minimal JSON Schema for a `str` Enum. (L177)
+- `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L189)
+- `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L241)
 
 ### `tools/check_repo_state_map.py`
 _Pre-commit drift guard checking the mechanically verifiable half of `docs/architecture/repo-state-map.html`: that its `pkg:` pointers name something real and its asserted counts haven't rotted. Prose on the map stays a human judgement call._
@@ -80,11 +80,11 @@ _Real GPU rollout audit for every YAML under `scenes/`. Operator-driven, one epi
 - `_classify(returncode: int, tail: str) -> str` (L219) — Maps a subprocess result to a status by matching stderr against known OOM/asset/sidecar/opt-dep/host-setup patterns; a known MuJoCo/GL exit code is treated as pass when no error pattern appears.
 - `class _VramSampler` (L258) — Background `nvidia-smi --query-gpu=memory.used` poller, 200 ms cadence; `peak_mib` reported on `.stop()`. No-op without `nvidia-smi` on `$PATH`.
 - `_check_compat(spec: ConfigSpec) -> AuditRow` (L303) — `--check-compatibility` gate: load scene via `openral_core.load_scene_strict`, validate rSkill manifest (sim/benchmark) or assert the robot manifest resolves via `openral_sim.policies.robots.resolve_robot_manifest` and loads (deploy). No subprocess, no GPU. Returns `pass-compat` / `fail-compat`.
-- `_build_run_cmd(spec: ConfigSpec) -> list[str]` (L381) — Build the `uv run … openral <sim|benchmark> …` argv for sim/benchmark rows. Refactored out of `_run_one` so the deploy path can stay focused on lifecycle teardown.
-- `_run_one_deploy(spec, *, alive_grace_s, shutdown_grace_s, timeout_s) -> AuditRow` (L430) — Tier-2 deploy launch via `openral deploy sim`: runs in its own process group, waits `alive_grace_s`, sends SIGINT to the group, waits `shutdown_grace_s`, then escalates to SIGKILL. Passes when the startup banner appears and the exit reflects a clean or SIGINT/SIGTERM shutdown.
-- `_classify_or_fallback(returncode, tail, spec, wall_s, peak_vram) -> AuditRow` (L601) — Deploy-mode wrapper around `_classify` that defaults to `fail-other` when no pattern matches (sim path defaults to `pass`).
-- `_run_one(spec: ConfigSpec, timeout_s: int) -> AuditRow` (L640) — Tier-3 sim/benchmark rollout via `_build_run_cmd(spec)` with `MUJOCO_GL=egl` and `OPENRAL_SIM_SEQUENTIAL_INIT=1`.
-- `main(argv) -> int` (L778) — CLI entry; flags `--timeout` / `--deploy-alive-grace` / `--deploy-shutdown-grace` / `--check-compatibility` / `--report`. Returns 0 on all-pass, 1 if any config failed, 2 on filter mismatch.
+- `_build_run_cmd(spec: ConfigSpec) -> list[str]` (L386) — Build the `uv run … openral <sim|benchmark> …` argv for sim/benchmark rows. Refactored out of `_run_one` so the deploy path can stay focused on lifecycle teardown.
+- `_run_one_deploy(spec, *, alive_grace_s, shutdown_grace_s, timeout_s) -> AuditRow` (L435) — Tier-2 deploy launch via `openral deploy sim`: runs in its own process group, waits `alive_grace_s`, sends SIGINT to the group, waits `shutdown_grace_s`, then escalates to SIGKILL. Passes when the startup banner appears and the exit reflects a clean or SIGINT/SIGTERM shutdown.
+- `_classify_or_fallback(returncode, tail, spec, wall_s, peak_vram) -> AuditRow` (L606) — Deploy-mode wrapper around `_classify` that defaults to `fail-other` when no pattern matches (sim path defaults to `pass`).
+- `_run_one(spec: ConfigSpec, timeout_s: int) -> AuditRow` (L645) — Tier-3 sim/benchmark rollout via `_build_run_cmd(spec)` with `MUJOCO_GL=egl` and `OPENRAL_SIM_SEQUENTIAL_INIT=1`.
+- `main(argv) -> int` (L783) — CLI entry; flags `--timeout` / `--deploy-alive-grace` / `--deploy-shutdown-grace` / `--check-compatibility` / `--report`. Returns 0 on all-pass, 1 if any config failed, 2 on filter mismatch.
 
 ### `tools/validation_matrix.py`
 _The four-scene collision-stack validation matrix as one versioned command, emitting both `NOTES.md` and a machine-readable `verdicts.json` per round. Backs `just validation-matrix` / `-verdicts` / `-diff`. See [`docs/contributing/validation-matrix.md`](../contributing/validation-matrix.md) and the ledger it feeds, [`docs/reference/collision-validation-evidence.md`](../reference/collision-validation-evidence.md)._

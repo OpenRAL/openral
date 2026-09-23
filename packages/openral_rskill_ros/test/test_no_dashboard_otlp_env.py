@@ -67,7 +67,7 @@ def _make_launch_context(*, enable_dashboard: bool, enable_reasoner: bool = True
     cfg = ctx.launch_configurations
     # Required CLI-provided arguments have no defaults.
     cfg["robot_yaml"] = str(_REPO_ROOT / "robots" / _REPRESENTATIVE_ROBOT / "robot.yaml")
-    cfg["hal_package"] = "openral_hal_openarm"
+    cfg["hal_package"] = "openral_hal_node"
     cfg["hal_executable"] = "lifecycle_node.py"
     cfg["hal_node_name"] = "openral_hal_test"
     cfg["hal_params_file"] = "/tmp/openral-test-hal-params.yaml"

@@ -7,7 +7,7 @@ The mic button runs speech detection client-side via ``@ricky0123/vad-web``
 WASM binary (``ort-wasm-simd-threaded.wasm``), ~15 MB total, were previously
 committed to git; they are now fetched on demand into
 ``$OPENRAL_CACHE_DIR/dashboard_assets/vad/`` (matching
-``openral_hal._openarm_v2_assets`` / ``openral_rskill.engine_cache``) and
+``openral_hal._openarm_v2_assets``) and
 hard-linked (falling back to a copy) into ``static/vendor/vad/`` so
 ``StaticFiles`` keeps serving the same URL. The small JS glue files stay
 committed to git (tiny, reviewable as text).
@@ -85,8 +85,7 @@ def _cache_dir() -> Path:
     """Local cache root for the downloaded VAD assets.
 
     Honours ``$OPENRAL_CACHE_DIR`` (the same override
-    ``openral_hal._openarm_v2_assets`` and ``openral_rskill.engine_cache``
-    read); falls back to ``~/.cache/openral``.
+    ``openral_hal._openarm_v2_assets`` reads); falls back to ``~/.cache/openral``.
     """
     base = Path(os.environ.get("OPENRAL_CACHE_DIR") or Path.home() / ".cache" / "openral")
     return base / "dashboard_assets" / "vad"

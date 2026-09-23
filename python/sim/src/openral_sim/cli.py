@@ -346,6 +346,7 @@ def _load_or_build_env(args: SimpleNamespace) -> SimEnvironment:
             f"{args.config}; drop one of them."
         )
     resolved_robot = SCENES.resolve_robot(scene_env.scene.id, requested)
+    SCENES.validate_options(scene_env.scene.id, scene_env.scene.backend_options)
     if (
         scene_env.base_pose is not None
         and SCENES.meta(scene_env.scene.id).get("base_pose") is not True

@@ -317,7 +317,7 @@ class _ArmHandles:
     definitions). The env step writes joint position targets directly
     to ``data.ctrl`` — same contract the live
     ``OpenArmMujocoHAL.send_action`` path uses in
-    ``packages/openral_hal_openarm/`` — so the sim's force model
+    ``packages/openral_hal_node/`` — so the sim's force model
     exactly matches the live ROS launch.
     """
 
@@ -893,4 +893,5 @@ SCENES.register(
     sequential_init=True,  # env thread imports robosuite -> transformers
     sim_clock=True,
     base_pose=True,  # mandatory mounting pose read off SimEnvironment.base_pose
+    converts_policy_units=True,  # backend_options.joint_units / action_layout
 )(_build_openarm_tabletop_scene)

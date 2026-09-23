@@ -131,24 +131,9 @@
       "title": "QuantizationDtype",
       "type": "string"
     },
-    "RSkillRuntime": {
-      "description": "Inference runtime hint declared in the manifest (RFC \u00a77.3).",
-      "enum": [
-        "pytorch",
-        "onnx",
-        "tensorrt",
-        "trt_llm",
-        "vllm",
-        "gguf",
-        "mlx",
-        "jax"
-      ],
-      "title": "RSkillRuntime",
-      "type": "string"
-    },
     "SceneSpec": {
       "additionalProperties": false,
-      "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the eval\n        layer; passed through to the adapter.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
+      "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the core\n        schema: each sim backend owns the model that validates it,\n        declared via ``SCENES.register(..., options_model=...)`` and run\n        at load time by ``SCENES.validate_options``.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
       "properties": {
         "id": {
           "title": "Id",
@@ -258,7 +243,7 @@
     },
     "VLASpec": {
       "additionalProperties": false,
-      "description": "A VLA / policy declaration \u2014 the BRAIN driving the robot.\n\nLightweight pointer to a policy: either an installed rSkill (referenced\nby manifest name) or a raw HF Hub repo. The eval registry resolves this\nto a runtime adapter that returns ``Action`` objects.\n\nAttributes:\n    id: Adapter id in the eval registry, e.g. ``\"smolvla\"``, ``\"pi05\"``,\n        ``\"xvla\"``, ``\"random\"``, ``\"zero\"``. Picks the loader.\n    weights_uri: Where to fetch weights from. Pass a bare rSkill\n        reference: a name (``smolvla-libero``), a path (``rskills/smolvla-libero``),\n        or a bare HF repo ID (``OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16``). The\n        ``openral_sim.SimRunner`` requires a locally-resolvable\n        reference \u2014 raw ``\"hf://\"`` URIs are rejected. Other URI shapes\n        (e.g. ``\"mock://\"``) are still parsed by the schema so unit tests\n        of the eval registries can run without an rSkill, but they will\n        fail-fast if used with the runner.\n    device: Torch device override. ``\"auto\"`` picks ``cuda:0`` if\n        available, otherwise ``cpu``.\n    runtime: Optional runtime override; ``None`` means \"use whatever the\n        policy/manifest declares\".\n    quantization: Optional quantization override for this run.\n    deterministic: When True, set ``torch.use_deterministic_algorithms``\n        and disable cuDNN benchmarking.\n    extra: Adapter-specific options, e.g. ``{\"chunk_size\": 16}``.\n\nExample:\n    >>> v = VLASpec(id=\"smolvla\", weights_uri=\"rskills/smolvla-libero\")\n    >>> v.device\n    'auto'",
+      "description": "A VLA / policy declaration \u2014 the BRAIN driving the robot.\n\nLightweight pointer to a policy: either an installed rSkill (referenced\nby manifest name) or a raw HF Hub repo. The eval registry resolves this\nto a runtime adapter that returns ``Action`` objects.\n\nAttributes:\n    id: Adapter id in the eval registry, e.g. ``\"smolvla\"``, ``\"pi05\"``,\n        ``\"xvla\"``, ``\"random\"``, ``\"zero\"``. Picks the loader.\n    weights_uri: Where to fetch weights from. Pass a bare rSkill\n        reference: a name (``smolvla-libero``), a path (``rskills/smolvla-libero``),\n        or a bare HF repo ID (``OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16``). The\n        ``openral_sim.SimRunner`` requires a locally-resolvable\n        reference \u2014 raw ``\"hf://\"`` URIs are rejected. Other URI shapes\n        (e.g. ``\"mock://\"``) are still parsed by the schema so unit tests\n        of the eval registries can run without an rSkill, but they will\n        fail-fast if used with the runner.\n    device: Torch device override. ``\"auto\"`` picks ``cuda:0`` if\n        available, otherwise ``cpu``.\n    quantization: Optional quantization override for this run.\n    deterministic: When True, set ``torch.use_deterministic_algorithms``\n        and disable cuDNN benchmarking.\n    extra: Adapter-specific options, e.g. ``{\"chunk_size\": 16}``.\n\nExample:\n    >>> v = VLASpec(id=\"smolvla\", weights_uri=\"rskills/smolvla-libero\")\n    >>> v.device\n    'auto'",
       "properties": {
         "id": {
           "title": "Id",
@@ -272,17 +257,6 @@
           "default": "auto",
           "title": "Device",
           "type": "string"
-        },
-        "runtime": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RSkillRuntime"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
         },
         "quantization": {
           "anyOf": [

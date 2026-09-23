@@ -2138,7 +2138,7 @@
           "type": "string"
         }
       },
-      "description": "VLA observation configuration for this robot.\n\nAttributes:\n    state_key: Observation dict key for the state vector.\n    state_shape: Shape of the state tensor, e.g. ``(6,)`` for 6-D EEF.\n    state_representation: How the state vector is encoded.\n    image_flip_180: Whether camera images need 180\u00b0 rotation before\n        feeding to the VLA (common for wrist-mounted cameras).",
+      "description": "VLA observation configuration for this robot.\n\nAttributes:\n    state_key: Observation dict key for the state vector.\n    state_shape: Shape of the state tensor, e.g. ``(6,)`` for 6-D EEF.\n    state_representation: How the state vector is encoded.\n    image_flip_180: **Deprecated, read by no code.** The live knob is\n        the per-checkpoint ``RSkillManifest.image_preprocessing.flip_180``.\n        Kept so existing manifests still load; setting it emits a\n        ``DeprecationWarning``.",
       "properties": {
         "state_key": {
           "default": "observation.state",
@@ -3271,7 +3271,7 @@
           "type": "object"
         },
         "ObservationSpec": {
-          "description": "VLA observation configuration for this robot.\n\nAttributes:\n    state_key: Observation dict key for the state vector.\n    state_shape: Shape of the state tensor, e.g. ``(6,)`` for 6-D EEF.\n    state_representation: How the state vector is encoded.\n    image_flip_180: Whether camera images need 180\u00b0 rotation before\n        feeding to the VLA (common for wrist-mounted cameras).",
+          "description": "VLA observation configuration for this robot.\n\nAttributes:\n    state_key: Observation dict key for the state vector.\n    state_shape: Shape of the state tensor, e.g. ``(6,)`` for 6-D EEF.\n    state_representation: How the state vector is encoded.\n    image_flip_180: **Deprecated, read by no code.** The live knob is\n        the per-checkpoint ``RSkillManifest.image_preprocessing.flip_180``.\n        Kept so existing manifests still load; setting it emits a\n        ``DeprecationWarning``.",
           "properties": {
             "state_key": {
               "default": "observation.state",
@@ -10648,7 +10648,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the eval\n        layer; passed through to the adapter.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
+      "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the core\n        schema: each sim backend owns the model that validates it,\n        declared via ``SCENES.register(..., options_model=...)`` and run\n        at load time by ``SCENES.validate_options``.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
       "properties": {
         "id": {
           "title": "Id",
@@ -10699,212 +10699,6 @@
         "id"
       ],
       "title": "SceneSpec",
-      "type": "object",
-      "$schema": "https://json-schema.org/draft/2020-12/schema"
-    },
-    "RoboCasaBackendOptions": {
-      "additionalProperties": false,
-      "description": "Typed validator helper for ``SceneSpec.backend_options`` under RoboCasa.\n\nRoboCasa exposes two scenario modes:\n\n* **prebuilt** \u2014 pick one of the ~100 atomic-PnP / door / drawer /\n  navigation tasks shipped with the package by name (e.g.\n  ``\"PnPCounterToCab\"``). Set ``prebuilt_task``; leave all\n  procedural keys at their defaults.\n* **procedural** -- author a kitchen by composing\n  ``kitchen_style`` x ``layout_id`` x ``fixtures`` x\n  ``spawn_objects`` x ``task_verb``. Set ``mode`` to\n  ``\"procedural\"`` and leave ``prebuilt_task`` ``None``.\n\nThe model is **purely additive**: it lives alongside ``SceneSpec`` and is\nconstructed by the RoboCasa scene adapter at factory time via\n``RoboCasaBackendOptions.model_validate(scene.backend_options)``. The\nparent ``SceneSpec.backend_options: dict[str, object]`` field is\nunchanged, so this class does not constitute a schema migration\n(CLAUDE.md \u00a71.6).\n\nAttributes:\n    mode: ``\"prebuilt\"`` (default) or ``\"procedural\"``.\n    prebuilt_task: One of RoboCasa's ~100 atomic task names, e.g.\n        ``\"PnPCounterToCab\"``. Only valid when ``mode=\"prebuilt\"``.\n    kitchen_style: 0..9, picks one of RoboCasa's 10 kitchen aesthetic\n        packs. Only valid when ``mode=\"procedural\"``.\n    layout_id: 0..9, picks one of RoboCasa's 10 floor plans. Only\n        valid when ``mode=\"procedural\"``.\n    fixtures: Subset of RoboCasa fixture names to spawn. Empty list\n        keeps the layout's default fixtures.\n    spawn_objects: Subset of RoboCasa object asset names to spawn on\n        counters / inside cabinets.\n    task_verb: Coarse procedural-mode goal: pick-and-place, open,\n        close, press, navigate. Required when ``mode=\"procedural\"``.\n    robots: RoboCasa robot composition names, e.g.\n        ``[\"PandaMobile\"]`` (default) or ``[\"GR1\"]``. Must match\n        entries the upstream RoboCasa env factory accepts.\n    controller: RoboCasa controller name. ``\"OSC_POSE\"`` works for\n        arm-style robots; the adapter validates against the\n        controller config exposed by RoboCasa at import time.\n    horizon: Maximum step budget for the underlying RoboCasa env.\n\nExample:\n    >>> opts = RoboCasaBackendOptions(mode=\"prebuilt\", prebuilt_task=\"PnPCounterToCab\")\n    >>> opts.task_verb is None\n    True",
-      "properties": {
-        "mode": {
-          "default": "prebuilt",
-          "enum": [
-            "prebuilt",
-            "procedural"
-          ],
-          "title": "Mode",
-          "type": "string"
-        },
-        "prebuilt_task": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Prebuilt Task"
-        },
-        "kitchen_style": {
-          "anyOf": [
-            {
-              "maximum": 9,
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Kitchen Style"
-        },
-        "layout_id": {
-          "anyOf": [
-            {
-              "maximum": 9,
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Layout Id"
-        },
-        "fixtures": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Fixtures",
-          "type": "array"
-        },
-        "spawn_objects": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Spawn Objects",
-          "type": "array"
-        },
-        "task_verb": {
-          "anyOf": [
-            {
-              "enum": [
-                "pnp",
-                "open",
-                "close",
-                "press",
-                "navigate"
-              ],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Task Verb"
-        },
-        "robots": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Robots",
-          "type": "array"
-        },
-        "controller": {
-          "default": "OSC_POSE",
-          "title": "Controller",
-          "type": "string"
-        },
-        "horizon": {
-          "default": 500,
-          "exclusiveMinimum": 0,
-          "title": "Horizon",
-          "type": "integer"
-        },
-        "state_layout": {
-          "default": "human300_16d",
-          "enum": [
-            "smolvla_9d",
-            "human300_16d",
-            "xr1_8d",
-            "gr1"
-          ],
-          "title": "State Layout",
-          "type": "string"
-        },
-        "obj_instance_split": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Obj Instance Split"
-        },
-        "layout_and_style_ids": {
-          "anyOf": [
-            {
-              "items": {
-                "items": {
-                  "type": "integer"
-                },
-                "type": "array"
-              },
-              "type": "array"
-            },
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Layout And Style Ids"
-        },
-        "layout_ids": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "integer"
-              },
-              "type": "array"
-            },
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Layout Ids"
-        },
-        "style_ids": {
-          "anyOf": [
-            {
-              "items": {
-                "type": "integer"
-              },
-              "type": "array"
-            },
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Style Ids"
-        },
-        "obj_groups": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Obj Groups"
-        },
-        "ignore_done": {
-          "default": false,
-          "title": "Ignore Done",
-          "type": "boolean"
-        }
-      },
-      "title": "RoboCasaBackendOptions",
       "type": "object",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
@@ -11028,25 +10822,10 @@
           ],
           "title": "QuantizationDtype",
           "type": "string"
-        },
-        "RSkillRuntime": {
-          "description": "Inference runtime hint declared in the manifest (RFC \u00a77.3).",
-          "enum": [
-            "pytorch",
-            "onnx",
-            "tensorrt",
-            "trt_llm",
-            "vllm",
-            "gguf",
-            "mlx",
-            "jax"
-          ],
-          "title": "RSkillRuntime",
-          "type": "string"
         }
       },
       "additionalProperties": false,
-      "description": "A VLA / policy declaration \u2014 the BRAIN driving the robot.\n\nLightweight pointer to a policy: either an installed rSkill (referenced\nby manifest name) or a raw HF Hub repo. The eval registry resolves this\nto a runtime adapter that returns ``Action`` objects.\n\nAttributes:\n    id: Adapter id in the eval registry, e.g. ``\"smolvla\"``, ``\"pi05\"``,\n        ``\"xvla\"``, ``\"random\"``, ``\"zero\"``. Picks the loader.\n    weights_uri: Where to fetch weights from. Pass a bare rSkill\n        reference: a name (``smolvla-libero``), a path (``rskills/smolvla-libero``),\n        or a bare HF repo ID (``OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16``). The\n        ``openral_sim.SimRunner`` requires a locally-resolvable\n        reference \u2014 raw ``\"hf://\"`` URIs are rejected. Other URI shapes\n        (e.g. ``\"mock://\"``) are still parsed by the schema so unit tests\n        of the eval registries can run without an rSkill, but they will\n        fail-fast if used with the runner.\n    device: Torch device override. ``\"auto\"`` picks ``cuda:0`` if\n        available, otherwise ``cpu``.\n    runtime: Optional runtime override; ``None`` means \"use whatever the\n        policy/manifest declares\".\n    quantization: Optional quantization override for this run.\n    deterministic: When True, set ``torch.use_deterministic_algorithms``\n        and disable cuDNN benchmarking.\n    extra: Adapter-specific options, e.g. ``{\"chunk_size\": 16}``.\n\nExample:\n    >>> v = VLASpec(id=\"smolvla\", weights_uri=\"rskills/smolvla-libero\")\n    >>> v.device\n    'auto'",
+      "description": "A VLA / policy declaration \u2014 the BRAIN driving the robot.\n\nLightweight pointer to a policy: either an installed rSkill (referenced\nby manifest name) or a raw HF Hub repo. The eval registry resolves this\nto a runtime adapter that returns ``Action`` objects.\n\nAttributes:\n    id: Adapter id in the eval registry, e.g. ``\"smolvla\"``, ``\"pi05\"``,\n        ``\"xvla\"``, ``\"random\"``, ``\"zero\"``. Picks the loader.\n    weights_uri: Where to fetch weights from. Pass a bare rSkill\n        reference: a name (``smolvla-libero``), a path (``rskills/smolvla-libero``),\n        or a bare HF repo ID (``OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16``). The\n        ``openral_sim.SimRunner`` requires a locally-resolvable\n        reference \u2014 raw ``\"hf://\"`` URIs are rejected. Other URI shapes\n        (e.g. ``\"mock://\"``) are still parsed by the schema so unit tests\n        of the eval registries can run without an rSkill, but they will\n        fail-fast if used with the runner.\n    device: Torch device override. ``\"auto\"`` picks ``cuda:0`` if\n        available, otherwise ``cpu``.\n    quantization: Optional quantization override for this run.\n    deterministic: When True, set ``torch.use_deterministic_algorithms``\n        and disable cuDNN benchmarking.\n    extra: Adapter-specific options, e.g. ``{\"chunk_size\": 16}``.\n\nExample:\n    >>> v = VLASpec(id=\"smolvla\", weights_uri=\"rskills/smolvla-libero\")\n    >>> v.device\n    'auto'",
       "properties": {
         "id": {
           "title": "Id",
@@ -11060,17 +10839,6 @@
           "default": "auto",
           "title": "Device",
           "type": "string"
-        },
-        "runtime": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RSkillRuntime"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
         },
         "quantization": {
           "anyOf": [
@@ -11235,24 +11003,9 @@
           "title": "QuantizationDtype",
           "type": "string"
         },
-        "RSkillRuntime": {
-          "description": "Inference runtime hint declared in the manifest (RFC \u00a77.3).",
-          "enum": [
-            "pytorch",
-            "onnx",
-            "tensorrt",
-            "trt_llm",
-            "vllm",
-            "gguf",
-            "mlx",
-            "jax"
-          ],
-          "title": "RSkillRuntime",
-          "type": "string"
-        },
         "SceneSpec": {
           "additionalProperties": false,
-          "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the eval\n        layer; passed through to the adapter.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
+          "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the core\n        schema: each sim backend owns the model that validates it,\n        declared via ``SCENES.register(..., options_model=...)`` and run\n        at load time by ``SCENES.validate_options``.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
           "properties": {
             "id": {
               "title": "Id",
@@ -11362,7 +11115,7 @@
         },
         "VLASpec": {
           "additionalProperties": false,
-          "description": "A VLA / policy declaration \u2014 the BRAIN driving the robot.\n\nLightweight pointer to a policy: either an installed rSkill (referenced\nby manifest name) or a raw HF Hub repo. The eval registry resolves this\nto a runtime adapter that returns ``Action`` objects.\n\nAttributes:\n    id: Adapter id in the eval registry, e.g. ``\"smolvla\"``, ``\"pi05\"``,\n        ``\"xvla\"``, ``\"random\"``, ``\"zero\"``. Picks the loader.\n    weights_uri: Where to fetch weights from. Pass a bare rSkill\n        reference: a name (``smolvla-libero``), a path (``rskills/smolvla-libero``),\n        or a bare HF repo ID (``OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16``). The\n        ``openral_sim.SimRunner`` requires a locally-resolvable\n        reference \u2014 raw ``\"hf://\"`` URIs are rejected. Other URI shapes\n        (e.g. ``\"mock://\"``) are still parsed by the schema so unit tests\n        of the eval registries can run without an rSkill, but they will\n        fail-fast if used with the runner.\n    device: Torch device override. ``\"auto\"`` picks ``cuda:0`` if\n        available, otherwise ``cpu``.\n    runtime: Optional runtime override; ``None`` means \"use whatever the\n        policy/manifest declares\".\n    quantization: Optional quantization override for this run.\n    deterministic: When True, set ``torch.use_deterministic_algorithms``\n        and disable cuDNN benchmarking.\n    extra: Adapter-specific options, e.g. ``{\"chunk_size\": 16}``.\n\nExample:\n    >>> v = VLASpec(id=\"smolvla\", weights_uri=\"rskills/smolvla-libero\")\n    >>> v.device\n    'auto'",
+          "description": "A VLA / policy declaration \u2014 the BRAIN driving the robot.\n\nLightweight pointer to a policy: either an installed rSkill (referenced\nby manifest name) or a raw HF Hub repo. The eval registry resolves this\nto a runtime adapter that returns ``Action`` objects.\n\nAttributes:\n    id: Adapter id in the eval registry, e.g. ``\"smolvla\"``, ``\"pi05\"``,\n        ``\"xvla\"``, ``\"random\"``, ``\"zero\"``. Picks the loader.\n    weights_uri: Where to fetch weights from. Pass a bare rSkill\n        reference: a name (``smolvla-libero``), a path (``rskills/smolvla-libero``),\n        or a bare HF repo ID (``OpenRAL/rskill-smolvla-franka_panda-libero_spatial-bf16``). The\n        ``openral_sim.SimRunner`` requires a locally-resolvable\n        reference \u2014 raw ``\"hf://\"`` URIs are rejected. Other URI shapes\n        (e.g. ``\"mock://\"``) are still parsed by the schema so unit tests\n        of the eval registries can run without an rSkill, but they will\n        fail-fast if used with the runner.\n    device: Torch device override. ``\"auto\"`` picks ``cuda:0`` if\n        available, otherwise ``cpu``.\n    quantization: Optional quantization override for this run.\n    deterministic: When True, set ``torch.use_deterministic_algorithms``\n        and disable cuDNN benchmarking.\n    extra: Adapter-specific options, e.g. ``{\"chunk_size\": 16}``.\n\nExample:\n    >>> v = VLASpec(id=\"smolvla\", weights_uri=\"rskills/smolvla-libero\")\n    >>> v.device\n    'auto'",
           "properties": {
             "id": {
               "title": "Id",
@@ -11376,17 +11129,6 @@
               "default": "auto",
               "title": "Device",
               "type": "string"
-            },
-            "runtime": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/RSkillRuntime"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "default": null
             },
             "quantization": {
               "anyOf": [
@@ -12491,7 +12233,7 @@
         },
         "SceneSpec": {
           "additionalProperties": false,
-          "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the eval\n        layer; passed through to the adapter.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
+          "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the core\n        schema: each sim backend owns the model that validates it,\n        declared via ``SCENES.register(..., options_model=...)`` and run\n        at load time by ``SCENES.validate_options``.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
           "properties": {
             "id": {
               "title": "Id",
@@ -14219,7 +13961,7 @@
         },
         "SceneSpec": {
           "additionalProperties": false,
-          "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the eval\n        layer; passed through to the adapter.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
+          "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the core\n        schema: each sim backend owns the model that validates it,\n        declared via ``SCENES.register(..., options_model=...)`` and run\n        at load time by ``SCENES.validate_options``.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
           "properties": {
             "id": {
               "title": "Id",
@@ -16086,7 +15828,7 @@
         },
         "SceneSpec": {
           "additionalProperties": false,
-          "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the eval\n        layer; passed through to the adapter.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
+          "description": "A physics scene declaration \u2014 the WORLD the robot acts in.\n\nA scene is a deterministic, reproducible MuJoCo / MJX / etc. world: assets,\nlighting, cameras, fixed objects.  Tasks (``TaskSpec``) are evaluated\nINSIDE a scene; multiple tasks can share one scene (e.g. ``libero_spatial``\nhas 10 tasks per suite).\n\nAttributes:\n    id: Stable scene identifier used by the eval registry, e.g.\n        ``\"libero_spatial\"``, ``\"metaworld_mt50\"``, ``\"so100_tabletop\"``.\n    backend: Physics backend used to instantiate the scene.\n    assets_uri: Optional URI (file:// or hf://) pointing at scene assets\n        (XML / MJCF / asset bundle).  When ``None``, the registered\n        adapter resolves assets internally (LIBERO / MetaWorld pull theirs\n        from their own packages).\n    observation_height: Default render height in pixels for camera obs.\n    observation_width: Default render width in pixels for camera obs.\n    cameras: List of camera names the scene exposes.  Adapters use this\n        both to render and to map sensors to VLA feature keys.\n    backend_options: Backend-specific overrides\n        (e.g. ``{\"render_modes\": [\"rgb_array\"]}``).  Opaque to the core\n        schema: each sim backend owns the model that validates it,\n        declared via ``SCENES.register(..., options_model=...)`` and run\n        at load time by ``SCENES.validate_options``.\n\nExample:\n    >>> s = SceneSpec(id=\"libero_spatial\", backend=PhysicsBackend.MUJOCO)\n    >>> s.observation_width\n    256",
           "properties": {
             "id": {
               "title": "Id",

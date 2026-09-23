@@ -105,6 +105,14 @@ weights_uri: "hf://robbyant/lingbot-vla-v2-6b"
 # family (smolvla / pi05 / xvla / diffusion / rldx). Normalization ships inside
 # the upstream repo at assets/norm_stats/robotwin.json and is applied server-side
 # by the model's FeatureTransform, so there is nothing to download here.
+# Slot -> the sidecar's upstream FeatureTransform origin key (top, left wrist,
+# right wrist); the adapter rejects any other mapping.
+image_preprocessing:
+  input_template: "{cam}"
+  aliases:
+    camera1: "cam_high"
+    camera2: "cam_left_wrist"
+    camera3: "cam_right_wrist"
 state_contract:
   dim: 14
 

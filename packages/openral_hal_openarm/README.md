@@ -1,24 +1,22 @@
 # openral_hal_openarm
 
-ROS 2 lifecycle-node host for the manifest-driven HAL (`hal.sim: null` → `MujocoArmHAL.from_description`) so the
-Enactic **OpenArm v2** 16-DoF bimanual arm can participate in the
-`openral deploy sim` graph (`deploy_e2e.launch.py` → C++ safety kernel → HAL).
+Real-hardware bringup for the Enactic **OpenArm v2** 16-DoF bimanual arm —
+bringup only. The OpenArm HAL lifecycle node is the generic
+[`openral_hal_node`](../openral_hal_node/README.md) (sim: `hal.sim: null` →
+`MujocoArmHAL.from_description`; real: `openral_hal.openarm_real:OpenArmRealHAL`),
+spawned by `openral deploy sim|run` under the node name `openral_hal_openarm`.
+Lifecycle coverage in `tests/integration/test_openarm_hal_lifecycle.py` and
+`packages/openral_hal_node/test/test_lifecycle_node.py`.
 
-Spawned by `openral deploy sim --robot openarm` via
-`_derive_hal_spec` (see `python/cli/src/openral_cli/deploy_sim.py`): a
-robot's own `openral_hal_<robot_id>` package hosts it when one ships, else
-the generic `openral_hal_scene_attached` node — both run the same
-manifest-driven node, so `robots/<id>/robot.yaml` is the only per-robot input. Subscribes `/openral/safe_action`
-+ `/openral/estop`, publishes `/joint_states`, and — under sim
-scene-attach — `/openral/cameras/*` + the MuJoCo viewer.
+This package ships what that node cannot: `launch/real_bringup.launch.py`,
+`deps.repos` and `patches/` for the vendor `ros2_control` stack.
+`robots/openarm/robot.yaml` names the launch through
+`hal.real_bringup: "openral_hal_openarm:real_bringup.launch.py"`.
 
-This node wraps the MuJoCo twin; `HAL.connect()` resolves the MJCF on first
-use. Lifecycle coverage in `tests/integration/test_openarm_hal_lifecycle.py`.
-
-The real arm is reached a different way — `openral_hal.openarm_real:OpenArmRealHAL`
-(the manifest's `hal.real`) commands `openarm_bringup`'s own `ros2_control`
-stack, so on hardware the `controller_manager` and the C++ `openarm_hardware`
-SystemInterface own the 400 Hz loop and this node is not in the path.
+The real arm is reached through `openarm_bringup`'s own `ros2_control` stack:
+on hardware the `controller_manager` and the C++ `openarm_hardware`
+SystemInterface own the 400 Hz loop, and the HAL node only publishes to their
+controllers.
 
 ## Real-hardware bringup
 
@@ -77,8 +75,8 @@ vendor camera driver like `zed_wrapper`, the `drivers:` pairing covered by
 `tests/unit/test_scene_drivers.py`.
 
 `deploy_e2e.launch.py` includes `launch/real_bringup.launch.py` whenever
-`hal_mode:=real` and the HAL package ships that file — the file name *is* the
-declaration, so nothing names it in a manifest. Do not also launch it by hand:
+`hal_mode:=real`, because the manifest declares it as `hal.real_bringup`. Do not
+also launch it by hand:
 a second copy puts a second `/joint_states` publisher on the graph, and
 `openral deploy run` then refuses to start at all (the shared-graph guard in
 `openral_cli._dds_scope`, #227).
@@ -105,7 +103,7 @@ A per-second `controller_manager` overrun warning at 750 Hz is expected on a USB
 CAN-FD adapter (its ~1.1 ms read round-trip eats the 1.33 ms budget; effective
 rate ~600 Hz).
 
-This package's lifecycle node runs with `hal_mode:=real` in the same graph. It
+The generic HAL node runs with `hal_mode:=real` in the same graph. It
 attaches its `RosControlTransport` automatically and leaves the global
 `/joint_states` to the controller's own `joint_state_broadcaster`. It starts
 concurrently with the bringup rather than after it, so while the controllers

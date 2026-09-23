@@ -938,6 +938,41 @@ _MOCK_POLICY_IDS = frozenset({"zero", "random"})
 _MOCK_PLACEHOLDER_URI = "placeholder"
 
 
+def _check_policy_units_owned(
+    manifest: RSkillManifest, robot: RobotDescription, scene_id: str
+) -> None:
+    """Fail loud when the policy needs a unit/order conversion no one on ``sim run`` does.
+
+    ``sim run`` applies no ``PolicyIOCodec``: a scene that converts (degrees,
+    gripper scale, joint order) declares ``SCENES.register(...,
+    converts_policy_units=True)`` and does it from ``scene.backend_options``;
+    every other scene hands the policy's action to the sim verbatim. A
+    non-identity codec on a non-converting scene would silently drive
+    degrees as radians, so it is a ``ROSConfigError`` here — not a
+    conversion (that would double-convert on the scenes that own it).
+
+    Raises:
+        ROSConfigError: the manifest's codec is non-identity and ``scene_id``
+            does not declare ``converts_policy_units``.
+    """
+    from openral_rskill._policy_io import PolicyIOCodec
+
+    from openral_sim.registry import SCENES
+
+    codec = PolicyIOCodec.from_manifest(manifest, robot)
+    if codec.is_identity or SCENES.meta(scene_id).get("converts_policy_units") is True:
+        return
+    raise ROSConfigError(
+        f"rSkill {manifest.name!r} needs a policy<->robot conversion "
+        f"(joint_units_are_degrees={codec.joint_units_are_degrees}, "
+        f"gripper_scale={codec.gripper_scale}, robot_to_policy={codec.robot_to_policy}) "
+        f"but scene {scene_id!r} does not convert policy units "
+        "(no SCENES.register(..., converts_policy_units=True)); its actions would reach "
+        "the sim unconverted. Use a converting scene (e.g. so101_box with "
+        "backend_options.joint_units) or a radians / unit-gripper checkpoint."
+    )
+
+
 def _required_render_resolution(
     manifest: RSkillManifest, env_cfg: SimEnvironment
 ) -> tuple[int, int]:
@@ -1059,6 +1094,7 @@ def _check_rskill_compatibility(
     robot = robot.model_copy(update={"sensors": synced_sensors})
 
     rSkill.check_compatibility(manifest, robot)
+    _check_policy_units_owned(manifest, robot, str(env_cfg.scene.id))
     _log.info(
         "rskill_compat_ok",
         skill=manifest.name,

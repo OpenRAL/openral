@@ -76,7 +76,8 @@ mismatch up front.
     kernel links against it
   - `openral_safety_kernel` — C++ deny-by-default safety process (binary at
     `/workspace/install/lib/openral_safety_kernel/safety_kernel_node`)
-  - `openral_hal_so100`, `openral_hal_openarm` — HAL lifecycle nodes
+  - `openral_hal_node` — the one manifest-driven HAL lifecycle node (every robot);
+    `openral_hal_openarm` — the OpenArm real-hardware bringup launch
   - `openral_world_state` — 30 Hz world-state snapshot node
   - `openral_reasoner_ros` — LLM tool dispatch
   - `openral_prompt_router` — prompt fan-in

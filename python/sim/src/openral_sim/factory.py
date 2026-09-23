@@ -34,9 +34,11 @@ def make_env(env_cfg: SimEnvironment) -> SimRollout:
 
     Raises:
         openral_core.exceptions.ROSConfigError: If
-            ``env_cfg.scene.id`` is not registered.
+            ``env_cfg.scene.id`` is not registered, or its
+            ``backend_options`` fail the backend's declared options model.
     """
     factory = SCENES.get(env_cfg.scene.id)
+    SCENES.validate_options(env_cfg.scene.id, env_cfg.scene.backend_options)
     return factory(env_cfg)
 
 

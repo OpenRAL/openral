@@ -1,4 +1,4 @@
-"""Lifecycle integration test for ``packages/openral_hal_openarm``.
+"""Lifecycle integration test for the OpenArm HAL node (``packages/openral_hal_node``).
 
 Exercises the real production lifecycle node end-to-end:
 

@@ -4,8 +4,8 @@ Real-HW HAL adapters (``UR5eRealHAL``/``UR10eRealHAL``/``FrankaPandaRealHAL``/
 ``SawyerRealHAL``) don't import ``rclpy`` themselves — the HAL Protocol is wire-format-free;
 the transport is injected at construction time via ``publish_fn``/``state_fn`` callables.
 
-In production the transport is the per-HAL ROS 2 lifecycle node
-(``packages/openral_hal_<robot>/``). Inside a HIL test a minimal ``rclpy`` node is brought up
+In production the transport is the generic ROS 2 HAL lifecycle node
+(``packages/openral_hal_node/``). Inside a HIL test a minimal ``rclpy`` node is brought up
 locally so the test can drive the real vendor ``ros2_control`` controller end-to-end.
 
 HIL-only — imported by ``tests/hil/test_<robot>.py`` after the test confirms both ``rclpy``

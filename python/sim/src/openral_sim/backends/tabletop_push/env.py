@@ -30,7 +30,7 @@ relies on (the appended task world never reorders the robot's actuators).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -54,97 +54,20 @@ if TYPE_CHECKING:
 _DEFAULT_MAX_STEPS = 300
 _DEFAULT_RENDER_HEIGHT = 480
 _DEFAULT_RENDER_WIDTH = 640
-_XY_LEN = 2
-_XYZ_LEN = 3
-_RANGE_PAIR_LEN = 2
 _SPAWN_ATTEMPTS = 32
 
 
-def _options_from_backend_options(raw: dict[str, Any] | None) -> TabletopOptions:
-    """Build ``TabletopOptions`` from the YAML ``scene.backend_options``.
+def _options_from_backend_options(scene: SceneSpec) -> TabletopOptions:
+    """Validate ``scene.backend_options`` into ``TabletopOptions`` via the registry.
 
-    Unknown keys are rejected loudly so typos surface immediately; every field
-    has a default on ``TabletopOptions``, so an empty block is valid.
+    ``TabletopOptions`` is this backend's registered ``options_model``: unknown
+    keys and wrong shapes fail with a typed ``ROSConfigError`` naming the field;
+    every field has a default, so an empty block is valid.
     """
-    raw = dict(raw or {})
-    valid = {f.name for f in TabletopOptions.__dataclass_fields__.values()}
-    unknown = set(raw) - valid
-    if unknown:
-        raise ROSConfigError(
-            f"tabletop_push: unknown scene.backend_options keys {sorted(unknown)!r}; "
-            f"valid keys: {sorted(valid)!r}.",
-        )
-
-    def _vecn(value: object, name: str, n: int) -> tuple[float, ...]:
-        if not isinstance(value, (list, tuple)) or len(value) != n:
-            raise ROSConfigError(
-                f"tabletop_push: scene.backend_options.{name} must be a {n}-vector; got {value!r}",
-            )
-        return tuple(float(v) for v in value)
-
-    def _range2(value: object, name: str) -> tuple[tuple[float, float], tuple[float, float]]:
-        if (
-            not isinstance(value, (list, tuple))
-            or len(value) != _RANGE_PAIR_LEN
-            or not all(isinstance(p, (list, tuple)) and len(p) == _RANGE_PAIR_LEN for p in value)
-        ):
-            raise ROSConfigError(
-                f"tabletop_push: scene.backend_options.{name} must be "
-                f"((x_min, x_max), (y_min, y_max)); got {value!r}",
-            )
-        x, y = value
-        return ((float(x[0]), float(x[1])), (float(y[0]), float(y[1])))
-
-    xy_keys = {"table_size_xy", "table_center_xy"}
-    xyz_keys = {
-        "robot_base_xyz",
-        "cube_size",
-        "top_camera_pos",
-        "front_camera_pos",
-        "wrist_camera_pos_local",
-        "ambient_light",
-    }
-    range_keys = {"cube_spawn_xy_range", "goal_spawn_xy_range"}
-
-    parsed: dict[str, Any] = {}
-    for key, value in raw.items():
-        if key in xy_keys:
-            parsed[key] = _vecn(value, key, _XY_LEN)
-        elif key in xyz_keys:
-            parsed[key] = _vecn(value, key, _XYZ_LEN)
-        elif key in range_keys:
-            parsed[key] = _range2(value, key)
-        elif key == "settle_steps":
-            parsed[key] = int(value)
-        elif key == "joint_units":
-            units = str(value).lower()
-            if units not in ("radians", "degrees"):
-                raise ROSConfigError(
-                    f"tabletop_push: scene.backend_options.joint_units must be "
-                    f"'radians' or 'degrees'; got {units!r}",
-                )
-            parsed[key] = units
-        elif key in ("initial_joint_positions", "joint_offsets_deg", "joint_signs", "joint_scales"):
-            if not isinstance(value, (list, tuple)):
-                raise ROSConfigError(
-                    f"tabletop_push: scene.backend_options.{key} must be a numeric list; "
-                    f"got {value!r}",
-                )
-            parsed[key] = tuple(float(v) for v in value)
-        elif key == "wrist_camera_mount_body":
-            parsed[key] = None if value is None else str(value)
-        elif key == "instruction":
-            parsed[key] = str(value)
-        elif key == "extra_metadata":
-            if not isinstance(value, dict):
-                raise ROSConfigError(
-                    f"tabletop_push: scene.backend_options.extra_metadata must be a dict; "
-                    f"got {type(value).__name__}",
-                )
-            parsed[key] = {str(k): str(v) for k, v in value.items()}
-        else:
-            parsed[key] = float(value)  # remaining keys are scalar floats
-    return TabletopOptions(**parsed)
+    opts = SCENES.validate_options(scene.id, scene.backend_options)
+    if not isinstance(opts, TabletopOptions):
+        raise ROSConfigError(f"scene {scene.id!r} does not resolve to tabletop_push.")
+    return opts
 
 
 def _validate_joint_unit_affine(options: TabletopOptions, n_act: int) -> None:
@@ -426,9 +349,11 @@ class _TabletopPushRollout:
 
 @SCENES.register(
     "tabletop_push",
+    options_model=TabletopOptions,
     sequential_init=True,  # _mujoco_arm -> openral_hal._base pulls transformers
     sim_clock=True,
     base_pose=True,  # anchors the robot's base_frame at SimEnvironment.base_pose
+    converts_policy_units=True,  # backend_options.joint_units (LeRobot degrees mode)
 )
 def build_tabletop_push_scene(env_cfg: SimEnvironment) -> _TabletopPushRollout:
     """Build the robot-agnostic ``tabletop_push`` rollout (free-axis).
@@ -448,7 +373,7 @@ def build_tabletop_push_scene(env_cfg: SimEnvironment) -> _TabletopPushRollout:
 
     from openral_sim.factory import make_robot  # reason: defer to avoid import cycle
 
-    options = _options_from_backend_options(env_cfg.scene.backend_options)
+    options = _options_from_backend_options(env_cfg.scene)
     description = make_robot(env_cfg)
     if description is None:
         raise ROSConfigError(
@@ -466,7 +391,7 @@ def build_tabletop_push_scene(env_cfg: SimEnvironment) -> _TabletopPushRollout:
                 f"{description.name!r} does not declare "
                 "sensors['wrist'].sim_placement.parent_body in its manifest.",
             )
-        options = replace(options, wrist_camera_mount_body=inferred_mount)
+        options = options.model_copy(update={"wrist_camera_mount_body": inferred_mount})
 
     model = compose_tabletop_mjcf(description, options, base_pose=env_cfg.base_pose)
     data = mujoco.MjData(model)

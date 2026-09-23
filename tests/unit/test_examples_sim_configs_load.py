@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from openral_core import BenchmarkScene, DeployScene, RoboCasaBackendOptions, SimScene
+from openral_core import BenchmarkScene, DeployScene, SimScene
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCENES_DIR = REPO_ROOT / "scenes"
@@ -100,21 +100,24 @@ def _robocasa_scene_yamls() -> list[Path]:
 
 @pytest.mark.parametrize(
     "yaml_path",
-    _robocasa_scene_yamls(),
+    _yamls("sim") + _yamls("benchmark") + _yamls("deploy"),
     ids=lambda p: p.relative_to(REPO_ROOT).as_posix(),
 )
-def test_robocasa_scene_backend_options_validate(yaml_path: Path) -> None:
-    """Each RoboCasa scene's ``backend_options`` must pass the adapter's validator.
+def test_scene_backend_options_pass_the_backend_model(yaml_path: Path) -> None:
+    """Each scene's ``backend_options`` passes its backend's registered options model.
 
-    ``_build_robocasa_sim`` calls
-    ``RoboCasaBackendOptions.model_validate(scene.backend_options)`` at
-    scene-factory time, so a YAML that omits a required key (e.g. a
-    ``mode='prebuilt'`` scene with no ``prebuilt_task``) loads as a
-    ``SimScene`` but blows up the instant ``openral sim run`` /
-    ``deploy sim`` builds the env. This guard catches that at unit speed.
+    ``SCENES.validate_options`` runs the model a backend declared with
+    ``SCENES.register(..., options_model=...)`` (RoboCasa, tabletop_push,
+    so101_box). A YAML that omits a required key (a ``mode='prebuilt'``
+    RoboCasa scene with no ``prebuilt_task``) or misspells one loads as its
+    tier's schema but fails the instant ``openral sim run`` / ``deploy sim``
+    builds the env. This guard catches that at unit speed; backends with no
+    model and real-robot scene ids are a no-op.
     """
+    from openral_sim.registry import SCENES
+
     scene = _TIER_LOADERS[_tier_of(yaml_path)].from_yaml(str(yaml_path))
-    RoboCasaBackendOptions.model_validate(scene.scene.backend_options or {})
+    SCENES.validate_options(scene.scene.id, scene.scene.backend_options)
 
 
 @pytest.mark.parametrize(

@@ -38,7 +38,7 @@ class TestRealModeResolution:
             reset_to_pose_service=None,
             hal_mode="real",
         )
-        assert inv.hal.package == "openral_hal_galaxea_a1"
+        assert inv.hal.package == "openral_hal_node"
         assert inv.hal.executable == "lifecycle_node.py"
         assert inv.hal_params["hal_mode"] == "real"
         assert str(inv.hal_params["robot_yaml"]).endswith("robots/galaxea_a1/robot.yaml")

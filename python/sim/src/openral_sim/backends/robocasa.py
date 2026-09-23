@@ -29,13 +29,12 @@ import math
 import os
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
-from openral_core import RoboCasaBackendOptions
 from openral_core.exceptions import ROSConfigError
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openral_sim._assets import ensure_robocasa_assets
 from openral_sim.registry import SCENES
@@ -49,6 +48,359 @@ if TYPE_CHECKING:
 
 _PREBUILT_SCENE_PREFIX = "robocasa"
 _PROCEDURAL_SCENE_ID = "robocasa"
+
+
+# Scene-pool id domains, mirrored from RoboCasa 1.0.1
+# ``robocasa/models/scenes/scene_registry.py``. Transcribed, not guessed
+# (CLAUDE.md §1.2): ``LayoutType`` declares ``LAYOUT001..LAYOUT060`` = 1..60
+# plus the negative group aliases ``TEST=-1 TRAIN=-2 ALL=-3 NO_ISLAND=-4
+# ISLAND=-5 DINING=-6``, and ``LAYOUT_GROUPS_TO_IDS`` is keyed by exactly
+# those six negatives. ``StyleType`` declares ``STYLE001..STYLE060`` = 1..60;
+# its only negative member is ``ALL=-3``, but ``unpack_style_ids`` indexes
+# ``STYLE_GROUPS_TO_IDS``, which is keyed ``-1 -2 -3`` — so the resolver
+# accepts three negatives where the enum names one, and this mirror follows
+# the resolver (it is what actually runs).
+#
+# 0 is NOT a layout or a style. RoboCasa numbers both from 1, so a
+# ``layout_ids: 0`` is always an authoring mistake, not "the first layout".
+_ROBOCASA_LAYOUT_ID_MIN = 1
+_ROBOCASA_LAYOUT_ID_MAX = 60
+_ROBOCASA_LAYOUT_GROUP_IDS = frozenset({-1, -2, -3, -4, -5, -6})
+_ROBOCASA_STYLE_ID_MIN = 1
+_ROBOCASA_STYLE_ID_MAX = 60
+_ROBOCASA_STYLE_GROUP_IDS = frozenset({-1, -2, -3})
+# ``Kitchen.__init__`` accepts these two strings for ``layout_and_style_ids``
+# (they resolve to ``EnvUtils.KITCHEN_SCENES_5X5`` / ``KITCHEN_SCENES_5X1``).
+# Any OTHER string falls through both branches leaving
+# ``self.layout_and_style_ids`` never assigned, so the failure surfaces much
+# later as an ``AttributeError`` on an unrelated line — reject it here.
+_ROBOCASA_LAYOUT_AND_STYLE_SHORTHANDS = frozenset({"5x5", "5x1"})
+_ROBOCASA_LAYOUT_AND_STYLE_PAIR_LEN = 2
+
+
+def _check_robocasa_scene_ids(
+    value: list[int] | int | None,
+    *,
+    field: str,
+    id_min: int,
+    id_max: int,
+    group_ids: frozenset[int],
+) -> list[int] | int | None:
+    """Reject a RoboCasa layout / style id outside the upstream domain.
+
+    Args:
+        value: The field's raw value — a scalar id, a list of ids, or ``None``.
+        field: Field name, quoted back in the error message.
+        id_min: Lowest concrete id upstream defines.
+        id_max: Highest concrete id upstream defines.
+        group_ids: Negative group shorthands the upstream resolver accepts.
+
+    Returns:
+        ``value`` unchanged when every id is in the domain.
+
+    Raises:
+        ValueError: naming the offending id and the whole accepted domain.
+            Pydantic wraps this into a ``ValidationError``, which the RoboCasa
+            scene adapter re-raises as a typed
+            ``ROSConfigError``.
+
+    Example:
+        >>> _check_robocasa_scene_ids(
+        ...     [3],
+        ...     field="layout_ids",
+        ...     id_min=1,
+        ...     id_max=60,
+        ...     group_ids=frozenset({-1, -2, -3, -4, -5, -6}),
+        ... )
+        [3]
+    """
+    if value is None:
+        return value
+    for scene_id in [value] if isinstance(value, int) else value:
+        if id_min <= scene_id <= id_max or scene_id in group_ids:
+            continue
+        raise ValueError(
+            f"RoboCasaBackendOptions.{field}: {scene_id} is not a RoboCasa "
+            f"scene id. Accepted: {id_min}..{id_max} (concrete scenes) or one "
+            f"of {sorted(group_ids)} (group shorthands). RoboCasa numbers "
+            f"layouts and styles from 1, so 0 is never valid."
+        )
+    return value
+
+
+class RoboCasaBackendOptions(BaseModel):
+    """Typed validator helper for ``SceneSpec.backend_options`` under RoboCasa.
+
+    RoboCasa exposes two scenario modes:
+
+    * **prebuilt** — pick one of the ~100 atomic-PnP / door / drawer /
+      navigation tasks shipped with the package by name (e.g.
+      ``"PnPCounterToCab"``). Set ``prebuilt_task``; leave all
+      procedural keys at their defaults.
+    * **procedural** -- author a kitchen by composing
+      ``kitchen_style`` x ``layout_id`` x ``fixtures`` x
+      ``spawn_objects`` x ``task_verb``. Set ``mode`` to
+      ``"procedural"`` and leave ``prebuilt_task`` ``None``.
+
+    Owned by this backend, not by ``openral_core``: it is registered as the
+    ``options_model`` of the ``robocasa`` and ``robocasa/gr1`` scenes, so
+    ``SCENES.validate_options`` runs it at load time. The parent
+    ``SceneSpec.backend_options: dict[str, object]`` stays an opaque dict,
+    so on-disk scenes are unchanged (CLAUDE.md §1.6).
+
+    Attributes:
+        mode: ``"prebuilt"`` (default) or ``"procedural"``.
+        prebuilt_task: One of RoboCasa's ~100 atomic task names, e.g.
+            ``"PnPCounterToCab"``. Only valid when ``mode="prebuilt"``.
+        kitchen_style: 0..9, picks one of RoboCasa's 10 kitchen aesthetic
+            packs. Only valid when ``mode="procedural"``.
+        layout_id: 0..9, picks one of RoboCasa's 10 floor plans. Only
+            valid when ``mode="procedural"``.
+        fixtures: Subset of RoboCasa fixture names to spawn. Empty list
+            keeps the layout's default fixtures.
+        spawn_objects: Subset of RoboCasa object asset names to spawn on
+            counters / inside cabinets.
+        task_verb: Coarse procedural-mode goal: pick-and-place, open,
+            close, press, navigate. Required when ``mode="procedural"``.
+        robots: RoboCasa robot composition names, e.g.
+            ``["PandaMobile"]`` (default) or ``["GR1"]``. Must match
+            entries the upstream RoboCasa env factory accepts.
+        controller: RoboCasa controller name. ``"OSC_POSE"`` works for
+            arm-style robots; the adapter validates against the
+            controller config exposed by RoboCasa at import time.
+        horizon: Maximum step budget for the underlying RoboCasa env.
+
+    Example:
+        >>> opts = RoboCasaBackendOptions(mode="prebuilt", prebuilt_task="PnPCounterToCab")
+        >>> opts.task_verb is None
+        True
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["prebuilt", "procedural"] = "prebuilt"
+    prebuilt_task: str | None = None
+    kitchen_style: int | None = Field(default=None, ge=0, le=9)
+    layout_id: int | None = Field(default=None, ge=0, le=9)
+    fixtures: list[str] = Field(default_factory=list)
+    spawn_objects: list[str] = Field(default_factory=list)
+    task_verb: Literal["pnp", "open", "close", "press", "navigate"] | None = None
+    robots: list[str] = Field(default_factory=lambda: ["PandaMobile"])
+    controller: str = "OSC_POSE"
+    horizon: int = Field(default=500, gt=0)
+    # Proprioception layout the wrapped policy expects. Each option
+    # concatenates a different subset of `robot0_*` robosuite obs keys
+    # into the `observation.state` vector emitted by `_RoboCasaSim`:
+    #   "human300_16d"   base_to_eef_pos(3) + base_to_eef_quat(4)
+    #                    + base_pos(3) + base_quat(4) + gripper_qpos(2)
+    #                    -> 16-D, robocasa-benchmark/openpi
+    #                    `pi05_pretrain_human300` schema.
+    #   "smolvla_9d"      eef_pos(3) + eef_quat(4) + gripper_qpos(2)
+    #                    -> 9-D, the older smolvla / pre-mg_300 layout.
+    #   "gr1" robot0_joint_pos(17) + robot0_right_gripper_qpos(11)
+    #                    + robot0_left_gripper_qpos(11) -> 39-D. The 17 joint
+    #                    slots are waist(3) + right arm(7) + left arm(7) in
+    #                    MJCF order; the per-part views the upstream GR1
+    #                    fork's GR1ArmsAndWaistKeyConverter exposes
+    #                    (`hand.right_hand`, `body.right_arm`, etc.) are
+    #                    sub-slices into this same 39-D vector.
+    state_layout: (
+        Literal[
+            "smolvla_9d",
+            "human300_16d",
+            "xr1_8d",
+            "gr1",
+        ]
+        | None
+    ) = None
+    """Explicit override; ``None`` follows the rSkill's ``state_contract.layout``
+    (see ``_resolve_state_layout``), falling back to ``human300_16d``."""
+
+    # Scene-pool restrictors mirroring `robocasa.environments.kitchen.kitchen.Kitchen`
+    # constructor kwargs. Independent of `mode` -- they apply equally to
+    # prebuilt and procedural authoring (the upstream Kitchen base class
+    # consumes them in both paths). Defaults are `None` so existing
+    # configs remain unchanged: when the user leaves these empty, the
+    # robocasa scene factory falls through to its own (uniform across
+    # all 60 layouts x 60 styles) sampling. To match the canonical
+    # benchmark eval split, pin
+    #   obj_instance_split="B"
+    #   layout_and_style_ids=[[1,1],[2,2],[4,4],[6,9],[7,10]]
+    # (see robocasa/utils/eval_utils.py::create_eval_env). To match the
+    # training-data collection distribution
+    # (DAVIAN-Robotics/robocasa-MG_*) pin
+    #   obj_instance_split="pretrain"
+    #   layout_ids=[-2]   # robocasa shorthand for "all train layouts (11..60)"
+    #   style_ids=[-2]
+    # See robocasa/scripts/collect_demos.py for the per-split semantics.
+    #
+    # ADR-amendment note: this is a purely additive Pydantic field. Old
+    # SimEnvironment YAMLs (which don't carry these keys) load
+    # unchanged because each field defaults to None.
+    #
+    # `layout_ids` / `style_ids` / `layout_and_style_ids` are RANGE-CHECKED
+    # against the upstream enums below. Without that check an out-of-range pin
+    # is not rejected here; it travels all the way into
+    # `SceneRegistry.get_layout_path`, which indexes a dict built from
+    # `LayoutType` and dies on a bare `KeyError: 99` from inside arena
+    # construction — a stack with no mention of the YAML key that caused it.
+    # A group shorthand outside `LAYOUT_GROUPS_TO_IDS` (`layout_ids: -7`) is
+    # the same failure one frame earlier, in `unpack_layout_ids`. Both are now
+    # `ROSConfigError` at scene-validation time, naming the offending value.
+    obj_instance_split: str | None = None
+    layout_and_style_ids: list[list[int]] | str | None = None
+    layout_ids: list[int] | int | None = None
+    style_ids: list[int] | int | None = None
+    obj_groups: str | None = None
+    """Pin the PnP target object to a specific RoboCasa object group / category
+    (e.g. ``"baguette"``, ``"vegetable"``). Forwarded to the prebuilt PnP task's
+    ``obj_groups`` kwarg so the sampled object is deterministic instead of the
+    default ``"all"`` random draw. Only valid for prebuilt PickPlace tasks;
+    leave ``None`` for door / drawer / navigation tasks."""
+    # ``False`` (default) matches ``openral sim run`` semantics: the env
+    # terminates at ``horizon`` so the runner can score the episode.
+    # ``True`` is for continuous-mode consumers (``openral deploy sim``)
+    # where the operator drives an indefinite stream of commands and we
+    # never want robosuite to refuse a follow-up step with
+    # ``ValueError: executing action in terminated episode``. The HAL
+    # bringup forces it on automatically via
+    # ``openral_hal.sim_bringup.build_sim_env_from_yaml`` regardless of
+    # what the YAML declares.
+    ignore_done: bool = False
+
+    @field_validator("layout_ids")
+    @classmethod
+    def _check_layout_ids(cls, value: list[int] | int | None) -> list[int] | int | None:
+        """Reject a layout id outside RoboCasa's 1..60 + group-shorthand domain."""
+        return _check_robocasa_scene_ids(
+            value,
+            field="layout_ids",
+            id_min=_ROBOCASA_LAYOUT_ID_MIN,
+            id_max=_ROBOCASA_LAYOUT_ID_MAX,
+            group_ids=_ROBOCASA_LAYOUT_GROUP_IDS,
+        )
+
+    @field_validator("style_ids")
+    @classmethod
+    def _check_style_ids(cls, value: list[int] | int | None) -> list[int] | int | None:
+        """Reject a style id outside RoboCasa's 1..60 + group-shorthand domain."""
+        return _check_robocasa_scene_ids(
+            value,
+            field="style_ids",
+            id_min=_ROBOCASA_STYLE_ID_MIN,
+            id_max=_ROBOCASA_STYLE_ID_MAX,
+            group_ids=_ROBOCASA_STYLE_GROUP_IDS,
+        )
+
+    @field_validator("layout_and_style_ids")
+    @classmethod
+    def _check_layout_and_style_ids(
+        cls, value: list[list[int]] | str | None
+    ) -> list[list[int]] | str | None:
+        """Reject an unknown shorthand string or a malformed (layout, style) pair."""
+        if value is None:
+            return value
+        if isinstance(value, str):
+            if value not in _ROBOCASA_LAYOUT_AND_STYLE_SHORTHANDS:
+                raise ValueError(
+                    f"RoboCasaBackendOptions.layout_and_style_ids: {value!r} is "
+                    f"not a RoboCasa shorthand. Accepted: "
+                    f"{sorted(_ROBOCASA_LAYOUT_AND_STYLE_SHORTHANDS)}, or an "
+                    f"explicit list of [layout, style] pairs."
+                )
+            return value
+        for pair in value:
+            if len(pair) != _ROBOCASA_LAYOUT_AND_STYLE_PAIR_LEN:
+                raise ValueError(
+                    f"RoboCasaBackendOptions.layout_and_style_ids: {pair!r} is "
+                    f"not a [layout, style] pair."
+                )
+            _check_robocasa_scene_ids(
+                pair[0],
+                field="layout_and_style_ids[0]",
+                id_min=_ROBOCASA_LAYOUT_ID_MIN,
+                id_max=_ROBOCASA_LAYOUT_ID_MAX,
+                group_ids=_ROBOCASA_LAYOUT_GROUP_IDS,
+            )
+            _check_robocasa_scene_ids(
+                pair[1],
+                field="layout_and_style_ids[1]",
+                id_min=_ROBOCASA_STYLE_ID_MIN,
+                id_max=_ROBOCASA_STYLE_ID_MAX,
+                group_ids=_ROBOCASA_STYLE_GROUP_IDS,
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _mutually_exclusive_scene_pool_pins(self) -> RoboCasaBackendOptions:
+        """Refuse the combination ``Kitchen.__init__`` asserts on.
+
+        Upstream: ``assert layout_ids is None and style_ids is None`` when
+        ``layout_and_style_ids`` is set. Raising here names the YAML keys;
+        the upstream assert surfaces as a bare ``AssertionError`` from inside
+        env construction with no pointer back to the scene file.
+        """
+        if self.layout_and_style_ids is not None and (
+            self.layout_ids is not None or self.style_ids is not None
+        ):
+            raise ValueError(
+                "RoboCasaBackendOptions: layout_and_style_ids is mutually "
+                "exclusive with layout_ids / style_ids (RoboCasa's Kitchen "
+                "ctor asserts on the combination). Pin either the pair list "
+                "or the two axes separately, not both."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _xor_prebuilt_vs_procedural(self) -> RoboCasaBackendOptions:
+        """Forbid mixing the two scenario authoring modes.
+
+        ``mode="prebuilt"`` requires ``prebuilt_task`` and forbids
+        any of the procedural-only keys (``kitchen_style``,
+        ``layout_id``, ``fixtures``, ``spawn_objects``,
+        ``task_verb``).
+
+        ``mode="procedural"`` forbids ``prebuilt_task`` and requires
+        at least one of the procedural-only keys to be set (otherwise
+        the user has just selected the upstream RoboCasa procedural
+        defaults, which is fine but ambiguous in a YAML — we force them
+        to set ``task_verb`` at minimum so the intent is explicit).
+        """
+        procedural_keys_set = any(
+            [
+                self.kitchen_style is not None,
+                self.layout_id is not None,
+                bool(self.fixtures),
+                bool(self.spawn_objects),
+                self.task_verb is not None,
+            ]
+        )
+        if self.mode == "prebuilt":
+            if self.prebuilt_task is None:
+                raise ValueError(
+                    "RoboCasaBackendOptions(mode='prebuilt') requires "
+                    "prebuilt_task to name one of the ~100 atomic tasks "
+                    "RoboCasa ships (e.g. 'PnPCounterToCab')."
+                )
+            if procedural_keys_set:
+                raise ValueError(
+                    "RoboCasaBackendOptions: procedural keys (kitchen_style, "
+                    "layout_id, fixtures, spawn_objects, task_verb) are not "
+                    "valid when mode='prebuilt'."
+                )
+        else:  # mode == "procedural"
+            if self.prebuilt_task is not None:
+                raise ValueError(
+                    "RoboCasaBackendOptions: prebuilt_task is not valid when mode='procedural'."
+                )
+            if not procedural_keys_set:
+                raise ValueError(
+                    "RoboCasaBackendOptions(mode='procedural') requires at "
+                    "least one procedural key — set task_verb (and "
+                    "kitchen_style / layout_id / fixtures / spawn_objects "
+                    "to taste)."
+                )
+        return self
 
 
 def _canonicalize_quat_xyzw_np(q: NDArray[np.float32]) -> NDArray[np.float32]:
@@ -1541,13 +1893,11 @@ def synthesize_laser_scan_2d(  # noqa: PLR0915  # reason: the body-name + joint-
 
 
 def _validate_backend_options(scene: SceneSpec) -> RoboCasaBackendOptions:
-    """Validate ``scene.backend_options`` through the typed RoboCasaBackendOptions."""
-    try:
-        return RoboCasaBackendOptions.model_validate(scene.backend_options)
-    except ValidationError as exc:
-        raise ROSConfigError(
-            f"scene.backend_options failed RoboCasaBackendOptions validation: {exc}"
-        ) from exc
+    """Validate ``scene.backend_options`` via the registry's declared options model."""
+    opts = SCENES.validate_options(scene.id, scene.backend_options)
+    if not isinstance(opts, RoboCasaBackendOptions):
+        raise ROSConfigError(f"scene {scene.id!r} does not resolve to a RoboCasa backend.")
+    return opts
 
 
 def _scene_id_as_int(value: Any) -> int | None:
@@ -1787,6 +2137,9 @@ _MANIFEST_TO_ROBOCASA_LAYOUT: dict[str, str] = {
     "gr1": "gr1",
 }
 
+# Layout when neither the YAML nor the rSkill's state_contract names one.
+_DEFAULT_STATE_LAYOUT = "human300_16d"
+
 # weights_uri schemes that name no in-tree rSkill manifest to read.
 _NO_MANIFEST_SCHEMES = ("hf://", "local://", "file://", "http://", "https://", "mock://")
 
@@ -1798,19 +2151,19 @@ def _resolve_state_layout(env_cfg: SimEnvironment, opts: RoboCasaBackendOptions)
     proprio shape it was trained on, so one scene YAML serves every rSkill;
     ``backend_options.state_layout`` stays as an explicit override.
     """
-    if "state_layout" in opts.model_fields_set:
+    if opts.state_layout is not None:
         return opts.state_layout
     # Mock policies (zero/random) and scheme URIs carry no in-tree manifest.
     if env_cfg.vla.id in {"zero", "random"} or env_cfg.vla.weights_uri.startswith(
         _NO_MANIFEST_SCHEMES
     ):
-        return opts.state_layout
+        return _DEFAULT_STATE_LAYOUT
     from openral_sim.policies.act import _load_manifest_for_spec
 
     manifest = _load_manifest_for_spec(env_cfg.vla)
     contract = getattr(manifest, "state_contract", None)
     layout = getattr(contract, "layout", None)
-    return _MANIFEST_TO_ROBOCASA_LAYOUT.get(str(layout), opts.state_layout)
+    return _MANIFEST_TO_ROBOCASA_LAYOUT.get(str(layout), _DEFAULT_STATE_LAYOUT)
 
 
 def _require_registered_env(env_name: str, *, gym_env_id: str | None = None) -> None:
@@ -2031,6 +2384,7 @@ _KITCHEN_ROBOTS = frozenset({"panda_mobile", "panda_mobile_vslam"})
 # the policy thread's lerobot import (see sim_runner._build_env_and_policy).
 @SCENES.register(
     _PROCEDURAL_SCENE_ID,
+    options_model=RoboCasaBackendOptions,
     fixed_robot=_KITCHEN_ROBOTS,
     provision=partial(provision_robocasa, "robocasa_kitchen"),
     sequential_init=True,
@@ -2046,6 +2400,7 @@ def _build_robocasa_kitchen(env_cfg: SimEnvironment) -> _RoboCasaSim:
 # so a host has one or the other and the missing family fails at build).
 @SCENES.register(
     _GR1_SCENE_PREFIX,
+    options_model=RoboCasaBackendOptions,
     fixed_robot="gr1",
     provision=partial(provision_robocasa, "robocasa_gr1"),
     sequential_init=True,

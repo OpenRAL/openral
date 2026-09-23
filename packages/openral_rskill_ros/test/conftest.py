@@ -6,7 +6,7 @@ directory into ``sys.path``. Without that injection a test module here cannot
 ``from _launch_test_common import ...`` its sibling helper, so this shim adds
 the directory explicitly — the same trick ``python/hal/tests/conftest.py``
 and the sibling ROS package test roots use
-(``packages/openral_hal_scene_attached/test/conftest.py`` and friends).
+(``packages/openral_hal_node/test/conftest.py`` and friends).
 """
 
 from __future__ import annotations

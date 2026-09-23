@@ -5,28 +5,9 @@
 Thin wrappers around the Python-layer adapters; each exposes a single
 `main()` entry point for `ros2 run`.
 
-### `packages/openral_hal_so100/openral_hal_so100/lifecycle_node.py`
+### `packages/openral_hal_node/openral_hal_node/lifecycle_node.py`
 
-- `main() -> None` (L24) — SO-100 LeRobot HAL. Heartbeat wired.
-
-### `packages/openral_hal_openarm/openral_hal_openarm/lifecycle_node.py`
-
-- `main() -> None` (L23) — Enactic OpenArm v2 bimanual HAL. Wraps `openral_hal.OpenArmMujocoHAL` (16-DoF); subscribes `/openral/safe_action` + `/openral/estop`, publishes `/joint_states`. Heartbeat wired; covered by `tests/integration/test_openarm_hal_lifecycle.py`.
-
-### `packages/openral_hal_franka/openral_hal_franka/lifecycle_node.py`
-
-- `main() -> None` (L21) — Franka Panda HAL.
-
-### `packages/openral_hal_ur5e/openral_hal_ur5e/lifecycle_node.py`
-
-- `main() -> None` (L21) — UR5e HAL.
-
-### `packages/openral_hal_ur10e/openral_hal_ur10e/lifecycle_node.py`
-
-- `main() -> None` (L21) — UR10e HAL.
-
-All four HAL `lifecycle_node.py` files share the same shape: import the
-matching Python HAL class and call `openral_hal.lifecycle.make_lifecycle_main(...)`. The generic wrapper at `python/hal/src/openral_hal/lifecycle.py` ships the F8 heartbeat, the `/openral/safe_action` consumer and the `/openral/estop` latch for franka / ur5e / ur10e. Since issue #295 the latch also reaches the robot: under `hal_mode:=real` the node attaches the production `RosControlTransport` as the HAL's `ControllerStopSeam` (or `InterbotixXSTransport` for ALOHA), forwards `/openral/estop` to `hal.estop()`, and logs FATAL / publishes `downstream_stop=unacknowledged` on `/diagnostics` when the HAL's `DownstreamStopReport` says the controller did not acknowledge. `packages/openral_hal_ur5e/test/test_lifecycle_estop.py` drives that branching on the real `UR5eRealHAL` / `OpenArmRealHAL` with the in-memory seam; `tests/integration/test_real_hal_estop_ros2_control_live.py` does it against a real `controller_manager`.
+- `main() -> None` (L28) — The one manifest-driven HAL lifecycle node every robot runs: `openral_hal.lifecycle.make_lifecycle_main_from_manifest(node_name="openral_hal_node")`, i.e. a `ManifestHALLifecycleNode` that builds its HAL from the `robot_yaml` + `hal_mode` parameters via `openral_hal.build_hal`. Heartbeat, `/openral/safe_action` consumer and `/openral/estop` latch come from `HALLifecycleNodeBase`. `openral deploy sim|run` launches it under the ROS node NAME `openral_hal_<robot_id>` (a `__node:=` remap — not a package name). Covered by `packages/openral_hal_node/test/` (parametrised by robot manifest) and `tests/integration/test_openarm_hal_lifecycle.py`.
 
 ### `packages/world_state/openral_world_state_ros/lifecycle_node.py`
 
@@ -102,6 +83,8 @@ matching Python HAL class and call `openral_hal.lifecycle.make_lifecycle_main(..
 - `generate_launch_description() -> LaunchDescription` (L21) — Declares params (`base_frame`, `octomap_topic`, `output_topic`, `resolution`, `coverage_radius_m`, `coverage_center_z`, `publish_rate_hz`) and spawns the `octomap_voxel_bridge` node that turns an OctoMap into the `openral_msgs/OccupancyVoxels` grid the safety kernel consumes.
 
 ### `packages/openral_hal_openarm/launch/real_bringup.launch.py`
+
+_Bringup-only package: no HAL node of its own (OpenArm runs `openral_hal_node`); `robots/openarm/robot.yaml` reaches this file through `hal.real_bringup`._
 
 - `generate_launch_description() -> LaunchDescription` (L54) — Real-hardware `ros2_control` bringup for the OpenArm v2: includes upstream `openarm_bringup`'s bimanual launch with this HAL's own CAN interface names. Never run alongside a deploy — two copies would double-publish `/joint_states`; activation energises the motors.
 - `prop _LEFT_CAN_INTERFACE, _RIGHT_CAN_INTERFACE` (L45–46) — `"openarm_left"` / `"openarm_right"`; must match the udev names `openral_hal.openarm_real._LEFT_CAN_INTERFACE` / `_RIGHT_CAN_INTERFACE` assign to the USB CAN-FD adapter's two channels.
@@ -197,14 +180,14 @@ _Composed-runtime entry point installed as `lib/openral_rskill_ros/runtime_node`
 
 ### `packages/openral_rskill_ros/launch/deploy_e2e.launch.py`
 
-- `compose_runtime_graph(context, *_args, **_kwargs) -> list` (L831) — Resolves every launch arg, loads the robot manifest, and assembles the full deploy-sim ROS graph — HAL, safety kernel, reasoner, SLAM/Nav2, sensor drivers, optional Foxglove viz. On `hal_mode:=real` it also starts the robot's vendor `ros2_control` bringup itself.
-- `generate_launch_description() -> LaunchDescription` (L2569) — Robot-agnostic deploy-sim launch graph entry point; wraps `compose_runtime_graph` in an `OpaqueFunction`.
-- `REAL_BRINGUP_LAUNCH: str` (L521) — `"real_bringup.launch.py"`; the per-HAL-package real-bringup launch filename convention `_build_real_bringup_include(hal_package, real_bringup=None)` falls back to when the manifest's `hal.real_bringup` is unset. An explicit `hal.real_bringup` wins and raises if its package/file is not installed.
-- `_VENV_SITE` (L43) — Optional workspace-editable-install site-dir from `OPENRAL_VENV_SITE`, registered via `site.addsitedir` (plain `PYTHONPATH` is not enough: `.pth` files are only processed by the `site` module on registered site-dirs).
-- `_REPO_ROOT` (L113) — Resolved repo root (`_resolve_repo_root()`).
-- `_RSKILLS_DIR` (L114) — `str(_REPO_ROOT / "rskills")`.
-- `_VENV_RAL` (L116) — `_REPO_ROOT / ".venv" / "bin" / "openral"`.
-- `_RAL_EXECUTABLE` (L117) — The workspace venv's `openral` binary when it exists, else the bare `"openral"` on PATH.
+- `compose_runtime_graph(context, *_args, **_kwargs) -> list` (L814) — Resolves every launch arg, loads the robot manifest, and assembles the full deploy-sim ROS graph — HAL, safety kernel, reasoner, SLAM/Nav2, sensor drivers, optional Foxglove viz. On `hal_mode:=real` it also starts the robot's vendor `ros2_control` bringup itself.
+- `generate_launch_description() -> LaunchDescription` (L2552) — Robot-agnostic deploy-sim launch graph entry point; wraps `compose_runtime_graph` in an `OpaqueFunction`.
+- `_build_real_bringup_include(real_bringup) -> object | None` (L516) — `IncludeLaunchDescription` of the manifest's `hal.real_bringup` (`"<pkg>:<file>.launch.py"`) on `hal_mode:=real`; `None` when the manifest declares none; raises `RuntimeError` when the declared package or file is not installed. There is no package-name convention fallback.
+- `_VENV_SITE` (L42) — Optional workspace-editable-install site-dir from `OPENRAL_VENV_SITE`, registered via `site.addsitedir` (plain `PYTHONPATH` is not enough: `.pth` files are only processed by the `site` module on registered site-dirs).
+- `_REPO_ROOT` (L112) — Resolved repo root (`_resolve_repo_root()`).
+- `_RSKILLS_DIR` (L113) — `str(_REPO_ROOT / "rskills")`.
+- `_VENV_RAL` (L115) — `_REPO_ROOT / ".venv" / "bin" / "openral"`.
+- `_RAL_EXECUTABLE` (L116) — The workspace venv's `openral` binary when it exists, else the bare `"openral"` on PATH.
 
 ### `python/runner/src/openral_runner/ros_publishing_hal.py`
 _HAL Protocol adapter that publishes `ActionChunk` on `/openral/candidate_action`._

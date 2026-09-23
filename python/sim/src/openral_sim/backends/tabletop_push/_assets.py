@@ -32,11 +32,11 @@ written path.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from openral_core.exceptions import ROSConfigError
 from openral_world_state.geometry import look_at_quat_wxyz
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     import mujoco
@@ -48,8 +48,7 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class TabletopOptions:
+class TabletopOptions(BaseModel):
     """Every dimension and pose the ``tabletop_push`` scene exposes.
 
     Lengths are metres, angles are radians unless suffixed ``_deg``. Defaults
@@ -118,6 +117,8 @@ class TabletopOptions:
         extra_metadata: Free-form string map echoed into scene metadata.
     """
 
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     table_size_xy: tuple[float, float] = (0.80, 0.80)
     table_top_z: float = 0.0
     table_thickness: float = 0.02
@@ -151,14 +152,14 @@ class TabletopOptions:
 
     settle_steps: int = 5
     initial_joint_positions: tuple[float, ...] = ()
-    joint_units: str = "radians"
+    joint_units: Literal["radians", "degrees"] = "radians"
     joint_offsets_deg: tuple[float, ...] = ()
     joint_signs: tuple[float, ...] = ()
     joint_scales: tuple[float, ...] = ()
     ambient_light: tuple[float, float, float] = (0.4, 0.4, 0.4)
 
     instruction: str = "push the red cube onto the green goal marker"
-    extra_metadata: dict[str, str] = field(default_factory=dict)
+    extra_metadata: dict[str, str] = Field(default_factory=dict)
 
 
 def _resolve_robot_mjcf(description: RobotDescription) -> str:

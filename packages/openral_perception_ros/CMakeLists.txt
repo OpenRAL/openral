@@ -12,7 +12,7 @@ ament_python_install_package(${PROJECT_NAME})
 # whereas install(PROGRAMS ...) copies the file verbatim, preserving its
 # ``#!/usr/bin/env python3`` shebang that PATH-resolves to the .venv
 # interpreter the rest of the graph runs under. Same pattern as every other
-# node-bearing package (e.g. openral_hal_panda_mobile).
+# node-bearing package (e.g. openral_hal_node).
 install(
   PROGRAMS
     openral_perception_ros/ros_image_detector_node.py

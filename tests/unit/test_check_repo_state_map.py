@@ -34,7 +34,7 @@ def _card(pkg: str, desc: str = "") -> str:
 
 class TestPaths:
     def test_real_directory_resolves(self) -> None:
-        cards = check_repo_state_map.iter_cards(_card("packages/openral_hal_so100"))
+        cards = check_repo_state_map.iter_cards(_card("packages/openral_hal_node"))
         assert check_repo_state_map.check_paths(cards) == []
 
     def test_module_relative_to_its_package_head_resolves(self) -> None:

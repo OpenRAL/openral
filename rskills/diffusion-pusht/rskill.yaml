@@ -20,12 +20,12 @@ model_family: "diffusion"
 embodiment_tags:
   - "pusht"
 
-# PushT exposes a single 96×96 RGB top-down stream (named
-# observation.image, not images.cameraN — PushT predates the multi-cam
-# convention used by SmolVLA/ACT).
+# PushT exposes a single 96×96 RGB top-down stream on slot camera1; the
+# checkpoint names it observation.image (PushT predates the multi-cam
+# convention) — see image_preprocessing.
 sensors_required:
   - modality: "rgb"
-    vla_feature_key: "observation.image"
+    vla_feature_key: "observation.images.camera1"
     min_width: 96
     min_height: 96
 
@@ -54,6 +54,11 @@ processors:
   postprocessor_uri: "hf://lerobot/diffusion_pusht/policy_postprocessor.json"
 # PushT is a 2-DoF planar pushing benchmark; proprio state is 2-D
 # (x, y) of the end effector.
+# Slot camera1 -> the checkpoint's `observation.image`.
+image_preprocessing:
+  input_template: "observation.{cam}"
+  aliases:
+    camera1: "image"
 state_contract:
   dim: 2
 

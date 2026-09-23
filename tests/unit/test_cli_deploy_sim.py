@@ -79,7 +79,7 @@ def test_bh_deploy_sim_dry_run_openarm() -> None:
     flat = " ".join(result.output.split())
     assert "robot=openarm" in flat
     assert "manifest.name=openarm_v2" in flat
-    assert "hal_package=openral_hal_openarm" in flat
+    assert "hal_package=openral_hal_node" in flat
     assert "hal_node_name=openral_hal_openarm" in flat
     assert "deploy_e2e.launch.py" in flat
     assert "robots/openarm/robot.yaml" in flat
@@ -101,7 +101,7 @@ def test_bh_deploy_sim_resolve_openarm_invocation() -> None:
     assert invocation.robot_id == "openarm"
     assert invocation.robot_manifest_name == "openarm_v2"
     assert invocation.robot_yaml == _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
-    assert invocation.hal.package == "openral_hal_openarm"
+    assert invocation.hal.package == "openral_hal_node"
     assert invocation.hal.executable == "lifecycle_node.py"
     assert invocation.hal.node_name == "openral_hal_openarm"
     # openarm is manifest-driven: robot_yaml + hal_mode are injected; HAL kwargs
@@ -143,7 +143,7 @@ def test_bh_deploy_sim_resolve_openarm_invocation() -> None:
     ]
     assert "envelope_file:=" not in joined  # no file path of any kind
     assert "HAL_PARAMS_FILE_PLACEHOLDER" in joined
-    assert "hal_package:=openral_hal_openarm" in joined
+    assert "hal_package:=openral_hal_node" in joined
     # Default is enable_slam=false; the launch arg is still
     # forwarded so the OpaqueFunction can read it.
     assert "enable_slam:=false" in joined
@@ -228,7 +228,7 @@ def test_deploy_sim_scene_attached_mujoco_uses_simulation_clock_origin() -> None
 
 
 def test_deploy_sim_scene_attached_sapien_registry_uses_generic_hal(tmp_path: Path) -> None:
-    """SAPIEN sidecar robots use the generic scene-attached lifecycle host."""
+    """SAPIEN sidecar robots scene-attach through the one generic HAL package."""
     # Registered SAPIEN scene families, so the scene rule picks scene-attach.
     for robot_id, family in (("widowx", "simpler_env"), ("aloha_agilex", "robotwin")):
         config = tmp_path / f"{robot_id}.yaml"
@@ -249,12 +249,12 @@ def test_deploy_sim_scene_attached_sapien_registry_uses_generic_hal(tmp_path: Pa
             hal_param_overrides=None,
         )
 
-        assert invocation.hal.package == "openral_hal_scene_attached"
+        assert invocation.hal.package == "openral_hal_node"
         assert invocation.hal.bare_twin_sim is False
         assert invocation.clock_origin == "simulation"
         assert invocation.hal_params["sim_env_yaml"] == str(config.resolve())
         joined = " ".join(invocation.argv_template)
-        assert "hal_package:=openral_hal_scene_attached" in joined
+        assert "hal_package:=openral_hal_node" in joined
         assert "clock_origin:=simulation" in joined
 
 
@@ -267,7 +267,7 @@ def test_deploy_sim_behavior_r1pro_uses_generic_scene_hal() -> None:
         hal_param_overrides=None,
     )
     assert invocation.robot_id == "r1pro"
-    assert invocation.hal.package == "openral_hal_scene_attached"
+    assert invocation.hal.package == "openral_hal_node"
     assert invocation.hal_params["sim_env_yaml"] == str(_BEHAVIOR_CONFIG.resolve())
     assert invocation.clock_origin == "simulation"
 
@@ -702,9 +702,9 @@ def test_bh_deploy_sim_so101_manifest_driven_bare_twin() -> None:
     rather than opening the Feetech serial bus. The CLI forwards the resolved
     `robots/so101_follower/robot.yaml` as `robot_yaml` + `hal_mode="sim"`; the
     DeployScene's `composition` (the so101_box arena) makes it a bare twin (no
-    `sim_env_yaml` scene-attach) and rides as `scene_composition_json`. No
-    `openral_hal_so101_follower` package ships, so the generic manifest-driven
-    node hosts it.
+    `sim_env_yaml` scene-attach) and rides as `scene_composition_json`. The one
+    generic `openral_hal_node` package hosts it; `openral_hal_so101_follower` is
+    only the ROS node NAME.
     """
     invocation = resolve_launch_invocation(
         config=_SO101_CONFIG,
@@ -714,7 +714,7 @@ def test_bh_deploy_sim_so101_manifest_driven_bare_twin() -> None:
         hal_param_overrides=None,
     )
     assert invocation.robot_id == "so101_follower"
-    assert invocation.hal.package == "openral_hal_scene_attached"
+    assert invocation.hal.package == "openral_hal_node"
     assert invocation.hal.node_name == "openral_hal_so101_follower"
     assert invocation.hal.bare_twin_sim is True
     assert "compose_so101_box_mjcf" in str(invocation.hal_params["scene_composition_json"])
@@ -760,7 +760,7 @@ def test_bh_deploy_sim_hal_executables_have_main_entrypoint() -> None:
     """
     seen_packages: set[str] = set()
     for manifest in sorted((_REPO_ROOT / "robots").glob("*/robot.yaml")):
-        hal = _derive_hal_spec(manifest.parent.name, _REPO_ROOT, None)
+        hal = _derive_hal_spec(manifest.parent.name, None)
         if hal.package in seen_packages:
             continue
         seen_packages.add(hal.package)
@@ -934,19 +934,18 @@ def test_bh_deploy_sim_hal_override_wins() -> None:
     assert invocation.hal_params["viewer_enabled"] is False
 
 
-def test_bh_deploy_sim_hal_spec_derives_from_packages() -> None:
-    """The HAL package is the robot's own ``openral_hal_<id>`` when it ships, else generic.
+def test_bh_deploy_sim_hal_spec_is_the_generic_package() -> None:
+    """Every robot runs the one generic ``openral_hal_node`` package.
 
-    Every derived package must be a real ROS package on disk (with a matching
-    ``<name>``) — a spec pointing at a package that does not exist can never be
-    built by ``just ros2-build`` nor pass ``assert_ros2_packages_discoverable``.
+    The package must be a real ROS package on disk (with a matching ``<name>``)
+    — a spec pointing at a package that does not exist can never be built by
+    ``just ros2-build`` nor pass ``assert_ros2_packages_discoverable``. The ROS
+    node NAME stays ``openral_hal_<robot_id>`` (it namespaces the topics).
     """
     for manifest in sorted((_REPO_ROOT / "robots").glob("*/robot.yaml")):
         robot_id = manifest.parent.name
-        hal = _derive_hal_spec(robot_id, _REPO_ROOT, None)
-        own = _REPO_ROOT / "packages" / f"openral_hal_{robot_id}" / "package.xml"
-        expected = f"openral_hal_{robot_id}" if own.is_file() else "openral_hal_scene_attached"
-        assert hal.package == expected
+        hal = _derive_hal_spec(robot_id, None)
+        assert hal.package == "openral_hal_node"
         assert hal.node_name == f"openral_hal_{robot_id}"
         pkg_xml = _REPO_ROOT / "packages" / hal.package / "package.xml"
         assert f"<name>{hal.package}</name>" in pkg_xml.read_text()
@@ -969,9 +968,8 @@ def test_bh_deploy_sim_bare_twin_is_decided_by_the_scene(tmp_path: Path) -> None
 def test_bh_deploy_sim_robot_without_registry_entry_resolves(tmp_path: Path) -> None:
     """A manifest-only robot deploys with no Python table entry.
 
-    ``anvil_openarm_v2`` ships no ``openral_hal_anvil_openarm_v2`` package and
-    was never in the removed per-robot table; it now resolves to the generic
-    manifest-driven node as a bare twin.
+    ``anvil_openarm_v2`` was never in the removed per-robot table; it resolves
+    to the generic manifest-driven node as a bare twin.
     """
     scene_yaml = tmp_path / "anvil.yaml"
     scene_yaml.write_text(
@@ -984,7 +982,7 @@ def test_bh_deploy_sim_robot_without_registry_entry_resolves(tmp_path: Path) -> 
         reset_to_pose_service=None,
         hal_param_overrides=None,
     )
-    assert invocation.hal.package == "openral_hal_scene_attached"
+    assert invocation.hal.package == "openral_hal_node"
     assert invocation.hal.bare_twin_sim is True
     assert "sim_env_yaml" not in invocation.hal_params
 
@@ -1506,10 +1504,10 @@ def test_bh_assert_ros2_packages_discoverable_all_present() -> None:
     """When every package resolves, the assertion is a no-op."""
     fake = {
         "openral_rskill_ros": "/ws/install/openral_rskill_ros",
-        "openral_hal_franka": "/ws/install/openral_hal_franka",
+        "openral_hal_node": "/ws/install/openral_hal_node",
     }
     assert_ros2_packages_discoverable(
-        ["openral_rskill_ros", "openral_hal_franka"],
+        ["openral_rskill_ros", "openral_hal_node"],
         prefix_lookup=fake.get,
     )
 
@@ -1524,12 +1522,12 @@ def test_bh_assert_ros2_packages_discoverable_overlay_not_sourced() -> None:
     """
     with pytest.raises(ROSConfigError) as ei:
         assert_ros2_packages_discoverable(
-            ["openral_rskill_ros", "openral_hal_franka"],
+            ["openral_rskill_ros", "openral_hal_node"],
             prefix_lookup=lambda _pkg: None,
         )
     msg = str(ei.value)
     assert "openral_rskill_ros" in msg
-    assert "openral_hal_franka" in msg
+    assert "openral_hal_node" in msg
     assert "just ros2-build" in msg
     assert "source install/setup.bash" in msg
     # Disambiguate the user's "is it called rskill now?" guess.
@@ -1541,11 +1539,11 @@ def test_bh_assert_ros2_packages_discoverable_partial_only_lists_missing() -> No
     fake = {"openral_rskill_ros": "/ws/install/openral_rskill_ros"}
     with pytest.raises(ROSConfigError) as ei:
         assert_ros2_packages_discoverable(
-            ["openral_rskill_ros", "openral_hal_franka"],
+            ["openral_rskill_ros", "openral_hal_node"],
             prefix_lookup=fake.get,
         )
     msg = str(ei.value)
-    assert "openral_hal_franka" in msg
+    assert "openral_hal_node" in msg
     assert "openral_rskill_ros" not in msg.split("ROS package(s):", 1)[1].split(".", 1)[0]
 
 

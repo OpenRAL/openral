@@ -64,96 +64,19 @@ _SO101_ARM_DOF = 6
 _DEFAULT_MAX_STEPS = 500
 _DEFAULT_RENDER_HEIGHT = 480
 _DEFAULT_RENDER_WIDTH = 640
-# Shape constants for backend_options validators.
-_XYZ_LEN = 3
-_RANGE_PAIR_LEN = 2
 
 
-def _options_from_backend_options(raw: dict[str, Any] | None) -> BoxSceneOptions:
-    """Build a ``BoxSceneOptions`` from the YAML's ``scene.backend_options`` dict.
+def _options_from_backend_options(scene: SceneSpec) -> BoxSceneOptions:
+    """Validate ``scene.backend_options`` into ``BoxSceneOptions`` via the registry.
 
-    Unknown keys are rejected loudly so YAML typos surface immediately.
-    Every field default lives on ``BoxSceneOptions``, so an empty
-    block is valid.
+    ``BoxSceneOptions`` is this backend's registered ``options_model``: unknown
+    keys and wrong shapes fail with a typed ``ROSConfigError`` naming the field;
+    every field has a default, so an empty block is valid.
     """
-    raw = dict(raw or {})
-    valid = {f.name for f in BoxSceneOptions.__dataclass_fields__.values()}
-    unknown = set(raw) - valid
-    if unknown:
-        raise ROSConfigError(
-            f"so101_box: unknown scene.backend_options keys {sorted(unknown)!r}; "
-            f"valid keys: {sorted(valid)!r}.",
-        )
-
-    def _tuple3(value: object, name: str) -> tuple[float, float, float]:
-        if not isinstance(value, (list, tuple)) or len(value) != _XYZ_LEN:
-            raise ROSConfigError(
-                f"so101_box: scene.backend_options.{name} must be a 3-vector; got {value!r}",
-            )
-        return (float(value[0]), float(value[1]), float(value[2]))
-
-    def _range2(value: object, name: str) -> tuple[tuple[float, float], tuple[float, float]]:
-        if (
-            not isinstance(value, (list, tuple))
-            or len(value) != _RANGE_PAIR_LEN
-            or not all(isinstance(p, (list, tuple)) and len(p) == _RANGE_PAIR_LEN for p in value)
-        ):
-            raise ROSConfigError(
-                f"so101_box: scene.backend_options.{name} must be "
-                f"((x_min, x_max), (y_min, y_max)); got {value!r}",
-            )
-        x, y = value
-        return ((float(x[0]), float(x[1])), (float(y[0]), float(y[1])))
-
-    def _vec6(value: object, name: str) -> tuple[float, ...]:
-        if not isinstance(value, (list, tuple)) or len(value) != _SO101_ARM_DOF:
-            raise ROSConfigError(
-                f"so101_box: scene.backend_options.{name} must be a "
-                f"{_SO101_ARM_DOF}-vector (one per joint); got {value!r}",
-            )
-        vec = tuple(float(v) for v in value)
-        if name == "joint_signs" and any(s not in (1.0, -1.0) for s in vec):
-            raise ROSConfigError(
-                f"so101_box: scene.backend_options.joint_signs entries must be "
-                f"+1 or -1; got {value!r}",
-            )
-        return vec
-
-    parsed: dict[str, Any] = {}
-    for key, value in raw.items():
-        if key in (
-            "box_size_xyz",
-            "robot_base_xyz",
-            "wrist_camera_pos_local",
-            "wrist_camera_target_local",
-            "wrist_camera_up_local",
-            "oak_top_camera_pos",
-            "oak_top_camera_target",
-            "slot_block_size",
-        ):
-            parsed[key] = _tuple3(value, key)
-        elif key in ("block_spawn_xy_range", "tube_spawn_xy_range"):
-            parsed[key] = _range2(value, key)
-        elif key == "extra_metadata":
-            if not isinstance(value, dict):
-                raise ROSConfigError(
-                    f"so101_box: scene.backend_options.extra_metadata "
-                    f"must be a dict; got {type(value).__name__}",
-                )
-            parsed[key] = {str(k): str(v) for k, v in value.items()}
-        elif key == "joint_units":
-            units = str(value).lower()
-            if units not in ("radians", "degrees"):
-                raise ROSConfigError(
-                    f"so101_box: scene.backend_options.joint_units must be "
-                    f"'radians' or 'degrees'; got {value!r}",
-                )
-            parsed[key] = units
-        elif key in ("joint_offsets_deg", "joint_signs"):
-            parsed[key] = _vec6(value, key)
-        else:
-            parsed[key] = float(value)
-    return BoxSceneOptions(**parsed)
+    opts = SCENES.validate_options(scene.id, scene.backend_options)
+    if not isinstance(opts, BoxSceneOptions):
+        raise ROSConfigError(f"scene {scene.id!r} does not resolve to so101_box.")
+    return opts
 
 
 @dataclass
@@ -559,7 +482,13 @@ class _So101BoxRollout:
         return xmat @ np.array([0.0, 0.0, 1.0], dtype=np.float64)
 
 
-@SCENES.register("so101_box", fixed_robot="so101_follower", sim_clock=True)
+@SCENES.register(
+    "so101_box",
+    fixed_robot="so101_follower",
+    options_model=BoxSceneOptions,
+    sim_clock=True,
+    converts_policy_units=True,  # backend_options.joint_units via _so_arm_units
+)
 def build_so101_box_scene(env_cfg: SimEnvironment) -> _So101BoxRollout:
     """Build the so101_box rollout from a composed ``SimEnvironment``.
 
@@ -580,7 +509,7 @@ def build_so101_box_scene(env_cfg: SimEnvironment) -> _So101BoxRollout:
 
     from openral_sim.factory import make_robot  # reason: defer to avoid import cycle
 
-    options = _options_from_backend_options(env_cfg.scene.backend_options)
+    options = _options_from_backend_options(env_cfg.scene)
     description = make_robot(env_cfg)
     _, output_path = compose_so101_box_mjcf(options, robot_description=description)
     model = mujoco.MjModel.from_xml_path(str(output_path))

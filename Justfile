@@ -422,18 +422,8 @@ ros2-build:
         --base-paths packages cpp \
         --packages-select openral_msgs \
                           opentelemetry_cpp_vendor \
-                          openral_hal_so100 \
-                          openral_hal_galaxea_a1 \
-                          openral_hal_panda_mobile \
+                          openral_hal_node \
                           openral_hal_openarm \
-                          openral_hal_franka \
-                          openral_hal_ur5e \
-                          openral_hal_ur10e \
-                          openral_hal_aloha \
-                          openral_hal_scene_attached \
-                          openral_hal_g1 \
-                          openral_hal_h1 \
-                          openral_hal_rizon4 \
                           openral_world_state \
                           openral_reasoner_ros \
                           openral_prompt_router \
@@ -522,18 +512,8 @@ ros2-test:
     colcon test --merge-install \
         --packages-select openral_msgs \
                           opentelemetry_cpp_vendor \
-                          openral_hal_so100 \
-                          openral_hal_galaxea_a1 \
-                          openral_hal_panda_mobile \
+                          openral_hal_node \
                           openral_hal_openarm \
-                          openral_hal_franka \
-                          openral_hal_ur5e \
-                          openral_hal_ur10e \
-                          openral_hal_aloha \
-                          openral_hal_scene_attached \
-                          openral_hal_g1 \
-                          openral_hal_h1 \
-                          openral_hal_rizon4 \
                           openral_world_state \
                           openral_reasoner_ros \
                           openral_prompt_router \

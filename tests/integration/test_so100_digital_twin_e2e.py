@@ -21,7 +21,7 @@ Per CLAUDE.md §1.11 / §5.4: real ``rclpy``, real ``openral_msgs/ActionChunk``,
 targets. Skipped when ROS 2 is not sourced.
 
 The ad-hoc HAL bridge node mirrors the relevant subset of
-``packages/openral_hal_so100/openral_hal_so100/lifecycle_node.py`` but bypasses the
+``packages/openral_hal_node/openral_hal_node/lifecycle_node.py`` but bypasses the
 production lifecycle ``on_configure`` (which opens a USB serial port to ``/dev/ttyUSB0``). It
 is a real ROS node, not a mock; the production HAL lifecycle node's contract
 (``/joint_states`` publication, ``/openral/safe_action`` consumption, ``/openral/estop``
@@ -130,7 +130,7 @@ def _make_hal_bridge_node(hal_adapter: Any) -> Any:
     Subscribes to ``/openral/safe_action`` and forwards the first chunk row to
     ``hal_adapter.send_action``; publishes ``/joint_states`` at 30 Hz from
     ``hal_adapter.read_state``; subscribes to ``/openral/estop`` to latch a brake state.
-    Mirrors the production ``packages/openral_hal_so100/openral_hal_so100/lifecycle_node.py``
+    Mirrors the production ``packages/openral_hal_node/openral_hal_node/lifecycle_node.py``
     topic surface (the parts F1/F5 exercise) without opening a USB port.
     """
     from openral_core.schemas import Action, ControlMode

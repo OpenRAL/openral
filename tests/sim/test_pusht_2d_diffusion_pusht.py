@@ -111,7 +111,7 @@ class TestDiffusionPushTManifest:
         sensors = skill_manifest.manifest.sensors_required
         assert len(sensors) == 1
         assert sensors[0].modality == "rgb"
-        assert sensors[0].vla_feature_key == "observation.image"
+        assert sensors[0].vla_feature_key == "observation.images.camera1"
 
     def test_manifest_has_latency_budget(
         self, skill_manifest, assert_manifest_has_latency_budget

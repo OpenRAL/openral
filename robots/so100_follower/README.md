@@ -38,7 +38,7 @@ acceleration ≤ 2.0 m/s². Deadman required (`deadman_required: true`).
 | Python HAL adapters | `openral_hal.so100_follower.SO100FollowerHAL` (real), `openral_hal.so100_sim.SO100DigitalTwin` (kinematic twin), `openral_hal.so100_mujoco.SO100MujocoHAL` (MuJoCo digital twin) |
 | Python description | `openral_hal.SO100_DESCRIPTION` |
 | Sensor factory | `openral_hal.so100_with_sensors` |
-| ROS 2 lifecycle node | [`packages/openral_hal_so100/`](../../packages/openral_hal_so100/README.md) |
+| ROS 2 lifecycle node | [`packages/openral_hal_node/`](../../packages/openral_hal_node/README.md) (generic; node name `openral_hal_<robot_id>`) |
 | Compatible rSkills | [`smolvla-libero`](../../rskills/smolvla-libero/README.md) (digital-twin verified) |
 
 ## Joints
@@ -86,6 +86,6 @@ state uses 6-DoF twin positions padded to 7-DoF where needed by the VLA.
 ## See also
 
 - [`python/hal/README.md`](../../python/hal/README.md) — `SO100FollowerHAL`, `SO100DigitalTwin`, sensor wiring.
-- [`packages/openral_hal_so100/README.md`](../../packages/openral_hal_so100/README.md) — ROS lifecycle node.
+- [`packages/openral_hal_node/README.md`](../../packages/openral_hal_node/README.md) — the generic manifest-driven ROS 2 lifecycle node.
 - [`rskills/smolvla-libero/README.md`](../../rskills/smolvla-libero/README.md) — example rSkill for this embodiment.
 - [`docs/tutorials/deploy/deploy-run-and-dashboard.md`](../../docs/tutorials/deploy/deploy-run-and-dashboard.md) — sim and hardware quickstart, using SO-100 as the worked example.

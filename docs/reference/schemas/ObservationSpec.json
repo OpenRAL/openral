@@ -13,7 +13,7 @@
       "type": "string"
     }
   },
-  "description": "VLA observation configuration for this robot.\n\nAttributes:\n    state_key: Observation dict key for the state vector.\n    state_shape: Shape of the state tensor, e.g. ``(6,)`` for 6-D EEF.\n    state_representation: How the state vector is encoded.\n    image_flip_180: Whether camera images need 180\u00b0 rotation before\n        feeding to the VLA (common for wrist-mounted cameras).",
+  "description": "VLA observation configuration for this robot.\n\nAttributes:\n    state_key: Observation dict key for the state vector.\n    state_shape: Shape of the state tensor, e.g. ``(6,)`` for 6-D EEF.\n    state_representation: How the state vector is encoded.\n    image_flip_180: **Deprecated, read by no code.** The live knob is\n        the per-checkpoint ``RSkillManifest.image_preprocessing.flip_180``.\n        Kept so existing manifests still load; setting it emits a\n        ``DeprecationWarning``.",
   "properties": {
     "state_key": {
       "default": "observation.state",

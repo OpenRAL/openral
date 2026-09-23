@@ -68,9 +68,13 @@ weights_uri: "hf://RLWRLD/RLDX-1-FT-GR1"
 processors:
   preprocessor_uri: "hf://RLWRLD/RLDX-1-FT-GR1/policy_preprocessor.json"
   postprocessor_uri: "hf://RLWRLD/RLDX-1-FT-GR1/policy_postprocessor.json"
-# image_preprocessing omitted — GR-1 RoboCasa scenes emit upright frames
-# (the LIBERO rotate-180 hack is LIBERO-specific). Schema default
-# (flip_180=False, empty aliases) applies.
+# GR-1 RoboCasa scenes emit upright frames (the LIBERO rotate-180 hack is
+# LIBERO-specific), so no flip. Slot -> sidecar video key (the gr1 layout's
+# key, stated explicitly).
+image_preprocessing:
+  input_template: "video.{cam}"
+  aliases:
+    camera1: "ego_view"
 state_contract:
   # 29-D Fourier GR-1 BASIC composite state, emitted by
   # openral_sim.backends.robocasa._wrap_obs_gr1 in the order

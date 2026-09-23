@@ -924,9 +924,9 @@ _mDNS advertise + browse for the live dashboard. Optional, requires the `mdns` e
 ### `python/observability/src/openral_observability/dashboard/vad_assets.py`
 - `class PinnedAsset(NamedTuple)` (L52) — `url: str`, `sha256: str`, `size: int` for one pinned binary asset.
 - module constant `PINNED_VAD_ASSETS: dict[str, PinnedAsset]` (L65) — The three voice-prompt binaries no longer committed to git, pinned to exact upstream URLs + sha256 recorded in `static/vendor/vad/NOTICE.md`.
-- `sha256_of(path: Path) -> str` — Hex sha256 digest of the file at `path`, read in chunks. (L95)
-- `ensure_vad_assets() -> bool` (L143) — Best-effort: for each pinned asset, reuse a sha256-verified cache hit or download + verify one, then serve it from `static/vendor/vad/`. Never raises; a failed asset logs a warning and does not stop the others. Called best-effort from `run_dashboard` on every start (never gates startup).
-- `vad_assets_available() -> bool` (L209) — Cheap presence-only check (no re-hash) of whether every pinned asset is currently served; backs `/api/config`'s `voice_prompt_enabled`.
+- `sha256_of(path: Path) -> str` — Hex sha256 digest of the file at `path`, read in chunks. (L94)
+- `ensure_vad_assets() -> bool` (L142) — Best-effort: for each pinned asset, reuse a sha256-verified cache hit or download + verify one, then serve it from `static/vendor/vad/`. Never raises; a failed asset logs a warning and does not stop the others. Called best-effort from `run_dashboard` on every start (never gates startup).
+- `vad_assets_available() -> bool` (L208) — Cheap presence-only check (no re-hash) of whether every pinned asset is currently served; backs `/api/config`'s `voice_prompt_enabled`.
 
 ### `python/observability/src/openral_observability/dashboard/server.py`
 - `run_dashboard(*, host="127.0.0.1", port=4318, inprocess_cmd=None, store=None, log_level="warning") -> None` — Start uvicorn on `host:port` and block until SIGINT/SIGTERM. Calls `vad_assets.ensure_vad_assets()` best-effort before binding. Prints a single URL banner to stderr before binding. When `inprocess_cmd` is set, spawns the argv as a child process pointed at this dashboard's OTLP endpoint. Default port `4318` (OTLP/HTTP standard) rather than `8000`, to avoid clashing with common dev servers. (L56)

@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from openral_core import RoboCasaBackendOptions
+from openral_sim.backends.robocasa import RoboCasaBackendOptions
 from pydantic import ValidationError
 
 
@@ -373,3 +373,28 @@ def test_scene_pool_pins_round_trip_through_json(layout: int, style: int, horizo
     assert restored == src
     assert restored.layout_ids == [layout]
     assert restored.style_ids == style
+
+
+def test_registry_validates_through_the_backend_owned_model() -> None:
+    """``SCENES.validate_options`` runs the model RoboCasa registered, prefix-inherited.
+
+    ``robocasa/<Task>`` resolves to ``robocasa``'s ``options_model``; a bad
+    field fails as a typed ``ROSConfigError`` naming the scene id and field;
+    a backend with no declared model (``libero_spatial``) or an unknown id
+    returns ``None``.
+    """
+    from openral_core.exceptions import ROSConfigError
+    from openral_sim import SCENES
+
+    opts = SCENES.validate_options(
+        "robocasa/PickPlaceCounterToCabinet",
+        {"prebuilt_task": "PickPlaceCounterToCabinet", "layout_ids": [3]},
+    )
+    assert isinstance(opts, RoboCasaBackendOptions)
+    assert opts.state_layout is None  # follows the rSkill's state_contract
+    gr1 = SCENES.validate_options("robocasa/gr1/PnPCupToDrawerClose", {"prebuilt_task": "X"})
+    assert isinstance(gr1, RoboCasaBackendOptions)
+    with pytest.raises(ROSConfigError, match=r"(?s)'robocasa/OpenDrawer'.*layout_ids"):
+        SCENES.validate_options("robocasa/OpenDrawer", {"prebuilt_task": "X", "layout_ids": 0})
+    assert SCENES.validate_options("libero_spatial", {"anything": 1}) is None
+    assert SCENES.validate_options("not_a_scene", {"anything": 1}) is None

@@ -134,6 +134,14 @@ wrong-tier YAML and tells you which tier the file actually fits. A YAML that
 still carries a `vla:` block raises `ROSConfigError` — policy is always
 supplied at the CLI via `--rskill <name>`.
 
+`scene.backend_options` is an opaque dict to the tier schemas; each backend
+owns its model (`options_model=` on `@SCENES.register`: RoboCasa's
+`RoboCasaBackendOptions`, `tabletop_push`'s `TabletopOptions`, `so101_box`'s
+`BoxSceneOptions`). `SCENES.validate_options` runs it at load time in
+`openral sim run`, `openral benchmark scene`, `openral deploy validate` and
+`make_env`, so a misspelled or out-of-range key fails with a
+`ROSConfigError` naming the scene id and the field.
+
 ## Available scene IDs (`scene.id`)
 
 | Backend             | Built-in scene IDs                                                                                                                                                                                                                                                                          | Adapter file                              |

@@ -910,7 +910,6 @@ _vla_spec_st = st.builds(
     id=_name,
     weights_uri=_name,
     device=st.sampled_from(["auto", "cpu", "cuda:0", "mps"]),
-    runtime=st.one_of(st.none(), st.sampled_from(list(RSkillRuntime))),
     quantization=st.one_of(st.none(), _quant_config_st),
     deterministic=st.booleans(),
 )

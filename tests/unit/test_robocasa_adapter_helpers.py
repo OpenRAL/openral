@@ -15,11 +15,12 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from openral_core import RoboCasaBackendOptions, SceneSpec
+from openral_core import SceneSpec
 from openral_core.exceptions import ROSConfigError
 from openral_sim import SCENES
 from openral_sim.backends.robocasa import (
     _CURATED_PREBUILT_TASKS,
+    RoboCasaBackendOptions,
     _fit_panda_mobile_action,
     _resolve_env_name,
     _single_scene_pin,

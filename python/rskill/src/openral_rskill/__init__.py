@@ -5,10 +5,6 @@ Public surface
 - ``rSkillBase``: Abstract base class with the ROS 2 lifecycle state machine.
 - ``Runtime``: Structural protocol for inference backends.
 - ``NullRuntime``: No-op runtime for tests and development.
-- ``QUANT_PRESETS``: Named ``QuantizationConfig`` presets.
-- ``auto_select_quant``: Device-aware quantization preset selector.
-- ``EngineCache``: Filesystem cache for compiled engine files.
-- ``DEFAULT_CACHE_DIR``: Default cache directory path.
 - ``rSkill``: HF Hub rSkill loader (manifest + weights + license guard).
 - ``InstalledRSkillEntry``: Local registry entry schema.
 - ``search_hub_rskills``: Free-text + facet search over an HF Hub org's
@@ -45,7 +41,6 @@ from openral_rskill._diagnostics import gpu_allocated_mb
 from openral_rskill._vla_core import hf_download_cached_first
 from openral_rskill.backend_registry import maybe_attach_pro_hooks, resolve_runtime_backend
 from openral_rskill.base import rSkillBase
-from openral_rskill.engine_cache import DEFAULT_CACHE_DIR, EngineCache
 from openral_rskill.hub_search import HubRSkillHit, HubRSkillSearchResult, search_hub_rskills
 from openral_rskill.loader import (
     DEFAULT_REGISTRY_PATH,
@@ -57,20 +52,15 @@ from openral_rskill.loader import (
     rSkill,
     validate_skill_ref,
 )
-from openral_rskill.quantization import QUANT_PRESETS, auto_select_quant
 from openral_rskill.runtime import NullRuntime, Runtime
 
 __all__ = [
-    "DEFAULT_CACHE_DIR",
     "DEFAULT_REGISTRY_PATH",
-    "QUANT_PRESETS",
-    "EngineCache",
     "HubRSkillHit",
     "HubRSkillSearchResult",
     "InstalledRSkillEntry",
     "NullRuntime",
     "Runtime",
-    "auto_select_quant",
     "discover_intree_rskills",
     "find_repo_root_from",
     "gpu_allocated_mb",

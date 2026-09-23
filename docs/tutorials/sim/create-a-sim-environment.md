@@ -408,9 +408,9 @@ block or `--hal key=value`, all forwarded to the constructor). A vendor
 ros2_control bringup is declared as `hal.real_bringup: "<pkg>:<file>.launch.py"`.
 
 `openral deploy sim --config <scene.yaml>` / `deploy run --robot my_arm` then
-work with no Python registry entry and no ROS package: the generic
-`openral_hal_scene_attached` manifest-driven node hosts the HAL (a
-`packages/openral_hal_my_arm` package is used instead only if you ship one).
+work with no Python registry entry and no ROS package: the one generic
+`openral_hal_node` manifest-driven node hosts the HAL for every robot, run under
+the ROS node name `openral_hal_my_arm` (a node name, not a package).
 Whether `deploy sim` builds a bare MuJoCo twin or scene-attaches is the
 scene's call: a DeployScene with its own `composition:`, or whose `scene.id` is
 not a registered `openral_sim` scene, gets a bare twin; otherwise the HAL
@@ -534,10 +534,30 @@ class _MyScene:
         }
 
 
-@SCENES.register("my_scene")
+class MySceneOptions(BaseModel):
+    """What `scene.backend_options` may carry for this backend."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    table_height: float = 0.75
+
+
+@SCENES.register("my_scene", options_model=MySceneOptions)
 def _build(env_cfg: "SimEnvironment") -> _MyScene:
     return _MyScene(scene=env_cfg.scene, task=env_cfg.task)
 ```
+
+**Declare your options model at registration.** `SceneSpec.backend_options`
+is an opaque dict in `openral_core`; the backend owns its schema. Pass
+`options_model=` to `@SCENES.register` (add `from pydantic import BaseModel,
+ConfigDict` to the skeleton's imports) and `SCENES.validate_options(scene_id,
+raw)` runs it wherever a scene is loaded — `make_env`, `openral sim run`,
+`openral benchmark scene`, `openral deploy validate`,
+`tools/audit_sim_configs.py`, and the `scenes/` load test — so a misspelled
+key fails at load with a typed `ROSConfigError` naming the scene id and the
+field, not deep inside env construction. Inside the factory, read the
+validated instance back with the same call. Ids under a registered prefix
+inherit its model (`robocasa/<Task>` uses `robocasa`'s).
 
 Then wire it into the package's import set so `@register` actually fires.
 The simplest way is a one-line import in
@@ -575,11 +595,11 @@ the task, and a geometric tube-insertion success check.
 Two design points worth lifting into your own adapter:
 
 * **Every scene parameter is YAML, no geometry is hard-coded.** The
-  composer is fed a single typed `BoxSceneOptions` dataclass that
-  carries every dimension, pose and threshold. The CLI's
-  `scene.backend_options` block populates it via
-  `_options_from_backend_options` (which rejects unknown keys
-  loudly). Once the adapter is registered, the next "SO-101 in a
+  composer is fed a single typed `BoxSceneOptions` Pydantic model that
+  carries every dimension, pose and threshold. It is the backend's
+  registered `options_model`, so the YAML's `scene.backend_options`
+  block is validated by `SCENES.validate_options` (unknown keys and
+  wrong shapes fail loudly, naming the field). Once the adapter is registered, the next "SO-101 in a
   similar arena" scene is a pure YAML edit — no Python change. See
   [`scenes/sim/so101_tube_insertion.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/sim/so101_tube_insertion.yaml)
   for the full surface.
@@ -798,8 +818,8 @@ What that config wires together:
   fixed_robot="panda_mobile")` so an accidental `--robot franka_panda`
   fails fast with `ROSConfigError`.
 - `scene.backend_options.mode: prebuilt` -- validated through
-  ``openral_core.RoboCasaBackendOptions`` (prebuilt-vs-procedural
-  XOR).
+  `openral_sim.backends.robocasa.RoboCasaBackendOptions`, the RoboCasa
+  backend's registered `options_model` (prebuilt-vs-procedural XOR).
 - `--rskill rskills/rldx1-ft-rc365-nf4` -- the verified RoboCasa-365
   manifest that declares the embodiment tags / sensor requirements the
   runner validates.

@@ -78,15 +78,17 @@ weights_uri: "hf://OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4"
 processors:
   preprocessor_uri: "hf://OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4/policy_preprocessor.json"
   postprocessor_uri: "hf://OpenRAL/rskill-molmoact2-franka_panda-libero_spatial-nf4/policy_postprocessor.json"
-# Default LIBERO image preprocessing (180° rotation + camera1/2 alias remap
-# to image/image2) and the canonical LIBERO 8-D proprio state.
+# Default LIBERO image preprocessing (180° rotation) and the canonical LIBERO
+# 8-D proprio state.
 image_preprocessing:
   flip_180: true
-  # Slot-keyed (camera1 / camera2). The MolmoAct2 adapter does not consume
-  # aliases today; kept as the checkpoint's view names.
+  # Slot -> checkpoint camera key. predict_action takes images positionally;
+  # the adapter orders the slots by the checkpoint's norm_stats.json
+  # `camera_keys` for the norm tag (libero: observation.images.image,
+  # observation.images.wrist_image).
   aliases:
     camera1: "image"
-    camera2: "image2"
+    camera2: "wrist_image"
 state_contract:
   dim: 8
 

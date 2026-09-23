@@ -302,6 +302,45 @@ def resolve_camera_keys(
     return default
 
 
+def manifest_camera_slots(manifest: RSkillManifest | None) -> tuple[str, ...]:
+    """The RGB VLA slots an rSkill declares, in ``sensors_required`` order.
+
+    The slot is the ``vla_feature_key`` suffix (``observation.images.camera1``
+    -> ``camera1``). Adapters use it as the ``resolve_camera_keys`` default so
+    a skill with no scene cameras still pulls the slots it was packaged for.
+
+    Example:
+        >>> from openral_core import RSkillManifest
+        >>> manifest_camera_slots(RSkillManifest.from_yaml("rskills/xvla-libero/rskill.yaml"))
+        ('camera1', 'camera2')
+    """
+    if manifest is None:
+        return ()
+    return tuple(
+        req.vla_feature_key.rsplit(".", 1)[-1]
+        for req in manifest.sensors_required
+        if req.modality == "rgb" and req.vla_feature_key
+    )
+
+
+def checkpoint_image_keys(
+    image_preprocessing: ImagePreprocessing, camera_keys: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Checkpoint-side image key for each slot: ``input_template`` over ``aliases``.
+
+    The one rename rule every VLA adapter shares: slot ``camera1`` becomes
+    ``input_template.format(cam=aliases.get("camera1", "camera1"))``.
+
+    Example:
+        >>> from openral_core import ImagePreprocessing
+        >>> ip = ImagePreprocessing(input_template="video.{cam}", aliases={"camera1": "image"})
+        >>> checkpoint_image_keys(ip, ("camera1", "camera2"))
+        ('video.image', 'video.camera2')
+    """
+    ip = image_preprocessing
+    return tuple(ip.input_template.format(cam=ip.aliases.get(k, k)) for k in camera_keys)
+
+
 def resolve_n_action_steps(
     manifest: RSkillManifest | None,
     extra: dict[str, Any],
@@ -1256,6 +1295,8 @@ __all__ = [
     "InferenceKind",
     "apply_chunk_replay",
     "call_make_processors_cached_first",
+    "checkpoint_image_keys",
+    "manifest_camera_slots",
     "materialize_processor_dir",
     "maybe_compile_chunk_forward",
     "parse_hf_file_uri",

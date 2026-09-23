@@ -138,10 +138,11 @@ def test_deleted_test_file_is_not_emitted_as_target() -> None:
 
 
 def test_ros_package_change_selects_its_test_dir() -> None:
-    target = "packages/openral_hal_so100"
+    target = "packages/openral_hal_node"
     if not (REPO_ROOT / target / "test").is_dir():
         pytest.skip(f"{target}/test not present in this checkout")
-    result = select_tests.select(REPO_ROOT, [f"{target}/openral_hal_so100/node.py"], CONFIG)
+    changed = f"{target}/openral_hal_node/lifecycle_node.py"
+    result = select_tests.select(REPO_ROOT, [changed], CONFIG)
     assert f"{target}/test" in result.targets
 
 
