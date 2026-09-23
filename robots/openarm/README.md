@@ -189,7 +189,11 @@ there. The real cell is the only in-distribution proving ground; its first
 dispatch aborted in the observation decoder on the ZED depth frame, which
 is fixed (`decode_inline_frame`). On 2026-09-23 the real cell executed its
 first chunk on the arms; the per-forward latency that then trips the
-deadman is the open item above.
+deadman is the open item above. That chunk was produced **without the head
+view**: the scene's `context` key reached the camera readers but not the
+runner, which kept the manifest's `top` → `base` slot, so lerobot fed a
+masked blank in its place. `compose_runtime` now merges the scene's
+`sensors:` into the one description every consumer reads.
 
 ## Action layout (16 DoF)
 
