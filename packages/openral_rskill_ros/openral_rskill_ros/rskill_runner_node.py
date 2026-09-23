@@ -702,8 +702,16 @@ if _ROS2_AVAILABLE:
                     f"rskill_runner.preload_done: {rskill_id!r} resident after "
                     f"{_time.monotonic() - t0:.1f} s"
                 )
-            except ROSSafetyViolation:
-                raise
+            except ROSSafetyViolation as exc:
+                # Never silenced (CLAUDE.md §5). A bare re-raise here would only
+                # end this worker thread with a traceback on stderr while the
+                # node kept accepting goals; hand it to the executor thread so
+                # it escapes spin() exactly as it does from the goal path.
+                self.get_logger().error(
+                    f"rskill_runner.preload_safety_violation: kind={type(exc).__name__} "
+                    f"rskill_id={rskill_id!r} reason={exc!s}"
+                )
+                self._rethrow_on_executor(exc)
             except ROSError as exc:
                 self.get_logger().error(
                     f"rskill_runner.preload_failed: kind={type(exc).__name__} "
@@ -721,6 +729,22 @@ if _ROS2_AVAILABLE:
                 )
             finally:
                 self._preload_in_flight.clear()
+
+        def _rethrow_on_executor(self, exc: BaseException) -> None:
+            """Re-raise ``exc`` from the executor thread on its next spin.
+
+            The safety-supervisor boundary is the executor (a violation raised
+            from a callback escapes ``spin()`` and takes the node down, which
+            the deadman watchdog reads as a stopped runner). A worker thread
+            has no such boundary, so it schedules a one-shot timer that raises
+            there; ``create_timer`` is safe to call off the executor thread.
+            """
+
+            def _raise() -> None:
+                timer.cancel()
+                raise exc
+
+            timer = self.create_timer(0.001, _raise)
 
         def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
             """Stop the heartbeat. Cancels any in-flight goal."""
@@ -3199,7 +3223,16 @@ def _make_policy_adapter_skill(
                 h, w = sizes.get(sensor_name, (224, 224))
                 images[slot] = np.zeros((h, w, 3), dtype=np.uint8)
             contract = getattr(self.manifest, "state_contract", None)
-            state_dim = int(getattr(contract, "dim", 0) or 0) or len(description.joints)
+            state_dim = int(getattr(contract, "dim", 0) or 0)
+            if not state_dim:
+                if description is None:
+                    from openral_core.exceptions import ROSConfigError
+
+                    raise ROSConfigError(
+                        "warm-up needs the policy's state width: declare "
+                        "state_contract.dim in rskill.yaml or run with a robot description"
+                    )
+                state_dim = len(description.joints)
             return {
                 "task": self._prompt or "",
                 "state": np.zeros(state_dim, dtype=np.float32),

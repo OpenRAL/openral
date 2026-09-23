@@ -283,6 +283,66 @@ class TestBuildRuntimeSkillSceneCameras:
         assert adapter.resets >= 1
         skill.shutdown()
 
+    def test_warmup_without_a_state_width_is_skipped_with_a_typed_reason(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No ``state_contract.dim`` and no robot description: warm-up skips, activate succeeds.
+
+        The state width used to fall through to ``description.joints`` with no
+        description, so the warm-up died on an ``AttributeError`` that the
+        non-fatal wrapper logged as an opaque ``warmup_failed``.
+        """
+        import openral_sim.factory as _sim_factory
+
+        yaml_path = _REPO_ROOT / "rskills" / "lingbot-va-galaxea-a1-fruit-placement" / "rskill.yaml"
+        no_state = RSkillManifest.from_yaml(str(yaml_path)).model_copy(
+            update={"state_contract": None}
+        )
+        monkeypatch.setattr(RSkillManifest, "from_yaml", staticmethod(lambda _p: no_state))
+
+        steps: list[object] = []
+
+        class _Adapter:
+            def __init__(self, env_cfg: object) -> None:
+                self.spec = env_cfg.vla  # type: ignore[attr-defined]
+                self.device = "cpu"
+
+            def step(self, observation: dict[str, object], instruction: str) -> np.ndarray:
+                steps.append(observation)
+                return np.zeros(int(no_state.action_contract.dim), dtype=np.float32)  # type: ignore[union-attr]
+
+            def reset(self) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr(_sim_factory, "make_policy", _Adapter)
+        warnings: list[tuple[str, dict[str, object]]] = []
+
+        class _CapturingLogger:
+            def warning(self, event: str, **kw: object) -> None:
+                warnings.append((event, kw))
+
+            def __getattr__(self, _name: str) -> object:
+                return lambda *_a, **_k: None
+
+        monkeypatch.setattr(_RUNNER, "log", _CapturingLogger())
+
+        skill = _build_runtime_skill_from_manifest(
+            yaml_path=yaml_path,
+            prompt="put the mango into the blue bowl",
+            scene_cameras=("front", "wrist"),
+            description=None,
+        )
+        from openral_rskill.base import RSkillState
+
+        assert skill.info.state is RSkillState.ACTIVE
+        assert steps == [], "warm-up must not step a policy with an unknown state width"
+        failed = [kw for event, kw in warnings if event == "rskill_runner.warmup_failed"]
+        assert len(failed) == 1 and "state_contract.dim" in str(failed[0]["error"])
+        skill.shutdown()
+
     def test_smolvla_deploy_enables_realtime_chunk_prefetch(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
