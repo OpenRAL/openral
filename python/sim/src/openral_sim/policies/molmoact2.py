@@ -283,7 +283,7 @@ def _norm_stats_camera_keys(repo_id: str, revision: str | None, norm_tag: str) -
 
     from huggingface_hub import hf_hub_download
 
-    with _hf_offline_if_cached(repo_id, probe_file="norm_stats.json"):
+    with _hf_offline_if_cached(repo_id, probe_file="norm_stats.json", revision=revision):
         path = hf_hub_download(repo_id, "norm_stats.json", revision=revision)
     with open(path, encoding="utf-8") as fh:
         stats = json.load(fh)
@@ -292,7 +292,9 @@ def _norm_stats_camera_keys(repo_id: str, revision: str | None, norm_tag: str) -
 
 
 @contextlib.contextmanager
-def _hf_offline_if_cached(repo_id: str, probe_file: str = "config.json") -> Any:
+def _hf_offline_if_cached(
+    repo_id: str, probe_file: str = "config.json", revision: str | None = None
+) -> Any:
     """Flip ``HF_HUB_OFFLINE`` on for the inner block when ``probe_file`` is cached.
 
     Every ``from_pretrained`` (config, processor) and the lazy ``norm_stats.json``
@@ -312,11 +314,15 @@ def _hf_offline_if_cached(repo_id: str, probe_file: str = "config.json") -> Any:
     would block the first-run lazy norm-stats download with a
     ``LocalEntryNotFoundError`` ("normalization stats file is missing"), since
     the model load warms ``config.json`` but never ``norm_stats.json``.
+
+    ``revision`` must be the revision the inner block requests: a file cached
+    for ``main`` says nothing about a pinned revision, and going offline on it
+    would block that revision's first download.
     """
     import huggingface_hub.constants as _hc
     from huggingface_hub import try_to_load_from_cache
 
-    cached = try_to_load_from_cache(repo_id, probe_file)
+    cached = try_to_load_from_cache(repo_id, probe_file, revision=revision)
     if not isinstance(cached, str):
         # Cold (or sentinel _CACHED_NO_EXIST) — let the load talk to the Hub.
         yield
@@ -594,7 +600,10 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
     # The processor + config still resolve their files against the Hub; on a
     # warm cache that is pure HEAD-request noise. Load offline-if-cached so a
     # re-run emits no httpx HEAD stream.
-    with _hf_offline_if_cached(source_repo), _molmoact2_phase("processor", repo=source_repo):
+    with (
+        _hf_offline_if_cached(source_repo, revision=revision),
+        _molmoact2_phase("processor", repo=source_repo),
+    ):
         processor = processor_cls.from_pretrained(source_repo, revision=revision)
         if max_crops is not None:
             image_processor = getattr(processor, "image_processor", None)
@@ -625,7 +634,7 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
 
         fast_state_keys = peek_safetensors_keys(prequant_repo)
         with (
-            _hf_offline_if_cached(source_repo),
+            _hf_offline_if_cached(source_repo, revision=revision),
             _molmoact2_phase("load_config", repo=source_repo),
         ):
             config = config_cls.from_pretrained(source_repo, revision=revision)
@@ -674,7 +683,7 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
     # instantiating the ~5.5 B backbone on CUDA in fp32 would OOM an 8 GiB card
     # before the nf4 rewrite ever runs.
     with (
-        _hf_offline_if_cached(source_repo),
+        _hf_offline_if_cached(source_repo, revision=revision),
         _molmoact2_phase("from_pretrained", repo=source_repo, dtype=dtype_str),
     ):
         model = model_cls.from_pretrained(

@@ -96,7 +96,9 @@ class TestHfOfflineIfCached:
     def test_offline_flipped_when_probe_file_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A cached probe file → HF_HUB_OFFLINE True inside, restored on exit."""
         monkeypatch.setattr(
-            huggingface_hub, "try_to_load_from_cache", lambda _repo, _f: "/cache/config.json"
+            huggingface_hub,
+            "try_to_load_from_cache",
+            lambda _repo, _f, revision=None: "/cache/config.json",
         )
         monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
         with _hf_offline_if_cached("allenai/MolmoAct2-LIBERO"):
@@ -105,7 +107,9 @@ class TestHfOfflineIfCached:
 
     def test_stays_online_when_probe_file_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """An uncached probe file → stays online so the inner block can download."""
-        monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda _repo, _f: None)
+        monkeypatch.setattr(
+            huggingface_hub, "try_to_load_from_cache", lambda _repo, _f, revision=None: None
+        )
         monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
         with _hf_offline_if_cached("allenai/MolmoAct2-LIBERO"):
             assert hc.HF_HUB_OFFLINE is False
@@ -121,7 +125,7 @@ class TestHfOfflineIfCached:
         monkeypatch.setattr(
             huggingface_hub,
             "try_to_load_from_cache",
-            lambda _repo, filename: cache.get(filename),
+            lambda _repo, filename, revision=None: cache.get(filename),
         )
         monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
         # config.json gate would flip offline...
@@ -129,6 +133,21 @@ class TestHfOfflineIfCached:
             assert hc.HF_HUB_OFFLINE is True
         # ...but the norm_stats.json gate (predict path) must stay online.
         with _hf_offline_if_cached("allenai/MolmoAct2-LIBERO", probe_file="norm_stats.json"):
+            assert hc.HF_HUB_OFFLINE is False
+
+    def test_probe_checks_the_pinned_revision(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A file cached for ``main`` must not send a pinned-revision fetch offline."""
+        cache = {(None, "norm_stats.json"): "/cache/main/norm_stats.json"}
+        monkeypatch.setattr(
+            huggingface_hub,
+            "try_to_load_from_cache",
+            lambda _repo, filename, revision=None: cache.get((revision, filename)),
+        )
+        monkeypatch.setattr(hc, "HF_HUB_OFFLINE", False)
+        repo = "allenai/MolmoAct2-LIBERO"
+        with _hf_offline_if_cached(repo, probe_file="norm_stats.json"):
+            assert hc.HF_HUB_OFFLINE is True
+        with _hf_offline_if_cached(repo, probe_file="norm_stats.json", revision="abc123"):
             assert hc.HF_HUB_OFFLINE is False
 
 
