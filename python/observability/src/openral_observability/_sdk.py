@@ -157,6 +157,13 @@ def configure_observability(
         if resolved is None:
             _service_name = service_name
             _endpoint = None
+            # No exporters, but the log floor still applies (see
+            # ``apply_structlog_level_floor``): the stock structlog config
+            # prints every DEBUG event, and a deploy runtime emits hundreds
+            # per second.
+            from openral_observability.logging import apply_structlog_level_floor
+
+            apply_structlog_level_floor()
             return False
 
         resource = Resource.create({"service.name": service_name})

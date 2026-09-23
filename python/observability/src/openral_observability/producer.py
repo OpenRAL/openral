@@ -275,24 +275,29 @@ def emit_sensor_frame_span(
         tracer_name: OTel tracer name, so the span still attributes to the
             emitting subsystem.
     """
-    display = frame
-    data = getattr(frame, "data", b"")
-    if flip_180 and data and int(getattr(frame, "channels", 0) or 0) == _RGB_CHANNELS:
-        expected = frame.width * frame.height * _RGB_CHANNELS
-        if len(data) == expected:
-            import numpy as np  # reason: lazy — only on the camera display path
-
-            flipped = (
-                np.frombuffer(data, dtype=np.uint8)
-                .reshape(frame.height, frame.width, _RGB_CHANNELS)[::-1, ::-1]
-                .tobytes()
-            )
-            display = frame.model_copy(update={"data": flipped})
     tracer = trace.get_tracer(tracer_name)
     with tracer.start_as_current_span(
         semconv.SPAN_SENSORS_READ_LATEST,
         attributes={semconv.SENSORS_SOURCE: sensor_name},
     ) as span:
+        if not span.is_recording():
+            # No exporter (no OTLP endpoint / dashboard off): the flip copy and
+            # the JPEG below only feed the span, and at 30 Hz per camera they
+            # held ~25 % of the deploy runtime's GIL on an AGX Orin for nothing.
+            return
+        display = frame
+        data = getattr(frame, "data", b"")
+        if flip_180 and data and int(getattr(frame, "channels", 0) or 0) == _RGB_CHANNELS:
+            expected = frame.width * frame.height * _RGB_CHANNELS
+            if len(data) == expected:
+                import numpy as np  # reason: lazy — only on the camera display path
+
+                flipped = (
+                    np.frombuffer(data, dtype=np.uint8)
+                    .reshape(frame.height, frame.width, _RGB_CHANNELS)[::-1, ::-1]
+                    .tobytes()
+                )
+                display = frame.model_copy(update={"data": flipped})
         record_sensor_frame_attrs(
             span,
             modality=modality_for_encoding(frame.encoding),
