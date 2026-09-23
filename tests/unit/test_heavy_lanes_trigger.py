@@ -74,8 +74,13 @@ def _ready_pr(**overrides: Any) -> PullRequestState:
     return PullRequestState(**fields)
 
 
-def test_own_check_names_match_heavy_lanes_workflow() -> None:
-    assert _job_names(_workflow("heavy-lanes.yml")) == set(OWN_CHECK_NAMES)
+def test_own_check_names_match_heavy_lanes_workflows() -> None:
+    """The lanes' own checks, and the trigger's (posted on the PR head by a
+    workflow_run-triggered sweep), are exactly what the verdict ignores."""
+    own = _job_names(_workflow("heavy-lanes.yml")) | _job_names(
+        _workflow("heavy-lanes-trigger.yml")
+    )
+    assert own == set(OWN_CHECK_NAMES)
 
 
 def test_required_checks_are_real_pr_job_names() -> None:
@@ -143,6 +148,7 @@ def test_own_checks_and_cancelled_runs_do_not_block() -> None:
         CheckRunState(name="lanes-select", status="completed", conclusion="cancelled"),
         CheckRunState(name="lane (sim, tests/sim)", status="completed", conclusion="cancelled"),
         CheckRunState(name="heavy-lanes", status="completed", conclusion="cancelled"),
+        CheckRunState(name="heavy-lanes-trigger", status="in_progress"),
     ]
     runs = [LaneRunState(status="completed", conclusion="cancelled")]
     verdict = readiness(_ready_pr(checks=checks, lane_runs=runs), REQUIRED)

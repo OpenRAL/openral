@@ -53,7 +53,12 @@ permissions:
   statuses: read
 
 jobs:
-  trigger:
+  # A workflow_run-triggered run posts THIS job's check on the triggering PR's
+  # head commit, so the job is named after the workflow and
+  # heavy_lanes_trigger.py excludes it from the "every other check is green"
+  # precondition — otherwise a sweep would see itself in_progress and never
+  # dispatch from the workflow_run path.
+  heavy-lanes-trigger:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

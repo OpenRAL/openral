@@ -5,8 +5,8 @@ name: test-selective
 # This is the CHEAPEST suite and runs on every PR, selecting ~5–20% of the
 # ~2.9k-test suite. Full `tests/sim/` and `tests/integration/` remain manual.
 # Selected opt-in sim targets (the "heavy lanes": LIBERO, RoboCasa, GR00T, …)
-# do NOT run here — they live in .github/workflows/heavy-lanes.yml and only
-# run on request (the `heavy-lanes` PR label, or a manual workflow_dispatch).
+# do NOT run here — they live in .github/workflows/heavy-lanes.yml, started
+# by heavy-lanes-trigger.yml once the PR is otherwise ready to merge.
 # See tools/select_tests.py and tools/test_selection.toml for selection logic.
 #
 # Job graph:

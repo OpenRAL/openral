@@ -53,6 +53,7 @@ import json
 import os
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -60,11 +61,17 @@ from pydantic import BaseModel
 
 API = "https://api.github.com"
 LANES_WORKFLOW = "heavy-lanes.yml"
-# Check runs heavy-lanes.yml itself posts — never a precondition for starting it.
-OWN_CHECK_NAMES = frozenset({"lanes-select", "heavy-lanes", "lane"})
+# Check runs heavy-lanes.yml itself posts, plus the trigger workflow's own job
+# (a workflow_run-triggered sweep posts it on the triggering PR's head) —
+# never a precondition for starting the lanes.
+OWN_CHECK_NAMES = frozenset({"lanes-select", "heavy-lanes", "lane", "heavy-lanes-trigger"})
 OWN_CHECK_PREFIXES = ("lane (",)
 GREEN_CONCLUSIONS = frozenset({"success", "skipped", "neutral"})
 DEFAULT_REQUIRED_CHECKS = ("select-and-test", "quality", "Verify Signed-off-by")
+
+
+class GitHubAPIError(RuntimeError):
+    """A GitHub response that is not usable: a GraphQL ``errors`` payload or a null result."""
 
 
 class CheckRunState(BaseModel):
@@ -194,6 +201,10 @@ class GitHub:
         while True:
             variables = {"owner": owner, "name": name, "number": number, "after": after}
             data = self._request("POST", f"{API}/graphql", {"query": query, "variables": variables})
+            # GraphQL reports rate limits, missing scopes and a vanished PR
+            # as HTTP 200 + `errors` (with `data` null), not as an HTTPError.
+            if data.get("errors") or not data.get("data"):
+                raise GitHubAPIError(f"GraphQL: {data.get('errors') or 'no data'}")
             threads = data["data"]["repository"]["pullRequest"]["reviewThreads"]
             count += sum(1 for t in threads["nodes"] if not t["isResolved"])
             if not threads["pageInfo"]["hasNextPage"]:
@@ -204,7 +215,7 @@ class GitHub:
         """Gather everything :func:`readiness` needs about one PR from the REST/GraphQL API."""
         sha = pr["head"]["sha"]
         base = pr["base"]["ref"]
-        compare = self.get(f"compare/{base}...{sha}")
+        compare = self.get(f"compare/{urllib.parse.quote(base, safe='')}...{sha}")
         checks = self.paginate(f"commits/{sha}/check-runs?filter=latest", key="check_runs")
         combined = self.get(f"commits/{sha}/status")
         runs = self.get(f"actions/workflows/{LANES_WORKFLOW}/runs?head_sha={sha}")
@@ -232,6 +243,12 @@ class GitHub:
         )
 
 
+def _describe(exc: Exception) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"GitHub API {exc.code} — {exc.reason}"
+    return str(exc)
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI: evaluate open PRs (or ``--pr``) and dispatch the heavy lanes where ready."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
@@ -254,15 +271,16 @@ def main(argv: list[str] | None = None) -> int:
     required = args.require_check or list(DEFAULT_REQUIRED_CHECKS)
     prs = [gh.get(f"pulls/{n}") for n in args.pr] if args.pr else gh.paginate("pulls?state=open")
 
-    rc = 0
+    # One PR's API trouble is a warning, never a failed sweep: a red
+    # heavy-lanes-trigger check would land on whichever PR's workflow_run
+    # started this sweep, and the next sweep (≤10 min) retries anyway.
     for raw in prs:
         if raw["state"] != "open":
             continue
         try:
             pr = gh.fetch(raw)
-        except urllib.error.HTTPError as exc:
-            print(f"::warning::PR #{raw['number']}: GitHub API {exc.code} — {exc.reason}")
-            rc = 1
+        except (urllib.error.URLError, GitHubAPIError) as exc:
+            print(f"::warning::PR #{raw['number']}: {_describe(exc)}")
             continue
         verdict = readiness(pr, required)
         if not verdict.ready:
@@ -278,14 +296,13 @@ def main(argv: list[str] | None = None) -> int:
             continue
         try:
             gh.dispatch(pr)
-        except urllib.error.HTTPError as exc:
+        except urllib.error.URLError as exc:
             # e.g. 422 when the branch has no heavy-lanes.yml — unreachable for
             # a PR 0 behind a base that has it, but one PR must not end the sweep.
-            print(f"::warning::PR #{pr.number}: dispatch failed, GitHub API {exc.code}")
-            rc = 1
+            print(f"::warning::PR #{pr.number}: dispatch failed — {_describe(exc)}")
             continue
         print(f"::notice::PR #{pr.number} @ {pr.head_sha[:7]}: ready — heavy lanes dispatched")
-    return rc
+    return 0
 
 
 if __name__ == "__main__":
