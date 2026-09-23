@@ -1,7 +1,10 @@
 schema_version: "0.1"
 name: "OpenRAL/rskill-gr00t_n17-r1pro-turning_on_radio-bf16"
 version: "0.1.0"
-license: "unknown"
+# The organizers' pinned runtime (wensi-ai/Isaac-GR00T@ace36d9, README
+# "License") releases model weights under the NVIDIA Open Model License; the
+# challenge pages name no separate terms for the Drive checkpoint.
+license: "nvidia_open_model"
 role: "s1"
 kind: "vla"
 model_family: "gr00t_b1k"

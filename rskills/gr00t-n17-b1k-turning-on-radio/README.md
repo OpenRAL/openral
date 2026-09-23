@@ -2,6 +2,7 @@
 language:
 - en
 license: other
+license_name: nvidia-open-model-license
 pipeline_tag: robotics
 tags:
 - OpenRAL
@@ -84,7 +85,7 @@ temporally-ensembled 23-D action per evaluator step.
 | Dataset | [`behavior-1k/2026-challenge-demos`](https://huggingface.co/datasets/behavior-1k/2026-challenge-demos) |
 | Paper | [arXiv:2503.14734](https://arxiv.org/abs/2503.14734) |
 | Parameters | approximately 3.1 B |
-| Weights license | Unknown: the Drive checkpoint ships without a separately published license file |
+| Weights license | NVIDIA Open Model License, as the organizers' [pinned runtime README](https://github.com/wensi-ai/Isaac-GR00T/tree/ace36d935b376fbf25cd56371e23877b95407c40#license) states for its model weights |
 
 ## Supported robots
 
@@ -112,7 +113,7 @@ OmniGibson step.
 | --- | --- |
 | `name` | `OpenRAL/rskill-gr00t_n17-r1pro-turning_on_radio-bf16` |
 | `version` | `0.1.0` |
-| `license` | `unknown` |
+| `license` | `nvidia_open_model` |
 | `role` | `s1` |
 | `model_family` | `gr00t_b1k` |
 | `quantization.dtype` | `int4` (NF4 at load; stored `bf16` → `quantization.extra.stored_dtype`) |
@@ -178,10 +179,11 @@ on this instance has not been isolated; no success-rate claim is made.
 ## License
 
 The OpenRAL adapter, manifest, and documentation are Apache-2.0. The
-organizer-provided fine-tuned checkpoint is marked `license: unknown` because
-the Google Drive artifact has no separately published license file. The base
-GR00T N1.7 model uses the NVIDIA Open Model License, but this package does not
-silently assume that the fine-tune inherits identical terms.
+organizer-provided fine-tuned checkpoint is under the NVIDIA Open Model
+License, which permits commercial use. The Google Drive artifact carries no
+license file of its own, but the organizers' pinned runtime,
+[`wensi-ai/Isaac-GR00T@ace36d9`](https://github.com/wensi-ai/Isaac-GR00T/tree/ace36d935b376fbf25cd56371e23877b95407c40#license), states that its model weights are
+released under that license, and the challenge pages name no other terms.
 
 ## See also
 

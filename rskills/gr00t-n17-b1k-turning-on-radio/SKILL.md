@@ -23,7 +23,7 @@ metadata:
   n_action_steps: 1
   latency_budget: {per_chunk_ms: 1500.0}
   license_code: Apache-2.0
-  license_weights: unknown   # NOT permissive — see License section
+  license_weights: nvidia_open_model
   weights_uri: local://checkpoints/behavior-groot-turning-on-radio
   paper_url: https://arxiv.org/abs/2503.14734
 ---
@@ -58,7 +58,7 @@ this file. Execution always goes through the OpenRAL loader and the robot HAL.
 ## License
 
 - **Code:** Apache-2.0.
-- **Weights:** `unknown` — **NOT** fully permissive. The loader surfaces this posture and enforces the non-commercial guard (`OPENRAL_ALLOW_NONCOMMERCIAL=1`) where applicable. Commercial use may require a separate upstream agreement. This is third-party weight lineage; OpenRAL's own code is Apache-2.0.
+- **Weights:** `nvidia_open_model` — permissive / commercial-use OK
 
 ## How to actually run it (not via an agent harness)
 
