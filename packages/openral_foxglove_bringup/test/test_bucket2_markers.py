@@ -291,3 +291,22 @@ class TestOccupiedVoxelCenters:
         assert (1.5, 0.5, 0.5) in c_set
         # (0,1,0) → center (0.5, 1.5, 0.5)
         assert (0.5, 1.5, 0.5) in c_set
+
+
+# ---------------------------------------------------------------------------
+# Topic agreement with the producer contract — the converter renders whatever
+# reaches the safety kernel, so it must subscribe under the kernel's own name.
+# A plural spelling here kept the collisions panel empty on every deploy.
+# ---------------------------------------------------------------------------
+_KERNEL_SRC = (
+    _PKG_DIR.parent.parent / "cpp" / "openral_safety_kernel" / "src" / "lifecycle_kernel.cpp"
+)
+
+
+def test_converter_subscribes_under_the_kernels_world_collision_topic() -> None:
+    kernel = _KERNEL_SRC.read_text(encoding="utf-8")
+    converter = _MODULE_PATH.read_text(encoding="utf-8")
+    topic = '"/openral/world_collision"'
+    assert topic in kernel, "kernel no longer subscribes there — update this test with it"
+    assert topic in converter
+    assert '"/openral/world_collisions"' not in converter

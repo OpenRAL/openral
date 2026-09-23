@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bucket-2 converter node: OpenRAL custom msgs → standard ROS viz types.
 
-- ``/openral/world_collisions`` (``WorldCollision``) → ``/openral/world_collisions_markers``
+- ``/openral/world_collision`` (``WorldCollision``) → ``/openral/world_collisions_markers``
   (``MarkerArray``): each capsule → CYLINDER marker (radius, length = 2×half_length);
   half_length == 0 → zero-length CYLINDER (renders as a squashed disc). Exact capsule
   geometry (hemispherical end-caps) isn't a single standard Marker type; a two-marker
@@ -227,7 +227,7 @@ def occupied_voxel_centers(
 class Bucket2MarkersNode:
     """Read-only converter node for Bucket-2 custom message types.
 
-    Subscribes to ``/openral/world_collisions`` and
+    Subscribes to ``/openral/world_collision`` and
     ``/openral/world_voxels`` and re-publishes them as standard ROS
     visualization types.  Never commands the robot.
     """
@@ -259,7 +259,7 @@ class Bucket2MarkersNode:
 
         self._sub_collisions = self._node.create_subscription(
             WorldCollision,
-            "/openral/world_collisions",
+            "/openral/world_collision",
             self._on_world_collisions,
             qos,
         )
