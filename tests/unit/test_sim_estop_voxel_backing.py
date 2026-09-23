@@ -1040,3 +1040,30 @@ def test_payload_slip_is_the_distance_between_the_kernels_model_and_the_body() -
     assert pivoted["max_point_slip_m"] > 0.0, (
         "a pure rotation is still a slip of every surface point"
     )
+
+
+def test_collision_model_slop_skips_capsule_links_instead_of_crashing() -> None:
+    """A manifest whose collision model is capsules/spheres (the OpenArm) has no OBB
+    corners to budget: those links land in ``unresolved_links`` (no budget, the
+    conservative reading) and the E-stop ground-truth snapshot keeps working.
+
+    Latent until the HAL ran on its manifest: the Python ``OPENARM_DESCRIPTION``
+    carried no collision geometry, so the box-only path was never reached.
+    """
+    from openral_core import RobotDescription
+    from openral_hal import build_hal
+
+    description = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+    assert all(
+        getattr(e.shape, "half_extents_m", None) is None for e in description.collision_geometry
+    ), "this test wants a non-box collision model; the openarm manifest changed"
+    hal = build_hal(description, mode="sim")
+    hal.connect()
+    try:
+        slop = collision_model_mesh_slop(hal._model, description)
+    finally:
+        hal.disconnect()
+    declared = sorted(e.link_name for e in description.collision_geometry)
+    assert slop["links"] == {}
+    assert slop["unresolved_links"] == declared
+    assert slop["max_corner_slop_m"] == 0.0

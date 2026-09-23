@@ -10,8 +10,12 @@ Factories lazily import heavy backends (robosuite, libero, metaworld, mujoco,
 Two scene categories
 ---------------------
 A scene is one of two kinds, set by the ``fixed_robot=`` argument to
-``@SCENES.register`` — the runtime source of truth (``SCENES.fixed_robot(id)``
-returns the bound robot or ``None``):
+``@SCENES.register`` (one id or a ``frozenset`` of ids) — the runtime source
+of truth. ``SCENES.resolve_robot(id, requested)`` is the ONE binding rule
+``sim run`` / ``benchmark`` / ``deploy sim`` / the sim HAL all apply:
+
+A family registers ONCE under its id prefix (``robocasa``, ``robocasa/gr1``);
+every ``<prefix>/<task>`` scene id resolves to it, so a new task is YAML.
 
 * **Multi-robot (free-axis)** — registered WITHOUT ``fixed_robot``. The robot
   is a flag: it comes from the YAML ``robot_id`` (or ``--robot``) and the scene
@@ -19,13 +23,16 @@ returns the bound robot or ``None``):
   from that robot's manifest ``assets.mjcf``). **New robot-flexible scenes
   belong here.** Today: ``tabletop_push`` (the greenfield robot-agnostic native
   scene — composes its table/cube/goal world onto any position-controlled arm
-  via MjSpec), ``maniskill3``, ``openarm_robosuite``, ``simpler_env``,
-  ``isaac_sim`` (Isaac Lab env behind an out-of-process py3.11 sidecar).
-* **Single-robot (fixed)** — registered WITH ``fixed_robot="<id>"``. The robot
-  is baked into the scene (its own MJCF / a benchmark world); the CLI rejects
-  ``--robot``. These reproduce a specific embodiment + reward. Today:
-  ``libero`` (franka), ``metaworld`` (sawyer),
-  ``robocasa`` (panda_mobile), ``aloha``, ``pusht``, ``so101_box`` (so101 — the
+  via MjSpec), ``isaac_sim`` (Isaac Lab env behind an out-of-process py3.11
+  sidecar).
+* **Fixed** — registered WITH ``fixed_robot`` (the robot(s) the backend can
+  build). The robot is baked into the scene (its own MJCF / a benchmark world);
+  a ``--robot`` / ``robot_id`` outside the set raises ``ROSConfigError``, and an
+  omitted one takes the default. Today: ``libero`` (franka), ``metaworld``
+  (sawyer), ``robocasa`` (panda_mobile | panda_mobile_vslam), ``robocasa/gr1``
+  (gr1), ``maniskill3`` (franka_panda — every in-tree ``robot_uids`` agent),
+  ``simpler_env`` (widowx — the only MS3-registered bridge robot),
+  ``openarm_tabletop_pnp`` (openarm), ``aloha``, ``pusht``, ``so101_box`` (so101 — the
   box/tube task is coupled to the so_arm101 MJCF schema),
   ``rlbench`` (franka_panda — CoppeliaSim/PyRep tasks behind an out-of-process
   py3.10 sidecar), ``robotwin`` (aloha_agilex — the RoboTwin 2.0
@@ -61,7 +68,7 @@ def _register_backends() -> None:
     """Import side-effect modules that register scene factories.
 
     Each module's ``@SCENES.register`` declares its category via ``fixed_robot``
-    (multi-robot / free-axis when absent; single-robot when set) — see the
+    (free-axis when absent; fixed when set) — see the
     module docstring above for the taxonomy + current membership.
     """
     from openral_sim.backends import (

@@ -236,9 +236,11 @@ from openral_core.schemas import (
     extract_base_sim_joint_names,
     is_collective_target,
     repo_name_is_canonical,
+    required_vla_camera_slots,
     scale_intrinsics_to,
     scene_family,
     scene_task_space_compatible,
+    sensor_name_to_slot,
     task_space_compatible,
 )
 
@@ -474,9 +476,11 @@ __all__ = [
     "load_scene_strict",
     "raise_on_invalid_suite",
     "repo_name_is_canonical",
+    "required_vla_camera_slots",
     "scale_intrinsics_to",
     "scene_family",
     "scene_task_space_compatible",
+    "sensor_name_to_slot",
     "task_space_compatible",
 ]
 __version__ = _pkg_version("openral-core")

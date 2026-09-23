@@ -54,8 +54,8 @@ embodiment_tags:
 
 # MolmoAct2-SO100_101 consumes two RGB camera streams. The training data
 # used overhead ("top") and side-mounted ("side") Realsense views; the
-# aliases below map from the canonical SO101 scene camera names to the
-# model's expected feature keys.
+# aliases below map the VLA slots (camera1 = SO101 `top`, camera2 = `wrist`)
+# to the model's view names.
 sensors_required:
   - modality: "rgb"
     vla_feature_key: "observation.images.camera1"
@@ -99,9 +99,8 @@ processors:
   preprocessor_uri: "hf://OpenRAL/rskill-molmoact2-multi-so101-nf4/policy_preprocessor.json"
   postprocessor_uri: "hf://OpenRAL/rskill-molmoact2-multi-so101-nf4/policy_postprocessor.json"
 # SO-100/101 teleop data is recorded upright — no rotation applied.
-# Aliases map from canonical SO101 scene camera keys (so101_box scene emits
-# ``oak_top`` + ``wrist``) to the model's training feature keys (``top`` /
-# ``side``). Adjust per-scene in vla.extra if your camera names differ.
+# Aliases map the VLA slots (camera1 / camera2) to the model's training view
+# names (``top`` / ``side``); override per rollout via vla.extra.camera_aliases.
 image_preprocessing:
   flip_180: false
   norm_tag: "so100_so101_molmoact2"
@@ -113,9 +112,10 @@ image_preprocessing:
   # the adapter turns on automatically (_enable_expandable_segments). Kept
   # conservative for the slow-processor path; raise via vla.extra.image_max_crops.
   image_max_crops: 4
+  # Slot-keyed. The MolmoAct2 adapter does not consume aliases today.
   aliases:
-    top: "top"
-    wrist: "side"
+    camera1: "top"
+    camera2: "side"
 state_contract:
   dim: 6
 
@@ -164,3 +164,7 @@ action_contract:
   # converts deg↔rad at the policy boundary; see the header UNITS note. Same
   # convention as the rskill-smolvla-so101-eraser_place-bf16 reference.
   joint_units: "degrees"
+  # Gripper is the LeRobot SO-ARM [0, 100] motor range, not an angle (norm_stats
+  # so100_so101_molmoact2 gripper: q01=0.94, q99=44.1, max=118), while the HAL
+  # contract is a normalized [0, 1] jaw fraction. Same as the SmolVLA SO-101 ref.
+  gripper_scale: 100.0

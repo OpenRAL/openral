@@ -1,7 +1,9 @@
 """Layout-adapter registry for per-checkpoint state-vector assembly.
 
-Single mapping from the closed ``openral_core.StateLayout`` literal
-to an ``Assembler`` function.
+Single mapping from an ``openral_core.StateLayout`` id to an ``Assembler``
+function. ``StateLayout`` is an open, pattern-validated id: this registry is
+the membership check — an unregistered layout is dropped by the reasoner
+palette and refused by ``assemble_state``.
 Layout files (one per literal value) register themselves at import via
 ``register``. The reasoner palette filter and the skill_runner both
 consult this registry — when a layout is present, the wrapped-task-space

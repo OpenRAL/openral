@@ -82,9 +82,11 @@ processors:
 # to image/image2) and the canonical LIBERO 8-D proprio state.
 image_preprocessing:
   flip_180: true
+  # Slot-keyed (camera1 / camera2). The MolmoAct2 adapter does not consume
+  # aliases today; kept as the checkpoint's view names.
   aliases:
-    top: "image"
-    wrist: "image2"
+    camera1: "image"
+    camera2: "image2"
 state_contract:
   dim: 8
 

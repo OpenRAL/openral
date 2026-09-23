@@ -175,10 +175,24 @@ def resolve_image_preprocessing(
     Returns:
         A fresh ``openral_core.ImagePreprocessing`` instance
         combining the inputs by precedence.
+
+    Raises:
+        ROSConfigError: A manifest ``aliases`` key is not a VLA slot declared
+            by ``sensors_required[].vla_feature_key`` (alias keys are slots,
+            e.g. ``camera1`` — never sensor or scene camera names).
     """
     from openral_core import ImagePreprocessing as _ImagePreprocessing
 
     manifest_ip = manifest.image_preprocessing if manifest is not None else None
+    if manifest is not None and manifest_ip is not None:
+        unknown = manifest_ip.unknown_alias_slots(manifest.sensors_required)
+        if unknown:
+            raise ROSConfigError(
+                f"rSkill {manifest.name!r}: image_preprocessing.aliases keys {unknown} are not "
+                "VLA slots declared by sensors_required[].vla_feature_key. Alias keys are "
+                "slots (the vla_feature_key suffix, e.g. 'camera1'), not sensor or scene "
+                "camera names."
+            )
 
     flip_180 = bool(
         spec_extra.get(
@@ -288,6 +302,57 @@ def resolve_camera_keys(
     return default
 
 
+def resolve_n_action_steps(
+    manifest: RSkillManifest | None,
+    extra: dict[str, Any],
+    *,
+    default: int,
+    chunk_size: int | None = None,
+) -> int:
+    """The one chunk-slicing rule: how many actions of a chunk to replay per inference.
+
+    Every policy adapter's chunk-slicing line calls this. Precedence:
+
+    1. ``extra["n_action_steps"]`` — the explicit ``--n-action-steps`` operator override.
+    2. ``manifest.n_action_steps`` — the checkpoint's declared cadence.
+    3. ``extra["replan_steps"]`` — deprecated alias (logs
+       ``vla.deprecated_replan_steps``); move it to ``n_action_steps``.
+    4. ``default`` — the adapter's family default.
+
+    The result is bounded to ``chunk_size`` (explicit, else ``manifest.chunk_size``);
+    a clamp logs ``vla.n_action_steps_clamped``.
+
+    Raises:
+        ValueError: the resolved value is < 1.
+
+    Example:
+        >>> resolve_n_action_steps(None, {"n_action_steps": 4}, default=8, chunk_size=16)
+        4
+    """
+    log = structlog.get_logger("openral_rskill._vla_core")
+    manifest_steps = manifest.n_action_steps if manifest is not None else None
+    if "n_action_steps" in extra:
+        n_steps = int(extra["n_action_steps"])
+    elif manifest_steps is not None:
+        n_steps = manifest_steps
+    elif "replan_steps" in extra:
+        n_steps = int(extra["replan_steps"])
+        log.warning(
+            "vla.deprecated_replan_steps",
+            replan_steps=n_steps,
+            hint="declare n_action_steps in rskill.yaml (or pass --n-action-steps)",
+        )
+    else:
+        n_steps = int(default)
+    if n_steps < 1:
+        raise ValueError(f"n_action_steps must be >= 1, got {n_steps}")
+    bound = chunk_size if chunk_size is not None else (manifest.chunk_size if manifest else None)
+    if bound is not None and n_steps > bound:
+        log.info("vla.n_action_steps_clamped", requested=n_steps, chunk_size=bound)
+        n_steps = bound
+    return n_steps
+
+
 def apply_chunk_replay(
     policy: Any,
     spec_extra: dict[str, Any],
@@ -333,16 +398,12 @@ def apply_chunk_replay(
         The applied ``n_action_steps`` value (clamped to ``[1, chunk_size]``).
     """
     chunk_size = int(getattr(policy.config, "chunk_size", 1) or 1)
-    # Precedence: spec_extra > manifest.n_action_steps > caller default > chunk_size.
-    if "n_action_steps" in spec_extra:
-        n_steps: int = int(spec_extra["n_action_steps"])
-    elif manifest is not None and manifest.n_action_steps is not None:
-        n_steps = manifest.n_action_steps
-    elif default_n_action_steps is not None:
-        n_steps = default_n_action_steps
-    else:
-        n_steps = chunk_size
-    n_action_steps = max(1, min(n_steps, chunk_size))
+    n_action_steps = resolve_n_action_steps(
+        manifest,
+        spec_extra,
+        default=default_n_action_steps if default_n_action_steps is not None else chunk_size,
+        chunk_size=chunk_size,
+    )
     policy.config.n_action_steps = n_action_steps
     return n_action_steps
 
@@ -1202,6 +1263,7 @@ __all__ = [
     "resolve_camera_keys",
     "resolve_device",
     "resolve_image_preprocessing",
+    "resolve_n_action_steps",
     "resolve_rskill_repo_id",
     "resolve_rskill_repo_revision",
     "resolve_state_dim",

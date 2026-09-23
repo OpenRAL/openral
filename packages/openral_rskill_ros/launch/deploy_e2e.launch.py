@@ -7,8 +7,10 @@ an ``OpaqueFunction`` so concrete strings reach ``LifecycleNode(package=, execut
   safety kernel envelope is synthesised from it
   (``openral_safety.envelope_loader.compute_intersection``) and forwarded as ROS parameters on
   the kernel node. No envelope YAML file is written or read.
-* ``hal_package`` / ``hal_executable`` / ``hal_node_name`` — HAL spawn, picked by
-  ``openral deploy sim`` from ``_ROBOT_HAL_REGISTRY[robot_id]``.
+* ``hal_package`` / ``hal_executable`` / ``hal_node_name`` — HAL spawn, derived by
+  ``openral deploy sim|run`` from the robot manifest (the robot's own
+  ``openral_hal_<robot_id>`` package when one ships, else the generic
+  ``openral_hal_scene_attached`` manifest-driven node).
 * ``hal_params_file`` — ephemeral ROS parameter YAML the CLI writes with the HAL's per-robot
   knobs (``/**`` wildcard).
 * ``reset_to_pose_service``, ``dashboard_port``, ``reasoner_model``, ``reasoner_endpoint`` —
@@ -513,15 +515,20 @@ def _write_foxglove_layout(cameras: list[str], robot_id: str, base_frame: str) -
 
 
 #: Conventional file name for a HAL package's vendor ``ros2_control`` bringup.
-#: A HAL package that ships ``launch/<this>`` declares, by that fact alone, the
-#: controller graph its real HAL publishes to — no manifest field and no
-#: per-robot branch in this launch file. ``hal_package`` is already threaded in
-#: from ``resolve_launch_invocation``, so the package is known here for free.
+#: The manifest's ``hal.real_bringup`` (``"<pkg>:<file>.launch.py"``) names the
+#: bringup explicitly; without it, a HAL package that ships ``launch/<this>``
+#: declares, by that fact alone, the controller graph its real HAL publishes to.
 REAL_BRINGUP_LAUNCH = "real_bringup.launch.py"
 
 
-def _build_real_bringup_include(hal_package: str) -> object | None:
-    """Include ``hal_package``'s vendor ros2_control bringup, if it ships one.
+def _build_real_bringup_include(hal_package: str, real_bringup: str | None = None) -> object | None:
+    """Include the robot's vendor ros2_control bringup, if it declares or ships one.
+
+    ``real_bringup`` is the manifest's ``hal.real_bringup``
+    (``"<pkg>:<file>.launch.py"``) and wins when set — a declared bringup
+    that is not installed raises instead of silently running without
+    controllers. ``None`` falls back to the convention:
+    ``<hal_package>/launch/real_bringup.launch.py``.
 
     Every real-hardware HAL in this repo publishes to controllers it does not
     start: ``controller_manager`` is C++ at 400 Hz+ and belongs under a vendor
@@ -576,6 +583,17 @@ def _build_real_bringup_include(hal_package: str) -> object | None:
     from launch.actions import IncludeLaunchDescription
     from launch.launch_description_sources import PythonLaunchDescriptionSource
 
+    if real_bringup is not None:
+        pkg, _, launch_file = real_bringup.partition(":")
+        try:
+            bringup_path = os.path.join(get_package_share_directory(pkg), "launch", launch_file)
+        except PackageNotFoundError as exc:
+            raise RuntimeError(
+                f"hal.real_bringup={real_bringup!r}: ROS package {pkg!r} is not installed."
+            ) from exc
+        if not os.path.isfile(bringup_path):
+            raise RuntimeError(f"hal.real_bringup={real_bringup!r}: {bringup_path} does not exist.")
+        return IncludeLaunchDescription(PythonLaunchDescriptionSource(bringup_path))
     try:
         share = get_package_share_directory(hal_package)
     except PackageNotFoundError:
@@ -1425,14 +1443,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # declares ``camera1/camera2/camera3`` (robocasa renders ``robot0_agentview_left_image``
     # etc., remapped to ``cameraN``), so WorldState subscribed to topics nothing publishes and
     # the rldx adapter's ``observation.images['camera1']`` lookup raised
-    # ``ROSConfigError: rldx adapter expects observation.images['camera1']; got []``. Falls back
-    # to the legacy triple if the manifest declares no RGB sensors (e.g. pure-base robots).
+    # ``ROSConfigError: rldx adapter expects observation.images['camera1']; got []``. A robot
+    # declaring no RGB sensors (pure-base robots) subscribes to none — a guessed fallback name
+    # would subscribe to a topic nothing publishes.
     rgb_camera_names = [s.name for s in description.sensors if s.modality == "rgb"]
-    if not rgb_camera_names:
-        # `wrist_left`/`wrist_right` is how `robots/*/robot.yaml` spells these;
-        # the transposed `left_wrist` this used to fall back to matched no
-        # camera on any robot in the repo.
-        rgb_camera_names = ["top", "wrist_left", "wrist_right"]
     # Workcell-mounted cameras (DeployScene.sensors) publish on the same
     # `/openral/cameras/<name>/image` prefix via the real-deploy sensor
     # leg — WorldState must subscribe to them too.
@@ -1519,10 +1533,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 "dataset_license": dataset_license,
                 # Real deploys — when set, the runtime opens the deploy
                 # config's camera readers (sensor_leg.py) and publishes
-                # them onto the WorldState image topics.
-                # Gated on hal_mode, not on the arg: `deploy sim` forwards
-                # deploy_config too (boot budget + scene sensors), but only a
-                # real deploy opens physical SensorReaders.
+                # them onto the WorldState image topics. Gated on hal_mode,
+                # not on the arg: `deploy sim` forwards deploy_config too (for
+                # the scene's boot timeout + sensor mounts), but a sim's
+                # cameras come from the HAL bridge, never physical readers.
                 "deploy_config": deploy_config if hal_mode == "real" else "",
                 # The RESOLVED consumer flags, not the scene's raw (tri-state)
                 # ones. The scene YAML may leave enable_object_detector /
@@ -1789,7 +1803,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # single graph with a single /joint_states publisher.
     vendor_owns_robot_description = False
     if hal_mode == "real":
-        real_bringup = _build_real_bringup_include(hal_package)
+        real_bringup = _build_real_bringup_include(hal_package, description.hal.real_bringup)
         if real_bringup is not None:
             extra_nodes.append(real_bringup)
             vendor_owns_robot_description = True
@@ -2187,23 +2201,17 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # neither optical-framed; the old hardcoded ``agentview_left`` fallback was a dead
         # topic — no cached frame, every ``locate_in_view`` returned found=False, looping the
         # reasoner.)
-        det_camera = "agentview_left"
-        try:
-            with pathlib.Path(robot_yaml).open(encoding="utf-8") as _rh:
-                _robot_doc = yaml.safe_load(_rh) or {}
-            _rgb_sensors = [
-                _s
-                for _s in _robot_doc.get("sensors", [])
-                if _s.get("modality") == "rgb" and _s.get("name")
-            ]
-            if _rgb_sensors:
-                det_camera = str(_rgb_sensors[0]["name"])
-                for _s in _rgb_sensors:
-                    if str(_s.get("frame_id", "")).endswith("_optical_frame"):
-                        det_camera = str(_s["name"])
-                        break
-        except (OSError, yaml.YAMLError):
-            pass
+        from openral_core.exceptions import ROSConfigError
+
+        _rgb_sensors = [s for s in description.sensors if s.modality == "rgb"]
+        det_camera = next(
+            (s.name for s in _rgb_sensors if s.frame_id.endswith("_optical_frame")),
+            _rgb_sensors[0].name if _rgb_sensors else "",
+        )
+        if not det_camera:
+            raise ROSConfigError(
+                f"object detector enabled but robot {description.name!r} declares no RGB sensor"
+            )
         det_image_topic = f"/openral/cameras/{det_camera}/image"
 
         # Shared QoS / clock note: clock domain follows the graph-wide flag
@@ -2336,21 +2344,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # Resolve the camera the monitor scores. Use the robot manifest's first RGB
         # camera so Robometer follows the same default view order as the deploy graph;
         # do not special-case wrist.
-        import yaml  # local: the base graph (no reward) never imports it
+        from openral_core.exceptions import ROSConfigError
 
-        reward_camera = "agentview_left"
-        try:
-            with pathlib.Path(robot_yaml).open(encoding="utf-8") as _rh:
-                _rdoc = yaml.safe_load(_rh) or {}
-            _rgb = [
-                str(_s["name"])
-                for _s in _rdoc.get("sensors", [])
-                if _s.get("modality") == "rgb" and _s.get("name")
-            ]
-            if _rgb:
-                reward_camera = _rgb[0]
-        except (OSError, yaml.YAMLError):
-            pass
+        reward_camera = next((s.name for s in description.sensors if s.modality == "rgb"), "")
+        if not reward_camera:
+            raise ROSConfigError(
+                f"reward monitor enabled but robot {description.name!r} declares no RGB sensor"
+            )
         reward_image_topic = f"/openral/cameras/{reward_camera}/image"
         reward_monitor = Node(
             package="openral_perception_ros",
@@ -2389,19 +2389,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # wants a different view than "did the gripper close?"), and the node
         # caches each stream's latest frame precisely so it can answer about any
         # of them. The detector leg above resolves cameras the same way.
-        import yaml  # local: the base graph (no scene VLM) never imports it
-
-        scene_vlm_cameras: list[str] = []
-        try:
-            with pathlib.Path(robot_yaml).open(encoding="utf-8") as _vh:
-                _vdoc = yaml.safe_load(_vh) or {}
-            scene_vlm_cameras = [
-                f"{_s['name']}=/openral/cameras/{_s['name']}/image"
-                for _s in _vdoc.get("sensors", [])
-                if _s.get("modality") == "rgb" and _s.get("name")
-            ]
-        except (OSError, yaml.YAMLError):
-            scene_vlm_cameras = []
+        scene_vlm_cameras = [
+            f"{s.name}=/openral/cameras/{s.name}/image"
+            for s in description.sensors
+            if s.modality == "rgb"
+        ]
         scene_vlm_params: dict[str, object] = {
             "manifest_path": scene_vlm_manifest
             or str(pathlib.Path(_RSKILLS_DIR) / "qwen35-4b-nf4" / "rskill.yaml"),
@@ -2641,14 +2633,17 @@ def generate_launch_description() -> LaunchDescription:
             "deploy_config",
             default_value="",
             description=(
-                "Real deploys (`openral deploy run`) — path to the "
-                "DeployScene YAML. The runtime node opens one "
+                "Path to the DeployScene YAML (`openral deploy sim` and "
+                "`openral deploy run` both forward it). Sets the HAL "
+                "autostart budget from `backend_options.boot_timeout_s` "
+                "and merges scene `sensors:` into the camera set. On "
+                "hal_mode:=real only, the runtime node also opens one "
                 "SensorReader per deploy-bound SensorSpec (robot "
                 "manifest + scene `sensors:`) and publishes each "
                 "camera onto /openral/cameras/<name>/image (the "
                 "real-hardware counterpart of the sim HAL's "
-                "SimSensorBridge). Empty (sim) leaves the HAL bridge as "
-                "the only camera source."
+                "SimSensorBridge); in sim the HAL bridge stays the only "
+                "camera source."
             ),
         ),
         DeclareLaunchArgument(

@@ -151,7 +151,9 @@ safety:
 sdk_kind: "closed"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
 hal:
-  sim: "openral_hal.ur:UR10eHAL"
+  # null → build_hal derives MujocoArmHAL.from_description(this manifest)
+  # from the `sim:` block below; no per-robot Python class is involved.
+  sim: null
   real: "openral_hal.ur_real:UR10eRealHAL"
 
 # MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``

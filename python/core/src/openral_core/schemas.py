@@ -22,7 +22,6 @@ from typing import (
     Self,
     TypeAlias,
     TypeVar,
-    get_args,
 )
 
 from pydantic import (
@@ -31,6 +30,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PositiveFloat,
+    StringConstraints,
     field_serializer,
     field_validator,
     model_validator,
@@ -539,6 +539,51 @@ class SensorBundle(BaseModel):
     sensors: list[SensorSpec]
     sync: Literal["hardware", "approximate", "none"] = "approximate"
     sync_tolerance_ms: float = 30.0
+
+
+def sensor_name_to_slot(description: RobotDescription | None) -> dict[str, str]:
+    """Map each RGB sensor NAME to its VLA slot, in manifest order.
+
+    The slot is the ``vla_feature_key`` suffix (``observation.images.camera1``
+    -> ``camera1``), falling back to the sensor name when the sensor declares
+    no key. Slots are the one camera namespace shared by ``openral sim run``,
+    ``deploy sim`` and ``deploy run``: ``image_preprocessing.aliases`` keys
+    and adapter ``camera_keys`` are slots, while topics and sim renders stay
+    keyed by sensor name.
+
+    Example:
+        >>> desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> sensor_name_to_slot(desc)
+        {'top': 'camera1', 'wrist': 'camera2'}
+    """
+    if description is None:
+        return {}
+    return {
+        s.name: s.vla_feature_key.rsplit(".", 1)[-1] if s.vla_feature_key else s.name
+        for s in description.sensors
+        if s.modality == "rgb"
+    }
+
+
+def required_vla_camera_slots(
+    manifest: RSkillManifest, description: RobotDescription | None
+) -> tuple[str, ...]:
+    """RGB VLA slots an rSkill consumes on this robot, in robot manifest order.
+
+    The robot's slots (``sensor_name_to_slot``) trimmed to the ones the
+    manifest's ``sensors_required`` names by ``vla_feature_key`` — a Franka
+    exposes ``camera3`` for VLABench while a LIBERO skill wants only
+    ``camera1``/``camera2``. All robot slots when the manifest names none.
+
+    Example:
+        >>> desc = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
+        >>> skill = RSkillManifest.from_yaml("rskills/smolvla-libero/rskill.yaml")
+        >>> required_vla_camera_slots(skill, desc)
+        ('camera1', 'camera2')
+    """
+    slots = tuple(sensor_name_to_slot(description).values())
+    required = _required_rgb_slots(manifest.sensors_required)
+    return tuple(slot for slot in slots if slot in required) if required else slots
 
 
 # ─── Joints / Actuation ────────────────────────────────────────────────────────
@@ -1882,10 +1927,18 @@ class HalEntrypoints(BaseModel):
         parameters: Per-robot HAL construction defaults (serial ``port``,
             ``robot_ip``, …) merged into the constructor by
             ``openral_hal.build_hal``. Empty by default.
+        real_bringup: Optional vendor ``ros2_control`` bringup that
+            ``deploy run`` includes next to the real HAL, as
+            ``"<ros_package>:<file>.launch.py"`` (resolved under that
+            package's ``share/<pkg>/launch/``). ``None`` falls back to the
+            convention: the HAL ROS package's own ``launch/real_bringup.launch.py``
+            if it ships one.
 
     Example:
         >>> HalEntrypoints(real="openral_hal.ur_real:UR5eRealHAL").sim is None
         True
+        >>> HalEntrypoints(real_bringup="openral_hal_openarm:real_bringup.launch.py").real_bringup
+        'openral_hal_openarm:real_bringup.launch.py'
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1893,6 +1946,9 @@ class HalEntrypoints(BaseModel):
     sim: str | None = None
     real: str | None = None
     parameters: HalParameters = Field(default_factory=HalParameters)
+    real_bringup: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9_]+:[A-Za-z0-9_.\-]+\.launch\.py$"
+    )
 
 
 class RobotDescription(BaseModel):
@@ -4308,6 +4364,15 @@ class SensorRequirement(BaseModel):
     count: int = Field(default=1, ge=1)
 
 
+def _required_rgb_slots(sensors_required: list[SensorRequirement]) -> set[str]:
+    """VLA slots named by the RGB ``sensors_required[].vla_feature_key`` entries."""
+    return {
+        req.vla_feature_key.rsplit(".", 1)[-1]
+        for req in sensors_required
+        if req.modality == SensorModality.RGB and req.vla_feature_key
+    }
+
+
 class ImagePreprocessing(BaseModel):
     """Per-rSkill image preprocessing contract.
 
@@ -4333,11 +4398,15 @@ class ImagePreprocessing(BaseModel):
             policy input batch — for example ``"observation.images.{cam}"``
             for SmolVLA / pi05 RoMALab vs ``"observation.image.{cam}"``
             for ruiname/pi05-robocasa-10tasks-200k.
-        aliases: Per-checkpoint rename map from the *scene* / *robot* raw
-            camera key (e.g. robosuite's ``robot0_agentview_left_image``)
-            to the *model*'s expected input feature name (e.g.
-            ``agentview``). Empty means pass through unchanged. SmolVLA
-            LIBERO usually wants ``{"camera1": "image", "camera2": "image2"}``.
+        aliases: Per-checkpoint rename map from a VLA *slot* (the
+            ``vla_feature_key`` suffix a ``sensors_required`` entry names,
+            e.g. ``camera1``) to the *model*'s expected input feature name
+            (e.g. ``image``). Keys are slots — never sensor or scene camera
+            names — so the map means the same thing on ``openral sim run``,
+            ``deploy sim`` and ``deploy run`` (see ``sensor_name_to_slot``);
+            ``unknown_alias_slots`` reports keys that break this rule. Empty
+            means pass through unchanged. SmolVLA / pi05 LIBERO want
+            ``{"camera1": "image", "camera2": "image2"}``.
         norm_tag: Normalization statistics tag for policies that use
             multiple checkpoints or training distributions (e.g. MolmoAct2
             with ``norm_tag="so100_so101_molmoact2"`` for SO-100/101
@@ -4381,38 +4450,65 @@ class ImagePreprocessing(BaseModel):
             )
         return self
 
+    def unknown_alias_slots(self, sensors_required: list[SensorRequirement]) -> list[str]:
+        """Alias keys that are not a slot declared by ``sensors_required``.
 
-StateLayout: TypeAlias = Literal[
-    "smolvla_9d",
-    "human300_16d",
-    "gr1",
-    "rc365",
-    # RLDX-1 SimplerEnv layouts.
-    # ``simpler_widowx`` matches RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX's
-    # ``bridge_orig`` modality config (8 scalar state keys, single
-    # ``video.image_0`` camera, Bridge-data orientation rotation).
-    # ``simpler_google`` matches RLWRLD/RLDX-1-FT-SIMPLER-GOOGLE's
-    # ``fractal20220817_data`` modality config (8 scalar state keys
-    # including a 4-D quaternion in ``state.r{x,y,z,w}``, single
-    # ``video.image`` camera, sticky-gripper postprocessing).
-    "simpler_widowx",
-    "simpler_google",
-    # LIBERO 8-D task-space proprio. ``eef_pos(3) ‖
-    # eef_axisangle(3) ‖ gripper_qpos(2)`` in the world frame — what the
-    # lerobot/smolvla_libero, pi05-libero and xvla-libero checkpoints were
-    # trained on. The benchmark (``openral sim run``) supplies it directly;
-    # deploy assembles it from live TF (EE pose) + JointState (gripper) via the
-    # ``libero_eef8d`` assembler. Without it the runner would feed raw
-    # joint-space state to a task-space policy.
-    "libero_eef8d",
-]
-"""Closed set of per-checkpoint proprioception layouts.
+        Example:
+            >>> req = SensorRequirement(
+            ...     modality=SensorModality.RGB, vla_feature_key="observation.images.camera1"
+            ... )
+            >>> ImagePreprocessing(aliases={"camera1": "image", "top": "x"}).unknown_alias_slots(
+            ...     [req]
+            ... )
+            ['top']
+        """
+        declared = _required_rgb_slots(sensors_required)
+        return [key for key in self.aliases if key not in declared]
+
+
+_REGISTRY_ID_PATTERN = r"^[a-z][a-z0-9_]*$"
+"""Shape of an open registry identifier (``StateLayout``, ``EmbodimentTag``,
+``BenchmarkName``, ``ModelFamily``): lower-case snake_case, leading letter.
+
+These four ids used to be closed ``Literal`` sets, so adding a robot, a policy
+family, a benchmark suite or a state layout meant editing this module. They are
+now OPEN, pattern-validated strings; membership is checked where the registry
+lives (``openral_sim.POLICIES``, ``openral_state_adapter.registered_layouts``,
+``robots/*/robot.yaml``, ``benchmarks/*.yaml``) and by the in-tree CI guard
+``tests/unit/test_manifest_registry_ids.py``. The pattern still rejects the
+malformed spellings (hyphens, upper case, empty, leading digit)."""
+
+StateLayout: TypeAlias = Annotated[str, StringConstraints(pattern=_REGISTRY_ID_PATTERN)]
+"""Per-checkpoint proprioception layout id (open; ``_REGISTRY_ID_PATTERN``).
+
+Membership is NOT checked here: a task-space layout without a registered
+assembler is dropped by the reasoner palette and refused by
+``openral_state_adapter.assemble_state`` (``ROSConfigError``); CI checks every
+in-tree manifest layout against ``registered_layouts()`` plus the sim adapters'
+layout maps.
+
+In-tree layouts:
+
+* ``smolvla_9d``, ``human300_16d``, ``gr1``, ``rc365``.
+* ``simpler_widowx`` matches RLWRLD/RLDX-1-FT-SIMPLER-WIDOWX's ``bridge_orig``
+  modality config (8 scalar state keys, single ``video.image_0`` camera,
+  Bridge-data orientation rotation). ``simpler_google`` matches
+  RLWRLD/RLDX-1-FT-SIMPLER-GOOGLE's ``fractal20220817_data`` modality config
+  (8 scalar state keys including a 4-D quaternion in ``state.r{x,y,z,w}``,
+  single ``video.image`` camera, sticky-gripper postprocessing).
+* ``libero_eef8d`` — LIBERO 8-D task-space proprio ``eef_pos(3) ‖
+  eef_axisangle(3) ‖ gripper_qpos(2)`` in the world frame, what the
+  lerobot/smolvla_libero, pi05-libero and xvla-libero checkpoints were trained
+  on. The benchmark (``openral sim run``) supplies it directly; deploy
+  assembles it from live TF (EE pose) + JointState (gripper) via the
+  ``libero_eef8d`` assembler. Without it the runner would feed raw joint-space
+  state to a task-space policy.
 
 A layout names the SHAPE the checkpoint was trained on — field order,
 frame convention, gripper encoding, quaternion handedness. The per-robot
 SOURCE bindings (which TF frame is "the EE", which joint names are "the
 gripper") live on ``StateContractBindings``. The
-``openral_state_adapter`` registry maps each literal to an assembler
+``openral_state_adapter`` registry maps each layout id to an assembler
 function that joins shape + bindings + live JointState + live TF.
 """
 
@@ -4734,6 +4830,16 @@ class ActionContract(BaseModel):
             Cartesian controller. Predictive safety applies
             ``clip(raw, -1, 1) * scale``. ``None`` means identity (the policy
             already emits physical units).
+        joint_names: The checkpoint's joint order on the whole-vector joint
+            path, spelled as ``RobotDescription.joints`` names (matched BY NAME
+            by ``openral_rskill._policy_io.PolicyIOCodec``). ``None`` means the
+            codec derives the order from the checkpoint's own feature names, or
+            identity. Forbidden together with ``slots`` (each JOINT_* slot
+            carries its own ``joint_names``).
+        gripper_scale: Policy-unit gripper value per robot-unit value. The HAL
+            gripper contract is a normalized ``[0, 1]`` jaw fraction; a LeRobot
+            SO-ARM checkpoint's gripper channel is ``[0, 100]`` → ``100.0``.
+            Applied by the codec on BOTH the joint and the slot path.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -4742,6 +4848,8 @@ class ActionContract(BaseModel):
     representation: ActionRepresentation | None = None
     slots: list[ActionSlot] | None = None
     cartesian_delta_scale: tuple[float, ...] | None = None
+    joint_names: list[str] | None = None
+    gripper_scale: float = Field(default=1.0, gt=0.0)
     # Angular convention the checkpoint's joint state/action are in. openral's
     # Action/JointState contract is radians, so the skill_runner converts
     # deg↔rad at the policy boundary when this is DEGREES. When None the runner
@@ -4749,6 +4857,24 @@ class ActionContract(BaseModel):
     # for joint-position checkpoints (a wrong guess sends ~57x commands and the
     # arm slams its limits). Governs BOTH the state fed in and the action out.
     joint_units: JointUnits | None = None
+
+    @model_validator(mode="after")
+    def _validate_joint_names(self) -> ActionContract:
+        names = self.joint_names
+        if names is None:
+            return self
+        if self.slots is not None:
+            raise ValueError(
+                "ActionContract.joint_names applies to the whole-vector joint path; "
+                "with slots, declare joint_names on each JOINT_* ActionSlot instead"
+            )
+        if len(names) != self.dim:
+            raise ValueError(
+                f"ActionContract.joint_names has {len(names)} entries but dim={self.dim}"
+            )
+        if len(set(names)) != len(names):
+            raise ValueError(f"ActionContract.joint_names has duplicates: {names!r}")
+        return self
 
     @model_validator(mode="after")
     def _validate_slots_cover_dim(self) -> ActionContract:
@@ -5807,38 +5933,17 @@ class EmbodimentExtra(BaseModel):
     actuators: list[ActuatorRequirement] = Field(min_length=1)
 
 
-# ─── rSkill V1 enumerated sets ──────────────────────────────────────────────
+# ─── rSkill V1 registry identifiers ─────────────────────────────────────────
 #
-# Closed Literals enforced by RSkillManifest. Adding a new robot HAL,
-# benchmark suite, or VLA family requires editing the matching alias here
-# (and shipping the supporting code in the same PR per CLAUDE.md §1.6).
+# Open, pattern-validated ids (``_REGISTRY_ID_PATTERN``). Adding a robot HAL,
+# benchmark suite, or VLA family does NOT edit this module: the id is checked
+# against its registry at the CLI / loader boundary and by the in-tree CI guard
+# ``tests/unit/test_manifest_registry_ids.py``.
 
-EmbodimentTag: TypeAlias = Literal[
-    "aloha",
-    "aloha_agilex",
-    "any",
-    "custom",
-    "franka_panda",
-    "g1",
-    "galaxea_a1",
-    "google_robot",
-    "gr1",
-    "h1",
-    "mobile_base",
-    "multi",
-    "openarm",
-    "panda_mobile",
-    "pusht",
-    "rizon4",
-    "r1pro",
-    "sawyer",
-    "so100_follower",
-    "so101_follower",
-    "ur10e",
-    "ur5e",
-    "widowx",
-]
-"""Canonical embodiment tags — one per ``robots/<id>/robot.yaml`` shipped in tree,
+EmbodimentTag: TypeAlias = Annotated[str, StringConstraints(pattern=_REGISTRY_ID_PATTERN)]
+"""Embodiment tag (open; ``_REGISTRY_ID_PATTERN``).
+
+One per ``robots/<id>/robot.yaml`` shipped in tree,
 plus ``"custom"`` as the explicit "I know what I'm doing" escape hatch and
 ``"any"`` as the explicit **embodiment-agnostic wildcard**.
 
@@ -5862,34 +5967,26 @@ NavigateToPose, etc.) can target the whole class without naming each specific
 mobile platform. Robot-specific tags (e.g. ``"panda_mobile"``) coexist on the
 same ``RobotDescription`` for skills that DO depend on the specific composition.
 
-The ``RSkillManifest.embodiment_tags`` field is restricted to this set so a
-typo or framework hint (``lerobot``, ``libero``) cannot land in a manifest
-where the loader's compat check would silently never match. When
+The in-tree CI guard (``tests/unit/test_manifest_registry_ids.py``) restricts
+every ``rskills/*/rskill.yaml`` tag to {``any``, ``custom``, ``multi``} plus the
+tags some ``robots/*/robot.yaml`` declares, so a typo cannot land in a manifest
+where the loader's compat check would silently never match;
+``openral_rskill.loader.intree_embodiment_tags`` is that set. When
 ``"custom"`` is used, the manifest MUST also populate
 ``embodiment_extra`` (see ``EmbodimentExtra``); the cross-validator
 on ``RSkillManifest`` enforces this.
 """
 
-BenchmarkName: TypeAlias = Literal[
-    "aloha",
-    "aloha_insertion",
-    "aloha_transfer_cube",
-    "behavior",
-    "gr1_tabletop",
-    "libero_10",
-    "libero_goal",
-    "libero_object",
-    "libero_spatial",
-    "maniskill3_panda",
-    "metaworld_mt10",
-    "metaworld_mt50",
-    "pusht",
-    "rlbench",
-    "robocasa_pnp",
-    "robotwin",
-    "simpler_env_widowx",
-]
-"""Canonical benchmark ids — one per ``benchmarks/<id>.yaml`` suite in tree.
+BenchmarkName: TypeAlias = Annotated[str, StringConstraints(pattern=_REGISTRY_ID_PATTERN)]
+"""Benchmark suite id (open; ``_REGISTRY_ID_PATTERN``).
+
+One per ``benchmarks/<id>.yaml`` suite in tree.
+
+Membership is checked against the checkout (``benchmarks/*.yaml`` plus
+``scenes/benchmark/*.yaml`` stems, ``openral_rskill.loader.known_benchmark_ids``)
+by the benchmark writeback (``update_rskill_benchmarks``), the ``openral
+benchmark scene`` guard and CI; ``rSkill.from_pretrained`` only WARNS on an
+unknown suite, since a Hub install may have no checkout to compare against.
 
 Used as keys in ``RSkillManifest.benchmarks``. Each value is the headline
 success rate ``[0.0, 1.0]`` the skill achieves on that suite. The full
@@ -5901,29 +5998,20 @@ two single-task suites were unified into ``aloha.yaml`` — the unified suite
 auto-filters per rSkill so a single run scores one ACT checkpoint's one task.
 """
 
-ModelFamily: TypeAlias = Literal[
-    "smolvla",
-    "pi05",
-    "xvla",
-    "xr1",
-    "act",
-    "diffusion",
-    "rldx",
-    "molmoact2",
-    "gr00t",
-    "diffuser_actor",
-    "openvla",
-    "lingbot_vla2",
-    "lingbot_vla",
-    "lingbot_va_a1",
-    "internvla_n1",
-]
-"""VLA / policy family the skill belongs to.
+ModelFamily: TypeAlias = Annotated[str, StringConstraints(pattern=_REGISTRY_ID_PATTERN)]
+"""VLA / policy family the skill belongs to (open; ``_REGISTRY_ID_PATTERN``).
+
+Membership is checked against the policy registry ``openral_sim.POLICIES``
+(the runner refuses an unregistered family at dispatch; CI checks every
+in-tree manifest). In-tree families: ``smolvla``, ``pi05``, ``xvla``, ``xr1``,
+``act``, ``diffusion``, ``rldx``, ``molmoact2``, ``gr00t``, ``diffuser_actor``,
+``openvla``, ``lingbot_vla2``, ``lingbot_vla``, ``lingbot_va_a1``,
+``internvla_n1``.
 
 Used by the eval / runner adapters to dispatch to the right
 ``openral_sim.backends.<family>`` policy adapter without
-string-matching the skill name. Adding a family here means landing the
-matching adapter under ``python/sim/src/openral_sim/backends/``.
+string-matching the skill name. Adding a family means registering the
+matching adapter in ``openral_sim.POLICIES`` — not editing this module.
 
 ``xr1`` (Xiaomi Robotics XR-1 / ``MiBoTForActionGeneration``) runs
 out-of-process because its released checkpoints pin transformers 4.57.1
@@ -6973,6 +7061,10 @@ class RSkillManifest(BaseModel):
     # requires either this OR RobotDescription.action_spec.dim, raising
     # ROSConfigError when both are missing.
     action_contract: ActionContract | None = None
+    # Replay cadence (actions executed per inference). ``None`` = the adapter's
+    # own default. Resolved for every adapter by
+    # ``openral_rskill._vla_core.resolve_n_action_steps``; bounded by ``chunk_size``
+    # (``_check_n_action_steps_within_chunk``).
     n_action_steps: int | None = Field(default=None, gt=0)
     # Optional initial joint pose the policy expects an episode to
     # start from. The list is ``state_contract.dim``-long and uses the
@@ -7059,13 +7151,23 @@ class RSkillManifest(BaseModel):
         ``model.safetensors`` and the ACT adapter dispatches on
         ``manifest.processors is not None``.
         """
-        # model_family is a closed Literal (typed as ``ModelFamily``) or None
-        # for wrapped-ROS kinds; the `in` check is safe against None.
+        # model_family is an open ``ModelFamily`` id or None for wrapped-ROS
+        # kinds; the `in` check is safe against None and unknown families.
         if self.model_family in _MODERN_PROCESSOR_FAMILIES and self.processors is None:
             raise ValueError(
                 f"RSkillManifest({self.name!r}): model_family={self.model_family!r} "
                 "requires a `processors` block (preprocessor_uri + postprocessor_uri). "
                 "Only `act` may omit it (legacy norm-stats-in-safetensors path)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_n_action_steps_within_chunk(self) -> RSkillManifest:
+        """``n_action_steps`` cannot replay more actions than one chunk holds."""
+        if self.n_action_steps is not None and self.n_action_steps > self.chunk_size:
+            raise ValueError(
+                f"RSkillManifest({self.name!r}): n_action_steps={self.n_action_steps} "
+                f"exceeds chunk_size={self.chunk_size}"
             )
         return self
 
@@ -7332,6 +7434,9 @@ class RSkillManifest(BaseModel):
                     "`weights_uri` (the Hugging Face model repository)."
                 )
             forbidden_vlm = {
+                # A scene VLM is not a policy: an open ``ModelFamily`` id no
+                # longer rejects e.g. ``qwen35`` at the field, so forbid it here.
+                "model_family": self.model_family,
                 "detector": self.detector,
                 "segmenter": self.segmenter,
                 "reward": self.reward,
@@ -7499,9 +7604,10 @@ class RSkillManifest(BaseModel):
 # - Each segment matches ``^[a-z0-9][a-z0-9_]*$``.
 # - ``<model>`` ∈ ``CANONICAL_MODEL_TOKENS`` (a versioned checkpoint token,
 #   NOT the bare ``ModelFamily``, so future gr00t_n2 / rldx2 don't collide).
-# - ``<robot>`` ∈ ``CANONICAL_ROBOT_NAME_TOKENS`` (the ``EmbodimentTag``
-#   values — includes ``"any"`` and ``"multi"`` for skills that declare >1
-#   concrete robot).
+# - ``<robot>`` is validated by shape here (robot ids are an open registry);
+#   CI checks in-tree names against ``robots/*/robot.yaml`` tags plus
+#   ``CANONICAL_ROBOT_NAME_TOKENS`` (``"any"``, and ``"multi"`` for skills that
+#   declare >1 concrete robot).
 # - ``<task>`` is AUTHOR-CHOSEN — validated by shape only, never by equality
 #   against ``evaluated_tasks`` (that collapses e.g. so101 "pen" vs
 #   "pick_place_pen", or omdet "indoor" vs "locator"). ``expected_repo_name``
@@ -7509,9 +7615,10 @@ class RSkillManifest(BaseModel):
 # - ``<quant>`` ∈ ``CANONICAL_QUANT_TOKENS``. ``int4`` weights ship as
 #   bitsandbytes NF4, so the schema dtype ``int4`` maps to the token ``nf4``.
 #   Weightless wrappers (``ros_action`` / ``ros_service``) OMIT ``<quant>``.
-# - When ``model_family`` is set (VLA skills), the ``<model>`` token must also be
-#   family-consistent — in ``_MODEL_FAMILY_ALLOWED_TOKENS`` for that family —
-#   so a smolvla checkpoint can't be mislabelled ``pi05``.
+# - When ``model_family`` is set (VLA skills), the ``<model>`` token must instead be
+#   family-consistent — in ``_MODEL_FAMILY_ALLOWED_TOKENS`` for that family, or
+#   the family id itself for a family with no entry there — so a smolvla
+#   checkpoint can't be mislabelled ``pi05`` and a new family needs no edit here.
 
 _DEFAULT_RSKILL_OWNER = "OpenRAL"
 """Owner used when a manifest ``name`` carries no ``<owner>/`` prefix."""
@@ -7604,6 +7711,7 @@ _MODEL_FAMILY_TO_TOKEN: dict[str, str] = {
     "molmoact2": "molmoact2",
     "rldx": "rldx1_ft",
     "gr00t": "gr00t_n17",
+    "gr00t_b1k": "gr00t_n17",
     "diffuser_actor": "3d_diffuser_actor",
     "openvla": "openvla_oft",
     "lingbot_vla": "lingbot_vla",
@@ -7612,7 +7720,8 @@ _MODEL_FAMILY_TO_TOKEN: dict[str, str] = {
     "internvla_n1": "internvla_n1",
 }
 """VLA ``ModelFamily`` → its canonical ``<model>`` *suggestion* token
-(the single token ``expected_repo_name`` proposes)."""
+(the single token ``expected_repo_name`` proposes). A family absent from this
+map suggests its own id."""
 
 _MODEL_FAMILY_ALLOWED_TOKENS: dict[str, frozenset[str]] = {
     "smolvla": frozenset({"smolvla"}),
@@ -7624,6 +7733,8 @@ _MODEL_FAMILY_ALLOWED_TOKENS: dict[str, frozenset[str]] = {
     "molmoact2": frozenset({"molmoact2"}),
     "rldx": frozenset({"rldx1_ft"}),
     "gr00t": frozenset({"gr00t_n17"}),
+    # The BEHAVIOR-1K organizer checkpoint: same N1.7 model, its own sidecar runtime.
+    "gr00t_b1k": frozenset({"gr00t_n17"}),
     "diffuser_actor": frozenset({"3d_diffuser_actor"}),
     # A manifest family ``openvla`` may carry the base or the OFT checkpoint.
     "openvla": frozenset({"openvla", "openvla_oft"}),
@@ -7636,7 +7747,14 @@ _MODEL_FAMILY_ALLOWED_TOKENS: dict[str, frozenset[str]] = {
 declares ``model_family``, the name's ``<model>`` segment must be one of these
 (a per-family allowlist rather than a bare ``startswith`` stem, so
 ``lingbot_vla`` and ``lingbot_vla2`` — where one string prefixes the other —
-stay distinct). Keyed by every ``ModelFamily`` value."""
+stay distinct). A family absent from this map allows exactly its own id
+(``_allowed_model_tokens``), so only the special cases need an entry."""
+
+
+def _allowed_model_tokens(model_family: str) -> frozenset[str]:
+    """``<model>`` tokens a ``model_family`` may use; default ``{model_family}``."""
+    return _MODEL_FAMILY_ALLOWED_TOKENS.get(model_family, frozenset({model_family}))
+
 
 _EMBODIMENT_TO_ROBOT_TOKEN: dict[str, str] = {
     "so100_follower": "so100",
@@ -7646,13 +7764,13 @@ _EMBODIMENT_TO_ROBOT_TOKEN: dict[str, str] = {
 ``_follower`` suffix carries no information in a repo name (there is no other
 so100/so101 embodiment), so names use the bare robot id."""
 
-CANONICAL_ROBOT_NAME_TOKENS: frozenset[str] = frozenset(
-    _EMBODIMENT_TO_ROBOT_TOKEN.get(t, t) for t in get_args(EmbodimentTag)
-)
-"""Canonical ``<robot>`` name tokens: the ``EmbodimentTag`` values —
-including the ``"any"`` wildcard and the ``"multi"`` aggregate (a skill
-declaring >1 concrete robot) — with the ``so10x_follower`` tags shortened to
-``so100``/``so101`` via ``_EMBODIMENT_TO_ROBOT_TOKEN``."""
+CANONICAL_ROBOT_NAME_TOKENS: frozenset[str] = frozenset({"any", "multi"})
+"""Reserved robot-agnostic ``<robot>`` name tokens: the ``"any"`` wildcard and
+the ``"multi"`` aggregate (a skill declaring >1 concrete robot). Concrete robot
+tokens are an open registry (``robots/*/robot.yaml``): ``repo_name_is_canonical``
+checks them by shape only, and CI checks in-tree names against the robot tags
+(with the ``so10x_follower`` tags shortened to ``so100``/``so101`` via
+``_EMBODIMENT_TO_ROBOT_TOKEN``) plus these reserved tokens."""
 
 
 def _quant_token_for_dtype(dtype: QuantizationDtype) -> str:
@@ -7685,7 +7803,8 @@ def _model_token_for_manifest(manifest: RSkillManifest) -> str:
     """Suggest the ``<model>`` token.
 
     VLA skills map their ``model_family`` through
-    ``_MODEL_FAMILY_TO_TOKEN``. Non-VLA skills (no ``model_family``) match
+    ``_MODEL_FAMILY_TO_TOKEN`` (defaulting to the family id itself). Non-VLA
+    skills (no ``model_family``) match
     the current repo tail against ``CANONICAL_MODEL_TOKENS`` by longest
     prefix (e.g. ``omdet-turbo-locator`` → ``omdet_turbo``).
 
@@ -7693,14 +7812,7 @@ def _model_token_for_manifest(manifest: RSkillManifest) -> str:
         ValueError: If no canonical token can be determined.
     """
     if manifest.model_family is not None:
-        token = _MODEL_FAMILY_TO_TOKEN.get(manifest.model_family)
-        if token is None:
-            raise ValueError(
-                f"RSkillManifest({manifest.name!r}): model_family "
-                f"{manifest.model_family!r} has no canonical <model> token; "
-                "extend _MODEL_FAMILY_TO_TOKEN."
-            )
-        return token
+        return _MODEL_FAMILY_TO_TOKEN.get(manifest.model_family, manifest.model_family)
     tail = _repo_tail_slug(manifest.name)
     candidates = [t for t in CANONICAL_MODEL_TOKENS if tail == t or tail.startswith(f"{t}_")]
     if not candidates:
@@ -7773,15 +7885,16 @@ def repo_name_is_canonical(name: str, *, kind: RSkillKind, model_family: str | N
     * every other kind → ``rskill-<model>-<robot>-<task>-<quant>`` (5 parts) with
       ``<quant>`` ∈ ``CANONICAL_QUANT_TOKENS``.
 
-    In all cases ``<model>`` ∈ ``CANONICAL_MODEL_TOKENS``, ``<robot>`` ∈
-    ``CANONICAL_ROBOT_NAME_TOKENS``, and ``<task>`` matches the segment
-    shape. The owner prefix (``<owner>/``) is ignored.
+    In all cases ``<robot>`` and ``<task>`` match the segment shape (robot ids
+    are an open registry, vocabulary-checked in CI). The owner prefix
+    (``<owner>/``) is ignored.
 
     When ``model_family`` is given (a VLA skill), the ``<model>`` segment must
-    additionally be family-consistent — one of
-    ``_MODEL_FAMILY_ALLOWED_TOKENS`` for that family — so a checkpoint can't
-    be mislabelled with another family's token. When ``model_family`` is ``None``
-    (tool / ROS skills, or a pure name check) only vocab membership is required.
+    be family-consistent — one of ``_MODEL_FAMILY_ALLOWED_TOKENS`` for that
+    family, or the family id itself for a family with no entry — so a
+    checkpoint can't be mislabelled with another family's token. When
+    ``model_family`` is ``None`` (tool / ROS skills, or a pure name check)
+    ``<model>`` ∈ ``CANONICAL_MODEL_TOKENS`` is required.
 
     Example:
         >>> repo_name_is_canonical(
@@ -7823,15 +7936,17 @@ def repo_name_is_canonical(name: str, *, kind: RSkillKind, model_family: str | N
             return False
         _, model, robot, task, quant = parts
         quant_ok = quant in CANONICAL_QUANT_TOKENS
-    ok = (
+    model_ok = (
         model in CANONICAL_MODEL_TOKENS
-        and robot in CANONICAL_ROBOT_NAME_TOKENS
+        if model_family is None
+        else model in _allowed_model_tokens(model_family)
+    )
+    return (
+        model_ok
+        and bool(_RSKILL_NAME_SEGMENT_RE.match(robot))
         and bool(_RSKILL_NAME_SEGMENT_RE.match(task))
         and quant_ok
     )
-    if ok and model_family is not None:
-        ok = model in _MODEL_FAMILY_ALLOWED_TOKENS.get(model_family, frozenset())
-    return ok
 
 
 def expected_repo_name(manifest: RSkillManifest) -> str:

@@ -2,12 +2,20 @@
 
 ROS 2 lifecycle node for the Franka Emika Panda 7-DoF arm.
 
-This package wraps `openral_hal.franka_panda.FrankaPandaHAL` (sim) /
+This package hosts the manifest-driven sim HAL (`hal.sim: null` →
+`MujocoArmHAL.from_description`) /
 `openral_hal.franka_panda_real.FrankaPandaRealHAL` (real) as a managed
 ROS 2 lifecycle node, shipped via the shared
 `make_lifecycle_main_from_manifest` (same pattern as `openral_hal_so100`).
 The Python HAL adapter is shipped and sim-tested via MuJoCo
 (`tests/sim/test_franka_panda_hal_mujoco.py`).
+
+> **`openral deploy sim|run` no longer spawns this package.** `_derive_hal_spec`
+> (`python/cli/src/openral_cli/deploy_sim.py`) only picks a robot's own
+> `openral_hal_<robot_id>` package, and the robot id is `franka_panda`, so deploy
+> runs the generic `openral_hal_scene_attached` node — the same
+> manifest-driven node shipped here. `ros2 run` of this package still works.
+> Retiring it needs a recorded decision.
 
 ## Status
 
@@ -30,7 +38,7 @@ package (see `packages/openral_hal_so100/README.md`):
 | Pub topics | `/joint_states`, `~/joint_states` (`sensor_msgs/JointState`) |
 | Sub topics | `/openral/safe_action` (`openral_msgs/ActionChunk`), `/openral/estop` (`std_msgs/Empty`) — under `hal_mode:=real` the stop deactivates `franka_arm_controller` via `controller_manager` (`franka_hardware` then calls `stopRobot()`); recovery is `RESTART_REQUIRED` (see [`robots/franka_panda/README.md`](../../robots/franka_panda/README.md#e-stop-and-recovery)) |
 | QoS | RELIABLE / VOLATILE / KEEP_LAST=10 (control-class) |
-| HAL backend | `openral_hal.franka_panda.FrankaPandaHAL` |
+| HAL backend | derived `MujocoArmHAL` (sim) / `openral_hal.franka_panda_real.FrankaPandaRealHAL` (real) |
 
 ## Embodiment
 

@@ -80,7 +80,7 @@ def test_update_overwrites_existing_benchmark_key(skill_dir: Path) -> None:
 def test_update_merges_multiple_benchmarks(skill_dir: Path) -> None:
     """Successive calls with different benchmark ids accumulate into the dict."""
     update_rskill_benchmarks(skill_dir, "robocasa_pnp", 0.50)
-    # libero_spatial is also a valid BenchmarkName literal — we just exercise
+    # libero_spatial is also a known benchmark id — we just exercise
     # the merge logic; no claim the skill actually achieves this rate.
     update_rskill_benchmarks(skill_dir, "libero_spatial", 0.20)
 
@@ -90,7 +90,7 @@ def test_update_merges_multiple_benchmarks(skill_dir: Path) -> None:
 
 
 def test_update_rejects_unknown_benchmark_id(skill_dir: Path) -> None:
-    """Unknown BenchmarkName literal raises before the file is touched."""
+    """A benchmark id the checkout does not define raises before the file is touched."""
     from openral_core.exceptions import ROSConfigError
 
     before = (skill_dir / "rskill.yaml").read_text()

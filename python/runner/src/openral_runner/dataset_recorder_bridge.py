@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import structlog
+from openral_core import sensor_name_to_slot
 from openral_core.exceptions import ROSConfigError
 
 if TYPE_CHECKING:
@@ -51,7 +52,7 @@ if TYPE_CHECKING:
     from openral_dataset import RolloutRecorder
     from openral_world_state.aggregator import WorldStateAggregator
 
-__all__ = ["DatasetRecorderBridge", "sensor_name_to_slot"]
+__all__ = ["DatasetRecorderBridge"]
 
 _log = structlog.get_logger(__name__)
 
@@ -61,26 +62,6 @@ _PHASE_END = 1
 
 ACTION_TOPIC_DEFAULT = "/openral/candidate_action"
 EPISODE_TOPIC_DEFAULT = "/openral/episode"
-
-
-def sensor_name_to_slot(description: RobotDescription | None) -> dict[str, str]:
-    """Map each RGB sensor NAME to its VLA slot (``camera1`` / ``camera2`` / ...).
-
-    The aggregator keys ``image_frames`` by sensor name; the dataset sink
-    keys images by the slot (``vla_feature_key`` suffix). Canonical copy —
-    ``rskill_runner_node`` imports this (``openral_rskill_ros`` already
-    depends on ``openral_runner``); the reverse direction stays forbidden
-    (CLAUDE.md §3).
-    """
-    if description is None:
-        return {}
-    out: dict[str, str] = {}
-    for sensor in description.sensors:
-        if getattr(sensor, "modality", None) != "rgb":
-            continue
-        vfk = getattr(sensor, "vla_feature_key", None)
-        out[sensor.name] = str(vfk).rsplit(".", 1)[-1] if vfk else sensor.name
-    return out
 
 
 class DatasetRecorderBridge:

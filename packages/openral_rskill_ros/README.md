@@ -99,12 +99,13 @@ One generic launch file ships with this package:
   In practice you don't invoke this launch directly — use
   `openral deploy sim --config <SceneEnvironment.yaml>` (see
   `python/cli/src/openral_cli/deploy_sim.py`). The CLI:
-  1. resolves the robot via the SceneEnvironment's `robot_id` (or
-     `--robot` override) → `_ROBOT_HAL_REGISTRY` for HAL package/exec
-     + the set of robot manifest names this HAL accepts;
-  2. validates `robots/<robot_id>/robot.yaml` via
-     `RobotDescription.validate_for_e2e_pipeline()` and asserts the
-     manifest's `name` is in the HAL's `supported_robot_names`;
+  1. resolves the robot via the DeployScene's `robot_id` (or
+     `--robot` override) → `$OPENRAL_ROBOTS_DIR/<id>/robot.yaml` or
+     `robots/<id>/robot.yaml`, and derives the HAL package/exec from it
+     (`_derive_hal_spec`: the robot's own `openral_hal_<id>` package when
+     one ships, else the generic `openral_hal_scene_attached` node);
+  2. validates the manifest via
+     `RobotDescription.validate_for_e2e_pipeline()`;
   3. shells `ros2 launch openral_rskill_ros deploy_e2e.launch.py …`.
 
   The launch's `OpaqueFunction` then loads `robot.yaml`, calls

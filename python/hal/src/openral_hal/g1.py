@@ -420,6 +420,7 @@ class G1MujocoHAL(MujocoArmHAL):
         staleness_limit_s: float = 0.5,
         body_twist_dt_s: float = 0.05,
         walking_enabled: bool = False,
+        description: RobotDescription | None = None,
     ) -> None:
         """Initialise the G1 HAL; no MuJoCo state is created until ``connect()``.
 
@@ -436,6 +437,9 @@ class G1MujocoHAL(MujocoArmHAL):
                 ``SimAttachedHAL`` / ``PandaMobileHAL``).
             walking_enabled: Use the pinned MuJoCo Playground ONNX walking
                 controller instead of the kinematic glide.
+            description: The loaded ``robots/g1/robot.yaml`` manifest
+                (threaded by ``build_hal``); ``None`` falls back to the
+                in-code ``G1_DESCRIPTION`` mirror.
         """
         walking_policy_path: str | None = None
         if walking_enabled:
@@ -447,7 +451,7 @@ class G1MujocoHAL(MujocoArmHAL):
                 )
             mjcf_path, walking_policy_path = ensure_g1_walking_assets()
         self._init_from_description(
-            G1_DESCRIPTION,
+            description or G1_DESCRIPTION,
             mjcf_path=mjcf_path,
             settle_steps=settle_steps,
             gravity_enabled=gravity_enabled,

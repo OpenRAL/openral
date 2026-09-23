@@ -35,6 +35,8 @@ from openral_rskill._vla_core import (
     to_numpy_action,
 )
 
+from openral_sim._quantization import require_supported_dtype, resolve_quant_plan
+from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.policies._processors import resolve_processor_dir
 from openral_sim.registry import POLICIES
 
@@ -142,7 +144,11 @@ class _DiffusionAdapter:
         return batch
 
 
-@POLICIES.register("diffusion")
+@POLICIES.register(
+    "diffusion",
+    install_groups=("sim",),
+    required_imports=("lerobot.policies.diffusion.modeling_diffusion",),
+)
 def _build_diffusion(env_cfg: Any) -> _DiffusionAdapter:
     """Load a Diffusion Policy checkpoint."""
     spec = env_cfg.vla
@@ -160,6 +166,12 @@ def _build_diffusion(env_cfg: Any) -> _DiffusionAdapter:
 
     repo_id, revision = resolve_rskill_repo_revision(
         spec.weights_uri, adapter_name="Diffusion Policy"
+    )
+
+    # Loads at the checkpoint's stored precision; there is no cast or packing
+    # path, so any other requested dtype fails here instead of being ignored.
+    require_supported_dtype(
+        resolve_quant_plan(spec, load_manifest_for_spec(spec)), frozenset({"fp32"}), "diffusion"
     )
     policy = DiffusionPolicy.from_pretrained(repo_id, revision=revision).to(device)
     policy.eval()

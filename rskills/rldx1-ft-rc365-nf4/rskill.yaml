@@ -129,7 +129,7 @@ chunk_size: 16
 # Half-chunk replay (8) bought tighter closed-loop reactivity at the
 # cost of 2× round-trips per episode; for the slow PandaMobile PnP
 # tasks the open-loop trade is worth halving the visible viewer
-# stalls. Override via vla.extra.replan_steps or --n-action-steps.
+# stalls. Override via n_action_steps here or --n-action-steps.
 latency_budget:
   per_chunk_ms: 1500.0
 

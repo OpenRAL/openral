@@ -21,7 +21,7 @@ metadata:
   runtime: pytorch
   quantization: bf16/pytorch
   min_vram_gb: {bf16: 1.2}
-  chunk_size: 16
+  chunk_size: 50
   n_action_steps: 25
   latency_budget: {per_chunk_ms: 150.0, max_execution_s: 60.0}
   license_code: Apache-2.0

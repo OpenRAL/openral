@@ -21,8 +21,6 @@ Public surface:
   ``SensorReader``s, and a ``SafetyClient``.
 - ``precise_sleep`` / ``sleep_until``: cadence helpers (mirrors lerobot's
   ``precise_sleep`` shape).
-- ``sensor_name_to_slot``: Maps each RGB sensor name to its VLA slot, shared
-  by ``DatasetRecorderBridge`` and the rskill runner node.
 
 Imports are PEP 562 lazy: ``import openral_runner`` no longer eagerly drags
 in torch (via ``base``); symbols still resolve via attribute access, on
@@ -39,7 +37,6 @@ from typing import TYPE_CHECKING, Any
 
 # Light imports — no torch, no gi, no rclpy in any of these.
 from openral_runner.clock import precise_sleep, sleep_until
-from openral_runner.dataset_recorder_bridge import sensor_name_to_slot
 from openral_runner.protocol import InferenceRunner
 from openral_runner.sensor_reader import SensorReader
 
@@ -65,7 +62,6 @@ __all__ = [
     "SafetyClient",
     "SensorReader",
     "precise_sleep",
-    "sensor_name_to_slot",
     "sleep_until",
 ]
 __version__ = _pkg_version("openral-runner")

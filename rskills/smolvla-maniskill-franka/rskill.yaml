@@ -10,9 +10,10 @@
 # (3,256,256) eye-in-hand; output action (8,) = 7 joint pos + 1 gripper;
 # chunk_size 50, n_action_steps 50, flow-matching steps 10.
 #
-# ManiSkill3 backend surfaces cameras as `camera1`/`camera2` (matching
-# franka_panda's `sensors` block); `image_preprocessing.aliases` below renames
-# them to the model's `up`/`wrist` keys. Companion MS3 backend changes (this
+# The ManiSkill3 scene renders franka_panda's `top`/`wrist` sensors; the sim
+# runner rekeys them to their VLA slots `camera1`/`camera2` (as deploy does),
+# and `image_preprocessing.aliases` below renames the slots to the model's
+# `up`/`wrist` keys. Companion MS3 backend changes (this
 # PR) surface every `sensor_data` entry as camera1/camera2/... in declaration
 # order, plumb `backend_options.robot_uids` to `gym.make` (so `panda_wristcam`
 # brings in the wrist cam), and forward `task.max_steps` to MS3's
@@ -85,13 +86,13 @@ processors:
   postprocessor_uri: "hf://OpenRAL/rskill-smolvla-franka_panda-maniskill3-bf16/policy_postprocessor.json"
 # Per-checkpoint knobs the processor JSONs don't encode. The model was
 # trained on raw SAPIEN renders (no 180° flip); cameras need an alias
-# remap from the in-tree scene-side keys (camera1 / camera2) to the
-# checkpoint's `up` / `wrist`.
+# remap from the VLA slots (camera1 / camera2) to the checkpoint's
+# `up` / `wrist`.
 image_preprocessing:
   flip_180: false
   aliases:
-    top: "up"
-    wrist: "wrist"
+    camera1: "up"
+    camera2: "wrist"
 state_contract:
   dim: 9
 

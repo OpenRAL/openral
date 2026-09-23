@@ -235,6 +235,7 @@ def run_benchmark(
     """
     from openral_core import SimEnvironment
 
+    from openral_sim.registry import SCENES
     from openral_sim.sim_runner import SimRunner
 
     # Suite auto-filter: keep only the tasks the rSkill declares it
@@ -278,12 +279,11 @@ def run_benchmark(
 
     for scene in scenes:
         task_id = scene.task.id
-        # raise_on_invalid_suite asserts robot_id is not None for every
-        # scene; BenchmarkScene._require_task_eval_fields asserts
-        # task.success_key and task.max_steps are set. Re-narrow for mypy.
-        robot_id = scene.robot_id
+        # SCENES.resolve_robot is the shared binding rule (refuses a robot the
+        # scene can't build). BenchmarkScene._require_task_eval_fields asserts
+        # task.max_steps is set; re-narrow for mypy.
+        robot_id = SCENES.resolve_robot(scene.scene.id, scene.robot_id)
         max_steps = scene.task.max_steps
-        assert robot_id is not None
         assert max_steps is not None
         per_task[task_id] = []
         for seed in seeds:
@@ -510,23 +510,21 @@ def run_benchmark_scene(
 
     Raises:
         openral_core.exceptions.ROSConfigError: When ``scene.robot_id`` is
-            ``None`` (the runner cannot construct a ``SimEnvironment``
-            without an embodiment), or for any error propagated from
-            ``SimRunner``.
+            not a robot the scene can instantiate (or is ``None`` on a
+            free-axis scene — ``SCENES.resolve_robot``), or for any error
+            propagated from ``SimRunner``.
     """
     from openral_core import SimEnvironment
-    from openral_core.exceptions import ROSConfigError
 
+    from openral_sim.registry import SCENES
     from openral_sim.sim_runner import SimRunner
 
-    if scene.robot_id is None:
-        raise ROSConfigError(
-            f"BenchmarkScene scene.id={scene.scene.id!r} has no robot_id; "
-            "add `robot_id: <id>` to the YAML (e.g. franka_panda for LIBERO, "
-            "aloha_bimanual for gym-aloha, pusht_2d for gym-pusht). "
-            "The benchmark runner cannot construct a SimEnvironment without "
-            "an embodiment."
-        )
+    # The one robot-binding rule (shared with `sim run` / `deploy sim` / the
+    # sim HAL): a robot the scene cannot instantiate is refused, a fixed scene
+    # supplies its default. Rebind so the eval record names the robot run.
+    scene = scene.model_copy(
+        update={"robot_id": SCENES.resolve_robot(scene.scene.id, scene.robot_id)}
+    )
     # BenchmarkScene._require_task_eval_fields guarantees these are set,
     # but mypy --strict still needs the local narrowing.
     success_key = scene.task.success_key
@@ -755,17 +753,17 @@ def update_rskill_benchmarks(
     The on-disk edit is a *surgical* replacement of the top-level
     ``benchmarks:`` block — every other line in ``rskill.yaml`` (comments,
     ordering, blank lines) is left untouched. The merged manifest is then
-    re-validated through ``RSkillManifest`` so an unknown
-    ``benchmark_id`` (one not in the ``BenchmarkName`` literal) or an
+    re-validated through ``RSkillManifest``, and ``benchmark_id`` is checked
+    against the checkout's benchmark ids
+    (``openral_rskill.loader.known_benchmark_ids``), so an unknown id or an
     out-of-range ``score`` fails loud before the bytes hit disk.
 
     Args:
         skill_dir: Path to the skill directory (the parent of
             ``rskill.yaml``). Accepts either ``Path`` or string forms.
         benchmark_id: The benchmark suite id (the YAML filename stem) whose
-            headline rate to record. MUST be a member of the
-            ``openral_core.BenchmarkName`` literal — the manifest
-            schema rejects everything else.
+            headline rate to record. MUST be a ``benchmarks/*.yaml`` or
+            ``scenes/benchmark/*.yaml`` stem of the checkout.
         score: Headline success rate in ``[0.0, 1.0]``. Typically the
             ``avg_success_rate`` from ``RSkillEvalResult.results``.
 
@@ -781,6 +779,14 @@ def update_rskill_benchmarks(
     import yaml
     from openral_core import RSkillManifest
     from openral_core.exceptions import ROSConfigError
+    from openral_rskill.loader import known_benchmark_ids
+
+    known = known_benchmark_ids()
+    if known is not None and benchmark_id not in known:
+        raise ROSConfigError(
+            f"refusing to record benchmark {benchmark_id!r}: not a benchmarks/*.yaml "
+            f"or scenes/benchmark/*.yaml id of this checkout (known: {sorted(known)})"
+        )
 
     skill_path = Path(skill_dir)
     manifest_path = skill_path / "rskill.yaml"
@@ -799,9 +805,9 @@ def update_rskill_benchmarks(
     raw["benchmarks"] = benchmarks
 
     # Re-validate — raises a pydantic ValidationError (wrapped) if the
-    # benchmark_id is not a BenchmarkName literal or the score is out of
-    # range. We deliberately validate *before* writing so a bad call does
-    # not corrupt the manifest.
+    # benchmark_id is malformed or the score is out of range. We
+    # deliberately validate *before* writing so a bad call does not
+    # corrupt the manifest.
     try:
         RSkillManifest.model_validate(raw)
     except Exception as exc:  # pragma: no cover — surfaced as ROSConfigError

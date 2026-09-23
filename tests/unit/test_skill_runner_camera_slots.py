@@ -48,7 +48,6 @@ _RUNNER = _load_skill_runner_module()
 _build_runtime_skill_from_manifest = _RUNNER._build_runtime_skill_from_manifest
 _decode_image_frames = _RUNNER._decode_image_frames
 sensor_name_to_slot = _RUNNER.sensor_name_to_slot
-_vla_camera_slots = _RUNNER._vla_camera_slots
 
 
 def _franka() -> RobotDescription:
@@ -71,7 +70,7 @@ def _rgb_frame(name: str, *, fill: int, h: int = 2, w: int = 2) -> SensorFrame:
 
 class TestVlaCameraSlots:
     def test_franka_slots_in_manifest_order(self) -> None:
-        assert _vla_camera_slots(_franka()) == ("camera1", "camera2", "camera3")
+        assert tuple(sensor_name_to_slot(_franka()).values()) == ("camera1", "camera2", "camera3")
 
     def test_franka_name_to_slot_map(self) -> None:
         assert sensor_name_to_slot(_franka()) == {
@@ -81,7 +80,6 @@ class TestVlaCameraSlots:
         }
 
     def test_none_description_is_empty(self) -> None:
-        assert _vla_camera_slots(None) == ()
         assert sensor_name_to_slot(None) == {}
 
 

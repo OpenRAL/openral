@@ -3,8 +3,9 @@
 Sim backends that hard-wire a single robot (LIBERO → Franka, MetaWorld →
 Sawyer, PushT → 2-D pusher, gym-aloha → bimanual, RoboCasa → PandaMobile) used
 to let ``--robot`` / ``robot_id:`` silently swap robots underneath the user.
-The CLI now raises a typed ``ROSConfigError`` at config-build time, before
-any rollout starts.
+The CLI now raises a typed ``ROSConfigError`` (``SCENES.resolve_robot``) at
+config-build time, before any rollout starts. A robot the scene CAN build is
+accepted (``--robot franka_panda`` on LIBERO is redundant, not an error).
 
 Canonical invocation::
 
@@ -55,7 +56,7 @@ def test_libero_rejects_explicit_robot_flag() -> None:
     out = result.output + (result.stderr or "")
     assert "libero_spatial" in out
     assert "franka_panda" in out
-    assert "hard-fixes" in out
+    assert "can only instantiate" in out
 
 
 def test_metaworld_rejects_explicit_robot_flag() -> None:
@@ -79,7 +80,7 @@ def test_metaworld_rejects_explicit_robot_flag() -> None:
     assert result.exit_code != 0
     out = result.output + (result.stderr or "")
     assert "sawyer" in out
-    assert "hard-fixes" in out
+    assert "can only instantiate" in out
 
 
 def test_pusht_rejects_explicit_robot_flag() -> None:
@@ -103,4 +104,4 @@ def test_pusht_rejects_explicit_robot_flag() -> None:
     assert result.exit_code != 0
     out = result.output + (result.stderr or "")
     assert "pusht_2d" in out
-    assert "hard-fixes" in out
+    assert "can only instantiate" in out

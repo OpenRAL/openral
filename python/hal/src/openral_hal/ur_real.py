@@ -233,10 +233,15 @@ class UR5eRealHAL(_URRealHAL):
         publish_fn: Callable[[str, dict[str, object]], None] | None = None,
         state_fn: Callable[[], dict[str, object]] | None = None,
         staleness_limit_s: float = 0.5,
+        description: RobotDescription | None = None,
     ) -> None:
-        """Initialise the UR5e real-HW HAL; transport defaults match ``ur_robot_driver``."""
+        """Initialise the UR5e real-HW HAL; transport defaults match ``ur_robot_driver``.
+
+        ``description`` is the loaded manifest (threaded by ``build_hal``);
+        ``None`` falls back to ``UR5e_REAL_DESCRIPTION``.
+        """
         super().__init__(
-            UR5e_REAL_DESCRIPTION,
+            description or UR5e_REAL_DESCRIPTION,
             robot_ip=robot_ip,
             publish_fn=publish_fn,
             state_fn=state_fn,
@@ -276,10 +281,15 @@ class UR10eRealHAL(_URRealHAL):
         publish_fn: Callable[[str, dict[str, object]], None] | None = None,
         state_fn: Callable[[], dict[str, object]] | None = None,
         staleness_limit_s: float = 0.5,
+        description: RobotDescription | None = None,
     ) -> None:
-        """Initialise the UR10e real-HW HAL; transport defaults match ``ur_robot_driver``."""
+        """Initialise the UR10e real-HW HAL; transport defaults match ``ur_robot_driver``.
+
+        ``description`` is the loaded manifest (threaded by ``build_hal``);
+        ``None`` falls back to ``UR10e_REAL_DESCRIPTION``.
+        """
         super().__init__(
-            UR10e_REAL_DESCRIPTION,
+            description or UR10e_REAL_DESCRIPTION,
             robot_ip=robot_ip,
             publish_fn=publish_fn,
             state_fn=state_fn,

@@ -85,7 +85,7 @@ chunk_size: 16
 # whole chunk halves the visible viewer stalls (vs the half-chunk
 # default of 8). Trade-off: 16 env steps of open-loop control between
 # observations, fine for slow-evolution PnP tasks. Override via
-# vla.extra.replan_steps in the YAML or --n-action-steps on the CLI.
+# n_action_steps in the YAML or --n-action-steps on the CLI.
 latency_budget:
   per_chunk_ms: 1500.0
 

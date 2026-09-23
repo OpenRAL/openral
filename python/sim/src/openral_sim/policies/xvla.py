@@ -32,6 +32,7 @@ import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_rskill._vla_core import (
+    apply_chunk_replay,
     build_chunk_executor,
     release_torch_modules,
     resolve_camera_keys,
@@ -41,6 +42,8 @@ from openral_rskill._vla_core import (
     to_numpy_action,
 )
 
+from openral_sim._quantization import require_supported_dtype, resolve_quant_plan
+from openral_sim.policies._policy_loading import load_manifest_for_spec
 from openral_sim.policies._processors import resolve_processor_dir
 from openral_sim.registry import POLICIES
 
@@ -210,7 +213,11 @@ class _XVLAAdapter:
         return batch
 
 
-@POLICIES.register("xvla")
+@POLICIES.register(
+    "xvla",
+    install_groups=("sim",),
+    required_imports=("lerobot.policies.xvla.modeling_xvla",),
+)
 def _build_xvla(env_cfg: Any) -> _XVLAAdapter:
     """Load an xVLA-LIBERO checkpoint + its four-stage processor pipeline."""
     spec = env_cfg.vla
@@ -240,10 +247,17 @@ def _build_xvla(env_cfg: Any) -> _XVLAAdapter:
         ) from exc
 
     repo_id, revision = resolve_rskill_repo_revision(spec.weights_uri, adapter_name="xVLA")
+    # Loads the checkpoint's own ``config.dtype`` (float32 for xvla-libero, whose
+    # weights are stored F32); there is no per-run cast, so any other requested
+    # dtype fails here instead of being ignored.
+    require_supported_dtype(
+        resolve_quant_plan(spec, load_manifest_for_spec(spec)), frozenset({"fp32"}), "xvla"
+    )
     policy = XVLAPolicy.from_pretrained(repo_id, revision=revision).to(device)
     policy.eval()
     if getattr(policy.config, "chunk_size", None):
-        policy.config.n_action_steps = policy.config.chunk_size
+        # xVLA default = full chunk; manifest / --n-action-steps may shorten it.
+        apply_chunk_replay(policy, dict(spec.extra or {}), manifest=load_manifest_for_spec(spec))
         policy.reset()
 
     # lerobot 0.5.1 split the four-stage pipeline:

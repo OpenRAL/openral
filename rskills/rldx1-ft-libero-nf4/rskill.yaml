@@ -103,7 +103,7 @@ chunk_size: 16
 # Half-chunk replay (RTC exec_horizon=8) bought tighter closed-loop
 # reactivity at the cost of 2× round-trips per episode; for the LIBERO
 # PnP / drawer tasks the full-chunk open-loop horizon is fine and
-# visibly halves viewer lag. Override via vla.extra.replan_steps in
+# visibly halves viewer lag. Override via n_action_steps in
 # the YAML or --n-action-steps on the CLI.
 latency_budget:
   per_chunk_ms: 1500.0   # Qwen3-VL-8B at NF4 backbone + 4-frame video is heavy.

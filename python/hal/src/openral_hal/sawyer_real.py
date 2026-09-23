@@ -267,6 +267,9 @@ class SawyerRealHAL(RosControlHAL):
         staleness_limit_s: Maximum age of a ``read_state()`` reading
             before ``ROSPerceptionStale`` is raised.  Defaults to
             ``0.2 s`` (Sawyer's intera_sdk feedback rate is ~100 Hz).
+        description: The loaded ``robots/<id>/robot.yaml`` manifest
+            (threaded by ``build_hal``). ``None`` falls back to the
+            in-code ``SAWYER_REAL_DESCRIPTION`` mirror.
 
     Raises:
         ROSConfigError: If ``hostname`` is empty / whitespace.
@@ -301,6 +304,7 @@ class SawyerRealHAL(RosControlHAL):
         publish_fn: _PublishFn | None = None,
         state_fn: _StateFn | None = None,
         staleness_limit_s: float = 0.2,
+        description: RobotDescription | None = None,
     ) -> None:
         """Initialise the adapter; no TCP connection is opened until ``connect()``."""
         if not hostname or not hostname.strip():
@@ -309,7 +313,7 @@ class SawyerRealHAL(RosControlHAL):
                 "(e.g. 'sawyer.local' or the robot's IP)."
             )
         super().__init__(
-            SAWYER_REAL_DESCRIPTION,
+            description or SAWYER_REAL_DESCRIPTION,
             controller_name=controller_name,
             joint_state_topic=joint_state_topic,
             command_topic=command_topic,

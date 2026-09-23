@@ -16,6 +16,7 @@ CLAUDE.md §1.11 -- real schemas; no mocks.
 
 from __future__ import annotations
 
+import pytest
 from openral_core import (
     ImagePreprocessing,
     RSkillLatencyBudget,
@@ -62,29 +63,36 @@ def _manifest(**overrides: object) -> RSkillManifest:
 
 # ── resolve_image_preprocessing ──────────────────────────────────────────────
 
+# Alias keys must be slots a sensors_required entry declares.
+_CAMERA1 = [{"modality": "rgb", "vla_feature_key": "observation.images.camera1"}]
+
 
 class TestResolveImagePreprocessing:
     def test_spec_extra_overrides_manifest(self) -> None:
         """spec_extra.flip_180 wins over manifest.image_preprocessing.flip_180."""
-        m = _manifest(image_preprocessing=ImagePreprocessing(flip_180=False, aliases={"a": "b"}))
+        m = _manifest(
+            sensors_required=_CAMERA1,
+            image_preprocessing=ImagePreprocessing(flip_180=False, aliases={"camera1": "b"}),
+        )
         ip = resolve_image_preprocessing(m, {"flip_180": True})
         assert ip.flip_180 is True
         # aliases fall through from the manifest since spec_extra didn't carry one
-        assert ip.aliases == {"a": "b"}
+        assert ip.aliases == {"camera1": "b"}
 
     def test_manifest_wins_when_extra_silent(self) -> None:
         """Manifest's image_preprocessing applies when spec_extra has nothing."""
         m = _manifest(
+            sensors_required=_CAMERA1,
             image_preprocessing=ImagePreprocessing(
                 flip_180=True,
                 input_template="observation.image.{cam}",
-                aliases={"front": "agentview"},
-            )
+                aliases={"camera1": "agentview"},
+            ),
         )
         ip = resolve_image_preprocessing(m, {})
         assert ip.flip_180 is True
         assert ip.input_template == "observation.image.{cam}"
-        assert ip.aliases == {"front": "agentview"}
+        assert ip.aliases == {"camera1": "agentview"}
 
     def test_schema_defaults_when_both_silent(self) -> None:
         """Both silent → ImagePreprocessing() schema defaults."""
@@ -219,14 +227,14 @@ class _FakePolicy:
 class TestApplyChunkReplay:
     def test_spec_extra_wins(self) -> None:
         p = _FakePolicy()
-        m = _manifest(n_action_steps=10)
+        m = _manifest(n_action_steps=10, chunk_size=50)
         applied = apply_chunk_replay(p, {"n_action_steps": 3}, manifest=m)
         assert applied == 3
         assert p.config.n_action_steps == 3
 
     def test_manifest_wins_over_default(self) -> None:
         p = _FakePolicy()
-        m = _manifest(n_action_steps=10)
+        m = _manifest(n_action_steps=10, chunk_size=50)
         applied = apply_chunk_replay(p, {}, manifest=m, default_n_action_steps=25)
         assert applied == 10
 
@@ -245,5 +253,6 @@ class TestApplyChunkReplay:
         p = _FakePolicy()
         # spec_extra=999, chunk_size=50 → clamped to 50
         assert apply_chunk_replay(p, {"n_action_steps": 999}) == 50
-        # zero / negative clamps to 1
-        assert apply_chunk_replay(p, {"n_action_steps": 0}) == 1
+        # zero / negative is a config error, not a silent clamp to 1
+        with pytest.raises(ValueError, match="n_action_steps"):
+            apply_chunk_replay(p, {"n_action_steps": 0})

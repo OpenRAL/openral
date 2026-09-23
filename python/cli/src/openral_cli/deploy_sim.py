@@ -8,11 +8,12 @@ dashboard + C++ safety kernel + reasoner + prompt router + runtime
 digital-twin (MuJoCo viewer) mode.
 
 The launch graph is robot-agnostic — one ``deploy_e2e.launch.py`` for every
-robot; the CLI resolves everything robot-specific: the manifest at
-``robots/<robot_id>/robot.yaml``, and the HAL package/executable/node
-name/default params looked up by ``robot_id`` in ``_ROBOT_HAL_REGISTRY``
-(the lookup asserts the HAL's ``supported_robot_names`` matches the
-manifest's ``name``, so a mis-wired HAL fails loud).
+robot; the CLI resolves everything robot-specific from data: the manifest
+(``$OPENRAL_ROBOTS_DIR/<robot_id>/robot.yaml`` or ``robots/<robot_id>/robot.yaml``)
+and the DeployScene. There is no per-robot Python table — the HAL node spec
+is derived by ``_derive_hal_spec`` (every HAL package runs the same
+manifest-driven node), and whether the sim HAL scene-attaches or builds a
+bare twin is decided by the scene (``_scene_builds_bare_twin``).
 
 No envelope YAML file on either side: the robot manifest is the single
 source of truth for the safety kernel envelope.
@@ -47,7 +48,7 @@ import sys
 import sysconfig
 import tempfile
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -58,7 +59,7 @@ from openral_core.gpu import detect_gpu_vram_gb
 from rich.console import Console
 
 if TYPE_CHECKING:
-    from openral_core import RobotDescription, RSkillManifest
+    from openral_core import DeployScene, RobotDescription, RSkillManifest
 
 __all__ = [
     "LaunchInvocation",
@@ -72,250 +73,56 @@ _console = Console(soft_wrap=True)
 
 @dataclass(frozen=True)
 class _HalSpec:
-    """Per-robot HAL spawn descriptor.
+    """HAL spawn descriptor, derived from the manifest + DeployScene (no per-robot table).
 
-    ``package`` / ``executable`` / ``node_name`` parameterise the HAL
-    ``LifecycleNode`` in ``deploy_e2e.launch.py``. ``supported_robot_names``
-    is the set of ``RobotDescription.name`` values this HAL is willing
-    to drive — the CLI asserts the loaded manifest's name is in this
-    set so a mis-paired registry entry (openarm HAL routed at an so100
-    manifest) fails loud at resolution time, not at the HAL's first
-    actuation tick. ``default_params`` is the parameter dict the HAL
-    accepts via its ROS parameter interface; operator-supplied
-    ``--hal`` overrides win.
+    Every ``openral_hal_*`` ROS package runs the same manifest-driven node
+    (``make_lifecycle_main_from_manifest``), so ``package`` only decides which
+    install hosts it: the robot's own ``openral_hal_<robot_id>`` package when
+    ``packages/`` ships one (keeps e.g. openarm's ``launch/real_bringup.launch.py``
+    convention), else the generic ``openral_hal_scene_attached``. The node is
+    always named ``openral_hal_<robot_id>`` (the launch overrides the name).
+
+    ``bare_twin_sim`` is a property of the SCENE, not the robot: see
+    ``_scene_builds_bare_twin``.
     """
 
     package: str
     executable: str
     node_name: str
-    supported_robot_names: frozenset[str]
-    default_params: dict[str, object] = field(default_factory=dict)
-    # HAL nodes that declare a `sim_env_yaml` ROS
-    # parameter (today: openral_hal_panda_mobile) opt in via this
-    # flag. When True, `openral deploy sim --config <yaml>` injects the
-    # resolved config path into hal_params so the HAL builds a live
-    # `openral_sim.SimRollout` env in-process. Other HALs leave it
-    # False so rclpy doesn't reject the unknown parameter at startup
-    # (`automatically_declare_parameters_from_overrides=False` is the
-    # default).
-    supports_sim_env_yaml: bool = False
-    # HAL nodes built via `make_lifecycle_main_from_manifest`
-    # (franka / ur5e / ur10e / aloha / g1 / h1 / rizon4 / so100 / so101) declare
-    # `robot_yaml` + `hal_mode` params and construct their HAL through
-    # `build_hal(mode=...)`. When True, `openral deploy sim` injects the resolved
-    # manifest path + `hal_mode="sim"`; `openral deploy run` injects
-    # `hal_mode="real"`.
-    manifest_driven: bool = False
-    # issue #191 Phase 2/3b — a manifest-driven arm that builds its OWN sim
-    # MJCF rather than scene-attaching: so100/so101 derive a bare
-    # `MujocoArmHAL` twin from the manifest's `sim:` block; openarm composes a
-    # tabletop MJCF from `scene_defaults.composition`. When True, the
-    # manifest-driven injection below skips `sim_env_yaml` so the node builds
-    # the explicit `hal.sim` HAL (with the composed mjcf threaded in) instead
-    # of a scene-attached `SimAttachedHAL`. Other manifest arms leave it
-    # False and scene-attach.
     bare_twin_sim: bool = False
 
 
-_ROBOT_HAL_REGISTRY: dict[str, _HalSpec] = {
-    # Keys match the directory name under ``robots/<robot_id>/``; the
-    # CLI looks up ``robots/<robot_id>/robot.yaml`` against this key. To
-    # add a new robot to ``openral deploy sim``: ship a ``openral_hal_<X>``
-    # ROS package with a ``lifecycle_node.py`` executable, register it
-    # in the ros2-build Justfile target, and add an entry here. The
-    # Python HAL adapters under ``python/hal/src/openral_hal/`` are a
-    # different layer (used by ``openral deploy run`` / ``openral sim run``);
-    # they do not provide ROS lifecycle nodes by themselves.
-    "openarm": _HalSpec(
-        package="openral_hal_openarm",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_openarm",
-        supported_robot_names=frozenset({"openarm_v2", "openarm"}),
-        # issue #191 Phase 3b — migrated onto the manifest-driven node. Scene
-        # composition (robot_lift_z / robot_forward_x / white_background) moved to
-        # the manifest's `scene_defaults.composition`; HAL kwargs (settle_steps /
-        # gravity_enabled / staleness_limit_s) to `hal.parameters`; cameras via
-        # SimSensorBridge + OpenArmMujocoHAL.read_images. Only the viewer toggle
-        # remains a node ROS param.
-        default_params={
-            "viewer_enabled": True,
-        },
-        manifest_driven=True,
-        # openarm builds its own MJCF via scene COMPOSITION (the manifest's
-        # `scene_defaults.composition`), not scene-attach — so suppress the
-        # `sim_env_yaml` injection (see `bare_twin_sim`).
-        bare_twin_sim=True,
-    ),
-    "so100_follower": _HalSpec(
-        # issue #191 Phase 2 — migrated onto the manifest-driven node
-        # (`make_lifecycle_main_from_manifest`). `hal_mode="sim"` derives a bare
-        # `MujocoArmHAL` twin; `hal_mode="real"` builds `SO100FollowerHAL` with
-        # `port` / `calibrate_on_connect` from the manifest's `hal.parameters`
-        # (so no `port` ROS param — the node would reject the unknown override).
-        package="openral_hal_so100",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_so100",
-        supported_robot_names=frozenset({"so100_follower"}),
-        manifest_driven=True,
-        bare_twin_sim=True,
-    ),
-    "so101_follower": _HalSpec(
-        # The SO-101 is a hardware revision of the SO-100 (same 6-DoF chain,
-        # same lerobot Feetech STS3215 backend), so it reuses the
-        # ``openral_hal_so100`` ROS lifecycle node (manifest-driven) verbatim
-        # — no dedicated ``openral_hal_so101`` package (CLAUDE.md §1.13).
-        # ``deploy sim`` injects this manifest + ``hal_mode="sim"``; the node
-        # builds a bare ``MujocoArmHAL.from_description`` from
-        # ``robots/so101_follower/robot.yaml`` (``assets.mjcf`` →
-        # ``so101_new_calib``; so100 uses ``so_arm100``). The robot-name
-        # guard below binds this entry to so101.
-        package="openral_hal_so100",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_so100",
-        supported_robot_names=frozenset({"so101_follower"}),
-        manifest_driven=True,
-        bare_twin_sim=True,
-    ),
-    "panda_mobile": _HalSpec(
-        # panda_mobile publishes /joint_states + /odom +
-        # /scan and broadcasts the odom -> base_link TF that slam_toolbox + Nav2
-        # both need. issue #191 Phase 3 migrated it onto the manifest-driven node:
-        # MobileBaseBridge owns /odom + TF + /cmd_vel (gated on the manifest's
-        # `base_joints`), SimSensorBridge owns /scan + cameras + depth + viewer.
-        package="openral_hal_panda_mobile",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_panda_mobile",
-        supported_robot_names=frozenset({"panda_mobile"}),
-        default_params={
-            "odom_publish_rate_hz": 20.0,
-            # The /scan envelope (rate / beam count / range) is NOT hardcoded
-            # here: it's derived from the robot.yaml lidar_2d sensor at resolve
-            # time (see _resolve_deploy_target) so robot.yaml stays the single
-            # source of truth. viewer_enabled opens a non-blocking
-            # mujoco.viewer.launch_passive window (no-op headless).
-            "viewer_enabled": True,
-        },
-        # Scene-attach (SimAttachedHAL via sim_env_yaml) when a scene config is
-        # given; bare PandaMobileHAL digital twin otherwise.
-        manifest_driven=True,
-        supports_sim_env_yaml=True,
-    ),
-    # Lidar-less visual-SLAM twin of panda_mobile: same HAL node + sim
-    # composition, a different manifest (has_lidar false, has_vision_slam true).
-    # The HAL is manifest-driven so it reads the panda_mobile_vslam manifest's
-    # sensors/capabilities; robosuite still builds a PandaMobile from the scene's
-    # backend_options. Registered explicitly below (after the dict) to stay DRY.
-    "franka_panda": _HalSpec(
-        package="openral_hal_franka",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_franka",
-        supported_robot_names=frozenset({"franka_panda"}),
-        default_params={},
-        manifest_driven=True,
-    ),
-    "ur5e": _HalSpec(
-        package="openral_hal_ur5e",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_ur5e",
-        supported_robot_names=frozenset({"ur5e"}),
-        default_params={},
-        manifest_driven=True,
-    ),
-    "ur10e": _HalSpec(
-        package="openral_hal_ur10e",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_ur10e",
-        supported_robot_names=frozenset({"ur10e"}),
-        default_params={},
-        manifest_driven=True,
-    ),
-    "aloha_bimanual": _HalSpec(
-        package="openral_hal_aloha",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_aloha",
-        supported_robot_names=frozenset({"aloha_bimanual"}),
-        default_params={},
-        manifest_driven=True,
-    ),
-    "aloha_agilex": _HalSpec(
-        # RoboTwin owns the SAPIEN robot; deploy-sim only needs a ROS lifecycle
-        # host for SimAttachedHAL. This package is intentionally sim-only and
-        # generic, so it never claims a real AgileX hardware transport.
-        package="openral_hal_scene_attached",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_scene_attached",
-        supported_robot_names=frozenset({"aloha_agilex"}),
-        default_params={},
-        manifest_driven=True,
-        supports_sim_env_yaml=True,
-    ),
-    "widowx": _HalSpec(
-        # SimplerEnv owns the SAPIEN WidowX twin; OpenRAL has no real WidowX HAL.
-        # The generic scene-attached node is valid for deploy-sim only because
-        # build_hal(mode="sim", sim_env_yaml=...) bypasses hal.sim entirely.
-        package="openral_hal_scene_attached",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_scene_attached",
-        supported_robot_names=frozenset({"widowx"}),
-        default_params={},
-        manifest_driven=True,
-        supports_sim_env_yaml=True,
-    ),
-    "r1pro": _HalSpec(
-        package="openral_hal_scene_attached",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_scene_attached",
-        supported_robot_names=frozenset({"r1pro"}),
-        default_params={},
-        manifest_driven=True,
-        supports_sim_env_yaml=True,
-    ),
-    "g1": _HalSpec(
-        package="openral_hal_g1",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_g1",
-        supported_robot_names=frozenset({"g1"}),
-        default_params={},
-        manifest_driven=True,
-        # Bare MuJoCo twin from the manifest's `sim:` block (ADR-0087
-        # kinematic-glide base + camera-rigged head cam) — an env-only
-        # DeployScene must not scene-attach. Scene props still compose
-        # via `deploy_scene.composition`, like so100/so101.
-        bare_twin_sim=True,
-    ),
-    "h1": _HalSpec(
-        package="openral_hal_h1",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_h1",
-        supported_robot_names=frozenset({"h1"}),
-        default_params={},
-        manifest_driven=True,
-    ),
-    "rizon4": _HalSpec(
-        package="openral_hal_rizon4",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_rizon4",
-        supported_robot_names=frozenset({"rizon4"}),
-        default_params={},
-        manifest_driven=True,
-    ),
-    "galaxea_a1": _HalSpec(
-        package="openral_hal_galaxea_a1",
-        executable="lifecycle_node.py",
-        node_name="openral_hal_galaxea_a1",
-        supported_robot_names=frozenset({"galaxea_a1"}),
-        default_params={},
-        manifest_driven=True,
-    ),
-}
+_GENERIC_HAL_PACKAGE: Final = "openral_hal_scene_attached"
 
-# The lidar-less visual-SLAM twin reuses panda_mobile's HAL verbatim (same node,
-# same sim composition, manifest-driven) — only the manifest name differs. Derive
-# it so the two never drift; see robots/panda_mobile_vslam/robot.yaml.
-_ROBOT_HAL_REGISTRY["panda_mobile_vslam"] = replace(
-    _ROBOT_HAL_REGISTRY["panda_mobile"],
-    supported_robot_names=frozenset({"panda_mobile_vslam"}),
-)
+
+def _scene_builds_bare_twin(deploy_scene: DeployScene | None) -> bool:
+    """Whether ``deploy sim`` builds a bare MuJoCo twin instead of scene-attaching.
+
+    Bare twin when the DeployScene composes its own arena (``composition``)
+    or names a scene id that ``openral_sim.SCENES`` cannot build (nothing to
+    attach to); otherwise the HAL scene-attaches (``SimAttachedHAL`` around
+    the scene's ``SimRollout``). No scene at all (``--robot`` only) is a bare
+    twin too.
+    """
+    if deploy_scene is None or deploy_scene.composition is not None:
+        return True
+    try:
+        from openral_sim import SCENES  # reason: defer optional dep
+    except ImportError:
+        return True
+    return deploy_scene.scene.id not in SCENES
+
+
+def _derive_hal_spec(robot_id: str, repo_root: Path, deploy_scene: DeployScene | None) -> _HalSpec:
+    """Build the ``_HalSpec`` for ``robot_id`` — see ``_HalSpec`` for the rule."""
+    own = f"openral_hal_{robot_id}"
+    ships_own = (repo_root / "packages" / own / "package.xml").is_file()
+    return _HalSpec(
+        package=own if ships_own else _GENERIC_HAL_PACKAGE,
+        executable="lifecycle_node.py",
+        node_name=own,
+        bare_twin_sim=_scene_builds_bare_twin(deploy_scene),
+    )
 
 
 @dataclass(frozen=True)
@@ -552,22 +359,27 @@ def _repo_root_from(start: Path) -> Path:
     )
 
 
-def _load_scene_robot_id(config: Path) -> str | None:
-    """Return the ``robot_id`` declared in a DeployScene YAML, or None.
+def _load_scene_robot_id(
+    config: Path, requested: str | None = None, *, sim: bool = True
+) -> str | None:
+    """Bind the deploy robot for a DeployScene YAML, or return None.
 
     Strict DeployScene loading: ``openral deploy sim --config``
     accepts a DeployScene YAML only (scene + optional robot, no task).
     SimScene / BenchmarkScene YAMLs are rejected with a redirect message.
 
-    Two paths to discover the robot:
+    ``requested`` (``--robot``) wins over the YAML's ``robot_id:``. For a
+    scene registered in ``openral_sim.SCENES`` the choice goes through
+    ``SCENES.resolve_robot`` — the rule ``sim run`` / ``benchmark`` / the sim
+    HAL share — so a robot the scene cannot build is refused and a fixed
+    scene supplies its default. Unregistered (real-robot) scene ids pass the
+    choice through unchanged, as does ``sim=False`` (``deploy run`` drives
+    the real robot; the scene only describes its workcell). ``None`` means
+    nothing named a robot.
 
-    1. ``robot_id:`` declared explicitly in the YAML → use it.
-    2. The scene id is registered with a ``fixed_robot=`` in
-       ``openral_sim.SCENES`` (every robocasa kitchen / LIBERO / ALOHA
-       / MetaWorld / PushT scene) → look it up. Lets robocasa-shaped
-       YAMLs (which forbid ``robot_id:`` per the schema's free-axis
-       guard) still resolve into ``openral deploy sim`` without the
-       operator passing ``--robot`` redundantly.
+    Raises:
+        ROSConfigError: the YAML fails to load, or the robot is not one the
+            registered scene can instantiate.
     """
     from openral_core import DeployScene, load_scene_strict  # reason: defer schema import
 
@@ -575,17 +387,17 @@ def _load_scene_robot_id(config: Path) -> str | None:
         env = load_scene_strict(str(config), DeployScene)
     except (ROSConfigError, FileNotFoundError) as exc:
         raise ROSConfigError(f"failed to load --config {config}: {exc}") from exc
-    if env.robot_id is not None:
-        return env.robot_id
-    # Fixed-robot scene fallback. The sim registry is the source of
-    # truth for which scene ids hard-fix a robot.
+    chosen = requested or env.robot_id
+    if not sim:
+        return chosen
     try:
         from openral_sim import SCENES  # reason: defer optional dep
     except ImportError:
-        return None
-    if env.scene.id in SCENES:
-        return SCENES.fixed_robot(env.scene.id)
-    return None
+        return chosen
+    scene_id = env.scene.id
+    if scene_id not in SCENES or (chosen is None and SCENES.allowed_robots(scene_id) is None):
+        return chosen
+    return SCENES.resolve_robot(scene_id, chosen)
 
 
 def _scan_params_from_description(description: RobotDescription) -> dict[str, object]:
@@ -612,18 +424,23 @@ def _scan_params_from_description(description: RobotDescription) -> dict[str, ob
 
 
 def _scene_backend_has_sim_clock(config: Path | None) -> bool:
-    """Return whether a DeployScene backend can be the OpenRAL simulation clock authority."""
+    """Return whether the DeployScene's sim backend can be the OpenRAL clock authority.
+
+    A bare MuJoCo twin always reports ``sim_time_ns``; a scene-attached HAL
+    does when its scene is registered with ``SCENES.register(...,
+    sim_clock=True)`` — not keyed on the YAML's ``scene.backend`` enum, which
+    is descriptive and can be wrong.
+    """
     if config is None:
         return False
-    from openral_core import DeployScene, PhysicsBackend, load_scene_strict
+    from openral_core import DeployScene, load_scene_strict
 
     scene = load_scene_strict(str(config), DeployScene)
-    return scene.scene.backend in {
-        PhysicsBackend.MUJOCO,
-        PhysicsBackend.MUJOCO_MJX,
-        PhysicsBackend.ISAACSIM,
-        PhysicsBackend.SAPIEN,
-    }
+    if _scene_builds_bare_twin(scene):
+        return True
+    from openral_sim import SCENES  # reason: defer optional dep; bare-twin check proved it imports
+
+    return SCENES.meta(scene.scene.id).get("sim_clock") is True
 
 
 def _resolve_clock_origin(*, hal_mode: str, config: Path | None) -> str:
@@ -1037,14 +854,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         raise ROSConfigError(f"hal_mode must be 'sim' or 'real', got {hal_mode!r}.")
 
     deploy_scene = DeployScene.from_yaml(str(config)) if config is not None else None
-    scene_robot_id = (
-        deploy_scene.robot_id
-        if deploy_scene is not None and deploy_scene.robot_id is not None
-        else _load_scene_robot_id(config)
+    scene_robot_id = deploy_scene.robot_id if deploy_scene is not None else None
+    robot_id = (
+        _load_scene_robot_id(config, robot_override, sim=hal_mode == "sim")
         if config is not None
-        else None
+        else robot_override
     )
-    robot_id = robot_override or scene_robot_id
     if not robot_id:
         raise ROSConfigError(
             "robot_id is undefined: pass ``--robot <id>`` or (for ``deploy sim``) "
@@ -1158,32 +973,36 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             "kinematically-compatible arm on a free-axis scene."
         )
 
-    hal = _ROBOT_HAL_REGISTRY.get(robot_id)
-    if hal is None:
-        supported = ", ".join(sorted(_ROBOT_HAL_REGISTRY))
-        raise ROSConfigError(
-            f"robot {robot_id!r} has no HAL entry in _ROBOT_HAL_REGISTRY. "
-            f"Supported: {supported}. The registry key matches the "
-            "``robots/<robot_id>/`` directory name — e.g. ``--robot "
-            "franka_panda`` (not ``--robot franka``). To add a new robot, "
-            "ship a ROS ``openral_hal_<X>`` package with a "
-            "``lifecycle_node.py`` executable, add it to the ros2-build "
-            "Justfile target, and register it here."
-        )
+    from openral_sim.policies.robots import resolve_robot_manifest
 
     repo_root = _repo_root_from(Path(__file__))
-    robot_yaml = repo_root / "robots" / robot_id / "robot.yaml"
-    if not robot_yaml.is_file():
-        raise ROSConfigError(
-            f"robot manifest not found at {robot_yaml}; expected robots/{robot_id}/robot.yaml."
-        )
+    # Same lookup as `sim run`: $OPENRAL_ROBOTS_DIR/<id>/robot.yaml first, then
+    # <repo_root>/robots/<id>/robot.yaml. The directory name is the robot id —
+    # e.g. ``--robot franka_panda`` (not ``--robot franka``).
+    robot_yaml = resolve_robot_manifest(robot_id, repo_root=repo_root)
 
     # Validate the manifest carries the e2e fields (joint position /
-    # velocity / effort limits) and assert the manifest's declared name
-    # is one the registered HAL accepts — protects against a typo
-    # routing the wrong HAL at a robot.
+    # velocity / effort limits).
     description = RobotDescription.from_yaml(str(robot_yaml))
     description.validate_for_e2e_pipeline()
+    # No per-robot table: the HAL node + sim path derive from the manifest
+    # and the scene (see `_derive_hal_spec`).
+    hal = _derive_hal_spec(robot_id, repo_root, deploy_scene)
+    if (
+        hal_mode == "sim"
+        and hal.bare_twin_sim
+        and description.hal.sim is None
+        and description.sim is None
+    ):
+        raise ROSCapabilityMismatch(
+            f"robot {robot_id!r} cannot be simulated here: hal.sim is null, the manifest "
+            "has no `sim:` block to derive a MuJoCo twin from, and the deploy scene "
+            + (
+                f"{deploy_scene.scene.id!r} is not a registered openral_sim scene to attach to."
+                if deploy_scene is not None
+                else "is missing (pass --config <scene.yaml>)."
+            )
+        )
 
     # fail fast before shelling the launch if real mode is asked of
     # a simulation-only robot (better UX than a graph that dies at HAL
@@ -1315,17 +1134,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     if spatial_memory_ingest is None:
         spatial_memory_ingest = enable_object_detector
 
-    if description.name not in hal.supported_robot_names:
-        raise ROSConfigError(
-            f"HAL/robot mismatch: robot_id={robot_id!r} (registry → "
-            f"{hal.package!r}) declares supported_robot_names="
-            f"{sorted(hal.supported_robot_names)}, but "
-            f"{robot_yaml} has name={description.name!r}. Either fix the "
-            "manifest's `name:` field or register the right HAL for this "
-            "robot in openral_cli.deploy_sim._ROBOT_HAL_REGISTRY."
-        )
-
-    hal_params: dict[str, object] = {**hal.default_params}
+    hal_params: dict[str, object] = {}
     # a DeployScene ``hal:`` binding carries the workcell's
     # host-specific HAL defaults (serial ``port`` + lerobot ``id`` /
     # ``calibration_dir`` + ``calibrate_on_connect``), the HAL analogue of a
@@ -1347,6 +1156,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         hal_params.update(scene_hal)
     if hal_param_overrides:
         hal_params.update(hal_param_overrides)
+    # Snapshot before the node-level knobs below are added: these are the HAL
+    # constructor kwargs forwarded verbatim as `hal_transport_json`.
+    hal_ctor_params = {k: v for k, v in hal_params.items() if v is not None}
 
     # derive the /scan envelope from robot.yaml's lidar_2d
     # sensor (single source of truth) instead of hardcoding it in the
@@ -1355,36 +1167,27 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     for _scan_key, _scan_value in _scan_params_from_description(description).items():
         hal_params.setdefault(_scan_key, _scan_value)
 
-    # forward the sim config to HALs that declare
-    # `sim_env_yaml` support. Gated on the per-HAL opt-in flag because
-    # rclpy rejects unknown parameters at startup
-    # (`automatically_declare_parameters_from_overrides=False` is the
-    # default), so blanket-forwarding would break every other HAL.
-    if hal.supports_sim_env_yaml and hal_mode == "sim" and config is not None:
-        hal_params.setdefault("sim_env_yaml", str(config.resolve()))
-
-    # manifest-driven nodes build their HAL via build_hal(mode).
+    # Every HAL node is manifest-driven: it builds its HAL via build_hal(mode).
     # `deploy sim` → hal_mode="sim"; `deploy run` → hal_mode="real". The node
     # raises ROSCapabilityMismatch for a sim-only-vs-real mismatch.
-    if hal.manifest_driven:
-        hal_params.setdefault("robot_yaml", str(robot_yaml))
-        hal_params.setdefault("hal_mode", hal_mode)
-        # deploy sim is inherently a scene; forward the resolved
-        # config so the manifest-driven node scene-attaches (SimAttachedHAL)
-        # instead of building a bare twin. Sim mode only; real never attaches.
-        # `bare_twin_sim` arms (so100 / so101) opt out: they build a bare
-        # `MujocoArmHAL` twin from their `sim:` block (issue #191 Phase 2),
-        # preserving the pre-migration `supports_sim_robot_yaml` behaviour.
-        if hal_mode == "sim" and config is not None and not hal.bare_twin_sim:
-            hal_params.setdefault("sim_env_yaml", str(config.resolve()))
-        # forward the DeployScene's own MJCF composition (its arena)
-        # to the manifest-driven node so the SCENE owns its environment instead
-        # of the robot manifest. Sim-mode bare-twin robots only (scene-attach
-        # robots build the scene's SimRollout directly via sim_env_yaml).
-        if hal_mode == "sim" and deploy_scene is not None and hal.bare_twin_sim:
-            scene_composition = deploy_scene.composition
-            if scene_composition is not None:
-                hal_params.setdefault("scene_composition_json", scene_composition.model_dump_json())
+    hal_params.setdefault("robot_yaml", str(robot_yaml))
+    hal_params.setdefault("hal_mode", hal_mode)
+    if hal_mode == "sim" and config is not None and not hal.bare_twin_sim:
+        # A registered scene with no own composition: scene-attach
+        # (SimAttachedHAL around the scene's SimRollout). Real never attaches.
+        hal_params.setdefault("sim_env_yaml", str(config.resolve()))
+    if hal_mode == "sim" and deploy_scene is not None and hal.bare_twin_sim:
+        # Bare twin: forward the DeployScene's own MJCF composition (its arena)
+        # so the SCENE owns its environment, not the robot manifest.
+        scene_composition = deploy_scene.composition
+        if scene_composition is not None:
+            hal_params.setdefault("scene_composition_json", scene_composition.model_dump_json())
+    # Every constructor kwarg (DeployScene `hal.defaults` + `--hal`) also rides
+    # as one JSON param, so a kwarg the node does not declare by name (galaxea
+    # `host`, openarm `left_can_interface`, …) still reaches build_hal instead
+    # of being dropped. build_hal filters by the HAL constructor's signature.
+    if hal_ctor_params:
+        hal_params["hal_transport_json"] = json.dumps(hal_ctor_params, sort_keys=True)
 
     service = reset_to_pose_service or f"/openral/{robot_id}/reset_to_pose"
     # Empty by default: the runner uses its checked joint ramp until a MoveIt
@@ -1543,11 +1346,6 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     if _resolved_initial_prompt:
         argv_template.append(f"initial_task_prompt:={_resolved_initial_prompt}")
 
-    # Real deploys — forward the DeployScene YAML so the runtime node
-    # opens every deploy-bound sensor (robot manifest + scene `sensors:`)
-    # and publishes the physical cameras onto
-    # /openral/cameras/<name>/image (sim keeps the HAL bridge as the
-    # only camera source; empty default in the launch file).
     # Forward the DeployScene YAML on BOTH paths: the launch derives the HAL
     # autostart budget from its `backend_options.boot_timeout_s` (a sim Isaac /
     # BEHAVIOR scene boots past the 300 s floor) and merges its `sensors:` into
@@ -2702,7 +2500,9 @@ def deploy_sim_command(  # noqa: PLR0915  # reason: linear resolve → print →
             "Per-robot HAL parameter override, ``key=value`` (repeatable). "
             "Value is parsed as JSON when possible (so ``--hal "
             "viewer_enabled=false`` works); otherwise treated as a string. "
-            "Overrides the per-robot defaults in ``_ROBOT_HAL_REGISTRY``."
+            "Overrides the DeployScene's ``hal.defaults`` and the manifest's "
+            "``hal.parameters.defaults``; every key also reaches the HAL "
+            "constructor via ``hal_transport_json``."
         ),
     ),
     enable_slam: bool | None = typer.Option(

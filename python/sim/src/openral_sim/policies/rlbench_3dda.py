@@ -31,6 +31,7 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
 
+from openral_sim._quantization import require_supported_dtype, resolve_quant_plan
 from openral_sim._sidecar_common import alloc_conf_var, venv_torch_version
 from openral_sim.registry import POLICIES
 from openral_sim.sidecar import SidecarClient
@@ -164,7 +165,15 @@ def _locate_sidecar_script() -> Path:
     )
 
 
-@POLICIES.register("diffuser_actor")
+@POLICIES.register(
+    "diffuser_actor",
+    install_groups=("rlbench",),
+    required_imports=("zmq", "msgpack"),
+    install_note=(
+        "The policy + the CoppeliaSim/PyRep RLBench env run in "
+        "tools/rlbench_*_sidecar.py's own externally-provisioned Python 3.10 venv."
+    ),
+)
 def _build_diffuser_actor(env_cfg: SimEnvironment) -> _Diffuser3DActorAdapter:
     """Build the 3D Diffuser Actor adapter behind the policy sidecar.
 
@@ -173,6 +182,14 @@ def _build_diffuser_actor(env_cfg: SimEnvironment) -> _Diffuser3DActorAdapter:
     sidecar venv + 3DDA repo + checkpoint/instructions/bounds (externally
     provisioned); spawns the sidecar and connects.
     """
+    from openral_sim.policies._policy_loading import load_manifest_for_spec
+
+    # The sidecar runs the checkpoint in fp32 and takes no precision flag.
+    require_supported_dtype(
+        resolve_quant_plan(env_cfg.vla, load_manifest_for_spec(env_cfg.vla)),
+        frozenset({"fp32"}),
+        "diffuser_actor",
+    )
     repo = _resolve_file(_REPO_ENV, _DEFAULT_REPO, "repo checkout")
     checkpoint = _resolve_file(_CKPT_ENV, _default_checkpoint(), "checkpoint")
     instructions = _resolve_file(

@@ -747,7 +747,6 @@ def resolve_quant_plan(
     manifest: Any | None = None,
     *,
     default: str | None = None,
-    manifest_dtype_is_storage: bool = False,
 ) -> QuantPlan:
     """Resolve one load's quantization from every source, in one place.
 
@@ -755,12 +754,19 @@ def resolve_quant_plan(
 
     1. ``$OPENRAL_QUANTIZATION_DTYPE`` — the per-run override, honoured
        identically by every family.
-    2. ``spec.extra["dtype"]`` — a programmatic ``VLASpec``, or a scene that
-       pins the dtype for one pairing.
-    3. ``manifest.quantization.dtype`` — the rSkill's declared dtype, the
-       normal case.
-    4. ``default`` — the adapter's own fallback, for families that quantize
+    2. ``spec.quantization.dtype`` — the typed ``VLASpec`` override.
+    3. ``spec.extra["dtype"]`` — the untyped override (a programmatic
+       ``VLASpec``, or a scene that pins the dtype for one pairing).
+    4. ``manifest.quantization.dtype`` — the rSkill's declared *runtime*
+       dtype, the normal case. A checkpoint stored at a different precision
+       than it runs records that in ``quantization.extra.stored_dtype``; the
+       resolver never reads it.
+    5. ``default`` — the adapter's own fallback, for families that quantize
        unless told otherwise.
+
+    The resolver does not know which tokens a family can load; every adapter
+    passes the plan through :func:`require_supported_dtype`, so an
+    unsupported request raises instead of loading something else.
 
     Every resolution is logged; a resolved dtype that *differs* from the
     manifest's declared one is logged at WARNING naming both, because the
@@ -768,33 +774,25 @@ def resolve_quant_plan(
     about to run (CLAUDE.md §1.4 — quantization is never silent).
 
     Args:
-        spec: The ``VLASpec`` for this run; its ``extra`` is read.
+        spec: The ``VLASpec`` for this run; its ``quantization`` and
+            ``extra`` are read.
         manifest: The resolved ``RSkillManifest``, when the caller has one.
         default: Fallback token when no source declares a dtype.
-        manifest_dtype_is_storage: Set by families whose manifests use
-            ``quantization.dtype`` to describe the *stored* checkpoint rather
-            than the runtime load. Every GR00T rSkill is published ``bf16``
-            (and named ``…-bf16``) while the adapter NF4-packs it on load, so
-            for those a plain-precision declaration must not veto the packing
-            ``default``. A declared *packing* token (``nf4`` / ``int8``) still
-            wins, and an explicit override always wins — including ``bf16`` or
-            ``none`` to turn packing off.
 
     Returns:
         A :class:`QuantPlan`.
     """
     declared = normalise_manifest_dtype(manifest) if manifest is not None else None
-    declared_token = canonical_quant_token(declared)
-    # Storage-dtype families: only a packing declaration pins the runtime.
-    manifest_token = declared_token
-    if manifest_dtype_is_storage and manifest_token not in _PACKING_TOKENS:
-        manifest_token = None
+    manifest_token = canonical_quant_token(declared)
 
     env_raw = os.environ.get(QUANTIZATION_DTYPE_ENV)
+    typed_raw = normalise_manifest_dtype(spec)
     spec_raw = spec.extra.get("dtype") if hasattr(spec, "extra") and spec.extra else None
 
     if env_raw:
         token, source = canonical_quant_token(env_raw), "env"
+    elif typed_raw:
+        token, source = canonical_quant_token(typed_raw), "spec_quantization"
     elif spec_raw:
         token, source = canonical_quant_token(spec_raw), "spec_extra"
     elif manifest_token:
@@ -805,12 +803,11 @@ def resolve_quant_plan(
         token, source = None, "unset"
 
     quantize = token in _PACKING_TOKENS
-    expected = declared_token if manifest_token is not None else None
-    if token is not None and expected is not None and token != expected:
+    if token is not None and manifest_token is not None and token != manifest_token:
         log.warning(
             "quantization.override",
             resolved=token,
-            declared=expected,
+            declared=manifest_token,
             source=source,
             skill=getattr(manifest, "name", None),
             note=(
@@ -826,41 +823,83 @@ def resolve_quant_plan(
     )
 
 
-def manifest_dtype(spec: Any, manifest: Any | None = None) -> str | None:
-    """Return the dtype the adapter should load with, if any.
+def require_supported_dtype(plan: QuantPlan, supported: frozenset[str], family: str) -> None:
+    """Refuse a resolved dtype the ``family`` cannot actually load.
 
-    Thin wrapper over :func:`resolve_quant_plan` kept for the in-process
-    adapters (pi05 / molmoact2 / openvla) that only need the token. See that
-    function for the full precedence, including the
-    ``$OPENRAL_QUANTIZATION_DTYPE`` per-run override.
+    Every adapter calls this with the set of canonical tokens (see
+    :func:`canonical_quant_token`) its load path honours, so a request it
+    would otherwise silently reinterpret — ``int8`` loading as bf16, ``bf16``
+    loading as fp32 — fails at build time instead (CLAUDE.md §1.4). An unset
+    plan (``dtype is None``) means the adapter's own default applies and is
+    always accepted.
 
-    Returns ``None`` when no source supplies a dtype, leaving
-    ``default_dtype_for_device`` to pick a CUDA-aware default at the call site.
+    Raises:
+        ROSConfigError: Naming the family, the requested token, where it came
+            from, and the supported set.
+
+    Example:
+        >>> plan = QuantPlan(dtype="int8", quantize=True, source="env", extra={})
+        >>> try:
+        ...     require_supported_dtype(plan, frozenset({"nf4", "bf16"}), "molmoact2")
+        ... except ROSConfigError as exc:
+        ...     print(str(exc).split(";")[0])
+        molmoact2 cannot load dtype 'int8' (from env)
     """
-    return resolve_quant_plan(spec, manifest).dtype
+    if plan.dtype is None or plan.dtype in supported:
+        return
+    raise ROSConfigError(
+        f"{family} cannot load dtype {plan.dtype!r} (from {plan.source}); "
+        f"supported: {sorted(supported)}. Set {QUANTIZATION_DTYPE_ENV} or the "
+        "rSkill's quantization.dtype to one of those."
+    )
 
 
 def torch_dtype_for(torch: Any, dtype_str: str | None, device: str) -> Any:
     """Map a manifest dtype string to a torch dtype, with a CUDA-aware default.
 
-    Recognised dtype strings (case-insensitive): ``bf16`` / ``bfloat16``,
-    ``fp16`` / ``float16`` / ``half``, ``fp32`` / ``float32``. Anything
-    else falls through to the device-aware default (bf16 on CUDA, fp32
-    elsewhere) so adapters can pass through ``"nf4"`` / ``"int8"`` and
-    let this helper pick a sensible *compute* dtype for the leaves that
-    won't be quantized.
+    Recognised dtype strings (case-insensitive, via
+    :func:`canonical_quant_token`): ``bf16`` / ``bfloat16``, ``fp16`` /
+    ``float16`` / ``half``, ``fp32`` / ``float32``. ``None`` / ``"none"``
+    pick the device-aware default (bf16 on CUDA, fp32 elsewhere). A packing
+    token (``nf4`` / ``int8``) or an unknown one raises: it is not a torch
+    dtype, and silently mapping it to the default is how an ``int8`` request
+    used to load as bf16. Packing adapters pass ``None`` for the compute
+    dtype of the leaves they do not quantize.
+
+    Raises:
+        ROSConfigError: On a token that names no torch dtype.
     """
-    if dtype_str:
-        s = dtype_str.lower()
-        if s in {"bf16", "bfloat16"}:
-            return torch.bfloat16
-        if s in {"fp16", "float16", "half"}:
-            return torch.float16
-        if s in {"fp32", "float32"}:
-            return torch.float32
-    # Default: bf16 on CUDA (large VLAs are too big for fp32 on consumer
-    # GPUs), fp32 elsewhere.
-    return torch.bfloat16 if device.startswith("cuda") else torch.float32
+    token = canonical_quant_token(dtype_str)
+    if token in (None, "none"):
+        # Default: bf16 on CUDA (large VLAs are too big for fp32 on consumer
+        # GPUs), fp32 elsewhere.
+        return torch.bfloat16 if device.startswith("cuda") else torch.float32
+    mapped = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}.get(str(token))
+    if mapped is None:
+        raise ROSConfigError(
+            f"dtype {dtype_str!r} is not a torch compute dtype (expected bf16 / fp16 / "
+            "fp32, or none for the device default)."
+        )
+    return mapped
+
+
+def sidecar_quant_token(plan: QuantPlan, accepted: frozenset[str], family: str) -> str:
+    """Map a resolved plan onto a sidecar's ``--quantization`` token, or raise.
+
+    Every OpenRAL sidecar loads its ``none`` mode at bf16, so a ``bf16``
+    request maps onto ``none`` when the sidecar accepts it; any other token
+    outside ``accepted`` raises via :func:`require_supported_dtype` rather than
+    collapsing to something the sidecar can parse.
+
+    Example:
+        >>> sidecar_quant_token(
+        ...     QuantPlan("bf16", False, "env", {}), frozenset({"none", "nf4"}), "lingbot_vla2"
+        ... )
+        'none'
+    """
+    supported = accepted | {"bf16"} if "none" in accepted else accepted
+    require_supported_dtype(plan, supported, family)
+    return "none" if plan.dtype in (None, "bf16") else str(plan.dtype)
 
 
 def default_dtype_for_device(device: str) -> str:
@@ -970,11 +1009,13 @@ __all__ = [
     "detect_prequantized_nf4",
     "install_prequantized_linears",
     "load_prequantized_state_for_rskill",
-    "manifest_dtype",
     "normalise_manifest_dtype",
     "peek_safetensors_keys",
     "quantize_int8_in_place",
     "quantize_nf4_in_place",
+    "require_supported_dtype",
+    "resolve_quant_plan",
+    "sidecar_quant_token",
     "targeted_reset_parameters",
     "tie_transformers_weights",
     "torch_dtype_for",

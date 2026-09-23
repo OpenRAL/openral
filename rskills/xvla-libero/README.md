@@ -74,7 +74,7 @@ underlying paper are TBD pending checkpoint inspection — see
 | `version` | `0.1.0` |
 | `license` | `apache-2.0` |
 | `role` | `s1` |
-| `runtime` / `quantization.dtype` | `pytorch` / `bf16` |
+| `runtime` / `quantization.dtype` | `pytorch` / `fp32` |
 | `weights_uri` | `hf://lerobot/xvla-libero` |
 | `latency_budget.per_chunk_ms` | 200 ms (conservative — update after local profiling) |
 | `latency_budget.warmup_ms` / `load_ms` | 15 000 ms / 60 000 ms |

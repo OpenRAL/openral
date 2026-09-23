@@ -101,4 +101,4 @@ def test_discovery_degrades_when_installed_as_wheel(monkeypatch: pytest.MonkeyPa
 
     # A real robot lookup still fails loudly, with an actionable message.
     with pytest.raises(Exception, match=r"OPENRAL_ROBOTS_DIR"):
-        robots_mod._resolve_manifest("panda_mobile")
+        robots_mod.resolve_robot_manifest("panda_mobile")

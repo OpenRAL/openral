@@ -52,6 +52,8 @@ from openral_rskill.loader import (
     InstalledRSkillEntry,
     discover_intree_rskills,
     find_repo_root_from,
+    intree_embodiment_tags,
+    known_benchmark_ids,
     rSkill,
     validate_skill_ref,
 )
@@ -73,6 +75,8 @@ __all__ = [
     "find_repo_root_from",
     "gpu_allocated_mb",
     "hf_download_cached_first",
+    "intree_embodiment_tags",
+    "known_benchmark_ids",
     "maybe_attach_pro_hooks",
     "rSkill",
     "rSkillBase",

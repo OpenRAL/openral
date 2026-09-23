@@ -1,24 +1,21 @@
-"""Regression test — every ``robots/<id>/robot.yaml`` matches its ``*_DESCRIPTION`` HAL constant.
+"""Regression test — ``robots/<id>/robot.yaml`` is the runtime source of truth for every HAL.
 
-HAL constants in ``python/hal/src/openral_hal/`` are the runtime source of
-truth; YAMLs under ``robots/`` are what the eval layer loads via
-``ROBOTS.register``. Pins them together so a joint-limit/payload/safety-
-envelope bump can't silently drift the YAML out of sync (issues #54-58).
+``build_hal`` threads the loaded manifest into every HAL constructor (sim and
+real), so ``sim:``, ``sensors:`` and ``collision_geometry:`` edits reach the
+running HAL. ``test_build_hal_binds_the_loaded_manifest`` pins that for every
+robot with a ``hal:`` entrypoint.
 
-UR5e/UR10e/Franka/Sawyer/ALOHA pin to their ``*_REAL_DESCRIPTION`` (production
-manifests), derived from the sim baseline via
-``openral_hal._real_description.make_real_description`` — kinematics,
-safety envelope, capabilities and ``hal`` entrypoints are shared; only
-``sdk_kind`` differs. G1/H1/Rizon4/OpenArm/Anvil-v2 pin to their sim baseline
-because none has a real-HW HAL yet (G1/H1 gated on the M2 C++ S0 cerebellum,
-CLAUDE.md §6.2; Rizon4/OpenArm/Anvil real-HW wrappers are tracked follow-ups)
-— their ``hal.real`` is null until the real adapter lands.
+The ``*_DESCRIPTION`` constants in ``python/hal/src/openral_hal/`` survive
+only as in-code **mirrors** of the manifests (tests and direct
+``FrankaPandaHAL()``-style construction use them). The parametrised test
+below checks each mirror against its manifest, so a joint-limit/payload/
+safety-envelope bump in the YAML fails loudly until the mirror follows
+(issues #54-58). The manifest wins; fix the constant, never the YAML.
 
-SO-100 and ``pusht_2d`` are out of scope: SO-100's YAML carries optional
-sensor entries the in-code constant omits; ALOHA's YAML carries a camera
-``SensorSpec`` + observation/action spec the constant omits (only joint
-inventory + capability + safety + sdk pointer are asserted equal for it);
-``pusht_2d`` has no in-code DESCRIPTION sibling.
+UR5e/UR10e/Franka/Sawyer/ALOHA mirror their ``*_REAL_DESCRIPTION`` (derived
+via ``openral_hal._real_description.make_real_description`` — only
+``sdk_kind`` differs from the sim baseline). G1/H1/Rizon4/OpenArm/Anvil-v2
+mirror their sim baseline. SO-100 and ``pusht_2d`` are out of scope.
 """
 
 from __future__ import annotations
@@ -49,8 +46,8 @@ from openral_core import RobotDescription
         ("robots/galaxea_a1/robot.yaml", "GALAXEA_A1_DESCRIPTION"),
     ],
 )
-def test_robot_yaml_matches_hal_description(manifest_path: str, hal_constant_attr: str) -> None:
-    """The YAML manifest must reproduce the in-code HAL description."""
+def test_hal_constant_mirrors_robot_yaml(manifest_path: str, hal_constant_attr: str) -> None:
+    """The in-code mirror constant must reproduce the YAML manifest (the source of truth)."""
     yaml_desc = RobotDescription.from_yaml(str(Path(manifest_path)))
 
     bh_hal = pytest.importorskip("openral_hal")
@@ -90,3 +87,33 @@ def test_robot_yaml_matches_hal_description(manifest_path: str, hal_constant_att
     assert yaml_modes == hal_modes or yaml_modes == [m.value for m in hal_modes]
     assert yaml_desc.sdk_kind == hal_desc.sdk_kind
     assert yaml_desc.hal == hal_desc.hal  # sim/real HAL entrypoints
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _hal_cases() -> list[tuple[str, str]]:
+    cases: list[tuple[str, str]] = []
+    for manifest in sorted((_REPO_ROOT / "robots").glob("*/robot.yaml")):
+        desc = RobotDescription.from_yaml(str(manifest))
+        if desc.hal.sim is not None or desc.sim is not None:
+            cases.append((manifest.parent.name, "sim"))
+        if desc.hal.real is not None:
+            cases.append((manifest.parent.name, "real"))
+    return cases
+
+
+@pytest.mark.parametrize(("robot_id", "mode"), _hal_cases())
+def test_build_hal_binds_the_loaded_manifest(robot_id: str, mode: str) -> None:
+    """``build_hal`` hands the HAL the loaded manifest itself, not an in-code constant."""
+    from openral_core.exceptions import ROSConfigError
+    from openral_hal import build_hal
+
+    desc = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / robot_id / "robot.yaml"))
+    try:
+        hal = build_hal(desc, mode=mode)  # type: ignore[arg-type] # reason: parametrised literal
+    except ROSConfigError as exc:
+        if "not installed" in str(exc):
+            pytest.skip(f"{robot_id} sim asset needs an optional dependency: {exc}")
+        raise
+    assert hal.description is desc

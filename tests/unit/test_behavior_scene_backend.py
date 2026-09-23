@@ -125,7 +125,7 @@ def test_runtime_skill_consumes_world_state_policy_state() -> None:
 
     class Adapter:
         spec = VLASpec(
-            id="gr00t", weights_uri=str(_ROOT / "rskills" / "gr00t-n17-b1k-turning-on-radio")
+            id="gr00t_b1k", weights_uri=str(_ROOT / "rskills" / "gr00t-n17-b1k-turning-on-radio")
         )
         device = "cpu"
 

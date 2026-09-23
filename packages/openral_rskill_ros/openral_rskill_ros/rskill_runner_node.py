@@ -41,10 +41,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
-from openral_runner import sensor_name_to_slot
+from openral_core import required_vla_camera_slots, sensor_name_to_slot
 
 if TYPE_CHECKING:
-    from openral_core.schemas import RobotDescription
+    from openral_core.schemas import Action, ActionSlot, RobotDescription, RSkillManifest
+    from openral_rskill._policy_io import PolicyIOCodec
     from openral_rskill.base import rSkillBase
     from openral_world_state import WorldStateAggregator
 
@@ -2329,31 +2330,6 @@ def make_local_skill_resolver(
     return _resolver
 
 
-def _vla_camera_slots(description: RobotDescription | None) -> tuple[str, ...]:
-    """RGB sensor VLA slots (``camera1`` / ``camera2`` / ...) in manifest order.
-
-    The values of ``sensor_name_to_slot``, used as the adapter's
-    ``scene_cameras`` so ``resolve_camera_keys`` -> ``_camera_keys`` lands
-    on the slots the checkpoint's ``cam_alias`` maps (``camera1 ->
-    image``). Empty when the manifest declares no RGB sensors — callers
-    then keep their existing ``scene_cameras``.
-    """
-    return tuple(sensor_name_to_slot(description).values())
-
-
-def _required_vla_camera_slots(
-    manifest: Any, description: RobotDescription | None
-) -> tuple[str, ...]:
-    """RGB VLA slots needed by this rSkill, in robot manifest order."""
-    slots = _vla_camera_slots(description)
-    required = {
-        str(req.vla_feature_key).rsplit(".", 1)[-1]
-        for req in manifest.sensors_required
-        if req.modality == "rgb" and req.vla_feature_key
-    }
-    return tuple(slot for slot in slots if slot in required) if required else slots
-
-
 def _pace_tick(prev_deadline_s: float, period_s: float) -> float:
     """Sleep to the next absolute tick deadline, re-anchoring after overruns.
 
@@ -2537,7 +2513,7 @@ def _build_runtime_skill_from_manifest(
     # camera1/2). Slot-level overrides belong in the rSkill manifest's `extra["camera_keys"]`,
     # honoured first by `resolve_camera_keys`; obs-image keys realign in
     # `_PolicyAdapterSkill._step_impl`.
-    effective_scene_cameras = _required_vla_camera_slots(manifest, description) or scene_cameras
+    effective_scene_cameras = required_vla_camera_slots(manifest, description) or scene_cameras
     env_stub = _SimpleEnvCfg(
         vla=vla,
         cameras=effective_scene_cameras,
@@ -2594,161 +2570,6 @@ class _SimpleEnvCfg:
         self.vla = vla
         self.scene = _SimpleSceneCfg(cameras=cameras)
         self.robot_description = robot_description
-
-
-def _effective_perm(robot_to_policy: list[int] | None, n: int) -> list[int]:
-    """The joint permutation to use, defaulting to identity when there's no reorder.
-
-    ``robot_to_policy`` is ``None`` when the checkpoint's joint order already
-    matches the robot's (e.g. SO-101) or when there isn't enough metadata to
-    reorder safely. Returning ``range(n)`` here — instead of skipping the whole
-    conversion block — is what guarantees the deg↔rad unit conversion still runs
-    on the no-reorder path. Nesting the conversion inside ``if robot_to_policy is
-    not None`` was the bug that sent a degrees checkpoint's actions out raw
-    (~57× too large → the arm slammed its limits).
-    """
-    if robot_to_policy is not None and len(robot_to_policy) == n:
-        return robot_to_policy
-    return list(range(n))
-
-
-def _robot_state_to_policy(
-    robot_state: Any,
-    robot_to_policy: list[int] | None,
-    joint_units_are_degrees: bool,
-    policy_is_gripper: list[bool],
-    policy_gripper_scale: float = 1.0,
-) -> Any:
-    """Reorder robot-order state → policy order and convert rad→deg when needed.
-
-    The conversion runs on EVERY path (identity perm when no reorder), so a
-    degrees-trained policy is never fed raw radians (~57× too small → OOD). The
-    gripper channel (``policy_is_gripper[j]``) is left untouched — its unit is a
-    custom 0-1/0-100 motor range, not an angle.
-    """
-    n = robot_state.shape[0]
-    policy_state = robot_state.copy()
-    for i, j in enumerate(_effective_perm(robot_to_policy, n)):
-        val = float(robot_state[i])
-        is_grip = bool(policy_is_gripper) and j < len(policy_is_gripper) and policy_is_gripper[j]
-        if is_grip:
-            val *= policy_gripper_scale
-        elif joint_units_are_degrees:
-            val = math.degrees(val)
-        policy_state[j] = val
-    return policy_state
-
-
-def _policy_action_to_robot(
-    policy_action: Any,
-    robot_to_policy: list[int] | None,
-    joint_units_are_degrees: bool,
-    policy_is_gripper: list[bool],
-    policy_gripper_scale: float = 1.0,
-) -> Any:
-    """Reorder policy-order action → robot order and convert deg→rad when needed.
-
-    Symmetric to ``_robot_state_to_policy``. Runs on every path (identity
-    perm when no reorder) so a degrees checkpoint's actions reach the radians
-    ``Action`` contract instead of passing through raw (~57× too large → the arm
-    slams its limits). Gripper channels are left untouched.
-    """
-    n = policy_action.shape[0]
-    robot_action = policy_action.copy()
-    for i, j in enumerate(_effective_perm(robot_to_policy, n)):
-        val = float(policy_action[j])
-        is_grip = bool(policy_is_gripper) and j < len(policy_is_gripper) and policy_is_gripper[j]
-        if is_grip:
-            val /= policy_gripper_scale
-        elif joint_units_are_degrees:
-            val = math.radians(val)
-        robot_action[i] = val
-    return robot_action
-
-
-def _build_joint_permutation(
-    *,
-    adapter: object,
-    description: RobotDescription | None,
-) -> tuple[list[int] | None, list[bool]]:
-    """Map ``description.joints`` order onto ``policy.config.action_feature_names``.
-
-    Different checkpoints can publish state/action vectors in a different joint order than the
-    robot's URDF / RobotDescription — e.g. OpenArm bimanual: ``robots/openarm/robot.yaml`` lists
-    left-first (``left_joint1..7, left_gripper, right_joint1..7, right_gripper``), but the
-    pi05-openarm-pickplace-120ep checkpoint's ``config.json`` declares right-first. Without a
-    reorder the safety kernel correctly rejects each chunk (it validates ``policy_action[i]``
-    against ``robot_joint_position_max[i]`` — different joints).
-
-    Returns:
-        ``robot_to_policy`` of length ``len(description.joints)`` where
-        ``robot_to_policy[i] = j`` such that ``policy_names[j] == robot_names[i]`` (names
-        normalised). ``None`` when: the adapter has no ``policy.config.action_feature_names``
-        (ACT / DiffusionPolicy, or a non-pi05 backbone); the joint counts don't match
-        (single-arm checkpoint on a bimanual robot or vice versa); or any robot joint name is
-        missing from the policy's list (incompatible embodiments — surfaced loudly rather than
-        silently flopping bytes). ``None`` means "pass through"; the kernel enforces correctness
-        downstream.
-    """
-    if description is None:
-        return None, []
-    robot_names = [j.name for j in description.joints]
-    fallback_grippers = [
-        getattr(getattr(j, "role", None), "value", getattr(j, "role", None)) == "gripper"
-        or "gripper" in j.name.lower()
-        for j in description.joints
-    ]
-    # Bound before the try: an adapter without a `_policy` (ACT / Diffusion,
-    # or any non-lerobot backbone) raises AttributeError on the FIRST line,
-    # leaving `policy` unbound. The `not names` branch below then read it and
-    # raised UnboundLocalError — a NameError, so the except clause guarding
-    # that read never caught it and the runner blew up instead of falling
-    # through to "pass through". `None.config` raises a plain AttributeError,
-    # which that same clause already handles.
-    policy: Any = None
-    try:
-        policy = adapter._policy  # type: ignore[attr-defined]  # reason: documented Protocol-internal field
-        names = list(policy.config.action_feature_names)
-    except (AttributeError, TypeError):
-        names = []
-    if not names:
-        try:
-            action_dim = int(policy.config.output_features["action"].shape[0])
-        except (AttributeError, KeyError, TypeError):
-            return None, []
-        return (None, fallback_grippers) if action_dim == len(robot_names) else (None, [])
-
-    def _normalize(s: str) -> str:
-        # Map LeRobot feature keys to robot.yaml joint names.
-        # Handles three known conventions:
-        #   ``right_joint_1.pos`` → ``right_joint1`` (yuto / AdrianLlopart)
-        #   ``openarm_left_joint1`` → ``left_joint1`` (mddoai)
-        #   ``left_joint1``        → ``left_joint1`` (canonical)
-        # All three end up matching ``robots/openarm/robot.yaml``'s
-        # joint name list.
-        s = s.replace(".pos", "").replace("_joint_", "_joint")
-        if s.startswith("openarm_"):
-            s = s[len("openarm_") :]
-        return s
-
-    policy_names = [_normalize(n) for n in names]
-    if len(policy_names) != len(robot_names):
-        return None, []
-    name_to_pidx = {n: i for i, n in enumerate(policy_names)}
-    try:
-        perm = [name_to_pidx[n] for n in robot_names]
-    except KeyError:
-        return None, []
-    # `policy_is_gripper[j] = True` iff policy slot j is a gripper feature.
-    # Decoded from the (normalised) feature name (`*_gripper`). The LeRobot
-    # OpenArm dataset records arm joints in DEGREES but grippers in a
-    # custom motor unit (state distribution centres around -1 with a long
-    # tail to -50 — neither radians nor degrees), so the shim must apply
-    # rad↔deg conversion to the 7 arm joints per side and pass the
-    # grippers through untouched. Mis-converting the gripper produces
-    # the same "every joint slammed to limit" symptom as before.
-    policy_is_gripper = ["gripper" in n.lower() for n in policy_names]
-    return perm, policy_is_gripper
 
 
 def _pad_joint_payload(
@@ -2946,6 +2767,46 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
     return out
 
 
+def _policy_action_to_actions(
+    policy_action: Any,
+    *,
+    codec: PolicyIOCodec,
+    slots: Sequence[ActionSlot] | None,
+    description: RobotDescription | None,
+    cartesian_delta_scale: tuple[float, ...] | None,
+) -> Any:
+    """Raw policy vector → the typed ``Action``(s) the safety kernel sees.
+
+    The codec runs on BOTH paths, so a degrees checkpoint reaches the wire in radians
+    and a ``[0, 100]`` gripper as a ``[0, 1]`` fraction whether or not the manifest
+    declares slots (the slot path used to receive the raw vector):
+
+    * ``slots`` → per-slot unit conversion in policy order, then ``_dispatch_slots``
+      (one ``Action`` per non-discard slot; JOINT_* slots padded to full dof).
+    * no slots → permute to robot order + convert, pre-clamp strictly inside the
+      ``RobotDescription`` position limits (so an OOD target the kernel would reject
+      moves to the limit instead of estopping), one JOINT_POSITION ``Action``.
+
+    Returns:
+        ``list[Action]`` on the slot path, a single ``Action`` otherwise.
+    """
+    from openral_core.schemas import Action, ControlMode
+
+    if slots:
+        return _dispatch_slots(
+            list(slots),
+            codec.to_robot_action(policy_action, slots=slots),
+            description=description,
+            cartesian_delta_scale=cartesian_delta_scale,
+        )
+    robot_action = codec.clamp(codec.to_robot_action(policy_action))
+    return Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_targets=[list(map(float, robot_action))],
+    )
+
+
 def _make_policy_adapter_skill(
     *,
     manifest: object,
@@ -2984,60 +2845,21 @@ def _make_policy_adapter_skill(
     2. ``tf_lookup`` + ``state_contract.layout`` — see above.
     """
     import numpy as np
-    from openral_core.exceptions import ROSConfigError, ROSPerceptionStale, ROSRuntimeError
-    from openral_core.schemas import Action, ControlMode
+    from openral_core.exceptions import ROSPerceptionStale, ROSRuntimeError
+    from openral_rskill._policy_io import PolicyIOCodec
     from openral_rskill.base import rSkillBase
 
-    robot_to_policy, policy_is_gripper = _build_joint_permutation(
-        adapter=adapter,
-        description=description,
+    # The one policy<->robot codec (joint order, deg<->rad, gripper scale, clamp), built
+    # from the manifest's action_contract + the robot description and applied on BOTH the
+    # whole-vector joint path and the slot path (see `_policy_action_to_actions`). A
+    # joint-position contract without joint_units is a ROSConfigError (issue #135).
+    codec = PolicyIOCodec.from_manifest(
+        cast("RSkillManifest", manifest), description, adapter=adapter
     )
     # Sensor-name -> VLA-slot map (camera1/camera2/...) so `_step_impl`
     # rekeys `obs["images"]` to what the adapter looks up. Built once at
     # skill-build time; see `sensor_name_to_slot`.
     sensor_to_slot = sensor_name_to_slot(description)
-    # Joint units govern the deg↔rad conversion at the policy boundary. Prefer the manifest's
-    # EXPLICIT declaration (action_contract.joint_units) — issue #135: no runtime guess anymore.
-    # The old stats-magnitude heuristic was fragile: it silently defaulted a degrees-trained
-    # SmolVLA SO-101 checkpoint to radians, feeding the policy ~57x too-small state and emitting
-    # ~57x too-large HAL commands → the arm slammed its limits. Every joint-position rSkill now
-    # declares its verified units (RSkillManifest._check_joint_units_declared enforces it at
-    # load); reaching the runner without one is a hard error, not a silent radians default.
-    # EE-space skills legitimately leave it None (no deg↔rad conversion applies).
-    _action_contract = getattr(manifest, "action_contract", None)
-    _declared_units = getattr(_action_contract, "joint_units", None)
-    if _declared_units is not None:
-        joint_units_are_degrees = (
-            str(getattr(_declared_units, "value", _declared_units)) == "degrees"
-        )
-    else:
-        from openral_core.schemas import ActionRepresentation
-
-        if (
-            getattr(_action_contract, "representation", None)
-            is ActionRepresentation.JOINT_POSITIONS
-        ):
-            raise ROSConfigError(
-                f"rskill_runner_node: skill {getattr(manifest, 'name', '?')!r} has "
-                "action_contract.representation='joint_positions' but no "
-                "action_contract.joint_units. Declare 'degrees' or 'radians' "
-                "(verified against the checkpoint's normalizer stats) — the runner "
-                "no longer guesses the units (issue #135)."
-            )
-        joint_units_are_degrees = False
-    raw_gripper_scale = getattr(manifest, "policy_extras", {}).get("gripper_scale", 1.0)
-    try:
-        policy_gripper_scale = float(raw_gripper_scale)
-    except (TypeError, ValueError) as exc:
-        raise ROSConfigError(
-            f"rskill_runner_node: policy_extras.gripper_scale must be a positive number; "
-            f"got {raw_gripper_scale!r}."
-        ) from exc
-    if policy_gripper_scale <= 0.0:
-        raise ROSConfigError(
-            f"rskill_runner_node: policy_extras.gripper_scale must be > 0; "
-            f"got {policy_gripper_scale}."
-        )
     # Print to stderr so the diagnostic shows up in the launch's
     # stitched-together stdout (structlog's OTel sink doesn't surface
     # there). One-time event at build-time — keeps the per-step
@@ -3045,35 +2867,14 @@ def _make_policy_adapter_skill(
     print(
         f"[rskill_runner_node] policy_adapter.skill_built "
         f"skill={getattr(manifest, 'name', '?')!r} "
-        f"joint_units={'degrees' if joint_units_are_degrees else 'radians'} "
+        f"joint_units={'degrees' if codec.joint_units_are_degrees else 'radians'} "
         f"(manifest) "
-        f"perm={robot_to_policy} "
-        f"is_gripper={policy_is_gripper} "
-        f"gripper_scale={policy_gripper_scale:g}",
+        f"perm={codec.robot_to_policy} "
+        f"is_gripper={codec.policy_is_gripper} "
+        f"gripper_scale={codec.gripper_scale:g}",
         file=sys.stderr,
         flush=True,
     )
-    # Per-joint absolute clamping bounds taken straight from RobotDescription's declared
-    # ``position_limits`` — same limits the safety_kernel's envelope encodes, in the unit that
-    # travels on each channel (radians/metres for arm joints, normalised [0,1] for a
-    # ``normalised`` gripper), NOT unconditionally the URDF's mechanical range (see
-    # ``JointSpec`` and issue #62). Without this an OOD checkpoint can emit a target a few
-    # degrees past the mechanical range; the kernel correctly rejects + estops, the robot never
-    # moves, and the operator sees nothing happen. Hardware motors/firmware would also clamp
-    # (MuJoCo's <position> actuator ctrlrange clamps too). Pre-clamping here lets the kernel see
-    # an in-range chunk + the HAL apply it, while staying strictly tighter than the envelope (so
-    # a real envelope violation still surfaces).
-    if description is not None:
-        joint_limits: list[tuple[float, float] | None] = [
-            (
-                (float(j.position_limits[0]), float(j.position_limits[1]))
-                if j.position_limits is not None
-                else None
-            )
-            for j in description.joints
-        ]
-    else:
-        joint_limits = []
 
     class _PolicyAdapterSkill(rSkillBase):
         """``rSkillBase`` shim over an ``openral_sim.policy.PolicyAdapter``.
@@ -3239,9 +3040,7 @@ def _make_policy_adapter_skill(
                     flush=True,
                 )
 
-        def _step_impl(  # noqa: PLR0912, PLR0915  # reason: linear policy observation/action boundary with one branch per supported state/action contract
-            self, world_state: Any
-        ) -> Action | list[Action]:
+        def _step_impl(self, world_state: Any) -> Action | list[Action]:
             obs: dict[str, object] = {"task": self._prompt}
             js = world_state.joint_state
             robot_state = np.asarray(list(js.position), dtype=np.float32)
@@ -3295,31 +3094,18 @@ def _make_policy_adapter_skill(
                         self._tf_lookup,
                     )
                     state_assembled = True
-            # Reorder robot-order state → policy-order state so the checkpoint sees its
-            # training-distribution joint layout (see `_build_joint_permutation`). None
-            # permutation means the policy's order already matches the robot's (or there isn't
-            # enough metadata to safely reorder).
-            #
-            # ALSO: convert rad → deg for the 7 arm joints per side. The LeRobot OpenArm
+            # Robot-order radians state → the checkpoint's joint order + units via the codec
+            # (see `openral_rskill._policy_io.PolicyIOCodec`). E.g. OpenArm: rad → deg for
+            # the 7 arm joints per side. The LeRobot OpenArm
             # dataset's state+action features are in DEGREES (decoded from
             # `policy_preprocessor_step_3_normalizer_processor.safetensors` —
             # `observation.state.q50[left_joint4]` is 96.4, the bent-elbow home pose in degrees,
             # ≈ π/2 rad). Sending 1.57 (radians) to a policy that's seen 90 (degrees) puts every
             # joint deep in the lower tail of the QUANTILES normalizer and triggers "all joints
-            # slam to max". Grippers (`policy_is_gripper[j] == True`) are kept untouched — their
-            # state centres around -1 in a custom motor unit, not a rad↔deg conversion.
+            # slam to max". Gripper channels are never rad↔deg converted, only scaled by
+            # ``action_contract.gripper_scale``.
             if not state_assembled:
-                # rad->deg conversion is INDEPENDENT of reordering — it runs on
-                # every path (identity perm when no reorder), so a checkpoint
-                # whose joint order already matches the robot (SO-101) is not fed
-                # raw radians. See _robot_state_to_policy / _effective_perm.
-                obs["state"] = _robot_state_to_policy(
-                    robot_state,
-                    robot_to_policy,
-                    joint_units_are_degrees,
-                    policy_is_gripper,
-                    policy_gripper_scale,
-                )
+                obs["state"] = codec.to_policy_state(robot_state)
             # Deploy-sim keys `world_state.image_frames` by the manifest
             # sensor NAME; VLA adapters look up `obs["images"]` by the VLA
             # slot (camera1/camera2/...). `sensor_to_slot` realigns the two
@@ -3338,17 +3124,9 @@ def _make_policy_adapter_skill(
             # IK shim translates if the adapter's output semantics
             # differ.
             policy_action = np.asarray(action_array, dtype=np.float32)
-            # Symmetric to the state path: deg->rad conversion runs on every path
-            # (identity perm when no reorder) so a matching-order checkpoint
-            # (SO-101) reaches the radians Action contract instead of passing
-            # through raw (~57x too large → the arm slams its limits).
-            robot_action = _policy_action_to_robot(
-                policy_action,
-                robot_to_policy,
-                joint_units_are_degrees,
-                policy_is_gripper,
-                policy_gripper_scale,
-            )
+            # Whole-vector view for the diagnostics below; the dispatched Actions are built
+            # by `_policy_action_to_actions`, which applies the same codec on every path.
+            robot_action = codec.to_robot_action(policy_action)
             # One-shot stderr diagnostic so the launch's stdout shows
             # what's actually being commanded. Print the FIRST step
             # (or every 50th) to catch policy saturation without spam.
@@ -3377,19 +3155,11 @@ def _make_policy_adapter_skill(
                     file=sys.stderr,
                     flush=True,
                 )
-            # Pre-clamp to the per-joint mechanical range. The safety kernel uses the same
-            # limits in its envelope; any value inside [min, max] passes through, any value the
-            # policy emits beyond range would otherwise trip an estop. Hardware motors/firmware
-            # clamp here too; MuJoCo's actuator ctrlrange clamps; doing it explicitly in the shim
-            # makes the safety kernel + simulator agree on "in-range", so the operator sees
-            # motion instead of an immediate estop on OOD checkpoints.
-            #
-            # When the manifest declares an ``action_contract.slots`` block, the runner
-            # dispatches slices of the RAW policy vector onto typed ``Action`` objects per the
-            # slot's declared ``control_mode``. The joint-permutation + joint-limit clamp path
-            # above only applies to legacy single-surface joint_position output; multi-surface
-            # slots route each slice to its own HAL channel (cartesian → OSC controller, body
-            # twist → /cmd_vel, gripper → gripper actuator).
+            # When the manifest declares ``action_contract.slots`` (or a representation with
+            # a canonical slot layout), the vector is split into one typed ``Action`` per slot
+            # (cartesian → OSC controller, body twist → /cmd_vel, gripper → gripper
+            # actuator); otherwise it is one whole-vector JOINT_POSITION ``Action``. Both paths
+            # go through the codec — see ``_policy_action_to_actions``.
             ac = getattr(self.manifest, "action_contract", None)
             slots = getattr(ac, "slots", None) if ac is not None else None
             if (
@@ -3411,38 +3181,12 @@ def _make_policy_adapter_skill(
                 slots = canonical_slots_for_representation(
                     ac.representation, dim=ac.dim, description=description
                 )
-            if slots:
-                # ``description`` is the closure var from
-                # ``_make_policy_adapter_skill``; used to pad sub-slot
-                # JOINT_* chunks to full-dof.
-                return _dispatch_slots(
-                    slots,
-                    policy_action,
-                    description=description,
-                    cartesian_delta_scale=getattr(ac, "cartesian_delta_scale", None),
-                )
-            if joint_limits and robot_action.shape[0] == len(joint_limits):
-                # Strictly INSIDE the envelope — the safety_kernel
-                # validates ``value > limit_max`` / ``value < limit_min``
-                # (open intervals), so clamping to the exact limit still
-                # trips a violation on the boundary. Pull in by a small
-                # epsilon (well under any sensor / control precision)
-                # to stay safe across float round-trips.
-                clamp_eps = 1e-3
-                for i, lims in enumerate(joint_limits):
-                    if lims is None:
-                        continue
-                    lo, hi = lims
-                    lo_safe = lo + clamp_eps
-                    hi_safe = hi - clamp_eps
-                    if robot_action[i] < lo_safe:
-                        robot_action[i] = lo_safe
-                    elif robot_action[i] > hi_safe:
-                        robot_action[i] = hi_safe
-            return Action(
-                control_mode=ControlMode.JOINT_POSITION,
-                horizon=1,
-                joint_targets=[list(map(float, robot_action))],
+            return _policy_action_to_actions(
+                policy_action,
+                codec=codec,
+                slots=slots,
+                description=description,
+                cartesian_delta_scale=getattr(ac, "cartesian_delta_scale", None),
             )
 
     skill = _PolicyAdapterSkill()

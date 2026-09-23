@@ -42,17 +42,18 @@ from openral_rskill.backend_registry import maybe_attach_pro_hooks
 
 # π0.5 nf4 quantization + prequantized state load both live in the
 # adapter-agnostic helper module so smolvla / xvla / future-pi06 can
-# reuse them. The dtype-resolution helpers (manifest_dtype,
+# reuse them. The dtype-resolution helpers (resolve_quant_plan,
 # torch_dtype_for, default_dtype_for_device) also live there so every
 # adapter speaks the same QuantizationDtype enum vocabulary.
 from openral_sim._quantization import (
     default_dtype_for_device,
     detect_prequantized_nf4,
     load_prequantized_state_for_rskill,
-    manifest_dtype,
     peek_safetensors_keys,
     quantize_int8_in_place,
     quantize_nf4_in_place,
+    require_supported_dtype,
+    resolve_quant_plan,
     torch_dtype_for,
 )
 from openral_sim._quantization import (
@@ -200,7 +201,8 @@ class _PI05Adapter:
         batch: dict[str, Any] = {"task": instruction or observation.get("task", "")}
 
         images = observation.get("images", {})
-        cam_alias = {"camera1": "image", "camera2": "image2", **self._camera_aliases}
+        # Slot -> checkpoint view, from the manifest (LIBERO: camera1 -> image).
+        cam_alias = self._camera_aliases
         from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
 
         # Record a stitched preview of every camera handed to the policy so
@@ -415,7 +417,11 @@ def _resolve_pretrained_path(spec: Any, repo_id: str) -> str:
     return resolve_processor_dir(spec, repo_id)
 
 
-@POLICIES.register("pi05")
+@POLICIES.register(
+    "pi05",
+    install_groups=("sim", "libero"),
+    required_imports=("transformers", "bitsandbytes", "lerobot.policies.pi05.modeling_pi05"),
+)
 def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-phase orchestration (from_pretrained/meta-init/quantize/prequant/to_device) is naturally long
     """Load a π0.5 LIBERO/SO-100 finetune via the lerobot ``PI05Policy``."""
     spec = env_cfg.vla
@@ -443,9 +449,13 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     # ~13.6 GiB; default -> nf4 on CUDA, fp32 on CPU.
     # `PI05Policy.from_pretrained` has no dtype kwarg, so torch's default
     # dtype is set while loading; nf4/int8 quantize Linear weights post-load.
-    dtype_str = manifest_dtype(spec, manifest=manifest) or default_dtype_for_device(device)
-    use_nf4 = dtype_str.lower() in {"nf4", "4bit", "int4"}
-    use_int8 = dtype_str.lower() in {"int8", "8bit", "llm_int8"}
+    plan = resolve_quant_plan(spec, manifest, default=default_dtype_for_device(device))
+    require_supported_dtype(
+        plan, frozenset({"nf4", "int8", "bf16", "fp16", "fp32", "none"}), "pi05"
+    )
+    dtype_str = plan.dtype or default_dtype_for_device(device)
+    use_nf4 = dtype_str == "nf4"
+    use_int8 = dtype_str == "int8"
     torch_dtype = torch_dtype_for(torch, None if (use_nf4 or use_int8) else dtype_str, device)
 
     # PI05Policy.__init__ ends with `self.model.to(config.device)` — if

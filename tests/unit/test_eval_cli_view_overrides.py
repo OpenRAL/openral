@@ -77,10 +77,10 @@ def test_missing_rskill_rejects() -> None:
 
 
 def test_robot_flag_rejected_on_fixed_robot_scene() -> None:
-    """``--robot`` on a fixed-robot scene (LIBERO=franka_panda) is rejected."""
+    """``--robot`` naming a robot a fixed scene (LIBERO=franka_panda) can't build is rejected."""
     _require_libero_cfg()
-    args = _args(config=LIBERO_CFG, rskill=LIBERO_RSKILL, robot="franka_panda")
-    with pytest.raises(ROSConfigError, match="hard-fixes"):
+    args = _args(config=LIBERO_CFG, rskill=LIBERO_RSKILL, robot="ur5e")
+    with pytest.raises(ROSConfigError, match="can only instantiate"):
         _load_or_build_env(args)
 
 

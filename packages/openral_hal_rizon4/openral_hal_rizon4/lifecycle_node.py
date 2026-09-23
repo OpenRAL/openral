@@ -5,7 +5,7 @@ Manifest-driven node: builds its HAL via
 ``openral_hal.lifecycle.make_lifecycle_main_from_manifest``, which reads
 the ``robot_yaml`` + ``hal_mode`` ROS parameters and routes through
 ``openral_hal.build_hal``. ``openral deploy sim`` injects ``hal_mode:=sim``
-(→ ``Rizon4MujocoHAL``). The Rizon 4 is sim-only today (``hal.real`` is
+(→ derived ``MujocoArmHAL``). The Rizon 4 is sim-only today (``hal.real`` is
 null), so ``hal_mode:=real`` raises ``ROSCapabilityMismatch`` until the
 ``flexiv_rdk`` wrapper lands.
 

@@ -18,15 +18,13 @@ Shared helper for any HAL ROS lifecycle node that flips into
 4. Look up the scene's factory in ``openral_sim.SCENES`` and instantiate.
 
 Generic across robots — the only per-HAL piece is ``robot_id_fallback``
-(``None`` default; e.g. the panda_mobile lifecycle node passes
-``"panda_mobile"`` for robocasa-shaped YAMLs with no ``robot_id:`` field).
+(``None`` default), used only for free-axis scenes whose YAML names no
+``robot_id:``; fixed-robot scenes resolve through ``SCENES.resolve_robot``.
 
-Most backends ignore ``task.id`` (so101, robocasa, native MjSpec), so the
-synthesised task carries an inert ``_hal_deploy_noop`` suffix. LIBERO's
-index-parsing suites (``"<suite>/<int>"``) have no taskless floor — each
-suite task is a distinct MuJoCo scene — so
-``_synthesise_deploy_task_id`` gives them a concrete index (``0``)
-instead; deploy-sim never reads the task's success criterion.
+The synthesised task id is ``"<scene_id>/_hal_deploy_noop"``; each backend
+decides what that means (most ignore ``task.id``; LIBERO maps it to task 0,
+ManiSkill3 / SimplerEnv / RoboTwin to a ``deploy_task_id`` option), so no
+scene-id knowledge lives here. Deploy-sim never reads the success criterion.
 """
 
 from __future__ import annotations
@@ -51,27 +49,9 @@ if TYPE_CHECKING:
 
 __all__ = ["build_sim_env_from_yaml"]
 
-# Scene-id prefixes whose backend factory parses ``task.id`` as
-# ``"<suite>/<int>"`` (``openral_sim.backends.libero._parse_task_id``).
-# For these the deploy-promoted noop task must carry a *valid* integer
-# index — there is no taskless floor — so the LIBERO env boots task 0's
-# scene. All other backends ignore ``task.id`` and tolerate the inert
-# ``_hal_deploy_noop`` suffix.
-_INDEX_PARSING_SCENE_PREFIXES = ("libero_spatial", "libero_object", "libero_goal", "libero_10")
-
 
 def _synthesise_deploy_task_id(scene_id: str) -> str:
-    """Build the noop deploy task id for ``scene_id``.
-
-    Index-parsing suites (LIBERO) require ``"<suite>/<int>"`` and reject a
-    string suffix, so they get task index ``0``; every other backend gets
-    the inert ``"<suite>/_hal_deploy_noop"`` it never reads.
-    """
-    if any(
-        scene_id == prefix or scene_id.startswith(f"{prefix}/")
-        for prefix in _INDEX_PARSING_SCENE_PREFIXES
-    ):
-        return f"{scene_id}/0"
+    """Build the inert deploy task id for ``scene_id`` (the backend interprets it)."""
     return f"{scene_id}/_hal_deploy_noop"
 
 
@@ -140,28 +120,6 @@ def _load_scene_for_hal(path: str) -> SimScene:
     )
 
 
-def _maybe_force_ignore_done(scene_env: SimScene) -> SimScene:
-    """Force ``ignore_done=True`` for robocasa scenes only (deploy-sim continuous).
-
-    ``ignore_done`` is a robocasa-only knob: robocasa is the only backend that
-    reads ``opts.ignore_done`` (LIBERO/so100 hardcode it; native MjSpec
-    backends such as ``tabletop_push`` strictly REJECT unknown
-    ``backend_options`` keys). Injecting it only for robocasa scenes keeps
-    deploy-sim's continuous stepping from tripping robocasa's
-    terminated-episode guard without breaking strict-validation backends.
-    Non-robocasa scenes are returned unchanged. (§1.15 fix.)
-    """
-    if not scene_env.scene.id.startswith("robocasa"):
-        return scene_env
-    backend_options = dict(scene_env.scene.backend_options or {})
-    if backend_options.get("ignore_done") is True:
-        return scene_env
-    backend_options["ignore_done"] = True
-    return scene_env.model_copy(
-        update={"scene": scene_env.scene.model_copy(update={"backend_options": backend_options})}
-    )
-
-
 def build_sim_env_from_yaml(
     sim_env_yaml: str,
     *,
@@ -178,11 +136,10 @@ def build_sim_env_from_yaml(
             YAMLs (env-only, no ``task:``) gain a synthesised noop
             ``TaskSpec`` so the SimEnvironment schema is satisfied;
             see ``_load_scene_for_hal``.
-        robot_id_fallback: Robot id to plug into the constructed
-            ``SimEnvironment`` when the YAML omits ``robot_id``
-            (robocasa-shaped fixtures forbid it). ``None`` means
-            "trust the YAML / SCENES registry" and the loader will
-            raise if neither source supplies one.
+        robot_id_fallback: Robot id for a free-axis scene whose YAML omits
+            ``robot_id`` (fixed-robot scenes use their registered default).
+            ``None`` means "trust the YAML / SCENES registry"; the loader
+            raises if neither supplies one.
 
     Returns:
         ``(env, seed)`` — the instantiated ``SimRollout`` env and
@@ -195,8 +152,9 @@ def build_sim_env_from_yaml(
     Raises:
         ROSConfigError: when the YAML can't be located, is a
             BenchmarkScene, is neither a valid SimScene nor DeployScene,
-            the scene id isn't registered in ``openral_sim.SCENES``,
-            or the schema validators reject the loaded fields.
+            the scene id isn't registered in ``openral_sim.SCENES``, the
+            YAML's ``robot_id`` is not one the scene can instantiate, or the
+            schema validators reject the loaded fields.
     """
     yaml_path = Path(sim_env_yaml)
     if not yaml_path.is_absolute():
@@ -213,8 +171,6 @@ def build_sim_env_from_yaml(
         )
     scene_env = _load_scene_for_hal(str(yaml_path))
 
-    scene_env = _maybe_force_ignore_done(scene_env)
-
     from openral_sim.registry import SCENES  # noqa: PLC0415  # reason: optional dep
 
     scene_id = scene_env.scene.id
@@ -224,16 +180,14 @@ def build_sim_env_from_yaml(
             f"openral_sim.SCENES. Available: {sorted(SCENES)}."
         )
 
-    # Resolve robot_id from the YAML, the SCENES fixed_robot registry,
-    # or the caller-supplied fallback. Schema requires the field but
-    # robocasa-shaped YAMLs forbid it — same fallback chain
-    # `openral_cli.deploy_sim._load_scene_robot_id` uses.
-    robot_id = scene_env.robot_id or SCENES.fixed_robot(scene_id) or robot_id_fallback
-    if robot_id is None:
-        raise ROSConfigError(
-            f"build_sim_env_from_yaml: cannot resolve robot_id for scene "
-            f"{scene_id!r}; pass robot_id_fallback or set scene.robot_id."
-        )
+    # One binding rule (SCENES.resolve_robot) shared with `sim run`,
+    # `benchmark` and `deploy sim`: the YAML's robot_id must be one the scene
+    # can instantiate; absent, a fixed scene supplies its default and a
+    # free-axis scene takes the caller's fallback.
+    requested = scene_env.robot_id
+    if requested is None and SCENES.allowed_robots(scene_id) is None:
+        requested = robot_id_fallback
+    robot_id = SCENES.resolve_robot(scene_id, requested)
 
     # Dummy VLA — required by the SimEnvironment schema but never
     # invoked from the HAL lifecycle path (the HAL drives env.step

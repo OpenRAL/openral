@@ -129,7 +129,7 @@ class _MetaworldSim:
         }
 
 
-@SCENES.register(_METAWORLD_SCENE_ID, fixed_robot="sawyer")
+@SCENES.register(_METAWORLD_SCENE_ID, fixed_robot="sawyer", sim_clock=True)
 def _build_metaworld_scene(env_cfg: SimEnvironment) -> _MetaworldSim:
     """Lazily import ``lerobot.envs.metaworld`` and build a ``_MetaworldSim``."""
     from openral_sim._deps import ensure_backend_deps

@@ -326,11 +326,13 @@ OPENARM_DESCRIPTION = RobotDescription(
     ),
     sdk_kind="open",
     hal=HalEntrypoints(
-        sim="openral_hal.openarm:OpenArmMujocoHAL",
+        # sim=None: build_hal derives MujocoArmHAL.from_description(manifest).
+        sim=None,
         # Real hardware goes through `openarm_bringup`'s ros2_control stack,
         # never through Python-side CAN — the loop runs at 400 Hz and
         # CLAUDE.md §1.5 keeps anything above 100 Hz in C++.
         real="openral_hal.openarm_real:OpenArmRealHAL",
+        real_bringup="openral_hal_openarm:real_bringup.launch.py",
         # issue #191 Phase 3b — kept in sync with robots/openarm/robot.yaml so the
         # manifest-driven node threads these kwargs via build_hal.  One flat
         # block serves both entrypoints: build_hal drops every key the target
@@ -338,7 +340,7 @@ OPENARM_DESCRIPTION = RobotDescription(
         # interface names and the real HAL never sees `settle_steps`.
         parameters=HalParameters(
             defaults={
-                # sim (OpenArmMujocoHAL)
+                # sim (derived MujocoArmHAL)
                 "settle_steps": 4,
                 "gravity_enabled": False,
                 # both

@@ -280,7 +280,9 @@ def provision_rlbench() -> None:
     _sidecar_python()
 
 
-@SCENES.register(_RLBENCH_SCENE_ID, fixed_robot="franka_panda", provision=provision_rlbench)
+@SCENES.register(
+    _RLBENCH_SCENE_ID, fixed_robot="franka_panda", provision=provision_rlbench, sim_clock=True
+)
 def _build_rlbench_scene(env_cfg: SimEnvironment) -> _RLBenchSidecar:
     """Build an RLBench task behind the out-of-process CoppeliaSim sidecar.
 

@@ -27,9 +27,8 @@ preserving action quality and side-stepping the GR00T DiT
 
 The official 2026 BEHAVIOR-1K checkpoint is a deliberate exception to this
 native path: its organizer runtime is pinned to ``wensi-ai/Isaac-GR00T`` under
-Python 3.10, so a manifest with
-``policy_extras.implementation=behavior_b1k_sidecar`` dispatches to
-``openral_sim.policies.behavior_groot`` before the lerobot loader runs.
+Python 3.10, so it is its own registered family, ``gr00t_b1k``, whose factory
+delegates to ``openral_sim.policies.behavior_groot``.
 
 Embodiment mapping
 ------------------
@@ -65,10 +64,11 @@ from openral_rskill._vla_core import (
     resolve_camera_keys,
     resolve_device,
     resolve_image_preprocessing,
+    resolve_n_action_steps,
     resolve_rskill_repo_revision,
 )
 
-from openral_sim._quantization import resolve_quant_plan
+from openral_sim._quantization import require_supported_dtype, resolve_quant_plan
 from openral_sim.policies._policy_loading import lazy_import_lerobot, load_manifest_for_spec
 from openral_sim.registry import POLICIES
 
@@ -416,7 +416,41 @@ def _build_groot_config(
     )
 
 
-@POLICIES.register("gr00t")
+@POLICIES.register(
+    "gr00t_b1k",
+    install_groups=("behavior-groot",),
+    required_imports=("zmq", "msgpack"),
+)
+def _build_gr00t_b1k(env_cfg: Any) -> PolicyAdapter:
+    """Official BEHAVIOR-1K GR00T checkpoint behind its Python 3.10 sidecar."""
+    from openral_sim.policies.behavior_groot import build_behavior_groot_policy
+
+    spec = env_cfg.vla
+    manifest = load_manifest_for_spec(spec)
+    if manifest is None:
+        raise ROSConfigError(
+            "gr00t_b1k requires a bare rSkill reference as weights_uri "
+            "(e.g. rskills/gr00t-n17-b1k-turning-on-radio)."
+        )
+    # spec.extra (scene / CLI) wins over the manifest's policy_extras.
+    extra = {**(manifest.policy_extras or {}), **(spec.extra or {})}
+    return build_behavior_groot_policy(env_cfg, manifest, extra)
+
+
+@POLICIES.register(
+    "gr00t",
+    install_groups=("sim", "gr00t"),
+    required_imports=(
+        "transformers",
+        "bitsandbytes",
+        # Imported lazily INSIDE GrootPolicy's build, not by modeling_groot —
+        # probing only the modeling module admitted gr00t skills that then
+        # aborted every dispatch ("'diffusers' is required"; deploy-sim
+        # 2026-07-20).
+        "diffusers",
+        "lerobot.policies.groot.modeling_groot",
+    ),
+)
 def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # noqa: PLR0915  # reason: staged loader
     """Load the in-process lerobot ``GrootPolicy`` (GR00T N1.7) backend.
 
@@ -442,12 +476,6 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # noqa: PLR0915  # reason: sta
     # travel in its rSkill without every scene having to repeat them.
     policy_extras = dict(getattr(manifest, "policy_extras", {}) or {})
     extra = {**policy_extras, **extra}
-    if extra.get("implementation") == "behavior_b1k_sidecar":
-        from openral_sim.policies.behavior_groot import (
-            build_behavior_groot_policy,
-        )
-
-        return build_behavior_groot_policy(env_cfg, manifest, extra)
 
     repo_id, revision = resolve_rskill_repo_revision(spec.weights_uri, adapter_name="GR00T")
     embodiment_tag = str(
@@ -472,7 +500,11 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # noqa: PLR0915  # reason: sta
     # manifest.quantization.dtype > this adapter's nf4 default. It logs the
     # source it resolved from, and warns when that disagrees with the
     # manifest's declared dtype.
-    plan = resolve_quant_plan(spec, manifest, default="nf4", manifest_dtype_is_storage=True)
+    plan = resolve_quant_plan(spec, manifest, default="nf4")
+    # nf4 packs the backbone (or the whole model); an unpacked load runs the
+    # params in fp32 (`model_params_fp32=not quantize` below), so bf16 / fp16
+    # have no load path here and int8 would silently NF4-pack.
+    require_supported_dtype(plan, frozenset({"nf4", "fp32", "none"}), "gr00t")
     quantization = plan.dtype or "nf4"
     quantize = plan.quantize
     # How much of the model to pack to NF4 — "backbone" (default; LIBERO fits
@@ -549,7 +581,9 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # noqa: PLR0915  # reason: sta
     # Execution horizon: GR00T resolves this to min(n_action_steps, checkpoint
     # action_horizon, embodiment exec horizon) = 8 for libero_sim. Replay that
     # many decoded actions per inference before replanning.
-    replan_steps = int(getattr(policy, "_action_queue_steps", 8)) or 8
+    replan_steps = resolve_n_action_steps(
+        manifest, extra, default=int(getattr(policy, "_action_queue_steps", 8)) or 8
+    )
 
     adapter = _GrootAdapter(
         spec=spec,

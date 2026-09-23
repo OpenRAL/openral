@@ -51,8 +51,13 @@ actuators_required:
 
 runtime: "pytorch"
 quantization:
-  dtype: "bf16"
+  # `dtype` is what RUNS: the gr00t adapter NF4-packs the Qwen3-VL backbone at
+  # load (int4 is the schema's spelling of bitsandbytes NF4). The checkpoint is
+  # STORED bf16 — that is what the repo name's `-bf16` records.
+  dtype: "int4"
   backend: "pytorch"
+  extra:
+    stored_dtype: "bf16"
 
 # Root-level repackage of nvidia/GR00T-N1.7-LIBERO's `libero_spatial/` per-suite
 # checkpoint (the upstream repo has NO root model.safetensors — its weights live

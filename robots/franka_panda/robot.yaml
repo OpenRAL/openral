@@ -254,7 +254,9 @@ sensors:
 sdk_kind: "closed_with_api"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
 hal:
-  sim: "openral_hal.franka_panda:FrankaPandaHAL"
+  # null → build_hal derives MujocoArmHAL.from_description(this manifest)
+  # from the `sim:` block below; no per-robot Python class is involved.
+  sim: null
   real: "openral_hal.franka_panda_real:FrankaPandaRealHAL"
 
 # MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``

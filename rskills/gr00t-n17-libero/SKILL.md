@@ -19,7 +19,7 @@ metadata:
   action_dim: 7
   action_representation: delta_ee_6d_plus_gripper
   runtime: pytorch
-  quantization: bf16/pytorch
+  quantization: int4/pytorch
   chunk_size: 16
   latency_budget: {per_chunk_ms: 1500.0}
   license_code: Apache-2.0

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import NDArray
+from openral_core.exceptions import ROSConfigError
 
 from openral_sim.registry import POLICIES, SCENES
 from openral_sim.rollout import StepResult
@@ -113,20 +114,30 @@ def _build_mock_scene(env_cfg: SimEnvironment) -> _MockSim:
     )
 
 
+def _require_dim(action_dim: int | None) -> int:
+    if action_dim is None:
+        raise ROSConfigError(
+            "mock policy has no action_dim: set vla.extra.action_dim or "
+            "scene.backend_options.action_dim, or run it through SimRunner, which "
+            "sizes it from the built env."
+        )
+    return action_dim
+
+
 @dataclass
 class _ZeroPolicy:
     """Always emits zero-vector actions of the configured size."""
 
     spec: VLASpec
     device: str
-    action_dim: int = _MOCK_ACTION_DIM
+    action_dim: int | None = _MOCK_ACTION_DIM
 
     def reset(self) -> None:
         return None
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
         del observation, instruction
-        return np.zeros(self.action_dim, dtype=np.float32)
+        return np.zeros(_require_dim(self.action_dim), dtype=np.float32)
 
     def close(self) -> None:
         return None
@@ -138,7 +149,7 @@ class _RandomPolicy:
 
     spec: VLASpec
     device: str
-    action_dim: int = _MOCK_ACTION_DIM
+    action_dim: int | None = _MOCK_ACTION_DIM
     _rng: np.random.Generator | None = None
 
     def reset(self) -> None:
@@ -150,55 +161,30 @@ class _RandomPolicy:
         if self._rng is None:
             self.reset()
         assert self._rng is not None
-        return self._rng.standard_normal(self.action_dim).astype(np.float32) * 0.01
+        return self._rng.standard_normal(_require_dim(self.action_dim)).astype(np.float32) * 0.01
 
     def close(self) -> None:
         return None
 
 
-def _resolve_action_dim(env_cfg: SimEnvironment) -> int:
+def _resolve_action_dim(env_cfg: SimEnvironment) -> int | None:
+    """Explicit mock width (``vla.extra`` / ``backend_options.action_dim``), else None.
+
+    ``None`` means "size to the env": ``SimRunner`` sets it from
+    ``openral_sim.rollout.env_action_dim`` once the scene is built, so no
+    per-scene width table lives here.
+    """
     explicit = env_cfg.vla.extra.get("action_dim")
-    if explicit is not None:
-        return _coerce_int(explicit, _MOCK_ACTION_DIM)
-    explicit_scene = env_cfg.scene.backend_options.get("action_dim")
-    if explicit_scene is not None:
-        return _coerce_int(explicit_scene, _MOCK_ACTION_DIM)
-    # Defaults for registered scenes so the mock zero policy works
-    # end-to-end without forcing the user to pass `action_dim` overrides.
-    scene_default = _SCENE_DEFAULT_ACTION_DIM.get(env_cfg.scene.id)
-    if scene_default is not None:
-        return scene_default
-    # Isaac Sim serves two sidecar layouts under one scene id:
-    # lift_cube is 8-D (7 arm joint deltas + gripper); bowl_plate is the
-    # LIBERO 7-D OSC-pose delta. The dim is layout-, not id-, determined.
-    if env_cfg.scene.id == "isaac_sim":
-        layout = env_cfg.scene.backend_options.get("layout", "lift_cube")
-        return 7 if layout == "bowl_plate" else 8
-    # GR1 tabletop scenes share a single 29-D action shape (right arm 7
-    # + left arm 7 + waist 3 + right Fourier hand 6 + left Fourier
-    # hand 6); special-case the prefix so we don't enumerate all 24
-    # task ids in _SCENE_DEFAULT_ACTION_DIM.
-    if env_cfg.scene.id.startswith("robocasa/gr1/"):
-        return 29
-    return _MOCK_ACTION_DIM
+    if explicit is None:
+        explicit = env_cfg.scene.backend_options.get("action_dim")
+    return None if explicit is None else _coerce_int(explicit, _MOCK_ACTION_DIM)
 
 
-# Per-scene action dims used by mock policies (zero/random) when no override
-# is supplied. Values match each scene adapter's underlying gym/robosuite env.
-_SCENE_DEFAULT_ACTION_DIM: dict[str, int] = {
-    "pusht": 2,
-    "libero_spatial": 7,
-    "libero_object": 7,
-    "libero_goal": 7,
-    "libero_10": 7,
-    "metaworld": 4,
-    "aloha_bimanual": 14,
-    # isaac_sim is intentionally absent — its dim is layout-determined; see
-    # the layout branch in _resolve_action_dim.
-}
-
-
-@POLICIES.register("zero")
+@POLICIES.register(
+    "zero",
+    install_groups=(),
+    required_imports=(),
+)
 def _build_zero_policy(env_cfg: SimEnvironment) -> _ZeroPolicy:
     return _ZeroPolicy(
         spec=env_cfg.vla,
@@ -207,7 +193,11 @@ def _build_zero_policy(env_cfg: SimEnvironment) -> _ZeroPolicy:
     )
 
 
-@POLICIES.register("random")
+@POLICIES.register(
+    "random",
+    install_groups=(),
+    required_imports=(),
+)
 def _build_random_policy(env_cfg: SimEnvironment) -> _RandomPolicy:
     return _RandomPolicy(
         spec=env_cfg.vla,

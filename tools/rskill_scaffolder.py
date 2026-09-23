@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import get_args
 
 # Make the in-tree workspace packages importable when run as a script.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -29,7 +28,8 @@ for _pkg in ("cli", "core", "skill", "observability"):
     sys.path.insert(0, str(_REPO_ROOT / "python" / _pkg / "src"))
 
 from openral_cli._rskill_scaffolder import scaffold_rskill  # noqa: E402
-from openral_core.schemas import EmbodimentTag, RSkillLicensePosture  # noqa: E402
+from openral_core.schemas import RSkillLicensePosture  # noqa: E402
+from openral_rskill.loader import intree_embodiment_tags  # noqa: E402
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -63,8 +63,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--embodiment-tag",
         default="franka_panda",
-        choices=list(get_args(EmbodimentTag)),
-        help="Canonical embodiment tag (default: franka_panda).",
+        choices=sorted(intree_embodiment_tags()),
+        help="Embodiment tag declared by a robots/*/robot.yaml, or any/custom/multi "
+        "(default: franka_panda).",
     )
     parser.add_argument(
         "--overwrite",

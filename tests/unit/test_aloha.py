@@ -116,10 +116,11 @@ class TestAlohaDescription:
 
     def test_sim_baseline_sdk_pointer(self) -> None:
         """The sim baseline keeps ``sdk_kind: open``; its ``hal`` block names
-        both the sim HAL (AlohaMujocoHAL) and real HAL (AlohaHAL).
+        the real HAL (AlohaHAL); ``hal.sim`` is null so ``build_hal`` derives
+        ``MujocoArmHAL`` from the ``sim:`` block.
         """
         assert ALOHA_DESCRIPTION.sdk_kind == "open"
-        assert ALOHA_DESCRIPTION.hal.sim == "openral_hal.aloha:AlohaMujocoHAL"
+        assert ALOHA_DESCRIPTION.hal.sim is None
         assert ALOHA_DESCRIPTION.hal.real == "openral_hal.aloha:AlohaHAL"
 
     def test_real_sdk_pointer(self) -> None:

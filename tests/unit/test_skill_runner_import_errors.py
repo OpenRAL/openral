@@ -30,10 +30,10 @@ from openral_rskill_ros.rskill_runner_node import (
     _build_runtime_skill_from_manifest,
 )
 from openral_sim.policy_deps import (
-    _FAMILY_INSTALL_HINTS,
     model_family_install_hint,
     purge_partial_imports,
 )
+from openral_sim.registry import POLICIES
 
 
 def test_known_model_families_get_concrete_install_hints() -> None:
@@ -41,7 +41,7 @@ def test_known_model_families_get_concrete_install_hints() -> None:
     for family in ("smolvla", "pi05", "act", "diffusion", "xvla"):
         hint = model_family_install_hint(family)
         assert "just sync" in hint, hint
-        assert family in _FAMILY_INSTALL_HINTS
+        assert family in POLICIES
 
 
 def test_unknown_model_family_falls_back_to_generic_hint() -> None:

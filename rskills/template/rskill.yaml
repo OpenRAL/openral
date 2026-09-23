@@ -77,9 +77,15 @@ processors:
   postprocessor_uri: "hf://TEMPLATE_ORG/TEMPLATE_ID/policy_postprocessor.json"
 image_preprocessing:
   flip_180: true
+  # Keys are VLA SLOTS — the suffix of a sensors_required[].vla_feature_key
+  # above (observation.images.camera1 -> camera1) — never robot sensor names
+  # (top / wrist) or scene camera names. The same key then means the same
+  # camera under `openral sim run`, `deploy sim` and `deploy run`; the loader
+  # rejects a key no sensors_required entry declares. Values are the
+  # checkpoint's input-feature names (observation.images.<value>).
   aliases:
-    top: "image"
-    wrist: "image2"
+    camera1: "image"
+    camera2: "image2"
 state_contract:
   dim: 8
 

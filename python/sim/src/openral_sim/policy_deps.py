@@ -43,11 +43,10 @@ cannot catch one that's installed but *broken* (a half-written editable
 ``OPENRAL_STRICT_POLICY_PROBE=1`` to restore the deep import probe when that
 distinction matters.
 
-Adding a new policy family: register it in both
-``_FAMILY_REQUIRED_IMPORTS`` and ``_FAMILY_INSTALL_HINTS`` —
-``test_reasoner_palette_filters_unimportable_families`` and
-``test_known_model_families_get_concrete_install_hints`` walk both dicts, so
-a half-registered family fails at unit-test time.
+Adding a new policy family: pass its ``install_groups`` and
+``required_imports`` to ``@POLICIES.register`` — the facts live on the
+registration, so there is no second table to forget.
+``test_every_registered_family_declares_its_deps`` walks the registry.
 """
 
 from __future__ import annotations
@@ -58,6 +57,8 @@ import os
 import sys
 from collections.abc import Callable, Iterable
 from typing import Any
+
+from openral_sim.registry import POLICIES
 
 __all__ = [
     "can_import_policy_family",
@@ -72,155 +73,54 @@ __all__ = [
 ]
 
 
-# Model-family → ``uv sync`` install hint. Surfaced both at
-# pre-flight (reasoner drops the skill) and at runtime (skill_runner
-# translates the factory ImportError).
-_FAMILY_INSTALL_HINTS: dict[str, str] = {
-    "smolvla": (
-        "Install the sim extras: `just sync --all-packages --group sim` "
-        "(provides transformers + lerobot smolvla deps)."
-    ),
-    "pi05": (
-        "Install the sim + libero extras: `just sync --all-packages "
-        "--group sim --group libero` (provides transformers + bitsandbytes "
-        "+ lerobot)."
-    ),
-    "act": "Install the sim extras: `just sync --all-packages --group sim`.",
-    "diffusion": "Install the sim extras: `just sync --all-packages --group sim`.",
-    "xvla": "Install the sim extras: `just sync --all-packages --group sim`.",
-    "xr1": (
-        "Install the shared sidecar wire: "
-        "`just sync --all-packages --group sidecar-wire`. "
-        "XR-1 itself runs in an auto-provisioned torch-2.9.1 / transformers-4.57.1 "
-        "sidecar because its pinned stack cannot coexist with the workspace."
-    ),
-    "rldx": (
-        "Install the rldx extras: `just sync --all-packages --group rldx` "
-        "(adds pyzmq + msgpack for the RLDX adapter sidecar)."
-    ),
-    "gr00t": (
-        "Install the gr00t extras: `just sync --all-packages --group gr00t` "
-        "(adds lerobot[groot]). GR00T-N1.7 now runs in-process on lerobot 0.6.0 "
-        "under this repo's Python 3.12. The official BEHAVIOR-1K organizer "
-        "checkpoint is a manifest-selected exception and uses the "
-        "`behavior-groot` sidecar-wire group."
-    ),
-    "diffuser_actor": (
-        "Install the rlbench extras: `just sync --all-packages --group rlbench` "
-        "(adds pyzmq + msgpack for the 3D Diffuser Actor sidecar client). The "
-        "policy + the CoppeliaSim/PyRep RLBench env run in tools/rlbench_*"
-        "_sidecar.py's own externally-provisioned Python 3.10 venv."
-    ),
-    "lingbot_vla2": (
-        "Install the lingbot extras: `just sync --all-packages --group lingbot` "
-        "(adds pyzmq + msgpack for the LingBot-VLA 2.0 sidecar client). The policy "
-        "runs in tools/lingbot_vla2_sidecar.py's own auto-provisioned Python 3.12 "
-        "+ torch-2.9.1 venv."
-    ),
-    "lingbot_va_a1": (
-        "Install the LingBot wire dependencies with `just sync --all-packages "
-        "--group lingbot`, then start the A1 Runtime camera bridge, "
-        "contract-checked LingBot server, and OpenRAL policy gateway."
-    ),
-    "internvla_n1": (
-        "Install the rldx extras: `just sync --all-packages --group rldx` "
-        "(adds pyzmq + msgpack for the InternVLA-N1 sidecar client). The "
-        "policy itself runs in tools/internvla_n1_sidecar.py's own "
-        "auto-provisioned Python 3.11 venv (transformers 4.51 pin)."
-    ),
-    # `mock` has no external deps — included so a smoke that mentions a
-    # mock-family rSkill never gets filtered out.
-    "mock": "No extras required.",
-}
-
-
-# Model-family → ``uv sync --group …`` group names. Parallel to
-# ``_FAMILY_INSTALL_HINTS`` but machine-readable so callers can
-# compose a single ``uv sync`` for the union of missing families
-# (deploy_sim's pre-flight prompt joins these across all blocked
-# rSkills into one command).
-_FAMILY_INSTALL_GROUPS: dict[str, tuple[str, ...]] = {
-    "smolvla": ("sim",),
-    "pi05": ("sim", "libero"),
-    "act": ("sim",),
-    "diffusion": ("sim",),
-    "xvla": ("sim",),
-    "xr1": ("sidecar-wire",),
-    "rldx": ("rldx",),
-    "gr00t": ("sim", "gr00t"),
-    "diffuser_actor": ("rlbench",),
-    "lingbot_vla2": ("lingbot",),
-    "lingbot_va_a1": ("lingbot",),
-    "internvla_n1": ("rldx",),
-    "mock": (),
-}
-
-
-# Model-family → leaf module(s) whose presence proves the factory will
-# clear its import gates. Picked to mirror the FIRST import inside each
-# policy's factory (e.g.
-# ``from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy``
-# is what ``_build_smolvla`` does on line 300 of smolvla.py).
+# The per-family facts (``install_groups``, ``required_imports`` — the
+# leaf module(s) whose presence proves the factory clears its import gates,
+# mirroring its FIRST heavy import — and an optional ``install_note``) are
+# declared on each ``@POLICIES.register(...)`` call and read back here.
+# Importing ``openral_sim`` registers every built-in family without importing
+# torch (heavy imports live inside the factory bodies).
 _STRICT_PROBE_ENV = "OPENRAL_STRICT_POLICY_PROBE"
 
-_FAMILY_REQUIRED_IMPORTS: dict[str, tuple[str, ...]] = {
-    "smolvla": ("transformers", "lerobot.policies.smolvla.modeling_smolvla"),
-    "pi05": ("transformers", "bitsandbytes", "lerobot.policies.pi05.modeling_pi05"),
-    "act": ("lerobot.policies.act.modeling_act",),
-    "diffusion": ("lerobot.policies.diffusion.modeling_diffusion",),
-    "xvla": ("lerobot.policies.xvla.modeling_xvla",),
-    "xr1": ("zmq", "msgpack"),
-    "rldx": ("zmq", "msgpack"),
-    # GR00T-N1.7 now loads in-process via lerobot's native GrootPolicy and is
-    # NF4-quantized like pi05. Mirror the factory's first imports in
-    # openral_sim.policies.gr00t. ``diffusers`` is imported lazily INSIDE
-    # GrootPolicy's build (not by modeling_groot's module import), so probing
-    # only the modeling module admitted the skill to the reasoner palette and
-    # then aborted every dispatch at runtime ("'diffusers' is required but not
-    # installed") — observed live in the 2026-07-20 deploy-sim run.
-    "gr00t": ("transformers", "bitsandbytes", "diffusers", "lerobot.policies.groot.modeling_groot"),
-    # 3D Diffuser Actor shares the out-of-process sidecar contract; the
-    # openral-side client only needs the ZMQ + msgpack wire (the policy + the
-    # CoppeliaSim/PyRep RLBench env live in the sidecar's own py3.10 venv).
-    # See openral_sim.policies.rlbench_3dda.
-    "diffuser_actor": ("zmq", "msgpack"),
-    # LingBot-VLA 2.0 shares the out-of-process sidecar contract; the openral
-    # side only needs the ZMQ + msgpack wire (the 6.38 B model runs in the
-    # sidecar's own auto-provisioned py3.12 + torch-2.9.1 venv). See
-    # openral_sim.policies.lingbot_vla2.
-    "lingbot_vla2": ("zmq", "msgpack"),
-    "lingbot_va_a1": ("websockets", "msgpack"),
-    # InternVLA-N1 shares the sidecar contract — the openral side only
-    # needs the ZMQ + msgpack wire; the transformers-4.51 stack lives in
-    # the sidecar's auto-provisioned py3.11 venv.
-    "internvla_n1": ("zmq", "msgpack"),
-    "mock": (),
-}
+
+def _meta_strings(family: str, key: str) -> tuple[str, ...]:
+    raw = POLICIES.meta(family).get(key, ())
+    return tuple(str(item) for item in raw) if isinstance(raw, (tuple, list)) else ()
 
 
 def model_family_install_hint(family: str) -> str:
     """Return an actionable install command for a given model_family.
 
-    Falls back to a generic hint when the family is unknown — better
-    than silence, but the operator still has to map to a uv extras
-    group.
+    Derived from the family's registered ``install_groups`` (plus its
+    ``install_note``). Falls back to a generic hint when the family is
+    unknown — better than silence, but the operator still has to map to a
+    uv extras group.
     """
-    return _FAMILY_INSTALL_HINTS.get(
-        family,
-        f"Unknown model_family {family!r}; check the rSkill manifest's "
-        "runtime declarations and install the matching uv extras group "
-        "(`just sync --all-packages --group <name>`).",
+    if family not in POLICIES:
+        return (
+            f"Unknown model_family {family!r}; check the rSkill manifest's "
+            "runtime declarations and install the matching uv extras group "
+            "(`just sync --all-packages --group <name>`)."
+        )
+    groups = model_family_install_groups(family)
+    hint = (
+        "Install the extras: `just sync --all-packages "
+        + " ".join(f"--group {g}" for g in groups)
+        + "`."
+        if groups
+        else "No extras required."
     )
+    note = POLICIES.meta(family).get("install_note")
+    return f"{hint} {note}" if note else hint
 
 
 def model_family_install_groups(family: str) -> tuple[str, ...]:
     """Return the ``uv sync --group …`` group names that install ``family``.
 
     Empty tuple for unknown families (caller should fall back to
-    ``model_family_install_hint`` for display). Empty tuple for
-    ``"mock"`` (no extras needed).
+    ``model_family_install_hint`` for display) and for families that need
+    no extras (``zero`` / ``random``).
     """
-    return _FAMILY_INSTALL_GROUPS.get(family, ())
+    return _meta_strings(family, "install_groups")
 
 
 def model_family_required_imports(family: str) -> tuple[str, ...]:
@@ -230,13 +130,13 @@ def model_family_required_imports(family: str) -> tuple[str, ...]:
     then assumes the family is importable (no false negatives on
     fresh / out-of-tree policies).
     """
-    return _FAMILY_REQUIRED_IMPORTS.get(family, ())
+    return _meta_strings(family, "required_imports")
 
 
 def can_import_policy_family(family: str) -> tuple[bool, str | None]:
     """Probe whether ``family``'s policy factory can resolve its imports.
 
-    Resolves each entry in ``_FAMILY_REQUIRED_IMPORTS[family]`` via
+    Resolves each of ``model_family_required_imports(family)`` via
     ``_can_import_modules`` — top-level ``find_spec`` by default,
     or a full import under ``OPENRAL_STRICT_POLICY_PROBE=1``. Returns
     ``(True, None)`` on full success, else ``(False, reason)`` where
@@ -295,35 +195,18 @@ def _deep_import_probe(required: tuple[str, ...]) -> tuple[bool, str | None]:
     return True, None
 
 
-def _is_behavior_groot_manifest(manifest: Any) -> bool:
-    extras = getattr(manifest, "policy_extras", {}) or {}
-    return (
-        getattr(manifest, "model_family", None) == "gr00t"
-        and extras.get("implementation") == "behavior_b1k_sidecar"
-    )
-
-
 def can_import_policy_manifest(manifest: Any) -> tuple[bool, str | None]:
-    """Probe the manifest-selected runtime, including GR00T sidecar variants."""
-    if _is_behavior_groot_manifest(manifest):
-        return _can_import_modules(("zmq", "msgpack"))
+    """Probe the runtime of ``manifest.model_family``."""
     return can_import_policy_family(getattr(manifest, "model_family", None) or "")
 
 
 def manifest_install_groups(manifest: Any) -> tuple[str, ...]:
-    """Return dependency groups for the manifest-selected policy runtime."""
-    if _is_behavior_groot_manifest(manifest):
-        return ("behavior-groot",)
+    """Return dependency groups for the manifest's ``model_family``."""
     return model_family_install_groups(getattr(manifest, "model_family", None) or "")
 
 
 def manifest_install_hint(manifest: Any) -> str:
-    """Return the install hint for the manifest-selected policy runtime."""
-    if _is_behavior_groot_manifest(manifest):
-        return (
-            "Install the BEHAVIOR GR00T wire extras: "
-            "`just sync --all-packages --group behavior-groot`."
-        )
+    """Return the install hint for the manifest's ``model_family``."""
     return model_family_install_hint(getattr(manifest, "model_family", None) or "")
 
 
@@ -339,8 +222,8 @@ def filter_importable_manifests(
     are reported via ``log_fn`` (e.g. ``self.get_logger().warning``)
     with an actionable install hint.
 
-    Manifests whose ``model_family`` is not in
-    ``_FAMILY_REQUIRED_IMPORTS`` are kept unchanged (unknown
+    Manifests whose ``model_family`` is not registered in
+    ``openral_sim.POLICIES`` are kept unchanged (unknown
     families are assumed importable — better to surface a clearer
     runtime error from the factory than to drop a manifest the
     operator may want).

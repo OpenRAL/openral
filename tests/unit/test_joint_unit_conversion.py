@@ -8,9 +8,9 @@ bug nested it inside the reorder branch, so a matching-order checkpoint
 (``robot_to_policy is None``) passed degree actions through raw — ~57x too large,
 slamming the arm into its limits.
 
-These tests are robot-agnostic: they pin the shared helpers
-``_policy_action_to_robot`` / ``_robot_state_to_policy`` / ``_effective_perm``
-for any joint-position VLA, not one checkpoint.
+These tests are robot-agnostic: they pin ``openral_rskill._policy_io.PolicyIOCodec``
+(the one policy<->robot codec every dispatch path applies) for any
+joint-position VLA, not one checkpoint.
 """
 
 from __future__ import annotations
@@ -18,11 +18,36 @@ from __future__ import annotations
 import math
 
 import numpy as np
-from openral_rskill_ros.rskill_runner_node import (
-    _effective_perm,
-    _policy_action_to_robot,
-    _robot_state_to_policy,
-)
+from numpy.typing import NDArray
+from openral_rskill._policy_io import PolicyIOCodec, _effective_perm
+
+
+def _policy_action_to_robot(
+    action: NDArray[np.float32],
+    robot_to_policy: list[int] | None,
+    joint_units_are_degrees: bool,
+    policy_is_gripper: list[bool],
+) -> NDArray[np.float32]:
+    codec = PolicyIOCodec(
+        robot_to_policy=robot_to_policy,
+        joint_units_are_degrees=joint_units_are_degrees,
+        policy_is_gripper=policy_is_gripper,
+    )
+    return codec.to_robot_action(action)
+
+
+def _robot_state_to_policy(
+    state: NDArray[np.float32],
+    robot_to_policy: list[int] | None,
+    joint_units_are_degrees: bool,
+    policy_is_gripper: list[bool],
+) -> NDArray[np.float32]:
+    codec = PolicyIOCodec(
+        robot_to_policy=robot_to_policy,
+        joint_units_are_degrees=joint_units_are_degrees,
+        policy_is_gripper=policy_is_gripper,
+    )
+    return codec.to_policy_state(state)
 
 
 def test_effective_perm_is_identity_when_no_reorder() -> None:

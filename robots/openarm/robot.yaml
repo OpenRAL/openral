@@ -348,8 +348,13 @@ sdk_kind: "open"
 #                  → openarm_hardware SystemInterface
 #                  → openarm_can → SocketCAN → Damiao motors.
 hal:
-  sim: "openral_hal.openarm:OpenArmMujocoHAL"
+  # null → build_hal derives MujocoArmHAL.from_description(this manifest)
+  # from the `sim:` block below; no per-robot Python class is involved.
+  sim: null
   real: "openral_hal.openarm_real:OpenArmRealHAL"
+  # Vendor ros2_control bringup `deploy run` includes beside the real HAL
+  # (controller_manager + openarm_hardware at 400 Hz stay in C++, §1.5).
+  real_bringup: "openral_hal_openarm:real_bringup.launch.py"
   # issue #191 Phase 3b — HAL construction kwargs, threaded by build_hal so
   # the manifest-driven node needs no bespoke ROS params.
   #
@@ -359,7 +364,7 @@ hal:
   # `staleness_limit_s` is common to both.
   parameters:
     defaults:
-      # ── sim (OpenArmMujocoHAL) ──────────────────────────────────────
+      # ── sim (derived MujocoArmHAL) ──────────────────────────────────
       settle_steps: 4
       gravity_enabled: false
       # ── both ────────────────────────────────────────────────────────

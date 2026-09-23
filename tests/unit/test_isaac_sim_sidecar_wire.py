@@ -281,16 +281,13 @@ class TestMockActionDimByLayout:
             vla=VLASpec(id="random", weights_uri="none"),
         )
 
-    def test_lift_cube_and_default_are_8d(self) -> None:
+    def test_layout_width_comes_from_the_sidecar_not_a_table(self) -> None:
+        # The layout-determined width (lift_cube 8-D, bowl_plate 7-D) is read
+        # from the live sidecar's `action_dim` by SimRunner, not guessed here.
         from openral_sim.policies.mock import _resolve_action_dim
 
-        assert _resolve_action_dim(self._env("lift_cube")) == 8
-        assert _resolve_action_dim(self._env(None)) == 8
-
-    def test_bowl_plate_is_7d(self) -> None:
-        from openral_sim.policies.mock import _resolve_action_dim
-
-        assert _resolve_action_dim(self._env("bowl_plate")) == 7
+        assert _resolve_action_dim(self._env("lift_cube")) is None
+        assert _resolve_action_dim(self._env("bowl_plate")) is None
 
     def test_explicit_override_wins(self) -> None:
         from openral_sim.policies.mock import _resolve_action_dim

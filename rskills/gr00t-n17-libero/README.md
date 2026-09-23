@@ -9,6 +9,8 @@ tags:
 - rskill
 - gr00t
 - vision-language-action
+- nf4
+- 4-bit
 - franka_panda
 - nvidia
 - vla
@@ -17,7 +19,7 @@ tags:
 - manipulation
 base_model:
 - nvidia/GR00T-N1.7-LIBERO
-base_model_relation: finetune
+base_model_relation: quantized
 inference: false
 ---
 
@@ -93,7 +95,7 @@ processor pipeline — hence no `processors` block in the manifest.
 | `model_family` | `gr00t` |
 | `embodiment_tags` | `franka_panda` |
 | `runtime` | `pytorch` (out-of-process sidecar) |
-| `quantization.dtype` | `bf16` |
+| `quantization.dtype` | `int4` (NF4 at load; stored bf16 → `quantization.extra.stored_dtype`) |
 | `weights_uri` | `hf://nvidia/GR00T-N1.7-LIBERO` |
 | `chunk_size` | 16 |
 | `state_contract.dim` / `action_contract.dim` | 8 / 7 |
@@ -106,7 +108,8 @@ Full schema: [`openral_core.schemas.RSkillManifest`](../../python/core/src/openr
 GR00T N1.7-3B (bf16, ~6 GB weights) plus the Cosmos-Reason VLM does not fit
 on an 8 GB GPU without NF4 quantization; the sidecar (GR00T backend epic PR2) follows
 the NF4 isolated-venv recipe used by the RLDX and detector sidecars. A
-≥ 16 GB GPU runs bf16 directly.
+≥ 16 GB GPU can skip packing with `OPENRAL_QUANTIZATION_DTYPE=fp32` (the
+unpacked load runs fp32 params; there is no bf16 path).
 
 ## License
 

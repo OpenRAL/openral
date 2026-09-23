@@ -60,6 +60,14 @@ satisfies it. There is no inheritance requirement.
 
 ## Supported robots
 
+`robots/<id>/robot.yaml` is the runtime source of truth: `build_hal` passes the
+loaded manifest to every HAL (sim and real) as `description=`. Pure-data MuJoCo
+arms (franka_panda, ur5e, ur10e, rizon4, openarm, anvil_openarm_v2,
+aloha_bimanual, so100/so101) set `hal.sim: null`, so `deploy sim` / `sim run`
+build `MujocoArmHAL.from_description(manifest)`; the per-robot sim classes in
+the table below (`FrankaPandaHAL`, `UR5eHAL`, …) are thin wrappers over the
+in-code `*_DESCRIPTION` mirrors, kept for direct construction in tests.
+
 | Robot | Adapter | Status | Notes |
 | --- | --- | --- | --- |
 | LeRobot SO-100 follower arm | `SO100FollowerHAL` | ✓ unit + sim | Embodiment tag: `so100_follower`. |

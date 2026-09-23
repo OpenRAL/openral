@@ -239,7 +239,7 @@ def test_publish_joint_state_emits_hal_read_state_span(
     spans = [s for s in captured_spans.get_finished_spans() if s.name == "hal.read_state"]
     assert spans, "no hal.read_state span emitted by openral_hal_openarm timer"
     attrs = dict(spans[0].attributes or {})
-    assert attrs.get("openral.hal.adapter") == "openarmmujocohal"
+    assert attrs.get("openral.hal.adapter") == "mujocoarmhal"
     assert attrs.get("openral.hal.robot.model"), "openral.hal.robot.model must be set"
     assert attrs.get("openral.tick.idx") == 0
     names = list(attrs.get("openral.hal.joint.names") or [])
@@ -286,7 +286,7 @@ def test_on_safe_action_emits_hal_send_action_span(
     spans = [s for s in captured_spans.get_finished_spans() if s.name == "hal.send_action"]
     assert spans, "no hal.send_action span emitted after /openral/safe_action publish"
     attrs = dict(spans[0].attributes or {})
-    assert attrs.get("openral.hal.adapter") == "openarmmujocohal"
+    assert attrs.get("openral.hal.adapter") == "mujocoarmhal"
     assert attrs.get("openral.hal.control_mode") == "joint_position"
     next_row = list(attrs.get("openral.hal.action.next") or [])
     assert len(next_row) == 16, f"action.next must carry the 16-DoF row, got {len(next_row)}"

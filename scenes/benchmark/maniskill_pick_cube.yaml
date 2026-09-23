@@ -7,7 +7,7 @@ robot_id: franka_panda
 
 scene:
   id: maniskill3
-  backend: mujoco            # SAPIEN under the hood; mujoco enum slot reused
+  backend: sapien
   observation_height: 256
   observation_width: 256
   cameras: ["top", "wrist"]

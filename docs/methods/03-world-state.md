@@ -8,10 +8,10 @@ _Layout adapter registry that assembles per-checkpoint state vectors from manife
 - `@dataclass TransformView` (_protocol.py L21) — rclpy-free view of a `geometry_msgs/TransformStamped` (position + quaternion_xyzw).
 - `Protocol TfLookup` (_protocol.py L36) — `__call__(target_frame: str, source_frame: str) -> TransformView`. Implementations MUST raise on missing transforms — assembler never silently substitutes identity.
 - `Protocol Assembler` (_protocol.py L49) — `__call__(bindings: StateContractBindings, joint_positions: dict[str, float], tf_lookup: TfLookup) -> NDArray[float32]`. Pure-function signature every layout file implements.
-- const `_LAYOUT_ASSEMBLERS: dict[StateLayout, Assembler]` (_registry.py L27) — Package-global `layout → assembler` map; layout files populate it at import via `register`.
-- `register(layout: StateLayout, assembler: Assembler) -> None` (_registry.py L30) — Bind `assembler` to `layout` in the package-global registry. Layout files call this at module load.
-- `registered_layouts() -> frozenset[StateLayout]` (_registry.py L41) — Snapshot of currently-registered layouts. Reasoner palette filter consults this to admit wrapped-task-space rSkills.
-- `assemble_state(layout, bindings, joint_positions, tf_lookup) -> NDArray[float32]` (_registry.py L53) — Look up and run the assembler for `layout` after checking every bound joint is present. Raises `ROSConfigError` when no assembler is registered or a bound joint is missing; `ROSPerceptionStale` when no joint frame has arrived at all.
+- const `_LAYOUT_ASSEMBLERS: dict[StateLayout, Assembler]` (_registry.py L29) — Package-global `layout → assembler` map; layout files populate it at import via `register`.
+- `register(layout: StateLayout, assembler: Assembler) -> None` (_registry.py L32) — Bind `assembler` to `layout` in the package-global registry. Layout files call this at module load.
+- `registered_layouts() -> frozenset[StateLayout]` (_registry.py L43) — Snapshot of currently-registered layouts. Reasoner palette filter consults this to admit wrapped-task-space rSkills.
+- `assemble_state(layout, bindings, joint_positions, tf_lookup) -> NDArray[float32]` (_registry.py L55) — Look up and run the assembler for `layout` after checking every bound joint is present. Raises `ROSConfigError` when no assembler is registered or a bound joint is missing; `ROSPerceptionStale` when no joint frame has arrived at all.
 - const `_DIM = 16` (layouts/human300_16d.py L35) — Output vector width.
 - const `_N_GRIPPER_JOINTS = 2` (layouts/human300_16d.py L36) — Per-finger gripper-joint count.
 - `assemble_human300_16d(bindings, joint_positions, tf_lookup) -> NDArray[float32]` (layouts/human300_16d.py L86) — RoboCasa365 / pi05_pretrain_human300 16-D task-space layout (EE pose + base pose + gripper). Registered as `"human300_16d"` at import.

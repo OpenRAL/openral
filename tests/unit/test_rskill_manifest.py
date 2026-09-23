@@ -317,12 +317,18 @@ class TestEmbodimentTags:
         with pytest.raises(ValidationError):
             RSkillManifest.model_validate(d)
 
-    def test_off_list_tag_rejected(self) -> None:
-        """Tags outside the canonical robots/ set must be rejected."""
+    @pytest.mark.parametrize("tag", ["Franka_Panda", "franka-panda", "", "2dof"])
+    def test_malformed_tag_rejected(self, tag: str) -> None:
+        """EmbodimentTag is an open id: membership is CI's job, shape is the schema's."""
         d = _minimal_manifest_dict()
-        d["embodiment_tags"] = ["lerobot"]
+        d["embodiment_tags"] = [tag]
         with pytest.raises(ValidationError):
             RSkillManifest.model_validate(d)
+
+    def test_new_robot_tag_accepted_without_schema_edit(self) -> None:
+        d = _minimal_manifest_dict()
+        d["embodiment_tags"] = ["my_new_arm"]
+        assert RSkillManifest.model_validate(d).embodiment_tags == ["my_new_arm"]
 
     def test_multiple_canonical_tags_accepted(self) -> None:
         d = _minimal_manifest_dict()
@@ -341,9 +347,10 @@ class TestModelFamily:
         d["model_family"] = fam
         RSkillManifest.model_validate(d)
 
-    # "groot" (single-zero typo) stays rejected — the canonical spelling is "gr00t".
-    @pytest.mark.parametrize("fam", ["groot", "custom", "smolvla2", ""])
-    def test_unsupported_family_rejected(self, fam: str) -> None:
+    # ModelFamily is an open id: a typo like "groot" is caught against
+    # openral_sim.POLICIES by tests/unit/test_manifest_registry_ids.py, not here.
+    @pytest.mark.parametrize("fam", ["Gr00t", "smol-vla", "", "0act"])
+    def test_malformed_family_rejected(self, fam: str) -> None:
         d = _minimal_manifest_dict()
         d["model_family"] = fam
         with pytest.raises(ValidationError):
@@ -372,9 +379,10 @@ class TestBenchmarks:
         m = RSkillManifest.model_validate(d)
         assert m.benchmarks == {"libero_spatial": 0.8, "libero_10": 0.59}
 
-    def test_unknown_benchmark_key_rejected(self) -> None:
+    def test_malformed_benchmark_key_rejected(self) -> None:
+        """BenchmarkName is an open id; unknown-but-well-formed keys are CI's job."""
         d = _minimal_manifest_dict()
-        d["benchmarks"] = {"my_custom_suite": 0.5}
+        d["benchmarks"] = {"My-Suite": 0.5}
         with pytest.raises(ValidationError):
             RSkillManifest.model_validate(d)
 
@@ -1102,12 +1110,22 @@ class TestCanonicalTokenSets:
         # No hyphenated variant leaks in.
         assert "lingbot-vla" not in CANONICAL_MODEL_TOKENS
 
-    def test_robot_tokens_include_embodiment_plus_multi(self) -> None:
+    def test_reserved_robot_tokens(self) -> None:
         from openral_core import CANONICAL_ROBOT_NAME_TOKENS
 
-        assert "franka_panda" in CANONICAL_ROBOT_NAME_TOKENS
-        assert "any" in CANONICAL_ROBOT_NAME_TOKENS
-        assert "multi" in CANONICAL_ROBOT_NAME_TOKENS
+        # Concrete robot tokens are an open registry (robots/*/robot.yaml).
+        assert {"any", "multi"} == CANONICAL_ROBOT_NAME_TOKENS
+
+    def test_new_robot_and_family_need_no_schema_edit(self) -> None:
+        from openral_core import repo_name_is_canonical
+
+        assert repo_name_is_canonical(
+            "OpenRAL/rskill-newfam-my_new_arm-pick-bf16", kind="vla", model_family="newfam"
+        )
+        # ...but a family still cannot borrow another family's token.
+        assert not repo_name_is_canonical(
+            "OpenRAL/rskill-smolvla-my_new_arm-pick-bf16", kind="vla", model_family="newfam"
+        )
 
     def test_quant_tokens_exact_set(self) -> None:
         from openral_core import CANONICAL_QUANT_TOKENS

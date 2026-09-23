@@ -29,12 +29,34 @@ def test_int4_manifest_selects_nf4_sidecar() -> None:
     from openral_core import RSkillManifest
 
     root = Path(__file__).parents[2]
+    from openral_core import VLASpec
+
     manifest = RSkillManifest.from_yaml(str(root / "rskills" / "xr1-vlabench" / "rskill.yaml"))
-    assert _quantization_mode(manifest) == "prequantized_nf4"
+    spec = VLASpec(id="xr1", weights_uri="rskills/xr1-vlabench")
+    assert _quantization_mode(spec, manifest) == "prequantized_nf4"
     local = manifest.model_copy(
         update={"policy_extras": {**manifest.policy_extras, "prequantized_nf4": False}}
     )
-    assert _quantization_mode(local) == "nf4"
+    assert _quantization_mode(spec, local) == "nf4"
+
+
+def test_xr1_honours_the_shared_override_and_rejects_int8(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """XR-1 used to read only the manifest; the per-run override now reaches it."""
+    from pathlib import Path
+
+    from openral_core import RSkillManifest, VLASpec
+    from openral_sim._quantization import QUANTIZATION_DTYPE_ENV
+
+    root = Path(__file__).parents[2]
+    manifest = RSkillManifest.from_yaml(str(root / "rskills" / "xr1-vlabench" / "rskill.yaml"))
+    spec = VLASpec(id="xr1", weights_uri="rskills/xr1-vlabench")
+    monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "bf16")
+    assert _quantization_mode(spec, manifest) == "none"
+    monkeypatch.setenv(QUANTIZATION_DTYPE_ENV, "int8")
+    with pytest.raises(ROSConfigError, match="xr1 cannot load dtype 'int8'"):
+        _quantization_mode(spec, manifest)
 
 
 def test_rc365_state_reorders_and_converts_quaternions() -> None:

@@ -144,8 +144,8 @@ supplied at the CLI via `--rskill <name>`.
 | gym-pusht           | `pusht` (2-D pymunk)                                                                                                                                                                                                                                                                        | `python/sim/.../backends/pusht.py`        |
 | RLBench (CoppeliaSim/PyRep) | `rlbench` (scene-fixed Franka Panda; task selected by `backend_options.rlbench_task`) | `python/sim/.../backends/rlbench.py` |
 | BEHAVIOR-1K (OmniGibson / Isaac Sim) | `behavior` (scene-fixed R1 Pro; task/instance selected by `backend_options`) | `python/sim/.../backends/behavior.py` |
-| RoboCasa (MuJoCo)   | `robocasa` (procedural) + curated kitchen tasks (including XR-1's `CloseBlenderLid` smoke task) + 24 GR1 tabletop tasks                                                                                                                            | `python/sim/.../backends/robocasa.py`     |
-| ManiSkill3 (SAPIEN) | `maniskill3` (free-axis; passes `<env_id>` to `gym.make`)                                                                                                                                                                                                                                   | `python/sim/.../backends/maniskill3.py`   |
+| RoboCasa (MuJoCo)   | `robocasa` (procedural) + any `robocasa/<Task>` kitchen task + any `robocasa/gr1/<Task>` GR1 tabletop task (resolved by id prefix; a typo fails at build with `ROSConfigError`) | `python/sim/.../backends/robocasa.py`     |
+| ManiSkill3 (SAPIEN) | `maniskill3` (scene-fixed Franka Panda; passes `<env_id>` to `gym.make`)                                                                                                                                                                                                                    | `python/sim/.../backends/maniskill3.py`   |
 | SimplerEnv (SAPIEN) | `simpler_env` (Bridge V2 digital twin: 4 WidowX tasks on MS3 v3.0.x)                                                                                                                                                                                                                        | `python/sim/.../backends/simpler_env.py`  |
 | Custom OpenArm      | `openarm_tabletop_pnp` (bimanual; default top camera matches the mddoai dataset POV)                                                                                                                                                                                                        | `python/sim/.../backends/openarm_*/env.py`|
 | Custom SO-101       | `so101_box` (100 × 61.5 × 75 cm box arena + OAK-D Pro overhead RGB-D + wrist camera + tube-insertion task — geometry/sensors/spawn ranges configurable via `BoxSceneOptions`)                                                                                                               | `python/sim/.../backends/so101_box/env.py`|
@@ -159,7 +159,8 @@ path — paste one straight into `--config`. The `--rskill` half comes from
 
 ## Scene-fixed robots
 
-Some scenes hard-wire the physics robot via `@SCENES.register(..., fixed_robot=...)`:
+Some scenes hard-wire the physics robot(s) via `@SCENES.register(..., fixed_robot=...)`
+(one id or a set):
 
 | Scene                                            | Fixed robot         |
 |--------------------------------------------------|---------------------|
@@ -169,21 +170,24 @@ Some scenes hard-wire the physics robot via `@SCENES.register(..., fixed_robot=.
 | `aloha_transfer_cube` / `aloha_insertion`        | `aloha_bimanual`    |
 | `rlbench`                                       | `franka_panda`      |
 | `so101_box`                                      | `so101_follower`    |
-| `robocasa/*` (kitchen)                           | `panda_mobile`      |
+| `robocasa`, `robocasa/*` (kitchen)               | `panda_mobile`, `panda_mobile_vslam` |
 | `robocasa/gr1/*` (humanoid tabletop)             | `gr1`               |
 | `behavior`                                       | `r1pro`              |
 | `robotwin`                                       | `aloha_agilex`       |
 | `vlabench`                                       | `franka_panda`       |
+| `maniskill3`                                     | `franka_panda`       |
+| `simpler_env`                                    | `widowx`             |
+| `openarm_tabletop_pnp`                           | `openarm`            |
 
-Passing `--robot` (or authoring `robot_id:` in a YAML) with a value that
-disagrees with the scene's `fixed_robot` raises `ROSConfigError` at
-config-build time — the message tells you which robot the scene requires.
-Free-axis scenes (`tabletop_push`, `maniskill3`, `simpler_env`,
-`openarm_tabletop_pnp`) leave `--robot` user-controlled.
+One rule, `SCENES.resolve_robot`, binds the robot in `sim run`, `benchmark`,
+`deploy sim` and the sim HAL: a `--robot` / `robot_id:` outside the scene's set
+raises `ROSConfigError` at config-build time (the message lists the allowed
+robots); a matching one is accepted; an omitted one takes the scene's default.
+Free-axis scenes (`tabletop_push`, `isaac_sim`, `mock`) require a robot.
 
 ## Placing robots in free-axis scenes (`base_pose:`)
 
-Free-axis scenes accept an optional `base_pose:` block that anchors the robot
+Scenes registered with `base_pose=True` (`tabletop_push`, `openarm_tabletop_pnp`) accept an optional `base_pose:` block that anchors the robot
 in the scene's world frame. Adapters write the `world → base_frame` transform
 (from the robot manifest's `RobotDescription.base_frame`) into the scene's
 MJCF at load. Example:

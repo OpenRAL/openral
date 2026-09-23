@@ -1,7 +1,7 @@
 """``openral benchmark scene`` manifest-writeback eligibility guard.
 
 ``benchmark scene`` writes ``rskill.yaml``'s ``benchmarks:`` block (the
-suite-headline map, keyed by the ``BenchmarkName`` literal) only when the
+suite-headline map, keyed by ``BenchmarkName`` ids) only when the
 scene's id IS a canonical suite id. A single-scene config whose ``scene.id``
 is not a suite id (e.g. ``scenes/benchmark/metaworld_push.yaml`` →
 ``scene.id == "metaworld"``, suite is ``"metaworld_mt50"``) used to crash
@@ -9,7 +9,7 @@ is not a suite id (e.g. ``scenes/benchmark/metaworld_push.yaml`` →
 validation"). The guard now skips the manifest write for those scenes; the
 per-scene eval JSON still records the result.
 
-CLAUDE.md §1.11 — real schema (``BenchmarkName``) and real shipped scene ids,
+CLAUDE.md §1.11 — real on-disk benchmark ids and real shipped scene ids,
 no placeholders.
 """
 

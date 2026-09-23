@@ -6,9 +6,12 @@ pipeline_tag: robotics
 tags:
 - OpenRAL
 - rskill
-- gr00t
+- gr00t_b1k
 - vision-language-action
+- nf4
+- 4-bit
 - r1pro
+- gr00t
 - behavior-1k
 datasets:
 - behavior-1k/2026-challenge-demos
@@ -111,7 +114,8 @@ OmniGibson step.
 | `version` | `0.1.0` |
 | `license` | `unknown` |
 | `role` | `s1` |
-| `model_family` | `gr00t` |
+| `model_family` | `gr00t_b1k` |
+| `quantization.dtype` | `int4` (NF4 at load; stored `bf16` → `quantization.extra.stored_dtype`) |
 | `runtime` | external Python 3.10 Isaac-GR00T sidecar, whole-model NF4 |
 | `weights_uri` | `local://checkpoints/behavior-groot-turning-on-radio` |
 | `chunk_size` | 16 |

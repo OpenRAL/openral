@@ -60,22 +60,24 @@ from openral_rskill._vla_core import (
     resolve_camera_keys,
     resolve_device,
     resolve_image_preprocessing,
+    resolve_n_action_steps,
     resolve_rskill_repo_id,
     resolve_state_dim,
 )
 
 # NF4 quantization + prequantized-state load live in the adapter-agnostic
 # helper module so π0.5 / MolmoAct2 / future families share one bnb rewrite
-# path. The dtype-resolution helpers (manifest_dtype, torch_dtype_for,
+# path. The dtype-resolution helpers (resolve_quant_plan, torch_dtype_for,
 # default_dtype_for_device) live there too so every adapter speaks the same
 # QuantizationDtype enum vocabulary.
 from openral_sim._quantization import (
     default_dtype_for_device,
     detect_prequantized_nf4,
     load_prequantized_state_for_rskill,
-    manifest_dtype,
     peek_safetensors_keys,
     quantize_nf4_in_place,
+    require_supported_dtype,
+    resolve_quant_plan,
     targeted_reset_parameters,
     tie_transformers_weights,
     torch_dtype_for,
@@ -536,7 +538,7 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
     ``_build_molmoact2`` so the build function stays under the statement
     cap; all phases stay wrapped in ``_molmoact2_phase``.
     """
-    use_nf4 = dtype_str.lower() in {"nf4", "4bit", "int4"}
+    use_nf4 = dtype_str == "nf4"
     torch_dtype = torch_dtype_for(torch, None if use_nf4 else dtype_str, device)
 
     # The processor + config still resolve their files against the Hub; on a
@@ -672,7 +674,15 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
     return model, processor, use_nf4, torch_dtype
 
 
-@POLICIES.register("molmoact2")
+@POLICIES.register(
+    "molmoact2",
+    install_groups=("libero",),
+    required_imports=(
+        "transformers",
+        "bitsandbytes",
+        "lerobot.policies.molmoact2.molmoact2_hf_model.modeling_molmoact2",
+    ),
+)
 def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
     """Load a MolmoAct2 finetune via lerobot's in-tree MolmoAct2 model class."""
     spec = env_cfg.vla
@@ -703,7 +713,10 @@ def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
         _strip_hf_uri(manifest.source_repo, field_name="source_repo")
     )
 
-    dtype_str = manifest_dtype(spec, manifest=manifest) or default_dtype_for_device(device)
+    plan = resolve_quant_plan(spec, manifest, default=default_dtype_for_device(device))
+    # No int8 path: the load either NF4-packs or casts to a plain precision.
+    require_supported_dtype(plan, frozenset({"nf4", "bf16", "fp16", "fp32", "none"}), "molmoact2")
+    dtype_str = plan.dtype or default_dtype_for_device(device)
     model, processor, use_nf4, torch_dtype = _load_molmoact2_model(
         torch=torch,
         model_cls=model_cls,
@@ -725,18 +738,18 @@ def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
     # Replay cadence + solver knobs: vla.extra overrides win, then the manifest,
     # then the checkpoint/README defaults.
     extra = spec.extra if hasattr(spec, "extra") else {}
-    n_action_steps = extra.get("n_action_steps", manifest.n_action_steps)
     # The checkpoint hard-caps the chunk it will emit at config.max_action_horizon
-    # (the LIBERO checkpoint = 10); predict_action raises if asked for more. Clamp
-    # so a stale manifest / CLI value degrades to the full chunk instead of erroring.
+    # (the LIBERO checkpoint = 10); predict_action raises if asked for more, so the
+    # shared rule clamps to it. Nothing declared anywhere → None (checkpoint default).
     max_horizon = int(getattr(model.config, "max_action_horizon", 0) or 0)
-    if n_action_steps and max_horizon and int(n_action_steps) > max_horizon:
-        _log.warning(
-            "molmoact2_n_action_steps_clamped",
-            requested=int(n_action_steps),
-            max_action_horizon=max_horizon,
+    n_action_steps: int | None = None
+    if manifest.n_action_steps is not None or "n_action_steps" in extra or "replan_steps" in extra:
+        n_action_steps = resolve_n_action_steps(
+            manifest,
+            dict(extra),
+            default=max_horizon or manifest.chunk_size,
+            chunk_size=max_horizon or None,
         )
-        n_action_steps = max_horizon
     num_steps = int(extra.get("num_steps", _DEFAULT_NUM_STEPS))
     # Precedence: vla.extra → manifest.image_preprocessing.norm_tag → default
     manifest_norm_tag = None

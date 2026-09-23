@@ -424,7 +424,12 @@ class _TabletopPushRollout:
         return bool(np.linalg.norm(cube_pos[:2] - goal_xy) <= self.options.goal_radius)
 
 
-@SCENES.register("tabletop_push")
+@SCENES.register(
+    "tabletop_push",
+    sequential_init=True,  # _mujoco_arm -> openral_hal._base pulls transformers
+    sim_clock=True,
+    base_pose=True,  # anchors the robot's base_frame at SimEnvironment.base_pose
+)
 def build_tabletop_push_scene(env_cfg: SimEnvironment) -> _TabletopPushRollout:
     """Build the robot-agnostic ``tabletop_push`` rollout (free-axis).
 

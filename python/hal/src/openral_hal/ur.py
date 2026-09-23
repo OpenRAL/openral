@@ -182,7 +182,7 @@ UR5e_DESCRIPTION = RobotDescription(
         deadman_required=True,
     ),
     sdk_kind="open",
-    hal=HalEntrypoints(sim="openral_hal.ur:UR5eHAL", real="openral_hal.ur_real:UR5eRealHAL"),
+    hal=HalEntrypoints(sim=None, real="openral_hal.ur_real:UR5eRealHAL"),
     assets=AssetRefs(
         urdf=UrdfAsset(
             ref="file:ur5e.urdf",
@@ -226,7 +226,7 @@ UR10e_DESCRIPTION = RobotDescription(
         deadman_required=True,
     ),
     sdk_kind="open",
-    hal=HalEntrypoints(sim="openral_hal.ur:UR10eHAL", real="openral_hal.ur_real:UR10eRealHAL"),
+    hal=HalEntrypoints(sim=None, real="openral_hal.ur_real:UR10eRealHAL"),
     assets=AssetRefs(
         urdf=UrdfAsset(
             ref="file:ur10e.urdf",

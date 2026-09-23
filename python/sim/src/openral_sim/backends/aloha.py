@@ -196,4 +196,4 @@ def _build_aloha_scene(env_cfg: SimEnvironment) -> _AlohaSim:
 for _scene_id in _ALOHA_SCENES:
     # gym-aloha hard-wires the ALOHA bimanual rig; the scene rejects
     # mismatched robot_id values.
-    SCENES.register(_scene_id, fixed_robot="aloha_bimanual")(_build_aloha_scene)
+    SCENES.register(_scene_id, fixed_robot="aloha_bimanual", sim_clock=True)(_build_aloha_scene)
