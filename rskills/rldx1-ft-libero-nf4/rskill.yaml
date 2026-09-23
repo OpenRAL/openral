@@ -89,6 +89,11 @@ image_preprocessing:
   # honours this manifest flag and applies the same transform so the
   # FT-LIBERO checkpoint sees in-distribution image orientation.
   flip_180: true
+  # Slot -> sidecar video key (the libero layout's keys, stated explicitly).
+  input_template: "video.{cam}"
+  aliases:
+    camera1: "image"
+    camera2: "wrist_image"
 # RLDX-1 carries an embedded state-encoder for the LIBERO 8-D
 # (eef_pos | axisangle | gripper_qpos) layout — see the adapter for
 # the wire mapping. We expose dim=8 here so the loader's compat

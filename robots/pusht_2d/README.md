@@ -15,7 +15,7 @@ commands. Sim-only.
 | `embodiment_kind` | `manipulator` |
 | Joints | 2 synthetic prismatic "joints" representing the (x, y) tip position |
 | Workspace | 512 × 512 px canvas (`gym_pusht/PushT-v0` default) |
-| Sensors | 1× top-down RGB (96 × 96, key `observation.image`) |
+| Sensors | 1× top-down RGB (96 × 96, VLA slot `camera1`) |
 | Supported control modes | 2-D end-effector position |
 | `sdk_kind` | `open` (`gym_pusht`, `pymunk`) |
 
@@ -25,9 +25,10 @@ commands. Sim-only.
 > action space. Position limits match the canvas (0 — 512 px); velocity /
 > effort limits are nominal.
 
-PushT predates the multi-cam `observation.images.cameraN` convention and
-exposes the raw key `observation.image`; the rSkill manifest pins this
-explicitly so capability matching gates correctly.
+The camera is VLA slot `camera1` (`observation.images.camera1`). The
+Diffusion Policy checkpoint's own key, `observation.image` (PushT predates
+the multi-cam convention), is the rSkill's `image_preprocessing` rename
+(`input_template: "observation.{cam}"`, `aliases: {camera1: image}`).
 
 ## Pair with
 

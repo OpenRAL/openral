@@ -15,7 +15,7 @@ commercial); ``franka_ros2`` is Apache-2.0. The manifest declares
 Transport: the hot path is ``ros2_control``; this module does not import
 ``rclpy`` and instead subclasses ``openral_hal.ros_control.RosControlHAL``,
 which takes injected ``publish_fn``/``state_fn`` callables. The lifecycle
-node in ``packages/openral_hal_franka`` attaches the production
+node in ``packages/openral_hal_node`` attaches the production
 ``RosControlTransport`` at runtime (the adapter is structurally
 ``RosControlDrivable``); unit tests inject ``SimTransport`` for the same code
 path without ROS 2 installed.

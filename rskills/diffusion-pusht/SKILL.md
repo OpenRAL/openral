@@ -14,7 +14,7 @@ metadata:
   actions: [push]
   objects: [t_shape]
   scenes: [tabletop_2d]
-  sensors_required: ['rgb:observation.image']
+  sensors_required: ['rgb:observation.images.camera1']
   state_dim: 2
   action_dim: 2
   action_representation: joint_positions

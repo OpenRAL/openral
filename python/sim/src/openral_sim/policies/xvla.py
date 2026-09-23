@@ -34,9 +34,11 @@ from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_rskill._vla_core import (
     apply_chunk_replay,
     build_chunk_executor,
+    checkpoint_image_keys,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
+    resolve_image_preprocessing,
     resolve_rskill_repo_revision,
     run_inference,
     to_numpy_action,
@@ -68,6 +70,9 @@ class _XVLAAdapter:
     _converters: Any  # lerobot.processor.converters (for transition wrapping)
     _empty_camera_size: tuple[int, int] = (224, 224)
     _camera_keys: tuple[str, ...] = field(default_factory=lambda: ("camera1", "camera2"))
+    # Checkpoint batch key per ``_camera_keys`` slot (manifest ``aliases`` over
+    # ``input_template``; LIBERO: ``observation.images.image`` / ``image2``).
+    _image_keys: tuple[str, ...] = ()
     _last_input_frame: NDArray[np.uint8] | None = None
     _chunk_executor: Any = None
 
@@ -156,8 +161,10 @@ class _XVLAAdapter:
 
         The xVLA env preprocessor (``LiberoProcessorStep``) consumes
         ``observation.images.image{,2}``, ``observation.images.empty_camera_0``,
-        and a nested ``observation.robot_state`` dict with tensor fields. We
-        build that here from the raw LiberoEnv observation.
+        and a nested ``observation.robot_state`` dict with tensor fields. The
+        camera frames come from ``observation["images"]`` by slot, keyed by the
+        manifest's ``image_preprocessing`` aliases; the robot state comes from
+        the raw LiberoEnv observation.
         """
         torch = self._torch
         device = self.device
@@ -172,21 +179,19 @@ class _XVLAAdapter:
             np_arr = np.asarray(arr, dtype=np.float32)
             return torch.from_numpy(np_arr).reshape(1, *shape).to(device)
 
-        pixels = raw_obs.get("pixels", {})
+        images = observation.get("images", {})
         h, w = self._empty_camera_size
         batch: dict[str, Any] = {"task": instruction or observation.get("task", "")}
         from openral_sim.policies._video_capture import to_input_frame
 
-        if "image" in pixels:
-            batch["observation.images.image"] = _hwc_uint8_to_bchw_float(pixels["image"])
-        if "image2" in pixels:
-            batch["observation.images.image2"] = _hwc_uint8_to_bchw_float(pixels["image2"])
-        # Capture the wrist / mounted camera for the top-left "VLA input"
-        # panel — image2 is the eye-in-hand view in LIBERO; fall back to
-        # the agent view (image) when only one stream is available.
-        wrist = pixels.get("image2", pixels.get("image"))
-        if wrist is not None:
-            self._last_input_frame = to_input_frame(wrist)
+        # The last present slot (LIBERO camera2 = eye-in-hand) is the preview.
+        preview = None
+        for slot, key in zip(self._camera_keys, self._image_keys, strict=True):
+            if slot in images:
+                preview = images[slot]
+                batch[key] = _hwc_uint8_to_bchw_float(preview)
+        if preview is not None:
+            self._last_input_frame = to_input_frame(preview)
         batch["observation.images.empty_camera_0"] = torch.zeros(
             1, 3, h, w, dtype=torch.float32, device=device
         )
@@ -291,10 +296,8 @@ def _build_xvla(env_cfg: Any) -> _XVLAAdapter:
         to_output=transition_to_policy_action,
     )
 
-    # Manifest-first camera-key resolution. xVLA's env preprocessor
-    # (LiberoProcessorStep) builds its own observation.images.* batch
-    # from the LIBERO raw obs; this list only drives the wrist-frame
-    # surface for the eval video helper.
+    # Slots -> checkpoint batch keys via the manifest's image_preprocessing
+    # (aliases over input_template), the one rename mechanism.
     manifest = None
     weights_uri = str(getattr(spec, "weights_uri", "") or "")
     if not weights_uri.startswith(("hf://", "local://", "file://", "http://", "https://")):
@@ -303,6 +306,7 @@ def _build_xvla(env_cfg: Any) -> _XVLAAdapter:
         manifest = load_rskill_manifest(weights_uri)
     scene_cameras = getattr(env_cfg.scene, "cameras", None)
     cam_keys = resolve_camera_keys(manifest, spec.extra, scene_cameras=scene_cameras)
+    image_keys = checkpoint_image_keys(resolve_image_preprocessing(manifest, spec.extra), cam_keys)
 
     adapter = _XVLAAdapter(
         spec=spec,
@@ -315,6 +319,7 @@ def _build_xvla(env_cfg: Any) -> _XVLAAdapter:
         _torch=torch,
         _converters=_converters,
         _camera_keys=cam_keys,
+        _image_keys=image_keys,
     )
     adapter._chunk_executor = build_chunk_executor(spec.extra, policy=policy, adapter_name="xvla")
     return adapter

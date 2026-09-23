@@ -261,6 +261,23 @@ class PolicyIOCodec(BaseModel):
         )
         return legacy
 
+    @property
+    def is_identity(self) -> bool:
+        """True when the codec changes nothing: radians, unit gripper scale, robot order.
+
+        Example:
+            >>> PolicyIOCodec().is_identity
+            True
+            >>> PolicyIOCodec(gripper_scale=100.0).is_identity
+            False
+        """
+        perm = self.robot_to_policy
+        return (
+            not self.joint_units_are_degrees
+            and self.gripper_scale == 1.0
+            and (perm is None or perm == list(range(len(perm))))
+        )
+
     def _is_policy_gripper(self, j: int) -> bool:
         return j < len(self.policy_is_gripper) and self.policy_is_gripper[j]
 

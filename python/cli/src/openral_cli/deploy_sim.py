@@ -11,8 +11,8 @@ The launch graph is robot-agnostic — one ``deploy_e2e.launch.py`` for every
 robot; the CLI resolves everything robot-specific from data: the manifest
 (``$OPENRAL_ROBOTS_DIR/<robot_id>/robot.yaml`` or ``robots/<robot_id>/robot.yaml``)
 and the DeployScene. There is no per-robot Python table — the HAL node spec
-is derived by ``_derive_hal_spec`` (every HAL package runs the same
-manifest-driven node), and whether the sim HAL scene-attaches or builds a
+is derived by ``_derive_hal_spec`` (every robot runs the one manifest-driven
+node in ``openral_hal_node``), and whether the sim HAL scene-attaches or builds a
 bare twin is decided by the scene (``_scene_builds_bare_twin``).
 
 No envelope YAML file on either side: the robot manifest is the single
@@ -75,12 +75,11 @@ _console = Console(soft_wrap=True)
 class _HalSpec:
     """HAL spawn descriptor, derived from the manifest + DeployScene (no per-robot table).
 
-    Every ``openral_hal_*`` ROS package runs the same manifest-driven node
-    (``make_lifecycle_main_from_manifest``), so ``package`` only decides which
-    install hosts it: the robot's own ``openral_hal_<robot_id>`` package when
-    ``packages/`` ships one (keeps e.g. openarm's ``launch/real_bringup.launch.py``
-    convention), else the generic ``openral_hal_scene_attached``. The node is
-    always named ``openral_hal_<robot_id>`` (the launch overrides the name).
+    Every robot runs the one manifest-driven HAL lifecycle node shipped by the
+    ``openral_hal_node`` ROS package; robot identity comes from the
+    ``robot_yaml`` parameter, never from the package. ``node_name`` is the ROS
+    node NAME ``openral_hal_<robot_id>`` (the launch overrides the name), which
+    namespaces the node's topics and services — it is not a package name.
 
     ``bare_twin_sim`` is a property of the SCENE, not the robot: see
     ``_scene_builds_bare_twin``.
@@ -92,7 +91,7 @@ class _HalSpec:
     bare_twin_sim: bool = False
 
 
-_GENERIC_HAL_PACKAGE: Final = "openral_hal_scene_attached"
+_GENERIC_HAL_PACKAGE: Final = "openral_hal_node"
 
 
 def _scene_builds_bare_twin(deploy_scene: DeployScene | None) -> bool:
@@ -113,14 +112,12 @@ def _scene_builds_bare_twin(deploy_scene: DeployScene | None) -> bool:
     return deploy_scene.scene.id not in SCENES
 
 
-def _derive_hal_spec(robot_id: str, repo_root: Path, deploy_scene: DeployScene | None) -> _HalSpec:
+def _derive_hal_spec(robot_id: str, deploy_scene: DeployScene | None) -> _HalSpec:
     """Build the ``_HalSpec`` for ``robot_id`` — see ``_HalSpec`` for the rule."""
-    own = f"openral_hal_{robot_id}"
-    ships_own = (repo_root / "packages" / own / "package.xml").is_file()
     return _HalSpec(
-        package=own if ships_own else _GENERIC_HAL_PACKAGE,
+        package=_GENERIC_HAL_PACKAGE,
         executable="lifecycle_node.py",
-        node_name=own,
+        node_name=f"openral_hal_{robot_id}",
         bare_twin_sim=_scene_builds_bare_twin(deploy_scene),
     )
 
@@ -987,7 +984,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     description.validate_for_e2e_pipeline()
     # No per-robot table: the HAL node + sim path derive from the manifest
     # and the scene (see `_derive_hal_spec`).
-    hal = _derive_hal_spec(robot_id, repo_root, deploy_scene)
+    hal = _derive_hal_spec(robot_id, deploy_scene)
     if (
         hal_mode == "sim"
         and hal.bare_twin_sim
@@ -1703,7 +1700,7 @@ def _reap_orphans_with_log() -> None:
 _ORPHAN_GRAPH_NEEDLES: tuple[str | tuple[str, ...], ...] = (
     "deploy_e2e.launch.py",
     "openral_rskill_ros/runtime_node",
-    "install/lib/openral_hal_",
+    "install/lib/openral_hal_node/",
     "openral_reasoner_ros/reasoner_node.py",
     "openral_prompt_router/prompt_router_node.py",
     "openral_safety_kernel/safety_kernel_node",
@@ -2055,8 +2052,8 @@ def assert_ros2_packages_discoverable(
     Catches the most common operator failure for ``openral deploy sim``:
     ``ros2`` itself is on PATH (so the system overlay is sourced) but
     the OpenRAL workspace overlay (``install/setup.bash``) is not, so
-    ``ros2 launch`` can't find ``openral_rskill_ros`` or the per-robot
-    ``openral_hal_<X>`` package. The same error fires for a stale build
+    ``ros2 launch`` can't find ``openral_rskill_ros`` or the
+    ``openral_hal_node`` package. The same error fires for a stale build
     that simply hasn't included the requested HAL package yet.
 
     ``prefix_lookup`` is injectable so unit tests can drive the path

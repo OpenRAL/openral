@@ -184,21 +184,19 @@ after `reset_estop()` succeeds; `RESTART_REQUIRED` adapters reject
 `/openral/estop_cleared` and need a fresh lifecycle start and alignment — the
 procedure is in each `robots/<robot>/README.md` under "E-stop and recovery".
 
-## Pairing with ROS 2 lifecycle nodes
+## Pairing with the ROS 2 lifecycle node
 
-Each HAL adapter has (or will have) a thin ROS 2 lifecycle node under
-`packages/openral_hal_<robot>/`:
+Every HAL adapter runs inside the one manifest-driven ROS 2 lifecycle node,
+`packages/openral_hal_node/` (`ManifestHALLifecycleNode` from
+`openral_hal.lifecycle`). The robot comes from the `robot_yaml` parameter;
+`build_hal` picks the manifest's `hal.sim` / `hal.real` entrypoint (or derives
+`MujocoArmHAL`). `openral deploy sim|run` runs it under the ROS node name
+`openral_hal_<robot_id>` — a node name, not a package. A vendor real-hardware
+bringup the node needs beside it is declared by the manifest's
+`hal.real_bringup` (e.g. `packages/openral_hal_openarm`).
 
-| ROS package | Wraps | Status |
-| --- | --- | --- |
-| `openral_hal_so100` | `SO100FollowerHAL` | ✓ working (unit + sim coverage) |
-| `openral_hal_galaxea_a1` | `GalaxeaA1HAL` | ✓ real observation/hold/joint/gripper + full C++ kernel graph HIL |
-| `openral_hal_franka` | `FrankaPandaHAL` (sim) / `FrankaPandaRealHAL` (real HW) | lifecycle + e-stop path proven on a real `controller_manager` (`tests/integration/test_real_hal_estop_ros2_control_live.py`); real FCI pending HIL |
-| `openral_hal_ur5e` | `UR5eHAL` (sim) / `UR5eRealHAL` (real HW) | same; real arm pending HIL |
-| `openral_hal_ur10e` | `UR10eHAL` (sim) / `UR10eRealHAL` (real HW) | same; real arm pending HIL |
-
-See each ROS package's `README.md` for the lifecycle contract, parameters,
-and topic names.
+See `packages/openral_hal_node/README.md` for the lifecycle contract,
+parameters and topic names.
 
 ## Tests
 
@@ -254,7 +252,7 @@ docstring examples.
   `JointState`, `SafetyEnvelope` — the typed contract this package
   consumes and emits.
 - `robots/<robot_id>/robot.yaml` — canonical description manifests.
-- `packages/openral_hal_*/README.md` — ROS 2 lifecycle node docs.
+- `packages/openral_hal_node/README.md` — the ROS 2 lifecycle node docs.
 - CLAUDE.md §3 (architecture discipline) and §5 (exception hierarchy:
   `ROSConfigError` / `ROSRuntimeError` / `ROSSafetyViolation` are the
   only exceptions a HAL adapter raises).

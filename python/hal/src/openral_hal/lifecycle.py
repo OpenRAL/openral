@@ -1,9 +1,11 @@
 """Generic ROS 2 managed lifecycle node wrapper for any HAL adapter.
 
 Wraps any ``openral_hal.protocol.HAL`` Protocol implementation as a
-``rclpy.lifecycle.LifecycleNode`` so every per-robot package (``UR5e``,
+``rclpy.lifecycle.LifecycleNode`` so every robot (``UR5e``,
 ``FrankaPanda``, ``SO100Follower``, ``OpenArm``, …) shares the same
-publisher / subscriber / heartbeat / OTel-span wiring.
+publisher / subscriber / heartbeat / OTel-span wiring. The one ROS package
+that ships the node is ``openral_hal_node``; the robot comes from the
+``robot_yaml`` parameter and the launch names the node ``openral_hal_<robot_id>``.
 
 Three ways to use this module, in decreasing preference:
 
@@ -44,10 +46,10 @@ Lifecycle transitions:
 
 Example (manifest-driven, the preferred path)::
 
-    # In each per-robot package's lifecycle_node.py — no subclass needed:
+    # packages/openral_hal_node/openral_hal_node/lifecycle_node.py:
     from openral_hal.lifecycle import make_lifecycle_main_from_manifest
 
-    main = make_lifecycle_main_from_manifest(node_name="openral_hal_so100")
+    main = make_lifecycle_main_from_manifest(node_name="openral_hal_node")
     # `openral deploy sim` injects `robot_yaml` + `hal_mode=sim`; real-HAL
     # construction kwargs live in the manifest's `hal.parameters` block.
 """
@@ -56,6 +58,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import sys
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -220,6 +223,27 @@ def _hal_service_name(node_name: str) -> str:
     return "openral.hal." + node_name.removeprefix("openral_hal_")
 
 
+def _launched_node_name(default: str, argv: list[str]) -> str:
+    """Return the node name a ``__node:=`` / ``__name:=`` remap in ``argv`` sets, else ``default``.
+
+    ``launch_ros`` renames a node with ``--ros-args -r __node:=<name>``; every
+    robot runs the one ``openral_hal_node`` executable, so the launched name
+    (``openral_hal_<robot_id>``) — not the executable's default — is what
+    identifies the robot to observability.
+
+    Example:
+        >>> _launched_node_name("openral_hal_node", ["x", "-r", "__node:=openral_hal_ur5e"])
+        'openral_hal_ur5e'
+        >>> _launched_node_name("openral_hal_node", ["x"])
+        'openral_hal_node'
+    """
+    for arg in reversed(argv):
+        for prefix in ("__node:=", "__name:="):
+            if arg.startswith(prefix):
+                return arg.removeprefix(prefix)
+    return default
+
+
 def make_lifecycle_main(
     node_name: str,
     hal_factory: HALFactory,
@@ -292,7 +316,8 @@ def make_lifecycle_main_from_manifest(node_name: str) -> Callable[[], None]:
     ``ROSCapabilityMismatch`` at configure time.
 
     Args:
-        node_name: ROS 2 node name (e.g. ``"openral_hal_franka"``).
+        node_name: default ROS 2 node name (``"openral_hal_node"``); the
+            launch's ``__node:=openral_hal_<robot_id>`` remap overrides it.
 
     Returns:
         A zero-argument ``main()`` console-script entry point.
@@ -312,7 +337,9 @@ def make_lifecycle_main_from_manifest(node_name: str) -> Callable[[], None]:
         # Idempotent + no-op when the endpoint env var is unset.
         from openral_observability import configure_observability
 
-        configure_observability(service_name=_hal_service_name(node_name))
+        configure_observability(
+            service_name=_hal_service_name(_launched_node_name(node_name, sys.argv))
+        )
 
         rclpy.init()
         node = ManifestHALLifecycleNode(node_name)
@@ -360,7 +387,9 @@ if _ROS2_AVAILABLE:
         def __init__(self, node_name: str) -> None:
             """Declare the standard ``publish_rate_hz`` parameter; opens no resources."""
             super().__init__(node_name)
-            self._node_name = node_name
+            # The effective name: a launch `__node:=` remap renames the node,
+            # and the remapped `openral_hal_<robot_id>` is what diagnostics key on.
+            self._node_name = self.get_name()
             self._hal: HAL | None = None
             self._timer: Any = None
             self._publisher: Any = None
@@ -1917,11 +1946,6 @@ if _ROS2_AVAILABLE:
                 self.destroy_service(self._reset_to_pose_srv)
                 self._reset_to_pose_srv = None
 
-    # Back-compat alias: existing call sites + tests reference the old
-    # internal `_HALLifecycleNode` name. Keep it pointing at the factory
-    # subclass so legacy callers (and the UR5e lifecycle test) continue
-    # to work without churn.
-    _HALLifecycleNode = _FactoryHALLifecycleNode
     # Back-compat alias for the manifest node's prior private name (issue
     # #191 promoted it to public API). Existing imports keep working.
     _ManifestHALLifecycleNode = ManifestHALLifecycleNode

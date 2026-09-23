@@ -101,6 +101,8 @@ processors:
 # SO-100/101 teleop data is recorded upright — no rotation applied.
 # Aliases map the VLA slots (camera1 / camera2) to the model's training view
 # names (``top`` / ``side``); override per rollout via vla.extra.camera_aliases.
+# The checkpoint's norm_stats.json records no camera order for this norm tag,
+# so the adapter keeps slot order (camera1, camera2).
 image_preprocessing:
   flip_180: false
   norm_tag: "so100_so101_molmoact2"
@@ -112,7 +114,7 @@ image_preprocessing:
   # the adapter turns on automatically (_enable_expandable_segments). Kept
   # conservative for the slow-processor path; raise via vla.extra.image_max_crops.
   image_max_crops: 4
-  # Slot-keyed. The MolmoAct2 adapter does not consume aliases today.
+  # Slot-keyed; see the note above image_preprocessing.
   aliases:
     camera1: "top"
     camera2: "side"

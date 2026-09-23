@@ -61,7 +61,7 @@ def test_resolve_launch_invocation_facts() -> None:
         hal_param_overrides=None,
     )
     assert invocation.robot_id == "panda_mobile"
-    assert invocation.hal.package == "openral_hal_panda_mobile"
+    assert invocation.hal.package == "openral_hal_node"
     assert invocation.hal.node_name == "openral_hal_panda_mobile"
     # panda_mobile.robot.yaml declares has_lidar: true, so SLAM + Nav2
     # auto-enable and the backend is the lidar leg, not visual SLAM.
@@ -89,7 +89,7 @@ def test_dry_run_cli_reports_nav_stack_enabled() -> None:
     assert result.exit_code == 0, result.output
     flat = " ".join(result.output.split())
     assert "robot=panda_mobile" in flat
-    assert "hal_package=openral_hal_panda_mobile" in flat
+    assert "hal_package=openral_hal_node" in flat
     assert "slam: enabled" in flat
     assert "nav2: enabled" in flat
     # The dry-run summary names the exact Nav2 rSkill the docs promise.

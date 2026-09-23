@@ -78,8 +78,8 @@ joints:
   # helpers read these from the loaded description rather than hardcoding
   # names — see `synthesize_laser_scan_2d` / `read_panda_mobile_base_velocity`
   # in python/sim/src/openral_sim/backends/robocasa.py, and
-  # `_PandaMobileLifecycleNode._compute_scan_ranges` in
-  # packages/openral_hal_panda_mobile/.
+  # `SimSensorBridge._compute_scan_ranges` in
+  # python/hal/src/openral_hal/sim_sensor_bridge.py.
   #
   # base velocity_limit: a JOINT_VELOCITY rSkill (rldx-rc365, pi05-human300)
   # emits NORMALIZED [-1,+1] on these joints; robosuite's `HybridMobileBase`

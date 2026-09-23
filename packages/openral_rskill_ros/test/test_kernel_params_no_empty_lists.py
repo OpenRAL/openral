@@ -109,7 +109,7 @@ def _make_launch_context(robot_yaml: Path) -> object:
     # never imports the HAL package at parse time; only the executable
     # name reaches the LifecycleNode constructor (a launch-arg-validated
     # string).
-    cfg["hal_package"] = "openral_hal_openarm"
+    cfg["hal_package"] = "openral_hal_node"
     cfg["hal_executable"] = "lifecycle_node.py"
     cfg["hal_node_name"] = "openral_hal_test"
     cfg["hal_params_file"] = "/tmp/openral-test-hal-params.yaml"

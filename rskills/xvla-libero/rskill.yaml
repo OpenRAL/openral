@@ -65,6 +65,11 @@ processors:
 # and the canonical 8-D LIBERO proprio state.
 image_preprocessing:
   flip_180: true
+  # Slot -> the batch key xVLA's LiberoProcessorStep reads
+  # (observation.images.image / image2).
+  aliases:
+    camera1: "image"
+    camera2: "image2"
 state_contract:
   # LIBERO checkpoints train on 8-D TASK-SPACE proprio
   # (eef_pos ‖ eef_axisangle ‖ gripper). `openral sim run` supplies it directly;

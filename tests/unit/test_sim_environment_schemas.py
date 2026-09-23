@@ -51,8 +51,14 @@ def test_task_spec_defaults() -> None:
 def test_vla_spec_defaults() -> None:
     v = VLASpec(id="smolvla", weights_uri="hf://lerobot/smolvla_libero")
     assert v.device == "auto"
-    assert v.runtime is None
+    assert v.quantization is None
     assert v.deterministic is False
+
+
+def test_vla_spec_rejects_removed_runtime_field() -> None:
+    # ``VLASpec.runtime`` was read by nothing; the live knob is ``RSkillManifest.runtime``.
+    with pytest.raises(ValidationError, match="runtime"):
+        VLASpec(id="smolvla", weights_uri="rskills/smolvla-libero", runtime="pytorch")  # type: ignore[call-arg] # reason: asserts the removed kwarg is rejected
 
 
 def test_sim_environment_cross_field_validation() -> None:

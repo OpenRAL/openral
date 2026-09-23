@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>openral_hal_node</name>
+  <version>0.1.0</version>
+  <description>
+    The one manifest-driven OpenRAL HAL lifecycle node. Robot identity comes
+    from the robot_yaml parameter (robots/&lt;id&gt;/robot.yaml); openral_hal.build_hal
+    picks the sim or real HAL from the manifest. Every robot runs this node
+    under the ROS node name openral_hal_&lt;robot_id&gt;.
+  </description>
+  <maintainer email="contact@openral.dev">OpenRAL Contributors</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>diagnostic_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>openral_msgs</depend>
+  <depend>lifecycle_msgs</depend>
+  <!-- Mobile-base robots (panda_mobile): /odom, /cmd_vel and odom -> base_link TF. -->
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+
+  <exec_depend>python3-openral-hal</exec_depend>
+  <exec_depend>python3-openral-observability</exec_depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

@@ -41,10 +41,10 @@ action-decode transform. Wrong tag -> eval scores 0%.
 
 The per-embodiment I/O contract — state width, action width, GR00T video
 modality keys — is read from the rSkill: ``state_dim``/``action_dim`` from
-``state_contract.dim``/``action_contract.dim``, image keys from
-``policy_extras.image_modality_keys`` (``image``/``wrist_image`` for LIBERO,
-``front``/``wrist`` for SO-101). LIBERO values are the fallback when a
-manifest omits them.
+``state_contract.dim``/``action_contract.dim``, image keys from the slot-keyed
+``image_preprocessing.aliases`` over ``input_template`` (LIBERO:
+``camera1: image`` / ``camera2: wrist_image``), the same rename every VLA
+adapter uses.
 """
 
 from __future__ import annotations
@@ -60,6 +60,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
     build_chunk_executor,
+    checkpoint_image_keys,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -95,10 +96,6 @@ _GR00T_DEFAULT_EMBODIMENT_TAG = "libero_sim"
 # a single scalar in the checkpoint's action modality).
 _GR00T_LIBERO_STATE_DIM = 8
 _GR00T_LIBERO_ACTION_DIM = 7
-
-# GR00T's libero_sim video modality keys (from the checkpoint processor_config).
-# The lerobot GR00T pack step reads ``observation.images.<modality_key>``.
-_GR00T_LIBERO_IMAGE_KEYS = ("image", "wrist_image")
 
 # predict_action_chunk returns a rank-3 ``(B, T, action_dim)`` tensor.
 _CHUNK_RANK_BTD = 3
@@ -281,8 +278,9 @@ class _GrootAdapter:
     _flip_images_180: bool = False
     _flip_vertical: bool = False
     _camera_keys: tuple[str, ...] = field(default_factory=lambda: ("camera1", "camera2"))
-    # GR00T modality video keys aligned positionally with ``_camera_keys``.
-    _image_input_keys: tuple[str, ...] = _GR00T_LIBERO_IMAGE_KEYS
+    # Checkpoint batch key per ``_camera_keys`` slot (manifest aliases over
+    # input_template, e.g. ``observation.images.wrist_image``).
+    _image_input_keys: tuple[str, ...] = ()
     # Declared proprio width (state_contract.dim): 8 = LIBERO, 6 = SO-101.
     _state_dim: int = _GR00T_LIBERO_STATE_DIM
     _chunk_executor: Any = None
@@ -352,7 +350,7 @@ class _GrootAdapter:
         from openral_sim.policies._video_capture import tile_input_frames, to_input_frame
 
         preview_frames: list[NDArray[np.uint8]] = []
-        for cam_key, modality_key in zip(self._camera_keys, self._image_input_keys, strict=False):
+        for cam_key, modality_key in zip(self._camera_keys, self._image_input_keys, strict=True):
             img = images.get(cam_key)
             if img is None:
                 continue
@@ -364,7 +362,7 @@ class _GrootAdapter:
                 t = torch.flip(t, dims=[1, 2])
             if self._flip_vertical:
                 t = torch.flip(t, dims=[1])
-            batch[f"observation.images.{modality_key}"] = t.to(self.device)
+            batch[modality_key] = t.to(self.device)
         self._last_input_frame = tile_input_frames(preview_frames)
 
         state = observation.get("state")
@@ -387,7 +385,9 @@ def _build_groot_config(
     state_dim: int,
     action_dim: int,
 ) -> Any:
-    """Construct a ``GrootConfig`` pinned to the LIBERO embodiment + I/O dims.
+    """Construct a ``GrootConfig`` pinned to the embodiment + I/O dims.
+
+    ``image_keys`` are full checkpoint feature keys (``observation.images.image``).
 
     ``embodiment_tag`` MUST be set at construction (not mutated afterwards): the
     ``libero_sim`` gripper-flip / action-decode transform is resolved in
@@ -400,8 +400,7 @@ def _build_groot_config(
     from lerobot.utils.constants import ACTION, OBS_STATE
 
     input_features: dict[str, Any] = {
-        f"observation.images.{key}": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 256, 256))
-        for key in image_keys
+        key: PolicyFeature(type=FeatureType.VISUAL, shape=(3, 256, 256)) for key in image_keys
     }
     input_features[OBS_STATE] = PolicyFeature(type=FeatureType.STATE, shape=(state_dim,))
     output_features = {ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(action_dim,))}
@@ -451,11 +450,13 @@ def _build_gr00t_b1k(env_cfg: Any) -> PolicyAdapter:
         "lerobot.policies.groot.modeling_groot",
     ),
 )
-def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # noqa: PLR0915  # reason: staged loader
+def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # reason: staged loader
     """Load the in-process lerobot ``GrootPolicy`` (GR00T N1.7) backend.
 
-    YAML knobs (via ``vla.extra``): ``device``, ``embodiment_tag``,
-    ``camera_keys``. Quantization is declared on the manifest
+    YAML knobs (via ``vla.extra``): ``device``, ``embodiment_tag`` (selects the
+    embodiment's modality config; not a rename). Cameras are slots from
+    ``resolve_camera_keys``; their GR00T video keys come from the manifest's
+    ``image_preprocessing`` (``checkpoint_image_keys``). Quantization is declared on the manifest
     (``quantization.dtype``, plus ``quantization.extra.quantize_scope``) and
     resolved by ``openral_sim._quantization.resolve_quant_plan``.
     Environment overrides: ``OPENRAL_GR00T_EMBODIMENT_TAG``,
@@ -472,7 +473,7 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # noqa: PLR0915  # reason: sta
             "loader can resolve the GR00T checkpoint + its embodiment contract."
         )
     # Merge the manifest's policy_extras under any scene/CLI spec.extra overrides
-    # (spec.extra wins) so a checkpoint's embodiment_tag / image_modality_keys
+    # (spec.extra wins) so a checkpoint's embodiment_tag
     # travel in its rSkill without every scene having to repeat them.
     policy_extras = dict(getattr(manifest, "policy_extras", {}) or {})
     extra = {**policy_extras, **extra}
@@ -483,16 +484,9 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # noqa: PLR0915  # reason: sta
         or extra.get("embodiment_tag", _GR00T_DEFAULT_EMBODIMENT_TAG)
     )
 
-    # I/O contract per embodiment. LIBERO (8-D state / 7-D action /
-    # image,wrist_image) is the fallback; SO-101 (6-D / 6-D / front,wrist)
-    # and any other GR00T checkpoint come from the manifest contracts +
-    # policy_extras.image_modality_keys.
-    img_keys_raw = extra.get("image_modality_keys")
-    image_input_keys = (
-        tuple(str(k) for k in img_keys_raw)
-        if isinstance(img_keys_raw, (list, tuple)) and img_keys_raw
-        else _GR00T_LIBERO_IMAGE_KEYS
-    )
+    # I/O contract per embodiment. LIBERO (8-D state / 7-D action) is the
+    # fallback; any other GR00T checkpoint comes from the manifest contracts.
+    # Video keys come from image_preprocessing (aliases over input_template) below.
     state_dim = int(getattr(manifest.state_contract, "dim", 0) or _GR00T_LIBERO_STATE_DIM)
     action_dim = int(getattr(manifest.action_contract, "dim", 0) or _GR00T_LIBERO_ACTION_DIM)
     # One resolver for every policy family (openral_sim._quantization):
@@ -515,6 +509,7 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # noqa: PLR0915  # reason: sta
     ip = resolve_image_preprocessing(manifest, spec.extra)
     scene_cameras = getattr(env_cfg.scene, "cameras", None)
     cam_keys = resolve_camera_keys(manifest, spec.extra, scene_cameras=scene_cameras)
+    image_input_keys = checkpoint_image_keys(ip, cam_keys)
 
     with _groot_phase("imports"):
         torch, make_processors = lazy_import_lerobot("GR00T")

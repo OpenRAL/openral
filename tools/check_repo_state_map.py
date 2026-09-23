@@ -81,7 +81,7 @@ def _resolves(head: str, token: str) -> bool:
     """Is ``token`` a real path, read the way a reader of this card would read it?
 
     Three spellings are all in use on the map and all count as resolved:
-    straight from the repo root (``packages/openral_hal_so100``), relative to
+    straight from the repo root (``packages/openral_hal_node``), relative to
     the card's leading package under the workspace src layout (``policies/
     pi05.py`` under a ``python/sim`` head), or a bare module the card names
     without a directory at all (``openarm.py``).

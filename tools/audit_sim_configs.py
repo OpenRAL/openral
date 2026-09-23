@@ -341,6 +341,11 @@ def _check_compat(spec: ConfigSpec) -> AuditRow:
         else:  # deploy
             scene = load_scene_strict(config_path, expected=DeployScene)
 
+        # Backend-owned `backend_options` model (SCENES.register options_model=).
+        from openral_sim.registry import SCENES
+
+        SCENES.validate_options(scene.scene.id, scene.scene.backend_options)
+
         # rSkill manifest validation (sim/benchmark only — deploy is env-only).
         if spec.run_mode != "deploy":
             if not spec.rskill:

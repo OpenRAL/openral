@@ -60,6 +60,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
     build_chunk_executor,
+    manifest_camera_slots,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -845,7 +846,14 @@ def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
     _seed_torch_for_sampling(torch, torch_seed)
 
     scene_cameras = getattr(env_cfg.scene, "cameras", None)
-    cam_keys = resolve_camera_keys(manifest, spec.extra, scene_cameras=scene_cameras)
+    # OpenVLA's processor takes one image positionally (no checkpoint key to
+    # rename); the default is the slot(s) the manifest declares.
+    cam_keys = resolve_camera_keys(
+        manifest,
+        spec.extra,
+        scene_cameras=scene_cameras,
+        default=manifest_camera_slots(manifest),
+    )
 
     action_dim = int(extra.get("openvla_action_dim", _DEFAULT_ACTION_DIM))
     generation_method = str(extra.get("openvla_generation_method", _DEFAULT_GENERATION_METHOD))
@@ -864,7 +872,7 @@ def _build_openvla(env_cfg: Any) -> _OpenVLAAdapter:
         _torch=torch,
         _unnorm_key=_resolve_unnorm_key(spec, model),
         _action_dim=action_dim,
-        _camera_keys=tuple(cam_keys) if cam_keys else ("camera1",),
+        _camera_keys=cam_keys,
         _actions_prenormalized=bool(extra.get("openvla_actions_prenormalized", False)),
         _autocast_dtype=torch.bfloat16 if device.startswith("cuda") else None,
         _generation_method=generation_method,

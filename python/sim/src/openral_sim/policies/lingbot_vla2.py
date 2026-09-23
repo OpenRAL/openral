@@ -43,8 +43,9 @@ The default embodiment is ``robotwin`` (dual-arm Agilex Cobot Magic), the only
 robot config shipped upstream (``configs/robot_configs/robotwin.yaml`` +
 ``assets/norm_stats/robotwin.json``):
 
-* **3 cameras**, mapped positionally onto the upstream origin keys
-  ``cam_high`` / ``cam_left_wrist`` / ``cam_right_wrist`` (model-space
+* **3 cameras**, VLA slots renamed onto the upstream origin keys
+  ``cam_high`` / ``cam_left_wrist`` / ``cam_right_wrist`` by the rSkill's
+  ``image_preprocessing.aliases`` (model-space
   ``camera_top`` / ``camera_wrist_left`` / ``camera_wrist_right``), HWC uint8,
   resized to 256×256 by the server's ``FeatureTransform``.
 * **14-D proprio state**: ``[arm_l(6) grip_l(1) arm_r(6) grip_r(1)]``, padded to
@@ -76,6 +77,12 @@ import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
+from openral_rskill._vla_core import (
+    checkpoint_image_keys,
+    manifest_camera_slots,
+    resolve_camera_keys,
+    resolve_image_preprocessing,
+)
 
 from openral_sim._quantization import resolve_quant_plan, sidecar_quant_token
 from openral_sim._sidecar_common import sidecar_port_for_key
@@ -83,7 +90,7 @@ from openral_sim.registry import POLICIES
 from openral_sim.sidecar import SidecarClient
 
 if TYPE_CHECKING:
-    from openral_core import SimEnvironment, VLASpec
+    from openral_core import RSkillManifest, SimEnvironment, VLASpec
 
     from openral_sim.rollout import Observation
 
@@ -93,10 +100,10 @@ _DEFAULT_MODEL_ID = "robbyant/lingbot-vla-v2-6b"
 # LingBot-VLA 1.0 (4B) RoboTwin post-train — the ``lingbot_vla`` (v1) policy.
 _DEFAULT_MODEL_ID_V1 = "robbyant/lingbot-vla-4b-posttrain-robotwin"
 _DEFAULT_ROBO_NAME = "robotwin"
-# Upstream FeatureTransform origin image keys, positionally aligned with the
-# scene-side camera keys resolved below.
+# Upstream FeatureTransform origin image keys: the wire contract the sidecar
+# accepts. Which slot feeds which key is the manifest's image_preprocessing
+# (``input_template: "{cam}"`` + slot-keyed ``aliases``), checked against this set.
 _LINGBOT_IMAGE_KEYS = ("cam_high", "cam_left_wrist", "cam_right_wrist")
-_DEFAULT_CAMERA_KEYS = ("camera_top", "camera_wrist_left", "camera_wrist_right")
 _LINGBOT_STATE_DIM = 14
 # Action chunk is rank-2: (chunk_len, action_dim).
 _CHUNK_RANK_2D = 2
@@ -132,25 +139,33 @@ def _policy_default_port(model_id: str, robo_name: str, variant: str = "v2") -> 
     )
 
 
-def _resolve_camera_keys(env_cfg: SimEnvironment, extra: dict[str, Any]) -> tuple[str, ...]:
-    """Resolve the 3 scene-side camera keys aligned with the LingBot views.
+def _resolve_camera_io(
+    manifest: RSkillManifest | None,
+    extra: dict[str, Any],
+    scene_cameras: list[str] | None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Resolve ``(slots, sidecar image keys)`` for the three LingBot views.
 
-    Precedence: ``vla.extra.camera_keys`` > scene ``cameras`` (first three) >
-    the upstream default triple. The order is load-bearing — index 0 is the
-    top/high camera, 1/2 are the left/right wrist cameras.
+    Slots come from ``resolve_camera_keys`` (default: the manifest's declared
+    slots); each slot's wire key is the manifest's ``image_preprocessing``
+    (``input_template`` over ``aliases``). The keys must be exactly
+    ``_LINGBOT_IMAGE_KEYS`` — the sidecar has no other views.
+
+    Raises:
+        ROSConfigError: Fewer than three slots, or the aliases do not map
+            them onto ``cam_high`` / ``cam_left_wrist`` / ``cam_right_wrist``.
     """
-    override = extra.get("camera_keys")
-    if isinstance(override, (list, tuple)) and override:
-        keys = tuple(str(k) for k in override)
-    else:
-        scene_cams = getattr(env_cfg.scene, "cameras", None)
-        keys = tuple(str(k) for k in scene_cams) if scene_cams else _DEFAULT_CAMERA_KEYS
-    if len(keys) < len(_LINGBOT_IMAGE_KEYS):
+    slots = resolve_camera_keys(
+        manifest, extra, scene_cameras=scene_cameras, default=manifest_camera_slots(manifest)
+    )[: len(_LINGBOT_IMAGE_KEYS)]
+    keys = checkpoint_image_keys(resolve_image_preprocessing(manifest, extra), slots)
+    if sorted(keys) != sorted(_LINGBOT_IMAGE_KEYS):
         raise ROSConfigError(
-            f"lingbot_vla2 needs {len(_LINGBOT_IMAGE_KEYS)} cameras "
-            f"({_LINGBOT_IMAGE_KEYS}); got {keys}. Set vla.extra.camera_keys."
+            f"lingbot needs slots mapped onto {_LINGBOT_IMAGE_KEYS}; slots {slots} map to "
+            f"{keys}. Declare image_preprocessing.input_template '{{cam}}' and slot-keyed "
+            "aliases (camera1: cam_high, ...) in the rSkill manifest."
         )
-    return keys[: len(_LINGBOT_IMAGE_KEYS)]
+    return slots, keys
 
 
 def _resolve_model_id(
@@ -223,6 +238,8 @@ class _LingBotVla2Adapter:
     device: str
     _client: SidecarClient
     _camera_keys: tuple[str, ...]
+    # Sidecar image key per ``_camera_keys`` slot (see ``_resolve_camera_io``).
+    _image_keys: tuple[str, ...] = _LINGBOT_IMAGE_KEYS
     _replan_steps: int = _DEFAULT_REPLAN_STEPS
     _queue: deque[NDArray[np.float32]] = field(default_factory=deque)
     _last_input: NDArray[np.uint8] | None = field(default=None)
@@ -248,7 +265,7 @@ class _LingBotVla2Adapter:
     def _refill(self, observation: Observation, instruction: str) -> None:
         images = observation.get("images", {})
         payload_images: dict[str, NDArray[np.uint8]] = {}
-        for lingbot_key, scene_key in zip(_LINGBOT_IMAGE_KEYS, self._camera_keys, strict=True):
+        for lingbot_key, scene_key in zip(self._image_keys, self._camera_keys, strict=True):
             img = images.get(scene_key)
             if img is None:
                 raise ROSConfigError(
@@ -297,7 +314,9 @@ def _build_lingbot(env_cfg: SimEnvironment, *, variant: str) -> _LingBotVla2Adap
     Qwen2.5-VL dense expert / posttrain-robotwin). Both share the transport, obs
     contract, and adapter; only the sidecar's repo + venv + server variant differ.
 
-    YAML knobs (``vla.extra``): ``model_id``, ``robo_name``, ``camera_keys``,
+    Cameras: slots via ``resolve_camera_keys``, renamed to the sidecar's
+    views by the manifest ``image_preprocessing`` (see ``_resolve_camera_io``).
+    YAML knobs (``vla.extra``): ``model_id``, ``robo_name``,
     ``device`` (``cuda`` default / ``cpu``), ``attn`` (v2 ``sdpa`` / v1
     ``eager``), ``port``, ``auto_spawn``; replay cadence is ``n_action_steps``
     (``resolve_n_action_steps``). Quantization comes
@@ -336,7 +355,9 @@ def _build_lingbot(env_cfg: SimEnvironment, *, variant: str) -> _LingBotVla2Adap
     replan_steps = resolve_n_action_steps(
         load_manifest_for_spec(spec), extra, default=_DEFAULT_REPLAN_STEPS
     )
-    camera_keys = _resolve_camera_keys(env_cfg, extra)
+    camera_keys, image_keys = _resolve_camera_io(
+        load_manifest_for_spec(spec), extra, getattr(env_cfg.scene, "cameras", None)
+    )
     # A single CPU forward runs to minutes, far past the GPU-tuned default; let the
     # operator raise the REQ recv timeout so a slow (but live) CPU chunk is not
     # read as a dead sidecar.
@@ -394,6 +415,7 @@ def _build_lingbot(env_cfg: SimEnvironment, *, variant: str) -> _LingBotVla2Adap
         device=device,
         _client=client,
         _camera_keys=camera_keys,
+        _image_keys=image_keys,
         _replan_steps=replan_steps,
     )
 

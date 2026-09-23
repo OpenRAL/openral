@@ -65,7 +65,7 @@ def _compose(*, enable_object_detector: bool, locator_manifest: str) -> list[obj
     ctx = LaunchContext()
     cfg = ctx.launch_configurations
     cfg["robot_yaml"] = str(_REPO_ROOT / "robots" / "franka_panda" / "robot.yaml")
-    cfg["hal_package"] = "openral_hal_franka"
+    cfg["hal_package"] = "openral_hal_node"
     cfg["hal_executable"] = "lifecycle_node.py"
     cfg["hal_node_name"] = "openral_hal_test"
     cfg["hal_params_file"] = "/tmp/openral-test-hal-params.yaml"

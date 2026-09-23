@@ -24,10 +24,11 @@ Example::
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from typing import TYPE_CHECKING, Generic, TypeVar
 
 from openral_core.exceptions import ROSConfigError
+from pydantic import BaseModel, ValidationError
 
 if TYPE_CHECKING:
     from openral_core import RobotDescription
@@ -56,6 +57,7 @@ class _Registry(Generic[T]):
         self._items: dict[str, Callable[..., T]] = {}
         self._fixed_robots: dict[str, frozenset[str]] = {}
         self._provisioners: dict[str, Callable[[], None]] = {}
+        self._options_models: dict[str, type[BaseModel]] = {}
         self._meta: dict[str, dict[str, object]] = {}
 
     @property
@@ -68,6 +70,7 @@ class _Registry(Generic[T]):
         *,
         fixed_robot: str | frozenset[str] | None = None,
         provision: Callable[[], None] | None = None,
+        options_model: type[BaseModel] | None = None,
         **meta: object,
     ) -> Callable[[Callable[..., T]], Callable[..., T]]:
         """Decorator to register a factory under ``name``.
@@ -96,6 +99,13 @@ class _Registry(Generic[T]):
                 Must be idempotent — the factory calls the same helpers
                 again and they short-circuit on their own sentinels. Leave
                 ``None`` for backends whose only setup is a pip install.
+            options_model: Only meaningful on the ``SCENES`` registry. The
+                Pydantic model that validates this backend's
+                ``SceneSpec.backend_options`` — owned by the backend, not by
+                ``openral_core`` (the core field stays an opaque dict).
+                ``validate_options`` runs it at load time so a bad key fails
+                before any env is built. Leave ``None`` for backends that read
+                their options ad hoc.
             **meta: Static facts about the entry, read back via ``meta``.
                 On ``POLICIES`` these are the family's dependency facts
                 (``install_groups``, ``required_imports``, optional
@@ -122,6 +132,8 @@ class _Registry(Generic[T]):
                 )
             if provision is not None:
                 self._provisioners[name] = provision
+            if options_model is not None:
+                self._options_models[name] = options_model
             self._meta[name] = dict(meta)
             return fn
 
@@ -206,6 +218,42 @@ class _Registry(Generic[T]):
         """
         key = self._key(name)
         return None if key is None else self._provisioners.get(key)
+
+    def validate_options(self, name: str, raw: Mapping[str, object]) -> BaseModel | None:
+        """Validate ``raw`` backend options against the backend's declared model.
+
+        Like ``provision``, an unknown ``name`` is not an error here (the
+        scene resolver owns that): it returns ``None``, as does a backend
+        registered without an ``options_model``.
+
+        Args:
+            name: Scene id; ``/``-prefix lookup applies, so
+                ``robocasa/<Task>`` uses ``robocasa``'s model.
+            raw: The YAML ``scene.backend_options`` mapping.
+
+        Returns:
+            The validated model instance, or ``None`` when no model is declared.
+
+        Raises:
+            ROSConfigError: ``raw`` fails the model; the message names the
+                scene id and the offending field(s).
+
+        Example:
+            >>> from openral_sim import SCENES
+            >>> SCENES.validate_options("libero_spatial", {}) is None
+            True
+        """
+        key = self._key(name)
+        model = None if key is None else self._options_models.get(key)
+        if model is None:
+            return None
+        try:
+            return model.model_validate(dict(raw))
+        except ValidationError as exc:
+            raise ROSConfigError(
+                f"{self._kind} {name!r}: scene.backend_options failed "
+                f"{model.__name__} validation: {exc}"
+            ) from exc
 
     def meta(self, name: str) -> dict[str, object]:
         """Return the static facts registered with ``name`` (``{}`` if unknown).

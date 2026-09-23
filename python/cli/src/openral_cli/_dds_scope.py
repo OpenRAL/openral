@@ -248,5 +248,5 @@ def assert_graph_unoccupied(env: dict[str, str], *, hal_mode: str) -> None:
         f"different host or ROS_DOMAIN_ID, or stop the other graph. If the "
         f"other publisher is the vendor ros2_control graph for the robot you "
         f"are launching, do not start it by hand — deploy_e2e.launch.py starts "
-        f"it under hal_mode:=real (see REAL_BRINGUP_LAUNCH).",
+        f"it under hal_mode:=real (the manifest's hal.real_bringup).",
     )

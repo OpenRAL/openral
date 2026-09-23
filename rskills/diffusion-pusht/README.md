@@ -50,10 +50,12 @@ queue-drain contract in `ChunkedExecutor`.
 
 | Key | Type | Resolution | Format |
 | --- | --- | --- | --- |
-| `observation.image` | RGB camera | 96 × 96 | `float32` |
+| `observation.images.camera1` | RGB camera | 96 × 96 | `float32` |
 
-PushT predates the multi-cam `observation.images.cameraN` convention and
-exposes the raw key `observation.image`.
+PushT predates the multi-cam `observation.images.cameraN` convention: the
+checkpoint's own key is `observation.image`. The manifest's
+`image_preprocessing` renames slot `camera1` onto it
+(`input_template: "observation.{cam}"`, `aliases: {camera1: image}`).
 
 ## Manifest summary
 

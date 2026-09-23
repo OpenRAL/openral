@@ -3,8 +3,8 @@
 Everything that controls scene geometry — box dimensions, robot base
 pose, OAK-D Pro overhead camera placement, wrist camera placement,
 slotted block + tube dimensions — is sourced from a single typed
-``BoxSceneOptions`` dataclass.  The dataclass is filled from the
-YAML's ``scene.backend_options`` block in ``.env``, so any future
+``BoxSceneOptions`` model — the backend's registered ``options_model``,
+validated from the YAML's ``scene.backend_options`` block, so any future
 "SO-101 in a box" variant is a pure YAML edit.
 
 The composer reads the upstream
@@ -22,12 +22,13 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from openral_core import RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_world_state.geometry import look_at_quat_wxyz, yaw_to_quat_wxyz
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 __all__ = [
     "BoxSceneOptions",
@@ -39,8 +40,10 @@ __all__ = [
 _UNSET: tuple[float, ...] = ()
 
 
-@dataclass(frozen=True)
-class BoxSceneOptions:
+_Vec6 = tuple[float, float, float, float, float, float]
+
+
+class BoxSceneOptions(BaseModel):
     """Every dimension and pose the ``so101_box`` scene exposes.
 
     Lengths are metres, angles are radians unless suffixed ``_deg``.
@@ -109,6 +112,8 @@ class BoxSceneOptions:
             to 32 attempts).
     """
 
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
     box_size_xyz: tuple[float, float, float] = (1.00, 0.615, 0.75)
     wall_thickness: float = 0.01
 
@@ -175,7 +180,7 @@ class BoxSceneOptions:
     # were recorded in (arm joints in servo degrees; the GRIPPER channel is
     # normalised [0, 100] over the jaw travel, not degrees). Consumed by the
     # env factory, not the MJCF composer.
-    joint_units: str = "radians"
+    joint_units: Literal["radians", "degrees"] = "radians"
 
     # Per-joint calibration affine bridging the MuJoCo URDF joint convention to
     # the checkpoint's LeRobot servo-degree convention (only applied when
@@ -189,10 +194,18 @@ class BoxSceneOptions:
     # 6-vector in the robot's joint order (shoulder_pan, shoulder_lift,
     # elbow_flex, wrist_flex, wrist_roll, gripper); ``joint_signs`` entries must
     # be +1 or -1.
-    joint_offsets_deg: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    joint_signs: tuple[float, ...] = (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
+    joint_offsets_deg: _Vec6 = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    joint_signs: _Vec6 = (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
 
-    extra_metadata: dict[str, str] = field(default_factory=dict)
+    extra_metadata: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("joint_signs")
+    @classmethod
+    def _signs_are_unit(cls, value: _Vec6) -> _Vec6:
+        """Reject a ``joint_signs`` entry other than +1 / -1."""
+        if any(sign not in (1.0, -1.0) for sign in value):
+            raise ValueError(f"joint_signs entries must be +1 or -1; got {value!r}")
+        return value
 
 
 def _resolve_so101_mjcf() -> Path:

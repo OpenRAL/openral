@@ -25,13 +25,8 @@ openral/                      ← THIS monorepo
 ├─ packages/                      ← ROS 2 packages (colcon build)
 │  ├─ msgs/         (openral_msgs)        ← IDL (.msg, .action) — normative; WorldStateStamped carries detected_objects ✓
 │  ├─ world_state/  (openral_world_state_ros) ← lifecycle node wrapping the aggregator ✓
-│  ├─ openral_hal_so100/      ← SO-100 / SO-101 lifecycle node ✓
-│  ├─ openral_hal_franka/     ← Franka lifecycle node ✓
-│  ├─ openral_hal_ur5e/  · openral_hal_ur10e/  ← UR5e / UR10e lifecycle nodes ✓
-│  ├─ openral_hal_aloha/  · openral_hal_openarm/  ← bimanual lifecycle nodes ✓
-│  ├─ openral_hal_rizon4/  · openral_hal_g1/  · openral_hal_h1/  · openral_hal_panda_mobile/  ← per-robot lifecycle nodes (unified base) ✓
-│  ├─ openral_hal_galaxea_a1/ ← Galaxea A1 real-HW HAL lifecycle node ✓
-│  ├─ openral_hal_scene_attached/ ← scene-attached sim HAL node (`deploy sim`) ✓
+│  ├─ openral_hal_node/       ← the one manifest-driven HAL lifecycle node, every robot (`robot_yaml` picks it; node name `openral_hal_<robot_id>`) ✓
+│  ├─ openral_hal_openarm/    ← OpenArm real-HW bringup only (`real_bringup.launch.py`, via `hal.real_bringup`) ✓
 │  ├─ openral_reasoner_ros/   ← reasoner_node (LLM ReasonerToolCall dispatch) ✓
 │  ├─ openral_prompt_router/  ← prompt fan-in lifecycle node ✓
 │  ├─ openral_rskill_ros/      ← rskill_runner_node + ExecuteRskill action server ✓

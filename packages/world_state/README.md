@@ -67,7 +67,7 @@ only wire format — there is no JSON fallback.
 ## Wiring
 
 ```
-HAL (e.g. openral_hal_so100) ──► /joint_states ─┐
+HAL (openral_hal_node)       ──► /joint_states ─┐
                                                      ├─► world_state_node ──► /openral/world_state_fast (30 Hz)
 sensors/ → ROS topics (planned per-sensor packages) ─┘                  └──► /openral/world_state_slow (5 Hz)
 ```

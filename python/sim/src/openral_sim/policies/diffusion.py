@@ -28,8 +28,12 @@ from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
 from openral_rskill._vla_core import (
     call_make_processors_cached_first,
+    checkpoint_image_keys,
+    manifest_camera_slots,
     release_torch_modules,
+    resolve_camera_keys,
     resolve_device,
+    resolve_image_preprocessing,
     resolve_rskill_repo_revision,
     run_inference,
     to_numpy_action,
@@ -56,7 +60,8 @@ class _DiffusionAdapter:
     _preprocessor: Any | None
     _postprocessor: Any | None
     _torch: Any
-    _image_key: str = "camera1"  # eval-layer Observation.images key to consume
+    _image_key: str = "camera1"  # VLA slot: the Observation.images key to consume
+    _batch_key: str = "observation.image"  # checkpoint key (manifest image_preprocessing)
     _last_input_frame: NDArray[np.uint8] | None = None
     # Normalization stats extracted from the checkpoint when the
     # underlying lerobot DiffusionPolicy class no longer carries
@@ -134,7 +139,7 @@ class _DiffusionAdapter:
 
             self._last_input_frame = to_input_frame(img)
             t = torch.tensor(np.asarray(img), dtype=torch.float32).div(255.0).permute(2, 0, 1)
-            batch["observation.image"] = t.unsqueeze(0).to(self.device)
+            batch[self._batch_key] = t.unsqueeze(0).to(self.device)
 
         state = observation.get("state")
         if state is not None:
@@ -188,7 +193,18 @@ def _build_diffusion(env_cfg: Any) -> _DiffusionAdapter:
             pretrained_path=pretrained_path,
         )
 
-    image_key = str(spec.extra.get("image_key", "camera1"))
+    # One camera: the first resolved slot, renamed to the checkpoint's key by
+    # the manifest image_preprocessing (pusht: slot `camera1` -> `observation.image`).
+    manifest = load_manifest_for_spec(spec)
+    image_key = resolve_camera_keys(
+        manifest,
+        spec.extra,
+        scene_cameras=getattr(env_cfg.scene, "cameras", None),
+        default=manifest_camera_slots(manifest) or ("camera1",),
+    )[0]
+    (batch_key,) = checkpoint_image_keys(
+        resolve_image_preprocessing(manifest, spec.extra), (image_key,)
+    )
 
     # Recover normalization stats from the checkpoint's safetensors when
     # the loaded DiffusionPolicy class doesn't expose normalize_inputs /
@@ -206,6 +222,7 @@ def _build_diffusion(env_cfg: Any) -> _DiffusionAdapter:
         _postprocessor=postprocessor,
         _torch=torch,
         _image_key=image_key,
+        _batch_key=batch_key,
         _state_min=stats.get("state_min"),
         _state_max=stats.get("state_max"),
         _image_mean=stats.get("image_mean"),

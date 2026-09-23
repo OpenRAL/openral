@@ -5,7 +5,7 @@
 OpenRAL uses a seven-layer architecture. Each layer has a single responsibility and communicates with adjacent layers through typed contracts. Status pills below match the [repo state map](repo-state-map.html): **✓ shipped** = source + tests on disk, **🟡 partial** = some pieces shipped, **⏳ planned** = not yet on disk.
 
 ```
-0  HAL                  python/hal/, packages/openral_hal_*/        ✓ shipped (12 robots: SO-100/101, Franka, UR5e/10e, ALOHA, OpenArm, Anvil-OpenArm-v2, Galaxea A1, Rizon4, H1, G1, panda_mobile)
+0  HAL                  python/hal/, packages/openral_hal_node/     ✓ shipped (12 robots: SO-100/101, Franka, UR5e/10e, ALOHA, OpenArm, Anvil-OpenArm-v2, Galaxea A1, Rizon4, H1, G1, panda_mobile)
 1  Sensors              python/sensors/                             ✓ shipped (catalog + vendor adapters)
 2  World State          python/world_state/, packages/world_state/  ✓ shipped (aggregator + lifecycle node)
 3  rSkill (S1)           python/rskill/, packages/openral_rskill_ros/ ✓ shipped (Python ABC + rSkill loader + openral_rskill_ros action server)

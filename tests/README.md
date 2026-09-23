@@ -106,7 +106,7 @@ stale/incomplete; see §4) · **Consolidate** (overlap with another file) ·
 | `test_hal.py` | 427 | `RosControlHAL` with `SimTransport` — full lifecycle, action/state path, e-stop, safety. | Keep |
 | `test_so100_follower_hal.py` | 399 | `SO100FollowerHAL` against `SO100DigitalTwin` — closed-loop, joint limits, gripper normalisation, latency. | Keep |
 | `test_world_state.py` | 494 | `WorldStateAggregator` snapshot freshness, staleness latching, 30 Hz clock injection, thread-safety. Comprehensively covers the aggregator API. | Keep |
-| `test_runtime.py` | 621 | `Runtime` Protocol, `NullRuntime`, `PyTorchRuntime`, `OnnxRuntime`, plus full `QUANT_PRESETS` / `auto_select_quant` / `EngineCache` coverage (see lines 248–467). | Keep |
+| `test_runtime.py` | 621 | `Runtime` Protocol, `NullRuntime`, `PyTorchRuntime`, `OnnxRuntime`, quantization enum/schema pins. | Keep |
 | `test_sim_transport.py` | 230 | `SimTransport` queue + drop semantics + introspection helpers. **Added 2026-05-08.** | Keep |
 | `test_franka_panda.py` | 200 | `FRANKA_PANDA_DESCRIPTION` joint inventory, datasheet limits, capabilities, safety envelope, JSON round-trip. Unit-level (no MuJoCo). **Added 2026-05-08.** | Keep |
 | `test_mujoco_arm.py` | 200 | `MujocoArmHAL` constructor invariants, gripper-config validation, not-connected error paths, optional-parameter wiring. Unit-level (no MuJoCo connect needed). **Added 2026-05-08.** | Keep |
@@ -199,7 +199,6 @@ For each layer (per repo state map) and cross-cutting surface:
 | L2 World State — ROS 2 lifecycle node | ✗ | ✓ (5 `rclpy`-driven scenarios in `test_world_state_integration.py`) | ✗ | ✗ | n/a | ✗ | n/a |
 | L3 rSkill (S1) — `rSkillBase` ABC | ✓ (`test_skill_contract.py` — 12 invariants × 3 builders) | ✗ | ✓ | ✗ | n/a | ✓ | ◐ |
 | L3 Skill — `Runtime`, `PyTorchRuntime`, `OnnxRuntime` | ✓ | ✗ | ✓ | ✗ | n/a | ✓ (`runtime`, `runtime_pytorch`, `runtime_onnx`) | ◐ |
-| L3 Skill — `EngineCache`, `quantization` | ✓ (`test_runtime.py` lines 248–467) | ✗ | ◐ | ✗ | ✓ | ✓ | ✗ |
 | L3 Skill — `rSkill` loader, `RSkillManifest` | ✓ | ✗ | ✓ | ✗ | ✓ (manifest fuzzed) | ✓ | ✓ (`assert_within_budget`) |
 | L3 Skill — `SmolVLASkill` adapter | ✓ | ✗ | ✓ | ✗ | n/a | ✓ | ✓ (sim) |
 | L3 Skill — testing helper (`assert_within_budget`) | ✓ (`test_rskill_testing_helpers.py`) | ✗ | n/a | n/a | n/a | ✓ | ✓ |
@@ -225,16 +224,14 @@ runs `colcon build` before pytest so `test_lifecycle_node_launch` is no
 longer filtered out.
 
 Remaining gaps (see §4):
-- ~~**ROS 2 lifecycle smokes** for the `franka` / `ur5e` / `ur10e` packages —
-  only `openral_hal_so100` has equivalent coverage today.~~ Resolved
-  2026-05-09 (issue #26): each of `packages/openral_hal_franka`,
-  `packages/openral_hal_ur5e`, and `packages/openral_hal_ur10e`
-  now ships a `test/test_lifecycle_node.py` colcon smoke that drives the
-  full managed-lifecycle path (`unconfigured → configure → activate →
-  active → deactivate → cleanup → shutdown`) against a stub HAL injected
-  into `_HALLifecycleNode` and asserts joint-state publication during
-  the `active` phase. Wired into `test-ros2.yml` via the existing
-  `colcon test --merge-install` step.
+- ~~**ROS 2 lifecycle smokes** for the `franka` / `ur5e` / `ur10e` packages.~~
+  Resolved 2026-05-09 (issue #26) with per-package colcon smokes; those
+  packages have since collapsed into the one generic `packages/openral_hal_node`,
+  whose `test/test_lifecycle_node.py` drives the full managed-lifecycle path
+  (`configure → activate → deactivate → cleanup → shutdown`) through the real
+  `ManifestHALLifecycleNode` once per sim-twin robot manifest and asserts
+  joint-state publication while `active`. Wired into `test-ros2.yml` via the
+  existing `colcon test --merge-install` step.
 ---
 
 ## 4. Flagged backlog
@@ -336,13 +333,11 @@ future contributors can audit the closure.
 #### P1 — remaining
 
 1. ~~**ROS 2 lifecycle node tests for franka / ur5e / ur10e packages.**~~
-   Resolved 2026-05-09 (issue #26): per-package `test/test_lifecycle_node.py`
-   colcon smokes added under `packages/openral_hal_franka/test/`,
-   `packages/openral_hal_ur5e/test/`, and
-   `packages/openral_hal_ur10e/test/`.  Each drives
-   `unconfigured → configure → activate → active → deactivate → cleanup →
-   shutdown` against `_HALLifecycleNode` with an injected stub HAL and
-   asserts joint-state publication during the `active` phase.  Picked up
+   Resolved 2026-05-09 (issue #26); now one manifest-parametrised
+   `packages/openral_hal_node/test/test_lifecycle_node.py` covering every
+   sim-twin robot, driving `configure → activate → deactivate → cleanup →
+   shutdown` through the real `ManifestHALLifecycleNode` and asserting
+   joint-state publication while `active`.  Picked up
    by the existing `colcon test --merge-install` step in
    `.github/workflows/test-ros2.yml` (now activates the uv venv so the
    workspace `openral_hal` / `openral_core` packages are importable).

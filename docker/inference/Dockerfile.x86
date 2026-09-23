@@ -330,8 +330,7 @@ RUN bash -lc 'set -eo pipefail \
     && colcon build --merge-install \
         --base-paths packages cpp \
         --packages-select openral_msgs \
-                          openral_hal_so100 \
-                          openral_hal_galaxea_a1 \
+                          openral_hal_node \
                           openral_hal_openarm \
                           openral_world_state \
                           openral_reasoner_ros \

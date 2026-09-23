@@ -8,9 +8,8 @@ an ``OpaqueFunction`` so concrete strings reach ``LifecycleNode(package=, execut
   (``openral_safety.envelope_loader.compute_intersection``) and forwarded as ROS parameters on
   the kernel node. No envelope YAML file is written or read.
 * ``hal_package`` / ``hal_executable`` / ``hal_node_name`` — HAL spawn, derived by
-  ``openral deploy sim|run`` from the robot manifest (the robot's own
-  ``openral_hal_<robot_id>`` package when one ships, else the generic
-  ``openral_hal_scene_attached`` manifest-driven node).
+  ``openral deploy sim|run``: always the one manifest-driven ``openral_hal_node``
+  package, run under the node NAME ``openral_hal_<robot_id>``.
 * ``hal_params_file`` — ephemeral ROS parameter YAML the CLI writes with the HAL's per-robot
   knobs (``/**`` wildcard).
 * ``reset_to_pose_service``, ``dashboard_port``, ``reasoner_model``, ``reasoner_endpoint`` —
@@ -514,21 +513,14 @@ def _write_foxglove_layout(cameras: list[str], robot_id: str, base_frame: str) -
     return str(path)
 
 
-#: Conventional file name for a HAL package's vendor ``ros2_control`` bringup.
-#: The manifest's ``hal.real_bringup`` (``"<pkg>:<file>.launch.py"``) names the
-#: bringup explicitly; without it, a HAL package that ships ``launch/<this>``
-#: declares, by that fact alone, the controller graph its real HAL publishes to.
-REAL_BRINGUP_LAUNCH = "real_bringup.launch.py"
-
-
-def _build_real_bringup_include(hal_package: str, real_bringup: str | None = None) -> object | None:
-    """Include the robot's vendor ros2_control bringup, if it declares or ships one.
+def _build_real_bringup_include(real_bringup: str | None) -> object | None:
+    """Include the robot's vendor ros2_control bringup, if its manifest declares one.
 
     ``real_bringup`` is the manifest's ``hal.real_bringup``
-    (``"<pkg>:<file>.launch.py"``) and wins when set — a declared bringup
-    that is not installed raises instead of silently running without
-    controllers. ``None`` falls back to the convention:
-    ``<hal_package>/launch/real_bringup.launch.py``.
+    (``"<pkg>:<file>.launch.py"``, e.g.
+    ``"openral_hal_openarm:real_bringup.launch.py"``). A declared bringup that
+    is not installed raises instead of silently running without controllers;
+    ``None`` means the robot needs none.
 
     Every real-hardware HAL in this repo publishes to controllers it does not
     start: ``controller_manager`` is C++ at 400 Hz+ and belongs under a vendor
@@ -541,7 +533,7 @@ def _build_real_bringup_include(hal_package: str, real_bringup: str | None = Non
     escape hatch needed to deploy a real robot — the occupied-graph refusal is
     now unwaivable (``openral_cli._dds_scope``).
 
-    Returns ``None`` when the package ships no such file — the case for every
+    Returns ``None`` when the manifest declares no bringup — the case for every
     HAL whose controller graph is started elsewhere (a vendor daemon, a
     robot-side controller) and for every sim-only HAL. Callers must only reach
     here on ``hal_mode == "real"``.
@@ -583,26 +575,17 @@ def _build_real_bringup_include(hal_package: str, real_bringup: str | None = Non
     from launch.actions import IncludeLaunchDescription
     from launch.launch_description_sources import PythonLaunchDescriptionSource
 
-    if real_bringup is not None:
-        pkg, _, launch_file = real_bringup.partition(":")
-        try:
-            bringup_path = os.path.join(get_package_share_directory(pkg), "launch", launch_file)
-        except PackageNotFoundError as exc:
-            raise RuntimeError(
-                f"hal.real_bringup={real_bringup!r}: ROS package {pkg!r} is not installed."
-            ) from exc
-        if not os.path.isfile(bringup_path):
-            raise RuntimeError(f"hal.real_bringup={real_bringup!r}: {bringup_path} does not exist.")
-        return IncludeLaunchDescription(PythonLaunchDescriptionSource(bringup_path))
+    if real_bringup is None:
+        return None
+    pkg, _, launch_file = real_bringup.partition(":")
     try:
-        share = get_package_share_directory(hal_package)
-    except PackageNotFoundError:
-        # A pure-Python HAL package has no share directory. Not an error: it
-        # simply ships no bringup.
-        return None
-    bringup_path = os.path.join(share, "launch", REAL_BRINGUP_LAUNCH)
+        bringup_path = os.path.join(get_package_share_directory(pkg), "launch", launch_file)
+    except PackageNotFoundError as exc:
+        raise RuntimeError(
+            f"hal.real_bringup={real_bringup!r}: ROS package {pkg!r} is not installed."
+        ) from exc
     if not os.path.isfile(bringup_path):
-        return None
+        raise RuntimeError(f"hal.real_bringup={real_bringup!r}: {bringup_path} does not exist.")
     return IncludeLaunchDescription(PythonLaunchDescriptionSource(bringup_path))
 
 
@@ -1811,7 +1794,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # single graph with a single /joint_states publisher.
     vendor_owns_robot_description = False
     if hal_mode == "real":
-        real_bringup = _build_real_bringup_include(hal_package, description.hal.real_bringup)
+        real_bringup = _build_real_bringup_include(description.hal.real_bringup)
         if real_bringup is not None:
             extra_nodes.append(real_bringup)
             vendor_owns_robot_description = True

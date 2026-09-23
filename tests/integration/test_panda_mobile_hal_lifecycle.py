@@ -10,7 +10,7 @@ least one transform arrives in the same window. No mocks per CLAUDE.md §1.11 �
 ``PandaMobileHAL`` (in-process digital twin), real rclpy executor, real ROS pub/sub.
 
 Gates: ``ROS_DISTRO`` env + ``rclpy`` import + a colcon install exposing
-``openral_hal_panda_mobile``. Missing any → ``pytest.skip(reason=...)`` per §1.11.
+``openral_msgs``. Missing any → ``pytest.skip(reason=...)`` per §1.11.
 """
 
 from __future__ import annotations

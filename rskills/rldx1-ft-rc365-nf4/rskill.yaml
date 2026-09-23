@@ -84,8 +84,14 @@ processors:
 # field. The openral RoboCasa scene adapter
 # (`openral_sim.backends.robocasa._RoboCasaSim._wrap_obs`) mirrors that flip
 # at the source, so every consumer (dashboard, camera publisher, this
-# adapter) sees standard top-down orientation — no extra flip needed here;
-# image_preprocessing omitted intentionally.
+# adapter) sees standard top-down orientation — no extra flip needed here.
+# Slot -> sidecar video key (the rc365 layout's keys, stated explicitly).
+image_preprocessing:
+  input_template: "video.{cam}"
+  aliases:
+    camera1: "robot0_agentview_left"
+    camera2: "robot0_agentview_right"
+    camera3: "robot0_eye_in_hand"
 # RC365's general_embodiment state is 16-D: eef_pos_rel(3) +
 # eef_rot_rel_quat(4) + gripper_qpos(2) + base_pos(3) + base_rot_quat(4). The
 # openral RoboCasa scene emits a 16-D human300_16d state (same total dim,

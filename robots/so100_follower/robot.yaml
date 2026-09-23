@@ -223,7 +223,6 @@ observation_spec:
   state_key: "observation.state"
   state_shape: [6]
   state_representation: "joint_positions"
-  image_flip_180: false
 
 action_spec:
   dim: 6

@@ -3,7 +3,7 @@
 OpenRAL mandates a uniform 1 Hz ``DiagnosticArray`` publication from every
 lifecycle node in the graph. Centralising it here keeps cadence,
 ``hardware_id`` shape, and level-mapping identical across
-`openral_world_state`, `openral_hal_*`, `openral_safety`,
+`openral_world_state`, `openral_hal_<robot_id>`, `openral_safety`,
 `openral_rskill_ros`, and any future node.
 
 Imports ``rclpy`` and ``diagnostic_msgs`` lazily so the module stays

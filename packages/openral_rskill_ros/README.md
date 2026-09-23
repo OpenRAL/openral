@@ -102,8 +102,8 @@ One generic launch file ships with this package:
   1. resolves the robot via the DeployScene's `robot_id` (or
      `--robot` override) → `$OPENRAL_ROBOTS_DIR/<id>/robot.yaml` or
      `robots/<id>/robot.yaml`, and derives the HAL package/exec from it
-     (`_derive_hal_spec`: the robot's own `openral_hal_<id>` package when
-     one ships, else the generic `openral_hal_scene_attached` node);
+     (`_derive_hal_spec`: always the one generic `openral_hal_node`
+     package, run under the node name `openral_hal_<id>`);
   2. validates the manifest via
      `RobotDescription.validate_for_e2e_pipeline()`;
   3. shells `ros2 launch openral_rskill_ros deploy_e2e.launch.py …`.
@@ -121,7 +121,7 @@ One generic launch file ships with this package:
   ```bash
   ros2 launch openral_rskill_ros deploy_e2e.launch.py \
       robot_yaml:=$PWD/robots/openarm/robot.yaml \
-      hal_package:=openral_hal_openarm \
+      hal_package:=openral_hal_node \
       hal_executable:=lifecycle_node.py \
       hal_node_name:=openral_hal_openarm \
       hal_params_file:=/tmp/openral-hal-params-openarm.yaml

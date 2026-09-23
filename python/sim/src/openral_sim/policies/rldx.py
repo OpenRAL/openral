@@ -83,6 +83,7 @@ import structlog
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_observability import inference_span
+from openral_rskill._vla_core import manifest_camera_slots, resolve_camera_keys
 
 from openral_sim._quantization import resolve_quant_plan, sidecar_quant_token
 from openral_sim._sidecar_common import sidecar_port_for_key
@@ -92,7 +93,7 @@ from openral_sim.registry import POLICIES
 from openral_sim.sidecar import open_req_socket
 
 if TYPE_CHECKING:
-    from openral_core import VLASpec
+    from openral_core import ImagePreprocessing, VLASpec
 
     from openral_sim.rollout import Observation
 
@@ -123,7 +124,7 @@ _LIBERO_STATE_DIM = 8
 # these constants name the rank checks in `_assemble_action_chunk`.
 _RLDX_ACTION_RANK_BT1 = 3
 _RLDX_ACTION_RANK_T1 = 2
-# `camera_keys` from the SimEnvironment must be a 2-tuple (agentview, wrist).
+# Camera count of the default (LIBERO: agentview + wrist) layout.
 _RLDX_CAMERA_PAIR_LEN = 2
 # Server response envelope is exactly ``[action_dict, info_dict]``.
 _RLDX_RESPONSE_ENVELOPE_LEN = 2
@@ -294,13 +295,44 @@ _RLDX_NON_DEFAULT_LAYOUTS: tuple[str, ...] = ("gr1", "rc365", "simpler_widowx", 
 # mid-rollout ``observation.images[...]`` KeyError *after* the multi-minute
 # sidecar boot. We use this to reject the pairing up front instead. Layouts:
 # libero=agentview+wrist, rc365=agentview_left/right+eye_in_hand, gr1/simpler=ego.
-_RLDX_LAYOUT_CAMERA_COUNT: dict[str, int] = {
-    "libero": 2,
-    "gr1": 1,
-    "rc365": 3,
-    "simpler_widowx": 1,
-    "simpler_google": 1,
+# Per-layout sidecar video keys, in slot order. This table is the WIRE format;
+# which slot feeds which key is the manifest's image_preprocessing
+# (``input_template: "video.{cam}"`` + slot-keyed ``aliases``), defaulting to
+# the layout key at the slot's position (see ``_resolve_video_keys``).
+_RLDX_LAYOUT_VIDEO_KEYS: dict[str, tuple[str, ...]] = {
+    "libero": (_RLDX_AGENTVIEW_KEY, _RLDX_WRIST_KEY),
+    "gr1": (_GR1_VIDEO_KEY,),
+    "rc365": _RC365_VIDEO_KEYS,
+    "simpler_widowx": (_SIMPLER_VIDEO_KEY_WIDOWX,),
+    "simpler_google": (_SIMPLER_VIDEO_KEY_GOOGLE,),
 }
+_RLDX_LAYOUT_CAMERA_COUNT: dict[str, int] = {
+    layout: len(keys) for layout, keys in _RLDX_LAYOUT_VIDEO_KEYS.items()
+}
+
+
+def _resolve_video_keys(
+    layout: str, image_preprocessing: ImagePreprocessing, camera_keys: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Sidecar video key per camera slot for ``layout``.
+
+    An aliased slot takes ``input_template.format(cam=alias)`` (the manifest's
+    checkpoint key); an un-aliased slot takes the layout's key at its position,
+    so a manifest without aliases keeps the historical wire keys.
+
+    Example:
+        >>> from openral_core import ImagePreprocessing
+        >>> ip = ImagePreprocessing(input_template="video.{cam}", aliases={"camera2": "wrist"})
+        >>> _resolve_video_keys("libero", ip, ("camera1", "camera2"))
+        ('video.image', 'video.wrist')
+    """
+    layout_keys = _RLDX_LAYOUT_VIDEO_KEYS.get(layout, _RLDX_LAYOUT_VIDEO_KEYS["libero"])
+    ip = image_preprocessing
+    return tuple(
+        ip.input_template.format(cam=ip.aliases[slot]) if slot in ip.aliases else default
+        for slot, default in zip(camera_keys, layout_keys, strict=False)
+    )
+
 
 # Deterministic per-identity default port range. When the user pins neither
 # OPENRAL_<FAMILY>_PORT nor vla.extra.port, we derive the sidecar port from the
@@ -541,7 +573,10 @@ class _Gr00tFamilySidecarAdapter:
     # step). RLDX-1's LIBERO config wants 4 frames spaced 2 steps apart;
     # GR00T's ``LIBERO_PANDA`` wants a single current frame (horizon 1).
     video_offsets: tuple[int, ...] = _RLDX_VIDEO_OFFSETS
-    _camera_keys: tuple[str, str] = ("camera1", "camera2")
+    _camera_keys: tuple[str, ...] = ("camera1", "camera2")
+    # Sidecar video key per ``_camera_keys`` slot (``_resolve_video_keys``);
+    # empty = the layout's default keys.
+    _video_keys: tuple[str, ...] = ()
     _ctx: Any = None
     _socket: Any = None
     # PID we forked; None if we connected to a pre-existing sidecar.
@@ -1103,8 +1138,8 @@ class _Gr00tFamilySidecarAdapter:
             return np.asarray([[[val]]], dtype=np.float32)
 
         return {
-            _RLDX_AGENTVIEW_KEY: agentview,
-            _RLDX_WRIST_KEY: wrist,
+            self._video_key(0): agentview,
+            self._video_key(1): wrist,
             "state.x": _bt1(float(x)),
             "state.y": _bt1(float(y)),
             "state.z": _bt1(float(z)),
@@ -1126,7 +1161,7 @@ class _Gr00tFamilySidecarAdapter:
         self._last_input_frame = ego[0, 0]
 
         state_vec = self._pick_state(observation, expected_dim=29)
-        obs: dict[str, Any] = {_GR1_VIDEO_KEY: ego}
+        obs: dict[str, Any] = {self._video_key(0): ego}
         for key, (lo, hi) in _GR1_STATE_SLICES.items():
             obs[key] = state_vec[lo:hi].astype(np.float32).reshape(1, 1, hi - lo)
         obs[_GR1_TASK_KEY] = (instruction or observation.get("task", "") or "",)
@@ -1140,22 +1175,15 @@ class _Gr00tFamilySidecarAdapter:
         * five state keys re-sliced from openral's 16-D human300 layout
         * language key ``annotation.human.task_description``
         """
-        # Pick the scene-side camera keys (default camera1/2/3); fall back
-        # cleanly when fewer than 3 are present.
-        scene_cams = [
-            self._camera_keys[0] if len(self._camera_keys) > 0 else "camera1",
-            self._camera_keys[1] if len(self._camera_keys) > 1 else "camera2",
-            "camera3",
-        ]
         videos = [
-            self._pick_single_camera(observation, scene_cams[i], buf_key=f"camera{i + 1}")
+            self._pick_single_camera(observation, self._camera_keys[i], buf_key=f"camera{i + 1}")
             for i in range(3)
         ]
         # Top-down ("wrist" equivalent) is the eye_in_hand stream — index 2.
         self._last_input_frame = videos[2][0, 0]
 
         state_vec = self._pick_state(observation, expected_dim=16)
-        obs: dict[str, Any] = {_RC365_VIDEO_KEYS[i]: videos[i] for i in range(3)}
+        obs: dict[str, Any] = {self._video_key(i): videos[i] for i in range(3)}
         for key, (lo, hi) in _RC365_STATE_SLICES_FROM_HUMAN300.items():
             obs[key] = state_vec[lo:hi].astype(np.float32).reshape(1, 1, hi - lo)
         obs[_RC365_TASK_KEY] = (instruction or observation.get("task", "") or "",)
@@ -1202,7 +1230,7 @@ class _Gr00tFamilySidecarAdapter:
         gripper = np.asarray([gripper_norm], dtype=np.float32)
 
         return {
-            _SIMPLER_VIDEO_KEY_WIDOWX: image[None, None, ...],
+            self._video_key(0): image[None, None, ...],
             "state.end_effector_position": pos.reshape(1, 1, 3),
             "state.end_effector_rotation": rot.reshape(1, 1, 3),
             "state.gripper_position": gripper.reshape(1, 1, 1),
@@ -1245,12 +1273,19 @@ class _Gr00tFamilySidecarAdapter:
         gripper_closedness = np.asarray([1.0 - float(proprio[7])], dtype=np.float32)
 
         return {
-            _SIMPLER_VIDEO_KEY_GOOGLE: image[None, None, ...],
+            self._video_key(0): image[None, None, ...],
             "state.end_effector_position": pos.reshape(1, 1, 3),
             "state.end_effector_rotation": quat_xyzw.reshape(1, 1, 4),
             "state.gripper_position": gripper_closedness.reshape(1, 1, 1),
             _SIMPLER_LANG_KEY: (instruction or observation.get("task", "") or "",),
         }
+
+    def _video_key(self, index: int) -> str:
+        """Sidecar video key of camera ``index`` (manifest aliases, else the layout key)."""
+        keys = self._video_keys or _RLDX_LAYOUT_VIDEO_KEYS.get(
+            self.state_layout, _RLDX_LAYOUT_VIDEO_KEYS["libero"]
+        )
+        return keys[index]
 
     def _pick_single_camera(
         self, observation: Observation, scene_key: str, *, buf_key: str
@@ -1296,8 +1331,7 @@ class _Gr00tFamilySidecarAdapter:
         ``_RLDX_VIDEO_HISTORY`` steps have accumulated.
         """
         images = observation.get("images", {})
-        # Fixed alias from scene key (which the user can override via
-        # `camera_keys`) to the rolling-buffer key.
+        # Fixed alias from the camera slot to the rolling-buffer key.
         cam_buf_alias = ("camera1", "camera2")
 
         def _take(scene_key: str, buf_key: str) -> NDArray[np.uint8]:
@@ -1305,8 +1339,8 @@ class _Gr00tFamilySidecarAdapter:
             if img is None:
                 raise ROSConfigError(
                     f"rldx adapter expects observation.images[{scene_key!r}]; got "
-                    f"{list(images.keys())}. Set vla.extra.camera_keys to "
-                    "match your scene."
+                    f"{list(images.keys())}; the scene must render the rSkill's "
+                    "camera slots."
                 )
             arr = np.asarray(img, dtype=np.uint8)
             if arr.shape[:2] != (self.image_size, self.image_size):
@@ -1724,9 +1758,6 @@ def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
         timeout_ms       -- per-request ZMQ recv timeout (default 60_000).
                             First call after boot is slow (policy still
                             loading); raise for big checkpoints.
-        camera_keys      -- override the (agentview, wrist) camera pair
-                            when your scene doesn't follow the LIBERO
-                            convention.
         auto_spawn       -- when True (default) the adapter forks
                             ``tools/rldx_sidecar.py`` if no server is
                             already listening on ``host:port``; set False
@@ -1771,20 +1802,6 @@ def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
     )
     image_size = int(extra.get("image_size", 256))
     timeout_ms = int(extra.get("timeout_ms", 60_000))
-    cam_keys_raw = extra.get("camera_keys")
-    if isinstance(cam_keys_raw, (list, tuple)) and len(cam_keys_raw) == _RLDX_CAMERA_PAIR_LEN:
-        camera_keys = (str(cam_keys_raw[0]), str(cam_keys_raw[1]))
-    else:
-        # Fall back to the scene's canonical camera names
-        # (e.g. ``("front", "wrist")`` on franka_panda) when the rskill
-        # manifest does not pin ``vla.extra.camera_keys`` explicitly. The
-        # ordinal ``("camera1", "camera2")`` legacy default is retained
-        # only when the scene leaves ``cameras`` empty.
-        _scene_cams = list(getattr(env_cfg.scene, "cameras", []) or [])
-        camera_keys = (
-            _scene_cams[0] if len(_scene_cams) > 0 else "camera1",
-            _scene_cams[1] if len(_scene_cams) > 1 else "camera2",
-        )
     auto_spawn = _env_bool("OPENRAL_RLDX_AUTO_SPAWN", bool(extra.get("auto_spawn", True)))
     boot_timeout_s = float(
         os.environ.get("OPENRAL_RLDX_BOOT_TIMEOUT_S") or extra.get("boot_timeout_s", 900.0)
@@ -1816,6 +1833,16 @@ def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
     #   "simpler_google"  → SimplerEnv Google fractal20220817 (1 cam, 8 state scalars, 7-D action)
     #   default           → LIBERO-flat (2 cams, 7 state scalars)
     layout = _resolve_state_layout(manifest)
+    # Camera slots (resolve_camera_keys; default = the manifest's slots) and
+    # their sidecar video keys (manifest aliases, else the layout's keys).
+    camera_keys = resolve_camera_keys(
+        manifest,
+        extra,
+        scene_cameras=getattr(env_cfg.scene, "cameras", None),
+        default=manifest_camera_slots(manifest)
+        or tuple(f"camera{i + 1}" for i in range(_RLDX_LAYOUT_CAMERA_COUNT[layout])),
+    )
+    video_keys = _resolve_video_keys(layout, ip, camera_keys)
 
     # Reject a too-few-cameras scene up front (before the multi-minute sidecar
     # boot) instead of failing opaquely on the first obs assembly.
@@ -1860,4 +1887,5 @@ def _build_rldx(env_cfg: Any) -> _Gr00tFamilySidecarAdapter:
         embodiment_tag=embodiment_tag,
         model_id=str(model_id_override) if model_id_override else None,
         _camera_keys=camera_keys,
+        _video_keys=video_keys,
     )

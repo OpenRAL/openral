@@ -452,7 +452,7 @@ def test_tabletop_push_unknown_backend_option_rejected() -> None:
     from openral_sim import SCENES
 
     env = _make_env("so101_follower", backend_options={"taable_size_xy": [0.5, 0.5]})
-    with pytest.raises(ROSConfigError, match=r"unknown scene\.backend_options"):
+    with pytest.raises(ROSConfigError, match=r"(?s)TabletopOptions validation.*taable_size_xy"):
         SCENES.get("tabletop_push")(env)
 
 

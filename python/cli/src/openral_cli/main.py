@@ -56,6 +56,7 @@ from openral_observability import (
     semconv,
 )
 from openral_sim.cli import sim_app
+from openral_sim.registry import SCENES
 from rich.box import MINIMAL, ROUNDED
 from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
@@ -3122,7 +3123,7 @@ def _default_benchmark_out_path(vla_spec: VLASpec, suite_id: str) -> Path:
 
 
 @benchmark_app.command("scene")
-def benchmark_scene(
+def benchmark_scene(  # noqa: PLR0915  # reason: linear CLI flow of guards and prints; splitting scatters the error surface
     config: Path = typer.Option(
         ...,
         "--config",
@@ -3269,6 +3270,7 @@ def benchmark_scene(
     from openral_core import BenchmarkScene, load_scene_strict
 
     scene = load_scene_strict(str(config), BenchmarkScene)
+    SCENES.validate_options(scene.scene.id, scene.scene.backend_options)
     if n_episodes is not None:
         scene = scene.model_copy(update={"n_episodes": n_episodes})
 
@@ -4033,7 +4035,7 @@ def deploy_run(
 
 
 @deploy_app.command("validate")
-def deploy_validate(
+def deploy_validate(  # noqa: PLR0915  # reason: linear readiness checklist; each check is one append
     config: Path = typer.Option(  # reason: typer Option idiom
         ...,
         "--config",
@@ -4083,6 +4085,7 @@ def deploy_validate(
 
     try:
         deploy_scene = DeployScene.from_yaml(str(config))
+        SCENES.validate_options(deploy_scene.scene.id, deploy_scene.scene.backend_options)
     except (FileNotFoundError, ROSConfigError, ValidationError) as exc:
         console.print(f"[red]✗ config:[/red] {exc}")
         raise typer.Exit(code=1) from exc

@@ -41,7 +41,7 @@ are identical between the two; only `sdk_kind` differs (the `hal` block is share
 | --- | --- |
 | Python HAL adapter (real HW) | `openral_hal.ur_real:UR5eRealHAL` (`python/hal/src/openral_hal/ur_real.py`) |
 | Python HAL adapter (sim) | `openral_hal.ur:UR5eHAL` (`python/hal/src/openral_hal/ur.py:300`) |
-| ROS 2 lifecycle node | `packages/openral_hal_ur5e/` |
+| ROS 2 lifecycle node | [`packages/openral_hal_node/`](../../packages/openral_hal_node/README.md) (generic; node name `openral_hal_<robot_id>`) |
 | Conformance test | `tests/unit/test_hal_protocol_conformance.py::HAL_BUILDERS["UR5eRealHAL+SimTransport"]` |
 | Unit test | `tests/unit/test_ur_real_hal.py` |
 | HIL test | `tests/hil/test_ur5e.py` (gated by `UR5E_HOST` env var + `[self-hosted, lab-ur5e]` runner label) |
@@ -96,6 +96,6 @@ attended `tests/hil/test_ur5e.py::TestUR5eDownstreamEStop`.
 ## See also
 
 - [`python/hal/README.md`](../../python/hal/README.md) — HAL Protocol + per-robot adapters.
-- [`packages/openral_hal_ur5e/README.md`](../../packages/openral_hal_ur5e/README.md) — ROS 2 lifecycle node.
+- [`packages/openral_hal_node/README.md`](../../packages/openral_hal_node/README.md) — the generic manifest-driven ROS 2 lifecycle node.
 - `UR5e_DESCRIPTION` constant (sim): `python/hal/src/openral_hal/ur.py:154`.
 - `UR5e_REAL_DESCRIPTION` constant (real HW): `python/hal/src/openral_hal/ur_real.py`.

@@ -1,16 +1,10 @@
 cmake_minimum_required(VERSION 3.8)
 project(openral_hal_openarm)
 
+# Bringup-only package: the OpenArm HAL node itself is the generic
+# `openral_hal_node`. This installs the vendor ros2_control bringup that
+# `robots/openarm/robot.yaml` names through `hal.real_bringup`.
 find_package(ament_cmake REQUIRED)
-find_package(ament_cmake_python REQUIRED)
-
-ament_python_install_package(${PROJECT_NAME})
-
-install(
-  PROGRAMS
-    openral_hal_openarm/lifecycle_node.py
-  DESTINATION lib/${PROJECT_NAME}
-)
 
 install(
   DIRECTORY launch patches

@@ -56,6 +56,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
     build_chunk_executor,
+    checkpoint_image_keys,
     release_torch_modules,
     resolve_camera_keys,
     resolve_device,
@@ -239,6 +240,55 @@ def _import_molmoact2() -> tuple[Any, Any, Any]:
         MolmoAct2Config, MolmoAct2Processor, exist_ok=True
     )
     return MolmoAct2ForConditionalGeneration, MolmoAct2Config, MolmoAct2Processor
+
+
+def _checkpoint_camera_order(
+    camera_keys: tuple[str, ...], image_keys: tuple[str, ...], checkpoint_keys: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Order the camera slots the way the checkpoint was trained.
+
+    ``predict_action`` takes images positionally, so the manifest aliases
+    decide *which* slot is which checkpoint view: ``image_keys[i]`` is slot
+    ``camera_keys[i]``'s key (``checkpoint_image_keys``), matched against the
+    checkpoint's ``norm_stats.json`` ``camera_keys`` for the norm tag. A
+    checkpoint that records no camera order keeps the slot order.
+
+    Raises:
+        ROSConfigError: A checkpoint camera has no slot aliased onto it.
+
+    Example:
+        >>> _checkpoint_camera_order(
+        ...     ("camera1", "camera2"),
+        ...     ("observation.images.wrist_image", "observation.images.image"),
+        ...     ("observation.images.image", "observation.images.wrist_image"),
+        ... )
+        ('camera2', 'camera1')
+    """
+    if not checkpoint_keys:
+        return camera_keys
+    slot_of = dict(zip(image_keys, camera_keys, strict=True))
+    missing = [key for key in checkpoint_keys if key not in slot_of]
+    if missing:
+        raise ROSConfigError(
+            f"MolmoAct2 checkpoint cameras {missing} have no slot: slots {camera_keys} map to "
+            f"{image_keys}. Alias the slots onto the checkpoint's camera keys in the rSkill's "
+            "image_preprocessing.aliases."
+        )
+    return tuple(slot_of[key] for key in checkpoint_keys)
+
+
+def _norm_stats_camera_keys(repo_id: str, revision: str | None, norm_tag: str) -> tuple[str, ...]:
+    """The checkpoint's camera order for ``norm_tag`` from its ``norm_stats.json``."""
+    import json
+
+    from huggingface_hub import hf_hub_download
+
+    with _hf_offline_if_cached(repo_id, probe_file="norm_stats.json"):
+        path = hf_hub_download(repo_id, "norm_stats.json", revision=revision)
+    with open(path, encoding="utf-8") as fh:
+        stats = json.load(fh)
+    meta = stats.get("metadata_by_tag", {}).get(norm_tag, {})
+    return tuple(str(key) for key in meta.get("camera_keys") or ())
 
 
 @contextlib.contextmanager
@@ -440,8 +490,8 @@ class _MolmoAct2Adapter:
         """Build the ordered ``[agentview, wrist]`` image list predict_action wants.
 
         Camera order is significant (README: ``images`` must preserve
-        ``[agentview_rgb, wrist_rgb]``); ``_camera_keys`` already encodes that
-        order (LIBERO ``camera1`` = agentview/front, ``camera2`` = wrist).
+        ``[agentview_rgb, wrist_rgb]``); ``_camera_keys`` is already in the
+        checkpoint's order (``_checkpoint_camera_order`` over the manifest aliases).
         """
         from openral_sim.policies._video_capture import tile_input_frames
 
@@ -756,6 +806,11 @@ def _build_molmoact2(env_cfg: Any) -> _MolmoAct2Adapter:
     if ip.norm_tag is not None:
         manifest_norm_tag = ip.norm_tag
     norm_tag = str(extra.get("norm_tag", manifest_norm_tag or _DEFAULT_NORM_TAG))
+    cam_keys = _checkpoint_camera_order(
+        cam_keys,
+        checkpoint_image_keys(ip, cam_keys),
+        _norm_stats_camera_keys(source_repo, source_revision, norm_tag),
+    )
     # CUDA graphs default OFF: they pin static buffers (extra VRAM) and don't
     # compose cleanly with bnb's 4-bit dequant on an 8 GiB card.
     enable_cuda_graph = bool(extra.get("enable_cuda_graph", False))

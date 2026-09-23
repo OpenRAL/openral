@@ -46,9 +46,10 @@ joints:
     effort_limit: 1.0
     actuator_kind: "servo"
 
-# Single 96x96 top-down RGB matching gym_pusht's ``obs["pixels"]``.
-# PushT predates the multi-cam ``observation.images.cameraN`` convention
-# and exposes the raw key ``observation.image``.
+# Single 96x96 top-down RGB matching gym_pusht's ``obs["pixels"]``, on VLA
+# slot ``camera1`` like every other robot. The checkpoint's own key
+# (``observation.image`` — PushT predates the multi-cam convention) is the
+# rSkill's ``image_preprocessing`` rename, not a robot property.
 sensors:
   - name: "top"
     modality: "rgb"
@@ -62,7 +63,7 @@ sensors:
       cx: 48.0
       cy: 48.0
     encoding: "rgb8"
-    vla_feature_key: "observation.image"
+    vla_feature_key: "observation.images.camera1"
     vendor: "sim"
     model: "gym_pusht_topdown"
 

@@ -44,7 +44,7 @@ has been retired.
 | --- | --- |
 | Python HAL adapter (sim) | `openral_hal.franka_panda:FrankaPandaHAL` |
 | Real-HW adapter | `openral_hal.franka_panda_real:FrankaPandaRealHAL` |
-| ROS 2 lifecycle node | `packages/openral_hal_franka/` |
+| ROS 2 lifecycle node | [`packages/openral_hal_node/`](../../packages/openral_hal_node/README.md) (generic; node name `openral_hal_<robot_id>`) |
 | Sim test (HAL) | `tests/sim/test_franka_panda_hal_mujoco.py` |
 | Sim test (LIBERO + VLA) | `tests/sim/test_franka_panda_smolvla_libero.py`, `test_xvla_libero.py` (and skill-level π0.5 LIBERO test) |
 | Example configs | `scenes/{smolvla,xvla,pi05}_libero_spatial.yaml` |
@@ -77,6 +77,6 @@ Evidence: `tests/unit/test_franka_panda_real.py::TestSafety`,
 ## See also
 
 - [`python/hal/README.md`](../../python/hal/README.md) — HAL Protocol + per-robot adapters.
-- [`packages/openral_hal_franka/README.md`](../../packages/openral_hal_franka/README.md) — ROS 2 lifecycle node.
+- [`packages/openral_hal_node/README.md`](../../packages/openral_hal_node/README.md) — the generic manifest-driven ROS 2 lifecycle node.
 - The robot/sim split convention — design decision behind this manifest.
 - `FRANKA_PANDA_DESCRIPTION` constant: [`python/hal/src/openral_hal/franka_panda.py:168`](../../python/hal/src/openral_hal/franka_panda.py).
