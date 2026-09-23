@@ -275,7 +275,7 @@ the `isolated_targets` from those partitions and re-running each in its own
 process, see rule 7 above). The opt-in `lane` jobs (one per dependency group,
 built from the `lanes` output) run in the separate
 [`heavy-lanes`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/heavy-lanes.yml)
-workflow, on request only. `just test-changed-run` mirrors the
+workflow, started automatically once the PR is ready (rule 6 below). `just test-changed-run` mirrors the
 `core_selected` path locally.
 
 ### CI job graph and speed-up design
@@ -286,16 +286,20 @@ select ──┬── core_full (matrix: 4 file-shards + isolated) ──┐
          └── core_selected ────────────────────────────────┴── select-and-test
                                                                (required check)
 
-heavy-lanes.yml (only for the `heavy-lanes` PR label or a manual dispatch):
-select ── lane (matrix: one job per opt-in dependency group) ── heavy-lanes
-                                                                (gate + ledger
-                                                                 attest)
+heavy-lanes-trigger.yml (workflow_run of the PR workflows + every 10 min):
+tools/heavy_lanes_trigger.py ── workflow_dispatch, once the PR is ready ──┐
+                                                                          │
+heavy-lanes.yml (workflow_dispatch only):                                 ▼
+lanes-select ── lane (matrix: one job per opt-in dependency group) ── heavy-lanes
+                                                                      (required check +
+                                                                       ledger attest)
 ```
 
 Splitting one job into this graph is what makes `test-selective` fast on
 every push instead of ~15 min every time — the 19 opt-in lanes used to run
 one after another in the same job as everything else; now they live in their
-own workflow, run in parallel in their own jobs, and only when asked for (see
+own workflow, run in parallel in their own jobs, and only once the PR is
+otherwise ready to merge (see
 [Review policy](development.md#review-policy)). Both workflows' `select` jobs
 run the same [`select-tests`](https://github.com/OpenRAL/openral/blob/master/.github/actions/select-tests/action.yml)
 composite action.
@@ -323,11 +327,17 @@ composite action.
    --group sim ...` and requires passing tests, with no skip beyond the
    declared capability gaps (see
    [Lane policy](#lane-policy-what-a-skip-is-allowed-to-mean)).
-6. **Lanes run only on request.** `lane` and its `heavy-lanes` gate live in
-   `heavy-lanes.yml`, whose `select` job runs only for a `workflow_dispatch`
-   or when the PR carries the `heavy-lanes` label. Otherwise every job there
-   is skipped — a skipped job is not red and reports success to
-   required-check evaluation. `select-and-test` never waits on the lanes.
+6. **Lanes start by themselves once the PR is ready.** `lane` and its
+   required `heavy-lanes` gate live in `heavy-lanes.yml`, which runs only via
+   `workflow_dispatch`. `heavy-lanes-trigger.yml` runs
+   [`tools/heavy_lanes_trigger.py`](https://github.com/OpenRAL/openral/blob/master/tools/heavy_lanes_trigger.py)
+   whenever a PR workflow finishes and every 10 minutes; it dispatches the
+   lanes on a PR's branch once the head commit is **0 commits behind its base**,
+   **every other check is green** (and `select-and-test`, `quality`,
+   `Verify Signed-off-by` have reported), **every review thread is resolved**,
+   the PR is not a draft and not from a fork — once per head commit. Until then
+   `heavy-lanes` shows "Expected — waiting" and blocks the merge.
+   `select-and-test` never waits on the lanes.
 7. **`robot_descriptions` / openarm asset clones are cached** across runs
    (`.github/actions/setup-test-env`), instead of re-cloned by every job that
    needs them.

@@ -1,30 +1,29 @@
 name: heavy-lanes
 # Opt-in dependency lanes ("heavy lanes": sim, libero, robocasa, gr00t,
 # maniskill3, …) for the tests tools/select_tests.py selects for a diff.
-# These used to run inside test-selective.yml behind the `heavy-lanes`
-# GitHub Environment's approval gate; that made the required `heavy-lanes`
-# check red or pending on nearly every PR. They now run ONLY when asked for:
 #
-#   * add the `heavy-lanes` label to the PR (every later push re-runs them
-#     while the label stays; remove it to stop), or
-#   * Actions → heavy-lanes → "Run workflow" (workflow_dispatch) on a branch.
-#
-# Otherwise `select` is skipped by its `if:` and so is everything downstream,
-# including the `heavy-lanes` gate job — a skipped job reports success to
-# required-check evaluation, so a PR that never asked for the lanes is not
-# blocked by them. The workflow itself always triggers on pull_request (no
-# paths/labels filtering at the `on:` level — a workflow skipped by
-# filtering leaves its checks "Pending" forever).
+# Runs ONLY via workflow_dispatch, and nobody has to click it: the
+# heavy-lanes-trigger workflow (tools/heavy_lanes_trigger.py) dispatches it on
+# a PR's branch once that PR's head commit is ready — up to date with master,
+# every other check green, every review thread resolved, not a draft. Until
+# then the required `heavy-lanes` check shows "Expected — waiting", exactly
+# like the old environment-approval gate, minus the approval. It is never
+# posted by a pull_request run, so it can't read as skipped ⇒ success before
+# the lanes have actually run. A maintainer can still dispatch it by hand
+# (Actions → heavy-lanes → "Run workflow"), e.g. to re-run a PR early.
 #
 # Job graph:
-#   select ── lane (matrix, one job per opt-in dependency group) ── heavy-lanes
-#   (skipped unless requested)                                      (gate +
-#                                                                   ledger attest)
+#   lanes-select ── lane (matrix, one job per opt-in dependency group) ── heavy-lanes
+#                                                                         (required
+#                                                                          check +
+#                                                                          ledger attest)
 #
 # Each lane is its own matrix job/runner/venv, so wall-clock is close to the
 # SLOWEST lane instead of the SUM of all of them, and lanes cannot
 # contaminate each other's venv. Selection is shared with test-selective.yml
-# via .github/actions/select-tests.
+# via .github/actions/select-tests. The `select` job is named `lanes-select`
+# here so its check run is distinguishable from test-selective's `select`
+# (heavy_lanes_trigger.py excludes this workflow's own checks by name).
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -41,25 +40,12 @@ on:
         description: "diff head ref"
         required: false
         default: "HEAD"
-  pull_request:
-    branches: [master]
-    # `labeled` / `unlabeled` so adding or removing the `heavy-lanes` label
-    # starts or clears a run without a push.
-    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
 
 jobs:
-  # Gate on the label being PRESENT on the PR, not on the event's own label:
-  # an unrelated label added while `heavy-lanes` is set re-runs the lanes
-  # (the concurrency group cancels the older run), and one added while it is
-  # absent is a skip — either way the latest run on the head SHA reflects
-  # whether the lanes were asked for.
-  select:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.pull_request.labels.*.name, 'heavy-lanes')
+  lanes-select:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -83,8 +69,8 @@ jobs:
   # comment below) cannot happen between lanes — only within a single lane's
   # own setup.
   lane:
-    needs: select
-    if: needs.select.outputs.any == 'true' && needs.select.outputs.lanes != '[]'
+    needs: lanes-select
+    if: needs.lanes-select.outputs.any == 'true' && needs.lanes-select.outputs.lanes != '[]'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -100,7 +86,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.select.outputs.lanes) }}
+        include: ${{ fromJSON(needs.lanes-select.outputs.lanes) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: ./.github/actions/setup-test-env
@@ -109,7 +95,7 @@ jobs:
         env:
           LANE: ${{ matrix.lane }}
           TARGETS: ${{ matrix.targets }}
-          ISOLATED_TARGETS: ${{ needs.select.outputs.isolated_targets }}
+          ISOLATED_TARGETS: ${{ needs.lanes-select.outputs.isolated_targets }}
           LEDGER: ${{ runner.temp }}/lane-ledger.jsonl
         run: |
           # Accounting is done by tools/lane_report.py against pytest's
@@ -251,19 +237,16 @@ jobs:
           path: ${{ runner.temp }}/lane-ledger.jsonl
           if-no-files-found: warn
 
-  # The gate — named `heavy-lanes` so it keeps the check name the master
-  # ruleset may still list. Also the anti-vacuity gate (issue #163): merges
+  # The gate — named `heavy-lanes`, the required check in the master ruleset. Also the anti-vacuity gate (issue #163): merges
   # every lane's uploaded ledger and cross-checks it against the selector's
   # own output, so "tested nothing" and "tested everything and passed" can
   # no longer report the same result.
   heavy-lanes:
-    needs: [select, lane]
-    # `always()` so a failed `select` or lane still reaches the failure check
-    # below instead of auto-skipping this job (a skipped job reports
-    # success). The `!= 'skipped'` half is what hides the gate when the lanes
-    # were not requested: `select` is skipped, so is this, and a skipped job
-    # is not red.
-    if: always() && needs.select.result != 'skipped'
+    needs: [lanes-select, lane]
+    # `always()` so a failed `lanes-select` or lane still reaches the failure
+    # check below instead of auto-skipping this job — a skipped job reports
+    # success to required-check evaluation.
+    if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -274,7 +257,7 @@ jobs:
           enable-cache: false
 
       - name: Download lane ledgers
-        if: needs.select.outputs.lanes != '[]'
+        if: needs.lanes-select.outputs.lanes != '[]'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           pattern: lane-ledger-*
@@ -282,10 +265,10 @@ jobs:
           if-no-artifact-found: ignore
 
       - name: Merge ledgers and attest lane coverage
-        if: needs.select.outputs.any == 'true'
+        if: needs.lanes-select.outputs.any == 'true'
         env:
-          FULL_RUN: ${{ needs.select.outputs.full_run }}
-          REQUIREMENT_TARGETS_JSON: ${{ needs.select.outputs.requirement_targets_json }}
+          FULL_RUN: ${{ needs.lanes-select.outputs.full_run }}
+          REQUIREMENT_TARGETS_JSON: ${{ needs.lanes-select.outputs.requirement_targets_json }}
           LEDGER: ${{ runner.temp }}/lane-ledger.jsonl
         run: |
           # Each lane job uploaded its own ledger artifact (one JSONL line,
@@ -312,10 +295,10 @@ jobs:
             --selection-json "$RUNNER_TEMP/selection.json" \
             --summary "$GITHUB_STEP_SUMMARY"
 
-      - name: Require select and every lane to have succeeded or been skipped
+      - name: Require lanes-select and every lane to have succeeded or been skipped
         if: >-
-          needs.select.result == 'failure' || needs.select.result == 'cancelled' ||
+          needs.lanes-select.result == 'failure' || needs.lanes-select.result == 'cancelled' ||
           needs.lane.result == 'failure' || needs.lane.result == 'cancelled'
         run: |
-          echo "::error::select or a lane failed or was cancelled — see above."
+          echo "::error::lanes-select or a lane failed or was cancelled — see above."
           exit 1

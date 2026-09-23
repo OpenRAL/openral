@@ -1,0 +1,76 @@
+name: heavy-lanes-trigger
+# Starts heavy-lanes.yml on every open PR that is ready for it — nobody has to
+# click anything. tools/heavy_lanes_trigger.py dispatches the lanes on a PR's
+# branch once its head commit is:
+#   * up to date with its base branch (0 commits behind: rebased or merged),
+#   * green on every other check (and `select-and-test`, `quality`,
+#     `Verify Signed-off-by` have all reported),
+#   * free of unresolved review threads,
+#   * not a draft, and from a branch of this repo (not a fork),
+# and no heavy-lanes run exists for that commit yet. Until then the required
+# `heavy-lanes` check stays "Expected — waiting".
+#
+# Triggers:
+#   * workflow_run — the moment one of the PR workflows finishes, so a PR that
+#     was only waiting on CI starts its lanes right away.
+#   * schedule — a sweep every 10 minutes, because GitHub Actions has no event
+#     for "review thread resolved" and none for the base branch moving; this
+#     is the latency ceiling for those two.
+#   * workflow_dispatch — run a sweep now.
+#
+# Security: every trigger here runs THIS file from the default branch, never
+# PR code. It only reads PR state and calls the workflow_dispatch API; the
+# dispatched heavy-lanes run executes the PR branch's code with the same
+# read-only token a pull_request run would. workflow_dispatch is also the one
+# event a GITHUB_TOKEN call is allowed to trigger (a label or push made with
+# it would not start a workflow).
+
+on:
+  workflow_run:
+    workflows: [test-selective, quality, DCO]
+    types: [completed]
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "only this PR number (default: every open PR)"
+        required: false
+        default: ""
+
+# One sweep at a time, so two overlapping sweeps can't both dispatch for the
+# same commit. A newer pending sweep replaces an older pending one, which is
+# fine: it reads fresher state.
+concurrency:
+  group: heavy-lanes-trigger
+  cancel-in-progress: false
+
+permissions:
+  actions: write        # POST .../workflows/heavy-lanes.yml/dispatches
+  checks: read
+  contents: read
+  pull-requests: read   # PR list + review threads (GraphQL)
+  statuses: read
+
+jobs:
+  trigger:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+        with:
+          enable-cache: false
+
+      - name: Dispatch heavy lanes on ready PRs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.inputs.pr }}
+        run: |
+          set -euo pipefail
+          args=(--repo "$REPO")
+          if [ -n "${PR:-}" ]; then args+=(--pr "$PR"); fi
+          uv run --isolated --with pydantic --python 3.12 \
+            python tools/heavy_lanes_trigger.py "${args[@]}"
