@@ -198,7 +198,7 @@ _Composed-runtime entry point installed as `lib/openral_rskill_ros/runtime_node`
 ### `packages/openral_rskill_ros/launch/deploy_e2e.launch.py`
 
 - `compose_runtime_graph(context, *_args, **_kwargs) -> list` (L831) — Resolves every launch arg, loads the robot manifest, and assembles the full deploy-sim ROS graph — HAL, safety kernel, reasoner, SLAM/Nav2, sensor drivers, optional Foxglove viz. On `hal_mode:=real` it also starts the robot's vendor `ros2_control` bringup itself.
-- `generate_launch_description() -> LaunchDescription` (L2567) — Robot-agnostic deploy-sim launch graph entry point; wraps `compose_runtime_graph` in an `OpaqueFunction`.
+- `generate_launch_description() -> LaunchDescription` (L2569) — Robot-agnostic deploy-sim launch graph entry point; wraps `compose_runtime_graph` in an `OpaqueFunction`.
 - `REAL_BRINGUP_LAUNCH: str` (L521) — `"real_bringup.launch.py"`; the per-HAL-package real-bringup launch filename convention `_build_real_bringup_include(hal_package, real_bringup=None)` falls back to when the manifest's `hal.real_bringup` is unset. An explicit `hal.real_bringup` wins and raises if its package/file is not installed.
 - `_VENV_SITE` (L43) — Optional workspace-editable-install site-dir from `OPENRAL_VENV_SITE`, registered via `site.addsitedir` (plain `PYTHONPATH` is not enough: `.pth` files are only processed by the `site` module on registered site-dirs).
 - `_REPO_ROOT` (L113) — Resolved repo root (`_resolve_repo_root()`).
