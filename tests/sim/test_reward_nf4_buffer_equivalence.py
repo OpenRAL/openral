@@ -9,7 +9,9 @@ modules' own ``__init__``:
 * Robometer (``tools/_robometer_scorer.py``) builds on meta and fills buffers
   from the checkpoint. The reference build keeps parameters on meta but builds
   buffers for real, then installs the same checkpoint. ``named_buffers()`` and
-  the per-frame scores on a fixed real LIBERO clip must be bit-identical.
+  the per-frame scores on a fixed real LIBERO clip must be bit-identical, and
+  those scores must be meaningful: rising on a success demo, falling reversed,
+  lower under the wrong instruction.
 * TOPReward loads through stock ``transformers`` ``from_pretrained``. Its buffers
   must equal a real-init build of the same config.
 
@@ -59,7 +61,7 @@ def _free_cuda() -> None:
     torch.cuda.empty_cache()
 
 
-def _clip(n_frames: int = 6) -> tuple[object, str]:
+def _clip(n_frames: int = 8) -> tuple[object, str]:
     """Real LIBERO success-demo frames (RGB uint8, T x H x W x 3) + their task."""
     import numpy as np
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -88,6 +90,8 @@ def test_robometer_meta_load_matches_real_buffer_reference() -> None:
     meta = scorer_mod.Scorer(_ROBOMETER, device="cuda")
     meta_bufs = _buffers(meta.model)
     meta_score = meta.score(clip, task, num_bins=10)
+    reversed_progress, _ = meta.score(clip[::-1].copy(), task, num_bins=10)
+    wrong_task_progress, _ = meta.score(clip, "open the top drawer of the cabinet", num_bins=10)
     del meta
     _free_cuda()
 
@@ -101,6 +105,20 @@ def test_robometer_meta_load_matches_real_buffer_reference() -> None:
     _assert_same_buffers(meta_bufs, ref_bufs)
     # Determinism is pinned (math SDP), so equal buffers + weights => equal scores.
     assert meta_score == ref_score, (meta_score, ref_score)
+    # Per-frame series in [0, 1], one value per input frame (discrete progress +
+    # sigmoid success).
+    progress, success = meta_score
+    assert len(progress) == len(success) == len(clip), meta_score
+    assert all(0.0 <= v <= 1.0 for v in progress + success), meta_score
+    # Equal to a reference is not the same as right: the scores must also mean
+    # something. On a success demo progress climbs and success ends high; played
+    # backwards progress falls; under the wrong instruction it ends lower.
+    # (Measured 2026-09-23, 8 frames: 0.25 -> 0.85, reversed 0.74 -> 0.24,
+    # wrong task ends 0.52.)
+    assert progress[-1] > progress[0] + 0.3, progress
+    assert success[-1] > 0.5, success
+    assert reversed_progress[-1] < reversed_progress[0] - 0.3, reversed_progress
+    assert wrong_task_progress[-1] < progress[-1] - 0.1, (wrong_task_progress, progress)
 
 
 def test_topreward_load_buffers_match_real_init() -> None:
