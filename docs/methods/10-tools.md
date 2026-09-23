@@ -303,24 +303,25 @@ _Opt-in lane accounting — decides, records and attests what each dependency la
 ### `tools/heavy_lanes_trigger.py`
 _Starts the required `heavy-lanes` check on a PR automatically once the PR is ready — no approval, no label. Run by `.github/workflows/heavy-lanes-trigger.yml`. See [`docs/contributing/development.md`](../contributing/development.md#review-policy)._
 
-- `API` (L61) — `"https://api.github.com"`.
-- `LANES_WORKFLOW` (L62) — `"heavy-lanes.yml"`, the workflow it dispatches.
-- `OWN_CHECK_NAMES` (L64) — Check runs `heavy-lanes.yml` posts itself (`lanes-select`, `lane`, `heavy-lanes`); never a precondition. Kept equal to the workflow's job names by `tests/unit/test_heavy_lanes_trigger.py`.
-- `OWN_CHECK_PREFIXES` (L65) — `("lane (",)`: matrix legs of the `lane` job.
-- `GREEN_CONCLUSIONS` (L66) — `success`, `skipped`, `neutral`.
-- `DEFAULT_REQUIRED_CHECKS` (L67) — Checks that must have reported green before dispatch: `select-and-test`, `quality`, `Verify Signed-off-by`.
-- `class CheckRunState(BaseModel)` (L70) — One check run on the PR head: `name` / `status` / `conclusion`.
-- `class LaneRunState(BaseModel)` (L78) — One `heavy-lanes.yml` run for the PR head: `status` / `conclusion`.
-- `class PullRequestState(BaseModel)` (L85) — Everything the verdict reads: draft, same-repo, `behind_by`, checks, commit statuses, unresolved threads, existing lane runs.
-- `class Verdict(BaseModel)` (L101) — `ready` + the `reasons` it is not.
-- `readiness(pr, required_checks) -> Verdict` (L112) — Pure verdict: not draft, not a fork, 0 behind base, every other check green and the required ones present, statuses `success`, threads resolved, no non-cancelled lane run for this head yet.
-- `class GitHub` (L144) — Minimal REST + GraphQL client over `urllib` (the network boundary).
-  - `GitHub.get(path)` (L161) — GET `/repos/<repo>/<path>`, decoded JSON.
-  - `GitHub.paginate(path, key=None) -> list` (L165) — Every page of a list endpoint.
-  - `GitHub.unresolved_threads(number) -> int` (L178) — Unresolved review threads, via GraphQL.
-  - `GitHub.fetch(pr) -> PullRequestState` (L203) — Gather one PR's state.
-  - `GitHub.dispatch(pr) -> None` (L226) — `workflow_dispatch` `heavy-lanes.yml` on the PR branch.
-- `main(argv=None) -> int` (L235) — CLI; `--repo`, `--pr` (repeatable), `--require-check`, `--dry-run`. Re-reads the head SHA right before dispatch and defers if it moved.
+- `API` (L62) — `"https://api.github.com"`.
+- `LANES_WORKFLOW` (L63) — `"heavy-lanes.yml"`, the workflow it dispatches.
+- `OWN_CHECK_NAMES` (L67) — Check runs `heavy-lanes.yml` posts itself (`lanes-select`, `lane`, `heavy-lanes`) plus the trigger workflow's own job (`heavy-lanes-trigger`, posted on the PR head by a `workflow_run` sweep); never a precondition. Kept equal to both workflows' job names by `tests/unit/test_heavy_lanes_trigger.py`.
+- `OWN_CHECK_PREFIXES` (L68) — `("lane (",)`: matrix legs of the `lane` job.
+- `GREEN_CONCLUSIONS` (L69) — `success`, `skipped`, `neutral`.
+- `DEFAULT_REQUIRED_CHECKS` (L70) — Checks that must have reported green before dispatch: `select-and-test`, `quality`, `Verify Signed-off-by`.
+- `class GitHubAPIError(RuntimeError)` (L73) — A 200 response that is unusable: GraphQL `errors` payload or null `data` (rate limit, missing scope, vanished PR).
+- `class CheckRunState(BaseModel)` (L77) — One check run on the PR head: `name` / `status` / `conclusion`.
+- `class LaneRunState(BaseModel)` (L85) — One `heavy-lanes.yml` run for the PR head: `status` / `conclusion`.
+- `class PullRequestState(BaseModel)` (L92) — Everything the verdict reads: draft, same-repo, `behind_by`, checks, commit statuses, unresolved threads, existing lane runs.
+- `class Verdict(BaseModel)` (L108) — `ready` + the `reasons` it is not.
+- `readiness(pr, required_checks) -> Verdict` (L119) — Pure verdict: not draft, not a fork, 0 behind base, every other check green and the required ones present, statuses `success`, threads resolved, no non-cancelled lane run for this head yet.
+- `class GitHub` (L151) — Minimal REST + GraphQL client over `urllib` (the network boundary).
+  - `GitHub.get(path)` (L168) — GET `/repos/<repo>/<path>`, decoded JSON.
+  - `GitHub.paginate(path, key=None) -> list` (L172) — Every page of a list endpoint.
+  - `GitHub.unresolved_threads(number) -> int` (L185) — Unresolved review threads, via GraphQL.
+  - `GitHub.fetch(pr) -> PullRequestState` (L214) — Gather one PR's state.
+  - `GitHub.dispatch(pr) -> None` (L237) — `workflow_dispatch` `heavy-lanes.yml` on the PR branch.
+- `main(argv=None) -> int` (L252) — CLI; `--repo`, `--pr` (repeatable), `--require-check`, `--dry-run`. Re-reads the head SHA right before dispatch and defers if it moved. One PR's API trouble is a `::warning::`, never a failed sweep.
 
 ### `tools/audit_tests.py`
 _Test-suite auditor — flags dead / shadowed / duplicate / no-assertion tests; writes `docs/contributing/test-audit.md`. Read-only; never deletes. Backs `just test-audit`._
