@@ -1859,10 +1859,23 @@ if _ROS2_AVAILABLE:
             return None
 
         def _control_rate_hz(self) -> float:
-            """The tick rate: the `rate_hz` param, else the manifest's control rate."""
-            return resolve_control_rate_hz(
+            """The tick rate: the `rate_hz` param, else the manifest's control rate.
+
+            A manifest that declares no rate (sim-only robots today) ticks at
+            30 Hz with a warning naming the missing field; a real ros2_control
+            HAL built from such a manifest has already refused to construct.
+            """
+            rate = resolve_control_rate_hz(
                 float(self.get_parameter("rate_hz").value), self._description
             )
+            if rate is None:
+                name = self._description.name if self._description is not None else "?"
+                self.get_logger().warning(
+                    f"robot {name!r} declares no action_spec.control_freq_hz and no "
+                    "rate_hz param was given; ticking at 30 Hz. Declare the field."
+                )
+                return 30.0
+            return rate
 
         @staticmethod
         def _joint_positions_in_manifest_order(state: Any, names: list[str]) -> list[float]:
@@ -2526,14 +2539,15 @@ def make_local_skill_resolver(
     return _resolver
 
 
-def resolve_control_rate_hz(param_hz: float, description: RobotDescription | None) -> float:
-    """Pick the runner's tick rate: an explicit param, else the manifest, else 30 Hz.
+def resolve_control_rate_hz(param_hz: float, description: RobotDescription | None) -> float | None:
+    """Pick the runner's tick rate: an explicit param, else the manifest's rate.
 
     ``rate_hz > 0`` wins. Otherwise the robot's ``action_spec.control_freq_hz``
     is the rate — the field the real ros2_control HAL derives every trajectory
     deadline from (issue #303), so runner and HAL cannot disagree unless an
-    operator overrides the param on purpose. 30 Hz only for a manifest that
-    declares no control rate.
+    operator overrides the param on purpose. ``None`` when neither declares a
+    positive rate; the caller decides what that means (the node warns and
+    ticks at 30 Hz, which only a sim-only manifest can reach).
 
     Example:
         >>> from openral_core.schemas import RobotDescription
@@ -2542,13 +2556,15 @@ def resolve_control_rate_hz(param_hz: float, description: RobotDescription | Non
         30.0
         >>> resolve_control_rate_hz(15.0, desc)
         15.0
+        >>> resolve_control_rate_hz(0.0, None) is None
+        True
     """
     if param_hz > 0.0:
         return float(param_hz)
     spec = None if description is None else description.action_spec
     if spec is not None and spec.control_freq_hz is not None and spec.control_freq_hz > 0.0:
         return float(spec.control_freq_hz)
-    return 30.0
+    return None
 
 
 def _pace_tick(prev_deadline_s: float, period_s: float) -> float:

@@ -150,6 +150,15 @@ safety:
 
 sdk_kind: "closed"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
+# Control rate: the skill runner ticks at it (`rate_hz` ROS param 0 = read
+# this), the dataset recorder stamps it as fps, and the real HAL sets every
+# trajectory point's time_from_start = horizon / control_freq_hz (issue #303).
+# A ros2_control HAL refuses to build without it.
+action_spec:
+  dim: 6
+  representation: "joint_positions"
+  control_freq_hz: 30.0
+
 hal:
   # null → build_hal derives MujocoArmHAL.from_description(this manifest)
   # from the `sim:` block below; no per-robot Python class is involved.

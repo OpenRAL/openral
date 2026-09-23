@@ -48,7 +48,7 @@ requires_rclpy = pytest.mark.skipif(
 )
 
 
-def _description(n_joints: int = 2, *, control_freq_hz: float | None = None) -> RobotDescription:
+def _description(n_joints: int = 2, *, control_freq_hz: float | None = 30.0) -> RobotDescription:
     return RobotDescription(
         name="bench_arm",
         embodiment_kind=EmbodimentKind.MANIPULATOR,
@@ -71,7 +71,7 @@ def _description(n_joints: int = 2, *, control_freq_hz: float | None = None) -> 
     )
 
 
-def _hal(control_freq_hz: float | None = None, **kw: object) -> RosControlHAL:
+def _hal(control_freq_hz: float | None = 30.0, **kw: object) -> RosControlHAL:
     return RosControlHAL(
         _description(control_freq_hz=control_freq_hz),
         controller_name="joint_trajectory_controller",
@@ -177,17 +177,11 @@ def test_send_action_carries_the_deadline_the_control_rate_implies() -> None:
     assert sent[1][1]["time_from_start_s"] == pytest.approx(0.08)
 
 
-def test_a_hal_with_no_rate_sends_no_deadline_and_a_bad_rate_is_refused() -> None:
-    sent: list[tuple[str, dict[str, object]]] = []
-    hal = _hal()
-    hal.attach_transport(lambda t, m: sent.append((t, m)), lambda: {}, None)
-    hal.connect()
-    hal.send_action(
-        Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[[0.1, 0.2]])
-    )
-    assert "time_from_start_s" not in sent[0][1]
-    with pytest.raises(ROSConfigError, match="control_freq_hz"):
-        _hal(control_freq_hz=0.0)
+@pytest.mark.parametrize("rate", [None, 0.0, -30.0])
+def test_a_manifest_without_a_positive_rate_cannot_build_the_hal(rate: float | None) -> None:
+    """No deadline fallback exists, so the HAL refuses at construction and names the field."""
+    with pytest.raises(ROSConfigError, match=r"action_spec\.control_freq_hz"):
+        _hal(control_freq_hz=rate)
 
 
 # ── The watchdog ──────────────────────────────────────────────────────────────
@@ -334,8 +328,8 @@ def test_transport_publishes_the_chunks_last_step_to_the_named_controller() -> N
         hal.send_action(
             Action(
                 control_mode=ControlMode.JOINT_POSITION,
-                horizon=2,
-                joint_targets=[[0.1, 0.2], [0.3, 0.4]],
+                horizon=3,
+                joint_targets=[[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
             )
         )
 
@@ -353,9 +347,18 @@ def test_transport_publishes_the_chunks_last_step_to_the_named_controller() -> N
         assert received, "no JointTrajectory reached the controller topic"
         traj = received[0]
         assert list(traj.joint_names) == ["j0", "j1"]
-        # Only the final step: a trajectory point is an absolute target the
-        # controller interpolates toward, not a step to replay.
-        assert [round(p, 3) for p in traj.points[0].positions] == [0.3, 0.4]
+        # Every row is a point, one control period apart (30 Hz manifest), so
+        # the controller interpolates through the chunk's shape rather than
+        # driving a straight line to its last row (issue #303).
+        assert [[round(p, 3) for p in pt.positions] for pt in traj.points] == [
+            [0.1, 0.2],
+            [0.3, 0.4],
+            [0.5, 0.6],
+        ]
+        deadlines = [
+            pt.time_from_start.sec + pt.time_from_start.nanosec / 1e9 for pt in traj.points
+        ]
+        assert deadlines == pytest.approx([1 / 30, 2 / 30, 3 / 30], abs=1e-6)
     finally:
         node.destroy_node()
         sink.destroy_node()
@@ -487,6 +490,11 @@ def test_an_unexpressible_payload_raises_instead_of_vanishing() -> None:
             tr.publish("/g/command", {"position": 0.5, "stamp_ns": 0})
         # An empty chunk is a different thing: the HAL had nothing to send.
         tr.publish("/g/command", {"joint_targets": [], "joint_names": ["g0"]})
+        # A chunk with no deadline is refused rather than driven at some
+        # arbitrary speed — the 100 ms constant that used to fill this gap is
+        # the defect of issue #303.
+        with pytest.raises(ROSConfigError, match="time_from_start_s"):
+            tr.publish("/g/command", {"joint_targets": [[0.1]], "joint_names": ["g0"]})
     finally:
         node.destroy_node()
         ctx.shutdown()

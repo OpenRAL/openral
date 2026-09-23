@@ -470,15 +470,11 @@ class TestTrajectoryDeadline:
         manifest = RobotDescription.from_yaml(str(OPENARM_MANIFEST))
         assert OPENARM_REAL_DESCRIPTION.action_spec == manifest.action_spec
 
-    def test_without_a_rate_the_deadline_is_left_to_the_transport(
-        self, both_buses_up: Path
-    ) -> None:
-        recorder = _Recorder()
+    def test_a_manifest_without_a_rate_cannot_build_the_hal(self) -> None:
+        """`build_hal(mode="real")` and so the node's configure stop here, naming the field."""
         rateless = OPENARM_REAL_DESCRIPTION.model_copy(update={"action_spec": None})
-        hal = OpenArmRealHAL(rateless, publish_fn=recorder)
-        hal.connect()
-        hal.send_action(_action())
-        assert all("time_from_start_s" not in msg for _t, msg in recorder.sent)
+        with pytest.raises(ROSConfigError, match=r"action_spec\.control_freq_hz"):
+            OpenArmRealHAL(rateless, require_can_links=False)
 
     @pytest.mark.parametrize("rate", [0.0, -30.0])
     def test_a_non_positive_rate_is_refused(self, rate: float) -> None:
