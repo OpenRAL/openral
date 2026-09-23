@@ -37,7 +37,6 @@ from openral_core.exceptions import (
 )
 from openral_core.schemas import (
     Action,
-    ActionRepresentation,
     ActionSpec,
     ControlMode,
     EmbodimentKind,
@@ -209,11 +208,9 @@ GALAXEA_A1_DESCRIPTION = RobotDescription(
     sdk_kind="closed_with_api",
     # Control rate: the runner ticks at it, the HAL node publishes proprio at
     # it, and the recorder stamps it as fps (issue #303). Mirrors the YAML.
-    action_spec=ActionSpec(
-        dim=6,
-        representation=ActionRepresentation.JOINT_POSITIONS,
-        control_freq_hz=30.0,
-    ),
+    # dim / representation deliberately undeclared (no committed policy
+    # contract for this robot); the control rate is the known quantity.
+    action_spec=ActionSpec(control_freq_hz=30.0),
     hal=HalEntrypoints(
         real="openral_hal.galaxea_a1:GalaxeaA1HAL",
         parameters={

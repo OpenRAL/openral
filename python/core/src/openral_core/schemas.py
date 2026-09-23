@@ -1105,13 +1105,18 @@ class ActionSpec(BaseModel):
     """VLA action configuration for this robot.
 
     Attributes:
-        dim: Dimensionality of the action vector.
+        dim: Dimensionality of the action vector. ``None`` = not declared: the
+            dataset recorder then takes the width from the action itself. A
+            robot whose policy contract is not committed declares only the
+            control rate rather than a guessed width (issue #303).
         representation: How the action vector is encoded.
-        control_freq_hz: Control frequency the actions are executed at.
+        control_freq_hz: Control frequency the actions are executed at — the
+            runner's tick, the HAL node's proprio publish rate, the real
+            ros2_control HAL's trajectory deadline, and the recorder's fps.
         chunk_size: Number of action steps per inference call (chunk size H).
     """
 
-    dim: int
+    dim: int | None = None
     representation: ActionRepresentation | None = None
     control_freq_hz: float | None = None
     chunk_size: int | None = None
