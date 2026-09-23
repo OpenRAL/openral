@@ -203,6 +203,9 @@ SO100_DESCRIPTION = RobotDescription(
         max_ee_accel_m_s2=2.0,  # matches both shipped manifests
         contact_force_threshold_n=30.0,
         self_collision_margin_m=0.0,
+        # runner ramp to starting_pose — the former defaults, declared (issue #303)
+        starting_pose_max_joint_speed_rad_s=0.5,
+        starting_pose_tolerance_rad=0.05,
     ),
     sdk_kind="open",
     # Control rate: the runner ticks at it, the HAL node publishes proprio at

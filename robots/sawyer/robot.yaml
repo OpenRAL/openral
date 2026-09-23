@@ -153,6 +153,10 @@ safety:
   max_ee_accel_m_s2: 1.0
   contact_force_threshold_n: 30.0
   self_collision_margin_m: 0.0
+  # Runner ramp to a skill's starting_pose — the runner's former defaults,
+  # declared here so they are visible; provisional until run on this rig.
+  starting_pose_max_joint_speed_rad_s: 0.5
+  starting_pose_tolerance_rad: 0.05
 
 # Single corner-view RGB camera mirroring MetaWorld's `pixels` observation
 # (480x480, surfaced as `front` by python/sim/src/openral_sim/backends/metaworld.py:92,

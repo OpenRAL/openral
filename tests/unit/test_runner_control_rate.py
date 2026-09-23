@@ -47,33 +47,49 @@ def test_every_ros2_control_robot_declares_its_rate(robot: str) -> None:
     assert runner.resolve_control_rate_hz(0.0, desc) == 30.0
 
 
-# ── Starting-pose ramp: derived from the manifest, not from constants ─────────
+# ── Starting-pose ramp: declared in the manifest, never derived ───────────────
 
 
-def test_the_ramp_speed_is_the_slowest_joint_scaled_by_the_safety_factor() -> None:
+def test_the_ramp_comes_from_the_manifest_not_from_rated_joint_limits() -> None:
+    """Half the slowest rated velocity_limit would put the OpenArm at 2 rad/s (issue #303)."""
     desc = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
+    assert runner.resolve_starting_pose_ramp(0.0, 0.0, desc) == (0.5, 0.05)
     slowest = min(j.velocity_limit for j in desc.joints if j.velocity_limit)
-    speed, tolerance = runner.resolve_starting_pose_ramp(0.0, 0.0, 30.0, desc)
-    assert speed == pytest.approx(slowest * desc.safety.max_joint_speed_factor)
-    # "arrived" = within one control period of motion at that speed.
-    assert tolerance == pytest.approx(speed / 30.0)
+    assert slowest * desc.safety.max_joint_speed_factor > 0.5
+
+
+@pytest.mark.parametrize(
+    "robot", ["so101_follower", "ur5e", "franka_panda", "sawyer", "aloha_bimanual", "galaxea_a1"]
+)
+def test_every_real_robot_declares_its_approach(robot: str) -> None:
+    desc = RobotDescription.from_yaml(str(REPO_ROOT / f"robots/{robot}/robot.yaml"))
+    speed, tolerance = runner.resolve_starting_pose_ramp(0.0, 0.0, desc)
+    assert speed > 0.0 and tolerance > 0.0
 
 
 def test_explicit_ramp_params_win() -> None:
     desc = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
-    assert runner.resolve_starting_pose_ramp(0.2, 0.01, 30.0, desc) == (0.2, 0.01)
-    speed, tolerance = runner.resolve_starting_pose_ramp(0.2, 0.0, 50.0, desc)
-    assert (speed, tolerance) == (0.2, pytest.approx(0.2 / 50.0))
+    assert runner.resolve_starting_pose_ramp(0.2, 0.01, desc) == (0.2, 0.01)
+    assert runner.resolve_starting_pose_ramp(0.2, 0.0, desc) == (0.2, 0.05)
 
 
-def test_a_manifest_without_velocity_limits_cannot_derive_the_ramp() -> None:
+def test_a_manifest_without_the_approach_values_is_refused_not_guessed() -> None:
     from openral_core.exceptions import ROSConfigError
 
     desc = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
-    limitless = desc.model_copy(
-        update={"joints": [j.model_copy(update={"velocity_limit": None}) for j in desc.joints]}
+    bare = desc.model_copy(
+        update={
+            "safety": desc.safety.model_copy(
+                update={
+                    "starting_pose_max_joint_speed_rad_s": None,
+                    "starting_pose_tolerance_rad": None,
+                }
+            )
+        }
     )
-    with pytest.raises(ROSConfigError, match="velocity_limit"):
-        runner.resolve_starting_pose_ramp(0.0, 0.0, 30.0, limitless)
-    with pytest.raises(ROSConfigError, match="control rate"):
-        runner.resolve_starting_pose_ramp(0.0, 0.0, 0.0, desc)
+    with pytest.raises(ROSConfigError, match="starting_pose_max_joint_speed_rad_s"):
+        runner.resolve_starting_pose_ramp(0.0, 0.0, bare)
+    with pytest.raises(ROSConfigError, match="starting_pose_tolerance_rad"):
+        runner.resolve_starting_pose_ramp(0.3, 0.0, bare)
+    with pytest.raises(ROSConfigError):
+        runner.resolve_starting_pose_ramp(0.0, 0.0, None)
