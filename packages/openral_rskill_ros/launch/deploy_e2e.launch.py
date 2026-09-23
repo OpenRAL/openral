@@ -1520,7 +1520,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # Real deploys — when set, the runtime opens the deploy
                 # config's camera readers (sensor_leg.py) and publishes
                 # them onto the WorldState image topics.
-                "deploy_config": deploy_config,
+                # Gated on hal_mode, not on the arg: `deploy sim` forwards
+                # deploy_config too (boot budget + scene sensors), but only a
+                # real deploy opens physical SensorReaders.
+                "deploy_config": deploy_config if hal_mode == "real" else "",
                 # The RESOLVED consumer flags, not the scene's raw (tri-state)
                 # ones. The scene YAML may leave enable_object_detector /
                 # enable_slam as None ("auto") and the deploy CLI resolves

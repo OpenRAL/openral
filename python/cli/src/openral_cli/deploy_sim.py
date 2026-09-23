@@ -1548,8 +1548,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # and publishes the physical cameras onto
     # /openral/cameras/<name>/image (sim keeps the HAL bridge as the
     # only camera source; empty default in the launch file).
-    if deploy_config is not None and hal_mode == "real":
-        argv_template.append(f"deploy_config:={Path(deploy_config).resolve()}")
+    # Forward the DeployScene YAML on BOTH paths: the launch derives the HAL
+    # autostart budget from its `backend_options.boot_timeout_s` (a sim Isaac /
+    # BEHAVIOR scene boots past the 300 s floor) and merges its `sensors:` into
+    # the WorldState camera set + mount TFs. The real-only camera leg (the
+    # runtime node's physical SensorReaders) is gated on `hal_mode` inside the
+    # launch, not on this arg's presence. `deploy sim` passes only `config`.
+    scene_yaml = deploy_config if deploy_config is not None else config
+    if scene_yaml is not None:
+        argv_template.append(f"deploy_config:={Path(scene_yaml).resolve()}")
 
     return LaunchInvocation(
         robot_id=robot_id,
