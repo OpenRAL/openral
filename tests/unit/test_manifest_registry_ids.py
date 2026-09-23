@@ -107,9 +107,17 @@ def test_state_layout_has_a_consumer(skill: str, manifest: RSkillManifest) -> No
     )
 
 
-def test_hub_manifest_with_unknown_benchmark_warns_not_fails(cap: Any) -> None:
+def test_hub_manifest_with_unknown_benchmark_warns_not_fails(
+    cap: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``rSkill.from_pretrained`` WARNS on a suite this checkout lacks (it may be newer)."""
+    import structlog
+    from openral_rskill import loader
     from openral_rskill.loader import _warn_unknown_benchmarks
+
+    # An earlier test in the process may have configured structlog with
+    # cache_logger_on_first_use=True, pinning the module logger to that pipeline.
+    monkeypatch.setattr(loader, "log", structlog.get_logger(loader.__name__))
 
     _, real = next((d, m) for d, m in _MANIFESTS if m.benchmarks)
     newer = real.model_copy(update={"benchmarks": {**real.benchmarks, "suite_from_future": 0.5}})
