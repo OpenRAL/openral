@@ -364,9 +364,9 @@ not automated from this repo. On the host with the arm attached:
 6. Every push runs two fast required checks: `quality` (lint/type/schema/docs,
    <3 min) and `select-and-test` (the pytest targets your diff actually
    touches — see [Selective testing](selective-testing.md), usually a few
-   minutes). The opt-in dependency lanes (LIBERO, RoboCasa, GR00T, …) your
-   diff selected do not run by default — see [Review policy](#review-policy)
-   below for how to ask for them.
+   minutes). A third required check, `heavy-lanes`, runs the opt-in
+   dependency lanes (LIBERO, RoboCasa, GR00T, …) your diff selected — it
+   starts by itself once the PR is ready, see [Review policy](#review-policy).
 7. All required checks must be green, and the PR needs one approving review
    from a code owner, before it can merge. See `.github/workflows/` for what
    each workflow runs.
@@ -383,22 +383,26 @@ maintainer's own PRs merge via the ruleset's `OrganizationAdmin` bypass
 instead of a satisfying review — expected, not a workaround; a second code
 owner would remove the need for it.
 
-The opt-in dependency lanes (LIBERO, RoboCasa, GR00T, ManiSkill3, …) run in
-the [`heavy-lanes`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/heavy-lanes.yml)
-workflow, and only when asked for:
+`heavy-lanes` (the opt-in dependency lanes: LIBERO, RoboCasa, GR00T,
+ManiSkill3, …) starts **automatically**, with no approval or label, once the
+PR's head commit is:
 
-- add the **`heavy-lanes`** label to the PR — the lanes selected by the diff
-  run in parallel, and re-run on every push while the label stays; remove it
-  to stop; or
-- Actions → **heavy-lanes** → "Run workflow" on the branch
-  (`workflow_dispatch`).
+- up to date with `master` (0 commits behind — rebase or merge `master` in);
+- green on every other check;
+- free of unresolved review threads;
+- not a draft, and from a branch of this repo.
 
-Without either, every job in that workflow is skipped, so its `heavy-lanes`
-check is skipped too (not red, and it counts as success if the ruleset still
-requires it). This replaces the old `heavy-lanes` GitHub Environment approval
-gate, which left the check red or pending on nearly every PR. A maintainer
-decides whether the expensive lanes are worth running once the PR is close to
-mergeable, rather than every push paying for 19 parallel jobs.
+[`heavy-lanes-trigger`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/heavy-lanes-trigger.yml)
+re-checks each open PR whenever a PR workflow finishes and every 10 minutes
+(GitHub has no event for "thread resolved" or "`master` moved", so those two
+can take up to ~10 min to be noticed). It starts the lanes once per head
+commit; a new push waits for the conditions again. Until then the check shows
+"Expected — waiting" and blocks the merge. A failed lane is re-run from its
+Actions run page. Fork PRs are not dispatched automatically
+(`workflow_dispatch` cannot target a fork branch).
+
+This keeps the expensive lanes — 19 parallel jobs — for PRs that are otherwise
+mergeable, instead of paying for them on every push.
 `select-and-test` — test-speed feedback on the code a diff actually
 touches (`quality` is the lint/type/schema/docs check) — never waits on this.
 

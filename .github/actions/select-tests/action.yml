@@ -61,7 +61,9 @@ runs:
       id: select
       shell: bash
       env:
-        HEAD_REF: ${{ github.head_ref }}
+        # head_ref on pull_request; the dispatched branch on workflow_dispatch
+        # (heavy-lanes.yml), so a release-please branch short-circuits there too.
+        HEAD_REF: ${{ github.head_ref || github.ref_name }}
         BASE: ${{ steps.range.outputs.base }}
         HEAD: ${{ steps.range.outputs.head }}
       run: |
