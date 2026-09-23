@@ -150,10 +150,21 @@ Bind those streams with the `ros2_image` backend:
 ```yaml
 sensors:
   # Left eye as RGB — still fine over UVC with a crop.
-  # Same name as the manifest's sim `top` camera, so the scene only overrides
-  # the hardware fields and the policy keeps its `top` slot.
+  # Same name as the manifest's sim `top` camera, so the policy keeps its `top`
+  # slot (leave `vla_feature_key` unset). Restate every hardware field: the
+  # merge keeps any the scene omits, so the sim camera's 640x480 intrinsics and
+  # `frame_id: world` would otherwise describe the ZED.
   - name: top
     modality: rgb
+    frame_id: openarm_head_camera_optical_frame
+    parent_frame: openarm_base
+    rate_hz: 30.0
+    encoding: bgr8
+    # Width/height match the crop below; take fx/fy/cx/cy from your unit's
+    # ZED calibration (these are placeholders at the WVGA scale).
+    intrinsics: { width: 672, height: 376, fx: 336.0, fy: 336.0, cx: 336.0, cy: 188.0 }
+    vendor: StereoLabs
+    model: ZED Mini
     deploy_binding:
       backend: opencv_thread
       backend_params: { device: /dev/camera_head_stereo, width: 1344, height: 376,

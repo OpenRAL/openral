@@ -46,7 +46,14 @@ _SCENE_YAML = {
             "parent_frame": "openarm_base",
             "rate_hz": 30.0,
             "encoding": "bgr8",
-            "intrinsics": {"width": 672, "height": 376, "fx": 336.0, "fy": 336.0},
+            "intrinsics": {
+                "width": 672,
+                "height": 376,
+                "fx": 336.0,
+                "fy": 336.0,
+                "cx": 336.0,
+                "cy": 188.0,
+            },
             "vendor": "StereoLabs",
             "model": "ZED Mini",
             "deploy_binding": {
@@ -62,7 +69,14 @@ _SCENE_YAML = {
             "rate_hz": 30.0,
             "encoding": "bgr8",
             "vla_feature_key": "observation.images.wrist_left",
-            "intrinsics": {"width": 960, "height": 600, "fx": 685.5, "fy": 685.5},
+            "intrinsics": {
+                "width": 960,
+                "height": 600,
+                "fx": 685.5,
+                "fy": 685.5,
+                "cx": 480.0,
+                "cy": 300.0,
+            },
             "vendor": "Arducam",
             "model": "B0495",
             "deploy_binding": {
@@ -78,7 +92,14 @@ _SCENE_YAML = {
             "rate_hz": 30.0,
             "encoding": "bgr8",
             "vla_feature_key": "observation.images.wrist_right",
-            "intrinsics": {"width": 960, "height": 600, "fx": 685.5, "fy": 685.5},
+            "intrinsics": {
+                "width": 960,
+                "height": 600,
+                "fx": 685.5,
+                "fy": 685.5,
+                "cx": 480.0,
+                "cy": 300.0,
+            },
             "vendor": "Arducam",
             "model": "B0495",
             "deploy_binding": {
@@ -161,6 +182,21 @@ def test_the_real_top_camera_keeps_the_sim_slot(
 
     assert manifest_top["vla_feature_key"] == "observation.images.top"
     assert "vla_feature_key" not in scene_top
+
+    # And through the real merge the sensor leg uses, not just the YAML.
+    from openral_core import DeployScene, RobotDescription
+    from openral_rskill_ros.sensor_leg import merge_deploy_sensors
+
+    merged_top = next(
+        sensor
+        for sensor in merge_deploy_sensors(
+            RobotDescription.from_yaml(str(_MANIFEST)).sensors,
+            DeployScene.from_yaml(str(_scene)).sensors,
+        )
+        if sensor.name == "top"
+    )
+    assert merged_top.vla_feature_key == "observation.images.top"
+    assert merged_top.frame_id == scene_top["frame_id"]
     # `merge_deploy_sensors` copies only the fields the scene explicitly sets,
     # so anything the sim entry declares and the scene omits survives into the
     # real deploy — sim intrinsics on a ZED, for instance.
