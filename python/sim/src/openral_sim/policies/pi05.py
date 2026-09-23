@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 import structlog
 from numpy.typing import NDArray
-from openral_core.exceptions import ROSConfigError
+from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_observability import inference_span
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
@@ -329,31 +329,61 @@ def _rebuild_int8_params_for_linear8bitlt(policy: Any) -> int:
 def _init_rope_and_position_buffers(policy: Any, *, torch: Any) -> None:
     """Recompute the buffers a meta-initialised policy cannot load from safetensors.
 
-    After ``init_empty_weights`` + ``to_empty`` every buffer holds garbage.
-    Two kinds are not in the checkpoint and must be rebuilt: ``*.position_ids``
-    (int64 ``arange``; garbage indices assert on the embedding gather) and the
-    RoPE ``*.inv_freq`` / ``*.original_inv_freq`` coefficients
-    ``1/(theta**(arange(0,d,2)/d))`` carried by PaliGemma + gemma_expert
-    (garbage -> NaN rotation contaminating the attention path). Shared by the
+    After ``init_empty_weights`` + ``to_empty`` every buffer holds garbage, and
+    the *non-persistent* ones are not in the checkpoint, so they must be rebuilt
+    the way their modules build them:
+
+    * ``*.position_ids`` — int64 ``arange`` (garbage indices assert on the
+      embedding gather);
+    * RoPE ``*.inv_freq`` / ``*.original_inv_freq`` —
+      ``1/(theta**(arange(0,d,2)/d))`` with ``theta`` from the module's
+      ``config.rope_parameters`` (transformers 5), else its ``rope_theta`` /
+      ``base`` attribute, else Gemma's 10000 (garbage -> NaN rotation);
+    * ``*.embed_scale`` — Gemma's ``sqrt(hidden_size)`` token-embedding scale
+      (``GemmaTextScaledWordEmbedding``), kept by the module as the plain float
+      ``scalar_embed_scale``. Left as garbage, every language token is scaled
+      by noise and the policy runs to completion producing plausible-looking
+      nonsense: cosine 0.03 against ``from_pretrained`` on the OpenArm restock
+      checkpoint (Thor, 2026-09-23), while all 813 loaded tensors matched.
+
+    A non-persistent buffer this function does not know how to rebuild is
+    refused (``ROSRuntimeError``) rather than run on garbage — the only
+    symptom of a missed one is a policy that is silently wrong. Shared by the
     nf4, int8 and bf16 fast meta-init paths; call under ``torch.no_grad()``.
     """
+    persistent = set(policy.state_dict().keys())
+    unhandled: list[str] = []
     for name, buf in policy.named_buffers():
+        mod = policy
+        for part in name.split(".")[:-1]:
+            mod = getattr(mod, part)
         if name.endswith(".position_ids") and buf.dtype == torch.int64:
             n = buf.shape[-1]
             arange = torch.arange(n, dtype=torch.int64, device=buf.device)
             buf.copy_(arange.expand_as(buf))
         elif name.endswith((".inv_freq", ".original_inv_freq")):
             d = buf.shape[-1] * 2
-            # Walk up to the owning module for its rope `theta` (a.k.a. `base`).
-            mod = policy
-            for part in name.split(".")[:-1]:
-                mod = getattr(mod, part)
-            theta = getattr(mod, "rope_theta", None) or getattr(mod, "base", None) or 10000.0
+            rope_params = getattr(getattr(mod, "config", None), "rope_parameters", None)
+            theta = 10000.0
+            if isinstance(rope_params, dict) and rope_params.get("rope_theta"):
+                theta = float(rope_params["rope_theta"])
+            elif getattr(mod, "rope_theta", None) or getattr(mod, "base", None):
+                theta = float(getattr(mod, "rope_theta", None) or mod.base)
             freqs = 1.0 / (
-                float(theta)
-                ** (torch.arange(0, d, 2, dtype=torch.float32, device=buf.device).float() / d)
+                theta ** (torch.arange(0, d, 2, dtype=torch.float32, device=buf.device).float() / d)
             )
             buf.copy_(freqs.to(buf.dtype))
+        elif name.endswith(".embed_scale"):
+            scalar = getattr(mod, "scalar_embed_scale", None)
+            scale = float(scalar) if scalar is not None else float(mod.embedding_dim) ** 0.5
+            buf.copy_(torch.tensor(scale, dtype=buf.dtype, device=buf.device))
+        elif name not in persistent:
+            unhandled.append(name)
+    if unhandled:
+        raise ROSRuntimeError(
+            "pi05 fast meta-init: non-persistent buffers this loader cannot rebuild "
+            f"(they are not in the checkpoint and would run as garbage): {unhandled[:8]}"
+        )
 
 
 def _stream_bf16_state_to_device(policy: Any, repo_id: str, *, device: str, torch: Any) -> None:
