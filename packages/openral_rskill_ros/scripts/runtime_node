@@ -103,7 +103,7 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
 
     from openral_observability import configure_observability
     from openral_observability.system_metrics import start_system_metrics_collector
-    from openral_rskill_ros.compose import compose_runtime
+    from openral_rskill_ros.compose import compose_runtime, start_world_state_executor
 
     # Idempotent + no-op if OTEL_EXPORTER_OTLP_ENDPOINT is unset.
     # The launch passes the dashboard's endpoint via env so the
@@ -348,6 +348,16 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
                 uncapped_sensors=slam_camera_names(effective_runtime),
                 topic_max_size=topic_frame_size(effective_runtime),
             )
+            joint_states_topic = getattr(scene.runtime, "joint_states_topic", None)
+            if joint_states_topic:
+                from rclpy.parameter import Parameter
+
+                # Read by both nodes' on_configure, which run after this: world_state's
+                # ingest and the runner's ROSPublishingHAL cache share the one topic.
+                for _node in (runtime.world_state_node, runtime.skill_runner_node):
+                    _node.set_parameters(
+                        [Parameter("joint_states_topic", Parameter.Type.STRING, joint_states_topic)]
+                    )
             if sensor_leg.direct_sensors:
                 from rclpy.parameter import Parameter
 
@@ -377,7 +387,17 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
         )
 
     executor = MultiThreadedExecutor(num_threads=4)
-    executor.add_node(runtime.world_state_node)
+    # World state spins on the C++ events executor (see
+    # ``start_world_state_executor``); only the skill runner stays on the
+    # Python multi-threaded one, whose reentrant group the action server needs.
+    stop_world_state_executor = start_world_state_executor(runtime.world_state_node)
+    if stop_world_state_executor is None:
+        print(
+            "runtime_node: rclpy has no EventsExecutor; world_state shares the "
+            "MultiThreadedExecutor (expect GIL pressure on the inference thread)",
+            file=sys.stderr,
+        )
+        executor.add_node(runtime.world_state_node)
     executor.add_node(runtime.skill_runner_node)
 
     # Drive the two internal lifecycle nodes to ACTIVE automatically.
@@ -440,6 +460,8 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
         # closes any open episode) BEFORE the nodes go down.
         if runtime.dataset_recorder_bridge is not None:
             runtime.dataset_recorder_bridge.destroy()
+        if stop_world_state_executor is not None:
+            stop_world_state_executor()
         runtime.skill_runner_node.destroy_node()
         runtime.world_state_node.destroy_node()
         # Idempotent — no-op when the SIGINT handler (or whoever fired

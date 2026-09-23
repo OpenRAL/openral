@@ -325,6 +325,18 @@
           "default": null,
           "title": "Octomap Cloud Topic"
         },
+        "joint_states_topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Joint States Topic"
+        },
         "enable_object_detector": {
           "anyOf": [
             {

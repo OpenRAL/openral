@@ -212,6 +212,11 @@ runtime:
   # OpenArm deploy on this host.
   enable_octomap: true
   octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+  # The HAL's 30 Hz republish, not the joint_state_broadcaster's 750 Hz
+  # /joint_states: at full rate the Python executor + callback held half of
+  # the runtime's GIL on the Orin and a 1.6 s π0.5 forward took 322 s. The
+  # C++ kernel still reads /joint_states at full rate.
+  joint_states_topic: /openral_hal_openarm/joint_states
 
   # FALSE until `openral calibrate camera` has run on this cell.
   #

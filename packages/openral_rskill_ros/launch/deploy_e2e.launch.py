@@ -1515,7 +1515,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # Attach the WorldCloudBridge → dashboard world.pointcloud when a
                 # voxel cloud exists: octomap's centers, or (mono visual SLAM)
                 # nvblox's ESDF cloud so the card shows the vision-built voxels.
-                "enable_world_cloud_bridge": enable_octomap or bool(slam_mono_camera),
+                # Dashboard-only (PNG + `world.pointcloud` span per cloud): with the
+                # dashboard off it still cost the runner's executor a Python
+                # deserialize of every octomap cloud, so it is gated on it.
+                "enable_world_cloud_bridge": (enable_octomap or bool(slam_mono_camera))
+                and enable_dashboard,
                 "world_cloud_topic": (
                     "/openral_nvblox/static_esdf_pointcloud"
                     if (slam_mono_camera and not enable_octomap)
