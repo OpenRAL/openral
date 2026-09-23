@@ -66,11 +66,6 @@ _SKIP_REASON = unavailable() or (
 )
 pytestmark = pytest.mark.skipif(_SKIP_REASON is not None, reason=str(_SKIP_REASON))
 
-#: Every ros2_control `hal.real` adapter, by manifest directory, with its declared policy.
-#: The fleet conformance test (`tests/unit/test_real_hal_estop_fleet_conformance.py`) is what
-#: keeps this list honest: a new ros2_control real HAL fails there until it is added here.
-_ADAPTERS = ["ur5e", "ur10e", "franka_panda", "sawyer", "openarm"]
-
 _STOP_TIMEOUT_S = 10.0
 
 
@@ -81,6 +76,29 @@ def _real_hal(robot: str) -> Any:
 
     desc = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / robot / "robot.yaml"))
     return build_hal(desc, mode="real", transport={"require_can_links": False})
+
+
+def _ros2_control_adapters() -> list[str]:
+    """Every ros2_control `hal.real` adapter, by manifest directory — derived, never hand-kept.
+
+    Same discovery as `tests/unit/test_real_hal_estop_fleet_conformance.py`: each
+    `robots/*/robot.yaml` with `hal.real` set is built through the production `build_hal`
+    seam, and the ones the lifecycle node would drive over ros2_control (`RosControlDrivable`)
+    are the ones this file must prove. A new ros2_control robot lands here by existing.
+    """
+    from openral_core import RobotDescription
+    from openral_hal.ros_control_transport import RosControlDrivable
+
+    out: list[str] = []
+    for path in sorted(_REPO_ROOT.glob("robots/*/robot.yaml")):
+        if not RobotDescription.from_yaml(str(path)).hal.real:
+            continue
+        if isinstance(_real_hal(path.parent.name), RosControlDrivable):
+            out.append(path.parent.name)
+    return out
+
+
+_ADAPTERS = _ros2_control_adapters()
 
 
 def _controller_joints(hal: Any) -> dict[str, list[str]]:
