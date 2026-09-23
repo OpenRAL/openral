@@ -360,8 +360,11 @@ OPENARM_DESCRIPTION = RobotDescription(
                 # sim (derived MujocoArmHAL)
                 "settle_steps": 4,
                 "gravity_enabled": False,
-                # both
-                "staleness_limit_s": 0.5,
+                # both — three control periods at 30 Hz; measured on Thor
+                # 2026-09-23 with tools/joint_state_staleness_probe.py (worst
+                # observed callback latency 43 ms under GIL starvation). Mirrors
+                # the YAML, which carries the full measurement.
+                "staleness_limit_s": 0.1,
                 # real (OpenArmRealHAL) — udev-pinned SocketCAN names and the
                 # four bimanual controllers openarm_bringup spawns. The two
                 # interface names are defaults only: `openral detect`

@@ -384,7 +384,16 @@ hal:
       settle_steps: 4
       gravity_enabled: false
       # ── both ────────────────────────────────────────────────────────
-      staleness_limit_s: 0.5
+      # Max age of a read_state() reading before ROSPerceptionStale. Three
+      # control periods at 30 Hz. Measured on Thor 2026-09-23 with
+      # tools/joint_state_staleness_probe.py (750 Hz JointState over the
+      # production Fast-DDS path into RosControlTransport): idle callback gap
+      # p99.9 2.6 ms / max 4.6 ms, read-side age max 32 ms; under deliberate
+      # GIL starvation gap max 24 ms, stamp->callback latency max 43 ms, no gap
+      # above 33 ms. 0.1 s is >2x the worst observed and catches a dead bus
+      # within three ticks instead of fifteen. Confirm on an attended run: a
+      # spurious trip shows as ROSPerceptionStale in the runner log.
+      staleness_limit_s: 0.1
       # ── real (OpenArmRealHAL) ───────────────────────────────────────
       # SocketCAN interface names. The OpenArm Jetson provisioning pins
       # these with a udev rule keyed on the PEAK adapter's per-channel
