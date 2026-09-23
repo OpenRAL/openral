@@ -285,10 +285,12 @@ def _import_transformers() -> tuple[Any, Any, Any]:
         import transformers
         from transformers import AutoProcessor, BitsAndBytesConfig
     except ImportError as exc:  # pragma: no cover - opt-in dependency
+        from openral_sim.policy_deps import model_family_install_hint
+
         raise ROSConfigError(
             "OpenVLA adapter requires transformers (custom-code model loaded via "
-            "AutoModelForVision2Seq + trust_remote_code). Install with: "
-            f"just sync --all-packages --group simpler-env (underlying: {exc!r})"
+            "AutoModelForVision2Seq + trust_remote_code). "
+            f"{model_family_install_hint('openvla')} (underlying: {exc!r})"
         ) from exc
     auto_model_cls: Any = getattr(transformers, "AutoModelForVision2Seq", None)
     if auto_model_cls is None:
