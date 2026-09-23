@@ -388,10 +388,9 @@ On-disk + runtime contracts for the hardware inference runner (`openral deploy -
 - `class DeadlineOverrunPolicy(str, Enum)` — Behaviour when a tick exceeds `1 / rate_hz`. (L9589)
   `WARN, DROP, RAISE`
 - `class SensorReaderConfig(BaseModel)` — Per-sensor reader backend plus optional ROS-tee. (L9603)
-  - `model_post_init(self, _context: object) -> None` — Cross-field validation for the ROS tee. (L9654)
-- `class SensorDeployBinding(BaseModel)` — Optional `SensorSpec.deploy_binding` payload letting `openral deploy run` open the physical camera; the runtime counterpart of `sim_placement`. (L9669)
   fields: `sensor_id, backend, backend_params, max_age_ms, publish_to_ros, publish_topic, publish_rate_hz`
-  - `model_post_init(_context: object) -> None` — Cross-field validation: `publish_to_ros ↔ publish_topic`. (L3635)
+  - `model_post_init(self, _context: object) -> None` — Cross-field validation for the ROS tee: `publish_to_ros ↔ publish_topic`. (L9654)
+- `class SensorDeployBinding(BaseModel)` — Optional `SensorSpec.deploy_binding` payload letting `openral deploy run` open the physical camera; the runtime counterpart of `sim_placement`. (L9669)
 - `class HalConfig(BaseModel)` — Which HAL adapter to instantiate plus transport params (serial port / FCI URI / ROS namespace). (L9722)
   fields: `adapter, transport, params`
 - `class TickResult(BaseModel)` — One tick's record returned by `InferenceRunner.tick`; optional sim-only fields and trace context default to `None` so hardware ticks serialize unchanged from v1. (L9755)
