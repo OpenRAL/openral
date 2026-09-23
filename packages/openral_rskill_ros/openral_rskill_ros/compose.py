@@ -20,7 +20,7 @@ entry point or a test ``trigger_configure`` sequence) configures + activates aft
 from __future__ import annotations
 
 import pathlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -28,6 +28,7 @@ from openral_core import RobotDescription
 from openral_world_state import WorldStateAggregator
 
 if TYPE_CHECKING:
+    from openral_core import SensorSpec
     from openral_world_state_ros.lifecycle_node import _WorldStateLifecycleNode
 
     from openral_rskill_ros.rskill_runner_node import RskillRunnerNode, SkillResolver
@@ -128,6 +129,7 @@ def compose_runtime(
     dataset_license: str = "CC-BY-4.0",
     dataset_fps: float | None = None,
     image_staleness_limit_s: float | None = None,
+    deploy_sensors: Sequence[SensorSpec] = (),
 ) -> ComposedRuntime:
     """Build the composed world_state + skill_runner runtime for any robot.
 
@@ -171,6 +173,14 @@ def compose_runtime(
             ``action_spec.control_freq_hz`` or 30.0.
         image_staleness_limit_s: Camera-specific freshness window for the shared world-state
             aggregator. ``None`` keeps its general default.
+        deploy_sensors: A ``DeployScene``'s ``sensors:`` block, merged into the robot
+            manifest's sensors (``merge_deploy_sensors``: scene fields win per name, scene-only
+            sensors appended) before anything is built from the description. The scene is
+            where a cell says what its cameras *are* — a ``vla_feature_key`` naming the
+            checkpoint's view — so every consumer of this one description (the runner's
+            camera slots, the dataset recorder, world state) must see it. Merging only for
+            the sensor readers fed the policy a camera it then filed under the manifest's
+            key, and lerobot replaced the view it was trained on with a masked blank.
 
     Returns:
         A ``ComposedRuntime`` bundle. The caller attaches both nodes to a single
@@ -185,6 +195,12 @@ def compose_runtime(
     from openral_rskill_ros.rskill_runner_node import RskillRunnerNode
 
     description = RobotDescription.from_yaml(str(robot_yaml))
+    if deploy_sensors:
+        from openral_rskill_ros.sensor_leg import merge_deploy_sensors
+
+        description = description.model_copy(
+            update={"sensors": merge_deploy_sensors(description.sensors, deploy_sensors)}
+        )
     aggregator = WorldStateAggregator(
         description,
         image_staleness_limit_s=image_staleness_limit_s,

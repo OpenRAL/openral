@@ -270,9 +270,24 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
             tf_lookup_getter=lambda: getattr(skill_runner_node, "_tf_lookup", None),
         )
 
+    # Real deploys: the scene is loaded before composing because its
+    # ``sensors:`` block is part of the robot description every composed
+    # consumer reads (see ``compose_runtime(deploy_sensors=...)``).
+    scene = None
+    if deploy_config:
+        from openral_core import DeployScene
+
+        try:
+            scene = DeployScene.from_yaml(deploy_config)
+        except Exception as exc:  # surface as exit code, not stack trace
+            print(f"runtime_node: deploy_config failed to load: {exc!s}", file=sys.stderr)
+            rclpy.try_shutdown()
+            return 6
+
     try:
         runtime = compose_runtime(
             robot_yaml,
+            deploy_sensors=scene.sensors if scene is not None else (),
             skill_resolver_factory=_build_resolver,
             enable_world_cloud_bridge=enable_world_cloud_bridge,
             world_cloud_topic=world_cloud_topic,
@@ -308,18 +323,15 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
     # images and fold blind (same failure class the safety-kernel
     # autostart guards against).
     sensor_leg = None
-    if deploy_config:
-        from openral_core import DeployScene
+    if scene is not None:
         from openral_rskill_ros.sensor_leg import (
             apply_launch_overrides,
-            merge_deploy_sensors,
             open_deploy_sensor_readers,
             slam_camera_names,
             topic_frame_size,
         )
 
         try:
-            scene = DeployScene.from_yaml(deploy_config)
             # The scene's raw runtime block can say None ("auto") where the
             # launch already resolved on/off — fold the launch's answer over
             # it so the rate/resolution exemptions match the consumers that
@@ -331,9 +343,10 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
                 slam_stereo_cameras=resolved_slam_stereo_cameras,
                 slam_mono_camera=resolved_slam_mono_camera,
             )
-            # Robot-manifest ∪ scene sensors (scene wins on name collision —
-            # a same-named scene entry is that robot sensor's deploy binding);
-            # the leg opens only those carrying a `deploy_binding`. The shared
+            # ``runtime.description.sensors`` is already robot-manifest ∪ scene
+            # sensors (merged in ``compose_runtime``; scene wins on name
+            # collision — a same-named scene entry is that robot sensor's deploy
+            # binding); the leg opens only those carrying a `deploy_binding`. The shared
             # aggregator gets frames straight from the readers (the
             # zero-copy vision path — zero-copy NVMM handles survive; no intra-process ROS
             # round trip on the policy leg).
@@ -342,7 +355,7 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
             # publisher's rate cap automatically — derived from the scene, not
             # from a per-binding flag somebody has to remember (§1.4).
             sensor_leg = open_deploy_sensor_readers(
-                merge_deploy_sensors(runtime.description.sensors, scene.sensors),
+                runtime.description.sensors,
                 aggregator=runtime.aggregator,
                 ros_node=runtime.world_state_node,
                 uncapped_sensors=slam_camera_names(effective_runtime),
