@@ -168,3 +168,29 @@ def test_deploy_validate_ready_with_committed_calibration(tmp_path: Path) -> Non
     result = CliRunner().invoke(app, ["deploy", "validate", "--config", str(config)])
     assert result.exit_code == 0, result.output
     assert "ready" in result.output.lower()
+
+
+def test_sim_mode_forwards_deploy_config_for_boot_timeout() -> None:
+    """`deploy sim` forwards its --config path as `deploy_config` too.
+
+    It used to be appended only on `hal_mode == "real"`, so on the sim path the
+    launch's `hal_transition_timeout_s("")` fell back to the 300 s floor and a
+    scene's `backend_options.boot_timeout_s` (1200 s for a cold Isaac Sim boot)
+    was silently ignored. The real-only camera leg is gated on `hal_mode` inside
+    the launch instead. Drives the real CLI on a real shipped scene (--dry-run
+    prints the launch argv without shelling ros2).
+    """
+    from openral_hal.sim_bringup import (
+        HAL_TRANSITION_TIMEOUT_FLOOR_S,
+        hal_transition_timeout_s,
+    )
+
+    config = (Path(__file__).resolve().parents[2] / "scenes/deploy/isaac_franka.yaml").resolve()
+    result = CliRunner(env={"COLUMNS": "100000"}).invoke(
+        app, ["deploy", "sim", "--config", str(config), "--dry-run"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert f"deploy_config:={config}" in result.output
+    # ...and what the launch derives from it is the scene's budget, not the floor.
+    assert float(hal_transition_timeout_s(str(config))) > HAL_TRANSITION_TIMEOUT_FLOOR_S
