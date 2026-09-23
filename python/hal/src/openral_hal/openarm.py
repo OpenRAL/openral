@@ -65,6 +65,7 @@ Example:
 
 from __future__ import annotations
 
+from openral_core.exceptions import ROSRuntimeError
 from openral_core.schemas import (
     Action,
     AssetRefs,
@@ -521,6 +522,21 @@ class OpenArmMujocoHAL(MujocoArmHAL):
         one. Everything else goes straight to ``MujocoArmHAL.send_action``.
         """
         if int(action.tick_group_size) > 1:
+            # Same gate a whole-robot action meets in ``MujocoArmHAL.send_action``:
+            # an incomplete group returns before reaching it, so without this a
+            # disconnected twin reported success and kept the slot.
+            self._require_connected("send_action")
+            tick = int(action.tick_index)
+            if 0 < tick <= self._last_committed_tick:
+                # The stager only guards the tick in flight. A whole group of
+                # an already-committed tick would otherwise replay stale
+                # targets, and the lifecycle node's monotonic acknowledgement
+                # would hide it. Ticks are process-monotonic in the runner;
+                # ``disconnect`` resets the counter for a fresh numbering.
+                raise ROSRuntimeError(
+                    f"stale slot group: tick {tick} is not after the last committed "
+                    f"tick {self._last_committed_tick}; refusing to replay it."
+                )
             group = self._slot_group.stage(action)
             if group is None:
                 return
@@ -540,8 +556,9 @@ class OpenArmMujocoHAL(MujocoArmHAL):
         super().send_action(action)
 
     def disconnect(self) -> None:
-        """Drop any half-staged tick before releasing the twin."""
+        """Drop any half-staged tick before releasing the twin; tick numbering restarts."""
         self._slot_group.reset()
+        self._last_committed_tick = 0
         super().disconnect()
 
     def estop(self) -> None:

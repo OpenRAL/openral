@@ -731,14 +731,11 @@ hil-so101:
 hil-openarm-deploy:
     #!/usr/bin/env bash
     set -uo pipefail
+    # Off-rig the module skips itself (CAN links down -> pytest exit 0 with
+    # skips), so every non-zero status is a real failure: a usage error (4)
+    # or an empty collection (5) says nothing about the hardware.
     OPENARM_DEPLOY_HIL=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
         uv run pytest -q -rs tests/hil/test_openarm_deploy.py
-    status=$?
-    if [[ $status -eq 4 || $status -eq 5 ]]; then
-        echo "SKIPPED: no OpenArm on this host (openarm_left / openarm_right CAN links are not up)."
-        exit 0
-    fi
-    exit $status
 
 # Docs serve
 docs:

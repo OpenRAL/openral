@@ -94,7 +94,11 @@ def decode_inline_frame(frame: SensorFrame) -> np.ndarray[Any, Any] | None:
     1843200`` while the policy only ever wanted the RGB slots next to it.
 
     Returns ``None`` for a frame with no inline pixels (topic / handle
-    delivery) or an encoding that is not a raw pixel run.
+    delivery), an encoding that is not a raw pixel run, or a payload whose
+    byte count is not exactly ``height * width * channels * itemsize`` (a
+    truncated or row-padded frame): ``SensorFrame`` validates the dimensions
+    but not the payload length, and ``reshape`` would raise on the mismatch
+    instead of letting the recorder skip the frame.
     """
     data = frame.data
     if data is None:
@@ -102,9 +106,10 @@ def decode_inline_frame(frame: SensorFrame) -> np.ndarray[Any, Any] | None:
     dtype = _INLINE_FRAME_DTYPES.get(frame.encoding)
     if dtype is None:
         return None
-    return np.frombuffer(data, dtype=dtype).reshape(
-        int(frame.height), int(frame.width), int(frame.channels)
-    )
+    shape = (int(frame.height), int(frame.width), int(frame.channels))
+    if len(data) != shape[0] * shape[1] * shape[2] * np.dtype(dtype).itemsize:
+        return None
+    return np.frombuffer(data, dtype=dtype).reshape(shape)
 
 
 class DatasetRecorderBridge:

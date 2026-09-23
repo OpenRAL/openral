@@ -148,7 +148,11 @@ camera and nothing else — which is exactly what `openral detect` reports.
 Bind those streams with the `ros2_image` backend — and let the scene start the
 driver, so there is no second terminal to forget. This is the recipe verified on
 the OpenArm bench (`scenes/deploy/openarm_bench.yaml`, ZED-M, SDK 5.4.1) and it
-is not OpenArm-specific: any cell with a ZED bolted to the robot uses it as is.
+is not OpenArm-specific: a cell with a ZED-M bolted to the robot, launched under
+the wrapper's default `zed` camera name and `zed_node` node name, uses it as is.
+Another ZED model changes `camera_model` and needs its own override file (the
+ZED-M one pins settings for its USB hub and IMU); a different camera or node
+name changes the `/zed/zed_node/...` topic root on every binding below.
 
 ```yaml
 # The scene launches zed_wrapper itself (real path only; `deploy sim` renders).

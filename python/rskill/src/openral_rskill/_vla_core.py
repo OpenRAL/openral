@@ -1470,13 +1470,17 @@ def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = No
     # tensor after preprocessing for exactly this reason; the warm-up has to
     # do the same or it warms nothing, and tick 1 pays the cold start (15.3 s
     # measured on a Jetson AGX Orin against a 600 ms budget, 2026-09-22).
-    device_kind = device.split(":", 1)[0]
+    # Full identity, not the kind prefix: a tensor on ``cuda:1`` is not on
+    # ``cuda:0``, and the forward raises on mixed GPUs exactly as on CPU/GPU.
+    target_device = torch.device(device)
+    if target_device.type == "cuda" and target_device.index is None:
+        target_device = torch.device("cuda", torch.cuda.current_device())
     input_dtype = getattr(adapter, "_input_dtype", None)
     for key, original in list(batch.items()):
         moved = original
         value_device = getattr(moved, "device", None)
-        if value_device is not None and not str(value_device).startswith(device_kind):
-            moved = moved.to(device)
+        if value_device is not None and value_device != target_device:
+            moved = moved.to(target_device)
         value_dtype = getattr(moved, "dtype", None)
         if (
             input_dtype is not None

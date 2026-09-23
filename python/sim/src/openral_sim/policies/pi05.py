@@ -386,7 +386,9 @@ def _init_rope_and_position_buffers(policy: Any, *, torch: Any) -> None:
         )
 
 
-def _stream_bf16_state_to_device(policy: Any, repo_id: str, *, device: str, torch: Any) -> None:
+def _stream_bf16_state_to_device(
+    policy: Any, repo_id: str, *, device: str, torch: Any, revision: str | None = None
+) -> None:
     """Copy ``<repo>/model.safetensors`` tensor-by-tensor into a policy already on ``device``.
 
     The bf16 fast meta-init path's substitute for lerobot's
@@ -395,11 +397,14 @@ def _stream_bf16_state_to_device(policy: Any, repo_id: str, *, device: str, torc
     347 s idle and 666 s under a live graph on a Jetson AGX Orin (2026-09-22),
     whose cores have no native bf16. Here the policy is built on meta,
     allocated straight on ``device`` by ``to_empty``, and each tensor is read
-    by ``safe_open(..., device=device)`` and ``copy_``-ed into its parameter,
-    so the peak is one model plus one tensor — never the 2x of a full
-    ``load_state_dict`` from a device-side dict. Tied parameters were tied by
-    ``_tie_transformers_weights`` before this runs, so writing one storage
-    writes both. Logs ``missing`` / ``unexpected`` key counts like the int8 path.
+    on the CPU and ``copy_``-ed into its parameter (the copy moves and casts),
+    so the device peak is one model — never the 2x of a full
+    ``load_state_dict`` from a device-side dict, and never a source-dtype
+    temporary on the GPU (an fp32 checkpoint's 256k x 2048 embedding is 2 GiB
+    on its own). Tied parameters were tied by ``_tie_transformers_weights``
+    before this runs; ``named_parameters(remove_duplicate=False)`` keeps every
+    alias name so a checkpoint may carry either spelling of a tied weight.
+    Logs ``missing`` / ``unexpected`` key counts like the int8 path.
     """
     from openral_sim._quantization import resolve_weights_file
 
@@ -410,13 +415,13 @@ def _stream_bf16_state_to_device(policy: Any, repo_id: str, *, device: str, torc
             "bf16 fast meta-init requires safetensors; install with: "
             "just sync --all-packages --group sim"
         ) from exc
-    weights_path = resolve_weights_file(repo_id)
-    targets: dict[str, Any] = dict(policy.named_parameters())
-    targets.update(dict(policy.named_buffers()))
+    weights_path = resolve_weights_file(repo_id, revision=revision)
+    targets: dict[str, Any] = dict(policy.named_parameters(remove_duplicate=False))
+    targets.update(dict(policy.named_buffers(remove_duplicate=False)))
     loaded = 0
     unexpected: list[str] = []
     # reason: safetensors ships no type stubs for safe_open
-    with torch.no_grad(), safe_open(weights_path, framework="pt", device=device) as f:  # type: ignore[no-untyped-call]
+    with torch.no_grad(), safe_open(weights_path, framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]
         file_keys = list(f.keys())
         for key in file_keys:
             target = targets.get(key)
@@ -438,7 +443,9 @@ def _stream_bf16_state_to_device(policy: Any, repo_id: str, *, device: str, torc
     )
 
 
-def _load_bf16_state_for_int8(policy: Any, repo_id: str, *, torch: Any) -> None:
+def _load_bf16_state_for_int8(
+    policy: Any, repo_id: str, *, torch: Any, revision: str | None = None
+) -> None:
     """Download ``<repo>/model.safetensors`` and apply via ``load_state_dict``.
 
     The int8 fast meta-init path's substitute for lerobot's slow
@@ -468,7 +475,7 @@ def _load_bf16_state_for_int8(policy: Any, repo_id: str, *, torch: Any) -> None:
     # Directory-aware: a local snapshot never re-resolves through the HF cache.
     from openral_sim._quantization import resolve_weights_file
 
-    weights_path = resolve_weights_file(repo_id)
+    weights_path = resolve_weights_file(repo_id, revision=revision)
     state = load_file(weights_path, device="cpu")
     missing, unexpected = policy.load_state_dict(state, strict=False)
     _log.info(
@@ -784,7 +791,7 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             with _pi05_phase("init_buffers"), torch.no_grad():
                 _init_rope_and_position_buffers(policy, torch=torch)
             with _pi05_phase("bf16_state_load", repo=repo_id):
-                _load_bf16_state_for_int8(policy, repo_id, torch=torch)
+                _load_bf16_state_for_int8(policy, repo_id, torch=torch, revision=revision)
             # `to_empty` above stripped the `Int8Params` subclass from
             # every `Linear8bitLt.weight`; re-wrap so `policy.to(<cuda>)`
             # dispatches through `Int8Params.cuda` (bf16->int8 pack)
@@ -829,7 +836,9 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
         with _pi05_phase("init_buffers"), torch.no_grad():
             _init_rope_and_position_buffers(policy, torch=torch)
         with _pi05_phase("bf16_state_stream", repo=repo_id, device=device):
-            _stream_bf16_state_to_device(policy, repo_id, device=device, torch=torch)
+            _stream_bf16_state_to_device(
+                policy, repo_id, device=device, torch=torch, revision=revision
+            )
     else:
         # Cast on CPU first, then move to GPU. Doing both in one .to() loads
         # each parameter onto CUDA in fp32 before the dtype conversion, which
