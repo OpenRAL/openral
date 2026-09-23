@@ -15,7 +15,7 @@ This package ships what that node cannot: `launch/real_bringup.launch.py`,
 
 The real arm is reached through `openarm_bringup`'s own `ros2_control` stack:
 on hardware the `controller_manager` and the C++ `openarm_hardware`
-SystemInterface own the 400 Hz loop, and the HAL node only publishes to their
+SystemInterface own the 750 Hz loop (`update_rate: 750` in `openarm_bimanual_controllers.yaml` at the pinned SHA), and the HAL node only publishes to their
 controllers.
 
 ## Real-hardware bringup
