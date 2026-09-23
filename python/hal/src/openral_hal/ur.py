@@ -26,6 +26,8 @@ from __future__ import annotations
 import math
 
 from openral_core.schemas import (
+    ActionRepresentation,
+    ActionSpec,
     AssetRefs,
     ControlMode,
     EmbodimentKind,
@@ -182,6 +184,14 @@ UR5e_DESCRIPTION = RobotDescription(
         deadman_required=True,
     ),
     sdk_kind="open",
+    # Control rate: the runner ticks at it and the real HAL sets every
+    # trajectory point's time_from_start from it (issue #303). Required for a
+    # ros2_control HAL to construct.
+    action_spec=ActionSpec(
+        dim=6,
+        representation=ActionRepresentation.JOINT_POSITIONS,
+        control_freq_hz=30.0,
+    ),
     hal=HalEntrypoints(sim=None, real="openral_hal.ur_real:UR5eRealHAL"),
     assets=AssetRefs(
         urdf=UrdfAsset(
@@ -226,6 +236,14 @@ UR10e_DESCRIPTION = RobotDescription(
         deadman_required=True,
     ),
     sdk_kind="open",
+    # Control rate: the runner ticks at it and the real HAL sets every
+    # trajectory point's time_from_start from it (issue #303). Required for a
+    # ros2_control HAL to construct.
+    action_spec=ActionSpec(
+        dim=6,
+        representation=ActionRepresentation.JOINT_POSITIONS,
+        control_freq_hz=30.0,
+    ),
     hal=HalEntrypoints(sim=None, real="openral_hal.ur_real:UR10eRealHAL"),
     assets=AssetRefs(
         urdf=UrdfAsset(

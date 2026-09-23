@@ -375,14 +375,29 @@ class RosControlTransport:
             JointTrajectoryPoint,
         )
 
+        # Every row of the chunk becomes a point, evenly spaced up to the
+        # chunk's deadline, so the controller interpolates through the chunk's
+        # shape rather than driving a straight line to its last row. A
+        # single-row tick (what the chunked executor emits) is one point at
+        # one control period. Rows are validated against the final one above:
+        # a ragged chunk is a HAL bug, not something to publish partially.
+        total_s = self._time_from_start_s(msg, topic)
         traj = JointTrajectory()
         traj.joint_names = names
-        point = JointTrajectoryPoint()
-        point.positions = [float(v) for v in last_step]
-        seconds = self._time_from_start_s(msg)
-        point.time_from_start.sec = int(seconds)
-        point.time_from_start.nanosec = int((seconds - int(seconds)) * 1e9)
-        traj.points.append(point)
+        step_s = total_s / len(targets)
+        for i, row in enumerate(targets, start=1):
+            if not isinstance(row, list) or len(row) != len(names):
+                raise ROSConfigError(
+                    f"RosControlTransport: {topic!r} chunk row {i - 1} has "
+                    f"{len(row) if isinstance(row, list) else 'a non-list'} value(s) "
+                    f"for {len(names)} joint(s)."
+                )
+            point = JointTrajectoryPoint()
+            point.positions = [float(v) for v in row]
+            seconds = step_s * i
+            point.time_from_start.sec = int(seconds)
+            point.time_from_start.nanosec = int((seconds - int(seconds)) * 1e9)
+            traj.points.append(point)
         publisher.publish(traj)
 
     def state(self) -> dict[str, object]:
@@ -572,18 +587,30 @@ class RosControlTransport:
 
     # ── Internals ─────────────────────────────────────────────────────────────
 
-    def _time_from_start_s(self, msg: dict[str, object]) -> float:
-        """Deadline for the published point.
+    def _time_from_start_s(self, msg: dict[str, object], topic: str) -> float:
+        """Deadline of the chunk's last point, as the HAL supplied it.
 
-        Taken from the action's own `chunk_dt * horizon` when the HAL supplies
-        it, because the controller's speed is `(target - measured) / deadline`
-        — a deadline shorter than the chunk it represents asks the arm to cover
-        the whole chunk in one step.
+        The HAL derives it from the manifest's ``action_spec.control_freq_hz``
+        (``horizon / rate``); the controller's speed is
+        ``(target - measured) / deadline``, so a wrong deadline is a wrong
+        speed. There is deliberately no fallback: a 100 ms constant once lived
+        here and asked a 30 Hz stream to cover each step in a third of its
+        period (issue #303). A command without a deadline is refused.
+
+        Raises:
+            ROSConfigError: If the message carries no positive `time_from_start_s`.
         """
+        from openral_core.exceptions import ROSConfigError  # noqa: PLC0415
+
         raw = msg.get("time_from_start_s")
         if isinstance(raw, int | float) and float(raw) > 0.0:
             return float(raw)
-        return _DEFAULT_TIME_FROM_START_S
+        raise ROSConfigError(
+            f"RosControlTransport: the command for {topic!r} carries no positive "
+            f"'time_from_start_s' (got {raw!r}). A JointTrajectory without a deadline "
+            "would be driven at an arbitrary speed; the HAL derives it from the "
+            "manifest's action_spec.control_freq_hz, so declare that field."
+        )
 
     def _on_joint_state(self, msg: Any) -> None:  # noqa: ANN401  # reason: duck-typed sensor_msgs/JointState keeps this module ROS-free at import
         """Merge one `sensor_msgs/JointState` into the cache, by name."""
@@ -598,13 +625,6 @@ class RosControlTransport:
                 efforts[i] if i < len(efforts) else 0.0,
             )
         self._last_arrival = time.monotonic()
-
-
-#: Fallback trajectory deadline for a manifest with no `action_spec.control_freq_hz`.
-#: A `RosControlHAL` that knows its rate sends `time_from_start_s` per message
-#: instead (issue #303: at 30 Hz this 100 ms default re-plans a steep segment
-#: every 33 ms and amplifies each step between consecutive targets).
-_DEFAULT_TIME_FROM_START_S = 0.1
 
 
 def _left(deadline: float) -> float:

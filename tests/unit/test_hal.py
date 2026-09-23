@@ -16,6 +16,7 @@ import time
 import pytest
 from openral_core import (
     Action,
+    ActionSpec,
     ControlMode,
     EmbodimentKind,
     JointSpec,
@@ -59,6 +60,8 @@ def _make_description(
             ),
         ),
         safety=SafetyEnvelope(),
+        # A ros2_control HAL refuses a manifest without a control rate (#303).
+        action_spec=ActionSpec(dim=len(joints), control_freq_hz=30.0),
     )
 
 

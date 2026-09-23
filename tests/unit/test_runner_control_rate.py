@@ -33,8 +33,15 @@ def test_an_explicit_param_overrides_the_manifest() -> None:
     assert runner.resolve_control_rate_hz(15.0, desc) == 15.0
 
 
-def test_a_manifest_without_a_control_rate_falls_back_to_30_hz() -> None:
+def test_a_manifest_without_a_control_rate_is_reported_not_guessed() -> None:
     desc = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
     rateless = desc.model_copy(update={"action_spec": None})
-    assert runner.resolve_control_rate_hz(0.0, rateless) == 30.0
-    assert runner.resolve_control_rate_hz(0.0, None) == 30.0
+    assert runner.resolve_control_rate_hz(0.0, rateless) is None
+    assert runner.resolve_control_rate_hz(0.0, None) is None
+
+
+@pytest.mark.parametrize("robot", ["ur5e", "ur10e", "franka_panda", "sawyer", "openarm"])
+def test_every_ros2_control_robot_declares_its_rate(robot: str) -> None:
+    """Their real HALs refuse to build without it, so the committed manifests must carry it."""
+    desc = RobotDescription.from_yaml(str(REPO_ROOT / f"robots/{robot}/robot.yaml"))
+    assert runner.resolve_control_rate_hz(0.0, desc) == 30.0

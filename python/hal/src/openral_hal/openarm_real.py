@@ -438,16 +438,19 @@ class OpenArmRealHAL(RosControlHAL):
         deadline = self.time_from_start_s(action)
         outbound: list[tuple[str, dict[str, object]]] = []
         for topic, span, names in self._command_groups:
-            msg: dict[str, object] = {
-                "control_mode": action.control_mode,
-                "horizon": action.horizon,
-                "joint_names": names,
-                "joint_targets": [list(step[span]) for step in action.joint_targets],
-                "stamp_ns": action.stamp_ns,
-            }
-            if deadline is not None:
-                msg["time_from_start_s"] = deadline
-            outbound.append((topic, msg))
+            outbound.append(
+                (
+                    topic,
+                    {
+                        "control_mode": action.control_mode,
+                        "horizon": action.horizon,
+                        "joint_names": names,
+                        "joint_targets": [list(step[span]) for step in action.joint_targets],
+                        "stamp_ns": action.stamp_ns,
+                        "time_from_start_s": deadline,
+                    },
+                )
+            )
         for topic, msg in outbound:
             self._publish_fn(topic, msg)
 
