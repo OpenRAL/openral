@@ -184,12 +184,17 @@ class _XVLAAdapter:
         batch: dict[str, Any] = {"task": instruction or observation.get("task", "")}
         from openral_sim.policies._video_capture import to_input_frame
 
-        # The last present slot (LIBERO camera2 = eye-in-hand) is the preview.
+        # The last slot (LIBERO camera2 = eye-in-hand) is the preview.
         preview = None
         for slot, key in zip(self._camera_keys, self._image_keys, strict=True):
-            if slot in images:
-                preview = images[slot]
-                batch[key] = _hwc_uint8_to_bchw_float(preview)
+            if slot not in images:
+                # Skipping it would hand the processor an incomplete batch.
+                raise ROSCapabilityMismatch(
+                    f"xVLA needs camera slot {slot!r} in observation['images']; "
+                    f"got {sorted(images)}"
+                )
+            preview = images[slot]
+            batch[key] = _hwc_uint8_to_bchw_float(preview)
         if preview is not None:
             self._last_input_frame = to_input_frame(preview)
         batch["observation.images.empty_camera_0"] = torch.zeros(
