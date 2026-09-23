@@ -1258,3 +1258,28 @@ def test_preload_loads_the_skill_before_the_first_goal_and_rejects_goals_meanwhi
         # Same key → resident skill reused; no second resolve.
         _run_goal(executor, node, "openral/skill-a")
         assert len(built) == 1, "a goal matching the preload key must not reload"
+
+
+def test_preload_hands_a_safety_violation_to_the_executor() -> None:
+    """A ``ROSSafetyViolation`` raised while preloading escapes ``spin()`` (CLAUDE.md §5).
+
+    The preload runs on a worker thread. A bare re-raise there ends only that
+    thread, with a traceback on stderr and the node still accepting goals, which
+    is a silenced safety violation. The goal path lets the violation escape the
+    executor; the preload must reach the same boundary.
+    """
+    from openral_core.exceptions import ROSSafetyViolation
+
+    def _violating_resolver(*_args: Any, **_kwargs: Any) -> Any:
+        raise ROSSafetyViolation("preload tripped a safety check")
+
+    params = {"preload_rskill_id": "openral/skill-a", "preload_prompt": "drive"}
+    with _compose_harness(resolver=_violating_resolver, runner_parameters=params) as (
+        executor,
+        runtime,
+        _s,
+        _o,
+    ):
+        with pytest.raises(ROSSafetyViolation, match="preload tripped"):
+            _spin_for(executor, 3.0)
+        assert not runtime.skill_runner_node._preload_in_flight.is_set()
