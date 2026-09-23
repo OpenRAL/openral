@@ -258,9 +258,8 @@ if _ROS2_AVAILABLE:
             # Conservative speed for the kernel-checked move from the live pose to an
             # rSkill's starting_pose. The gripper channel is normalised [0, 1], so the same
             # bound treats one full jaw stroke like one radian: conservative and tunable.
-            # 0 = derive from the manifest: ramp speed is the slowest joint's
-            # `velocity_limit` scaled by `safety.max_joint_speed_factor`; the
-            # arrival tolerance is one control period of that motion. Both were
+            # 0 = the manifest's safety.starting_pose_max_joint_speed_rad_s /
+            # starting_pose_tolerance_rad, declared per robot. Both used to be
             # bare constants (0.5 rad/s, 0.05 rad) that came from nowhere.
             self.declare_parameter("starting_pose_max_delta_per_s", 0.0)
             self.declare_parameter("starting_pose_tolerance", 0.0)
@@ -1864,7 +1863,6 @@ if _ROS2_AVAILABLE:
             return resolve_starting_pose_ramp(
                 float(self.get_parameter("starting_pose_max_delta_per_s").value),
                 float(self.get_parameter("starting_pose_tolerance").value),
-                self._control_rate_hz(),
                 self._description,
             )
 
@@ -2577,55 +2575,48 @@ def resolve_control_rate_hz(param_hz: float, description: RobotDescription | Non
 def resolve_starting_pose_ramp(
     param_max_delta_per_s: float,
     param_tolerance_rad: float,
-    rate_hz: float,
     description: RobotDescription | None,
 ) -> tuple[float, float]:
     """Ramp speed and arrival tolerance for the move to a skill's starting pose.
 
-    An explicit positive param wins. Otherwise both come from the manifest, so
-    no constant is invented: the speed is the slowest joint's ``velocity_limit``
-    scaled by ``safety.max_joint_speed_factor`` (the same cap the kernel
-    applies), and the tolerance is the distance that speed covers in one
-    control period — "arrived" means within one tick of the target.
+    An explicit positive param wins (the SO-100 twin tests set both). Otherwise
+    the manifest's ``safety.starting_pose_max_joint_speed_rad_s`` and
+    ``safety.starting_pose_tolerance_rad`` are used — declared per robot, never
+    derived: a rated ``velocity_limit`` is a ceiling, not an approach speed, and
+    deriving from it put the OpenArm at 2 rad/s where every attended run had
+    used 0.5 (issue #303). No constant lives here.
 
     Raises:
-        ROSConfigError: If a value must be derived and the manifest has no
-            joint with a positive ``velocity_limit``, or ``rate_hz`` is not
-            positive.
+        ROSConfigError: If a value is neither passed nor declared in the manifest.
 
     Example:
         >>> from openral_core.schemas import RobotDescription
         >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
-        >>> speed, tol = resolve_starting_pose_ramp(0.0, 0.0, 30.0, desc)
-        >>> speed > 0 and abs(tol - speed / 30.0) < 1e-12
-        True
-        >>> resolve_starting_pose_ramp(0.2, 0.01, 30.0, desc)
+        >>> resolve_starting_pose_ramp(0.0, 0.0, desc)
+        (0.5, 0.05)
+        >>> resolve_starting_pose_ramp(0.2, 0.01, desc)
         (0.2, 0.01)
     """
-    if rate_hz <= 0.0:
-        raise ROSConfigError(f"starting-pose ramp needs a positive control rate; got {rate_hz}")
-    max_delta_per_s = float(param_max_delta_per_s)
-    if max_delta_per_s <= 0.0:
-        limits = (
-            []
-            if description is None
-            else [
-                float(j.velocity_limit)
-                for j in description.joints
-                if j.velocity_limit is not None and j.velocity_limit > 0.0
-            ]
-        )
-        if not limits or description is None:
+    safety = None if description is None else description.safety
+    speed = float(param_max_delta_per_s)
+    if speed <= 0.0:
+        declared = None if safety is None else safety.starting_pose_max_joint_speed_rad_s
+        if declared is None:
             raise ROSConfigError(
-                "starting_pose_max_delta_per_s is unset and the manifest declares no joint "
-                "with a positive velocity_limit to derive it from; declare the limits or "
-                "pass the param."
+                "starting_pose_max_delta_per_s is unset and the manifest declares no "
+                "safety.starting_pose_max_joint_speed_rad_s; declare it (rad/s) or pass the param."
             )
-        max_delta_per_s = min(limits) * float(description.safety.max_joint_speed_factor)
+        speed = float(declared)
     tolerance = float(param_tolerance_rad)
     if tolerance <= 0.0:
-        tolerance = max_delta_per_s / rate_hz
-    return max_delta_per_s, tolerance
+        declared = None if safety is None else safety.starting_pose_tolerance_rad
+        if declared is None:
+            raise ROSConfigError(
+                "starting_pose_tolerance is unset and the manifest declares no "
+                "safety.starting_pose_tolerance_rad; declare it (rad) or pass the param."
+            )
+        tolerance = float(declared)
+    return speed, tolerance
 
 
 def _require_positive_param(node: Any, name: str) -> float:  # reason: rclpy Node is untyped

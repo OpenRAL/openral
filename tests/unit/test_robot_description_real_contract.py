@@ -40,6 +40,8 @@ _FULL_SAFETY = SafetyEnvelope(
     contact_force_threshold_n=30.0,
     deadman_required=True,
     self_collision_margin_m=0.0,
+    starting_pose_max_joint_speed_rad_s=0.5,
+    starting_pose_tolerance_rad=0.05,
 )
 
 
@@ -92,7 +94,9 @@ def test_a_real_manifest_survives_a_json_round_trip() -> None:
 
 
 def test_a_complete_real_manifest_is_accepted() -> None:
-    assert _description().control_rate_hz == 30.0
+    desc = _description()
+    assert desc.control_rate_hz == 30.0
+    assert desc.safety.starting_pose_max_joint_speed_rad_s == 0.5
 
 
 def test_a_sim_only_manifest_keeps_the_schema_defaults() -> None:
@@ -113,8 +117,8 @@ def test_every_gap_is_named_in_one_error() -> None:
     assert "action_spec.control_freq_hz" in message
     for name in RobotDescription.REAL_HARDWARE_SAFETY_FIELDS:
         assert f"safety.{name}" in message
-    assert "joints[j0].velocity_limit" in message
-    assert "joints[j1].velocity_limit" in message
+    assert "safety.starting_pose_max_joint_speed_rad_s" in message
+    assert "safety.starting_pose_tolerance_rad" in message
 
 
 @pytest.mark.parametrize("rate", [None, 0.0, -30.0])
@@ -142,15 +146,29 @@ def test_each_kernel_read_safety_field_must_be_declared(field: str) -> None:
 def test_an_explicit_value_equal_to_the_default_counts_as_declared() -> None:
     """What is refused is inheriting a default silently, not the number itself."""
     explicit = SafetyEnvelope(
-        **{k: getattr(SafetyEnvelope(), k) for k in RobotDescription.REAL_HARDWARE_SAFETY_FIELDS}  # type: ignore[arg-type]  # reason: mapping of the model's own fields
+        starting_pose_max_joint_speed_rad_s=0.5,
+        starting_pose_tolerance_rad=0.05,
+        **{k: getattr(SafetyEnvelope(), k) for k in RobotDescription.REAL_HARDWARE_SAFETY_FIELDS},  # type: ignore[arg-type]  # reason: mapping of the model's own fields
     )
     assert _description(safety=explicit).safety.contact_force_threshold_n == 30.0
 
 
-@pytest.mark.parametrize("limit", [None, 0.0, -1.0])
-def test_every_joint_needs_a_positive_velocity_limit(limit: float | None) -> None:
-    with pytest.raises(ValidationError, match=r"joints\[j0\]\.velocity_limit"):
-        _description(joints=_joints(velocity_limit=limit))
+@pytest.mark.parametrize(
+    "field", ["starting_pose_max_joint_speed_rad_s", "starting_pose_tolerance_rad"]
+)
+def test_the_approach_speed_and_tolerance_must_be_declared(field: str) -> None:
+    """They have no default at all: the runner refuses rather than guess an approach speed."""
+    with pytest.raises(ValidationError, match=rf"safety\.{field}"):
+        _description(safety=_FULL_SAFETY.model_copy(update={field: None}))
+    with pytest.raises(ValidationError):
+        _FULL_SAFETY.model_copy(update={field: 0.0}).model_validate(
+            _FULL_SAFETY.model_copy(update={field: 0.0}).model_dump()
+        )
+
+
+def test_joints_without_velocity_limits_are_no_longer_a_contract_failure() -> None:
+    """The limit was only ever consumed by the ramp derivation, which is gone."""
+    assert _description(joints=_joints(velocity_limit=None)).control_rate_hz == 30.0
 
 
 def test_the_contract_is_only_held_against_real_hals() -> None:
@@ -159,6 +177,6 @@ def test_the_contract_is_only_held_against_real_hals() -> None:
         hal=HalEntrypoints(sim="openral_hal.ur:UR5eMujocoHAL", real=None),
         safety=SafetyEnvelope(),
         action_spec=None,
-        joints=_joints(velocity_limit=None),
     )
     assert desc.hal.real is None
+    assert desc.safety.starting_pose_max_joint_speed_rad_s is None

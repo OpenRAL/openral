@@ -926,6 +926,16 @@ class SafetyEnvelope(BaseModel):
             safety-WG decision and must be justified against the true
             (non-convex mesh) envelope clearance, not the conservative
             primitive distance.
+        starting_pose_max_joint_speed_rad_s: Joint-space speed of the
+            skill runner's ramp from the live pose to a skill's
+            ``starting_pose``. Declared per robot, never derived: a rated
+            ``velocity_limit`` is a ceiling, not an approach speed (issue
+            #303 — deriving it put the OpenArm at 2 rad/s). ``None`` =
+            undeclared; a real robot must declare it.
+        starting_pose_tolerance_rad: Joint-space distance within which the
+            runner treats the starting pose as reached, both for the ramp
+            and for verifying arrival before the policy starts. ``None`` =
+            undeclared; a real robot must declare it.
     """
 
     workspace_box_min_xyz: tuple[float, float, float] | None = None
@@ -953,6 +963,8 @@ class SafetyEnvelope(BaseModel):
     max_base_linear_speed_m_s: float | None = None
     max_base_angular_speed_rad_s: float | None = None
     self_collision_margin_m: float = 0.0  # negative tolerates grazing
+    starting_pose_max_joint_speed_rad_s: float | None = Field(default=None, gt=0.0)
+    starting_pose_tolerance_rad: float | None = Field(default=None, gt=0.0)
 
 
 # ─── VLA observation / action specs ────────────────────────────────────────────
@@ -2153,8 +2165,9 @@ class RobotDescription(BaseModel):
         * every field in ``REAL_HARDWARE_SAFETY_FIELDS`` set explicitly in
           ``safety`` (an explicit value equal to the default is fine; what is
           refused is silently inheriting it).
-        * ``velocity_limit`` > 0 on every joint — the starting-pose ramp speed
-          is derived from it.
+        * ``safety.starting_pose_max_joint_speed_rad_s`` and
+          ``safety.starting_pose_tolerance_rad`` declared — the runner's
+          approach to a skill's starting pose has no default speed.
         """
         if not self.hal.real:
             return self
@@ -2166,9 +2179,9 @@ class RobotDescription(BaseModel):
             f"safety.{name}" for name in self.REAL_HARDWARE_SAFETY_FIELDS if name not in declared
         )
         missing.extend(
-            f"joints[{j.name}].velocity_limit (> 0)"
-            for j in self.joints
-            if j.velocity_limit is None or j.velocity_limit <= 0.0
+            f"safety.{name} (> 0)"
+            for name in ("starting_pose_max_joint_speed_rad_s", "starting_pose_tolerance_rad")
+            if getattr(self.safety, name) is None
         )
         if missing:
             raise ValueError(

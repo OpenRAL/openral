@@ -154,13 +154,12 @@ def _compose_harness(
 
     rclpy.init()
     runtime = compose_so100_runtime(skill_resolver=resolver or _local_skill_resolver)
-    if runner_parameters:
-        runtime.skill_runner_node.set_parameters(
-            [
-                rclpy.parameter.Parameter(name, value=value)
-                for name, value in runner_parameters.items()
-            ]
-        )
+    # The runner has no staleness window of its own (issue #303): production
+    # declares it in deploy_e2e.launch.py; this harness plays the launch's role.
+    parameters = {"joint_state_staleness_limit_s": 0.5, **(runner_parameters or {})}
+    runtime.skill_runner_node.set_parameters(
+        [rclpy.parameter.Parameter(name, value=value) for name, value in parameters.items()]
+    )
     safety = SafetyPassthroughNode(node_name="openral_safety_test")
     safety.set_parameters(
         [rclpy.parameter.Parameter("n_dof", value=6)],
