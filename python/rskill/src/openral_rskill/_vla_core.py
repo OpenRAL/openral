@@ -1034,6 +1034,55 @@ def hf_download_cached_first(
         )
 
 
+def local_snapshot_dir(
+    repo_id: str,
+    *,
+    revision: str | None = None,
+    ignore_patterns: list[str] | tuple[str, ...] = ("*.md",),
+    **extra: Any,
+) -> str:
+    """A local directory holding ``repo_id``'s files: the directory itself, or its Hub snapshot.
+
+    The rSkill resolver hands adapters either a Hub repo id or — for a skill
+    installed with ``openral rskill install``, whose snapshot already carries
+    ``rskill.yaml`` next to ``model.safetensors`` — that snapshot's directory
+    (``resolve_rskill_to_hf_with_revision``). ``huggingface_hub.snapshot_download``
+    validates its argument as a repo id and rejects a filesystem path, so every
+    adapter that snapshotted the resolved id broke on an installed skill: ACT,
+    Diffusion, GR00T and the processor-sidecar fallback (found on the ACT
+    LIBERO checkpoint, 2026-09-23). A directory is returned as is — it is
+    already the pinned snapshot, so ``revision`` has nothing to add — and a
+    repo id is snapshotted with ``ignore_patterns`` / ``extra`` forwarded.
+
+    Args:
+        repo_id: Hub repo id, or a local checkpoint directory.
+        revision: Optional git revision, forwarded for the repo-id case.
+        ignore_patterns: Glob patterns ``snapshot_download`` skips.
+        **extra: Forwarded verbatim to ``snapshot_download``.
+
+    Returns:
+        Absolute path of a directory containing the checkpoint files.
+
+    Example:
+        >>> import os, tempfile
+        >>> d = tempfile.mkdtemp()
+        >>> local_snapshot_dir(d) == os.path.realpath(d)
+        True
+    """
+    from pathlib import Path
+
+    candidate = Path(repo_id)
+    if candidate.is_dir():
+        return str(candidate.resolve())
+    from huggingface_hub import snapshot_download
+
+    return str(
+        snapshot_download(
+            repo_id=repo_id, revision=revision, ignore_patterns=list(ignore_patterns), **extra
+        )
+    )
+
+
 def parse_hf_file_uri(uri: str) -> tuple[str, str | None, str]:
     """Split an ``hf://owner/repo[@rev]/path/to/file`` URI into its parts.
 
