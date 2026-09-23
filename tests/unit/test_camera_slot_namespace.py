@@ -237,6 +237,11 @@ def test_xvla_batch_takes_frames_by_slot() -> None:
     assert float(batch["observation.images.image"].max()) == 0.0
     assert float(batch["observation.images.image2"].max()) == pytest.approx(1 / 255)
 
+    from openral_core.exceptions import ROSCapabilityMismatch
+
+    with pytest.raises(ROSCapabilityMismatch, match="camera2"):
+        adapter._build_raw_batch({}, {"images": _frames("camera1"), "raw": {}}, "pick")
+
 
 def test_gr00t_batch_takes_frames_by_slot() -> None:
     torch = pytest.importorskip("torch")

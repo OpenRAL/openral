@@ -228,3 +228,48 @@ def test_a_robot_without_rgb_gets_a_typed_empty_camera_list() -> None:
         if isinstance(e, Node) and getattr(e, "_Node__node_executable", None) == "runtime_node"
     )
     evaluate_parameters(ctx, runtime._Node__parameters)  # type: ignore[attr-defined]  # raises on []
+
+
+def test_the_sim_foxglove_layout_lists_the_rendered_cameras(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In sim the layout names what SimSensorBridge renders, not bound hardware cameras."""
+    pytest.importorskip("openral_foxglove_bringup.layout")
+    monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
+    scene = tmp_path / "workcell_rgb.yaml"
+    scene.write_text(
+        _SCENE_YAML
+        + """  - name: workcell_rgb
+    modality: rgb
+    frame_id: workcell_rgb_optical_frame
+    parent_frame: openarm_base
+    static_transform_xyz_rpy: [0.0, 0.3, 0.5, 0.0, 0.5, 0.0]
+    rate_hz: 15.0
+    deploy_binding: {backend: opencv_thread, backend_params: {device: 0}}
+""",
+        encoding="utf-8",
+    )
+    from launch import LaunchContext
+    from launch.actions import DeclareLaunchArgument
+
+    module = _import_launch_module()
+    ctx = LaunchContext()
+    cfg = ctx.launch_configurations
+    cfg["robot_yaml"] = str(_REPO_ROOT / "robots" / "openarm" / "robot.yaml")
+    cfg["hal_package"] = "openral_hal_node"
+    cfg["hal_executable"] = "lifecycle_node.py"
+    cfg["hal_node_name"] = "openral_hal_test"
+    cfg["hal_params_file"] = "/tmp/openral-test-hal-params.yaml"
+    for entity in module.generate_launch_description().entities:  # type: ignore[attr-defined]
+        if isinstance(entity, DeclareLaunchArgument):
+            entity.execute(ctx)
+    cfg["hal_mode"] = "sim"
+    for leg in ("slam", "nav2", "octomap", "object_detector", "dashboard"):
+        cfg[f"enable_{leg}"] = "false"
+    cfg["enable_foxglove"] = "true"
+    cfg["deploy_config"] = str(scene)
+    module.compose_runtime_graph(ctx)  # type: ignore[attr-defined]
+
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if "foxglove: ws://" in ln)
+    assert "top" in line
+    assert "workcell_rgb" not in line

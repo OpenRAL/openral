@@ -1462,11 +1462,18 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # deploy scene fixes that by binding the slot to real hardware. The
     # Foxglove layout is generated from this list rather than a hardcoded
     # default, which cannot know the scene (see `_write_foxglove_layout`).
-    bound_rgb_camera_names = [
-        s.name
-        for s in (*description.sensors, *scene_sensors)
-        if s.modality == "rgb" and getattr(s, "deploy_binding", None) is not None
-    ]
+    # In sim the publishers are SimSensorBridge's renders of the manifest's RGB
+    # sensors (deploy_binding or not) — exactly `rgb_camera_names`, which already
+    # leaves out scene-only hardware cameras there.
+    bound_rgb_camera_names = (
+        [
+            s.name
+            for s in (*description.sensors, *scene_sensors)
+            if s.modality == "rgb" and getattr(s, "deploy_binding", None) is not None
+        ]
+        if hal_mode == "real"
+        else list(rgb_camera_names)
+    )
     runtime = Node(
         package="openral_rskill_ros",
         executable="runtime_node",

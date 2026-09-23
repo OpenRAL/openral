@@ -25,6 +25,9 @@ if(BUILD_TESTING)
   ament_add_pytest_test(test_lifecycle_estop_safety test/test_lifecycle_estop_safety.py
     TIMEOUT 60
   )
+  ament_add_pytest_test(test_lifecycle_estop_real_adapters test/test_lifecycle_estop_real_adapters.py
+    TIMEOUT 60
+  )
   ament_add_pytest_test(test_real_hal_spans test/test_real_hal_spans.py
     TIMEOUT 60
   )
