@@ -203,9 +203,9 @@ class LaunchInvocation:
     """The PointCloud2 ``octomap_server`` maps, from
     ``DeployRuntime.octomap_cloud_topic``. Forwarded as
     ``octomap_cloud_topic:=<topic>`` only when the scene pins it; ``None``
-    leaves the launch default (``/openral/cameras/front_depth/points``, the
-    sim sensor bridge's back-projected depth), which no node publishes under
-    ``hal_mode:=real``."""
+    lets the launch derive ``/openral/cameras/<depth sensor>/points`` from the
+    manifest (the sim sensor bridge's back-projected depth), which no node
+    publishes under ``hal_mode:=real``."""
     clock_origin: str
     """ClockAuthority origin forwarded as ``clock_origin:=…``. Derived from
     the deployment: simulator-owned elapsed time for sim backends that expose

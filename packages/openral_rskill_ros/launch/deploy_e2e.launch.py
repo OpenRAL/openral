@@ -458,6 +458,33 @@ def _depth_points_topic(description: RobotDescription) -> str:
     return f"/openral/cameras/{name}/points" if name else ""
 
 
+def _octomap_cloud_topic(pinned: str, description: RobotDescription) -> str:
+    """The cloud ``octomap_server`` maps: the pinned topic, else the manifest's depth cloud.
+
+    A scene-pinned ``octomap_cloud_topic`` wins (a real depth driver's topic); otherwise the
+    cloud the sim sensor bridge back-projects for the first depth sensor with intrinsics. A
+    fixed default was silence on every robot whose depth camera is not named ``front_depth``.
+
+    Raises:
+        ROSConfigError: nothing pinned and the robot declares no such depth sensor — never
+            spawn octomap_server against a topic nothing publishes.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> _octomap_cloud_topic("", RobotDescription.from_yaml("robots/openarm/robot.yaml"))
+        '/openral/cameras/head_zed/points'
+    """
+    topic = pinned or _depth_points_topic(description)
+    if not topic:
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"octomap enabled but robot {description.name!r} declares no depth sensor "
+            "with intrinsics and no octomap_cloud_topic was given"
+        )
+    return topic
+
+
 def _build_driver_includes(scene_drivers: list, deploy_config: str) -> list:  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, imported lazily
     """Include the vendor sensor drivers a deploy scene declares.
 
@@ -2154,6 +2181,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     octomap_fixed_frame, octomap_base_frame = _octomap_frames(description)
 
     if enable_octomap:
+        octomap_cloud_topic = _octomap_cloud_topic(octomap_cloud_topic, description)
         # The world-collision perception leg. octomap_server builds a 3-D OcTree from the
         # HAL's depth PointCloud2 (``synthesize_depth_image`` back-projected by
         # ``points_from_depth_grid`` → ``octomap_cloud_topic``), and openral_octomap_bridge
@@ -2931,11 +2959,13 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "octomap_cloud_topic",
-            default_value="/openral/cameras/front_depth/points",
+            default_value="",
             description=(
                 "Depth PointCloud2 topic octomap_server consumes "
-                "(``cloud_in`` remap). Matches the HAL's depth publisher "
-                "for the robot's depth SensorSpec."
+                "(``cloud_in`` remap). Empty (default) derives "
+                "``/openral/cameras/<name>/points`` from the manifest's first "
+                "depth sensor with intrinsics — the sim sensor bridge's cloud. "
+                "Pin the depth driver's topic on real hardware."
             ),
         ),
         DeclareLaunchArgument(

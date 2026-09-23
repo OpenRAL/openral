@@ -1,10 +1,10 @@
 """The deploy launch derives its camera topics from the robot manifest, not from a guess.
 
-Two consumers used to keep a node-default camera name that most robots do not
+Three consumers used to keep a node-default camera name that most robots do not
 declare — the reasoner's completion camera (``top``) and the world-state
-object-lift depth fallback (``front_depth``) — so on every other robot they
-subscribed to a topic nothing publishes and silently did nothing. The launch
-now resolves both from the manifest; these tests pin that resolution on real
+object-lift depth fallback and octomap's ``cloud_in`` (``front_depth``) — so
+on every other robot they subscribed to a topic nothing publishes and silently
+did nothing. The launch now resolves them from the manifest; these tests pin that resolution on real
 manifests.
 """
 
@@ -72,7 +72,35 @@ def test_the_launch_no_longer_hardcodes_either_camera() -> None:
     assert "/openral/cameras/top/image" not in source
     assert 'reasoner_params["completion_camera_topic"]' in source
     assert '"object_depth_points_topic": _depth_points_topic(description)' in source
-    # ``octomap_cloud_topic`` keeps its documented sim default (scenes pin it on hardware);
-    # the object-lift fallback is the only ``front_depth`` literal that was silently dead.
-    # (launch-arg default + the helper's docstring example)
-    assert source.count("/openral/cameras/front_depth/points") == 2
+    assert "octomap_cloud_topic = _octomap_cloud_topic(octomap_cloud_topic, description)" in source
+    # Only the helper's docstring example names ``front_depth`` — no launch default does.
+    assert source.count("/openral/cameras/front_depth/points") == 1
+
+
+@pytest.mark.parametrize(
+    ("pinned", "robot", "topic"),
+    [
+        ("", "openarm", "/openral/cameras/head_zed/points"),  # derived: the sim bridge's cloud
+        ("", "panda_mobile", "/openral/cameras/front_depth/points"),
+        # A scene pin (a real depth driver) wins over the derivation.
+        (
+            "/zed/zed_node/point_cloud/cloud_registered",
+            "openarm",
+            "/zed/zed_node/point_cloud/cloud_registered",
+        ),
+        ("/camera/depth/color/points", "so101_follower", "/camera/depth/color/points"),
+    ],
+)
+def test_octomap_cloud_topic_prefers_the_pin_then_the_manifest(
+    launch_module: object, pinned: str, robot: str, topic: str
+) -> None:
+    got = launch_module._octomap_cloud_topic(pinned, _robot(robot))  # type: ignore[attr-defined]
+    assert got == topic
+
+
+def test_octomap_without_a_depth_cloud_fails_loud(launch_module: object) -> None:
+    """``--enable-octomap`` on a depth-less robot must not map silence behind healthy nodes."""
+    from openral_core.exceptions import ROSConfigError
+
+    with pytest.raises(ROSConfigError, match="so101_follower"):
+        launch_module._octomap_cloud_topic("", _robot("so101_follower"))  # type: ignore[attr-defined]

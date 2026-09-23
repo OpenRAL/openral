@@ -65,8 +65,8 @@ runtime:
   enable_reasoner: false
 
   enable_octomap: true
-  # Without this, octomap_server subscribes to the launch default
-  # /openral/cameras/front_depth/points — published only by the SIM sensor
+  # Without this, octomap_server subscribes to the manifest-derived
+  # /openral/cameras/head_zed/points — published only by the SIM sensor
   # bridge, so a real-camera deploy maps silence.
   octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
 

@@ -9164,11 +9164,13 @@ class DeployRuntime(BaseModel):
     octomap_cloud_topic: str | None = None
     """The ``PointCloud2`` topic ``octomap_server`` consumes as ``cloud_in``,
     i.e. what the world map is actually built from. ``None`` = the launch
-    default ``/openral/cameras/front_depth/points``, which is published by the
-    **sim** sensor bridge's depth back-projection — so a ``hal_mode:=real``
-    deploy that leaves this unset gives ``octomap_server`` no input at all and
-    the map, ``/openral/world_voxels`` and the dashboard's pointcloud card all
-    stay empty.
+    derives ``/openral/cameras/<name>/points`` from the manifest's first depth
+    sensor with intrinsics (and fails with ``ROSConfigError`` when there is
+    none). That cloud is published by the **sim** sensor bridge's depth
+    back-projection — so a ``hal_mode:=real`` deploy that leaves this unset
+    gives ``octomap_server`` no input at all and the map,
+    ``/openral/world_voxels`` and the dashboard's pointcloud card all stay
+    empty.
 
     On real hardware, set it to whatever the depth driver already publishes
     rather than adding a conversion node: ``zed_wrapper`` emits
