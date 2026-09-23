@@ -88,6 +88,7 @@ runtime:
   # mis-framed cloud becomes an E-stop rather than a bad picture (or moves a
   # real obstacle away from where it is). `openral calibrate camera` does not
   # measure that: it fits intrinsics, which the ZED SDK already supplies.
+  # The real-arm scene that does all of this is openarm_real_world_voxels.yaml.
   enable_octomap_kernel_check: false
 
   enable_slam: false

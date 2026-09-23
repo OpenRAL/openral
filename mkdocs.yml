@@ -76,6 +76,7 @@ nav:
     - Write & publish an rSkill: tutorials/rskill/write-and-publish-an-rskill.md
     - Quantize an rSkill: tutorials/rskill/quantize-an-rskill.md
     - Deploy on a robot & open the dashboard: tutorials/deploy/deploy-run-and-dashboard.md
+    - OpenArm real-cell world-voxel check: tutorials/deploy/openarm-real-world-voxel-check.md
   - Architecture:
     - Overview: architecture/overview.md
     - Repo map: architecture/repo-map.md

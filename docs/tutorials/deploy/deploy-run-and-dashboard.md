@@ -241,6 +241,11 @@ that auto-enable through the same code path as `deploy sim`). Both are
 `deploy sim` scenes, but the same fields apply unchanged under
 `hal_mode:=real`. Copy one of them; never leave it half-set.
 
+To let that map **stop** a real arm, not just draw it, see
+[`scenes/deploy/openarm_real_world_voxels.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_real_world_voxels.yaml)
+and its [attended runbook](openarm-real-world-voxel-check.md): it adds
+`enable_octomap_kernel_check: true`, the calibrated camera pose and a guarded launcher.
+
 That is deliberate reuse rather than a new node: `zed_wrapper` (and the RealSense
 and Orbbec drivers) already stereo-match and project on the GPU, so composing a
 depth-to-cloud converter would redo work the driver has done.

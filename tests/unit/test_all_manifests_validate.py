@@ -110,6 +110,7 @@ _DEPLOY_STEMS: list[str] = [
     "libero_object",
     "libero_pnp",
     "openarm_tabletop",
+    "openarm_real_world_voxels",
     "openarm_zed_octomap",
     "robocasa_baguette",
     "robocasa_deliver_straw",

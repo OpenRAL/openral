@@ -430,6 +430,10 @@ sensors:
   # EXTRINSIC below, not these intrinsics: the ZED SDK builds its cloud from
   # its own factory calibration. `openral calibrate camera` measures
   # intrinsics only (a monocular checkerboard fit) and cannot fix this pose.
+  # The real cell's measured pose overrides this one in
+  # scenes/deploy/openarm_real_world_voxels.yaml (measured and gated by
+  # tools/zed_extrinsic_check.py; runbook:
+  # docs/tutorials/deploy/openarm-real-world-voxel-check.md).
   #
   # A depth sensor with intrinsics auto-enables the octomap leg, so every
   # in-tree OpenArm scene pins `runtime.enable_octomap` explicitly and must
