@@ -46,7 +46,6 @@ _SCENE_YAML = {
             "parent_frame": "openarm_base",
             "rate_hz": 30.0,
             "encoding": "bgr8",
-            "vla_feature_key": "observation.images.context",
             "intrinsics": {"width": 672, "height": 376, "fx": 336.0, "fy": 336.0},
             "vendor": "StereoLabs",
             "model": "ZED Mini",
@@ -143,18 +142,16 @@ def test_every_rgb_camera_the_real_deploy_declares_is_also_bound(_scene: pathlib
     )
 
 
-def test_the_overridden_top_slot_keeps_the_feature_key_the_policy_was_trained_on(
+def test_the_real_top_camera_keeps_the_sim_slot(
     _scene: pathlib.Path,
 ) -> None:
-    """Renaming the slot must not rename the policy's input.
+    """Sim and real feed the policy the same slot, with no scene remap.
 
-    A real deploy scene's `top` overrides the manifest's `top` field-wise,
-    and the manifest's is the sim overhead camera carrying
-    `observation.images.base`. The policy reads by `vla_feature_key`, not by
-    sensor name, and was trained with the ZED on
-    `observation.images.context` — so letting the manifest's key survive the
-    merge would hand it an OOD base stream and an empty context stream, with
-    every node healthy and no error anywhere.
+    The manifest's `top` carries `observation.images.top` in sim, and a real
+    deploy scene overrides only the hardware fields. It must not restate the
+    key: `merge_deploy_sensors` keeps the manifest's, so the checkpoint sees
+    the ZED on the slot it saw the MuJoCo render on. A checkpoint trained on a
+    different name maps it with `image_preprocessing.aliases`, not a scene edit.
     """
     scene = yaml.safe_load(_scene.read_text(encoding="utf-8"))
     manifest = yaml.safe_load(_MANIFEST.read_text(encoding="utf-8"))
@@ -162,10 +159,8 @@ def test_the_overridden_top_slot_keeps_the_feature_key_the_policy_was_trained_on
     scene_top = next(s for s in _rgb_sensors(scene) if s["name"] == "top")
     manifest_top = next(s for s in _rgb_sensors(manifest) if s["name"] == "top")
 
-    assert scene_top["vla_feature_key"] == "observation.images.context"
-    assert manifest_top["vla_feature_key"] == "observation.images.base", (
-        "fixture moved: the sim `top` no longer carries the key this override has to shadow"
-    )
+    assert manifest_top["vla_feature_key"] == "observation.images.top"
+    assert "vla_feature_key" not in scene_top
     # `merge_deploy_sensors` copies only the fields the scene explicitly sets,
     # so anything the sim entry declares and the scene omits survives into the
     # real deploy — sim intrinsics on a ZED, for instance.

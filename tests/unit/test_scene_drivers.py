@@ -68,7 +68,6 @@ def _scene(tmp_path: pathlib.Path) -> _Scene:
             {
                 "name": "top",
                 "modality": "rgb",
-                "vla_feature_key": "observation.images.context",
                 "deploy_binding": {
                     "backend": "ros2_image",
                     "backend_params": {"topic": "/zed/zed_node/rgb/color/rect/image"},

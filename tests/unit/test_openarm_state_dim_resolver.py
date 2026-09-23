@@ -64,7 +64,7 @@ embodiment_tags: ["openarm"]
 actions: ["pick"]
 sensors_required:
   - modality: "rgb"
-    vla_feature_key: "observation.images.base"
+    vla_feature_key: "observation.images.top"
     min_width: 64
     min_height: 64
 actuators_required:
@@ -122,7 +122,7 @@ embodiment_tags: ["openarm"]
 actions: ["pick"]
 sensors_required:
   - modality: "rgb"
-    vla_feature_key: "observation.images.base"
+    vla_feature_key: "observation.images.top"
     min_width: 64
     min_height: 64
 actuators_required:

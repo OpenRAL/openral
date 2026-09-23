@@ -150,9 +150,10 @@ Bind those streams with the `ros2_image` backend:
 ```yaml
 sensors:
   # Left eye as RGB — still fine over UVC with a crop.
-  - name: context
+  # Same name as the manifest's sim `top` camera, so the scene only overrides
+  # the hardware fields and the policy keeps its `top` slot.
+  - name: top
     modality: rgb
-    vla_feature_key: "observation.images.context"
     deploy_binding:
       backend: opencv_thread
       backend_params: { device: /dev/camera_head_stereo, width: 1344, height: 376,
