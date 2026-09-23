@@ -1,0 +1,321 @@
+name: heavy-lanes
+# Opt-in dependency lanes ("heavy lanes": sim, libero, robocasa, gr00t,
+# maniskill3, …) for the tests tools/select_tests.py selects for a diff.
+# These used to run inside test-selective.yml behind the `heavy-lanes`
+# GitHub Environment's approval gate; that made the required `heavy-lanes`
+# check red or pending on nearly every PR. They now run ONLY when asked for:
+#
+#   * add the `heavy-lanes` label to the PR (every later push re-runs them
+#     while the label stays; remove it to stop), or
+#   * Actions → heavy-lanes → "Run workflow" (workflow_dispatch) on a branch.
+#
+# Otherwise `select` is skipped by its `if:` and so is everything downstream,
+# including the `heavy-lanes` gate job — a skipped job reports success to
+# required-check evaluation, so a PR that never asked for the lanes is not
+# blocked by them. The workflow itself always triggers on pull_request (no
+# paths/labels filtering at the `on:` level — a workflow skipped by
+# filtering leaves its checks "Pending" forever).
+#
+# Job graph:
+#   select ── lane (matrix, one job per opt-in dependency group) ── heavy-lanes
+#   (skipped unless requested)                                      (gate +
+#                                                                   ledger attest)
+#
+# Each lane is its own matrix job/runner/venv, so wall-clock is close to the
+# SLOWEST lane instead of the SUM of all of them, and lanes cannot
+# contaminate each other's venv. Selection is shared with test-selective.yml
+# via .github/actions/select-tests.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "diff base ref"
+        required: false
+        default: "origin/master"
+      head:
+        description: "diff head ref"
+        required: false
+        default: "HEAD"
+  pull_request:
+    branches: [master]
+    # `labeled` / `unlabeled` so adding or removing the `heavy-lanes` label
+    # starts or clears a run without a push.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  # Gate on the label being PRESENT on the PR, not on the event's own label:
+  # an unrelated label added while `heavy-lanes` is set re-runs the lanes
+  # (the concurrency group cancels the older run), and one added while it is
+  # absent is a skip — either way the latest run on the head SHA reflects
+  # whether the lanes were asked for.
+  select:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'heavy-lanes')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      any: ${{ steps.select.outputs.any }}
+      full_run: ${{ steps.select.outputs.full_run }}
+      isolated_targets: ${{ steps.select.outputs.isolated_targets }}
+      requirement_targets_json: ${{ steps.select.outputs.requirement_targets_json }}
+      lanes: ${{ steps.select.outputs.lanes }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Full history so `git diff <base>...<head>` (merge-base) resolves.
+          fetch-depth: 0
+
+      - uses: ./.github/actions/select-tests
+        id: select
+
+  # One job per opt-in dependency lane (sim, libero, robocasa, …). Because
+  # each lane is its own runner/venv, the cross-lane venv contamination the
+  # old single-job design had to work around (see the robosuite reinstall
+  # comment below) cannot happen between lanes — only within a single lane's
+  # own setup.
+  lane:
+    needs: select
+    if: needs.select.outputs.any == 'true' && needs.select.outputs.lanes != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMEXPR_NUM_THREADS: "1"
+      VECLIB_MAXIMUM_THREADS: "1"
+      RAYON_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      MUJOCO_GL: "osmesa"
+      PYOPENGL_PLATFORM: "osmesa"
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.select.outputs.lanes) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: ./.github/actions/setup-test-env
+
+      - name: Run opt-in dependency lane ${{ matrix.lane }}
+        env:
+          LANE: ${{ matrix.lane }}
+          TARGETS: ${{ matrix.targets }}
+          ISOLATED_TARGETS: ${{ needs.select.outputs.isolated_targets }}
+          LEDGER: ${{ runner.temp }}/lane-ledger.jsonl
+        run: |
+          # Accounting is done by tools/lane_report.py against pytest's
+          # junit XML, not by grepping the terse summary. Two reasons
+          # (issue #163):
+          #  * "any skip fails the lane" is right for anything this runner
+          #    CAN provide and wrong for anything it cannot. The report
+          #    attributes a skip to a DECLARED capability gap
+          #    ([capability_gaps] in tools/test_selection.toml) and fails on
+          #    every other skip, so a CUDA gate no longer reddens the lane
+          #    while a real provisioning gap ("panda.srdf not installed")
+          #    still does.
+          #  * every lane writes a LEDGER record, uploaded as this job's own
+          #    artifact; the heavy-lanes gate job merges every lane's ledger
+          #    and cross-checks it against the selection. A lane that was
+          #    selected and never executed is a hard failure instead of an
+          #    absence.
+          report_lane() {
+            local lane_rc=0
+            uv run --isolated --with pydantic --python 3.12 \
+              python tools/lane_report.py --ledger "$LEDGER" lane \
+              --lane "$1" --exit-code "$2" "${@:3}" || lane_rc=1
+            return "$lane_rc"
+          }
+          run_lane() {
+            # `local` is load-bearing even with one lane per job: this
+            # function still owns its own `rc`, `xml_args`, `log`, etc., and
+            # returning it explicitly is what makes the exit code below
+            # correct. It used to matter more because the old single-job
+            # workflow called this function 19 times in a row sharing one
+            # caller-scope accumulator — a missing `local` here once let a
+            # failing lane followed by a passing one report green, carrying
+            # 12–13 hidden `::error::` messages. One job = one call removes
+            # that failure mode; the function shape is kept unchanged from
+            # test-selective's original single-job form so this diff is a
+            # reshuffle, not a rewrite.
+            local group="$1"
+            local targets="$2"
+            [ -z "$targets" ] && return 0
+            local dependency_group="$group"
+            local rc=0
+            local xml_args=()
+            local log
+            local batched_xml
+            extra_groups=()
+            env_args=()
+            if [ "$group" = "sim" ]; then
+              extra_groups=(--group dataset)
+              env_args=(MUJOCO_GL="${MUJOCO_GL:-egl}" PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}")
+            elif [ "$group" = "robocasa-gr1" ]; then
+              dependency_group="robocasa"
+            fi
+            echo "::group::pytest opt-in group=${group} targets=${targets}"
+            log=$(mktemp)
+            batched_xml="$RUNNER_TEMP/lane-${group}-batched.xml"
+            python3 scripts/repair_hf_libero_install.py || true
+            # robocasa + robocasa-gr1 both need robosuite 1.5.2 from the git
+            # pin (232ce7d4). Each lane is now its own job/runner, so the
+            # cross-lane contamination this reinstall originally guarded
+            # against (the libero lane leaving robosuite 1.4.0 behind in a
+            # SHARED venv, in the old single-job workflow) can no longer
+            # happen — kept anyway, because a fresh `--group robocasa` sync
+            # on its OWN still does not reliably land the git-pinned wheel
+            # over whatever `uv` prefers (python/sim/src/openral_sim/_deps.py),
+            # independent of any other lane. Removing it is a separate
+            # change with its own evidence.
+            if [ "$dependency_group" = "robocasa" ]; then
+              uv sync --frozen --all-packages --group robocasa --reinstall-package robosuite
+            fi
+            if [ "$group" = "onnx-export" ]; then
+              uv run --all-packages --group onnx-export python tools/export_rtdetr_onnx.py \
+                --out rskills/rtdetr-coco-r18/model.onnx || rc=$?
+            fi
+            if [ "$rc" -eq 0 ]; then
+              if [ "$group" = "simpler-env" ] || [ "$group" = "robocasa-gr1" ]; then
+                # verify_test_envs.py drives its own pytest, so there is no
+                # junit report to account from — judge it by exit code alone.
+                OPENRAL_ALLOW_ROBOCASA_ASSETS=1 uv run python tools/verify_test_envs.py \
+                  --include-provisioned --groups "$group" 2>&1 | tee "$log" || rc=$?
+                python3 scripts/repair_hf_libero_install.py || true
+                report_lane "$group" "$rc" --from-exit-code || rc=1
+              else
+                # Partition selected targets: files flagged for per-process
+                # isolation (ISOLATED_TARGETS, from tools/test_selection.toml
+                # `isolate_globs`) run one-at-a-time in their own
+                # interpreter. Real robosuite/MuJoCo EGL contexts do not
+                # survive a sibling env's teardown in the same process — a
+                # second LIBERO env then dies with "RethinkMount is not a
+                # MujocoXML instance" even on the correct robosuite 1.4
+                # (issue #24 class). The rest run together.
+                batched=""
+                isolated_here=""
+                for t in $targets; do
+                  case " $ISOLATED_TARGETS " in
+                    *" $t "*) isolated_here="$isolated_here $t" ;;
+                    *) batched="$batched $t" ;;
+                  esac
+                done
+                if [ -n "$batched" ]; then
+                  # selector-emitted space-separated list
+                  # shellcheck disable=SC2086
+                  env "${env_args[@]}" uv run --all-packages --group "$dependency_group" "${extra_groups[@]}" pytest $batched \
+                    -q -rs -p no:launch_testing -p no:launch_ros \
+                    --junit-xml="$batched_xml" 2>&1 | tee "$log" || rc=$?
+                  python3 scripts/repair_hf_libero_install.py || true
+                  xml_args+=(--junit-xml "$batched_xml")
+                fi
+                iso_n=0
+                for t in $isolated_here; do
+                  echo "::group::pytest (isolated) ${t}"
+                  iso_n=$((iso_n + 1))
+                  iso_xml="$RUNNER_TEMP/lane-${group}-iso-${iso_n}.xml"
+                  iso_rc=0
+                  env "${env_args[@]}" uv run --all-packages --group "$dependency_group" "${extra_groups[@]}" pytest "$t" \
+                    -q -rs -p no:launch_testing -p no:launch_ros \
+                    --junit-xml="$iso_xml" || iso_rc=$?
+                  python3 scripts/repair_hf_libero_install.py || true
+                  echo "::endgroup::"
+                  # exit 5 == nothing collected (whole module
+                  # importorskip'd): a legitimate all-skipped outcome,
+                  # judged from the report.
+                  if [ "$iso_rc" -ne 0 ] && [ "$iso_rc" -ne 5 ]; then rc=1; fi
+                  xml_args+=(--junit-xml "$iso_xml")
+                done
+                report_lane "$group" "$rc" "${xml_args[@]}" || rc=1
+              fi
+            fi
+            echo "::endgroup::"
+            return "$rc"
+          }
+
+          run_lane "$LANE" "$TARGETS"
+
+      - name: Upload lane ledger
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: lane-ledger-${{ matrix.lane }}
+          path: ${{ runner.temp }}/lane-ledger.jsonl
+          if-no-files-found: warn
+
+  # The gate — named `heavy-lanes` so it keeps the check name the master
+  # ruleset may still list. Also the anti-vacuity gate (issue #163): merges
+  # every lane's uploaded ledger and cross-checks it against the selector's
+  # own output, so "tested nothing" and "tested everything and passed" can
+  # no longer report the same result.
+  heavy-lanes:
+    needs: [select, lane]
+    # `always()` so a failed `select` or lane still reaches the failure check
+    # below instead of auto-skipping this job (a skipped job reports
+    # success). The `!= 'skipped'` half is what hides the gate when the lanes
+    # were not requested: `select` is skipped, so is this, and a skipped job
+    # is not red.
+    if: always() && needs.select.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+        with:
+          enable-cache: false
+
+      - name: Download lane ledgers
+        if: needs.select.outputs.lanes != '[]'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: lane-ledger-*
+          path: ledgers
+          if-no-artifact-found: ignore
+
+      - name: Merge ledgers and attest lane coverage
+        if: needs.select.outputs.any == 'true'
+        env:
+          FULL_RUN: ${{ needs.select.outputs.full_run }}
+          REQUIREMENT_TARGETS_JSON: ${{ needs.select.outputs.requirement_targets_json }}
+          LEDGER: ${{ runner.temp }}/lane-ledger.jsonl
+        run: |
+          # Each lane job uploaded its own ledger artifact (one JSONL line,
+          # name lane-ledger-<lane>); merge them back into the single file
+          # tools/lane_report.py expects. Every lane's file lands in its own
+          # `ledgers/lane-ledger-<lane>/` subdirectory (no merge-multiple),
+          # so a download hiccup on one lane can't silently overwrite
+          # another's line. `find` over an absent `ledgers/` (no lanes
+          # selected) legitimately finds nothing — that is not an error.
+          find ledgers -name '*.jsonl' -exec cat {} + > "$LEDGER" 2>/dev/null || true
+          touch "$LEDGER"
+          python3 - > "$RUNNER_TEMP/selection.json" <<'PY'
+          import json, os, sys
+          json.dump(
+              {
+                  "full_run": os.environ.get("FULL_RUN", "false"),
+                  "requirement_targets_json": os.environ.get("REQUIREMENT_TARGETS_JSON") or "{}",
+              },
+              sys.stdout,
+          )
+          PY
+          uv run --isolated --with pydantic --python 3.12 \
+            python tools/lane_report.py --ledger "$LEDGER" attest \
+            --selection-json "$RUNNER_TEMP/selection.json" \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Require select and every lane to have succeeded or been skipped
+        if: >-
+          needs.select.result == 'failure' || needs.select.result == 'cancelled' ||
+          needs.lane.result == 'failure' || needs.lane.result == 'cancelled'
+        run: |
+          echo "::error::select or a lane failed or was cancelled — see above."
+          exit 1

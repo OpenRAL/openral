@@ -21,6 +21,8 @@ full_run_globs = [
   "python/*/conftest.py",
   "python/*/tests/conftest.py",
   ".github/workflows/test-selective.yml",
+  ".github/workflows/heavy-lanes.yml",
+  ".github/actions/select-tests/**",
   ".github/workflows/test-python.yml",
   ".github/workflows/test-ros2.yml",
   "tools/select_tests.py",

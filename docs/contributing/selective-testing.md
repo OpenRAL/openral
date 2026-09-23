@@ -269,34 +269,36 @@ script does not fake proprietary sidecars.
 
 In CI, the [`test-selective`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/test-selective.yml)
 workflow's `select` job runs `select_tests.py --github-output` once, then fans
-its outputs out to three downstream jobs: `core_full` (the whole suite,
-`full_run=true`), `core_selected` (just the emitted targets — `--ignore`ing
+its outputs out to two downstream jobs: `core_full` (the whole suite,
+`full_run=true`) and `core_selected` (just the emitted targets — `--ignore`ing
 the `isolated_targets` from those partitions and re-running each in its own
-process, see rule 7 above), and `lane` (one job per opt-in dependency group,
-built from the `lanes` output). `just test-changed-run` mirrors the
+process, see rule 7 above). The opt-in `lane` jobs (one per dependency group,
+built from the `lanes` output) run in the separate
+[`heavy-lanes`](https://github.com/OpenRAL/openral/blob/master/.github/workflows/heavy-lanes.yml)
+workflow, on request only. `just test-changed-run` mirrors the
 `core_selected` path locally.
 
 ### CI job graph and speed-up design
 
 ```
+test-selective.yml (every push):
 select ──┬── core_full (matrix: 4 file-shards + isolated) ──┐
-         ├── core_selected ────────────────────────────────┴── select-and-test
-         └── lane (matrix: one job per opt-in dependency      (required check,
-             group, gated on the `heavy-lanes` environment)    every push)
-                                                        └── heavy-lanes
-                                                            (required check,
-                                                             waits for a
-                                                             maintainer to
-                                                             approve the
-                                                             `heavy-lanes`
-                                                             deployment)
+         └── core_selected ────────────────────────────────┴── select-and-test
+                                                               (required check)
+
+heavy-lanes.yml (only for the `heavy-lanes` PR label or a manual dispatch):
+select ── lane (matrix: one job per opt-in dependency group) ── heavy-lanes
+                                                                (gate + ledger
+                                                                 attest)
 ```
 
 Splitting one job into this graph is what makes `test-selective` fast on
 every push instead of ~15 min every time — the 19 opt-in lanes used to run
-one after another in the same job as everything else; here they run in
-parallel, in their own jobs, and only after a maintainer approves them (see
-[Review policy](development.md#review-policy)).
+one after another in the same job as everything else; now they live in their
+own workflow, run in parallel in their own jobs, and only when asked for (see
+[Review policy](development.md#review-policy)). Both workflows' `select` jobs
+run the same [`select-tests`](https://github.com/OpenRAL/openral/blob/master/.github/actions/select-tests/action.yml)
+composite action.
 
 1. **Selection runs first, in its own cheap job.** `select_tests.py` only
    needs `pydantic` + stdlib; `select` runs it via `uv run --isolated --with
@@ -321,11 +323,11 @@ parallel, in their own jobs, and only after a maintainer approves them (see
    --group sim ...` and requires passing tests, with no skip beyond the
    declared capability gaps (see
    [Lane policy](#lane-policy-what-a-skip-is-allowed-to-mean)).
-6. **Lanes wait behind a maintainer's approval.** `lane` (and therefore
-   `heavy-lanes`) is gated on the `heavy-lanes` GitHub Environment, which
-   requires a maintainer to approve the pending deployment before any lane
-   starts. `select-and-test` — the fast required check — does not wait on
-   this at all.
+6. **Lanes run only on request.** `lane` and its `heavy-lanes` gate live in
+   `heavy-lanes.yml`, whose `select` job runs only for a `workflow_dispatch`
+   or when the PR carries the `heavy-lanes` label. Otherwise every job there
+   is skipped — a skipped job is not red and reports success to
+   required-check evaluation. `select-and-test` never waits on the lanes.
 7. **`robot_descriptions` / openarm asset clones are cached** across runs
    (`.github/actions/setup-test-env`), instead of re-cloned by every job that
    needs them.
