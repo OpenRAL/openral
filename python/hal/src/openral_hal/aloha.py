@@ -642,6 +642,7 @@ class AlohaHAL(HALBase):
         )
 
     def _cut_torque(self) -> DownstreamStopReport:
+        """Call ``torque_enable(false)`` on every arm and report per-arm acknowledgement."""
         arms = tuple(self._arm_namespaces)
         seam = self._torque_seam
         if seam is None:

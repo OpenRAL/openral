@@ -200,6 +200,7 @@ class TestURLifecycleEStop:
     """`/openral/estop` → controller deactivation → dashboard `stop` (issue #295)."""
 
     def test_ur5e_estop_deactivates_the_scaled_controller_then_stops_the_program(self) -> None:
+        """Ur5e estop deactivates the scaled controller then stops the program."""
         hal, transport = _make_ur5e()
         hal.attach_controller_stop(transport)
         hal.connect()
@@ -214,6 +215,7 @@ class TestURLifecycleEStop:
         assert hal.vendor_stop_services() == ["/dashboard_client/stop"]
 
     def test_a_dashboard_that_refuses_to_stop_is_an_unacknowledged_stop(self) -> None:
+        """A dashboard that refuses to stop is an unacknowledged stop."""
         transport = SimTransport(
             n_joints=6, trigger_responses={"/dashboard_client/stop": (False, "not connected")}
         )
@@ -229,6 +231,7 @@ class TestURLifecycleEStop:
         assert "not connected" in report.detail
 
     def test_recovery_policy_is_restart_required(self) -> None:
+        """Recovery policy is restart required."""
         from openral_hal.protocol import EStopRecovery, LifecycleEStopHAL
 
         for hal, _ in (_make_ur5e(), _make_ur10e()):

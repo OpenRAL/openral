@@ -219,6 +219,7 @@ class TestSafety:
         assert report.vendor_stop == "/robot/set_super_stop"
 
     def test_recovery_policy_is_restart_required(self, hal: SawyerRealHAL) -> None:
+        """Recovery policy is restart required."""
         from openral_hal.protocol import EStopRecovery, LifecycleEStopHAL
 
         assert isinstance(hal, LifecycleEStopHAL)

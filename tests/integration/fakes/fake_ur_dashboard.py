@@ -24,6 +24,7 @@ class FakeURDashboard:
     """Serve `/dashboard_client/stop` (`std_srvs/Trigger`) on a private, self-spinning node."""
 
     def __init__(self, *, refuse: bool = False, name: str = "fake_ur_dashboard") -> None:
+        """Create the private node, the ``stop`` service and the spinning thread."""
         import rclpy
         from rclpy.executors import SingleThreadedExecutor
         from std_srvs.srv import Trigger
@@ -40,10 +41,12 @@ class FakeURDashboard:
         self._thread.start()
 
     def _spin(self) -> None:
+        """Executor loop for the private node until ``close``."""
         while not self._stop.is_set():
             self._executor.spin_once(timeout_sec=0.05)
 
     def _on_stop(self, _request: Any, response: Any) -> Any:
+        """Answer ``stop``: refuse when configured to, else stop the (simulated) program."""
         self.stop_calls += 1
         if self._refuse:
             response.success = False

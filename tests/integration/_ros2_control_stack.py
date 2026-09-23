@@ -251,6 +251,7 @@ def driver_node(name: str) -> Iterator[tuple[Any, Callable[[float], None]]]:
     executor.add_node(node)
 
     def spin(seconds: float) -> None:
+        """Spin the private executor for ``seconds`` of wall time."""
         end = time.monotonic() + seconds
         while time.monotonic() < end:
             executor.spin_once(timeout_sec=0.02)

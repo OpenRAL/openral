@@ -52,6 +52,7 @@ _OFF_ROBOT_KWARGS: dict[str, object] = {"require_can_links": False}
 
 
 def _real_manifests() -> list[Path]:
+    """Every ``robots/*/robot.yaml`` whose ``hal.real`` is set."""
     out = []
     for path in _MANIFESTS:
         desc = RobotDescription.from_yaml(str(path))
@@ -64,6 +65,7 @@ _REAL = _real_manifests()
 
 
 def _build(path: Path) -> HAL:
+    """Build the manifest's real HAL off-robot through ``build_hal``."""
     desc = RobotDescription.from_yaml(str(path))
     return build_hal(desc, mode="real", transport=_OFF_ROBOT_KWARGS)
 
@@ -87,6 +89,7 @@ def test_the_fleet_is_not_empty() -> None:
 def test_every_real_hal_opts_into_the_lifecycle_estop_with_an_explicit_policy(
     manifest: Path,
 ) -> None:
+    """Every real hal opts into the lifecycle estop with an explicit policy."""
     hal = _build(manifest)
     assert isinstance(hal, LifecycleEStopHAL), (
         f"{type(hal).__name__} ({manifest.parent.name}) is not a LifecycleEStopHAL: "
@@ -104,6 +107,7 @@ def test_every_real_hal_opts_into_the_lifecycle_estop_with_an_explicit_policy(
 def test_every_ros2_control_real_hal_can_stop_every_controller_it_commands(
     manifest: Path,
 ) -> None:
+    """Every ros2 control real hal can stop every controller it commands."""
     hal = _build(manifest)
     if not isinstance(hal, RosControlDrivable):
         pytest.skip(f"{type(hal).__name__} is not a ros2_control adapter (own bus / sidecar).")
@@ -124,6 +128,7 @@ def test_every_ros2_control_real_hal_can_stop_every_controller_it_commands(
 
 @pytest.mark.parametrize("manifest", _REAL, ids=[p.parent.name for p in _REAL])
 def test_every_interbotix_real_hal_can_cut_torque_on_every_arm(manifest: Path) -> None:
+    """Every interbotix real hal can cut torque on every arm."""
     from openral_hal.aloha import InterbotixStoppable
 
     hal = _build(manifest)
@@ -147,11 +152,24 @@ def test_a_real_hal_without_the_contract_is_rejected() -> None:
     class LatchOnly:
         description = SimpleNamespace(name="latch_only")
 
-        def connect(self) -> None: ...
-        def disconnect(self) -> None: ...
-        def read_state(self) -> None: ...
-        def send_action(self, action: object) -> None: ...
+        def connect(self) -> None:
+            """Protocol stub for the latch-only shape under test."""
+            ...
+
+        def disconnect(self) -> None:
+            """Protocol stub for the latch-only shape under test."""
+            ...
+
+        def read_state(self) -> None:
+            """Protocol stub for the latch-only shape under test."""
+            ...
+
+        def send_action(self, action: object) -> None:
+            """Protocol stub for the latch-only shape under test."""
+            ...
+
         def estop(self) -> None:
+            """Protocol stub for the latch-only shape under test."""
             raise ROSEStopRequested("latched")
 
     assert isinstance(LatchOnly(), HAL)
