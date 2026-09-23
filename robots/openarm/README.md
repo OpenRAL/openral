@@ -139,14 +139,20 @@ cache for an offline load; `openral rskill install` does not fetch it.
 resolves and loads the policy right after it activates, in a worker thread,
 and rejects goals until `rskill_runner.preload_done` is logged. This is not
 an optimisation: the deadman watchdog opens its 120 s first-chunk window
-the moment a goal is accepted, and this 3.6 B checkpoint takes ~350 s to
-load on the Orin with the graph idle and ~1230 s with the ZED depth engine
-and the 750 Hz controller manager competing for it (measured 2026-09-22),
-so a cold load inside a goal is E-stopped every time — correctly. The
+the moment a goal is accepted, and even the fast bf16 load (meta-device
+build, weights streamed onto the GPU, one warm-up forward) takes ~33 s on
+the Orin under the live graph (measured 2026-09-23) — before it, ~350 s idle
+and ~1230 s live. A cold load inside a goal is E-stopped, correctly. The
 preload prompt must equal the goal's prompt character for character: the
 resident key is `(id, revision, prompt)` and a mismatch evicts the warm
-skill and pays the cold load inside the watchdog window. Expect the
-preload to take 20+ minutes on a live cell; `preload_done` names the time.
+skill and pays the cold load inside the watchdog window. `preload_done`
+names the time.
+
+**Not yet usable end to end (2026-09-23).** A dispatched goal executes its
+first 35-step chunk on the real arms, then the deadman watchdog E-stops
+the cell: one π0.5 forward takes 6–7 s inside the live graph (1.6 s in an
+idle process), the runner proposes nothing while it infers the next chunk,
+and a `safe_action` gap past 5 s is a stall by the watchdog's contract.
 
 Once it is resident, the operator dispatches the single goal directly, with
 the training instruction **verbatim** — a drifted prompt is an
@@ -181,9 +187,9 @@ tabletop twin starts with both elbows at −π/2 and the policy sees a MuJoCo
 table instead of the real shelf, so its actions are out of distribution
 there. The real cell is the only in-distribution proving ground; its first
 dispatch aborted in the observation decoder on the ZED depth frame, which
-is fixed (`decode_inline_frame`). The first-inference latency on the Orin is
-~11.7 s against the manifest's 600 ms budget (measured on a Thor), warm-up
-included — open.
+is fixed (`decode_inline_frame`). On 2026-09-23 the real cell executed its
+first chunk on the arms; the per-forward latency that then trips the
+deadman is the open item above.
 
 ## Action layout (16 DoF)
 
