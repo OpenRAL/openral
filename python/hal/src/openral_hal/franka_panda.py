@@ -23,7 +23,6 @@ Example:
 from __future__ import annotations
 
 from openral_core.schemas import (
-    ActionRepresentation,
     ActionSpec,
     AssetRefs,
     ControlMode,
@@ -219,11 +218,9 @@ FRANKA_PANDA_DESCRIPTION = RobotDescription(
     # Control rate: the runner ticks at it and the real HAL sets every
     # trajectory point's time_from_start from it (issue #303). Required for a
     # ros2_control HAL to construct.
-    action_spec=ActionSpec(
-        dim=8,
-        representation=ActionRepresentation.JOINT_POSITIONS,
-        control_freq_hz=30.0,
-    ),
+    # dim / representation deliberately undeclared (no committed policy
+    # contract for this robot); the control rate is the known quantity.
+    action_spec=ActionSpec(control_freq_hz=30.0),
     hal=HalEntrypoints(
         # sim=None: build_hal derives MujocoArmHAL.from_description(manifest).
         sim=None,

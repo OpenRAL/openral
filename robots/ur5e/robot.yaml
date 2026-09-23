@@ -159,9 +159,10 @@ sdk_kind: "closed"
 # this), the dataset recorder stamps it as fps, and the real HAL sets every
 # trajectory point's time_from_start = horizon / control_freq_hz (issue #303).
 # A ros2_control HAL refuses to build without it.
+# `dim` / `representation` are deliberately not declared: this repo commits no
+# policy action contract for this robot, and the recorder takes the width from
+# the action itself. Only the control rate is a known quantity.
 action_spec:
-  dim: 6
-  representation: "joint_positions"
   control_freq_hz: 30.0
 
 hal:

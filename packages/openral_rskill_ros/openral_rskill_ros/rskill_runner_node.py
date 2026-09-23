@@ -3604,6 +3604,11 @@ def main(args: list[str] | None = None) -> int:
     ``WorldStateAggregator``. Production launches use
     ``openral_rskill_ros.compose.compose_so100_runtime`` to share the
     aggregator with the colocated ``world_state_node``.
+
+    ``joint_state_staleness_limit_s`` has no default (issue #303): pass it as a
+    ROS parameter (``--ros-args -p joint_state_staleness_limit_s:=0.5``) or
+    ``on_configure`` refuses, naming it. ``deploy_e2e.launch.py`` declares it
+    for production runs.
     """
     if not _ROS2_AVAILABLE:
         print("rclpy not found — cannot start rskill_runner_node without ROS 2.", file=sys.stderr)
