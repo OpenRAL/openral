@@ -99,7 +99,11 @@ Detection records robot-owned facts in `robot.yaml`; it does not create a
 deploy scene unless `--deployment` is passed. The wizard always runs (there is
 no `--interactive` flag) and opens the camera binding wizard: a robot camera's
 binding lands in `robot.yaml`, a workcell camera (its own name) in that deploy
-scene — a deploy scene never touches a robot camera.
+scene — a deploy scene never touches a robot camera. A robot type with more than
+one unit or host keeps each host's camera bindings (and per-unit calibration) in
+`robots/<id>/units/<unit>.yaml` instead; the scene's `robot_unit` or
+`OPENRAL_ROBOT_UNIT` selects it, and a real deploy of such a robot refuses until
+one is selected (SO-101 bench: `units/bench_laptop.yaml`; OpenArm: `thor`, `orin`).
 Use `--include usb,gpu,cameras_v4l2,cameras_realsense` to limit probes, and
 `--report detect.json --no-write` when you only want the raw detection report.
 The rSkill that drives the robot is **not** set in deploy config — the reasoner
@@ -392,7 +396,7 @@ It checks three things:
   and `calibration_dir`, and `<calibration_dir>/<id>.json` is actually there.
   Missing, and every `send_action` fails with "has no calibration registered".
 - **Camera bindings** — each deploy sensor (the robot manifest's cameras, bound
-  in `robot.yaml`, plus the scene's workcell cameras) has a `deploy_binding`
+  in the host's unit overlay or `robot.yaml`, plus the scene's workcell cameras) has a `deploy_binding`
   (without one it is never published, and a camera VLA silently gets an empty
   observation), and any `/dev/*` path exists now.
 

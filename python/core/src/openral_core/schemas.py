@@ -10,9 +10,11 @@ from __future__ import annotations
 import base64
 import binascii
 import math
+import os
 import re
 from collections.abc import Callable, Iterable
 from enum import Enum, StrEnum
+from pathlib import Path
 from typing import (
     Annotated,
     Any,
@@ -683,11 +685,12 @@ def check_scene_sensor_overrides(
 ) -> None:
     """Refuse a scene sensor entry that names a sensor the robot manifest defines.
 
-    A sensor the robot manifest declares belongs to the robot: its geometry, its
-    intrinsics, its frame and its real-hardware ``deploy_binding`` all live in
-    ``robot.yaml``, so every scene on that robot sees the same camera. A deploy scene
-    never touches it; ``DeployScene.sensors`` only adds workcell cameras, under names
-    the manifest does not use, and those carry their own geometry and binding.
+    A sensor the robot manifest declares belongs to the robot: its name, modality and
+    frames live in ``robot.yaml``, so every scene on that robot sees the same camera.
+    ``DeployScene.sensors`` only adds workcell cameras, under names the manifest does
+    not use, and those carry their own geometry and binding. What differs per host or
+    per physical unit (device path, driver topic, calibrated mount and intrinsics) goes
+    in a ``RobotUnit`` overlay instead (``resolve_sensor_overlays``).
 
     Args:
         manifest_sensors: The robot manifest's ``sensors``.
@@ -705,9 +708,11 @@ def check_scene_sensor_overrides(
     if clashes:
         raise ROSConfigError(
             f"scene sensor(s) {', '.join(repr(n) for n in clashes)} are defined by the robot "
-            "manifest. A deploy scene never touches a robot camera — its geometry, frame, "
-            "intrinsics and real-hardware deploy_binding live in robots/<robot_id>/robot.yaml. "
-            "Put the binding there, or give a workcell camera its own name."
+            "manifest. A deploy scene never redefines a robot camera — its name, modality and "
+            "frames live in robots/<robot_id>/robot.yaml. Put a per-host binding or per-unit "
+            "calibration in a unit overlay (robots/<robot_id>/units/<unit>.yaml, selected by "
+            "the scene's robot_unit or $OPENRAL_ROBOT_UNIT), or give a workcell camera its own "
+            "name."
         )
 
 
@@ -734,6 +739,111 @@ def merge_deploy_sensors(
     return [*manifest, *scene]
 
 
+ROBOT_UNIT_ENV = "OPENRAL_ROBOT_UNIT"
+"""Env var naming the ``robots/<robot_id>/units/<unit>.yaml`` overlay for this host.
+
+Wins over ``DeployScene.robot_unit`` so one committed scene runs on several cells."""
+
+
+def apply_sensor_overlays(
+    sensors: Iterable[SensorSpec], overlays: Iterable[SensorOverlay]
+) -> list[SensorSpec]:
+    """Robot-manifest sensors with each ``SensorOverlay``'s set fields laid over them.
+
+    An overlay only replaces the per-host / per-unit fields ``SensorOverlay`` allows
+    (``deploy_binding``, ``ros2_topic``, ``static_transform_xyz_rpy``, ``intrinsics``);
+    name, modality and frames stay the manifest's. The result is re-validated as a
+    ``SensorSpec``.
+
+    Raises:
+        ROSConfigError: An overlay names no manifest sensor, or names one twice.
+
+    Example:
+        >>> desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> fix = SensorOverlay(name="top", static_transform_xyz_rpy=(0, 0, 0.5, 0, 0, 0))
+        >>> apply_sensor_overlays(desc.sensors, [fix])[0].static_transform_xyz_rpy
+        (0.0, 0.0, 0.5, 0.0, 0.0, 0.0)
+    """
+    by_name: dict[str, SensorOverlay] = {}
+    for overlay in overlays:
+        if overlay.name in by_name:
+            raise ROSConfigError(f"sensor overlay names {overlay.name!r} twice")
+        by_name[overlay.name] = overlay
+    out = list(sensors)
+    unknown = sorted(set(by_name) - {s.name for s in out})
+    if unknown:
+        raise ROSConfigError(
+            f"sensor overlay(s) {', '.join(repr(n) for n in unknown)} name no robot-manifest "
+            f"sensor (manifest has: {', '.join(s.name for s in out)})"
+        )
+    return [
+        SensorSpec.model_validate(
+            {**s.model_dump(), **by_name[s.name].model_dump(exclude={"name"}, exclude_unset=True)}
+        )
+        if s.name in by_name
+        else s
+        for s in out
+    ]
+
+
+def load_robot_unit(robot_yaml: str | Path, unit: str) -> RobotUnit:
+    """Load ``<robot_yaml dir>/units/<unit>.yaml`` and check it belongs to that robot.
+
+    Raises:
+        ROSConfigError: The file is missing, or its ``robot_id`` / ``unit`` disagree with
+            the manifest directory name / the requested unit.
+
+    Example:
+        >>> load_robot_unit("robots/openarm/robot.yaml", "thor").robot_id
+        'openarm'
+    """
+    manifest_dir = Path(robot_yaml).parent
+    path = manifest_dir / "units" / f"{unit}.yaml"
+    if not path.is_file():
+        have = sorted(p.stem for p in (manifest_dir / "units").glob("*.yaml"))
+        raise ROSConfigError(
+            f"robot unit {unit!r} not found at {path} (available: {', '.join(have) or 'none'})"
+        )
+    loaded = RobotUnit.from_yaml(str(path))
+    if loaded.robot_id != manifest_dir.name or loaded.unit != unit:
+        raise ROSConfigError(
+            f"{path} declares robot_id={loaded.robot_id!r} unit={loaded.unit!r}; "
+            f"expected robot_id={manifest_dir.name!r} unit={unit!r}"
+        )
+    return loaded
+
+
+def resolve_sensor_overlays(
+    robot_yaml: str | Path, scene_unit: str | None, *, required: bool
+) -> list[SensorOverlay]:
+    """The sensor overlays of the robot unit this host runs.
+
+    The unit is ``$OPENRAL_ROBOT_UNIT`` if set, else the scene's ``robot_unit``. With
+    neither, there is nothing to overlay; but when ``required`` (a real deploy) and the
+    robot ships a ``units/`` directory, that is refused: its bindings and calibration
+    are per unit, so running on the manifest's nominal values would be a silent guess.
+
+    Raises:
+        ROSConfigError: A required unit is not selected, or the selected one is invalid.
+
+    Example:
+        >>> resolve_sensor_overlays("robots/franka_panda/robot.yaml", None, required=True)
+        []
+    """
+    unit = os.environ.get(ROBOT_UNIT_ENV) or scene_unit
+    if not unit:
+        units_dir = Path(robot_yaml).parent / "units"
+        if required and units_dir.is_dir():
+            have = sorted(p.stem for p in units_dir.glob("*.yaml"))
+            raise ROSConfigError(
+                f"{Path(robot_yaml).parent.name} has per-unit sensor overlays "
+                f"({', '.join(have)}) but none is selected: set ${ROBOT_UNIT_ENV} or the "
+                "scene's robot_unit to the unit this host drives"
+            )
+        return []
+    return list(load_robot_unit(robot_yaml, unit).sensors)
+
+
 def publishing_sensors(
     manifest_sensors: Iterable[SensorSpec],
     scene_sensors: Iterable[SensorSpec],
@@ -752,7 +862,9 @@ def publishing_sensors(
         >>> sim = publishing_sensors(arm.sensors, [], "sim")
         >>> ", ".join(s.name for s in sim if s.modality == "rgb")
         'top, wrist_left, wrist_right'
-        >>> ", ".join(s.name for s in publishing_sensors(arm.sensors, [], "real"))  # bound
+        >>> thor = resolve_sensor_overlays("robots/openarm/robot.yaml", "thor", required=True)
+        >>> bound = publishing_sensors(apply_sensor_overlays(arm.sensors, thor), [], "real")
+        >>> ", ".join(s.name for s in bound)
         'head_zed, top, wrist_left, wrist_right'
     """
     if hal_mode != "real":
@@ -9708,12 +9820,17 @@ class DeployScene(BaseModel):
     A deploy scene never touches a sensor the robot manifest defines: every entry
     must use a name the manifest does not (``check_scene_sensor_overrides`` refuses
     a clash), and carries its own geometry and binding. A robot camera's
-    real-hardware ``SensorSpec.deploy_binding`` lives in
-    ``robots/<robot_id>/robot.yaml``. ``merge_deploy_sensors`` appends these
-    entries after the manifest's sensors.
+    real-hardware ``SensorSpec.deploy_binding`` lives in its unit overlay
+    (``robot_unit``) or ``robots/<robot_id>/robot.yaml``. ``merge_deploy_sensors``
+    appends these entries after the manifest's sensors.
 
     Entries whose ``deploy_binding`` is set are opened by the real-deploy
     sensor leg and published on ``/openral/cameras/<name>/image``."""
+    robot_unit: str | None = None
+    """The ``robots/<robot_id>/units/<unit>.yaml`` overlay this cell runs: per-host
+    sensor bindings and per-unit calibration (``SensorOverlay``). ``$OPENRAL_ROBOT_UNIT``
+    overrides it, so one scene serves several cells. ``None`` = none; a real deploy of a
+    robot that ships ``units/`` then refuses (``resolve_sensor_overlays``)."""
     drivers: list[LaunchInclude] = Field(default_factory=list)
     """Vendor sensor drivers this workcell needs on the bus.
 
@@ -10106,14 +10223,14 @@ class SensorDeployBinding(BaseModel):
     says how the **sim** renders a camera; ``deploy_binding`` says how a **real**
     deploy opens it — which ``SensorReaderBackend`` and its
     ``/dev/video*`` / pipeline parameters. It is host/site-specific (a
-    ``/dev/video*`` index differs per machine): ``openral detect`` fills it per
-    host, and a manifest written for one reference cell commits that cell's.
+    ``/dev/video*`` index differs per machine).
 
-    A ``SensorSpec`` carries this wherever the sensor is *physically
-    mounted*: a robot camera (wrist / head / the robot's own overview) declares
-    it in ``robots/<id>/robot.yaml`` only — a deploy scene never touches a robot
-    sensor; a workcell-mounted camera (overhead / front) declares it on its own,
-    distinctly named ``DeployScene.sensors`` entry. Either way the deploy
+    A robot camera (wrist / head / the robot's own overview) takes it from its
+    host's unit overlay, ``robots/<id>/units/<unit>.yaml`` (``SensorOverlay``),
+    or from ``robots/<id>/robot.yaml`` for a robot with a single reference host;
+    a deploy scene never redefines a robot sensor. A workcell-mounted camera
+    (overhead / front) declares it on its own, distinctly named
+    ``DeployScene.sensors`` entry. Either way the deploy
     sensor leg (``openral_rskill_ros.sensor_leg``) opens every
     ``SensorSpec`` that carries one and publishes it on
     ``/openral/cameras/<name>/image``.
@@ -10140,10 +10257,77 @@ class SensorDeployBinding(BaseModel):
     max_age_ms: int = Field(default=100, gt=0)
 
 
+class SensorOverlay(BaseModel):
+    """Per-host / per-unit values for ONE sensor the robot manifest declares.
+
+    The robot manifest owns a sensor's identity and semantics (name, modality,
+    ``frame_id``, ``parent_frame``); what differs between two physical units of the
+    same robot type — the device path or serial in ``deploy_binding``, the vendor
+    driver topic, the calibrated mount pose and intrinsics — goes here. Any other
+    field is refused (``extra="forbid"``). Applied by ``apply_sensor_overlays``.
+
+    Attributes:
+        name: The robot-manifest sensor this overlays.
+        deploy_binding: This host's real-device binding.
+        ros2_topic: This host's vendor-driver topic.
+        static_transform_xyz_rpy: This unit's calibrated mount, in the manifest's
+            ``parent_frame``.
+        intrinsics: This unit's calibrated intrinsics.
+
+    Example:
+        >>> SensorOverlay(name="top", ros2_topic="/cam/image").ros2_topic
+        '/cam/image'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    deploy_binding: SensorDeployBinding | None = None
+    ros2_topic: str | None = None
+    static_transform_xyz_rpy: tuple[float, float, float, float, float, float] | None = None
+    intrinsics: IntrinsicsPinhole | None = None
+
+
+class RobotUnit(BaseModel):
+    """One physical unit / host of a robot type: ``robots/<robot_id>/units/<unit>.yaml``.
+
+    Selected by ``$OPENRAL_ROBOT_UNIT`` or ``DeployScene.robot_unit``; see
+    ``resolve_sensor_overlays``.
+
+    Attributes:
+        schema_version: On-disk schema version.
+        robot_id: The ``robots/<robot_id>`` directory this unit belongs to.
+        unit: The unit name, equal to the file stem.
+        sensors: Overlays for the robot manifest's sensors.
+
+    Example:
+        >>> RobotUnit(robot_id="so101_follower", unit="bench_laptop").sensors
+        []
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["0.1"] = "0.1"
+    robot_id: str
+    unit: str
+    sensors: list[SensorOverlay] = Field(default_factory=list)
+
+    @classmethod
+    def from_yaml(cls, path: str) -> RobotUnit:
+        """Load and validate a unit overlay YAML file.
+
+        Example:
+            >>> RobotUnit.from_yaml("robots/openarm/units/orin.yaml").unit
+            'orin'
+        """
+        return _load_yaml_model(cls, path)
+
+
 # `SensorSpec.deploy_binding` forward-references `SensorDeployBinding`, which the
 # reader schemas (and their `SensorReaderBackend` enum) define here rather than
 # up at `SensorSpec`. Resolve that annotation now that the target exists.
 SensorSpec.model_rebuild()
+SensorOverlay.model_rebuild()
 # `PlaceRegion.geometry` names `AttachedCollisionPrimitive`, which this module
 # defines several hundred lines BELOW `PlaceRegion` — the place-phase schemas
 # were written before a declared target carried geometry. `from __future__

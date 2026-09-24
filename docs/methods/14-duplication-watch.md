@@ -120,6 +120,8 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 - **Image-subscription QoS in `openral_perception_ros`** (`ros_image_detector_node`, `scene_vlm_node`, `reward_monitor_node`, `segmenter_node`) — built inline four times with the same parameters. Same package, so a `_qos.py` there is the obvious next step when any of them is next touched.
 
+- **Per-unit sensor values** — `openral_core.resolve_sensor_overlays` + `apply_sensor_overlays` are the one way a host's camera binding or a unit's calibrated mount/intrinsics reach a robot sensor (`robots/<id>/units/<unit>.yaml`, `$OPENRAL_ROBOT_UNIT` / `DeployScene.robot_unit`). Do not add per-host fields to `robot.yaml`, a scene-level copy of a robot sensor, or a second env var.
+
 - **Robot manifest lookup** — `openral_sim.policies.robots.resolve_robot_manifest` is the one `$OPENRAL_ROBOTS_DIR` → `robots/<id>/robot.yaml` resolver, shared by `sim run` (the `ROBOTS` factories), `deploy sim|run` (`resolve_launch_invocation`) and `tools/audit_sim_configs.py`. The former per-robot `openral_cli.deploy_sim._ROBOT_HAL_REGISTRY` table is gone (its fields were derivable); do not reintroduce a robot-id → HAL table.
 
 - **`openral_nav2_bringup._footprint_geometry`** is a private module reached from `tools/_nav2_costmap_silhouette_probe.py` and an integration test. Its public names (`convex_hull_2d`, `base_footprint_polygon`, `SHAPE_*`) are de-facto API; drop the module's underscore when it is next touched.

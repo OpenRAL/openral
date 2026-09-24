@@ -8,9 +8,11 @@
 # only sanctioned way to launch scenes/deploy/openarm_real_world_voxels.yaml, and it refuses
 # unless, in this order:
 #   1. OPENRAL_OPENARM_ALLOW_MOTION=1 and OPENRAL_OPENARM_ATTENDED=1 (the HIL tier's gates);
-#   2. the head_zed extrinsic report verifies against the pose in robots/openarm/robot.yaml
-#      (the camera is bolted to the robot, so its pose is robot geometry, not the scene's).
-#      `openral deploy run` applies the same gate; this copy only refuses earlier;
+#   2. OPENRAL_ROBOT_UNIT names this cell (robots/openarm/units/<unit>.yaml), and that unit's
+#      head_zed extrinsic report (calibration/<unit>/head_zed_extrinsic.json) verifies against
+#      the pose `deploy run` publishes for it (manifest + unit overlay; the camera is bolted to
+#      the robot, so its pose is robot geometry, not the scene's). `openral deploy run`
+#      applies the same gate; this copy only refuses earlier;
 #   3. it runs in an interactive terminal and the operator types the confirmation.
 # Extra arguments pass through to `openral deploy run` only from an allow-list of
 # observability flags (--foxglove, --dataset-out <dir>, ...). Anything else — a second
@@ -21,7 +23,6 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scene="${root}/scenes/deploy/openarm_real_world_voxels.yaml"
 robot="${root}/robots/openarm/robot.yaml"
-report="${root}/robots/openarm/calibration/head_zed_extrinsic.json"
 
 refuse() {
   echo "REFUSED: $*" >&2
@@ -51,6 +52,10 @@ done
   refuse "OPENRAL_OPENARM_ALLOW_MOTION is not 1 — this graph moves the arms at bringup."
 [[ "${OPENRAL_OPENARM_ATTENDED:-}" == "1" ]] ||
   refuse "OPENRAL_OPENARM_ATTENDED is not 1 — export it only while you are at the E-stop."
+unit="${OPENRAL_ROBOT_UNIT:-}"
+[[ -n "${unit}" ]] ||
+  refuse "OPENRAL_ROBOT_UNIT is not set — name this cell (robots/openarm/units/<unit>.yaml); its ZED mount and calibration are per unit."
+report="${root}/robots/openarm/calibration/${unit}/head_zed_extrinsic.json"
 [[ -n "${ROS_DISTRO:-}" ]] || refuse "ROS 2 is not sourced (and source the ZED overlay too)."
 command -v openral >/dev/null || refuse "openral is not on PATH (activate the venv)."
 
@@ -75,8 +80,8 @@ PY
 # `openral deploy run` re-applies this gate itself (any robot, world-voxel check on); checking
 # here too refuses before the operator is asked to confirm, not after.
 python "${root}/tools/depth_extrinsic_check.py" verify --robot "${robot}" --sensor head_zed \
-  --report "${report}" ||
-  refuse "head_zed extrinsic not verified for the manifest's pose (runbook step 2)."
+  --unit "${unit}" --report "${report}" ||
+  refuse "head_zed extrinsic not verified for unit ${unit}'s pose (runbook step 2)."
 [[ -t 0 ]] || refuse "not an interactive terminal; a person at the cell launches this."
 
 echo "Bringup steps all 16 motors to zero UNRAMPED. Arms parked near zero, cell clear,"
