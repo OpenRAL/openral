@@ -1083,16 +1083,32 @@ class SafetyEnvelope(BaseModel):
             safety-WG decision and must be justified against the true
             (non-convex mesh) envelope clearance, not the conservative
             primitive distance.
-        starting_pose_max_joint_speed_rad_s: Joint-space speed of the
-            skill runner's ramp from the live pose to a skill's
-            ``starting_pose``. Declared per robot, never derived: a rated
-            ``velocity_limit`` is a ceiling, not an approach speed (issue
-            #303 — deriving it put the OpenArm at 2 rad/s). ``None`` =
-            undeclared; a real robot must declare it.
-        starting_pose_tolerance_rad: Joint-space distance within which the
-            runner treats the starting pose as reached, both for the ramp
-            and for verifying arrival before the policy starts. ``None`` =
-            undeclared; a real robot must declare it.
+        starting_pose_max_joint_speed_rad_s: Approach speed (rad/s) of every
+            non-prismatic joint on the skill runner's ramp from the live pose to
+            a skill's ``starting_pose``. Declared per robot, never derived: a
+            rated ``velocity_limit`` is a ceiling, not an approach speed (issue
+            #303 — deriving it put the OpenArm at 2 rad/s). The runner caps each
+            joint at ``min(this, joint.velocity_limit)``. ``None`` = undeclared;
+            a real robot with a non-prismatic joint must declare it.
+        starting_pose_tolerance_rad: Per-joint distance (rad) within which a
+            non-prismatic joint counts as at its starting pose, both for the
+            ramp and for verifying arrival before the policy starts. ``None`` =
+            undeclared; a real robot with a non-prismatic joint must declare it.
+        starting_pose_max_joint_speed_m_s: The same approach speed for
+            **prismatic** joints, in m/s (a gripper's 0.041 m stroke is not
+            comparable to a radian). Also capped by ``joint.velocity_limit``.
+            A real robot with a prismatic joint must declare it.
+        starting_pose_tolerance_m: The per-joint arrival tolerance for
+            prismatic joints, in m. A real robot with a prismatic joint must
+            declare it.
+        joint_state_staleness_limit_s: Age (s) past which a joint-state
+            reading is refused as stale — by the real HAL's ``read_state``
+            (``ROSPerceptionStale``) and by the skill runner's blocking waits.
+            The one place a rig declares it: ``build_hal`` threads it into the
+            HAL and ``deploy_e2e.launch.py`` into the runner in real mode.
+            Must come from a measurement on the deploy host
+            (``tools/joint_state_staleness_probe.py``). ``None`` = undeclared;
+            a real robot must declare it.
     """
 
     workspace_box_min_xyz: tuple[float, float, float] | None = None
@@ -1122,6 +1138,9 @@ class SafetyEnvelope(BaseModel):
     self_collision_margin_m: float = 0.0  # negative tolerates grazing
     starting_pose_max_joint_speed_rad_s: float | None = Field(default=None, gt=0.0)
     starting_pose_tolerance_rad: float | None = Field(default=None, gt=0.0)
+    starting_pose_max_joint_speed_m_s: float | None = Field(default=None, gt=0.0)
+    starting_pose_tolerance_m: float | None = Field(default=None, gt=0.0)
+    joint_state_staleness_limit_s: float | None = Field(default=None, gt=0.0)
 
 
 # ─── VLA observation / action specs ────────────────────────────────────────────
@@ -2321,10 +2340,29 @@ class RobotDescription(BaseModel):
         * every field in ``REAL_HARDWARE_SAFETY_FIELDS`` set explicitly in
           ``safety`` (an explicit value equal to the default is fine; what is
           refused is silently inheriting it).
-        * ``safety.starting_pose_max_joint_speed_rad_s`` and
-          ``safety.starting_pose_tolerance_rad`` declared — the runner's
-          approach to a skill's starting pose has no default speed.
+        * the starting-pose approach speed and tolerance for every joint type
+          the robot has: ``safety.starting_pose_max_joint_speed_rad_s`` /
+          ``safety.starting_pose_tolerance_rad`` when it has a non-prismatic
+          joint, ``safety.starting_pose_max_joint_speed_m_s`` /
+          ``safety.starting_pose_tolerance_m`` when it has a prismatic one —
+          the runner's approach has no default speed, and a radian tolerance
+          on a 4 cm gripper stroke is always "arrived".
+        * ``safety.joint_state_staleness_limit_s`` — the HAL's and the runner's
+          joint-state freshness window.
+
+        On any manifest, ``safety.joint_state_staleness_limit_s`` and a
+        ``hal.parameters.defaults.staleness_limit_s`` are refused together:
+        one number, one place.
         """
+        if (
+            self.safety.joint_state_staleness_limit_s is not None
+            and "staleness_limit_s" in self.hal.parameters.defaults
+        ):
+            raise ValueError(
+                f"robot {self.name!r} declares both safety.joint_state_staleness_limit_s and "
+                "hal.parameters.defaults.staleness_limit_s; keep only the typed safety field "
+                "(build_hal passes it to the HAL)."
+            )
         if not self.hal.real:
             return self
         missing: list[str] = []
@@ -2334,10 +2372,13 @@ class RobotDescription(BaseModel):
         missing.extend(
             f"safety.{name}" for name in self.REAL_HARDWARE_SAFETY_FIELDS if name not in declared
         )
+        required = ["joint_state_staleness_limit_s"]
+        if any(j.joint_type is not JointType.PRISMATIC for j in self.joints):
+            required += ["starting_pose_max_joint_speed_rad_s", "starting_pose_tolerance_rad"]
+        if any(j.joint_type is JointType.PRISMATIC for j in self.joints):
+            required += ["starting_pose_max_joint_speed_m_s", "starting_pose_tolerance_m"]
         missing.extend(
-            f"safety.{name} (> 0)"
-            for name in ("starting_pose_max_joint_speed_rad_s", "starting_pose_tolerance_rad")
-            if getattr(self.safety, name) is None
+            f"safety.{name} (> 0)" for name in required if getattr(self.safety, name) is None
         )
         if missing:
             raise ValueError(
@@ -5080,12 +5121,20 @@ class ActionContract(BaseModel):
             gripper contract is a normalized ``[0, 1]`` jaw fraction; a LeRobot
             SO-ARM checkpoint's gripper channel is ``[0, 100]`` → ``100.0``.
             Applied by the codec on BOTH the joint and the slot path.
+        control_freq_hz: The rate (Hz) the checkpoint was trained to be
+            executed at — one action-chunk row per control period. ``None`` =
+            undeclared (the runner uses the robot's
+            ``action_spec.control_freq_hz`` unchecked). When declared, the skill
+            runner refuses a goal whose tick rate differs: there is no temporal
+            resampler, and executing a 15 Hz policy at 30 Hz doubles its
+            commanded speed.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     dim: int = Field(gt=0)
     representation: ActionRepresentation | None = None
+    control_freq_hz: float | None = Field(default=None, gt=0.0)
     slots: list[ActionSlot] | None = None
     cartesian_delta_scale: tuple[float, ...] | None = None
     joint_names: list[str] | None = None

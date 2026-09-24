@@ -227,6 +227,19 @@ safety:
   # declared here so they are visible; provisional until run on this rig.
   starting_pose_max_joint_speed_rad_s: 0.5
   starting_pose_tolerance_rad: 0.05
+  # Prismatic joints (the 0.041 m gripper stroke), in metres: a rad tolerance of
+  # 0.05 was wider than the whole stroke, so the gripper always "arrived".
+  # provisional, not measured on this rig: the stroke-time and tolerance
+  # fraction of the OpenArm gripper (0.785 rad at 0.5 rad/s, 0.05 rad) scaled
+  # to this stroke. The runner also caps each joint at its velocity_limit.
+  starting_pose_max_joint_speed_m_s: 0.025
+  starting_pose_tolerance_m: 0.0025
+  # Joint-state freshness window: the real HAL's read_state and the skill
+  # runner's blocking waits refuse state older than this (one place; build_hal
+  # and deploy_e2e.launch.py read it). provisional: AlohaHAL's former constructor default,
+  # not measured on this rig — measure with
+  # tools/joint_state_staleness_probe.py --robot <this manifest>.
+  joint_state_staleness_limit_s: 0.2
 
 # Trossen Interbotix XS SDK + interbotix_ros_manipulators ROS 2 driver are
 # BSD-3 / Apache-2.0 (compatible per CLAUDE.md §7.4) but ship as
