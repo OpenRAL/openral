@@ -12,11 +12,11 @@ regenerated ACM never changes silently (safety input — CLAUDE.md §3).
 ``check`` fails (exit 1) on any manifest drift from its lowered model.
 
 **A re-lower may not silently loosen a hand-tightened collision model.**
-``urdf_lowering.lower_link_geometry`` emits a PCA bounding capsule for any
-mesh collision — correct for onboarding, but looser than a hand-fitted
-oriented box. ``panda_mobile`` carries boxes (#103); re-lowering from
-``rd:panda_description`` would replace all seven with capsules of
-**1.9-3.7x the volume** and **1.4-1.5x the circumradius**. So ``lower``
+``urdf_lowering.lower_link_geometry`` emits a bounding capsule for every link
+— correct for onboarding, but looser than a hand-fitted oriented box on
+flanged links. ``panda_mobile`` carries boxes (#103); re-lowering from
+``rd:panda_description`` would replace five of its seven with capsules of up
+to **1.31x the volume** (``test_collision_geometry_no_loosening``). So ``lower``
 compares against the shipped geometry (``geometry_loosening``) and
 **refuses to write** a looser one — no override flag (CLAUDE.md §3): dropping
 tighter geometry means deleting it from the manifest first, a reviewable diff.
@@ -317,8 +317,9 @@ def _report_loosening(robot_path: Path, findings: list[GeometryLoosening]) -> No
             highlight=False,
         )
     _console.print(
-        "[yellow]`lower_link_geometry` PCA-fits a bounding capsule to any mesh collision; "
-        "that is conservative for onboarding but looser than hand-fitted boxes. To adopt "
+        "[yellow]`lower_link_geometry` fits a bounding capsule to each link's collision + "
+        "visual geometry; that is conservative, but can be larger than the shipped primitive "
+        "(a hand-fitted box, or a capsule that did not hold the visual mesh). To adopt "
         "the lowered geometry anyway, delete the affected `collision_geometry` entries "
         "from the manifest first — there is no override flag (CLAUDE.md §3).[/yellow]"
     )

@@ -203,7 +203,7 @@ def test_generated_acm_never_invents_the_exemption() -> None:
     [
         ("left_knee_link", "left_ankle_roll_link"),
         ("left_elbow_link", "left_wrist_pitch_link"),
-        ("torso_link", "left_shoulder_yaw_link"),
+        ("torso_link", "left_shoulder_roll_link"),
     ],
 )
 def test_certified_pairs_are_genuinely_always_colliding(link_a: str, link_b: str) -> None:
@@ -211,11 +211,10 @@ def test_certified_pairs_are_genuinely_always_colliding(link_a: str, link_b: str
 
     A certificate that were wrong would delete a live check, so it is not enough
     that the criterion says yes: the pair must also never separate on a grid the
-    criterion did not choose. Includes a 3-DoF pair (torso vs upper arm across the
-    shoulder pitch/roll/yaw joints); an earlier fixed-grid version of this
-    criterion wrongly refused such multi-DoF pairs — a false refusal costs false
-    E-stops. (The 4-DoF hip-pitch-vs-torso pair this used to pin stopped being
-    always-colliding once the lowering stopped overhanging capsule caps.)
+    criterion did not choose. (The 4-DoF hip-pitch-vs-torso pair this used to pin
+    stopped being always-colliding once the lowering stopped overhanging capsule
+    caps, and the 3-DoF torso-vs-shoulder-yaw pair once the capsules were fitted
+    at minimum volume: both are live checks now.)
     """
     model, geoms, margin = _load("g1")
     assert _certified_always_colliding(model, geoms, link_a, link_b, margin_m=margin)
@@ -229,7 +228,7 @@ def test_certification_is_deterministic() -> None:
     model, geoms, margin = _load("g1")
     verdicts = [
         _certified_always_colliding(
-            model, geoms, "torso_link", "left_shoulder_yaw_link", margin_m=margin
+            model, geoms, "left_elbow_link", "left_wrist_pitch_link", margin_m=margin
         )
         for _ in range(3)
     ]
@@ -257,7 +256,7 @@ def test_running_out_of_budget_withholds_the_exemption(
     import openral_safety.urdf_lowering as ul
 
     model, geoms, margin = _load("g1")
-    pair = ("torso_link", "left_shoulder_yaw_link")
+    pair = ("left_elbow_link", "left_wrist_pitch_link")
     assert _certified_always_colliding(model, geoms, *pair, margin_m=margin)
     monkeypatch.setattr(ul, constant, starved)
     assert not _certified_always_colliding(model, geoms, *pair, margin_m=margin)

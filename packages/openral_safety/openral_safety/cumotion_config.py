@@ -247,7 +247,7 @@ def render_cumotion_config(
     """
     # The kernel checks the MANIFEST's geometry; `model.collision_geometry` is what the
     # lowering tool would *write*, a different (looser) solid for a hand-authored box manifest
-    # (`urdf_lowering.lower_link_geometry` still emits a PCA capsule for a mesh collision —
+    # (`urdf_lowering.lower_link_geometry` emits a capsule for every link —
     # collision-primitive-study 8.5). Prefer the manifest; fall back to the lowered model only
     # during onboarding, when the manifest has no geometry block yet.
     geometry = list(robot.collision_geometry or []) or list(model.collision_geometry)

@@ -456,6 +456,16 @@ the #103 conversion. Whether or not §8.2 lands, a mesh should lower to a box.
 > arm link (1.18–2.08× by volume, `test_collision_geometry_no_loosening.py`).
 > §8.5 stands.
 
+> **Update 2026-09-24 (PR #324 review).** The capsule fit is now minimum-volume
+> (axis search, minimal-enclosing-circle line, 1 mm declared headroom) and holds
+> the link's `<collision>` **and** `<visual>` geometry — the vendor collision
+> blocks under-covered H1 by up to 549 mm, G1 by 61 mm, SO-100 by 15 mm. A
+> `panda_mobile` re-lower would now loosen five of seven links (up to 1.31× by
+> volume), not seven. The review also measures why a capsule of any count per
+> link cannot clear the humanoid rest poses and recommends §8.5's direction —
+> box + exact hull — for every mesh-backed link:
+> [collision-geometry-review.md](collision-geometry-review.md).
+
 > **This is not hypothetical, and #191 hit it.** `render_cumotion_config` was
 > sourcing its collision spheres from `LoweredCollisionModel.collision_geometry`
 > — i.e. from exactly this PCA-capsule path — rather than from the manifest the
