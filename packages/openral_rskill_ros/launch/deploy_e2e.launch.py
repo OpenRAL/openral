@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     # `from __future__ import annotations` keeps the annotation a string.
     from openral_core import RobotDescription, SensorSpec
 from lifecycle_msgs.msg import Transition
+from openral_core import CameraTopicKind, camera_topic
 from openral_foxglove_bringup.topics import (
     ASSET_URI_ALLOWLIST,
     BUCKET1_TOPIC_WHITELIST,
@@ -391,10 +392,10 @@ def _resolve_clock_origin(value: str) -> str:
 def _stereo_camera_topics(names_csv: str) -> tuple[str, str, str, str] | None:
     """Map a ``"<left>,<right>"`` camera-name CSV to the four stereo topics.
 
-    Returns ``(left_image, left_camera_info, right_image, right_camera_info)`` by
-    the OpenRAL ``/openral/cameras/<name>/image`` (+ ``/camera_info``) convention,
-    or ``None`` when unset or not exactly two names — in which case the visual
-    SLAM impl keeps its own default ``left``/``right`` topics.
+    Returns ``(left_image, left_camera_info, right_image, right_camera_info)`` built by
+    ``openral_core.camera_topic``, or ``None`` when unset or not exactly two names — in
+    which case the stereo visual SLAM impl gets no camera topics and refuses to start
+    (its launch arguments carry no default, ADR-0108).
 
     Example:
         >>> t = _stereo_camera_topics("l, r")
@@ -408,10 +409,10 @@ def _stereo_camera_topics(names_csv: str) -> tuple[str, str, str, str] | None:
         return None
     left, right = parts
     return (
-        f"/openral/cameras/{left}/image",
-        f"/openral/cameras/{left}/camera_info",
-        f"/openral/cameras/{right}/image",
-        f"/openral/cameras/{right}/camera_info",
+        camera_topic(left),
+        camera_topic(left, CameraTopicKind.CAMERA_INFO),
+        camera_topic(right),
+        camera_topic(right, CameraTopicKind.CAMERA_INFO),
     )
 
 
@@ -438,7 +439,7 @@ def _primary_rgb_camera(description: RobotDescription) -> str:
 
 
 def _depth_points_topic(description: RobotDescription) -> str:
-    """``/openral/cameras/<name>/points`` of the first depth sensor with intrinsics, else ``""``.
+    """``camera_topic(<name>, POINTS)`` of the first depth sensor with intrinsics, else ``""``.
 
     The world-state object lift's depth-cloud fallback (``object_depth_points_topic``) reads the
     cloud the sim sensor bridge back-projects for exactly those sensors
@@ -452,10 +453,24 @@ def _depth_points_topic(description: RobotDescription) -> str:
         >>> _depth_points_topic(RobotDescription.from_yaml("robots/so101_follower/robot.yaml"))
         ''
     """
+    name = _depth_camera(description)
+    return camera_topic(name, CameraTopicKind.POINTS) if name else ""
+
+
+def _depth_camera(description: RobotDescription) -> str:
+    """Name of the manifest's first depth sensor with intrinsics, else ``""``.
+
+    The sensors the sim bridge back-projects (``openral_hal.depth_cloud.is_depth_sensor``) and
+    publishes ``depth/image`` + ``depth/camera_info`` + ``points`` for.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> _depth_camera(RobotDescription.from_yaml("robots/panda_mobile/robot.yaml"))
+        'front_depth'
+    """
     from openral_hal.depth_cloud import is_depth_sensor
 
-    name = next((s.name for s in description.sensors if is_depth_sensor(s)), "")
-    return f"/openral/cameras/{name}/points" if name else ""
+    return next((s.name for s in description.sensors if is_depth_sensor(s)), "")
 
 
 def _octomap_cloud_topic(pinned: str, description: RobotDescription) -> str:
@@ -712,6 +727,7 @@ def _build_visual_slam_includes(
     mono_camera: str = "",
     mono_depth_frame: str = "",
     depth_sidecar_autostart: bool = True,
+    nav2_depth_camera: str = "",
 ) -> list[object]:
     """Build the cuVSLAM (+ optional nvblox) includes for the visual backend.
 
@@ -721,9 +737,11 @@ def _build_visual_slam_includes(
     ``visual_impl`` picks the engine — ``"pycuvslam"`` composes the in-process PyCuVSLAM wheel
     node (``pycuvslam.launch.py``, rectified stereo, no Isaac ROS apt stack); anything else
     composes the composable ``isaac_ros_visual_slam`` C++ node (``cuvslam.launch.py``).
-    ``stereo_cameras_csv`` (``"<left>,<right>"``) overrides the impl's default left/right
-    topics, keyed to each impl's own arg names. ``enable_nav2`` also composes nvblox (cuVSLAM
-    gives pose, not an occupancy grid).
+    ``stereo_cameras_csv`` (``"<left>,<right>"``) supplies the stereo camera topics, keyed to
+    each impl's own arg names (the impls carry no default, ADR-0108). ``enable_nav2`` also
+    composes nvblox (cuVSLAM gives pose, not an occupancy grid), fed ``nav2_depth_camera``'s
+    depth stream (the manifest's depth sensor, ``_depth_camera``); empty leaves nvblox without
+    an input, which its depth height filter refuses at startup.
 
     ``mono_camera`` (pycuvslam only) selects the mono RGBD path: one RGB camera + the DA3
     metric-depth provider. Auto-composes ``depth_provider_node`` (RGB → 32FC1 depth, framed at
@@ -740,10 +758,10 @@ def _build_visual_slam_includes(
     sim_time_arg = "true" if use_sim_time else "false"
     mono_camera = mono_camera.strip()
     if visual_impl == "pycuvslam" and mono_camera:
-        rgb_image = f"/openral/cameras/{mono_camera}/image"
-        rgb_info = f"/openral/cameras/{mono_camera}/camera_info"
-        depth_image = f"/openral/cameras/{mono_camera}/depth/image"
-        depth_info = f"/openral/cameras/{mono_camera}/depth/camera_info"
+        rgb_image = camera_topic(mono_camera)
+        rgb_info = camera_topic(mono_camera, CameraTopicKind.CAMERA_INFO)
+        depth_image = camera_topic(mono_camera, CameraTopicKind.DEPTH_IMAGE)
+        depth_info = camera_topic(mono_camera, CameraTopicKind.DEPTH_CAMERA_INFO)
         depth_frame = mono_depth_frame or f"{mono_camera}_optical_frame"
         actions: list[object] = []
         if depth_sidecar_autostart:
@@ -857,6 +875,18 @@ def _build_visual_slam_includes(
                 launch_arguments={
                     "use_sim_time": sim_time_arg,
                     "robot_yaml": robot_yaml,
+                    **(
+                        {
+                            "depth_image_topic": camera_topic(
+                                nav2_depth_camera, CameraTopicKind.DEPTH_IMAGE
+                            ),
+                            "depth_camera_info_topic": camera_topic(
+                                nav2_depth_camera, CameraTopicKind.DEPTH_CAMERA_INFO
+                            ),
+                        }
+                        if nav2_depth_camera
+                        else {}
+                    ),
                 }.items(),
             )
         )
@@ -1461,7 +1491,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # frames on every robot. Empty disables the subscription on a camera-less robot.
     _completion_camera = _primary_rgb_camera(description)
     reasoner_params["completion_camera_topic"] = (
-        f"/openral/cameras/{_completion_camera}/image" if _completion_camera else ""
+        camera_topic(_completion_camera) if _completion_camera else ""
     )
     reasoner_params["completion_camera_flip_180"] = os.environ.get(
         "OPENRAL_DASHBOARD_FLIP_180", ""
@@ -2072,6 +2102,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     mono_camera=slam_mono_camera,
                     mono_depth_frame=mono_depth_frame,
                     depth_sidecar_autostart=slam_depth_sidecar_autostart,
+                    nav2_depth_camera=_depth_camera(description),
                 )
             )
         else:
@@ -2292,7 +2323,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             raise ROSConfigError(
                 f"object detector enabled but robot {description.name!r} declares no RGB sensor"
             )
-        det_image_topic = f"/openral/cameras/{det_camera}/image"
+        det_image_topic = camera_topic(det_camera)
 
         # Shared QoS / clock note: clock domain follows the graph-wide flag
         # (see _resolve_clock_origin). The node stamps its output from the input
@@ -2431,7 +2462,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             raise ROSConfigError(
                 f"reward monitor enabled but robot {description.name!r} declares no RGB sensor"
             )
-        reward_image_topic = f"/openral/cameras/{reward_camera}/image"
+        reward_image_topic = camera_topic(reward_camera)
         reward_monitor = Node(
             package="openral_perception_ros",
             executable="reward_monitor_node.py",
@@ -2470,9 +2501,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # caches each stream's latest frame precisely so it can answer about any
         # of them. The detector leg above resolves cameras the same way.
         scene_vlm_cameras = [
-            f"{s.name}=/openral/cameras/{s.name}/image"
-            for s in description.sensors
-            if s.modality == "rgb"
+            f"{s.name}={camera_topic(s.name)}" for s in description.sensors if s.modality == "rgb"
         ]
         scene_vlm_params: dict[str, object] = {
             "manifest_path": scene_vlm_manifest
@@ -2720,7 +2749,7 @@ def generate_launch_description() -> LaunchDescription:
                 "hal_mode:=real only, the runtime node also opens one "
                 "SensorReader per deploy-bound SensorSpec (robot "
                 "manifest + scene `sensors:`) and publishes each "
-                "camera onto /openral/cameras/<name>/image (the "
+                "camera onto its openral_core.camera_topic(<name>) (the "
                 "real-hardware counterpart of the sim HAL's "
                 "SimSensorBridge); in sim the HAL bridge stays the only "
                 "camera source."
@@ -2890,9 +2919,9 @@ def generate_launch_description() -> LaunchDescription:
             default_value="",
             description=(
                 "Optional ``<left>,<right>`` camera names for the visual SLAM "
-                "stereo rig; each maps to /openral/cameras/<name>/image "
-                "(+ /camera_info) and overrides the visual impl's default "
-                "left/right topics. Empty keeps the impl defaults."
+                "stereo rig; each maps to openral_core.camera_topic(<name>) "
+                "(+ camera_info). Required by the stereo visual impls, whose "
+                "camera topics carry no default."
             ),
         ),
         DeclareLaunchArgument(
@@ -2963,8 +2992,8 @@ def generate_launch_description() -> LaunchDescription:
             description=(
                 "Depth PointCloud2 topic octomap_server consumes "
                 "(``cloud_in`` remap). Empty (default) derives "
-                "``/openral/cameras/<name>/points`` from the manifest's first "
-                "depth sensor with intrinsics — the sim sensor bridge's cloud. "
+                "the ``points`` camera topic of the manifest's first depth "
+                "sensor with intrinsics — the sim sensor bridge's cloud. "
                 "Pin the depth driver's topic on real hardware."
             ),
         ),

@@ -143,7 +143,6 @@ if _ROS2_AVAILABLE:
             # the rSkill's `image_preprocessing.aliases` keys (e.g. `top`,
             # `left_wrist`, `right_wrist`).
             self.declare_parameter("camera_names", [""])
-            self.declare_parameter("camera_topic_prefix", "/openral/cameras")
             self.declare_parameter("attachment_state_topic", "/openral/attachment_state")
             # Cameras the co-located sensor leg writes directly (zero-copy NVMM
             # handles intact); ``_on_image`` keeps their thumbnail span but must
@@ -154,10 +153,9 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("object_voxels_topic", "/openral/world_voxels")
             # Depth-cloud fallback for the lift when no octomap voxel grid exists
             # (octomap is often disabled in dense scenes to avoid kernel false
-            # positives). Empty disables the fallback.
-            self.declare_parameter(
-                "object_depth_points_topic", "/openral/cameras/front_depth/points"
-            )
+            # positives). Empty (the default) disables the fallback; the deploy launch passes
+            # ``camera_topic(<first depth sensor>, POINTS)`` from the manifest.
+            self.declare_parameter("object_depth_points_topic", "")
             self.declare_parameter("object_lift_depth_max_points", 4000)
             self.declare_parameter("object_lift_map_frame", "map")
             self.declare_parameter("object_lift_k_nearest", 25)
@@ -308,27 +306,25 @@ if _ROS2_AVAILABLE:
                 attachment_qos,
             )
 
-            # Per-camera subs on `<prefix>/<name>/image`. BEST_EFFORT (CLAUDE.md
+            # Per-camera subs on `camera_topic(name)`. BEST_EFFORT (CLAUDE.md
             # §2 sensor streams) matches both the sim HAL bridges (RELIABLE) and
             # real-mode GStreamer ros_tee/SensorRosPublisher readers
             # (BEST_EFFORT) — a RELIABLE profile never matched the real-camera
             # publishers, leaving real hardware with zero frames.
+            from openral_core import camera_topic
             from sensor_msgs.msg import Image as RosImage
 
             camera_names_raw = list(
                 self.get_parameter("camera_names").get_parameter_value().string_array_value,
             )
             camera_names = [n for n in camera_names_raw if n]
-            topic_prefix: str = (
-                self.get_parameter("camera_topic_prefix").get_parameter_value().string_value
-            )
             image_qos = QoSProfile(
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
                 durability=QoSDurabilityPolicy.VOLATILE,
                 depth=1,
             )
             for name in camera_names:
-                topic = f"{topic_prefix}/{name}/image"
+                topic = camera_topic(name)
                 self._camera_subs[name] = self.create_subscription(
                     RosImage,
                     topic,

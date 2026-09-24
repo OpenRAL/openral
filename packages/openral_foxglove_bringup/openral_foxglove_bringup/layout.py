@@ -40,6 +40,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from openral_core import camera_topic
+
 #: Camera slots used by the shipped layout. ``top`` leads because it is the
 #: 3rd-person overview slot verified against the LIBERO + Franka-Panda deploy
 #: scene; the two wrist slots cover the three-camera humanoid scenes. A slot a
@@ -47,7 +49,7 @@ from typing import Any
 #: panel's topic dropdown, or regenerate with ``--cameras``.
 #: Camera slots the shipped layout is generated for. These are *sensor names*
 #: from the robot manifest, not free labels — `camera_image_topic` builds
-#: `/openral/cameras/<slot>/image` from them, and a slot that does not exist
+#: `openral_core.camera_topic(<slot>)` from them, and a slot that does not exist
 #: renders as "Image topic does not exist" in an otherwise healthy panel.
 #: `wrist_left` / `wrist_right` is the spelling `robots/*/robot.yaml` uses
 #: (openarm, and two other manipulators); the transposed `left_wrist` this
@@ -78,7 +80,7 @@ def camera_image_topic(camera: str, *, compressed: bool = False) -> str:
         '/openral/cameras/top/image/compressed'
     """
     suffix = "/compressed" if compressed else ""
-    return f"/openral/cameras/{camera}/image{suffix}"
+    return camera_topic(camera) + suffix
 
 
 def _scene_panel(follow_frame: str) -> dict[str, Any]:

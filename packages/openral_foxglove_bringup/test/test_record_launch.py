@@ -19,6 +19,7 @@ import re
 from pathlib import Path
 
 import pytest
+from openral_core import camera_topic
 
 _PKG_DIR = Path(__file__).resolve().parent.parent
 _LAUNCH_FILE = _PKG_DIR / "launch" / "record.launch.py"
@@ -62,9 +63,9 @@ _FORBIDDEN_TOPIC_LITERALS = [
 # ``layout.DEFAULT_CAMERAS`` needs its image topic here.
 _EXPECTED_ALLOWED: set[str] = {
     # Scene
-    "/openral/cameras/top/image",
-    "/openral/cameras/wrist_left/image",
-    "/openral/cameras/wrist_right/image",
+    camera_topic("top"),
+    camera_topic("wrist_left"),
+    camera_topic("wrist_right"),
     "/map",
     "/octomap_point_cloud_centers",
     "/scan",

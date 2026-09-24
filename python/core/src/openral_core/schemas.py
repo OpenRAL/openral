@@ -12,11 +12,12 @@ import binascii
 import math
 import re
 from collections.abc import Callable
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import (
     Annotated,
     Any,
     ClassVar,
+    Final,
     Literal,
     NamedTuple,
     Self,
@@ -444,7 +445,12 @@ class SensorSpec(BaseModel):
         vla_feature_key: VLA observation dict key this sensor maps to, e.g.
             'observation.images.camera1'. Used by skill loaders to auto-wire
             sensors to VLA input_features.
-        ros2_topic: ROS 2 topic name. None for non-ROS robots (USB, sim-only).
+        ros2_topic: The image topic an *external* ROS 2 driver publishes
+            (``/camera/color/image_raw``, ``/zed/zed_node/...``); the deploy
+            launch remaps it onto ``camera_topic(name)`` so consumers never see
+            a vendor name. ``None`` (every in-tree manifest) means OpenRAL
+            itself produces the sensor (sim bridge or sensor leg) under the
+            canonical ``camera_topic(name, kind)`` layout.
         ros2_msg_type: ROS 2 message type, e.g. "sensor_msgs/Image". None for
             non-ROS robots (USB, sim-only).
         qos_profile: QoS profile key.
@@ -523,6 +529,56 @@ class SensorSpec(BaseModel):
     # schemas below) resolved by the `SensorSpec.model_rebuild()` after it.
     deploy_binding: SensorDeployBinding | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+
+
+#: Root of the canonical camera topic layout. Spelled here and nowhere else; build
+#: topics with :func:`camera_topic`.
+CAMERA_TOPIC_PREFIX: Final[str] = "/openral/cameras"
+
+
+class CameraTopicKind(StrEnum):
+    """Per-camera stream suffix under ``CAMERA_TOPIC_PREFIX/<sensor name>/``."""
+
+    IMAGE = "image"
+    CAMERA_INFO = "camera_info"
+    DEPTH_IMAGE = "depth/image"
+    DEPTH_CAMERA_INFO = "depth/camera_info"
+    POINTS = "points"
+
+
+def camera_topic(
+    name: str,
+    kind: CameraTopicKind = CameraTopicKind.IMAGE,
+    *,
+    prefix: str = CAMERA_TOPIC_PREFIX,
+) -> str:
+    """The canonical ROS topic of camera ``name``'s ``kind`` stream.
+
+    ``<prefix>/<name>/<kind>`` — the only place the camera layout is spelled.
+    Producers (sim bridge, sensor leg) and consumers (world state, perception,
+    reasoner, Foxglove, launch files) all build through it, so a camera's
+    publisher and subscribers can never drift apart.
+
+    Args:
+        name: ``SensorSpec.name`` of the camera.
+        kind: Which stream of that camera.
+        prefix: Topic root; override only for a namespaced graph.
+
+    Returns:
+        The absolute topic name.
+
+    Raises:
+        ROSConfigError: ``name`` is empty or contains ``/``.
+
+    Example:
+        >>> camera_topic("wrist")
+        '/openral/cameras/wrist/image'
+        >>> camera_topic("front_depth", CameraTopicKind.POINTS)
+        '/openral/cameras/front_depth/points'
+    """
+    if not name or "/" in name:
+        raise ROSConfigError(f"camera name must be a non-empty single path segment, got {name!r}")
+    return f"{prefix}/{name}/{kind.value}"
 
 
 class SensorBundle(BaseModel):
@@ -3591,7 +3647,7 @@ class SensorFrame(BaseModel):
         ...     encoding=FrameEncoding.RGB8,
         ...     width=640,
         ...     height=480,
-        ...     topic="/cameras/wrist_rgb/image_raw",
+        ...     topic=camera_topic("wrist_rgb"),
         ... ).channels
         3
     """
@@ -9637,7 +9693,7 @@ class SensorReaderConfig(BaseModel):
         ...         "nvv4l2decoder ! nvvideoconvert ! appsink"
         ...     },
         ...     publish_to_ros=True,
-        ...     publish_topic="/cameras/wrist_rgb/image_raw",
+        ...     publish_topic=camera_topic("wrist_rgb"),
         ...     publish_rate_hz=5.0,
         ... ).backend.value
         'gstreamer'

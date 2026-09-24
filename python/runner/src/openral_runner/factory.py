@@ -188,7 +188,7 @@ def _make_gstreamer_reader(cfg: SensorReaderConfig) -> SensorReader:
     if cfg.publish_to_ros and not ros_topic:
         raise ROSConfigError(
             f"SensorReaderConfig({cfg.sensor_id!r}): publish_to_ros=True requires "
-            "publish_topic (absolute ROS topic, e.g. /cameras/wrist_rgb/image_raw)."
+            "publish_topic (absolute ROS topic, e.g. openral_core.camera_topic(<sensor>))."
         )
 
     if pipeline_param is not None:

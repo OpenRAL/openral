@@ -46,17 +46,17 @@ _Sensor catalog — vendor-agnostic registry of `SensorSpec` / `SensorBundle` fa
 - const `_D415_RGB_INTRINSICS = IntrinsicsPinhole(...)` — Nominal D415 RGB intrinsics at 640×480 (rolling-shutter IR-stereo, 65°×40°). (L79)
 - const `_D415_DEPTH_INTRINSICS = IntrinsicsPinhole(...)` — Nominal D415 depth intrinsics at 640×480. (L89)
 - `realsense_d435_bundle(name='realsense', parent_frame='base_link', serial_no='', rgb_rate_hz=30.0, depth_rate_hz=30.0, imu_rate_hz=400.0) -> SensorBundle` (L104)
-- `realsense_d435i_bundle(...) -> SensorBundle` — D435 + Bosch BMI085 IMU; delegates to `realsense_d435_bundle`. (L421)
-- `realsense_d415_bundle(...) -> SensorBundle` — rolling-shutter IR stereo, 65°×40°, no IMU. (L456)
-- `bundle_to_node_params(bundle, serial_no='') -> NodeParams` — Map to `realsense2_camera` node params. (L203)
-- `generate_launch_py(bundle, serial_no='') -> str` — Auto-generated ROS 2 launch file. (L277)
-- `calibrate_camera_cmd(sensor, chessboard_cols=8, chessboard_rows=6, square_size_m=0.025) -> list[str]` — Build `ros2 run camera_calibration cameracalibrator` argv. (L346)
+- `realsense_d435i_bundle(...) -> SensorBundle` — D435 + Bosch BMI085 IMU; delegates to `realsense_d435_bundle`. (L422)
+- `realsense_d415_bundle(...) -> SensorBundle` — rolling-shutter IR stereo, 65°×40°, no IMU. (L457)
+- `bundle_to_node_params(bundle, serial_no='') -> NodeParams` — Map to `realsense2_camera` node params. (L205)
+- `generate_launch_py(bundle, serial_no='') -> str` — Auto-generated ROS 2 launch file. (L279)
+- `calibrate_camera_cmd(sensor, chessboard_cols=8, chessboard_rows=6, square_size_m=0.025) -> list[str]` — Build `ros2 run camera_calibration cameracalibrator` argv. `sensor.ros2_topic` is the driver's image topic (ADR-0108); `camera_info` is its sibling in the same namespace. (L348)
 
 #### `python/sensors/src/openral_sensors/luxonis.py`
 - const `_OAK_D_PRO_RGB_INTRINSICS = IntrinsicsPinhole(...)` — Nominal RGB (IMX378) intrinsics at 1920×1080 (95° HFoV). (L48)
 - const `_OAK_D_PRO_DEPTH_INTRINSICS = IntrinsicsPinhole(...)` — Nominal stereo-depth (OV9282) intrinsics at 1280×800, 71.86° HFoV, 7.5 cm baseline. (L60)
 - `oak_d_pro_bundle(name='oak', parent_frame='base_link', mxid='', rgb_rate_hz=30.0, depth_rate_hz=30.0, imu_rate_hz=400.0, rgb_width=1920, rgb_height=1080, depth_width=1280, depth_height=800) -> SensorBundle` — Luxonis OAK-D Pro RGB + global-shutter stereo depth (0.20–19 m, 71.86°×56°) + BNO086 IMU bundle. Registered as `luxonis/oak_d_pro`, the recommended overhead RGB-D for the `so101_box` scene. (L75)
-- `_scale_intrinsics(base, width, height) -> IntrinsicsPinhole` — Delegates to `openral_core.scale_intrinsics_to` so a caller can pick a non-default stream resolution and still get consistent intrinsics. (L187)
+- `_scale_intrinsics(base, width, height) -> IntrinsicsPinhole` — Delegates to `openral_core.scale_intrinsics_to` so a caller can pick a non-default stream resolution and still get consistent intrinsics. (L189)
 
 #### `python/sensors/src/openral_sensors/stereolabs.py`
 - const `_ZED_MINI_EYE_INTRINSICS = IntrinsicsPinhole(...)` — Nominal per-eye intrinsics at the HD720 default (1280×720). (L51)
