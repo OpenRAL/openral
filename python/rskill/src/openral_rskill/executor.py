@@ -136,8 +136,10 @@ class ChunkedExecutor:
                 a chunk in the producing thread, straight after inference and
                 after one host copy of the chunk, so pops are free and the
                 postprocessor sees the state cached for *that* inference.
-                With RTC the queue must hold raw model-space actions for the
-                guidance blend, so it runs at pop time instead.
+                With RTC it runs at merge time, also in the producing thread:
+                lerobot's ``ActionQueue`` keeps the raw rows for the guidance
+                blend and serves the postprocessed ones, which must then be a
+                flat per-step vector (``select_action`` returns it as NumPy).
 
         Raises:
             ROSConfigError: ``prefetch_at`` is negative.
@@ -336,8 +338,10 @@ class ChunkedExecutor:
         trigger = self._prefetch_at  # already clamped to chunk_size - 1 in __init__
         if 0 < trigger >= self._rtc_queue.qsize() and self._running and not self._bg_pending:
             self._launch_prefetch(self._materialize(batch))
-        action = action.unsqueeze(0)
-        return self._postprocess_action(action) if self._postprocess_action else action
+        if self._postprocess_action is not None:
+            # A processed row, finished at merge time (see `_rtc_merge`).
+            return action.numpy()
+        return action.unsqueeze(0)
 
     def _rtc_merge(self, chunk: Any, *, idx_before: int) -> None:
         """Replace the queue tail with a fresh chunk; delay = actions consumed meanwhile."""
@@ -354,6 +358,7 @@ class ChunkedExecutor:
                 f"batch dimension must be 1, got {int(chunk.shape[0])}"
             )
         actions = chunk.squeeze(0).detach()
+        processed = self._rtc_processed(actions)  # before the delay read: it counts every pop
         # Ground-truth delay: how many actions the consumer popped while this
         # inference ran. Valid in wall-clock deploy AND fast-forward sim, unlike
         # a latency/control-period estimate.
@@ -364,7 +369,21 @@ class ChunkedExecutor:
         # one action of staleness in the drop count, not a bug. Don't triage it as one.
         real_delay = max(0, self._rtc_queue.get_action_index() - idx_before)
         self._rtc_last_delay = real_delay
-        self._rtc_queue.merge(actions, actions, real_delay, idx_before)
+        self._rtc_queue.merge(actions, processed, real_delay, idx_before)
+
+    def _rtc_processed(self, actions: Any) -> Any:
+        """The robot-facing copy of an RTC chunk: raw rows, or host-side postprocessed ones.
+
+        ``ActionQueue`` keeps the raw actions for the guidance blend and serves
+        this copy to the robot, so postprocessing happens here, once per chunk and
+        in the producing thread, for the same two reasons as without RTC.
+        """
+        if self._postprocess_action is None:
+            return actions
+        import torch  # RTC implies torch; the module itself stays torch-free
+
+        rows = [self._postprocess_action(row.unsqueeze(0)) for row in actions.cpu()]
+        return torch.stack([torch.as_tensor(r).reshape(-1) for r in rows])
 
     def _raise_bg_error_if_any(self) -> None:
         """Re-raise a latched background error on the foreground thread."""
