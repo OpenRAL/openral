@@ -183,9 +183,9 @@ _Composed-runtime entry point installed as `lib/openral_rskill_ros/runtime_node`
 
 ### `packages/openral_rskill_ros/launch/deploy_e2e.launch.py`
 
-- `compose_runtime_graph(context, *_args, **_kwargs) -> list` (L932) — Resolves every launch arg, loads the robot manifest, and assembles the full deploy-sim ROS graph — HAL, safety kernel, reasoner, SLAM/Nav2, sensor drivers, optional Foxglove viz. On `hal_mode:=real` it also starts the robot's vendor `ros2_control` bringup itself.
-- `generate_launch_description() -> LaunchDescription` (L2714) — Robot-agnostic deploy-sim launch graph entry point; wraps `compose_runtime_graph` in an `OpaqueFunction`.
-- `_build_real_bringup_include(real_bringup) -> object | None` (L619) — `IncludeLaunchDescription` of the manifest's `hal.real_bringup` (`"<pkg>:<file>.launch.py"`) on `hal_mode:=real`; `None` when the manifest declares none; raises `RuntimeError` when the declared package or file is not installed. There is no package-name convention fallback.
+- `compose_runtime_graph(context, *_args, **_kwargs) -> list` (L938) — Resolves every launch arg, loads the robot manifest, and assembles the full deploy-sim ROS graph — HAL, safety kernel, reasoner, SLAM/Nav2, sensor drivers, optional Foxglove viz. On `hal_mode:=real` it also starts the robot's vendor `ros2_control` bringup itself.
+- `generate_launch_description() -> LaunchDescription` (L2720) — Robot-agnostic deploy-sim launch graph entry point; wraps `compose_runtime_graph` in an `OpaqueFunction`.
+- `_build_real_bringup_include(real_bringup) -> object | None` (L625) — `IncludeLaunchDescription` of the manifest's `hal.real_bringup` (`"<pkg>:<file>.launch.py"`) on `hal_mode:=real`; `None` when the manifest declares none; raises `RuntimeError` when the declared package or file is not installed. There is no package-name convention fallback.
 - `_VENV_SITE` (L42) — Optional workspace-editable-install site-dir from `OPENRAL_VENV_SITE`, registered via `site.addsitedir` (plain `PYTHONPATH` is not enough: `.pth` files are only processed by the `site` module on registered site-dirs).
 - `_REPO_ROOT` (L113) — Resolved repo root (`_resolve_repo_root()`).
 - `_RSKILLS_DIR` (L114) — `str(_REPO_ROOT / "rskills")`.
@@ -195,8 +195,8 @@ _Composed-runtime entry point installed as `lib/openral_rskill_ros/runtime_node`
 - `_primary_rgb_camera(description) -> str` — Optical-framed RGB sensor first, else the first RGB sensor, else `""`; the object detector's and the reasoner completion camera's view.
 - `_depth_camera(description) -> str` — The manifest's first depth sensor with intrinsics (`openral_hal.depth_cloud.is_depth_sensor`), else `""`; feeds nvblox under `enable_nav2` and `_depth_points_topic`.
 - `_depth_points_topic(description) -> str` — `camera_topic(_depth_camera(description), POINTS)`, else `""`; the world-state object-lift depth fallback.
-- `_WORLD_VOXEL_DEADLINE_MS` (L306) — The kernel's `world_voxel_deadline_ms` (1000 ms) — the one number the voxel liveness chain hangs off.
-- `_MAX_OCTREE_AGE_S` (L319) — The octomap bridge's `max_octree_age_s`, equal to `_WORLD_VOXEL_DEADLINE_MS` (1.0 s): well above octomap's measured inter-publish gap (~0.45 s at its slowest on Thor), not above the kernel's deadline, so a dead camera ends in the kernel's `DROP_VOXEL_UNAVAILABLE` within 2.0 s (hazard log Entry 033).
+- `_WORLD_VOXEL_DEADLINE_MS` (L312) — The kernel's `world_voxel_deadline_ms` (1000 ms) — the one number the voxel liveness chain hangs off.
+- `_MAX_OCTREE_AGE_S` (L325) — The octomap bridge's `max_octree_age_s`, equal to `_WORLD_VOXEL_DEADLINE_MS` (1.0 s): well above octomap's measured inter-publish gap (~0.45 s at its slowest on Thor), not above the kernel's deadline, so a dead camera ends in the kernel's `DROP_VOXEL_UNAVAILABLE` within 2.0 s (hazard log Entry 033).
 
 ### `python/runner/src/openral_runner/ros_publishing_hal.py`
 _HAL Protocol adapter that publishes `ActionChunk` on `/openral/candidate_action`._

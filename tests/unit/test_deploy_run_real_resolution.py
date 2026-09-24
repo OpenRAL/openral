@@ -14,11 +14,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from openral_cli.deploy_sim import resolve_launch_invocation
+from openral_cli.deploy_sim import LaunchInvocation, resolve_launch_invocation
+from openral_core import SensorSpec
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 
 
-def _resolve(robot_id: str, mode: str) -> object:
+def _resolve(robot_id: str, mode: str) -> LaunchInvocation:
     return resolve_launch_invocation(
         config=None,
         robot_override=robot_id,
@@ -166,3 +167,106 @@ class TestSimModeUnchanged:
     def test_manifest_robot_sim_forwards_sim_mode(self) -> None:
         inv = _resolve("franka_panda", "sim")
         assert inv.hal_params["hal_mode"] == "sim"
+
+
+def _passing_report(spec: SensorSpec, base_frame: str) -> dict[str, object]:
+    """A ``tools/depth_extrinsic_check.py check`` report that clears ``spec``'s pose."""
+    from openral_core.depth_extrinsic import (
+        MAX_HEIGHT_ERR_M,
+        MAX_MARKER_ERR_M,
+        MAX_TILT_DEG,
+        MIN_MARKERS,
+    )
+
+    markers = [
+        {"expected_xy": [0.4, y], "measured_xy": [0.4, y], "error_m": 0.002} for y in (-1, 1)
+    ]
+    return {
+        "sensor": spec.name,
+        "parent_frame": spec.parent_frame,
+        "frame_id": spec.frame_id,
+        "base_frame": base_frame,
+        "static_transform_xyz_rpy": list(spec.static_transform_xyz_rpy or ()),
+        "criteria": {
+            "max_tilt_deg": MAX_TILT_DEG,
+            "max_height_err_m": MAX_HEIGHT_ERR_M,
+            "max_marker_err_m": MAX_MARKER_ERR_M,
+            "min_markers": MIN_MARKERS,
+        },
+        "residuals": {"tilt_deg": 0.1, "height_err_m": 0.001, "markers": markers},
+        "passed": True,
+        "failures": [],
+    }
+
+
+class TestDepthExtrinsicPreflight:
+    """A real deploy with the world-voxel check on refuses an unverified depth extrinsic.
+
+    Galaxea A1 is a real-HAL robot whose manifest ``wrist`` camera (on ``arm_seg6``) is
+    RGB in-tree; it is made a depth camera here, in a copy served via
+    ``OPENRAL_ROBOTS_DIR``, which is how ``deploy run`` resolves manifests.
+    """
+
+    @pytest.fixture
+    def robot_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        import yaml
+
+        data = yaml.safe_load(Path("robots/galaxea_a1/robot.yaml").read_text(encoding="utf-8"))
+        (wrist,) = [s for s in data["sensors"] if s["name"] == "wrist"]
+        wrist["modality"] = "depth"
+        wrist["static_transform_xyz_rpy"] = [0.05, 0.0, 0.03, 0.0, 0.4, 0.0]
+        out = tmp_path / "robots" / "galaxea_a1"
+        out.mkdir(parents=True)
+        (out / "robot.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+        monkeypatch.setenv("OPENRAL_ROBOTS_DIR", str(tmp_path / "robots"))
+        return out
+
+    def _write_report(self, robot_dir: Path, **edit: object) -> None:
+        import json
+
+        from openral_core import RobotDescription
+        from openral_core.depth_extrinsic import extrinsic_report_path
+
+        desc = RobotDescription.from_yaml(str(robot_dir / "robot.yaml"))
+        (spec,) = [s for s in desc.sensors if s.name == "wrist"]
+        report = {**_passing_report(spec, desc.base_frame), **edit}
+        path = extrinsic_report_path(robot_dir / "robot.yaml", "wrist")
+        path.parent.mkdir()
+        path.write_text(json.dumps(report), encoding="utf-8")
+
+    def test_refuses_without_a_report(self, robot_dir: Path) -> None:
+        with pytest.raises(ROSConfigError, match=r"wrist: no extrinsic report"):
+            _resolve("galaxea_a1", "real")
+
+    def test_launches_with_a_verified_report(self, robot_dir: Path) -> None:
+        self._write_report(robot_dir)
+        inv = _resolve("galaxea_a1", "real")
+        assert "enable_octomap_kernel_check:=true" in inv.argv_template
+
+    def test_refuses_a_stale_report(self, robot_dir: Path) -> None:
+        self._write_report(robot_dir, static_transform_xyz_rpy=[0.05, 0.0, 0.03, 0.0, 0.41, 0.0])
+        with pytest.raises(ROSConfigError, match=r"wrist: manifest pose .* != checked pose"):
+            _resolve("galaxea_a1", "real")
+
+    def test_refuses_a_failed_report(self, robot_dir: Path) -> None:
+        self._write_report(robot_dir, passed=False, failures=["tilt"])
+        with pytest.raises(ROSConfigError, match=r"wrist: report did not pass"):
+            _resolve("galaxea_a1", "real")
+
+    def test_not_gated_when_the_world_voxel_check_is_off(self, robot_dir: Path) -> None:
+        inv = resolve_launch_invocation(
+            config=None,
+            robot_override="galaxea_a1",
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_mode="real",
+            enable_octomap_kernel_check=False,
+        )
+        assert "enable_octomap_kernel_check:=false" in inv.argv_template
+
+    def test_the_committed_openarm_refuses_until_calibrated(self) -> None:
+        """head_zed is a depth camera with no committed report: bare `deploy run` refuses."""
+        if Path("robots/openarm/calibration/head_zed_extrinsic.json").exists():
+            pytest.skip("a head_zed calibration report is committed")
+        with pytest.raises(ROSConfigError, match=r"head_zed: no extrinsic report"):
+            _resolve("openarm", "real")

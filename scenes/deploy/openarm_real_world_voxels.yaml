@@ -8,7 +8,7 @@
 # Preconditions, ALL of them, every run:
 #   1. head_zed extrinsic calibrated AND verified for exactly the pose in
 #      robots/openarm/robot.yaml: a passing report from
-#      `tools/zed_extrinsic_check.py check` committed at
+#      `tools/depth_extrinsic_check.py check` committed at
 #      robots/openarm/calibration/head_zed_extrinsic.json. A mis-framed
 #      cloud is not a bad picture here: it puts obstacles where there are none
 #      (false E-stops) and, worse, moves real obstacles away from where they

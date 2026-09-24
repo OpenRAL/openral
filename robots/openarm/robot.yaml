@@ -471,7 +471,7 @@ sensors:
   # THIS entry is the one place the ZED extrinsic lives: the camera is bolted
   # to the rig, so every OpenArm scene publishes this pose and no scene may
   # name this sensor (openral_core.check_scene_sensor_overrides). Calibrate it with
-  # tools/zed_extrinsic_check.py and copy the report's suggested pose here; the
+  # tools/depth_extrinsic_check.py and copy the report's suggested pose here; the
   # passing report is committed at calibration/head_zed_extrinsic.json and
   # `verify` refuses it once this pose changes (runbook:
   # docs/tutorials/deploy/openarm-real-world-voxel-check.md). One manifest

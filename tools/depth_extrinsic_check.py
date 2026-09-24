@@ -1,43 +1,49 @@
-"""Measure a head camera's extrinsic against the table it looks at, from a recorded bag.
+"""Measure a depth camera's extrinsic against the table it looks at, from a recorded bag.
 
 The safety kernel's world-voxel check trusts ``parent_frame -> frame_id`` for the depth
 camera absolutely: every obstacle it will ever stop on is placed through that transform.
-Intrinsics do not enter (the ZED SDK builds the cloud from its own factory calibration);
-the EXTRINSIC does, and ``openral calibrate camera`` does not measure it. This tool does,
-offline, from a bag the operator records with the arms unpowered:
+Intrinsics do not enter (the depth driver builds the cloud from its own calibration); the
+EXTRINSIC does, and ``openral calibrate camera`` does not measure it. This tool does,
+offline, from a bag the operator records with the robot held still:
 
 * **Table plane** (roll, pitch, height). Points in ``--table-roi`` are fitted to a plane
-  in the robot base frame; its tilt from horizontal and its height against the measured
-  ``--table-z`` are the residuals.
+  in the robot BASE frame (the manifest's ``base_frame``); its tilt from horizontal and its
+  height against the measured ``--table-z`` are the residuals.
 * **Markers** (x, y, yaw). Flat objects a few cm thick placed at tape-measured base-frame
   ``--marker X Y`` positions; the centroid of the cloud standing on the table within
   ``--marker-radius`` of each is compared with where it was placed. Two or more are
   required to pass: one marker cannot tell a yaw error from a translation.
 
-The pose under test is the ROBOT MANIFEST's ``--sensor`` entry: the camera is bolted to
-the robot, so its mount is robot geometry, published by every scene on that robot, and no
-scene may name that sensor (``openral_core.check_scene_sensor_overrides``). The bag supplies
-only the clouds and the camera-internal TF below the mount frame (``zed_camera_link ->
-<cloud frame>``, from the ZED wrapper's own URDF), so the bag can be recorded with the
-ZED driver alone. The report records that pose, and ``verify`` refuses a report whose pose
-no longer matches the manifest or whose criteria are looser than this tool's — the gate
-``tools/openarm_world_voxel_run.sh`` applies before a real-arm launch. The committed
-report lives next to the manifest, in ``robots/<id>/calibration/<sensor>_extrinsic.json``.
+The pose under test is the ROBOT MANIFEST's ``--sensor`` entry (a depth camera with
+``parent_frame`` + ``static_transform_xyz_rpy``; RGB-only cameras are refused, there is no
+cloud to fit). The bag supplies the clouds, the camera-internal TF below the mount frame
+(``frame_id -> <cloud frame>``, from the driver's own URDF), and — when ``parent_frame`` is
+not the base frame (a head on ``torso_link``, a wrist camera on ``gripper``) — the TF chain
+``base_frame -> parent_frame`` at the recorded joint pose (record ``/tf`` + ``/tf_static``
+from ``robot_state_publisher``). That chain must hold still across the clouds used. A camera
+whose parent IS the base frame needs only the driver in the bag.
 
-The fitted corrections are also composed into ``suggested_static_transform_xyz_rpy``, to
-be copied into the manifest. Passing on the bag the suggestion was fitted to proves
-nothing (it is zero by construction); verify on a SECOND bag with the markers moved.
+The report records the pose, and ``verify`` (``openral_core.depth_extrinsic``) refuses a
+report whose pose no longer matches the manifest or whose criteria are looser than the
+limits derived from the real world-voxel margin. ``openral deploy run`` applies the same
+gate before any real launch with the world-voxel check on. The committed report lives next
+to the manifest, in ``robots/<id>/calibration/<sensor>_extrinsic.json``.
+
+The fitted corrections are also composed into ``suggested_static_transform_xyz_rpy`` (in
+``parent_frame``), to be copied into the manifest. Passing on the bag the suggestion was
+fitted to proves nothing (it is zero by construction); verify on a SECOND bag with the
+markers moved.
 
 Run (ROS 2 sourced, for rosbag2_py / tf2)::
 
-    uv run python tools/zed_extrinsic_check.py check \\
-        --robot robots/openarm/robot.yaml --bag <bag_dir> \\
+    uv run python tools/depth_extrinsic_check.py check \\
+        --robot robots/openarm/robot.yaml --sensor head_zed --bag <bag_dir> \\
         --cloud-topic /zed/zed_node/point_cloud/cloud_registered \\
         --table-z -0.20 --table-roi 0.30 0.70 -0.30 0.30 \\
-        --marker 0.45 0.15 --marker 0.55 -0.15 --out report.json
-    uv run python tools/zed_extrinsic_check.py verify \\
-        --robot robots/openarm/robot.yaml \\
-        --report robots/openarm/calibration/head_zed_extrinsic.json
+        --marker 0.45 0.15 --marker 0.55 -0.15 \\
+        --out robots/openarm/calibration/head_zed_extrinsic.json
+    uv run python tools/depth_extrinsic_check.py verify \\
+        --robot robots/openarm/robot.yaml --sensor head_zed
 """
 
 from __future__ import annotations
@@ -51,19 +57,27 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
-
-#: Pass criteria. Proposed, not measured on a rig: each is half or less of the real
-#: world-voxel margin (20 mm) at the ranges the head camera sees the table (<= 1 m,
-#: where 0.75 deg is 13 mm). ``verify`` refuses a report checked against looser ones.
-MAX_TILT_DEG = 0.75
-MAX_HEIGHT_ERR_M = 0.010
-MAX_MARKER_ERR_M = 0.015
-MIN_MARKERS = 2
+from openral_core import RobotDescription
+from openral_core.depth_extrinsic import (
+    MAX_HEIGHT_ERR_M,
+    MAX_MARKER_ERR_M,
+    MAX_TILT_DEG,
+    MIN_MARKERS,
+    checkable_depth_sensor,
+    extrinsic_report_path,
+    residual_failures,
+    verify_extrinsic_report,
+)
+from openral_core.exceptions import ROSConfigError
 
 _TABLE_BAND_M = 0.15  # first-pass search band around --table-z; a bad pose is cm off
 _INLIER_M = 0.01  # plane refit keeps points this close to the first fit
 _MIN_PLANE_POINTS = 500
 _MIN_MARKER_POINTS = 30
+#: How far ``base_frame -> parent_frame`` may wander across the clouds used (m / rad):
+#: a wrist or head that moves mid-recording has no single extrinsic to fit.
+_PARENT_STILL_M = 1e-3
+_PARENT_STILL_RAD = 1e-3
 
 Points = NDArray[np.float64]
 Rot = NDArray[np.float64]
@@ -211,28 +225,35 @@ def _suggest(
     return rz @ rot, rz @ trans + np.array([shift[0], shift[1], 0.0])
 
 
-def _manifest_sensor(robot_yaml: Path, sensor: str) -> Any:
-    """The sensor's mount exactly as every deploy publishes it: the robot manifest's entry."""
-    from openral_core import RobotDescription
-
-    for spec in RobotDescription.from_yaml(str(robot_yaml)).sensors:
-        if spec.name == sensor:
-            if spec.parent_frame is None or spec.static_transform_xyz_rpy is None:
-                raise ValueError(f"sensor {sensor!r} has no parent_frame + static transform")
-            return spec
-    raise ValueError(f"no sensor named {sensor!r} in {robot_yaml}")
+def _as_rt(tf: Any) -> tuple[Rot, NDArray[np.float64]]:
+    r, t = tf.rotation, tf.translation
+    return _quat_to_matrix(r.x, r.y, r.z, r.w), np.array([t.x, t.y, t.z])
 
 
 def _read_bag(
-    bag: Path, cloud_topic: str, mount_frame: str, max_clouds: int, stride: int
-) -> tuple[Points, str, int]:
-    """Clouds from ``bag``, re-expressed in ``mount_frame`` through the camera-internal TF."""
+    bag: Path,
+    cloud_topic: str,
+    *,
+    mount_frame: str,
+    parent_frame: str,
+    base_frame: str,
+    max_clouds: int,
+    stride: int,
+) -> tuple[Points, str, int, Rot, NDArray[np.float64]]:
+    """Clouds from ``bag`` in ``mount_frame``, and the recorded ``base_frame <- parent_frame``.
+
+    The cloud is re-expressed in the mount frame through the camera-internal TF; the mount
+    itself (``parent_frame -> mount_frame``) is the manifest pose under test and is never
+    read from the bag. ``base_frame <- parent_frame`` is identity when they are the same
+    frame, else looked up at each cloud's stamp and required to hold still.
+    """
     import rosbag2_py
+    from rclpy.duration import Duration
     from rclpy.serialization import deserialize_message
     from rclpy.time import Time
     from rosidl_runtime_py.utilities import get_message
     from sensor_msgs_py.point_cloud2 import read_points_numpy
-    from tf2_ros import Buffer
+    from tf2_ros import Buffer, TransformException
 
     # Any: rosbag2_py has pybind stubs only when a ROS overlay is sourced, so a typed
     # reader would make `mypy --strict tools/` disagree between CI (no ROS) and a dev host.
@@ -247,7 +268,8 @@ def _read_bag(
     types = {t.name: t.type for t in topics}
     if cloud_topic not in types:
         raise ValueError(f"{bag} has no {cloud_topic}; topics: {sorted(types)}")
-    buf = Buffer()
+    # Hold the whole recording: the chain is looked up at each cloud's own stamp.
+    buf = Buffer(cache_time=Duration(seconds=24 * 3600))
     clouds = []
     while reader.has_next():
         topic, data, _ = reader.read_next()
@@ -263,26 +285,66 @@ def _read_bag(
         raise ValueError(f"{bag}: no messages on {cloud_topic}")
     clouds = clouds[-max_clouds:]
     frame = clouds[0].header.frame_id
-    tf = buf.lookup_transform(mount_frame, frame, Time()).transform
-    rot = _quat_to_matrix(tf.rotation.x, tf.rotation.y, tf.rotation.z, tf.rotation.w)
-    trans = np.array([tf.translation.x, tf.translation.y, tf.translation.z])
+    try:
+        rot, trans = _as_rt(buf.lookup_transform(mount_frame, frame, Time()).transform)
+        chain = [
+            _as_rt(
+                buf.lookup_transform(
+                    base_frame, parent_frame, Time.from_msg(c.header.stamp)
+                ).transform
+            )
+            for c in clouds
+            if parent_frame != base_frame
+        ] or [(np.eye(3), np.zeros(3))]
+    except TransformException as exc:
+        raise ValueError(
+            f"{bag}: TF lookup failed ({exc}). The bag needs {mount_frame} -> {frame} (the "
+            "driver's own TF)"
+            + (
+                f" and {base_frame} -> {parent_frame} at each cloud's stamp: record /tf and "
+                "/tf_static from robot_state_publisher with the robot held still."
+                if parent_frame != base_frame
+                else "."
+            )
+        ) from exc
+    base_rot, base_trans = chain[0]
+    for r, t in chain[1:]:
+        moved = float(np.linalg.norm(t - base_trans))
+        turned = math.acos(max(-1.0, min(1.0, (float(np.trace(base_rot.T @ r)) - 1.0) / 2.0)))
+        if moved > _PARENT_STILL_M or turned > _PARENT_STILL_RAD:
+            raise ValueError(
+                f"{parent_frame} moved relative to {base_frame} during the recording "
+                f"({moved * 1000:.1f} mm, {math.degrees(turned):.2f} deg): hold the robot "
+                "still while recording."
+            )
     pts = np.concatenate(
         [
             read_points_numpy(c, field_names=("x", "y", "z"), skip_nans=True)[::stride]
             for c in clouds
         ]
     ).astype(np.float64)
-    return pts @ rot.T + trans, frame, len(clouds)
+    return pts @ rot.T + trans, frame, len(clouds), base_rot, base_trans
 
 
 def check(args: argparse.Namespace) -> int:
     """Measure the manifest's pose against the bag and write the JSON report; 0 iff it passes."""
-    spec = _manifest_sensor(args.robot, args.sensor)
-    mount_pts, cloud_frame, n_clouds = _read_bag(
-        args.bag, args.cloud_topic, spec.frame_id, args.max_clouds, args.stride
+    description = RobotDescription.from_yaml(str(args.robot))
+    spec = checkable_depth_sensor(description, args.sensor)
+    assert spec.parent_frame is not None and spec.static_transform_xyz_rpy is not None
+    base_frame = description.base_frame
+    mount_pts, cloud_frame, n_clouds, base_rot, base_trans = _read_bag(
+        args.bag,
+        args.cloud_topic,
+        mount_frame=spec.frame_id,
+        parent_frame=spec.parent_frame,
+        base_frame=base_frame,
+        max_clouds=args.max_clouds,
+        stride=args.stride,
     )
     x, y, z, roll, pitch, yaw = spec.static_transform_xyz_rpy
-    rot, trans = _rpy_to_matrix(roll, pitch, yaw), np.array([x, y, z])
+    # The camera's pose in the BASE frame: the recorded parent pose, then the manifest mount.
+    rot = base_rot @ _rpy_to_matrix(roll, pitch, yaw)
+    trans = base_rot @ np.array([x, y, z]) + base_trans
     kw: dict[str, Any] = {
         "table_z": args.table_z,
         "roi": tuple(args.table_roi),
@@ -298,7 +360,7 @@ def check(args: argparse.Namespace) -> int:
         "max_marker_err_m": args.max_marker_err_m,
         "min_markers": MIN_MARKERS,
     }
-    failures = _residual_failures(
+    failures = residual_failures(
         res,
         max_tilt_deg=args.max_tilt_deg,
         max_height_err_m=args.max_height_err_m,
@@ -308,6 +370,8 @@ def check(args: argparse.Namespace) -> int:
         "sensor": spec.name,
         "parent_frame": spec.parent_frame,
         "frame_id": spec.frame_id,
+        "base_frame": base_frame,
+        "parent_in_base_xyz_rpy": [*(float(v) for v in base_trans), *_matrix_to_rpy(base_rot)],
         "static_transform_xyz_rpy": list(spec.static_transform_xyz_rpy),
         "bag": str(args.bag),
         "cloud_topic": args.cloud_topic,
@@ -319,9 +383,10 @@ def check(args: argparse.Namespace) -> int:
         "residuals": res,
         "passed": not failures,
         "failures": failures,
+        # Back from the base frame to the manifest's parent_frame.
         "suggested_static_transform_xyz_rpy": [
-            *(float(v) for v in s_trans),
-            *_matrix_to_rpy(s_rot),
+            *(float(v) for v in base_rot.T @ (s_trans - base_trans)),
+            *_matrix_to_rpy(base_rot.T @ s_rot),
         ],
         "suggested_residuals": _evaluate(mount_pts, s_rot, s_trans, **kw),
     }
@@ -333,88 +398,16 @@ def check(args: argparse.Namespace) -> int:
     return 0 if not failures else 1
 
 
-def _within(value: object, limit: float) -> bool:
-    """``value <= limit`` for a finite number; NaN, inf and non-numbers never pass."""
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-        and value <= limit
-    )
-
-
-def _residual_failures(
-    res: dict[str, Any],
-    *,
-    max_tilt_deg: float,
-    max_height_err_m: float,
-    max_marker_err_m: float,
-) -> list[str]:
-    """Every way ``res`` misses the criteria. Written as "not within", so a NaN or inf
-    residual — or limit — fails instead of slipping through a ``>`` comparison."""
-    failures = []
-    if not _within(res.get("tilt_deg"), max_tilt_deg):
-        failures.append(f"table tilt {res.get('tilt_deg')} deg not <= {max_tilt_deg}")
-    height = res.get("height_err_m")
-    if not _within(abs(height) if isinstance(height, (int, float)) else height, max_height_err_m):
-        failures.append(f"table height error {height} m not within {max_height_err_m}")
-    markers = res.get("markers") or []
-    if len(markers) < MIN_MARKERS:
-        failures.append(f"{len(markers)} marker(s); {MIN_MARKERS} needed to fix yaw")
-    failures += [
-        f"marker {m.get('expected_xy')} off by {m.get('error_m')} m (limit {max_marker_err_m})"
-        for m in markers
-        if not _within(m.get("error_m"), max_marker_err_m)
-    ]
-    return failures
-
-
 def verify(args: argparse.Namespace) -> int:
-    """0 iff ``--report`` passed, at no looser criteria, for the manifest's CURRENT pose."""
-    spec = _manifest_sensor(args.robot, args.sensor)
-    if not args.report.is_file():
-        print(f"REFUSE: no extrinsic report at {args.report}", file=sys.stderr)
-        return 1
-    report = json.loads(args.report.read_text(encoding="utf-8"))
-    crit = report.get("criteria", {})
-    problems = []
-    if report.get("passed") is not True:
-        problems.append(f"report did not pass: {report.get('failures')}")
-    # Never trust the stored verdict alone: re-derive it from the stored residuals against
-    # this tool's own limits, so a hand-edited or NaN-laden report cannot open the gate.
-    problems += [
-        f"residuals fail the shipped limits: {f}"
-        for f in _residual_failures(
-            report.get("residuals") or {},
-            max_tilt_deg=MAX_TILT_DEG,
-            max_height_err_m=MAX_HEIGHT_ERR_M,
-            max_marker_err_m=MAX_MARKER_ERR_M,
-        )
-    ]
-    if (report.get("sensor"), report.get("parent_frame"), report.get("frame_id")) != (
-        spec.name,
-        spec.parent_frame,
-        spec.frame_id,
-    ):
-        problems.append("report is for a different sensor or frame pair")
-    reported = report.get("static_transform_xyz_rpy") or []
-    if len(reported) != 6 or not np.allclose(reported, spec.static_transform_xyz_rpy, atol=1e-9):
-        problems.append(
-            f"manifest pose {list(spec.static_transform_xyz_rpy)} != checked pose {reported}"
-        )
-    for key, limit in (
-        ("max_tilt_deg", MAX_TILT_DEG),
-        ("max_height_err_m", MAX_HEIGHT_ERR_M),
-        ("max_marker_err_m", MAX_MARKER_ERR_M),
-    ):
-        if not _within(crit.get(key), limit):
-            problems.append(f"criterion {key}={crit.get(key)} is looser than {limit}")
-    if not isinstance(crit.get("min_markers"), int) or crit["min_markers"] < MIN_MARKERS:
-        problems.append(f"criterion min_markers={crit.get('min_markers')} < {MIN_MARKERS}")
+    """0 iff the report passed, at no looser criteria, for the manifest's CURRENT pose."""
+    description = RobotDescription.from_yaml(str(args.robot))
+    spec = checkable_depth_sensor(description, args.sensor)
+    report = args.report or extrinsic_report_path(args.robot, spec.name)
+    problems = verify_extrinsic_report(spec, report, base_frame=description.base_frame)
     for p in problems:
         print(f"REFUSE: {p}", file=sys.stderr)
     if not problems:
-        print(f"extrinsic verified: {spec.name} {list(spec.static_transform_xyz_rpy)}")
+        print(f"extrinsic verified: {spec.name} {list(spec.static_transform_xyz_rpy or ())}")
     return 1 if problems else 0
 
 
@@ -433,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("check", "verify"):
         p = sub.add_parser(name)
         p.add_argument("--robot", type=Path, required=True, help="robots/<id>/robot.yaml")
-        p.add_argument("--sensor", default="head_zed")
+        p.add_argument("--sensor", required=True, help="the manifest's depth camera name")
     c = sub.choices["check"]
     finite = _finite_float
     c.add_argument("--bag", type=Path, required=True)
@@ -453,11 +446,16 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--max-height-err-m", type=finite, default=MAX_HEIGHT_ERR_M)
     c.add_argument("--max-marker-err-m", type=finite, default=MAX_MARKER_ERR_M)
     c.add_argument("--out", type=Path, default=None)
-    sub.choices["verify"].add_argument("--report", type=Path, required=True)
+    sub.choices["verify"].add_argument(
+        "--report",
+        type=Path,
+        default=None,
+        help="default: <robot dir>/calibration/<sensor>_extrinsic.json",
+    )
     args = parser.parse_args(argv)
     try:
         return check(args) if args.cmd == "check" else verify(args)
-    except ValueError as exc:
+    except (ValueError, ROSConfigError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
