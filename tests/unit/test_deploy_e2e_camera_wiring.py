@@ -108,24 +108,23 @@ def test_octomap_without_a_depth_cloud_fails_loud(launch_module: object) -> None
 def test_real_deploy_picks_a_bound_camera(launch_module: object) -> None:
     """On a real deploy only a camera with a ``deploy_binding`` has a topic.
 
-    OpenArm's manifest binds no camera (``top`` is a MuJoCo render), so its sim pick
-    (``top``) is a dead topic on the real cell. With a scene that binds only
-    ``wrist_left`` (host binding only, as ``check_scene_sensor_overrides`` requires),
-    the completion/detector camera must be ``wrist_left``; with no binding at all it is
-    empty, which disables the subscription instead of subscribing to silence.
+    The committed OpenArm manifest binds all its cameras (a deploy scene never touches
+    a robot camera), so the real pick equals the sim pick, ``top``. Strip the bindings
+    and a camera the manifest leaves unbound is a dead topic on the real cell: with only
+    ``wrist_left`` bound the completion/detector camera must be ``wrist_left``; with no
+    binding at all it is empty, which disables the subscription instead of subscribing
+    to silence.
     """
-    from openral_core import SensorDeployBinding, SensorSpec, publishing_sensors
+    from openral_core import publishing_sensors
 
     arm = _robot("openarm")
-    manifest_left = next(s for s in arm.sensors if s.name == "wrist_left")
-    bound_left = SensorSpec(
-        name="wrist_left",
-        modality="rgb",
-        frame_id=manifest_left.frame_id,
-        rate_hz=30.0,
-        deploy_binding=SensorDeployBinding(backend_params={"device": "/dev/video0"}),
-    )
+    only_left = [
+        s if s.name == "wrist_left" else s.model_copy(update={"deploy_binding": None})
+        for s in arm.sensors
+    ]
+    unbound = [s.model_copy(update={"deploy_binding": None}) for s in arm.sensors]
     pick = launch_module._primary_rgb_camera  # type: ignore[attr-defined]
     assert pick(publishing_sensors(arm.sensors, [], "sim")) == "top"
-    assert pick(publishing_sensors(arm.sensors, [], "real")) == ""
-    assert pick(publishing_sensors(arm.sensors, [bound_left], "real")) == "wrist_left"
+    assert pick(publishing_sensors(arm.sensors, [], "real")) == "top"
+    assert pick(publishing_sensors(only_left, [], "real")) == "wrist_left"
+    assert pick(publishing_sensors(unbound, [], "real")) == ""

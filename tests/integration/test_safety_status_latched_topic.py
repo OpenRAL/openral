@@ -213,6 +213,11 @@ def test_runner_safety_abort_getter_names_the_fault_from_safety_status() -> None
 
     rclpy.init()
     runtime = compose_so100_runtime()
+    # The runner has no staleness window of its own (issue #303); deploy_e2e.launch.py
+    # declares it in production, so this harness plays the launch's role.
+    runtime.skill_runner_node.set_parameters(
+        [rclpy.parameter.Parameter("joint_state_staleness_limit_s", value=0.5)]
+    )
     safety = SafetyPassthroughNode(node_name="openral_safety_status_runner_seam")
     safety.set_parameters(
         [

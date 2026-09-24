@@ -391,9 +391,9 @@ Measures the wire cost of the dense `uint8[]` payload as publish→receive laten
 - `MAX_HEIGHT_ERR_M: float` (L59) — table-height pass limit (10 mm).
 - `MAX_MARKER_ERR_M: float` (L60) — per-marker planar pass limit (15 mm).
 - `MIN_MARKERS: int` (L61) — markers required to pass (2; one cannot separate yaw from translation).
-- `check(args) -> int` (L276) — Reads the ZED cloud and camera-internal TF from a rosbag2 bag, places the cloud through the robot manifest's `--sensor` pose (the only place a robot sensor's mount lives), fits the table plane and marker centroids in the base frame, and writes a JSON report (residuals, pass/fail, and `suggested_static_transform_xyz_rpy` composed from tilt, height and planar corrections, to be copied into the manifest). Returns 0 iff it passes.
-- `verify(args) -> int` (L370) — 0 iff the report passed, at criteria no looser than the defaults, for the manifest's *current* pose. The gate `tools/openarm_world_voxel_run.sh` applies.
-- `main(argv=None) -> int` (L427) — CLI: `check --robot --bag --cloud-topic --table-z --table-roi --marker X Y ...` / `verify --robot --report` (`--sensor` defaults to `head_zed`; committed report at `robots/<id>/calibration/<sensor>_extrinsic.json`). Needs a sourced ROS 2 overlay (rosbag2_py, tf2_ros).
+- `check(args) -> int` (L278) — Reads the ZED cloud and camera-internal TF from a rosbag2 bag, places the cloud through the robot manifest's `--sensor` pose (the only place a robot sensor's mount lives), fits the table plane and marker centroids in the base frame, and writes a JSON report (residuals, pass/fail, and `suggested_static_transform_xyz_rpy` composed from tilt, height and planar corrections, to be copied into the manifest). Returns 0 iff it passes.
+- `verify(args) -> int` (L372) — 0 iff the report passed, at criteria no looser than the defaults, for the manifest's *current* pose. The gate `tools/openarm_world_voxel_run.sh` applies.
+- `main(argv=None) -> int` (L429) — CLI: `check --robot --bag --cloud-topic --table-z --table-roi --marker X Y ...` / `verify --robot --report` (`--sensor` defaults to `head_zed`; committed report at `robots/<id>/calibration/<sensor>_extrinsic.json`). Needs a sourced ROS 2 overlay (rosbag2_py, tf2_ros).
 
 Measures the one input the kernel's world-voxel check trusts absolutely on a real camera — the extrinsic — which `openral calibrate camera` (intrinsics only) does not. Runbook: `docs/tutorials/deploy/openarm-real-world-voxel-check.md`. Tested in `tests/unit/test_zed_extrinsic_check.py` on a real rosbag2 bag.
 
@@ -781,3 +781,13 @@ _Galaxea A1 ROS 1 sidecar for `openral_hal.galaxea_a1.GalaxeaA1HAL`; owns roscor
   - `Bridge.state(config)` (L394) — Assemble the current feedback+relay JSON state, raising `RuntimeError` on stale feedback, a latched fault, or an out-of-limits reading.
   - `Bridge.apply(packet, config, first_joint_command)` (L457) — Validate and forward one command packet (`joint_targets` / gripper) to the host driver after re-checking state and motor status.
 - `main() -> int` (L709) — argparse (`--bind`, `--port`, `--serial`, `--startup-timeout-s`); starts roscore + the vendor serial driver + tracker via `Stack`, wires `Bridge`, serves the sidecar's TCP/JSON protocol.
+
+### `tools/joint_state_staleness_probe.py`
+
+- `RATE_HZ_DEFAULT: float` (L59) — the OpenArm's joint-state rate (750 Hz, `update_rate` of its controller manager).
+- `READ_HZ_DEFAULT: float` (L60) — the runner's tick rate the read-side age is sampled at (30 Hz).
+- `pct(xs, p) -> float` (L63) — nearest-rank percentile; NaN when empty.
+- `run(duration_s, rate_hz, read_hz, load) -> int` (L71) — publishes synthetic `JointState` at `rate_hz` over real DDS into the branch's `RosControlTransport` subscription (production QoS + callback) on one executor, and prints callback inter-arrival gaps, stamp→callback latency, the read-side age `now - last_arrival()` at `read_hz`, and how often `hal.read_state()` raised `ROSPerceptionStale` at the manifest's limit. `load=True` adds a GIL-contending thread in the same process.
+- `main(argv=None) -> int` (L219) — CLI: `uv run python tools/joint_state_staleness_probe.py [--duration 60] [--rate 750] [--read-hz 30] [--load]`. Needs a sourced ROS 2 overlay; uses `ROS_DOMAIN_ID` 77 unless set, so it never touches a live graph.
+
+Backs `staleness_limit_s` in a real manifest's `hal.parameters.defaults` — the age past which `read_state` refuses to answer. The number must come from a measurement on the deploy host, not a schema default. Thor 2026-09-23 (Fast-DDS): idle gap p99.9 2.6 ms / max 4.6 ms, read-side age max 32 ms; under GIL starvation latency max 43 ms, no gap above 33 ms → `robots/openarm/robot.yaml` declares 0.1 s (three control periods).

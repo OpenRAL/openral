@@ -447,6 +447,25 @@ x86_64 resolution is unchanged — still PyPI `torch==2.9.1`, `torchcodec==0.9.1
 >
 > Fresh venvs are unaffected.
 
+### No `expandable_segments` on Tegra
+
+`openral deploy sim` / `deploy run` default the CUDA caching allocator to
+`expandable_segments:True` for every node in the graph, because on an 8 GiB
+discrete card the default allocator fragments and OOMs a VLA that otherwise
+fits. On a Jetson the CLI leaves it unset (`_is_tegra_host`): the integrated
+GPU shares system RAM, so there is no fragmentation headroom to recover — and
+torch's expandable path queries NVML GPU-fabric info, which the iGPU cannot
+answer. Observed on qorin1 (AGX Orin, torch 2.13+cu130, 2026-09-22): the
+`runtime_node` raised
+
+```
+RuntimeError: Expected NVML_SUCCESS == DriverAPI::get()->nvmlDeviceGetGpuFabricInfoV_( nvml_device, &fabricInfo) to be true, but got false.
+```
+
+363 s into loading the OpenArm restock π0.5, while the identical load in the
+same venv without the variable succeeded (371 s, 7.8 GiB). An explicit
+`PYTORCH_ALLOC_CONF` in the operator's environment still passes through.
+
 ## GStreamer colour conversion on plain L4T
 
 Jetson Thor images ship the L4T multimedia stack (`nvvidconv`) but **not**

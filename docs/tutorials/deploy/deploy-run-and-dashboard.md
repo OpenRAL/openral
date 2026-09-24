@@ -97,8 +97,9 @@ openral detect \
 
 Detection records robot-owned facts in `robot.yaml`; it does not create a
 deploy scene unless `--deployment` is passed. The wizard always runs (there is
-no `--interactive` flag) and opens the camera binding wizard so robot cameras
-and workcell cameras land in that deploy scene.
+no `--interactive` flag) and opens the camera binding wizard: a robot camera's
+binding lands in `robot.yaml`, a workcell camera (its own name) in that deploy
+scene — a deploy scene never touches a robot camera.
 Use `--include usb,gpu,cameras_v4l2,cameras_realsense` to limit probes, and
 `--report detect.json --no-write` when you only want the raw detection report.
 The rSkill that drives the robot is **not** set in deploy config — the reasoner
@@ -145,51 +146,111 @@ depth at all. The ZED SDK rectifies and stereo-matches on the **host GPU**, and
 `zed_wrapper` publishes the result. So a host without the SDK sees one wide RGB
 camera and nothing else — which is exactly what `openral detect` reports.
 
-Bind those streams with the `ros2_image` backend:
+Bind those streams with the `ros2_image` backend — and let the scene start the
+driver, so there is no second terminal to forget. This is the recipe verified on
+the OpenArm bench (`scenes/deploy/openarm_bench.yaml`, ZED-M, SDK 5.4.1) and it
+is not OpenArm-specific: a cell with a ZED-M bolted to the robot, launched under
+the wrapper's default `zed` camera name and `zed_node` node name, uses it as is.
+Another ZED model changes `camera_model` and needs its own override file (the
+ZED-M one pins settings for its USB hub and IMU); a different camera or node
+name changes the `/zed/zed_node/...` topic root on every binding below.
+
+```yaml
+# The scene launches zed_wrapper itself (real path only; `deploy sim` renders).
+drivers:
+  - package: zed_wrapper
+    launch_file: zed_camera.launch.py
+    args:
+      camera_model: zedm            # zed / zedm / zed2 / zed2i / zedx …
+      # The camera is bolted to the robot, so its pose belongs to the robot's
+      # TF tree (the manifest's mount), not to the wrapper's visual odometry.
+      # With these on, zed_camera_link gets a SECOND parent, tf2 lookups go
+      # order-dependent and octomap silently drops every cloud.
+      publish_tf: "false"
+      publish_map_tf: "false"
+      # Scene-relative. Pins HD720 (the ZED-M shares a USB hub with other
+      # cameras and reboots in a loop at HD1080), turns positional tracking
+      # off and depth stabilization to 0 (the SDK force-enables tracking
+      # otherwise, defeating the setting above).
+      ros_params_override_path: drivers/zedm_openarm_override.yaml
+
+runtime:
+  # A depth SensorSpec with intrinsics auto-enables the octomap leg, but the
+  # cloud topic keeps a sim-only launch default unless the scene pins it —
+  # leaving the octree empty behind a healthy-looking graph.
+  enable_octomap: true
+  octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+```
+
+The scene has **no `sensors:` block**. The ZED is bolted to the robot, so both of
+its streams are robot cameras, and a deploy scene never touches a camera the
+robot manifest defines (`check_scene_sensor_overrides` refuses a scene entry
+that reuses a manifest sensor's name). The bindings go on the manifest's own
+entries, in `robots/<robot>/robot.yaml`, next to the geometry they belong to —
+this is what `robots/openarm/robot.yaml` commits:
 
 ```yaml
 sensors:
-  # Left eye as RGB — still fine over UVC with a crop.
-  # Same name as the manifest's sim `top` camera, so the policy keeps its `top`
-  # slot (leave `vla_feature_key` unset). Restate every hardware field: the
-  # merge keeps any the scene omits, so the sim camera's 640x480 intrinsics and
-  # `frame_id: world` would otherwise describe the ZED.
-  - name: top
-    modality: rgb
-    frame_id: openarm_head_camera_optical_frame
-    parent_frame: openarm_base
-    rate_hz: 30.0
-    encoding: bgr8
-    # Width/height match the crop below; take fx/fy/cx/cy from your unit's
-    # ZED calibration (these are placeholders at the WVGA scale).
-    intrinsics: { width: 672, height: 376, fx: 336.0, fy: 336.0, cx: 336.0, cy: 188.0 }
-    vendor: StereoLabs
-    model: ZED Mini
-    deploy_binding:
-      backend: opencv_thread
-      backend_params: { device: /dev/camera_head_stereo, width: 1344, height: 376,
-                        crop: [0, 0, 672, 376] }
-
-  # Depth — SDK-computed, so it arrives as a topic, not a device.
-  - name: head_depth
+  # Depth: SDK-computed, so it exists only as a topic. `32FC1` metres on the
+  # wire (or `16UC1` millimetres with `openni_depth_mode: true`) — either way
+  # it reaches the world state as DEPTH16, uint16 millimetres.
+  - name: head_zed
     modality: depth
-    frame_id: openarm_head_camera_optical_frame
-    parent_frame: openarm_base
-    rate_hz: 30.0
-    encoding: 32FC1
+    frame_id: zed_camera_link
+    parent_frame: openarm_base      # the mount: robot geometry, calibrated here
+    # … static_transform_xyz_rpy, intrinsics …
     deploy_binding:
       backend: ros2_image
       backend_params:
-        # Verified against a running zed_wrapper (ZED-M, SDK 5.4.1): the
-        # default topic root is /<camera_name>/<node_name>/, so the node
-        # name is part of the path. It is NOT /zed/depth/....
+        # Verified against a running zed_wrapper: the topic root is
+        # /<camera_name>/<node_name>/, so the node name is part of the path.
         topic: /zed/zed_node/depth/depth_registered
         # best_effort (the default) also matches a RELIABLE publisher; a
         # `reliable` subscriber gets NOTHING from a best-effort one.
         reliability: best_effort
         qos_depth: 5
+      max_age_ms: 500
+
+  # RGB: the wrapper's rectified left image, the policy's `top` view. It is
+  # published as `bgra8`; the reader drops the constant alpha plane and
+  # delivers `bgr8`.
+  - name: top
+    modality: rgb
+    # … frame_id, intrinsics, vla_feature_key …
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/rgb/color/rect/image
+        reliability: best_effort
+        qos_depth: 5
       max_age_ms: 200
 ```
+
+A camera that is part of the *cell* rather than the robot — an overhead or
+front camera on a stand — is the one thing a scene's `sensors:` block is for.
+It takes a name the manifest does not use, and carries its own geometry and
+binding:
+
+```yaml
+sensors:
+  - name: overhead               # not a manifest sensor name
+    modality: rgb
+    frame_id: overhead_optical_frame
+    parent_frame: world
+    static_transform_xyz_rpy: [0.4, 0.0, 1.2, 3.1416, 0.0, 0.0]
+    rate_hz: 30.0
+    encoding: rgb8
+    deploy_binding:
+      backend: opencv_thread
+      backend_params: {device: /dev/v4l/by-id/<your-camera>-video-index0, fps: 30}
+```
+
+Every frame in the world state, RGB and depth alike, is decoded by its
+encoding (`decode_inline_frame`): the depth frame rides along in the policy's
+observation as a `uint16` `(H, W, 1)` array under its own sensor name, and an
+RGB-only policy simply never reads it. Until 2026-09-22 the runner read every
+frame as `uint8`, and a ZED depth frame next to the RGB slots aborted the first
+real OpenArm dispatch with `cannot reshape array of size 1843200`.
 
 Prerequisites on the host: the **ZED SDK** installed, and `zed_wrapper` running
 and publishing. Without them the reader opens fine and then every `read_latest`
@@ -311,9 +372,10 @@ It checks three things:
 - **Calibration** — a serial HAL with `calibrate_on_connect: false` has an `id`
   and `calibration_dir`, and `<calibration_dir>/<id>.json` is actually there.
   Missing, and every `send_action` fails with "has no calibration registered".
-- **Camera bindings** — each scene sensor has a `deploy_binding` (without one
-  it is never published, and a camera VLA silently gets an empty observation),
-  and any `/dev/*` path exists now.
+- **Camera bindings** — each deploy sensor (the robot manifest's cameras, bound
+  in `robot.yaml`, plus the scene's workcell cameras) has a `deploy_binding`
+  (without one it is never published, and a camera VLA silently gets an empty
+  observation), and any `/dev/*` path exists now.
 
 It separates **ERROR** (committed data is missing — exits non-zero) from
 **WARN** (the device just is not plugged in right now), and resolves HAL

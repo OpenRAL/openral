@@ -46,6 +46,7 @@ import numpy as np
 import structlog
 from openral_core import sensor_name_to_slot
 from openral_core.exceptions import ROSConfigError
+from openral_core.schemas import FrameEncoding, SensorFrame
 
 if TYPE_CHECKING:
     from openral_core import RobotDescription
@@ -62,6 +63,53 @@ _PHASE_END = 1
 
 ACTION_TOPIC_DEFAULT = "/openral/candidate_action"
 EPISODE_TOPIC_DEFAULT = "/openral/episode"
+
+
+# Raw inline layouts the aggregator hands out, by element dtype. Compressed
+# (JPEG / PNG) and device-handle (CUDA_*) encodings carry no HxWxC pixel run
+# and are skipped by ``decode_inline_frame`` rather than mis-reshaped.
+_INLINE_FRAME_DTYPES: dict[FrameEncoding, Any] = {
+    FrameEncoding.BGR8: np.uint8,
+    FrameEncoding.RGB8: np.uint8,
+    FrameEncoding.MONO8: np.uint8,
+    FrameEncoding.RAW: np.uint8,
+    FrameEncoding.DEPTH16: np.uint16,
+}
+
+
+# What `DatasetRecorder.record_frame` accepts per camera key: `(H, W, 3) uint8`.
+_HWC_NDIM = 3
+_RGB_CHANNELS = 3
+
+
+def decode_inline_frame(frame: SensorFrame) -> np.ndarray[Any, Any] | None:
+    """Decode one ``SensorFrame`` with inline ``data`` into an ``HxWxC`` array.
+
+    The element dtype comes from ``frame.encoding``: ``DEPTH16`` is uint16
+    millimetres, the 8-bit colour/mono layouts are uint8. Reading everything
+    as uint8 was what aborted the first real-hardware OpenArm dispatch
+    (qorin1, 2026-09-22): the ZED depth sensor's ``16UC1`` frame is
+    1280x720x1 at two bytes per pixel, and ``reshape(720, 1280, 1)`` on a
+    uint8 view of it raised ``ValueError: cannot reshape array of size
+    1843200`` while the policy only ever wanted the RGB slots next to it.
+
+    Returns ``None`` for a frame with no inline pixels (topic / handle
+    delivery), an encoding that is not a raw pixel run, or a payload whose
+    byte count is not exactly ``height * width * channels * itemsize`` (a
+    truncated or row-padded frame): ``SensorFrame`` validates the dimensions
+    but not the payload length, and ``reshape`` would raise on the mismatch
+    instead of letting the recorder skip the frame.
+    """
+    data = frame.data
+    if data is None:
+        return None
+    dtype = _INLINE_FRAME_DTYPES.get(frame.encoding)
+    if dtype is None:
+        return None
+    shape = (int(frame.height), int(frame.width), int(frame.channels))
+    if len(data) != shape[0] * shape[1] * shape[2] * np.dtype(dtype).itemsize:
+        return None
+    return np.frombuffer(data, dtype=dtype).reshape(shape)
 
 
 class DatasetRecorderBridge:
@@ -323,11 +371,14 @@ class DatasetRecorderBridge:
         if not image_frames:
             return out
         for name, frame in image_frames.items():
-            data = getattr(frame, "data", None)
-            if data is None:
-                continue  # topic/handle delivery — no inline pixels to record
-            arr = np.frombuffer(data, dtype=np.uint8).reshape(
-                int(frame.height), int(frame.width), int(frame.channels)
-            )
+            arr = decode_inline_frame(frame)
+            if arr is None:
+                continue  # topic/handle delivery or a non-raw encoding — nothing inline to record
+            # `DatasetRecorder.record_frame` takes `(H, W, 3) uint8` RGB per
+            # camera key; a DEPTH16 or mono frame in the same world state (the
+            # OpenArm bench's `head_zed`) is not a dataset image feature and
+            # would be rejected per frame, stopping the episode.
+            if arr.dtype != np.uint8 or arr.ndim != _HWC_NDIM or arr.shape[2] != _RGB_CHANNELS:
+                continue
             out[self._sensor_to_slot.get(name, name)] = arr
         return out

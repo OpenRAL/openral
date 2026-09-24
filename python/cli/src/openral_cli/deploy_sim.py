@@ -151,6 +151,13 @@ class LaunchInvocation:
     plans a collision-free MoveGroup motion to the next skill's ``starting_pose``
     instead of the runner's kernel-checked joint ramp. Empty (the default) uses
     that ramp; opt in once a ``move_group`` is in the graph."""
+    preload_rskill_id: str
+    """``DeployRuntime.preload_rskill_id`` forwarded as ``preload_rskill_id:=…``
+    so the skill_runner loads the scene's policy right after activation, outside
+    any goal's watchdog window. Empty = no preload."""
+    preload_prompt: str
+    """``DeployRuntime.preload_prompt`` forwarded as ``preload_prompt:=…``; must
+    be the exact prompt later goals send (resident key = id, revision, prompt)."""
     enable_slam: bool
     """Opt-in. Set by ``openral deploy sim --enable-slam``;
     forwarded into the launch as ``enable_slam:=true``."""
@@ -899,6 +906,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # DeployScene.runtime — the committed deploy posture. Field-by-field
     # precedence: explicit CLI flag > scene runtime > auto/built-in default
     # (the per-feature autos below). None on both = auto, as before.
+    # Scene-only, no CLI flag: which policy a cell keeps warm is a property
+    # of the workcell, not of one invocation.
+    preload_rskill_id = ""
+    preload_prompt = ""
     rt = deploy_scene.runtime if deploy_scene is not None else None
     if rt is not None:
         scene_dir = config.parent if config is not None else None
@@ -942,6 +953,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         if spatial_memory_ingest is None:
             spatial_memory_ingest = rt.spatial_memory_ingest
         approach_skill_id = approach_skill_id or rt.approach_skill_id
+        preload_rskill_id = rt.preload_rskill_id or ""
+        preload_prompt = rt.preload_prompt or ""
         if slam_visual_impl is None:
             slam_visual_impl = rt.slam_visual_impl
         if slam_stereo_cameras is None:
@@ -1000,12 +1013,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     description = RobotDescription.from_yaml(str(robot_yaml))
     description.validate_for_e2e_pipeline()
     # The scene the launch will actually read (`deploy_config`, else `config`): parsed once,
-    # used for the geometry check here and for the camera decisions below.
+    # used for the sensor-name check here and for the camera decisions below.
     launched_scene = (
         DeployScene.from_yaml(str(deploy_config)) if deploy_config is not None else deploy_scene
     )
-    # A robot sensor's geometry lives in its manifest only; refuse a scene that restates it
-    # here, before launch, so `deploy validate` sees it too (the launch's merge re-checks).
+    # A robot sensor lives in its manifest only; refuse a scene that names one here,
+    # before launch, so `deploy validate` sees it too (the launch's merge re-checks).
     if launched_scene is not None:
         check_scene_sensor_overrides(description.sensors, launched_scene.sensors)
     # No per-robot table: the HAL node + sim path derive from the manifest
@@ -1387,6 +1400,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # defaults ``approach_skill_id`` to "").
     if approach_skill:
         argv_template.append(f"approach_skill_id:={approach_skill}")
+    # Same rule for the preload pair: forwarded only when the scene sets it.
+    if preload_rskill_id:
+        argv_template.append(f"preload_rskill_id:={preload_rskill_id}")
+        if preload_prompt:
+            argv_template.append(f"preload_prompt:={preload_prompt}")
     # only forward the stereo rig when the scene pins it (empty default; the
     # launch file defaults the visual impl's own left/right topics otherwise).
     if slam_stereo_cameras is not None:
@@ -1474,6 +1492,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         hal_mode=hal_mode,
         reset_to_pose_service=service,
         approach_skill_id=approach_skill,
+        preload_rskill_id=preload_rskill_id,
+        preload_prompt=preload_prompt,
         enable_foxglove=enable_foxglove,
         foxglove_port=foxglove_port,
         initial_task_prompt=_resolved_initial_prompt,
@@ -1602,9 +1622,23 @@ def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:
     venv_bin = os.path.dirname(sys.executable)
     existing_path = env.get("PATH", "")
     env["PATH"] = f"{venv_bin}{os.pathsep}{existing_path}" if existing_path else venv_bin
-    env.setdefault(_alloc_conf_var(), "expandable_segments:True")
+    # Not on Tegra. A Jetson's integrated GPU shares system RAM, so the
+    # fragmentation headroom expandable segments buy on an 8 GiB discrete card
+    # is moot there — and torch's expandable path queries NVML GPU-fabric info,
+    # which the iGPU cannot answer: the first CUDA allocation in the
+    # runtime_node raised ``Expected NVML_SUCCESS ==
+    # DriverAPI::get()->nvmlDeviceGetGpuFabricInfoV_(...)`` (qorin1, torch
+    # 2.13+cu130, 2026-09-22), 363 s into a policy load, while the identical
+    # load in the same venv without the variable succeeded.
+    if not _is_tegra_host():
+        env.setdefault(_alloc_conf_var(), "expandable_segments:True")
     _apply_rmw_default(env)
     return env
+
+
+def _is_tegra_host() -> bool:
+    """True on an NVIDIA Jetson / L4T host (``/etc/nv_tegra_release`` present)."""
+    return Path("/etc/nv_tegra_release").exists()
 
 
 def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool = True) -> int:

@@ -65,7 +65,11 @@ Example:
 
 from __future__ import annotations
 
+from openral_core.exceptions import ROSRuntimeError
 from openral_core.schemas import (
+    Action,
+    ActionRepresentation,
+    ActionSpec,
     AssetRefs,
     ControlMode,
     EmbodimentKind,
@@ -89,6 +93,7 @@ from openral_core.schemas import (
 )
 
 from openral_hal._mujoco_arm import MujocoArmHAL
+from openral_hal._slot_group import SlotGroupStager, compose_slot_group
 
 __all__ = ["OPENARM_DESCRIPTION", "OpenArmMujocoHAL"]
 
@@ -323,8 +328,23 @@ OPENARM_DESCRIPTION = RobotDescription(
         max_force_n=40.0,
         max_torque_nm=40.0,
         deadman_required=True,
+        # provisional: former schema default, not measured on this rig — see issue #303
+        max_ee_accel_m_s2=1.0,
+        contact_force_threshold_n=30.0,
+        self_collision_margin_m=0.0,
+        # runner ramp to starting_pose — the former defaults, declared (issue #303)
+        starting_pose_max_joint_speed_rad_s=0.5,
+        starting_pose_tolerance_rad=0.05,
     ),
     sdk_kind="open",
+    # The robot's single control-rate declaration: the runner ticks at it, the
+    # dataset recorder stamps it as fps, and the real HAL derives every
+    # trajectory point's time_from_start from it (issue #303).
+    action_spec=ActionSpec(
+        dim=16,
+        representation=ActionRepresentation.JOINT_POSITIONS,
+        control_freq_hz=30.0,
+    ),
     hal=HalEntrypoints(
         # sim=None: build_hal derives MujocoArmHAL.from_description(manifest).
         sim=None,
@@ -343,8 +363,11 @@ OPENARM_DESCRIPTION = RobotDescription(
                 # sim (derived MujocoArmHAL)
                 "settle_steps": 4,
                 "gravity_enabled": False,
-                # both
-                "staleness_limit_s": 0.5,
+                # both — three control periods at 30 Hz; measured on Thor
+                # 2026-09-23 with tools/joint_state_staleness_probe.py (worst
+                # observed callback latency 43 ms under GIL starvation). Mirrors
+                # the YAML, which carries the full measurement.
+                "staleness_limit_s": 0.1,
                 # real (OpenArmRealHAL) — udev-pinned SocketCAN names and the
                 # four bimanual controllers openarm_bringup spawns. The two
                 # interface names are defaults only: `openral detect`
@@ -488,3 +511,77 @@ class OpenArmMujocoHAL(MujocoArmHAL):
             gravity_enabled=gravity_enabled,
             staleness_limit_s=staleness_limit_s,
         )
+        # ADR-0102 — same reassembly as ``OpenArmRealHAL``: a slot-dispatched
+        # tick arrives as four typed actions (left arm / left gripper / right
+        # arm / right gripper), none of which is a whole-robot command, and
+        # this twin steps MuJoCo from one 16-DoF vector exactly as the real
+        # arm commands its four controllers from one. Without it the twin
+        # refused every gripper slot (``only supports joint_position``) and the
+        # tick never completed — observed on qorin1, 2026-09-22, the first
+        # time a slot policy was dispatched against this twin.
+        self._slot_group = SlotGroupStager()
+        self._last_committed_tick = 0
+
+    @property
+    def last_committed_tick(self) -> int:
+        """Inference tick of the last slot group applied to MuJoCo (0 = none).
+
+        Read by the HAL lifecycle node to acknowledge a grouped tick on
+        ``/openral/action_applied`` only once every slot has landed.
+        """
+        return self._last_committed_tick
+
+    def send_action(self, action: Action) -> None:
+        """Apply a whole-robot action, or stage one slot of a grouped tick.
+
+        A slot action (``tick_group_size > 1``) is buffered until its tick is
+        complete, then composed into one 16-DoF ``JOINT_POSITION`` action by
+        ``openral_hal._slot_group.compose_slot_group`` — addressing joints by
+        name and grippers by ``ee_name`` — and applied as a single step, so
+        one arm can never move on a new chunk while the other holds a stale
+        one. Everything else goes straight to ``MujocoArmHAL.send_action``.
+        """
+        if int(action.tick_group_size) > 1:
+            # Same gate a whole-robot action meets in ``MujocoArmHAL.send_action``:
+            # an incomplete group returns before reaching it, so without this a
+            # disconnected twin reported success and kept the slot.
+            self._require_connected("send_action")
+            tick = int(action.tick_index)
+            if 0 < tick <= self._last_committed_tick:
+                # The stager only guards the tick in flight. A whole group of
+                # an already-committed tick would otherwise replay stale
+                # targets, and the lifecycle node's monotonic acknowledgement
+                # would hide it. Ticks are process-monotonic in the runner;
+                # ``disconnect`` resets the counter for a fresh numbering.
+                raise ROSRuntimeError(
+                    f"stale slot group: tick {tick} is not after the last committed "
+                    f"tick {self._last_committed_tick}; refusing to replay it."
+                )
+            group = self._slot_group.stage(action)
+            if group is None:
+                return
+            first = group[0]
+            targets = compose_slot_group(group, [j.name for j in self.description.joints])
+            super().send_action(
+                Action(
+                    control_mode=ControlMode.JOINT_POSITION,
+                    horizon=1,
+                    joint_targets=[targets],
+                    stamp_ns=first.stamp_ns,
+                    confidence=first.confidence,
+                )
+            )
+            self._last_committed_tick = int(first.tick_index)
+            return
+        super().send_action(action)
+
+    def disconnect(self) -> None:
+        """Drop any half-staged tick before releasing the twin; tick numbering restarts."""
+        self._slot_group.reset()
+        self._last_committed_tick = 0
+        super().disconnect()
+
+    def estop(self) -> None:
+        """Drop any half-staged tick; the survivors must never be committed later."""
+        self._slot_group.reset()
+        super().estop()

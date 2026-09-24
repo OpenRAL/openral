@@ -16,7 +16,7 @@ offline, from a bag the operator records with the arms unpowered:
 
 The pose under test is the ROBOT MANIFEST's ``--sensor`` entry: the camera is bolted to
 the robot, so its mount is robot geometry, published by every scene on that robot, and no
-scene may restate it (``openral_core.check_scene_sensor_overrides``). The bag supplies
+scene may name that sensor (``openral_core.check_scene_sensor_overrides``). The bag supplies
 only the clouds and the camera-internal TF below the mount frame (``zed_camera_link ->
 <cloud frame>``, from the ZED wrapper's own URDF), so the bag can be recorded with the
 ZED driver alone. The report records that pose, and ``verify`` refuses a report whose pose

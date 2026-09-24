@@ -8,9 +8,10 @@ published.
 
 Not hypothetical: any real workcell camera declared at scene level (``parent_frame:
 openarm_base`` and a ``static_transform_xyz_rpy``, the shape any depth camera feeding the
-octomap leg needs) hit exactly this gap before the loop covered ``DeployScene.sensors``. Only
-a scene-only name may carry geometry; a camera bolted to the robot (the OpenArm's
-``head_zed``) keeps its mount in the robot manifest (``check_scene_sensor_overrides``). Same silent
+octomap leg needs) hit exactly this gap before the loop covered ``DeployScene.sensors``. A
+scene only declares workcell cameras, under names the manifest does not use; a camera bolted
+to the robot (the OpenArm's ``head_zed``) lives in the robot manifest alone, and a scene
+naming it is refused (``check_scene_sensor_overrides``). Same silent
 failure the loop exists to prevent: `octomap_server` can't resolve the cloud's frame, drops
 every message, and the map stays empty while the graph reports healthy.
 
@@ -40,7 +41,7 @@ pytestmark = pytest.mark.skipif(
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _LAUNCH_FILE = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.launch.py"
 
-# A workcell camera on the OpenArm cell (a scene-only name, not the manifest's head_zed):
+# A workcell camera on the OpenArm cell (its own name, not the manifest's head_zed):
 # parented to the manifest's own base frame, up and pitched down.
 _MOUNT = (0.4, 0.1, 0.60, 0.0, 0.9, 0.0)
 

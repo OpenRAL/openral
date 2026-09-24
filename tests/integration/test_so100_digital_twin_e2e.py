@@ -271,6 +271,12 @@ def _digital_twin_harness(
 
     helper.create_subscription(RosJointState, "/joint_states", _observe_so100_joint_state, 10)
 
+    # The runner declares no staleness window of its own (issue #303: a
+    # default nobody measured is refused at configure); deploy_e2e.launch.py is
+    # where production declares it. This harness plays the launch's role.
+    runtime.skill_runner_node.set_parameters(
+        [rclpy.parameter.Parameter("joint_state_staleness_limit_s", value=0.5)]
+    )
     try:
         for node in (
             runtime.world_state_node,

@@ -91,3 +91,28 @@ def test_unparseable_log_level_falls_back_instead_of_raising(
     """A typo must not take down a deploy at bring-up."""
     monkeypatch.setenv("OPENRAL_LOG_LEVEL", raw)
     assert resolve_log_level() == logging.INFO
+
+
+def test_level_floor_applies_without_an_otlp_endpoint(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """No endpoint → no bridge, but structlog's stock printer still honours the floor.
+
+    It used to print every DEBUG event; a deploy runtime emits one per joint
+    state and per camera frame, ~10 % of the process's GIL on an AGX Orin.
+    """
+    from openral_observability import configure_observability
+
+    monkeypatch.delenv("OTEL_EXPORTER_OTLP_ENDPOINT", raising=False)
+    monkeypatch.setenv("OPENRAL_LOG_LEVEL", "INFO")
+    structlog.reset_defaults()
+    try:
+        assert configure_observability(service_name="test-floor") is False
+        log = structlog.get_logger("openral.test_floor")
+        log.debug("floor.dropped")
+        log.info("floor.kept")
+        out = capsys.readouterr().out
+        assert "floor.kept" in out
+        assert "floor.dropped" not in out
+    finally:
+        structlog.reset_defaults()

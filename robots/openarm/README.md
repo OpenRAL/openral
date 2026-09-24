@@ -71,8 +71,135 @@ pinned to a known-good v2 SHA. The helper goes away once
 | Sim test | `tests/sim/test_openarm_hal_mujoco.py` |
 | v2 fetch helper | `openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf` |
 | Real-HW HAL | `openral_hal.openarm_real.OpenArmRealHAL` |
+| Real-HW bench scene | `scenes/deploy/openarm_bench.yaml` (`openral deploy run`) |
+| Real-HW bringup | `ros2 launch openral_hal_openarm real_bringup.launch.py` |
+| Full-graph HIL gate | `tests/hil/test_openarm_deploy.py` (`just hil-openarm-deploy`) |
 | Upstream URDF | [enactic/openarm](https://github.com/enactic/openarm) |
 | Upstream MJCF | [enactic/openarm_mujoco](https://github.com/enactic/openarm_mujoco) (v2 on master) |
+
+## Real hardware
+
+`hal.real` is `OpenArmRealHAL`, which publishes to the four `ros2_control`
+controllers `openarm_bringup` spawns (per-side arm + gripper) and refuses to
+`connect()` unless both udev-pinned SocketCAN links (`openarm_left`,
+`openarm_right`) are up. It never starts `controller_manager` itself — that
+graph is C++ at 400 Hz and belongs under a vendor bringup (CLAUDE.md §1.5).
+
+Real deploys use `scenes/deploy/openarm_bench.yaml`, which starts the ZED
+driver and — the part that is easy to get silently wrong — pins
+`runtime.octomap_cloud_topic` to the topic the ZED SDK actually publishes.
+`head_zed` in `robot.yaml` auto-enables the octomap leg, but the topic keeps a
+sim-only launch default unless the scene sets it, and the result is an empty
+octree behind a graph where every node reports healthy.
+
+> **Bringup moves both arms.** `OpenArmHW::on_activate` calls `enable_all()`
+> and then `return_to_zero()`: an unramped MIT position command to 0.0 on all
+> seven joints per side, issued before the current pose is sampled, then a
+> 200 x 10 ms ramp to zero. There is no non-moving real bringup for this robot.
+> Clear the cell and keep a hand on the hardware E-stop. The deploy graph's
+> three software E-stop sources (deadman watchdog, `hardware_estop` bridge,
+> `human_estop` forwarder) do not cover bringup: the watchdog arms only once a
+> skill goal is accepted, and the other two have no producer on this cell, so
+> during `return_to_zero()` the hardware E-stop is the only independent stop.
+
+The manifest's hand-authored capsules are what the C++ kernel checks every
+chunk against, and `tests/unit/test_collision_geometry_zero_pose.py` now
+asserts that no non-allowed pair interpenetrates at the zero configuration.
+It exists because the first policy dispatch on this cell was refused for a
+right link 3 / link 5 self-collision of exactly −0.04575 m — at the real zero
+pose and at the twin's bent-elbow pose alike. A distance that ignores the
+elbow angle is a modelling error, not a hazard: link 3's capsule was 0.22 m
+long from a joint 0.154 m above the elbow, reaching 6.6 cm past joint 4 into
+link 5's capsule. It now ends at the elbow, which link 4's capsule covers.
+
+### Running the restock policy
+
+The cell's policy is `OpenRAL/rskill-pi05-openarm-restock_shelf-bf16`, a
+**private** OpenRAL Hub repo (lerobot-format π0.5, 8.3 GB BF16, three RGB
+views in, 35-step chunks of 16-D actions out), so it is installed per host
+rather than shipped in `rskills/`. The weights are π0.5 derivatives under PI's
+permissive-research terms, hence `--non-commercial` here and
+`OPENRAL_ALLOW_NONCOMMERCIAL=1` at load:
+
+```bash
+HF_TOKEN=<token with OpenRAL org access> \
+    openral rskill install OpenRAL/rskill-pi05-openarm-restock_shelf-bf16 --non-commercial --yes
+openral rskill check OpenRAL/rskill-pi05-openarm-restock_shelf-bf16 --robot robots/openarm/robot.yaml
+```
+
+The cell's cameras are bound in `robot.yaml` itself (each sensor's
+`deploy_binding`, used only by `deploy run`; a deploy scene never touches a
+robot camera): `top` is the ZED's rectified left image, `head_zed` its SDK
+depth, the two Arducams are `wrist_left` / `wrist_right`. The manifest's
+`observation.images.top` key is what the skill requires: its published
+`rskill.yaml` lists `observation.images.top` / `wrist_left` / `wrist_right` in
+`sensors_required` and maps the checkpoint's `observation.images.context` input
+onto the `top` slot through `image_preprocessing.aliases: {top: "context"}`, so
+no deploy-time key override is needed. The PaliGemma tokenizer
+(`google/paligemma-3b-pt-224`) must also be in the default Hugging Face
+cache for an offline load; `openral rskill install` does not fetch it.
+
+**Preload, not dispatch-time load.** The bench scene pins
+`runtime.preload_rskill_id` and `preload_prompt`, so the skill runner
+resolves and loads the policy right after it activates, in a worker thread,
+and rejects goals until `rskill_runner.preload_done` is logged. This is not
+an optimisation: the deadman watchdog opens its 120 s first-chunk window
+the moment a goal is accepted, and even the fast bf16 load (meta-device
+build, weights streamed onto the GPU, one warm-up forward) takes ~33 s on
+the Orin under the live graph (measured 2026-09-23) — before it, ~350 s idle
+and ~1230 s live. A cold load inside a goal is E-stopped, correctly. The
+preload prompt must equal the goal's prompt character for character: the
+resident key is `(id, revision, prompt)` and a mismatch evicts the warm
+skill and pays the cold load inside the watchdog window. `preload_done`
+names the time.
+
+**Not yet usable end to end (2026-09-23).** A dispatched goal executes its
+first 35-step chunk on the real arms, then the deadman watchdog E-stops
+the cell: one π0.5 forward takes 6–7 s inside the live graph (1.6 s in an
+idle process), the runner proposes nothing while it infers the next chunk,
+and a `safe_action` gap past 5 s is a stall by the watchdog's contract.
+
+Once it is resident, the operator dispatches the single goal directly, with
+the training instruction **verbatim** — a drifted prompt is an
+out-of-distribution instruction to real arms:
+
+```bash
+ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
+    "{rskill_id: OpenRAL/rskill-pi05-openarm-restock_shelf-bf16, prompt: restock-shelf-from-front-box, deadline_s: 60.0}"
+```
+
+Arm joints come out of the checkpoint as per-step deltas and the grippers as
+absolutes; the integration to absolute targets happens inside lerobot's π0.5
+postprocessor (`use_relative_actions` with the gripper dims excluded by
+`action_feature_names`), not in the runner. The runner's slot dispatch then
+clamps every joint target strictly inside the manifest's joint limits before
+proposing it — the C++ kernel validates open intervals, and the policy's very
+first tick put one joint 0.019 rad past its limit — and the kernel remains the
+authority on what actually reaches the arm.
+
+**What has run, and where each layer was proven (2026-09-22).** Until this
+branch no VLA had ever produced a chunk through the deploy graph on any
+robot: the Hub resolver returned a packaging handle instead of a runtime
+skill, and the goal aborted with an empty `failure_reason`. Getting the
+first chunk to the kernel took seven stacked fixes, each masked by the one
+before it (resolver binding, the rSkill cache split, the preload above, the
+expandable-segments allocator on Tegra, the warm-up's device/dtype and
+autocast, the slot-dispatch clamp, and for the MuJoCo twin its slot-group
+reassembly plus the attachment heartbeat). On the digital twin the chain
+now runs goal → preloaded policy → 35×16 chunk → slot dispatch → kernel,
+where the kernel's self-collision check refuses the first chunk: the
+tabletop twin starts with both elbows at −π/2 and the policy sees a MuJoCo
+table instead of the real shelf, so its actions are out of distribution
+there. The real cell is the only in-distribution proving ground; its first
+dispatch aborted in the observation decoder on the ZED depth frame, which
+is fixed (`decode_inline_frame`). On 2026-09-23 the real cell executed its
+first chunk on the arms; the per-forward latency that then trips the
+deadman is the open item above. That chunk was produced **without the head
+view**: the scene's `context` key reached the camera readers but not the
+runner, which kept the manifest's `top` → `base` slot, so lerobot fed a
+masked blank in its place. `compose_runtime` now merges the scene's
+`sensors:` (workcell cameras only, since the robot's own are bound in
+`robot.yaml`) into the one description every consumer reads.
 
 ## Action layout (16 DoF)
 
@@ -120,6 +247,20 @@ needed) both pass on the wired cell. `test_openarm_slot_group_motion.py`
 is the command→motion gate and is double-gated on
 `OPENRAL_OPENARM_ALLOW_MOTION=1` + `OPENRAL_OPENARM_ATTENDED=1`; it has no
 recorded run. Nothing in CI runs `tests/hil/`.
+
+`test_openarm_deploy.py` is the full-graph gate and **passed green on the
+wired cell for the first time on 2026-09-22** (qorin1, attended, hand on the
+hardware E-stop): 7 passed in 28.5 s against a live `deploy run` of
+`scenes/deploy/openarm_bench.yaml`. What that run proved, on real hardware —
+all four `JointTrajectoryController`s plus `joint_state_broadcaster` active;
+`/joint_states` carrying all 16 ros2_control joints at 684 Hz; the TF tree
+complete to both end effectors; the C++ kernel ACTIVE at 16 DoF with
+self-collision armed over 19 links and emitting no `safe_action` unbidden;
+and a non-empty `/openral/world_voxels` fed by the real ZED cloud, which is
+the silent `octomap_cloud_topic` failure the bench scene exists to pin. The
+scene's `drivers:` block brought the ZED up as part of the graph, so there
+was no second terminal. The gate's teardown E-stop latched the HAL
+(`hal.estop`) as designed.
 
 ## Asymmetric joint conventions
 

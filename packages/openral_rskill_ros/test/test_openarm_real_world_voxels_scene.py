@@ -160,11 +160,12 @@ def test_the_manifest_pose_is_the_only_mount_published_for_the_zed() -> None:
 
 
 @pytest.mark.parametrize("hal_mode", ["real", "sim"])
-def test_deploy_refuses_a_scene_that_restates_the_zed_pose(tmp_path: Path, hal_mode: str) -> None:
+def test_deploy_refuses_a_scene_that_names_the_zed(tmp_path: Path, hal_mode: str) -> None:
     """``deploy run`` / ``deploy sim`` / ``deploy validate`` refuse before launching.
 
     All three go through ``resolve_launch_invocation``, which is where the rule is checked
-    pre-launch: a pose hidden in one scene would silently not apply to the robot's others.
+    pre-launch: a deploy scene never touches a robot camera — a pose (or binding) hidden in
+    one scene would silently not apply to the robot's others.
     """
     import yaml
     from openral_core.exceptions import ROSConfigError
@@ -183,5 +184,5 @@ def test_deploy_refuses_a_scene_that_restates_the_zed_pose(tmp_path: Path, hal_m
     scene = tmp_path / "hidden_pose.yaml"
     scene.write_text(yaml.safe_dump(data), encoding="utf-8")
 
-    with pytest.raises(ROSConfigError, match=r"'head_zed'.*static_transform_xyz_rpy"):
+    with pytest.raises(ROSConfigError, match=r"'head_zed'.*defined by the robot manifest"):
         _launch_args(hal_mode, scene)

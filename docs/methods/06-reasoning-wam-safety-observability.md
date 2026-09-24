@@ -505,9 +505,9 @@ _`openral prompt "do X"` CLI adapter. Publishes a one-shot `PromptStamped` onto 
 _Idempotent OTel SDK setup + flush helper._
 
 - `configure_observability(*, service_name="openral", endpoint=None, sample_ratio=None) -> bool` — Install OTLP/gRPC tracer + meter + logger providers; reads `OTEL_EXPORTER_OTLP_ENDPOINT` when `endpoint` is None; `True` if exporters were installed, `False` for the no-op path. On success also starts the system-metrics collector and registers `shutdown_observability` via `atexit`. `sample_ratio` (or `OPENRAL_OTEL_SAMPLE_RATIO`) selects the trace sampler: `None`/`1.0` → always-on, else a parent-based ratio sampler. (L115)
-- `configure_worker_observability(service_name, *, endpoint=None, sample_ratio=None) -> bool` — Cross-process bootstrap for a spawned worker: calls `configure_observability` then attaches the parent trace context from env, so a child spawned with `env={**os.environ, **traceparent_env()}` joins the parent trace. (L231)
-- `_resolve_sampler(sample_ratio) -> Sampler` — Resolve the trace sampler from arg + env, defaulting to always-on; a garbage env value also falls back to always-on rather than silently dropping every span. (L344)
-- `shutdown_observability() -> None` — Flush + shut down all three providers; idempotent and safe with no exporter installed. Stops the system-metrics collector before draining the meter so the final sample lands in the export batch. (L401)
+- `configure_worker_observability(service_name, *, endpoint=None, sample_ratio=None) -> bool` — Cross-process bootstrap for a spawned worker: calls `configure_observability` then attaches the parent trace context from env, so a child spawned with `env={**os.environ, **traceparent_env()}` joins the parent trace. (L240)
+- `_resolve_sampler(sample_ratio) -> Sampler` — Resolve the trace sampler from arg + env, defaulting to always-on; a garbage env value also falls back to always-on rather than silently dropping every span. (L353)
+- `shutdown_observability() -> None` — Flush + shut down all three providers; idempotent and safe with no exporter installed. Stops the system-metrics collector before draining the meter so the final sample lands in the export batch. (L410)
 
 ### `python/observability/src/openral_observability/tracing.py`
 _Span-context-manager helpers; safe to call before `configure_observability`._
@@ -787,9 +787,9 @@ _Producer-side helpers for recording rich span attributes on OpenRAL hot-path sp
 - `record_action(span, *, next_row, dim=None, horizon=None, applied=None, gripper_position=None, gripper_force_n=None) -> None` — Attach commanded-action attributes to a `hal.send_action` span. (L144)
 - `record_ee_poses(span, ee_poses) -> None` — Flatten a `name → Pose6D` mapping onto a `world_state.snapshot` span. (L175)
 - `record_sensor_frame_attrs(span, *, modality=None, encoding=None, width=None, height=None, channels=None, age_ms=None, thumbnail_bytes=None, thumbnail_already_encoded_b64=False) -> None` — Attach sensor-frame attributes to a `sensors.read_latest` span. (L201)
-- `emit_sensor_frame_span(frame, *, sensor_name, age_ms, flip_180=False, tracer_name=…) -> None` — The shared producer of a dashboard `sensors.read_latest` span for one camera frame: optional flip of a display-only copy (the policy's actual frame is never mutated), then span + attrs + thumbnail. Both frame emitters route through this one function so they can't drift apart. (L245)
-- `encode_rgb_thumbnail(rgb) -> bytes | None` — Encode an HWC uint8 RGB ndarray to a small JPEG for OTLP; returns `None` if Pillow is unavailable. (L308)
-- `encode_frame_thumbnail(frame) -> bytes | None` — Encode an `openral_core.SensorFrame` (RGB8/BGR8/MONO8/JPEG/PNG) as a small JPEG thumbnail; returns `None` for non-renderable encodings. (L333)
+- `emit_sensor_frame_span(frame, *, sensor_name, age_ms, flip_180=False, tracer_name=…) -> None` — The shared producer of a dashboard `sensors.read_latest` span for one camera frame: optional flip of a display-only copy (the policy's actual frame is never mutated), then span + attrs + thumbnail. Both frame emitters route through this one function so they can't drift apart. (L245) `encode_frame_thumbnail` — but the span is opened first and the function returns as soon as `span.is_recording()` is false (no OTLP endpoint / dashboard off): the flip copy and the JPEG only feed the span, and at 30 Hz per camera they held ~25 % of the deploy runtime's GIL on an AGX Orin for nothing.
+- `encode_rgb_thumbnail(rgb) -> bytes | None` — Encode an HWC uint8 RGB ndarray to a small JPEG for OTLP; returns `None` if Pillow is unavailable. (L313)
+- `encode_frame_thumbnail(frame) -> bytes | None` — Encode an `openral_core.SensorFrame` (RGB8/BGR8/MONO8/JPEG/PNG) as a small JPEG thumbnail; returns `None` for non-renderable encodings. (L338)
 - `modality_for_encoding(encoding) -> str` — Map a `FrameEncoding` to the dashboard's modality label (`rgb`/`mono`/`depth`/`raw`/`unknown`); shared by `DeployRunner` and the world-state node so both produce identical labels. (L57)
 - `_MODALITY_BY_ENCODING: dict[str, str]` (L45) — Canonical encoding → modality lookup table.
 
@@ -847,9 +847,10 @@ _Publisher helper + IDL-mirror constants for the namespaced `/openral/failure/{.
   - `publish(self, *, kind, severity, evidence, rskill_id='', trace_id=None) -> bool` (L329) — Emit one `FailureTrigger`, subject to rate-limiting (`False` when rate-limited).
 
 ### `python/observability/src/openral_observability/logging.py`
-- `trace_context_processor(_logger, _method_name, event_dict)` — structlog processor that stamps `trace_id` / `span_id` on every log event. (L54)
-- `resolve_log_level() -> int` (L70) — Resolve the OpenRAL log floor from `OPENRAL_LOG_LEVEL` (name or int); defaults to `INFO`, not `DEBUG`; an unparseable value falls back to the default rather than raising. Below the floor the stdlib check short-circuits before rendering/shipping, which matters since several DEBUG call sites fire per control tick. Governs log records only — dashboard span rows are banded separately by `dashboard.store._is_headline_span`.
-- `install_structlog_bridge(logger_provider)` — Wire the structlog processor chain to forward records to the OTel `LoggerProvider`, with both the bridge logger and the `openral` root logger set to `resolve_log_level()`. (L98)
+- `trace_context_processor(_logger, _method_name, event_dict)` — structlog processor that stamps `trace_id` / `span_id` on every log event. (L59)
+- `resolve_log_level() -> int` (L75) — Resolve the OpenRAL log floor from `OPENRAL_LOG_LEVEL` (name or int); defaults to `INFO`, not `DEBUG`; an unparseable value falls back to the default rather than raising. Below the floor the stdlib check short-circuits before rendering/shipping, which matters since several DEBUG call sites fire per control tick. Governs log records only — dashboard span rows are banded separately by `dashboard.store._is_headline_span`.
+- `apply_structlog_level_floor()` — Configure structlog's stock renderer to drop events below `resolve_log_level()`; called by `configure_observability` on its no-endpoint path, where the stock config otherwise printed every DEBUG event (a deploy runtime emits one per 750 Hz joint state and per camera frame — ~10 % of the process's GIL on an AGX Orin). (L103)
+- `install_structlog_bridge(logger_provider)` — Wire the structlog processor chain to forward records to the OTel `LoggerProvider`, with both the bridge logger and the `openral` root logger set to `resolve_log_level()`. (L123)
 
 ### `python/observability/src/openral_observability/dashboard/store.py`
 _In-memory aggregator for `openral dashboard` — feeds the SSE stream and the `/api/state` JSON endpoint. Thread-safe, bounded (200 events, 600 metric samples per series). Registered headline span families each populate one card slot in `self._topics`._

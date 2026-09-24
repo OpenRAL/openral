@@ -1,10 +1,10 @@
 # SO-101 laptop bench rig — converted from the retired
 # deployments/so101.yaml RobotEnvironment.
 #
-# `sensors:` entries are deploy-time bindings for the robot manifest's own
-# `top`/`wrist` cameras (same names -> the scene binds them; frames, mounts and
-# intrinsics stay the manifest's and a scene may not restate them). Host-specific — retune /dev/video*
-# paths per host with `openral detect --deployment`.
+# No `sensors:` block: `top` and `wrist` are robot cameras, so their real-hardware
+# `deploy_binding`s live in robots/so101_follower/robot.yaml (a deploy scene never
+# touches a robot camera). Host-specific — retune the /dev/video* paths there per
+# host with `openral detect --deployment`.
 #
 # HAL facts (serial port + lerobot calibration identity) live in the `hal:`
 # binding below (the HAL analogue of a sensor `deploy_binding`), so this scene
@@ -28,47 +28,10 @@ hal:
     id: "so_follower"
     calibration_dir: "calibration"
     calibrate_on_connect: false
-sensors:
-  # Cameras use `opencv_thread` (cv2.VideoCapture) — open host-camera path, no
-  # GStreamer/pygobject dependency (the gstreamer + NVMM zero-copy fast path
-  # lives in OpenRAL Pro; re-bind to `backend: gstreamer` there). cv2
-  # negotiates MJPG itself (both bench cams deliver MJPG), no decode knob needed.
-  #
-  # DEVICE PATHS: use kernel STABLE `/dev/v4l/*` symlinks, never raw
-  # `/dev/videoN` (USB-enumeration-order assigned, silently renumbers on
-  # replug/reboot, v4l2src dies with "streaming stopped (-5)"). Host-specific
-  # — retune with `ls -l /dev/v4l/by-id /dev/v4l/by-path` or `openral detect
-  # --deployment`. wrist uses `by-id` (keys on USB serial, follows the
-  # icspring across ports; `-video-index0` is the capture node). top uses
-  # `by-path` (built-in Integrated Camera's `by-id` wrongly resolves to the
-  # interface-1.2 GREY IR sensor, not the interface-1.0 RGB node; `by-path`
-  # pins interface 1.0 correctly). Re-pointed 2026-09-16: the built-in camera's
-  # by-path moved (pci-0000:00:14.0-usb-0:9 -> pci-0000:80:14.0-usb-0:11) and
-  # the stale entry no longer resolved — `openral deploy validate` reported it
-  # as a warning, which is exactly what that command is for. The wrist `by-id`
-  # was unchanged, which is the whole point of keying on the USB serial.
-  - name: top
-    modality: rgb
-    frame_id: world
-    rate_hz: 30.0
-    deploy_binding:
-      backend: opencv_thread
-      backend_params:
-        device: /dev/v4l/by-path/pci-0000:80:14.0-usb-0:11:1.0-video-index0
-        width: 640
-        height: 480
-        fps: 30
-  - name: wrist
-    modality: rgb
-    frame_id: wrist_camera
-    rate_hz: 30.0
-    deploy_binding:
-      backend: opencv_thread
-      backend_params:
-        device: /dev/v4l/by-id/usb-icSpring_icspring_camera_20240307110322-video-index0
-        width: 640
-        height: 480
-        fps: 30
+# Cameras: every camera here is a robot sensor, so its real-hardware binding lives in
+# robots/so101_follower/robot.yaml (a deploy scene never touches a robot camera —
+# openral_core.check_scene_sensor_overrides). A workcell camera would go under
+# `sensors:` with its own name.
 
 # Committed deploy posture (DeployRuntime) — every runtime leg pinned
 # explicitly so nothing depends on hidden CLI defaults. Precedence:
@@ -79,7 +42,7 @@ sensors:
 # Both perception legs are gstreamer-free ROS-topic consumers: the detector
 # (ros_image_detector_node) and reward monitor (reward_monitor_node) each
 # subscribe to /openral/cameras/<name>/image — here published by the
-# opencv_thread sensor leg above — and need no GStreamer/NVMM. The detector
+# opencv_thread bindings in robot.yaml — and need no GStreamer/NVMM. The detector
 # auto-selects its CPU-ONNX tier when gst-inspect-1.0/nvinfer is absent.
 runtime:
   enable_slam: false

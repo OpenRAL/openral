@@ -1624,8 +1624,12 @@ def test_bh_prepare_launch_env_defaults_expandable_segments(
     `deploy sim` shells through deploy_sim_command's own inline env build — so the
     var never reached the runtime_node. Both paths now route through this helper.
     """
+    import openral_cli.deploy_sim as _ds
+
     monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
+    # A discrete-GPU host; the Tegra branch has its own test below.
+    monkeypatch.setattr(_ds, "_is_tegra_host", lambda: False)
     env = _prepare_launch_env()
     chosen = _alloc_conf_var()
     other = "PYTORCH_CUDA_ALLOC_CONF" if chosen == "PYTORCH_ALLOC_CONF" else "PYTORCH_ALLOC_CONF"
@@ -1635,6 +1639,31 @@ def test_bh_prepare_launch_env_defaults_expandable_segments(
 
     monkeypatch.setenv(chosen, "garbage_collection_threshold:0.9")
     assert _prepare_launch_env()[chosen] == "garbage_collection_threshold:0.9"
+
+
+def test_bh_prepare_launch_env_leaves_the_allocator_alone_on_tegra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a Jetson, expandable segments are NOT defaulted.
+
+    torch's expandable-segments allocator queries NVML GPU-fabric info on its
+    first allocation, which the integrated GPU cannot answer: on qorin1
+    (torch 2.13+cu130) the runtime_node raised ``Expected NVML_SUCCESS ==
+    ...nvmlDeviceGetGpuFabricInfoV_...`` 363 s into a policy load, while the
+    same load in the same venv without the variable succeeded. Unified memory
+    also makes the discrete-card fragmentation headroom moot. An operator's
+    explicit setting still passes through untouched.
+    """
+    import openral_cli.deploy_sim as _ds
+
+    chosen = _alloc_conf_var()
+    monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
+    monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
+    monkeypatch.setattr(_ds, "_is_tegra_host", lambda: True)
+    assert chosen not in _prepare_launch_env()
+
+    monkeypatch.setenv(chosen, "expandable_segments:True")
+    assert _prepare_launch_env()[chosen] == "expandable_segments:True"
 
 
 def test_bh_run_launch_invocation_sets_expandable_segments(
@@ -2759,11 +2788,13 @@ def test_explicit_visual_slam_without_named_cameras_is_refused() -> None:
 def test_default_detector_is_downgraded_when_no_camera_publishes_on_a_real_deploy(
     tmp_path: Path,
 ) -> None:
-    """OpenArm's manifest binds no camera, so a real deploy with a scene that binds none
-    has no RGB topic: the implicit detector is switched off rather than the launch
-    refusing the whole graph."""
+    """The SO-100 manifest binds none of its cameras (a scene never binds a robot camera),
+    so a real deploy has no RGB topic: the implicit detector is switched off rather than
+    the launch refusing the whole graph."""
+    scene = tmp_path / "so100_real.yaml"
+    scene.write_text("scene:\n  id: so100_real\nrobot_id: so100_follower\n", encoding="utf-8")
     invocation = resolve_launch_invocation(
-        config=_openarm_scene_with_octomap(tmp_path, ""),
+        config=scene,
         robot_override=None,
         dashboard_port=4318,
         reset_to_pose_service=None,
@@ -2818,3 +2849,37 @@ def test_nav2_over_stereo_vslam_resolves_with_a_depth_sensor(tmp_path: Path) -> 
         hal_param_overrides={"viewer_enabled": False},
     )
     assert ok.enable_nav2 is True
+
+
+def test_scene_preload_pair_is_forwarded_only_when_the_scene_sets_it() -> None:
+    """``DeployRuntime.preload_rskill_id`` / ``preload_prompt`` → ``preload_*:=`` launch args.
+
+    The OpenArm bench scene pins its policy so the skill_runner loads it right
+    after activation, outside any goal's deadman first-chunk window; the
+    tabletop scene pins nothing and must forward nothing (ros2 launch rejects an
+    empty ``name:=``).
+    """
+    bench = _REPO_ROOT / "scenes" / "deploy" / "openarm_bench.yaml"
+    invocation = resolve_launch_invocation(
+        config=bench,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        hal_mode="real",
+    )
+    assert invocation.preload_rskill_id == "OpenRAL/rskill-pi05-openarm-restock_shelf-bf16"
+    assert invocation.preload_prompt == "restock-shelf-from-front-box"
+    joined = " ".join(invocation.argv_template)
+    assert "preload_rskill_id:=OpenRAL/rskill-pi05-openarm-restock_shelf-bf16" in joined
+    assert "preload_prompt:=restock-shelf-from-front-box" in joined
+
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.preload_rskill_id == ""
+    assert "preload_rskill_id:=" not in " ".join(invocation.argv_template)
