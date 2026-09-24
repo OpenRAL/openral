@@ -211,7 +211,7 @@ FRANKA_PANDA_DESCRIPTION = RobotDescription(
         starting_pose_tolerance_rad=0.05,
         starting_pose_max_joint_speed_m_s=0.1,  # normalised [0, 1] gripper; mirrors the YAML
         starting_pose_tolerance_m=0.05,
-        joint_state_staleness_limit_s=0.5,  # provisional, mirrors the YAML
+        joint_state_staleness_limit_s=0.2,  # provisional, mirrors the YAML
     ),
     # The shared ``hal`` block names both the sim HAL
     # (``FrankaPandaHAL``) and the real-HW HAL (``FrankaPandaRealHAL``);

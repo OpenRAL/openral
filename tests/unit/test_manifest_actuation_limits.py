@@ -181,8 +181,8 @@ def test_the_measured_openarm_window_and_the_other_robots_keep_their_values() ->
         "openarm": 0.1,
         "ur5e": 0.5,
         "ur10e": 0.5,
-        "franka_panda": 0.5,
-        "sawyer": 0.5,
+        "franka_panda": 0.2,
+        "sawyer": 0.2,
         "aloha_bimanual": 0.2,
         "so100_follower": 0.5,
         "so101_follower": 0.5,
@@ -223,7 +223,7 @@ def test_a_real_hal_built_directly_reads_its_description() -> None:
     aloha = _robot("aloha_bimanual")
     assert AlohaHAL(description=aloha)._staleness_limit_s == 0.2
     sawyer = _robot("sawyer")
-    assert SawyerRealHAL(description=sawyer)._staleness_limit_s == 0.5
+    assert SawyerRealHAL(description=sawyer)._staleness_limit_s == 0.2
 
 
 def test_a_real_hal_with_no_staleness_anywhere_is_refused() -> None:

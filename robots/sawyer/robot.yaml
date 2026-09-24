@@ -166,10 +166,12 @@ safety:
   starting_pose_tolerance_m: 0.0025
   # Joint-state freshness window: the real HAL's read_state and the skill
   # runner's blocking waits refuse state older than this (one place; build_hal
-  # and deploy_e2e.launch.py read it). provisional: former hal.parameters.defaults value,
-  # not measured on this rig — measure with
+  # and deploy_e2e.launch.py read it). Unmeasured on this rig; 0.2 s is the
+  # real HAL's own former constructor default (sawyer_real.py). OpenArm's 0.1 s
+  # was measured on its own 750 Hz broadcaster and does not transfer.
+  # provisional — re-measure with
   # tools/joint_state_staleness_probe.py --robot <this manifest>.
-  joint_state_staleness_limit_s: 0.5
+  joint_state_staleness_limit_s: 0.2
 
 # Single corner-view RGB camera mirroring MetaWorld's `pixels` observation
 # (480x480, surfaced as `front` by python/sim/src/openral_sim/backends/metaworld.py:92,

@@ -188,7 +188,7 @@ SAWYER_DESCRIPTION = RobotDescription(
         starting_pose_tolerance_rad=0.05,
         starting_pose_max_joint_speed_m_s=0.025,  # prismatic gripper; mirrors the YAML
         starting_pose_tolerance_m=0.0025,
-        joint_state_staleness_limit_s=0.5,  # provisional, mirrors the YAML
+        joint_state_staleness_limit_s=0.2,  # provisional, mirrors the YAML
     ),
     sdk_kind="open",
     # Control rate: the runner ticks at it and the real HAL sets every
