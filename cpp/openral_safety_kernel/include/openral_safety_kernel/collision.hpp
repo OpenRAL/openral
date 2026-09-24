@@ -202,13 +202,6 @@ struct CollisionScratch {
   std::vector<Transform> link_world;  ///< per-link frame in the base frame
 };
 
-/// Bounded set of world obstacles, each a capsule already expressed in the
-/// robot base frame (`origin` is the absolute base-frame transform — no link
-/// composition). Ingested from perception into a pre-sized buffer.
-struct WorldModel {
-  std::vector<Capsule> capsules;
-};
-
 /// Binding absolute ceiling on the declaration-scoped place approach
 /// allowance (ADR-0097's 2026-08-14 amendment, Condition 1, calibrated by
 /// its Second Amendment 2026-08-15; hazard log HZ-0097-4 mitigation 1,
@@ -894,14 +887,6 @@ void forward_kinematics(const CollisionModel& model, const double* qpos, std::si
 CollisionHit check_self_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                   double margin) noexcept;
 
-/// Check every robot capsule (FK'd via `scratch`) against every world obstacle
-/// in `world` (base-frame capsules) at a `margin` clearance. On a hit,
-/// `link_a` is the robot link index and `link_b` is the world obstacle index
-/// of the deepest pair within the margin, and `min_distance` is that pair's
-/// distance (`CollisionHit`). Allocation-free.
-CollisionHit check_world_collision(const CollisionModel& model, const CollisionScratch& scratch,
-                                   const WorldModel& world, double margin) noexcept;
-
 /// Maximum joint count the allocation-free Jacobian step supports (stack scratch
 /// is sized to this). Covers every in-tree robot (humanoids ~30 dof) with
 /// headroom; a model exceeding it makes `jacobian_dls_step` fail-safe (returns
@@ -982,16 +967,6 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
                                            std::size_t max_objects, std::size_t max_primitives,
                                            std::size_t max_touch_links,
                                            AttachedModel& out) noexcept;
-
-/// Check every attached payload (FK'd via `scratch` through its attach link)
-/// against every world obstacle capsule at a `margin` clearance. On a hit,
-/// `link_a` is the attached-object index and `link_b` is the world obstacle
-/// index of the deepest pair within the margin, and `min_distance` is that
-/// pair's distance (`CollisionHit`). Allocation-free.
-CollisionHit check_attached_world_collision(const CollisionModel& model,
-                                            const AttachedModel& attached,
-                                            const CollisionScratch& scratch,
-                                            const WorldModel& world, double margin) noexcept;
 
 /// Checks every attached payload against the occupied cells of a dense
 /// voxel grid (same conservative per-voxel cube treatment as

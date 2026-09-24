@@ -25,7 +25,8 @@ Parameters:
     cameras (str[]): logical cameras as ``"id=topic"`` entries. Empty = a single
         camera ``primary_camera`` on ``image_topic``.
     primary_camera (str): id of the default camera the monitor scores.
-    image_topic (str): single-camera fallback topic.
+    image_topic (str): single-camera fallback topic; default empty — ``cameras`` or this
+        must name a camera (ADR-0108), else configure raises ``ROSConfigError``.
     manifest_path (str): rSkill manifest path (``kind: "reward"``). Required.
     task (str): default task instruction (used when a request leaves ``task`` empty).
     score_period_s (float): reward-score heartbeat cadence — how often the timer
@@ -51,14 +52,15 @@ import contextlib
 from collections.abc import Callable
 from typing import Any
 
+from openral_core import CAMERA_TOPIC_PREFIX
+
 from openral_perception_ros.camera_topics import resolve_camera_topics
 
 
 def _camera_label(topic: str) -> str:
     """Derive a short, human-readable camera name from a camera image topic.
 
-    Convention topics are ``/openral/cameras/<name>/image`` (see
-    ``DeployScene.sensors`` / the ROS 2 sensor bringup) — this pulls out
+    Convention topics are ``openral_core.camera_topic(<name>)`` — this pulls out
     ``<name>`` (e.g. ``"top"``) so the dashboard can show which camera the
     reward monitor actually attends to instead of a full topic string or the
     uninformative default ``primary_camera`` id (usually just ``"default"``).
@@ -70,10 +72,8 @@ def _camera_label(topic: str) -> str:
         >>> _camera_label("/some/other/topic")
         '/some/other/topic'
     """
-    parts = topic.strip("/").split("/")
-    if len(parts) >= 3 and parts[0] == "openral" and parts[1] == "cameras":
-        return parts[2]
-    return topic
+    prefix = CAMERA_TOPIC_PREFIX + "/"
+    return topic.removeprefix(prefix).split("/")[0] if topic.startswith(prefix) else topic
 
 
 def main(args: Any = None) -> None:
@@ -100,7 +100,7 @@ def main(args: Any = None) -> None:
             super().__init__("openral_reward_monitor")
             self.declare_parameter("cameras", [""])
             self.declare_parameter("primary_camera", "default")
-            self.declare_parameter("image_topic", "/openral/cameras/agentview_left/image")
+            self.declare_parameter("image_topic", "")
             self.declare_parameter("manifest_path", "")
             self.declare_parameter("task", "")
             # Opt-in: also publish a generic openral_msgs/CriticScore per

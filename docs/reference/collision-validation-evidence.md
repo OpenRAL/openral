@@ -1440,8 +1440,10 @@ vacuously. `test_an_all_occupied_grid_is_refused` fails in that case, and the
 file was mutation-checked: neutralising the separating margin fails the ordering
 test, and displacing the grid origin by 2 m fails both it and the control.
 Publishing the grid under a wrong `header.frame_id` changes *nothing*, and that
-is correct rather than a gap — `WorldCollision.msg` states the kernel applies no
+is correct rather than a gap — `WorldCollision.msg` stated the kernel applies no
 TF on the hot path, so the frame id is advisory and the base frame is assumed.
+(Note 2026-09-23: `WorldCollision.msg` and the capsule world phase were retired
+by ADR-0109; the voxel grid remains the kernel's only world-geometry input.)
 
 ### 2026-09-05 — the colliding half of that pair, at zero margin (#102)
 
@@ -3836,6 +3838,39 @@ the 2026-08-22 entry, `harness-1` / `harness-2`, the harness's first live use.
 `reproducibility` on the SHA alone; it compares two different scenes, because
 the seed decides the initial configuration. Equal SHA **and** equal seed is now
 the test.
+
+### 2026-09-24 — a dead camera left the world check blind, and every grid still looked fresh
+
+Not a validation round: a fail-OPEN on the world-voxel input, observed live on
+Thor with the arms unpowered (hazard log Entry 033).
+
+**What was seen.** ZED driver stopped → `/octomap_binary` silent (octomap had
+been publishing at 3.2–4.0 Hz, gaps ~0.25–0.31 s) → `/openral/world_voxels`
+still arriving at **7.1 Hz**. `octomap_server` publishes only when it inserts a
+cloud; the bridge re-rasterized its LAST octree on its 10 Hz timer and stamped
+each grid `now()`; the kernel times voxel freshness from receipt. So the frozen
+map arrived on time, `DROP_VOXEL_UNAVAILABLE` never fired, and anything that
+entered the workspace afterwards was invisible to the world check.
+
+**Why the republish exists, and what is kept.** Between octrees the timer is
+what makes the grid follow the robot through TF and the payload clearing
+follow the payload's live pose (the attach window above spans ~28 grids of one
+octree's lifetime). All of that is unchanged while the octree is fresh.
+
+**The fix.** The bridge stops publishing once its last octree was received
+more than `max_octree_age_s` ago — `deploy_e2e.launch.py` sets it equal to
+the kernel's 1000 ms `world_voxel_deadline_ms`, i.e. 1.0 s (first shipped as
+half the deadline, 0.5 s; raised the same day after a Thor run with octomap at
+2.2 Hz put healthy gaps at ~0.45 s) — and the kernel's own deadline turns the
+silence into a drop. Worst case from the last inserted cloud to the drop:
+1.0 s + 1.0 s. Pinned by `test_bridge_staleness` (real node, in-process) and
+`tests/sim/safety/test_kernel_voxel_bridge_staleness.py` (real bridge + real
+kernel; checked by hand to discriminate — with the bound set to 1e9 the stale
+chunk is certified, reproducing the fail-open — but that control is not part of
+the committed suite). Not covered: a camera that keeps publishing garbage or a
+frozen image. Re-verified on Thor the same day (non-actuated, CAN down): ZED
+stopped → `/openral/world_voxels` silent from ~0.7 s, resumed at 9.8 Hz when the
+camera came back.
 
 ## Programme status note
 

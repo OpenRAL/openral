@@ -65,8 +65,11 @@ def test_default_params_file_exists_and_parses() -> None:
     assert params["static_mapper.occupied_region_decay_probability"] < 0.5
 
 
-def test_launch_defaults_to_sim_depth_camera_topics() -> None:
-    """deploy-sim's manifest depth camera is nvblox's default input."""
+def test_launch_depth_camera_topics_have_no_default() -> None:
+    """ADR-0108: the depth topics are required — deploy_e2e passes the manifest depth camera.
+
+    A default guessed ``front_depth`` (panda_mobile's name), a dead topic on every other robot.
+    """
     mod = _import_launch_module()
     from ament_index_python.packages import PackageNotFoundError, get_package_share_directory
     from launch.actions import DeclareLaunchArgument
@@ -79,12 +82,8 @@ def test_launch_defaults_to_sim_depth_camera_topics() -> None:
 
     desc = mod.generate_launch_description()
     args = {a.name: a for a in desc.describe_sub_entities() if isinstance(a, DeclareLaunchArgument)}
-    assert args["depth_image_topic"].default_value[0].text == (
-        "/openral/cameras/front_depth/depth/image"
-    )
-    assert args["depth_camera_info_topic"].default_value[0].text == (
-        "/openral/cameras/front_depth/depth/camera_info"
-    )
+    for name in ("depth_image_topic", "depth_camera_info_topic"):
+        assert "".join(s.text for s in args[name].default_value) == ""
     nodes = [
         a
         for a in desc.describe_sub_entities()

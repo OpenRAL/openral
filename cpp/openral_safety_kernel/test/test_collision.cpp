@@ -236,7 +236,7 @@ TEST(SelfCollision, MultipleCapsulesPerLinkAreCheckedIndependently) {
   EXPECT_NEAR(hit.min_distance, -0.15, 1e-9);  // near capsule (x=0.05) vs link1 (x=0)
 }
 
-// ── check_world_collision ─────────────────────────────────────────────────────
+// ── shared single-capsule robot ───────────────────────────────────────────────
 
 namespace {
 
@@ -257,55 +257,7 @@ osk::CollisionModel one_capsule_model() {
   return m;
 }
 
-osk::WorldModel world_obstacle_at(double x) {
-  osk::WorldModel w;
-  osk::Capsule obs;
-  obs.radius = 0.1;
-  obs.half_length = 0.2;
-  obs.origin = translate(x, 0.0, 0.0);
-  w.capsules = {obs};
-  return w;
-}
-
 }  // namespace
-
-TEST(WorldCollision, DetectsRobotCapsuleVsWorldObstacle) {
-  const auto m = one_capsule_model();
-  osk::CollisionScratch s;
-  s.link_world = {identity()};  // robot capsule centered at the origin
-  const auto w = world_obstacle_at(0.15);
-  const auto hit = osk::check_world_collision(m, s, w, 0.0);
-  EXPECT_TRUE(hit.hit);
-  EXPECT_EQ(hit.link_a, 0);                    // robot link 0
-  EXPECT_EQ(hit.link_b, 0);                    // world obstacle 0
-  EXPECT_NEAR(hit.min_distance, -0.05, 1e-9);  // centerline 0.15, radii 0.2
-}
-
-TEST(WorldCollision, NoHitWhenSeparatedReportsMinDistance) {
-  const auto m = one_capsule_model();
-  osk::CollisionScratch s;
-  s.link_world = {identity()};
-  const auto hit = osk::check_world_collision(m, s, world_obstacle_at(1.0), 0.0);
-  EXPECT_FALSE(hit.hit);
-  EXPECT_NEAR(hit.min_distance, 0.8, 1e-9);
-}
-
-TEST(WorldCollision, MarginTreatsNearMissAsCollision) {
-  const auto m = one_capsule_model();
-  osk::CollisionScratch s;
-  s.link_world = {identity()};
-  const auto hit = osk::check_world_collision(m, s, world_obstacle_at(1.0), 1.0);
-  EXPECT_TRUE(hit.hit);
-}
-
-TEST(WorldCollision, EmptyWorldNeverHits) {
-  const auto m = one_capsule_model();
-  osk::CollisionScratch s;
-  s.link_world = {identity()};
-  const osk::WorldModel empty;
-  const auto hit = osk::check_world_collision(m, s, empty, 0.0);
-  EXPECT_FALSE(hit.hit);
-}
 
 // ── check_voxel_collision ─────────────────────────────────────────────────────
 
@@ -685,14 +637,7 @@ TEST(NoAlloc, ForwardKinematicsAndSelfCollisionAreAllocationFree) {
   osk::CollisionScratch scratch;
   scratch.link_world.resize(m.n_links);
 
-  // Pre-built world obstacles + a voxel grid (allocated outside the counted window).
-  osk::WorldModel world;
-  osk::Capsule obs;
-  obs.radius = 0.05;
-  obs.half_length = 0.1;
-  obs.origin = translate(0.3, 0.0, 0.3);
-  world.capsules = {obs, obs};
-
+  // Pre-built voxel grid (allocated outside the counted window).
   std::vector<std::uint8_t> occ(8 * 8 * 8, 0);
   occ[42] = 1;
   osk::VoxelGrid grid;
@@ -713,11 +658,9 @@ TEST(NoAlloc, ForwardKinematicsAndSelfCollisionAreAllocationFree) {
     // A margin wide enough that every box pair fires, so the hull refinement
     // runs rather than being skipped by the cheap bound.
     const auto refined_hit = osk::check_self_collision(m, scratch, 1.0);
-    const auto world_hit = osk::check_world_collision(m, scratch, world, 0.0);
     const auto voxel_hit = osk::check_voxel_collision(m, scratch, grid, 0.0);
     (void)self_hit;
     (void)refined_hit;
-    (void)world_hit;
     (void)voxel_hit;
   }
   g_count_enabled.store(false, std::memory_order_relaxed);
@@ -744,8 +687,8 @@ TEST(NoAlloc, AttachedCollisionChecksAreAllocationFree) {
   osk::CollisionScratch scratch;
   scratch.link_world.resize(m.n_links);
 
-  // Pre-sized attached model (fixed capacity), a world obstacle and a voxel
-  // grid — all built OUTSIDE the counted window. One object owns one sphere
+  // Pre-sized attached model (fixed capacity) and a voxel grid — both built
+  // OUTSIDE the counted window. One object owns one sphere
   // primitive (flattened buffers presized to their caps).
   osk::AttachedModel att;
   att.objects.assign(4, osk::AttachedObject{});
@@ -770,13 +713,6 @@ TEST(NoAlloc, AttachedCollisionChecksAreAllocationFree) {
   att.n_objects = 1;
   att.n_primitives = 1;
 
-  osk::WorldModel world;
-  osk::Capsule obs;
-  obs.radius = 0.05;
-  obs.half_length = 0.1;
-  obs.origin = translate(0.3, 0.0, 0.3);
-  world.capsules = {obs, obs};
-
   std::vector<std::uint8_t> occ(8 * 8 * 8, 0);
   occ[42] = 1;
   osk::VoxelGrid grid;
@@ -800,14 +736,12 @@ TEST(NoAlloc, AttachedCollisionChecksAreAllocationFree) {
   for (int i = 0; i < 10000; ++i) {
     osk::forward_kinematics(m, qpos.data(), qpos.size(), scratch);
     const auto self_hit = osk::check_attached_self_collision(m, att, scratch, 0.0);
-    const auto world_hit = osk::check_attached_world_collision(m, att, scratch, world, 0.0);
     const auto voxel_hit = osk::check_attached_voxel_collision(m, att, scratch, grid, 0.0);
     const bool contacts_active = osk::update_attached_voxel_contacts(
         att, scratch, grid, contact_mask.data(), contact_distance.data(), contact_mask.size(),
         contact_distance.size(), false);
     const std::uint8_t live = osk::update_support_contact_witnesses(att, scratch, grid, 0x1, 0.0);
     (void)self_hit;
-    (void)world_hit;
     (void)voxel_hit;
     (void)contacts_active;
     (void)live;
@@ -972,7 +906,7 @@ TEST(SelfCollisionBox, BoxBoxPairFiresAndClears) {
   EXPECT_TRUE(hit.hit);  // overlapping
 }
 
-// ── Box link vs world / voxel (blocky links stay world-visible) ────
+// ── Box link vs voxel (blocky links stay world-visible) ────
 
 namespace {
 osk::CollisionModel one_box_model() {
@@ -988,20 +922,6 @@ osk::CollisionModel one_box_model() {
   return m;
 }
 }  // namespace
-
-TEST(WorldCollisionBox, BoxLinkIsCheckedAgainstWorldObstacle) {
-  const auto m = one_box_model();
-  osk::CollisionScratch s;
-  s.link_world = {identity()};
-  // Obstacle capsule (radius 0.1) at x=0.10: box +x face at 0.05 → gap 0.05,
-  // minus the obstacle radius → -0.05 (a hit the capsule-only loop would miss).
-  const auto hit = osk::check_world_collision(m, s, world_obstacle_at(0.10), 0.0);
-  EXPECT_TRUE(hit.hit);
-  EXPECT_EQ(hit.link_a, 0);
-  EXPECT_EQ(hit.link_b, 0);
-  EXPECT_NEAR(hit.min_distance, -0.05, 1e-6);
-  EXPECT_FALSE(osk::check_world_collision(m, s, world_obstacle_at(1.0), 0.0).hit);
-}
 
 TEST(VoxelCollisionBox, BoxLinkIsCheckedAgainstOccupiedVoxel) {
   const auto m = one_box_model();
@@ -1029,10 +949,10 @@ TEST(VoxelCollisionBox, BoxLinkIsCheckedAgainstOccupiedVoxel) {
 // ── Attached collision objects (grasped payload; ADR-0092) ─────────────
 //
 // A grasped payload is removed from world occupancy and re-checked as
-// collision-active robot geometry: against world obstacles, occupancy voxels,
-// and the robot's own links EXCEPT the attach link and explicit touch links
-// (the fingers legitimately holding it). Ground truth is hand-computed
-// analytically; the full FK + wire-ingest path is exercised in the sim tier.
+// collision-active robot geometry: against occupancy voxels and the robot's
+// own links EXCEPT the attach link and explicit touch links (the fingers legitimately holding it).
+// Ground truth is hand-computed analytically; the full FK + wire-ingest path is exercised in the
+// sim tier.
 
 namespace {
 
@@ -1138,46 +1058,6 @@ TEST(AttachedSelfCollision, PayloadHittingNonTouchLinkIsRejected) {
   EXPECT_EQ(hit.link_a, 0);                    // attached object 0
   EXPECT_EQ(hit.link_b, 3);                    // the non-touch arm link
   EXPECT_NEAR(hit.min_distance, -0.05, 1e-9);  // centerline 0.15, radii 0.2
-}
-
-TEST(AttachedWorldCollision, PayloadVsWorldObstacleIsRejected) {
-  osk::CollisionModel m = hand_model();
-  osk::CollisionScratch s;
-  s.link_world = {identity(), identity(), identity(), identity()};
-  osk::AttachedModel att;
-  append_object(att, 1, identity(), {sphere_prim(0.1)});
-
-  osk::WorldModel w;
-  osk::Capsule obs;
-  obs.radius = 0.1;
-  obs.half_length = 0.2;
-  obs.origin = translate(0.15, 0.0, 0.0);
-  w.capsules = {obs};
-
-  const auto hit = osk::check_attached_world_collision(m, att, s, w, 0.0);
-  EXPECT_TRUE(hit.hit);
-  EXPECT_EQ(hit.link_a, 0);
-  EXPECT_EQ(hit.link_b, 0);
-  EXPECT_NEAR(hit.min_distance, -0.05, 1e-9);
-}
-
-TEST(AttachedWorldCollision, ClearPayloadReportsMinDistanceNoHit) {
-  osk::CollisionModel m = hand_model();
-  osk::CollisionScratch s;
-  s.link_world = {identity(), identity(), identity(), identity()};
-  osk::AttachedModel att;
-  append_object(att, 1, identity(), {sphere_prim(0.1)});
-
-  osk::WorldModel w;
-  osk::Capsule obs;
-  obs.radius = 0.1;
-  obs.half_length = 0.2;
-  obs.origin = translate(1.0, 0.0, 0.0);
-  w.capsules = {obs};
-
-  const auto hit = osk::check_attached_world_collision(m, att, s, w, 0.0);
-  EXPECT_FALSE(hit.hit);
-  EXPECT_NEAR(hit.min_distance, 0.8, 1e-9);  // centerline 1.0 - 0.1 - 0.1
 }
 
 TEST(AttachedVoxelCollision, PayloadVsOccupiedVoxelIsRejected) {
@@ -1395,24 +1275,22 @@ TEST(AttachedVoxelCollision, MultiObjectBaselinesUseDeclaredGridStride) {
 TEST(AttachedObjects, MultipleObjectsAreAllChecked) {
   osk::CollisionModel m = hand_model();
   osk::CollisionScratch s;
-  // Attach link 1 at origin; attach link 3 shifted to x=1.0.
-  s.link_world = {identity(), identity(), identity(), translate(1.0, 0.0, 0.0)};
+  // Attach link 1 at origin; attach link 3 shifted to x=0.2.
+  s.link_world = {identity(), identity(), identity(), translate(0.2, 0.0, 0.0)};
 
   osk::AttachedModel att;
   append_object(att, 1, identity(), {sphere_prim(0.1)});  // object 0: at origin, clear
-  append_object(att, 3, identity(), {sphere_prim(0.1)});  // object 1: at x=1.0, overlaps obstacle
+  append_object(att, 3, identity(), {sphere_prim(0.1)});  // object 1: inside the occupied cell
 
-  osk::WorldModel w;
-  osk::Capsule obs;
-  obs.radius = 0.1;
-  obs.half_length = 0.2;
-  obs.origin = translate(1.15, 0.0, 0.0);  // near object 1 only
-  w.capsules = {obs};
+  // One occupied cell centred at x=0.2 (faces x in [0.15, 0.25]): object 0's
+  // sphere stops 0.05 m short of it, object 1 sits inside it.
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(4, 2, 2))] = 1;
 
-  const auto hit = osk::check_attached_world_collision(m, att, s, w, 0.0);
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, make_grid(occ), 0.0);
   EXPECT_TRUE(hit.hit);
   EXPECT_EQ(hit.link_a, 1) << "the second attached object must be reached and reported";
-  EXPECT_EQ(hit.link_b, 0);
+  EXPECT_EQ(hit.link_b, voxel_index(4, 2, 2));
 }
 
 // ── Multiple primitives per attached object (Phase 1) ──────────────────
@@ -1423,27 +1301,25 @@ TEST(AttachedMultiPrimitive, BothPrimitivesOnOneObjectAreChecked) {
   s.link_world = {identity(), identity(), identity(), identity()};
 
   // One object (attach link 1, identity object pose) owning TWO sphere
-  // primitives: A at the object origin (clear), B offset +x by 0.3 (near the
-  // obstacle). Only the second primitive collides; the object must still fire.
+  // primitives: A at the object origin (clear), B offset -x by 0.1 (near the
+  // occupied cell). Only the second primitive collides; the object must fire.
   osk::AttachedModel att;
   append_object(att, 1, identity(),
-                {sphere_prim(0.05, identity()), sphere_prim(0.1, translate(0.3, 0.0, 0.0))});
+                {sphere_prim(0.05, identity()), sphere_prim(0.1, translate(-0.1, 0.0, 0.0))});
   ASSERT_EQ(att.n_objects, 1U);
   ASSERT_EQ(att.n_primitives, 2U);
 
-  osk::WorldModel w;
-  osk::Capsule obs;
-  obs.radius = 0.05;
-  obs.half_length = 0.0;
-  obs.origin = translate(0.35, 0.0, 0.0);  // 0.35 from origin; near primitive B only
-  w.capsules = {obs};
+  // Occupied cell centred at x=-0.2 (faces x in [-0.25, -0.15]): A clears it by
+  // 0.10 m, B's centre is 0.05 m from its +x face.
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(0, 2, 2))] = 1;
 
-  const auto hit = osk::check_attached_world_collision(m, att, s, w, 0.0);
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, make_grid(occ), 0.0);
   EXPECT_TRUE(hit.hit) << "the second primitive of the object must be checked and reported";
   EXPECT_EQ(hit.link_a, 0) << "evidence stays object-level (single object index 0)";
-  EXPECT_EQ(hit.link_b, 0);
-  // B centre at x=0.3 r=0.1; obstacle centre x=0.35 r=0.05 -> centreline 0.05, radii 0.15.
-  EXPECT_NEAR(hit.min_distance, -0.1, 1e-9);
+  EXPECT_EQ(hit.link_b, voxel_index(0, 2, 2));
+  // B centre x=-0.1 r=0.1; cell face x=-0.15 -> 0.05 - 0.1.
+  EXPECT_NEAR(hit.min_distance, -0.05, 1e-9);
 }
 
 TEST(AttachedMultiPrimitive, FirstPrimitiveCollisionIsReported) {
@@ -1455,16 +1331,14 @@ TEST(AttachedMultiPrimitive, FirstPrimitiveCollisionIsReported) {
   // reports the (object-level) index with the minimum distance across prims.
   osk::AttachedModel att;
   append_object(att, 1, identity(),
-                {sphere_prim(0.1, identity()), sphere_prim(0.05, translate(1.0, 0.0, 0.0))});
+                {sphere_prim(0.1, identity()), sphere_prim(0.05, translate(-0.2, 0.0, 0.0))});
 
-  osk::WorldModel w;
-  osk::Capsule obs;
-  obs.radius = 0.1;
-  obs.half_length = 0.2;
-  obs.origin = translate(0.15, 0.0, 0.0);  // overlaps primitive A at origin
-  w.capsules = {obs};
+  // Occupied cell centred at x=0.1 (faces x in [0.05, 0.15]): overlaps A at the
+  // origin, 0.20 m clear of B.
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(3, 2, 2))] = 1;
 
-  const auto hit = osk::check_attached_world_collision(m, att, s, w, 0.0);
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, make_grid(occ), 0.0);
   EXPECT_TRUE(hit.hit);
   EXPECT_EQ(hit.link_a, 0);
   EXPECT_NEAR(hit.min_distance, -0.05, 1e-9);
@@ -1473,30 +1347,27 @@ TEST(AttachedMultiPrimitive, FirstPrimitiveCollisionIsReported) {
 TEST(AttachedMultiPrimitive, MultipleObjectsWithMultiplePrimitives) {
   osk::CollisionModel m = hand_model();
   osk::CollisionScratch s;
-  // Object 0 attach link 1 at origin; object 1 attach link 3 at x=2.0.
-  s.link_world = {identity(), identity(), identity(), translate(2.0, 0.0, 0.0)};
+  // Object 0 attach link 1 at origin; object 1 attach link 3 at y=0.1.
+  s.link_world = {identity(), identity(), identity(), translate(0.0, 0.1, 0.0)};
 
   osk::AttachedModel att;
-  // Object 0: two prims, both clear of the obstacle.
+  // Object 0: two prims, both clear of the occupied cell.
   append_object(att, 1, identity(),
-                {sphere_prim(0.05, identity()), sphere_prim(0.05, translate(0.2, 0.0, 0.0))});
-  // Object 1: two prims; the SECOND (offset +x 0.3 → world x=2.3) hits.
+                {sphere_prim(0.05, identity()), sphere_prim(0.05, translate(-0.2, 0.0, 0.0))});
+  // Object 1: two prims; the SECOND (offset (0.2, -0.1) -> world (0.2, 0, 0))
+  // lands inside the cell, the first (world (0, 0.1, 0)) stays clear.
   append_object(att, 3, identity(),
-                {sphere_prim(0.05, identity()), sphere_prim(0.1, translate(0.3, 0.0, 0.0))});
+                {sphere_prim(0.05, identity()), sphere_prim(0.1, translate(0.2, -0.1, 0.0))});
   ASSERT_EQ(att.n_objects, 2U);
   ASSERT_EQ(att.n_primitives, 4U);
 
-  osk::WorldModel w;
-  osk::Capsule obs;
-  obs.radius = 0.05;
-  obs.half_length = 0.0;
-  obs.origin = translate(2.35, 0.0, 0.0);  // near object 1's second primitive only
-  w.capsules = {obs};
+  std::vector<std::uint8_t> occ(125, 0);
+  occ[static_cast<std::size_t>(voxel_index(4, 2, 2))] = 1;  // centre (0.2, 0, 0)
 
-  const auto hit = osk::check_attached_world_collision(m, att, s, w, 0.0);
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, make_grid(occ), 0.0);
   EXPECT_TRUE(hit.hit);
   EXPECT_EQ(hit.link_a, 1) << "object 1 (second object, second primitive) must be reported";
-  EXPECT_EQ(hit.link_b, 0);
+  EXPECT_EQ(hit.link_b, voxel_index(4, 2, 2));
 }
 
 TEST(AttachedMultiPrimitive, PoseInLinkComposesWithPoseInObject) {
@@ -1514,26 +1385,18 @@ TEST(AttachedMultiPrimitive, PoseInLinkComposesWithPoseInObject) {
   osk::AttachedModel att;
   append_object(att, 1, obj_pose, {sphere_prim(0.05, translate(0.2, 0.0, 0.0))});
 
-  // Obstacle at the composed (rotated) location → hit.
-  osk::WorldModel hit_world;
-  osk::Capsule near_obs;
-  near_obs.radius = 0.05;
-  near_obs.half_length = 0.0;
-  near_obs.origin = translate(0.0, 0.2, 0.0);
-  hit_world.capsules = {near_obs};
-  const auto hit = osk::check_attached_world_collision(m, att, s, hit_world, 0.0);
+  // Occupied cell at the composed (rotated) location → hit.
+  std::vector<std::uint8_t> hit_occ(125, 0);
+  hit_occ[static_cast<std::size_t>(voxel_index(2, 4, 2))] = 1;  // centre (0, 0.2, 0)
+  const auto hit = osk::check_attached_voxel_collision(m, att, s, make_grid(hit_occ), 0.0);
   EXPECT_TRUE(hit.hit) << "primitive must land at the composed (rotated) pose (0, 0.2, 0)";
   EXPECT_LT(hit.min_distance, 0.0);
 
-  // Obstacle at the UN-rotated location (0.2, 0, 0) → clear (would only hit if
-  // the composition order were wrong).
-  osk::WorldModel clear_world;
-  osk::Capsule far_obs;
-  far_obs.radius = 0.05;
-  far_obs.half_length = 0.0;
-  far_obs.origin = translate(0.2, 0.0, 0.0);
-  clear_world.capsules = {far_obs};
-  const auto clear = osk::check_attached_world_collision(m, att, s, clear_world, 0.0);
+  // Occupied cell at the UN-rotated location (0.2, 0, 0) → clear (would only
+  // hit if the composition order were wrong).
+  std::vector<std::uint8_t> clear_occ(125, 0);
+  clear_occ[static_cast<std::size_t>(voxel_index(4, 2, 2))] = 1;  // centre (0.2, 0, 0)
+  const auto clear = osk::check_attached_voxel_collision(m, att, s, make_grid(clear_occ), 0.0);
   EXPECT_FALSE(clear.hit) << "the pre-rotation position must be clear (composition order matters)";
 }
 
@@ -2716,45 +2579,25 @@ TEST(CollisionEvidence, SelfCollisionDistanceDescribesTheReportedLinkPair) {
   EXPECT_NEAR(hit.sweep_min_distance, -0.05, 1e-9);
 }
 
-TEST(CollisionEvidence, AttachedWorldDistanceDescribesTheReportedObstacle) {
-  osk::CollisionModel m = hand_model();
-  osk::CollisionScratch s;
-  s.link_world = {identity(), identity(), identity(), identity()};
-  osk::AttachedModel att;
-  append_object(att, 1, identity(), {sphere_prim(0.1)});
-
-  osk::WorldModel w;
-  osk::Capsule grazing;
-  grazing.radius = 0.1;
-  grazing.half_length = 0.0;
-  grazing.origin = translate(0.199, 0.0, 0.0);  // -1 mm, checked first
-  osk::Capsule deep;
-  deep.radius = 0.1;
-  deep.half_length = 0.0;
-  deep.origin = translate(0.15, 0.0, 0.0);  // -50 mm
-  w.capsules = {grazing, deep};
-
-  const auto hit = osk::check_attached_world_collision(m, att, s, w, 0.0);
-  ASSERT_TRUE(hit.hit);
-  EXPECT_EQ(hit.link_a, 0);
-  EXPECT_EQ(hit.link_b, 1) << "the deepest tripping obstacle is the second one";
-  EXPECT_NEAR(hit.min_distance, -0.05, 1e-9);
-}
-
 TEST(CollisionEvidence, SweepMinimumEqualsTheEvidenceDistanceWhenNothingTrips) {
   // With no hit there is no pair to describe, so `min_distance` keeps its
   // clearance meaning and both fields agree.
-  const auto m = one_capsule_model();
+  osk::CollisionModel m = hand_model();
+  add_capsule(m, 1, 0.1, 0.0, identity());
+  add_capsule(m, 3, 0.1, 0.0, identity());
   osk::CollisionScratch s;
-  s.link_world = {identity()};
-  const auto clear = osk::check_world_collision(m, s, world_obstacle_at(1.0), 0.0);
+  s.link_world = {identity(), identity(), identity(), translate(1.0, 0.0, 0.0)};
+  const auto clear = osk::check_self_collision(m, s, 0.0);
   EXPECT_FALSE(clear.hit);
   EXPECT_NEAR(clear.min_distance, 0.8, 1e-9);
   EXPECT_NEAR(clear.sweep_min_distance, clear.min_distance, 1e-12);
 
-  // An empty check reports no clearance at all (infinite), on both fields.
-  const osk::WorldModel empty;
-  const auto nothing = osk::check_world_collision(m, s, empty, 0.0);
+  // An empty check reports no clearance at all (infinite), on both fields: a
+  // single-capsule robot has no self pair to measure.
+  const auto single = one_capsule_model();
+  osk::CollisionScratch single_s;
+  single_s.link_world = {identity()};
+  const auto nothing = osk::check_self_collision(single, single_s, 0.0);
   EXPECT_FALSE(nothing.hit);
   EXPECT_TRUE(std::isinf(nothing.min_distance));
   EXPECT_TRUE(std::isinf(nothing.sweep_min_distance));

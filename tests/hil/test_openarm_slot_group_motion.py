@@ -39,7 +39,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.hil.conftest import _can_links_up, _installed_slot_rskill
+from tests.hil._can_gate import _can_links_up
+from tests.hil.conftest import _installed_slot_rskill
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROBOT = REPO_ROOT / "robots" / "openarm" / "robot.yaml"

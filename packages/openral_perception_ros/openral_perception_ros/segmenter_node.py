@@ -48,7 +48,8 @@ Parameters:
         ``primary_camera`` on ``image_topic``.
     primary_camera (str): id of the default camera (used when a request leaves
         ``camera`` empty).
-    image_topic (str): single-camera fallback topic.
+    image_topic (str): single-camera fallback topic; default empty — ``cameras`` or this
+        must name a camera (ADR-0108), else configure raises ``ROSConfigError``.
     robot_yaml (str): RobotDescription path, for each camera's intrinsics +
         optical frame. Required.
     manifest_path (str): rSkill manifest path (``kind: "segmenter"``). Required.
@@ -183,7 +184,7 @@ def _node_class() -> type:
             super().__init__(node_name)
             self.declare_parameter("cameras", [""])
             self.declare_parameter("primary_camera", "default")
-            self.declare_parameter("image_topic", "/openral/cameras/wrist/image")
+            self.declare_parameter("image_topic", "")
             self.declare_parameter("robot_yaml", "")
             self.declare_parameter("manifest_path", "")
             self.declare_parameter("segment_in_view_service", DEFAULT_SEGMENT_SERVICE)

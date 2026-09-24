@@ -168,6 +168,27 @@ def test_deploy_validate_ready_with_committed_calibration(tmp_path: Path) -> Non
     result = CliRunner().invoke(app, ["deploy", "validate", "--config", str(config)])
     assert result.exit_code == 0, result.output
     assert "ready" in result.output.lower()
+    # The cameras are the manifest's, bound in robot.yaml: the scene needs none.
+    assert "declare no sensors" not in result.output
+    assert "no deploy_binding" not in result.output
+
+
+def test_deploy_validate_refuses_a_scene_naming_a_robot_camera(tmp_path: Path) -> None:
+    """A deploy scene never touches a robot camera: a `sensors:` entry reusing the
+    manifest's `wrist` name fails validation instead of rebinding it."""
+    config = tmp_path / "scene.yaml"
+    config.write_text(
+        "scene:\n  id: so101_bench\n"
+        "robot_id: so101_follower\n"
+        "sensors:\n  - name: wrist\n    modality: rgb\n"
+        "    frame_id: wrist_camera\n    rate_hz: 30.0\n"
+        "    deploy_binding: {backend: opencv_thread, backend_params: {device: /dev/video0}}\n",
+        encoding="utf-8",
+    )
+    result = CliRunner().invoke(app, ["deploy", "validate", "--config", str(config)])
+    assert result.exit_code != 0, result.output
+    assert "'wrist'" in result.output
+    assert "defined by the robot manifest" in result.output
 
 
 def test_sim_mode_forwards_deploy_config_for_boot_timeout() -> None:

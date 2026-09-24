@@ -97,8 +97,9 @@ openral detect \
 
 Detection records robot-owned facts in `robot.yaml`; it does not create a
 deploy scene unless `--deployment` is passed. The wizard always runs (there is
-no `--interactive` flag) and opens the camera binding wizard so robot cameras
-and workcell cameras land in that deploy scene.
+no `--interactive` flag) and opens the camera binding wizard: a robot camera's
+binding lands in `robot.yaml`, a workcell camera (its own name) in that deploy
+scene — a deploy scene never touches a robot camera.
 Use `--include usb,gpu,cameras_v4l2,cameras_realsense` to limit probes, and
 `--report detect.json --no-write` when you only want the raw detection report.
 The rSkill that drives the robot is **not** set in deploy config — the reasoner
@@ -173,35 +174,31 @@ drivers:
       # otherwise, defeating the setting above).
       ros_params_override_path: drivers/zedm_openarm_override.yaml
 
-sensors:
-  # RGB: the wrapper's rectified left image. It is published as `bgra8`; the
-  # reader drops the constant alpha plane and delivers `bgr8`, so declare the
-  # encoding you want to RECEIVE, not the wire layout.
-  # Same name as the manifest's `top` camera. Restate every hardware field the
-  # ZED changes: the merge keeps any the scene omits, so the manifest's sim
-  # intrinsics would otherwise describe the ZED.
-  - name: top
-    modality: rgb
-    frame_id: zed_left_camera_optical_frame   # the wrapper's own frame; no parent_frame
-    rate_hz: 30.0
-    encoding: bgr8
-    vla_feature_key: "observation.images.context"
-    intrinsics: { width: 1280, height: 720, fx: 640.0, fy: 640.0, cx: 640.0, cy: 360.0 }
-    deploy_binding:
-      backend: ros2_image
-      backend_params:
-        topic: /zed/zed_node/rgb/color/rect/image
-        reliability: best_effort
-        qos_depth: 5
-      max_age_ms: 200
+runtime:
+  # A depth SensorSpec with intrinsics auto-enables the octomap leg, but the
+  # cloud topic keeps a sim-only launch default unless the scene pins it —
+  # leaving the octree empty behind a healthy-looking graph.
+  enable_octomap: true
+  octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+```
 
+The scene has **no `sensors:` block**. The ZED is bolted to the robot, so both of
+its streams are robot cameras, and a deploy scene never touches a camera the
+robot manifest defines (`check_scene_sensor_overrides` refuses a scene entry
+that reuses a manifest sensor's name). The bindings go on the manifest's own
+entries, in `robots/<robot>/robot.yaml`, next to the geometry they belong to —
+this is what `robots/openarm/robot.yaml` commits:
+
+```yaml
+sensors:
   # Depth: SDK-computed, so it exists only as a topic. `32FC1` metres on the
   # wire (or `16UC1` millimetres with `openni_depth_mode: true`) — either way
   # it reaches the world state as DEPTH16, uint16 millimetres.
   - name: head_zed
     modality: depth
     frame_id: zed_camera_link
-    rate_hz: 10.0
+    parent_frame: openarm_base      # the mount: robot geometry, calibrated here
+    # … static_transform_xyz_rpy, intrinsics …
     deploy_binding:
       backend: ros2_image
       backend_params:
@@ -214,12 +211,38 @@ sensors:
         qos_depth: 5
       max_age_ms: 500
 
-runtime:
-  # A depth SensorSpec with intrinsics auto-enables the octomap leg, but the
-  # cloud topic keeps a sim-only launch default unless the scene pins it —
-  # leaving the octree empty behind a healthy-looking graph.
-  enable_octomap: true
-  octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+  # RGB: the wrapper's rectified left image, the policy's `top` view. It is
+  # published as `bgra8`; the reader drops the constant alpha plane and
+  # delivers `bgr8`.
+  - name: top
+    modality: rgb
+    # … frame_id, intrinsics, vla_feature_key …
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/rgb/color/rect/image
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 200
+```
+
+A camera that is part of the *cell* rather than the robot — an overhead or
+front camera on a stand — is the one thing a scene's `sensors:` block is for.
+It takes a name the manifest does not use, and carries its own geometry and
+binding:
+
+```yaml
+sensors:
+  - name: overhead               # not a manifest sensor name
+    modality: rgb
+    frame_id: overhead_optical_frame
+    parent_frame: world
+    static_transform_xyz_rpy: [0.4, 0.0, 1.2, 3.1416, 0.0, 0.0]
+    rate_hz: 30.0
+    encoding: rgb8
+    deploy_binding:
+      backend: opencv_thread
+      backend_params: {device: /dev/v4l/by-id/<your-camera>-video-index0, fps: 30}
 ```
 
 Every frame in the world state, RGB and depth alike, is decoded by its
@@ -251,10 +274,13 @@ any rectified stream published by a calibration node.
 ### Building a world map from a real depth camera (`octomap_cloud_topic`)
 
 Turning `enable_octomap: true` on is not enough on real hardware. `octomap_server`
-subscribes to whatever `octomap_cloud_topic` names, and that argument defaults to
-`/openral/cameras/front_depth/points` — a topic published by the **sim** sensor
-bridge, which back-projects the digital twin's depth raster. Nothing publishes it
-under `hal_mode:=real`.
+subscribes to whatever `octomap_cloud_topic` names. Left unset, the launch derives
+`/openral/cameras/<name>/points` from the manifest's first depth sensor with
+intrinsics (e.g. `head_zed` on `openarm`, `front_depth` on `panda_mobile`) — a
+topic published by the **sim** sensor bridge, which back-projects the digital
+twin's depth raster. Nothing publishes it under `hal_mode:=real`. With octomap
+forced on for a robot that declares no such depth sensor, the launch fails with
+`ROSConfigError` instead of mapping silence.
 
 Leave it unset on hardware and the failure is silent in the worst way: every node
 comes up healthy, and the octree, `/openral/world_voxels` and the dashboard's
@@ -278,6 +304,12 @@ pins `enable_octomap: false` to override the auto-enable that the manifest's
 that auto-enable through the same code path as `deploy sim`). Both are
 `deploy sim` scenes, but the same fields apply unchanged under
 `hal_mode:=real`. Copy one of them; never leave it half-set.
+
+To let that map **stop** a real arm, not just draw it, see
+[`scenes/deploy/openarm_real_world_voxels.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_real_world_voxels.yaml)
+and its [attended runbook](openarm-real-world-voxel-check.md): it adds
+`enable_octomap_kernel_check: true` and a guarded launcher that refuses until the camera
+pose in `robots/openarm/robot.yaml` is calibrated and verified.
 
 That is deliberate reuse rather than a new node: `zed_wrapper` (and the RealSense
 and Orbbec drivers) already stereo-match and project on the GPU, so composing a
@@ -340,9 +372,10 @@ It checks three things:
 - **Calibration** — a serial HAL with `calibrate_on_connect: false` has an `id`
   and `calibration_dir`, and `<calibration_dir>/<id>.json` is actually there.
   Missing, and every `send_action` fails with "has no calibration registered".
-- **Camera bindings** — each scene sensor has a `deploy_binding` (without one
-  it is never published, and a camera VLA silently gets an empty observation),
-  and any `/dev/*` path exists now.
+- **Camera bindings** — each deploy sensor (the robot manifest's cameras, bound
+  in `robot.yaml`, plus the scene's workcell cameras) has a `deploy_binding`
+  (without one it is never published, and a camera VLA silently gets an empty
+  observation), and any `/dev/*` path exists now.
 
 It separates **ERROR** (committed data is missing — exits non-zero) from
 **WARN** (the device just is not plugged in right now), and resolves HAL

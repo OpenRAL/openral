@@ -887,8 +887,10 @@ class ReasonerNode(LifecycleNode):
         # When set to a non-empty string, on_configure subscribes sensor_msgs/Image
         # on this topic (BEST_EFFORT, VOLATILE, depth=1) and caches the latest frame
         # as JPEG bytes in `_latest_completion_frame` for `_adjudicate_completion`.
-        # Empty string disables the subscription (no hidden camera subscription).
-        self.declare_parameter("completion_camera_topic", "/openral/cameras/top/image")
+        # Empty string (the default) disables the subscription (no hidden camera
+        # subscription); deploy_e2e passes the manifest's primary RGB camera through
+        # ``openral_core.camera_topic`` (ADR-0108).
+        self.declare_parameter("completion_camera_topic", "")
         # VLM-adjudicated completion §5 — the HAL publishes LIBERO/MuJoCo frames bottom-up (the
         # topic is raw; OPENRAL_DASHBOARD_FLIP_180 flips only the dashboard thumbnail —
         # sim_sensor_bridge). Rotate the cached completion frame 180° so the VLM judges an upright

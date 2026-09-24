@@ -145,6 +145,7 @@ lint:
     uv run mypy --strict tools/
     uv run python tools/refresh_methods_linenos.py --check --coverage
     uv run python tools/gen_nav2_visual.py --check
+    uv run python tools/gen_ros_topic_graph.py --check
 
 # Format
 fmt:
