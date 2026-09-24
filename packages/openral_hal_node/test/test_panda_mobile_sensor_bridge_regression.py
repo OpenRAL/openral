@@ -36,6 +36,7 @@ import time
 from pathlib import Path
 
 import pytest
+from openral_core import CameraTopicKind, camera_topic
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ _SCENE_YAML = str(_REPO_ROOT / "scenes" / "sim" / "robocasa_panda_mobile_kitchen
 # The depth sensor name declared in robots/panda_mobile/robot.yaml.
 # SimSensorBridge publishes on /openral/cameras/<name>/points.
 _DEPTH_SENSOR_NAME = "front_depth"
-_DEPTH_TOPIC = f"/openral/cameras/{_DEPTH_SENSOR_NAME}/points"
+_DEPTH_TOPIC = camera_topic(_DEPTH_SENSOR_NAME, CameraTopicKind.POINTS)
 
 # Generous configure timeout: on_configure calls build_sim_env_from_yaml which
 # runs ensure_backend_deps (robocasa kitchen git-clone + pip install) and

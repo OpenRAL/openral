@@ -33,6 +33,10 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("coverage_radius_m", default_value="0.0"),
         DeclareLaunchArgument("coverage_center_z", default_value="0.5"),
         DeclareLaunchArgument("publish_rate_hz", default_value="10.0"),
+        # Stop republishing an octree older than this, so the kernel's
+        # `world_voxel_deadline_ms` fails closed on a dead camera. Equal to that
+        # deadline in deploy_e2e (1.0 s; hazard log Entry 033).
+        DeclareLaunchArgument("max_octree_age_s", default_value="1.0"),
     ]
     bridge = Node(
         package="openral_octomap_bridge",
@@ -48,6 +52,7 @@ def generate_launch_description() -> LaunchDescription:
                 "coverage_radius_m": LaunchConfiguration("coverage_radius_m"),
                 "coverage_center_z": LaunchConfiguration("coverage_center_z"),
                 "publish_rate_hz": LaunchConfiguration("publish_rate_hz"),
+                "max_octree_age_s": LaunchConfiguration("max_octree_age_s"),
             }
         ],
     )

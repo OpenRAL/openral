@@ -95,7 +95,6 @@ from openral_core.schemas import (
     TickResult,
     VLASpec,
     WaitTool,
-    WorldCollisionPrimitive,
     WorldState,
 )
 from pydantic import ValidationError
@@ -234,7 +233,10 @@ _robot_description_st = st.builds(
     capabilities=_capabilities_st,
     safety=_safety_st,
     sdk_kind=st.sampled_from(["open", "closed_with_api", "closed"]),
-    hal=_hal_entrypoints_st,
+    # Sim-only: a manifest with `hal.real` must also declare its control rate,
+    # every kernel-read safety field and joint velocity limits (the real-hardware
+    # contract), which tests/unit/test_robot_description_real_contract.py pins.
+    hal=st.builds(HalEntrypoints, sim=st.none() | _name, real=st.none()),
     compute_edge=st.one_of(st.none(), _compute_spec_st),
     compute_local=st.one_of(st.none(), _compute_spec_st),
     compute_cloud=st.one_of(st.none(), _compute_spec_st),
@@ -323,13 +325,6 @@ _link_collision_geometry_st = st.builds(
     link_name=_name,
     shape=_collision_shape_st,
     origin_xyz_rpy=st.tuples(*([_safe_float] * 6)),
-)
-
-_world_collision_primitive_st = st.builds(
-    WorldCollisionPrimitive,
-    shape=_collision_shape_st,
-    pose=_pose6d_st,
-    object_id=st.one_of(st.none(), _name),
 )
 
 _occupancy_grid_ref_st = st.builds(
@@ -555,13 +550,6 @@ def test_fuzz_sphere_shape(instance: SphereShape) -> None:
 def test_fuzz_link_collision_geometry(instance: LinkCollisionGeometry) -> None:
     """LinkCollisionGeometry round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(LinkCollisionGeometry, instance)
-
-
-@_FUZZ_SETTINGS
-@given(_world_collision_primitive_st)
-def test_fuzz_world_collision_primitive(instance: WorldCollisionPrimitive) -> None:
-    """WorldCollisionPrimitive round-trips through JSON and validates against its schema."""
-    _round_trip_and_validate(WorldCollisionPrimitive, instance)
 
 
 @_FUZZ_SETTINGS
@@ -1033,14 +1021,23 @@ def _sensor_reader_config_st(draw: st.DrawFn) -> SensorReaderConfig:
     publish = draw(st.booleans())
     topic = draw(_topic) if publish else None
     rate = draw(_pos_float.filter(lambda x: x > 0)) if publish else None
+    frame_id = draw(st.none() | _name) if publish else None
+    camera_info = draw(st.none() | _intrinsics_st) if publish else None
     return SensorReaderConfig(
         sensor_id=draw(_name),
-        backend=draw(st.sampled_from(list(SensorReaderBackend))),
+        # Only the gstreamer backend has a ROS tee; the others refuse publish_to_ros.
+        backend=(
+            SensorReaderBackend.GSTREAMER
+            if publish
+            else draw(st.sampled_from(list(SensorReaderBackend)))
+        ),
         backend_params=draw(st.dictionaries(_name, st.text(max_size=32), max_size=4)),
         max_age_ms=draw(st.integers(min_value=1, max_value=10_000)),
         publish_to_ros=publish,
         publish_topic=topic,
         publish_rate_hz=rate,
+        publish_frame_id=frame_id,
+        publish_camera_info=camera_info,
     )
 
 
@@ -1053,6 +1050,7 @@ def test_fuzz_sensor_reader_config(instance: SensorReaderConfig) -> None:
         assert instance.publish_topic is not None
     else:
         assert instance.publish_topic is None
+        assert instance.publish_frame_id is None and instance.publish_camera_info is None
 
 
 _hal_config_st = st.builds(

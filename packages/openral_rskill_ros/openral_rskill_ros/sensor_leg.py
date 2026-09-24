@@ -6,13 +6,15 @@ Physical ``/dev/video*`` devices are described by ``SensorSpec.deploy_binding``
 ``DeployScene.sensors`` for workcell-mounted ones (overhead/front).
 
 ``open_deploy_sensor_readers`` opens one reader per bound spec and publishes to
-``<topic_prefix>/<name>/image`` (BEST_EFFORT QoS, matching WorldState's subscription):
+``camera_topic(name)`` (BEST_EFFORT QoS, matching WorldState's subscription):
 
 * ``gstreamer`` — native in-pipeline ROS tee.
 * ``opencv_thread`` (or any tee-less backend) — wrapped in a polling
-  ``SensorRosPublisher``. Calibrated ``intrinsics`` also
-  publish ``CameraInfo`` on ``<topic_prefix>/<name>/camera_info`` (sim HAL's layout), enabling
-  mono visual SLAM on real hardware.
+  ``SensorRosPublisher``.
+
+On both paths, calibrated ``intrinsics`` also publish ``CameraInfo`` on
+``camera_topic(name, CAMERA_INFO)`` (sim HAL's layout), stamped with the spec's
+``frame_id`` — enabling mono visual SLAM on real hardware.
 
 **Direct aggregator path (zero-copy vision path).** When ``aggregator`` is passed (reader,
 aggregator, and skill runner share one process), an ``_AggregatorPump`` per reader writes
@@ -37,6 +39,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Final
 
 import structlog
+from openral_core import CameraTopicKind, camera_topic
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable
@@ -45,16 +48,12 @@ if TYPE_CHECKING:
 
 __all__ = [
     "SensorLeg",
-    "merge_deploy_sensors",
     "open_deploy_sensor_readers",
     "slam_camera_names",
     "topic_frame_size",
 ]
 
 log = structlog.get_logger(__name__)
-
-#: WorldState's camera subscription prefix (`<prefix>/<name>/image`).
-DEFAULT_TOPIC_PREFIX = "/openral/cameras"
 
 #: Publish cadence when the binding's backend_params carry no fps.
 #: Matches the WorldStateAggregator staleness-gate expectation (10 Hz cameras).
@@ -101,9 +100,9 @@ def _emit_frame_observability(sensor_name: str, frame: Any, flip_180: bool) -> N
     ``_MAX_FALLBACK_TOPIC_RATE_HZ`` (3 Hz) — pump-fed cameras emit here instead, at full
     reader cadence, and ``_on_image`` skips them.
 
-    Affordable: Pillow drops the GIL for resize/encode, measured 2.42 ms/frame at 320x240 q60
-    (60 thumbnails/s costs 4.5% of a competing thread's GIL time, vs 89.5% for the uncapped
-    full-res topic). Display-only. Shares
+    Affordable because ``encode_frame_thumbnail`` subsamples before it copies: 0.6 ms per
+    1920x1200 frame on a Jetson AGX Thor, and three cameras at 30 Hz leave a competing Python
+    thread 97 % of its speed (34 % when it encoded at full resolution). Display-only. Shares
     ``openral_observability.producer.emit_sensor_frame_span`` with ``_on_image`` so
     pump-fed and tee-fed cameras render identically.
     """
@@ -248,35 +247,6 @@ class SensorLeg:
         self.readers.clear()
 
 
-def merge_deploy_sensors(
-    manifest_sensors: Iterable[SensorSpec],
-    scene_sensors: Iterable[SensorSpec],
-) -> list[SensorSpec]:
-    """Robot-manifest sensors ∪ ``DeployScene.sensors``, merged field-wise.
-
-    On a name collision the scene's explicitly-set fields win (via ``model_fields_set``, so an
-    unmentioned field falls through to the manifest) and the manifest fills the rest — exactly
-    one spec survives per name, else the device would be opened and its topic published twice.
-
-    Manifest owns robot-side geometry (``parent_frame`` / ``static_transform_xyz_rpy`` /
-    ``intrinsics``); scene owns the host-side binding (device, topic, fps).
-    """
-    scene = list(scene_sensors)
-    by_name = {s.name: s for s in scene}
-    merged: list[SensorSpec] = []
-    for spec in manifest_sensors:
-        override = by_name.pop(spec.name, None)
-        if override is None:
-            merged.append(spec)
-            continue
-        merged.append(
-            spec.model_copy(update={f: getattr(override, f) for f in override.model_fields_set})
-        )
-    # Scene-only sensors (workcell-mounted) keep their declaration order.
-    merged.extend(s for s in scene if s.name in by_name)
-    return merged
-
-
 def _publish_rate_hz(spec: SensorSpec) -> float:
     """The ROS publish cadence for ``spec`` — binding fps, else spec rate, else 10 Hz."""
     assert spec.deploy_binding is not None  # reason: caller filters on binding
@@ -286,13 +256,6 @@ def _publish_rate_hz(spec: SensorSpec) -> float:
     if spec.rate_hz > 0:
         return float(spec.rate_hz)
     return _DEFAULT_PUBLISH_RATE_HZ
-
-
-#: The camera names visual SLAM tracks when the scene does not name them.
-#: ``DeployRuntime.slam_stereo_cameras=None`` means "the impl's built-in
-#: left/right default", so an implicit stereo rig must be exempted too — a
-#: scene that never mentions camera names would otherwise be silently capped.
-_DEFAULT_SLAM_STEREO_CAMERAS: Final[tuple[str, str]] = ("left", "right")
 
 
 def slam_camera_names(runtime: object | None) -> frozenset[str]:
@@ -322,7 +285,9 @@ def slam_camera_names(runtime: object | None) -> frozenset[str]:
         return frozenset()
     names: set[str] = set()
     stereo = getattr(runtime, "slam_stereo_cameras", None)
-    names.update(stereo if stereo else _DEFAULT_SLAM_STEREO_CAMERAS)
+    # Only named cameras: visual SLAM with no stereo pair and no mono camera is refused
+    # before launch (``resolve_launch_invocation``), so there is no implicit rig to exempt.
+    names.update(stereo or ())
     mono = getattr(runtime, "slam_mono_camera", None)
     if mono:
         names.add(str(mono))
@@ -500,7 +465,6 @@ def _await_first_frame(
 def open_deploy_sensor_readers(
     sensors: Iterable[SensorSpec],
     *,
-    topic_prefix: str = DEFAULT_TOPIC_PREFIX,
     aggregator: Any | None = None,  # reason: WorldStateAggregator — deferred import
     ros_node: Any | None = None,  # reason: composed rclpy node — deferred import
     uncapped_sensors: Collection[str] = (),
@@ -511,8 +475,6 @@ def open_deploy_sensor_readers(
     Args:
         sensors: Robot-manifest sensors plus ``DeployScene.sensors`` (caller concatenates).
             Specs without a ``SensorSpec.deploy_binding`` are skipped.
-        topic_prefix: WorldState's ``camera_topic_prefix``. Final topic is
-            ``<topic_prefix>/<spec.name>/image``.
         aggregator: The composed runtime's shared ``WorldStateAggregator``. When set, each
             opened reader also gets an in-process ``_AggregatorPump`` (zero-copy NVMM
             handles intact), and the sensor is recorded in ``SensorLeg.direct_sensors`` —
@@ -558,7 +520,7 @@ def open_deploy_sensor_readers(
         binding = spec.deploy_binding
         if binding is None:
             continue
-        topic = f"{topic_prefix}/{spec.name}/image"
+        topic = camera_topic(spec.name)
         native_tee = binding.backend == SensorReaderBackend.GSTREAMER
         prepared.append(
             (
@@ -572,6 +534,11 @@ def open_deploy_sensor_readers(
                     publish_to_ros=native_tee,
                     publish_topic=topic if native_tee else None,
                     publish_rate_hz=_publish_rate_hz(spec) if native_tee else None,
+                    # Same TF frame + companion CameraInfo the opencv_thread
+                    # SensorRosPublisher emits, so GStreamer cameras feed mono
+                    # visual SLAM (cuVSLAM / nvblox) too.
+                    publish_frame_id=spec.frame_id if native_tee else None,
+                    publish_camera_info=spec.intrinsics if native_tee else None,
                 ),
                 native_tee,
             )
@@ -611,7 +578,7 @@ def open_deploy_sensor_readers(
                     max_size=None if spec.name in uncapped_sensors else topic_max_size,
                     frame_id=spec.frame_id,
                     camera_info=spec.intrinsics,
-                    info_topic=f"{topic_prefix}/{spec.name}/camera_info",
+                    info_topic=camera_topic(spec.name, CameraTopicKind.CAMERA_INFO),
                     node=ros_node,
                 )
                 leg.publishers.append(publisher)

@@ -28,6 +28,10 @@ _PACKAGE = "openral_slam_bringup"
 _EXECUTABLE = "pycuvslam_node.py"
 
 
+#: Suffix of every camera-topic launch argument: the caller supplies it (ADR-0108).
+_REQUIRED = " Required: deploy_e2e passes ``openral_core.camera_topic(<sensor>, ...)``."
+
+
 def _default_params_path() -> str:
     share = get_package_share_directory("openral_slam_bringup")
     return os.path.join(share, "config", "pycuvslam.yaml")
@@ -52,26 +56,28 @@ def generate_launch_description() -> LaunchDescription:
         # owns its ``image_0/1_topic`` remaps), this launch owns the topic
         # defaults so a scene's ``slam_stereo_cameras`` can retarget the rig
         # via ``deploy_e2e.launch.py`` without editing a params file. Passed as
-        # parameter overrides above ``params_file``.
+        # parameter overrides above ``params_file``. No defaults (ADR-0108): no robot
+        # names its cameras ``left``/``right``, so a guessed topic only subscribed to
+        # silence; the node refuses to start with an empty required topic.
         DeclareLaunchArgument(
             "left_image_topic",
-            default_value="/openral/cameras/left/image",
-            description="Rectified stereo-left image topic.",
+            default_value="",
+            description="Rectified stereo-left (or mono RGBD) image topic." + _REQUIRED,
         ),
         DeclareLaunchArgument(
             "left_camera_info_topic",
-            default_value="/openral/cameras/left/camera_info",
-            description="Calibration for the left image.",
+            default_value="",
+            description="Calibration for the left image." + _REQUIRED,
         ),
         DeclareLaunchArgument(
             "right_image_topic",
-            default_value="/openral/cameras/right/image",
-            description="Rectified stereo-right image topic.",
+            default_value="",
+            description="Rectified stereo-right image topic (stereo mode)." + _REQUIRED,
         ),
         DeclareLaunchArgument(
             "right_camera_info_topic",
-            default_value="/openral/cameras/right/camera_info",
-            description="Calibration for the right image.",
+            default_value="",
+            description="Calibration for the right image (stereo mode)." + _REQUIRED,
         ),
         # Multi-camera rig frame. ``robot_yaml`` lets the node derive the rig
         # frame from the manifest's base_frame (the natural rig for a mobile

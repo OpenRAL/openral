@@ -205,14 +205,15 @@ def compose_runtime(
             ``action_spec.control_freq_hz`` or 30.0.
         image_staleness_limit_s: Camera-specific freshness window for the shared world-state
             aggregator. ``None`` keeps its general default.
-        deploy_sensors: A ``DeployScene``'s ``sensors:`` block, merged into the robot
-            manifest's sensors (``merge_deploy_sensors``: scene fields win per name, scene-only
-            sensors appended) before anything is built from the description. The scene is
-            where a cell says what its cameras *are* — a ``vla_feature_key`` naming the
-            checkpoint's view — so every consumer of this one description (the runner's
-            camera slots, the dataset recorder, world state) must see it. Merging only for
-            the sensor readers fed the policy a camera it then filed under the manifest's
-            key, and lerobot replaced the view it was trained on with a masked blank.
+        deploy_sensors: A ``DeployScene``'s ``sensors:`` block — the cell's workcell
+            cameras, appended to the robot manifest's sensors (``merge_deploy_sensors``,
+            which refuses an entry reusing a manifest sensor's name) before anything is
+            built from the description. A workcell camera may carry the
+            ``vla_feature_key`` naming a checkpoint's view, so every consumer of this one
+            description (the runner's camera slots, the dataset recorder, world state) must
+            see it. Merging only for the sensor readers fed the policy a camera it then
+            filed under the manifest's key, and lerobot replaced the view it was trained on
+            with a masked blank.
 
     Returns:
         A ``ComposedRuntime`` bundle. The caller attaches both nodes to a single
@@ -228,7 +229,7 @@ def compose_runtime(
 
     description = RobotDescription.from_yaml(str(robot_yaml))
     if deploy_sensors:
-        from openral_rskill_ros.sensor_leg import merge_deploy_sensors
+        from openral_core import merge_deploy_sensors
 
         description = description.model_copy(
             update={"sensors": merge_deploy_sensors(description.sensors, deploy_sensors)}

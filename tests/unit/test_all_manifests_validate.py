@@ -111,6 +111,7 @@ _DEPLOY_STEMS: list[str] = [
     "libero_pnp",
     "openarm_bench",
     "openarm_tabletop",
+    "openarm_real_world_voxels",
     "openarm_zed_octomap",
     "robocasa_baguette",
     "robocasa_deliver_straw",
@@ -326,3 +327,39 @@ def test_deploy_scene_validates(stem: str) -> None:
 
     scene = DeployScene.from_yaml(str(_scene_yaml("deploy", stem)))
     assert scene.scene.id
+
+
+# ─── Scene sensors never name a robot sensor ──────────────────────────────────
+
+_TIERED_STEMS: list[tuple[str, str]] = [
+    *(("benchmark", s) for s in _BENCHMARK_STEMS),
+    *(("sim", s) for s in _SIM_STEMS),
+    *(("deploy", s) for s in _DEPLOY_STEMS),
+]
+
+
+@pytest.mark.parametrize(
+    ("tier", "stem"), _TIERED_STEMS, ids=[f"{t}/{s}" for t, s in _TIERED_STEMS]
+)
+def test_scene_sensors_never_name_a_robot_sensor(tier: str, stem: str) -> None:
+    """No committed scene has a sensor entry named like a robot-manifest sensor.
+
+    A robot sensor — geometry, frame, intrinsics and real-hardware ``deploy_binding`` —
+    lives in ``robots/<id>/robot.yaml`` so every scene on that robot sees the same camera;
+    a scene only adds workcell cameras under new names. ``check_scene_sensor_overrides``
+    is the rule every deploy path, ``deploy validate`` and ``openral check`` enforce.
+    """
+    from openral_core.schemas import (
+        BenchmarkScene,
+        DeployScene,
+        RobotDescription,
+        SimScene,
+        check_scene_sensor_overrides,
+    )
+
+    model = {"benchmark": BenchmarkScene, "sim": SimScene, "deploy": DeployScene}[tier]
+    scene = model.from_yaml(str(_scene_yaml(tier, stem)))
+    if scene.robot_id is None or not scene.sensors:
+        return
+    robot = RobotDescription.from_yaml(str(_robot_yaml(scene.robot_id)))
+    check_scene_sensor_overrides(robot.sensors, scene.sensors)

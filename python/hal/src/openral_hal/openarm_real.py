@@ -435,6 +435,7 @@ class OpenArmRealHAL(RosControlHAL):
             return
 
         # Build every message first — publishing is all-or-nothing.
+        deadline = self.time_from_start_s(action)
         outbound: list[tuple[str, dict[str, object]]] = []
         for topic, span, names in self._command_groups:
             outbound.append(
@@ -446,6 +447,7 @@ class OpenArmRealHAL(RosControlHAL):
                         "joint_names": names,
                         "joint_targets": [list(step[span]) for step in action.joint_targets],
                         "stamp_ns": action.stamp_ns,
+                        "time_from_start_s": deadline,
                     },
                 )
             )

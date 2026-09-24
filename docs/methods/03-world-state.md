@@ -137,6 +137,12 @@ _C++ (Layer 2). The attached payload's own occupancy leaves the published `Occup
   - `size() -> size_t` — How many windows the last swept grid carried.
 - `attach_transition_padding(steady_padding_m, attach_sweep_padding_m) -> double` — The clearing padding one object gets on one grid: steady padding plus the attach-sweep padding while its window is open, so widened sweep is never tighter than an ordinary frame. Non-finite or negative inputs contribute 0 — a parameter can never narrow the clearing below what the payload's volume explains.
 
+### `packages/openral_octomap_bridge/include/openral_octomap_bridge/octree_freshness.hpp`
+_C++ (Layer 2), header-only. When the bridge may still republish the last octree it received (hazard log Entry 033)._
+
+- `valid_max_octree_age(max_age_s) -> bool` — Is `max_octree_age_s` usable: finite and strictly positive. The node logs an ERROR and publishes nothing otherwise.
+- `octree_is_fresh(age_s, max_age_s) -> bool` — May an octree received `age_s` ago (receipt time, the node's clock — the one the kernel times voxel freshness on) still be published? False for an unusable bound and for a negative or non-finite age, so a map of unknown age is never republished; past the bound the bridge goes silent and the kernel's `world_voxel_deadline_ms` drops with `DROP_VOXEL_UNAVAILABLE`.
+
 ### `packages/openral_octomap_bridge/include/openral_octomap_bridge/octree_to_grid.hpp`
 _C++ (Layer 2). OctoMap → dense base-frame grid lowering, ROS-graph-free._
 

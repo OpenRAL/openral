@@ -14,11 +14,19 @@
       "type": "string"
     }
   },
-  "description": "VLA action configuration for this robot.\n\nAttributes:\n    dim: Dimensionality of the action vector.\n    representation: How the action vector is encoded.\n    control_freq_hz: Control frequency the actions are executed at.\n    chunk_size: Number of action steps per inference call (chunk size H).",
+  "description": "VLA action configuration for this robot.\n\nAttributes:\n    dim: Dimensionality of the action vector. ``None`` = not declared: the\n        dataset recorder then takes the width from the action itself. A\n        robot whose policy contract is not committed declares only the\n        control rate rather than a guessed width (issue #303).\n    representation: How the action vector is encoded.\n    control_freq_hz: Control frequency the actions are executed at \u2014 the\n        runner's tick, the HAL node's proprio publish rate, the real\n        ros2_control HAL's trajectory deadline, and the recorder's fps.\n    chunk_size: Number of action steps per inference call (chunk size H).",
   "properties": {
     "dim": {
-      "title": "Dim",
-      "type": "integer"
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Dim"
     },
     "representation": {
       "anyOf": [
@@ -56,9 +64,6 @@
       "title": "Chunk Size"
     }
   },
-  "required": [
-    "dim"
-  ],
   "title": "ActionSpec",
   "type": "object",
   "$schema": "https://json-schema.org/draft/2020-12/schema"

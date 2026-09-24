@@ -15,11 +15,12 @@ Names are in the ros2_control namespace (``openarm_left_joint1``), not the manif
 this transport from ``OpenArmRealHAL.ros2_control_joint_names``, never from
 ``description.joints``.
 
-``time_from_start`` is a constructor argument here, unlike the 100 ms the production
-transports hardcode: a ``JointTrajectoryController`` given an absolute target and a 100 ms
-deadline moves at ``(target - current) / 0.1s``, so on a first powered run the rate is set by
-how wrong the command is — the quantity under test. A longer window bounds the rate by
-construction; tests caring about production timing must pass 0.1 explicitly.
+``time_from_start`` is a constructor argument here, unlike production, where the HAL derives
+it from the manifest's ``action_spec.control_freq_hz`` (one control period per step, #303): a
+``JointTrajectoryController`` given an absolute target and a 33 ms deadline moves at
+``(target - current) / 0.033s``, so on a first powered run the rate is set by how wrong the
+command is — the quantity under test. A longer window bounds the rate by construction; tests
+caring about production timing must pass the production period explicitly.
 
 HIL-only; shares the import-time ``rclpy`` guard from ``tests.hil._ros_control_transport``
 (CLAUDE.md §1.11: real component or ``pytest.skip`` — nothing in between).

@@ -22,7 +22,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   # generic per-frame critic/reward score on /openral/critic/score.
   msg/CriticScore.msg
   # bounded world obstacles for the kernel's world-collision check.
-  msg/WorldCollision.msg
   # voxel phase — dense fixed-capacity 3-D occupancy grid (octomap path).
   msg/OccupancyVoxels.msg
   # typed WorldState publication.

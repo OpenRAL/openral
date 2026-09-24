@@ -36,7 +36,7 @@ so the geometry is consistent (per the object-lift design).
 
 | Name | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `image_topic` | string | `/openral/cameras/agentview_left/image` | Camera `sensor_msgs/Image` to detect on. |
+| `image_topic` | string | `""` | Camera `sensor_msgs/Image` to detect on — `openral_core.camera_topic(<name>)`, passed by `deploy_e2e`. With no `cameras` entries either, configure raises `ROSConfigError` (ADR-0108). |
 | `output_topic` | string | `/openral/perception/objects` | Perception topic to publish on. |
 | `sensor_id` | string | `front_depth` | Sensor name stamped on the metadata + `header.frame_id`. |
 | `onnx_path` | string | — (required) | RT-DETR ONNX model path. |
@@ -169,7 +169,7 @@ It is **strictly diagnostic**, and that is a property to preserve:
 | --- | --- | --- | --- |
 | `cameras` | string[] | `[""]` | `"id=topic"` entries. Each id MUST be a `SensorSpec` name in `robot_yaml` — that is where its intrinsics and optical frame come from. |
 | `primary_camera` | string | `default` | Camera used when a request leaves `camera` empty. |
-| `image_topic` | string | `/openral/cameras/wrist/image` | Single-camera fallback topic. |
+| `image_topic` | string | `""` | Single-camera fallback topic; with no `cameras` entries either, configure raises `ROSConfigError` (ADR-0108). |
 | `robot_yaml` | string | — (required) | `RobotDescription` path, for camera intrinsics + optical frame. |
 | `manifest_path` | string | — (required) | `kind: segmenter` rSkill manifest. |
 | `segment_in_view_service` | string | `/openral/perception/segment_in_view` | Service name. |

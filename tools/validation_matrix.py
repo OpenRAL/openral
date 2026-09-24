@@ -2121,11 +2121,12 @@ def wait_for_dds_transport_ready(
 ) -> str:
     """Block until the deploy CLI announces its DDS transport is safe to join.
 
-    ``openral deploy sim`` unlinks every ``/dev/shm/fastrtps_*`` this user owns before spawning
-    ``ros2 launch`` (``openral_cli.deploy_sim._apply_rmw_default``); a participant created before
-    that purge loses its shared-memory segments silently (no error, nothing received again). The
-    2026-08-23 round lost all 24 monitors this way — every ``run_monitor.jsonl`` holds only
-    ``monitor_started``/``monitor_stopped``.
+    ``openral deploy sim`` unlinks stale ``/dev/shm/fastrtps_*`` files before spawning
+    ``ros2 launch`` (``openral_cli.deploy_sim._apply_rmw_default``). Until 2026-09-24 it unlinked
+    every such file this user owned, so a participant created before the purge lost its
+    shared-memory segments silently; the 2026-08-23 round lost all 24 monitors that way — every
+    ``run_monitor.jsonl`` holds only ``monitor_started``/``monitor_stopped``. The clean now keeps
+    files a live process uses, and the gate stays so the monitor joins the graph being launched.
 
     So the monitor starts on the far side of the marker
     (``DDS_TRANSPORT_READY_MARKER``, printed after the purge, before

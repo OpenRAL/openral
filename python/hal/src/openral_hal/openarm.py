@@ -68,6 +68,8 @@ from __future__ import annotations
 from openral_core.exceptions import ROSRuntimeError
 from openral_core.schemas import (
     Action,
+    ActionRepresentation,
+    ActionSpec,
     AssetRefs,
     ControlMode,
     EmbodimentKind,
@@ -326,8 +328,23 @@ OPENARM_DESCRIPTION = RobotDescription(
         max_force_n=40.0,
         max_torque_nm=40.0,
         deadman_required=True,
+        # provisional: former schema default, not measured on this rig — see issue #303
+        max_ee_accel_m_s2=1.0,
+        contact_force_threshold_n=30.0,
+        self_collision_margin_m=0.0,
+        # runner ramp to starting_pose — the former defaults, declared (issue #303)
+        starting_pose_max_joint_speed_rad_s=0.5,
+        starting_pose_tolerance_rad=0.05,
     ),
     sdk_kind="open",
+    # The robot's single control-rate declaration: the runner ticks at it, the
+    # dataset recorder stamps it as fps, and the real HAL derives every
+    # trajectory point's time_from_start from it (issue #303).
+    action_spec=ActionSpec(
+        dim=16,
+        representation=ActionRepresentation.JOINT_POSITIONS,
+        control_freq_hz=30.0,
+    ),
     hal=HalEntrypoints(
         # sim=None: build_hal derives MujocoArmHAL.from_description(manifest).
         sim=None,
@@ -346,8 +363,11 @@ OPENARM_DESCRIPTION = RobotDescription(
                 # sim (derived MujocoArmHAL)
                 "settle_steps": 4,
                 "gravity_enabled": False,
-                # both
-                "staleness_limit_s": 0.5,
+                # both — three control periods at 30 Hz; measured on Thor
+                # 2026-09-23 with tools/joint_state_staleness_probe.py (worst
+                # observed callback latency 43 ms under GIL starvation). Mirrors
+                # the YAML, which carries the full measurement.
+                "staleness_limit_s": 0.1,
                 # real (OpenArmRealHAL) — udev-pinned SocketCAN names and the
                 # four bimanual controllers openarm_bringup spawns. The two
                 # interface names are defaults only: `openral detect`

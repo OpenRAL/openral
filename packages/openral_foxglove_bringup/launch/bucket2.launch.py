@@ -2,12 +2,10 @@
 """Launch file for the Bucket-2 converter node.
 
 Spawns ``bucket2_markers`` — a read-only converter that re-publishes
-``openral_msgs/WorldCollision`` and ``openral_msgs/OccupancyVoxels``
-as standard ROS visualization types so Foxglove renders them natively
-without any TypeScript extension.
+``openral_msgs/OccupancyVoxels`` as a standard ROS visualization type so
+Foxglove renders it natively without any TypeScript extension.
 
-Output topics (added to the Bucket-1 allowlist in ``topics.py``):
-  /openral/world_collisions_markers  — visualization_msgs/MarkerArray
+Output topic (added to the Bucket-1 allowlist in ``topics.py``):
   /openral/world_voxels_cloud        — sensor_msgs/PointCloud2
 
 This launch pairs with ``foxglove.launch.py`` but does not include it;

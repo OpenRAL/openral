@@ -26,11 +26,13 @@ from __future__ import annotations
 import math
 
 from openral_core.schemas import (
+    ActionSpec,
     AssetRefs,
     ControlMode,
     EmbodimentKind,
     EndEffectorSpec,
     HalEntrypoints,
+    HalParameters,
     JointSpec,
     JointType,
     RobotCapabilities,
@@ -180,9 +182,29 @@ UR5e_DESCRIPTION = RobotDescription(
         max_force_n=150.0,
         max_torque_nm=150.0,
         deadman_required=True,
+        # provisional: former schema default, not measured on this rig — see issue #303
+        max_ee_accel_m_s2=1.0,
+        contact_force_threshold_n=30.0,
+        self_collision_margin_m=0.0,
+        # runner ramp to starting_pose — the former defaults, declared (issue #303)
+        starting_pose_max_joint_speed_rad_s=0.5,
+        starting_pose_tolerance_rad=0.05,
     ),
     sdk_kind="open",
-    hal=HalEntrypoints(sim=None, real="openral_hal.ur_real:UR5eRealHAL"),
+    # Control rate: the runner ticks at it and the real HAL sets every
+    # trajectory point's time_from_start from it (issue #303). Required for a
+    # ros2_control HAL to construct.
+    # dim / representation deliberately undeclared (no committed policy
+    # contract for this robot); the control rate is the known quantity.
+    action_spec=ActionSpec(control_freq_hz=30.0),
+    hal=HalEntrypoints(
+        sim=None,
+        real="openral_hal.ur_real:UR5eRealHAL",
+        # Max age of a read_state() reading before ROSPerceptionStale. Mirrors
+        # the YAML; provisional: former constructor default, not measured on
+        # this rig — see issue #303.
+        parameters=HalParameters(defaults={"staleness_limit_s": 0.5}),
+    ),
     assets=AssetRefs(
         urdf=UrdfAsset(
             ref="file:ur5e.urdf",
@@ -224,9 +246,29 @@ UR10e_DESCRIPTION = RobotDescription(
         max_force_n=330.0,
         max_torque_nm=330.0,
         deadman_required=True,
+        # provisional: former schema default, not measured on this rig — see issue #303
+        max_ee_accel_m_s2=1.0,
+        contact_force_threshold_n=30.0,
+        self_collision_margin_m=0.0,
+        # runner ramp to starting_pose — the former defaults, declared (issue #303)
+        starting_pose_max_joint_speed_rad_s=0.5,
+        starting_pose_tolerance_rad=0.05,
     ),
     sdk_kind="open",
-    hal=HalEntrypoints(sim=None, real="openral_hal.ur_real:UR10eRealHAL"),
+    # Control rate: the runner ticks at it and the real HAL sets every
+    # trajectory point's time_from_start from it (issue #303). Required for a
+    # ros2_control HAL to construct.
+    # dim / representation deliberately undeclared (no committed policy
+    # contract for this robot); the control rate is the known quantity.
+    action_spec=ActionSpec(control_freq_hz=30.0),
+    hal=HalEntrypoints(
+        sim=None,
+        real="openral_hal.ur_real:UR10eRealHAL",
+        # Max age of a read_state() reading before ROSPerceptionStale. Mirrors
+        # the YAML; provisional: former constructor default, not measured on
+        # this rig — see issue #303.
+        parameters=HalParameters(defaults={"staleness_limit_s": 0.5}),
+    ),
     assets=AssetRefs(
         urdf=UrdfAsset(
             ref="file:ur10e.urdf",
