@@ -290,10 +290,74 @@ def launch_module() -> object:
     return module
 
 
+def _republished(desc: RobotDescription) -> bool:
+    """Whether a real deploy routes the runner to the HAL's ``~/joint_states`` republish."""
+    from openral_hal.resolver import hal_joint_states_topic
+
+    node = f"openral_hal_{desc.name}"
+    return hal_joint_states_topic(desc, mode="real", hal_node_name=node) == f"/{node}/joint_states"
+
+
 @pytest.mark.parametrize(("robot", "window"), [("openarm", 0.1), ("aloha_bimanual", 0.2)])
-def test_the_launch_uses_the_manifest_window_on_real(
+def test_the_launch_uses_the_manifest_window_on_the_raw_stream(
     launch_module: object, robot: str, window: float
 ) -> None:
     fn = launch_module._runner_joint_state_staleness_s  # type: ignore[attr-defined]
-    assert fn(_robot(robot), "real") == window
-    assert fn(_robot(robot), "sim") == 0.5
+    assert fn(_robot(robot), "real", republished=False) == window
+    assert fn(_robot(robot), "sim", republished=False) == 0.5
+
+
+@pytest.mark.parametrize(
+    ("robot", "window"),
+    [
+        # 0.1 s measured on the raw 750 Hz stream + two 33.3 ms republish periods.
+        ("openarm", 0.1 + 2 / 30.0),
+        ("franka_panda", 0.2 + 2 / 30.0),
+        # 0.5 + 2/30 would exceed the former shipped runner window; capped there.
+        ("ur5e", 0.5),
+        # Serial / interbotix HALs publish /joint_states themselves: not republished.
+        ("so100_follower", 0.5),
+        ("aloha_bimanual", 0.2),
+    ],
+)
+def test_the_runner_window_adds_two_republish_periods_on_the_hal_republish(
+    launch_module: object, robot: str, window: float
+) -> None:
+    fn = launch_module._runner_joint_state_staleness_s  # type: ignore[attr-defined]
+    desc = _robot(robot)
+    assert math.isclose(fn(desc, "real", republished=_republished(desc)), window)
+
+
+def test_the_hal_keeps_the_manifest_window_on_the_republish_path() -> None:
+    """Only the runner widens: the HAL still checks its raw source at the manifest value."""
+    from openral_hal import build_hal
+
+    desc = _robot("openarm")
+    assert _republished(desc)
+    hal = build_hal(desc, mode="real", transport={"require_can_links": False})
+    assert hal._staleness_limit_s == 0.1  # type: ignore[attr-defined]  # reason: private field under test
+
+
+def test_no_real_runner_window_is_looser_than_the_former_shipped_value(
+    launch_module: object,
+) -> None:
+    fn = launch_module._runner_joint_state_staleness_s  # type: ignore[attr-defined]
+    real = [
+        RobotDescription.from_yaml(p)
+        for p in sorted((REPO_ROOT / "robots").glob("*/robot.yaml"))
+        if RobotDescription.from_yaml(p).hal.real is not None
+    ]
+    assert len(real) >= 5
+    for desc in real:
+        assert fn(desc, "real", republished=_republished(desc)) <= 0.5, desc.name
+
+
+def test_a_republished_runner_without_a_control_rate_is_refused(launch_module: object) -> None:
+    fn = launch_module._runner_joint_state_staleness_s  # type: ignore[attr-defined]
+    desc = _robot("ur5e")
+    assert desc.action_spec is not None
+    bare = desc.model_copy(
+        update={"action_spec": desc.action_spec.model_copy(update={"control_freq_hz": None})}
+    )
+    with pytest.raises(ROSConfigError, match="control_freq_hz"):
+        fn(bare, "real", republished=True)
