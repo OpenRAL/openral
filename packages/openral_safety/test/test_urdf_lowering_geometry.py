@@ -62,6 +62,46 @@ def test_fit_capsule_diagonal_rod_containment() -> None:
     assert all(_point_in_capsule(p, shape, origin) for p in pts)
 
 
+def _capsule_local(pts, origin_xyz_rpy):
+    from openral_safety.mjcf_lowering import _rpy_to_mat
+
+    x, y, z, roll, pitch, yaw = origin_xyz_rpy
+    r = np.array(_rpy_to_mat(roll, pitch, yaw)).reshape(3, 3)
+    return (np.asarray(pts) - np.array([x, y, z])) @ r
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_fit_capsule_segment_is_the_shortest_that_contains(seed: int) -> None:
+    """Each end sits where pulling it in by 0.1 mm would drop a vertex.
+
+    The fit used to span the full axial projection, so each hemispherical cap
+    overhung the cloud by up to a radius — 9.4 cm on panda_link5, enough to put
+    the Franka's hand inside link 5's capsule at its SRDF ``ready`` pose.
+    """
+    rng = np.random.default_rng(seed)
+    pts = rng.normal(0.0, 1.0, (400, 3)) * np.array([0.15, 0.04, 0.03])
+    shape, origin = fit_capsule_to_vertices(pts)
+    assert all(_point_in_capsule(p, shape, origin) for p in pts)
+    local = _capsule_local(pts, origin)
+    for sign in (-1.0, 1.0):
+        shorter = CapsuleShape(radius_m=shape.radius_m, length_m=shape.length_m - 1e-4)
+        shifted = local - np.array([0.0, 0.0, sign * 0.5e-4])
+        zero = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        assert not all(_point_in_capsule(p, shorter, zero) for p in shifted)
+
+
+def test_fit_capsule_of_a_thin_disk_is_its_bounding_sphere() -> None:
+    """A disk (H1's r = 0.04, 0.01 m shoulder cylinders) fits as one sphere."""
+    ang = np.linspace(0.0, 2.0 * np.pi, 24, endpoint=False)
+    ring = np.stack([0.04 * np.cos(ang), 0.04 * np.sin(ang), np.zeros_like(ang)], axis=1)
+    lift = np.array([0.0, 0.0, 0.005])
+    pts = np.vstack([ring + lift, ring - lift])
+    shape, origin = fit_capsule_to_vertices(pts)
+    assert all(_point_in_capsule(p, shape, origin) for p in pts)
+    assert shape.length_m == pytest.approx(0.0, abs=1e-9)
+    assert shape.radius_m == pytest.approx(np.hypot(0.04, 0.005))
+
+
 # ── lower_link_geometry: real + inline URDFs ──────────────────────────────────
 
 _BOX_URDF = """<robot name="t">
