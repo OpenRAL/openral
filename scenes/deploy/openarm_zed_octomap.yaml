@@ -70,6 +70,12 @@ runtime:
   # bridge, so a real-camera deploy maps silence.
   octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
 
+  # The ZED stamps its clouds on wall-clock. A bare MuJoCo twin would otherwise
+  # run the graph on the simulator's clock, and octomap_server (use_sim_time)
+  # would drop every cloud as "from the future": an empty map behind healthy
+  # nodes. Found on Thor 2026-09-24; broken since 5507f12 made twins sim-clocked.
+  clock_origin: host_wall
+
   # The ZED observes a room; the kernel is protecting a MuJoCo twin. Feeding
   # one into the other would put phantom obstacles around a simulated arm. The
   # leg still publishes /openral/world_voxels and still drives the dashboard

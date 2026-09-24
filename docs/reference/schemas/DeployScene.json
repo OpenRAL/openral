@@ -281,6 +281,22 @@
           "default": null,
           "title": "Octomap Cloud Topic"
         },
+        "clock_origin": {
+          "anyOf": [
+            {
+              "enum": [
+                "host_wall",
+                "simulation"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clock Origin"
+        },
         "enable_object_detector": {
           "anyOf": [
             {

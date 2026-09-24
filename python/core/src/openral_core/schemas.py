@@ -9174,6 +9174,19 @@ class DeployRuntime(BaseModel):
     rather than adding a conversion node: ``zed_wrapper`` emits
     ``/<name>/point_cloud/cloud_registered``, RealSense ``/camera/depth/color/points``.
     Only meaningful when ``enable_octomap`` resolves true."""
+    clock_origin: Literal["host_wall", "simulation"] | None = None
+    """Pin the graph's clock authority instead of deriving it. ``None`` (auto) =
+    host wall time for ``deploy run``; for ``deploy sim``, the simulator's clock
+    whenever the backend exposes one (every bare MuJoCo twin does).
+
+    Pin ``host_wall`` on a twin scene that consumes a **real** sensor — a ZED or
+    RealSense driver stamping on wall-clock. Under the simulated clock
+    ``octomap_server`` (``use_sim_time``) sits near t=0, treats every
+    wall-stamped cloud as from the future and drops it, so the map and
+    ``/openral/world_voxels`` stay empty while every node reports healthy.
+
+    ``simulation`` is refused for ``deploy run`` (a real robot has no sim clock)
+    and for a sim backend that exposes no clock."""
     enable_object_detector: bool | None = None
     object_detector_onnx: str | None = None
     object_detector_manifest: str | None = None
