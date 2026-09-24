@@ -628,6 +628,41 @@ class TestSlotGroupDispatch:
             hal.send_action(action)  # no incomplete-group raise
         assert recorder.by_topic(hal.command_topics()[1])["joint_targets"] == [[7.0]]
 
+    def test_a_group_of_an_already_committed_tick_is_refused(self, both_buses_up: Path) -> None:
+        # The stager only guards the tick in flight; without a watermark a
+        # replayed group of a committed tick re-publishes stale targets to the
+        # motors (audit B.md 3 — the guard lived only in the MuJoCo twin).
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=2):
+            hal.send_action(action)
+        assert hal.last_committed_tick == 2
+        published = len(recorder.sent)
+        for stale in (2, 1):
+            with pytest.raises(ROSRuntimeError, match="stale slot group"):
+                hal.send_action(_bimanual_slot_group(tick=stale)[0])
+        assert len(recorder.sent) == published
+        for action in _bimanual_slot_group(tick=3):
+            hal.send_action(action)
+        assert hal.last_committed_tick == 3
+        hal.disconnect()
+        assert hal.last_committed_tick == 0
+
+    def test_estop_keeps_the_committed_watermark(self, both_buses_up: Path) -> None:
+        # A stop is not a renumbering: a pre-estop tick replayed after the
+        # reconnect is still stale. Only disconnect() restarts the numbering.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=2):
+            hal.send_action(action)
+        with pytest.raises(ROSEStopRequested):
+            hal.estop()
+        hal.connect()
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_bimanual_slot_group(tick=2)[0])
+
     def test_an_unnamed_joint_slot_is_refused(self, both_buses_up: Path) -> None:
         # Without joint_names a padded chunk cannot be placed, and guessing from
         # the zeros would be wrong (0.0 is a legal target).
