@@ -9406,17 +9406,17 @@ class DeployRuntime(BaseModel):
     ``simulation`` is refused for ``deploy run`` (a real robot has no sim clock)
     and for a sim backend that exposes no clock."""
     joint_states_topic: str | None = None
-    """``sensor_msgs/JointState`` topic the in-process world state ingests.
-    ``None`` = ``/joint_states``.
+    """Explicit override for the ``sensor_msgs/JointState`` topic the deploy
+    runtime's Python nodes (in-process world state + the runner's joint-state
+    cache) ingest. The C++ safety kernel always keeps the full-rate
+    ``/joint_states``.
 
-    On a ros2_control arm that topic is the ``joint_state_broadcaster``'s,
-    published at the controller manager's rate (750 Hz on the OpenArm). Every
-    message wakes the deploy runtime's Python executor, and that loop plus the
-    per-message callback held ~half of the process's GIL on an AGX Orin — the
-    in-process inference thread got under 2 % and a 1.6 s π0.5 forward took
-    322 s. Point this at the HAL's own ``~/joint_states`` republish (30 Hz,
-    e.g. ``/openral_hal_openarm/joint_states``) so the C++ safety kernel keeps
-    the full-rate topic and Python sees the rate it can afford."""
+    ``None`` (auto) derives it: on ``deploy run`` of a robot whose real HAL is
+    ros2_control-drivable (OpenArm, Franka, UR, Sawyer), the HAL node's own
+    rate-limited ``/<hal_node>/joint_states`` republish; otherwise
+    ``/joint_states``. The broadcaster's full-rate stream (0.5-1 kHz) would
+    wake the Python executor on every message and starve an in-process VLA of
+    the GIL. See ``openral_hal.hal_joint_states_topic``."""
     enable_object_detector: bool | None = None
     object_detector_onnx: str | None = None
     object_detector_manifest: str | None = None
@@ -9439,13 +9439,19 @@ class DeployRuntime(BaseModel):
     approach_skill_id: str | None = None
     preload_rskill_id: str | None = None
     """rSkill the skill_runner resolves and loads right after it activates, so
-    the first ``execute_rskill`` goal finds it GPU-resident. The deadman
-    watchdog opens its first-chunk window when a goal is accepted; a 3.6 B
-    π0.5 needs ~350 s to load on a Jetson AGX Orin against a 120 s window,
-    so a cold load inside a goal is E-stopped — correctly. Loading before any
-    goal exists keeps the watchdog exactly as strict. Goals are rejected
-    while the preload is in flight (``rskill_runner.preload_done`` marks the
-    end). Any resolvable id: an installed Hub repo id or an in-tree name."""
+    the first ``execute_rskill`` goal finds it resident. The deadman watchdog
+    opens its first-chunk window when a goal is accepted, so a multi-minute
+    cold load of a large policy inside a goal is E-stopped — correctly.
+    Loading before any goal exists keeps the watchdog exactly as strict.
+    Goals are rejected while the preload is in flight
+    (``rskill_runner.preload_done`` marks the end). Any resolvable id: an
+    installed Hub repo id or an in-tree name."""
+    preload_rskill_revision: str | None = None
+    """Hub revision (branch, tag or commit) pinned for ``preload_rskill_id``.
+    Part of the resident key ``(rskill_id, revision, prompt)``: it must equal
+    the ``revision`` later goals send, or they evict the preloaded skill.
+    ``None`` = the unpinned default revision. Ignored without
+    ``preload_rskill_id``."""
     preload_prompt: str | None = None
     """Exact prompt the preloaded skill is bound to. The runner's resident
     key is ``(rskill_id, revision, prompt)``, so a goal whose prompt differs
