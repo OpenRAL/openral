@@ -118,10 +118,12 @@ every OpenArm scene publishes it as the only parent of `zed_camera_link`, and no
 touch it. `openral check`, `openral deploy validate`, `deploy run` and `deploy sim` all
 refuse a scene sensor entry that reuses a robot sensor's name
 (`openral_core.check_scene_sensor_overrides`); a robot camera's real-hardware binding lives
-in the manifest too. `tools/zed_extrinsic_check.py` measures
-exactly the manifest value, and `tools/openarm_world_voxel_run.sh` refuses to launch until a
+in the manifest too. `tools/depth_extrinsic_check.py` measures
+exactly the manifest value, and `openral deploy run` itself (for any robot, whenever the
+world-voxel check is on and the robot has a depth camera) refuses to launch until a
 passing report for exactly that value is committed at
-`robots/openarm/calibration/head_zed_extrinsic.json`.
+`robots/openarm/calibration/head_zed_extrinsic.json`. `tools/openarm_world_voxel_run.sh`
+checks the same report before asking for the operator's confirmation.
 
 !!! warning "Two OpenArm cells, one manifest pose"
     There are two physical OpenArm cells, on **Thor** and on the **Orin** (`qorin1`). Their
@@ -159,8 +161,8 @@ ros2 bag record -s mcap -o ~/zed_extrinsic_$(date +%F-%H%M) \
 
 ```bash
 source /opt/ros/jazzy/setup.bash && source install/setup.bash
-uv run python tools/zed_extrinsic_check.py check \
-    --robot robots/openarm/robot.yaml --bag <bag_dir> \
+uv run python tools/depth_extrinsic_check.py check \
+    --robot robots/openarm/robot.yaml --sensor head_zed --bag <bag_dir> \
     --cloud-topic /zed/zed_node/point_cloud/cloud_registered \
     --table-z <TABLE_Z> --table-roi <XMIN> <XMAX> <YMIN> <YMAX> \
     --marker <X1> <Y1> --marker <X2> <Y2> --out /tmp/zed_extrinsic.json
@@ -177,15 +179,22 @@ The report gives:
   (`x`, `y`, yaw) corrections composed onto the pose. It is fitted to this bag, so its own
   residuals are near zero by construction and prove nothing.
 
-The pass criteria are the tool's defaults. They are **proposed**, not measured on a rig:
-each is at most half the real 20 mm voxel margin.
+The pass criteria are derived in `openral_core.depth_extrinsic` from the real world-voxel
+margin (`REAL_WORLD_VOXEL_MARGIN_M`, 20 mm, the value the launch gives the kernel), so a
+margin change moves them too. They are **proposed**, not measured on a rig.
 
 | residual | pass |
 |---|---|
-| table tilt | ≤ 0.75° (13 mm at 1 m) |
-| table height error | ≤ 10 mm |
-| each marker's `(x, y)` error | ≤ 15 mm |
+| table tilt | ≤ atan(10 mm / 1 m) ≈ 0.57° (half the margin at 1 m) |
+| table height error | ≤ 10 mm (half the margin) |
+| each marker's `(x, y)` error | ≤ 15 mm (three quarters of the margin) |
 | markers | ≥ 2 |
+
+`head_zed`'s parent is the base frame, so the bag needs only the ZED driver. For a depth
+camera whose `parent_frame` is a moving link (a head on a torso, a wrist camera), also record
+`/tf` from `robot_state_publisher` with the robot held still: the tool resolves
+`base_frame -> parent_frame` from it and refuses if that chain moved during the recording.
+RGB-only cameras cannot be checked: there is no cloud to fit.
 
 ### 2c. Adopt the suggestion, then verify on a new bag [human, rig] + [offline]
 
@@ -195,10 +204,10 @@ each is at most half the real 20 mm voxel margin.
 3. Run `check` on the second bag with `--out robots/openarm/calibration/head_zed_extrinsic.json`.
    It must print `PASS`. Do not loosen the criteria: `verify` refuses a report checked at
    looser ones.
-4. `uv run python tools/zed_extrinsic_check.py verify --robot robots/openarm/robot.yaml --report robots/openarm/calibration/head_zed_extrinsic.json`
+4. `uv run python tools/depth_extrinsic_check.py verify --robot robots/openarm/robot.yaml --sensor head_zed`
    must print `extrinsic verified`.
 5. Commit the manifest pose and the report together. Any later edit to the pose invalidates the
-   report, and the launch script refuses until the pose is re-verified.
+   report, and `openral deploy run` (and the launch script) refuse until the pose is re-verified.
 
 If the camera is ever bumped, re-seated or re-mounted, go back to 2a.
 
@@ -209,7 +218,9 @@ command exists. The arms stay unpowered. `drivers:` is ignored on the sim path, 
 ZED driver by hand as in step 1, before or after `deploy sim`: its launch purge
 (`dds_transport_ready: … shm_purged=N shm_kept_live=M`) only removes Fast-DDS files no live
 process uses, so a running driver keeps publishing (on Thor, 2026-09-24: ZED started first,
-5.4 Hz cloud / 5.6 Hz octree / 4.7 Hz voxels). Then:
+5.4 Hz cloud / 5.6 Hz octree / 4.7 Hz voxels). Run from inside a container, where a driver
+in another PID namespace is invisible, the purge removes nothing; `OPENRAL_FASTDDS_SHM_CLEAN=0`
+turns it off entirely. Then:
 
 ```bash
 openral deploy sim --config scenes/deploy/openarm_real_world_voxels.yaml \
@@ -354,7 +365,7 @@ For the write-up, record:
   it holds the ZED driver include. It declares no `head_zed` entry.
 - `robots/openarm/robot.yaml`: `head_zed`'s `static_transform_xyz_rpy`, the single-sourced
   ZED pose.
-- `tools/zed_extrinsic_check.py`: `check` (bag to residuals and report) and `verify`
+- `tools/depth_extrinsic_check.py`: `check` (bag to residuals and report) and `verify`
   (report against the manifest pose).
 - `tools/openarm_world_voxel_run.sh`: the guarded launcher for step 4.
 - `robots/openarm/calibration/head_zed_extrinsic.json`: the committed passing report.

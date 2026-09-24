@@ -15,7 +15,21 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from openral_cli.deploy_sim import _clean_stale_fastrtps_shm, _fastrtps_group
+from openral_cli.deploy_sim import (
+    DDS_TRANSPORT_READY_MARKER,
+    FASTDDS_SHM_CLEAN_ENV,
+    _apply_rmw_default,
+    _clean_stale_fastrtps_shm,
+    _fastrtps_group,
+    _in_initial_pid_namespace,
+)
+
+# Liveness is only provable from the initial PID namespace; inside a container the clean
+# (correctly) keeps everything, so the purge assertions below cannot hold there.
+_needs_init_pidns = pytest.mark.skipif(
+    not _in_initial_pid_namespace(),
+    reason="not in the initial PID namespace (container): the clean keeps every file here",
+)
 
 # Holds <path> the way argv[1] says, prints "ready", and waits for stdin to close.
 _HOLDER = r"""
@@ -62,6 +76,15 @@ def shm(tmp_path: Path) -> Iterator[Path]:
     yield tmp_path
 
 
+def _fake_proc(factory: pytest.TempPathFactory, pidns: str) -> Path:
+    """A procfs stand-in: ``self/ns/pid`` naming ``pidns`` and an empty ``locks``."""
+    root = factory.mktemp("proc")
+    (root / "self" / "ns").mkdir(parents=True)
+    (root / "self" / "ns" / "pid").symlink_to(pidns)
+    (root / "locks").touch()
+    return root
+
+
 def _left(shm_dir: Path) -> set[str]:
     return {p.name for p in shm_dir.iterdir()}
 
@@ -72,6 +95,7 @@ def test_group_strips_lock_suffixes() -> None:
     assert _fastrtps_group("fastrtps_port7000") == "fastrtps_port7000"
 
 
+@_needs_init_pidns
 @pytest.mark.parametrize("mode", ["open", "mmap"])
 def test_open_or_mapped_group_is_kept_then_purged_once_released(shm: Path, mode: str) -> None:
     holder = _hold(mode, shm / "fastrtps_ab12cd")
@@ -103,11 +127,52 @@ def test_locked_file_of_unreadable_process_is_kept(shm: Path) -> None:
 def test_unreadable_proc_locks_keeps_everything(
     shm: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
-    proc_root = tmp_path_factory.mktemp("proc")
+    proc_root = _fake_proc(tmp_path_factory, "pid:[4026531836]")
     locks = proc_root / "locks"
-    locks.touch()
     locks.chmod(0)
     if os.access(locks, os.R_OK):
         pytest.skip(reason="running as root; chmod 0 does not make the file unreadable")
     assert _clean_stale_fastrtps_shm(shm, proc_root) == (0, 4)
     assert len(_left(shm)) == 5
+
+
+@_needs_init_pidns
+def test_fastdds_3_names_are_cleaned_too(tmp_path: Path) -> None:
+    """Fast-DDS 3.x renamed the shm domain ``fastrtps`` -> ``fastdds``."""
+    for name in ("fastdds_ab12cd", "fastdds_port7400"):
+        (tmp_path / name).write_bytes(b"\0" * 4096)
+        (tmp_path / f"{name}_el").touch()
+    holder = _hold("open", tmp_path / "fastdds_ab12cd")
+    try:
+        assert _clean_stale_fastrtps_shm(tmp_path) == (2, 2)
+        assert _left(tmp_path) == {"fastdds_ab12cd", "fastdds_ab12cd_el"}
+    finally:
+        _release(holder)
+    assert _fastrtps_group("fastdds_port7400_sl") == "fastdds_port7400"
+
+
+def test_outside_the_initial_pid_namespace_nothing_is_unlinked(
+    shm: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """In a container, a driver sharing /dev/shm from another PID namespace is invisible to
+    /proc/locks and /proc/<pid>: its files would look stale. Keep everything."""
+    proc_root = _fake_proc(tmp_path_factory, "pid:[4026532999]")
+    assert not _in_initial_pid_namespace(proc_root)
+    assert _clean_stale_fastrtps_shm(shm, proc_root) == (0, 4)
+    assert len(_left(shm)) == 5
+
+
+def test_initial_pid_namespace_with_no_holders_purges(
+    shm: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Same fake procfs, initial namespace: nothing holds the files, so they go."""
+    proc_root = _fake_proc(tmp_path_factory, "pid:[4026531836]")
+    assert _clean_stale_fastrtps_shm(shm, proc_root) == (4, 0)
+    assert _left(shm) == {"unrelated"}
+
+
+def test_env_opt_out_skips_the_clean(capsys: pytest.CaptureFixture[str]) -> None:
+    _apply_rmw_default({FASTDDS_SHM_CLEAN_ENV: "0"})
+    out = capsys.readouterr().out
+    assert DDS_TRANSPORT_READY_MARKER in out
+    assert "shm_purged=n/a" in out
