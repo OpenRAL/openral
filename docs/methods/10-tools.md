@@ -93,7 +93,7 @@ _The four-scene collision-stack validation matrix as one versioned command, emit
 - `OUTPUT_ROOT: Final[Path]` (L61) — `REPO_ROOT/"outputs"/"validation-matrix"`.
 - `DEFAULT_RSKILL_ID: Final[str]` (L119) — `"OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4"`.
 - `LAUNCH_FAILED_MARKER: Final[str] = "launch_failed.txt"` (L1089) — Suffix of the runner's own launch-failure marker file, the first thing `detect_launch_failure` checks for.
-- `DISPATCH_READY_TIMEOUT_S: Final[float] = 180.0` (L2182) — Timeout bound for the goal re-dispatch loop when the graph answers but is not assembled yet (paired with `DISPATCH_RETRY_INTERVAL_S`).
+- `DISPATCH_READY_TIMEOUT_S: Final[float] = 180.0` (L2183) — Timeout bound for the goal re-dispatch loop when the graph answers but is not assembled yet (paired with `DISPATCH_RETRY_INTERVAL_S`).
 - `@dataclass(frozen=True) class SceneSpec(key, config, prompt, deadline_s)` — One matrix row; `config` is the tracked DeployScene YAML, and the round launches a resolved copy carrying the seed and CLI-less pins. (L79)
 - `MATRIX: tuple[SceneSpec, ...]` — The four scenes: `baguette`, `sink_cup`, `fridge`, `utensil`. (L96)
 - `SYNC_GROUPS = ("robocasa", "sidecar-wire")` — Both, always: `--group robocasa` alone strips `pyzmq` and breaks the XR-1 adapter. (L123)
@@ -118,8 +118,8 @@ _The four-scene collision-stack validation matrix as one versioned command, emit
 - `detect_launch_failure(run_dir, stem, deploy_lines) -> str` — Why a scene is not a run at all: a launch-failure marker, a `ros2 launch` exception, a CLI usage-error banner, no log, a Nav2 bond teardown, or a graph that never came up. Empty when the scene ran; this is what `artifacts_complete` checks. (L1236)
 - `_nav2_bond_teardown(deploy_lines) -> str` — A Nav2 bond-heartbeat timeout tears the whole stack down silently, leaving the graph inert until its deadline — which the harness would otherwise score as a policy failure to grasp. Discriminated from a late teardown by how early the loss occurs.
 - `_lacks_stage2_hull(link) -> bool` — Whether a link is known to carry no stage-2 hull. Only an explicit `False` counts — an older snapshot without the field must read as unknown, never as "no hull". Used by `_link_link_hull_gap_m`.
-- `dispatch_not_ready_reason(goal_log) -> str` (L2186) — Why a dispatch reports the graph as not assembled yet (e.g. a disconnected TF tree or a camera that published nothing), so the goal can be retried instead of scored as a non-completion. Never matches a real E-stop, deadline or capability mismatch. `tests/unit/test_dispatch_readiness.py`.
-- `DISPATCH_RETRY_INTERVAL_S: float` (L2183) — `12.0`; how often `dispatch_not_ready_reason` triggers a re-dispatch.
+- `dispatch_not_ready_reason(goal_log) -> str` (L2187) — Why a dispatch reports the graph as not assembled yet (e.g. a disconnected TF tree or a camera that published nothing), so the goal can be retried instead of scored as a non-completion. Never matches a real E-stop, deadline or capability mismatch. `tests/unit/test_dispatch_readiness.py`.
+- `DISPATCH_RETRY_INTERVAL_S: float` (L2184) — `12.0`; how often `dispatch_not_ready_reason` triggers a re-dispatch.
 - `_NAV2_BOND_LOSS_EARLY_S: float` (L1129) — `120.0`; a bond-loss timestamp inside this window of the log's start is scored as `_nav2_bond_teardown`, not an ordinary non-completion.
 - `_lifecycle_never_came_up(deploy_lines) -> str` — A lifecycle node never completed a transition, so the graph never came up and nothing after it is a policy outcome; bucketed alongside `_nav2_bond_teardown` since both represent absence rather than a real attempt.
 - `parse_goal_log(lines) -> tuple[dict[str, Any] | None, str]` — The dispatcher's single JSON status line, or why it never wrote one (e.g. a traceback with no `status` field). (L1306)
@@ -138,19 +138,19 @@ _The four-scene collision-stack validation matrix as one versioned command, emit
 - `gpu_status() -> tuple[str | None, list[str]]` — GPU name + resident compute processes; the host is shared. (L1945)
 - `pin_runtime_block(text, pins) -> str` — Splice `runtime:` pins into a scene YAML, changing nothing else (comments and safety commentary survive verbatim). (L1979)
 - `materialise_scene(spec, seed, run_dir) -> tuple[str, Path]` — Write the round's resolved scene copy (seed + `SCENE_RUNTIME_PIN`), re-parse it to prove the pins landed, and check it against the tracked scene. The tracked file is never touched. (L2030)
-- `wait_for_dds_transport_ready(deploy_log, proc, *, timeout_s, poll_s=0.05) -> str` — Block until the deploy log confirms the shared-memory purge is done and before `ros2 launch` spawns, so the monitor's DDS participant isn't created too early and silently receives nothing. Returns `""` on timeout or a dead deploy. (L2115)
-- `render_notes(verdicts) -> str` — The round's Markdown summary: names scenes whose monitor received nothing (a harness fault) separately from those that stopped before seeing a voxel grid (a fact about the run), plus any with an uncertified probe or a lower-bound-only budget. (L2430)
-- `round_exit_code(verdicts) -> int` — `4` when any scene bucketed `harness-error`, else `0`: a round in which a scene never launched must not exit successfully. (L2559)
-- `parse_launch_argv(lines) -> list[str]` — The resolved `argv: … launch …` the deploy CLI echoed: the only artifact stating the stack a run actually got; head-agnostic, so a venv-wrapped `ros2` still parses. (L2651)
-- `stack_tokens(argv) -> list[str]` — The stack-defining `key:=value` tokens of that argv, per-scene tokens dropped. (L2694)
-- `robot_facts_from_launch_argv(argv) -> dict[str, str]` — `repo_root` / `robot_id` / `robot_manifest_path`, from the argv's `robot_yaml:=` token. (L2713)
-- `parse_log_start_time(lines) -> str | None` — UTC timestamp of the log's first ROS stamp; pre-harness rounds recorded no start time, their logs did. (L2742)
-- `resolve_scene_dirs(round_dir, aliases) -> dict[str, str]` — Map each matrix scene onto the directory a round kept it in; `--scene-alias` wins over `LEGACY_SCENE_DIRS`. (L2766)
-- `cmd_verdicts(round_dir, *, stem=None) -> int` (L2575) — `stem=None` reads the round's recorded `artifact_stem`.
-- `cmd_diff(round_dir, baseline_dir, out_path) -> int` (L2626) — `verdicts` subcommand body: field-by-field round comparison via `diff_rounds`.
-- `cmd_import(args) -> int` (L2796) — `import-round` subcommand body.
-- `cmd_run(args) -> int` (L2885) — `run` subcommand body.
-- `main(argv=None) -> int` — CLI entry; `run` / `verdicts` / `diff` / `import-round`. `3` on a guardrail refusal (nothing written), `4` when a scene bucketed `harness-error`. (L2965)
+- `wait_for_dds_transport_ready(deploy_log, proc, *, timeout_s, poll_s=0.05) -> str` — Block until the deploy log shows `dds_transport_ready:` (stale shared-memory clean done, `ros2 launch` not yet spawned), so the monitor joins the graph being launched. Returns `""` on timeout or a dead deploy. (L2115)
+- `render_notes(verdicts) -> str` — The round's Markdown summary: names scenes whose monitor received nothing (a harness fault) separately from those that stopped before seeing a voxel grid (a fact about the run), plus any with an uncertified probe or a lower-bound-only budget. (L2431)
+- `round_exit_code(verdicts) -> int` — `4` when any scene bucketed `harness-error`, else `0`: a round in which a scene never launched must not exit successfully. (L2560)
+- `parse_launch_argv(lines) -> list[str]` — The resolved `argv: … launch …` the deploy CLI echoed: the only artifact stating the stack a run actually got; head-agnostic, so a venv-wrapped `ros2` still parses. (L2652)
+- `stack_tokens(argv) -> list[str]` — The stack-defining `key:=value` tokens of that argv, per-scene tokens dropped. (L2695)
+- `robot_facts_from_launch_argv(argv) -> dict[str, str]` — `repo_root` / `robot_id` / `robot_manifest_path`, from the argv's `robot_yaml:=` token. (L2714)
+- `parse_log_start_time(lines) -> str | None` — UTC timestamp of the log's first ROS stamp; pre-harness rounds recorded no start time, their logs did. (L2743)
+- `resolve_scene_dirs(round_dir, aliases) -> dict[str, str]` — Map each matrix scene onto the directory a round kept it in; `--scene-alias` wins over `LEGACY_SCENE_DIRS`. (L2767)
+- `cmd_verdicts(round_dir, *, stem=None) -> int` (L2576) — `stem=None` reads the round's recorded `artifact_stem`.
+- `cmd_diff(round_dir, baseline_dir, out_path) -> int` (L2627) — `verdicts` subcommand body: field-by-field round comparison via `diff_rounds`.
+- `cmd_import(args) -> int` (L2797) — `import-round` subcommand body.
+- `cmd_run(args) -> int` (L2886) — `run` subcommand body.
+- `main(argv=None) -> int` — CLI entry; `run` / `verdicts` / `diff` / `import-round`. `3` on a guardrail refusal (nothing written), `4` when a scene bucketed `harness-error`. (L2966)
 - `octomap_resolution_env() -> dict[str, float]` — The world-voxel resolution the round actually runs with, read from `OPENRAL_OCTOMAP_RESOLUTION_M`; a finer grid is less conservative than the shipped default. Returns `{}` (not a value) when the override is absent, so metadata never misdescribes the run. (L1792)
 
 ### `tools/_validation_matrix_monitor.py`
