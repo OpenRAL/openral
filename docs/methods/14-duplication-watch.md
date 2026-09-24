@@ -135,6 +135,7 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 - **`_h1_group` / `_g1_group`** — one `_mujoco_arm._kinematic_group(joint_name, groups, *, robot)`; each robot keeps its group tuple.
 - **Sidecar port derivation ×5** (`isaac_sim`/`robotwin`/`rlbench`/`lingbot_vla2`/`rldx`) — `_sidecar_common.sidecar_port_for_key`; pinned in `tests/unit/test_sidecar_common.py`.
 - **`_CARTESIAN_KINDS` / `_GRIPPER_KINDS`** — byte-identical to `_CARTESIAN_MODES` / `_GRIPPER_MODES` in `schemas.py`; deleted, second validator uses the surviving pair.
+- **Tegra host probe** (`openral_cli.deploy_sim._is_tegra_host`, `openral_runner.backends.gstreamer.pipeline._TEGRA_RELEASE_PATH`, `openral_detect.probes.gpu._DEFAULT_RELEASE_PATH`) — `openral_core.is_tegra_host()` / `TEGRA_RELEASE_PATH`. Do not re-probe `/etc/nv_tegra_release` elsewhere.
 - **CameraInfo topic rule** — `openral_sensors.ros_publisher.camera_info_topic_for` resolves OpenRAL's own `/openral/cameras/<name>/(depth/)image` through `openral_core.camera_topic(name, CAMERA_INFO | DEPTH_CAMERA_INFO)`; its suffix rules only cover driver topics (a RealSense `ros2_topic`).
 - **Torch-free GPU VRAM probe** (`openral_cli.deploy_sim._detect_gpu_vram_gb` / `openral_reasoner_ros.reasoner_node._query_gpu_gb`) — `openral_core.detect_gpu_vram_gb(field)` (ADR-0103).
 - **Unified-memory-SoC VRAM fallback** in `openral_detect.probes.gpu` (`_probe_nvidia_pynvml` / `_probe_nvidia_smi`) — one `_unified_memory_vram_fallback` helper.

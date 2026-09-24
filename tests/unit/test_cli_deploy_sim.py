@@ -1641,12 +1641,12 @@ def test_bh_prepare_launch_env_defaults_expandable_segments(
     `deploy sim` shells through deploy_sim_command's own inline env build — so the
     var never reached the runtime_node. Both paths now route through this helper.
     """
-    import openral_cli.deploy_sim as _ds
+    import openral_core.gpu
 
     monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
     # A discrete-GPU host; the Tegra branch has its own test below.
-    monkeypatch.setattr(_ds, "_is_tegra_host", lambda: False)
+    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: False)
     env = _prepare_launch_env()
     chosen = _alloc_conf_var()
     other = "PYTORCH_CUDA_ALLOC_CONF" if chosen == "PYTORCH_ALLOC_CONF" else "PYTORCH_ALLOC_CONF"
@@ -1671,12 +1671,12 @@ def test_bh_prepare_launch_env_leaves_the_allocator_alone_on_tegra(
     also makes the discrete-card fragmentation headroom moot. An operator's
     explicit setting still passes through untouched.
     """
-    import openral_cli.deploy_sim as _ds
+    import openral_core.gpu
 
     chosen = _alloc_conf_var()
     monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
-    monkeypatch.setattr(_ds, "_is_tegra_host", lambda: True)
+    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: True)
     assert chosen not in _prepare_launch_env()
 
     monkeypatch.setenv(chosen, "expandable_segments:True")

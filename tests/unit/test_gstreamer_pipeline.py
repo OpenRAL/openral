@@ -428,14 +428,12 @@ def test_tegra_system_memory_pipeline_links_on_a_real_nvvidconv_host() -> None:
 
 
 def test_detect_platform_deepstream_when_nvjpegdec_and_nvvideoconvert(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """nvjpegdec + nvvideoconvert (and no Tegra release file) ⇒ NVIDIA_DEEPSTREAM."""
-    import pathlib
-
     import openral_runner.backends.gstreamer.pipeline as p
 
-    monkeypatch.setattr(p, "_TEGRA_RELEASE_PATH", pathlib.Path(str(tmp_path)) / "absent")
+    monkeypatch.setattr(p, "is_tegra_host", lambda: False)
     monkeypatch.setattr(
         p, "inspect_element_present", lambda name: name in {"nvjpegdec", "nvvideoconvert"}
     )
@@ -446,15 +444,11 @@ def test_detect_platform_deepstream_when_nvjpegdec_and_nvvideoconvert(
         p.detect_platform.cache_clear()
 
 
-def test_detect_platform_desktop_when_only_nvh264dec(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: object
-) -> None:
+def test_detect_platform_desktop_when_only_nvh264dec(monkeypatch: pytest.MonkeyPatch) -> None:
     """nvh264dec without the DeepStream pair ⇒ NVIDIA_DESKTOP (ordering check)."""
-    import pathlib
-
     import openral_runner.backends.gstreamer.pipeline as p
 
-    monkeypatch.setattr(p, "_TEGRA_RELEASE_PATH", pathlib.Path(str(tmp_path)) / "absent")
+    monkeypatch.setattr(p, "is_tegra_host", lambda: False)
     monkeypatch.setattr(p, "inspect_element_present", lambda name: name == "nvh264dec")
     p.detect_platform.cache_clear()
     try:
