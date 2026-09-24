@@ -112,10 +112,13 @@ def _mat_to_rpy(r: _Arr) -> tuple[float, float, float]:
 def fit_capsule_to_vertices(vertices: _Arr) -> tuple[CapsuleShape, _Origin]:
     """Fit a conservative bounding capsule (segment along +Z) to a vertex cloud.
 
-    PCA via SVD: the dominant principal component is the capsule axis. ``length_m``
-    is the span of the projections onto that axis; ``radius_m`` is the max distance
-    of any vertex from the axis line. Every vertex therefore lies inside the result
-    — a conservative over-approximation, so the safety check never under-covers.
+    PCA via SVD: the dominant principal component is the capsule axis. ``radius_m``
+    is the max distance of any vertex from the axis line; ``length_m`` is the
+    shortest segment on that axis whose capsule still holds every vertex, so the
+    hemispherical caps end at the cloud instead of a radius past it (a short, fat
+    cloud gets a zero-length capsule, i.e. its bounding sphere about the axis).
+    Every vertex therefore lies inside the result — a conservative
+    over-approximation, so the safety check never under-covers.
     Returns the ``CapsuleShape`` plus its ``origin_xyz_rpy`` in the
     same frame as ``vertices``: the segment midpoint and the rotation taking local
     +Z onto the principal axis.
@@ -135,11 +138,23 @@ def fit_capsule_to_vertices(vertices: _Arr) -> tuple[CapsuleShape, _Origin]:
     _, _, vh = np.linalg.svd(centered, full_matrices=False)
     axis = vh[0] / np.linalg.norm(vh[0])
     proj = centered @ axis
-    length = float(proj.max() - proj.min())
     perp = centered - np.outer(proj, axis)
-    radius = max(float(np.linalg.norm(perp, axis=1).max()), 1e-4)
-    # Segment centred on the projection midpoint (not the centroid).
-    center = centroid + axis * float((proj.max() + proj.min()) / 2.0)
+    perp_dist = np.linalg.norm(perp, axis=1)
+    radius = max(float(perp_dist.max()), 1e-4)
+    # Shortest segment on this axis whose radius-``radius`` capsule still holds
+    # every vertex. A vertex at axial position t and axis distance d is inside
+    # iff the nearer segment end is within sqrt(r² - d²) of t along the axis,
+    # so the ends are lo = min(t + s) and hi = max(t - s). Using the full
+    # projection span instead let each hemispherical cap overhang the mesh by up
+    # to a whole radius (9.4 cm on panda_link5), which put the Franka's own hand
+    # inside link 5's capsule at its SRDF ``ready`` pose.
+    slack = np.sqrt(np.maximum(radius * radius - perp_dist * perp_dist, 0.0))
+    lo = float((proj + slack).min())
+    hi = float((proj - slack).max())
+    if lo > hi:  # a short, fat cloud: one sphere anywhere in [hi, lo] holds it
+        lo = hi = (lo + hi) / 2.0
+    length = hi - lo
+    center = centroid + axis * ((lo + hi) / 2.0)
     # Rotation taking local +Z onto `axis` (Rodrigues; handle the antiparallel case).
     z = np.array([0.0, 0.0, 1.0])
     v = np.cross(z, axis)

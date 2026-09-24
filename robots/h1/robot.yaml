@@ -328,7 +328,7 @@ collision_geometry:
     shape: { shape: "capsule", radius_m: 0.0100, length_m: 0.0200 }
     origin_xyz_rpy: [0.0200, -0.0000, 0.0000, -0.0000, -1.5708, 0.0000]
   - link_name: "left_hip_roll_link"
-    shape: { shape: "capsule", radius_m: 0.0206, length_m: 0.0400 }
+    shape: { shape: "capsule", radius_m: 0.0206, length_m: 0.0000 }
     origin_xyz_rpy: [-0.0000, 0.0600, -0.0000, 3.1416, -0.0000, 0.0000]
   - link_name: "left_hip_pitch_link"
     shape: { shape: "capsule", radius_m: 0.0500, length_m: 0.2000 }
@@ -343,8 +343,8 @@ collision_geometry:
     shape: { shape: "capsule", radius_m: 0.0100, length_m: 0.0200 }
     origin_xyz_rpy: [0.0200, -0.0000, 0.0000, -0.0000, -1.5708, 0.0000]
   - link_name: "right_hip_roll_link"
-    shape: { shape: "capsule", radius_m: 0.0206, length_m: 0.0400 }
-    origin_xyz_rpy: [-0.0000, -0.0600, -0.0000, 3.1416, -0.0000, 0.0000]
+    shape: { shape: "capsule", radius_m: 0.0206, length_m: 0.0000 }
+    origin_xyz_rpy: [-0.0000, -0.0600, 0.0000, 3.1416, -0.0000, 0.0000]
   - link_name: "right_hip_pitch_link"
     shape: { shape: "capsule", radius_m: 0.0500, length_m: 0.2000 }
     origin_xyz_rpy: [-0.0000, -0.0000, -0.2000, 0.0000, -0.0000, 0.0000]
@@ -358,26 +358,26 @@ collision_geometry:
     shape: { shape: "capsule", radius_m: 0.0640, length_m: 0.1600 }
     origin_xyz_rpy: [0.0000, 0.0000, 0.1500, -1.5708, -0.0000, 0.0000]
   - link_name: "left_shoulder_pitch_link"
-    shape: { shape: "capsule", radius_m: 0.0361, length_m: 0.0600 }
-    origin_xyz_rpy: [-0.0000, -0.0500, 0.0000, 0.0000, -0.0000, 0.0000]
+    shape: { shape: "capsule", radius_m: 0.0361, length_m: 0.0000 }
+    origin_xyz_rpy: [-0.0000, -0.0500, -0.0000, 0.0000, -0.0000, 0.0000]
   - link_name: "left_shoulder_roll_link"
-    shape: { shape: "capsule", radius_m: 0.0403, length_m: 0.0800 }
+    shape: { shape: "capsule", radius_m: 0.0403, length_m: 0.0000 }
     origin_xyz_rpy: [-0.0000, -0.0000, -0.0400, 1.5708, -0.0000, 0.0000]
   - link_name: "left_shoulder_yaw_link"
-    shape: { shape: "capsule", radius_m: 0.0403, length_m: 0.0800 }
-    origin_xyz_rpy: [-0.0000, -0.0000, -0.1100, 1.5708, -0.0000, 0.0000]
+    shape: { shape: "capsule", radius_m: 0.0403, length_m: 0.0000 }
+    origin_xyz_rpy: [-0.0000, 0.0000, -0.1100, 1.5708, -0.0000, 0.0000]
   - link_name: "left_elbow_link"
     shape: { shape: "capsule", radius_m: 0.0300, length_m: 0.0900 }
     origin_xyz_rpy: [0.1250, 0.0000, 0.0000, 3.1416, -1.5700, -3.1416]
   - link_name: "right_shoulder_pitch_link"
-    shape: { shape: "capsule", radius_m: 0.0361, length_m: 0.0600 }
+    shape: { shape: "capsule", radius_m: 0.0361, length_m: 0.0000 }
     origin_xyz_rpy: [-0.0000, 0.0500, -0.0000, 3.1416, -0.0000, 0.0000]
   - link_name: "right_shoulder_roll_link"
-    shape: { shape: "capsule", radius_m: 0.0403, length_m: 0.0800 }
+    shape: { shape: "capsule", radius_m: 0.0403, length_m: 0.0000 }
     origin_xyz_rpy: [-0.0000, -0.0000, -0.0400, 1.5708, -0.0000, 0.0000]
   - link_name: "right_shoulder_yaw_link"
-    shape: { shape: "capsule", radius_m: 0.0403, length_m: 0.0800 }
-    origin_xyz_rpy: [-0.0000, -0.0000, -0.1100, 1.5708, -0.0000, 0.0000]
+    shape: { shape: "capsule", radius_m: 0.0403, length_m: 0.0000 }
+    origin_xyz_rpy: [-0.0000, 0.0000, -0.1100, 1.5708, -0.0000, 0.0000]
   - link_name: "right_elbow_link"
     shape: { shape: "capsule", radius_m: 0.0300, length_m: 0.0900 }
     origin_xyz_rpy: [0.1250, 0.0000, 0.0000, 3.1416, -1.5700, -3.1416]

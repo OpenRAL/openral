@@ -141,8 +141,10 @@ def test_panda_mobile_relower_would_inflate_every_arm_link() -> None:
     _current, _spliced, loosening = _lowering(Path("robots/panda_mobile/robot.yaml"))
 
     assert {f.link_name for f in loosening} == {f"panda_link{i}" for i in range(1, 8)}
-    assert min(f.volume_ratio for f in loosening) > 1.5
-    assert min(f.circumradius_ratio for f in loosening) > 1.25
+    # By volume: 1.18x (link3/4) to 2.08x (link6). The circumradius no longer
+    # grows on every link since the lowering stopped overhanging capsule caps by a
+    # radius, so volume is the axis that carries the hazard for all seven.
+    assert min(f.volume_ratio for f in loosening) > 1.15
 
 
 @pytest.mark.parametrize("robot_name", ["franka_panda", "ur5e"])
