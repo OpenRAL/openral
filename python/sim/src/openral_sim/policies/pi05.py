@@ -126,10 +126,11 @@ class _PI05Adapter:
 
     def step(self, observation: Observation, instruction: str) -> NDArray[np.float32]:
         if self._chunk_executor is not None:
-            action_tensor = self._chunk_executor.select_action(
+            # Finished (postprocessed, host-side) by the executor: see `_finished_action`.
+            action: NDArray[np.float32] = self._chunk_executor.select_action(
                 lambda: self._prepared_batch(observation, instruction)
             )
-            return to_numpy_action(self._postprocessor(action_tensor))
+            return action
 
         batch = self._prepared_batch(observation, instruction)
         with inference_span(kind="single"), self._torch.no_grad(), self._autocast_ctx():
@@ -167,6 +168,10 @@ class _PI05Adapter:
         import contextlib
 
         return contextlib.nullcontext()
+
+    def _finished_action(self, action_tensor: Any) -> NDArray[np.float32]:
+        """Executor postprocess hook: lerobot postprocessor, then a flat float32 array."""
+        return to_numpy_action(self._postprocessor(action_tensor))
 
     def _chunk_forward(self, batch: dict[str, Any], **kwargs: Any) -> Any:
         """Chunk producer for the executor — predict under this adapter's autocast.
@@ -923,5 +928,6 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
         policy=policy,
         chunk_fn=adapter._chunk_forward,
         adapter_name="pi05",
+        postprocess_action=adapter._finished_action,
     )
     return adapter

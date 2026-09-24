@@ -842,6 +842,7 @@ def build_chunk_executor(
     chunk_fn: Callable[[Any], Any] | None = None,
     chunk_size: int | None = None,
     adapter_name: str = "policy",
+    postprocess_action: Callable[[Any], Any] | None = None,
 ) -> ChunkedExecutor | None:
     """Build + start a ``ChunkedExecutor`` for a chunked adapter.
 
@@ -869,6 +870,10 @@ def build_chunk_executor(
         chunk_size: Actions consumed per inference; defaults to
             ``policy.config.n_action_steps``.
         adapter_name: Label for the enable log line.
+        postprocess_action: Per-action postprocessor handed to the executor,
+            which runs it on each chunk in the producing thread (see
+            ``ChunkedExecutor``). Adapters that pass it get finished actions
+            from ``select_action`` and must not postprocess again.
 
     Returns:
         A started executor. Returns ``None`` for single-step lerobot policies;
@@ -941,6 +946,7 @@ def build_chunk_executor(
         chunk_size=n,
         prefetch_at=prefetch_at,
         rtc_config=rtc_cfg,
+        postprocess_action=postprocess_action,
     )
     executor.start()
     log = structlog.get_logger("openral_rskill._vla_core")
