@@ -1,8 +1,0 @@
-Verbatim schema_version "0.1" robot manifests, as shipped at commit 4d589d1
-(`git show 4d589d1:robots/<id>/robot.yaml`), before the "0.2" bump. They pin
-the 0.1 -> 0.2 migration in openral_core.migrate_robot_manifest:
-- ur5e.yaml: staleness in hal.parameters.defaults, every other 0.2 field present
-  -> migrates and validates.
-- sawyer.yaml: a real robot with a prismatic gripper and no
-  safety.starting_pose_*_m values -> refused after migration (never invented).
-Do not edit them; they are a snapshot of the old on-disk format.
