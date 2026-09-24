@@ -40,6 +40,7 @@ active rSkill's ``state_contract`` rather than ``RobotDescription``;
 
 from __future__ import annotations
 
+import io
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -65,9 +66,9 @@ ACTION_TOPIC_DEFAULT = "/openral/candidate_action"
 EPISODE_TOPIC_DEFAULT = "/openral/episode"
 
 
-# Raw inline layouts the aggregator hands out, by element dtype. Compressed
-# (JPEG / PNG) and device-handle (CUDA_*) encodings carry no HxWxC pixel run
-# and are skipped by ``decode_inline_frame`` rather than mis-reshaped.
+# Raw inline layouts the aggregator hands out, by element dtype. ``JPEG`` /
+# ``PNG`` are decoded with Pillow; device-handle (CUDA_*) encodings carry no
+# host pixel run and are skipped (logged) by ``decode_inline_frame``.
 _INLINE_FRAME_DTYPES: dict[FrameEncoding, Any] = {
     FrameEncoding.BGR8: np.uint8,
     FrameEncoding.RGB8: np.uint8,
@@ -75,11 +76,29 @@ _INLINE_FRAME_DTYPES: dict[FrameEncoding, Any] = {
     FrameEncoding.RAW: np.uint8,
     FrameEncoding.DEPTH16: np.uint16,
 }
+_COMPRESSED_ENCODINGS = frozenset({FrameEncoding.JPEG, FrameEncoding.PNG})
 
 
 # What `DatasetRecorder.record_frame` accepts per camera key: `(H, W, 3) uint8`.
 _HWC_NDIM = 3
 _RGB_CHANNELS = 3
+
+
+def _decode_compressed(frame: SensorFrame, data: bytes) -> np.ndarray[Any, Any] | str:
+    """Decode a JPEG/PNG payload to ``HxWxC`` uint8 RGB (or mono), else a skip reason."""
+    try:
+        from PIL import Image  # noqa: PLC0415  # reason: lazy — only compressed frames pay it
+    except ImportError:
+        return "pillow_not_installed"
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            decoded = np.asarray(img.convert("L" if frame.channels == 1 else "RGB"))
+    except (OSError, ValueError) as exc:  # reason: PIL raises these on corrupt/unknown data
+        return f"undecodable: {exc}"
+    if decoded.shape[:2] != (frame.height, frame.width):
+        got = f"{decoded.shape[1]}x{decoded.shape[0]}"
+        return f"decoded {got} != declared {frame.width}x{frame.height}"
+    return decoded.reshape(frame.height, frame.width, -1)
 
 
 def decode_inline_frame(frame: SensorFrame) -> np.ndarray[Any, Any] | None:
@@ -92,24 +111,49 @@ def decode_inline_frame(frame: SensorFrame) -> np.ndarray[Any, Any] | None:
     1280x720x1 at two bytes per pixel, and ``reshape(720, 1280, 1)`` on a
     uint8 view of it raised ``ValueError: cannot reshape array of size
     1843200`` while the policy only ever wanted the RGB slots next to it.
+    ``JPEG`` / ``PNG`` payloads (an MJPEG USB camera) are decoded with Pillow
+    to RGB (``channels == 3``) or mono (``channels == 1``) uint8.
 
-    Returns ``None`` for a frame with no inline pixels (topic / handle
-    delivery), an encoding that is not a raw pixel run, or a payload whose
-    byte count is not exactly ``height * width * channels * itemsize`` (a
-    truncated or row-padded frame): ``SensorFrame`` validates the dimensions
-    but not the payload length, and ``reshape`` would raise on the mismatch
-    instead of letting the recorder skip the frame.
+    Returns ``None`` silently for a frame with no inline pixels (topic /
+    handle delivery — not a skip). Returns ``None`` and logs
+    ``runner.frame_skipped`` (sensor, encoding, reason) for a payload it cannot
+    decode: a device-handle encoding carrying inline bytes, a corrupt or
+    wrongly-sized compressed image, or a raw payload whose byte count is not
+    exactly ``height * width * channels * itemsize`` (a truncated or row-padded
+    frame — ``SensorFrame`` validates the dimensions but not the payload
+    length). Callers decide whether a skip is fatal (the skill runner raises
+    when the sensor feeds a required policy slot).
     """
     data = frame.data
     if data is None:
         return None
+    if frame.encoding in _COMPRESSED_ENCODINGS:
+        decoded = _decode_compressed(frame, data)
+        if isinstance(decoded, str):
+            _skip(frame, decoded)
+            return None
+        return decoded
     dtype = _INLINE_FRAME_DTYPES.get(frame.encoding)
     if dtype is None:
+        _skip(frame, "no host pixel layout for this encoding")
         return None
     shape = (int(frame.height), int(frame.width), int(frame.channels))
-    if len(data) != shape[0] * shape[1] * shape[2] * np.dtype(dtype).itemsize:
+    expected = shape[0] * shape[1] * shape[2] * np.dtype(dtype).itemsize
+    if len(data) != expected:
+        _skip(frame, f"payload {len(data)} B != expected {expected} B")
         return None
     return np.frombuffer(data, dtype=dtype).reshape(shape)
+
+
+def _skip(frame: SensorFrame, reason: str) -> None:
+    # ponytail: logs every skipped frame; rate-limit if a non-required sensor
+    # ever skips steadily (a required one raises in the runner instead).
+    _log.warning(
+        "runner.frame_skipped",
+        sensor=frame.sensor_id,
+        encoding=frame.encoding.value,
+        reason=reason,
+    )
 
 
 class DatasetRecorderBridge:
@@ -373,7 +417,7 @@ class DatasetRecorderBridge:
         for name, frame in image_frames.items():
             arr = decode_inline_frame(frame)
             if arr is None:
-                continue  # topic/handle delivery or a non-raw encoding — nothing inline to record
+                continue  # topic/handle delivery, or a skip `decode_inline_frame` logged
             # `DatasetRecorder.record_frame` takes `(H, W, 3) uint8` RGB per
             # camera key; a DEPTH16 or mono frame in the same world state (the
             # OpenArm bench's `head_zed`) is not a dataset image feature and

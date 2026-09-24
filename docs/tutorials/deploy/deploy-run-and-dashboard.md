@@ -250,7 +250,12 @@ encoding (`decode_inline_frame`): the depth frame rides along in the policy's
 observation as a `uint16` `(H, W, 1)` array under its own sensor name, and an
 RGB-only policy simply never reads it. Until 2026-09-22 the runner read every
 frame as `uint8`, and a ZED depth frame next to the RGB slots aborted the first
-real OpenArm dispatch with `cannot reshape array of size 1843200`.
+real OpenArm dispatch with `cannot reshape array of size 1843200`. A camera
+that delivers JPEG or PNG (an MJPEG USB camera) is decoded to RGB the same way.
+A frame the decoder cannot handle is logged as `runner.frame_skipped` with the
+sensor and encoding; if that sensor feeds one of the policy's required camera
+slots, the goal fails with `ROSPerceptionStale` rather than running the policy
+without that view.
 
 Prerequisites on the host: the **ZED SDK** installed, and `zed_wrapper` running
 and publishing. Without them the reader opens fine and then every `read_latest`

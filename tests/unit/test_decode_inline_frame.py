@@ -42,3 +42,61 @@ def test_truncated_or_padded_payloads_are_skipped_not_raised() -> None:
     # A DEPTH16 payload sized for uint8 pixels is half a frame.
     half_depth = decode_inline_frame(_frame(FrameEncoding.DEPTH16, bytes(12), channels=1))
     assert short is None and padded is None and half_depth is None
+
+
+def _encoded(fmt: str, rgb: np.ndarray) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.fromarray(rgb, mode="RGB").save(buf, format=fmt)
+    return buf.getvalue()
+
+
+def test_png_decodes_losslessly_to_rgb() -> None:
+    rgb = np.arange(36, dtype=np.uint8).reshape(3, 4, 3)
+    out = decode_inline_frame(_frame(FrameEncoding.PNG, _encoded("PNG", rgb), channels=3))
+    assert out is not None and out.dtype == np.uint8
+    np.testing.assert_array_equal(out, rgb)
+
+
+def test_jpeg_decodes_to_declared_shape_and_mono_when_one_channel() -> None:
+    rgb = np.full((3, 4, 3), 128, dtype=np.uint8)
+    data = _encoded("JPEG", rgb)
+    colour = decode_inline_frame(_frame(FrameEncoding.JPEG, data, channels=3))
+    mono = decode_inline_frame(_frame(FrameEncoding.JPEG, data, channels=1))
+    assert colour is not None and colour.shape == (3, 4, 3)
+    assert abs(int(colour.mean()) - 128) <= 2  # lossy, but a flat field survives
+    assert mono is not None and mono.shape == (3, 4, 1)
+
+
+def test_every_skip_is_logged_with_sensor_and_encoding() -> None:
+    from structlog.testing import capture_logs
+
+    wrong_size_png = _encoded("PNG", np.zeros((5, 5, 3), dtype=np.uint8))
+    with capture_logs() as logs:
+        assert decode_inline_frame(_frame(FrameEncoding.JPEG, b"\xff\xd8junk", channels=3)) is None
+        assert decode_inline_frame(_frame(FrameEncoding.PNG, wrong_size_png, channels=3)) is None
+        assert decode_inline_frame(_frame(FrameEncoding.CUDA_NV12, bytes(18), channels=1)) is None
+        assert decode_inline_frame(_frame(FrameEncoding.RGB8, bytes(35), channels=3)) is None
+    skips = [e for e in logs if e["event"] == "runner.frame_skipped"]
+    assert [e["encoding"] for e in skips] == ["jpeg", "png", "cuda_nv12", "rgb8"]
+    assert all(e["sensor"] == "top" and e["log_level"] == "warning" for e in skips)
+
+
+def test_frames_without_inline_data_are_not_skips() -> None:
+    from structlog.testing import capture_logs
+
+    frame = SensorFrame(
+        sensor_id="top",
+        stamp_monotonic_ns=1,
+        stamp_wall_ns=2,
+        encoding=FrameEncoding.CUDA_NV12,
+        width=4,
+        height=3,
+        handle=0xDEAD,
+    )
+    with capture_logs() as logs:
+        assert decode_inline_frame(frame) is None
+    assert logs == []
