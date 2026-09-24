@@ -378,7 +378,10 @@ def _init_rope_and_position_buffers(policy: Any, *, torch: Any) -> None:
                 theta ** (torch.arange(0, d, 2, dtype=torch.float32, device=buf.device).float() / d)
             )
             buf.copy_(freqs.to(buf.dtype))
-        elif name.endswith(".embed_scale"):
+        elif name.endswith(".embed_scale") and (
+            getattr(mod, "scalar_embed_scale", None) is not None
+            or getattr(mod, "embedding_dim", None) is not None
+        ):
             scalar = getattr(mod, "scalar_embed_scale", None)
             scale = float(scalar) if scalar is not None else float(mod.embedding_dim) ** 0.5
             buf.copy_(torch.tensor(scale, dtype=buf.dtype, device=buf.device))

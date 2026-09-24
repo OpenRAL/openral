@@ -103,6 +103,19 @@ def test_an_unknown_non_persistent_buffer_is_refused() -> None:
         _init_rope_and_position_buffers(_Mystery(), torch=torch)
 
 
+def test_an_embed_scale_buffer_without_a_known_width_is_refused_by_name() -> None:
+    """``embed_scale`` on a module with neither ``scalar_embed_scale`` nor ``embedding_dim``."""
+    from openral_core.exceptions import ROSRuntimeError
+
+    class _Odd(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.register_buffer("embed_scale", torch.tensor(float("nan")), persistent=False)
+
+    with pytest.raises(ROSRuntimeError, match="embed_scale"):
+        _init_rope_and_position_buffers(_Odd(), torch=torch)
+
+
 def _write_state(tmp_path: Path, model: torch.nn.Module) -> Path:
     snapshot = tmp_path / "snapshots" / "abc"
     snapshot.mkdir(parents=True)

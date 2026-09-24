@@ -122,6 +122,8 @@ def start_world_state_executor(
         return None
     import threading
 
+    from rclpy.executors import ExternalShutdownException
+
     executor = EventsExecutor()
     executor.add_node(world_state_node)
     stopping = threading.Event()
@@ -129,6 +131,10 @@ def start_world_state_executor(
     def _spin() -> None:
         try:
             executor.spin()
+        except ExternalShutdownException:
+            # Ctrl-C / rclpy.shutdown() from outside: the context went away
+            # before `_stop` ran. A clean exit, not a dead executor.
+            return
         except Exception as exc:  # reason: the thread's boundary; nothing above it
             if stopping.is_set():
                 return

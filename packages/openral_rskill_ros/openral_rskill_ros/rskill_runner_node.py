@@ -656,7 +656,15 @@ if _ROS2_AVAILABLE:
             if self._heartbeat is not None:
                 self._heartbeat.start()
             preload_id = str(self.get_parameter("preload_rskill_id").value or "")
-            if preload_id:
+            if preload_id and self._preload_thread is not None and self._preload_thread.is_alive():
+                # A deactivate/activate cycle mid-load: the running worker
+                # keeps the skill (it re-checks ``_lifecycle_active`` when it
+                # finishes). A second worker would clear ``_preload_in_flight``
+                # while the first still loads and let a goal through.
+                self.get_logger().info(
+                    "rskill_runner.preload_in_flight: activate while a preload runs; not restarted"
+                )
+            elif preload_id:
                 # Off the lifecycle thread: the orchestrator bounds each
                 # transition, and a transition that takes minutes reads as a
                 # hung node. The worker takes ``_execute_serial`` itself.
@@ -2932,10 +2940,14 @@ def _clamp_joint_position_slice(
     """
     if not joint_names or description is None:
         return values
+    if len(joint_names) != len(values):
+        # Not this helper's call: ``_pad_joint_payload`` refuses the mismatch
+        # by name. Clamping the overlap would truncate the slice and hide it.
+        return values
     limits = {j.name: j.position_limits for j in description.joints}
     clamp_eps = 1e-3
     out: list[float] = []
-    for name, value in zip(joint_names, values, strict=False):
+    for name, value in zip(joint_names, values, strict=True):
         lims = limits.get(name)
         if lims is None:
             out.append(value)

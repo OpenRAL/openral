@@ -1831,6 +1831,12 @@ if _ROS2_AVAILABLE:
                 viewer_enabled=self.get_parameter("viewer_enabled")
                 .get_parameter_value()
                 .bool_value,
+                # One attachment authority per graph: with the vision leg on,
+                # the bridge's "nothing attached" heartbeat would fight its
+                # revisions on the same latched topic.
+                attachment_heartbeat=not self.get_parameter("vision_attachment_enabled")
+                .get_parameter_value()
+                .bool_value,
                 camera_rate_hz=self.get_parameter("camera_publish_rate_hz")
                 .get_parameter_value()
                 .double_value,

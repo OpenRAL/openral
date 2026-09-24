@@ -399,3 +399,28 @@ def test_joint_position_slots_are_clamped_inside_the_robots_joint_limits(
     # An in-range target is untouched, and nothing is clamped onto the limit itself.
     assert left_action.joint_targets[0][0] == 0.0
     assert left_action.joint_targets[0][4] > float(lo)
+
+
+def test_clamping_leaves_a_mismatched_slice_for_the_payload_check(
+    runner_mod: ModuleType,
+) -> None:
+    """A slice wider than its ``joint_names`` is returned untouched, never truncated.
+
+    ``_pad_joint_payload`` refuses the mismatch by name; a ``zip`` that stopped
+    at the shorter side would drop the extra column and let it pass.
+    """
+    import yaml
+    from openral_core import RobotDescription
+
+    repo_root = Path(__file__).resolve().parents[2]
+    desc = RobotDescription.model_validate(
+        yaml.safe_load((repo_root / "robots" / "openarm" / "robot.yaml").read_text())
+    )
+    names = [f"left_joint{i}" for i in range(1, 8)]
+    wide = [5.0] * 8
+    assert runner_mod._clamp_joint_position_slice(wide, names, desc) == wide
+    narrow = [5.0] * 6
+    assert runner_mod._clamp_joint_position_slice(narrow, names, desc) == narrow
+    # The matching width still clamps.
+    exact = runner_mod._clamp_joint_position_slice([5.0] * 7, names, desc)
+    assert all(v < 5.0 for v in exact)
