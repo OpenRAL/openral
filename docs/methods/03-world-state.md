@@ -37,11 +37,11 @@ _WorldStateAggregator — tf2-aware, injectable snapshot producer._
   - `update_base_pose(pose, twist=None) -> None` — Record base pose (and optional twist). (L356)
   - `update_battery(pct) -> None` — Record battery %. (L373)
   - `update_attached_objects(objects: list[AttachedCollisionObject], *, revision=0, stamp_ns=None, place_declaration: PlaceDeclaration | None = None) -> None` — Atomically replaces the complete attached-payload set; duplicate ids or backwards revisions raise `ValueError`. `place_declaration` is replaced in the same atomic step as its payload, and liveness is judged against the stream's own `stamp_ns`, never `clock_fn`, so a sim-clock declaration is never wrongly judged stale by the wall clock. (L397)
-  - `set_error(component, status='error') -> None` — Latch a forced diagnostic. (L455)
-  - `clear_error(component) -> None` — Remove a forced diagnostic. (L471)
-  - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock), emitting OTel span/metrics for staleness and latched errors. `staleness_latched` fires only for a component that has had data before — a never-received one counts as stale but doesn't latch, so bringup stays quiet before the HAL's first publish. (L482)
+  - `set_error(component, status='error') -> None` — Latch a forced diagnostic. (L459)
+  - `clear_error(component) -> None` — Remove a forced diagnostic. (L475)
+  - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock), emitting OTel span/metrics for staleness and latched errors. `staleness_latched` fires only for a component that has had data before — a never-received one counts as stale but doesn't latch, so bringup stays quiet before the HAL's first publish. (L486)
   - `update_detected_objects(objects: list[DetectedObject]) -> None` — Replace the remembered detected-object set (thread-safe); the next `snapshot()` reflects it. Called by the world-state lifecycle node's memory tick. (L382)
-  - `_emit_snapshot_telemetry(span, diag, ages_ms) -> None` — Internal: lift the snapshot diagnostics onto the OTel span + meter instruments. (L618)
+  - `_emit_snapshot_telemetry(span, diag, ages_ms) -> None` — Internal: lift the snapshot diagnostics onto the OTel span + meter instruments. (L622)
 
 ### `python/world_state/src/openral_world_state/spatial_memory.py`
 _SpatialMemory — persistent object-centric scene-graph memory (advisory; never a safety input)._

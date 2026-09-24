@@ -355,12 +355,11 @@ def _build_act(env_cfg: Any) -> _ACTAdapter:
     # below and (b) sanitize a ``config.json`` that may carry training-only
     # fields the installed lerobot ACTConfig doesn't recognize (e.g.
     # ``n_state_dim`` on ``JunnDooChoi/act_libero_spatial_finetuned_kaf_64``).
-    from huggingface_hub import snapshot_download
+    from openral_rskill import local_snapshot_dir
 
     with _act_phase("snapshot", repo=repo_id):
-        pretrained_path = snapshot_download(
-            repo_id=repo_id, revision=revision, ignore_patterns=["*.md"]
-        )
+        # Directory-aware: an installed rSkill snapshot resolves to itself.
+        pretrained_path = local_snapshot_dir(repo_id, revision=revision)
     _sanitize_act_config_json(pretrained_path)
     with _act_phase("from_pretrained", repo=repo_id):
         policy = ACTPolicy.from_pretrained(pretrained_path)
@@ -594,12 +593,12 @@ def _try_load_act_norm_stats(
     behaviour and what we did before this fix).
     """
     try:
-        from huggingface_hub import snapshot_download
+        from openral_rskill import local_snapshot_dir
         from safetensors import safe_open
     except ImportError:
         return {}
     try:
-        local = snapshot_download(repo_id=repo_id, ignore_patterns=["*.md"])
+        local = local_snapshot_dir(repo_id)
     except Exception:
         return {}
     import os

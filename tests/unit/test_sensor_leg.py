@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from openral_core import (
@@ -120,47 +121,6 @@ def test_explicit_topic_rate_overrides_the_cap() -> None:
     assert _fallback_topic_rate_hz(stereo) > _MAX_FALLBACK_TOPIC_RATE_HZ
 
 
-def test_merge_scene_entry_wins_on_name_collision() -> None:
-    """A same-named DeployScene entry is that robot sensor's deploy binding —
-    the manifest copy is dropped so the device is never double-opened."""
-    manifest = [_spec("top", binding=None), _spec("wrist", binding=None)]
-    scene = [
-        _spec("top", binding=SensorDeployBinding(backend_params={"device": "/dev/video0"})),
-        _spec("overhead", binding=SensorDeployBinding(backend_params={"device": "/dev/video2"})),
-    ]
-    merged = merge_deploy_sensors(manifest, scene)
-    names = [s.name for s in merged]
-    assert sorted(names) == ["overhead", "top", "wrist"]
-    top = next(s for s in merged if s.name == "top")
-    assert top.deploy_binding is not None  # the scene's bound copy survived
-
-
-def test_merge_keeps_manifest_geometry_the_scene_did_not_mention() -> None:
-    """The scene binds the device; the manifest keeps owning where it points.
-
-    Documented split: robot manifest for robot-mounted cameras (wrist/head),
-    DeployScene.sensors for workcell-mounted ones. Replacing wholesale silently
-    discarded the manifest's mount, landing readings in the wrong frame while
-    octomap_server/SLAM dropped messages with the graph reporting healthy.
-    """
-    mount = (0.0, 0.0, 0.20, 0.0, 0.7853981634, 0.0)
-    manifest = [
-        _spec("head", binding=None).model_copy(
-            update={"parent_frame": "openarm_base", "static_transform_xyz_rpy": mount}
-        )
-    ]
-    # A binding-only scene entry: it says WHERE THE PIXELS COME FROM, nothing
-    # about where the camera is.
-    scene = [_spec("head", binding=SensorDeployBinding(backend_params={"device": "/dev/video0"}))]
-
-    (head,) = merge_deploy_sensors(manifest, scene)
-
-    assert head.deploy_binding is not None  # scene's binding applied
-    assert head.deploy_binding.backend_params["device"] == "/dev/video0"
-    assert head.parent_frame == "openarm_base"  # manifest geometry survived
-    assert head.static_transform_xyz_rpy == mount
-
-
 _OPENARM = Path(__file__).resolve().parents[2] / "robots" / "openarm" / "robot.yaml"
 
 
@@ -171,31 +131,22 @@ def _openarm_sensors() -> list[SensorSpec]:
 
 
 @pytest.mark.parametrize(
-    "geometry",
+    "extra",
     [
+        {"deploy_binding": {"backend": "ros2_image", "backend_params": {"topic": "/zed/d"}}},
+        {"rate_hz": 15.0},
         {"parent_frame": "bench_post"},
         {"static_transform_xyz_rpy": [0.01, 0.0, 0.22, 0.0, 0.8, 0.0]},
-        {
-            "intrinsics": {
-                "width": 1920,
-                "height": 1080,
-                "fx": 1497.9,
-                "fy": 1497.9,
-                "cx": 960.0,
-                "cy": 540.0,
-            }
-        },
         {"frame_id": "zed_left_camera_frame"},
     ],
-    ids=["parent_frame", "static_transform", "intrinsics", "frame_id"],
+    ids=["binding_only", "rate_only", "parent_frame", "static_transform", "frame_id"],
 )
-def test_merge_refuses_a_scene_restating_a_robot_sensors_geometry(
-    geometry: dict[str, object],
-) -> None:
-    """The ZED is bolted to the OpenArm: its pose is in robot.yaml, never in a scene.
+def test_merge_refuses_a_scene_naming_a_robot_sensor(extra: dict[str, object]) -> None:
+    """A deploy scene never touches a robot camera — not even to bind it to the host.
 
-    A pose hidden in one scene silently does not apply to the other scenes on that robot,
-    so the merge refuses it instead of letting the scene win.
+    The ZED is bolted to the OpenArm: its pose AND its real-hardware binding live in
+    robot.yaml. A value hidden in one scene silently does not apply to the other scenes
+    on that robot, so any entry reusing a manifest sensor's name is refused.
     """
     from openral_core.exceptions import ROSConfigError
 
@@ -205,59 +156,45 @@ def test_merge_refuses_a_scene_restating_a_robot_sensors_geometry(
             "modality": "depth",
             "frame_id": "zed_camera_link",
             "rate_hz": 10.0,
-            **geometry,
+            **extra,
         }
     )
-    field = next(iter(geometry))
-    with pytest.raises(ROSConfigError, match=rf"'head_zed'.*{field}.*robot manifest owns"):
+    with pytest.raises(ROSConfigError, match=r"'head_zed'.*defined by the robot manifest"):
         merge_deploy_sensors(_openarm_sensors(), [entry])
 
 
-def test_merge_accepts_a_binding_and_a_workcell_camera_with_its_own_geometry() -> None:
-    """Host binding on a robot sensor, and geometry on a scene-only sensor, both pass."""
+def test_merge_appends_workcell_cameras_after_the_manifest() -> None:
+    """A workcell camera (a name the manifest does not use) keeps its own geometry and
+    binding and lands after the manifest's sensors, which pass through untouched."""
     manifest = _openarm_sensors()
-    zed = next(s for s in manifest if s.name == "head_zed")
-    scene = [
-        SensorSpec.model_validate(
-            {
-                "name": "head_zed",
-                "modality": "depth",
-                "frame_id": "zed_camera_link",
-                "rate_hz": 15.0,
-                "deploy_binding": {"backend": "ros2_image", "backend_params": {"topic": "/zed/d"}},
-            }
-        ),
-        SensorSpec.model_validate(
-            {
-                "name": "overhead",
-                "modality": "rgb",
-                "frame_id": "overhead_optical",
-                "parent_frame": "openarm_base",
-                "static_transform_xyz_rpy": [0.5, 0.0, 1.2, 0.0, 1.5708, 0.0],
-                "rate_hz": 30.0,
-                "intrinsics": {
-                    "width": 640,
-                    "height": 480,
-                    "fx": 600.0,
-                    "fy": 600.0,
-                    "cx": 320.0,
-                    "cy": 240.0,
-                },
-            }
-        ),
-    ]
+    overhead = SensorSpec.model_validate(
+        {
+            "name": "overhead",
+            "modality": "rgb",
+            "frame_id": "overhead_optical",
+            "parent_frame": "openarm_base",
+            "static_transform_xyz_rpy": [0.5, 0.0, 1.2, 0.0, 1.5708, 0.0],
+            "rate_hz": 30.0,
+            "intrinsics": {
+                "width": 640,
+                "height": 480,
+                "fx": 600.0,
+                "fy": 600.0,
+                "cx": 320.0,
+                "cy": 240.0,
+            },
+            "deploy_binding": {"backend_params": {"device": "/dev/video2"}},
+        }
+    )
 
-    merged = {s.name: s for s in merge_deploy_sensors(manifest, scene)}
+    merged = merge_deploy_sensors(manifest, [overhead])
 
-    assert merged["head_zed"].rate_hz == 15.0
-    assert merged["head_zed"].deploy_binding is not None
-    assert merged["head_zed"].static_transform_xyz_rpy == zed.static_transform_xyz_rpy
-    assert merged["head_zed"].intrinsics == zed.intrinsics
-    assert merged["overhead"].parent_frame == "openarm_base"
+    assert merged == [*manifest, overhead]
+    assert merged[-1].parent_frame == "openarm_base"
 
 
 def test_unbound_specs_are_skipped() -> None:
-    """Committed reference manifests leave deploy_binding unset — the leg skips them."""
+    """A spec without a deploy_binding (a sim-only camera) gets no reader."""
     leg = open_deploy_sensor_readers([_spec("top", binding=None)])
     assert leg.readers == []
     assert leg.publishers == []
@@ -587,20 +524,46 @@ def _rgb_frame(width: int = 64, height: int = 48, *, value: int = 0):
     )
 
 
-def test_pump_emits_a_real_jpeg_thumbnail_for_the_dashboard() -> None:
+def _exported_thumbnail(exporter: Any) -> bytes:
+    import base64
+
+    from openral_observability import semconv
+
+    (span,) = exporter.get_finished_spans()
+    return base64.b64decode(str(span.attributes[semconv.SENSORS_THUMBNAIL_JPEG_B64]))
+
+
+def test_pump_emits_a_real_jpeg_thumbnail_for_the_dashboard(memory_exporter: Any) -> None:
     """The span carries a decodable JPEG, not an empty attribute."""
-    from openral_observability import producer as ral_producer
     from openral_rskill_ros.sensor_leg import _emit_frame_observability
 
-    frame = _rgb_frame()
-    thumb = ral_producer.encode_frame_thumbnail(frame)
-    assert thumb is not None and thumb[:2] == b"\xff\xd8", "expected a JPEG SOI marker"
-
-    # The emit path itself must complete against the real tracer/producer.
-    _emit_frame_observability("top", frame, flip_180=False)
+    _emit_frame_observability("top", _rgb_frame(), flip_180=False)
+    assert _exported_thumbnail(memory_exporter)[:2] == b"\xff\xd8", "expected a JPEG SOI marker"
 
 
-def test_pump_flip_180_rotates_the_thumbnail_but_not_the_policy_frame() -> None:
+def test_no_exporter_means_no_encode_work(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no recording provider the emit returns before the flip and JPEG.
+
+    At 30 Hz per camera that work held ~25 % of the deploy runtime's GIL on an
+    AGX Orin while nothing consumed it (no OTLP endpoint, dashboard off).
+    """
+    from openral_observability import producer as ral_producer
+    from openral_rskill_ros.sensor_leg import _emit_frame_observability
+    from opentelemetry import trace
+
+    def _reached(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("thumbnail encoded for a span nobody records")
+
+    monkeypatch.setattr(ral_producer, "encode_frame_thumbnail", _reached)
+    trace._TRACER_PROVIDER_SET_ONCE._done = False  # type: ignore[attr-defined]  # reason: test-only reset
+    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]  # reason: test-only reset
+    trace.set_tracer_provider(trace.NoOpTracerProvider())
+    _emit_frame_observability("top", _rgb_frame(), flip_180=True)
+
+
+def test_pump_flip_180_rotates_the_thumbnail_but_not_the_policy_frame(
+    memory_exporter: Any,
+) -> None:
     """``OPENRAL_DASHBOARD_FLIP_180`` is display-only, and it really does flip.
 
     Guards the failure recorded in the dashboard-flip incident: flipping the
@@ -627,6 +590,7 @@ def test_pump_flip_180_rotates_the_thumbnail_but_not_the_policy_frame() -> None:
 
     _emit_frame_observability("top", frame, flip_180=True)
     assert frame.data == original, "flip leaked into the frame the policy reads"
+    assert _exported_thumbnail(memory_exporter) == flipped, "dashboard thumbnail was not flipped"
 
 
 def test_pump_feeds_aggregator_even_when_the_thumbnail_path_fails(

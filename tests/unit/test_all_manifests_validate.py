@@ -109,6 +109,7 @@ _DEPLOY_STEMS: list[str] = [
     "isaac_panda_mobile_urdf",
     "libero_object",
     "libero_pnp",
+    "openarm_bench",
     "openarm_tabletop",
     "openarm_real_world_voxels",
     "openarm_zed_octomap",
@@ -328,7 +329,7 @@ def test_deploy_scene_validates(stem: str) -> None:
     assert scene.scene.id
 
 
-# ─── Scene sensors stay off robot geometry ────────────────────────────────────
+# ─── Scene sensors never name a robot sensor ──────────────────────────────────
 
 _TIERED_STEMS: list[tuple[str, str]] = [
     *(("benchmark", s) for s in _BENCHMARK_STEMS),
@@ -340,12 +341,13 @@ _TIERED_STEMS: list[tuple[str, str]] = [
 @pytest.mark.parametrize(
     ("tier", "stem"), _TIERED_STEMS, ids=[f"{t}/{s}" for t, s in _TIERED_STEMS]
 )
-def test_scene_sensors_do_not_restate_robot_geometry(tier: str, stem: str) -> None:
-    """No committed scene restates a robot-manifest sensor's mount, intrinsics or frame.
+def test_scene_sensors_never_name_a_robot_sensor(tier: str, stem: str) -> None:
+    """No committed scene has a sensor entry named like a robot-manifest sensor.
 
-    A robot sensor's geometry lives in ``robots/<id>/robot.yaml`` so every scene on that
-    robot publishes the same pose; ``check_scene_sensor_overrides`` is the rule every
-    deploy path, ``deploy validate`` and ``openral check`` enforce.
+    A robot sensor — geometry, frame, intrinsics and real-hardware ``deploy_binding`` —
+    lives in ``robots/<id>/robot.yaml`` so every scene on that robot sees the same camera;
+    a scene only adds workcell cameras under new names. ``check_scene_sensor_overrides``
+    is the rule every deploy path, ``deploy validate`` and ``openral check`` enforce.
     """
     from openral_core.schemas import (
         BenchmarkScene,

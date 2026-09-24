@@ -114,9 +114,10 @@ stops. It also moves real obstacles away from where they are, which causes misse
 The pose lives in exactly one place: `static_transform_xyz_rpy` of the `head_zed` entry in
 `robots/openarm/robot.yaml`. The camera is bolted to the rig, so its pose is robot geometry:
 every OpenArm scene publishes it as the only parent of `zed_camera_link`, and no scene may
-restate it. `openral check`, `openral deploy validate`, `deploy run` and `deploy sim` all
-refuse a scene sensor entry that restates a robot sensor's mount, intrinsics or frame
-(`openral_core.check_scene_sensor_overrides`). `tools/zed_extrinsic_check.py` measures
+touch it. `openral check`, `openral deploy validate`, `deploy run` and `deploy sim` all
+refuse a scene sensor entry that reuses a robot sensor's name
+(`openral_core.check_scene_sensor_overrides`); a robot camera's real-hardware binding lives
+in the manifest too. `tools/zed_extrinsic_check.py` measures
 exactly the manifest value, and `tools/openarm_world_voxel_run.sh` refuses to launch until a
 passing report for exactly that value is committed at
 `robots/openarm/calibration/head_zed_extrinsic.json`.
@@ -261,9 +262,9 @@ interactive terminal. It asks you to type `ESTOP IN HAND`, then runs
 `openral deploy run --config scenes/deploy/openarm_real_world_voxels.yaml`, which brings up
 the vendor controllers (**arms snap to zero**), the ZED driver, octomap, the bridge and the
 kernel with `world_voxel_enabled: true`, `world_voxel_margin_m: 0.02` and
-`world_voxel_deadline_ms: 1000`. `openral deploy validate` warns that `head_zed` has no
-`deploy_binding`. That is expected: the cloud reaches octomap by topic, not through the
-sensor leg.
+`world_voxel_deadline_ms: 1000`. The cloud reaches octomap by topic
+(`runtime.octomap_cloud_topic`), not through the sensor leg; `head_zed`'s manifest
+`deploy_binding` only feeds its depth image to the world state.
 
 In a second terminal, record the evidence for every test below:
 

@@ -495,7 +495,7 @@
         },
         "SensorDeployBinding": {
           "additionalProperties": false,
-          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine), so committed reference manifests\nleave it unset and ``openral detect`` fills it per host.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: robot-mounted cameras (wrist / head) declare it in\n``robots/<id>/robot.yaml``; workcell-mounted cameras (overhead / front)\ndeclare it on a ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
           "properties": {
             "backend": {
               "$ref": "#/$defs/SensorReaderBackend",
@@ -1053,7 +1053,7 @@
         },
         "SensorDeployBinding": {
           "additionalProperties": false,
-          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine), so committed reference manifests\nleave it unset and ``openral detect`` fills it per host.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: robot-mounted cameras (wrist / head) declare it in\n``robots/<id>/robot.yaml``; workcell-mounted cameras (overhead / front)\ndeclare it on a ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
           "properties": {
             "backend": {
               "$ref": "#/$defs/SensorReaderBackend",
@@ -1935,7 +1935,7 @@
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
     "SafetyEnvelope": {
-      "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by the per-control-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.",
+      "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by the per-control-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.\n    starting_pose_max_joint_speed_rad_s: Joint-space speed of the\n        skill runner's ramp from the live pose to a skill's\n        ``starting_pose``. Declared per robot, never derived: a rated\n        ``velocity_limit`` is a ceiling, not an approach speed (issue\n        #303 \u2014 deriving it put the OpenArm at 2 rad/s). ``None`` =\n        undeclared; a real robot must declare it.\n    starting_pose_tolerance_rad: Joint-space distance within which the\n        runner treats the starting pose as reached, both for the ramp\n        and for verifying arrival before the policy starts. ``None`` =\n        undeclared; a real robot must declare it.",
       "properties": {
         "workspace_box_min_xyz": {
           "anyOf": [
@@ -2117,6 +2117,32 @@
           "default": 0.0,
           "title": "Self Collision Margin M",
           "type": "number"
+        },
+        "starting_pose_max_joint_speed_rad_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Starting Pose Max Joint Speed Rad S"
+        },
+        "starting_pose_tolerance_rad": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Starting Pose Tolerance Rad"
         }
       },
       "title": "SafetyEnvelope",
@@ -2190,11 +2216,19 @@
           "type": "string"
         }
       },
-      "description": "VLA action configuration for this robot.\n\nAttributes:\n    dim: Dimensionality of the action vector.\n    representation: How the action vector is encoded.\n    control_freq_hz: Control frequency the actions are executed at.\n    chunk_size: Number of action steps per inference call (chunk size H).",
+      "description": "VLA action configuration for this robot.\n\nAttributes:\n    dim: Dimensionality of the action vector. ``None`` = not declared: the\n        dataset recorder then takes the width from the action itself. A\n        robot whose policy contract is not committed declares only the\n        control rate rather than a guessed width (issue #303).\n    representation: How the action vector is encoded.\n    control_freq_hz: Control frequency the actions are executed at \u2014 the\n        runner's tick, the HAL node's proprio publish rate, the real\n        ros2_control HAL's trajectory deadline, and the recorder's fps.\n    chunk_size: Number of action steps per inference call (chunk size H).",
       "properties": {
         "dim": {
-          "title": "Dim",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dim"
         },
         "representation": {
           "anyOf": [
@@ -2232,9 +2266,6 @@
           "title": "Chunk Size"
         }
       },
-      "required": [
-        "dim"
-      ],
       "title": "ActionSpec",
       "type": "object",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
@@ -2255,11 +2286,19 @@
           "type": "string"
         },
         "ActionSpec": {
-          "description": "VLA action configuration for this robot.\n\nAttributes:\n    dim: Dimensionality of the action vector.\n    representation: How the action vector is encoded.\n    control_freq_hz: Control frequency the actions are executed at.\n    chunk_size: Number of action steps per inference call (chunk size H).",
+          "description": "VLA action configuration for this robot.\n\nAttributes:\n    dim: Dimensionality of the action vector. ``None`` = not declared: the\n        dataset recorder then takes the width from the action itself. A\n        robot whose policy contract is not committed declares only the\n        control rate rather than a guessed width (issue #303).\n    representation: How the action vector is encoded.\n    control_freq_hz: Control frequency the actions are executed at \u2014 the\n        runner's tick, the HAL node's proprio publish rate, the real\n        ros2_control HAL's trajectory deadline, and the recorder's fps.\n    chunk_size: Number of action steps per inference call (chunk size H).",
           "properties": {
             "dim": {
-              "title": "Dim",
-              "type": "integer"
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Dim"
             },
             "representation": {
               "anyOf": [
@@ -2297,9 +2336,6 @@
               "title": "Chunk Size"
             }
           },
-          "required": [
-            "dim"
-          ],
           "title": "ActionSpec",
           "type": "object"
         },
@@ -3423,7 +3459,7 @@
           "type": "object"
         },
         "SafetyEnvelope": {
-          "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by the per-control-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.",
+          "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by the per-control-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.\n    starting_pose_max_joint_speed_rad_s: Joint-space speed of the\n        skill runner's ramp from the live pose to a skill's\n        ``starting_pose``. Declared per robot, never derived: a rated\n        ``velocity_limit`` is a ceiling, not an approach speed (issue\n        #303 \u2014 deriving it put the OpenArm at 2 rad/s). ``None`` =\n        undeclared; a real robot must declare it.\n    starting_pose_tolerance_rad: Joint-space distance within which the\n        runner treats the starting pose as reached, both for the ramp\n        and for verifying arrival before the policy starts. ``None`` =\n        undeclared; a real robot must declare it.",
           "properties": {
             "workspace_box_min_xyz": {
               "anyOf": [
@@ -3605,6 +3641,32 @@
               "default": 0.0,
               "title": "Self Collision Margin M",
               "type": "number"
+            },
+            "starting_pose_max_joint_speed_rad_s": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Starting Pose Max Joint Speed Rad S"
+            },
+            "starting_pose_tolerance_rad": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Starting Pose Tolerance Rad"
             }
           },
           "title": "SafetyEnvelope",
@@ -3699,7 +3761,7 @@
         },
         "SensorDeployBinding": {
           "additionalProperties": false,
-          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine), so committed reference manifests\nleave it unset and ``openral detect`` fills it per host.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: robot-mounted cameras (wrist / head) declare it in\n``robots/<id>/robot.yaml``; workcell-mounted cameras (overhead / front)\ndeclare it on a ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
           "properties": {
             "backend": {
               "$ref": "#/$defs/SensorReaderBackend",
@@ -6069,7 +6131,7 @@
           "type": "object"
         },
         "SafetyEnvelope": {
-          "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by the per-control-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.",
+          "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by the per-control-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.\n    starting_pose_max_joint_speed_rad_s: Joint-space speed of the\n        skill runner's ramp from the live pose to a skill's\n        ``starting_pose``. Declared per robot, never derived: a rated\n        ``velocity_limit`` is a ceiling, not an approach speed (issue\n        #303 \u2014 deriving it put the OpenArm at 2 rad/s). ``None`` =\n        undeclared; a real robot must declare it.\n    starting_pose_tolerance_rad: Joint-space distance within which the\n        runner treats the starting pose as reached, both for the ramp\n        and for verifying arrival before the policy starts. ``None`` =\n        undeclared; a real robot must declare it.",
           "properties": {
             "workspace_box_min_xyz": {
               "anyOf": [
@@ -6251,6 +6313,32 @@
               "default": 0.0,
               "title": "Self Collision Margin M",
               "type": "number"
+            },
+            "starting_pose_max_joint_speed_rad_s": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Starting Pose Max Joint Speed Rad S"
+            },
+            "starting_pose_tolerance_rad": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Starting Pose Tolerance Rad"
             }
           },
           "title": "SafetyEnvelope",
@@ -11474,6 +11562,18 @@
               "default": null,
               "title": "Clock Origin"
             },
+            "joint_states_topic": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Joint States Topic"
+            },
             "enable_object_detector": {
               "anyOf": [
                 {
@@ -11632,6 +11732,30 @@
               ],
               "default": null,
               "title": "Approach Skill Id"
+            },
+            "preload_rskill_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Preload Rskill Id"
+            },
+            "preload_prompt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Preload Prompt"
             },
             "slam_visual_impl": {
               "anyOf": [
@@ -11984,7 +12108,7 @@
           "type": "object"
         },
         "SafetyEnvelope": {
-          "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by the per-control-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.",
+          "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by the per-control-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.\n    starting_pose_max_joint_speed_rad_s: Joint-space speed of the\n        skill runner's ramp from the live pose to a skill's\n        ``starting_pose``. Declared per robot, never derived: a rated\n        ``velocity_limit`` is a ceiling, not an approach speed (issue\n        #303 \u2014 deriving it put the OpenArm at 2 rad/s). ``None`` =\n        undeclared; a real robot must declare it.\n    starting_pose_tolerance_rad: Joint-space distance within which the\n        runner treats the starting pose as reached, both for the ramp\n        and for verifying arrival before the policy starts. ``None`` =\n        undeclared; a real robot must declare it.",
           "properties": {
             "workspace_box_min_xyz": {
               "anyOf": [
@@ -12166,6 +12290,32 @@
               "default": 0.0,
               "title": "Self Collision Margin M",
               "type": "number"
+            },
+            "starting_pose_max_joint_speed_rad_s": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Starting Pose Max Joint Speed Rad S"
+            },
+            "starting_pose_tolerance_rad": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Starting Pose Tolerance Rad"
             }
           },
           "title": "SafetyEnvelope",
@@ -12248,7 +12398,7 @@
         },
         "SensorDeployBinding": {
           "additionalProperties": false,
-          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine), so committed reference manifests\nleave it unset and ``openral detect`` fills it per host.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: robot-mounted cameras (wrist / head) declare it in\n``robots/<id>/robot.yaml``; workcell-mounted cameras (overhead / front)\ndeclare it on a ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
           "properties": {
             "backend": {
               "$ref": "#/$defs/SensorReaderBackend",
@@ -13218,6 +13368,18 @@
               "default": null,
               "title": "Clock Origin"
             },
+            "joint_states_topic": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Joint States Topic"
+            },
             "enable_object_detector": {
               "anyOf": [
                 {
@@ -13376,6 +13538,30 @@
               ],
               "default": null,
               "title": "Approach Skill Id"
+            },
+            "preload_rskill_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Preload Rskill Id"
+            },
+            "preload_prompt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Preload Prompt"
             },
             "slam_visual_impl": {
               "anyOf": [
@@ -13728,7 +13914,7 @@
           "type": "object"
         },
         "SafetyEnvelope": {
-          "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by the per-control-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.",
+          "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by the per-control-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.\n    starting_pose_max_joint_speed_rad_s: Joint-space speed of the\n        skill runner's ramp from the live pose to a skill's\n        ``starting_pose``. Declared per robot, never derived: a rated\n        ``velocity_limit`` is a ceiling, not an approach speed (issue\n        #303 \u2014 deriving it put the OpenArm at 2 rad/s). ``None`` =\n        undeclared; a real robot must declare it.\n    starting_pose_tolerance_rad: Joint-space distance within which the\n        runner treats the starting pose as reached, both for the ramp\n        and for verifying arrival before the policy starts. ``None`` =\n        undeclared; a real robot must declare it.",
           "properties": {
             "workspace_box_min_xyz": {
               "anyOf": [
@@ -13910,6 +14096,32 @@
               "default": 0.0,
               "title": "Self Collision Margin M",
               "type": "number"
+            },
+            "starting_pose_max_joint_speed_rad_s": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Starting Pose Max Joint Speed Rad S"
+            },
+            "starting_pose_tolerance_rad": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Starting Pose Tolerance Rad"
             }
           },
           "title": "SafetyEnvelope",
@@ -13992,7 +14204,7 @@
         },
         "SensorDeployBinding": {
           "additionalProperties": false,
-          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine), so committed reference manifests\nleave it unset and ``openral detect`` fills it per host.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: robot-mounted cameras (wrist / head) declare it in\n``robots/<id>/robot.yaml``; workcell-mounted cameras (overhead / front)\ndeclare it on a ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
           "properties": {
             "backend": {
               "$ref": "#/$defs/SensorReaderBackend",
@@ -15101,6 +15313,18 @@
               "default": null,
               "title": "Clock Origin"
             },
+            "joint_states_topic": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Joint States Topic"
+            },
             "enable_object_detector": {
               "anyOf": [
                 {
@@ -15259,6 +15483,30 @@
               ],
               "default": null,
               "title": "Approach Skill Id"
+            },
+            "preload_rskill_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Preload Rskill Id"
+            },
+            "preload_prompt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Preload Prompt"
             },
             "slam_visual_impl": {
               "anyOf": [
@@ -15611,7 +15859,7 @@
           "type": "object"
         },
         "SafetyEnvelope": {
-          "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by the per-control-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.",
+          "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by the per-control-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.\n    starting_pose_max_joint_speed_rad_s: Joint-space speed of the\n        skill runner's ramp from the live pose to a skill's\n        ``starting_pose``. Declared per robot, never derived: a rated\n        ``velocity_limit`` is a ceiling, not an approach speed (issue\n        #303 \u2014 deriving it put the OpenArm at 2 rad/s). ``None`` =\n        undeclared; a real robot must declare it.\n    starting_pose_tolerance_rad: Joint-space distance within which the\n        runner treats the starting pose as reached, both for the ramp\n        and for verifying arrival before the policy starts. ``None`` =\n        undeclared; a real robot must declare it.",
           "properties": {
             "workspace_box_min_xyz": {
               "anyOf": [
@@ -15793,6 +16041,32 @@
               "default": 0.0,
               "title": "Self Collision Margin M",
               "type": "number"
+            },
+            "starting_pose_max_joint_speed_rad_s": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Starting Pose Max Joint Speed Rad S"
+            },
+            "starting_pose_tolerance_rad": {
+              "anyOf": [
+                {
+                  "exclusiveMinimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Starting Pose Tolerance Rad"
             }
           },
           "title": "SafetyEnvelope",
@@ -15875,7 +16149,7 @@
         },
         "SensorDeployBinding": {
           "additionalProperties": false,
-          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine), so committed reference manifests\nleave it unset and ``openral detect`` fills it per host.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: robot-mounted cameras (wrist / head) declare it in\n``robots/<id>/robot.yaml``; workcell-mounted cameras (overhead / front)\ndeclare it on a ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
           "properties": {
             "backend": {
               "$ref": "#/$defs/SensorReaderBackend",
@@ -19114,7 +19388,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine), so committed reference manifests\nleave it unset and ``openral detect`` fills it per host.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: robot-mounted cameras (wrist / head) declare it in\n``robots/<id>/robot.yaml``; workcell-mounted cameras (overhead / front)\ndeclare it on a ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+      "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
       "properties": {
         "backend": {
           "$ref": "#/$defs/SensorReaderBackend",

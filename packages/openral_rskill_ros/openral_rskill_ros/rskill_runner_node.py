@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from openral_core import required_vla_camera_slots, sensor_name_to_slot
+from openral_core.exceptions import ROSConfigError
 
 if TYPE_CHECKING:
     from openral_core.schemas import Action, ActionSlot, RobotDescription, RSkillManifest
@@ -246,24 +247,52 @@ if _ROS2_AVAILABLE:
         ) -> None:
             """Store references; opens no ROS resources until ``on_configure``."""
             super().__init__(node_name)
-            self.declare_parameter("rate_hz", 30.0)
+            # 0 = the manifest's `action_spec.control_freq_hz` (issue #303: the
+            # HAL derives every trajectory deadline from that field, so the
+            # runner must tick at the same value), else 30 Hz.
+            self.declare_parameter("rate_hz", 0.0)
             self.declare_parameter("action_applied_timeout_s", 5.0)
-            self.declare_parameter("joint_state_staleness_limit_s", 0.5)
+            # No default: the launch declares it with its rationale, and configure
+            # refuses an unset value rather than guessing a staleness window.
+            self.declare_parameter("joint_state_staleness_limit_s", 0.0)
             # Conservative speed for the kernel-checked move from the live pose to an
             # rSkill's starting_pose. The gripper channel is normalised [0, 1], so the same
             # bound treats one full jaw stroke like one radian: conservative and tunable.
-            self.declare_parameter("starting_pose_max_delta_per_s", 0.5)
-            self.declare_parameter("starting_pose_tolerance", 0.05)
+            # 0 = the manifest's safety.starting_pose_max_joint_speed_rad_s /
+            # starting_pose_tolerance_rad, declared per robot. Both used to be
+            # bare constants (0.5 rad/s, 0.05 rad) that came from nowhere.
+            self.declare_parameter("starting_pose_max_delta_per_s", 0.0)
+            self.declare_parameter("starting_pose_tolerance", 0.0)
             self.declare_parameter("estop_topic", "/openral/estop")
             # Deprecated launch input retained until the CLI stops forwarding it. Starting
             # poses now always move through candidate_action; this service is never called.
             self.declare_parameter("reset_to_pose_service", "")
+            # ``sensor_msgs/JointState`` topic ``ROSPublishingHAL`` caches for its
+            # ``get_joint_state``. ``""`` = ``/joint_states``. On a ros2_control arm
+            # that is the broadcaster's full-rate stream (750 Hz on the OpenArm);
+            # every message woke this node's Python executor and held half of the
+            # process's GIL on an AGX Orin — the in-process inference thread got
+            # <2 %. Set from ``DeployRuntime.joint_states_topic`` by ``runtime_node``
+            # to the HAL's 30 Hz republish, the same topic world_state ingests.
+            self.declare_parameter("joint_states_topic", "")
             # MoveIt approach to the manifest ``starting_pose``. When
             # set, the runner dispatches this rSkill (the rskill-moveit-multi-joints-none
             # MoveGroup wrapper) retargeted at the next skill's starting_pose,
             # preferred over the checked joint ramp. ``openral deploy sim`` /
             # ``deploy run`` may set it to ``rskills/rskill-moveit-joints``.
             self.declare_parameter("approach_skill_id", "")
+            # Preload: resolve + load one rSkill right after on_activate, in a
+            # worker thread, so the first goal finds it GPU-resident. The
+            # deadman watchdog opens its first-chunk window the moment a goal
+            # is ACCEPTED, and a 3.6 B π0.5 takes ~350 s to load on a Jetson
+            # AGX Orin (measured 2026-09-22) against a 120 s window — so a cold
+            # load inside a goal is E-stopped every time, correctly. Loading
+            # before any goal exists is the only path that keeps the watchdog
+            # as strict as it is. The prompt must be the exact string later
+            # goals will send: the resident key is (id, revision, prompt).
+            self.declare_parameter("preload_rskill_id", "")
+            self.declare_parameter("preload_rskill_revision", "")
+            self.declare_parameter("preload_prompt", "")
             self.declare_parameter("approach_skill_revision", "main")
             # ADR-0097 place-phase declaration for DIRECT dispatch — the
             # deploy scene's own `place_declaration`, serialised, injected by
@@ -332,6 +361,13 @@ if _ROS2_AVAILABLE:
             # flight) — switch to reject-when-busy in _goal_cb if external
             # clients ever stack goals.
             self._execute_serial = threading.Lock()
+            # Set while the preload worker holds ``_execute_serial``; goals are
+            # REJECTED (not accepted-then-queued) while it is set, because an
+            # accepted goal arms the watchdog's first-chunk window even though
+            # it could only wait on the lock.
+            self._preload_in_flight = threading.Event()
+            self._preload_thread: threading.Thread | None = None
+            self._lifecycle_active = False
 
         # ── Lifecycle ────────────────────────────────────────────────────────
 
@@ -389,6 +425,10 @@ if _ROS2_AVAILABLE:
             self._hal = ROSPublishingHAL(
                 node=self,
                 description=self._description,
+                joint_state_topic=(
+                    self.get_parameter("joint_states_topic").get_parameter_value().string_value
+                    or "/joint_states"
+                ),
                 skill_id_getter=lambda: self._active_skill_id,
                 skill_revision_getter=lambda: self._active_skill_revision,
                 tick_index_getter=lambda: self._current_tick_index,
@@ -402,8 +442,8 @@ if _ROS2_AVAILABLE:
                 action_applied_timeout_s=float(
                     self.get_parameter("action_applied_timeout_s").value
                 ),
-                joint_state_staleness_limit_s=float(
-                    self.get_parameter("joint_state_staleness_limit_s").value
+                joint_state_staleness_limit_s=_require_positive_param(
+                    self, "joint_state_staleness_limit_s"
                 ),
             )
             try:
@@ -610,15 +650,115 @@ if _ROS2_AVAILABLE:
 
         @log_lifecycle_errors
         def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
-            """Start the diagnostics heartbeat."""
+            """Start the diagnostics heartbeat and, if configured, the skill preload."""
             del state
+            self._lifecycle_active = True
             if self._heartbeat is not None:
                 self._heartbeat.start()
+            preload_id = str(self.get_parameter("preload_rskill_id").value or "")
+            if preload_id:
+                # Off the lifecycle thread: the orchestrator bounds each
+                # transition, and a transition that takes minutes reads as a
+                # hung node. The worker takes ``_execute_serial`` itself.
+                self._preload_in_flight.set()
+                self._preload_thread = threading.Thread(
+                    target=self._preload_resident_skill,
+                    kwargs={
+                        "rskill_id": preload_id,
+                        "revision": str(self.get_parameter("preload_rskill_revision").value or ""),
+                        "prompt": str(self.get_parameter("preload_prompt").value or ""),
+                    },
+                    name="rskill_preload",
+                    daemon=True,
+                )
+                self._preload_thread.start()
             return TransitionCallbackReturn.SUCCESS
+
+        def _preload_resident_skill(self, *, rskill_id: str, revision: str, prompt: str) -> None:
+            """Worker body: make ``rskill_id`` the GPU-resident skill before any goal.
+
+            Goes through ``_acquire_skill`` so it is the same resolve, the same
+            gates and the same cache key a goal would use. A failure is logged
+            with its typed kind and the node stays up: the next goal simply
+            pays the cold load itself (and meets the watchdog), which is the
+            pre-preload behaviour, not a new failure mode.
+            """
+            import time as _time
+
+            from openral_core.exceptions import ROSError, ROSSafetyViolation
+
+            t0 = _time.monotonic()
+            self.get_logger().info(
+                f"rskill_runner.preload_start: {rskill_id!r} revision={revision!r} "
+                f"prompt={prompt!r}; goals are rejected until it is resident"
+            )
+            try:
+                with self._execute_serial:
+                    self._acquire_skill(
+                        rskill_id=rskill_id,
+                        revision=revision,
+                        prompt=prompt,
+                        prompt_metadata_json="",
+                        goal_params_json="",
+                    )
+                    if not self._lifecycle_active:
+                        # Deactivated while loading: on_cleanup's eviction ran
+                        # before the skill existed, so evict it here instead of
+                        # leaving 9 GB resident on an inactive node.
+                        self._evict_resident_skill()
+                        return
+                self.get_logger().info(
+                    f"rskill_runner.preload_done: {rskill_id!r} resident after "
+                    f"{_time.monotonic() - t0:.1f} s"
+                )
+            except ROSSafetyViolation as exc:
+                # Never silenced (CLAUDE.md §5). A bare re-raise here would only
+                # end this worker thread with a traceback on stderr while the
+                # node kept accepting goals; hand it to the executor thread so
+                # it escapes spin() exactly as it does from the goal path.
+                self.get_logger().error(
+                    f"rskill_runner.preload_safety_violation: kind={type(exc).__name__} "
+                    f"rskill_id={rskill_id!r} reason={exc!s}"
+                )
+                self._rethrow_on_executor(exc)
+            except ROSError as exc:
+                self.get_logger().error(
+                    f"rskill_runner.preload_failed: kind={type(exc).__name__} "
+                    f"rskill_id={rskill_id!r} reason={exc!s}"
+                )
+            except Exception as exc:  # reason: a preload must never take the node down
+                import traceback as _traceback
+
+                # Untyped means it escaped the OpenRAL exception surface, so
+                # the reason alone rarely says where; carry the frames.
+                self.get_logger().error(
+                    f"rskill_runner.preload_failed: kind=unexpected "
+                    f"({type(exc).__name__}) rskill_id={rskill_id!r} reason={exc!s}\n"
+                    f"{_traceback.format_exc()}"
+                )
+            finally:
+                self._preload_in_flight.clear()
+
+        def _rethrow_on_executor(self, exc: BaseException) -> None:
+            """Re-raise ``exc`` from the executor thread on its next spin.
+
+            The safety-supervisor boundary is the executor (a violation raised
+            from a callback escapes ``spin()`` and takes the node down, which
+            the deadman watchdog reads as a stopped runner). A worker thread
+            has no such boundary, so it schedules a one-shot timer that raises
+            there; ``create_timer`` is safe to call off the executor thread.
+            """
+
+            def _raise() -> None:
+                timer.cancel()
+                raise exc
+
+            timer = self.create_timer(0.001, _raise)
 
         def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
             """Stop the heartbeat. Cancels any in-flight goal."""
             del state
+            self._lifecycle_active = False
             with self._goal_lock:
                 self._cancel_requested = True
             if self._heartbeat is not None:
@@ -686,6 +826,14 @@ if _ROS2_AVAILABLE:
 
             req_key = (rskill_id, revision, prompt)
             if self._resident_skill is not None and self._resident_key != req_key:
+                # Loud on purpose: a preloaded skill is only reused when
+                # rskill_id, revision AND prompt match exactly, and the cost
+                # of a mismatch is the full cold load — inside the goal's
+                # watchdog window this time.
+                self.get_logger().warning(
+                    f"rskill_runner.resident_key_mismatch: resident={self._resident_key!r} "
+                    f"requested={req_key!r} — evicting and reloading"
+                )
                 self._evict_resident_skill()
             if self._resident_skill is not None and self._resident_key == req_key:
                 resident = cast("rSkillBase", self._resident_skill)
@@ -762,6 +910,17 @@ if _ROS2_AVAILABLE:
             Result message instead of refusing to even start the goal.
             """
             if self._estop_latched:
+                return GoalResponse.REJECT
+            if self._preload_in_flight.is_set():
+                # Not accept-and-wait: acceptance is what arms the deadman
+                # watchdog's first-chunk window, and a goal parked on
+                # ``_execute_serial`` behind a multi-minute load would be
+                # E-stopped for producing nothing. ROS 2 rejections carry no
+                # reason, so the log line is the operator's only explanation.
+                self.get_logger().warning(
+                    "rskill_runner.goal_rejected: preload in flight — re-send once "
+                    "rskill_runner.preload_done is logged"
+                )
                 return GoalResponse.REJECT
             return GoalResponse.ACCEPT
 
@@ -1054,7 +1213,22 @@ if _ROS2_AVAILABLE:
             # embodiment tags. Skip when the resolver returned a Skill
             # with no declared tags (test harness path).
             assert self._description is not None  # invariant from on_configure
-            tags = list(getattr(skill, "info", None).embodiment_tags or [])
+            # `.info` is the rSkillBase contract, so its absence means the
+            # resolver returned something that is not a runtime skill at all.
+            # Dereferencing the `getattr` default here raised a bare
+            # AttributeError, which escapes the ROSError surface and reaches
+            # the operator as an ABORTED goal with an EMPTY failure_reason and
+            # failure_kind 0 — no typed cause for the reasoner's replanning
+            # ladder either (CLAUDE.md §5). Name the contract violation instead.
+            info = getattr(skill, "info", None)
+            if info is None:
+                raise ROSConfigError(
+                    f"resolver returned {type(skill).__name__} for "
+                    f"rskill_id={rskill_id!r}, which has no `.info` and is "
+                    "therefore not an rSkillBase; a resolver must return a "
+                    "configured, activated runtime skill"
+                )
+            tags = list(info.embodiment_tags or [])
             if tags:
                 allowed = set(self._description.capabilities.embodiment_tags or [])
                 if allowed and not any(t in allowed for t in tags):
@@ -1170,7 +1344,7 @@ if _ROS2_AVAILABLE:
             assert self._aggregator is not None  # invariant set in on_configure
             assert self._hal is not None
 
-            rate_hz: float = self.get_parameter("rate_hz").get_parameter_value().double_value
+            rate_hz = self._control_rate_hz()
             period_s = 1.0 / max(rate_hz, 1.0)
             start = time.monotonic()
             # Absolute deadlines absorb tick work into the configured period.
@@ -1434,7 +1608,7 @@ if _ROS2_AVAILABLE:
 
             assert self._description is not None
             names = [joint.name for joint in self._description.joints]
-            tolerance = float(self.get_parameter("starting_pose_tolerance").value)
+            _, tolerance = self._starting_pose_ramp()
             deadline = time.monotonic() + float(
                 self.get_parameter("action_applied_timeout_s").value
             )
@@ -1651,14 +1825,8 @@ if _ROS2_AVAILABLE:
             current = self._joint_positions_in_manifest_order(self._hal.read_state(), names)
             deltas = [end - start for start, end in zip(current, target, strict=True)]
             max_delta = max((abs(delta) for delta in deltas), default=0.0)
-            tolerance = float(self.get_parameter("starting_pose_tolerance").value)
-            max_delta_per_s = float(self.get_parameter("starting_pose_max_delta_per_s").value)
-            rate_hz = float(self.get_parameter("rate_hz").value)
-            if tolerance <= 0.0 or max_delta_per_s <= 0.0 or rate_hz <= 0.0:
-                raise ROSConfigError(
-                    "starting_pose_tolerance, starting_pose_max_delta_per_s, and rate_hz "
-                    "must be positive"
-                )
+            max_delta_per_s, tolerance = self._starting_pose_ramp()
+            rate_hz = self._control_rate_hz()
             if max_delta <= tolerance:
                 return None
 
@@ -1689,6 +1857,33 @@ if _ROS2_AVAILABLE:
                 )
                 next_deadline = _pace_tick(next_deadline, 1.0 / rate_hz)
             return None
+
+        def _starting_pose_ramp(self) -> tuple[float, float]:
+            """(max joint speed, arrival tolerance) for the starting-pose move."""
+            return resolve_starting_pose_ramp(
+                float(self.get_parameter("starting_pose_max_delta_per_s").value),
+                float(self.get_parameter("starting_pose_tolerance").value),
+                self._description,
+            )
+
+        def _control_rate_hz(self) -> float:
+            """The tick rate: the `rate_hz` param, else the manifest's control rate.
+
+            A manifest that declares no rate (sim-only robots today) ticks at
+            30 Hz with a warning naming the missing field; a real ros2_control
+            HAL built from such a manifest has already refused to construct.
+            """
+            rate = resolve_control_rate_hz(
+                float(self.get_parameter("rate_hz").value), self._description
+            )
+            if rate is None:
+                name = self._description.name if self._description is not None else "?"
+                self.get_logger().warning(
+                    f"robot {name!r} declares no action_spec.control_freq_hz and no "
+                    "rate_hz param was given; ticking at 30 Hz. Declare the field."
+                )
+                return 30.0
+            return rate
 
         @staticmethod
         def _joint_positions_in_manifest_order(state: Any, names: list[str]) -> list[float]:
@@ -2015,8 +2210,10 @@ def _default_skill_resolver(
     description: RobotDescription | None,
     commercial_deployment: bool,
     ros_node: Any = None,
+    scene_cameras: Sequence[str] = (),
+    tf_lookup: Any = None,
 ) -> rSkillBase:
-    """Production resolver: pull from HF Hub via ``rSkill.from_pretrained``.
+    """Production resolver: HF Hub fetch, then bind the weights to a runtime skill.
 
     Kept as a module-level callable so tests can swap it via
     ``RskillRunnerNode(..., skill_resolver=local_resolver)`` without
@@ -2030,8 +2227,13 @@ def _default_skill_resolver(
 
     ``goal_params_json`` is accepted but unused — VLA
     skills consume the ``prompt`` as their structured input.
+
+    ``scene_cameras`` and ``tf_lookup`` are forwarded to the policy shim
+    exactly as ``make_local_skill_resolver`` forwards them for an in-tree
+    manifest; both default to the empty/None case so an older caller that
+    does not pass them keeps working.
     """
-    del prompt, prompt_metadata_json, goal_params_json, description, ros_node
+    del prompt_metadata_json, goal_params_json, ros_node
     from openral_rskill.loader import rSkill
 
     handle = rSkill.from_pretrained(
@@ -2039,15 +2241,23 @@ def _default_skill_resolver(
         revision=revision or None,
         commercial_use=commercial_deployment,
     )
-    # ``rSkill.from_pretrained`` returns a packaging-format handle, not
-    # the runtime ``rSkillBase``. Production use will route through the
-    # loader's instantiation helpers (the F1 design defers the
-    # exact runtime-binding to a follow-up that lands alongside the
-    # reasoner — F4 — when the loader-to-runtime seam is finalised).
-    # For now we expose the handle as the resolver's return value and
-    # let the production deployment configuration provide a richer
-    # wrapper.
-    return handle  # type: ignore[return-value]  # see comment above
+    # ``rSkill.from_pretrained`` returns a packaging-format handle — manifest
+    # plus snapshot directory — and NOT a runtime ``rSkillBase``. Returning it
+    # raw is what made every Hub-hosted VLA undispatchable: the runner's very
+    # next step reads ``skill.info``, which the handle does not have.
+    #
+    # Bind it the same way an in-tree manifest is bound. The snapshot is
+    # guaranteed to contain ``rskill.yaml`` because ``from_pretrained``
+    # fetches and validates that exact file before downloading any weights,
+    # so this is the manifest it already license-checked, not a second read
+    # of something that might differ.
+    return _build_runtime_skill_from_manifest(
+        yaml_path=handle.local_dir / "rskill.yaml",
+        prompt=prompt,
+        scene_cameras=tuple(str(c) for c in scene_cameras),
+        description=description,
+        tf_lookup=tf_lookup,
+    )
 
 
 def _ros_action_adapter_cls(builder: str | None) -> type:
@@ -2169,6 +2379,11 @@ def make_default_skill_resolver(
         if manifest is None:
             # No in-tree match → must be a VLA on HF Hub. Wrapped-ROS
             # skills have no HF-Hub fallback path (no weights to fetch).
+            # Resolve tf_lookup lazily, for the same reason the in-tree
+            # resolver does: captured at factory time it would still be None,
+            # and a wrapped-task-space layout would silently fall back to the
+            # raw joint-state slice.
+            hub_tf_lookup = tf_lookup_getter() if tf_lookup_getter is not None else tf_lookup
             return _default_skill_resolver(
                 rskill_id=rskill_id,
                 revision=revision,
@@ -2178,6 +2393,8 @@ def make_default_skill_resolver(
                 description=description,
                 commercial_deployment=commercial_deployment,
                 ros_node=ros_node_captured,
+                scene_cameras=scene_cameras,
+                tf_lookup=hub_tf_lookup,
             )
 
         if manifest.kind == "vla":
@@ -2330,6 +2547,89 @@ def make_local_skill_resolver(
     return _resolver
 
 
+def resolve_control_rate_hz(param_hz: float, description: RobotDescription | None) -> float | None:
+    """Pick the runner's tick rate: an explicit param, else the manifest's rate.
+
+    ``rate_hz > 0`` wins. Otherwise the robot's ``action_spec.control_freq_hz``
+    is the rate — the field the real ros2_control HAL derives every trajectory
+    deadline from (issue #303), so runner and HAL cannot disagree unless an
+    operator overrides the param on purpose. ``None`` when neither declares a
+    positive rate; the caller decides what that means (the node warns and
+    ticks at 30 Hz, which only a sim-only manifest can reach).
+
+    Example:
+        >>> from openral_core.schemas import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> resolve_control_rate_hz(0.0, desc)
+        30.0
+        >>> resolve_control_rate_hz(15.0, desc)
+        15.0
+        >>> resolve_control_rate_hz(0.0, None) is None
+        True
+    """
+    if param_hz > 0.0:
+        return float(param_hz)
+    return None if description is None else description.control_rate_hz
+
+
+def resolve_starting_pose_ramp(
+    param_max_delta_per_s: float,
+    param_tolerance_rad: float,
+    description: RobotDescription | None,
+) -> tuple[float, float]:
+    """Ramp speed and arrival tolerance for the move to a skill's starting pose.
+
+    An explicit positive param wins (the SO-100 twin tests set both). Otherwise
+    the manifest's ``safety.starting_pose_max_joint_speed_rad_s`` and
+    ``safety.starting_pose_tolerance_rad`` are used — declared per robot, never
+    derived: a rated ``velocity_limit`` is a ceiling, not an approach speed, and
+    deriving from it put the OpenArm at 2 rad/s where every attended run had
+    used 0.5 (issue #303). No constant lives here.
+
+    Raises:
+        ROSConfigError: If a value is neither passed nor declared in the manifest.
+
+    Example:
+        >>> from openral_core.schemas import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> resolve_starting_pose_ramp(0.0, 0.0, desc)
+        (0.5, 0.05)
+        >>> resolve_starting_pose_ramp(0.2, 0.01, desc)
+        (0.2, 0.01)
+    """
+    safety = None if description is None else description.safety
+    speed = float(param_max_delta_per_s)
+    if speed <= 0.0:
+        declared = None if safety is None else safety.starting_pose_max_joint_speed_rad_s
+        if declared is None:
+            raise ROSConfigError(
+                "starting_pose_max_delta_per_s is unset and the manifest declares no "
+                "safety.starting_pose_max_joint_speed_rad_s; declare it (rad/s) or pass the param."
+            )
+        speed = float(declared)
+    tolerance = float(param_tolerance_rad)
+    if tolerance <= 0.0:
+        declared = None if safety is None else safety.starting_pose_tolerance_rad
+        if declared is None:
+            raise ROSConfigError(
+                "starting_pose_tolerance is unset and the manifest declares no "
+                "safety.starting_pose_tolerance_rad; declare it (rad) or pass the param."
+            )
+        tolerance = float(declared)
+    return speed, tolerance
+
+
+def _require_positive_param(node: Any, name: str) -> float:  # reason: rclpy Node is untyped
+    """Read a float ROS param that the launch must set; refuse a missing or non-positive one."""
+    value = float(node.get_parameter(name).value)
+    if value <= 0.0:
+        raise ROSConfigError(
+            f"rskill_runner_node param {name!r} is {value}; it has no default on purpose — "
+            "the launch declares it with its rationale. Set it > 0."
+        )
+    return value
+
+
 def _pace_tick(prev_deadline_s: float, period_s: float) -> float:
     """Sleep to the next absolute tick deadline, re-anchoring after overruns.
 
@@ -2367,16 +2667,17 @@ def _decode_image_frames(
     """
     import numpy as np
     from openral_core.schemas import FrameEncoding
+    from openral_runner.dataset_recorder_bridge import decode_inline_frame
 
     images: dict[str, Any] = {}
     for name, frame in image_frames.items():
-        if frame.data is None:
+        # One decoder for the runner and the dataset recorder: dtype comes
+        # from the encoding, so a DEPTH16 frame sitting next to the RGB
+        # slots (the OpenArm bench's `head_zed`) decodes as uint16 instead
+        # of aborting the whole observation.
+        arr = decode_inline_frame(frame)
+        if arr is None:
             continue
-        arr = np.frombuffer(frame.data, dtype=np.uint8).reshape(
-            int(frame.height),
-            int(frame.width),
-            int(frame.channels),
-        )
         # Policies are fed RGB. OpenCV readers publish BGR8, so reverse the
         # channel axis (contiguous: torch rejects negative strides) rather than
         # feed a real deploy swapped colours.
@@ -2612,6 +2913,38 @@ def _pad_joint_payload(
     return padded
 
 
+def _clamp_joint_position_slice(
+    values: list[float], joint_names: list[str] | None, description: Any | None
+) -> list[float]:
+    """Pull a JOINT_POSITION slot's targets strictly inside the robot's joint limits.
+
+    The single-surface dispatch path has always done this for the whole
+    vector; slot dispatch (ADR-0102) clipped only to a slot's declared
+    ``input_bounds`` and proposed everything else raw. The OpenArm restock
+    π0.5 showed why that matters: on its first tick it put one joint
+    0.019 rad past its limit, the C++ kernel refused the chunk and
+    E-stopped — correct, but a 1-degree overshoot from a policy's delta
+    integration is not a fault worth stopping the cell for. Same epsilon
+    as the single-surface path: the kernel validates open intervals, so a
+    target exactly on the limit still trips it. The kernel remains the
+    authority — this only stops proposing what it will certainly refuse.
+    ``joint_names`` empty or no description → unchanged.
+    """
+    if not joint_names or description is None:
+        return values
+    limits = {j.name: j.position_limits for j in description.joints}
+    clamp_eps = 1e-3
+    out: list[float] = []
+    for name, value in zip(joint_names, values, strict=False):
+        lims = limits.get(name)
+        if lims is None:
+            out.append(value)
+            continue
+        lo_safe, hi_safe = float(lims[0]) + clamp_eps, float(lims[1]) - clamp_eps
+        out.append(min(max(value, lo_safe), hi_safe))
+    return out
+
+
 def _slot_joint_names(slot: Any) -> list[str] | None:
     """The slot's declared joint names, or ``None`` when it declares none.
 
@@ -2690,6 +3023,7 @@ def _dispatch_slots(  # noqa: PLR0912  # reason: one branch per ActionSlot contr
         sl = [float(v) for v in policy_action[lo : hi + 1].tolist()]
         mode = slot.control_mode
         if mode is ControlMode.JOINT_POSITION:
+            sl = _clamp_joint_position_slice(sl, slot.joint_names, description)
             payload = _pad_joint_payload(sl, slot.joint_names, joint_name_to_idx, n_dof_total)
             out.append(
                 Action(
@@ -2962,15 +3296,61 @@ def _make_policy_adapter_skill(
             cannot be introspected (the HF-based molmoact2 / openvla) are
             skipped silently by the helper.
             """
-            from openral_rskill._vla_core import warm_up_lerobot_policy
-
+            # Warm the EXACT path a tick runs — `adapter.step` with a
+            # synthetic observation shaped like the cell's cameras and state —
+            # not a bare policy forward. `warm_up_lerobot_policy` ran the
+            # policy's `select_action` on the main thread and the first real
+            # tick still cost 306-357 s on a Jetson AGX Orin under a live
+            # graph (2026-09-22): the chunk executor's background thread,
+            # its autocast context, the preprocessor on real-sized frames and
+            # the RTC/prefetch plumbing all pay their own first-call costs,
+            # and the deadman's 120 s first-chunk window cannot absorb them.
+            # A warm second dispatch in the same process took 426 ms, which
+            # is the number this has to move into the preload.
             try:
-                warmed = warm_up_lerobot_policy(self._adapter, prompt=self._prompt or "")
+                obs = self._warmup_observation()
+                self._adapter.step(obs, self._prompt or "")
+                if hasattr(self._adapter, "reset"):
+                    # Drop the synthetic chunk (and join any prefetch it
+                    # launched) so tick 1 starts from a clean buffer.
+                    self._adapter.reset()  # type: ignore[attr-defined]
             except Exception as exc:  # reason: an optimisation must never block activate
                 log.warning("rskill_runner.warmup_failed", skill=self.name, error=str(exc))
                 return
-            if warmed:
-                log.info("rskill_runner.warmed_up", skill=self.name)
+            log.info("rskill_runner.warmed_up", skill=self.name, path="adapter.step")
+
+        def _warmup_observation(self) -> dict[str, Any]:
+            """A zero observation with the cell's camera sizes and the policy's state width."""
+            import numpy as np
+
+            sizes: dict[str, tuple[int, int]] = {}
+            for sensor in getattr(description, "sensors", []) or []:
+                intr = getattr(sensor, "intrinsics", None)
+                if intr is not None and getattr(sensor, "modality", None) == "rgb":
+                    sizes[sensor.name] = (int(intr.height), int(intr.width))
+            required = required_vla_camera_slots(self.manifest, description)
+            images: dict[str, Any] = {}
+            for sensor_name, slot in sensor_to_slot.items():
+                if required and slot not in required:
+                    continue
+                h, w = sizes.get(sensor_name, (224, 224))
+                images[slot] = np.zeros((h, w, 3), dtype=np.uint8)
+            contract = getattr(self.manifest, "state_contract", None)
+            state_dim = int(getattr(contract, "dim", 0) or 0)
+            if not state_dim:
+                if description is None:
+                    from openral_core.exceptions import ROSConfigError
+
+                    raise ROSConfigError(
+                        "warm-up needs the policy's state width: declare "
+                        "state_contract.dim in rskill.yaml or run with a robot description"
+                    )
+                state_dim = len(description.joints)
+            return {
+                "task": self._prompt or "",
+                "state": np.zeros(state_dim, dtype=np.float32),
+                "images": images,
+            }
 
         def _activate_impl(self) -> None:
             """Reset the adapter's per-episode state (action queue, RNG)."""
@@ -3215,6 +3595,11 @@ def main(args: list[str] | None = None) -> int:
     ``WorldStateAggregator``. Production launches use
     ``openral_rskill_ros.compose.compose_so100_runtime`` to share the
     aggregator with the colocated ``world_state_node``.
+
+    ``joint_state_staleness_limit_s`` has no default (issue #303): pass it as a
+    ROS parameter (``--ros-args -p joint_state_staleness_limit_s:=0.5``) or
+    ``on_configure`` refuses, naming it. ``deploy_e2e.launch.py`` declares it
+    for production runs.
     """
     if not _ROS2_AVAILABLE:
         print("rclpy not found — cannot start rskill_runner_node without ROS 2.", file=sys.stderr)

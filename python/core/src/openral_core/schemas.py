@@ -525,10 +525,11 @@ class SensorSpec(BaseModel):
     model: str | None = None
     driver_pkg: str | None = None
     # Real-device binding for `openral deploy run` — the runtime counterpart to
-    # `sim_placement`. Host-specific, so committed reference manifests leave it
-    # unset (`openral detect` fills it per host). Robot-mounted sensors carry it
-    # in robot.yaml; workcell-mounted sensors carry it on a DeployScene.sensors
-    # entry. See `SensorDeployBinding`. Forward ref (defined with the reader
+    # `sim_placement`. Host-specific (`openral detect` fills it per host); a
+    # manifest that names one reference cell commits that cell's binding. A robot
+    # sensor carries it in robot.yaml only — a deploy scene never touches a robot
+    # sensor; a workcell camera carries it on its own DeployScene.sensors entry.
+    # See `SensorDeployBinding`. Forward ref (defined with the reader
     # schemas below) resolved by the `SensorSpec.model_rebuild()` after it.
     deploy_binding: SensorDeployBinding | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
@@ -660,76 +661,50 @@ def required_vla_camera_slots(
     return tuple(slot for slot in slots if slot in required) if required else slots
 
 
-#: Robot geometry a ``DeployScene.sensors`` entry may not restate for a manifest sensor.
-_SCENE_FORBIDDEN_SENSOR_GEOMETRY: tuple[str, ...] = (
-    "parent_frame",
-    "static_transform_xyz_rpy",
-    "intrinsics",
-    "sim_placement",
-)
-
-
 def check_scene_sensor_overrides(
     manifest_sensors: Iterable[SensorSpec], scene_sensors: Iterable[SensorSpec]
 ) -> None:
-    """Refuse a scene sensor entry that restates a robot-manifest sensor's geometry.
+    """Refuse a scene sensor entry that names a sensor the robot manifest defines.
 
-    A sensor the robot manifest declares is bolted to the robot: its mount
-    (``parent_frame`` / ``static_transform_xyz_rpy`` / ``sim_placement``), its
-    ``intrinsics`` and its ``frame_id`` are robot geometry and live only in
-    ``robot.yaml``, so every scene on that robot sees the same pose. A same-named
-    ``DeployScene.sensors`` entry binds that sensor to this host (``deploy_binding``,
-    rate, encoding) and may restate ``frame_id`` only verbatim (it is a required
-    field). A scene-only name is a workcell camera and carries its own geometry.
+    A sensor the robot manifest declares belongs to the robot: its geometry, its
+    intrinsics, its frame and its real-hardware ``deploy_binding`` all live in
+    ``robot.yaml``, so every scene on that robot sees the same camera. A deploy scene
+    never touches it; ``DeployScene.sensors`` only adds workcell cameras, under names
+    the manifest does not use, and those carry their own geometry and binding.
 
     Args:
         manifest_sensors: The robot manifest's ``sensors``.
         scene_sensors: The ``DeployScene.sensors`` entries.
 
     Raises:
-        ROSConfigError: A scene entry named like a manifest sensor sets a forbidden
-            geometry field, or a different ``frame_id``.
+        ROSConfigError: A scene entry reuses a manifest sensor's name.
 
     Example:
         >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
         >>> check_scene_sensor_overrides(desc.sensors, [])
     """
-    by_name = {s.name: s for s in manifest_sensors}
-    for entry in scene_sensors:
-        robot = by_name.get(entry.name)
-        if robot is None:
-            continue  # workcell-mounted: the scene owns its geometry
-        fields = [f for f in _SCENE_FORBIDDEN_SENSOR_GEOMETRY if f in entry.model_fields_set]
-        if entry.frame_id != robot.frame_id:
-            fields.append(f"frame_id ({entry.frame_id!r} != manifest {robot.frame_id!r})")
-        if fields:
-            raise ROSConfigError(
-                f"scene sensor {entry.name!r} overrides robot-manifest geometry: "
-                f"{', '.join(fields)}. The robot manifest owns a robot sensor's mount, "
-                "intrinsics and frame; a scene entry of the same name binds it to the "
-                "host only (deploy_binding, rate, encoding). Move the value into "
-                "robots/<robot_id>/robot.yaml, or give a workcell camera its own name."
-            )
+    robot_names = {s.name for s in manifest_sensors}
+    clashes = [entry.name for entry in scene_sensors if entry.name in robot_names]
+    if clashes:
+        raise ROSConfigError(
+            f"scene sensor(s) {', '.join(repr(n) for n in clashes)} are defined by the robot "
+            "manifest. A deploy scene never touches a robot camera — its geometry, frame, "
+            "intrinsics and real-hardware deploy_binding live in robots/<robot_id>/robot.yaml. "
+            "Put the binding there, or give a workcell camera its own name."
+        )
 
 
 def merge_deploy_sensors(
     manifest_sensors: Iterable[SensorSpec],
     scene_sensors: Iterable[SensorSpec],
 ) -> list[SensorSpec]:
-    """Robot-manifest sensors plus ``DeployScene.sensors``, merged field-wise.
+    """The deploy's sensor set: the robot manifest's sensors, then the scene's workcell ones.
 
-    On a name collision the scene's explicitly-set fields are applied over the manifest entry
-    (via ``model_fields_set``, so an unmentioned field falls through to the manifest) — exactly
-    one spec survives per name, else the device would be opened and its topic published twice.
-
-    Enforced rule (``check_scene_sensor_overrides``): the manifest owns a robot sensor's
-    geometry (``parent_frame`` / ``static_transform_xyz_rpy`` / ``intrinsics`` /
-    ``sim_placement``, and its ``frame_id``); a same-named scene entry carries only the
-    host-side binding (device, topic, fps, encoding) and is refused with ``ROSConfigError``
-    otherwise. Scene-only sensors (workcell cameras) keep their own geometry.
+    A scene only adds sensors (``check_scene_sensor_overrides`` refuses one that reuses a
+    manifest sensor's name), so this is a checked concatenation, in declaration order.
 
     Raises:
-        ROSConfigError: A scene entry restates a manifest sensor's geometry.
+        ROSConfigError: A scene entry names a sensor the robot manifest defines.
 
     Example:
         >>> desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
@@ -739,19 +714,7 @@ def merge_deploy_sensors(
     manifest = list(manifest_sensors)
     scene = list(scene_sensors)
     check_scene_sensor_overrides(manifest, scene)
-    by_name = {s.name: s for s in scene}
-    merged: list[SensorSpec] = []
-    for spec in manifest:
-        override = by_name.pop(spec.name, None)
-        if override is None:
-            merged.append(spec)
-            continue
-        merged.append(
-            spec.model_copy(update={f: getattr(override, f) for f in override.model_fields_set})
-        )
-    # Scene-only sensors (workcell-mounted) keep their declaration order.
-    merged.extend(s for s in scene if s.name in by_name)
-    return merged
+    return [*manifest, *scene]
 
 
 def publishing_sensors(
@@ -771,8 +734,8 @@ def publishing_sensors(
         >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
         >>> [s.name for s in publishing_sensors(arm.sensors, [], "sim") if s.modality == "rgb"]
         ['top', 'wrist_left', 'wrist_right']
-        >>> publishing_sensors(arm.sensors, [], "real")  # the manifest binds no camera
-        []
+        >>> [s.name for s in publishing_sensors(arm.sensors, [], "real")]  # bound in robot.yaml
+        ['head_zed', 'top', 'wrist_left', 'wrist_right']
     """
     if hal_mode != "real":
         return list(manifest_sensors)
@@ -1119,6 +1082,16 @@ class SafetyEnvelope(BaseModel):
             safety-WG decision and must be justified against the true
             (non-convex mesh) envelope clearance, not the conservative
             primitive distance.
+        starting_pose_max_joint_speed_rad_s: Joint-space speed of the
+            skill runner's ramp from the live pose to a skill's
+            ``starting_pose``. Declared per robot, never derived: a rated
+            ``velocity_limit`` is a ceiling, not an approach speed (issue
+            #303 — deriving it put the OpenArm at 2 rad/s). ``None`` =
+            undeclared; a real robot must declare it.
+        starting_pose_tolerance_rad: Joint-space distance within which the
+            runner treats the starting pose as reached, both for the ramp
+            and for verifying arrival before the policy starts. ``None`` =
+            undeclared; a real robot must declare it.
     """
 
     workspace_box_min_xyz: tuple[float, float, float] | None = None
@@ -1146,6 +1119,8 @@ class SafetyEnvelope(BaseModel):
     max_base_linear_speed_m_s: float | None = None
     max_base_angular_speed_rad_s: float | None = None
     self_collision_margin_m: float = 0.0  # negative tolerates grazing
+    starting_pose_max_joint_speed_rad_s: float | None = Field(default=None, gt=0.0)
+    starting_pose_tolerance_rad: float | None = Field(default=None, gt=0.0)
 
 
 # ─── VLA observation / action specs ────────────────────────────────────────────
@@ -1298,13 +1273,18 @@ class ActionSpec(BaseModel):
     """VLA action configuration for this robot.
 
     Attributes:
-        dim: Dimensionality of the action vector.
+        dim: Dimensionality of the action vector. ``None`` = not declared: the
+            dataset recorder then takes the width from the action itself. A
+            robot whose policy contract is not committed declares only the
+            control rate rather than a guessed width (issue #303).
         representation: How the action vector is encoded.
-        control_freq_hz: Control frequency the actions are executed at.
+        control_freq_hz: Control frequency the actions are executed at — the
+            runner's tick, the HAL node's proprio publish rate, the real
+            ros2_control HAL's trajectory deadline, and the recorder's fps.
         chunk_size: Number of action steps per inference call (chunk size H).
     """
 
-    dim: int
+    dim: int | None = None
     representation: ActionRepresentation | None = None
     control_freq_hz: float | None = None
     chunk_size: int | None = None
@@ -2294,6 +2274,78 @@ class RobotDescription(BaseModel):
     # Current on-disk format (three-slot compute layout). Manifests
     # without this field load with the default below.
     schema_version: Literal["0.1"] = "0.1"
+
+    #: `SafetyEnvelope` fields the safety kernel's envelope loader reads and
+    #: that carry a schema default. A real robot must declare every one of them
+    #: itself: a schema default is a number nobody measured on that rig, and it
+    #: would otherwise reach the kernel silently (issue #303 follow-up).
+    REAL_HARDWARE_SAFETY_FIELDS: ClassVar[tuple[str, ...]] = (
+        "max_ee_speed_m_s",
+        "max_ee_accel_m_s2",
+        "max_joint_speed_factor",
+        "max_force_n",
+        "max_torque_nm",
+        "contact_force_threshold_n",
+        "deadman_required",
+        "self_collision_margin_m",
+    )
+
+    @property
+    def control_rate_hz(self) -> float | None:
+        """The robot's declared control rate, ``action_spec.control_freq_hz``, or ``None``.
+
+        The one place a robot's rate lives: the skill runner ticks at it, the
+        HAL node publishes proprio at it, the real ros2_control HAL derives every
+        trajectory deadline from it, and the recorder stamps it as fps.
+
+        Example:
+            >>> RobotDescription.from_yaml("robots/openarm/robot.yaml").control_rate_hz
+            30.0
+        """
+        spec = self.action_spec
+        if spec is None or spec.control_freq_hz is None or spec.control_freq_hz <= 0.0:
+            return None
+        return float(spec.control_freq_hz)
+
+    @model_validator(mode="after")
+    def _validate_real_hardware_contract(self) -> RobotDescription:
+        """A manifest with a real HAL must declare every value the real path consumes.
+
+        Only robots with ``hal.real`` set are held to this; a sim-only manifest
+        keeps the schema defaults. Every gap is reported at once, so one load
+        names everything the rig still has to declare:
+
+        * ``action_spec.control_freq_hz`` > 0 — the runner tick and every
+          trajectory deadline (issue #303).
+        * every field in ``REAL_HARDWARE_SAFETY_FIELDS`` set explicitly in
+          ``safety`` (an explicit value equal to the default is fine; what is
+          refused is silently inheriting it).
+        * ``safety.starting_pose_max_joint_speed_rad_s`` and
+          ``safety.starting_pose_tolerance_rad`` declared — the runner's
+          approach to a skill's starting pose has no default speed.
+        """
+        if not self.hal.real:
+            return self
+        missing: list[str] = []
+        if self.control_rate_hz is None:
+            missing.append("action_spec.control_freq_hz (> 0 Hz)")
+        declared = self.safety.model_fields_set
+        missing.extend(
+            f"safety.{name}" for name in self.REAL_HARDWARE_SAFETY_FIELDS if name not in declared
+        )
+        missing.extend(
+            f"safety.{name} (> 0)"
+            for name in ("starting_pose_max_joint_speed_rad_s", "starting_pose_tolerance_rad")
+            if getattr(self.safety, name) is None
+        )
+        if missing:
+            raise ValueError(
+                f"robot {self.name!r} declares a real HAL ({self.hal.real}) but not every "
+                "value the real path consumes. A schema default is a number nobody "
+                "measured on this rig, so each must be declared in the manifest: "
+                + ", ".join(missing)
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_footprint_polygon(self) -> RobotDescription:
@@ -9352,6 +9404,18 @@ class DeployRuntime(BaseModel):
 
     ``simulation`` is refused for ``deploy run`` (a real robot has no sim clock)
     and for a sim backend that exposes no clock."""
+    joint_states_topic: str | None = None
+    """``sensor_msgs/JointState`` topic the in-process world state ingests.
+    ``None`` = ``/joint_states``.
+
+    On a ros2_control arm that topic is the ``joint_state_broadcaster``'s,
+    published at the controller manager's rate (750 Hz on the OpenArm). Every
+    message wakes the deploy runtime's Python executor, and that loop plus the
+    per-message callback held ~half of the process's GIL on an AGX Orin — the
+    in-process inference thread got under 2 % and a 1.6 s π0.5 forward took
+    322 s. Point this at the HAL's own ``~/joint_states`` republish (30 Hz,
+    e.g. ``/openral_hal_openarm/joint_states``) so the C++ safety kernel keeps
+    the full-rate topic and Python sees the rate it can afford."""
     enable_object_detector: bool | None = None
     object_detector_onnx: str | None = None
     object_detector_manifest: str | None = None
@@ -9372,6 +9436,21 @@ class DeployRuntime(BaseModel):
     in-tree ``rskills/qwen35-4b-nf4``. Ignored unless ``enable_scene_vlm``."""
     spatial_memory_ingest: bool | None = None
     approach_skill_id: str | None = None
+    preload_rskill_id: str | None = None
+    """rSkill the skill_runner resolves and loads right after it activates, so
+    the first ``execute_rskill`` goal finds it GPU-resident. The deadman
+    watchdog opens its first-chunk window when a goal is accepted; a 3.6 B
+    π0.5 needs ~350 s to load on a Jetson AGX Orin against a 120 s window,
+    so a cold load inside a goal is E-stopped — correctly. Loading before any
+    goal exists keeps the watchdog exactly as strict. Goals are rejected
+    while the preload is in flight (``rskill_runner.preload_done`` marks the
+    end). Any resolvable id: an installed Hub repo id or an in-tree name."""
+    preload_prompt: str | None = None
+    """Exact prompt the preloaded skill is bound to. The runner's resident
+    key is ``(rskill_id, revision, prompt)``, so a goal whose prompt differs
+    by one character evicts the preloaded skill and pays the cold load inside
+    its own watchdog window. For a single-instruction finetune this is the
+    training string, verbatim."""
     slam_visual_impl: Literal["isaac_ros", "pycuvslam"] | None = None
     """Which cuVSLAM implementation the visual SLAM backend composes when
     ``slam_backend`` resolves to ``"visual"`` (``capabilities.has_vision_slam``,
@@ -9468,21 +9547,15 @@ class DeployScene(BaseModel):
     safety: SafetyEnvelope | None = None
     extra_allowed_collision_pairs: list[tuple[str, str]] = Field(default_factory=list)
     sensors: list[SensorSpec] = Field(default_factory=list)
-    """Deploy-time sensor bindings for this workcell.
+    """Workcell-mounted cameras (overhead / front) — physically part of the cell,
+    not the robot.
 
-    Two kinds of entry, distinguished by name:
-
-    * A name **matching** a robot-manifest sensor (``top`` / ``wrist``) is the
-      deploy-time binding for that robot sensor — the manifest alone owns its
-      frame, mount and intrinsics (``check_scene_sensor_overrides`` refuses an
-      entry that restates them); this entry carries the host-specific
-      ``SensorSpec.deploy_binding`` (``deploy run`` loads the robot manifest
-      from the canonical ``robots/<robot_id>/`` dir, so a detect-scaffolded
-      local robot.yaml is never on that path — the scene is where a committed
-      workcell binds the robot's cameras). On a name collision the entry's
-      explicitly-set binding fields are applied over the manifest entry.
-    * A **new** name is a workcell-mounted camera (overhead / front) —
-      physically part of the cell, not the robot.
+    A deploy scene never touches a sensor the robot manifest defines: every entry
+    must use a name the manifest does not (``check_scene_sensor_overrides`` refuses
+    a clash), and carries its own geometry and binding. A robot camera's
+    real-hardware ``SensorSpec.deploy_binding`` lives in
+    ``robots/<robot_id>/robot.yaml``. ``merge_deploy_sensors`` appends these
+    entries after the manifest's sensors.
 
     Entries whose ``deploy_binding`` is set are opened by the real-deploy
     sensor leg and published on ``/openral/cameras/<name>/image``."""
@@ -9878,13 +9951,14 @@ class SensorDeployBinding(BaseModel):
     says how the **sim** renders a camera; ``deploy_binding`` says how a **real**
     deploy opens it — which ``SensorReaderBackend`` and its
     ``/dev/video*`` / pipeline parameters. It is host/site-specific (a
-    ``/dev/video*`` index differs per machine), so committed reference manifests
-    leave it unset and ``openral detect`` fills it per host.
+    ``/dev/video*`` index differs per machine): ``openral detect`` fills it per
+    host, and a manifest written for one reference cell commits that cell's.
 
     A ``SensorSpec`` carries this wherever the sensor is *physically
-    mounted*: robot-mounted cameras (wrist / head) declare it in
-    ``robots/<id>/robot.yaml``; workcell-mounted cameras (overhead / front)
-    declare it on a ``DeployScene.sensors`` entry. Either way the deploy
+    mounted*: a robot camera (wrist / head / the robot's own overview) declares
+    it in ``robots/<id>/robot.yaml`` only — a deploy scene never touches a robot
+    sensor; a workcell-mounted camera (overhead / front) declares it on its own,
+    distinctly named ``DeployScene.sensors`` entry. Either way the deploy
     sensor leg (``openral_rskill_ros.sensor_leg``) opens every
     ``SensorSpec`` that carries one and publishes it on
     ``/openral/cameras/<name>/image``.

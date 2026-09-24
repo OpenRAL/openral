@@ -1034,6 +1034,55 @@ def hf_download_cached_first(
         )
 
 
+def local_snapshot_dir(
+    repo_id: str,
+    *,
+    revision: str | None = None,
+    ignore_patterns: list[str] | tuple[str, ...] = ("*.md",),
+    **extra: Any,
+) -> str:
+    """A local directory holding ``repo_id``'s files: the directory itself, or its Hub snapshot.
+
+    The rSkill resolver hands adapters either a Hub repo id or — for a skill
+    installed with ``openral rskill install``, whose snapshot already carries
+    ``rskill.yaml`` next to ``model.safetensors`` — that snapshot's directory
+    (``resolve_rskill_to_hf_with_revision``). ``huggingface_hub.snapshot_download``
+    validates its argument as a repo id and rejects a filesystem path, so every
+    adapter that snapshotted the resolved id broke on an installed skill: ACT,
+    Diffusion, GR00T and the processor-sidecar fallback (found on the ACT
+    LIBERO checkpoint, 2026-09-23). A directory is returned as is — it is
+    already the pinned snapshot, so ``revision`` has nothing to add — and a
+    repo id is snapshotted with ``ignore_patterns`` / ``extra`` forwarded.
+
+    Args:
+        repo_id: Hub repo id, or a local checkpoint directory.
+        revision: Optional git revision, forwarded for the repo-id case.
+        ignore_patterns: Glob patterns ``snapshot_download`` skips.
+        **extra: Forwarded verbatim to ``snapshot_download``.
+
+    Returns:
+        Absolute path of a directory containing the checkpoint files.
+
+    Example:
+        >>> import os, tempfile
+        >>> d = tempfile.mkdtemp()
+        >>> local_snapshot_dir(d) == os.path.realpath(d)
+        True
+    """
+    from pathlib import Path
+
+    candidate = Path(repo_id)
+    if candidate.is_dir():
+        return str(candidate.resolve())
+    from huggingface_hub import snapshot_download
+
+    return str(
+        snapshot_download(
+            repo_id=repo_id, revision=revision, ignore_patterns=list(ignore_patterns), **extra
+        )
+    )
+
+
 def parse_hf_file_uri(uri: str) -> tuple[str, str | None, str]:
     """Split an ``hf://owner/repo[@rev]/path/to/file`` URI into its parts.
 
@@ -1414,6 +1463,34 @@ def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = No
     preprocessor = getattr(adapter, "_preprocessor", None)
     if callable(preprocessor):
         batch = preprocessor(batch)
+    # The preprocessor can hand back CPU tensors even for a CUDA batch — the
+    # π0.5 tokenizer step emits `observation.language.tokens` on the CPU —
+    # and lerobot's forward then raises "Expected all tensors to be on the
+    # same device". `_PI05Adapter._prepared_batch` moves and casts every
+    # tensor after preprocessing for exactly this reason; the warm-up has to
+    # do the same or it warms nothing, and tick 1 pays the cold start (15.3 s
+    # measured on a Jetson AGX Orin against a 600 ms budget, 2026-09-22).
+    # Full identity, not the kind prefix: a tensor on ``cuda:1`` is not on
+    # ``cuda:0``, and the forward raises on mixed GPUs exactly as on CPU/GPU.
+    target_device = torch.device(device)
+    if target_device.type == "cuda" and target_device.index is None:
+        target_device = torch.device("cuda", torch.cuda.current_device())
+    input_dtype = getattr(adapter, "_input_dtype", None)
+    for key, original in list(batch.items()):
+        moved = original
+        value_device = getattr(moved, "device", None)
+        if value_device is not None and value_device != target_device:
+            moved = moved.to(target_device)
+        value_dtype = getattr(moved, "dtype", None)
+        if (
+            input_dtype is not None
+            and value_dtype is not None
+            and getattr(value_dtype, "is_floating_point", False)
+            and value_dtype != input_dtype
+        ):
+            moved = moved.to(input_dtype)
+        if moved is not original:
+            batch[key] = moved
 
     with contextlib.suppress(AttributeError, TypeError):
         policy.reset()
@@ -1425,7 +1502,12 @@ def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = No
     # pays the full cold-start (524 ms measured on the SO-101 eraser
     # checkpoint against a 400 ms budget). Found on a live deploy run.
     warm_call = policy.predict_action_chunk if rtc_enabled(policy) else policy.select_action
-    with torch.no_grad():
+    # Same mixed-precision context the real tick uses (`_autocast_ctx` on the
+    # π0.5 / SmolVLA adapters): bf16 weights with an fp32 activation raised
+    # "mat1 and mat2 must have the same dtype" here while `step()` ran fine.
+    autocast_ctx = getattr(adapter, "_autocast_ctx", None)
+    ctx = autocast_ctx() if callable(autocast_ctx) else contextlib.nullcontext()
+    with torch.no_grad(), ctx:
         warm_call(batch)
     if device.startswith("cuda"):
         torch.cuda.synchronize()

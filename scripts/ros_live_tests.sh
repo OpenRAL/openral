@@ -43,6 +43,9 @@ TARGETS=(
     # gating at `margin` vs at the surface is algebraically identical.
     tests/integration/test_safety_kernel_place_target_geometry.py
     tests/integration/test_sim_sensor_bridge_tf_guard.py
+    # Every MuJoCo twin heartbeats a fresh, empty attachment set, not only the
+    # HALs with attach mechanics (kernel fails closed on an unstamped set).
+    tests/integration/test_sim_sensor_bridge_attachment_heartbeat.py
     # Defense-in-depth E-stop, on a real three-process graph: the in-band
     # safety node is SIGKILLed mid chunk-stream and /openral/estop still fires,
     # from a different process, with the structured KIND_TIMEOUT trigger. Needs

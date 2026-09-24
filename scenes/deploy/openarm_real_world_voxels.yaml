@@ -53,15 +53,16 @@ scene:
   id: openarm_real_world_voxels
 
 # No `sensors:` entry: head_zed is a robot sensor, so its mount pose (the
-# calibrated extrinsic) lives in robots/openarm/robot.yaml, the same value every
-# OpenArm scene publishes, and a scene may not restate it
-# (openral_core.check_scene_sensor_overrides). The cloud needs no host binding:
-# zed_wrapper publishes it and `runtime.octomap_cloud_topic` points octomap at it.
+# calibrated extrinsic) and its real-hardware binding live in
+# robots/openarm/robot.yaml, the same values every OpenArm scene uses — a deploy
+# scene never touches a robot camera (openral_core.check_scene_sensor_overrides).
+# The cloud itself reaches octomap by topic: zed_wrapper publishes it and
+# `runtime.octomap_cloud_topic` points octomap at it.
 
 # The ZED wrapper comes up with the graph (real path only), so the
 # no-second-parent arguments are pinned here instead of remembered by hand:
 # with publish_tf true the wrapper publishes odom -> zed_camera_link from
-# visual odometry while the scene parents zed_camera_link to the arm — two
+# visual odometry while the manifest parents zed_camera_link to the arm — two
 # parents, order-dependent tf2 lookups, and octomap_server silently drops
 # clouds. camera_name pins the `zed_` frame/topic prefix the manifest pose and
 # octomap_cloud_topic below both assume. Source the ZED colcon overlay before

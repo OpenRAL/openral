@@ -5,14 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def _can_links_up(can_links: tuple[str, ...]) -> bool:
-    """True if every link in *can_links* is up (per ``enumerate_can_interfaces``)."""
-    from openral_cli.autodetect import enumerate_can_interfaces
-
-    up = {i.name for i in enumerate_can_interfaces() if i.is_up}
-    return set(can_links) <= up
-
-
 def _installed_slot_rskill(embodiment: str) -> Path | None:
     """Manifest path of an installed rSkill that drives *embodiment* by slots.
 

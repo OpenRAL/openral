@@ -513,7 +513,7 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # reason: staged loader
 
     with _groot_phase("imports"):
         torch, make_processors = lazy_import_lerobot("GR00T")
-        from huggingface_hub import snapshot_download
+        from openral_rskill import local_snapshot_dir
 
         GrootPolicy = _import_real_groot_policy()  # noqa: N806 — class object, not a value
 
@@ -528,7 +528,7 @@ def _build_gr00t(env_cfg: Any) -> PolicyAdapter:  # reason: staged loader
         # them ~doubles the download and can stall the load. The inference set
         # (model shards + index + config + embodiment_id + experiment_cfg +
         # processor_config + statistics) is untouched.
-        local_path = snapshot_download(
+        local_path = local_snapshot_dir(
             repo_id,
             revision=revision,
             ignore_patterns=[

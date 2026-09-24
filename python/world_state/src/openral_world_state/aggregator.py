@@ -441,16 +441,20 @@ class WorldStateAggregator:
                     f"Attachment revision moved backwards: "
                     f"{revision} < {self._attachment_revision}."
                 )
+            # The producer republishes its latched set on a heartbeat; log the
+            # set changing, not every confirmation of it.
+            changed = by_id != self._attached_objects or live_declaration != self._place_declaration
             self._attached_objects = by_id
             self._attachment_revision = revision
             self._attachment_stamp_ns = applied_stamp_ns
             self._place_declaration = live_declaration
-        log.info(
-            "world_state.attached_objects.updated",
-            count=len(objects),
-            place_target=live_declaration.target_id if live_declaration is not None else None,
-            place_region=live_declaration is not None and live_declaration.region is not None,
-        )
+        if changed:
+            log.info(
+                "world_state.attached_objects.updated",
+                count=len(objects),
+                place_target=live_declaration.target_id if live_declaration is not None else None,
+                place_region=live_declaration is not None and live_declaration.region is not None,
+            )
 
     def set_error(self, component: str, status: DiagStatus = "error") -> None:
         """Latch an explicit diagnostic status for a named component.

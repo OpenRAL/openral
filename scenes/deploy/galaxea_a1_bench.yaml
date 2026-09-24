@@ -5,34 +5,11 @@ scene:
   id: galaxea_a1_bench
 robot_id: galaxea_a1
 
-sensors:
-  # These readers consume the A1 Runtime's public paired-frame bridge. They do
-  # not open either RealSense device; `just camera-web` remains the sole owner.
-  # Host binding only: both cameras are robot sensors, so their mount and
-  # intrinsics live in robots/galaxea_a1/robot.yaml (a scene may not restate
-  # them — openral_core.check_scene_sensor_overrides).
-  - name: front
-    modality: rgb
-    frame_id: a1_front_camera
-    rate_hz: 30.0
-    encoding: rgb8
-    vla_feature_key: observation.images.front
-    deploy_binding:
-      backend: galaxea_a1_camera_bridge
-      backend_params:
-        camera: front
-      max_age_ms: 500
-  - name: wrist
-    modality: rgb
-    frame_id: a1_wrist_camera
-    rate_hz: 30.0
-    encoding: rgb8
-    vla_feature_key: observation.images.wrist
-    deploy_binding:
-      backend: galaxea_a1_camera_bridge
-      backend_params:
-        camera: wrist
-      max_age_ms: 500
+# Cameras: every camera here is a robot sensor, so its real-hardware binding lives in
+# robots/galaxea_a1/robot.yaml (a deploy scene never touches a robot camera —
+# openral_core.check_scene_sensor_overrides). A workcell camera would go under
+# `sensors:` with its own name.
+
 runtime:
   enable_reasoner: false
   enable_slam: false

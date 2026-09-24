@@ -206,7 +206,10 @@ def test_build_record_command_slim_profile() -> None:
     regex_idx = argv.index("--regex")
     pattern = argv[regex_idx + 1]
     assert "/openral/failure/" in pattern
-    assert "/openral/sensors/" in pattern
+    # Cameras publish on /openral/cameras/<name>/image (its compressed sibling for slim);
+    # nothing publishes images under /openral/sensors/.
+    assert "/openral/cameras/[^/]+/image/compressed" in pattern
+    assert "/openral/sensors/" not in pattern
 
 
 def test_build_record_command_full_adds_world_state_fast_and_perception() -> None:

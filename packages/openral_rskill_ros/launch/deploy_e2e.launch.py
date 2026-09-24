@@ -960,6 +960,8 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     hal_params_file = LaunchConfiguration("hal_params_file").perform(context)
     reset_to_pose_service = LaunchConfiguration("reset_to_pose_service").perform(context)
     approach_skill_id = LaunchConfiguration("approach_skill_id").perform(context)
+    preload_rskill_id = LaunchConfiguration("preload_rskill_id").perform(context)
+    preload_prompt = LaunchConfiguration("preload_prompt").perform(context)
     place_declaration_json = LaunchConfiguration("place_declaration_json").perform(context)
     # Record the deploy session to a rosbag2 mcap.
     dataset_out = LaunchConfiguration("dataset_out").perform(context)
@@ -1582,20 +1584,19 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
 
     # Cameras that will actually publish on a real deploy: a declared RGB sensor
     # only gets a reader (and therefore a topic) when it carries a
-    # `deploy_binding`. A sim-only sensor has none — `robots/openarm` declares
-    # its `top` camera as a MuJoCo render — so on a real cell that slot has zero
+    # `deploy_binding`. A sim-only sensor (a MuJoCo render the manifest never
+    # bound to hardware) has none — so on a real cell that slot has zero
     # publishers while the Foxglove bridge still advertises the channel (its
     # allowlist is the pattern `/openral/cameras/.*/image`), and the panel reads
-    # "Image topic does not exist", indistinguishable from a broken camera. A
-    # deploy scene fixes that by binding the slot to real hardware. The
+    # "Image topic does not exist", indistinguishable from a broken camera. The
+    # robot manifest fixes that by binding the slot to real hardware. The
     # Foxglove layout is generated from this list rather than a hardcoded
     # default, which cannot know the scene (see `_write_foxglove_layout`).
     # In sim the publishers are SimSensorBridge's renders of the manifest's RGB
     # sensors (deploy_binding or not) — exactly `rgb_camera_names`, which already
     # leaves out scene-only hardware cameras there.
-    # On real, read the merged list: a scene entry overrides the manifest sensor
-    # of the same name, so the raw pair could list a camera twice or keep one
-    # whose binding the scene replaced.
+    # On real, read the merged list: the manifest's bound cameras plus the
+    # scene's bound workcell cameras (`merge_deploy_sensors` refuses a name clash).
     bound_rgb_camera_names = (
         [s.name for s in publishing if s.modality == "rgb"]
         if hal_mode == "real"
@@ -1621,6 +1622,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # idle. Keep joint/EE diagnostics at 0.5 s, but give simulated
                 # cameras enough room for one slow frame without stale flapping.
                 "image_staleness_limit_s": 5.0 if hal_mode == "sim" else 0.5,
+                # Joint state older than this aborts the blocking wait as a
+                # perception fault. The node has no default: this is the one
+                # place the window is declared. 0.5 s is the former node default,
+                # kept until a rig measurement says otherwise (issue #303).
+                "joint_state_staleness_limit_s": 0.5,
                 # One grouped action may synchronously attach a payload, then
                 # wait for a transparent depth frame + the next OctoMap raster
                 # before acknowledging application. Real HALs keep the 5 s
@@ -1629,6 +1635,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 "rskill_search_paths": [_RSKILLS_DIR],
                 "reset_to_pose_service": reset_to_pose_service,
                 "approach_skill_id": approach_skill_id,
+                # Load the scene's policy before any goal exists, so the
+                # deadman watchdog's first-chunk window (armed on goal accept)
+                # never has to cover a multi-minute cold load. Empty = the
+                # first goal loads its own skill, as before.
+                "preload_rskill_id": preload_rskill_id,
+                "preload_prompt": preload_prompt,
                 # ADR-0097 — the scene's committed place-phase declaration for a
                 # direct dispatch. Empty (every scene today) = no declaration, so
                 # no place witness can arm and payload contact mid-carry stops.
@@ -1636,7 +1648,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # Attach the WorldCloudBridge → dashboard world.pointcloud when a
                 # voxel cloud exists: octomap's centers, or (mono visual SLAM)
                 # nvblox's ESDF cloud so the card shows the vision-built voxels.
-                "enable_world_cloud_bridge": enable_octomap or bool(slam_mono_camera),
+                # Dashboard-only (PNG + `world.pointcloud` span per cloud): with the
+                # dashboard off it still cost the runner's executor a Python
+                # deserialize of every octomap cloud, so it is gated on it.
+                "enable_world_cloud_bridge": (enable_octomap or bool(slam_mono_camera))
+                and enable_dashboard,
                 "world_cloud_topic": (
                     "/openral_nvblox/static_esdf_pointcloud"
                     if (slam_mono_camera and not enable_octomap)
@@ -2040,10 +2056,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # ray was cast. Same shape and reason as the URDF-root bridge above — the manifest owns the
     # geometry, not the launch file.
     #
-    # Manifest sensors UNION DeployScene sensors (`merge_deploy_sensors`): a same-named scene
-    # entry only binds a robot sensor and may not restate its mount, so a robot sensor's pose
-    # is always the manifest's; iterating only the manifest would silently drop the mount
-    # publish for a workcell-mounted camera declared entirely at scene level.
+    # Manifest sensors then DeployScene sensors (`merge_deploy_sensors`): a scene never names
+    # a robot sensor, so a robot sensor's pose is always the manifest's; iterating only the
+    # manifest would silently drop the mount publish for a workcell-mounted camera declared
+    # entirely at scene level.
     for sensor in merge_deploy_sensors(description.sensors, scene_sensors):
         if sensor.parent_frame is None or sensor.static_transform_xyz_rpy is None:
             continue
@@ -2754,6 +2770,27 @@ def generate_launch_description() -> LaunchDescription:
                 "rskills/rskill-moveit-joints) the skill_runner dispatches to "
                 "plan a collision-free motion to each skill's starting_pose. "
                 "Empty = kernel-checked joint ramp."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "preload_rskill_id",
+            default_value="",
+            description=(
+                "rSkill the skill_runner resolves and loads right after "
+                "activation (worker thread), so the first goal finds it "
+                "GPU-resident instead of paying a multi-minute cold load "
+                "inside the deadman watchdog's first-chunk window. Goals "
+                "are rejected until rskill_runner.preload_done is logged. "
+                "Empty = no preload."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "preload_prompt",
+            default_value="",
+            description=(
+                "Exact prompt the preloaded skill is bound to; the resident "
+                "key is (rskill_id, revision, prompt), so a later goal must "
+                "send the same string or the skill is evicted and reloaded."
             ),
         ),
         DeclareLaunchArgument(
