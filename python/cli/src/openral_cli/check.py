@@ -3,7 +3,8 @@
 Loads every ``robots/*/robot.yaml``, ``rskills/*/rskill.yaml``, and
 ``scenes/{deploy,sim,benchmark}/*.yaml`` and cross-validates them in one pass:
 every manifest parses, every ``file:`` / ``ros2://`` asset ref resolves, every
-scene ``robot_id`` resolves to a real robot directory, every rSkill's embodiment
+scene ``robot_id`` resolves to a real robot directory, no scene restates a robot
+sensor's geometry (``check_scene_sensor_overrides``), every rSkill's embodiment
 tags reach at least one in-repo robot, and every sensor ``parent_frame`` is a
 declared tf2 frame. No schema change — pure reuse of the existing Pydantic
 contracts (``RobotDescription.from_yaml`` / ``resolve_asset`` / the scene tiers).
@@ -31,6 +32,7 @@ from openral_core.schemas import (
     RobotDescription,
     RSkillManifest,
     SimScene,
+    check_scene_sensor_overrides,
 )
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from rich.console import Console
@@ -53,6 +55,7 @@ CheckRule = Literal[
     "scene_parse",
     "asset_ref",
     "scene_robot_id",
+    "scene_sensor_geometry",
     "embodiment_reach",
     "frames",
 ]
@@ -267,7 +270,7 @@ def _check_rskills(repo_root: Path, robot_tags: set[str]) -> tuple[int, list[Che
 def _check_scenes(
     repo_root: Path, robots: dict[str, RobotDescription]
 ) -> tuple[int, list[CheckFinding]]:
-    """Parse every scene per tier and check its ``robot_id`` resolves to a robot dir."""
+    """Parse every scene per tier; check its ``robot_id`` and its sensors against the robot."""
     findings: list[CheckFinding] = []
     n_scenes = 0
     for tier, model in _SCENE_TIERS.items():
@@ -295,6 +298,11 @@ def _check_scenes(
                         f"robot_id={scene.robot_id!r} has no robots/{scene.robot_id}/robot.yaml",
                     )
                 )
+            elif scene.robot_id is not None:
+                try:
+                    check_scene_sensor_overrides(robots[scene.robot_id].sensors, scene.sensors)
+                except ROSError as exc:
+                    findings.append(_error("scene_sensor_geometry", target, str(exc)))
     return n_scenes, findings
 
 
@@ -382,7 +390,8 @@ def check_command(
     """Cross-validate every robot, rSkill, and scene manifest in one pass.
 
     Exits 1 on any error finding (a manifest that fails to parse, an unresolvable
-    asset ref, or a scene whose ``robot_id`` names no robot). Warnings (an
+    asset ref, a scene whose ``robot_id`` names no robot, or a scene sensor entry
+    that restates a robot-manifest sensor's geometry). Warnings (an
     unreachable embodiment tag, an undeclared sensor frame) only fail under
     ``--strict``.
     """

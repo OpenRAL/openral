@@ -14,26 +14,30 @@ offline, from a bag the operator records with the arms unpowered:
   ``--marker-radius`` of each is compared with where it was placed. Two or more are
   required to pass: one marker cannot tell a yaw error from a translation.
 
-The pose under test is the scene's own ``head_zed`` (robot manifest merged with the
-DeployScene's ``sensors:`` override, exactly as the launch publishes it); the bag supplies
+The pose under test is the ROBOT MANIFEST's ``--sensor`` entry: the camera is bolted to
+the robot, so its mount is robot geometry, published by every scene on that robot, and no
+scene may restate it (``openral_core.check_scene_sensor_overrides``). The bag supplies
 only the clouds and the camera-internal TF below the mount frame (``zed_camera_link ->
 <cloud frame>``, from the ZED wrapper's own URDF), so the bag can be recorded with the
-ZED driver alone. The report records that pose, and ``verify`` refuses a report whose pose no longer
-matches the scene or whose criteria are looser than this tool's — the gate
-``tools/openarm_world_voxel_run.sh`` applies before a real-arm launch.
+ZED driver alone. The report records that pose, and ``verify`` refuses a report whose pose
+no longer matches the manifest or whose criteria are looser than this tool's — the gate
+``tools/openarm_world_voxel_run.sh`` applies before a real-arm launch. The committed
+report lives next to the manifest, in ``robots/<id>/calibration/<sensor>_extrinsic.json``.
 
-The fitted corrections are also composed into ``suggested_static_transform_xyz_rpy``.
-Passing on the bag the suggestion was fitted to proves nothing (it is zero by
-construction); verify on a SECOND bag with the markers moved.
+The fitted corrections are also composed into ``suggested_static_transform_xyz_rpy``, to
+be copied into the manifest. Passing on the bag the suggestion was fitted to proves
+nothing (it is zero by construction); verify on a SECOND bag with the markers moved.
 
 Run (ROS 2 sourced, for rosbag2_py / tf2)::
 
     uv run python tools/zed_extrinsic_check.py check \\
-        --scene scenes/deploy/openarm_real_world_voxels.yaml --bag <bag_dir> \\
+        --robot robots/openarm/robot.yaml --bag <bag_dir> \\
+        --cloud-topic /zed/zed_node/point_cloud/cloud_registered \\
         --table-z -0.20 --table-roi 0.30 0.70 -0.30 0.30 \\
         --marker 0.45 0.15 --marker 0.55 -0.15 --out report.json
     uv run python tools/zed_extrinsic_check.py verify \\
-        --scene scenes/deploy/openarm_real_world_voxels.yaml --report report.json
+        --robot robots/openarm/robot.yaml \\
+        --report robots/openarm/calibration/head_zed_extrinsic.json
 """
 
 from __future__ import annotations
@@ -47,8 +51,6 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: Pass criteria. Proposed, not measured on a rig: each is half or less of the real
 #: world-voxel margin (20 mm) at the ranges the head camera sees the table (<= 1 m,
@@ -206,26 +208,16 @@ def _suggest(
     return rz @ rot, rz @ trans + np.array([shift[0], shift[1], 0.0])
 
 
-def _scene_sensor(scene_path: Path, sensor: str) -> Any:
-    """The sensor exactly as the deploy launch publishes it: manifest merged with the scene."""
-    from openral_core import DeployScene, RobotDescription
-    from openral_rskill_ros.sensor_leg import (  # type: ignore[import-untyped]  # reason: ament package, no py.typed
-        merge_deploy_sensors,
-    )
-    from openral_sim.policies.robots import resolve_robot_manifest
+def _manifest_sensor(robot_yaml: Path, sensor: str) -> Any:
+    """The sensor's mount exactly as every deploy publishes it: the robot manifest's entry."""
+    from openral_core import RobotDescription
 
-    scene = DeployScene.from_yaml(str(scene_path))
-    if scene.robot_id is None:
-        raise ValueError(f"{scene_path} declares no robot_id")
-    description = RobotDescription.from_yaml(
-        str(resolve_robot_manifest(scene.robot_id, repo_root=REPO_ROOT))
-    )
-    for spec in merge_deploy_sensors(description.sensors, scene.sensors):
+    for spec in RobotDescription.from_yaml(str(robot_yaml)).sensors:
         if spec.name == sensor:
             if spec.parent_frame is None or spec.static_transform_xyz_rpy is None:
                 raise ValueError(f"sensor {sensor!r} has no parent_frame + static transform")
-            return spec, scene
-    raise ValueError(f"no sensor named {sensor!r} in {scene_path} or its robot manifest")
+            return spec
+    raise ValueError(f"no sensor named {sensor!r} in {robot_yaml}")
 
 
 def _read_bag(
@@ -279,13 +271,10 @@ def _read_bag(
 
 
 def check(args: argparse.Namespace) -> int:
-    """Measure the scene's pose against the bag and write the JSON report; 0 iff it passes."""
-    spec, scene = _scene_sensor(args.scene, args.sensor)
-    cloud_topic = args.cloud_topic or (scene.runtime.octomap_cloud_topic if scene.runtime else None)
-    if not cloud_topic:
-        raise ValueError("no --cloud-topic and the scene pins no runtime.octomap_cloud_topic")
+    """Measure the manifest's pose against the bag and write the JSON report; 0 iff it passes."""
+    spec = _manifest_sensor(args.robot, args.sensor)
     mount_pts, cloud_frame, n_clouds = _read_bag(
-        args.bag, cloud_topic, spec.frame_id, args.max_clouds, args.stride
+        args.bag, args.cloud_topic, spec.frame_id, args.max_clouds, args.stride
     )
     x, y, z, roll, pitch, yaw = spec.static_transform_xyz_rpy
     rot, trans = _rpy_to_matrix(roll, pitch, yaw), np.array([x, y, z])
@@ -322,7 +311,7 @@ def check(args: argparse.Namespace) -> int:
         "frame_id": spec.frame_id,
         "static_transform_xyz_rpy": list(spec.static_transform_xyz_rpy),
         "bag": str(args.bag),
-        "cloud_topic": cloud_topic,
+        "cloud_topic": args.cloud_topic,
         "cloud_frame": cloud_frame,
         "clouds": n_clouds,
         "table_z": args.table_z,
@@ -346,8 +335,8 @@ def check(args: argparse.Namespace) -> int:
 
 
 def verify(args: argparse.Namespace) -> int:
-    """0 iff ``--report`` passed, at no looser criteria, for the scene's CURRENT pose."""
-    spec, _ = _scene_sensor(args.scene, args.sensor)
+    """0 iff ``--report`` passed, at no looser criteria, for the manifest's CURRENT pose."""
+    spec = _manifest_sensor(args.robot, args.sensor)
     if not args.report.is_file():
         print(f"REFUSE: no extrinsic report at {args.report}", file=sys.stderr)
         return 1
@@ -365,7 +354,7 @@ def verify(args: argparse.Namespace) -> int:
     reported = report.get("static_transform_xyz_rpy") or []
     if len(reported) != 6 or not np.allclose(reported, spec.static_transform_xyz_rpy, atol=1e-9):
         problems.append(
-            f"scene pose {list(spec.static_transform_xyz_rpy)} != checked pose {reported}"
+            f"manifest pose {list(spec.static_transform_xyz_rpy)} != checked pose {reported}"
         )
     for key, limit in (
         ("max_tilt_deg", MAX_TILT_DEG),
@@ -384,16 +373,16 @@ def verify(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry: ``check`` (bag -> report) or ``verify`` (report vs scene)."""
+    """CLI entry: ``check`` (bag -> report) or ``verify`` (report vs robot manifest)."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
     for name in ("check", "verify"):
         p = sub.add_parser(name)
-        p.add_argument("--scene", type=Path, required=True)
+        p.add_argument("--robot", type=Path, required=True, help="robots/<id>/robot.yaml")
         p.add_argument("--sensor", default="head_zed")
     c = sub.choices["check"]
     c.add_argument("--bag", type=Path, required=True)
-    c.add_argument("--cloud-topic", default=None, help="default: scene octomap_cloud_topic")
+    c.add_argument("--cloud-topic", required=True, help="the depth driver's PointCloud2")
     c.add_argument("--table-z", type=float, required=True, help="table top, base frame (m)")
     c.add_argument(
         "--table-roi", type=float, nargs=4, required=True, metavar=("XMIN", "XMAX", "YMIN", "YMAX")

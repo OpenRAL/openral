@@ -6,12 +6,15 @@
 # step by step; this header is the short form, not a substitute.
 #
 # Preconditions, ALL of them, every run:
-#   1. head_zed extrinsic calibrated AND verified for exactly the pose below:
-#      a passing report from `tools/zed_extrinsic_check.py check` committed at
-#      scenes/deploy/calibration/openarm_head_zed_extrinsic.json. A mis-framed
+#   1. head_zed extrinsic calibrated AND verified for exactly the pose in
+#      robots/openarm/robot.yaml: a passing report from
+#      `tools/zed_extrinsic_check.py check` committed at
+#      robots/openarm/calibration/head_zed_extrinsic.json. A mis-framed
 #      cloud is not a bad picture here: it puts obstacles where there are none
 #      (false E-stops) and, worse, moves real obstacles away from where they
-#      are (missed stops).
+#      are (missed stops). The manifest holds ONE pose; the Thor and Orin
+#      cells have different ZED mounts, so a pose calibrated on one is wrong
+#      on the other (runbook step 2).
 #   2. A person at the cell for the whole run, hardware E-stop in hand, and a
 #      second person on the stop for bringup: `deploy run` activates the
 #      OpenArm controllers, whose on_activate steps all 16 motors to zero
@@ -49,32 +52,18 @@ robot_id: "openarm"
 scene:
   id: openarm_real_world_voxels
 
-# The camera's calibrated mount. Overrides the manifest's `head_zed` pose
-# field-wise (`merge_deploy_sensors`: scene-set fields win, the manifest fills
-# the rest, intrinsics included — the ZED SDK computes the cloud from its own
-# factory calibration, so manifest intrinsics never reach this check). This
-# entry is the ONE place the real cell's extrinsic lives: `deploy run` and the
-# twin pass both publish it as the only openarm_base -> zed_camera_link
-# transform, and the extrinsic tool evaluates and gates exactly this value.
-#
-# PLACEHOLDER: the value below is the manifest's uncalibrated approximation
-# (0.20 m above openarm_base, pitched 45 deg down). Replace it with the
-# tool's `suggested_static_transform_xyz_rpy`, re-verify on a fresh bag, and
-# commit the passing report — the run script refuses until they agree.
-sensors:
-  - name: head_zed
-    modality: depth
-    frame_id: zed_camera_link
-    parent_frame: openarm_base
-    rate_hz: 10.0
-    static_transform_xyz_rpy: [0.0, 0.0, 0.20, 0.0, 0.7853981634, 0.0]
+# No `sensors:` entry: head_zed is a robot sensor, so its mount pose (the
+# calibrated extrinsic) lives in robots/openarm/robot.yaml, the same value every
+# OpenArm scene publishes, and a scene may not restate it
+# (openral_core.check_scene_sensor_overrides). The cloud needs no host binding:
+# zed_wrapper publishes it and `runtime.octomap_cloud_topic` points octomap at it.
 
 # The ZED wrapper comes up with the graph (real path only), so the
 # no-second-parent arguments are pinned here instead of remembered by hand:
 # with publish_tf true the wrapper publishes odom -> zed_camera_link from
 # visual odometry while the scene parents zed_camera_link to the arm — two
 # parents, order-dependent tf2 lookups, and octomap_server silently drops
-# clouds. camera_name pins the `zed_` frame/topic prefix the pose above and
+# clouds. camera_name pins the `zed_` frame/topic prefix the manifest pose and
 # octomap_cloud_topic below both assume. Source the ZED colcon overlay before
 # launching, or the graph refuses to start.
 drivers:

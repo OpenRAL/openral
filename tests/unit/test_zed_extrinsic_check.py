@@ -3,13 +3,14 @@
 The bag is written here with the real ``rosbag2_py`` writer and real ``sensor_msgs`` /
 ``tf2_msgs`` messages: a table plus two flat markers, seen from a known TRUE mount pose
 through a ZED-style internal transform (``zed_camera_link -> zed_left_camera_frame``). The
-scene under test is the committed ``scenes/deploy/openarm_real_world_voxels.yaml`` with its
-``head_zed`` pose swapped, so the pose goes through the same manifest merge the launch uses.
+manifest under test is the committed ``robots/openarm/robot.yaml`` with its ``head_zed`` pose
+swapped: the robot manifest is the only place a robot sensor's mount lives.
 
 What is pinned: the true pose passes; a wrong pose fails and its suggestion recovers the
 true one; and ``verify`` refuses a missing report,
 a report for a different pose, and a report checked at looser criteria — including the
-committed default state, where no calibration report exists yet.
+committed default state, where no calibration report exists yet — and the run script refuses
+to launch without a verified report.
 """
 
 from __future__ import annotations
@@ -31,8 +32,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_SCENE = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
-_REPORT = _REPO_ROOT / "scenes" / "deploy" / "calibration" / "openarm_head_zed_extrinsic.json"
+_ROBOT = _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
+_REPORT = _REPO_ROOT / "robots" / "openarm" / "calibration" / "head_zed_extrinsic.json"
 sys.path.insert(0, str(_REPO_ROOT / "tools"))
 
 import zed_extrinsic_check as zc  # noqa: E402
@@ -107,31 +108,32 @@ def bag(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return path
 
 
-def _scene_with_pose(tmp_path: Path, pose: list[float]) -> Path:
-    data = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
+def _robot_with_pose(tmp_path: Path, pose: list[float]) -> Path:
+    data = yaml.safe_load(_ROBOT.read_text(encoding="utf-8"))
     (entry,) = [s for s in data["sensors"] if s["name"] == "head_zed"]
     entry["static_transform_xyz_rpy"] = pose
-    path = tmp_path / "scene.yaml"
+    path = tmp_path / "robot.yaml"
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
     return path
 
 
-def _check(scene: Path, bag: Path, out: Path) -> int:
-    argv = ["check", "--scene", str(scene), "--bag", str(bag), "--table-z", str(_TABLE_Z)]
-    argv += ["--table-roi", *map(str, _ROI), "--stride", "1", "--out", str(out)]
+def _check(robot: Path, bag: Path, out: Path) -> int:
+    argv = ["check", "--robot", str(robot), "--bag", str(bag), "--cloud-topic", _CLOUD_TOPIC]
+    argv += ["--table-z", str(_TABLE_Z), "--table-roi", *map(str, _ROI)]
+    argv += ["--stride", "1", "--out", str(out)]
     for mx, my in _MARKERS:
         argv += ["--marker", str(mx), str(my)]
     return zc.main(argv)
 
 
 def test_the_true_pose_passes_and_verifies(bag: Path, tmp_path: Path) -> None:
-    scene, out = _scene_with_pose(tmp_path, list(_TRUE_POSE)), tmp_path / "r.json"
-    assert _check(scene, bag, out) == 0
+    robot, out = _robot_with_pose(tmp_path, list(_TRUE_POSE)), tmp_path / "r.json"
+    assert _check(robot, bag, out) == 0
     res = json.loads(out.read_text())["residuals"]
     assert res["tilt_deg"] < 0.1
     assert abs(res["height_err_m"]) < 0.002
     assert all(m["error_m"] < 0.003 for m in res["markers"])
-    assert zc.main(["verify", "--scene", str(scene), "--report", str(out)]) == 0
+    assert zc.main(["verify", "--robot", str(robot), "--report", str(out)]) == 0
 
 
 def test_a_wrong_pose_fails_and_the_suggestion_recovers_the_true_one(
@@ -139,44 +141,65 @@ def test_a_wrong_pose_fails_and_the_suggestion_recovers_the_true_one(
 ) -> None:
     x, y, z, roll, pitch, yaw = _TRUE_POSE
     wrong = [x + 0.012, y - 0.008, z + 0.015, roll - 0.02, pitch + math.radians(2.0), yaw + 0.025]
-    scene, out = _scene_with_pose(tmp_path, wrong), tmp_path / "r.json"
-    assert _check(scene, bag, out) == 1
+    robot, out = _robot_with_pose(tmp_path, wrong), tmp_path / "r.json"
+    assert _check(robot, bag, out) == 1
     report = json.loads(out.read_text())
     assert report["failures"]
     suggested = report["suggested_static_transform_xyz_rpy"]
     assert np.allclose(suggested[:3], _TRUE_POSE[:3], atol=0.003), suggested
     assert np.allclose(suggested[3:], _TRUE_POSE[3:], atol=math.radians(0.3)), suggested
 
-    fixed = _scene_with_pose(tmp_path, suggested)
+    fixed = _robot_with_pose(tmp_path, suggested)
     assert _check(fixed, bag, tmp_path / "fixed.json") == 0
 
 
 def test_verify_refuses_a_report_for_another_pose_or_looser_criteria(
     bag: Path, tmp_path: Path
 ) -> None:
-    scene, out = _scene_with_pose(tmp_path, list(_TRUE_POSE)), tmp_path / "r.json"
-    assert _check(scene, bag, out) == 0
+    robot, out = _robot_with_pose(tmp_path, list(_TRUE_POSE)), tmp_path / "r.json"
+    assert _check(robot, bag, out) == 0
 
     moved = tmp_path / "moved"
     moved.mkdir()
-    edited = _scene_with_pose(moved, [*_TRUE_POSE[:5], _TRUE_POSE[5] + 0.001])
-    assert zc.main(["verify", "--scene", str(edited), "--report", str(out)]) == 1
+    edited = _robot_with_pose(moved, [*_TRUE_POSE[:5], _TRUE_POSE[5] + 0.001])
+    assert zc.main(["verify", "--robot", str(edited), "--report", str(out)]) == 1
 
     report = json.loads(out.read_text())
     report["criteria"]["max_height_err_m"] = 0.05
     loose = tmp_path / "loose.json"
     loose.write_text(json.dumps(report))
-    assert zc.main(["verify", "--scene", str(scene), "--report", str(loose)]) == 1
+    assert zc.main(["verify", "--robot", str(robot), "--report", str(loose)]) == 1
 
-    assert zc.main(["verify", "--scene", str(scene), "--report", str(tmp_path / "no")]) == 1
+    assert zc.main(["verify", "--robot", str(robot), "--report", str(tmp_path / "no")]) == 1
 
 
-def test_the_committed_scene_is_refused_until_a_calibration_is_committed() -> None:
+def test_the_committed_manifest_is_refused_until_a_calibration_is_committed() -> None:
     """Fail-closed by default: the shipped pose is a placeholder with no passing report."""
     if _REPORT.exists():
         pytest.skip("a calibration report is committed; the default-refusal state is past")
-    rc = zc.main(["verify", "--scene", str(_SCENE), "--report", str(_REPORT)])
+    rc = zc.main(["verify", "--robot", str(_ROBOT), "--report", str(_REPORT)])
     assert rc == 1
+
+
+def test_the_run_script_refuses_without_a_verified_extrinsic() -> None:
+    """Both gates exported, still refused: no report verifies the manifest's pose.
+
+    The verify step runs before the interactive-terminal check, so this reaches it with
+    stdin closed; were the report to verify, the terminal check would still refuse.
+    """
+    if _REPORT.exists():
+        pytest.skip("a calibration report is committed; the default-refusal state is past")
+    env = {**os.environ, "OPENRAL_OPENARM_ALLOW_MOTION": "1", "OPENRAL_OPENARM_ATTENDED": "1"}
+    proc = subprocess.run(
+        ["bash", str(_REPO_ROOT / "tools" / "openarm_world_voxel_run.sh")],
+        env=env,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    assert proc.returncode == 2, proc.stderr
+    assert "head_zed extrinsic not verified for the manifest's pose" in proc.stderr
 
 
 def test_the_run_script_refuses_without_both_motion_gates() -> None:

@@ -8,8 +8,8 @@ run`` drives it: ``resolve_launch_invocation(hal_mode="real")`` produces the arg
 ``deploy_config`` is dropped from the real-mode composition only: the scene's ``drivers:``
 include resolves ``zed_wrapper`` from the ament path, which exists on the rig overlay, not
 here. The kernel/octomap parameters under test come from the argv, not from that include;
-the scene's own ``sensors:`` merge is covered by composing it on the sim path, where
-drivers are ignored.
+the ZED mount (the robot manifest's ``head_zed``) is covered by composing the scene on the
+sim path, where drivers are ignored.
 
 Per CLAUDE.md §1.11: the committed scene, the real ``robots/openarm/robot.yaml``, the real
 CLI resolver and launch composition. No mocks.
@@ -124,22 +124,24 @@ def test_the_kernel_gets_world_voxel_enabled_at_the_real_margin() -> None:
     assert octo_params["frame_id"] == "openarm_base"
 
 
-def test_the_scene_pose_is_the_only_mount_published_for_the_zed(tmp_path: Path) -> None:
-    """The scene's head_zed override reaches /tf_static, once, over the manifest's pose.
+def test_the_manifest_pose_is_the_only_mount_published_for_the_zed() -> None:
+    """The robot manifest's head_zed pose reaches /tf_static, once, with one parent.
 
-    The committed placeholder equals the manifest value, so a calibrated-looking pose is
-    swapped in: the assertion must be able to tell the scene from the manifest.
+    The ZED is bolted to the robot, so its mount is robot geometry: the scene declares no
+    ``head_zed`` entry and may not (``check_scene_sensor_overrides``), and the pose every
+    OpenArm scene publishes is the one in ``robots/openarm/robot.yaml``.
     """
     import yaml
+    from openral_core import RobotDescription
 
-    calibrated = [0.013, -0.021, 0.231, 0.004, 0.771, -0.012]
-    data = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
-    (entry,) = [s for s in data["sensors"] if s["name"] == "head_zed"]
-    entry["static_transform_xyz_rpy"] = calibrated
-    scene = tmp_path / "calibrated.yaml"
-    scene.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert "sensors" not in yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
+    (zed,) = [
+        s
+        for s in RobotDescription.from_yaml(str(_REPO_ROOT / "robots/openarm/robot.yaml")).sensors
+        if s.name == "head_zed"
+    ]
 
-    _, entities = _compose(_launch_args("sim", scene))
+    _, entities = _compose(_launch_args("sim"))
 
     mounts = []
     for e in entities:
@@ -150,6 +152,36 @@ def test_the_scene_pose_is_the_only_mount_published_for_the_zed(tmp_path: Path) 
             mounts.append(argv)
     assert len(mounts) == 1, mounts
     (argv,) = mounts
-    assert argv[argv.index("--frame-id") + 1] == "openarm_base"
+    assert argv[argv.index("--frame-id") + 1] == zed.parent_frame == "openarm_base"
     flags = ("--x", "--y", "--z", "--roll", "--pitch", "--yaw")
-    assert [float(argv[argv.index(f) + 1]) for f in flags] == pytest.approx(calibrated)
+    assert [float(argv[argv.index(f) + 1]) for f in flags] == pytest.approx(
+        list(zed.static_transform_xyz_rpy or ())
+    )
+
+
+@pytest.mark.parametrize("hal_mode", ["real", "sim"])
+def test_deploy_refuses_a_scene_that_restates_the_zed_pose(tmp_path: Path, hal_mode: str) -> None:
+    """``deploy run`` / ``deploy sim`` / ``deploy validate`` refuse before launching.
+
+    All three go through ``resolve_launch_invocation``, which is where the rule is checked
+    pre-launch: a pose hidden in one scene would silently not apply to the robot's others.
+    """
+    import yaml
+    from openral_core.exceptions import ROSConfigError
+
+    data = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
+    data["sensors"] = [
+        {
+            "name": "head_zed",
+            "modality": "depth",
+            "frame_id": "zed_camera_link",
+            "parent_frame": "openarm_base",
+            "rate_hz": 10.0,
+            "static_transform_xyz_rpy": [0.013, -0.021, 0.231, 0.004, 0.771, -0.012],
+        }
+    ]
+    scene = tmp_path / "hidden_pose.yaml"
+    scene.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    with pytest.raises(ROSConfigError, match=r"'head_zed'.*static_transform_xyz_rpy"):
+        _launch_args(hal_mode, scene)

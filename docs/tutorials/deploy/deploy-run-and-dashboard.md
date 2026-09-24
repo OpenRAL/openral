@@ -244,7 +244,8 @@ that auto-enable through the same code path as `deploy sim`). Both are
 To let that map **stop** a real arm, not just draw it, see
 [`scenes/deploy/openarm_real_world_voxels.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_real_world_voxels.yaml)
 and its [attended runbook](openarm-real-world-voxel-check.md): it adds
-`enable_octomap_kernel_check: true`, the calibrated camera pose and a guarded launcher.
+`enable_octomap_kernel_check: true` and a guarded launcher that refuses until the camera
+pose in `robots/openarm/robot.yaml` is calibrated and verified.
 
 That is deliberate reuse rather than a new node: `zed_wrapper` (and the RealSense
 and Orbbec drivers) already stereo-match and project on the GPU, so composing a
