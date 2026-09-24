@@ -29,9 +29,13 @@ def test_a_real_0_1_manifest_migrates_on_load_and_validates() -> None:
     assert desc.schema_version == "0.2"
     assert desc.safety.joint_state_staleness_limit_s == 0.5
     assert "staleness_limit_s" not in desc.hal.parameters.defaults
-    # Same content as the shipped 0.2 manifest, bar comments.
+    # Same content as the shipped 0.2 manifest, bar comments and the two
+    # GENERATED collision blocks: those are lowering output
+    # (`openral collision lower`), re-generated whenever the lowering changes,
+    # and the migration never touches them.
     current = RobotDescription.from_yaml(str(REPO_ROOT / "robots/ur5e/robot.yaml"))
-    assert desc.model_dump() == current.model_dump()
+    generated = {"collision_geometry", "allowed_collision_pairs"}
+    assert desc.model_dump(exclude=generated) == current.model_dump(exclude=generated)
 
 
 def test_the_migrator_is_pure_and_only_moves_the_staleness() -> None:
