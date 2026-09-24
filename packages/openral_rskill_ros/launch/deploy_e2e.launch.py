@@ -961,6 +961,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     reset_to_pose_service = LaunchConfiguration("reset_to_pose_service").perform(context)
     approach_skill_id = LaunchConfiguration("approach_skill_id").perform(context)
     preload_rskill_id = LaunchConfiguration("preload_rskill_id").perform(context)
+    preload_rskill_revision = LaunchConfiguration("preload_rskill_revision").perform(context)
     preload_prompt = LaunchConfiguration("preload_prompt").perform(context)
     place_declaration_json = LaunchConfiguration("place_declaration_json").perform(context)
     # Record the deploy session to a rosbag2 mcap.
@@ -1154,12 +1155,29 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # need to know which cameras exist (and, on a real deploy, which are bound).
     scene_sensors: list[SensorSpec] = []
     scene_drivers: list = []  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, deferred import
+    joint_states_override: str | None = None
     if deploy_config:
         from openral_core import DeployScene
 
         _scene = DeployScene.from_yaml(deploy_config)
         scene_sensors = list(_scene.sensors)
         scene_drivers = list(_scene.drivers)
+        if _scene.runtime is not None:
+            joint_states_override = _scene.runtime.joint_states_topic
+    from openral_hal.resolver import hal_joint_states_topic
+
+    # The Python nodes' JointState topic: the scene's override, else the HAL's
+    # rate-limited `~/joint_states` on a real ros2_control arm (whose global
+    # `/joint_states` is the broadcaster's full-rate stream), else "" = default.
+    runtime_joint_states_topic = (
+        hal_joint_states_topic(
+            description,
+            mode="real" if hal_mode == "real" else "sim",
+            hal_node_name=hal_node_name,
+            override=joint_states_override,
+        )
+        or ""
+    )
     publishing = publishing_sensors(description.sensors, scene_sensors, hal_mode)
     envelope = compute_intersection(
         description, skill=None, deploy=workcell.safety if workcell is not None else None
@@ -1640,7 +1658,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # never has to cover a multi-minute cold load. Empty = the
                 # first goal loads its own skill, as before.
                 "preload_rskill_id": preload_rskill_id,
+                "preload_rskill_revision": preload_rskill_revision,
                 "preload_prompt": preload_prompt,
+                # Applied by runtime_node to both composed nodes (world_state
+                # ingest + the runner's joint-state cache); "" = /joint_states.
+                "joint_states_topic": runtime_joint_states_topic,
                 # ADR-0097 — the scene's committed place-phase declaration for a
                 # direct dispatch. Empty (every scene today) = no declaration, so
                 # no place witness can arm and payload contact mid-carry stops.
@@ -2782,6 +2804,15 @@ def generate_launch_description() -> LaunchDescription:
                 "inside the deadman watchdog's first-chunk window. Goals "
                 "are rejected until rskill_runner.preload_done is logged. "
                 "Empty = no preload."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "preload_rskill_revision",
+            default_value="",
+            description=(
+                "Hub revision pinned for preload_rskill_id; part of the "
+                "resident key, so it must equal the revision later goals "
+                "send. Empty = the unpinned default revision."
             ),
         ),
         DeclareLaunchArgument(

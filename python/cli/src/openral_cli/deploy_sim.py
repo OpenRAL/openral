@@ -155,6 +155,9 @@ class LaunchInvocation:
     """``DeployRuntime.preload_rskill_id`` forwarded as ``preload_rskill_id:=…``
     so the skill_runner loads the scene's policy right after activation, outside
     any goal's watchdog window. Empty = no preload."""
+    preload_rskill_revision: str
+    """``DeployRuntime.preload_rskill_revision`` forwarded as
+    ``preload_rskill_revision:=…`` with the preload id. Empty = unpinned."""
     preload_prompt: str
     """``DeployRuntime.preload_prompt`` forwarded as ``preload_prompt:=…``; must
     be the exact prompt later goals send (resident key = id, revision, prompt)."""
@@ -909,6 +912,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # Scene-only, no CLI flag: which policy a cell keeps warm is a property
     # of the workcell, not of one invocation.
     preload_rskill_id = ""
+    preload_rskill_revision = ""
     preload_prompt = ""
     rt = deploy_scene.runtime if deploy_scene is not None else None
     if rt is not None:
@@ -954,6 +958,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             spatial_memory_ingest = rt.spatial_memory_ingest
         approach_skill_id = approach_skill_id or rt.approach_skill_id
         preload_rskill_id = rt.preload_rskill_id or ""
+        preload_rskill_revision = rt.preload_rskill_revision or ""
         preload_prompt = rt.preload_prompt or ""
         if slam_visual_impl is None:
             slam_visual_impl = rt.slam_visual_impl
@@ -1403,6 +1408,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # Same rule for the preload pair: forwarded only when the scene sets it.
     if preload_rskill_id:
         argv_template.append(f"preload_rskill_id:={preload_rskill_id}")
+        if preload_rskill_revision:
+            argv_template.append(f"preload_rskill_revision:={preload_rskill_revision}")
         if preload_prompt:
             argv_template.append(f"preload_prompt:={preload_prompt}")
     # only forward the stereo rig when the scene pins it (empty default; the
@@ -1493,6 +1500,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         reset_to_pose_service=service,
         approach_skill_id=approach_skill,
         preload_rskill_id=preload_rskill_id,
+        preload_rskill_revision=preload_rskill_revision,
         preload_prompt=preload_prompt,
         enable_foxglove=enable_foxglove,
         foxglove_port=foxglove_port,

@@ -2900,3 +2900,33 @@ def test_scene_preload_pair_is_forwarded_only_when_the_scene_sets_it() -> None:
     )
     assert invocation.preload_rskill_id == ""
     assert "preload_rskill_id:=" not in " ".join(invocation.argv_template)
+
+
+def test_scene_preload_revision_is_forwarded_with_the_preload_id(tmp_path: Path) -> None:
+    """``DeployRuntime.preload_rskill_revision`` → ``preload_rskill_revision:=`` (SO-101 bench).
+
+    The resident key is (id, revision, prompt): a goal pinning a revision the
+    preload did not use evicts the warm skill, so a scene must be able to pin it.
+    """
+    text = (_REPO_ROOT / "scenes" / "deploy" / "so101_bench.yaml").read_text(encoding="utf-8")
+    text = text.replace(
+        "\nruntime:\n",
+        "\nruntime:\n  preload_rskill_id: rskill-smolvla-so101-eraser_place-bf16\n"
+        "  preload_rskill_revision: v1.2.0\n",
+        1,
+    )
+    scene = tmp_path / "so101_bench.yaml"
+    scene.write_text(text, encoding="utf-8")
+    invocation = resolve_launch_invocation(
+        config=scene,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        hal_mode="real",
+    )
+    assert invocation.preload_rskill_revision == "v1.2.0"
+    joined = " ".join(invocation.argv_template)
+    assert "preload_rskill_id:=rskill-smolvla-so101-eraser_place-bf16" in joined
+    assert "preload_rskill_revision:=v1.2.0" in joined
+    assert "preload_prompt:=" not in joined

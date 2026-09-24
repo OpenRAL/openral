@@ -11745,6 +11745,18 @@
               "default": null,
               "title": "Preload Rskill Id"
             },
+            "preload_rskill_revision": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Preload Rskill Revision"
+            },
             "preload_prompt": {
               "anyOf": [
                 {
@@ -13550,6 +13562,18 @@
               ],
               "default": null,
               "title": "Preload Rskill Id"
+            },
+            "preload_rskill_revision": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Preload Rskill Revision"
             },
             "preload_prompt": {
               "anyOf": [
@@ -15495,6 +15519,18 @@
               ],
               "default": null,
               "title": "Preload Rskill Id"
+            },
+            "preload_rskill_revision": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Preload Rskill Revision"
             },
             "preload_prompt": {
               "anyOf": [

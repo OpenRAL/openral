@@ -272,8 +272,9 @@ if _ROS2_AVAILABLE:
             # that is the broadcaster's full-rate stream (750 Hz on the OpenArm);
             # every message woke this node's Python executor and held half of the
             # process's GIL on an AGX Orin — the in-process inference thread got
-            # <2 %. Set from ``DeployRuntime.joint_states_topic`` by ``runtime_node``
-            # to the HAL's 30 Hz republish, the same topic world_state ingests.
+            # <2 %. The deploy launch sets it (``openral_hal.hal_joint_states_topic``:
+            # scene override, else a real ros2_control HAL's rate-limited
+            # ``~/joint_states``), the same topic world_state ingests.
             self.declare_parameter("joint_states_topic", "")
             # MoveIt approach to the manifest ``starting_pose``. When
             # set, the runner dispatches this rSkill (the rskill-moveit-multi-joints-none
@@ -284,12 +285,12 @@ if _ROS2_AVAILABLE:
             # Preload: resolve + load one rSkill right after on_activate, in a
             # worker thread, so the first goal finds it GPU-resident. The
             # deadman watchdog opens its first-chunk window the moment a goal
-            # is ACCEPTED, and a 3.6 B π0.5 takes ~350 s to load on a Jetson
-            # AGX Orin (measured 2026-09-22) against a 120 s window — so a cold
-            # load inside a goal is E-stopped every time, correctly. Loading
-            # before any goal exists is the only path that keeps the watchdog
-            # as strict as it is. The prompt must be the exact string later
-            # goals will send: the resident key is (id, revision, prompt).
+            # is ACCEPTED, so a multi-minute cold load of a large policy inside
+            # a goal is E-stopped, correctly. Loading before any goal exists is
+            # the only path that keeps the watchdog as strict as it is. The
+            # revision and prompt must be exactly what later goals send: the
+            # resident key is (id, revision, prompt). Set from
+            # ``DeployRuntime.preload_*`` via the deploy launch.
             self.declare_parameter("preload_rskill_id", "")
             self.declare_parameter("preload_rskill_revision", "")
             self.declare_parameter("preload_prompt", "")
@@ -3309,15 +3310,16 @@ def _make_policy_adapter_skill(
             action was discarded. Same wall-clock either way; this just
             moves it to where the operator is already waiting.
 
+            Runs ``adapter.step`` on a synthetic observation for every
+            adapter, in-process and sidecar alike (XR-1, LingBot, RLDX).
             Non-fatal by contract: a warm-up is an optimisation and must
-            never be why a skill fails to activate. Adapters whose policy
-            cannot be introspected (the HF-based molmoact2 / openvla) are
-            skipped silently by the helper.
+            never be why a skill fails to activate, so any failure is logged
+            as ``rskill_runner.warmup_failed`` and the skill activates cold.
             """
             # Warm the EXACT path a tick runs — `adapter.step` with a
             # synthetic observation shaped like the cell's cameras and state —
-            # not a bare policy forward. `warm_up_lerobot_policy` ran the
-            # policy's `select_action` on the main thread and the first real
+            # not a bare policy forward. A bare `select_action` warm-up (the
+            # since-removed `warm_up_lerobot_policy`) ran on the main thread and the first real
             # tick still cost 306-357 s on a Jetson AGX Orin under a live
             # graph (2026-09-22): the chunk executor's background thread,
             # its autocast context, the preprocessor on real-sized frames and
