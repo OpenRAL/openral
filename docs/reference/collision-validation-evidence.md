@@ -3837,6 +3837,35 @@ the 2026-08-22 entry, `harness-1` / `harness-2`, the harness's first live use.
 the seed decides the initial configuration. Equal SHA **and** equal seed is now
 the test.
 
+### 2026-09-24 — a dead camera left the world check blind, and every grid still looked fresh
+
+Not a validation round: a fail-OPEN on the world-voxel input, observed live on
+Thor with the arms unpowered (hazard log Entry 033).
+
+**What was seen.** ZED driver stopped → `/octomap_binary` silent (octomap had
+been publishing at 3.2–4.0 Hz, gaps ~0.25–0.31 s) → `/openral/world_voxels`
+still arriving at **7.1 Hz**. `octomap_server` publishes only when it inserts a
+cloud; the bridge re-rasterized its LAST octree on its 10 Hz timer and stamped
+each grid `now()`; the kernel times voxel freshness from receipt. So the frozen
+map arrived on time, `DROP_VOXEL_UNAVAILABLE` never fired, and anything that
+entered the workspace afterwards was invisible to the world check.
+
+**Why the republish exists, and what is kept.** Between octrees the timer is
+what makes the grid follow the robot through TF and the payload clearing
+follow the payload's live pose (the attach window above spans ~28 grids of one
+octree's lifetime). All of that is unchanged while the octree is fresh.
+
+**The fix.** The bridge stops publishing once its last octree was received
+more than `max_octree_age_s` ago — `deploy_e2e.launch.py` derives it as half
+the kernel's 1000 ms `world_voxel_deadline_ms`, i.e. 0.5 s, above every
+measured gap and below the deadline — and the kernel's own deadline turns the
+silence into a drop. Worst case from the last inserted cloud to the drop:
+0.5 s + 1.0 s. Pinned by `test_bridge_staleness` (real node, in-process) and
+`tests/sim/safety/test_kernel_voxel_bridge_staleness.py` (real bridge + real
+kernel; with the bound disabled the stale chunk is certified, reproducing the
+fail-open). Not covered: a camera that keeps publishing garbage or a frozen
+image. Not yet re-verified on Thor.
+
 ## Programme status note
 
 _Moved here from the root `PLAN.md` on 2026-09-22. §4 and §5 are cited by tools and tests; keep the section numbers._

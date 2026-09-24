@@ -31,6 +31,15 @@
 // of extra reach, for the stale pre-attach silhouette that primitive-fit error
 // leaves just outside the steady-state reach. Once it has moved further than
 // that, the window latches shut and the reach is the steady one again.
+//
+// The timer re-rasterizes the LAST octree, so the grid follows the robot
+// through TF and the payload clearing follows its live pose between octrees.
+// That republish is bounded by `max_octree_age_s`: `octomap_server` publishes
+// only when it inserts a cloud, so a dead camera is a silent octree, and a
+// frozen map republished on time would never let the kernel's
+// `world_voxel_deadline_ms` fire. Past the bound this node publishes nothing —
+// not even a payload-cleared grid — and the kernel fails closed with
+// `DROP_VOXEL_UNAVAILABLE` (hazard log Entry 033).
 
 #pragma once
 
@@ -56,6 +65,7 @@
 #include <openral_msgs/msg/world_state_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 
+#include "openral_octomap_bridge/octree_freshness.hpp"
 #include "openral_octomap_bridge/octree_to_grid.hpp"
 #include "openral_octomap_bridge/payload_clearing.hpp"
 
@@ -88,6 +98,14 @@ public:
     const auto output_topic =
         this->declare_parameter<std::string>("output_topic", "/openral/world_voxels");
     const double rate_hz = this->declare_parameter<double>("publish_rate_hz", 10.0);
+    // How long the last octree may keep being republished after it arrived.
+    // Must exceed octomap's normal inter-publish gap (measured 0.25-0.31 s on
+    // the Thor ZED path, ~0.1-0.33 s in sim) and sit below the kernel's
+    // `world_voxel_deadline_ms`, which is what turns the resulting silence into
+    // a fail-closed drop. `deploy_e2e.launch.py` derives it as half that
+    // deadline. Receipt time, on this node's clock: the clock the kernel times
+    // voxel freshness on, immune to a sensor stamping on another clock domain.
+    max_octree_age_s_ = this->declare_parameter<double>("max_octree_age_s", 0.5);
 
     // Attached-payload clearing. On by default: `AttachedCollisionObject`
     // requires the object to be absent from world occupancy while attached, and
@@ -138,6 +156,12 @@ public:
                    "is blind outside of.",
                    coverage_radius_m_);
     }
+    if (!valid_max_octree_age(max_octree_age_s_)) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "max_octree_age_s must be finite and > 0 (got %g): publishing NOTHING — a "
+                   "bound that cannot be applied is a map of unknown age.",
+                   max_octree_age_s_);
+    }
     RCLCPP_INFO(this->get_logger(),
                 "octomap→voxel bridge: %s → %s, base=%s, covering r=%g m @[%g %g %g], "
                 "lattice=the octree's",
@@ -165,11 +189,28 @@ private:
     }
     octree_.reset(octree);  // takes ownership
     octomap_frame_ = msg->header.frame_id;
+    octree_received_ = this->now();
   }
 
   void on_timer() {
     if (octree_ == nullptr || octomap_frame_.empty()) {
       return;
+    }
+    // Before anything else, so a stale octree reaches no grid — a
+    // payload-cleared one included.
+    const double octree_age_s = (this->now() - octree_received_).seconds();
+    if (!octree_is_fresh(octree_age_s, max_octree_age_s_)) {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                           "last octree is %.3f s old (max_octree_age_s %g): publishing nothing "
+                           "until the next one, so the kernel's world_voxel_deadline_ms fails "
+                           "closed (DROP_VOXEL_UNAVAILABLE) instead of trusting a frozen map",
+                           octree_age_s, max_octree_age_s_);
+      octree_stale_ = true;
+      return;
+    }
+    if (octree_stale_) {
+      RCLCPP_INFO(this->get_logger(), "fresh octree (%.3f s old): publishing again", octree_age_s);
+      octree_stale_ = false;
     }
     geometry_msgs::msg::TransformStamped tf_msg;
     try {
@@ -352,6 +393,9 @@ private:
   double attached_clear_padding_m_{0.0};
   double attach_sweep_padding_m_{0.05};
   double attached_state_timeout_s_{0.5};
+  double max_octree_age_s_{0.5};
+  rclcpp::Time octree_received_;
+  bool octree_stale_{false};
   AttachSweepLedger attach_sweep_ledger_;
 
   std::unique_ptr<octomap::OcTree> octree_;

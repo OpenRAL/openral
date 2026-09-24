@@ -80,7 +80,7 @@ Thin wrappers around the Python-layer adapters; each exposes a single
 
 ### `packages/openral_octomap_bridge/launch/octomap_voxel_bridge.launch.py`
 
-- `generate_launch_description() -> LaunchDescription` (L21) — Declares params (`base_frame`, `octomap_topic`, `output_topic`, `resolution`, `coverage_radius_m`, `coverage_center_z`, `publish_rate_hz`) and spawns the `octomap_voxel_bridge` node that turns an OctoMap into the `openral_msgs/OccupancyVoxels` grid the safety kernel consumes.
+- `generate_launch_description() -> LaunchDescription` (L21) — Declares params (`base_frame`, `octomap_topic`, `output_topic`, `resolution`, `coverage_radius_m`, `coverage_center_z`, `publish_rate_hz`, `max_octree_age_s`) and spawns the `octomap_voxel_bridge` node that turns an OctoMap into the `openral_msgs/OccupancyVoxels` grid the safety kernel consumes.
 
 ### `packages/openral_hal_openarm/launch/real_bringup.launch.py`
 
@@ -180,14 +180,16 @@ _Composed-runtime entry point installed as `lib/openral_rskill_ros/runtime_node`
 
 ### `packages/openral_rskill_ros/launch/deploy_e2e.launch.py`
 
-- `compose_runtime_graph(context, *_args, **_kwargs) -> list` (L814) — Resolves every launch arg, loads the robot manifest, and assembles the full deploy-sim ROS graph — HAL, safety kernel, reasoner, SLAM/Nav2, sensor drivers, optional Foxglove viz. On `hal_mode:=real` it also starts the robot's vendor `ros2_control` bringup itself.
-- `generate_launch_description() -> LaunchDescription` (L2564) — Robot-agnostic deploy-sim launch graph entry point; wraps `compose_runtime_graph` in an `OpaqueFunction`.
-- `_build_real_bringup_include(real_bringup) -> object | None` (L516) — `IncludeLaunchDescription` of the manifest's `hal.real_bringup` (`"<pkg>:<file>.launch.py"`) on `hal_mode:=real`; `None` when the manifest declares none; raises `RuntimeError` when the declared package or file is not installed. There is no package-name convention fallback.
+- `compose_runtime_graph(context, *_args, **_kwargs) -> list` (L835) — Resolves every launch arg, loads the robot manifest, and assembles the full deploy-sim ROS graph — HAL, safety kernel, reasoner, SLAM/Nav2, sensor drivers, optional Foxglove viz. On `hal_mode:=real` it also starts the robot's vendor `ros2_control` bringup itself.
+- `generate_launch_description() -> LaunchDescription` (L2588) — Robot-agnostic deploy-sim launch graph entry point; wraps `compose_runtime_graph` in an `OpaqueFunction`.
+- `_build_real_bringup_include(real_bringup) -> object | None` (L537) — `IncludeLaunchDescription` of the manifest's `hal.real_bringup` (`"<pkg>:<file>.launch.py"`) on `hal_mode:=real`; `None` when the manifest declares none; raises `RuntimeError` when the declared package or file is not installed. There is no package-name convention fallback.
 - `_VENV_SITE` (L42) — Optional workspace-editable-install site-dir from `OPENRAL_VENV_SITE`, registered via `site.addsitedir` (plain `PYTHONPATH` is not enough: `.pth` files are only processed by the `site` module on registered site-dirs).
 - `_REPO_ROOT` (L112) — Resolved repo root (`_resolve_repo_root()`).
 - `_RSKILLS_DIR` (L113) — `str(_REPO_ROOT / "rskills")`.
 - `_VENV_RAL` (L115) — `_REPO_ROOT / ".venv" / "bin" / "openral"`.
 - `_RAL_EXECUTABLE` (L116) — The workspace venv's `openral` binary when it exists, else the bare `"openral"` on PATH.
+- `_WORLD_VOXEL_DEADLINE_MS` (L305) — The kernel's `world_voxel_deadline_ms` (1000 ms) — the one number the voxel liveness chain hangs off.
+- `_max_octree_age_s() -> float` (L308) — The octomap bridge's `max_octree_age_s`, derived as half `_WORLD_VOXEL_DEADLINE_MS`: above octomap's measured inter-publish gap, below the kernel's deadline, so a dead camera ends in the kernel's `DROP_VOXEL_UNAVAILABLE` (hazard log Entry 033).
 
 ### `python/runner/src/openral_runner/ros_publishing_hal.py`
 _HAL Protocol adapter that publishes `ActionChunk` on `/openral/candidate_action`._
