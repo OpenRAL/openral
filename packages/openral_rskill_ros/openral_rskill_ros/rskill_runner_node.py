@@ -2654,18 +2654,25 @@ def _pace_tick(prev_deadline_s: float, period_s: float) -> float:
 def _decode_image_frames(
     image_frames: dict[str, Any],
     sensor_to_slot: dict[str, str],
+    required_slots: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Decode ``WorldState.image_frames`` into a VLA-slot-keyed ``obs["images"]``.
 
-    Each ``SensorFrame`` with inline ``data``
-    is decoded into an ``HxWxC`` uint8 array and stored under its VLA slot
-    (``sensor_name_to_slot``). Sensors absent from
-    ``sensor_to_slot`` pass through under their own name. Frames without
-    inline pixels (``data is None`` — topic / handle delivery) are
-    skipped — zero-copy handle frames travel via
-    ``_collect_image_handles`` instead (the zero-copy vision path).
+    Each ``SensorFrame`` with inline ``data`` is decoded by
+    ``decode_inline_frame`` into an ``HxWxC`` array (uint8 colour/mono,
+    uint16 depth; JPEG/PNG decoded to RGB) and stored under its VLA slot
+    (``sensor_name_to_slot``). Sensors absent from ``sensor_to_slot`` pass
+    through under their own name. Frames without inline pixels (``data is
+    None`` — topic / handle delivery) are not decoded — zero-copy handle
+    frames travel via ``_collect_image_handles`` instead.
+
+    Raises:
+        ROSPerceptionStale: A frame carried inline bytes that could not be
+            decoded (``runner.frame_skipped`` logs why) and its slot is in
+            ``required_slots``: the policy would otherwise run blind on that view.
     """
     import numpy as np
+    from openral_core.exceptions import ROSPerceptionStale
     from openral_core.schemas import FrameEncoding
     from openral_runner.dataset_recorder_bridge import decode_inline_frame
 
@@ -2676,13 +2683,18 @@ def _decode_image_frames(
         # slots (the OpenArm bench's `head_zed`) decodes as uint16 instead
         # of aborting the whole observation.
         arr = decode_inline_frame(frame)
+        slot = sensor_to_slot.get(name, name)
         if arr is None:
+            if frame.data is not None and slot in required_slots:
+                raise ROSPerceptionStale(
+                    f"sensor {name!r} ({frame.encoding.value}) feeds required policy slot "
+                    f"{slot!r} but its frame could not be decoded (see runner.frame_skipped)"
+                )
             continue
         # Policies are fed RGB. OpenCV readers publish BGR8, so reverse the
         # channel axis (contiguous: torch rejects negative strides) rather than
         # feed a real deploy swapped colours.
         bgr = frame.encoding == FrameEncoding.BGR8
-        slot = sensor_to_slot.get(name, name)
         images[slot] = np.ascontiguousarray(arr[..., ::-1]) if bgr else arr
     return images
 
@@ -2691,6 +2703,7 @@ def _assemble_obs_images(
     obs: dict[str, Any],
     image_frames: dict[str, Any] | None,
     sensor_to_slot: dict[str, str],
+    required_slots: tuple[str, ...] = (),
 ) -> None:
     """Populate ``obs["images"]`` (+ ``obs["image_handles"]`` when present).
 
@@ -2698,7 +2711,9 @@ def _assemble_obs_images(
     NVMM descriptors alongside the decoded CPU frames; a TRT-attached SmolVLA
     adapter runs its vision encoder straight on the device pointers.
     """
-    obs["images"] = _decode_image_frames(image_frames, sensor_to_slot) if image_frames else {}
+    obs["images"] = (
+        _decode_image_frames(image_frames, sensor_to_slot, required_slots) if image_frames else {}
+    )
     if image_frames and (handles := _collect_image_handles(image_frames, sensor_to_slot)):
         obs["image_handles"] = handles
 
@@ -3206,6 +3221,9 @@ def _make_policy_adapter_skill(
     # rekeys `obs["images"]` to what the adapter looks up. Built once at
     # skill-build time; see `sensor_name_to_slot`.
     sensor_to_slot = sensor_name_to_slot(description)
+    # Slots the policy cannot run without: an undecodable frame on one of these
+    # raises instead of silently dropping the view (see `_decode_image_frames`).
+    required_slots = required_vla_camera_slots(cast("RSkillManifest", manifest), description)
     # Print to stderr so the diagnostic shows up in the launch's
     # stitched-together stdout (structlog's OTel sink doesn't surface
     # there). One-time event at build-time — keeps the per-step
@@ -3503,7 +3521,7 @@ def _make_policy_adapter_skill(
             # slot (camera1/camera2/...). `sensor_to_slot` realigns the two
             # so the adapter + `openral sim run` agree (see
             # `sensor_name_to_slot` / `_decode_image_frames`).
-            _assemble_obs_images(obs, world_state.image_frames, sensor_to_slot)
+            _assemble_obs_images(obs, world_state.image_frames, sensor_to_slot, required_slots)
 
             action_array = self._adapter.step(obs, self._prompt)  # type: ignore[attr-defined]
             # Reorder policy-order action → robot-order action so the
