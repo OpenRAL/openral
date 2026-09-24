@@ -1968,18 +1968,18 @@ def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) 
 DDS_TRANSPORT_READY_MARKER: Final[str] = "dds_transport_ready:"
 """Printed once the DDS transport is settled and safe to join.
 
-Everything destructive to an existing Fast-DDS participant — the orphan reap
-and the ``/dev/shm/fastrtps_*`` purge — has run by the time this line appears,
-and ``ros2 launch`` has not been spawned yet. A co-process that wants to
-observe the graph (the validation matrix's evidence monitor) waits for this
-line in the deploy log before creating its own participant; starting earlier
-gets its shared-memory segments unlinked underneath it, after which it runs
-happily and receives nothing at all.
+The orphan reap and the stale ``/dev/shm/fastrtps_*`` purge have run by the
+time this line appears, and ``ros2 launch`` has not been spawned yet. The line
+reads ``dds_transport_ready: rmw=<rmw> shm_purged=<N> shm_kept_live=<M>``
+(``n/a`` for both counts when Cyclone/Zenoh is selected). The purge only
+unlinks files no live process uses, so a participant that joined earlier keeps
+working; the validation matrix's evidence monitor still waits for this line so
+it attaches to the graph ``ros2 launch`` is about to build, not a leftover one.
 """
 
 
 def _apply_rmw_default(env: dict[str, str]) -> None:
-    """Clean stale Fast-DDS SHM lockfiles before spawning ``ros2 launch``.
+    """Clean stale Fast-DDS SHM files before spawning ``ros2 launch``.
 
     ROS 2 Jazzy defaults to Fast-DDS, whose per-participant SHM
     files live under ``/dev/shm/fastrtps_*``. When a prior launch
@@ -1993,61 +1993,155 @@ def _apply_rmw_default(env: dict[str, str]) -> None:
     sharp edge with Cyclone (deserialisation race on the
     auto-CONFIGURE → ACTIVATE chain) that takes down the
     prompt_router; until that's resolved we stay on Fast-DDS and
-    aggressively clean its stale state.
+    clean its stale state (``_clean_stale_fastrtps_shm``).
 
-    Best-effort: only files owned by the calling user are
-    unlinked — other users' SHM segments are silently skipped.
-    Operators that explicitly opt into Cyclone or Zenoh via
-    ``RMW_IMPLEMENTATION`` keep theirs untouched.
-
-    **The purge is destructive to participants that already exist.**
-    It unlinks *every* ``/dev/shm/fastrtps_*`` this user owns, not
-    only the stale ones, so any Fast-DDS participant already running
-    on this host loses its shared-memory segments and goes silent
-    without erroring. The validation matrix lost a 24-run round to
-    exactly that: its evidence monitor attached ~6 ms after the
-    deploy started, and every one of the 24 ``run_monitor.jsonl``
-    files contains two lines. The purge is therefore *announced*:
-    ``DDS_TRANSPORT_READY_MARKER`` is printed on the line after
-    it, so a co-process can wait for it and create its participant on
-    the far side. It is printed on the Cyclone/Zenoh paths too, where
-    nothing was purged — a waiter needs the signal either way.
+    Only files **no live process uses** are unlinked, so a Fast-DDS
+    participant already running on this host (a camera driver started
+    first, the ``ros2`` CLI daemon) keeps its segments and keeps
+    publishing. Operators that explicitly opt into Cyclone or Zenoh via
+    ``RMW_IMPLEMENTATION`` skip the clean entirely.
+    ``DDS_TRANSPORT_READY_MARKER`` is printed on the line after the
+    clean, on every RMW path — a waiter needs the signal either way.
     """
     rmw = env.get("RMW_IMPLEMENTATION", "")
-    # -1 = the operator opted out of Fast-DDS, so nothing was cleaned.
     opted_out = "rmw_cyclonedds" in rmw or "rmw_zenoh" in rmw
-    purged = -1 if opted_out else _clean_stale_fastrtps_shm()
-    _console.print(
-        f"  {DDS_TRANSPORT_READY_MARKER} rmw={rmw or 'default'} "
-        f"shm_purged={'n/a' if purged < 0 else purged}"
-    )
+    if opted_out:
+        counts = "shm_purged=n/a shm_kept_live=n/a"
+    else:
+        purged, kept = _clean_stale_fastrtps_shm()
+        counts = f"shm_purged={purged} shm_kept_live={kept}"
+    _console.print(f"  {DDS_TRANSPORT_READY_MARKER} rmw={rmw or 'default'} {counts}")
     # A waiter reads this line out of a redirected stdout, so it must not sit
     # in a block buffer while the graph comes up around it.
     sys.stdout.flush()
 
 
-def _clean_stale_fastrtps_shm() -> int:
-    """Best-effort: remove stale Fast-DDS SHM lock files in ``/dev/shm``.
+def _fastrtps_group(name: str) -> str:
+    """Group key tying a Fast-DDS lock file to the segment/port it guards.
 
-    Fast-DDS lock files are owned by the user that created them — we
-    silently skip anything we can't unlink (another user's file) so
-    this never escalates to ``sudo``-required cleanup. Cyclone-DDS
-    deployments never call this path.
+    Fast-DDS 2.x names a participant segment ``fastrtps_<hex>`` and a port
+    ``fastrtps_port<N>``; each is guarded by a lock file with the same name
+    plus ``_el`` (exclusive, ``RobustExclusiveLock``) or ``_sl`` (shared,
+    ``RobustSharedLock``). Stripping that suffix yields the group.
+    """
+    return name[:-3] if name.endswith(("_el", "_sl")) else name
+
+
+#: ``/proc/<pid>/maps`` columns when the mapping names a file (the path is last).
+_MAPS_FIELDS_WITH_PATH: Final[int] = 6
+#: ``<major>:<minor>:<inode>`` — the file column of a ``/proc/locks`` line.
+_LOCKS_FILE_ID_PARTS: Final[int] = 3
+
+
+def _live_fastrtps_paths(proc_root: Path = Path("/proc")) -> set[str]:
+    """Paths of ``fastrtps_*`` files some readable process has open or mapped.
+
+    Scans ``<proc_root>/<pid>/fd`` symlinks and ``<proc_root>/<pid>/maps``.
+    Processes that exit mid-scan or whose entries this user cannot read are
+    skipped here; ``_locked_fastrtps_inodes`` covers the latter, because every
+    live Fast-DDS participant holds a ``flock`` on each of its ``_el``/``_sl``
+    files and ``/proc/locks`` lists those for every process.
 
     Returns:
-        How many entries were unlinked, for the readiness line.
+        Absolute paths as the kernel reports them (``/dev/shm/fastrtps_...``).
     """
-    shm = Path("/dev/shm")
-    if not shm.is_dir():
-        return 0
-    purged = 0
-    for entry in shm.iterdir():
-        if not entry.name.startswith("fastrtps_"):
+    live: set[str] = set()
+    for pid_dir in proc_root.iterdir():
+        if not pid_dir.name.isdigit():
             continue
-        with contextlib.suppress(OSError, PermissionError):
+        with contextlib.suppress(OSError):
+            for fd in (pid_dir / "fd").iterdir():
+                with contextlib.suppress(OSError):
+                    target = os.readlink(fd)
+                    if "/fastrtps_" in target:
+                        live.add(target)
+        with contextlib.suppress(OSError):
+            for line in (pid_dir / "maps").read_text(errors="replace").splitlines():
+                fields = line.split(maxsplit=5)
+                if len(fields) == _MAPS_FIELDS_WITH_PATH and "/fastrtps_" in fields[5]:
+                    live.add(fields[5])
+    return live
+
+
+def _locked_fastrtps_inodes(proc_root: Path = Path("/proc")) -> set[tuple[int, int, int]] | None:
+    """``(major, minor, inode)`` of every file any process holds a lock on.
+
+    Parsed from ``<proc_root>/locks`` (``N: FLOCK ADVISORY WRITE <pid>
+    <maj>:<min>:<ino> ...``, major/minor in hex), which the kernel exposes
+    for every process in this PID namespace regardless of owner.
+
+    Returns:
+        The locked-file set, or ``None`` when ``/proc/locks`` cannot be read —
+        callers must then treat every file as live.
+    """
+    try:
+        text = (proc_root / "locks").read_text()
+    except OSError:
+        return None
+    locked: set[tuple[int, int, int]] = set()
+    for line in text.splitlines():
+        for field in line.split():
+            parts = field.split(":")
+            if len(parts) == _LOCKS_FILE_ID_PARTS and all(parts):
+                with contextlib.suppress(ValueError):
+                    locked.add((int(parts[0], 16), int(parts[1], 16), int(parts[2])))
+                break
+    return locked
+
+
+def _clean_stale_fastrtps_shm(
+    shm_dir: Path = Path("/dev/shm"), proc_root: Path = Path("/proc")
+) -> tuple[int, int]:
+    """Unlink the ``fastrtps_*`` files in ``shm_dir`` that no live process uses.
+
+    A file is live when a process has it open or mapped
+    (``_live_fastrtps_paths``) or holds a lock on it
+    (``_locked_fastrtps_inodes``). Liveness is per group
+    (``_fastrtps_group``): a segment or port and its ``_el``/``_sl`` lock
+    files are kept or removed together. If ``/proc/locks`` is unreadable
+    nothing is unlinked — never remove what could not be proven unused.
+    Files this user cannot unlink (another user's) are skipped, so this
+    never escalates to ``sudo``. Cyclone/Zenoh deployments never call it.
+
+    The directory is listed before ``/proc`` is scanned, so a file created
+    during the scan is never a candidate. A process that opens an existing,
+    otherwise-unused file between the scan and the unlink can still lose it.
+
+    Args:
+        shm_dir: Directory holding the Fast-DDS files.
+        proc_root: procfs mount to read liveness from.
+
+    Returns:
+        ``(unlinked, kept_live)`` entry counts, for the readiness line.
+    """
+    if not shm_dir.is_dir():
+        return 0, 0
+    candidates = [e for e in shm_dir.iterdir() if e.name.startswith("fastrtps_")]
+    if not candidates:
+        return 0, 0
+    locked = _locked_fastrtps_inodes(proc_root)
+    if locked is None:
+        return 0, len(candidates)
+    live_paths = _live_fastrtps_paths(proc_root)
+    real_dir = os.path.realpath(shm_dir)
+    live_groups: set[str] = set()
+    for entry in candidates:
+        try:
+            st = entry.stat()
+        except OSError:
+            continue
+        in_use = (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino) in locked
+        if in_use or os.path.join(real_dir, entry.name) in live_paths:
+            live_groups.add(_fastrtps_group(entry.name))
+    purged = kept = 0
+    for entry in candidates:
+        if _fastrtps_group(entry.name) in live_groups:
+            kept += 1
+            continue
+        with contextlib.suppress(OSError):
             entry.unlink()
             purged += 1
-    return purged
+    return purged, kept
 
 
 def _required_ros2_packages(invocation: LaunchInvocation) -> list[str]:
