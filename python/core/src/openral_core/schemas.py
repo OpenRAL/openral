@@ -544,8 +544,8 @@ class SensorSpec(BaseModel):
 
         Example:
             >>> desc = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
-            >>> [s.name for s in desc.sensors if s.is_depth_camera]
-            ['front_depth']
+            >>> ", ".join(s.name for s in desc.sensors if s.is_depth_camera)
+            'front_depth'
         """
         return self.modality in ("depth", "point_cloud") and self.intrinsics is not None
 
@@ -708,8 +708,8 @@ def merge_deploy_sensors(
 
     Example:
         >>> desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
-        >>> [s.name for s in merge_deploy_sensors(desc.sensors, [])]
-        ['top', 'wrist']
+        >>> ", ".join(s.name for s in merge_deploy_sensors(desc.sensors, []))
+        'top, wrist'
     """
     manifest = list(manifest_sensors)
     scene = list(scene_sensors)
@@ -732,10 +732,11 @@ def publishing_sensors(
 
     Example:
         >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
-        >>> [s.name for s in publishing_sensors(arm.sensors, [], "sim") if s.modality == "rgb"]
-        ['top', 'wrist_left', 'wrist_right']
-        >>> [s.name for s in publishing_sensors(arm.sensors, [], "real")]  # bound in robot.yaml
-        ['head_zed', 'top', 'wrist_left', 'wrist_right']
+        >>> sim = publishing_sensors(arm.sensors, [], "sim")
+        >>> ", ".join(s.name for s in sim if s.modality == "rgb")
+        'top, wrist_left, wrist_right'
+        >>> ", ".join(s.name for s in publishing_sensors(arm.sensors, [], "real"))  # bound
+        'head_zed, top, wrist_left, wrist_right'
     """
     if hal_mode != "real":
         return list(manifest_sensors)
