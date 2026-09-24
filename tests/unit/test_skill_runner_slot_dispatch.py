@@ -21,6 +21,7 @@ from types import ModuleType
 import numpy as np
 import pytest
 from openral_core import Action, ActionSlot, ControlMode
+from openral_rskill._policy_io import PolicyIOCodec
 
 
 def _load_skill_runner_module() -> ModuleType:
@@ -390,7 +391,13 @@ def test_joint_position_slots_are_clamped_inside_the_robots_joint_limits(
     vec = np.zeros(16, dtype=np.float32)
     vec[4] = -1.58973  # left_joint5, 0.019 rad past its limit
     vec[12] = float(hi) + 0.5  # right_joint5, well past the other end
-    actions = runner_mod._dispatch_slots(slots, vec, description=desc)
+    actions = runner_mod._policy_action_to_actions(
+        vec,
+        codec=PolicyIOCodec.from_manifest(None, desc),
+        slots=slots,
+        description=desc,
+        cartesian_delta_scale=None,
+    )
 
     left_action = next(a for a in actions if a.joint_names == left)
     right_action = next(a for a in actions if a.joint_names == right)
@@ -399,3 +406,41 @@ def test_joint_position_slots_are_clamped_inside_the_robots_joint_limits(
     # An in-range target is untouched, and nothing is clamped onto the limit itself.
     assert left_action.joint_targets[0][0] == 0.0
     assert left_action.joint_targets[0][4] > float(lo)
+
+
+def test_an_unnamed_joint_position_slot_is_clamped_in_description_order(
+    runner_mod: ModuleType,
+) -> None:
+    """A JOINT_POSITION slot without ``joint_names`` is clamped too (audit A.md F4).
+
+    Such a slot is a whole-vector action in ``RobotDescription.joints`` order
+    (``_slot_joint_names``). The runner's old slot clamp keyed on names only,
+    so it proposed these targets raw; the clamp now lives in the one codec
+    (``PolicyIOCodec``) with the same epsilon as the whole-vector path.
+    Real fixture: the Franka Panda manifest, an arm + gripper contract.
+    """
+    import yaml
+    from openral_core import RobotDescription
+
+    repo_root = Path(__file__).resolve().parents[2]
+    desc = RobotDescription.model_validate(
+        yaml.safe_load((repo_root / "robots" / "franka_panda" / "robot.yaml").read_text())
+    )
+    n = len(desc.joints)
+    slots = [ActionSlot(range=(0, n - 1), control_mode=ControlMode.JOINT_POSITION)]
+    limits = [j.position_limits for j in desc.joints]
+    lo4, hi4 = limits[3]
+    vec = np.zeros(n, dtype=np.float32)
+    vec[3] = float(hi4) + 0.3  # panda_joint4 past its upper limit
+    vec[0] = float(limits[0][0]) - 0.3  # panda_joint1 past its lower limit
+    codec = PolicyIOCodec.from_manifest(None, desc)
+
+    (action,) = runner_mod._policy_action_to_actions(
+        vec, codec=codec, slots=slots, description=desc, cartesian_delta_scale=None
+    )
+    row = action.joint_targets[0]
+    assert row[3] == pytest.approx(float(hi4) - 1e-3)
+    assert row[0] == pytest.approx(float(limits[0][0]) + 1e-3)
+    # Same result as the whole-vector path: one clamp, one epsilon.
+    assert row == pytest.approx(list(codec.clamp(codec.to_robot_action(vec))))
+    assert float(lo4) < row[3] < float(hi4)
