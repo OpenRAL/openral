@@ -604,15 +604,15 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             # `to_empty` materialises real (uninitialised) CPU storage for
             # every still-meta param (Linear4bit modules from the previous
             # step already have real bnb storage). The prequant state load
-            # below reports ~254 "missing" keys (bnb Params4bit sub-state +
-            # RoPE inv_freq buffers, etc.) it cannot fill — leaving those at
-            # uninit garbage is fatal: RMSNorm.weight=0 zeros its block
-            # output, softmax saturates, NaNs propagate, and an
-            # F.embedding gather later reads an out-of-bounds index and
-            # CUDA asserts. `reset_parameters()` restores PyTorch's normal
-            # __init__ values (kaiming for Linear, ones for norms, zeros
-            # for biases, normal for embeddings) as a safe baseline before
-            # the prequant load overwrites what it has data for.
+            # below refuses any parameter/persistent buffer it cannot fill,
+            # but the non-persistent RoPE inv_freq buffers are never in it
+            # (``init_buffers`` rebuilds them) — leaving uninit garbage is
+            # fatal: RMSNorm.weight=0 zeros its block output, softmax
+            # saturates, NaNs propagate, and an F.embedding gather later
+            # reads an out-of-bounds index and CUDA asserts.
+            # `reset_parameters()` restores PyTorch's normal __init__ values
+            # (kaiming for Linear, ones for norms, zeros for biases, normal
+            # for embeddings) for any module the load does not cover.
             # Staging on CPU (vs `to_empty(device=cuda)` directly, ~19s
             # faster) avoids an 8 GiB OOM: bitsandbytes' Params4bit
             # `__torch_function__` doesn't intercept `empty_like`, so

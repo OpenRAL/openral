@@ -723,8 +723,8 @@ def _load_molmoact2_model(  # noqa: PLR0915  # reason: load-phase orchestration 
         quantize_nf4_in_place(model, torch=torch, compute_dtype=torch.bfloat16)
     # Overlay the prequantized nf4 pack shipped at the rSkill's weights_uri so
     # the ~25 s on-line bf16→nf4 conversion on ``.to(cuda)`` is replaced by a
-    # fast state-dict load. Silent no-op + fallback if the pack is absent or its
-    # keys don't line up (then ``.to(cuda)`` re-packs).
+    # fast state-dict load. No-op when there is no pack (then ``.to(cuda)``
+    # re-packs); a pack whose keys don't line up raises ``ROSConfigError``.
     with _molmoact2_phase("prequant_state_load"):
         load_prequantized_state_for_rskill(model, spec, torch=torch, log_event_prefix="molmoact2")
     with _molmoact2_phase("to_device", device=device):
