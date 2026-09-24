@@ -100,9 +100,9 @@ def _emit_frame_observability(sensor_name: str, frame: Any, flip_180: bool) -> N
     ``_MAX_FALLBACK_TOPIC_RATE_HZ`` (3 Hz) — pump-fed cameras emit here instead, at full
     reader cadence, and ``_on_image`` skips them.
 
-    Affordable: Pillow drops the GIL for resize/encode, measured 2.42 ms/frame at 320x240 q60
-    (60 thumbnails/s costs 4.5% of a competing thread's GIL time, vs 89.5% for the uncapped
-    full-res topic). Display-only. Shares
+    Affordable because ``encode_frame_thumbnail`` subsamples before it copies: 0.6 ms per
+    1920x1200 frame on a Jetson AGX Thor, and three cameras at 30 Hz leave a competing Python
+    thread 97 % of its speed (34 % when it encoded at full resolution). Display-only. Shares
     ``openral_observability.producer.emit_sensor_frame_span`` with ``_on_image`` so
     pump-fed and tee-fed cameras render identically.
     """
