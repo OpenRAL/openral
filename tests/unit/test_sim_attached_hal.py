@@ -225,6 +225,46 @@ def test_multi_slot_tick_commits_one_atomic_env_step() -> None:
     assert env.last_action[-1] == pytest.approx(-1.0)
 
 
+def test_group_of_an_already_committed_tick_is_refused() -> None:
+    """A replayed group of a committed tick must not step the sim again (audit B.md 3).
+
+    The stale-tick guard used to live only in the OpenArm MuJoCo twin; this
+    HAL serves the slot-dispatched R1Pro/B1K, RoboCasa365 and InternVLA-N1
+    skills, and re-applied a replayed group.
+    """
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+
+    def _tick(tick: int) -> list[Action]:
+        return [
+            Action(
+                control_mode=ControlMode.CARTESIAN_DELTA,
+                cartesian_delta=[(0.2, -0.1, 0.3, 0.0, 0.1, -0.2)],
+                tick_index=tick,
+                tick_group_size=2,
+            ),
+            Action(
+                control_mode=ControlMode.GRIPPER_POSITION,
+                gripper=[-1.0],
+                tick_index=tick,
+                tick_group_size=2,
+            ),
+        ]
+
+    for slot in _tick(2):
+        hal.send_action(slot)
+    assert (env.step_calls, hal.last_committed_tick) == (1, 2)
+    for stale in (2, 1):
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_tick(stale)[0])
+    assert (env.step_calls, hal.last_committed_tick) == (1, 2)
+    # Nothing was staged by the refusal: the next tick commits normally.
+    for slot in _tick(3):
+        hal.send_action(slot)
+    assert (env.step_calls, hal.last_committed_tick) == (2, 3)
+
+
 def test_pack_action_gripper_position_packs_last_slot() -> None:
     """GRIPPER_POSITION fills the trailing slot; arm + base zero."""
     chunk = Action(
