@@ -418,11 +418,17 @@ sensors:
   # arrive on zed_wrapper's own topics since the ZED SDK computes depth on the
   # host GPU and the device only emits a side-by-side UVC stream.
   #
-  # POSE/INTRINSICS UNCALIBRATED by operator decision (no vendor extrinsic
+  # POSE PARTLY MEASURED, INTRINSICS UNCALIBRATED (no vendor extrinsic
   # exists; Stereolabs ship mount as a xacro param, Enactic leave theirs
-  # commented "tune before hardware"). Pose is the stated approximation:
-  # 0.20 m above the shoulder midpoint (= `openarm_base`, since both arm
-  # mounts sit at (0,+/-0.031,0)), pitched 45deg down. fx/fy from StereoLabs'
+  # commented "tune before hardware"). Position is still the stated
+  # approximation: 0.20 m above the shoulder midpoint (= `openarm_base`, since
+  # both arm mounts sit at (0,+/-0.031,0)), x = y = 0. Roll/pitch are MEASURED
+  # (2026-09-24, Thor cell, arms unpowered): a level-surface fit on a real ZED
+  # cloud showed the old 45deg-down placeholder was 22.7deg off in pitch (24.9deg
+  # on the Orin cell); correcting to roll -0.7deg / pitch 67.7deg leaves 0.4deg of
+  # residual tilt. Height, x/y and yaw are NOT observable from one level plane
+  # and remain unmeasured, so the kernel's world-voxel check still requires the
+  # extrinsic check below to PASS before it is trusted. fx/fy from StereoLabs'
   # published 90deg horizontal FOV at HD1080 depth (fx=(1920/2)/tan(45deg)=960,
   # same basis a real deploy scene's `context` override would use). Good
   # enough to prove the pipeline, not to project anything geometric. What a
@@ -456,7 +462,7 @@ sensors:
     modality: "depth"
     frame_id: "zed_camera_link"
     parent_frame: "openarm_base"
-    static_transform_xyz_rpy: [0.0, 0.0, 0.20, 0.0, 0.7853981634, 0.0]
+    static_transform_xyz_rpy: [0.0, 0.0, 0.20, -0.0123, 1.1823, 0.0]
     rate_hz: 10.0
     intrinsics:
       width: 1920

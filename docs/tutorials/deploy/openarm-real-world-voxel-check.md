@@ -27,7 +27,7 @@ expecting a clean pass:
    `exclude_body_ids` in the sim HAL's depth synthesis, is MuJoCo-only. Any arm link inside
    the ZED's field of view therefore becomes occupancy around that link. The kernel then
    stops that link against its own surface with `KIND_COLLISION` and a `voxel_<n>` cell. With
-   the arms hanging at zero, below and behind a camera pitched 45° down, they may be out of
+   the arms hanging at zero, below and behind a camera pitched ~68° down, they may be out of
    view; a policy reaching into the workspace brings them into view. A ROS 2 candidate is
    `leggedrobotics/robot_self_filter` (BSD-3-Clause, see §22.4 of the
    [collision-safety alternatives survey](../../reference/collision-safety-alternatives-survey.md)),
@@ -108,7 +108,10 @@ assuming. The cloud topic above is the one the scene pins, and it was verified o
 ## 2. Extrinsic: measure and verify with a pass criterion
 
 The kernel places every obstacle through `openarm_base -> zed_camera_link`. The manifest's
-value is an **uncalibrated approximation**: 0.20 m above `openarm_base`, pitched 45° down. A
+value is **partly measured**: roll −0.7° / pitch 67.7° come from a level-surface fit on a real
+ZED cloud in the Thor cell (2026-09-24; the earlier 45° placeholder was 22.7° off), but the
+position (0.20 m above `openarm_base`, x = y = 0) and yaw are still approximations, because
+one level plane cannot observe them. A
 wrong pose does two things. It puts obstacles where there are none, which causes false
 stops. It also moves real obstacles away from where they are, which causes missed stops.
 
@@ -205,7 +208,14 @@ If the camera is ever bumped, re-seated or re-mounted, go back to 2a.
 
 The same scene, pose and cloud are used, but the HAL is the MuJoCo twin, so no motor
 command exists. The arms stay unpowered. `drivers:` is ignored on the sim path, so start the
-ZED driver by hand as in step 1. Then:
+ZED driver by hand as in step 1, **but only after** `deploy sim` prints
+`dds_transport_ready: … shm_purged=N`. Before launching, `deploy sim` unlinks every Fast-DDS
+shared-memory segment your user owns, so a ZED driver that is already running keeps its
+process alive but silently stops delivering: its cloud reads 0 Hz, octomap never inserts,
+and `/openral/world_voxels` never appears. Seen on Thor on 2026-09-24. With the driver started
+after the marker, the same pass ran at 4.7 Hz cloud / 4.0 Hz octree / 6.4 Hz voxels.
+
+Start `deploy sim` first, then the ZED driver once the marker appears:
 
 ```bash
 openral deploy sim --config scenes/deploy/openarm_real_world_voxels.yaml \
