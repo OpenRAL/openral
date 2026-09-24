@@ -21,8 +21,10 @@
   <depend>tf2_geometry_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>openral_msgs</depend>
+  <depend>sensor_msgs</depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
+  <test_depend>openral_safety_kernel</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

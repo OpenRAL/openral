@@ -51,6 +51,40 @@ def test_the_data_age_budget_clears_the_receipt_window(launch_module: object) ->
     assert 1000.0 < budget < deadline + bound_s * 1000.0
 
 
+def test_self_filter_poses_the_kernels_model_with_manifest_and_upstream_joint_names(
+    launch_module: object,
+) -> None:
+    """The real-path self-filter gets exactly the kernel's collision model, on the real fixture.
+
+    Every ``collision_*`` key the kernel is handed goes to the filter unchanged,
+    so the two can never pose different geometry; joints are indexed by the
+    manifest names with the upstream ``sim_joint_name`` as an alias, which is
+    what a vendor ``/joint_states`` spells.
+    """
+    pytest.importorskip("openral_safety", reason="the collision lowering lives in openral_safety")
+    from openral_core import RobotDescription
+    from openral_safety.envelope_loader import collision_params_from_description
+
+    description = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
+    collision = collision_params_from_description(description)
+    params = launch_module._self_filter_params(  # type: ignore[attr-defined]
+        collision, description, "/openral_hal_openarm/joint_states"
+    )
+    for key, value in collision.items():
+        if key.startswith("collision_"):
+            assert params[key] == value, key
+    assert params["collision_link_names"][0] == description.base_frame
+    names = params["collision_joint_names"]
+    aliases = params["collision_joint_aliases"]
+    assert names == [j.name for j in description.joints]
+    assert len(aliases) == len(names)
+    assert aliases[names.index("left_joint1")] == "openarm_left_joint1"
+    assert params["joint_states_topic"] == "/openral_hal_openarm/joint_states"
+    assert params["padding_m"] == launch_module._SELF_FILTER_PADDING_M  # type: ignore[attr-defined]
+    # The filtered cloud is the world map's input, never a camera topic (ADR-0108).
+    assert not launch_module._SELF_FILTERED_CLOUD_TOPIC.startswith("/openral/cameras/")  # type: ignore[attr-defined]
+
+
 def test_cpuset_prefix_is_off_by_default_and_refuses_garbage(
     launch_module: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:

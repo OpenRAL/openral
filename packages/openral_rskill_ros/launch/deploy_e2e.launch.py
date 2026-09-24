@@ -341,6 +341,46 @@ _WORLD_VOXEL_DEADLINE_MS = 1000.0
 _WORLD_VOXEL_DATA_AGE_BUDGET_MS = 1500.0
 
 
+# Robot self-filter (real camera path). How far beyond the robot's collision
+# primitives a depth return is still treated as the robot itself and removed
+# before octomap inserts the cloud. It has to cover the kernel's world-voxel
+# margin (2 cm on real), one 20 mm cell's worth of quantisation, the camera's
+# depth noise and the hand-authored primitives' fit to the real links; 5 cm is
+# the starting point, tuned from Thor measurements. It is also the width of the
+# blind shell around the arm (hazard log): anything that close to the robot is
+# removed with it.
+_SELF_FILTER_PADDING_M = 0.05
+
+# Where the filtered cloud is published for octomap_server. Not a camera topic
+# (ADR-0108): it is no longer one camera's cloud, it is the world map's input.
+_SELF_FILTERED_CLOUD_TOPIC = "/openral/world_cloud/self_filtered"
+
+
+def _self_filter_params(
+    collision_params: dict[str, object],
+    description: object,
+    joint_states_topic: str,
+) -> dict[str, object]:
+    """Parameters for ``openral_octomap_bridge``'s ``robot_self_filter``.
+
+    The filter poses the SAME collision model the kernel checks (every
+    ``collision_*`` key the kernel receives), indexed by the manifest's joint
+    names, with each joint's ``sim_joint_name`` as an alias so a vendor
+    ``/joint_states`` that spells joints the upstream way still matches.
+    ``joint_states_topic`` is the scene's (the HAL's manifest-named topic on the
+    OpenArm bench) or the global one.
+    """
+    joints = list(getattr(description, "joints", []))
+    params: dict[str, object] = {
+        k: v for k, v in collision_params.items() if k.startswith("collision_")
+    }
+    params["collision_joint_names"] = [j.name for j in joints]
+    params["collision_joint_aliases"] = [j.sim_joint_name or "" for j in joints]
+    params["joint_states_topic"] = joint_states_topic
+    params["padding_m"] = _SELF_FILTER_PADDING_M
+    return params
+
+
 # How long the octomap bridge may republish the last octree it received
 # (``max_octree_age_s``). ``octomap_server`` publishes only when it inserts a cloud, so a
 # dead camera is a silent octree; past this bound the bridge stops publishing and the
@@ -1188,6 +1228,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # the detector's camera, WorldState's subscriptions and the vendor driver includes all
     # need to know which cameras exist (and, on a real deploy, which are bound).
     scene_sensors: list[SensorSpec] = []
+    scene_joint_states_topic = "/joint_states"
     scene_drivers: list = []  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, deferred import
     if deploy_config:
         from openral_core import DeployScene
@@ -1195,6 +1236,8 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         _scene = DeployScene.from_yaml(deploy_config)
         scene_sensors = list(_scene.sensors)
         scene_drivers = list(_scene.drivers)
+        if _scene.runtime is not None and _scene.runtime.joint_states_topic:
+            scene_joint_states_topic = _scene.runtime.joint_states_topic
     publishing = publishing_sensors(description.sensors, scene_sensors, hal_mode)
     envelope = compute_intersection(
         description, skill=None, deploy=workcell.safety if workcell is not None else None
@@ -2294,6 +2337,37 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # Requires ros-${ROS_DISTRO}-octomap-server + the openral_octomap_bridge package built —
         # opt-in, default off, like slam/nav2.
         perception_prefix = _cpuset_prefix("OPENRAL_PERCEPTION_CPUSET")
+        # Real camera: remove the robot's (and a held payload's) own returns
+        # before octomap inserts the cloud, as the sim depth renderer does by
+        # making those bodies transparent. Sim needs no filter; a robot with
+        # no collision model has nothing to filter against.
+        octomap_input_topic = octomap_cloud_topic
+        self_filter_nodes: list = []  # type: ignore[type-arg]  # reason: launch_ros.actions.Node, deferred import
+        if hal_mode == "real" and has_collision_capsules:
+            octomap_input_topic = _SELF_FILTERED_CLOUD_TOPIC
+            self_filter_nodes.append(
+                Node(
+                    package="openral_octomap_bridge",
+                    executable="robot_self_filter",
+                    name="openral_robot_self_filter",
+                    namespace="",
+                    prefix=perception_prefix,
+                    parameters=[
+                        {
+                            **_self_filter_params(
+                                collision_params, description, scene_joint_states_topic
+                            ),
+                            "use_sim_time": use_sim_time,
+                        }
+                    ],
+                    remappings=[
+                        ("cloud_in", octomap_cloud_topic),
+                        ("cloud_out", _SELF_FILTERED_CLOUD_TOPIC),
+                    ],
+                    additional_env=otel_env,
+                    output="screen",
+                )
+            )
         octomap_server = Node(
             package="octomap_server",
             executable="octomap_server_node",
@@ -2334,7 +2408,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "use_sim_time": use_sim_time,
                 }
             ],
-            remappings=[("cloud_in", octomap_cloud_topic)],
+            remappings=[("cloud_in", octomap_input_topic)],
             additional_env=otel_env,
             output="screen",
         )
@@ -2362,7 +2436,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             additional_env=otel_env,
             output="screen",
         )
-        extra_nodes.extend([octomap_server, octomap_bridge])
+        extra_nodes.extend([*self_filter_nodes, octomap_server, octomap_bridge])
 
     if enable_object_detector or locator_specs:
         # The perception leg runs when EITHER the continuous detector is on OR an on-demand
