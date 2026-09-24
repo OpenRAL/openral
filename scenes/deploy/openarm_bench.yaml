@@ -48,13 +48,16 @@
 scene:
   id: openarm_bench
 robot_id: openarm
+# This cell's per-host camera bindings + calibration: robots/openarm/units/orin.yaml.
+# $OPENRAL_ROBOT_UNIT overrides it (e.g. `thor` to run this bench scene on the Thor cell).
+robot_unit: orin
 
 # Camera INVENTORY, verified on the rig 2026-09-16 (`lsusb`, `ls -l /dev/v4l/by-id`),
 # not assumed: ONE StereoLabs ZED-M and TWO Arducam B0495. The ZED serves twice:
 # its SDK depth as `head_zed` and its rectified left image as `top`, the
 # policy's `context` view — so all three manifest RGB slots are bound. Every one
-# of them is a robot camera, so the bindings live in robots/openarm/robot.yaml,
-# not here (see the pointer below `drivers:`).
+# of them is a robot camera, so the bindings live in this host's unit overlay,
+# robots/openarm/units/orin.yaml (selected by `robot_unit` below), not here.
 #
 # Vendor sensor driver this cell needs on the bus. The manifest's `head_zed` binding subscribes
 # `/zed/zed_node/...` and `runtime.octomap_cloud_topic` names the wrapper's
@@ -91,7 +94,7 @@ drivers:
       ros_params_override_path: drivers/zedm_openarm_override.yaml
 
 # Cameras: every camera here is a robot sensor, so its real-hardware binding lives in
-# robots/openarm/robot.yaml (a deploy scene never touches a robot camera —
+# the unit overlay (robot_unit above; a deploy scene never redefines a robot camera —
 # openral_core.check_scene_sensor_overrides). A workcell camera would go under
 # `sensors:` with its own name.
 
@@ -99,13 +102,11 @@ runtime:
   # The octomap leg is the reason this scene exists as a separate file.
   #
   # The manifest declares `head_zed` — a depth SensorSpec WITH intrinsics — which
-  # flips deploy's octomap auto-enable to true. But the auto-enable only sets the
-  # flag; `octomap_cloud_topic` keeps its launch default
-  # `/openral/cameras/front_depth/points`, which ONLY the sim sensor bridge ever
-  # publishes. On a real camera that leaves the octree, `/openral/world_voxels`
-  # and the dashboard POINTCLOUD card permanently empty while every node reports
-  # healthy — the quietest failure in the graph. So both keys are set together,
-  # always.
+  # flips deploy's octomap auto-enable to true. Unpinned, the only derivable cloud is
+  # `/openral/cameras/head_zed/points`, which ONLY the sim sensor bridge publishes,
+  # so `deploy run` refuses to start octomap without `octomap_cloud_topic` (it used
+  # to leave the octree, `/openral/world_voxels` and the dashboard POINTCLOUD card
+  # empty while every node reported healthy). So both keys are set together, always.
   #
   # Topic verified three ways on this rig rather than guessed: the wrapper's own
   # source (`zed_camera_component_video_depth.cpp:84`,
@@ -114,11 +115,10 @@ runtime:
   # OpenArm deploy on this host.
   enable_octomap: true
   octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
-  # The HAL's 30 Hz republish, not the joint_state_broadcaster's 750 Hz
-  # /joint_states: at full rate the Python executor + callback held half of
-  # the runtime's GIL on the Orin and a 1.6 s π0.5 forward took 322 s. The
-  # C++ kernel still reads /joint_states at full rate.
-  joint_states_topic: /openral_hal_openarm/joint_states
+  # No `joint_states_topic`: on `deploy run` the launch derives the HAL's 30 Hz
+  # `/openral_hal_openarm/joint_states` republish for any ros2_control arm
+  # (`openral_hal.hal_joint_states_topic`) instead of the broadcaster's 750 Hz
+  # /joint_states, which starved the in-process π0.5 of the GIL on the Orin.
 
   # FALSE until `openral calibrate camera` has run on this cell.
   #

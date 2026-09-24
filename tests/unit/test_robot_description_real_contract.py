@@ -42,6 +42,7 @@ _FULL_SAFETY = SafetyEnvelope(
     self_collision_margin_m=0.0,
     starting_pose_max_joint_speed_rad_s=0.5,
     starting_pose_tolerance_rad=0.05,
+    joint_state_staleness_limit_s=0.5,
 )
 
 
@@ -148,13 +149,19 @@ def test_an_explicit_value_equal_to_the_default_counts_as_declared() -> None:
     explicit = SafetyEnvelope(
         starting_pose_max_joint_speed_rad_s=0.5,
         starting_pose_tolerance_rad=0.05,
+        joint_state_staleness_limit_s=0.5,
         **{k: getattr(SafetyEnvelope(), k) for k in RobotDescription.REAL_HARDWARE_SAFETY_FIELDS},  # type: ignore[arg-type]  # reason: mapping of the model's own fields
     )
     assert _description(safety=explicit).safety.contact_force_threshold_n == 30.0
 
 
 @pytest.mark.parametrize(
-    "field", ["starting_pose_max_joint_speed_rad_s", "starting_pose_tolerance_rad"]
+    "field",
+    [
+        "starting_pose_max_joint_speed_rad_s",
+        "starting_pose_tolerance_rad",
+        "joint_state_staleness_limit_s",
+    ],
 )
 def test_the_approach_speed_and_tolerance_must_be_declared(field: str) -> None:
     """They have no default at all: the runner refuses rather than guess an approach speed."""

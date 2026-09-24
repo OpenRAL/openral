@@ -45,7 +45,6 @@ from openral_core.schemas import (
     EmbodimentKind,
     EndEffectorSpec,
     HalEntrypoints,
-    HalParameters,
     Hand,
     JointSpec,
     JointType,
@@ -187,6 +186,9 @@ SAWYER_DESCRIPTION = RobotDescription(
         # runner ramp to starting_pose — the former defaults, declared (issue #303)
         starting_pose_max_joint_speed_rad_s=0.5,
         starting_pose_tolerance_rad=0.05,
+        starting_pose_max_joint_speed_m_s=0.025,  # prismatic gripper; mirrors the YAML
+        starting_pose_tolerance_m=0.0025,
+        joint_state_staleness_limit_s=0.2,  # provisional, mirrors the YAML
     ),
     sdk_kind="open",
     # Control rate: the runner ticks at it and the real HAL sets every
@@ -194,14 +196,11 @@ SAWYER_DESCRIPTION = RobotDescription(
     # ros2_control HAL to construct.
     # dim / representation deliberately undeclared (no committed policy
     # contract for this robot); the control rate is the known quantity.
+    # provisional: the runner's former 30 Hz default, not measured on this rig.
     action_spec=ActionSpec(control_freq_hz=30.0),
     hal=HalEntrypoints(
         sim=None,
         real="openral_hal.sawyer_real:SawyerRealHAL",
-        # Max age of a read_state() reading before ROSPerceptionStale. Mirrors
-        # the YAML; provisional: former constructor default, not measured on
-        # this rig — see issue #303.
-        parameters=HalParameters(defaults={"staleness_limit_s": 0.5}),
     ),
     assets=AssetRefs(mjcf="rd:sawyer_mj_description"),
 )
@@ -287,8 +286,8 @@ class SawyerRealHAL(RosControlHAL):
             Production use injects the lifecycle node's subscriber
             callback; tests inject ``SimTransport.state``.
         staleness_limit_s: Maximum age of a ``read_state()`` reading
-            before ``ROSPerceptionStale`` is raised.  Defaults to
-            ``0.2 s`` (Sawyer's intera_sdk feedback rate is ~100 Hz).
+            before ``ROSPerceptionStale`` is raised. ``None`` (default) reads the manifest's
+            ``safety.joint_state_staleness_limit_s``.
         description: The loaded ``robots/<id>/robot.yaml`` manifest
             (threaded by ``build_hal``). ``None`` falls back to the
             in-code ``SAWYER_REAL_DESCRIPTION`` mirror.
@@ -325,7 +324,7 @@ class SawyerRealHAL(RosControlHAL):
         estop_topic: str = _DEFAULT_SAWYER_ESTOP_TOPIC,
         publish_fn: _PublishFn | None = None,
         state_fn: _StateFn | None = None,
-        staleness_limit_s: float = 0.2,
+        staleness_limit_s: float | None = None,
         description: RobotDescription | None = None,
     ) -> None:
         """Initialise the adapter; no TCP connection is opened until ``connect()``."""

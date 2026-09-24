@@ -13,7 +13,6 @@ latching, ``info`` copy isolation, and the weight load/unload hook contract.
 
 from __future__ import annotations
 
-import importlib.util
 import time
 from collections.abc import Callable
 
@@ -90,15 +89,6 @@ def _minimal_skill() -> rSkillBase:
 SKILL_BUILDERS: dict[str, SkillBuilder] = {
     "_MinimalSkill": _minimal_skill,
 }
-
-
-# Optional: SmolVLAAdapter requires lerobot + torch; only added when present
-# so the contract test stays in the unit lane.
-if (
-    importlib.util.find_spec("lerobot") is not None
-    and importlib.util.find_spec("torch") is not None
-):  # pragma: no cover  # reason: only takes the branch when heavy deps install
-    pass  # SmolVLAAdapter requires real weights to construct; skip here.
 
 
 # ── Tests ────────────────────────────────────────────────────────────────────

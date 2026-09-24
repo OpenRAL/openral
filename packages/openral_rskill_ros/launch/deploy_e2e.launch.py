@@ -69,7 +69,16 @@ if TYPE_CHECKING:
     # `from __future__ import annotations` keeps the annotation a string.
     from openral_core import RobotDescription, SensorSpec
 from lifecycle_msgs.msg import Transition
-from openral_core import CameraTopicKind, camera_topic, merge_deploy_sensors, publishing_sensors
+from openral_core import (
+    CameraTopicKind,
+    DeployRuntime,
+    apply_sensor_overlays,
+    camera_topic,
+    deploy_cloud_topic,
+    merge_deploy_sensors,
+    publishing_sensors,
+    resolve_sensor_overlays,
+)
 from openral_foxglove_bringup.topics import (
     ASSET_URI_ALLOWLIST,
     BUCKET1_TOPIC_WHITELIST,
@@ -166,8 +175,14 @@ def _run_resource_attrs(hal_mode: str) -> str:
 
 
 def _world_voxel_margin_m(hal_mode: str) -> float:
-    """Return the calibrated world-voxel clearance for this boundary."""
-    return 0.0 if hal_mode == "sim" else 0.02
+    """Return the calibrated world-voxel clearance for this boundary.
+
+    The real value is owned by ``openral_core.depth_extrinsic``, whose extrinsic pass
+    limits are derived from it: a margin change re-tightens the calibration gate.
+    """
+    from openral_core.depth_extrinsic import REAL_WORLD_VOXEL_MARGIN_M
+
+    return 0.0 if hal_mode == "sim" else REAL_WORLD_VOXEL_MARGIN_M
 
 
 def _collision_scale_params() -> dict[str, float]:
@@ -302,21 +317,30 @@ def _world_voxel_max_cells(resolution_m: float) -> int:
     return per_axis**3
 
 
-# How long the kernel trusts the last `/openral/world_voxels` grid it received.
-_WORLD_VOXEL_DEADLINE_MS = 1000.0
+def _voxel_freshness(deadline_s: str, max_octree_age_s: str) -> tuple[float, float]:
+    """``(world_voxel_deadline_ms, max_octree_age_s)`` from the launch args.
 
+    The kernel's deadline is how long it trusts the last ``/openral/world_voxels``
+    grid; the bridge's bound is how long it republishes the last octree
+    (``octomap_server`` publishes only when it inserts a cloud, so a dead camera is a
+    silent octree). Past both, the kernel drops with ``DROP_VOXEL_UNAVAILABLE`` (hazard
+    log Entry 033). Both are per-rig ``DeployRuntime`` fields; empty args take its
+    defaults, and it refuses a bound above the deadline, so the kernel -- not the
+    bridge -- fails closed whoever launches this file.
 
-# How long the octomap bridge may republish the last octree it received
-# (``max_octree_age_s``). ``octomap_server`` publishes only when it inserts a cloud, so a
-# dead camera is a silent octree; past this bound the bridge stops publishing and the
-# kernel's ``world_voxel_deadline_ms`` turns the silence into ``DROP_VOXEL_UNAVAILABLE``
-# (hazard log Entry 033). Equal to the deadline, 1.0 s: octomap's normal gap was
-# 0.25-0.31 s on the Thor ZED path, but one Thor run (2026-09-24) had octomap at 2.2 Hz,
-# gaps ~0.45 s, too close to the earlier half-deadline bound (0.5 s); 1.0 s tolerates
-# octomap down to ~1 Hz. It must not exceed the deadline, so the kernel -- not the bridge
-# -- still fails closed. Worst case from the last inserted cloud to the drop: bound +
-# deadline, 2.0 s. Derived, not hand-kept, for the reason ``_world_voxel_max_cells`` gives.
-_MAX_OCTREE_AGE_S = _WORLD_VOXEL_DEADLINE_MS / 1000.0
+    Example:
+        >>> _voxel_freshness("", "")
+        (1000.0, 1.0)
+        >>> _voxel_freshness("2.5", "")
+        (2500.0, 2.5)
+    """
+    fields: dict[str, float] = {}
+    if deadline_s:
+        fields["world_voxel_deadline_s"] = float(deadline_s)
+    if max_octree_age_s:
+        fields["max_octree_age_s"] = float(max_octree_age_s)
+    deadline, age = DeployRuntime.model_validate(fields).voxel_freshness_s
+    return deadline * 1000.0, age
 
 
 def _octomap_coverage_radius() -> float:
@@ -458,23 +482,58 @@ def _primary_rgb_camera(sensors: list[SensorSpec]) -> str:
     )
 
 
-def _depth_points_topic(description: RobotDescription) -> str:
-    """``camera_topic(<name>, POINTS)`` of the first depth sensor with intrinsics, else ``""``.
+# Sim runner joint-state window: the former node default. A sim bridge's
+# /joint_states is not the rig the manifest's window was measured on, so sim
+# keeps it rather than the (possibly much tighter) real value. It is also the
+# ceiling of a real runner window: the value every real deploy shipped with.
+_SIM_JOINT_STATE_STALENESS_S = 0.5
 
-    The world-state object lift's depth-cloud fallback (``object_depth_points_topic``) reads the
-    cloud the sim sensor bridge back-projects for exactly those sensors
-    (``SensorSpec.is_depth_camera``). Empty disables the fallback rather than
-    subscribing to a name nothing publishes.
 
-    Example:
-        >>> from openral_core import RobotDescription
-        >>> _depth_points_topic(RobotDescription.from_yaml("robots/panda_mobile/robot.yaml"))
-        '/openral/cameras/front_depth/points'
-        >>> _depth_points_topic(RobotDescription.from_yaml("robots/so101_follower/robot.yaml"))
-        ''
+def _runner_joint_state_staleness_s(
+    description: RobotDescription, hal_mode: str, *, republished: bool
+) -> float:
+    """The runner's joint-state freshness window for this deploy.
+
+    Real, raw ``/joint_states``: the manifest's
+    ``safety.joint_state_staleness_limit_s`` — the same number ``build_hal``
+    hands the real HAL, so the two cannot disagree.
+
+    Real, HAL republish (``republished``: the runner reads the HAL node's
+    rate-limited ``~/joint_states``, see ``hal_joint_states_topic``): source
+    staleness plus two republish periods, ``limit + 2 / control_freq_hz``. The
+    manifest window was measured on the raw stream; the republish timer adds up
+    to one period of age per sample, and a window of ~3 periods (OpenArm: 0.1 s
+    at 30 Hz) trips on two late timer ticks under GIL load. The HAL itself still
+    checks its source at the manifest value. Capped at
+    ``_SIM_JOINT_STATE_STALENESS_S`` so no real runner is looser than it shipped.
+
+    Sim: ``_SIM_JOINT_STATE_STALENESS_S``.
+
+    Raises:
+        ROSConfigError: ``hal_mode == "real"`` and the manifest declares no
+            window, or ``republished`` and it declares no
+            ``action_spec.control_freq_hz`` (the republish rate).
     """
-    name = _depth_camera(description)
-    return camera_topic(name, CameraTopicKind.POINTS) if name else ""
+    if hal_mode != "real":
+        return _SIM_JOINT_STATE_STALENESS_S
+    from openral_core.exceptions import ROSConfigError
+
+    declared = description.safety.joint_state_staleness_limit_s
+    if declared is None:
+        raise ROSConfigError(
+            f"robot {description.name!r} declares no safety.joint_state_staleness_limit_s; "
+            "a real deploy needs the measured window (tools/joint_state_staleness_probe.py)."
+        )
+    if not republished:
+        return float(declared)
+    rate_hz = description.control_rate_hz
+    if rate_hz is None:
+        raise ROSConfigError(
+            f"robot {description.name!r} declares no action_spec.control_freq_hz; the "
+            "runner reads the HAL's ~/joint_states republish at that rate and needs it "
+            "to size its staleness window."
+        )
+    return min(float(declared) + 2.0 / rate_hz, _SIM_JOINT_STATE_STALENESS_S)
 
 
 def _depth_camera(description: RobotDescription) -> str:
@@ -491,29 +550,32 @@ def _depth_camera(description: RobotDescription) -> str:
     return next((s.name for s in description.sensors if s.is_depth_camera), "")
 
 
-def _octomap_cloud_topic(pinned: str, description: RobotDescription) -> str:
-    """The cloud ``octomap_server`` maps: the pinned topic, else the manifest's depth cloud.
+def _octomap_cloud_topic(pinned: str, description: RobotDescription, hal_mode: str) -> str:
+    """The cloud ``octomap_server`` maps (``openral_core.deploy_cloud_topic``), never silence.
 
-    A scene-pinned ``octomap_cloud_topic`` wins (a real depth driver's topic); otherwise the
-    cloud the sim sensor bridge back-projects for the first depth sensor with intrinsics. A
-    fixed default was silence on every robot whose depth camera is not named ``front_depth``.
+    A scene-pinned ``octomap_cloud_topic`` wins (a real depth driver's topic); otherwise, in
+    sim, the cloud the sim sensor bridge back-projects for the manifest's one depth sensor
+    with intrinsics. ``openral deploy`` refuses the same cases before launch; this repeats
+    the check for a direct ``ros2 launch``.
 
     Raises:
-        ROSConfigError: nothing pinned and the robot declares no such depth sensor — never
-            spawn octomap_server against a topic nothing publishes.
+        ROSConfigError: nothing publishes a cloud (a real deploy with nothing pinned, or a
+            robot with no depth sensor) or several depth sensors and nothing pinned --
+            never spawn octomap_server against a topic nothing publishes.
 
     Example:
         >>> from openral_core import RobotDescription
-        >>> _octomap_cloud_topic("", RobotDescription.from_yaml("robots/openarm/robot.yaml"))
+        >>> _octomap_cloud_topic("", RobotDescription.from_yaml("robots/openarm/robot.yaml"), "sim")
         '/openral/cameras/head_zed/points'
     """
-    topic = pinned or _depth_points_topic(description)
+    topic = deploy_cloud_topic(description.sensors, pinned=pinned, hal_mode=hal_mode)
     if not topic:
         from openral_core.exceptions import ROSConfigError
 
         raise ROSConfigError(
-            f"octomap enabled but robot {description.name!r} declares no depth sensor "
-            "with intrinsics and no octomap_cloud_topic was given"
+            f"octomap enabled but nothing publishes a cloud for robot {description.name!r} "
+            f"(hal_mode={hal_mode}): pin octomap_cloud_topic to the depth driver's "
+            "PointCloud2 topic, or declare a depth sensor with intrinsics for sim"
         )
     return topic
 
@@ -961,6 +1023,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     reset_to_pose_service = LaunchConfiguration("reset_to_pose_service").perform(context)
     approach_skill_id = LaunchConfiguration("approach_skill_id").perform(context)
     preload_rskill_id = LaunchConfiguration("preload_rskill_id").perform(context)
+    preload_rskill_revision = LaunchConfiguration("preload_rskill_revision").perform(context)
     preload_prompt = LaunchConfiguration("preload_prompt").perform(context)
     place_declaration_json = LaunchConfiguration("place_declaration_json").perform(context)
     # Record the deploy session to a rosbag2 mcap.
@@ -1037,6 +1100,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         context
     ).lower() in ("1", "true", "yes")
     octomap_cloud_topic = LaunchConfiguration("octomap_cloud_topic").perform(context)
+    world_voxel_deadline_ms, max_octree_age_s = _voxel_freshness(
+        LaunchConfiguration("world_voxel_deadline_s").perform(context).strip(),
+        LaunchConfiguration("max_octree_age_s").perform(context).strip(),
+    )
     # Object-detection perception leg. Off by default; when on,
     # the ROS-Image detector node runs RT-DETR over the agentview RGB tee and
     # publishes ObjectsMetadata to /openral/perception/objects, which the
@@ -1154,12 +1221,42 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # need to know which cameras exist (and, on a real deploy, which are bound).
     scene_sensors: list[SensorSpec] = []
     scene_drivers: list = []  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, deferred import
+    joint_states_override: str | None = None
+    scene_unit: str | None = None
     if deploy_config:
         from openral_core import DeployScene
 
         _scene = DeployScene.from_yaml(deploy_config)
         scene_sensors = list(_scene.sensors)
         scene_drivers = list(_scene.drivers)
+        scene_unit = _scene.robot_unit
+        if _scene.runtime is not None:
+            joint_states_override = _scene.runtime.joint_states_topic
+    from openral_hal.resolver import hal_joint_states_topic
+
+    # The Python nodes' JointState topic: the scene's override, else the HAL's
+    # rate-limited `~/joint_states` on a real ros2_control arm (whose global
+    # `/joint_states` is the broadcaster's full-rate stream), else "" = default.
+    runtime_joint_states_topic = (
+        hal_joint_states_topic(
+            description,
+            mode="real" if hal_mode == "real" else "sim",
+            hal_node_name=hal_node_name,
+            override=joint_states_override,
+        )
+        or ""
+    )
+    # This host's unit overlay (scene `robot_unit`, or $OPENRAL_ROBOT_UNIT which `openral
+    # deploy` resolved identically before launching): per-host bindings and per-unit mount
+    # calibration replace the manifest's nominal values for every consumer below.
+    description = description.model_copy(
+        update={
+            "sensors": apply_sensor_overlays(
+                description.sensors,
+                resolve_sensor_overlays(robot_yaml, scene_unit, required=hal_mode == "real"),
+            )
+        }
+    )
     publishing = publishing_sensors(description.sensors, scene_sensors, hal_mode)
     envelope = compute_intersection(
         description, skill=None, deploy=workcell.safety if workcell is not None else None
@@ -1297,7 +1394,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # See `_world_voxel_max_cells` for why a hand-kept derived constant
             # is the wrong shape here.
             "world_voxel_max_cells": _world_voxel_max_cells(_octomap_resolution(hal_mode)),
-            "world_voxel_deadline_ms": _WORLD_VOXEL_DEADLINE_MS,
+            "world_voxel_deadline_ms": world_voxel_deadline_ms,
         }
 
     kernel_params = {**kernel_params, **_collision_scale_params()}
@@ -1613,20 +1710,25 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 "camera_names": rgb_camera_names or [""],
                 # World-state object-lift depth fallback: the same cloud octomap maps — the
                 # scene-pinned driver cloud when there is one (a real ZED publishes on its
-                # own topic, not the sim bridge's), else the manifest depth sensor's; ""
-                # disables the fallback.
-                "object_depth_points_topic": (
-                    octomap_cloud_topic or _depth_points_topic(description)
+                # own topic, not the sim bridge's), else in sim the manifest depth
+                # sensor's; "" (a real deploy with nothing pinned) disables the fallback.
+                "object_depth_points_topic": deploy_cloud_topic(
+                    description.sensors, pinned=octomap_cloud_topic, hal_mode=hal_mode
                 ),
                 # 512 px RoboCasa renders can arrive at ~0.6 Hz wall time while
                 # idle. Keep joint/EE diagnostics at 0.5 s, but give simulated
                 # cameras enough room for one slow frame without stale flapping.
                 "image_staleness_limit_s": 5.0 if hal_mode == "sim" else 0.5,
                 # Joint state older than this aborts the blocking wait as a
-                # perception fault. The node has no default: this is the one
-                # place the window is declared. 0.5 s is the former node default,
-                # kept until a rig measurement says otherwise (issue #303).
-                "joint_state_staleness_limit_s": 0.5,
+                # perception fault. The node has no default. Real: the manifest's
+                # safety.joint_state_staleness_limit_s (the HAL's window too), plus
+                # two republish periods when the runner reads the HAL's
+                # ~/joint_states; sim: the former node default (audit C F3).
+                "joint_state_staleness_limit_s": _runner_joint_state_staleness_s(
+                    description,
+                    hal_mode,
+                    republished=runtime_joint_states_topic == f"/{hal_node_name}/joint_states",
+                ),
                 # One grouped action may synchronously attach a payload, then
                 # wait for a transparent depth frame + the next OctoMap raster
                 # before acknowledging application. Real HALs keep the 5 s
@@ -1640,7 +1742,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # never has to cover a multi-minute cold load. Empty = the
                 # first goal loads its own skill, as before.
                 "preload_rskill_id": preload_rskill_id,
+                "preload_rskill_revision": preload_rskill_revision,
                 "preload_prompt": preload_prompt,
+                # Applied by runtime_node to both composed nodes (world_state
+                # ingest + the runner's joint-state cache); "" = /joint_states.
+                "joint_states_topic": runtime_joint_states_topic,
                 # ADR-0097 — the scene's committed place-phase declaration for a
                 # direct dispatch. Empty (every scene today) = no declaration, so
                 # no place witness can arm and payload contact mid-carry stops.
@@ -2246,7 +2352,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     octomap_fixed_frame, octomap_base_frame = _octomap_frames(description)
 
     if enable_octomap:
-        octomap_cloud_topic = _octomap_cloud_topic(octomap_cloud_topic, description)
+        octomap_cloud_topic = _octomap_cloud_topic(octomap_cloud_topic, description, hal_mode)
         # The world-collision perception leg. octomap_server builds a 3-D OcTree from the
         # HAL's depth PointCloud2 (``synthesize_depth_image`` back-projected by
         # ``points_from_depth_grid`` → ``octomap_cloud_topic``), and openral_octomap_bridge
@@ -2313,7 +2419,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "coverage_radius_m": _octomap_coverage_radius(),
                     # Stop republishing an octree that stopped arriving, so the
                     # kernel's voxel deadline can fail closed (Entry 033).
-                    "max_octree_age_s": _MAX_OCTREE_AGE_S,
+                    "max_octree_age_s": max_octree_age_s,
                     # Graph-wide clock domain — matches octomap_server above
                     # (sim-time without a /clock pins its TF lookups at 0).
                     "use_sim_time": use_sim_time,
@@ -2785,6 +2891,15 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ),
         DeclareLaunchArgument(
+            "preload_rskill_revision",
+            default_value="",
+            description=(
+                "Hub revision pinned for preload_rskill_id; part of the "
+                "resident key, so it must equal the revision later goals "
+                "send. Empty = the unpinned default revision."
+            ),
+        ),
+        DeclareLaunchArgument(
             "preload_prompt",
             default_value="",
             description=(
@@ -3056,10 +3171,28 @@ def generate_launch_description() -> LaunchDescription:
             default_value="",
             description=(
                 "Depth PointCloud2 topic octomap_server consumes "
-                "(``cloud_in`` remap). Empty (default) derives "
-                "the ``points`` camera topic of the manifest's first depth "
+                "(``cloud_in`` remap). Empty (default) derives, in sim, "
+                "the ``points`` camera topic of the manifest's one depth "
                 "sensor with intrinsics — the sim sensor bridge's cloud. "
-                "Pin the depth driver's topic on real hardware."
+                "Required on real hardware (the depth driver's topic): "
+                "octomap refuses to start without it."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "world_voxel_deadline_s",
+            default_value="",
+            description=(
+                "How long the safety kernel trusts the last /openral/world_voxels grid "
+                "(DeployRuntime.world_voxel_deadline_s). Empty = the schema default, 1.0 s."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "max_octree_age_s",
+            default_value="",
+            description=(
+                "How long the octomap bridge republishes the last octree "
+                "(DeployRuntime.max_octree_age_s). Empty = the deadline; a value "
+                "above the deadline is refused."
             ),
         ),
         DeclareLaunchArgument(

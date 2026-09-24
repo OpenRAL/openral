@@ -4,14 +4,37 @@ Both ``openral deploy sim`` (``python/cli``) and the reasoner node
 (``packages/openral_reasoner_ros``) needed the same one-shot ``nvidia-smi``
 query for GPU 0's VRAM in GB — duplicated because the CLI cannot import the
 ROS package. Lifted here (``openral_core``, importable from every layer)
-rather than re-solved twice.
+rather than re-solved twice. ``is_tegra_host`` is here for the same reason:
+the CLI allocator default, the GStreamer platform probe and the hardware
+detector all key on ``/etc/nv_tegra_release``.
 """
 
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
+from typing import Final
 
-__all__ = ["detect_gpu_vram_gb"]
+__all__ = ["TEGRA_RELEASE_PATH", "detect_gpu_vram_gb", "is_tegra_host"]
+
+# Present on every L4T (Jetson Orin / Thor) image NVIDIA ships; absent on desktop
+# Ubuntu. DGX Spark (GB10) runs DGX OS, not L4T; whether it carries this file is
+# unverified on our hosts.
+TEGRA_RELEASE_PATH: Final[Path] = Path("/etc/nv_tegra_release")
+
+
+def is_tegra_host(release_path: Path = TEGRA_RELEASE_PATH) -> bool:
+    """True on an NVIDIA Jetson / L4T host (``release_path`` exists).
+
+    The one Tegra probe; ``release_path`` lets tests point at a fixture. It
+    answers "is this an L4T image", not "is the GPU integrated / unified
+    memory": DGX Spark (GB10) is unified-memory but runs DGX OS.
+
+    Example:
+        >>> is_tegra_host(Path("/nonexistent/nv_tegra_release"))
+        False
+    """
+    return release_path.exists()
 
 
 def detect_gpu_vram_gb(field: str) -> float:

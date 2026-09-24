@@ -3858,8 +3858,9 @@ follow the payload's live pose (the attach window above spans ~28 grids of one
 octree's lifetime). All of that is unchanged while the octree is fresh.
 
 **The fix.** The bridge stops publishing once its last octree was received
-more than `max_octree_age_s` ago — `deploy_e2e.launch.py` sets it equal to
-the kernel's 1000 ms `world_voxel_deadline_ms`, i.e. 1.0 s (first shipped as
+more than `max_octree_age_s` ago — by default equal to the kernel's 1000 ms
+`world_voxel_deadline_ms`, i.e. 1.0 s, both now per-rig `DeployRuntime` fields
+validated so the bound never exceeds the deadline (first shipped as
 half the deadline, 0.5 s; raised the same day after a Thor run with octomap at
 2.2 Hz put healthy gaps at ~0.45 s) — and the kernel's own deadline turns the
 silence into a drop. Worst case from the last inserted cloud to the drop:

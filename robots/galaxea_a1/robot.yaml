@@ -161,6 +161,13 @@ safety:
   # declared here so they are visible; provisional until run on this rig.
   starting_pose_max_joint_speed_rad_s: 0.5
   starting_pose_tolerance_rad: 0.05
+  # Joint-state freshness window: the real HAL's read_state and the skill
+  # runner's blocking waits refuse state older than this (one place; build_hal
+  # and deploy_e2e.launch.py read it). provisional: the runner's former launch constant (the HAL's own
+  # state_timeout_s is separate),
+  # not measured on this rig — measure with
+  # tools/joint_state_staleness_probe.py --robot <this manifest>.
+  joint_state_staleness_limit_s: 0.5
 
 sdk_kind: closed_with_api
 # Control rate: the skill runner ticks at it (`rate_hz` ROS param 0 = read
@@ -211,4 +218,4 @@ onboard_compute:
   gripper_command_topic: /gripper_position_control_host
   gripper_feedback_topic: /gripper_stroke_host
 
-schema_version: "0.1"
+schema_version: "0.2"

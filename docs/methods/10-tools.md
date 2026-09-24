@@ -48,9 +48,9 @@ _Two modes: `emit --robot <path>` prints the YAML fragment to paste into the man
 ### `tools/schema_export.py`
 _Generates JSON Schema files for every public `openral_core` model._
 
-- `_enum_schema(cls) -> dict[str, Any]` — Minimal JSON Schema for a `str` Enum. (L177)
-- `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L189)
-- `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L241)
+- `_enum_schema(cls) -> dict[str, Any]` — Minimal JSON Schema for a `str` Enum. (L181)
+- `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L193)
+- `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L245)
 
 ### `tools/check_repo_state_map.py`
 _Pre-commit drift guard checking the mechanically verifiable half of `docs/architecture/repo-state-map.html`: that its `pkg:` pointers name something real and its asserted counts haven't rotted. Prose on the map stays a human judgement call._
@@ -346,12 +346,12 @@ _Query-time joiner for rosbag2 (mcap) ↔ OTel spans. Backs `openral replay` + `
 - `@dataclass(frozen=True) class TimelineEntry(kind, ts_ns, trace_id, topic, span_name, attrs, duration_ms)` (correlator.py L27) — One row of the joined timeline; `.to_json()` returns a plain dict.
 - `list_bag_trace_ids(bag_messages) -> list[dict]` (correlator.py L68) — Distinct trace_ids in the bag with counts, busiest first.
 - `build_timeline(bag_messages, spans, *, trace_id=None) -> list[TimelineEntry]` (correlator.py L95) — Pure join. Filters both inputs to `trace_id`, merges, sorts ascending by `ts_ns`.
-- `RECORD_PROFILES: dict[str, dict[str, list[str]]]` (cli.py L48) — Slim and full topic + regex presets.
-- `build_record_command(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=()) -> list[str]` (cli.py L91) — Compose `ros2 bag record` argv.
-- `@dataclass(frozen=True) class ReplayResult(trace_id, bag_trace_ids, timeline, bag_path)` (cli.py L139) — `.to_json()` returns a plain dict.
-- `run_replay(*, bag_path, trace_id, dashboard_url) -> ReplayResult` (cli.py L168) — Read a bag, fetch matching spans from the dashboard, return the joined timeline.
-- `run_record(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=(), dry_run=False) -> tuple[list[str], CompletedProcess | None]` (cli.py L216) — Spawn `ros2 bag record` in a new process group; forwards SIGINT/SIGTERM received by the parent as **SIGINT** to the child group so rosbag2 flushes `metadata.yaml` cleanly. Waits up to 5 s after the child exits for that file to appear.
-- `write_timeline(result: ReplayResult, out_path: Path) -> None` (cli.py L289) — Persist the timeline JSON.
+- `RECORD_PROFILES: dict[str, dict[str, list[str]]]` (cli.py L52) — Slim and full topic + regex + topic-type presets (`full` records `LaserScan` / `PointCloud2` / `Imu` by type).
+- `build_record_command(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=()) -> list[str]` (cli.py L102) — Compose `ros2 bag record` argv.
+- `@dataclass(frozen=True) class ReplayResult(trace_id, bag_trace_ids, timeline, bag_path)` (cli.py L156) — `.to_json()` returns a plain dict.
+- `run_replay(*, bag_path, trace_id, dashboard_url) -> ReplayResult` (cli.py L185) — Read a bag, fetch matching spans from the dashboard, return the joined timeline.
+- `run_record(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=(), dry_run=False) -> tuple[list[str], CompletedProcess | None]` (cli.py L233) — Spawn `ros2 bag record` in a new process group; forwards SIGINT/SIGTERM received by the parent as **SIGINT** to the child group so rosbag2 flushes `metadata.yaml` cleanly. Waits up to 5 s after the child exits for that file to appear.
+- `write_timeline(result: ReplayResult, out_path: Path) -> None` (cli.py L306) — Persist the timeline JSON.
 
 ### `tools/rskill_publisher.py`
 _Package and publish a local rSkill directory to the HF Hub._
@@ -385,21 +385,17 @@ _Package and publish a local rSkill directory to the HF Hub._
 
 Measures the wire cost of the dense `uint8[]` payload as publish→receive latency, i.e. map staleness. Result is transport- and host-specific.
 
-### `tools/zed_extrinsic_check.py`
+### `tools/depth_extrinsic_check.py`
 
-- `MAX_TILT_DEG: float` (L58) — table-plane tilt pass limit (0.75°). Proposed, not rig-measured.
-- `MAX_HEIGHT_ERR_M: float` (L59) — table-height pass limit (10 mm).
-- `MAX_MARKER_ERR_M: float` (L60) — per-marker planar pass limit (15 mm).
-- `MIN_MARKERS: int` (L61) — markers required to pass (2; one cannot separate yaw from translation).
-- `check(args) -> int` (L278) — Reads the ZED cloud and camera-internal TF from a rosbag2 bag, places the cloud through the robot manifest's `--sensor` pose (the only place a robot sensor's mount lives), fits the table plane and marker centroids in the base frame, and writes a JSON report (residuals, pass/fail, and `suggested_static_transform_xyz_rpy` composed from tilt, height and planar corrections, to be copied into the manifest). Returns 0 iff it passes.
-- `verify(args) -> int` (L372) — 0 iff the report passed, at criteria no looser than the defaults, for the manifest's *current* pose. The gate `tools/openarm_world_voxel_run.sh` applies.
-- `main(argv=None) -> int` (L429) — CLI: `check --robot --bag --cloud-topic --table-z --table-roi --marker X Y ...` / `verify --robot --report` (`--sensor` defaults to `head_zed`; committed report at `robots/<id>/calibration/<sensor>_extrinsic.json`). Needs a sourced ROS 2 overlay (rosbag2_py, tf2_ros).
+- `check(args) -> int` (L357) — Reads the depth cloud, the camera-internal TF (`frame_id -> cloud frame`) and, when the sensor's `parent_frame` is not the manifest's `base_frame` (G1 head on `torso_link`, SO-100/101 wrist on `gripper`, Galaxea A1 wrist on `arm_seg6`), the recorded `base_frame -> parent_frame` TF chain at each cloud's stamp — refusing if that chain moved during the recording or is missing. Places the cloud through the `--sensor` pose a deploy of `--unit` publishes (the manifest entry with that `RobotUnit`'s `SensorOverlay` applied; a robot that ships `units/` requires `--unit`, via `_unit_description`), fits the table plane and marker centroids in the base frame, and writes a JSON report (residuals, pass/fail, `base_frame`, `parent_in_base_xyz_rpy`, and `suggested_static_transform_xyz_rpy` in `parent_frame`, to be copied into the unit overlay — or the manifest, for a robot without units; the report records the unit). Returns 0 iff it passes against the `openral_core.depth_extrinsic` limits.
+- `verify(args) -> int` (L430) — `openral_core.depth_extrinsic.verify_extrinsic_report` for one sensor: 0 iff the report passed, at criteria no looser than the shipped limits, for the same unit and that unit's *current* pose. `openral deploy run` applies the same check itself.
+- `main(argv=None) -> int` (L453) — CLI: `check --robot --sensor --bag --cloud-topic --table-z --table-roi --marker X Y ...` / `verify --robot --sensor [--unit] [--report]` (`--sensor` required; `--unit` selects `robots/<id>/units/<unit>.yaml`; report defaults to `robots/<id>/calibration/<unit>/<sensor>_extrinsic.json`, or `calibration/<sensor>_extrinsic.json` without units). RGB-only sensors are refused (exit 2): no cloud to fit. Needs a sourced ROS 2 overlay (rosbag2_py, tf2_ros).
 
-Measures the one input the kernel's world-voxel check trusts absolutely on a real camera — the extrinsic — which `openral calibrate camera` (intrinsics only) does not. Runbook: `docs/tutorials/deploy/openarm-real-world-voxel-check.md`. Tested in `tests/unit/test_zed_extrinsic_check.py` on a real rosbag2 bag.
+Measures the one input the kernel's world-voxel check trusts absolutely on a real depth camera — the extrinsic — which `openral calibrate camera` (intrinsics only) does not. Runbook: `docs/tutorials/deploy/openarm-real-world-voxel-check.md`. Tested in `tests/unit/test_depth_extrinsic_check.py` on real rosbag2 bags (OpenArm `head_zed`, G1 `head`, SO-101 `wrist`; `--unit` on a unit overlay).
 
 ### `tools/openarm_world_voxel_run.sh`
 
-_The only sanctioned launcher for `scenes/deploy/openarm_real_world_voxels.yaml`. Refuses unless `OPENRAL_OPENARM_ALLOW_MOTION=1` and `OPENRAL_OPENARM_ATTENDED=1`, sourced ROS 2, `openral` on PATH, `zed_extrinsic_check.py verify` passing against `robots/openarm/robot.yaml` + `robots/openarm/calibration/head_zed_extrinsic.json`, and an interactive terminal; then asks for a typed confirmation and execs `openral deploy run`. Extra args pass through._
+_The only sanctioned launcher for `scenes/deploy/openarm_real_world_voxels.yaml`. Refuses unless `OPENRAL_OPENARM_ALLOW_MOTION=1` and `OPENRAL_OPENARM_ATTENDED=1`, `OPENRAL_ROBOT_UNIT` naming the cell, sourced ROS 2, `openral` on PATH, `depth_extrinsic_check.py verify --sensor head_zed --unit $OPENRAL_ROBOT_UNIT` passing against `robots/openarm/robot.yaml` + `robots/openarm/calibration/<unit>/head_zed_extrinsic.json` (early refusal; `openral deploy run` re-applies the gate), and an interactive terminal; then asks for a typed confirmation and execs `openral deploy run`. Extra args pass through._
 
 ### `tools/stop_ee_speed.py`
 
@@ -650,10 +646,10 @@ _Shared NF4 quantize + pre-quantized meta-load helpers for the Robometer reward 
 ### `tools/_robometer_scorer.py`
 _In-process stateless scorer for the Robometer-4B reward monitor, companion to `RobometerInProcessReward`. Loaded directly by `reward_monitor_node` — no separate process or dedicated venv. Meta-builds lerobot's native reward-model skeleton and drops in OpenRAL's NF4 pre-quantized weights directly, with no bf16 spike and no extra download._
 
-- `_NATIVE_CONFIG_REPO: str` (L50) — `"lerobot/Robometer-4B"`, the HF repo `_native_config` downloads `config.json` from to meta-build the native module skeleton.
-- `class Scorer` (L103) — Meta-builds the native `RobometerRewardModel` and remaps + loads the NF4 prequant pack.
-  - `__init__(weights, device="cuda", *, meta_buffers=True)` (L106) — `meta_buffers=False` builds buffers for real from the modules' own `__init__`: the reference `tests/sim/test_reward_nf4_buffer_equivalence.py` compares the meta load against (issue #304). Seeding `original_inv_freq` from `inv_freq` raises unless the rotary module's `rope_type` is `"default"`.
-  - `score(frames_rgb, task, num_bins) -> tuple[list[float], list[float]]` (L210) — Computes per-frame progress/success via the module's logit-decoding path (not the scalar-only `compute_reward`). `num_bins` is accepted for interface parity but unused.
+- `_NATIVE_CONFIG_REPO: str` (L51) — `"lerobot/Robometer-4B"`, the HF repo `_native_config` downloads `config.json` from to meta-build the native module skeleton.
+- `class Scorer` (L104) — Meta-builds the native `RobometerRewardModel` and remaps + loads the NF4 prequant pack.
+  - `__init__(weights, device="cuda", *, meta_buffers=True)` (L107) — `meta_buffers=False` builds buffers for real from the modules' own `__init__`: the reference `tests/sim/test_reward_nf4_buffer_equivalence.py` compares the meta load against (issue #304). Seeding `original_inv_freq` from `inv_freq` raises unless the rotary module's `rope_type` is `"default"`.
+  - `score(frames_rgb, task, num_bins) -> tuple[list[float], list[float]]` (L211) — Computes per-frame progress/success via the module's logit-decoding path (not the scalar-only `compute_reward`). `num_bins` is accepted for interface parity but unused.
 
 ### `tools/build_qwen_vlm_nf4_checkpoint.py`
 _Reproducible recipe for the published `OpenRAL/rskill-qwen35_4b-any-general-nf4` pre-quantized NF4 checkpoint. Runs in the sidecar venv. Distinct from `quantize_rskill.py`, which writes an `install_prequantized_linears`-loaded pack for the in-process lerobot runtime; this writes a transformers-native `save_pretrained` checkpoint for the isolated VLM sidecar._
@@ -785,10 +781,9 @@ _Galaxea A1 ROS 1 sidecar for `openral_hal.galaxea_a1.GalaxeaA1HAL`; owns roscor
 
 ### `tools/joint_state_staleness_probe.py`
 
-- `RATE_HZ_DEFAULT: float` (L59) — the OpenArm's joint-state rate (750 Hz, `update_rate` of its controller manager).
-- `READ_HZ_DEFAULT: float` (L60) — the runner's tick rate the read-side age is sampled at (30 Hz).
-- `pct(xs, p) -> float` (L63) — nearest-rank percentile; NaN when empty.
-- `run(duration_s, rate_hz, read_hz, load) -> int` (L71) — publishes synthetic `JointState` at `rate_hz` over real DDS into the branch's `RosControlTransport` subscription (production QoS + callback) on one executor, and prints callback inter-arrival gaps, stamp→callback latency, the read-side age `now - last_arrival()` at `read_hz`, and how often `hal.read_state()` raised `ROSPerceptionStale` at the manifest's limit. `load=True` adds a GIL-contending thread in the same process.
-- `main(argv=None) -> int` (L219) — CLI: `uv run python tools/joint_state_staleness_probe.py [--duration 60] [--rate 750] [--read-hz 30] [--load]`. Needs a sourced ROS 2 overlay; uses `ROS_DOMAIN_ID` 77 unless set, so it never touches a live graph.
+- `pct(xs, p) -> float` (L68) — nearest-rank percentile; NaN when empty.
+- `build_probe_hal(robot_yaml) -> RosControlHAL` (L76) — builds the robot's real HAL from its manifest via `build_hal(mode="real")` (so it reads at the manifest's `safety.joint_state_staleness_limit_s` on the manifest's joint-state topic); refuses a non-`RosControlHAL` robot (SO-100, ALOHA, Galaxea) with `SystemExit`.
+- `run(robot_yaml, duration_s, rate_hz, read_hz, load) -> int` (L103) — publishes synthetic `JointState` at `rate_hz` over real DDS into `RosControlTransport` (production QoS + callback) on one executor, and prints callback inter-arrival gaps, stamp→callback latency, the read-side age `now - last_arrival()` at `read_hz` (default: the manifest's control rate), and how often `hal.read_state()` raised `ROSPerceptionStale` at the manifest's limit. `load=True` adds a GIL-contending thread in the same process.
+- `main(argv=None) -> int` (L257) — CLI: `uv run python tools/joint_state_staleness_probe.py --robot robots/<id>/robot.yaml --rate <joint_states Hz> [--duration 60] [--read-hz N] [--load]`. Needs a sourced ROS 2 overlay; uses `ROS_DOMAIN_ID` 77 unless set, so it never touches a live graph.
 
-Backs `staleness_limit_s` in a real manifest's `hal.parameters.defaults` — the age past which `read_state` refuses to answer. The number must come from a measurement on the deploy host, not a schema default. Thor 2026-09-23 (Fast-DDS): idle gap p99.9 2.6 ms / max 4.6 ms, read-side age max 32 ms; under GIL starvation latency max 43 ms, no gap above 33 ms → `robots/openarm/robot.yaml` declares 0.1 s (three control periods).
+Backs `safety.joint_state_staleness_limit_s` in a real manifest — the age past which `read_state` (and the runner's waits) refuse to answer. The number must come from a measurement on the deploy host, not a schema default. Thor 2026-09-23 (Fast-DDS): idle gap p99.9 2.6 ms / max 4.6 ms, read-side age max 32 ms; under GIL starvation latency max 43 ms, no gap above 33 ms → `robots/openarm/robot.yaml` declares 0.1 s (three control periods). The other real manifests are unmeasured and marked provisional (Franka / Sawyer 0.2 s, the real HALs' former constructor default).
