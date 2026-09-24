@@ -463,7 +463,7 @@ def _depth_points_topic(description: RobotDescription) -> str:
 
     The world-state object lift's depth-cloud fallback (``object_depth_points_topic``) reads the
     cloud the sim sensor bridge back-projects for exactly those sensors
-    (``openral_hal.depth_cloud.is_depth_sensor``). Empty disables the fallback rather than
+    (``SensorSpec.is_depth_camera``). Empty disables the fallback rather than
     subscribing to a name nothing publishes.
 
     Example:
@@ -480,7 +480,7 @@ def _depth_points_topic(description: RobotDescription) -> str:
 def _depth_camera(description: RobotDescription) -> str:
     """Name of the manifest's first depth sensor with intrinsics, else ``""``.
 
-    The sensors the sim bridge back-projects (``openral_hal.depth_cloud.is_depth_sensor``) and
+    The sensors the sim bridge back-projects (``SensorSpec.is_depth_camera``) and
     publishes ``depth/image`` + ``depth/camera_info`` + ``points`` for.
 
     Example:
@@ -488,9 +488,7 @@ def _depth_camera(description: RobotDescription) -> str:
         >>> _depth_camera(RobotDescription.from_yaml("robots/panda_mobile/robot.yaml"))
         'front_depth'
     """
-    from openral_hal.depth_cloud import is_depth_sensor
-
-    return next((s.name for s in description.sensors if is_depth_sensor(s)), "")
+    return next((s.name for s in description.sensors if s.is_depth_camera), "")
 
 
 def _octomap_cloud_topic(pinned: str, description: RobotDescription) -> str:

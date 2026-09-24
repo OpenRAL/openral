@@ -210,3 +210,15 @@ def test_camera_topic_resolves_literal_expression_and_kinds(tmp_path: Path) -> N
 
 def test_checked_in_page_is_fresh() -> None:
     assert graph.main(["--check"]) == 0, "run `uv run python tools/gen_ros_topic_graph.py`"
+
+
+def test_untracked_files_do_not_reach_the_page() -> None:
+    """Only git-tracked sources count: a scratch script must not change the page."""
+    probe = REPO_ROOT / "tools" / "_untracked_graph_probe.py"
+    probe.write_text(
+        'def f(node):\n    node.create_publisher(int, "/untracked/probe", 1)\n', encoding="utf-8"
+    )
+    try:
+        assert probe not in graph._iter_sources((".py",))
+    finally:
+        probe.unlink()

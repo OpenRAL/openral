@@ -703,14 +703,14 @@ _Generates `packages/openral_nav2_bringup/config/nav2_visual.yaml` (the Nav2 cos
 ### `tools/gen_ros_topic_graph.py`
 _Generates `docs/topics/README.md`, the ROS 2 topic / service / action graph, by statically joining every publisher, subscriber, server and client in `python/`, `packages/`, `tools/` and `cpp/` (tests excluded) on its resolved name, plus launch-file remappings. Pre-commit rewrites the page; `just lint` and the quality workflow run `--check`._
 
-- `prop REPO_ROOT, OUT_PATH, SCAN_ROOTS` (L47–49) — Repo root, the generated page (`docs/topics/README.md`), and the scanned top-level trees (`python`, `packages`, `cpp`, `tools`).
-- `class Endpoint` — One side of a connection: `kind` (topic/service/action), `role`, resolved `name` (or the source expression), `resolved`, canonical `pkg/Type`, and `where` (`path (Class.method)` plus a `[param `x`]` note). (L89)
-- `extract_python(files) -> list[Endpoint]` — Endpoints from Python sources; names resolve through literals, f-strings, enclosing-scope and module constants (across `from x import`), class and `self._x` attributes, parameter defaults (a parameter without one stays unresolved), `declare_parameter` defaults, argparse `add_argument(default=...)` and `openral_core.camera_topic(name, kind)` (a non-literal name becomes `{sensor}`); name and type are read positionally or by rclpy's keywords (`topic`/`msg_type`, `srv_name`/`srv_type`, `action_name`/`action_type`). (L409)
-- `extract_cpp(files) -> list[Endpoint]` — Endpoints from C++ sources; arguments are split with balanced brackets, both `rclcpp_action::create_server`/`create_client` overloads (node, or the four node interfaces) are handled, and a name resolves from a string literal or a `declare_parameter<T>("x", "default")` variable. (L452)
-- `extract_remappings(files) -> list[tuple[str, str, str]]` — `(from, to, launch file)` for every `remappings=` pair. (L518)
-- `render(endpoints, remaps) -> str` — The Markdown page: concrete and per-instance (`{placeholder}`) topics, services and actions, unresolved endpoints, remappings. (L550)
-- `build() -> str` — Scans the tree and renders the page. (L620)
-- `main(argv=None) -> int` — Writes the page; `--check` exits 1 when the checked-in copy is stale. (L628)
+- `prop REPO_ROOT, OUT_PATH, SCAN_ROOTS` (L48–50) — Repo root, the generated page (`docs/topics/README.md`), and the scanned top-level trees (`python`, `packages`, `cpp`, `tools`).
+- `class Endpoint` — One side of a connection: `kind` (topic/service/action), `role`, resolved `name` (or the source expression), `resolved`, canonical `pkg/Type`, and `where` (`path (Class.method)` plus a `[param `x`]` note). (L90)
+- `extract_python(files) -> list[Endpoint]` — Endpoints from Python sources; names resolve through literals, f-strings, enclosing-scope and module constants (across `from x import`), class and `self._x` attributes, parameter defaults (a parameter without one stays unresolved), `declare_parameter` defaults, argparse `add_argument(default=...)` and `openral_core.camera_topic(name, kind)` (a non-literal name becomes `{sensor}`); name and type are read positionally or by rclpy's keywords (`topic`/`msg_type`, `srv_name`/`srv_type`, `action_name`/`action_type`). (L428)
+- `extract_cpp(files) -> list[Endpoint]` — Endpoints from C++ sources; arguments are split with balanced brackets, both `rclcpp_action::create_server`/`create_client` overloads (node, or the four node interfaces) are handled, and a name resolves from a string literal or a `declare_parameter<T>("x", "default")` variable. (L471)
+- `extract_remappings(files) -> list[tuple[str, str, str]]` — `(from, to, launch file)` for every `remappings=` pair. (L537)
+- `render(endpoints, remaps) -> str` — The Markdown page: concrete and per-instance (`{placeholder}`) topics, services and actions, unresolved endpoints, remappings. (L569)
+- `build() -> str` — Scans the tree and renders the page. (L639)
+- `main(argv=None) -> int` — Writes the page; `--check` exits 1 when the checked-in copy is stale. (L647)
 
 ### `tools/quantize_lingbot_vla2.py`
 _Pre-quantizes LingBot-VLA 2.0's Qwen3-VL backbone to an NF4 pack ahead of time (the sidecar normally does this at load) so deploys download ~7 GB instead of 25.5 GB and skip the per-boot conversion. Runs in the sidecar venv (torch 2.9 / transformers 4.57.3 / bitsandbytes) importing `tools/_lingbot_vla2_server.py`'s own helpers so the pack matches the runtime shells byte-for-byte. Frugal streaming keeps GPU peak at a few hundred MB and host peak at ~30 GB._

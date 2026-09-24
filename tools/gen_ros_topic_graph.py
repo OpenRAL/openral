@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import ast
 import re
+import subprocess
 import sys
 from collections import defaultdict
 from collections.abc import Iterable
@@ -124,12 +125,30 @@ def _rel(path: Path) -> str:
 
 
 def _iter_sources(suffixes: tuple[str, ...]) -> list[Path]:
+    """Tracked source files only (``git ls-files``: the index, so a staged new file counts).
+
+    Walking the filesystem would let a scratch script, a stray ``venv/`` or a colcon
+    ``log/`` change the page on one machine, and CI's ``--check`` on a clean checkout
+    would then disagree with what pre-commit wrote.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "ls-files", "-z", "--", *SCAN_ROOTS],
+            capture_output=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise SystemExit(f"gen_ros_topic_graph needs a git checkout: {exc}") from exc
     files: list[Path] = []
-    for root in SCAN_ROOTS:
-        for path in (REPO_ROOT / root).rglob("*"):
-            rel_parts = path.relative_to(REPO_ROOT).parts
-            if path.suffix in suffixes and not _EXCLUDED_PARTS.intersection(rel_parts):
-                files.append(path)
+    for rel in out.decode().split("\0"):
+        path = REPO_ROOT / rel
+        if (
+            rel
+            and path.suffix in suffixes
+            and not _EXCLUDED_PARTS.intersection(Path(rel).parts)
+            and path.is_file()
+        ):
+            files.append(path)
     return sorted(files)
 
 

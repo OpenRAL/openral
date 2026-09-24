@@ -194,13 +194,13 @@ _ROS 2 image-publisher tee for `GStreamerSensorReader`. Republishes the `ros_sin
 
 - module constant `_DEFAULT_QOS_DEPTH: Final[int] = 5` (L52) — default QoS depth for the image publisher (mirrors gscam2's shallow, `BEST_EFFORT`-friendly default).
 - `class RosImagePublisher` (L55) — `__init__(*, sensor_id, appsink, topic, rate_hz=None, node_name=None, qos_depth=_DEFAULT_QOS_DEPTH, frame_id=None, camera_info=None)` — `frame_id` (default `sensor_id`) stamps both headers; `camera_info` enables the `CameraInfo` companion on `camera_info_topic_for(topic)`. Validates `topic` is absolute and `rate_hz` is positive or `None`; no ROS I/O until `start`.
-  - `is_started` [@property] (L123) — `True` between `start` and `stop`.
-  - `start() -> None` (L127) — Initialise rclpy (if needed), create the `sensor_msgs/Image` publisher (`BEST_EFFORT`+`VOLATILE`+`KEEP_LAST`), plus a `CameraInfo` publisher (`RELIABLE`+`VOLATILE`+`KEEP_LAST=1`) when `camera_info` is set, hook the appsink; raises `RuntimeError` if `rclpy` is unavailable.
-  - `stop() -> None` (L201) — Disconnect the signal, destroy the publisher, shut down rclpy if this instance initialised it. Idempotent.
-  - `_on_new_sample(appsink) -> int` (L234) — Rate-gate → map → build `sensor_msgs/Image` → publish, then the matching `CameraInfo` (frame width/height, same stamp) when enabled.
-  - `_claim_rate_slot() -> bool` (L288) — Monotonic-clock token gate enforcing `rate_hz`.
-  - `_extract_image_payload(appsink, gst) -> tuple[bytes, int, int, str] | None` (L303) — Pull the latest sample; `None` on malformed sample / unsupported format / map failure.
-- `_gst_format_to_ros_encoding(gst_format) -> str | None` (L345) — Maps a GStreamer caps `format` (`BGR`/`RGB`/`GRAY8`) to a ROS `Image.encoding` (`bgr8`/`rgb8`/`mono8`).
+  - `is_started` [@property] (L128) — `True` between `start` and `stop`.
+  - `start() -> None` (L132) — Initialise rclpy (if needed), create the `sensor_msgs/Image` publisher (`BEST_EFFORT`+`VOLATILE`+`KEEP_LAST`), plus a `CameraInfo` publisher (`RELIABLE`+`VOLATILE`+`KEEP_LAST=1`) when `camera_info` is set, hook the appsink; raises `RuntimeError` if `rclpy` is unavailable.
+  - `stop() -> None` (L206) — Disconnect the signal, destroy the publisher, shut down rclpy if this instance initialised it. Idempotent.
+  - `_on_new_sample(appsink) -> int` (L244) — Rate-gate → map → build `sensor_msgs/Image` → publish, then the matching `CameraInfo` (frame width/height, same stamp) when enabled.
+  - `_claim_rate_slot() -> bool` (L313) — Monotonic-clock token gate enforcing `rate_hz`.
+  - `_extract_image_payload(appsink, gst) -> tuple[bytes, int, int, str] | None` (L328) — Pull the latest sample; `None` on malformed sample / unsupported format / map failure.
+- `_gst_format_to_ros_encoding(gst_format) -> str | None` (L370) — Maps a GStreamer caps `format` (`BGR`/`RGB`/`GRAY8`) to a ROS `Image.encoding` (`bgr8`/`rgb8`/`mono8`).
 
 ### `python/runner/src/openral_runner/backends/gstreamer/perception_tee.py`
 _Perception event tee for `GStreamerSensorReader`. Pulls frames from the event leg's `appsink`, runs `EventDetector`s, publishes `openral_msgs/PromptStamped` on `/openral/perception/<kind>`. `rclpy` lazy-imported in `start()` so the module stays import-safe on hosts without a sourced ROS env._

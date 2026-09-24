@@ -293,3 +293,29 @@ def test_the_run_script_lets_observability_flags_through_to_the_gates() -> None:
     )
     assert proc.returncode == 2
     assert "OPENRAL_OPENARM_ALLOW_MOTION" in proc.stderr
+
+
+def test_the_run_script_refuses_when_deploy_would_load_another_manifest(
+    tmp_path: Path,
+) -> None:
+    """The gate must verify the manifest `deploy run` loads. With OPENRAL_ROBOTS_DIR pointing
+    elsewhere, deploy would publish that copy's head_zed pose, so the wrapper refuses."""
+    other = tmp_path / "robots" / "openarm"
+    other.mkdir(parents=True)
+    (other / "robot.yaml").write_text(_ROBOT.read_text(encoding="utf-8"), encoding="utf-8")
+    env = {
+        **os.environ,
+        "OPENRAL_OPENARM_ALLOW_MOTION": "1",
+        "OPENRAL_OPENARM_ATTENDED": "1",
+        "OPENRAL_ROBOTS_DIR": str(tmp_path / "robots"),
+    }
+    proc = subprocess.run(
+        ["bash", str(_REPO_ROOT / "tools" / "openarm_world_voxel_run.sh")],
+        env=env,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    assert proc.returncode == 2, proc.stderr
+    assert "openral deploy run would load" in proc.stderr

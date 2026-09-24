@@ -533,6 +533,21 @@ class SensorSpec(BaseModel):
     deploy_binding: SensorDeployBinding | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
 
+    @property
+    def is_depth_camera(self) -> bool:
+        """A depth / point-cloud camera with intrinsics.
+
+        The one test for "can this be back-projected into a cloud": the sim bridge's
+        depth synth, octomap's auto-enable, the Nav2-over-visual-SLAM guard and the
+        launch's depth-camera pick all use it.
+
+        Example:
+            >>> desc = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+            >>> [s.name for s in desc.sensors if s.is_depth_camera]
+            ['front_depth']
+        """
+        return self.modality in ("depth", "point_cloud") and self.intrinsics is not None
+
 
 #: Root of the canonical camera topic layout. Spelled here and nowhere else; build
 #: topics with :func:`camera_topic`.

@@ -116,6 +116,11 @@ class RosImagePublisher:
         self._signal_handler_id: int | None = None
         self._last_publish_monotonic_ns: int = 0
         self._publish_lock = threading.Lock()
+        # Held by the streaming-thread callback while it touches the node/publishers and by
+        # ``_release`` while it tears them down: disconnecting the signal does not stop a
+        # callback already running, so without this a close mid-frame could publish on a
+        # destroyed publisher or read a cache ``_release`` just cleared.
+        self._ros_lock = threading.Lock()
         self._we_initialised_rclpy = False
         self._is_started = False
 
@@ -211,6 +216,11 @@ class RosImagePublisher:
             with contextlib.suppress(Exception):  # reason: defensive cleanup
                 self._appsink.disconnect(self._signal_handler_id)
         self._signal_handler_id = None
+        with self._ros_lock:
+            self._release_ros()
+
+    def _release_ros(self) -> None:
+        """Destroy publishers and node, shut rclpy down if owned. Caller holds ``_ros_lock``."""
         if self._node is not None:
             for pub in (self._publisher, self._info_publisher):
                 if pub is not None:
@@ -254,21 +264,37 @@ class RosImagePublisher:
             return ok_flow
         payload, width, height, encoding = extracted
 
-        msg = Image()
-        msg.header.stamp = self._node.get_clock().now().to_msg()
+        with self._ros_lock:
+            self._publish_locked(payload, int(width), int(height), encoding, Image)
+        return ok_flow
+
+    def _publish_locked(
+        self,
+        payload: bytes,
+        width: int,
+        height: int,
+        encoding: str,
+        image_cls: Any,  # noqa: ANN401  # reason: sensor_msgs.msg.Image, imported lazily
+    ) -> None:
+        """Publish one Image (+ CameraInfo). Caller holds ``_ros_lock``."""
+        node, publisher = self._node, self._publisher
+        if not self._is_started or node is None or publisher is None:
+            return  # torn down while this frame was being extracted
+        msg = image_cls()
+        msg.header.stamp = node.get_clock().now().to_msg()
         msg.header.frame_id = self._frame_id
-        msg.height = int(height)
-        msg.width = int(width)
+        msg.height = height
+        msg.width = width
         msg.encoding = encoding
         msg.is_bigendian = 0
         channels = 1 if encoding == "mono8" else 3
-        msg.step = int(width) * channels
+        msg.step = width * channels
         msg.data = payload
-        self._publisher.publish(msg)
+        publisher.publish(msg)
         if self._info_publisher is not None and self._camera_info is not None:
             # Built once per frame size (the intrinsics only rescale when it changes); per
             # frame only the stamp moves. Runs on the streaming thread, so keep it cheap.
-            size = (int(width), int(height))
+            size = (width, height)
             if self._info_cache is None or self._info_cache[0] != size:
                 self._info_cache = (
                     size,
@@ -283,7 +309,6 @@ class RosImagePublisher:
             info = self._info_cache[1]
             info.header.stamp = msg.header.stamp
             self._info_publisher.publish(info)
-        return ok_flow
 
     def _claim_rate_slot(self) -> bool:
         """Return ``True`` and update the monotonic gate when a publish slot is due.

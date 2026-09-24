@@ -999,10 +999,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # velocity / effort limits).
     description = RobotDescription.from_yaml(str(robot_yaml))
     description.validate_for_e2e_pipeline()
+    # The scene the launch will actually read (`deploy_config`, else `config`): parsed once,
+    # used for the geometry check here and for the camera decisions below.
+    launched_scene = (
+        DeployScene.from_yaml(str(deploy_config)) if deploy_config is not None else deploy_scene
+    )
     # A robot sensor's geometry lives in its manifest only; refuse a scene that restates it
     # here, before launch, so `deploy validate` sees it too (the launch's merge re-checks).
-    if deploy_scene is not None:
-        check_scene_sensor_overrides(description.sensors, deploy_scene.sensors)
+    if launched_scene is not None:
+        check_scene_sensor_overrides(description.sensors, launched_scene.sensors)
     # No per-robot table: the HAL node + sim path derive from the manifest
     # and the scene (see `_derive_hal_spec`).
     hal = _derive_hal_spec(robot_id, deploy_scene)
@@ -1092,18 +1097,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # from the robot's depth sensor (``_depth_camera`` in the launch). The mono path
     # brings its own DA3 depth. Without a depth sensor there is nothing to map, so decide
     # before launch — same implicit-downgrade / explicit-refusal policy as above.
-    if (
-        enable_nav2
-        and slam_backend == "visual"
-        and not mono_usable
-        and not any(
-            s.modality in ("depth", "point_cloud") and s.intrinsics is not None
-            for s in description.sensors
-        )
-    ):
-        reason = (
-            f"Nav2 over stereo visual SLAM needs a depth sensor with intrinsics for nvblox, "
-            f"and robot {description.name!r} declares none"
+    # The depth image nvblox reads (``camera_topic(<depth>, DEPTH_IMAGE)``) is published only
+    # by the sim sensor bridge; on a real deploy nothing publishes it (ADR-0108 Decision 2,
+    # remapping a driver's depth, is not implemented), so the real path has no source.
+    nvblox_depth_source = hal_mode == "sim" and any(s.is_depth_camera for s in description.sensors)
+    if enable_nav2 and slam_backend == "visual" and not mono_usable and not nvblox_depth_source:
+        reason = "Nav2 over stereo visual SLAM needs nvblox depth, and " + (
+            "no depth image reaches the canonical topics on a real deploy yet"
+            if hal_mode != "sim"
+            else f"robot {description.name!r} declares no depth sensor with intrinsics"
         )
         if not nav2_defaulted:
             raise ROSConfigError(f"{reason}.")
@@ -1114,10 +1116,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # can ray-cast a PointCloud2 from); there is nothing to map otherwise.
     # ``--enable-octomap`` / ``--no-enable-octomap`` overrides.
     if enable_octomap is None:
-        enable_octomap = any(
-            s.modality in ("depth", "point_cloud") and s.intrinsics is not None
-            for s in description.sensors
-        )
+        enable_octomap = any(s.is_depth_camera for s in description.sensors)
     clock_origin = _resolve_clock_origin(
         hal_mode=hal_mode, config=config, pinned=rt.clock_origin if rt is not None else None
     )
@@ -1158,14 +1157,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # launch picks it from ``publishing_sensors`` and refuses when there is none): on a
     # real deploy that is a camera with a deploy_binding. Only the implicit default is
     # downgraded — an explicit --object-detector still fails loud in the launch.
-    sensor_scene = (
-        DeployScene.from_yaml(str(deploy_config)) if deploy_config is not None else deploy_scene
-    )
     publishing_rgb = [
         s
         for s in publishing_sensors(
             description.sensors,
-            sensor_scene.sensors if sensor_scene is not None else [],
+            launched_scene.sensors if launched_scene is not None else [],
             hal_mode,
         )
         if s.modality == "rgb"
@@ -2190,17 +2186,24 @@ def _clean_stale_fastrtps_shm(
     locked = _locked_fastrtps_inodes(proc_root)
     if locked is None:
         return 0, len(candidates)
-    live_paths = _live_fastrtps_paths(proc_root)
     real_dir = os.path.realpath(shm_dir)
     live_groups: set[str] = set()
     for entry in candidates:
-        try:
+        with contextlib.suppress(OSError):
             st = entry.stat()
-        except OSError:
-            continue
-        in_use = (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino) in locked
-        if in_use or os.path.join(real_dir, entry.name) in live_paths:
-            live_groups.add(_fastrtps_group(entry.name))
+            if (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino) in locked:
+                live_groups.add(_fastrtps_group(entry.name))
+    # Every live participant flocks its lock files, so the cheap /proc/locks pass usually
+    # proves every group live. Only when some group is still unproven is the full
+    # /proc/*/fd + /proc/*/maps scan worth its cost (tens of thousands of maps lines on a
+    # host running torch/CUDA jobs).
+    if any(_fastrtps_group(e.name) not in live_groups for e in candidates):
+        live_paths = _live_fastrtps_paths(proc_root)
+        live_groups.update(
+            _fastrtps_group(e.name)
+            for e in candidates
+            if os.path.join(real_dir, e.name) in live_paths
+        )
     purged = kept = 0
     for entry in candidates:
         if _fastrtps_group(entry.name) in live_groups:

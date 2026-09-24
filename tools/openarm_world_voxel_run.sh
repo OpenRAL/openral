@@ -53,6 +53,24 @@ done
 [[ -n "${ROS_DISTRO:-}" ]] || refuse "ROS 2 is not sourced (and source the ZED overlay too)."
 command -v openral >/dev/null || refuse "openral is not on PATH (activate the venv)."
 
+# Verify the manifest `deploy run` will actually load, not merely this checkout's copy: the
+# installed CLI resolves $OPENRAL_ROBOTS_DIR first, then its OWN repo root, which may be a
+# different worktree. Ask that resolver with the same interpreter `openral` runs under.
+openral_python="$(dirname "$(readlink -f "$(command -v openral)")")/python"
+[[ -x "${openral_python}" ]] || openral_python="python"
+deployed_robot="$("${openral_python}" - <<'PY'
+from pathlib import Path
+
+import openral_cli.deploy_sim as deploy_sim
+from openral_sim.policies.robots import resolve_robot_manifest
+
+root = deploy_sim._repo_root_from(Path(deploy_sim.__file__))
+print(Path(resolve_robot_manifest("openarm", repo_root=root)).resolve())
+PY
+)" || refuse "could not resolve the robot manifest openral deploy run would load."
+[[ "${deployed_robot}" == "$(readlink -f "${robot}")" ]] ||
+  refuse "openral deploy run would load ${deployed_robot}, not ${robot}: run from the checkout whose openral you are using, and unset OPENRAL_ROBOTS_DIR."
+
 python "${root}/tools/zed_extrinsic_check.py" verify --robot "${robot}" --report "${report}" ||
   refuse "head_zed extrinsic not verified for the manifest's pose (runbook step 2)."
 [[ -t 0 ]] || refuse "not an interactive terminal; a person at the cell launches this."
