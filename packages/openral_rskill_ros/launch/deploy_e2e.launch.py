@@ -312,15 +312,17 @@ def _max_octree_age_s() -> float:
     ``octomap_server`` publishes only when it inserts a cloud, so a dead camera
     is a silent octree; past this bound the bridge stops publishing and the
     kernel's ``world_voxel_deadline_ms`` turns the silence into
-    ``DROP_VOXEL_UNAVAILABLE`` (hazard log Entry 033). Half the deadline:
-    comfortably above octomap's normal gap (0.25-0.31 s measured on the Thor
-    ZED path, <= 0.33 s in sim with the depth cast slowed to ~3 Hz) and well
-    below the deadline, so the kernel -- not the bridge -- is what fails closed.
-    Worst case from the last inserted cloud to the drop is bound + deadline,
-    1.5 s. Derived, not hand-kept, for the reason ``_world_voxel_max_cells``
-    gives.
+    ``DROP_VOXEL_UNAVAILABLE`` (hazard log Entry 033). Equal to the deadline,
+    1.0 s. Octomap's normal gap was 0.25-0.31 s on the Thor ZED path, but one
+    Thor run (2026-09-24) had octomap at 2.2 Hz, gaps ~0.45 s, which sat too
+    close to the earlier half-deadline bound (0.5 s) and silenced a healthy
+    camera's grid; 1.0 s tolerates octomap down to ~1 Hz. The kernel -- not the
+    bridge -- still fails closed: the bridge goes silent, then the kernel's own
+    deadline expires. Worst case from the last inserted cloud to the drop is
+    bound + deadline, 2.0 s. Derived, not hand-kept, for the reason
+    ``_world_voxel_max_cells`` gives.
     """
-    return _WORLD_VOXEL_DEADLINE_MS / 1000.0 / 2.0
+    return _WORLD_VOXEL_DEADLINE_MS / 1000.0
 
 
 def _octomap_coverage_radius() -> float:
@@ -437,22 +439,54 @@ def _stereo_camera_topics(names_csv: str) -> tuple[str, str, str, str] | None:
     )
 
 
-def _primary_rgb_camera(description: RobotDescription) -> str:
-    """The RGB sensor the perception legs default to, or ``""`` when the robot has none.
+def _publishing_sensors(
+    description: RobotDescription, scene_sensors: list[SensorSpec], hal_mode: str
+) -> list[SensorSpec]:
+    """The sensors that actually publish a camera topic on this deploy.
 
-    Prefers an optical-framed RGB camera (its intrinsics/extrinsics resolve directly), else
-    the manifest's first RGB sensor. Shared by the object detector's ``locate_in_view`` camera
-    and the reasoner's completion camera so both watch the same view — a hard-coded name is a
-    dead topic on every robot that spells its cameras differently.
+    Sim: the manifest's sensors, which SimSensorBridge renders (bound or not; a scene-only
+    hardware camera has no sim publisher). Real: the manifest merged with the deploy scene
+    (``merge_deploy_sensors``), keeping only sensors with a ``deploy_binding`` — an unbound
+    sensor gets no reader and so no topic, and picking it would subscribe to silence.
 
     Example:
         >>> from openral_core import RobotDescription
-        >>> _primary_rgb_camera(RobotDescription.from_yaml("robots/panda_mobile/robot.yaml"))
+        >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> [s.name for s in _publishing_sensors(arm, [], "sim") if s.modality == "rgb"]
+        ['top', 'wrist_left', 'wrist_right']
+        >>> _publishing_sensors(arm, [], "real")  # the manifest binds no camera
+        []
+    """
+    if hal_mode != "real":
+        return list(description.sensors)
+    from openral_rskill_ros.sensor_leg import merge_deploy_sensors
+
+    return [
+        s
+        for s in merge_deploy_sensors(description.sensors, scene_sensors)
+        if getattr(s, "deploy_binding", None) is not None
+    ]
+
+
+def _primary_rgb_camera(sensors: list[SensorSpec]) -> str:
+    """The RGB sensor the perception legs default to, or ``""`` when there is none.
+
+    Prefers an optical-framed RGB camera (its intrinsics/extrinsics resolve directly), else
+    the first RGB sensor. Shared by the object detector's ``locate_in_view`` camera and the
+    reasoner's completion camera so both watch the same view — a hard-coded name is a dead
+    topic on every robot that spells its cameras differently. Pass ``_publishing_sensors``,
+    not the raw manifest: on a real deploy only bound cameras have a topic.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> mobile = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+        >>> _primary_rgb_camera(mobile.sensors)
         'shoulder_left'
-        >>> _primary_rgb_camera(RobotDescription.from_yaml("robots/so101_follower/robot.yaml"))
+        >>> so101 = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> _primary_rgb_camera(so101.sensors)
         'top'
     """
-    rgb = [s for s in description.sensors if s.modality == "rgb"]
+    rgb = [s for s in sensors if s.modality == "rgb"]
     return next(
         (s.name for s in rgb if s.frame_id.endswith("_optical_frame")),
         rgb[0].name if rgb else "",
@@ -1150,6 +1184,18 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # kernel reload, not by mounting a different envelope at boot.
     description = RobotDescription.from_yaml(robot_yaml)
     description.validate_for_e2e_pipeline()  # loud failure on missing fields
+    # The deploy scene's sensors and drivers, loaded once: the reasoner's completion camera,
+    # the detector's camera, WorldState's subscriptions and the vendor driver includes all
+    # need to know which cameras exist (and, on a real deploy, which are bound).
+    scene_sensors: list[SensorSpec] = []
+    scene_drivers: list = []  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, deferred import
+    if deploy_config:
+        from openral_core import DeployScene
+
+        _scene = DeployScene.from_yaml(deploy_config)
+        scene_sensors = list(_scene.sensors)
+        scene_drivers = list(_scene.drivers)
+    publishing_sensors = _publishing_sensors(description, scene_sensors, hal_mode)
     envelope = compute_intersection(
         description, skill=None, deploy=workcell.safety if workcell is not None else None
     )
@@ -1508,9 +1554,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # mirror OPENRAL_DASHBOARD_FLIP_180 so the VLM judges an upright frame (the topic
     # itself is not flipped — sim_sensor_bridge flips only the dashboard thumbnail).
     # The node's own default names a ``top`` camera that most robots do not declare; derive
-    # the view from the manifest (same rule as the detector) so the VLM completion check gets
-    # frames on every robot. Empty disables the subscription on a camera-less robot.
-    _completion_camera = _primary_rgb_camera(description)
+    # the view from the cameras that actually publish on this deploy (same rule as the
+    # detector) so the VLM completion check gets frames on every robot — on a real cell that
+    # means a bound camera. Empty disables the subscription when there is none.
+    _completion_camera = _primary_rgb_camera(publishing_sensors)
     reasoner_params["completion_camera_topic"] = (
         camera_topic(_completion_camera) if _completion_camera else ""
     )
@@ -1564,21 +1611,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # in sim, SimSensorBridge renders the manifest's cameras only, so a
     # scene-only camera would be a subscription with no publisher (a stale
     # diagnostic forever).
-    scene_sensors: list[SensorSpec] = []
-    scene_drivers: list = []  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, deferred import
-    if deploy_config:
-        from openral_core import DeployScene
-
-        _scene = DeployScene.from_yaml(deploy_config)
-        scene_sensors = list(_scene.sensors)
-        scene_drivers = list(_scene.drivers)
-        if hal_mode == "real":
-            scene_rgb = [
-                s.name
-                for s in scene_sensors
-                if s.modality == "rgb" and s.name not in rgb_camera_names
-            ]
-            rgb_camera_names = [*rgb_camera_names, *scene_rgb]
+    if deploy_config and hal_mode == "real":
+        scene_rgb = [
+            s.name for s in scene_sensors if s.modality == "rgb" and s.name not in rgb_camera_names
+        ]
+        rgb_camera_names = [*rgb_camera_names, *scene_rgb]
 
     # Cameras that will actually publish on a real deploy: a declared RGB sensor
     # only gets a reader (and therefore a topic) when it carries a
@@ -1596,14 +1633,8 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # On real, read the merged list: a scene entry overrides the manifest sensor
     # of the same name, so the raw pair could list a camera twice or keep one
     # whose binding the scene replaced.
-    from openral_rskill_ros.sensor_leg import merge_deploy_sensors
-
     bound_rgb_camera_names = (
-        [
-            s.name
-            for s in merge_deploy_sensors(description.sensors, scene_sensors)
-            if s.modality == "rgb" and getattr(s, "deploy_binding", None) is not None
-        ]
+        [s.name for s in publishing_sensors if s.modality == "rgb"]
         if hal_mode == "real"
         else list(rgb_camera_names)
     )
@@ -2343,10 +2374,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # reasoner.)
         from openral_core.exceptions import ROSConfigError
 
-        det_camera = _primary_rgb_camera(description)
+        det_camera = _primary_rgb_camera(publishing_sensors)
         if not det_camera:
             raise ROSConfigError(
-                f"object detector enabled but robot {description.name!r} declares no RGB sensor"
+                f"object detector enabled but robot {description.name!r} has no RGB camera "
+                f"that publishes on this deploy (hal_mode={hal_mode})"
             )
         det_image_topic = camera_topic(det_camera)
 

@@ -9,6 +9,7 @@ skipped when rclpy is not importable (source ``/opt/ros/jazzy/setup.bash``).
 from __future__ import annotations
 
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -75,6 +76,9 @@ def _shm_files_of(pid: int) -> set[str]:
     return paths
 
 
+_READY_TIMEOUT_S = 20.0
+
+
 @pytest.mark.skipif(not _rclpy_available(), reason="rclpy not importable (ROS 2 not sourced)")
 def test_live_participant_keeps_segments_and_still_delivers() -> None:
     pub = subprocess.Popen(
@@ -82,6 +86,9 @@ def test_live_participant_keeps_segments_and_still_delivers() -> None:
     )
     try:
         assert pub.stdout is not None
+        # Bounded: a publisher that stalls in rclpy init must fail the test, not hang it.
+        ready, _, _ = select.select([pub.stdout], [], [], _READY_TIMEOUT_S)
+        assert ready, f"publisher not ready within {_READY_TIMEOUT_S} s"
         assert pub.stdout.readline().strip() == "ready"
         time.sleep(1.0)  # Fast-DDS maps its ports/segments during participant init.
         owned = _shm_files_of(pub.pid)

@@ -9715,7 +9715,8 @@ class SensorReaderConfig(BaseModel):
             ``SensorReader.read_latest`` raises. Defaults to ~3 frames at
             30 Hz.
         publish_to_ros: If True, the reader tees a downsampled stream to
-            ``publish_topic`` at ``publish_rate_hz``.
+            ``publish_topic`` at ``publish_rate_hz``. ``gstreamer`` backend only;
+            every other backend refuses it.
         publish_topic: ROS 2 topic to publish to when ``publish_to_ros`` is
             True. Required iff ``publish_to_ros``.
         publish_rate_hz: Downsample rate for the ROS tee.
@@ -9764,6 +9765,13 @@ class SensorReaderConfig(BaseModel):
                 f"SensorReaderConfig({self.sensor_id!r}): publish_frame_id / "
                 f"publish_camera_info are set but publish_to_ros is False; they "
                 f"only configure the ROS tee."
+            )
+        if self.publish_to_ros and self.backend != SensorReaderBackend.GSTREAMER:
+            raise ValueError(
+                f"SensorReaderConfig({self.sensor_id!r}): publish_to_ros needs the "
+                f"gstreamer backend (got {self.backend.value!r}); only its in-pipeline "
+                f"tee publishes to ROS. Other backends are published by the deploy "
+                f"sensor leg's SensorRosPublisher, not by this flag."
             )
         if self.publish_to_ros and self.publish_topic is None:
             raise ValueError(

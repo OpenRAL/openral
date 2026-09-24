@@ -303,7 +303,10 @@ class GStreamerSensorReader:
         )
         try:
             publisher.start()
-        except RuntimeError as exc:
+        except Exception as exc:
+            # Not only the documented RuntimeError: any failure part-way (a ROS
+            # publisher, the appsink hook) leaves nothing half-open — the publisher
+            # released its own partial state, the pipeline goes down here.
             self._teardown_pipeline()
             raise ROSConfigError(
                 f"GStreamerSensorReader({self.sensor_id!r}): ROS tee start failed: {exc}"

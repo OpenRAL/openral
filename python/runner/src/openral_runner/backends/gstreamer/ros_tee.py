@@ -126,20 +126,38 @@ class RosImagePublisher:
         if self._is_started:
             return
         try:
-            import rclpy  # noqa: PLC0415  # reason: optional ROS dep
-            from rclpy.qos import (  # noqa: PLC0415
-                QoSDurabilityPolicy,
-                QoSHistoryPolicy,
-                QoSProfile,
-                QoSReliabilityPolicy,
-            )
-            from sensor_msgs.msg import Image  # noqa: PLC0415
+            self._start_ros()
         except ImportError as exc:
+            self._release()
             raise RuntimeError(
                 "RosImagePublisher.start() requires rclpy + sensor_msgs. "
                 "Source a ROS 2 install (e.g. `source /opt/ros/jazzy/setup.bash`) "
                 "before invoking the GStreamer reader with publish_to_ros=True."
             ) from exc
+        except Exception:
+            # A failure part-way (node, Image publisher, CameraInfo publisher, appsink
+            # hook) must not leak what was already created: release it, then re-raise.
+            self._release()
+            raise
+        self._is_started = True
+        log.debug(
+            "ros_tee.started",
+            sensor_id=self.sensor_id,
+            topic=self._topic,
+            rate_hz=self._rate_hz,
+            has_camera_info=self._info_publisher is not None,
+        )
+
+    def _start_ros(self) -> None:
+        """Create the node, the publishers and the appsink hook (``start``'s body)."""
+        import rclpy  # noqa: PLC0415  # reason: optional ROS dep
+        from rclpy.qos import (  # noqa: PLC0415
+            QoSDurabilityPolicy,
+            QoSHistoryPolicy,
+            QoSProfile,
+            QoSReliabilityPolicy,
+        )
+        from sensor_msgs.msg import Image  # noqa: PLC0415
 
         # Initialise rclpy lazily and remember whether we did so we don't
         # tear down a context the user might own.
@@ -177,19 +195,16 @@ class RosImagePublisher:
         self._appsink.set_property("emit-signals", True)
         self._appsink.set_property("sync", False)
         self._signal_handler_id = self._appsink.connect("new-sample", self._on_new_sample)
-        self._is_started = True
-        log.debug(
-            "ros_tee.started",
-            sensor_id=self.sensor_id,
-            topic=self._topic,
-            rate_hz=self._rate_hz,
-            has_camera_info=self._info_publisher is not None,
-        )
 
     def stop(self) -> None:
         """Disconnect the signal, destroy the publisher, shut down rclpy (if we own it)."""
         if not self._is_started:
             return
+        self._release()
+        log.debug("ros_tee.stopped", sensor_id=self.sensor_id)
+
+    def _release(self) -> None:
+        """Release whatever ``start`` created so far; safe on a partial start."""
         if self._signal_handler_id is not None and self._appsink is not None:
             with contextlib.suppress(Exception):  # reason: defensive cleanup
                 self._appsink.disconnect(self._signal_handler_id)
@@ -210,7 +225,6 @@ class RosImagePublisher:
                 rclpy.shutdown()
             self._we_initialised_rclpy = False
         self._is_started = False
-        log.debug("ros_tee.stopped", sensor_id=self.sensor_id)
 
     # ── GStreamer callback ──────────────────────────────────────────────────
 

@@ -105,7 +105,7 @@ public:
     // a fail-closed drop. `deploy_e2e.launch.py` derives it as half that
     // deadline. Receipt time, on this node's clock: the clock the kernel times
     // voxel freshness on, immune to a sensor stamping on another clock domain.
-    max_octree_age_s_ = this->declare_parameter<double>("max_octree_age_s", 0.5);
+    max_octree_age_s_ = this->declare_parameter<double>("max_octree_age_s", 1.0);
 
     // Attached-payload clearing. On by default: `AttachedCollisionObject`
     // requires the object to be absent from world occupancy while attached, and
@@ -393,7 +393,7 @@ private:
   double attached_clear_padding_m_{0.0};
   double attach_sweep_padding_m_{0.05};
   double attached_state_timeout_s_{0.5};
-  double max_octree_age_s_{0.5};
+  double max_octree_age_s_{1.0};
   rclcpp::Time octree_received_;
   bool octree_stale_{false};
   AttachSweepLedger attach_sweep_ledger_;

@@ -108,13 +108,15 @@ logs a throttled WARN. The kernel's own `world_voxel_deadline_ms` then turns
 the silence into `DROP_VOXEL_UNAVAILABLE` (a drop, not a latch). The next
 octree resumes publication automatically (one INFO line). Worst case from
 the last inserted cloud to the kernel's drop: `max_octree_age_s +
-world_voxel_deadline_ms` (0.5 s + 1.0 s in `deploy_e2e.launch.py`).
+world_voxel_deadline_ms` (1.0 s + 1.0 s in `deploy_e2e.launch.py`).
 
-The bound has to exceed octomap's normal inter-publish gap (0.25–0.31 s
-measured on the Thor ZED path at 3.2–4.0 Hz; ≤ 0.33 s in sim with the depth
-cast slowed to ~3 Hz) and sit below the kernel's deadline, so the kernel —
-not the bridge — is what fails closed. `deploy_e2e.launch.py` derives it as
-half the deadline it gives the kernel (`_max_octree_age_s`). A bound that is
+The bound has to exceed octomap's normal inter-publish gap with margin
+(0.25–0.31 s measured on the Thor ZED path at 3.2–4.0 Hz, but ~0.45 s in one
+Thor run at 2.2 Hz; ≤ 0.33 s in sim with the depth cast slowed to ~3 Hz) and
+must not exceed the kernel's deadline, so the kernel — not the bridge — is what
+fails closed. `deploy_e2e.launch.py` sets it equal to the deadline it gives the
+kernel (`_max_octree_age_s`, 1.0 s); an earlier half-deadline bound (0.5 s)
+silenced a healthy camera's grid at 2.2 Hz. A bound that is
 too small only costs availability: silence shorter than the kernel's
 deadline is not a drop. A non-finite or non-positive bound publishes
 nothing (ERROR at start-up). A grid's `header.stamp` is still `now()`: it
@@ -131,8 +133,10 @@ under an unusable bound; plus the `octree_is_fresh` boundaries) and, end to
 end against the real kernel,
 `tests/sim/safety/test_kernel_voxel_bridge_staleness.py` (certifies while
 octrees arrive, `DROP_VOXEL_UNAVAILABLE` with no latch or E-stop once they
-stop, certifies again when they resume; with the bound disabled the stale
-chunk passes — the pre-fix fail-open, reproduced).
+stop, certifies again when they resume). That test was checked to discriminate
+by hand when it was written: rerun with the bridge bound set to 1e9 (the pre-fix
+behaviour), the stale chunk is certified — the fail-open, reproduced. The
+committed suite does not carry that control.
 
 **Not covered:** a camera that keeps publishing garbage, or a frozen image
 re-published by a driver, still reaches `octomap_server` as fresh inserts.
@@ -451,7 +455,7 @@ Requires TF from `base_frame` into the OctoMap's `header.frame_id` (usually
 | `coverage_radius_m` | `0.0` | Local volume radius around the robot (m). |
 | `coverage_center_{x,y,z}` | `0.0, 0.0, 0.5` | Local volume centre in `base_frame`. |
 | `publish_rate_hz` | `10.0` | Republish rate (the grid follows the robot via TF). |
-| `max_octree_age_s` | `0.5` | Stop publishing once the last octree was received longer ago than this, so the kernel's `world_voxel_deadline_ms` fails closed on a dead camera. Above octomap's normal gap, below the kernel's deadline (`deploy_e2e.launch.py`: half of it). Non-finite or ≤ 0 publishes nothing. |
+| `max_octree_age_s` | `1.0` | Stop publishing once the last octree was received longer ago than this, so the kernel's `world_voxel_deadline_ms` fails closed on a dead camera. Well above octomap's normal gap, not above the kernel's deadline (`deploy_e2e.launch.py`: equal to it). Non-finite or ≤ 0 publishes nothing. |
 | `attached_clear_enabled` | `true` | Clear an attached payload's own cells out of the published grid. Off = pre-#110 behaviour (payload stays in the map and can stop the robot against itself). |
 | `world_state_topic` | `/openral/world_state_fast` | Where the attachment set is read from — the kernel's own source. |
 | `attached_clear_padding_m` | `0.0` | Extra reach beyond the cell circumradius **on every frame**, for pose uncertainty. |

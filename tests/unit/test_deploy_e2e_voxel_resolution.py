@@ -165,18 +165,18 @@ def test_the_quantisation_gain_matches_the_matrix_budget_it_is_derived_from() ->
 
 
 def test_the_octree_age_bound_is_derived_from_the_kernel_deadline(launch_module: object) -> None:
-    """The bridge's ``max_octree_age_s`` is half the kernel's voxel deadline (Entry 033).
+    """The bridge's ``max_octree_age_s`` equals the kernel's voxel deadline (Entry 033).
 
-    It must sit below the deadline so the kernel -- not the bridge -- is what turns a
-    silent octree into ``DROP_VOXEL_UNAVAILABLE``, and above octomap's measured normal
-    gap (0.31 s at Thor's 3.2 Hz; <= 0.33 s in sim at ~3 Hz) so a live camera never
-    silences the grid. The launch also has to pass it to the bridge, and the kernel
-    the same deadline it was derived from.
+    It must not exceed the deadline, so a silent octree ends in the kernel's
+    ``DROP_VOXEL_UNAVAILABLE`` within bound + deadline (2.0 s), and it must sit well
+    above octomap's measured gaps (0.31 s at Thor's 3.2 Hz; ~0.45 s at 2.2 Hz) so a
+    live camera never silences the grid. The launch also has to pass it to the
+    bridge, and the kernel the same deadline it was derived from.
     """
     deadline_s = launch_module._WORLD_VOXEL_DEADLINE_MS / 1000.0
     bound = launch_module._max_octree_age_s()
-    assert bound == pytest.approx(deadline_s / 2.0)
-    assert 0.33 < bound < deadline_s
+    assert bound == pytest.approx(deadline_s)
+    assert 0.45 * 2 <= bound <= deadline_s
 
     source = LAUNCH.read_text()
     assert '"max_octree_age_s": _max_octree_age_s()' in source

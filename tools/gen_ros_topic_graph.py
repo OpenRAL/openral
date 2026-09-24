@@ -9,14 +9,17 @@ source tree statically and joins every endpoint on its name:
   ``ActionServer`` / ``ActionClient`` constructions. The name argument is
   resolved through string literals, f-strings, module constants (also across
   ``from x import NAME``), class attributes, ``self._x = ...`` assignments,
-  parameter defaults and ``declare_parameter(name, default)``.
+  parameter defaults, ``declare_parameter(name, default)`` and
+  ``openral_core.camera_topic(name, kind)`` (ADR-0108).
 * **C++** (``cpp/``, ``packages/``): ``create_publisher<T>`` /
   ``create_subscription<T>`` / ``create_service<T>`` / ``create_client<T>``
   and ``rclcpp_action::create_server<T>`` / ``create_client<T>``.
 * **Launch files**: ``remappings=`` pairs of string literals.
 
 A name that is only known at runtime is listed under "Unresolved endpoints"
-with its source expression, never guessed. Test trees are excluded (they
+with its source expression, never guessed. A name resolved around a runtime
+placeholder (``/openral/{robot}/reset_to_pose``) is listed under the
+"Per-instance" section of its kind, apart from the concrete names. Test trees are excluded (they
 publish fixtures, not the product graph). Endpoints cite ``path`` +
 enclosing ``Class.method`` rather than a line number, so the page changes
 only when the graph does.
@@ -39,6 +42,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from openral_core import CAMERA_TOPIC_PREFIX, CameraTopicKind, camera_topic
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 OUT_PATH = REPO_ROOT / "docs" / "topics" / "README.md"
 SCAN_ROOTS = ("python", "packages", "cpp", "tools")
@@ -46,22 +51,26 @@ _EXCLUDED_PARTS = frozenset(
     {"test", "tests", "__pycache__", ".venv", "build", "install", "vendor", "fakes"}
 )
 
-# method name -> (kind, role, index of the name argument)
-_PY_METHODS: dict[str, tuple[str, str, int]] = {
-    "create_publisher": ("topic", "pub", 1),
-    "create_subscription": ("topic", "sub", 1),
-    "create_service": ("service", "server", 1),
-    "create_client": ("service", "client", 1),
+# name -> (kind, role, index of the name argument, type keyword, name keyword); the
+# keywords are rclpy's own (``Node.create_publisher(msg_type, topic, ...)``,
+# ``create_service(srv_type, srv_name, ...)``, ``ActionServer(node, action_type,
+# action_name, ...)``), the type argument sits right before the name.
+_PY_METHODS: dict[str, tuple[str, str, int, str, str]] = {
+    "create_publisher": ("topic", "pub", 1, "msg_type", "topic"),
+    "create_subscription": ("topic", "sub", 1, "msg_type", "topic"),
+    "create_service": ("service", "server", 1, "srv_type", "srv_name"),
+    "create_client": ("service", "client", 1, "srv_type", "srv_name"),
 }
-# constructor name -> (kind, role, index of the name argument); (node, Type, name, ...)
-_PY_CTORS: dict[str, tuple[str, str, int]] = {
-    "ActionServer": ("action", "server", 2),
-    "ActionClient": ("action", "client", 2),
+_PY_CTORS: dict[str, tuple[str, str, int, str, str]] = {
+    "ActionServer": ("action", "server", 2, "action_type", "action_name"),
+    "ActionClient": ("action", "client", 2, "action_type", "action_name"),
 }
+# Every camera_topic() name that is not a literal is, by contract, a SensorSpec
+# name — the one placeholder allowed to join rows from different call sites.
+_SENSOR_PLACEHOLDER = "{sensor}"
 _CPP_RE = re.compile(
     r"(?P<action>rclcpp_action::)?create_(?P<what>publisher|subscription|service|client|server)"
-    r"\s*<\s*(?P<type>[\w:]+)\s*>\s*\(\s*(?P<args>[^;]*?)\s*[,)]",
-    re.S,
+    r"\s*<\s*(?P<type>[\w:]+)\s*>\s*\(",
 )
 _CPP_PARAM_RE = re.compile(
     r"(?P<var>\w+)\s*=\s*(?:this->)?declare_parameter\s*<[^>]*>\s*\(\s*"
@@ -95,8 +104,6 @@ def _endpoint(
     if name is None:
         return Endpoint(kind, role, " ".join(src.split()), False, msg_type, where)
     name, sep, note = name.partition(" (param ")
-    # `{spec.name}` and `{name}` are the same placeholder: join them on the last segment.
-    name = re.sub(r"\{[^{}]*?(\w+)\}", r"{\1}", name)
     return Endpoint(
         kind, role, name, True, msg_type, f"{where} [param {note[:-1]}]" if sep else where
     )
@@ -110,6 +117,10 @@ def _module_name(path: Path) -> str | None:
         parts.insert(0, parent.name)
         parent = parent.parent
     return ".".join(parts) if parts else None
+
+
+def _rel(path: Path) -> str:
+    return path.relative_to(REPO_ROOT).as_posix() if path.is_relative_to(REPO_ROOT) else str(path)
 
 
 def _iter_sources(suffixes: tuple[str, ...]) -> list[Path]:
@@ -184,6 +195,8 @@ class _Resolver:
             return self._resolve_attribute(expr, path, depth)
         if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id == "str":
             return self.resolve(expr.args[0], path, depth + 1) if expr.args else None
+        if isinstance(expr, ast.Call) and _callee(expr) == "camera_topic":
+            return self._camera_topic(expr, path, depth)
         if isinstance(expr, ast.BoolOp) and isinstance(expr.op, ast.Or):
             # `topic or DEFAULT` -> the default is the only statically known value.
             return self.resolve(expr.values[-1], path, depth + 1)
@@ -207,8 +220,29 @@ class _Resolver:
             )
             if expr.id in defaults:
                 return self.resolve(defaults[expr.id], path, depth + 1)
+            params = [*positional, *args.kwonlyargs, args.vararg, args.kwarg]
+            if expr.id in {a.arg for a in params if a is not None}:
+                return None  # a caller's argument: no module constant may stand in
             scope = self.enclosing(scope, funcs)
         return self._module_constant(expr.id, path, depth)
+
+    def _camera_topic(self, call: ast.Call, path: Path, depth: int) -> str | None:
+        """``camera_topic(name, kind, prefix=...)`` through the real function."""
+        kw = {k.arg: k.value for k in call.keywords}
+        name_expr = call.args[0] if call.args else kw.get("name")
+        kind_expr = call.args[1] if len(call.args) > 1 else kw.get("kind")
+        name = self.resolve(name_expr, path, depth + 1) if name_expr else None
+        if isinstance(kind_expr, ast.Attribute) and kind_expr.attr in CameraTopicKind.__members__:
+            kind: str | None = CameraTopicKind[kind_expr.attr].value
+        else:
+            kind = self.resolve(kind_expr, path, depth + 1) if kind_expr else "image"
+        prefix_expr = kw.get("prefix")
+        prefix = self.resolve(prefix_expr, path, depth + 1) if prefix_expr else CAMERA_TOPIC_PREFIX
+        if kind not in {k.value for k in CameraTopicKind} or prefix is None:
+            return None
+        if not name or "/" in name or " (param " in name:
+            name = _SENSOR_PLACEHOLDER
+        return camera_topic(name, CameraTopicKind(kind), prefix=prefix)
 
     def _module_constant(self, name: str, path: Path, depth: int) -> str | None:
         tree = self.trees.get(path)
@@ -359,11 +393,17 @@ def _message_imports(tree: ast.Module) -> dict[str, str]:
     return out
 
 
-def _name_arg(call: ast.Call, index: int) -> ast.expr | None:
-    for kw in call.keywords:
-        if kw.arg in ("topic", "srv_name", "action_name", "name"):
-            return kw.value
-    return call.args[index] if len(call.args) > index else None
+def _callee(call: ast.Call) -> str | None:
+    """``f`` for ``f(...)`` and ``mod.f(...)``."""
+    func = call.func
+    return func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+
+
+def _arg(call: ast.Call, index: int, keyword: str) -> ast.expr | None:
+    """Argument ``index`` of ``call``, positional or by ``keyword``."""
+    if len(call.args) > index:
+        return call.args[index]
+    return next((k.value for k in call.keywords if k.arg == keyword), None)
 
 
 def extract_python(files: list[Path]) -> list[Endpoint]:
@@ -377,7 +417,7 @@ def extract_python(files: list[Path]) -> list[Endpoint]:
     resolver = _Resolver(trees)
     out: list[Endpoint] = []
     for path, tree in trees.items():
-        rel = path.relative_to(REPO_ROOT).as_posix()
+        rel = _rel(path)
         msg_types = _message_imports(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -390,11 +430,11 @@ def extract_python(files: list[Path]) -> list[Endpoint]:
                 spec = _PY_CTORS[func.id]
             if spec is None:
                 continue
-            kind, role, index = spec
-            name_expr = _name_arg(node, index)
-            if name_expr is None or len(node.args) < index:
+            kind, role, index, type_kw, name_kw = spec
+            name_expr = _arg(node, index, name_kw)
+            type_expr = _arg(node, index - 1, type_kw)
+            if name_expr is None or type_expr is None:
                 continue  # a same-named helper with another signature
-            type_expr = node.args[index - 1]
             type_src = ast.unparse(type_expr)
             out.append(
                 _endpoint(
@@ -413,7 +453,7 @@ def extract_cpp(files: list[Path]) -> list[Endpoint]:
     """Every C++ endpoint in ``files``; only string-literal names resolve."""
     out: list[Endpoint] = []
     for path in files:
-        rel = path.relative_to(REPO_ROOT).as_posix()
+        rel = _rel(path)
         text = path.read_text(encoding="utf-8")
         # `const auto x = this->declare_parameter<std::string>("x", "/default");`
         params = {
@@ -421,16 +461,22 @@ def extract_cpp(files: list[Path]) -> list[Endpoint]:
         }
         for match in _CPP_RE.finditer(text):
             what = match["what"]
+            args = _cpp_args(text, match.end())
             if match["action"]:
                 kind, role = "action", "server" if what == "server" else "client"
-                # rclcpp_action::create_server<T>(node, "name", ...): name is 2nd arg.
-                tail = match.string[match.end("args") :]
-                name_src = tail.lstrip(", \n").split(",")[0].split(")")[0].strip()
+                # rclcpp_action overloads: (node, name, ...) or the four node
+                # interfaces then name. The node form takes at most 7 args for a
+                # server (4 for a client); the interface form at least 8 (5).
+                interfaces = len(args) >= (8 if role == "server" else 5)
+                index = 4 if interfaces else 1
             elif what == "server":
                 continue
             else:
                 kind, role = _CPP_ROLES[what]
-                name_src = match["args"].strip()
+                index = 0
+            if len(args) <= index:
+                continue
+            name_src = args[index]
             literal = re.fullmatch(r'"([^"]*)"', name_src)
             name = literal[1] if literal else params.get(name_src)
             msg_type = re.sub(r"::(msg|srv|action)::", "/", match["type"])
@@ -438,12 +484,43 @@ def extract_cpp(files: list[Path]) -> list[Endpoint]:
     return out
 
 
+def _cpp_args(text: str, start: int) -> list[str]:
+    """Top-level arguments of the C++ call whose ``(`` ends at ``start``.
+
+    Balances ``()[]{}<>`` (``->`` is not a bracket) and skips string literals.
+    """
+    args: list[str] = []
+    depth, i, begin = 0, start, start
+    while i < len(text):
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            while i < len(text) and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif ch == "-" and text.startswith("->", i):
+            i += 1
+        elif ch in "([{<":
+            depth += 1
+        elif ch in ")]}>":
+            if depth == 0:
+                break
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append(text[begin:i].strip())
+            begin = i + 1
+        elif ch == ";" and depth == 0:
+            break  # never past the statement
+        i += 1
+    last = text[begin:i].strip()
+    return [*args, last] if last or args else []
+
+
 def extract_remappings(files: list[Path]) -> list[tuple[str, str, str]]:
     """``(from, to, launch file)`` for every literal remapping pair."""
     out: list[tuple[str, str, str]] = []
     for path in files:
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        rel = path.relative_to(REPO_ROOT).as_posix()
+        rel = _rel(path)
         for node in ast.walk(tree):
             if isinstance(node, ast.keyword) and node.arg == "remappings":
                 for elt in getattr(node.value, "elts", []):
@@ -483,18 +560,28 @@ def render(endpoints: list[Endpoint], remaps: list[tuple[str, str, str]]) -> str
         "robot manifest and launch arguments. A [param `x`] note on an endpoint means the",
         "name is that ROS parameter's declared default, overridable at launch. A row with",
         "`—` on one side talks to something outside this repo (ros2_control,",
-        "Nav2, a driver) or is a dead end worth checking.",
+        "Nav2, a driver) or is a dead end worth checking. A `{placeholder}` in a",
+        "per-instance name is filled at runtime (a robot id, a manifest sensor name);",
+        "rows join only on identical placeholder text, except that every",
+        "`openral_core.camera_topic(<name>)` is `{sensor}` — a `SensorSpec.name` by contract.",
         "",
         "Regenerate with `uv run python tools/gen_ros_topic_graph.py`;",
         "`just lint` and pre-commit fail when this page is stale.",
         "",
     ]
-    for kind, title in (("topic", "Topics"), ("service", "Services"), ("action", "Actions")):
+    sections = [
+        (kind, (prefix + title).capitalize(), per_instance)
+        for kind, title in (("topic", "topics"), ("service", "services"), ("action", "actions"))
+        for prefix, per_instance in (("", False), ("Per-instance ", True))
+    ]
+    for kind, title, per_instance in sections:
         a, b, a_title, b_title = _ROLE_COLUMNS[kind]
         groups: dict[str, list[Endpoint]] = defaultdict(list)
         for e in endpoints:
-            if e.kind == kind and e.resolved:
+            if e.kind == kind and e.resolved and ("{" in e.name) == per_instance:
                 groups[e.name].append(e)
+        if per_instance and not groups:
+            continue
         lines += [
             f"## {title} ({len(groups)})",
             "",

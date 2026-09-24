@@ -8,6 +8,7 @@ a C++ literal no longer resolving) turns the graph silently sparse and fails her
 from __future__ import annotations
 
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -49,7 +50,7 @@ def test_declare_parameter_default_resolves_with_param_note(
 
 def test_cpp_declare_parameter_default_resolves(endpoints: list[graph.Endpoint]) -> None:
     pubs = _where(endpoints, "topic", "pub", "/openral/world_voxels")
-    assert any("octomap_voxel_bridge_node.cpp" in w for w in pubs)
+    assert any("openral_octomap_bridge/src/octomap_voxel_bridge" in w for w in pubs)
 
 
 def test_service_and_action_are_joined(endpoints: list[graph.Endpoint]) -> None:
@@ -65,6 +66,146 @@ def test_message_types_are_canonical(endpoints: list[graph.Endpoint]) -> None:
 
 def test_tests_are_excluded(endpoints: list[graph.Endpoint]) -> None:
     assert not any("/test/" in e.where or e.where.startswith("tests/") for e in endpoints)
+
+
+def test_camera_topic_rows_join_producer_and_consumer(endpoints: list[graph.Endpoint]) -> None:
+    # ADR-0108: sim bridge publishes and world state subscribes on camera_topic(<name>).
+    name = "/openral/cameras/{sensor}/image"
+    assert any("sim_sensor_bridge.py" in w for w in _where(endpoints, "topic", "pub", name))
+    assert any("world_state" in w for w in _where(endpoints, "topic", "sub", name))
+    points = "/openral/cameras/{sensor}/points"
+    assert any("sim_sensor_bridge.py" in w for w in _where(endpoints, "topic", "pub", points))
+
+
+def _py(tmp_path: Path, source: str, extra: tuple[Path, ...] = ()) -> list[graph.Endpoint]:
+    path = tmp_path / "snippet.py"
+    path.write_text(textwrap.dedent(source), encoding="utf-8")
+    return [e for e in graph.extract_python([path, *extra]) if e.where.startswith(str(path))]
+
+
+def _names(endpoints: list[graph.Endpoint]) -> set[tuple[str, str, str, bool]]:
+    return {(e.kind, e.role, e.name, e.resolved) for e in endpoints}
+
+
+def test_distinct_placeholders_stay_distinct_and_per_instance(tmp_path: Path) -> None:
+    eps = _py(
+        tmp_path,
+        """
+        def f(node, left, right):
+            node.create_publisher(Empty, f"/x/{left.name}/s", 1)
+            node.create_subscription(Empty, f"/x/{right.name}/s", cb, 1)
+            node.create_publisher(Empty, "/x/concrete", 1)
+        """,
+    )
+    assert _names(eps) == {
+        ("topic", "pub", "/x/{left.name}/s", True),
+        ("topic", "sub", "/x/{right.name}/s", True),
+        ("topic", "pub", "/x/concrete", True),
+    }
+    page = graph.render(eps, [])
+    concrete, _, rest = page.partition("## Per-instance topics (2)")
+    assert "`/x/concrete`" in concrete and "{left.name}" not in concrete
+    assert "`/x/{left.name}/s`" in rest and "`/x/{right.name}/s`" in rest
+
+
+def test_parameter_without_default_is_not_a_module_constant(tmp_path: Path) -> None:
+    eps = _py(
+        tmp_path,
+        """
+        TOPIC = "/module/const"
+
+        def no_default(node, TOPIC):
+            node.create_publisher(Empty, TOPIC, 1)
+
+        def with_default(node, TOPIC="/param/default"):
+            node.create_subscription(Empty, TOPIC, cb, 1)
+
+        def unbound(node):
+            node.create_client(Trigger, TOPIC)
+        """,
+    )
+    assert _names(eps) == {
+        ("topic", "pub", "TOPIC", False),
+        ("topic", "sub", "/param/default", True),
+        ("service", "client", "/module/const", True),
+    }
+
+
+def test_keyword_arguments_are_extracted(tmp_path: Path) -> None:
+    eps = _py(
+        tmp_path,
+        """
+        def f(node):
+            node.create_publisher(msg_type=Empty, topic="/k/pub", qos_profile=1)
+            node.create_subscription(Empty, topic="/k/sub", callback=cb, qos_profile=1)
+            node.create_service(srv_type=Trigger, srv_name="/k/srv", callback=cb)
+            node.create_client(srv_type=Trigger, srv_name="/k/cli")
+            ActionServer(node, action_type=Nav, action_name="/k/act", execute_callback=cb)
+            ActionClient(node=node, action_type=Nav, action_name="/k/act")
+            node.create_publisher(qos_profile=1)  # neither form: not an rclpy call
+        """,
+    )
+    assert _names(eps) == {
+        ("topic", "pub", "/k/pub", True),
+        ("topic", "sub", "/k/sub", True),
+        ("service", "server", "/k/srv", True),
+        ("service", "client", "/k/cli", True),
+        ("action", "server", "/k/act", True),
+        ("action", "client", "/k/act", True),
+    }
+    assert {e.msg_type for e in eps if e.kind == "action"} == {"Nav"}
+
+
+def test_cpp_action_overloads_parse_balanced_arguments(tmp_path: Path) -> None:
+    path = tmp_path / "node.cpp"
+    path.write_text(
+        """
+        server_ = rclcpp_action::create_server<Act>(
+          this->get_node_base_interface(), this->get_node_clock_interface(),
+          this->get_node_logging_interface(), this->get_node_waitables_interface(),
+          "/x/act", std::bind(&N::goal, this, _1, _2), [this](auto g) { cancel(g); },
+          std::bind(&N::accepted, this, _1));
+        client_ = rclcpp_action::create_client<Act>(this, "/x/node_form");
+        other_ = rclcpp_action::create_client<Act>(
+          get_node_base_interface(), get_node_graph_interface(),
+          get_node_logging_interface(), get_node_waitables_interface(), "/x/iface_form");
+        pub_ = create_publisher<std_msgs::msg::Empty>(std::string("/x/") + name(), 10);
+        """,
+        encoding="utf-8",
+    )
+    eps = graph.extract_cpp([path])
+    assert _names(eps) == {
+        ("action", "server", "/x/act", True),
+        ("action", "client", "/x/node_form", True),
+        ("action", "client", "/x/iface_form", True),
+        ("topic", "pub", 'std::string("/x/") + name()', False),
+    }
+
+
+def test_camera_topic_resolves_literal_expression_and_kinds(tmp_path: Path) -> None:
+    core = REPO_ROOT / "python/core/src/openral_core"
+    eps = _py(
+        tmp_path,
+        """
+        import openral_core
+        from openral_core import CAMERA_TOPIC_PREFIX, CameraTopicKind, camera_topic
+
+        def f(node, spec):
+            node.create_publisher(Image, camera_topic("wrist"), 1)
+            node.create_publisher(Pc, camera_topic("front_depth", CameraTopicKind.POINTS), 1)
+            node.create_publisher(Info, camera_topic(spec.name, kind="depth/camera_info"), 1)
+            node.create_subscription(Image, openral_core.camera_topic(name=spec.name), cb, 1)
+            node.create_subscription(Image, f"{CAMERA_TOPIC_PREFIX}/top/image", cb, 1)
+        """,
+        extra=(core / "__init__.py", core / "schemas.py"),
+    )
+    assert _names(eps) == {
+        ("topic", "pub", "/openral/cameras/wrist/image", True),
+        ("topic", "pub", "/openral/cameras/front_depth/points", True),
+        ("topic", "pub", "/openral/cameras/{sensor}/depth/camera_info", True),
+        ("topic", "sub", "/openral/cameras/{sensor}/image", True),
+        ("topic", "sub", "/openral/cameras/top/image", True),
+    }
 
 
 def test_checked_in_page_is_fresh() -> None:

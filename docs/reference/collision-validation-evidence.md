@@ -3858,15 +3858,19 @@ follow the payload's live pose (the attach window above spans ~28 grids of one
 octree's lifetime). All of that is unchanged while the octree is fresh.
 
 **The fix.** The bridge stops publishing once its last octree was received
-more than `max_octree_age_s` ago — `deploy_e2e.launch.py` derives it as half
-the kernel's 1000 ms `world_voxel_deadline_ms`, i.e. 0.5 s, above every
-measured gap and below the deadline — and the kernel's own deadline turns the
+more than `max_octree_age_s` ago — `deploy_e2e.launch.py` sets it equal to
+the kernel's 1000 ms `world_voxel_deadline_ms`, i.e. 1.0 s (first shipped as
+half the deadline, 0.5 s; raised the same day after a Thor run with octomap at
+2.2 Hz put healthy gaps at ~0.45 s) — and the kernel's own deadline turns the
 silence into a drop. Worst case from the last inserted cloud to the drop:
-0.5 s + 1.0 s. Pinned by `test_bridge_staleness` (real node, in-process) and
+1.0 s + 1.0 s. Pinned by `test_bridge_staleness` (real node, in-process) and
 `tests/sim/safety/test_kernel_voxel_bridge_staleness.py` (real bridge + real
-kernel; with the bound disabled the stale chunk is certified, reproducing the
-fail-open). Not covered: a camera that keeps publishing garbage or a frozen
-image. Not yet re-verified on Thor.
+kernel; checked by hand to discriminate — with the bound set to 1e9 the stale
+chunk is certified, reproducing the fail-open — but that control is not part of
+the committed suite). Not covered: a camera that keeps publishing garbage or a
+frozen image. Re-verified on Thor the same day (non-actuated, CAN down): ZED
+stopped → `/openral/world_voxels` silent from ~0.7 s, resumed at 9.8 Hz when the
+camera came back.
 
 ## Programme status note
 

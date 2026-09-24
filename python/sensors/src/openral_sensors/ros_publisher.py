@@ -477,22 +477,34 @@ class SensorRosPublisher:
         )
 
 
+# Last path segments that name an image stream in its camera namespace (OpenRAL's own
+# ``image`` plus image_pipeline's standard names); CameraInfo is their sibling.
+_IMAGE_TOPIC_NAMES: Final[frozenset[str]] = frozenset(
+    {"image", "image_raw", "image_rect", "image_color", "image_mono", "image_rect_color"}
+)
+
+
 def camera_info_topic_for(image_topic: str) -> str:
     """Return the ``CameraInfo`` topic that sits beside ``image_topic``.
 
-    OpenRAL's layout is ``/openral/cameras/<name>/image`` +
-    ``/openral/cameras/<name>/camera_info`` (sibling), matching the sim HAL and
-    the deploy sensor leg. Any other topic falls back to the
-    ``camera_info_manager`` convention, ``<topic>/camera_info``.
+    ``CameraInfo`` is a *sibling* of the image in its camera namespace: OpenRAL's
+    ``/openral/cameras/<name>/image`` pairs with ``/openral/cameras/<name>/camera_info``
+    (the sim HAL's and the deploy sensor leg's layout), and ``image_pipeline``'s
+    ``image_raw`` / ``image_rect`` / ``image_color`` / ``image_mono`` /
+    ``image_rect_color`` do the same. Any other topic falls back to
+    ``<topic>/camera_info``.
 
     Example:
         >>> camera_info_topic_for("/openral/cameras/wrist/image")
         '/openral/cameras/wrist/camera_info'
-        >>> camera_info_topic_for("/cameras/wrist_rgb/image_raw")
-        '/cameras/wrist_rgb/image_raw/camera_info'
+        >>> camera_info_topic_for("/camera/color/image_raw")
+        '/camera/color/camera_info'
+        >>> camera_info_topic_for("/zed/left/rgb")
+        '/zed/left/rgb/camera_info'
     """
-    if image_topic.endswith("/image"):
-        return image_topic.rsplit("/image", 1)[0] + "/camera_info"
+    namespace, _, last = image_topic.rpartition("/")
+    if last in _IMAGE_TOPIC_NAMES:
+        return f"{namespace}/camera_info"
     return f"{image_topic}/camera_info"
 
 

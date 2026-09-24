@@ -159,8 +159,11 @@ def _evaluate(
     )
     found: list[dict[str, Any]] = []
     for mx, my in markers:
+        # Height above the FITTED table plane, not the nominal table_z: with a height or
+        # tilt error in the pose under test, a nominal cut would drop real marker points
+        # (or admit table points) and bias the marker residual it is meant to measure.
         near = (np.hypot(pts[:, 0] - mx, pts[:, 1] - my) <= marker_radius) & (
-            pts[:, 2] >= table_z + min_marker_height
+            (pts - centroid) @ normal >= min_marker_height
         )
         if int(near.sum()) < _MIN_MARKER_POINTS:
             raise ValueError(

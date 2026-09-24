@@ -57,7 +57,8 @@ repos:
         entry: uv run python tools/gen_ros_topic_graph.py
         language: system
         pass_filenames: false
-        files: ^(python|packages|cpp|tools)/
+        # Always: a commit touching only docs/topics/README.md must regenerate it too.
+        always_run: true
   - repo: https://github.com/pre-commit/mirrors-clang-format
     rev: v18.1.8
     hooks:

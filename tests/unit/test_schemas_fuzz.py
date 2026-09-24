@@ -1022,7 +1022,12 @@ def _sensor_reader_config_st(draw: st.DrawFn) -> SensorReaderConfig:
     camera_info = draw(st.none() | _intrinsics_st) if publish else None
     return SensorReaderConfig(
         sensor_id=draw(_name),
-        backend=draw(st.sampled_from(list(SensorReaderBackend))),
+        # Only the gstreamer backend has a ROS tee; the others refuse publish_to_ros.
+        backend=(
+            SensorReaderBackend.GSTREAMER
+            if publish
+            else draw(st.sampled_from(list(SensorReaderBackend)))
+        ),
         backend_params=draw(st.dictionaries(_name, st.text(max_size=32), max_size=4)),
         max_age_ms=draw(st.integers(min_value=1, max_value=10_000)),
         publish_to_ros=publish,

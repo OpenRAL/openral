@@ -33,8 +33,10 @@ def test_camera_info_topic_is_the_image_topics_sibling() -> None:
         "/openral/cameras/wrist/camera_info"
     )
     assert camera_info_topic_for("/cameras/wrist_rgb/image_raw") == (
-        "/cameras/wrist_rgb/image_raw/camera_info"
+        "/cameras/wrist_rgb/camera_info"
     )
+    assert camera_info_topic_for("/camera/color/image_rect_color") == "/camera/color/camera_info"
+    assert camera_info_topic_for("/zed/left/rgb") == "/zed/left/rgb/camera_info"
     # Only a trailing ``/image`` segment is replaced, never an inner one.
     assert camera_info_topic_for("/image/cam/image") == "/image/cam/camera_info"
 
@@ -87,3 +89,43 @@ def test_sensor_reader_config_rejects_tee_fields_without_the_tee() -> None:
         SensorReaderConfig(sensor_id="wrist", publish_camera_info=_manifest_intrinsics())
     with pytest.raises(ValueError, match="publish_to_ros is False"):
         SensorReaderConfig(sensor_id="wrist", publish_frame_id="wrist_optical")
+
+
+def test_ros_tee_is_refused_on_a_backend_without_one() -> None:
+    """Only the gstreamer backend has an in-pipeline ROS tee; others must not accept the flag."""
+    from openral_core import SensorReaderBackend
+
+    with pytest.raises(ValueError, match="needs the gstreamer backend"):
+        SensorReaderConfig(
+            sensor_id="wrist",
+            backend=SensorReaderBackend.OPENCV_THREAD,
+            publish_to_ros=True,
+            publish_topic="/openral/cameras/wrist/image",
+        )
+
+
+def test_ros_tee_releases_a_partial_start() -> None:
+    """A tee whose start fails after its node and publishers exist leaves nothing behind.
+
+    The appsink here cannot be hooked (a plain object has no ``set_property``), so
+    ``start`` fails at its last step — after the node, the Image publisher and the
+    CameraInfo publisher were created. They must be released and, when the tee
+    initialised rclpy itself, rclpy shut down again.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("sensor_msgs")
+    from openral_runner.backends.gstreamer.ros_tee import RosImagePublisher
+
+    owned_before = rclpy.ok()
+    tee = RosImagePublisher(
+        sensor_id="wrist",
+        appsink=object(),
+        topic="/openral/cameras/wrist/image",
+        camera_info=_manifest_intrinsics(),
+    )
+    with pytest.raises(AttributeError):
+        tee.start()
+    assert tee._node is None
+    assert tee._publisher is None and tee._info_publisher is None
+    assert not tee.is_started
+    assert rclpy.ok() is owned_before

@@ -2711,3 +2711,19 @@ def test_pinned_clock_origin_wins_and_simulation_needs_a_clock() -> None:
     assert _resolve_clock_origin(hal_mode="real", config=twin) == "host_wall"
     with pytest.raises(ROSConfigError, match="real deploy"):
         _resolve_clock_origin(hal_mode="real", config=twin, pinned="simulation")
+
+
+def test_a_simulation_pin_is_refused_on_a_clockless_sim_backend(tmp_path: Path) -> None:
+    """``pusht`` is registered without ``sim_clock``: nothing there would publish ``/clock``."""
+    pytest.importorskip("openral_sim")
+    from openral_sim import SCENES
+
+    assert SCENES.meta("pusht").get("sim_clock") is not True
+    # A scene-attached deploy scene (no `composition`), re-pointed at the clockless backend.
+    text = (_REPO_ROOT / "scenes" / "deploy" / "behavior_r1pro.yaml").read_text(encoding="utf-8")
+    assert '\n  id: "behavior"\n' in text and "\ncomposition:" not in text
+    scene = tmp_path / "pusht_attached.yaml"
+    scene.write_text(text.replace('\n  id: "behavior"\n', "\n  id: pusht\n"), encoding="utf-8")
+    assert _resolve_clock_origin(hal_mode="sim", config=scene) == "host_wall"
+    with pytest.raises(ROSConfigError, match="sim backend without a clock"):
+        _resolve_clock_origin(hal_mode="sim", config=scene, pinned="simulation")

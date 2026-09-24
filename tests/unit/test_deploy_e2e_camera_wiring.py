@@ -49,7 +49,7 @@ def _robot(name: str) -> RobotDescription:
 def test_primary_rgb_camera_follows_the_manifest(
     launch_module: object, robot: str, camera: str
 ) -> None:
-    assert launch_module._primary_rgb_camera(_robot(robot)) == camera  # type: ignore[attr-defined]
+    assert launch_module._primary_rgb_camera(_robot(robot).sensors) == camera  # type: ignore[attr-defined]
 
 
 @pytest.mark.parametrize(
@@ -103,3 +103,30 @@ def test_octomap_without_a_depth_cloud_fails_loud(launch_module: object) -> None
 
     with pytest.raises(ROSConfigError, match="so101_follower"):
         launch_module._octomap_cloud_topic("", _robot("so101_follower"))  # type: ignore[attr-defined]
+
+
+def test_real_deploy_picks_a_bound_camera(launch_module: object) -> None:
+    """On a real deploy only a camera with a ``deploy_binding`` has a topic.
+
+    OpenArm's manifest binds no camera (``top`` is a MuJoCo render), so its sim pick
+    (``top``) is a dead topic on the real cell. With a scene that binds only
+    ``wrist_left`` (host binding only, as ``check_scene_sensor_overrides`` requires),
+    the completion/detector camera must be ``wrist_left``; with no binding at all it is
+    empty, which disables the subscription instead of subscribing to silence.
+    """
+    from openral_core import SensorDeployBinding, SensorSpec
+
+    arm = _robot("openarm")
+    manifest_left = next(s for s in arm.sensors if s.name == "wrist_left")
+    bound_left = SensorSpec(
+        name="wrist_left",
+        modality="rgb",
+        frame_id=manifest_left.frame_id,
+        rate_hz=30.0,
+        deploy_binding=SensorDeployBinding(backend_params={"device": "/dev/video0"}),
+    )
+    publishing = launch_module._publishing_sensors  # type: ignore[attr-defined]
+    pick = launch_module._primary_rgb_camera  # type: ignore[attr-defined]
+    assert pick(publishing(arm, [], "sim")) == "top"
+    assert pick(publishing(arm, [], "real")) == ""
+    assert pick(publishing(arm, [bound_left], "real")) == "wrist_left"

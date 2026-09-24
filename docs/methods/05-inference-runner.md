@@ -175,19 +175,19 @@ _GStreamer-backed `SensorReader` (CPU appsink path + NVMM zero-copy path). Mirro
 - module constant `_GST_FORMAT_TO_ENCODING: Final[dict[str, FrameEncoding]]` (L80) — maps GStreamer caps `format=...` (`BGR`/`RGB`/`GRAY8`) to `FrameEncoding` for the CPU path; NV12 is deliberately absent (handled by the NVMM path instead).
 - `class GStreamerSensorReader` (L87) — `SensorReader` backed by a GStreamer pipeline; construct from an explicit `pipeline=` string or a generated `spec=` (`PipelineSpec`). CPU path delivers `SensorFrame(data=bytes)`; NVMM/CUDA zero-copy populates `handle` + `encoding` ∈ `{CUDA_NV12, CUDA_RGBA}`. `ros_topic` / `ros_rate_hz` / `ros_frame_id` / `ros_camera_info` configure the optional ROS tee (`RosImagePublisher`).
   - `open() -> None` (L210) — Initialise GStreamer, parse the pipeline, start the ROS tee (if enabled) and the bus-drain thread, transition to PLAYING. Idempotent.
-  - `close() -> None` (L313) — Stop the ROS publisher (if any), tear down the pipeline, join the bus thread, release the latched frame/handle. Idempotent.
-  - `__enter__() / __exit__()` (L345) — Context-manager sugar; calls `open` / `close`.
-  - `read_latest(max_age_ms: int | None = None) -> SensorFrame` (L361) — Non-blocking snapshot of the latched frame; raises `ROSRuntimeError` on a bus-reported error, `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on a closed reader.
+  - `close() -> None` (L316) — Stop the ROS publisher (if any), tear down the pipeline, join the bus thread, release the latched frame/handle. Idempotent.
+  - `__enter__() / __exit__()` (L348) — Context-manager sugar; calls `open` / `close`.
+  - `read_latest(max_age_ms: int | None = None) -> SensorFrame` (L364) — Non-blocking snapshot of the latched frame; raises `ROSRuntimeError` on a bus-reported error, `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on a closed reader.
   - `_start_ros_publisher()` (L276) — Look up the `ros_sink` appsink and start a `RosImagePublisher`; tears the pipeline back down with an actionable `ROSConfigError` if `rclpy` is unavailable.
-  - `_on_new_sample(appsink) -> int` (L442) — Streaming-thread callback; branches on `memory:NVMM` caps features to the zero-copy or CPU handler.
-  - `_handle_cpu_buffer(buffer, structure) -> int` (L471) — Map → copy → latch `data`; unsupported format latches a bus error.
-  - `_handle_nvmm_buffer(buffer, structure) -> int` (L513) — Map → wrap as an `NvBufSurfaceHandle` (lazy `openral_pro_trt.nvbufsurface` import) → DtoD-mirror into a reader-owned `StableSurfaceMirror` → latch `handle`; an absent/unloadable NVMM backend latches a bus error rather than silently falling back.
-  - `_bus_loop()` (L620) — Background thread draining the GStreamer bus for ERROR / EOS.
-  - `_teardown_pipeline()` (L652) — Drop the pipeline and join the bus thread; shared by `close()` and `open()`'s rollback path.
-  - `_wrap_in_pipeline(element) -> Gst.Pipeline` (L664) [@staticmethod] — Wraps a bare `Gst.Element` from `Gst.parse_launch` in a `Pipeline` bin (single-element strings only).
-- module constant `_GST_INIT_LOCK` (L677) — one-shot-init guard lock.
-- module constant `_GST_INITIALISED` (L678) — one-shot-init guard flag.
-- `_ensure_gst_initialised() -> None` (L681) — Calls `Gst.init` exactly once per process, thread-safely.
+  - `_on_new_sample(appsink) -> int` (L445) — Streaming-thread callback; branches on `memory:NVMM` caps features to the zero-copy or CPU handler.
+  - `_handle_cpu_buffer(buffer, structure) -> int` (L474) — Map → copy → latch `data`; unsupported format latches a bus error.
+  - `_handle_nvmm_buffer(buffer, structure) -> int` (L516) — Map → wrap as an `NvBufSurfaceHandle` (lazy `openral_pro_trt.nvbufsurface` import) → DtoD-mirror into a reader-owned `StableSurfaceMirror` → latch `handle`; an absent/unloadable NVMM backend latches a bus error rather than silently falling back.
+  - `_bus_loop()` (L623) — Background thread draining the GStreamer bus for ERROR / EOS.
+  - `_teardown_pipeline()` (L655) — Drop the pipeline and join the bus thread; shared by `close()` and `open()`'s rollback path.
+  - `_wrap_in_pipeline(element) -> Gst.Pipeline` (L667) [@staticmethod] — Wraps a bare `Gst.Element` from `Gst.parse_launch` in a `Pipeline` bin (single-element strings only).
+- module constant `_GST_INIT_LOCK` (L680) — one-shot-init guard lock.
+- module constant `_GST_INITIALISED` (L681) — one-shot-init guard flag.
+- `_ensure_gst_initialised() -> None` (L684) — Calls `Gst.init` exactly once per process, thread-safely.
 
 ### `python/runner/src/openral_runner/backends/gstreamer/ros_tee.py`
 _ROS 2 image-publisher tee for `GStreamerSensorReader`. Republishes the `ros_sink` appsink branch as `sensor_msgs/Image` on a configurable topic, independently rate-limited from the inference loop, plus — when manifest intrinsics are supplied — a companion `sensor_msgs/CameraInfo` on the sibling topic built by `openral_sensors.ros_publisher.build_camera_info_msg`. `rclpy` is lazy-imported inside `start()` so the module is import-safe without a sourced ROS env._
@@ -196,11 +196,11 @@ _ROS 2 image-publisher tee for `GStreamerSensorReader`. Republishes the `ros_sin
 - `class RosImagePublisher` (L54) — `__init__(*, sensor_id, appsink, topic, rate_hz=None, node_name=None, qos_depth=_DEFAULT_QOS_DEPTH, frame_id=None, camera_info=None)` — `frame_id` (default `sensor_id`) stamps both headers; `camera_info` enables the `CameraInfo` companion on `camera_info_topic_for(topic)`. Validates `topic` is absolute and `rate_hz` is positive or `None`; no ROS I/O until `start`.
   - `is_started` [@property] (L120) — `True` between `start` and `stop`.
   - `start() -> None` (L124) — Initialise rclpy (if needed), create the `sensor_msgs/Image` publisher (`BEST_EFFORT`+`VOLATILE`+`KEEP_LAST`), plus a `CameraInfo` publisher (`RELIABLE`+`VOLATILE`+`KEEP_LAST=1`) when `camera_info` is set, hook the appsink; raises `RuntimeError` if `rclpy` is unavailable.
-  - `stop() -> None` (L189) — Disconnect the signal, destroy the publisher, shut down rclpy if this instance initialised it. Idempotent.
-  - `_on_new_sample(appsink) -> int` (L217) — Rate-gate → map → build `sensor_msgs/Image` → publish, then the matching `CameraInfo` (frame width/height, same stamp) when enabled.
-  - `_claim_rate_slot() -> bool` (L265) — Monotonic-clock token gate enforcing `rate_hz`.
-  - `_extract_image_payload(appsink, gst) -> tuple[bytes, int, int, str] | None` (L280) — Pull the latest sample; `None` on malformed sample / unsupported format / map failure.
-- `_gst_format_to_ros_encoding(gst_format) -> str | None` (L322) — Maps a GStreamer caps `format` (`BGR`/`RGB`/`GRAY8`) to a ROS `Image.encoding` (`bgr8`/`rgb8`/`mono8`).
+  - `stop() -> None` (L199) — Disconnect the signal, destroy the publisher, shut down rclpy if this instance initialised it. Idempotent.
+  - `_on_new_sample(appsink) -> int` (L231) — Rate-gate → map → build `sensor_msgs/Image` → publish, then the matching `CameraInfo` (frame width/height, same stamp) when enabled.
+  - `_claim_rate_slot() -> bool` (L279) — Monotonic-clock token gate enforcing `rate_hz`.
+  - `_extract_image_payload(appsink, gst) -> tuple[bytes, int, int, str] | None` (L294) — Pull the latest sample; `None` on malformed sample / unsupported format / map failure.
+- `_gst_format_to_ros_encoding(gst_format) -> str | None` (L336) — Maps a GStreamer caps `format` (`BGR`/`RGB`/`GRAY8`) to a ROS `Image.encoding` (`bgr8`/`rgb8`/`mono8`).
 
 ### `python/runner/src/openral_runner/backends/gstreamer/perception_tee.py`
 _Perception event tee for `GStreamerSensorReader`. Pulls frames from the event leg's `appsink`, runs `EventDetector`s, publishes `openral_msgs/PromptStamped` on `/openral/perception/<kind>`. `rclpy` lazy-imported in `start()` so the module stays import-safe on hosts without a sourced ROS env._

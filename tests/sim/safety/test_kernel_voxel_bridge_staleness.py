@@ -53,7 +53,7 @@ from tests.sim.safety.test_kernel_voxel_collision_synthetic import (  # noqa: E4
 # The deploy's pair (`deploy_e2e.launch.py`): the kernel's deadline, and the
 # bridge bound derived from it as half.
 _WORLD_VOXEL_DEADLINE_MS = 1000.0
-_MAX_OCTREE_AGE_S = 0.5
+_MAX_OCTREE_AGE_S = 1.0  # deploy_e2e: equal to the kernel deadline
 _OCTREE_PERIOD_S = 0.31  # Thor's measured octomap cadence, 3.2 Hz
 _RESOLUTION = 0.05
 _COVERAGE_RADIUS_M = 0.5  # (2*0.5/0.05 + 1)^3 = 9261 cells, under the cap below

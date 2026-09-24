@@ -88,8 +88,8 @@ _Generalised sensor → ROS 2 image publisher; non-GStreamer fallback to `RosIma
   - `n_stale_skipped -> int` [@property] — Number of ticks the reader had no fresh frame and publish was skipped. (L181)
   - `topic -> str` [@property] — The configured image topic (read-only). (L186)
   - `info_topic -> str` [@property] — The configured `CameraInfo` companion topic (read-only). (L191)
-- `camera_info_topic_for(image_topic: str) -> str` — The `CameraInfo` topic beside an image topic: `.../<name>/image` → `.../<name>/camera_info` (OpenRAL/sim-HAL sibling layout), anything else → `<topic>/camera_info`. Used by the GStreamer ROS tee. (L480)
-- `build_camera_info_msg(spec: IntrinsicsPinhole, *, width, height, stamp, frame_id) -> CameraInfo` — The one `sensor_msgs/CameraInfo` builder both real-camera ROS paths use (`SensorRosPublisher` and the GStreamer `RosImagePublisher`): intrinsics rescaled to `width x height` via `openral_core.scale_intrinsics_to` (degenerate spec verbatim), identity `r`, monocular `p`. `sensor_msgs` lazy-imported. (L499)
+- `camera_info_topic_for(image_topic: str) -> str` — The `CameraInfo` topic beside an image topic: `.../<name>/image` → `.../<name>/camera_info` (OpenRAL/sim-HAL sibling layout), anything else → `<topic>/camera_info`. Used by the GStreamer ROS tee. (L487)
+- `build_camera_info_msg(spec: IntrinsicsPinhole, *, width, height, stamp, frame_id) -> CameraInfo` — The one `sensor_msgs/CameraInfo` builder both real-camera ROS paths use (`SensorRosPublisher` and the GStreamer `RosImagePublisher`): intrinsics rescaled to `width x height` via `openral_core.scale_intrinsics_to` (degenerate spec verbatim), identity `r`, monocular `p`. `sensor_msgs` lazy-imported. (L511)
 
 ### `python/sensors/src/openral_sensors/_reader_protocol.py`
 _Internal Protocol shim mirroring `openral_runner.SensorReader` to avoid a sensors↔runner import cycle._

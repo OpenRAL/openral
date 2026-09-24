@@ -36,7 +36,7 @@ def generate_launch_description() -> LaunchDescription:
         # Stop republishing an octree older than this, so the kernel's
         # `world_voxel_deadline_ms` fails closed on a dead camera. About half
         # that deadline (hazard log Entry 033).
-        DeclareLaunchArgument("max_octree_age_s", default_value="0.5"),
+        DeclareLaunchArgument("max_octree_age_s", default_value="1.0"),
     ]
     bridge = Node(
         package="openral_octomap_bridge",
