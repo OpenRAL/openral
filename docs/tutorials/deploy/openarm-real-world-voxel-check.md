@@ -208,7 +208,9 @@ command exists. The arms stay unpowered. `drivers:` is ignored on the sim path, 
 ZED driver by hand as in step 1, before or after `deploy sim`: its launch purge
 (`dds_transport_ready: … shm_purged=N shm_kept_live=M`) only removes Fast-DDS files no live
 process uses, so a running driver keeps publishing (on Thor, 2026-09-24: ZED started first,
-5.4 Hz cloud / 5.6 Hz octree / 4.7 Hz voxels). Then:
+5.4 Hz cloud / 5.6 Hz octree / 4.7 Hz voxels). Run from inside a container, where a driver
+in another PID namespace is invisible, the purge removes nothing; `OPENRAL_FASTDDS_SHM_CLEAN=0`
+turns it off entirely. Then:
 
 ```bash
 openral deploy sim --config scenes/deploy/openarm_real_world_voxels.yaml \
