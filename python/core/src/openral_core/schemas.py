@@ -9653,6 +9653,14 @@ class SensorReaderConfig(BaseModel):
         publish_topic: ROS 2 topic to publish to when ``publish_to_ros`` is
             True. Required iff ``publish_to_ros``.
         publish_rate_hz: Downsample rate for the ROS tee.
+        publish_frame_id: TF frame stamped on the tee's ``Image`` and
+            ``CameraInfo`` headers (``SensorSpec.frame_id``). ``None`` stamps
+            ``sensor_id``. Only valid with ``publish_to_ros``.
+        publish_camera_info: Manifest intrinsics (``SensorSpec.intrinsics``).
+            When set, the tee also publishes ``sensor_msgs/CameraInfo`` on the
+            image topic's sibling (``.../<name>/image`` →
+            ``.../<name>/camera_info``), scaled to each published frame.
+            ``None`` publishes images only. Only valid with ``publish_to_ros``.
 
     Example:
         >>> SensorReaderConfig(
@@ -9678,9 +9686,19 @@ class SensorReaderConfig(BaseModel):
     publish_to_ros: bool = False
     publish_topic: str | None = None
     publish_rate_hz: float | None = Field(default=None, gt=0)
+    publish_frame_id: str | None = None
+    publish_camera_info: IntrinsicsPinhole | None = None
 
     def model_post_init(self, _context: object) -> None:
         """Cross-field validation for the ROS tee."""
+        if not self.publish_to_ros and (
+            self.publish_frame_id is not None or self.publish_camera_info is not None
+        ):
+            raise ValueError(
+                f"SensorReaderConfig({self.sensor_id!r}): publish_frame_id / "
+                f"publish_camera_info are set but publish_to_ros is False; they "
+                f"only configure the ROS tee."
+            )
         if self.publish_to_ros and self.publish_topic is None:
             raise ValueError(
                 f"SensorReaderConfig({self.sensor_id!r}): publish_to_ros is "

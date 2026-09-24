@@ -1018,6 +1018,8 @@ def _sensor_reader_config_st(draw: st.DrawFn) -> SensorReaderConfig:
     publish = draw(st.booleans())
     topic = draw(_topic) if publish else None
     rate = draw(_pos_float.filter(lambda x: x > 0)) if publish else None
+    frame_id = draw(st.none() | _name) if publish else None
+    camera_info = draw(st.none() | _intrinsics_st) if publish else None
     return SensorReaderConfig(
         sensor_id=draw(_name),
         backend=draw(st.sampled_from(list(SensorReaderBackend))),
@@ -1026,6 +1028,8 @@ def _sensor_reader_config_st(draw: st.DrawFn) -> SensorReaderConfig:
         publish_to_ros=publish,
         publish_topic=topic,
         publish_rate_hz=rate,
+        publish_frame_id=frame_id,
+        publish_camera_info=camera_info,
     )
 
 
@@ -1038,6 +1042,7 @@ def test_fuzz_sensor_reader_config(instance: SensorReaderConfig) -> None:
         assert instance.publish_topic is not None
     else:
         assert instance.publish_topic is None
+        assert instance.publish_frame_id is None and instance.publish_camera_info is None
 
 
 _hal_config_st = st.builds(

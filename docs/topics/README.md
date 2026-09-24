@@ -87,7 +87,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/execute_rskill` | `openral_msgs/ExecuteRskill` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>tools/_validation_matrix_dispatch.py (main) |
 | `navigate_to_pose` | `nav2_msgs/NavigateToPose` | — | tools/_nav2_costmap_silhouette_probe.py (_drive)<br>tools/_nav2_mppi_loop_probe.py (Probe.__init__) |
 
-## Unresolved endpoints (37)
+## Unresolved endpoints (38)
 
 Names only known at runtime (built from a manifest, a robot id or a
 caller's argument). Shown as their source expression.
@@ -100,6 +100,7 @@ caller's argument). Shown as their source expression.
 | service | client | `service` | `openral_msgs/LocateInView` | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._dispatch_locate_in_view) |
 | service | client | `service` | `std_srvs/Trigger` | python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__) |
 | service | client | `service_name` | `srv_type` | tools/lifecycle_autostart.py (_wait_for_service) |
+| topic | pub | `camera_info_topic_for(self._topic)` | `sensor_msgs/CameraInfo` | python/runner/src/openral_runner/backends/gstreamer/ros_tee.py (RosImagePublisher.start) |
 | topic | pub | `camera_topic(name)` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera) |
 | topic | pub | `camera_topic(name, CameraTopicKind.CAMERA_INFO)` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera) |
 | topic | pub | `camera_topic(spec.name, CameraTopicKind.DEPTH_CAMERA_INFO)` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) |

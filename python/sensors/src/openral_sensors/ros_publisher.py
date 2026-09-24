@@ -38,10 +38,11 @@ if TYPE_CHECKING:
     from openral_core import IntrinsicsPinhole
     from rclpy.node import Node
     from rclpy.publisher import Publisher
+    from sensor_msgs.msg import CameraInfo
 
     from openral_sensors._reader_protocol import SensorReaderLike
 
-__all__ = ["SensorRosPublisher"]
+__all__ = ["SensorRosPublisher", "build_camera_info_msg", "camera_info_topic_for"]
 
 _log = structlog.get_logger(__name__)
 
@@ -463,32 +464,92 @@ class SensorRosPublisher:
         ``fx/fy/cx/cy`` against reduced dimensions would silently break every
         geometric consumer (cuVSLAM, nvblox, the depth provider, object-lift).
         """
-        from openral_core import scale_intrinsics_to
-        from sensor_msgs.msg import CameraInfo
-
         assert self._info_publisher is not None
         assert self._camera_info_spec is not None
-        spec = self._camera_info_spec
+        self._info_publisher.publish(
+            build_camera_info_msg(
+                self._camera_info_spec,
+                width=width,
+                height=height,
+                stamp=stamp,
+                frame_id=self._frame_id,
+            )
+        )
 
-        # Uses the same helper as the sim HAL (openral_core.scale_intrinsics_to)
-        # so real-hardware and sim CameraInfo never drift on the rescale rule.
-        # Per-axis, so mismatched declared/actual geometry still lands correctly.
-        # Degenerate spec (zero width/height) is published verbatim, not divided by.
-        if spec.width > 0 and spec.height > 0:
-            scaled = scale_intrinsics_to(spec, width, height)
-            fx, fy, cx, cy = scaled.fx, scaled.fy, scaled.cx, scaled.cy
-        else:
-            fx, fy, cx, cy = spec.fx, spec.fy, spec.cx, spec.cy
 
-        info = CameraInfo()
-        info.header.stamp = stamp
-        info.header.frame_id = self._frame_id
-        info.width = width
-        info.height = height
-        info.distortion_model = spec.distortion_model
-        # ROS expects flat lists; pad/truncate to spec sizes.
-        info.d = list(spec.distortion_coeffs)
-        info.k = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
-        info.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-        info.p = [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
-        self._info_publisher.publish(info)
+def camera_info_topic_for(image_topic: str) -> str:
+    """Return the ``CameraInfo`` topic that sits beside ``image_topic``.
+
+    OpenRAL's layout is ``/openral/cameras/<name>/image`` +
+    ``/openral/cameras/<name>/camera_info`` (sibling), matching the sim HAL and
+    the deploy sensor leg. Any other topic falls back to the
+    ``camera_info_manager`` convention, ``<topic>/camera_info``.
+
+    Example:
+        >>> camera_info_topic_for("/openral/cameras/wrist/image")
+        '/openral/cameras/wrist/camera_info'
+        >>> camera_info_topic_for("/cameras/wrist_rgb/image_raw")
+        '/cameras/wrist_rgb/image_raw/camera_info'
+    """
+    if image_topic.endswith("/image"):
+        return image_topic.rsplit("/image", 1)[0] + "/camera_info"
+    return f"{image_topic}/camera_info"
+
+
+def build_camera_info_msg(
+    spec: IntrinsicsPinhole,
+    *,
+    width: int,
+    height: int,
+    stamp: object,
+    frame_id: str,
+) -> CameraInfo:
+    """Build the ``sensor_msgs/CameraInfo`` that matches a published image.
+
+    Intrinsics are scaled to ``width x height`` rather than used verbatim:
+    when a publisher downscales the frame, manifest-resolution
+    ``fx/fy/cx/cy`` against reduced dimensions would silently break every
+    geometric consumer (cuVSLAM, nvblox, the depth provider, object-lift).
+    Uses the same helper as the sim HAL (``openral_core.scale_intrinsics_to``),
+    per axis, so real-hardware and sim ``CameraInfo`` never drift on the
+    rescale rule. A degenerate spec (zero width/height) is published verbatim.
+
+    Shared by ``SensorRosPublisher`` and the GStreamer reader's in-pipeline
+    ROS tee so both camera paths emit identical messages. ``sensor_msgs`` is
+    imported lazily, so this module stays importable without a ROS env.
+
+    Args:
+        spec: Manifest intrinsics (``SensorSpec.intrinsics``).
+        width: Width of the image this message accompanies.
+        height: Height of the image this message accompanies.
+        stamp: ``builtin_interfaces/Time`` — the image's ``header.stamp``.
+        frame_id: TF frame (``SensorSpec.frame_id``).
+
+    Returns:
+        A populated ``CameraInfo`` (plumb-bob / manifest distortion, identity
+        ``r``, monocular ``p``).
+
+    Example:
+        >>> # Needs sensor_msgs; exercised in tests/unit/test_camera_info_msg.py
+        >>> pass
+    """
+    from openral_core import scale_intrinsics_to
+    from sensor_msgs.msg import CameraInfo
+
+    if spec.width > 0 and spec.height > 0:
+        scaled = scale_intrinsics_to(spec, width, height)
+        fx, fy, cx, cy = scaled.fx, scaled.fy, scaled.cx, scaled.cy
+    else:
+        fx, fy, cx, cy = spec.fx, spec.fy, spec.cx, spec.cy
+
+    info = CameraInfo()
+    info.header.stamp = stamp
+    info.header.frame_id = frame_id
+    info.width = width
+    info.height = height
+    info.distortion_model = spec.distortion_model
+    info.d = list(spec.distortion_coeffs)
+    info.k = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
+    info.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    info.p = [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0]
+    return info
