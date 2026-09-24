@@ -9,7 +9,8 @@
 # unless, in this order:
 #   1. OPENRAL_OPENARM_ALLOW_MOTION=1 and OPENRAL_OPENARM_ATTENDED=1 (the HIL tier's gates);
 #   2. the head_zed extrinsic report verifies against the pose in robots/openarm/robot.yaml
-#      (the camera is bolted to the robot, so its pose is robot geometry, not the scene's);
+#      (the camera is bolted to the robot, so its pose is robot geometry, not the scene's).
+#      `openral deploy run` applies the same gate; this copy only refuses earlier;
 #   3. it runs in an interactive terminal and the operator types the confirmation.
 # Extra arguments pass through to `openral deploy run` only from an allow-list of
 # observability flags (--foxglove, --dataset-out <dir>, ...). Anything else — a second
@@ -71,7 +72,10 @@ PY
 [[ "${deployed_robot}" == "$(readlink -f "${robot}")" ]] ||
   refuse "openral deploy run would load ${deployed_robot}, not ${robot}: run from the checkout whose openral you are using, and unset OPENRAL_ROBOTS_DIR."
 
-python "${root}/tools/zed_extrinsic_check.py" verify --robot "${robot}" --report "${report}" ||
+# `openral deploy run` re-applies this gate itself (any robot, world-voxel check on); checking
+# here too refuses before the operator is asked to confirm, not after.
+python "${root}/tools/depth_extrinsic_check.py" verify --robot "${robot}" --sensor head_zed \
+  --report "${report}" ||
   refuse "head_zed extrinsic not verified for the manifest's pose (runbook step 2)."
 [[ -t 0 ]] || refuse "not an interactive terminal; a person at the cell launches this."
 
