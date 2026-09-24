@@ -1630,15 +1630,16 @@ def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:
     # DriverAPI::get()->nvmlDeviceGetGpuFabricInfoV_(...)`` (qorin1, torch
     # 2.13+cu130, 2026-09-22), 363 s into a policy load, while the identical
     # load in the same venv without the variable succeeded.
-    if not _is_tegra_host():
+    # DGX Spark (GB10, DGX OS) is unified-memory too but is deliberately not
+    # excluded: expandable segments are reported to work and help there
+    # (vllm-project/vllm#55569; unslothai/unsloth-zoo#1235 carves GB10 out of
+    # the same Tegra exclusion). Not verified on our hosts.
+    from openral_core.gpu import is_tegra_host  # reason: deferred, tests patch the module
+
+    if not is_tegra_host():
         env.setdefault(_alloc_conf_var(), "expandable_segments:True")
     _apply_rmw_default(env)
     return env
-
-
-def _is_tegra_host() -> bool:
-    """True on an NVIDIA Jetson / L4T host (``/etc/nv_tegra_release`` present)."""
-    return Path("/etc/nv_tegra_release").exists()
 
 
 def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool = True) -> int:

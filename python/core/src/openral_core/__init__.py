@@ -26,7 +26,7 @@ from openral_core.exceptions import (
     ROSSafetyViolation,
     ROSWorkspaceViolation,
 )
-from openral_core.gpu import detect_gpu_vram_gb
+from openral_core.gpu import TEGRA_RELEASE_PATH, detect_gpu_vram_gb, is_tegra_host
 from openral_core.loaders import load_benchmark_suite, load_scene_strict, raise_on_invalid_suite
 from openral_core.schemas import (
     ANTHROPIC_BASE_URL,
@@ -267,6 +267,7 @@ __all__ = [
     "RSKILL_TEMPLATE_SENTINELS",
     "SCENE_FAMILY_TASK_SPACE",
     "SIM_EXECUTABLE_CONTROL_MODES",
+    "TEGRA_RELEASE_PATH",
     "UINT8_TO_CONTROL_MODE",
     "VLLM_BASE_URL",
     "WRAPPED_TASK_SPACE_LAYOUTS",
@@ -478,6 +479,7 @@ __all__ = [
     "expected_repo_name",
     "extract_base_sim_joint_names",
     "is_collective_target",
+    "is_tegra_host",
     "load_benchmark_suite",
     "load_scene_strict",
     "merge_deploy_sensors",
