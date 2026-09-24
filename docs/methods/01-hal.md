@@ -30,7 +30,7 @@ _Internal MuJoCo-backed HAL implementation shared by UR / Franka / SO-100 / G1 /
 - `class _MujocoArmInitKwargs(TypedDict)` — Typed shape of the kwargs `MujocoArmHAL.__init__` accepts. (L62) Lets `_sim_kwargs_for` build a value that unpacks under `mypy --strict` with no `# type: ignore`.
 - `_resolve_mjcf_path(desc: RobotDescription) -> str` [private] — Resolves `desc.assets.mjcf` to an absolute MJCF path via `openral_core.assets.resolve_asset`; raises `ROSConfigError` if unset/unresolvable. (L82)
 - `_kinematic_group(joint_name, groups, *, robot) -> str` [private] (L112) — Maps a joint name to its kinematic group (substring match against `groups`) for the G1/H1 humanoid velocity/effort/PD-gain lookup tables; raises `ROSConfigError` naming `robot` if none match.
-- `build_hal(description, *, mode: Literal["sim","real"], transport=None, sim_env_yaml=None) -> HAL` (`resolver.py` L39) — The single seam for building a robot's sim or real HAL from its manifest, used by `deploy sim`/`deploy run`. `mode` picks `description.hal.sim`/`.real` (or a scene YAML via `sim_env_yaml`), merged under `hal.parameters.defaults`; raises `ROSConfigError`/`ROSCapabilityMismatch` for a bad or missing entry.
+- `build_hal(description, *, mode: Literal["sim","real"], transport=None, sim_env_yaml=None) -> HAL` (`resolver.py` L39) — The single seam for building a robot's sim or real HAL from its manifest, used by `deploy sim`/`deploy run`. `mode` picks `description.hal.sim`/`.real` (or a scene YAML via `sim_env_yaml`), merged under `hal.parameters.defaults`, with `safety.joint_state_staleness_limit_s` (when declared) passed as the HAL's `staleness_limit_s` — sim-derived HALs included — and `transport` on top; raises `ROSConfigError`/`ROSCapabilityMismatch` for a bad or missing entry.
 - `hal_joint_states_topic(description, *, mode, hal_node_name, override=None) -> str | None` (`resolver.py` L133) — The `JointState` topic the deploy runtime's Python nodes (world_state ingest + the runner's `ROSPublishingHAL` cache) read. `override` (`DeployRuntime.joint_states_topic`) wins; else, on `mode="real"` with a `hal.real` class exposing every `RosControlDrivable` member (checked on the class, not constructed — same membership `_attach_ros_control_transport` uses), `/<hal_node_name>/joint_states`, the HAL's rate-limited republish instead of the broadcaster's 0.5-1 kHz `/joint_states` that starves an in-process VLA of the GIL; `None` (= `/joint_states`) for serial/interbotix/sim HALs. Called by `deploy_e2e.launch.py`, which forwards the result as the runtime node's `joint_states_topic` param.
   - `_import_object(path: str) -> object` [private] — Resolves a `"module.path:Attribute"` import string; raises `ROSConfigError` if malformed/missing. Reuse watch: the canonical entrypoint importer — don't hand-roll `importlib` in HAL callers.
 - `class MujocoArmHAL` — Generic MuJoCo-backed HAL adapter for position-controlled arms (and, via the `_per_step_update` hook, torque-controlled humanoids like the H1). (L142)
@@ -61,6 +61,7 @@ _Shared HAL mixin — `_connected` flag, validation helpers, and a default `disc
 - `class HALBase` — Non-ABC mixin every adapter subclasses. (L22)
   - `disconnect() -> None` (L40) — Flag-and-log default (guard on `_connected`, `log.info("hal.disconnect", ...)`, clear the flag). Idempotent. Adapters holding a real resource (SDK handle, MuJoCo buffers, USB port) override it; `AlohaHAL` and `RosControlHAL` use the default as-is.
   - private: `_require_connected`, `_require_control_mode`, `_validate_action_dims`
+- `resolve_staleness_limit_s(description, override) -> float` (L22) — A real HAL's joint-state freshness window: `override` when not `None`, else `description.safety.joint_state_staleness_limit_s`; `ROSConfigError` when neither exists. Replaces every real HAL's constructor default (audit C F3): used by `RosControlHAL`, `AlohaHAL` and `SO100FollowerHAL`.
 - `_raw_floats(raw: dict[str, object], key: str, width: int) -> list[float]` [private] — Shared `read_state` decode: `raw[key]` as floats if it's a list, else `width` zeros. Used by `AlohaHAL.read_state` and `RosControlHAL.read_state`.
 
 ### `python/hal/src/openral_hal/_camera_rig.py`
@@ -84,7 +85,7 @@ _Resolve sensor catalog ids into `SensorSpec` / `SensorBundle` and attach them t
 _HAL adapter for the Franka Emika Panda 7-DoF arm (sim, MuJoCo)._
 
 - `class FrankaPandaHAL(MujocoArmHAL)` — Franka Panda HAL (MuJoCo-backed). Thin manifest-driven wrapper around `MujocoArmHAL`; `__init__` forwards to `self._init_from_description(FRANKA_PANDA_DESCRIPTION, …)`. (L286)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L315)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L105)
 - `_panda_joint_specs() -> list[JointSpec]` (L124)
 - module const `_PANDA_ARM_JOINT_NAMES: list[str]` (L54) — 7 arm joint names, upstream `panda_jointN` naming.
 - module const `_PANDA_GRIPPER_JOINT_NAME = "panda_gripper"` (L64) — synthetic 1-DoF gripper channel, normalized like SO-100's.
@@ -103,7 +104,7 @@ _Real-hardware HAL adapter for the Franka Emika Panda over the FCI._
 - module const `_DEFAULT_FRANKA_JOINT_STATE_TOPIC: str = "/joint_states"` (L63)
 - module const `_DEFAULT_FRANKA_ERROR_RECOVERY: str = "/error_recovery"` (L70) — the `franka_msgs/action/ErrorRecovery` name recorded for the operator; never called by `estop()`.
 - `class FrankaPandaRealHAL(RosControlHAL)` — Production adapter for a physical Panda over `franka_ros2` / FCI. Takes `description=` (loaded manifest; `None` → `FRANKA_PANDA_REAL_DESCRIPTION`). **Subclasses** `RosControlHAL` (the UR shape) so it is structurally `RosControlDrivable` and the lifecycle node attaches the production `RosControlTransport` under `hal_mode:=real`; the earlier composed wrapper forwarded only the five HAL Protocol methods, exposed none of the drivable surface, and was therefore never wired — a real Panda deploy published every command into `_default_publish`. (L89)
-  - `__init__(*, fci_ip='172.16.0.2', controller_name='franka_arm_controller', joint_state_topic='/joint_states', command_topic=None, error_recovery_action='/error_recovery', publish_fn=None, state_fn=None, staleness_limit_s=0.2, description=None)` (L166)
+  - `__init__(*, fci_ip='172.16.0.2', controller_name='franka_arm_controller', joint_state_topic='/joint_states', command_topic=None, error_recovery_action='/error_recovery', publish_fn=None, state_fn=None, staleness_limit_s=None, description=None)` (L165) — `staleness_limit_s=None` reads the manifest's `safety.joint_state_staleness_limit_s`.
   - `estop_recovery = RESTART_REQUIRED` — `stopRobot()` ends the FCI session; the reflex is cleared and the FCI re-armed by the operator.
   - `fci_ip -> str` [@property] (L200)
   - `error_recovery_action -> str` [@property] — `franka_ros2`'s `franka_msgs/action/ErrorRecovery` the operator runs before re-arming; recorded, **never** called by `estop()` (it clears a reflex — a recovery, not a stop). (L205)
@@ -123,9 +124,9 @@ _Real-hardware HAL adapter for the Rethink Sawyer 7-DoF arm._
 - module const `_DEFAULT_SAWYER_JOINT_STATE_TOPIC: str = "/robot/joint_states"` (L229)
 - module const `_DEFAULT_SAWYER_ESTOP_TOPIC: str = "/robot/set_super_stop"` (L238)
 - `class SawyerRealHAL(RosControlHAL)` — Production adapter for a physical Sawyer over `intera_sdk` / `sawyer_robot`. Takes `description=` (loaded manifest; `None` → `SAWYER_REAL_DESCRIPTION`). **Subclasses** `RosControlHAL` for the same reason as `FrankaPandaRealHAL`: the composed wrapper it replaced was not `RosControlDrivable`, so the lifecycle node never attached the production transport to it. (L244)
-  - `__init__(*, hostname='sawyer.local', controller_name='sawyer_arm_controller', joint_state_topic='/robot/joint_states', command_topic=None, estop_topic='/robot/set_super_stop', publish_fn=None, state_fn=None, staleness_limit_s=0.2, description=None)` (L318)
+  - `__init__(*, hostname='sawyer.local', controller_name='sawyer_arm_controller', joint_state_topic='/robot/joint_states', command_topic=None, estop_topic='/robot/set_super_stop', publish_fn=None, state_fn=None, staleness_limit_s=None, description=None)` (L317) — `staleness_limit_s=None` reads the manifest's window.
   - `hostname -> str` [@property] (L352)
-  - `connect() -> None` (L356)
+  - `connect() -> None` (L505)
   - `estop_recovery = RESTART_REQUIRED` — the super stop is cleared by `/robot/set_super_reset` + re-enable, an operator step.
   - **(property)** `estop_topic -> str` — `/robot/set_super_stop`, intera's super-stop topic. (L371)
   - `vendor_stop_topics() -> list[str]` — `[estop_topic]`, declared so the transport creates its `std_msgs/Empty` publisher at wire-up. (L377)
@@ -147,13 +148,13 @@ _In-process digital-twin HAL for the `panda_mobile` embodiment (Franka 7-DoF arm
   - `read_state() -> JointState` (L198) — Fresh 10-DoF snapshot; raises `ROSConfigError` if called before `connect()`.
   - `send_action(action: Action) -> None` (L212) — Applies the action to in-memory state; accepts `JOINT_POSITION` / `BODY_TWIST` / `CARTESIAN_DELTA` / `GRIPPER_POSITION`, each reading its matching `Action` field. No-ops while e-stop is latched. Raises `ROSConfigError` for an unsupported mode or a missing/mis-shaped payload.
   - `estop() -> None` (L269) — Latch the e-stop flag; subsequent `send_action` calls no-op until `reset_estop`.
-  - `reset_estop() -> None` (L280) — Clear the e-stop latch; caller asserts the cause has been resolved.
-  - **(property)** `estop_latched -> bool` (L285)
+  - `reset_estop() -> None` (L1951) — Clear the e-stop latch; caller asserts the cause has been resolved.
+  - **(property)** `estop_latched -> bool` (L1756)
   - **(property)** `base_pose -> tuple[float, float, float]` (L290) — Current base `(x, y, yaw)` for tests / odom publishers.
   - **(property)** `base_twist -> tuple[float, ...]` (L295) — Last commanded base body twist `(vx, vy, vz, wx, wy, wz)`; zeroed once a non-BODY_TWIST action is sent.
 - module const `_PANDA_MOBILE_ARM_JOINT_NAMES` (L87) — the 7 Franka arm joint names within the 11-DoF panda_mobile order.
 - module const `_PANDA_MOBILE_GRIPPER_JOINT_NAME` (L95) — the 1-DoF gripper joint name.
-- module const `_PLANAR_TWIST_EPS` (L112) — tolerance for detecting a non-planar `BODY_TWIST` component.
+- module const `_PLANAR_TWIST_EPS` (L155) — tolerance for detecting a non-planar `BODY_TWIST` component.
 - _(removed: the `base_sim_joint_names` re-export wrapper — callers now import `openral_core.extract_base_sim_joint_names` directly.)_
 
 ### `python/hal/src/openral_hal/depth_cloud.py`
@@ -184,11 +185,11 @@ _Reusable, robot-agnostic depth-camera → `sensor_msgs/PointCloud2` plumbing fo
 _HAL adapter for the Trossen ALOHA bimanual setup, plus the MuJoCo digital twin._
 
 - `class AlohaHAL(HALBase)` — Real-hardware adapter for the 14-DoF ALOHA over the Interbotix XS SDK. Takes `description=` (loaded manifest; `None` → `ALOHA_REAL_DESCRIPTION`). Stays on `HALBase`, not `RosControlHAL`: the driver owns the bus, like `SO100FollowerHAL`. Its command topics are ros2_control names a real ALOHA does not expose, so `send_action` reports success and moves nothing — issue #250 holds the `xs_sdk` wire contract and the on-rig checks needed before changing the defaults. Its **e-stop**, by contrast, targets what a real ALOHA does expose: `estop_recovery = RESTART_REQUIRED`, and `estop()` cuts torque on every arm namespace through an attached `InterbotixStopSeam`. (L402)
-  - `__init__(*, left_arm_controller=..., right_arm_controller=..., left_gripper_controller=..., right_gripper_controller=..., joint_state_topic='/joint_states', arm_namespaces=('follower_left', 'follower_right'), publish_fn=None, state_fn=None, staleness_limit_s=0.2, stop_timeout_s=5.0, description=None)` — The former `estop_topic` (`/aloha/estop`, a broadcast for a watchdog node that does not exist in this repo) is gone; `arm_namespaces` names the `xs_sdk` robots the stop torques off. (L474)
+  - `__init__(*, left_arm_controller=..., right_arm_controller=..., left_gripper_controller=..., right_gripper_controller=..., joint_state_topic='/joint_states', arm_namespaces=('follower_left', 'follower_right'), publish_fn=None, state_fn=None, staleness_limit_s=None, stop_timeout_s=5.0, description=None)` — `staleness_limit_s=None` reads the manifest's window (0.2 s, formerly a code-only default). — The former `estop_topic` (`/aloha/estop`, a broadcast for a watchdog node that does not exist in this repo) is gone; `arm_namespaces` names the `xs_sdk` robots the stop torques off. (L478)
   - `arm_namespaces() -> list[str]` — The `xs_sdk` robot namespaces the stop torques off; the `InterbotixStoppable` surface the lifecycle node reflects on. (L512)
   - `attach_torque_stop(seam) -> None` — Bind the `InterbotixStopSeam` after construction (`build_hal` runs before any ROS node exists); rejects a non-seam with `ROSConfigError`. (L516)
   - **(property)** `last_stop_report -> DownstreamStopReport | None` — The `DownstreamStopReporting` surface the lifecycle heartbeat and FATAL log read. (L530)
-  - `connect() -> None` (L536)
+  - `connect() -> None` (L505)
   - `read_state() -> JointState` (L553)
   - `send_action(action) -> None` — Splits the 14-D action 4-ways across per-arm + per-gripper controllers. (L579)
   - `estop() -> None` — Drop the connection flag first, then `torque_enable(cmd_type='group', name='all', enable=false)` on every arm namespace (each attempted even if an earlier one refused), record a `DownstreamStopReport` (`stopped` only when every arm acknowledged; `controller_states` per arm `torque_off` / `torque_unknown`), raise `ROSEStopRequested`. Torque off leaves the ViperX arms limp (no brakes) — the same outcome as the rig's hardware e-stop and the only stop `xs_sdk` offers. (L643)
@@ -225,9 +226,9 @@ _HAL adapter for the Trossen ALOHA bimanual setup, plus the MuJoCo digital twin.
 _HAL adapters for the Universal Robots UR5e and UR10e arms (sim, MuJoCo)._
 
 - `class UR5eHAL(MujocoArmHAL)` — UR5e HAL (MuJoCo-backed). Thin manifest-driven wrapper; `__init__` forwards to `self._init_from_description(UR5e_DESCRIPTION, …)`. (L344)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L368)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L105)
 - `class UR10eHAL(MujocoArmHAL)` — UR10e HAL (MuJoCo-backed). Same shape as `UR5eHAL`. (L386)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L398)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L105)
 - `ur5e_with_sensors(catalog_ids=None) -> RobotDescription` (L288)
 - `ur10e_with_sensors(catalog_ids=None) -> RobotDescription` (L314)
 - `_ur_joint_specs(velocity_limits, effort_limits) -> list[JointSpec]` (L121)
@@ -265,7 +266,7 @@ _SO100FollowerHAL — wraps lerobot's SO-100 follower arm USB driver._
 - module const `_RESET_STEP_HZ = 30.0` (L99) — `reset_to_pose` ramp waypoint rate.
 - module const `_RESET_DEADBAND_RAD` (L102) — below this max joint delta the arm counts as already at the target and the ramp is skipped.
 - `class SO100FollowerHAL` — HAL adapter wrapping lerobot's SO-100/SO-101 follower. Takes `description=` (the loaded manifest, so an SO-101 deploy reports `so101_follower`); `None` falls back to `SO100_DESCRIPTION`. Declares `estop_recovery = RESTART_REQUIRED`: its vendor E-stop disconnects the motor bus, so command execution requires a fresh lifecycle start and alignment. (L306)
-  - `__init__(port='/dev/ttyUSB0', *, calibrate_on_connect=False, id=None, calibration_dir=None, max_relative_target=None, staleness_limit_s=0.5, robot=None)` (L355)
+  - `__init__(port='/dev/ttyUSB0', *, calibrate_on_connect=False, id=None, calibration_dir=None, max_relative_target=None, staleness_limit_s=None, robot=None, description=None)` (L362) — `staleness_limit_s=None` reads the manifest's window.
   - `connect() -> None` — Open USB serial connection. (L400)
   - `disconnect() -> None` — Close USB, disable motor torque (idempotent). (L516)
   - `read_state() -> JointState` — Joint state in radians. (L529)
@@ -323,7 +324,7 @@ Galaxea A1 hardware bring-up and the LingBot-VA rSkill deploy runbook moved to [
 _MuJoCo digital twin for the Unitree H1 humanoid (Menagerie MJCF). Contract validator only — falls without an S0 cerebellum, so gravity must stay disabled in closed-loop tests. Unlike G1/UR/Franka/SO-100, the H1 menagerie ships torque actuators, so this HAL runs a software PD position loop every physics step._
 
 - `class H1MujocoHAL(MujocoArmHAL)` — Takes `description=` (loaded manifest; `None` → `H1_DESCRIPTION`). 19-DoF humanoid HAL driving `mujoco_menagerie/unitree_h1/h1.xml` (legs + torso + arms, no wrists); thin manifest-driven wrapper around `MujocoArmHAL`. Overrides `_apply_arm_targets` to a no-op and `_per_step_update` to compute `tau = kp*(target - q) - kv*dq` clamped to `ctrlrange`, so the public action contract stays "position targets in radians" — mirroring how `unitree_sdk2` wraps torque control in a position loop on real hardware. (L329)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L369)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L105)
   - `_per_step_update(targets) -> None` — Recomputes PD torque every `mj_step`.
   - `_apply_arm_targets(targets) -> None` — No-op (PD loop runs per-step instead).
 - module const `_H1_LEFT_LEG_JOINTS: tuple[str, ...]` (L80) — left-leg joint names.
@@ -347,7 +348,7 @@ _MuJoCo digital twin for the Unitree H1 humanoid (Menagerie MJCF). Contract vali
 _MuJoCo digital twin for the Flexiv Rizon 4 — 7-DoF cobot with whole-body force sensitivity (0.1 N).  Structurally identical to the UR / Franka sim HALs: position actuators, no gripper, no floating base, no PD-loop overrides — a clean `MujocoArmHAL` subclass._
 
 - `class Rizon4MujocoHAL(MujocoArmHAL)` — 7-DoF HAL driving `mujoco_menagerie/flexiv_rizon4/flexiv_rizon4.xml` via `MujocoArmHAL`. Thin manifest-driven wrapper; `__init__` forwards to `self._init_from_description(RIZON4_DESCRIPTION, …)`. (L180)
-  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L210)
+  - `__init__(*, mjcf_path=None, settle_steps=1, gravity_enabled=True, staleness_limit_s=0.5)` (L105)
 - `_rizon4_joint_specs() -> list[JointSpec]` — Build the 7 `JointSpec`s from the joint-name tuple + per-joint limit tables. (L111)
 - module const `_RIZON4_JOINT_NAMES: tuple[str, ...]` (L65) — 7 arm joint names.
 - module const `_RIZON4_POSITION_LIMITS: dict[str, tuple[float, float]]` (L80)
@@ -391,7 +392,7 @@ _Real-hardware adapter for the Enactic OpenArm v2. Commands `openarm_bringup`'s 
 - module const `_RIGHT_ARM_SLICE` (L104) — right-arm slice.
 - module const `_RIGHT_GRIPPER_SLICE` (L105) — right-gripper slice.
 - `class OpenArmRealHAL(RosControlHAL)` (L120) — 16-DoF real-HW adapter, same action layout as `OpenArmMujocoHAL`. Guards three silent-failure modes: fan-out (one action sliced atomically across the bimanual bringup's four controller topics, so a rejection can't leave one arm on a new chunk and the other stale), read-by-name (`read_state` matches `/joint_states` by joint name, raising rather than zero-filling a missing joint), and bus preflight (`connect()` refuses a missing/wrong-type/down CAN link rather than reporting connected over a dead bus). `estop_recovery = RESETTABLE`.
-  - `__init__(description=None, *, left_can_interface='openarm_left', right_can_interface='openarm_right', left_arm_controller=..., left_gripper_controller=..., right_arm_controller=..., right_gripper_controller=..., joint_state_topic='/joint_states', publish_fn=None, state_fn=None, staleness_limit_s=0.5, require_can_links=True)` — Rejects a manifest that is not 16-joint or whose joints lack `sim_joint_name` (the URDF joint name, i.e. the logical→ros2_control mapping).
+  - `__init__(description=None, *, left_can_interface='openarm_left', right_can_interface='openarm_right', left_arm_controller=..., left_gripper_controller=..., right_arm_controller=..., right_gripper_controller=..., joint_state_topic='/joint_states', publish_fn=None, state_fn=None, staleness_limit_s=None, require_can_links=True)` — Rejects a manifest that is not 16-joint or whose joints lack `sim_joint_name` (the URDF joint name, i.e. the logical→ros2_control mapping).
   - `connect() -> None` (L300) — Bus preflight (`openral_core.can.preflight_can_links`) then delegates to `RosControlHAL.connect`; refuses a CAN link that is missing, is not a CAN device, or is down.
   - `ros2_control_joint_names() -> list[str]` (L256) — 16 URDF names in action-vector order.
   - `controller_names() -> list[str]` — The four controllers `estop` deactivates, in fan-out order (left arm, left gripper, right arm, right gripper); the fleet conformance test pins that every `command_bindings` topic belongs to one of them. (L288)
@@ -548,9 +549,9 @@ _RosControlHAL — `ros2_control`-backed HAL adapter, plus the typed downstream 
   - `vendor_stop_topics() -> list[str]` — `std_msgs/Empty` topics the vendor stop publishes on. (L220)
   - `attach_controller_stop(seam) -> None` — Bind the `ControllerStopSeam` at wire-up. (L224)
 - `class DownstreamStopReporting(Protocol)` — `last_stop_report -> DownstreamStopReport | None` property; what the lifecycle heartbeat and FATAL log read. (L230)
-  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L234)
+  - **(property)** `last_stop_report -> DownstreamStopReport | None` (L458)
 - `class RosControlHAL` — `ros2_control`-backed HAL adapter. Implements `LifecycleEStopHAL` with `estop_recovery = RESTART_REQUIRED` by default (the conservative policy; OpenArm opts into `RESETTABLE`). (L261)
-  - `__init__(description, controller_name, *, joint_state_topic='/joint_states', command_topic=None, publish_fn=None, state_fn=None, staleness_limit_s=0.5, stop_timeout_s=5.0)` (L322) — Reads the control rate from `description.action_spec.control_freq_hz` (the field the runner ticks at and the recorder stamps as fps; every committed ros2_control manifest declares 30 Hz); **refuses to construct** with `ROSConfigError` naming the field when it is missing or not positive, so `build_hal(mode="real")` and the lifecycle node's configure stop there (issue #303).
+  - `__init__(description, controller_name, *, joint_state_topic='/joint_states', command_topic=None, publish_fn=None, state_fn=None, staleness_limit_s=None, stop_timeout_s=5.0)` (L324) — `staleness_limit_s=None` reads `description.safety.joint_state_staleness_limit_s` via `resolve_staleness_limit_s` (no constructor default; refused when undeclared). Reads the control rate from `description.action_spec.control_freq_hz` (the field the runner ticks at and the recorder stamps as fps; every committed ros2_control manifest declares 30 Hz); **refuses to construct** with `ROSConfigError` naming the field when it is missing or not positive, so `build_hal(mode="real")` and the lifecycle node's configure stop there (issue #303).
   - `attach_transport(publish_fn, state_fn, stamp_fn=None) -> None` — Bind a live transport after construction; `build_hal` runs before any ROS node exists, so a real deployment cannot pass one to `__init__`. `stamp_fn` is the transport's per-message arrival clock and is what makes the staleness check a freshness check rather than a time-since-connect check. Rejects a non-callable `stamp_fn` at wire-up. (L373)
   - `attach_controller_stop(seam) -> None` — Bind the `ControllerStopSeam` (same rationale as `attach_transport`); rejects a non-seam at wire-up with `ROSConfigError`. (L412)
   - `controller_names() -> list[str]` — Every `controller_manager` controller `estop` deactivates; `[controller_name]` by default, overridden by the bimanual OpenArm alongside `command_bindings`. (L435)

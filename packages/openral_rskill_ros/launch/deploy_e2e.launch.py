@@ -458,6 +458,36 @@ def _primary_rgb_camera(sensors: list[SensorSpec]) -> str:
     )
 
 
+# Sim runner joint-state window: the former node default. A sim bridge's
+# /joint_states is not the rig the manifest's window was measured on, so sim
+# keeps it rather than the (possibly much tighter) real value.
+_SIM_JOINT_STATE_STALENESS_S = 0.5
+
+
+def _runner_joint_state_staleness_s(description: RobotDescription, hal_mode: str) -> float:
+    """The runner's joint-state freshness window for this deploy.
+
+    Real: the manifest's ``safety.joint_state_staleness_limit_s`` — the same
+    number ``build_hal`` hands the real HAL, so the two cannot disagree. The
+    schema already refuses a real manifest without it; this only guards a
+    manifest bypassing that validator. Sim: ``_SIM_JOINT_STATE_STALENESS_S``.
+
+    Raises:
+        ROSConfigError: ``hal_mode == "real"`` and the manifest declares none.
+    """
+    if hal_mode != "real":
+        return _SIM_JOINT_STATE_STALENESS_S
+    declared = description.safety.joint_state_staleness_limit_s
+    if declared is None:
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"robot {description.name!r} declares no safety.joint_state_staleness_limit_s; "
+            "a real deploy needs the measured window (tools/joint_state_staleness_probe.py)."
+        )
+    return float(declared)
+
+
 def _depth_points_topic(description: RobotDescription) -> str:
     """``camera_topic(<name>, POINTS)`` of the first depth sensor with intrinsics, else ``""``.
 
@@ -1641,10 +1671,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # cameras enough room for one slow frame without stale flapping.
                 "image_staleness_limit_s": 5.0 if hal_mode == "sim" else 0.5,
                 # Joint state older than this aborts the blocking wait as a
-                # perception fault. The node has no default: this is the one
-                # place the window is declared. 0.5 s is the former node default,
-                # kept until a rig measurement says otherwise (issue #303).
-                "joint_state_staleness_limit_s": 0.5,
+                # perception fault. The node has no default. Real: the manifest's
+                # safety.joint_state_staleness_limit_s (the HAL's window too);
+                # sim: the former node default (audit C F3).
+                "joint_state_staleness_limit_s": _runner_joint_state_staleness_s(
+                    description, hal_mode
+                ),
                 # One grouped action may synchronously attach a payload, then
                 # wait for a transparent depth frame + the next OctoMap raster
                 # before acknowledging application. Real HALs keep the 5 s

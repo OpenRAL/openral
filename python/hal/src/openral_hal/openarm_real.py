@@ -140,6 +140,8 @@ class OpenArmRealHAL(RosControlHAL):
             ``name`` / ``position`` / ``velocity`` / ``effort`` keys, in
             ros2_control joint naming.
         staleness_limit_s: Maximum age of a ``read_state()`` reading.
+            ``None`` (default) reads the manifest's
+            ``safety.joint_state_staleness_limit_s``.
         require_can_links: When ``True`` (the default), ``connect``
             verifies both CAN interfaces are up and refuses otherwise.  Set
             ``False`` only to exercise the ROS wiring against a bringup whose
@@ -181,7 +183,7 @@ class OpenArmRealHAL(RosControlHAL):
         joint_state_topic: str = _JOINT_STATE_TOPIC,
         publish_fn: Callable[[str, dict[str, object]], None] | None = None,
         state_fn: Callable[[], dict[str, object]] | None = None,
-        staleness_limit_s: float = 0.5,
+        staleness_limit_s: float | None = None,
         require_can_links: bool = True,
     ) -> None:
         """Initialise the adapter; opens neither ROS nor the CAN bus yet."""
