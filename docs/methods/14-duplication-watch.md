@@ -85,7 +85,7 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 - **Kernel-twin sim tests** — the four `tests/sim/safety/test_kernel_with_<robot>_*.py` files (`so100_digital_twin`, `openarm_twin`, `rizon4_twin`, `h1_humanoid_twin`) all route through `tests/sim/safety/_kernel_subprocess.py::{start_kernel, activate_kernel_node, build_kernel_envelope, terminate_kernel}` and only declare their own joint names + action/state vectors. A fifth robot's kernel-twin test should call the same four helpers, not re-roll the lifecycle ceremony.
 
-- **rSkillBase subclasses** — `GpuPassthroughSkill`, `SmolVLAAdapter`, `SO100SmolVLASkill` all override the same five `_*_impl` hooks; the duplicated names are the `Skill` ABC contract, not redundancy. `GpuPassthroughSkill`'s `_step_impl` is the reference for a torch.cuda-based skill that must be explicit about device placement.
+- **rSkillBase subclasses** — every `rSkillBase` subclass (`GpuPassthroughSkill`, the `ROSActionRskill` family) overrides the same five `_*_impl` hooks; the duplicated names are the `Skill` ABC contract, not redundancy. `GpuPassthroughSkill`'s `_step_impl` is the reference for a torch.cuda-based skill that must be explicit about device placement.
 
 - **Runtime backends** — `NullRuntime`, `PyTorchRuntime`, `ONNXRuntime` (plus `TensorRTRuntime` in the private `openral-pro-trt` package) all implement the `Runtime` Protocol surface (`load`/`infer`/`quantize`/`warmup`/`unload`). Same situation as `Skill`.
 

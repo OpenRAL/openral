@@ -19,7 +19,7 @@ the seam that lets those packages plug into the open ``openral-rskill`` /
   entry-point group. Absent hook (open-source-only install) is a no-op with a
   debug log; an attached hook logs at info level. Replaces the per-policy ad
   hoc ``try: from openral_rskill.smolvla_trt import ...`` / ``act_trt``
-  imports in ``openral_rskill.smolvla`` and ``openral_sim.policies.act``.
+  imports the ``openral_sim.policies`` adapters used to hardcode.
 """
 
 from __future__ import annotations
@@ -107,8 +107,8 @@ def maybe_attach_pro_hooks(policy_name: str, skill: Any, **kwargs: Any) -> bool:
     """Look up and invoke an OpenRAL Pro policy-attach hook, if installed.
 
     Replaces the per-policy ``try: from openral_rskill.<x>_trt import
-    maybe_attach_<x>_trt_from_env`` calls hardcoded in
-    ``openral_rskill.smolvla`` and ``openral_sim.policies.act``. A hook
+    maybe_attach_<x>_trt_from_env`` calls once hardcoded in the
+    ``openral_sim.policies`` adapters (``smolvla``, ``act``). A hook
     registered under the ``openral.policy_attach_hooks`` entry-point group
     (name = *policy_name*, e.g. ``"smolvla"`` or ``"act"``) is loaded and
     called as ``hook(skill, **kwargs)``; its truthy/falsy return says whether

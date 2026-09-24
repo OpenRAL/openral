@@ -112,7 +112,7 @@ stale/incomplete; see §4) · **Consolidate** (overlap with another file) ·
 | `test_sim_transport.py` | 230 | `SimTransport` queue + drop semantics + introspection helpers. **Added 2026-05-08.** | Keep |
 | `test_franka_panda.py` | 200 | `FRANKA_PANDA_DESCRIPTION` joint inventory, datasheet limits, capabilities, safety envelope, JSON round-trip. Unit-level (no MuJoCo). **Added 2026-05-08.** | Keep |
 | `test_mujoco_arm.py` | 200 | `MujocoArmHAL` constructor invariants, gripper-config validation, not-connected error paths, optional-parameter wiring. Unit-level (no MuJoCo connect needed). **Added 2026-05-08.** | Keep |
-| `test_smolvla_adapter.py` | 425 | `SmolVLASkill` lifecycle + `ChunkedExecutor` queue/prefetch/error semantics with mocked lerobot stubs. | Keep |
+| `test_chunked_executor.py` | 377 | `ChunkedExecutor` queue/prefetch/error semantics + `build_chunk_executor`, with a numbered-chunk policy stand-in. | Keep |
 | `test_sensors.py` | 399 | RealSense / Hokuyo / IMU / Livox / Orbbec / Ouster / SLAMTEC / tactile / UVC vendor factories + launch-py codegen. | Keep |
 | `test_sensor_catalog.py` | 592 | `SensorCatalog` register/get/filter/build, `openral sensor list` / `show` CLI. | Keep |
 | `test_rskill_loader.py` | 514 | `rSkill.from_yaml` / `from_pretrained`, license guards, capability matching, registry I/O (HF mocked). | Keep |
