@@ -18,6 +18,7 @@ import pytest
 from openral_core.exceptions import ROSConfigError, ROSEStopRequested, ROSRuntimeError
 from openral_core.schemas import (
     Action,
+    ActionSpec,
     ControlMode,
     EmbodimentKind,
     JointSpec,
@@ -54,6 +55,8 @@ def _description(n_joints: int = 2) -> RobotDescription:
         ],
         capabilities=RobotCapabilities(supported_control_modes=[ControlMode.JOINT_POSITION]),
         safety=SafetyEnvelope(),
+        # A ros2_control HAL refuses a manifest without a control rate (#303).
+        action_spec=ActionSpec(dim=n_joints, control_freq_hz=30.0),
     )
 
 

@@ -446,7 +446,11 @@ if _ROS2_AVAILABLE:
             # within a single goal lifecycle.
             self._read_tick_idx: int = 0
             self._send_tick_idx: int = 0
-            self.declare_parameter("publish_rate_hz", 30.0)
+            # 0 = the manifest's action_spec.control_freq_hz — the runner reads
+            # state once per tick, so proprio is published once per tick. A
+            # sim-only manifest that declares no rate falls back to 30 Hz with a
+            # warning; a real manifest cannot load without one (issue #303).
+            self.declare_parameter("publish_rate_hz", 0.0)
             self.get_logger().info(f"{node_name} HAL node initialised.")
 
         # ── Subclass hooks ────────────────────────────────────────────────
@@ -715,6 +719,16 @@ if _ROS2_AVAILABLE:
             rate_hz: float = (
                 self.get_parameter("publish_rate_hz").get_parameter_value().double_value
             )
+            if rate_hz <= 0.0:
+                assert self._hal is not None  # invariant: configure built it
+                declared = self._hal.description.control_rate_hz
+                if declared is None:
+                    self.get_logger().warning(
+                        f"robot {self._hal.description.name!r} declares no "
+                        "action_spec.control_freq_hz and no publish_rate_hz param was "
+                        "given; publishing proprio at 30 Hz. Declare the field."
+                    )
+                rate_hz = 30.0 if declared is None else declared
             # For sim-attached HALs, joint_state (and odom, in
             # MobileBaseBridge) is published off a dedicated thread reading the
             # snapshot, NOT a timer on the single executor thread (which is busy

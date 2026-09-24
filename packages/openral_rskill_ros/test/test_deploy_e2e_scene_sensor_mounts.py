@@ -7,8 +7,11 @@ manifest), so a camera declared in ``DeployScene.sensors`` could never get its m
 published.
 
 Not hypothetical: any real workcell camera declared at scene level (``parent_frame:
-openarm_base`` and a ``static_transform_xyz_rpy``, the shape any ZED feeding the octomap leg
-needs) hit exactly this gap before the loop covered ``DeployScene.sensors``. Same silent
+openarm_base`` and a ``static_transform_xyz_rpy``, the shape any depth camera feeding the
+octomap leg needs) hit exactly this gap before the loop covered ``DeployScene.sensors``. A
+scene only declares workcell cameras, under names the manifest does not use; a camera bolted
+to the robot (the OpenArm's ``head_zed``) lives in the robot manifest alone, and a scene
+naming it is refused (``check_scene_sensor_overrides``). Same silent
 failure the loop exists to prevent: `octomap_server` can't resolve the cloud's frame, drops
 every message, and the map stays empty while the graph reports healthy.
 
@@ -38,9 +41,9 @@ pytestmark = pytest.mark.skipif(
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _LAUNCH_FILE = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.launch.py"
 
-# A workcell camera on the OpenArm cell: parented to the manifest's own base
-# frame, 0.20 m up and pitched down — the shape of a real head-camera mount.
-_MOUNT = (0.0, 0.0, 0.20, 0.0, 0.7853981634, 0.0)
+# A workcell camera on the OpenArm cell (its own name, not the manifest's head_zed):
+# parented to the manifest's own base frame, up and pitched down.
+_MOUNT = (0.4, 0.1, 0.60, 0.0, 0.9, 0.0)
 
 _SCENE_YAML = """
 robot_id: "openarm"
@@ -48,11 +51,11 @@ scene:
   id: openarm_tabletop_pnp
   backend: mujoco
 sensors:
-  - name: head_zed
+  - name: workcell_depth
     modality: depth
-    frame_id: zed_camera_link
+    frame_id: workcell_depth_link
     parent_frame: openarm_base
-    static_transform_xyz_rpy: [0.0, 0.0, 0.20, 0.0, 0.7853981634, 0.0]
+    static_transform_xyz_rpy: [0.4, 0.1, 0.60, 0.0, 0.9, 0.0]
     rate_hz: 10.0
 """
 
@@ -135,7 +138,7 @@ def test_a_scene_declared_sensor_gets_its_mount_published(tmp_path: Path) -> Non
     scene = tmp_path / "workcell.yaml"
     scene.write_text(_SCENE_YAML, encoding="utf-8")
 
-    args = _mount_for(_compose(scene), "openarm_base", "zed_camera_link")
+    args = _mount_for(_compose(scene), "openarm_base", "workcell_depth_link")
 
     assert args is not None, (
         "no static_transform_publisher for the scene-declared sensor — the mount "

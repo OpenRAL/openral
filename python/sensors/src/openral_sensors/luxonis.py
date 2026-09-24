@@ -95,6 +95,8 @@ def oak_d_pro_bundle(
     Args:
         name: Bundle name — used as a prefix for topic names and frame
             ids (e.g. ``"oak_top"`` → ``/oak_top/rgb/image_raw``).
+            ``SensorSpec.ros2_topic`` carries that *driver-native* topic (ADR-0108);
+            OpenRAL consumers use ``openral_core.camera_topic(name)``.
         parent_frame: tf2 parent frame for the static transform.
         mxid: Optional Luxonis MXID for device targeting (multi-device
             hosts). Stored in ``metadata.mxid`` and forwarded to the

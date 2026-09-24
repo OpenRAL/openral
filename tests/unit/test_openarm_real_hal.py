@@ -423,6 +423,70 @@ class TestManifestWiring:
         hal.disconnect()
 
 
+# ── Trajectory deadline (issue #303) ──────────────────────────────────────────
+
+
+def _manifest_hal(recorder: _Recorder) -> OpenArmRealHAL:
+    """The HAL exactly as `build_hal` constructs it from the committed manifest."""
+    import inspect
+
+    manifest = RobotDescription.from_yaml(str(OPENARM_MANIFEST))
+    accepted = set(inspect.signature(OpenArmRealHAL.__init__).parameters)
+    kwargs = {k: v for k, v in manifest.hal.parameters.defaults.items() if k in accepted}
+    return OpenArmRealHAL(manifest, publish_fn=recorder, **kwargs)  # type: ignore[arg-type]  # reason: manifest-typed
+
+
+class TestTrajectoryDeadline:
+    """Every published point's `time_from_start` follows `action_spec.control_freq_hz`.
+
+    Without it the transport's 100 ms default asked a 30 Hz stream to cover each
+    step in a third of its period — one of the two jitter causes on the attended
+    Thor run (issue #303).
+    """
+
+    def test_every_controller_gets_one_control_period_for_a_single_step(
+        self, both_buses_up: Path
+    ) -> None:
+        recorder = _Recorder()
+        hal = _manifest_hal(recorder)
+        hal.connect()
+        hal.send_action(_action(horizon=1))
+        spec = RobotDescription.from_yaml(str(OPENARM_MANIFEST)).action_spec
+        assert spec is not None and spec.control_freq_hz is not None
+        rate = spec.control_freq_hz
+        assert len(recorder.sent) == 4
+        for _topic, msg in recorder.sent:
+            assert msg["time_from_start_s"] == pytest.approx(1.0 / rate)
+
+    def test_a_chunk_gets_one_period_per_step(self, both_buses_up: Path) -> None:
+        recorder = _Recorder()
+        hal = _manifest_hal(recorder)
+        hal.connect()
+        hal.send_action(_action(horizon=3))
+        for _topic, msg in recorder.sent:
+            assert msg["time_from_start_s"] == pytest.approx(3.0 / 30.0)
+
+    def test_the_in_code_description_agrees_with_the_manifest(self) -> None:
+        manifest = RobotDescription.from_yaml(str(OPENARM_MANIFEST))
+        assert OPENARM_REAL_DESCRIPTION.action_spec == manifest.action_spec
+
+    def test_a_manifest_without_a_rate_cannot_build_the_hal(self) -> None:
+        """`build_hal(mode="real")` and so the node's configure stop here, naming the field."""
+        rateless = OPENARM_REAL_DESCRIPTION.model_copy(update={"action_spec": None})
+        with pytest.raises(ROSConfigError, match=r"action_spec\.control_freq_hz"):
+            OpenArmRealHAL(rateless, require_can_links=False)
+
+    @pytest.mark.parametrize("rate", [0.0, -30.0])
+    def test_a_non_positive_rate_is_refused(self, rate: float) -> None:
+        spec = OPENARM_REAL_DESCRIPTION.action_spec
+        assert spec is not None
+        bad = OPENARM_REAL_DESCRIPTION.model_copy(
+            update={"action_spec": spec.model_copy(update={"control_freq_hz": rate})}
+        )
+        with pytest.raises(ROSConfigError, match="control_freq_hz"):
+            OpenArmRealHAL(bad, require_can_links=False)
+
+
 # ── ADR-0102 slot groups ──────────────────────────────────────────────────────
 
 

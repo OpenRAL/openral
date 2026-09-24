@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from openral_core import required_vla_camera_slots, sensor_name_to_slot
+from openral_core.exceptions import ROSConfigError
 
 if TYPE_CHECKING:
     from openral_core.schemas import Action, ActionSlot, RobotDescription, RSkillManifest
@@ -246,14 +247,22 @@ if _ROS2_AVAILABLE:
         ) -> None:
             """Store references; opens no ROS resources until ``on_configure``."""
             super().__init__(node_name)
-            self.declare_parameter("rate_hz", 30.0)
+            # 0 = the manifest's `action_spec.control_freq_hz` (issue #303: the
+            # HAL derives every trajectory deadline from that field, so the
+            # runner must tick at the same value), else 30 Hz.
+            self.declare_parameter("rate_hz", 0.0)
             self.declare_parameter("action_applied_timeout_s", 5.0)
-            self.declare_parameter("joint_state_staleness_limit_s", 0.5)
+            # No default: the launch declares it with its rationale, and configure
+            # refuses an unset value rather than guessing a staleness window.
+            self.declare_parameter("joint_state_staleness_limit_s", 0.0)
             # Conservative speed for the kernel-checked move from the live pose to an
             # rSkill's starting_pose. The gripper channel is normalised [0, 1], so the same
             # bound treats one full jaw stroke like one radian: conservative and tunable.
-            self.declare_parameter("starting_pose_max_delta_per_s", 0.5)
-            self.declare_parameter("starting_pose_tolerance", 0.05)
+            # 0 = the manifest's safety.starting_pose_max_joint_speed_rad_s /
+            # starting_pose_tolerance_rad, declared per robot. Both used to be
+            # bare constants (0.5 rad/s, 0.05 rad) that came from nowhere.
+            self.declare_parameter("starting_pose_max_delta_per_s", 0.0)
+            self.declare_parameter("starting_pose_tolerance", 0.0)
             self.declare_parameter("estop_topic", "/openral/estop")
             # Deprecated launch input retained until the CLI stops forwarding it. Starting
             # poses now always move through candidate_action; this service is never called.
@@ -433,8 +442,8 @@ if _ROS2_AVAILABLE:
                 action_applied_timeout_s=float(
                     self.get_parameter("action_applied_timeout_s").value
                 ),
-                joint_state_staleness_limit_s=float(
-                    self.get_parameter("joint_state_staleness_limit_s").value
+                joint_state_staleness_limit_s=_require_positive_param(
+                    self, "joint_state_staleness_limit_s"
                 ),
             )
             try:
@@ -1335,7 +1344,7 @@ if _ROS2_AVAILABLE:
             assert self._aggregator is not None  # invariant set in on_configure
             assert self._hal is not None
 
-            rate_hz: float = self.get_parameter("rate_hz").get_parameter_value().double_value
+            rate_hz = self._control_rate_hz()
             period_s = 1.0 / max(rate_hz, 1.0)
             start = time.monotonic()
             # Absolute deadlines absorb tick work into the configured period.
@@ -1599,7 +1608,7 @@ if _ROS2_AVAILABLE:
 
             assert self._description is not None
             names = [joint.name for joint in self._description.joints]
-            tolerance = float(self.get_parameter("starting_pose_tolerance").value)
+            _, tolerance = self._starting_pose_ramp()
             deadline = time.monotonic() + float(
                 self.get_parameter("action_applied_timeout_s").value
             )
@@ -1816,14 +1825,8 @@ if _ROS2_AVAILABLE:
             current = self._joint_positions_in_manifest_order(self._hal.read_state(), names)
             deltas = [end - start for start, end in zip(current, target, strict=True)]
             max_delta = max((abs(delta) for delta in deltas), default=0.0)
-            tolerance = float(self.get_parameter("starting_pose_tolerance").value)
-            max_delta_per_s = float(self.get_parameter("starting_pose_max_delta_per_s").value)
-            rate_hz = float(self.get_parameter("rate_hz").value)
-            if tolerance <= 0.0 or max_delta_per_s <= 0.0 or rate_hz <= 0.0:
-                raise ROSConfigError(
-                    "starting_pose_tolerance, starting_pose_max_delta_per_s, and rate_hz "
-                    "must be positive"
-                )
+            max_delta_per_s, tolerance = self._starting_pose_ramp()
+            rate_hz = self._control_rate_hz()
             if max_delta <= tolerance:
                 return None
 
@@ -1854,6 +1857,33 @@ if _ROS2_AVAILABLE:
                 )
                 next_deadline = _pace_tick(next_deadline, 1.0 / rate_hz)
             return None
+
+        def _starting_pose_ramp(self) -> tuple[float, float]:
+            """(max joint speed, arrival tolerance) for the starting-pose move."""
+            return resolve_starting_pose_ramp(
+                float(self.get_parameter("starting_pose_max_delta_per_s").value),
+                float(self.get_parameter("starting_pose_tolerance").value),
+                self._description,
+            )
+
+        def _control_rate_hz(self) -> float:
+            """The tick rate: the `rate_hz` param, else the manifest's control rate.
+
+            A manifest that declares no rate (sim-only robots today) ticks at
+            30 Hz with a warning naming the missing field; a real ros2_control
+            HAL built from such a manifest has already refused to construct.
+            """
+            rate = resolve_control_rate_hz(
+                float(self.get_parameter("rate_hz").value), self._description
+            )
+            if rate is None:
+                name = self._description.name if self._description is not None else "?"
+                self.get_logger().warning(
+                    f"robot {name!r} declares no action_spec.control_freq_hz and no "
+                    "rate_hz param was given; ticking at 30 Hz. Declare the field."
+                )
+                return 30.0
+            return rate
 
         @staticmethod
         def _joint_positions_in_manifest_order(state: Any, names: list[str]) -> list[float]:
@@ -2515,6 +2545,89 @@ def make_local_skill_resolver(
         )
 
     return _resolver
+
+
+def resolve_control_rate_hz(param_hz: float, description: RobotDescription | None) -> float | None:
+    """Pick the runner's tick rate: an explicit param, else the manifest's rate.
+
+    ``rate_hz > 0`` wins. Otherwise the robot's ``action_spec.control_freq_hz``
+    is the rate — the field the real ros2_control HAL derives every trajectory
+    deadline from (issue #303), so runner and HAL cannot disagree unless an
+    operator overrides the param on purpose. ``None`` when neither declares a
+    positive rate; the caller decides what that means (the node warns and
+    ticks at 30 Hz, which only a sim-only manifest can reach).
+
+    Example:
+        >>> from openral_core.schemas import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> resolve_control_rate_hz(0.0, desc)
+        30.0
+        >>> resolve_control_rate_hz(15.0, desc)
+        15.0
+        >>> resolve_control_rate_hz(0.0, None) is None
+        True
+    """
+    if param_hz > 0.0:
+        return float(param_hz)
+    return None if description is None else description.control_rate_hz
+
+
+def resolve_starting_pose_ramp(
+    param_max_delta_per_s: float,
+    param_tolerance_rad: float,
+    description: RobotDescription | None,
+) -> tuple[float, float]:
+    """Ramp speed and arrival tolerance for the move to a skill's starting pose.
+
+    An explicit positive param wins (the SO-100 twin tests set both). Otherwise
+    the manifest's ``safety.starting_pose_max_joint_speed_rad_s`` and
+    ``safety.starting_pose_tolerance_rad`` are used — declared per robot, never
+    derived: a rated ``velocity_limit`` is a ceiling, not an approach speed, and
+    deriving from it put the OpenArm at 2 rad/s where every attended run had
+    used 0.5 (issue #303). No constant lives here.
+
+    Raises:
+        ROSConfigError: If a value is neither passed nor declared in the manifest.
+
+    Example:
+        >>> from openral_core.schemas import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> resolve_starting_pose_ramp(0.0, 0.0, desc)
+        (0.5, 0.05)
+        >>> resolve_starting_pose_ramp(0.2, 0.01, desc)
+        (0.2, 0.01)
+    """
+    safety = None if description is None else description.safety
+    speed = float(param_max_delta_per_s)
+    if speed <= 0.0:
+        declared = None if safety is None else safety.starting_pose_max_joint_speed_rad_s
+        if declared is None:
+            raise ROSConfigError(
+                "starting_pose_max_delta_per_s is unset and the manifest declares no "
+                "safety.starting_pose_max_joint_speed_rad_s; declare it (rad/s) or pass the param."
+            )
+        speed = float(declared)
+    tolerance = float(param_tolerance_rad)
+    if tolerance <= 0.0:
+        declared = None if safety is None else safety.starting_pose_tolerance_rad
+        if declared is None:
+            raise ROSConfigError(
+                "starting_pose_tolerance is unset and the manifest declares no "
+                "safety.starting_pose_tolerance_rad; declare it (rad) or pass the param."
+            )
+        tolerance = float(declared)
+    return speed, tolerance
+
+
+def _require_positive_param(node: Any, name: str) -> float:  # reason: rclpy Node is untyped
+    """Read a float ROS param that the launch must set; refuse a missing or non-positive one."""
+    value = float(node.get_parameter(name).value)
+    if value <= 0.0:
+        raise ROSConfigError(
+            f"rskill_runner_node param {name!r} is {value}; it has no default on purpose — "
+            "the launch declares it with its rationale. Set it > 0."
+        )
+    return value
 
 
 def _pace_tick(prev_deadline_s: float, period_s: float) -> float:
@@ -3482,6 +3595,11 @@ def main(args: list[str] | None = None) -> int:
     ``WorldStateAggregator``. Production launches use
     ``openral_rskill_ros.compose.compose_so100_runtime`` to share the
     aggregator with the colocated ``world_state_node``.
+
+    ``joint_state_staleness_limit_s`` has no default (issue #303): pass it as a
+    ROS parameter (``--ros-args -p joint_state_staleness_limit_s:=0.5``) or
+    ``on_configure`` refuses, naming it. ``deploy_e2e.launch.py`` declares it
+    for production runs.
     """
     if not _ROS2_AVAILABLE:
         print("rclpy not found — cannot start rskill_runner_node without ROS 2.", file=sys.stderr)

@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from openral_core import ROSConfigError
+
 __all__ = ["resolve_camera_topics"]
 
 
@@ -33,12 +35,16 @@ def resolve_camera_topics(
             never given cameras arrives here with one blank entry.
         primary_camera: Id to file the single-camera fallback under. Blank falls
             back to ``"default"``, matching the nodes' declared default.
-        image_topic: Topic for the single-camera fallback.
+        image_topic: Topic for the single-camera fallback. Empty (the nodes'
+            default, ADR-0108) means "no fallback": the launch must name a camera.
 
     Returns:
         Camera id → topic, in declaration order. The first key is the primary
         camera (dicts preserve insertion order), which is what the nodes use
         when a request leaves its ``camera`` field empty.
+
+    Raises:
+        ROSConfigError: Neither ``entries`` nor ``image_topic`` names a camera.
 
     Example:
         >>> resolve_camera_topics(
@@ -58,5 +64,10 @@ def resolve_camera_topics(
         if cid and topic:
             cameras[cid] = topic
     if not cameras:
+        if not image_topic:
+            raise ROSConfigError(
+                "no camera configured: set `cameras` (id=topic) or `image_topic` to the "
+                "manifest camera's openral_core.camera_topic(<name>)"
+            )
         cameras[primary_camera or "default"] = image_topic
     return cameras

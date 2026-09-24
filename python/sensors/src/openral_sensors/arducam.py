@@ -61,7 +61,9 @@ def arducam_b0495_spec(
     """Build a ``SensorSpec`` for an Arducam B0495 USB3 global-shutter camera.
 
     Args:
-        name: Sensor name — also the topic prefix and frame-id stem.
+        name: Sensor name — also the driver topic prefix and frame-id stem.
+            ``SensorSpec.ros2_topic`` carries that *driver-native* topic (ADR-0108);
+            OpenRAL consumers use ``openral_core.camera_topic(name)``.
         parent_frame: tf2 parent frame for the static transform.
         rate_hz: Publish rate.  The device supports up to 50 Hz at the native
             1920×1200 and up to 80 Hz at 960×600; values above the mode's

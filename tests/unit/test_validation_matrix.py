@@ -906,7 +906,9 @@ def test_the_monitor_gate_waits_for_the_deploys_own_readiness_line(tmp_path: Pat
             == ""
         )
         with log.open("a", encoding="utf-8") as sink:
-            sink.write(f"  {DDS_TRANSPORT_READY_MARKER} rmw=default shm_purged=41\n")
+            sink.write(
+                f"  {DDS_TRANSPORT_READY_MARKER} rmw=default shm_purged=41 shm_kept_live=3\n"
+            )
         ready = validation_matrix.wait_for_dds_transport_ready(
             log, proc, timeout_s=5.0, poll_s=0.05
         )

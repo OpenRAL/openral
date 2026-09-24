@@ -21,13 +21,13 @@ from openral_core import (
     SensorReaderBackend,
     SensorReaderConfig,
     SensorSpec,
+    merge_deploy_sensors,
 )
 from openral_rskill_ros.sensor_leg import (
     _MAX_FALLBACK_TOPIC_RATE_HZ,
     SensorLeg,
     _fallback_topic_rate_hz,
     _publish_rate_hz,
-    merge_deploy_sensors,
     open_deploy_sensor_readers,
 )
 
@@ -121,59 +121,80 @@ def test_explicit_topic_rate_overrides_the_cap() -> None:
     assert _fallback_topic_rate_hz(stereo) > _MAX_FALLBACK_TOPIC_RATE_HZ
 
 
-def test_merge_scene_entry_wins_on_name_collision() -> None:
-    """A same-named DeployScene entry is that robot sensor's deploy binding —
-    the manifest copy is dropped so the device is never double-opened."""
-    manifest = [_spec("top", binding=None), _spec("wrist", binding=None)]
-    scene = [
-        _spec("top", binding=SensorDeployBinding(backend_params={"device": "/dev/video0"})),
-        _spec("overhead", binding=SensorDeployBinding(backend_params={"device": "/dev/video2"})),
-    ]
-    merged = merge_deploy_sensors(manifest, scene)
-    names = [s.name for s in merged]
-    assert sorted(names) == ["overhead", "top", "wrist"]
-    top = next(s for s in merged if s.name == "top")
-    assert top.deploy_binding is not None  # the scene's bound copy survived
+_OPENARM = Path(__file__).resolve().parents[2] / "robots" / "openarm" / "robot.yaml"
 
 
-def test_merge_keeps_manifest_geometry_the_scene_did_not_mention() -> None:
-    """The scene binds the device; the manifest keeps owning where it points.
+def _openarm_sensors() -> list[SensorSpec]:
+    from openral_core import RobotDescription
 
-    Documented split: robot manifest for robot-mounted cameras (wrist/head),
-    DeployScene.sensors for workcell-mounted ones. Replacing wholesale silently
-    discarded the manifest's mount, landing readings in the wrong frame while
-    octomap_server/SLAM dropped messages with the graph reporting healthy.
+    return list(RobotDescription.from_yaml(str(_OPENARM)).sensors)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"deploy_binding": {"backend": "ros2_image", "backend_params": {"topic": "/zed/d"}}},
+        {"rate_hz": 15.0},
+        {"parent_frame": "bench_post"},
+        {"static_transform_xyz_rpy": [0.01, 0.0, 0.22, 0.0, 0.8, 0.0]},
+        {"frame_id": "zed_left_camera_frame"},
+    ],
+    ids=["binding_only", "rate_only", "parent_frame", "static_transform", "frame_id"],
+)
+def test_merge_refuses_a_scene_naming_a_robot_sensor(extra: dict[str, object]) -> None:
+    """A deploy scene never touches a robot camera — not even to bind it to the host.
+
+    The ZED is bolted to the OpenArm: its pose AND its real-hardware binding live in
+    robot.yaml. A value hidden in one scene silently does not apply to the other scenes
+    on that robot, so any entry reusing a manifest sensor's name is refused.
     """
-    mount = (0.0, 0.0, 0.20, 0.0, 0.7853981634, 0.0)
-    manifest = [
-        _spec("head", binding=None).model_copy(
-            update={"parent_frame": "openarm_base", "static_transform_xyz_rpy": mount}
-        )
-    ]
-    # A binding-only scene entry: it says WHERE THE PIXELS COME FROM, nothing
-    # about where the camera is.
-    scene = [_spec("head", binding=SensorDeployBinding(backend_params={"device": "/dev/video0"}))]
+    from openral_core.exceptions import ROSConfigError
 
-    (head,) = merge_deploy_sensors(manifest, scene)
-
-    assert head.deploy_binding is not None  # scene's binding applied
-    assert head.deploy_binding.backend_params["device"] == "/dev/video0"
-    assert head.parent_frame == "openarm_base"  # manifest geometry survived
-    assert head.static_transform_xyz_rpy == mount
+    entry = SensorSpec.model_validate(
+        {
+            "name": "head_zed",
+            "modality": "depth",
+            "frame_id": "zed_camera_link",
+            "rate_hz": 10.0,
+            **extra,
+        }
+    )
+    with pytest.raises(ROSConfigError, match=r"'head_zed'.*defined by the robot manifest"):
+        merge_deploy_sensors(_openarm_sensors(), [entry])
 
 
-def test_merge_lets_the_scene_override_geometry_when_it_says_so() -> None:
-    """An explicit scene value still wins — an override is still an override."""
-    manifest = [_spec("head", binding=None).model_copy(update={"parent_frame": "openarm_base"})]
-    scene = [_spec("head", binding=None).model_copy(update={"parent_frame": "bench_post"})]
+def test_merge_appends_workcell_cameras_after_the_manifest() -> None:
+    """A workcell camera (a name the manifest does not use) keeps its own geometry and
+    binding and lands after the manifest's sensors, which pass through untouched."""
+    manifest = _openarm_sensors()
+    overhead = SensorSpec.model_validate(
+        {
+            "name": "overhead",
+            "modality": "rgb",
+            "frame_id": "overhead_optical",
+            "parent_frame": "openarm_base",
+            "static_transform_xyz_rpy": [0.5, 0.0, 1.2, 0.0, 1.5708, 0.0],
+            "rate_hz": 30.0,
+            "intrinsics": {
+                "width": 640,
+                "height": 480,
+                "fx": 600.0,
+                "fy": 600.0,
+                "cx": 320.0,
+                "cy": 240.0,
+            },
+            "deploy_binding": {"backend_params": {"device": "/dev/video2"}},
+        }
+    )
 
-    (head,) = merge_deploy_sensors(manifest, scene)
+    merged = merge_deploy_sensors(manifest, [overhead])
 
-    assert head.parent_frame == "bench_post"
+    assert merged == [*manifest, overhead]
+    assert merged[-1].parent_frame == "openarm_base"
 
 
 def test_unbound_specs_are_skipped() -> None:
-    """Committed reference manifests leave deploy_binding unset — the leg skips them."""
+    """A spec without a deploy_binding (a sim-only camera) gets no reader."""
     leg = open_deploy_sensor_readers([_spec("top", binding=None)])
     assert leg.readers == []
     assert leg.publishers == []
@@ -282,11 +303,18 @@ from openral_core import SensorDeployBinding, SensorSpec
 from openral_rskill_ros.sensor_leg import open_deploy_sensor_readers
 
 rclpy.init()
+from openral_core import RobotDescription
+
+description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+# Real manifest intrinsics (640x480, fx=fy=480) — the tee must rescale them
+# to the 320x240 test frames and publish CameraInfo on the sibling topic.
+intrinsics = next(s.intrinsics for s in description.sensors if s.intrinsics is not None)
 spec = SensorSpec(
     name="testcam",
     modality="rgb",
-    frame_id="testcam",
+    frame_id="testcam_optical_frame",
     rate_hz=10.0,
+    intrinsics=intrinsics,
     deploy_binding=SensorDeployBinding(
         backend="gstreamer",
         backend_params={"source": "testsrc", "width": 320, "height": 240, "fps": 10},
@@ -295,10 +323,7 @@ spec = SensorSpec(
 # Phase 3: the shared aggregator receives frames straight from
 # the reader (no ROS hop). Subclass the REAL aggregator only to observe
 # the write (super() still runs) — no behaviour is faked.
-from openral_core import RobotDescription
 from openral_world_state import WorldStateAggregator
-
-description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
 
 class _CountingAggregator(WorldStateAggregator):
     def __init__(self, desc):
@@ -346,10 +371,21 @@ try:
     # on the leg's topic (same profile world_state requests) receives a
     # sensor_msgs/Image from the in-pipeline ROS tee.
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
-    from sensor_msgs.msg import Image
+    from sensor_msgs.msg import CameraInfo, Image
 
     got = []
+    infos = []
     sub_node = rclpy.create_node("probe_subscriber")
+    sub_node.create_subscription(
+        CameraInfo,
+        "/openral/cameras/testcam/camera_info",
+        infos.append,
+        QoSProfile(
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+            depth=1,
+        ),
+    )
     sub_node.create_subscription(
         Image,
         "/openral/cameras/testcam/image",
@@ -361,11 +397,18 @@ try:
         ),
     )
     deadline = time.time() + 10.0
-    while time.time() < deadline and not got:
+    while time.time() < deadline and not (got and infos):
         rclpy.spin_once(sub_node, timeout_sec=0.2)
     sub_node.destroy_node()
     assert got, "no Image arrived on /openral/cameras/testcam/image within 10 s"
     assert got[0].height == 240 and got[0].width == 320, (got[0].height, got[0].width)
+    assert got[0].header.frame_id == "testcam_optical_frame", got[0].header.frame_id
+    assert infos, "no CameraInfo arrived on /openral/cameras/testcam/camera_info within 10 s"
+    info = infos[0]
+    assert (info.width, info.height) == (320, 240), (info.width, info.height)
+    assert info.header.frame_id == "testcam_optical_frame", info.header.frame_id
+    # 640x480 manifest intrinsics scaled to the 320x240 frame: halved.
+    assert list(info.k) == [240.0, 0.0, 160.0, 0.0, 240.0, 120.0, 0.0, 0.0, 1.0], list(info.k)
 finally:
     leg.close()
     rclpy.try_shutdown()
@@ -391,20 +434,26 @@ print("SENSOR_LEG_PROBE_OK")
     assert "SENSOR_LEG_PROBE_OK" in result.stdout
 
 
-def test_slam_cameras_are_never_capped_even_when_unnamed() -> None:
+def test_named_slam_cameras_are_never_capped() -> None:
     """Visual SLAM keeps full cadence automatically — no per-binding flag needed.
 
-    ``slam_stereo_cameras=None`` means the impl's built-in left/right default,
-    so unnamed SLAM cameras must still be exempt — cuVSLAM loses tracking on a
-    starved stream.
+    Only named cameras are exempt: visual SLAM with neither a stereo pair nor a mono
+    camera is refused before launch, so there is no implicit rig (ADR-0108 removed the
+    impls' ``left``/``right`` defaults). cuVSLAM loses tracking on a starved stream.
     """
     from openral_rskill_ros.sensor_leg import slam_camera_names
 
     class _Runtime:
         enable_slam = True
+        slam_stereo_cameras = ("left", "right")
+        slam_mono_camera = None
+
+    class _Unnamed:
+        enable_slam = True
         slam_stereo_cameras = None
         slam_mono_camera = None
 
+    assert slam_camera_names(_Unnamed()) == frozenset()
     names = slam_camera_names(_Runtime())
     assert names == frozenset({"left", "right"})
 
@@ -435,7 +484,7 @@ def test_slam_camera_names_covers_explicit_stereo_and_mono() -> None:
         slam_mono_camera = "front"
 
     assert slam_camera_names(_Stereo()) == frozenset({"front_left", "front_right"})
-    assert slam_camera_names(_Mono()) == frozenset({"left", "right", "front"})
+    assert slam_camera_names(_Mono()) == frozenset({"front"})
 
 
 def test_slam_off_means_every_camera_is_capped() -> None:
@@ -651,10 +700,11 @@ def test_launch_overrides_resolve_the_scene_auto_flags() -> None:
     merged = apply_launch_overrides(raw, enable_object_detector=True, enable_slam=False)
     assert topic_frame_size(merged) is None
 
-    # Launch resolved SLAM ON with no camera names → implicit stereo pair exempt.
+    # Launch resolved SLAM ON with no camera names → no implicit rig to exempt (visual
+    # SLAM without names is refused before launch; lidar SLAM reads no camera).
     merged = apply_launch_overrides(raw, enable_object_detector=False, enable_slam=True)
     assert topic_frame_size(merged) is None
-    assert slam_camera_names(merged) == frozenset({"left", "right"})
+    assert slam_camera_names(merged) == frozenset()
 
     # Launch-resolved camera names win over the (unset) scene names.
     merged = apply_launch_overrides(
@@ -676,7 +726,7 @@ def test_launch_overrides_keep_scene_values_when_absent() -> None:
     scene = DeployRuntime(enable_slam=True, slam_mono_camera="front")
     merged = apply_launch_overrides(scene)
     assert topic_frame_size(merged) is None
-    assert slam_camera_names(merged) == frozenset({"left", "right", "front"})
+    assert slam_camera_names(merged) == frozenset({"front"})
 
     # And with no runtime block at all, overrides alone drive the decision —
     # but no block AND no opinion preserves the conservative None contract.

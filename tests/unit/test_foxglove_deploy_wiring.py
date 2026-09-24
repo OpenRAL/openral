@@ -4,19 +4,20 @@
 Two things were missing on the real OpenArm cell, both invisible from inside the
 graph — every node healthy, every panel empty:
 
-* **The Bucket-2 converter was never spawned.** The layout's collision and voxel
-  panels read `/openral/world_collisions_markers` and
-  `/openral/world_voxels_cloud`, which are `visualization_msgs` / `sensor_msgs`
-  re-publications of the custom `openral_msgs` world types. Foxglove renders the
-  standard types natively and the custom ones not at all, and nothing else in
-  the graph produces them, so those panels could never fill on any deploy.
+* **The Bucket-2 converter was never spawned.** The layout's voxel panels read
+  `/openral/world_voxels_cloud`, a `sensor_msgs` re-publication of the custom
+  `openral_msgs/OccupancyVoxels`. Foxglove renders the standard type natively
+  and the custom one not at all, and nothing else in the graph produces it, so
+  those panels could never fill on any deploy.
 
 * **Camera slots were a guess.** They are sensor names from the robot manifest
   and the deploy scene, and they differ per robot. A declared RGB sensor only
   gets a reader — and therefore a topic — when it carries a `deploy_binding`;
-  `robots/openarm` declares a `top` camera for sim with none, so on the real
-  cell `/openral/cameras/top/image` has zero publishers and its panel reads
+  `robots/openarm` once declared its `top` camera for sim with none, so on the
+  real cell `/openral/cameras/top/image` had zero publishers and its panel read
   "Image topic does not exist", which is indistinguishable from a dead camera.
+  The manifest now binds every OpenArm camera itself (a deploy scene never
+  touches a robot camera).
 """
 
 from __future__ import annotations
@@ -30,92 +31,9 @@ _ROOT = pathlib.Path(__file__).resolve().parents[2]
 _LAUNCH = _ROOT / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.launch.py"
 _MANIFEST = _ROOT / "robots" / "openarm" / "robot.yaml"
 
-# A synthetic real-cell override for the two tests below: the manifest's `top`
-# is a MuJoCo render with no `deploy_binding`, and no in-tree scene currently
-# overrides OpenArm's cameras for a real deploy — so these bind all three rig
-# cameras directly, the same shape a real deploy scene would carry, without
-# depending on one being committed.
-_SCENE_YAML = {
-    "scene": {"id": "test_cell"},
-    "robot_id": "openarm",
-    "sensors": [
-        {
-            "name": "top",
-            "modality": "rgb",
-            "frame_id": "openarm_head_camera_optical_frame",
-            "parent_frame": "openarm_base",
-            "rate_hz": 30.0,
-            "encoding": "bgr8",
-            "intrinsics": {
-                "width": 672,
-                "height": 376,
-                "fx": 336.0,
-                "fy": 336.0,
-                "cx": 336.0,
-                "cy": 188.0,
-            },
-            "vendor": "StereoLabs",
-            "model": "ZED Mini",
-            "deploy_binding": {
-                "backend": "ros2_image",
-                "backend_params": {"topic": "/zed/zed_node/rgb/color/rect/image"},
-            },
-        },
-        {
-            "name": "wrist_left",
-            "modality": "rgb",
-            "frame_id": "openarm_left_ee_base_link",
-            "parent_frame": "openarm_base",
-            "rate_hz": 30.0,
-            "encoding": "bgr8",
-            "vla_feature_key": "observation.images.wrist_left",
-            "intrinsics": {
-                "width": 960,
-                "height": 600,
-                "fx": 685.5,
-                "fy": 685.5,
-                "cx": 480.0,
-                "cy": 300.0,
-            },
-            "vendor": "Arducam",
-            "model": "B0495",
-            "deploy_binding": {
-                "backend": "opencv_thread",
-                "backend_params": {"device": "/dev/camera_wrist_left"},
-            },
-        },
-        {
-            "name": "wrist_right",
-            "modality": "rgb",
-            "frame_id": "openarm_right_ee_base_link",
-            "parent_frame": "openarm_base",
-            "rate_hz": 30.0,
-            "encoding": "bgr8",
-            "vla_feature_key": "observation.images.wrist_right",
-            "intrinsics": {
-                "width": 960,
-                "height": 600,
-                "fx": 685.5,
-                "fy": 685.5,
-                "cx": 480.0,
-                "cy": 300.0,
-            },
-            "vendor": "Arducam",
-            "model": "B0495",
-            "deploy_binding": {
-                "backend": "opencv_thread",
-                "backend_params": {"device": "/dev/camera_wrist_right"},
-            },
-        },
-    ],
-}
-
-
-@pytest.fixture
-def _scene(tmp_path: pathlib.Path) -> pathlib.Path:
-    scene_path = tmp_path / "scene.yaml"
-    scene_path.write_text(yaml.safe_dump(_SCENE_YAML), encoding="utf-8")
-    return scene_path
+# The committed real OpenArm cell. It has no `sensors:` block: every camera on that cell is a
+# robot camera, bound in robots/openarm/robot.yaml (a deploy scene never touches one).
+_SCENE = _ROOT / "scenes" / "deploy" / "openarm_bench.yaml"
 
 
 def _rgb_sensors(doc: dict[str, object]) -> list[dict[str, object]]:
@@ -133,25 +51,21 @@ def test_the_deploy_launch_spawns_the_bucket2_converter() -> None:
     )
 
 
-def test_every_rgb_camera_the_real_deploy_declares_is_also_bound(_scene: pathlib.Path) -> None:
+def test_every_rgb_camera_the_real_deploy_declares_is_also_bound() -> None:
     """A declared-but-unbound RGB slot is a panel that can never fill.
 
-    The manifest's `top` is the SIM overhead camera — a MuJoCo render with no
-    `deploy_binding` — so on a real deploy `/openral/cameras/top/image` would
-    have zero publishers while the bridge still advertised the channel (its
-    allowlist is the pattern `/openral/cameras/.*/image`). In the viewer that
-    is indistinguishable from a dead camera. A real deploy scene must override
-    `top` with a bound camera, so every slot it surfaces has a publisher
-    behind it.
+    On a real deploy an unbound RGB sensor has zero publishers while the bridge
+    still advertises its channel (the allowlist is the pattern
+    `/openral/cameras/.*/image`) — in the viewer, indistinguishable from a dead
+    camera. So every RGB slot the real OpenArm cell surfaces (manifest plus scene)
+    must carry a binding.
     """
-    scene = yaml.safe_load(_scene.read_text(encoding="utf-8"))
+    scene = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
     manifest = yaml.safe_load(_MANIFEST.read_text(encoding="utf-8"))
 
-    bound = {s["name"] for s in _rgb_sensors(scene) if s.get("deploy_binding")}
-    bound |= {s["name"] for s in _rgb_sensors(manifest) if s.get("deploy_binding")}
-    declared = {s["name"] for s in _rgb_sensors(manifest)} | {
-        s["name"] for s in _rgb_sensors(scene)
-    }
+    declared_rgb = _rgb_sensors(manifest) + _rgb_sensors(scene)
+    bound = {s["name"] for s in declared_rgb if s.get("deploy_binding")}
+    declared = {s["name"] for s in declared_rgb}
 
     assert {"top", "wrist_left", "wrist_right"} <= bound, (
         f"expected all three rig cameras to be bound: {bound}"
@@ -159,52 +73,60 @@ def test_every_rgb_camera_the_real_deploy_declares_is_also_bound(_scene: pathlib
     assert declared - bound == set(), (
         f"{sorted(declared - bound)} are declared but never bound, so their panels "
         "would advertise a channel with no publisher — the failure that reads as a "
-        "dead camera. Bind them in the scene or drop the declaration."
+        "dead camera. Bind them in robot.yaml (or, for a workcell camera, the scene)."
     )
 
 
-def test_the_real_top_camera_keeps_the_sim_slot(
-    _scene: pathlib.Path,
-) -> None:
+def test_the_real_top_camera_keeps_the_sim_slot() -> None:
     """Sim and real feed the policy the same slot, with no scene remap.
 
-    The manifest's `top` carries `observation.images.top` in sim, and a real
-    deploy scene overrides only the hardware fields. It must not restate the
-    key: `merge_deploy_sensors` keeps the manifest's, so the checkpoint sees
-    the ZED on the slot it saw the MuJoCo render on. A checkpoint trained on a
-    different name maps it with `image_preprocessing.aliases`, not a scene edit.
+    The manifest's `top` carries `observation.images.top` in sim and, through its
+    own `deploy_binding`, on the real cell. The scene never touches it, so the
+    checkpoint sees the real camera on the slot it saw the MuJoCo render on. A
+    checkpoint trained on a different name maps it with `image_preprocessing.aliases`
+    (the restock π0.5 maps `top` onto its `context` input), not a scene edit.
     """
-    scene = yaml.safe_load(_scene.read_text(encoding="utf-8"))
-    manifest = yaml.safe_load(_MANIFEST.read_text(encoding="utf-8"))
+    from openral_core import DeployScene, RobotDescription, merge_deploy_sensors
 
-    scene_top = next(s for s in _rgb_sensors(scene) if s["name"] == "top")
-    manifest_top = next(s for s in _rgb_sensors(manifest) if s["name"] == "top")
+    scene = DeployScene.from_yaml(str(_SCENE))
+    description = RobotDescription.from_yaml(str(_MANIFEST))
 
-    assert manifest_top["vla_feature_key"] == "observation.images.top"
-    assert "vla_feature_key" not in scene_top
-
-    # And through the real merge the sensor leg uses, not just the YAML.
-    from openral_core import DeployScene, RobotDescription
-    from openral_rskill_ros.sensor_leg import merge_deploy_sensors
-
+    assert "top" not in {s.name for s in scene.sensors}
     merged_top = next(
         sensor
-        for sensor in merge_deploy_sensors(
-            RobotDescription.from_yaml(str(_MANIFEST)).sensors,
-            DeployScene.from_yaml(str(_scene)).sensors,
-        )
+        for sensor in merge_deploy_sensors(description.sensors, scene.sensors)
         if sensor.name == "top"
     )
+    robot_top = next(s for s in description.sensors if s.name == "top")
+    assert merged_top == robot_top
     assert merged_top.vla_feature_key == "observation.images.top"
-    assert merged_top.frame_id == scene_top["frame_id"]
-    # `merge_deploy_sensors` copies only the fields the scene explicitly sets,
-    # so anything the sim entry declares and the scene omits survives into the
-    # real deploy — sim intrinsics on a ZED, for instance.
-    for field in ("frame_id", "rate_hz", "intrinsics", "encoding", "vendor", "model"):
-        assert field in scene_top, (
-            f"the sim `top` sets {field!r}; the override must restate it or the "
-            "MuJoCo value silently describes the ZED"
-        )
+    assert merged_top.deploy_binding is not None
+
+
+def test_a_scene_that_rebinds_the_top_camera_is_refused(tmp_path: pathlib.Path) -> None:
+    """A deploy scene never touches a robot camera, not even to bind it to a host."""
+    from openral_core import DeployScene, RobotDescription, merge_deploy_sensors
+    from openral_core.exceptions import ROSConfigError
+
+    doc = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
+    doc["sensors"] = [
+        {
+            "name": "top",
+            "modality": "rgb",
+            "frame_id": "world",
+            "rate_hz": 30.0,
+            "deploy_binding": {
+                "backend": "ros2_image",
+                "backend_params": {"topic": "/zed/zed_node/rgb/color/rect/image"},
+            },
+        }
+    ]
+    scene_path = tmp_path / "scene.yaml"
+    scene_path.write_text(yaml.safe_dump(doc), encoding="utf-8")
+
+    description = RobotDescription.from_yaml(str(_MANIFEST))
+    with pytest.raises(ROSConfigError, match=r"'top'.*defined by the robot manifest"):
+        merge_deploy_sensors(description.sensors, DeployScene.from_yaml(str(scene_path)).sensors)
 
 
 def test_the_launch_generates_its_layout_from_the_bound_cameras() -> None:
@@ -215,7 +137,11 @@ def test_the_launch_generates_its_layout_from_the_bound_cameras() -> None:
         "the layout must be generated from the deploy-bound cameras; a hardcoded "
         "default cannot know the scene"
     )
-    assert 'getattr(s, "deploy_binding", None) is not None' in text
+    # The "bound" filter is the shared openral_core rule (real: merged manifest+scene
+    # sensors with a deploy_binding), exercised on real manifests in
+    # test_deploy_e2e_camera_wiring.py::test_real_deploy_picks_a_bound_camera.
+    assert "publishing = publishing_sensors(description.sensors, scene_sensors, hal_mode)" in text
+    assert '[s.name for s in publishing if s.modality == "rgb"]' in text
 
 
 def test_the_shipped_default_matches_how_manifests_spell_wrist_cameras() -> None:
@@ -248,7 +174,7 @@ def test_both_3d_panels_follow_the_same_frame() -> None:
     """The Bucket-2 panel had `base_link` hardcoded past the parameter.
 
     Threading `follow_frame` only into the hero panel would have left the
-    collision/voxel panel — the one whose entire job is to show the world model
+    voxel panel — the one whose entire job is to show the world model
     — blank on exactly the robots the fix was for.
     """
     layout = pytest.importorskip("openral_foxglove_bringup.layout")

@@ -215,9 +215,9 @@ def record_sensor_frame_attrs(
     ``thumbnail_bytes`` rides along as an inline base64 attribute — a preview
     channel for the dashboard's camera tiles, not a lossless video transport.
     Callers range from DeployRunner's throttled per-camera cadence up to the
-    deploy sensor pump's full reader rate (~30 Hz per camera; measured
-    2.42 ms/frame at 320x240 q60 with Pillow dropping the GIL) — keep new
-    callers within that envelope, since every thumbnail also transits the
+    deploy sensor pump's full reader rate (~30 Hz per camera; 0.6 ms per
+    1920x1200 frame on a Jetson AGX Thor, since the encoder downscales before
+    it copies) — keep new callers within that envelope, since every thumbnail also transits the
     OTLP exporter. When set, the value is base64-encoded inline; downstream
     consumers (including ``openral_observability.dashboard``) decode it
     for display.
@@ -285,19 +285,6 @@ def emit_sensor_frame_span(
             # the JPEG below only feed the span, and at 30 Hz per camera they
             # held ~25 % of the deploy runtime's GIL on an AGX Orin for nothing.
             return
-        display = frame
-        data = getattr(frame, "data", b"")
-        if flip_180 and data and int(getattr(frame, "channels", 0) or 0) == _RGB_CHANNELS:
-            expected = frame.width * frame.height * _RGB_CHANNELS
-            if len(data) == expected:
-                import numpy as np  # reason: lazy — only on the camera display path
-
-                flipped = (
-                    np.frombuffer(data, dtype=np.uint8)
-                    .reshape(frame.height, frame.width, _RGB_CHANNELS)[::-1, ::-1]
-                    .tobytes()
-                )
-                display = frame.model_copy(update={"data": flipped})
         record_sensor_frame_attrs(
             span,
             modality=modality_for_encoding(frame.encoding),
@@ -306,7 +293,7 @@ def emit_sensor_frame_span(
             height=int(frame.height),
             channels=int(getattr(frame, "channels", 0) or 0),
             age_ms=age_ms,
-            thumbnail_bytes=encode_frame_thumbnail(display),
+            thumbnail_bytes=encode_frame_thumbnail(frame, flip_180=flip_180),
         )
 
 
@@ -324,36 +311,53 @@ def encode_rgb_thumbnail(rgb: Any) -> bytes | None:
     except ImportError:
         return None
     try:
-        img = Image.fromarray(rgb)
+        import numpy as np  # reason: lazy — only on the camera display path
+
+        step = _thumb_step(int(rgb.shape[1]), int(rgb.shape[0]))
+        img = Image.fromarray(np.ascontiguousarray(rgb[::step, ::step]))
     except Exception:
         return None
     img.thumbnail((_THUMB_MAX_WIDTH, _THUMB_MAX_HEIGHT))
     if img.mode != "RGB":
         img = img.convert("RGB")
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=_THUMB_JPEG_QUALITY, optimize=True)
+    img.save(buf, format="JPEG", quality=_THUMB_JPEG_QUALITY)
     return buf.getvalue()
 
 
-def encode_frame_thumbnail(frame: Any) -> bytes | None:
+def _thumb_step(width: int, height: int) -> int:
+    """Integer subsampling step that fits ``width x height`` inside the thumbnail box."""
+    return max(1, -(-width // _THUMB_MAX_WIDTH), -(-height // _THUMB_MAX_HEIGHT))
+
+
+def encode_frame_thumbnail(frame: Any, *, flip_180: bool = False) -> bytes | None:
     """Encode a ``openral_core.SensorFrame`` as a small JPEG thumbnail.
 
     Handles the encodings the dashboard knows how to render:
 
-    * ``JPEG`` / ``PNG`` — decoded then re-encoded at the smaller size.
+    * ``JPEG`` / ``PNG`` — decoded (JPEG in reduced-scale draft mode) and
+      re-encoded at the thumbnail size.
     * ``RGB8`` / ``BGR8`` — interpreted as ``H*W*C`` raw bytes.
     * ``MONO8`` — interpreted as grayscale, converted to RGB.
 
-    Returns ``None`` for encodings the dashboard can't render
-    (``DEPTH16``, ``CUDA_NV12``, ``RAW``) or when ``frame.data`` is
-    empty (the frame carries a ``topic`` ref or a GPU ``handle``
-    instead of inline pixels). Also returns ``None`` if Pillow isn't
-    importable — the call site stays unconditional and gracefully
-    skips the thumbnail attribute.
+    Raw frames are subsampled to fit the 320x240 box **before** anything is
+    copied: a strided NumPy view of the frame, then the channel swap and the
+    optional 180° flip on that small view. The thumbnail feeds only the
+    dashboard's camera tile (Foxglove reads the full-resolution ROS image
+    topics), so full-resolution work bought nothing. It used to cost 8.2 ms per
+    1920x1200 frame on a Jetson AGX Thor and, at three cameras x 30 Hz, left a
+    competing Python thread 34 % of its speed; downscaling first costs 0.6 ms
+    and leaves it 97 % (``tools/`` benchmark numbers in the PR).
 
-    Runs in a few ms/frame (2.42 ms measured at 320x240 q60); Pillow drops
-    the GIL for resize/encode. Callers range from the runner's throttled
-    cadence to the deploy sensor pump's full ~30 Hz reader rate.
+    Args:
+        frame: The sensor frame.
+        flip_180: Rotate the thumbnail 180° (an upside-down mounted camera).
+            Applied to 3-channel raw frames only, as before.
+
+    Returns ``None`` for encodings the dashboard can't render
+    (``DEPTH16``, ``CUDA_NV12``, ``RAW``), when ``frame.data`` is empty or
+    does not match its declared shape, or when Pillow isn't importable — the
+    call site stays unconditional and gracefully skips the attribute.
     """
     try:
         from PIL import Image
@@ -367,16 +371,32 @@ def encode_frame_thumbnail(frame: Any) -> bytes | None:
     height = int(getattr(frame, "height", 0) or 0)
     img: Image.Image
     try:
-        if encoding in ("jpeg", "png"):
+        if encoding in ("rgb8", "bgr8", "mono8"):
+            import numpy as np  # reason: lazy — only on the camera display path
+
+            channels = 1 if encoding == "mono8" else _RGB_CHANNELS
+            if width <= 0 or height <= 0 or len(data) != width * height * channels:
+                return None
+            full = np.frombuffer(data, dtype=np.uint8).reshape(height, width, channels)
+            step = _thumb_step(width, height)
+            # ponytail: nearest-neighbour subsample aliases fine texture; fine for a
+            # display tile. Switch to an area filter if the preview ever feeds a model.
+            small = (
+                full[::-step, ::-step]
+                if flip_180 and channels == _RGB_CHANNELS
+                else full[::step, ::step]
+            )
+            if encoding == "bgr8":
+                small = small[..., ::-1]
+            if channels == 1:
+                img = Image.fromarray(np.ascontiguousarray(small[..., 0]), mode="L").convert("RGB")
+            else:
+                img = Image.fromarray(np.ascontiguousarray(small), mode="RGB")
+        elif encoding in ("jpeg", "png"):
             img = Image.open(io.BytesIO(data))
-        elif encoding == "rgb8":
-            img = Image.frombytes("RGB", (width, height), data)
-        elif encoding == "bgr8":
-            img = Image.frombytes("RGB", (width, height), data)
-            b, g, r = img.split()
-            img = Image.merge("RGB", (r, g, b))
-        elif encoding == "mono8":
-            img = Image.frombytes("L", (width, height), data).convert("RGB")
+            img.draft(
+                "RGB", (_THUMB_MAX_WIDTH, _THUMB_MAX_HEIGHT)
+            )  # JPEG: decode at 1/2..1/8 scale
         else:
             # depth16 / cuda_nv12 / raw — not renderable as a colour thumb here.
             return None
@@ -386,5 +406,5 @@ def encode_frame_thumbnail(frame: Any) -> bytes | None:
     if img.mode != "RGB":
         img = img.convert("RGB")
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=_THUMB_JPEG_QUALITY, optimize=True)
+    img.save(buf, format="JPEG", quality=_THUMB_JPEG_QUALITY)
     return buf.getvalue()

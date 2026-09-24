@@ -9,12 +9,15 @@ typer.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Literal
+
+from openral_core import CAMERA_TOPIC_PREFIX
 
 from openral_observability.replay.bag_reader import read_bag
 from openral_observability.replay.correlator import (
@@ -55,8 +58,11 @@ RECORD_PROFILES: Final[dict[str, dict[str, list[str]]]] = {
         ],
         "regex": [
             r"/openral/failure/.*",
-            # One compressed image stream per camera.
-            r"/openral/sensors/[^/]+/compressed",
+            # One compressed image stream per camera. Cameras publish on
+            # ``openral_core.camera_topic(<name>)``; the ``/compressed`` sibling exists
+            # when the image_transport republishers run (``foxglove.launch.py``
+            # ``republish_compressed``), which is what keeps this profile slim.
+            re.escape(CAMERA_TOPIC_PREFIX) + r"/[^/]+/image/compressed",
         ],
     },
     "full": {
@@ -76,7 +82,7 @@ RECORD_PROFILES: Final[dict[str, dict[str, list[str]]]] = {
         "regex": [
             r"/openral/failure/.*",
             r"/openral/perception/.*",
-            r"/openral/sensors/.*",
+            re.escape(CAMERA_TOPIC_PREFIX) + r"/.*",
         ],
     },
 }

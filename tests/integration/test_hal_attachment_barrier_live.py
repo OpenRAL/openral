@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from openral_core import CameraTopicKind, camera_topic
 
 os.environ.setdefault("MUJOCO_GL", "egl")
 
@@ -339,7 +340,7 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
     camera = next(
         spec for spec in description.sensors if spec.name == _VISION_CAMERA and spec.intrinsics
     )
-    depth_topic = f"/openral/cameras/{_VISION_CAMERA}/depth"
+    depth_topic = camera_topic(_VISION_CAMERA, CameraTopicKind.DEPTH_IMAGE)
     segment_service = "/openral/perception/segment_in_view_barrier_itest"
 
     rclpy.init()

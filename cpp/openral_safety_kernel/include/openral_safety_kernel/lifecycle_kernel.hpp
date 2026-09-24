@@ -24,7 +24,6 @@
 #include <openral_msgs/msg/failure_trigger.hpp>
 #include <openral_msgs/msg/occupancy_voxels.hpp>
 #include <openral_msgs/msg/safety_status.hpp>
-#include <openral_msgs/msg/world_collision.hpp>
 #include <openral_msgs/msg/world_state_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
@@ -121,7 +120,7 @@ private:
 
   // Publish a FailureTrigger(KIND_COLLISION) carrying CollisionEvidence.
   // `collision_kind` is "self" or "world"; `link_a`/`link_b` name the colliding
-  // entities (robot links, or a world obstacle for the world check).
+  // entities (robot links, or an occupied voxel cell for the voxel check).
   // `min_distance` MUST be `CollisionHit::min_distance` — the distance of the
   // very pair `link_a`/`link_b` names. The sweep-wide
   // `CollisionHit::sweep_min_distance` belongs to no named pair and never
@@ -135,10 +134,6 @@ private:
                                  const char* collision_kind, const std::string& link_a,
                                  const std::string& link_b, int horizon_step, double min_distance,
                                  const std::vector<double>& joint_positions);
-
-  // World phase — ingest bounded world obstacles into a pre-sized
-  // buffer (single-threaded executor → no lock needed).
-  void on_world_collision(const openral_msgs::msg::WorldCollision::SharedPtr msg);
 
   // Voxel phase — ingest a dense occupancy grid into a pre-sized buffer.
   void on_world_voxels(const openral_msgs::msg::OccupancyVoxels::SharedPtr msg);
@@ -180,7 +175,6 @@ private:
 
   // Subscriptions / publishers / service / timer.
   rclcpp::Subscription<openral_msgs::msg::ActionChunk>::SharedPtr candidate_sub_;
-  rclcpp::Subscription<openral_msgs::msg::WorldCollision>::SharedPtr world_sub_;
   rclcpp::Subscription<openral_msgs::msg::OccupancyVoxels>::SharedPtr voxel_sub_;
   rclcpp::Subscription<openral_msgs::msg::WorldStateStamped>::SharedPtr world_state_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr estop_sub_;
@@ -206,17 +200,6 @@ private:
   bool self_collision_enabled_{false};
   double self_collision_margin_m_{0.0};
   std::size_t collision_required_dof_{0};
-
-  // World phase — bounded world-obstacle buffer + freshness tracking.
-  WorldModel world_model_;
-  std::vector<std::string> world_labels_;
-  bool world_collision_enabled_{false};
-  double world_collision_margin_m_{0.0};
-  double world_collision_deadline_s_{0.5};
-  std::size_t world_collision_max_primitives_{0};
-  bool world_received_{false};
-  bool world_overflow_{false};
-  rclcpp::Time world_stamp_{};
 
   // Voxel phase — dense occupancy grid (octomap path). `voxel_grid_`
   // is a view into the pre-sized `voxel_occupancy_` buffer.

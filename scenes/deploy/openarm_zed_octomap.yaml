@@ -65,10 +65,16 @@ runtime:
   enable_reasoner: false
 
   enable_octomap: true
-  # Without this, octomap_server subscribes to the launch default
-  # /openral/cameras/front_depth/points — published only by the SIM sensor
+  # Without this, octomap_server subscribes to the manifest-derived
+  # /openral/cameras/head_zed/points — published only by the SIM sensor
   # bridge, so a real-camera deploy maps silence.
   octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+
+  # The ZED stamps its clouds on wall-clock. A bare MuJoCo twin would otherwise
+  # run the graph on the simulator's clock, and octomap_server (use_sim_time)
+  # would drop every cloud as "from the future": an empty map behind healthy
+  # nodes. Found on Thor 2026-09-24; broken since 5507f12 made twins sim-clocked.
+  clock_origin: host_wall
 
   # The ZED observes a room; the kernel is protecting a MuJoCo twin. Feeding
   # one into the other would put phantom obstacles around a simulated arm. The
@@ -77,9 +83,12 @@ runtime:
   # --no-enable-octomap baseline, never below it.
   #
   # Set this TRUE on any scene where the camera actually observes the robot's
-  # own workspace — AND only after `openral calibrate camera`, because
-  # head_zed's pose is an uncalibrated approximation and a mis-framed cloud
-  # becomes an E-stop rather than a bad picture.
+  # own workspace — AND only once head_zed's EXTRINSIC (its mount pose) is
+  # measured, because the manifest's is an uncalibrated approximation and a
+  # mis-framed cloud becomes an E-stop rather than a bad picture (or moves a
+  # real obstacle away from where it is). `openral calibrate camera` does not
+  # measure that: it fits intrinsics, which the ZED SDK already supplies.
+  # The real-arm scene that does all of this is openarm_real_world_voxels.yaml.
   enable_octomap_kernel_check: false
 
   enable_slam: false

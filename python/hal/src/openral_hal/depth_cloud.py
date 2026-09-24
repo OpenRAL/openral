@@ -44,9 +44,10 @@ def is_depth_sensor(spec: Any) -> bool:
     """True when ``spec`` is a depth/point-cloud camera with intrinsics.
 
     Intrinsics are required to back-project pixels, so a depth ``SensorSpec``
-    without them is not usable by the synth and is skipped.
+    without them is not usable by the synth and is skipped. The rule itself is
+    ``SensorSpec.is_depth_camera``; this is the HAL's name for it.
     """
-    return spec.modality in ("depth", "point_cloud") and spec.intrinsics is not None
+    return bool(spec.is_depth_camera)
 
 
 def mjcf_camera_name(spec: Any) -> str:

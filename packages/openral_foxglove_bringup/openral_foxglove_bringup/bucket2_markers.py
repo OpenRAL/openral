@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """Bucket-2 converter node: OpenRAL custom msgs → standard ROS viz types.
 
-- ``/openral/world_collisions`` (``WorldCollision``) → ``/openral/world_collisions_markers``
-  (``MarkerArray``): each capsule → CYLINDER marker (radius, length = 2×half_length);
-  half_length == 0 → zero-length CYLINDER (renders as a squashed disc). Exact capsule
-  geometry (hemispherical end-caps) isn't a single standard Marker type; a two-marker
-  cylinder+spheres approach was rejected as noisy in the panel.
 - ``/openral/world_voxels`` (``OccupancyVoxels``) → ``/openral/world_voxels_cloud``
   (``PointCloud2``): one point per occupied voxel, at the voxel centre.
 
-Conversion math lives in pure, ROS-free functions (``capsule_markers``,
-``occupied_voxel_centers``) so unit tests exercise them without a ROS context
+Conversion math lives in a pure, ROS-free function (``occupied_voxel_centers``)
+so unit tests exercise it without a ROS context
 (CLAUDE.md §1.11). ``rclpy``/``openral_msgs`` imports are deferred inside node
 methods (PLC0415, ruff-exempt for ``packages/**``).
 """
@@ -20,14 +15,11 @@ from __future__ import annotations
 import math
 import struct
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 import structlog
 
 __all__ = [
     "Bucket2MarkersNode",
-    "MarkerSpec",
-    "capsule_markers",
     "main",
     "occupied_voxel_centers",
 ]
@@ -38,116 +30,6 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Pure data types and conversion functions (no ROS imports)
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class MarkerSpec:
-    """Plain data representing one ``visualization_msgs/Marker`` to emit.
-
-    All lengths are in metres; angles in radians.  ``q`` is a
-    (qx, qy, qz, qw) quaternion.  ``marker_type`` matches the
-    ``visualization_msgs/Marker`` integer constants (CYLINDER = 3).
-    """
-
-    marker_id: int
-    ns: str
-    pos_x: float
-    pos_y: float
-    pos_z: float
-    q_x: float
-    q_y: float
-    q_z: float
-    q_w: float
-    scale_x: float  # diameter for CYLINDER
-    scale_y: float  # diameter for CYLINDER
-    scale_z: float  # length for CYLINDER
-    marker_type: int = 3  # CYLINDER
-
-
-def _rpy_to_quaternion(roll: float, pitch: float, yaw: float) -> tuple[float, float, float, float]:
-    """Convert roll/pitch/yaw (radians) to a (qx, qy, qz, qw) quaternion.
-
-    Uses the ZYX (yaw-pitch-roll) intrinsic convention matching ROS TF2.
-    """
-    cy = math.cos(yaw * 0.5)
-    sy = math.sin(yaw * 0.5)
-    cp = math.cos(pitch * 0.5)
-    sp = math.sin(pitch * 0.5)
-    cr = math.cos(roll * 0.5)
-    sr = math.sin(roll * 0.5)
-
-    qw = cr * cp * cy + sr * sp * sy
-    qx = sr * cp * cy - cr * sp * sy
-    qy = cr * sp * cy + sr * cp * sy
-    qz = cr * cp * sy - sr * sp * cy
-    return (qx, qy, qz, qw)
-
-
-def capsule_markers(
-    radius: list[float],
-    half_length: list[float],
-    origin_xyzrpy: list[float],
-    object_id: list[str],
-) -> list[MarkerSpec]:
-    """Convert parallel capsule arrays from ``WorldCollision`` to marker specs.
-
-    Args:
-        radius: Per-obstacle capsule radius (metres). Length N.
-        half_length: Per-obstacle half-length of the cylinder shaft (metres).
-            0 → sphere (emitted as zero-length CYLINDER).  Length N.
-        origin_xyzrpy: Flat array of 6 floats per obstacle: x, y, z (metres),
-            roll, pitch, yaw (radians).  Length 6N.
-        object_id: Per-obstacle label string.  Length N (may be empty strings).
-
-    Returns:
-        One ``MarkerSpec`` per obstacle, index-parallel with the inputs.
-
-    Raises:
-        ValueError: If ``len(radius) != len(half_length)``, the 6N invariant
-            is violated, or ``len(object_id) != len(radius)``.
-    """
-    n = len(radius)
-    if len(half_length) != n:
-        raise ValueError(
-            f"radius and half_length must have the same length: {n} vs {len(half_length)}"
-        )
-    if len(origin_xyzrpy) != 6 * n:
-        raise ValueError(f"origin_xyzrpy must have length 6*N={6 * n}, got {len(origin_xyzrpy)}")
-    if len(object_id) != n:
-        raise ValueError(f"object_id must have the same length as radius: {n} vs {len(object_id)}")
-
-    specs: list[MarkerSpec] = []
-    for i in range(n):
-        base = 6 * i
-        x, y, z = origin_xyzrpy[base], origin_xyzrpy[base + 1], origin_xyzrpy[base + 2]
-        roll, pitch, yaw = (
-            origin_xyzrpy[base + 3],
-            origin_xyzrpy[base + 4],
-            origin_xyzrpy[base + 5],
-        )
-        qx, qy, qz, qw = _rpy_to_quaternion(roll, pitch, yaw)
-
-        r = radius[i]
-        length = 2.0 * half_length[i]
-        ns = object_id[i] if object_id[i] else f"obstacle_{i}"
-
-        specs.append(
-            MarkerSpec(
-                marker_id=i,
-                ns=ns,
-                pos_x=x,
-                pos_y=y,
-                pos_z=z,
-                q_x=qx,
-                q_y=qy,
-                q_z=qz,
-                q_w=qw,
-                scale_x=2.0 * r,  # CYLINDER scale_x/y = diameter
-                scale_y=2.0 * r,
-                scale_z=length,
-            )
-        )
-    return specs
 
 
 def occupied_voxel_centers(
@@ -227,9 +109,8 @@ def occupied_voxel_centers(
 class Bucket2MarkersNode:
     """Read-only converter node for Bucket-2 custom message types.
 
-    Subscribes to ``/openral/world_collisions`` and
-    ``/openral/world_voxels`` and re-publishes them as standard ROS
-    visualization types.  Never commands the robot.
+    Subscribes to ``/openral/world_voxels`` and re-publishes it as a
+    standard ROS visualization type.  Never commands the robot.
     """
 
     def __init__(self) -> None:
@@ -246,23 +127,13 @@ class Bucket2MarkersNode:
             depth=1,
         )
 
-        from openral_msgs.msg import OccupancyVoxels, WorldCollision
+        from openral_msgs.msg import OccupancyVoxels
         from sensor_msgs.msg import PointCloud2
-        from visualization_msgs.msg import MarkerArray
 
-        self._pub_markers = self._node.create_publisher(
-            MarkerArray, "/openral/world_collisions_markers", qos
-        )
         self._pub_cloud = self._node.create_publisher(
             PointCloud2, "/openral/world_voxels_cloud", qos
         )
 
-        self._sub_collisions = self._node.create_subscription(
-            WorldCollision,
-            "/openral/world_collisions",
-            self._on_world_collisions,
-            qos,
-        )
         self._sub_voxels = self._node.create_subscription(
             OccupancyVoxels,
             "/openral/world_voxels",
@@ -275,49 +146,6 @@ class Bucket2MarkersNode:
     # ------------------------------------------------------------------
     # Subscription callbacks
     # ------------------------------------------------------------------
-
-    def _on_world_collisions(self, msg: object) -> None:
-        """Convert WorldCollision → MarkerArray and publish."""
-        from visualization_msgs.msg import Marker, MarkerArray
-
-        radius = list(msg.radius)  # type: ignore[union-attr]
-        half_length = list(msg.half_length)  # type: ignore[union-attr]
-        origin_xyzrpy = list(msg.origin_xyzrpy)  # type: ignore[union-attr]
-        object_id = list(msg.object_id)  # type: ignore[union-attr]
-
-        try:
-            specs = capsule_markers(radius, half_length, origin_xyzrpy, object_id)
-        except ValueError:
-            log.exception("bucket2: malformed WorldCollision message — skipping")
-            return
-
-        array = MarkerArray()
-        for spec in specs:
-            m = Marker()
-            m.header = msg.header  # type: ignore[union-attr]
-            m.ns = spec.ns
-            m.id = spec.marker_id
-            m.type = Marker.CYLINDER
-            m.action = Marker.ADD
-            m.pose.position.x = spec.pos_x
-            m.pose.position.y = spec.pos_y
-            m.pose.position.z = spec.pos_z
-            m.pose.orientation.x = spec.q_x
-            m.pose.orientation.y = spec.q_y
-            m.pose.orientation.z = spec.q_z
-            m.pose.orientation.w = spec.q_w
-            m.scale.x = spec.scale_x
-            m.scale.y = spec.scale_y
-            m.scale.z = spec.scale_z if spec.scale_z > 0.0 else 0.001  # avoid zero scale
-            # Semi-transparent cyan so capsules don't occlude the robot model
-            m.color.r = 0.0
-            m.color.g = 0.8
-            m.color.b = 1.0
-            m.color.a = 0.4
-            array.markers.append(m)
-
-        self._pub_markers.publish(array)
-        log.debug("bucket2: published world_collisions_markers", count=len(specs))
 
     def _on_world_voxels(self, msg: object) -> None:
         """Convert OccupancyVoxels → PointCloud2 and publish."""

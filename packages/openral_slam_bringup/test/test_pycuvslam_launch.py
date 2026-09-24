@@ -62,7 +62,8 @@ def test_default_params_file_exists_and_parses() -> None:
 
 
 def test_launch_declares_stereo_camera_topic_args() -> None:
-    """The launch owns the four rectified-stereo topics as overridable args."""
+    """The launch owns the four rectified-stereo topics as required args (ADR-0108: no default;
+    no robot names its cameras ``left``/``right``, deploy_e2e passes ``camera_topic(...)``)."""
     mod = _import_launch_module()
     desc = None
     try:
@@ -75,14 +76,17 @@ def test_launch_declares_stereo_camera_topic_args() -> None:
     from launch.actions import DeclareLaunchArgument
 
     defaults = {
-        a.name: a.default_value[0].text  # single TextSubstitution
+        a.name: "".join(s.text for s in a.default_value)
         for a in desc.describe_sub_entities()
         if isinstance(a, DeclareLaunchArgument)
     }
-    assert defaults["left_image_topic"] == "/openral/cameras/left/image"
-    assert defaults["left_camera_info_topic"] == "/openral/cameras/left/camera_info"
-    assert defaults["right_image_topic"] == "/openral/cameras/right/image"
-    assert defaults["right_camera_info_topic"] == "/openral/cameras/right/camera_info"
+    for name in (
+        "left_image_topic",
+        "left_camera_info_topic",
+        "right_image_topic",
+        "right_camera_info_topic",
+    ):
+        assert defaults[name] == ""
 
 
 def test_launch_module_pins_node_package_and_executable() -> None:

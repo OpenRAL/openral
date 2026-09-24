@@ -1177,42 +1177,6 @@ CollisionHit check_self_collision(const CollisionModel& model, const CollisionSc
   return finish_sweep(result, sweep_min);
 }
 
-CollisionHit check_world_collision(const CollisionModel& model, const CollisionScratch& scratch,
-                                   const WorldModel& world, double margin) noexcept {
-  CollisionHit result;
-  double sweep_min = std::numeric_limits<double>::infinity();
-  const std::size_t n_caps = model.capsules.size();
-  const std::size_t n_world = world.capsules.size();
-  for (std::size_t i = 0; i < n_caps; ++i) {
-    const int li = model.capsule_link[i];
-    const Transform cap_i =
-        compose(scratch.link_world[static_cast<std::size_t>(li)], model.capsules[i].origin);
-    for (std::size_t w = 0; w < n_world; ++w) {
-      // World capsule origins are already absolute in the base frame.
-      const double d = capsule_distance(cap_i, model.capsules[i].radius,
-                                        model.capsules[i].half_length, world.capsules[w].origin,
-                                        world.capsules[w].radius, world.capsules[w].half_length);
-      // link_a: robot link; link_b: world obstacle index.
-      fold_pair(result, sweep_min, d, d <= margin, li, static_cast<int>(w));
-    }
-  }
-  // Blocky links (OBB) are checked against every world obstacle too,
-  // so a boxed link is never invisible to the world check.
-  const std::size_t n_boxes = model.boxes.size();
-  for (std::size_t b = 0; b < n_boxes; ++b) {
-    const int lb = model.box_link[b];
-    const Transform box_w =
-        compose(scratch.link_world[static_cast<std::size_t>(lb)], model.boxes[b].origin);
-    for (std::size_t w = 0; w < n_world; ++w) {
-      const double d =
-          box_capsule_distance(box_w, model.boxes[b].half_extents, world.capsules[w].origin,
-                               world.capsules[w].radius, world.capsules[w].half_length);
-      fold_pair(result, sweep_min, d, d <= margin, lb, static_cast<int>(w));
-    }
-  }
-  return finish_sweep(result, sweep_min);
-}
-
 // ---------------------------------------------------------------------------
 // Working in GRID coordinates
 //
@@ -1778,33 +1742,6 @@ AttachIngestStatus ingest_attached_objects(const std::vector<AttachedObjectInput
   out.n_objects = n;
   out.n_primitives = prim_cursor;
   return AttachIngestStatus::kOk;
-}
-
-CollisionHit check_attached_world_collision(const CollisionModel& /*model*/,
-                                            const AttachedModel& attached,
-                                            const CollisionScratch& scratch,
-                                            const WorldModel& world, double margin) noexcept {
-  CollisionHit result;
-  double sweep_min = std::numeric_limits<double>::infinity();
-  const std::size_t n_world = world.capsules.size();
-  for (std::size_t i = 0; i < attached.n_objects; ++i) {
-    const AttachedObject& obj = attached.objects[i];
-    const Transform obj_xf = attached_object_transform(obj, scratch);
-    for (int p = 0; p < obj.prim_count; ++p) {
-      const AttachedPrimitive& prim =
-          attached.primitives[static_cast<std::size_t>(obj.prim_first + p)];
-      const Transform prim_xf = compose(obj_xf, prim.pose_in_object);
-      for (std::size_t w = 0; w < n_world; ++w) {
-        const double d = attached_primitive_capsule_distance(
-            prim, prim_xf, world.capsules[w].origin, world.capsules[w].radius,
-            world.capsules[w].half_length);
-        // link_a: attached object index (evidence is object-level, not
-        // per-primitive); link_b: world obstacle index.
-        fold_pair(result, sweep_min, d, d <= margin, static_cast<int>(i), static_cast<int>(w));
-      }
-    }
-  }
-  return finish_sweep(result, sweep_min);
 }
 
 CollisionHit check_attached_voxel_collision(const CollisionModel& /*model*/,

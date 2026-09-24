@@ -331,6 +331,16 @@ safety:
   max_force_n: 40.0
   max_torque_nm: 40.0
   deadman_required: true
+  # provisional: former schema default, not measured on this rig — see issue #303
+  max_ee_accel_m_s2: 1.0
+  contact_force_threshold_n: 30.0
+  self_collision_margin_m: 0.0
+  # Runner ramp to a skill's starting_pose. 0.5 rad/s / 0.05 rad are what
+  # every attended Thor run has used (the runner's former defaults); declared
+  # here so they are visible and reviewable. Not derived from velocity_limit:
+  # that gave 2 rad/s (issue #303).
+  starting_pose_max_joint_speed_rad_s: 0.5
+  starting_pose_tolerance_rad: 0.05
 
 # `sdk_kind: open` — the whole real-hardware path is Apache-2.0: the
 # upstream enactic/openarm_mujoco MJCF for sim, and `openarm_can` +
@@ -347,6 +357,18 @@ sdk_kind: "open"
 #                  → controller_manager (400 Hz, C++)
 #                  → openarm_hardware SystemInterface
 #                  → openarm_can → SocketCAN → Damiao motors.
+# The one place this robot's control rate lives. The skill runner ticks at
+# it (`rate_hz` ROS param 0 = read this), the dataset recorder stamps it as
+# fps, and the real HAL sets every trajectory point's
+# time_from_start = horizon / control_freq_hz so the controller reaches each
+# target exactly when the next command is due. A ros2_control HAL refuses to
+# build without it — the 100 ms fallback that used to fill the gap re-planned
+# a steep segment every 33 ms and amplified each step between targets (#303).
+action_spec:
+  dim: 16
+  representation: "joint_positions"
+  control_freq_hz: 30.0
+
 hal:
   # null → build_hal derives MujocoArmHAL.from_description(this manifest)
   # from the `sim:` block below; no per-robot Python class is involved.
@@ -368,7 +390,16 @@ hal:
       settle_steps: 4
       gravity_enabled: false
       # ── both ────────────────────────────────────────────────────────
-      staleness_limit_s: 0.5
+      # Max age of a read_state() reading before ROSPerceptionStale. Three
+      # control periods at 30 Hz. Measured on Thor 2026-09-23 with
+      # tools/joint_state_staleness_probe.py (750 Hz JointState over the
+      # production Fast-DDS path into RosControlTransport): idle callback gap
+      # p99.9 2.6 ms / max 4.6 ms, read-side age max 32 ms; under deliberate
+      # GIL starvation gap max 24 ms, stamp->callback latency max 43 ms, no gap
+      # above 33 ms. 0.1 s is >2x the worst observed and catches a dead bus
+      # within three ticks instead of fifteen. Confirm on an attended run: a
+      # spurious trip shows as ROSPerceptionStale in the runner log.
+      staleness_limit_s: 0.1
       # ── real (OpenArmRealHAL) ───────────────────────────────────────
       # SocketCAN interface names. The OpenArm Jetson provisioning pins
       # these with a udev rule keyed on the PEAK adapter's per-channel
@@ -413,20 +444,40 @@ sensors:
   # Robot-parented per the sensor-leg rule (robot manifest for wrist/head
   # cams, DeployScene.sensors for overhead/front); Enactic mounts it the same
   # way (openarm_zed_wrapper.xacro `mount_origin`, reference_points.yaml
-  # `kind: sensor_mount`). No `deploy_binding`: manifest owns geometry, scene
-  # owns host binding (merge_deploy_sensors merges field-wise) — pixels/cloud
-  # arrive on zed_wrapper's own topics since the ZED SDK computes depth on the
-  # host GPU and the device only emits a side-by-side UVC stream.
+  # `kind: sensor_mount`). The manifest owns this camera whole — geometry AND the
+  # real-hardware `deploy_binding` below; a deploy scene never touches it
+  # (check_scene_sensor_overrides). The binding is `ros2_image` because the
+  # pixels/cloud arrive on zed_wrapper's own topics: the ZED SDK computes depth
+  # on the host GPU and the device only emits a side-by-side UVC stream.
   #
-  # POSE/INTRINSICS UNCALIBRATED by operator decision (no vendor extrinsic
+  # POSE PARTLY MEASURED, INTRINSICS UNCALIBRATED (no vendor extrinsic
   # exists; Stereolabs ship mount as a xacro param, Enactic leave theirs
-  # commented "tune before hardware"). Pose is the stated approximation:
-  # 0.20 m above the shoulder midpoint (= `openarm_base`, since both arm
-  # mounts sit at (0,+/-0.031,0)), pitched 45deg down. fx/fy from StereoLabs'
+  # commented "tune before hardware"). Position is still the stated
+  # approximation: 0.20 m above the shoulder midpoint (= `openarm_base`, since
+  # both arm mounts sit at (0,+/-0.031,0)), x = y = 0. Roll/pitch are MEASURED
+  # (2026-09-24, Thor cell, arms unpowered): a level-surface fit on a real ZED
+  # cloud showed the old 45deg-down placeholder was 22.7deg off in pitch (24.9deg
+  # on the Orin cell); correcting to roll -0.7deg / pitch 67.7deg leaves 0.4deg of
+  # residual tilt. Height, x/y and yaw are NOT observable from one level plane
+  # and remain unmeasured, so the kernel's world-voxel check still requires the
+  # extrinsic check below to PASS before it is trusted. fx/fy from StereoLabs'
   # published 90deg horizontal FOV at HD1080 depth (fx=(1920/2)/tan(45deg)=960,
   # same basis a real deploy scene's `context` override would use). Good
-  # enough to prove the pipeline; run `openral calibrate camera` before
-  # projecting anything geometric.
+  # enough to prove the pipeline, not to project anything geometric. What a
+  # geometric consumer (the kernel's world-voxel check) depends on is the
+  # EXTRINSIC below, not these intrinsics: the ZED SDK builds its cloud from
+  # its own factory calibration. `openral calibrate camera` measures
+  # intrinsics only (a monocular checkerboard fit) and cannot fix this pose.
+  # THIS entry is the one place the ZED extrinsic lives: the camera is bolted
+  # to the rig, so every OpenArm scene publishes this pose and no scene may
+  # name this sensor (openral_core.check_scene_sensor_overrides). Calibrate it with
+  # tools/zed_extrinsic_check.py and copy the report's suggested pose here; the
+  # passing report is committed at calibration/head_zed_extrinsic.json and
+  # `verify` refuses it once this pose changes (runbook:
+  # docs/tutorials/deploy/openarm-real-world-voxel-check.md). One manifest
+  # holds ONE pose, but the Thor and Orin cells have different ZED mounts and
+  # units: a calibrated pose here is the Thor cell's until per-unit
+  # calibration exists.
   #
   # A depth sensor with intrinsics auto-enables the octomap leg, so every
   # in-tree OpenArm scene pins `runtime.enable_octomap` explicitly and must
@@ -443,7 +494,7 @@ sensors:
     modality: "depth"
     frame_id: "zed_camera_link"
     parent_frame: "openarm_base"
-    static_transform_xyz_rpy: [0.0, 0.0, 0.20, 0.0, 0.7853981634, 0.0]
+    static_transform_xyz_rpy: [0.0, 0.0, 0.20, -0.0123, 1.1823, 0.0]
     rate_hz: 10.0
     intrinsics:
       width: 1920
@@ -456,6 +507,15 @@ sensors:
     catalog_id: "stereolabs/zed_mini"
     vendor: "StereoLabs"
     model: "ZED Mini"
+    # Real-hardware binding (the OpenArm bench cell). Used only by `deploy run`; the sim
+    # renders this camera. zed_wrapper (the bench scene's `drivers:`) publishes the topic.
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/depth/depth_registered
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 500
 
   - name: "top"
     modality: "rgb"
@@ -472,6 +532,22 @@ sensors:
     vla_feature_key: "observation.images.top"
     vendor: "sim"
     model: "mujoco_top"
+    # On the real cell `top` is the ZED-M's rectified LEFT image (the wrapper owns the
+    # device; `ros2_image` subscribes). The frame and intrinsics above are the sim
+    # render's stand-ins: fine for a policy view, which conditions on pixels, but NOT
+    # for anything geometric on real hardware — use `head_zed` for that. The key stays
+    # `observation.images.top`: the restock π0.5 rSkill aliases it onto its checkpoint's
+    # `observation.images.context` (`image_preprocessing.aliases: {top: "context"}`), and
+    # the ros2_image reader takes the wire encoding from each message, not `encoding`.
+    # Real-hardware binding (the OpenArm bench cell). Used only by `deploy run`; the sim
+    # renders this camera. zed_wrapper (the bench scene's `drivers:`) publishes the topic.
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/rgb/color/rect/image
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 200
   - name: "wrist_left"
     modality: "rgb"
     frame_id: "openarm_left_ee_base_link"
@@ -487,6 +563,15 @@ sensors:
     vla_feature_key: "observation.images.wrist_left"
     vendor: "sim"
     model: "mujoco_wrist"
+    # Real-hardware binding (the OpenArm bench cell). Used only by `deploy run`; the sim
+    # renders this camera. Device paths are the cell's kernel-stable by-id symlinks.
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_LEFT-video-index0
+        width: 640
+        height: 480
+        fps: 30
   - name: "wrist_right"
     modality: "rgb"
     frame_id: "openarm_right_ee_base_link"
@@ -502,6 +587,15 @@ sensors:
     vla_feature_key: "observation.images.wrist_right"
     vendor: "sim"
     model: "mujoco_wrist"
+    # Real-hardware binding (the OpenArm bench cell). Used only by `deploy run`; the sim
+    # renders this camera. Device paths are the cell's kernel-stable by-id symlinks.
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_RIGHT-video-index0
+        width: 640
+        height: 480
+        fps: 30
 
 # MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``.
 # Source: ``enactic/openarm_mujoco/v2/openarm_v20_bimanual.xml`` fetched
