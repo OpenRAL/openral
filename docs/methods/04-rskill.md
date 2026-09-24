@@ -230,25 +230,6 @@ _Joint-space MoveGroup skill. Selected when `ros_integration.goal_builder == "jo
 - `class JointGoalRskill(ROSActionRskill)` — Consumes the merged goal's `joint` block; lowers it into a `joint_constraints` goal at `_configure_impl`, then dispatches/replays like the parent. (L69)
   - `_configure_impl() -> None` (L77)
 
-### `python/rskill/src/openral_rskill/smolvla.py`
-_SmolVLA adapter — rSkillBase implementation for the SmolVLA family of VLAs._
-
-- `from openral_rskill.executor import ChunkedExecutor` — re-exported via `__all__` for back-compat (`from openral_rskill.smolvla import ChunkedExecutor` still works after the move). (L53)
-- const `_SO100_JOINT_NAMES: tuple[str, ...] = (...)` — SO-100 6-DoF joint order used by `_so100_obs_fn`. (L63)
-- `class SmolVLAAdapter(rSkillBase)` — Drives any SmolVLA-family policy. (L76)
-  - `__init__(repo_id, obs_fn, prompt, *, device='cuda:0', n_dof=6, n_cameras=None, prefetch_at=20, name='smolvla', version='0.1.0', embodiment_tags=None, latency_budget_ms=None)` — `n_cameras` (default `len(config.image_features)`) truncates warmup to the cameras the deploy feeds and threads to the TRT export (phantom-camera fix). (L121)
-  - `on_load_weights() -> None` — Fetch checkpoint from HF Hub. (L159)
-  - `on_warmup() -> None` — Dummy inference. (L218)
-  - `_configure_impl()` — Validate IO shapes match `n_dof`. (L251)
-  - `_activate_impl()` — Reset policy, start `ChunkedExecutor`. (L267)
-  - `_deactivate_impl()` — Stop pre-fetch, keep weights. (L275)
-  - `_shutdown_impl()` — Stop threads, free GPU memory. (L281)
-  - `_step_impl(world_state) -> Action` — One S1 step. (L298)
-  - `_preprocess(raw) -> dict[str, Any]` — Lerobot preprocessor + tensor → device. (L334)
-- `class SO100SmolVLASkill(SmolVLAAdapter)` — Pre-configured for the SO-100 6-DoF arm. (L390)
-  - `__init__(prompt, *, repo_id='lerobot/smolvla_base', device='cuda:0', extra_images=None, **kwargs)` (L412)
-- `_so100_obs_fn(world_state, *, device, extra_images=None, prompt) -> dict[str, Any]` — SO-100 WorldState → SmolVLA raw input. (L348)
-
 ### `python/rskill/src/openral_rskill/_vla_core.py`
 _Shared helpers for VLA adapters (Layer 3); internal — no public re-export._
 
