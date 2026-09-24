@@ -30,6 +30,7 @@ from openral_cli.deploy_sim import (
     _derive_hal_spec,
     _preflight_palette_deps,
     _prepare_launch_env,
+    _resolve_clock_origin,
     _resolve_slam_backend,
     _ros2_argv_head,
     _run_launch,
@@ -2681,3 +2682,32 @@ def test_an_unpinned_octomap_cloud_topic_leaves_the_launch_default(tmp_path: Pat
     assert invocation.enable_octomap is True
     assert invocation.octomap_cloud_topic is None
     assert "octomap_cloud_topic:=" not in " ".join(invocation.argv_template)
+
+
+def test_zed_twin_scene_pins_host_wall_clock() -> None:
+    """A bare MuJoCo twin fed by a real ZED must run on wall-clock.
+
+    Found on Thor 2026-09-24: under the auto-selected simulated clock,
+    ``octomap_server`` sat near t=0 and dropped every wall-stamped ZED cloud as
+    "from the future" — 53 s of graph, zero clouds inserted, no world voxels.
+    """
+    invocation = resolve_launch_invocation(
+        config=_REPO_ROOT / "scenes" / "deploy" / "openarm_zed_octomap.yaml",
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides={"viewer_enabled": False},
+    )
+    assert invocation.hal.bare_twin_sim is True
+    assert invocation.clock_origin == "host_wall"
+    assert "clock_origin:=host_wall" in " ".join(invocation.argv_template)
+
+
+def test_pinned_clock_origin_wins_and_simulation_needs_a_clock() -> None:
+    twin = _SO101_CONFIG  # bare MuJoCo twin: exposes a sim clock
+    assert _resolve_clock_origin(hal_mode="sim", config=twin) == "simulation"
+    assert _resolve_clock_origin(hal_mode="sim", config=twin, pinned="host_wall") == "host_wall"
+    assert _resolve_clock_origin(hal_mode="sim", config=twin, pinned="simulation") == "simulation"
+    assert _resolve_clock_origin(hal_mode="real", config=twin) == "host_wall"
+    with pytest.raises(ROSConfigError, match="real deploy"):
+        _resolve_clock_origin(hal_mode="real", config=twin, pinned="simulation")

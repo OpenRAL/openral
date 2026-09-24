@@ -440,17 +440,29 @@ def _scene_backend_has_sim_clock(config: Path | None) -> bool:
     return SCENES.meta(scene.scene.id).get("sim_clock") is True
 
 
-def _resolve_clock_origin(*, hal_mode: str, config: Path | None) -> str:
+def _resolve_clock_origin(*, hal_mode: str, config: Path | None, pinned: str | None = None) -> str:
     """Resolve the OpenRAL clock authority origin for the launch graph.
 
-    Real deployments use host wall time. Sim deployments use simulator elapsed
+    A scene's ``runtime.clock_origin`` (``pinned``) wins. Otherwise real
+    deployments use host wall time, and sim deployments use simulator elapsed
     time when the deploy scene backend exposes a sim clock. Scene-attached HALs
     and bare MuJoCo twins both expose ``sim_time_ns``; clock-less scenes stay in
     host-wall time so ROS node clocks never pin at zero.
+
+    Raises:
+        ROSConfigError: ``pinned`` is ``"simulation"`` on a real deploy, or on a
+            sim backend that exposes no clock.
     """
-    if hal_mode != "sim":
-        return "host_wall"
-    return "simulation" if _scene_backend_has_sim_clock(config) else "host_wall"
+    has_sim_clock = hal_mode == "sim" and _scene_backend_has_sim_clock(config)
+    if pinned == "simulation" and not has_sim_clock:
+        where = "a real deploy" if hal_mode != "sim" else "a sim backend without a clock"
+        raise ROSConfigError(
+            f"runtime.clock_origin: simulation is pinned on {where}; nothing would "
+            "publish /clock and every node's clock would stay at zero."
+        )
+    if pinned is not None:
+        return pinned
+    return "simulation" if has_sim_clock else "host_wall"
 
 
 def _omdet_runtime_available() -> bool:
@@ -1043,7 +1055,9 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             s.modality in ("depth", "point_cloud") and s.intrinsics is not None
             for s in description.sensors
         )
-    clock_origin = _resolve_clock_origin(hal_mode=hal_mode, config=config)
+    clock_origin = _resolve_clock_origin(
+        hal_mode=hal_mode, config=config, pinned=rt.clock_origin if rt is not None else None
+    )
 
     # The object-detection leg is ON by default (deploy sim is a
     # perception-driven stack; ``--no-object-detector`` turns it off). The default
