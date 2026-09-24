@@ -162,3 +162,22 @@ def test_the_quantisation_gain_matches_the_matrix_budget_it_is_derived_from() ->
     ) - validation_matrix.quantization_budget_m(0.015)
     assert pytest.approx(expected) == stop_ee_speed.QUANTISATION_GAIN_M
     assert pytest.approx(8.66, abs=0.01) == stop_ee_speed.QUANTISATION_GAIN_M * 1e3
+
+
+def test_the_octree_age_bound_is_derived_from_the_kernel_deadline(launch_module: object) -> None:
+    """The bridge's ``max_octree_age_s`` is half the kernel's voxel deadline (Entry 033).
+
+    It must sit below the deadline so the kernel -- not the bridge -- is what turns a
+    silent octree into ``DROP_VOXEL_UNAVAILABLE``, and above octomap's measured normal
+    gap (0.31 s at Thor's 3.2 Hz; <= 0.33 s in sim at ~3 Hz) so a live camera never
+    silences the grid. The launch also has to pass it to the bridge, and the kernel
+    the same deadline it was derived from.
+    """
+    deadline_s = launch_module._WORLD_VOXEL_DEADLINE_MS / 1000.0
+    bound = launch_module._max_octree_age_s()
+    assert bound == pytest.approx(deadline_s / 2.0)
+    assert 0.33 < bound < deadline_s
+
+    source = LAUNCH.read_text()
+    assert '"max_octree_age_s": _max_octree_age_s()' in source
+    assert '"world_voxel_deadline_ms": _WORLD_VOXEL_DEADLINE_MS' in source
