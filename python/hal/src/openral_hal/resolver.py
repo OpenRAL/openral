@@ -31,7 +31,7 @@ from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_hal._mujoco_arm import MujocoArmHAL
 from openral_hal.protocol import HAL
 
-__all__ = ["build_hal"]
+__all__ = ["build_hal", "hal_joint_states_topic"]
 
 HalMode = Literal["sim", "real"]
 
@@ -128,6 +128,61 @@ def build_hal(
             )
         return _construct(_import_object(entry), description, resolved)
     raise ROSConfigError(f"build_hal: unknown mode {mode!r}; expected 'sim' or 'real'.")
+
+
+def hal_joint_states_topic(
+    description: RobotDescription,
+    *,
+    mode: HalMode,
+    hal_node_name: str,
+    override: str | None = None,
+) -> str | None:
+    """The ``JointState`` topic the deploy runtime's Python nodes should read.
+
+    A real ros2_control arm's global ``/joint_states`` is the
+    ``joint_state_broadcaster``'s full-rate stream (0.5-1 kHz); every message
+    wakes the runtime's Python executor and starves an in-process VLA of the
+    GIL. Every HAL lifecycle node already republishes its state rate-limited on
+    ``~/joint_states`` (at ``action_spec.control_freq_hz``), so a real HAL that
+    ``HALLifecycleNodeBase`` wires to a ``RosControlTransport`` points the
+    runtime there. Every other HAL (serial SO-100, interbotix ALOHA, any sim
+    HAL) publishes ``/joint_states`` itself at its own rate and is left alone.
+
+    Membership mirrors ``_attach_ros_control_transport``: ``mode == "real"``
+    and the manifest's ``hal.real`` class exposes every
+    ``RosControlDrivable`` member, checked on the class without constructing
+    it (construction may open a bus).
+
+    Args:
+        description: The robot manifest.
+        mode: ``"sim"`` or ``"real"``, as passed to ``build_hal``.
+        hal_node_name: The HAL lifecycle node's name (``openral_hal_<robot_id>``).
+        override: ``DeployRuntime.joint_states_topic``; wins when set.
+
+    Returns:
+        The topic, or ``None`` for the default ``/joint_states``.
+
+    Raises:
+        ROSConfigError: ``hal.real`` is a malformed or unimportable entrypoint.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/ur5e/robot.yaml")  # doctest: +SKIP
+        >>> node = "openral_hal_ur5e"
+        >>> hal_joint_states_topic(desc, mode="real", hal_node_name=node)  # doctest: +SKIP
+        '/openral_hal_ur5e/joint_states'
+    """
+    if override:
+        return override
+    if mode != "real" or description.hal.real is None:
+        return None
+    from openral_hal.ros_control_transport import RosControlDrivable
+
+    cls = _import_object(description.hal.real)
+    members: frozenset[str] = RosControlDrivable.__protocol_attrs__  # type: ignore[attr-defined]  # reason: typing's 3.12 protocol member set, no public accessor before 3.13
+    if all(hasattr(cls, m) for m in members):
+        return f"/{hal_node_name}/joint_states"
+    return None
 
 
 def _construct(obj: object, description: RobotDescription, transport: dict[str, object]) -> HAL:
