@@ -392,26 +392,31 @@ class TestSendAction:
 
         return [_joints(left), _gripper(left_grip), _joints(right), _gripper(right_grip)]
 
-    def test_a_tick_at_or_below_the_last_committed_one_is_refused(
+    def test_a_replay_of_the_committed_tick_is_refused_but_a_restart_renumbers(
         self, connected_hal: OpenArmMujocoHAL
     ) -> None:
-        """A whole group of an already-committed tick would replay stale targets.
+        """A re-delivered group of the tick just committed would replay stale targets.
 
         The stager only guards the tick in flight, and the lifecycle node's
         monotonic acknowledgement would hide the replay; the HAL refuses it
-        before staging. A reconnect restarts the numbering.
+        before staging. A LOWER tick is a runner that restarted and numbers
+        from 1 again while this twin stayed connected: refusing it would wedge
+        the twin for the rest of the HAL node's life, so the numbering is
+        adopted instead. E-stop and disconnect restart the counter too.
         """
+        for tick in (1, 2):
+            for slot in self._zero_tick(connected_hal, tick):
+                connected_hal.send_action(slot)
+        assert connected_hal.last_committed_tick == 2
+
+        replay = self._zero_tick(connected_hal, 2)[0]
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            connected_hal.send_action(replay)
+        assert connected_hal.last_committed_tick == 2
+
+        # A runner restart: tick 1 again, accepted as a fresh numbering.
         for slot in self._zero_tick(connected_hal, 1):
             connected_hal.send_action(slot)
-        assert connected_hal.last_committed_tick == 1
-
-        stale = self._zero_tick(connected_hal, 1)[0]
-        with pytest.raises(ROSRuntimeError, match="stale slot group"):
-            connected_hal.send_action(stale)
-        assert connected_hal.last_committed_tick == 1
-
-        # The next tick is unaffected by the refusal.
-        connected_hal.send_action(self._zero_tick(connected_hal, 2)[0])
         assert connected_hal.last_committed_tick == 1
 
         connected_hal.disconnect()

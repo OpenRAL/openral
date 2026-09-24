@@ -45,3 +45,24 @@ def test_a_raising_callback_is_handed_to_on_failure_and_a_stop_is_not() -> None:
         assert quiet == []
     finally:
         rclpy.try_shutdown()
+
+
+def test_an_external_shutdown_is_a_clean_exit_not_a_failure() -> None:
+    """Ctrl-C's handler shuts the context down from outside: ``on_failure`` stays silent."""
+    rclpy = pytest.importorskip("rclpy", reason="needs a sourced ROS 2 overlay")
+    pytest.importorskip("rclpy.experimental", reason="needs rclpy's EventsExecutor")
+    from openral_rskill_ros.compose import start_world_state_executor
+
+    rclpy.init()
+    failures: list[BaseException] = []
+    try:
+        node = rclpy.create_node("world_state_executor_probe_shutdown")
+        node.create_timer(0.05, lambda: None)
+        stop = start_world_state_executor(node, on_failure=failures.append)
+        assert stop is not None
+        time.sleep(0.2)
+        rclpy.shutdown()  # what the SIGINT handler does, before any stop callable runs
+        time.sleep(0.5)
+    finally:
+        rclpy.try_shutdown()
+    assert failures == []

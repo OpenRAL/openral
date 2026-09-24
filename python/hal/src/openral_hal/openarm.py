@@ -547,16 +547,20 @@ class OpenArmMujocoHAL(MujocoArmHAL):
             # disconnected twin reported success and kept the slot.
             self._require_connected("send_action")
             tick = int(action.tick_index)
-            if 0 < tick <= self._last_committed_tick:
-                # The stager only guards the tick in flight. A whole group of
-                # an already-committed tick would otherwise replay stale
-                # targets, and the lifecycle node's monotonic acknowledgement
-                # would hide it. Ticks are process-monotonic in the runner;
-                # ``disconnect`` resets the counter for a fresh numbering.
+            if 0 < tick == self._last_committed_tick:
+                # The stager only guards the tick in flight. A re-delivered
+                # group of the tick just committed would replay stale targets,
+                # and the lifecycle node's monotonic acknowledgement would
+                # hide it.
                 raise ROSRuntimeError(
-                    f"stale slot group: tick {tick} is not after the last committed "
-                    f"tick {self._last_committed_tick}; refusing to replay it."
+                    f"stale slot group: tick {tick} was already committed; refusing to replay it."
                 )
+            if 0 < tick < self._last_committed_tick:
+                # Ticks are process-monotonic in the runner, so a lower tick
+                # means the runner restarted and numbers from 1 again while
+                # this twin stayed connected. Refusing it would wedge the twin
+                # for the rest of the HAL node's life; adopt the new numbering.
+                self._last_committed_tick = 0
             group = self._slot_group.stage(action)
             if group is None:
                 return
@@ -582,6 +586,11 @@ class OpenArmMujocoHAL(MujocoArmHAL):
         super().disconnect()
 
     def estop(self) -> None:
-        """Drop any half-staged tick; the survivors must never be committed later."""
+        """Drop any half-staged tick; the survivors must never be committed later.
+
+        The tick counter restarts too: what follows an E-stop is a relaunch,
+        which numbers its ticks from 1.
+        """
         self._slot_group.reset()
+        self._last_committed_tick = 0
         super().estop()
