@@ -61,8 +61,10 @@ to `openral sim list` / `openral rskill check` / the eval registry.
 A manifest with `hal.real` set must declare every value the real path reads —
 the schema refuses it otherwise, naming each gap: `action_spec.control_freq_hz`,
 the kernel's `safety` thresholds, `safety.joint_state_staleness_limit_s` (the
-HAL's and the runner's joint-state window; measure it with
-`tools/joint_state_staleness_probe.py --robot`), and the starting-pose approach
+HAL's and the runner's joint-state window, measured on the raw stream; measure
+it with `tools/joint_state_staleness_probe.py --robot`. A runner that reads the
+HAL's rate-limited `~/joint_states` republish gets two republish periods on top,
+capped at 0.5 s), and the starting-pose approach
 per joint type — `safety.starting_pose_max_joint_speed_rad_s` /
 `starting_pose_tolerance_rad` for revolute joints, `..._m_s` / `..._m` when the
 robot has a prismatic joint (the runner also caps each joint at its

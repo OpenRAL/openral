@@ -484,32 +484,56 @@ def _primary_rgb_camera(sensors: list[SensorSpec]) -> str:
 
 # Sim runner joint-state window: the former node default. A sim bridge's
 # /joint_states is not the rig the manifest's window was measured on, so sim
-# keeps it rather than the (possibly much tighter) real value.
+# keeps it rather than the (possibly much tighter) real value. It is also the
+# ceiling of a real runner window: the value every real deploy shipped with.
 _SIM_JOINT_STATE_STALENESS_S = 0.5
 
 
-def _runner_joint_state_staleness_s(description: RobotDescription, hal_mode: str) -> float:
+def _runner_joint_state_staleness_s(
+    description: RobotDescription, hal_mode: str, *, republished: bool
+) -> float:
     """The runner's joint-state freshness window for this deploy.
 
-    Real: the manifest's ``safety.joint_state_staleness_limit_s`` — the same
-    number ``build_hal`` hands the real HAL, so the two cannot disagree. The
-    schema already refuses a real manifest without it; this only guards a
-    manifest bypassing that validator. Sim: ``_SIM_JOINT_STATE_STALENESS_S``.
+    Real, raw ``/joint_states``: the manifest's
+    ``safety.joint_state_staleness_limit_s`` — the same number ``build_hal``
+    hands the real HAL, so the two cannot disagree.
+
+    Real, HAL republish (``republished``: the runner reads the HAL node's
+    rate-limited ``~/joint_states``, see ``hal_joint_states_topic``): source
+    staleness plus two republish periods, ``limit + 2 / control_freq_hz``. The
+    manifest window was measured on the raw stream; the republish timer adds up
+    to one period of age per sample, and a window of ~3 periods (OpenArm: 0.1 s
+    at 30 Hz) trips on two late timer ticks under GIL load. The HAL itself still
+    checks its source at the manifest value. Capped at
+    ``_SIM_JOINT_STATE_STALENESS_S`` so no real runner is looser than it shipped.
+
+    Sim: ``_SIM_JOINT_STATE_STALENESS_S``.
 
     Raises:
-        ROSConfigError: ``hal_mode == "real"`` and the manifest declares none.
+        ROSConfigError: ``hal_mode == "real"`` and the manifest declares no
+            window, or ``republished`` and it declares no
+            ``action_spec.control_freq_hz`` (the republish rate).
     """
     if hal_mode != "real":
         return _SIM_JOINT_STATE_STALENESS_S
+    from openral_core.exceptions import ROSConfigError
+
     declared = description.safety.joint_state_staleness_limit_s
     if declared is None:
-        from openral_core.exceptions import ROSConfigError
-
         raise ROSConfigError(
             f"robot {description.name!r} declares no safety.joint_state_staleness_limit_s; "
             "a real deploy needs the measured window (tools/joint_state_staleness_probe.py)."
         )
-    return float(declared)
+    if not republished:
+        return float(declared)
+    rate_hz = description.control_rate_hz
+    if rate_hz is None:
+        raise ROSConfigError(
+            f"robot {description.name!r} declares no action_spec.control_freq_hz; the "
+            "runner reads the HAL's ~/joint_states republish at that rate and needs it "
+            "to size its staleness window."
+        )
+    return min(float(declared) + 2.0 / rate_hz, _SIM_JOINT_STATE_STALENESS_S)
 
 
 def _depth_camera(description: RobotDescription) -> str:
@@ -1697,10 +1721,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 "image_staleness_limit_s": 5.0 if hal_mode == "sim" else 0.5,
                 # Joint state older than this aborts the blocking wait as a
                 # perception fault. The node has no default. Real: the manifest's
-                # safety.joint_state_staleness_limit_s (the HAL's window too);
-                # sim: the former node default (audit C F3).
+                # safety.joint_state_staleness_limit_s (the HAL's window too), plus
+                # two republish periods when the runner reads the HAL's
+                # ~/joint_states; sim: the former node default (audit C F3).
                 "joint_state_staleness_limit_s": _runner_joint_state_staleness_s(
-                    description, hal_mode
+                    description,
+                    hal_mode,
+                    republished=runtime_joint_states_topic == f"/{hal_node_name}/joint_states",
                 ),
                 # One grouped action may synchronously attach a payload, then
                 # wait for a transparent depth frame + the next OctoMap raster
