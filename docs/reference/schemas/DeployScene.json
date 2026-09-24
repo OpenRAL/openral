@@ -297,6 +297,25 @@
           "default": null,
           "title": "Clock Origin"
         },
+        "world_voxel_deadline_s": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "World Voxel Deadline S",
+          "type": "number"
+        },
+        "max_octree_age_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Octree Age S"
+        },
         "joint_states_topic": {
           "anyOf": [
             {
