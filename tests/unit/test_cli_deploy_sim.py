@@ -1118,6 +1118,18 @@ def test_bh_preflight_palette_deps_returns_silent_when_no_rskills_dir(tmp_path: 
     _preflight_palette_deps(repo_root=tmp_path, robot_yaml=fake_yaml)
 
 
+@pytest.fixture()
+def _just_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend `just` is installed: the install path refuses up front without it (CI lacks it)."""
+    real_which = deploy_sim.shutil.which
+    monkeypatch.setattr(
+        deploy_sim.shutil,
+        "which",
+        lambda name, *a, **kw: "/usr/bin/just" if name == "just" else real_which(name, *a, **kw),
+    )
+
+
+@pytest.mark.usefixtures("_just_on_path")
 def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1193,6 +1205,7 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     assert "--group libero" in out and "--group sim" in out, out
 
 
+@pytest.mark.usefixtures("_just_on_path")
 def test_bh_preflight_install_cmd_uses_just_sync_all_packages(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1314,6 +1327,7 @@ def test_bh_preflight_refuses_when_just_is_missing(
     )
 
 
+@pytest.mark.usefixtures("_just_on_path")
 def test_bh_preflight_accept_propagates_auto_install_consent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1371,6 +1385,7 @@ def test_bh_preflight_accept_propagates_auto_install_consent(
     assert os.environ.get("OPENRAL_AUTO_INSTALL_DEPS") == "1"
 
 
+@pytest.mark.usefixtures("_just_on_path")
 def test_bh_preflight_warns_and_proceeds_when_some_skills_importable(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1413,6 +1428,7 @@ def test_bh_preflight_warns_and_proceeds_when_some_skills_importable(
     assert "--group rldx" in out, out
 
 
+@pytest.mark.usefixtures("_just_on_path")
 def test_bh_preflight_auto_installs_when_env_set(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1465,6 +1481,7 @@ def test_bh_preflight_auto_installs_when_env_set(
     assert "extras installed" in out, out
 
 
+@pytest.mark.usefixtures("_just_on_path")
 def test_bh_preflight_auto_install_failure_exits_with_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
