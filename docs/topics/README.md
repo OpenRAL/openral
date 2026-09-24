@@ -13,7 +13,7 @@ Nav2, a driver) or is a dead end worth checking.
 Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 `just lint` and pre-commit fail when this page is stale.
 
-## Topics (63)
+## Topics (46)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -30,22 +30,8 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/action_applied` | `std_msgs/UInt64` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | python/runner/src/openral_runner/ros_publishing_hal.py (ROSPublishingHAL.connect) |
 | `/openral/attachment_state` | `openral_msgs/AttachmentState` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_attachment_state)<br>python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup) | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) [param `attachment_state_topic`]<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_attachment_state)<br>tools/_validation_matrix_monitor.py (Monitor.__init__) |
 | `/openral/attachment_state_applied` | `std_msgs/UInt64` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_attachment_state)<br>tools/_validation_matrix_monitor.py (Monitor.__init__) |
-| `/openral/cameras/front/image` | `sensor_msgs/Image` | — | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) [param `image_topic`] |
-| `/openral/cameras/front_depth/depth/camera_info` | `sensor_msgs/CameraInfo` | — | packages/openral_slam_bringup/openral_slam_bringup/depth_height_filter_node.py (main.DepthHeightFilterNode.__init__) [param `input_camera_info_topic`] |
-| `/openral/cameras/front_depth/depth/image` | `sensor_msgs/Image` | — | packages/openral_slam_bringup/openral_slam_bringup/depth_height_filter_node.py (main.DepthHeightFilterNode.__init__) [param `input_depth_topic`] |
-| `/openral/cameras/front_depth/points` | `sensor_msgs/PointCloud2` | — | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode._setup_depth_points_fallback) [param `object_depth_points_topic`] |
-| `/openral/cameras/left/camera_info` | `sensor_msgs/CameraInfo` | — | packages/openral_slam_bringup/openral_slam_bringup/pycuvslam_node.py (main.PyCuVSLAMNode._setup_inputs) [param `left_camera_info_topic`] |
-| `/openral/cameras/right/camera_info` | `sensor_msgs/CameraInfo` | — | packages/openral_slam_bringup/openral_slam_bringup/pycuvslam_node.py (main.PyCuVSLAMNode._setup_inputs) [param `right_camera_info_topic`] |
-| `/openral/cameras/top/image` | `sensor_msgs/Image` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) [param `completion_camera_topic`] |
-| `/openral/cameras/{name}/camera_info` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera) | — |
-| `/openral/cameras/{name}/depth/camera_info` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | — |
-| `/openral/cameras/{name}/depth/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | — |
-| `/openral/cameras/{name}/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera) | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) [param `camera_topic_prefix`] |
-| `/openral/cameras/{name}/points` | `sensor_msgs/PointCloud2` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | — |
 | `/openral/candidate_action` | `openral_msgs/ActionChunk` | python/runner/src/openral_runner/ros_publishing_hal.py (ROSPublishingHAL.connect) | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_estop_ground_truth)<br>python/runner/src/openral_runner/dataset_recorder_bridge.py (DatasetRecorderBridge.__init__) |
 | `/openral/critic/score` | `openral_msgs/CriticScore` | packages/openral_perception_ros/openral_perception_ros/reward_monitor_node.py (main.RewardMonitorNode.__init__) [param `critic_score_topic`] | packages/openral_reasoner_ros/openral_reasoner_ros/critic_producer_node.py (CriticProducerNode.__init__) [param `score_topic`] |
-| `/openral/depth/camera_info` | `sensor_msgs/CameraInfo` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) [param `camera_info_topic`] | — |
-| `/openral/depth/image` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) [param `depth_topic`] | — |
 | `/openral/episode` | `openral_msgs/Episode` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | python/runner/src/openral_runner/dataset_recorder_bridge.py (DatasetRecorderBridge.__init__) |
 | `/openral/estop` | `std_msgs/Empty` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_human_estop/openral_human_estop/forwarder_node.py (HumanEstopForwarderNode.on_configure)<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/hardware_estop_node.py (HardwareEstopNode.on_configure)<br>python/observability/src/openral_observability/dashboard/estop_publisher.py (EstopPublisher._start) | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) [param `estop_topic`]<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure)<br>python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_estop_ground_truth)<br>tools/_validation_matrix_monitor.py (Monitor.__init__) |
 | `/openral/estop_cleared` | `std_msgs/Empty` | python/observability/src/openral_observability/dashboard/estop_publisher.py (EstopPublisher._start) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure)<br>python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) |
@@ -69,9 +55,6 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/safety_status` | `openral_msgs/SafetyStatus` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_safety/openral_safety/supervisor_node.py (SafetyPassthroughNode.on_configure) | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure)<br>packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure) [param `safety_status_topic`]<br>python/observability/src/openral_observability/dashboard/safety_status_subscriber.py (SafetyStatusSubscriber._start) |
 | `/openral/skill_registry_changed` | `std_msgs/Empty` | tools/wait_for_action_and_signal_palette.py (main) [param `--signal-topic`] | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | `/openral/visual_slam/odometry` | `nav_msgs/Odometry` | packages/openral_slam_bringup/openral_slam_bringup/pycuvslam_node.py (main.PyCuVSLAMNode.__init__) [param `odometry_topic`] | — |
-| `/openral/world_collision` | `openral_msgs/WorldCollision` | — | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp |
-| `/openral/world_collisions` | `openral_msgs/WorldCollision` | — | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__) |
-| `/openral/world_collisions_markers` | `visualization_msgs/MarkerArray` | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__) | — |
 | `/openral/world_state_fast` | `openral_msgs/WorldStateStamped` | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_nav2_bringup/openral_nav2_bringup/payload_scan_filter_node.py (main.PayloadScanFilterNode.__init__) [param `world_state_topic`]<br>packages/openral_octomap_bridge/src/octomap_voxel_bridge_node.cpp [param `world_state_topic`]<br>tools/_nav2_costmap_silhouette_probe.py (SilhouetteProbe.__init__)<br>tools/_validation_matrix_monitor.py (Monitor.__init__) |
 | `/openral/world_state_slow` | `openral_msgs/WorldStateStamped` | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | `/openral/world_voxels` | `openral_msgs/OccupancyVoxels` | packages/openral_octomap_bridge/src/octomap_voxel_bridge_node.cpp [param `output_topic`]<br>tools/voxel_transport_probe.py (run_pub) | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__)<br>packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) [param `object_voxels_topic`]<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_attachment_state)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_estop_ground_truth)<br>tools/_validation_matrix_monitor.py (Monitor.__init__)<br>tools/voxel_transport_probe.py (run_sub) |
@@ -104,7 +87,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/execute_rskill` | `openral_msgs/ExecuteRskill` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>tools/_validation_matrix_dispatch.py (main) |
 | `navigate_to_pose` | `nav2_msgs/NavigateToPose` | — | tools/_nav2_costmap_silhouette_probe.py (_drive)<br>tools/_nav2_mppi_loop_probe.py (Probe.__init__) |
 
-## Unresolved endpoints (22)
+## Unresolved endpoints (37)
 
 Names only known at runtime (built from a manifest, a robot id or a
 caller's argument). Shown as their source expression.
@@ -117,6 +100,13 @@ caller's argument). Shown as their source expression.
 | service | client | `service` | `openral_msgs/LocateInView` | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode._dispatch_locate_in_view) |
 | service | client | `service` | `std_srvs/Trigger` | python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__) |
 | service | client | `service_name` | `srv_type` | tools/lifecycle_autostart.py (_wait_for_service) |
+| topic | pub | `camera_topic(name)` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera) |
+| topic | pub | `camera_topic(name, CameraTopicKind.CAMERA_INFO)` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera) |
+| topic | pub | `camera_topic(spec.name, CameraTopicKind.DEPTH_CAMERA_INFO)` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) |
+| topic | pub | `camera_topic(spec.name, CameraTopicKind.DEPTH_IMAGE)` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) |
+| topic | pub | `camera_topic(spec.name, CameraTopicKind.POINTS)` | `sensor_msgs/PointCloud2` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) |
+| topic | pub | `gp('camera_info_topic').get_parameter_value().string_value` | `sensor_msgs/CameraInfo` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
+| topic | pub | `gp('depth_topic').get_parameter_value().string_value` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
 | topic | pub | `self._topic` | `openral_msgs/FailureTrigger` | python/observability/src/openral_observability/failure_bus.py (FailureBusPublisher.create_publisher) |
 | topic | pub | `self._topic` | `sensor_msgs/Image` | python/runner/src/openral_runner/backends/gstreamer/ros_tee.py (RosImagePublisher.start) |
 | topic | pub | `self._topic` | `sensor_msgs/Image` | python/sensors/src/openral_sensors/ros_publisher.py (SensorRosPublisher.prepare) |
@@ -126,6 +116,13 @@ caller's argument). Shown as their source expression.
 | topic | pub | `topic` | `openral_msgs/PromptStamped` | python/cli/src/openral_cli/prompt.py (prompt_command) |
 | topic | pub | `topic` | `std_msgs/Empty` | python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__) |
 | topic | sub | `arm_status_topic` | `action_msgs/GoalStatusArray` | packages/openral_safety_watchdog/openral_safety_watchdog/deadman_watchdog_node.py (DeadmanWatchdogNode.on_configure) |
+| topic | sub | `completion_camera_topic` | `sensor_msgs/Image` | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
+| topic | sub | `depth_topic` | `sensor_msgs/PointCloud2` | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode._setup_depth_points_fallback) |
+| topic | sub | `gp('image_topic').get_parameter_value().string_value` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
+| topic | sub | `gp('input_camera_info_topic').get_parameter_value().string_value` | `sensor_msgs/CameraInfo` | packages/openral_slam_bringup/openral_slam_bringup/depth_height_filter_node.py (main.DepthHeightFilterNode.__init__) |
+| topic | sub | `gp('input_depth_topic').get_parameter_value().string_value` | `sensor_msgs/Image` | packages/openral_slam_bringup/openral_slam_bringup/depth_height_filter_node.py (main.DepthHeightFilterNode.__init__) |
+| topic | sub | `gp('left_camera_info_topic').get_parameter_value().string_value` | `sensor_msgs/CameraInfo` | packages/openral_slam_bringup/openral_slam_bringup/pycuvslam_node.py (main.PyCuVSLAMNode._setup_inputs) |
+| topic | sub | `gp('right_camera_info_topic').get_parameter_value().string_value` | `sensor_msgs/CameraInfo` | packages/openral_slam_bringup/openral_slam_bringup/pycuvslam_node.py (main.PyCuVSLAMNode._setup_inputs) |
 | topic | sub | `self._depth_topic()` | `sensor_msgs/Image` | python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup) |
 | topic | sub | `self._topic` | `sensor_msgs/Image` | python/runner/src/openral_runner/backends/ros2_image.py (Ros2ImageSensorReader.open) |
 | topic | sub | `topic` | `geometry_msgs/Twist` | tools/_nav2_mppi_loop_probe.py (Probe.__init__) |
@@ -133,6 +130,7 @@ caller's argument). Shown as their source expression.
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/ros_image_detector_node.py (main.RosImageObjectDetectorNode.on_configure) |
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/scene_vlm_node.py (main.SceneVlmNode.__init__) |
 | topic | sub | `topic` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/segmenter_node.py (_node_class.SegmenterNode.on_configure) |
+| topic | sub | `topic` | `sensor_msgs/Image` | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) |
 
 ## Launch remappings (11)
 

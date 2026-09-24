@@ -95,7 +95,6 @@ from openral_core.schemas import (
     TickResult,
     VLASpec,
     WaitTool,
-    WorldCollisionPrimitive,
     WorldState,
 )
 from pydantic import ValidationError
@@ -325,13 +324,6 @@ _link_collision_geometry_st = st.builds(
     origin_xyz_rpy=st.tuples(*([_safe_float] * 6)),
 )
 
-_world_collision_primitive_st = st.builds(
-    WorldCollisionPrimitive,
-    shape=_collision_shape_st,
-    pose=_pose6d_st,
-    object_id=st.one_of(st.none(), _name),
-)
-
 _occupancy_grid_ref_st = st.builds(
     OccupancyGridRef,
     frame_id=_name,
@@ -555,13 +547,6 @@ def test_fuzz_sphere_shape(instance: SphereShape) -> None:
 def test_fuzz_link_collision_geometry(instance: LinkCollisionGeometry) -> None:
     """LinkCollisionGeometry round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(LinkCollisionGeometry, instance)
-
-
-@_FUZZ_SETTINGS
-@given(_world_collision_primitive_st)
-def test_fuzz_world_collision_primitive(instance: WorldCollisionPrimitive) -> None:
-    """WorldCollisionPrimitive round-trips through JSON and validates against its schema."""
-    _round_trip_and_validate(WorldCollisionPrimitive, instance)
 
 
 @_FUZZ_SETTINGS

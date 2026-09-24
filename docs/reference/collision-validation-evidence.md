@@ -1440,8 +1440,10 @@ vacuously. `test_an_all_occupied_grid_is_refused` fails in that case, and the
 file was mutation-checked: neutralising the separating margin fails the ordering
 test, and displacing the grid origin by 2 m fails both it and the control.
 Publishing the grid under a wrong `header.frame_id` changes *nothing*, and that
-is correct rather than a gap — `WorldCollision.msg` states the kernel applies no
+is correct rather than a gap — `WorldCollision.msg` stated the kernel applies no
 TF on the hot path, so the frame id is advisory and the base frame is assumed.
+(Note 2026-09-23: `WorldCollision.msg` and the capsule world phase were retired
+by ADR-0109; the voxel grid remains the kernel's only world-geometry input.)
 
 ### 2026-09-05 — the colliding half of that pair, at zero margin (#102)
 

@@ -287,8 +287,7 @@ fails the whole object closed and clears nothing (same rule
 
 **Conservative.** The payload stays collision-active attached geometry;
 `check_attached_voxel_collision` keeps testing it against every remaining
-occupied cell, plus `check_attached_world_collision` and
-`check_attached_self_collision`. Only self-stops are removed.
+occupied cell, plus `check_attached_self_collision`. Only self-stops are removed.
 `AttachedVoxelCollision.ClearingThePayloadsOwnCellsKeepsThePayloadVsWorldCheck`
 (`cpp/openral_safety_kernel/test/test_collision.cpp`) pins it: payload cells
 cleared, a real obstacle 90 mm off its surface stays, kernel still stops and

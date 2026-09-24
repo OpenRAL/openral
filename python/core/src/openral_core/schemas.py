@@ -1529,7 +1529,7 @@ class CapsuleShape(BaseModel):
     The central segment runs along the local +Z axis from ``-length_m / 2``
     to ``+length_m / 2`` (the MJCF / URDF capsule convention); it is placed
     and oriented by the owning frame (``LinkCollisionGeometry.origin_xyz_rpy``
-    for a link, ``WorldCollisionPrimitive.pose`` for an obstacle).
+    for a link, ``AttachedCollisionPrimitive.pose_in_object`` for a payload).
     Capsules bound most robot links tightly, so the safety check stays
     conservative.
 
@@ -1589,8 +1589,7 @@ CollisionShape: TypeAlias = Annotated[
 """Discriminated union of convex collision primitives.
 
 Discriminator field is ``shape``. Used by ``LinkCollisionGeometry``
-(robot links), ``WorldCollisionPrimitive`` (world obstacles) and
-``AttachedCollisionPrimitive`` (carried payloads). Mesh primitives are
+(robot links) and ``AttachedCollisionPrimitive`` (carried payloads). Mesh primitives are
 excluded — the allocation-free safety kernel checks only convex analytic
 shapes; mesh-accurate collision is a planning-layer concern.
 
@@ -2532,30 +2531,6 @@ class DetectedObject(BaseModel):
     pose: Pose6D
     bbox_3d: tuple[float, float, float, float, float, float] | None = None
     track_id: int | None = None
-
-
-class WorldCollisionPrimitive(BaseModel):
-    """A placed convex obstacle volume in the world.
-
-    The world-frame analogue of ``LinkCollisionGeometry``: a convex
-    primitive plus the pose that places it. Populated by perception / SLAM and
-    consumed by the kernel's world-collision phase against the robot's link
-    capsules. A bounded, capped set is the kernel's world model (mesh
-    obstacles are out of scope for the allocation-free check).
-
-    Attributes:
-        shape: The convex primitive (capsule or sphere).
-        pose: Pose of the primitive's local origin in the world frame.
-        object_id: Optional stable identifier (e.g. a
-            ``DetectedObject.track_id`` rendered as text) surfaced in
-            ``CollisionEvidence.link_b_or_object``.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    shape: CollisionShape
-    pose: Pose6D
-    object_id: str | None = None
 
 
 class AttachmentEvidenceKind(str, Enum):
@@ -3721,9 +3696,6 @@ class WorldState(BaseModel):
         detected_objects: List of detected objects.
         battery_pct: Battery percentage in [0, 100].
         diagnostics: Per-component diagnostic status.
-        collision_primitives: Bounded set of placed convex obstacle volumes
-            the kernel checks robot links against (world-collision). Empty
-            until a perception / SLAM source populates it.
         attached_objects: Collision objects carried by robot links. These are
             absent from world occupancy and remain collision-active as payloads.
         attachment_revision: Monotonic producer revision for atomic snapshots.
@@ -3756,8 +3728,6 @@ class WorldState(BaseModel):
     detected_objects: list[DetectedObject] = Field(default_factory=list)
     battery_pct: float | None = None
     diagnostics: dict[str, Literal["ok", "warn", "error", "stale"]] = Field(default_factory=dict)
-    # Bounded world surface for kernel world-collision checking.
-    collision_primitives: list[WorldCollisionPrimitive] = Field(default_factory=list)
     attached_objects: list[AttachedCollisionObject] = Field(default_factory=list)
     attachment_revision: int = Field(default=0, ge=0)
     attachment_stamp_ns: int = Field(default=0, ge=0)

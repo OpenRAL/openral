@@ -2,7 +2,7 @@
 
 Covers the typed surface added for self/world-collision checking: the
 ``CollisionShape`` discriminated union, ``LinkCollisionGeometry`` /
-``WorldCollisionPrimitive`` / ``OccupancyGridRef``, the ``CollisionEvidence``
+``OccupancyGridRef``, the ``CollisionEvidence``
 ``FailureEvidence`` variant, and the real ``robots/openarm/robot.yaml``
 fixture carrying capsule/sphere link geometry + an allowed-collision matrix.
 
@@ -24,7 +24,6 @@ from openral_core import (
     Pose6D,
     RobotDescription,
     SphereShape,
-    WorldCollisionPrimitive,
     WorldState,
 )
 from openral_core.schemas import JointState
@@ -234,20 +233,14 @@ def test_collision_evidence_rejects_below_reactive_sentinel() -> None:
 
 
 def test_world_state_world_surface_defaults_empty() -> None:
-    """A WorldState with no obstacles has an empty/absent world surface."""
+    """A WorldState with no obstacles has an absent world surface."""
     ws = WorldState(stamp_ns=0, joint_state=JointState(name=["j1"], position=[0.0], stamp_ns=0))
-    assert ws.collision_primitives == []
     assert ws.occupancy_grid is None
 
 
-def test_world_collision_primitive_and_occupancy_grid_validate() -> None:
-    """A placed obstacle and an occupancy-grid reference validate against schema."""
+def test_occupancy_grid_validates() -> None:
+    """An occupancy-grid reference validates against schema."""
     origin = Pose6D(xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map")
-    obstacle = WorldCollisionPrimitive(
-        shape=SphereShape(radius_m=0.1),
-        pose=Pose6D(xyz=(0.5, 0.0, 0.2), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"),
-        object_id="mug-7",
-    )
     grid = OccupancyGridRef(
         frame_id="map",
         resolution_m=0.05,
@@ -256,7 +249,6 @@ def test_world_collision_primitive_and_occupancy_grid_validate() -> None:
         origin=origin,
         data_topic="/map",
     )
-    assert obstacle.object_id == "mug-7"
     assert grid.width == 200
 
 
