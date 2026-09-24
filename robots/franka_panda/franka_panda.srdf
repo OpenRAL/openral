@@ -60,7 +60,9 @@
   <disable_collisions link1="panda_link1" link2="panda_link4" reason="Never"/>
   <disable_collisions link1="panda_link2" link2="panda_link3" reason="Adjacent"/>
   <disable_collisions link1="panda_link2" link2="panda_link4" reason="Never"/>
-  <disable_collisions link1="panda_link2" link2="panda_link6" reason="Never"/>
+  <!-- Removed 2026-09-24 (PR #324 review): panda_link2 / panda_link6 was reason="Never", but the links
+       really collide inside the joint limits: 5 of 5 sampled in-limit poses where their hulls met, up to 3705 visual-mesh vertices of one inside the other; e.g. panda_joint1..7 = 2.207 0.413 1.711 -2.991 0.037 -0.002 -2.648
+       (docs/reference/collision-geometry-review.md). The kernel now checks the pair. -->
   <disable_collisions link1="panda_link3" link2="panda_link4" reason="Adjacent"/>
   <disable_collisions link1="panda_link3" link2="panda_link5" reason="Never"/>
   <disable_collisions link1="panda_link3" link2="panda_link6" reason="Never"/>

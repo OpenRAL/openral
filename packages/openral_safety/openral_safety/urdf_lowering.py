@@ -3,9 +3,10 @@
 Produces the hand-reviewable ``collision_geometry`` + ``allowed_collision_pairs``
 that ``robot.yaml`` carries and ``collision_params_from_description`` consumes:
 
-* **Geometry** — fit one conservative capsule/sphere per link from the URDF
-  ``<collision>`` (primitive → direct map; mesh → PCA bounding capsule that
-  contains every vertex, so the safety check never under-covers).
+* **Geometry** — fit one conservative capsule/sphere per link to the URDF
+  ``<collision>`` and ``<visual>`` geometry together (minimum-volume capsule
+  holding every vertex plus a declared headroom, so the safety check never
+  under-covers the part).
 * **ACM** — adjacent pairs, plus pairs *proved* always-colliding over their own
   relative-DoF subspace, plus the hand-reviewed rows of the SRDF
   ``disable_collisions`` block where one exists. Every verdict is taken with the
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
     _Arr = NDArray[np.float64]
 
 __all__ = [
+    "CAPSULE_HEADROOM_M",
     "LoweredCollisionModel",
     "LoweringSource",
     "acm_for_geometry",
@@ -109,52 +111,182 @@ def _mat_to_rpy(r: _Arr) -> tuple[float, float, float]:
     return roll, pitch, yaw
 
 
-def fit_capsule_to_vertices(vertices: _Arr) -> tuple[CapsuleShape, _Origin]:
-    """Fit a conservative bounding capsule (segment along +Z) to a vertex cloud.
+# Headroom every fitted primitive carries beyond the geometry it bounds: the
+# radius is grown by this much after the fit. It is a declared margin, not a fit
+# tolerance: it absorbs the manifest's 4-dp rendering of radius/length/origin
+# (at most ~0.1 mm of displacement over a link) with room to spare, so the
+# committed primitive — not just the in-memory fit — still contains every
+# vertex. `tests/unit/test_collision_geometry_enclosure_urdf.py` asserts that on
+# the written manifests.
+CAPSULE_HEADROOM_M = 0.001
+# Axis candidates for the capsule fit: the cloud's three principal axes plus a
+# Fibonacci hemisphere, then a local refinement. The search only changes how
+# TIGHT the capsule is — containment holds by construction for every axis.
+_AXIS_SEARCH_DIRS = 256
+_AXIS_REFINE_MIN_STEP = 1e-4
+# Clouds at least this large are reduced to their convex-hull vertices first.
+_HULL_REDUCE_MIN_POINTS = 64
 
-    PCA via SVD: the dominant principal component is the capsule axis. ``radius_m``
-    is the max distance of any vertex from the axis line; ``length_m`` is the
-    shortest segment on that axis whose capsule still holds every vertex, so the
-    hemispherical caps end at the cloud instead of a radius past it (a short, fat
-    cloud gets a zero-length capsule, i.e. its bounding sphere about the axis).
-    Every vertex therefore lies inside the result — a conservative
-    over-approximation, so the safety check never under-covers.
-    Returns the ``CapsuleShape`` plus its ``origin_xyz_rpy`` in the
-    same frame as ``vertices``: the segment midpoint and the rotation taking local
-    +Z onto the principal axis.
 
-    Args:
-        vertices: ``(N, 3)`` point cloud (N ≥ 1) in the link frame.
+def _circle_2(a: _Arr, b: _Arr) -> tuple[_Arr, float]:
+    import numpy as np
 
-    Returns:
-        ``(CapsuleShape, origin_xyz_rpy)``.
+    c = (a + b) / 2.0
+    return c, float(np.linalg.norm(a - c))
+
+
+def _circle_3(a: _Arr, b: _Arr, c: _Arr) -> tuple[_Arr, float]:
+    """Circumcircle of three 2-D points (the widest pair's circle if collinear)."""
+    import numpy as np
+
+    d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]))
+    if abs(d) < 1e-18:
+        pairs = [(a, b), (a, c), (b, c)]
+        return _circle_2(*max(pairs, key=lambda p: float(np.linalg.norm(p[0] - p[1]))))
+    sa, sb, sc = a @ a, b @ b, c @ c
+    ux = (sa * (b[1] - c[1]) + sb * (c[1] - a[1]) + sc * (a[1] - b[1])) / d
+    uy = (sa * (c[0] - b[0]) + sb * (a[0] - c[0]) + sc * (b[0] - a[0])) / d
+    center = np.array([ux, uy])
+    return center, float(np.linalg.norm(a - center))
+
+
+def _next_outside(pts: _Arr, start: int, stop: int, center: _Arr, radius: float) -> int:
+    """Index of the first point in ``pts[start:stop]`` outside the circle, or -1."""
+    import numpy as np
+
+    d = np.linalg.norm(pts[start:stop] - center, axis=1)
+    out = np.flatnonzero(d > radius * (1.0 + 1e-12) + 1e-15)
+    return start + int(out[0]) if out.size else -1
+
+
+def _min_enclosing_circle(pts: _Arr) -> tuple[_Arr, float]:
+    """Smallest circle holding every 2-D point (Welzl, iterative, vectorised scans).
+
+    Each loop only scans forward, so it terminates whatever floating point does
+    at the boundary. The capsule built on the centre takes its radius as the
+    true max distance (``_capsule_for_axis``), so a last-ulp miss here can only
+    loosen the fit, never let a point out. The fixed-seed shuffle keeps the
+    expected cost linear and the result reproducible.
     """
     import numpy as np
 
-    pts = np.asarray(vertices, dtype=np.float64)
-    centroid = pts.mean(axis=0)
-    centered = pts - centroid
-    # Principal axis = first right-singular vector of the centered cloud.
-    _, _, vh = np.linalg.svd(centered, full_matrices=False)
-    axis = vh[0] / np.linalg.norm(vh[0])
-    proj = centered @ axis
-    perp = centered - np.outer(proj, axis)
-    perp_dist = np.linalg.norm(perp, axis=1)
-    radius = max(float(perp_dist.max()), 1e-4)
-    # Shortest segment on this axis whose radius-``radius`` capsule still holds
-    # every vertex. A vertex at axial position t and axis distance d is inside
-    # iff the nearer segment end is within sqrt(r² - d²) of t along the axis,
-    # so the ends are lo = min(t + s) and hi = max(t - s). Using the full
-    # projection span instead let each hemispherical cap overhang the mesh by up
-    # to a whole radius (9.4 cm on panda_link5), which put the Franka's own hand
-    # inside link 5's capsule at its SRDF ``ready`` pose.
-    slack = np.sqrt(np.maximum(radius * radius - perp_dist * perp_dist, 0.0))
-    lo = float((proj + slack).min())
-    hi = float((proj - slack).max())
+    p = pts[np.random.default_rng(0).permutation(len(pts))]
+    n = len(p)
+    center, radius = p[0].copy(), 0.0
+    i = _next_outside(p, 1, n, center, radius)
+    while i >= 0:
+        center, radius = p[i].copy(), 0.0
+        j = _next_outside(p, 0, i, center, radius)
+        while j >= 0:
+            center, radius = _circle_2(p[i], p[j])
+            k = _next_outside(p, 0, j, center, radius)
+            while k >= 0:
+                center, radius = _circle_3(p[i], p[j], p[k])
+                k = _next_outside(p, k + 1, j, center, radius)
+            j = _next_outside(p, j + 1, i, center, radius)
+        i = _next_outside(p, i + 1, n, center, radius)
+    return center, radius
+
+
+def _capsule_for_axis(pts: _Arr, axis: _Arr) -> tuple[float, _Arr, _Arr, float]:
+    """Tightest capsule with direction ``axis`` holding every point.
+
+    The axis line goes through the centre of the minimal enclosing circle of the
+    points projected on the plane normal to ``axis``; the radius is the largest
+    distance of any point from that line; the segment is the shortest one on the
+    line whose capsule still holds every point (a point at axial position ``t``
+    and line distance ``d`` is inside iff the nearer end is within
+    ``sqrt(r² - d²)`` of ``t``). Returns ``(volume, end0, end1, radius)``.
+    """
+    import numpy as np
+
+    a = axis / np.linalg.norm(axis)
+    helper = np.array([1.0, 0.0, 0.0]) if abs(a[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    e1 = np.cross(a, helper)
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(a, e1)
+    planar = np.stack([pts @ e1, pts @ e2], axis=1)
+    c2, _ = _min_enclosing_circle(planar)
+    d = np.linalg.norm(planar - c2, axis=1)
+    radius = max(float(d.max()), 1e-4)
+    t = pts @ a
+    slack = np.sqrt(np.maximum(radius * radius - d * d, 0.0))
+    lo = float((t + slack).min())
+    hi = float((t - slack).max())
     if lo > hi:  # a short, fat cloud: one sphere anywhere in [hi, lo] holds it
         lo = hi = (lo + hi) / 2.0
-    length = hi - lo
-    center = centroid + axis * ((lo + hi) / 2.0)
+    base = c2[0] * e1 + c2[1] * e2
+    volume = math.pi * radius * radius * (hi - lo) + 4.0 / 3.0 * math.pi * radius**3
+    return volume, base + a * lo, base + a * hi, radius
+
+
+def fit_capsule_to_vertices(
+    vertices: _Arr, *, headroom_m: float = CAPSULE_HEADROOM_M
+) -> tuple[CapsuleShape, _Origin]:
+    """Fit a conservative, minimum-volume bounding capsule (segment along +Z) to a cloud.
+
+    The axis direction is searched (principal axes, a 256-direction Fibonacci
+    hemisphere, then a local refinement) for the capsule of least volume; for
+    each direction the axis line passes through the centre of the minimal
+    enclosing circle of the cloud's projection, and the segment is the shortest
+    whose capsule still holds every vertex (``_capsule_for_axis``). Every vertex
+    is inside the result by construction, whichever axis wins — the search only
+    decides how tight it is. The radius then grows by ``headroom_m`` so the
+    capsule keeps that clearance around every vertex after the manifest's 4-dp
+    rendering. A short, fat cloud gets a zero-length capsule (a sphere).
+
+    The principal axes the previous fitter used are always candidates. Measured
+    on the seven URDF-lowered robots' real link meshes, the result is 1.5–2.2×
+    the convex-hull volume against the PCA fit's 2.6–4.1×
+    (``docs/reference/collision-geometry-review.md``).
+
+    Args:
+        vertices: ``(N, 3)`` point cloud (N ≥ 1) in the link frame.
+        headroom_m: Declared clearance added to the fitted radius.
+
+    Returns:
+        ``(CapsuleShape, origin_xyz_rpy)`` in the same frame as ``vertices``:
+        the segment midpoint and the rotation taking local +Z onto the axis.
+    """
+    import numpy as np
+
+    pts = np.unique(np.asarray(vertices, dtype=np.float64).reshape(-1, 3), axis=0)
+    if len(pts) >= _HULL_REDUCE_MIN_POINTS:
+        import trimesh
+
+        # A convex capsule holds the cloud iff it holds the cloud's hull
+        # vertices, so fitting those is exact and 10-100x cheaper on CAD meshes.
+        pts = np.asarray(trimesh.convex.convex_hull(pts).vertices, dtype=np.float64)
+    _, _, vh = np.linalg.svd(pts - pts.mean(axis=0), full_matrices=False)
+    n = _AXIS_SEARCH_DIRS
+    i = np.arange(n) + 0.5
+    polar = np.arccos(1.0 - i / n)  # upper hemisphere: a capsule axis has no sign
+    azim = math.pi * (1.0 + 5.0**0.5) * i
+    fib = np.stack(
+        [np.cos(azim) * np.sin(polar), np.sin(azim) * np.sin(polar), np.cos(polar)], axis=1
+    )
+    best = min((_capsule_for_axis(pts, d) for d in [*vh, *fib]), key=lambda c: c[0])
+    seg = best[2] - best[1]
+    axis = seg / np.linalg.norm(seg) if np.linalg.norm(seg) > 1e-12 else vh[0]
+    step = 0.1
+    while step >= _AXIS_REFINE_MIN_STEP:
+        helper = np.array([1.0, 0.0, 0.0]) if abs(axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        e1 = np.cross(axis, helper)
+        e1 /= np.linalg.norm(e1)
+        e2 = np.cross(axis, e1)
+        improved = False
+        for delta in (e1, -e1, e2, -e2):
+            trial_axis = (axis + step * delta) / np.linalg.norm(axis + step * delta)
+            trial = _capsule_for_axis(pts, trial_axis)
+            if trial[0] < best[0] - 1e-15:
+                best, axis, improved = trial, trial_axis, True
+        if not improved:
+            step /= 2.0
+    _, end0, end1, radius = best
+    seg = end1 - end0
+    length = float(np.linalg.norm(seg))
+    axis = seg / length if length > 1e-12 else axis
+    center = (end0 + end1) / 2.0
     # Rotation taking local +Z onto `axis` (Rodrigues; handle the antiparallel case).
     z = np.array([0.0, 0.0, 1.0])
     v = np.cross(z, axis)
@@ -173,7 +305,7 @@ def fit_capsule_to_vertices(vertices: _Arr) -> tuple[CapsuleShape, _Origin]:
         pitch,
         yaw,
     )
-    return CapsuleShape(radius_m=radius, length_m=length), origin
+    return CapsuleShape(radius_m=radius + headroom_m, length_m=length), origin
 
 
 def _origin_matrix(origin: object) -> _Arr:
@@ -197,26 +329,37 @@ def _box_vertices(size: object) -> _Arr:
 
 
 def _cylinder_vertices(radius: float, length: float) -> _Arr:
-    """Rim points at both caps of a +Z cylinder (radius, length) — bounds R and L."""
+    """Cap rims of a polygonal prism CIRCUMSCRIBING a +Z cylinder (radius, length).
+
+    The 24-gon's apothem is ``radius``, so the prism — and any convex primitive
+    holding its vertices — contains the whole cylinder, not just sampled rim
+    points (an inscribed rim would leave ``r·(1 - cos 7.5°)`` uncovered between
+    samples).
+    """
     import numpy as np
 
+    n = 24
     h = length / 2.0
-    ang = np.linspace(0.0, 2.0 * math.pi, 24, endpoint=False)
-    ring = np.stack([radius * np.cos(ang), radius * np.sin(ang), np.zeros_like(ang)], axis=1)
+    circ = radius / math.cos(math.pi / n)
+    ang = np.linspace(0.0, 2.0 * math.pi, n, endpoint=False)
+    ring = np.stack([circ * np.cos(ang), circ * np.sin(ang), np.zeros_like(ang)], axis=1)
     return np.vstack([ring + np.array([0.0, 0.0, h]), ring + np.array([0.0, 0.0, -h])])
 
 
 def _sphere_vertices(radius: float) -> _Arr:
-    """A coarse surface sampling of a sphere (so it bounds when mixed with geoms)."""
-    import numpy as np
+    """Vertices of a polyhedron CIRCUMSCRIBING a sphere (a scaled icosphere).
 
-    u = np.linspace(0.0, 2.0 * math.pi, 12, endpoint=False)
-    v = np.linspace(0.0, math.pi, 6)
-    uu, vv = np.meshgrid(u, v)
-    return np.stack(
-        [radius * np.cos(uu) * np.sin(vv), radius * np.sin(uu) * np.sin(vv), radius * np.cos(vv)],
-        axis=-1,
-    ).reshape(-1, 3)
+    Scaled so the nearest face plane sits at ``radius``: the polyhedron, hence any
+    convex primitive holding these vertices, contains the whole sphere.
+    """
+    import numpy as np
+    import trimesh
+
+    ico = trimesh.creation.icosphere(subdivisions=2, radius=1.0)
+    normals = np.asarray(ico.face_normals, dtype=np.float64)
+    first = np.asarray(ico.vertices, dtype=np.float64)[np.asarray(ico.faces)[:, 0]]
+    inradius = float(np.einsum("ij,ij->i", normals, first).min())
+    return np.asarray(ico.vertices, dtype=np.float64) * (radius / inradius)
 
 
 def _apply(transform: _Arr, pts: _Arr) -> _Arr:
@@ -227,19 +370,31 @@ def _apply(transform: _Arr, pts: _Arr) -> _Arr:
 
 
 def lower_link_geometry(urdf_path: str) -> list[LinkCollisionGeometry]:
-    """One conservative ``LinkCollisionGeometry`` per URDF link with a ``<collision>``.
+    """One conservative ``LinkCollisionGeometry`` per URDF link with geometry.
 
-    Primitive collisions map by exact analytic bounds (box → 8 corners; cylinder →
-    cap rims; sphere → an exact ``SphereShape``); mesh collisions load their
-    vertices (``trimesh``) and PCA-fit a bounding capsule. All vertices are first
-    transformed by the ``<collision><origin>`` into the link frame, so the emitted
-    ``origin_xyz_rpy`` is link-relative (what the kernel's forward kinematics
-    expects). Links with no collision element — or fewer than 4 cloud points and no
-    sphere — are skipped.
+    The primitive bounds the link's ``<collision>`` **and** ``<visual>``
+    geometry together. A vendor's ``<collision>`` block is a simplification, and
+    measured on the shipped robots it is often *smaller* than the part: H1's is a
+    set of placeholder spheres/cylinders the real torso reaches 549 mm past, G1's
+    shoulder cylinders miss the shoulder by 61 mm, SO-100's meshes leave out the
+    servo housings (26 mm), Flexiv's 30-vertex meshes cut 3 mm into the CAD. The
+    visual mesh is the CAD of the part the robot is made of, so the fit holds
+    both (``docs/reference/collision-geometry-review.md``).
 
-    A link whose sole collision is a single sphere emits an exact ``SphereShape``;
-    every other case (mesh / box / cylinder / multi-geom) emits a capsule that
-    contains the union of all its collision vertices.
+    Boxes map to their 8 corners, cylinders and spheres to circumscribing
+    polytopes, meshes to their vertices (``trimesh``); everything is placed in
+    the link frame by its ``<origin>`` and fitted with
+    ``fit_capsule_to_vertices`` (minimum volume, declared headroom). A link whose
+    only geometry is one sphere ``<collision>`` emits that exact ``SphereShape``.
+
+    Fails closed on partial resolution: a link some of whose geometry loads and
+    some does not raises, because fitting the part that loaded would under-cover
+    the link. A link none of whose geometry resolves is skipped with a warning
+    per missing mesh (the openarm URDF's deliberately unresolvable refs, which
+    route it to the MJCF lowering).
+
+    Raises:
+        ROSConfigError: If a link's geometry resolves only partially.
     """
     import numpy as np
 
@@ -249,10 +404,11 @@ def lower_link_geometry(urdf_path: str) -> list[LinkCollisionGeometry]:
     out: list[LinkCollisionGeometry] = []
     for link_name, link in model.link_map.items():  # type: ignore[attr-defined]  # reason: yourdfpy URDF
         collisions = list(getattr(link, "collisions", None) or [])
+        visuals = list(getattr(link, "visuals", None) or [])
+        elements = collisions + visuals
         if not collisions:
             continue
-        # Exact-sphere fast path: a single sphere collision → an exact SphereShape.
-        if len(collisions) == 1 and getattr(collisions[0].geometry, "sphere", None) is not None:
+        if len(elements) == 1 and getattr(collisions[0].geometry, "sphere", None) is not None:
             sph = collisions[0].geometry.sphere
             tf = _origin_matrix(collisions[0].origin)
             cx, cy, cz = (float(tf[0, 3]), float(tf[1, 3]), float(tf[2, 3]))
@@ -266,13 +422,23 @@ def lower_link_geometry(urdf_path: str) -> list[LinkCollisionGeometry]:
             continue
 
         clouds: list[_Arr] = []
-        for col in collisions:
-            verts = _collision_local_vertices(col, handler)
+        missing: list[str] = []
+        for el in elements:
+            verts = _collision_local_vertices(el, handler)
             if verts is None or len(verts) == 0:
+                mesh = getattr(el.geometry, "mesh", None)
+                missing.append(getattr(mesh, "filename", "<unsupported geometry>"))
                 continue
-            clouds.append(_apply(_origin_matrix(col.origin), verts))
+            clouds.append(_apply(_origin_matrix(el.origin), verts))
         if not clouds:
             continue
+        if missing:
+            raise ROSConfigError(
+                f"link {link_name!r}: geometry {missing} did not load while the rest of "
+                "the link did; a primitive fitted to the part that loaded would "
+                "under-cover the link. Resolve the refs (vendored URDFs use "
+                "`rd:<module>:<relpath>`) before lowering."
+            )
         cloud = np.vstack(clouds)
         if len(cloud) < 4:
             continue
@@ -282,10 +448,11 @@ def lower_link_geometry(urdf_path: str) -> list[LinkCollisionGeometry]:
 
 
 def _collision_local_vertices(col: object, handler: object) -> _Arr | None:
-    """Vertices of one ``<collision>`` geometry, in the geometry's own local frame.
+    """Vertices of one ``<collision>``/``<visual>`` geometry, in its own local frame.
 
-    Mesh → loaded vertices × scale; box / cylinder → analytic samples; sphere →
-    a coarse surface sampling (so a sphere mixed with other geoms still bounds).
+    Mesh → loaded vertices × scale; box → corners; cylinder / sphere → the
+    vertices of a circumscribing polytope, so a convex primitive holding them
+    holds the whole solid.
     """
     import os
 
@@ -309,7 +476,7 @@ def _collision_local_vertices(col: object, handler: object) -> _Arr | None:
             # Never skip a collision link silently — an absent mesh means the link
             # would carry no geometry and go unchecked by the kernel (§1.4).
             warnings.warn(
-                f"collision mesh not found, link will carry no geometry: {mesh.filename!r}",
+                f"mesh not found: {mesh.filename!r}",
                 stacklevel=2,
             )
             return None

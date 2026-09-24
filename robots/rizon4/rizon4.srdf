@@ -7,7 +7,9 @@
   <disable_collisions link1="base_link" link2="link1" reason="Adjacent"/>
   <disable_collisions link1="base_link" link2="link2" reason="Never"/>
   <disable_collisions link1="base_link" link2="link3" reason="Never"/>
-  <disable_collisions link1="base_link" link2="link4" reason="Never"/>
+  <!-- Removed 2026-09-24 (PR #324 review): base_link / link4 was reason="Never", but the links
+       really collide inside the joint limits: 2 of 2 sampled in-limit poses where their hulls met, up to 112 visual-mesh vertices of one inside the other; e.g. joint1..7 = -0.588 2.353 2.534 2.423 -1.375 2.564 1.146
+       (docs/reference/collision-geometry-review.md). The kernel now checks the pair. -->
   <disable_collisions link1="link1" link2="link2" reason="Adjacent"/>
   <disable_collisions link1="link1" link2="link3" reason="Never"/>
   <disable_collisions link1="link1" link2="link4" reason="Never"/>

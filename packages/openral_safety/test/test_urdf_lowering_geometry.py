@@ -80,7 +80,7 @@ def test_fit_capsule_segment_is_the_shortest_that_contains(seed: int) -> None:
     """
     rng = np.random.default_rng(seed)
     pts = rng.normal(0.0, 1.0, (400, 3)) * np.array([0.15, 0.04, 0.03])
-    shape, origin = fit_capsule_to_vertices(pts)
+    shape, origin = fit_capsule_to_vertices(pts, headroom_m=0.0)
     assert all(_point_in_capsule(p, shape, origin) for p in pts)
     local = _capsule_local(pts, origin)
     for sign in (-1.0, 1.0):
@@ -96,10 +96,49 @@ def test_fit_capsule_of_a_thin_disk_is_its_bounding_sphere() -> None:
     ring = np.stack([0.04 * np.cos(ang), 0.04 * np.sin(ang), np.zeros_like(ang)], axis=1)
     lift = np.array([0.0, 0.0, 0.005])
     pts = np.vstack([ring + lift, ring - lift])
-    shape, origin = fit_capsule_to_vertices(pts)
+    shape, origin = fit_capsule_to_vertices(pts, headroom_m=0.0)
     assert all(_point_in_capsule(p, shape, origin) for p in pts)
     assert shape.length_m == pytest.approx(0.0, abs=1e-9)
     assert shape.radius_m == pytest.approx(np.hypot(0.04, 0.005))
+
+
+def test_fit_capsule_keeps_its_declared_headroom_around_every_vertex() -> None:
+    """The committed capsule clears every vertex by ``CAPSULE_HEADROOM_M``, not by zero."""
+    from openral_safety.urdf_lowering import CAPSULE_HEADROOM_M
+
+    rng = np.random.default_rng(3)
+    pts = rng.normal(0.0, 1.0, (300, 3)) * np.array([0.12, 0.05, 0.02])
+    tight, origin = fit_capsule_to_vertices(pts, headroom_m=0.0)
+    padded, padded_origin = fit_capsule_to_vertices(pts)
+    assert padded_origin == origin
+    assert padded.length_m == tight.length_m
+    assert padded.radius_m == pytest.approx(tight.radius_m + CAPSULE_HEADROOM_M)
+    local = _capsule_local(pts, origin)
+    half = padded.length_m / 2.0
+    gap = np.hypot(local[:, 0], local[:, 1]) ** 2 + (np.abs(local[:, 2]) - half).clip(0) ** 2
+    assert (padded.radius_m - np.sqrt(gap)).min() >= CAPSULE_HEADROOM_M - 1e-12
+
+
+def test_fit_capsule_is_never_larger_than_the_pca_axis_capsule() -> None:
+    """The PCA axis is a candidate of the search, so the result can only be smaller.
+
+    Checked on an L-shaped cloud, where the principal axis is not the best one.
+    """
+    import math
+
+    rng = np.random.default_rng(4)
+    noise = rng.normal(0, 0.01, (260, 3))
+    leg_a = noise[:200] + np.column_stack([rng.uniform(0, 0.3, 200), np.zeros(200), np.zeros(200)])
+    leg_b = noise[200:] + np.column_stack([np.zeros(60), rng.uniform(0, 0.08, 60), np.zeros(60)])
+    pts = np.vstack([leg_a, leg_b])
+    shape, origin = fit_capsule_to_vertices(pts, headroom_m=0.0)
+    assert all(_point_in_capsule(p, shape, origin) for p in pts)
+    from openral_safety.urdf_lowering import _capsule_for_axis
+
+    pca_axis = np.linalg.svd(pts - pts.mean(axis=0), full_matrices=False)[2][0]
+    pca_volume = _capsule_for_axis(pts, pca_axis)[0]
+    volume = math.pi * shape.radius_m**2 * (shape.length_m + 4.0 * shape.radius_m / 3.0)
+    assert volume <= pca_volume * (1 + 1e-9)
 
 
 # ── lower_link_geometry: real + inline URDFs ──────────────────────────────────

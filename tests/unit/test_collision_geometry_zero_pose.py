@@ -75,7 +75,12 @@ def _joint_motion(joint_type: JointType, axis: tuple[float, float, float], q: fl
 
 def _link_poses(robot: RobotDescription, q: dict[str, float]) -> dict[str, np.ndarray]:
     """World pose of every link at joint positions ``q`` (missing joints at 0)."""
-    poses: dict[str, np.ndarray] = {robot.base_frame: np.eye(4)}
+    edges = [*robot.fixed_attachments, *robot.joints]
+    roots = {e.parent_link for e in edges} - {e.child_link for e in edges}
+    # The kernel roots its model at the chain's single root; a `base_frame`
+    # outside the chain (UR's `ur5e_base_link`) names that same frame.
+    root = robot.base_frame if robot.base_frame in roots or len(roots) != 1 else roots.pop()
+    poses: dict[str, np.ndarray] = {root: np.eye(4)}
     pending = [
         (a.parent_link, a.child_link, _tf(a.origin_xyz, a.origin_rpy))
         for a in robot.fixed_attachments
@@ -152,9 +157,15 @@ def _tripping_pairs(robot: RobotDescription, q: dict[str, float]) -> list[tuple[
         for g in robot.collision_geometry
         if g.link_name in poses
     ]
+    # A box pair whose links both declare `tight_geometry` is decided by the
+    # kernel's exact-hull narrow phase (`hull_hull_distance`), which this port
+    # does not model; the box distance would report the box's corner slop as a
+    # trip. That verdict is pinned end to end by
+    # tests/sim/safety/test_kernel_panda_link5_link7.py instead.
+    tight = {g.link_name for g in robot.collision_geometry if g.tight_geometry is not None}
     out = []
     for (a, sa, ta), (b, sb, tb) in itertools.combinations(sorted(placed, key=lambda c: c[0]), 2):
-        if a == b or frozenset((a, b)) in allowed:
+        if a == b or frozenset((a, b)) in allowed or {a, b} <= tight:
             continue
         gap = float(shape_distance(sa, ta, sb, tb)[0])
         if gap <= margin:
@@ -167,24 +178,26 @@ def _load(name: str) -> RobotDescription:
 
 
 # Manifests whose geometry still trips at rest, pending a safety-WG decision.
-# Strict xfails so a fix flips them green and a regression is loud.
+# Strict xfails so a fix flips them green and a regression is loud. All three
+# are the same finding (docs/reference/collision-geometry-review.md §5): the
+# capsules now bound the whole link (collision + visual geometry, 1 mm headroom),
+# and at rest these links sit closer than any capsule set can express — the
+# exact convex hulls are clear, but single capsules AND chains of 2-4 capsules
+# per link still overlap. The honest fix is a representation change (the
+# kernel's existing box + tight_geometry hull narrow phase), not an exemption.
 _UNADJUDICATED: dict[str, str] = {
-    # Arms hanging at q = 0 sit 1-4 cm from the torso mesh (MuJoCo hull gaps
-    # elbow +0.037, shoulder_yaw +0.009, shoulder_roll +0.002 m), but the torso
-    # is a tapered block whose widest point (|y| = 0.1077 m, at the shoulder
-    # mounts) is wider than the gap to the upper arms below it: no single
-    # primitive per link that bounds the torso mesh clears both upper arms —
-    # not the capsule (r = 0.169 m), not its bounding box (-0.041 m against
-    # the upper-arm capsules). Needs the kernel's box tight_geometry (hull
-    # narrow phase) on torso/upper arm, or a safety-WG exemption.
-    "g1": "arms-vs-torso at q = 0; one bounding primitive per link cannot clear it",
-    # q = 0 of this URDF is the folded rest (upper arm lying on the base): the
-    # meshes are in contact there (3 base vertices inside upper_arm's mesh and
-    # 4 the other way; MuJoCo hull gap -0.0003 m), so no primitive that bounds
-    # both links can clear it at margin 0, and there is no declared rest pose
-    # (no SRDF) to check instead. Needs a safety-WG call: a measured rest pose,
-    # an allowed pair, or the SO-101 box model + negative margin of issue #84.
-    "so100_follower": "base/upper_arm meshes in contact at the folded q = 0 pose",
+    # q = 0, arms hanging: shoulder_yaw <-> torso hull gap +7.8 / +9.2 mm
+    # (left/right); the capsules overlap by -12.6 / -17.1 mm.
+    "g1": "shoulder_yaw vs torso hull gap +7.8 mm at q = 0; no capsule set clears it",
+    # q = 0: shoulder_roll <-> torso hull gap +1.2 mm, shoulder_yaw +27.4 mm,
+    # elbow +55.0 mm, hip_pitch <-> pelvis +38.3 mm; capsules -0.4 ... -12.1 mm.
+    "h1": "shoulder_roll vs torso hull gap +1.2 mm at q = 0; no capsule set clears it",
+    # q = 0 is this URDF's folded rest: base <-> upper_arm hulls overlap (nearest
+    # vertices 1.0 mm apart, the arm resting on the base), lower_arm <-> shoulder
+    # +0.9 mm, shoulder/upper_arm <-> wrist +14-16 mm. There is no declared rest
+    # pose (no SRDF) to check instead. Needs a measured rest pose or the hull
+    # narrow phase, and a WG call on the resting contact.
+    "so100_follower": "folded q = 0: base/upper_arm resting contact, lower_arm/shoulder +0.9 mm",
 }
 
 
@@ -218,14 +231,18 @@ def test_no_non_allowed_pair_interpenetrates_at_rest(manifest_path: Path) -> Non
     )
 
 
-# A configuration per fixed robot, inside every joint limit, where the real
-# meshes interpenetrate — the fix must not have bought the rest pose by
-# blinding the kernel there. Evidence (vertices of the first link inside the
-# second link's watertight mesh at this q):
-#   franka_panda: 40 panda_hand vertices inside panda_link1 (panda_description
-#     URDF collision meshes) — elbow fully folded, hand driven into the shoulder.
-#   h1: 627 left_elbow_link vertices inside torso_link (mujoco_menagerie
-#     unitree_h1 meshes) — left forearm swung into the chest.
+# A configuration per robot, inside every joint limit, where the real meshes
+# interpenetrate — tightening a primitive must never have bought anything by
+# blinding the kernel there. Evidence (vertices of the first link's visual mesh
+# inside the second link's watertight mesh at this q, robot_descriptions meshes):
+#   franka_panda: 40 panda_hand vertices inside panda_link1 — elbow fully folded.
+#   h1 (1): 627 left_elbow_link vertices inside torso_link — forearm into the chest.
+#   h1 (2): the PR #324 review's "forearm miss": 13 604 left_elbow_link vertices
+#     inside torso_link, which the placeholder-derived capsules did not trip on.
+#   ur5e / ur10e: 32 601 / 33 530 wrist_2_link vertices inside upper_arm_link.
+#   rizon4: 93 base_link vertices inside link6.
+#   so100_follower: 207 wrist vertices inside base.
+#   g1: 163 torso_link vertices inside right_elbow_link.
 _REAL_COLLISIONS: list[tuple[str, dict[str, float], tuple[str, str]]] = [
     (
         "franka_panda",
@@ -242,11 +259,107 @@ _REAL_COLLISIONS: list[tuple[str, dict[str, float], tuple[str, str]]] = [
         },
         ("left_elbow_link", "torso_link"),
     ),
+    (
+        "h1",
+        {
+            "left_shoulder_pitch": 0.99,
+            "left_shoulder_roll": -0.15,
+            "left_shoulder_yaw": -1.03,
+            "left_elbow": -0.62,
+        },
+        ("left_elbow_link", "torso_link"),
+    ),
+    (
+        "ur5e",
+        {
+            "shoulder_pan_joint": -0.04,
+            "shoulder_lift_joint": -3.17,
+            "elbow_joint": -3.07,
+            "wrist_1_joint": -3.87,
+            "wrist_2_joint": 2.41,
+            "wrist_3_joint": -3.76,
+        },
+        ("upper_arm_link", "wrist_2_link"),
+    ),
+    (
+        "ur10e",
+        {
+            "shoulder_pan_joint": -0.04,
+            "shoulder_lift_joint": -3.17,
+            "elbow_joint": -3.07,
+            "wrist_1_joint": -3.87,
+            "wrist_2_joint": 2.41,
+            "wrist_3_joint": -3.76,
+        },
+        ("upper_arm_link", "wrist_2_link"),
+    ),
+    (
+        "rizon4",
+        {
+            "joint1": 1.82,
+            "joint2": -2.29,
+            "joint3": 0.78,
+            "joint4": 1.8,
+            "joint5": 0.08,
+            "joint6": 2.95,
+            "joint7": -1.67,
+        },
+        ("base_link", "link6"),
+    ),
+    (
+        "so100_follower",
+        {
+            "shoulder_pan": 0.52,
+            "shoulder_lift": 1.39,
+            "elbow_flex": 0.96,
+            "wrist_flex": -0.96,
+            "wrist_roll": -1.26,
+            "gripper": 0.87,
+        },
+        ("base", "wrist"),
+    ),
+    (
+        "g1",
+        {
+            "left_hip_pitch_joint": 2.76,
+            "left_hip_roll_joint": 1.54,
+            "left_hip_yaw_joint": 0.58,
+            "left_knee_joint": 1.81,
+            "left_ankle_pitch_joint": 0.07,
+            "left_ankle_roll_joint": -0.18,
+            "right_hip_pitch_joint": -0.15,
+            "right_hip_roll_joint": -2.13,
+            "right_hip_yaw_joint": -0.54,
+            "right_knee_joint": 0.2,
+            "right_ankle_pitch_joint": 0.48,
+            "right_ankle_roll_joint": -0.15,
+            "waist_yaw_joint": 0.9,
+            "waist_roll_joint": -0.21,
+            "waist_pitch_joint": 0.39,
+            "left_shoulder_pitch_joint": 0.72,
+            "left_shoulder_roll_joint": -1.08,
+            "left_shoulder_yaw_joint": 1.81,
+            "left_elbow_joint": 1.92,
+            "left_wrist_roll_joint": 1.59,
+            "left_wrist_pitch_joint": 0.23,
+            "left_wrist_yaw_joint": -1.14,
+            "right_shoulder_pitch_joint": -1.98,
+            "right_shoulder_roll_joint": 1.31,
+            "right_shoulder_yaw_joint": 0.27,
+            "right_elbow_joint": -0.48,
+            "right_wrist_roll_joint": 1.51,
+            "right_wrist_pitch_joint": 0.46,
+            "right_wrist_yaw_joint": 0.23,
+        },
+        ("right_elbow_link", "torso_link"),
+    ),
 ]
 
 
 @pytest.mark.parametrize(
-    ("name", "q_overrides", "pair"), _REAL_COLLISIONS, ids=[r[0] for r in _REAL_COLLISIONS]
+    ("name", "q_overrides", "pair"),
+    _REAL_COLLISIONS,
+    ids=[f"{r[0]}-{i}" for i, r in enumerate(_REAL_COLLISIONS)],
 )
 def test_real_self_collision_still_trips(
     name: str, q_overrides: dict[str, float], pair: tuple[str, str]

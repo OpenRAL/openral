@@ -131,20 +131,22 @@ def test_shipped_geometry_is_tighter_than_a_re_lower(robot_name: str) -> None:
     assert all(f.volume_ratio > 1.0 or f.circumradius_ratio > 1.0 for f in loosening)
 
 
-def test_panda_mobile_relower_would_inflate_every_arm_link() -> None:
+def test_panda_mobile_relower_would_inflate_five_arm_links() -> None:
     """The specific hazard #157 flagged, measured link by link.
 
     ``panda_mobile``'s kernel collision model is ``panda_link1..7`` and nothing
-    else, so "every arm link" is the whole model: a re-lower would loosen all of
-    it at once, not a corner of it.
+    else, so a re-lower would loosen most of the model at once, not a corner of it.
     """
     _current, _spliced, loosening = _lowering(Path("robots/panda_mobile/robot.yaml"))
 
-    assert {f.link_name for f in loosening} == {f"panda_link{i}" for i in range(1, 8)}
-    # By volume: 1.18x (link3/4) to 2.08x (link6). The circumradius no longer
-    # grows on every link since the lowering stopped overhanging capsule caps by a
-    # radius, so volume is the axis that carries the hazard for all seven.
-    assert min(f.volume_ratio for f in loosening) > 1.15
+    # Since the lowering fits a minimum-volume capsule to the collision + visual
+    # meshes, link3/link4's capsules are no larger than the hand-fitted boxes, so
+    # the guard flags five links, not seven: by volume 1.06x (link1) to 1.31x
+    # (link7), and link5 by circumradius at 0.995x the volume
+    # (docs/reference/collision-geometry-review.md). Still a loosening the guard
+    # must refuse.
+    assert {f.link_name for f in loosening} == {f"panda_link{i}" for i in (1, 2, 5, 6, 7)}
+    assert max(f.volume_ratio for f in loosening) > 1.25
 
 
 @pytest.mark.parametrize("robot_name", ["franka_panda", "ur5e"])
