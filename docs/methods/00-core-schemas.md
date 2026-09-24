@@ -508,9 +508,11 @@ _The single resolver for robot description assets — URDF / MJCF / SRDF._
 `HalParameters` also carries `can_bus_bindings: dict[str, str]`, mapping a `defaults` key to the role token naming which physical CAN bus fills it — matched by token, never position, since a CAN interface name is a host property, not a robot one.
 
 ### `python/core/src/openral_core/gpu.py`
-_Torch-free GPU VRAM probe shared across layers, so the CLI and the reasoner ROS node share one `nvidia-smi` query instead of each carrying its own copy._
+_Torch-free GPU probes shared across layers: one `nvidia-smi` VRAM query for the CLI and the reasoner ROS node, and one Tegra/L4T host probe for the CLI, the GStreamer platform probe and the hardware detector._
 
-- `detect_gpu_vram_gb(field) -> float` (L17) — One `nvidia-smi --query-gpu=<field>` value for GPU 0 in GB; `0.0` on any failure so callers skip their check rather than block.
+- const `TEGRA_RELEASE_PATH: Final[Path]` — `/etc/nv_tegra_release`, present on every L4T (Jetson) image. (L23)
+- `is_tegra_host(release_path=TEGRA_RELEASE_PATH) -> bool` — The one Tegra/L4T probe, shared by `openral_cli.deploy_sim._prepare_launch_env` (allocator default), `openral_runner…gstreamer.pipeline.detect_platform` and `openral_detect.probes.gpu._probe_jetson`. Answers "L4T image", not "unified memory": DGX Spark (GB10) runs DGX OS. (L26)
+- `detect_gpu_vram_gb(field) -> float` (L40) — One `nvidia-smi --query-gpu=<field>` value for GPU 0 in GB; `0.0` on any failure so callers skip their check rather than block.
 
 ### `python/core/src/openral_core/can.py`
 _Robot-agnostic SocketCAN transport discovery — a CAN-bus robot is invisible to USB/serial discovery, so this is the one place that reads the kernel's view of CAN links. Linux-only, dependency-free, needs no root, and never perturbs a running robot._

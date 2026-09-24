@@ -346,12 +346,12 @@ _Query-time joiner for rosbag2 (mcap) ↔ OTel spans. Backs `openral replay` + `
 - `@dataclass(frozen=True) class TimelineEntry(kind, ts_ns, trace_id, topic, span_name, attrs, duration_ms)` (correlator.py L27) — One row of the joined timeline; `.to_json()` returns a plain dict.
 - `list_bag_trace_ids(bag_messages) -> list[dict]` (correlator.py L68) — Distinct trace_ids in the bag with counts, busiest first.
 - `build_timeline(bag_messages, spans, *, trace_id=None) -> list[TimelineEntry]` (correlator.py L95) — Pure join. Filters both inputs to `trace_id`, merges, sorts ascending by `ts_ns`.
-- `RECORD_PROFILES: dict[str, dict[str, list[str]]]` (cli.py L48) — Slim and full topic + regex presets.
-- `build_record_command(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=()) -> list[str]` (cli.py L91) — Compose `ros2 bag record` argv.
-- `@dataclass(frozen=True) class ReplayResult(trace_id, bag_trace_ids, timeline, bag_path)` (cli.py L139) — `.to_json()` returns a plain dict.
-- `run_replay(*, bag_path, trace_id, dashboard_url) -> ReplayResult` (cli.py L168) — Read a bag, fetch matching spans from the dashboard, return the joined timeline.
-- `run_record(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=(), dry_run=False) -> tuple[list[str], CompletedProcess | None]` (cli.py L216) — Spawn `ros2 bag record` in a new process group; forwards SIGINT/SIGTERM received by the parent as **SIGINT** to the child group so rosbag2 flushes `metadata.yaml` cleanly. Waits up to 5 s after the child exits for that file to appear.
-- `write_timeline(result: ReplayResult, out_path: Path) -> None` (cli.py L289) — Persist the timeline JSON.
+- `RECORD_PROFILES: dict[str, dict[str, list[str]]]` (cli.py L52) — Slim and full topic + regex + topic-type presets (`full` records `LaserScan` / `PointCloud2` / `Imu` by type).
+- `build_record_command(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=()) -> list[str]` (cli.py L102) — Compose `ros2 bag record` argv.
+- `@dataclass(frozen=True) class ReplayResult(trace_id, bag_trace_ids, timeline, bag_path)` (cli.py L156) — `.to_json()` returns a plain dict.
+- `run_replay(*, bag_path, trace_id, dashboard_url) -> ReplayResult` (cli.py L185) — Read a bag, fetch matching spans from the dashboard, return the joined timeline.
+- `run_record(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=(), dry_run=False) -> tuple[list[str], CompletedProcess | None]` (cli.py L233) — Spawn `ros2 bag record` in a new process group; forwards SIGINT/SIGTERM received by the parent as **SIGINT** to the child group so rosbag2 flushes `metadata.yaml` cleanly. Waits up to 5 s after the child exits for that file to appear.
+- `write_timeline(result: ReplayResult, out_path: Path) -> None` (cli.py L306) — Persist the timeline JSON.
 
 ### `tools/rskill_publisher.py`
 _Package and publish a local rSkill directory to the HF Hub._
@@ -650,10 +650,10 @@ _Shared NF4 quantize + pre-quantized meta-load helpers for the Robometer reward 
 ### `tools/_robometer_scorer.py`
 _In-process stateless scorer for the Robometer-4B reward monitor, companion to `RobometerInProcessReward`. Loaded directly by `reward_monitor_node` — no separate process or dedicated venv. Meta-builds lerobot's native reward-model skeleton and drops in OpenRAL's NF4 pre-quantized weights directly, with no bf16 spike and no extra download._
 
-- `_NATIVE_CONFIG_REPO: str` (L50) — `"lerobot/Robometer-4B"`, the HF repo `_native_config` downloads `config.json` from to meta-build the native module skeleton.
-- `class Scorer` (L103) — Meta-builds the native `RobometerRewardModel` and remaps + loads the NF4 prequant pack.
-  - `__init__(weights, device="cuda", *, meta_buffers=True)` (L106) — `meta_buffers=False` builds buffers for real from the modules' own `__init__`: the reference `tests/sim/test_reward_nf4_buffer_equivalence.py` compares the meta load against (issue #304). Seeding `original_inv_freq` from `inv_freq` raises unless the rotary module's `rope_type` is `"default"`.
-  - `score(frames_rgb, task, num_bins) -> tuple[list[float], list[float]]` (L210) — Computes per-frame progress/success via the module's logit-decoding path (not the scalar-only `compute_reward`). `num_bins` is accepted for interface parity but unused.
+- `_NATIVE_CONFIG_REPO: str` (L51) — `"lerobot/Robometer-4B"`, the HF repo `_native_config` downloads `config.json` from to meta-build the native module skeleton.
+- `class Scorer` (L104) — Meta-builds the native `RobometerRewardModel` and remaps + loads the NF4 prequant pack.
+  - `__init__(weights, device="cuda", *, meta_buffers=True)` (L107) — `meta_buffers=False` builds buffers for real from the modules' own `__init__`: the reference `tests/sim/test_reward_nf4_buffer_equivalence.py` compares the meta load against (issue #304). Seeding `original_inv_freq` from `inv_freq` raises unless the rotary module's `rope_type` is `"default"`.
+  - `score(frames_rgb, task, num_bins) -> tuple[list[float], list[float]]` (L211) — Computes per-frame progress/success via the module's logit-decoding path (not the scalar-only `compute_reward`). `num_bins` is accepted for interface parity but unused.
 
 ### `tools/build_qwen_vlm_nf4_checkpoint.py`
 _Reproducible recipe for the published `OpenRAL/rskill-qwen35_4b-any-general-nf4` pre-quantized NF4 checkpoint. Runs in the sidecar venv. Distinct from `quantize_rskill.py`, which writes an `install_prequantized_linears`-loaded pack for the in-process lerobot runtime; this writes a transformers-native `save_pretrained` checkpoint for the isolated VLM sidecar._

@@ -41,6 +41,7 @@ q.set_cublas_workspace_env()  # MUST precede CUDA init (torch import below)
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 from numpy.typing import NDArray  # noqa: E402
+from openral_core.exceptions import ROSConfigError  # noqa: E402
 
 q.apply_determinism()
 
@@ -117,7 +118,7 @@ class Scorer:
         self.device = device
         local = _resolve_local_dir(weights)
         if not q.is_prequantized_checkpoint(local):
-            raise RuntimeError(
+            raise ROSConfigError(
                 f"{local} is not an NF4 pre-quantized checkpoint (no bnb nf4 keys). "
                 "The native scorer loads OpenRAL/rskill-robometer_4b-any-general-nf4; the bf16 "
                 "lerobot/Robometer-4B is too large for an 8 GB GPU."
@@ -190,7 +191,7 @@ class Scorer:
             if bname.endswith("original_inv_freq") and bname not in state:
                 rope_type = getattr(model.get_submodule(bname.rsplit(".", 1)[0]), "rope_type", None)
                 if rope_type != "default":
-                    raise RuntimeError(
+                    raise ROSConfigError(
                         f"{bname}: rope_type {rope_type!r} is not 'default'; "
                         "original_inv_freq cannot be seeded from inv_freq"
                     )
@@ -202,7 +203,7 @@ class Scorer:
             model.to(self.device)  # the real buffers were built on CPU
         still_meta = [n for n, p in model.named_parameters() if p.is_meta]
         if still_meta:
-            raise RuntimeError(f"meta params left after prequant load: {still_meta[:5]}")
+            raise ROSConfigError(f"meta params left after prequant load: {still_meta[:5]}")
         print(f"[robometer] installed NF4 + {n_buf} rotary buffers", flush=True)
         return cfg, model
 
