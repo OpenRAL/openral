@@ -118,6 +118,8 @@ def realsense_d435_bundle(
     Args:
         name: Sensor bundle name, used as a prefix for topic names and frame
             IDs (e.g. ``"head"`` → ``/head/color/image_raw``).
+            ``SensorSpec.ros2_topic`` carries that *driver-native* topic (ADR-0108);
+            OpenRAL consumers use ``openral_core.camera_topic(name)``.
         parent_frame: tf2 parent frame for the static transform.
         serial_no: Optional serial number for the device.  Stored in metadata
             and forwarded to ``realsense2_camera`` as ``serial_no``.
@@ -387,16 +389,17 @@ def calibrate_camera_cmd(
     size_arg = f"{chessboard_cols}x{chessboard_rows}"
     square_arg = str(square_size_m)
 
-    # Derive camera_info topic from image topic convention
-    # e.g. /head/color/image_raw → /head/color/camera_info
+    # ``ros2_topic`` is the *driver's* image topic (ADR-0108); its CameraInfo is the
+    # image_pipeline sibling in the same namespace (``camera_info_topic_for``, the one rule
+    # every publisher here uses), e.g. /head/color/image_raw → /head/color/camera_info.
     topic = sensor.ros2_topic
     if topic is None:
         raise ValueError(
             f"Sensor '{sensor.name}' has no ros2_topic; cannot derive camera_info remap."
         )
-    info_topic = topic.replace("/image_raw", "/camera_info").replace(
-        "/image_rect_raw", "/camera_info"
-    )
+    from openral_sensors.ros_publisher import camera_info_topic_for  # noqa: PLC0415
+
+    info_topic = camera_info_topic_for(topic)
 
     return [
         "ros2",

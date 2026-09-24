@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
+from openral_core import CameraTopicKind, camera_topic
 from openral_core.exceptions import ROSConfigError
 
 from openral_hal._grasp_trigger import GraspEvent, GraspTriggerConfig, GripperEffortTrigger
@@ -708,4 +709,4 @@ class VisionAttachmentBridge:
 
     def _depth_topic(self) -> str:
         """Configured depth topic, or the conventional per-camera default."""
-        return self._config.depth_topic or f"/openral/cameras/{self._camera}/depth"
+        return self._config.depth_topic or camera_topic(self._camera, CameraTopicKind.DEPTH_IMAGE)

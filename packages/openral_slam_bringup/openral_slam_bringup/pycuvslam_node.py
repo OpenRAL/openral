@@ -231,10 +231,13 @@ def main(args: Any = None) -> None:
 
         def __init__(self) -> None:
             super().__init__("openral_pycuvslam")
-            self.declare_parameter("left_image_topic", "/openral/cameras/left/image")
-            self.declare_parameter("left_camera_info_topic", "/openral/cameras/left/camera_info")
-            self.declare_parameter("right_image_topic", "/openral/cameras/right/image")
-            self.declare_parameter("right_camera_info_topic", "/openral/cameras/right/camera_info")
+            # Camera topics carry no default: the launch derives them from the robot manifest
+            # through ``openral_core.camera_topic`` (ADR-0108). Empty required ones fail at
+            # startup in ``_setup_inputs`` rather than subscribing to a guessed name.
+            self.declare_parameter("left_image_topic", "")
+            self.declare_parameter("left_camera_info_topic", "")
+            self.declare_parameter("right_image_topic", "")
+            self.declare_parameter("right_camera_info_topic", "")
             self.declare_parameter("map_frame", "map")
             self.declare_parameter("odom_frame", "odom")
             self.declare_parameter("odometry_topic", "/openral/visual_slam/odometry")
@@ -323,6 +326,18 @@ def main(args: Any = None) -> None:
             """Subscribe camera_info + the synced image pair (mono RGBD or stereo)."""
             cuvslam = self._cuvslam
             gp = self.get_parameter
+            required = ["left_image_topic", "left_camera_info_topic"]
+            if not self._depth_topic:
+                required += ["right_image_topic", "right_camera_info_topic"]
+            missing = [p for p in required if not gp(p).get_parameter_value().string_value]
+            if missing:
+                from openral_core import ROSConfigError
+
+                raise ROSConfigError(
+                    f"pycuvslam: camera topic parameter(s) {missing} are empty; pass "
+                    "camera_topic(<sensor name>) from the robot manifest (deploy_e2e does this "
+                    "via slam_stereo_cameras / slam_mono_camera)."
+                )
             left_image = gp("left_image_topic").get_parameter_value().string_value
             self.create_subscription(
                 CameraInfo,

@@ -51,10 +51,11 @@ uint8 KIND_COLLISION           = 10
 # enum value alone, without first reading `latched`. Values start at 100
 # and can never collide with a KIND_* value.
 uint8 DROP_ENVELOPE_UNCONFIGURED = 100
-uint8 DROP_WORLD_UNAVAILABLE     = 101
+# 101 and 104 are RESERVED — never reuse them. They were DROP_WORLD_UNAVAILABLE
+# / DROP_WORLD_OVERFLOW of the retired capsule world phase (ADR-0109) and still
+# appear in recorded bags.
 uint8 DROP_VOXEL_UNAVAILABLE     = 102
 uint8 DROP_STATE_UNAVAILABLE     = 103
-uint8 DROP_WORLD_OVERFLOW        = 104
 uint8 DROP_VOXEL_OVERFLOW        = 105
 # An external /openral/estop publication latched us. The publisher of
 # that std_msgs/Empty is unknowable from the wire, so this names the
@@ -66,7 +67,7 @@ uint8 DROP_EXTERNAL_ESTOP        = 106
 # (never received, stale, or over-capacity / unknown-link) is its own
 # fail-closed drop cause: "we do not know what the robot is carrying" is
 # a different operator action from "the world model went stale", so it
-# gets its own code rather than borrowing DROP_WORLD_*.
+# gets its own code rather than borrowing DROP_VOXEL_*.
 uint8 DROP_ATTACHED_UNAVAILABLE   = 107
 uint8 DROP_ATTACHED_OVERFLOW      = 108
 

@@ -105,6 +105,13 @@ sensors:
       output_width: 480
       output_height: 480
       crop: "x=103,y=0,width=480,height=480"
+    # Real-hardware binding: reads the A1 Runtime's public paired-frame bridge; it never opens
+    # the RealSense itself (`just camera-web` stays its sole owner).
+    deploy_binding:
+      backend: galaxea_a1_camera_bridge
+      backend_params:
+        camera: front
+      max_age_ms: 500
   - name: wrist
     modality: rgb
     frame_id: a1_wrist_camera
@@ -126,6 +133,13 @@ sensors:
     metadata:
       output_width: 640
       output_height: 480
+    # Real-hardware binding: reads the A1 Runtime's public paired-frame bridge; it never opens
+    # the RealSense itself (`just camera-web` stays its sole owner).
+    deploy_binding:
+      backend: galaxea_a1_camera_bridge
+      backend_params:
+        camera: wrist
+      max_age_ms: 500
 
 capabilities:
   can_lift_kg: 5.0

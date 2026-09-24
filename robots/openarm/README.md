@@ -85,8 +85,8 @@ controllers `openarm_bringup` spawns (per-side arm + gripper) and refuses to
 `openarm_right`) are up. It never starts `controller_manager` itself — that
 graph is C++ at 400 Hz and belongs under a vendor bringup (CLAUDE.md §1.5).
 
-Real deploys use `scenes/deploy/openarm_bench.yaml`, which binds the cell's
-real cameras and — the part that is easy to get silently wrong — pins
+Real deploys use `scenes/deploy/openarm_bench.yaml`, which starts the ZED
+driver and — the part that is easy to get silently wrong — pins
 `runtime.octomap_cloud_topic` to the topic the ZED SDK actually publishes.
 `head_zed` in `robot.yaml` auto-enables the octomap leg, but the topic keeps a
 sim-only launch default unless the scene sets it, and the result is an empty
@@ -127,10 +127,15 @@ HF_TOKEN=<token with OpenRAL org access> \
 openral rskill check OpenRAL/rskill-pi05-openarm-restock_shelf-bf16 --robot robots/openarm/robot.yaml
 ```
 
-The bench scene binds every stream the manifest requires: `top` is the ZED's
-rectified left image as `observation.images.context`, the two Arducams are
-`observation.images.wrist_left` / `wrist_right`. `openral rskill check`
-against that merged sensor set reports compatible. The PaliGemma tokenizer
+The cell's cameras are bound in `robot.yaml` itself (each sensor's
+`deploy_binding`, used only by `deploy run`; a deploy scene never touches a
+robot camera): `top` is the ZED's rectified left image, `head_zed` its SDK
+depth, the two Arducams are `wrist_left` / `wrist_right`. The manifest's
+`observation.images.top` key is what the skill requires: its published
+`rskill.yaml` lists `observation.images.top` / `wrist_left` / `wrist_right` in
+`sensors_required` and maps the checkpoint's `observation.images.context` input
+onto the `top` slot through `image_preprocessing.aliases: {top: "context"}`, so
+no deploy-time key override is needed. The PaliGemma tokenizer
 (`google/paligemma-3b-pt-224`) must also be in the default Hugging Face
 cache for an offline load; `openral rskill install` does not fetch it.
 
@@ -193,7 +198,8 @@ deadman is the open item above. That chunk was produced **without the head
 view**: the scene's `context` key reached the camera readers but not the
 runner, which kept the manifest's `top` → `base` slot, so lerobot fed a
 masked blank in its place. `compose_runtime` now merges the scene's
-`sensors:` into the one description every consumer reads.
+`sensors:` (workcell cameras only, since the robot's own are bound in
+`robot.yaml`) into the one description every consumer reads.
 
 ## Action layout (16 DoF)
 

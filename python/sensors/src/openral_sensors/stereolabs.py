@@ -85,6 +85,8 @@ def zed_mini_bundle(
     Args:
         name: Bundle name — used as a prefix for topic names and frame ids
             (e.g. ``"zed_head"`` → ``/zed_head/left/image_rect_color``).
+            ``SensorSpec.ros2_topic`` carries that *driver-native* topic (ADR-0108);
+            OpenRAL consumers use ``openral_core.camera_topic(name)``.
         parent_frame: tf2 parent frame for the static transform.
         serial: Optional ZED serial number for multi-camera hosts.  Stored in
             ``metadata.serial_no`` and forwarded to the ROS driver's

@@ -210,9 +210,9 @@ class LaunchInvocation:
     """The PointCloud2 ``octomap_server`` maps, from
     ``DeployRuntime.octomap_cloud_topic``. Forwarded as
     ``octomap_cloud_topic:=<topic>`` only when the scene pins it; ``None``
-    leaves the launch default (``/openral/cameras/front_depth/points``, the
-    sim sensor bridge's back-projected depth), which no node publishes under
-    ``hal_mode:=real``."""
+    lets the launch derive ``/openral/cameras/<depth sensor>/points`` from the
+    manifest (the sim sensor bridge's back-projected depth), which no node
+    publishes under ``hal_mode:=real``."""
     clock_origin: str
     """ClockAuthority origin forwarded as ``clock_origin:=…``. Derived from
     the deployment: simulator-owned elapsed time for sim backends that expose
@@ -447,17 +447,29 @@ def _scene_backend_has_sim_clock(config: Path | None) -> bool:
     return SCENES.meta(scene.scene.id).get("sim_clock") is True
 
 
-def _resolve_clock_origin(*, hal_mode: str, config: Path | None) -> str:
+def _resolve_clock_origin(*, hal_mode: str, config: Path | None, pinned: str | None = None) -> str:
     """Resolve the OpenRAL clock authority origin for the launch graph.
 
-    Real deployments use host wall time. Sim deployments use simulator elapsed
+    A scene's ``runtime.clock_origin`` (``pinned``) wins. Otherwise real
+    deployments use host wall time, and sim deployments use simulator elapsed
     time when the deploy scene backend exposes a sim clock. Scene-attached HALs
     and bare MuJoCo twins both expose ``sim_time_ns``; clock-less scenes stay in
     host-wall time so ROS node clocks never pin at zero.
+
+    Raises:
+        ROSConfigError: ``pinned`` is ``"simulation"`` on a real deploy, or on a
+            sim backend that exposes no clock.
     """
-    if hal_mode != "sim":
-        return "host_wall"
-    return "simulation" if _scene_backend_has_sim_clock(config) else "host_wall"
+    has_sim_clock = hal_mode == "sim" and _scene_backend_has_sim_clock(config)
+    if pinned == "simulation" and not has_sim_clock:
+        where = "a real deploy" if hal_mode != "sim" else "a sim backend without a clock"
+        raise ROSConfigError(
+            f"runtime.clock_origin: simulation is pinned on {where}; nothing would "
+            "publish /clock and every node's clock would stay at zero."
+        )
+    if pinned is not None:
+        return pinned
+    return "simulation" if has_sim_clock else "host_wall"
 
 
 def _omdet_runtime_available() -> bool:
@@ -852,7 +864,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     YAML. No envelope file is ever written — the launch reads ``robot_yaml``
     and feeds the kernel via ROS params.
     """
-    from openral_core import DeployScene, RobotDescription  # reason: defer schema import
+    from openral_core import (  # reason: defer schema import
+        DeployScene,
+        RobotDescription,
+        check_scene_sensor_overrides,
+        publishing_sensors,
+    )
 
     if hal_mode not in ("sim", "real"):
         raise ROSConfigError(f"hal_mode must be 'sim' or 'real', got {hal_mode!r}.")
@@ -979,7 +996,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             f"[yellow]warning:[/yellow] --robot {robot_override!r} overrides the scene's "
             f"declared robot_id {scene_robot_id!r}; the scene's cameras + asset mounts are "
             f"authored for {scene_robot_id!r} and may not match {robot_override!r} (expect "
-            "empty /openral/cameras/* for non-matching sensors). Override only with a "
+            "empty camera topics for non-matching sensors). Override only with a "
             "kinematically-compatible arm on a free-axis scene."
         )
 
@@ -995,6 +1012,15 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # velocity / effort limits).
     description = RobotDescription.from_yaml(str(robot_yaml))
     description.validate_for_e2e_pipeline()
+    # The scene the launch will actually read (`deploy_config`, else `config`): parsed once,
+    # used for the sensor-name check here and for the camera decisions below.
+    launched_scene = (
+        DeployScene.from_yaml(str(deploy_config)) if deploy_config is not None else deploy_scene
+    )
+    # A robot sensor lives in its manifest only; refuse a scene that names one here,
+    # before launch, so `deploy validate` sees it too (the launch's merge re-checks).
+    if launched_scene is not None:
+        check_scene_sensor_overrides(description.sensors, launched_scene.sensors)
     # No per-robot table: the HAL node + sim path derive from the manifest
     # and the scene (see `_derive_hal_spec`).
     hal = _derive_hal_spec(robot_id, deploy_scene)
@@ -1031,6 +1057,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # neither stay off — no base to localise, nothing to map.
     # `enable_slam is None` means "auto": honour the manifest; an explicit
     # flag wins.
+    slam_defaulted = enable_slam is None
     if enable_slam is None:
         enable_slam = bool(
             description.capabilities.has_lidar or description.capabilities.has_vision_slam
@@ -1041,22 +1068,71 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         has_vision_slam=bool(description.capabilities.has_vision_slam),
         enable_slam=enable_slam,
     )
+    # Visual SLAM tracks named cameras only: since ADR-0108 no impl guesses a
+    # ``left``/``right`` pair. Decide here, before launch, rather than let the SLAM node
+    # die at configure after the rest of the graph came up. Same policy as the detector:
+    # the implicit (manifest-derived) default is downgraded with a warning; an explicit
+    # --enable-slam / runtime.enable_slam: true fails loud.
+    mono_usable = bool(slam_mono_camera) and slam_visual_impl == "pycuvslam"
+    if slam_backend == "visual" and not slam_stereo_cameras and not mono_usable:
+        missing = (
+            "set runtime.slam_stereo_cameras (a left/right pair) or, with "
+            "slam_visual_impl: pycuvslam, runtime.slam_mono_camera"
+            + (
+                f" — slam_mono_camera is only read by pycuvslam, not {slam_visual_impl!r}"
+                if slam_mono_camera
+                else ""
+            )
+        )
+        if not slam_defaulted:
+            raise ROSConfigError(
+                f"visual SLAM is enabled for robot {description.name!r} but the scene names "
+                f"no cameras: {missing}."
+            )
+        _console.print(
+            f"[yellow]robot {description.name!r} supports visual SLAM but the scene names no "
+            f"cameras ({missing}); disabling SLAM.[/yellow]"
+        )
+        enable_slam = False
+        slam_backend = _resolve_slam_backend(
+            has_lidar=bool(description.capabilities.has_lidar),
+            has_vision_slam=bool(description.capabilities.has_vision_slam),
+            enable_slam=False,
+        )
     # Nav2 auto-enables alongside slam_toolbox: every
     # lidar-equipped mobile robot needs a planner to consume the map.
     # Operators that want the map alone (recording / inspection) pass
     # ``--no-enable-nav2``.
+    nav2_defaulted = enable_nav2 is None
     if enable_nav2 is None:
         enable_nav2 = enable_slam
+    # Stereo visual SLAM gives Nav2 a pose, not a map: nvblox builds the occupancy grid
+    # from the robot's depth sensor (``_depth_camera`` in the launch). The mono path
+    # brings its own DA3 depth. Without a depth sensor there is nothing to map, so decide
+    # before launch — same implicit-downgrade / explicit-refusal policy as above.
+    # The depth image nvblox reads (``camera_topic(<depth>, DEPTH_IMAGE)``) is published only
+    # by the sim sensor bridge; on a real deploy nothing publishes it (ADR-0108 Decision 2,
+    # remapping a driver's depth, is not implemented), so the real path has no source.
+    nvblox_depth_source = hal_mode == "sim" and any(s.is_depth_camera for s in description.sensors)
+    if enable_nav2 and slam_backend == "visual" and not mono_usable and not nvblox_depth_source:
+        reason = "Nav2 over stereo visual SLAM needs nvblox depth, and " + (
+            "no depth image reaches the canonical topics on a real deploy yet"
+            if hal_mode != "sim"
+            else f"robot {description.name!r} declares no depth sensor with intrinsics"
+        )
+        if not nav2_defaulted:
+            raise ROSConfigError(f"{reason}.")
+        _console.print(f"[yellow]{reason}; disabling Nav2.[/yellow]")
+        enable_nav2 = False
     # the octomap world-collision leg auto-enables when the
     # robot manifest declares a usable depth SensorSpec (a camera the HAL
     # can ray-cast a PointCloud2 from); there is nothing to map otherwise.
     # ``--enable-octomap`` / ``--no-enable-octomap`` overrides.
     if enable_octomap is None:
-        enable_octomap = any(
-            s.modality in ("depth", "point_cloud") and s.intrinsics is not None
-            for s in description.sensors
-        )
-    clock_origin = _resolve_clock_origin(hal_mode=hal_mode, config=config)
+        enable_octomap = any(s.is_depth_camera for s in description.sensors)
+    clock_origin = _resolve_clock_origin(
+        hal_mode=hal_mode, config=config, pinned=rt.clock_origin if rt is not None else None
+    )
 
     # The object-detection leg is ON by default (deploy sim is a
     # perception-driven stack; ``--no-object-detector`` turns it off). The default
@@ -1090,13 +1166,23 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     detector_defaulted = enable_object_detector is None
     if enable_object_detector is None:
         enable_object_detector = True
-    # The detector reads one of the robot's own RGB cameras; the launch refuses a
-    # robot with none. Only the implicit default is downgraded — an explicit
-    # --object-detector still fails loud there.
-    if detector_defaulted and not any(s.modality == "rgb" for s in description.sensors):
+    # The detector reads an RGB camera that actually publishes on this deploy (the
+    # launch picks it from ``publishing_sensors`` and refuses when there is none): on a
+    # real deploy that is a camera with a deploy_binding. Only the implicit default is
+    # downgraded — an explicit --object-detector still fails loud in the launch.
+    publishing_rgb = [
+        s
+        for s in publishing_sensors(
+            description.sensors,
+            launched_scene.sensors if launched_scene is not None else [],
+            hal_mode,
+        )
+        if s.modality == "rgb"
+    ]
+    if detector_defaulted and not publishing_rgb:
         _console.print(
-            f"[yellow]robot {description.name!r} declares no RGB sensor; "
-            "disabling the object detector leg.[/yellow]"
+            f"[yellow]robot {description.name!r} has no RGB camera that publishes on this "
+            f"{hal_mode} deploy; disabling the object detector leg.[/yellow]"
         )
         enable_object_detector = False
     # Downgrade to off (rather than let the node hard-fail at backend build) when
@@ -1980,18 +2066,18 @@ def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) 
 DDS_TRANSPORT_READY_MARKER: Final[str] = "dds_transport_ready:"
 """Printed once the DDS transport is settled and safe to join.
 
-Everything destructive to an existing Fast-DDS participant — the orphan reap
-and the ``/dev/shm/fastrtps_*`` purge — has run by the time this line appears,
-and ``ros2 launch`` has not been spawned yet. A co-process that wants to
-observe the graph (the validation matrix's evidence monitor) waits for this
-line in the deploy log before creating its own participant; starting earlier
-gets its shared-memory segments unlinked underneath it, after which it runs
-happily and receives nothing at all.
+The orphan reap and the stale ``/dev/shm/fastrtps_*`` purge have run by the
+time this line appears, and ``ros2 launch`` has not been spawned yet. The line
+reads ``dds_transport_ready: rmw=<rmw> shm_purged=<N> shm_kept_live=<M>``
+(``n/a`` for both counts when Cyclone/Zenoh is selected). The purge only
+unlinks files no live process uses, so a participant that joined earlier keeps
+working; the validation matrix's evidence monitor still waits for this line so
+it attaches to the graph ``ros2 launch`` is about to build, not a leftover one.
 """
 
 
 def _apply_rmw_default(env: dict[str, str]) -> None:
-    """Clean stale Fast-DDS SHM lockfiles before spawning ``ros2 launch``.
+    """Clean stale Fast-DDS SHM files before spawning ``ros2 launch``.
 
     ROS 2 Jazzy defaults to Fast-DDS, whose per-participant SHM
     files live under ``/dev/shm/fastrtps_*``. When a prior launch
@@ -2005,61 +2091,162 @@ def _apply_rmw_default(env: dict[str, str]) -> None:
     sharp edge with Cyclone (deserialisation race on the
     auto-CONFIGURE → ACTIVATE chain) that takes down the
     prompt_router; until that's resolved we stay on Fast-DDS and
-    aggressively clean its stale state.
+    clean its stale state (``_clean_stale_fastrtps_shm``).
 
-    Best-effort: only files owned by the calling user are
-    unlinked — other users' SHM segments are silently skipped.
-    Operators that explicitly opt into Cyclone or Zenoh via
-    ``RMW_IMPLEMENTATION`` keep theirs untouched.
-
-    **The purge is destructive to participants that already exist.**
-    It unlinks *every* ``/dev/shm/fastrtps_*`` this user owns, not
-    only the stale ones, so any Fast-DDS participant already running
-    on this host loses its shared-memory segments and goes silent
-    without erroring. The validation matrix lost a 24-run round to
-    exactly that: its evidence monitor attached ~6 ms after the
-    deploy started, and every one of the 24 ``run_monitor.jsonl``
-    files contains two lines. The purge is therefore *announced*:
-    ``DDS_TRANSPORT_READY_MARKER`` is printed on the line after
-    it, so a co-process can wait for it and create its participant on
-    the far side. It is printed on the Cyclone/Zenoh paths too, where
-    nothing was purged — a waiter needs the signal either way.
+    Only files **no live process uses** are unlinked, so a Fast-DDS
+    participant already running on this host (a camera driver started
+    first, the ``ros2`` CLI daemon) keeps its segments and keeps
+    publishing. Operators that explicitly opt into Cyclone or Zenoh via
+    ``RMW_IMPLEMENTATION`` skip the clean entirely.
+    ``DDS_TRANSPORT_READY_MARKER`` is printed on the line after the
+    clean, on every RMW path — a waiter needs the signal either way.
     """
     rmw = env.get("RMW_IMPLEMENTATION", "")
-    # -1 = the operator opted out of Fast-DDS, so nothing was cleaned.
     opted_out = "rmw_cyclonedds" in rmw or "rmw_zenoh" in rmw
-    purged = -1 if opted_out else _clean_stale_fastrtps_shm()
-    _console.print(
-        f"  {DDS_TRANSPORT_READY_MARKER} rmw={rmw or 'default'} "
-        f"shm_purged={'n/a' if purged < 0 else purged}"
-    )
+    if opted_out:
+        counts = "shm_purged=n/a shm_kept_live=n/a"
+    else:
+        purged, kept = _clean_stale_fastrtps_shm()
+        counts = f"shm_purged={purged} shm_kept_live={kept}"
+    _console.print(f"  {DDS_TRANSPORT_READY_MARKER} rmw={rmw or 'default'} {counts}")
     # A waiter reads this line out of a redirected stdout, so it must not sit
     # in a block buffer while the graph comes up around it.
     sys.stdout.flush()
 
 
-def _clean_stale_fastrtps_shm() -> int:
-    """Best-effort: remove stale Fast-DDS SHM lock files in ``/dev/shm``.
+def _fastrtps_group(name: str) -> str:
+    """Group key tying a Fast-DDS lock file to the segment/port it guards.
 
-    Fast-DDS lock files are owned by the user that created them — we
-    silently skip anything we can't unlink (another user's file) so
-    this never escalates to ``sudo``-required cleanup. Cyclone-DDS
-    deployments never call this path.
+    Fast-DDS 2.x names a participant segment ``fastrtps_<hex>`` and a port
+    ``fastrtps_port<N>``; each is guarded by a lock file with the same name
+    plus ``_el`` (exclusive, ``RobustExclusiveLock``) or ``_sl`` (shared,
+    ``RobustSharedLock``). Stripping that suffix yields the group.
+    """
+    return name[:-3] if name.endswith(("_el", "_sl")) else name
+
+
+#: ``/proc/<pid>/maps`` columns when the mapping names a file (the path is last).
+_MAPS_FIELDS_WITH_PATH: Final[int] = 6
+#: ``<major>:<minor>:<inode>`` — the file column of a ``/proc/locks`` line.
+_LOCKS_FILE_ID_PARTS: Final[int] = 3
+
+
+def _live_fastrtps_paths(proc_root: Path = Path("/proc")) -> set[str]:
+    """Paths of ``fastrtps_*`` files some readable process has open or mapped.
+
+    Scans ``<proc_root>/<pid>/fd`` symlinks and ``<proc_root>/<pid>/maps``.
+    Processes that exit mid-scan or whose entries this user cannot read are
+    skipped here; ``_locked_fastrtps_inodes`` covers the latter, because every
+    live Fast-DDS participant holds a ``flock`` on each of its ``_el``/``_sl``
+    files and ``/proc/locks`` lists those for every process.
 
     Returns:
-        How many entries were unlinked, for the readiness line.
+        Absolute paths as the kernel reports them (``/dev/shm/fastrtps_...``).
     """
-    shm = Path("/dev/shm")
-    if not shm.is_dir():
-        return 0
-    purged = 0
-    for entry in shm.iterdir():
-        if not entry.name.startswith("fastrtps_"):
+    live: set[str] = set()
+    for pid_dir in proc_root.iterdir():
+        if not pid_dir.name.isdigit():
             continue
-        with contextlib.suppress(OSError, PermissionError):
+        with contextlib.suppress(OSError):
+            for fd in (pid_dir / "fd").iterdir():
+                with contextlib.suppress(OSError):
+                    target = os.readlink(fd)
+                    if "/fastrtps_" in target:
+                        live.add(target)
+        with contextlib.suppress(OSError):
+            for line in (pid_dir / "maps").read_text(errors="replace").splitlines():
+                fields = line.split(maxsplit=5)
+                if len(fields) == _MAPS_FIELDS_WITH_PATH and "/fastrtps_" in fields[5]:
+                    live.add(fields[5])
+    return live
+
+
+def _locked_fastrtps_inodes(proc_root: Path = Path("/proc")) -> set[tuple[int, int, int]] | None:
+    """``(major, minor, inode)`` of every file any process holds a lock on.
+
+    Parsed from ``<proc_root>/locks`` (``N: FLOCK ADVISORY WRITE <pid>
+    <maj>:<min>:<ino> ...``, major/minor in hex), which the kernel exposes
+    for every process in this PID namespace regardless of owner.
+
+    Returns:
+        The locked-file set, or ``None`` when ``/proc/locks`` cannot be read —
+        callers must then treat every file as live.
+    """
+    try:
+        text = (proc_root / "locks").read_text()
+    except OSError:
+        return None
+    locked: set[tuple[int, int, int]] = set()
+    for line in text.splitlines():
+        for field in line.split():
+            parts = field.split(":")
+            if len(parts) == _LOCKS_FILE_ID_PARTS and all(parts):
+                with contextlib.suppress(ValueError):
+                    locked.add((int(parts[0], 16), int(parts[1], 16), int(parts[2])))
+                break
+    return locked
+
+
+def _clean_stale_fastrtps_shm(
+    shm_dir: Path = Path("/dev/shm"), proc_root: Path = Path("/proc")
+) -> tuple[int, int]:
+    """Unlink the ``fastrtps_*`` files in ``shm_dir`` that no live process uses.
+
+    A file is live when a process has it open or mapped
+    (``_live_fastrtps_paths``) or holds a lock on it
+    (``_locked_fastrtps_inodes``). Liveness is per group
+    (``_fastrtps_group``): a segment or port and its ``_el``/``_sl`` lock
+    files are kept or removed together. If ``/proc/locks`` is unreadable
+    nothing is unlinked — never remove what could not be proven unused.
+    Files this user cannot unlink (another user's) are skipped, so this
+    never escalates to ``sudo``. Cyclone/Zenoh deployments never call it.
+
+    The directory is listed before ``/proc`` is scanned, so a file created
+    during the scan is never a candidate. A process that opens an existing,
+    otherwise-unused file between the scan and the unlink can still lose it.
+
+    Args:
+        shm_dir: Directory holding the Fast-DDS files.
+        proc_root: procfs mount to read liveness from.
+
+    Returns:
+        ``(unlinked, kept_live)`` entry counts, for the readiness line.
+    """
+    if not shm_dir.is_dir():
+        return 0, 0
+    candidates = [e for e in shm_dir.iterdir() if e.name.startswith("fastrtps_")]
+    if not candidates:
+        return 0, 0
+    locked = _locked_fastrtps_inodes(proc_root)
+    if locked is None:
+        return 0, len(candidates)
+    real_dir = os.path.realpath(shm_dir)
+    live_groups: set[str] = set()
+    for entry in candidates:
+        with contextlib.suppress(OSError):
+            st = entry.stat()
+            if (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino) in locked:
+                live_groups.add(_fastrtps_group(entry.name))
+    # Every live participant flocks its lock files, so the cheap /proc/locks pass usually
+    # proves every group live. Only when some group is still unproven is the full
+    # /proc/*/fd + /proc/*/maps scan worth its cost (tens of thousands of maps lines on a
+    # host running torch/CUDA jobs).
+    if any(_fastrtps_group(e.name) not in live_groups for e in candidates):
+        live_paths = _live_fastrtps_paths(proc_root)
+        live_groups.update(
+            _fastrtps_group(e.name)
+            for e in candidates
+            if os.path.join(real_dir, e.name) in live_paths
+        )
+    purged = kept = 0
+    for entry in candidates:
+        if _fastrtps_group(entry.name) in live_groups:
+            kept += 1
+            continue
+        with contextlib.suppress(OSError):
             entry.unlink()
             purged += 1
-    return purged
+    return purged, kept
 
 
 def _required_ros2_packages(invocation: LaunchInvocation) -> list[str]:

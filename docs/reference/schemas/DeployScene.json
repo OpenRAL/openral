@@ -179,7 +179,7 @@
     },
     "CapsuleShape": {
       "additionalProperties": false,
-      "description": "Capsule collision primitive \u2014 a segment swept by a radius.\n\nThe central segment runs along the local +Z axis from ``-length_m / 2``\nto ``+length_m / 2`` (the MJCF / URDF capsule convention); it is placed\nand oriented by the owning frame (``LinkCollisionGeometry.origin_xyz_rpy``\nfor a link, ``WorldCollisionPrimitive.pose`` for an obstacle).\nCapsules bound most robot links tightly, so the safety check stays\nconservative.\n\nAttributes:\n    shape: Discriminator (always ``\"capsule\"``).\n    radius_m: Capsule radius in metres.\n    length_m: Length of the central segment in metres (the cylinder\n        portion; the total span is ``length_m + 2 * radius_m``). ``0.0``\n        degenerates to a sphere.\n\nExample:\n    >>> CapsuleShape(radius_m=0.04, length_m=0.3).length_m\n    0.3",
+      "description": "Capsule collision primitive \u2014 a segment swept by a radius.\n\nThe central segment runs along the local +Z axis from ``-length_m / 2``\nto ``+length_m / 2`` (the MJCF / URDF capsule convention); it is placed\nand oriented by the owning frame (``LinkCollisionGeometry.origin_xyz_rpy``\nfor a link, ``AttachedCollisionPrimitive.pose_in_object`` for a payload).\nCapsules bound most robot links tightly, so the safety check stays\nconservative.\n\nAttributes:\n    shape: Discriminator (always ``\"capsule\"``).\n    radius_m: Capsule radius in metres.\n    length_m: Length of the central segment in metres (the cylinder\n        portion; the total span is ``length_m + 2 * radius_m``). ``0.0``\n        degenerates to a sphere.\n\nExample:\n    >>> CapsuleShape(radius_m=0.04, length_m=0.3).length_m\n    0.3",
       "properties": {
         "shape": {
           "const": "capsule",
@@ -280,6 +280,22 @@
           ],
           "default": null,
           "title": "Octomap Cloud Topic"
+        },
+        "clock_origin": {
+          "anyOf": [
+            {
+              "enum": [
+                "host_wall",
+                "simulation"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clock Origin"
         },
         "joint_states_topic": {
           "anyOf": [
@@ -1117,7 +1133,7 @@
     },
     "SensorDeployBinding": {
       "additionalProperties": false,
-      "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine), so committed reference manifests\nleave it unset and ``openral detect`` fills it per host.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: robot-mounted cameras (wrist / head) declare it in\n``robots/<id>/robot.yaml``; workcell-mounted cameras (overhead / front)\ndeclare it on a ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+      "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
       "properties": {
         "backend": {
           "$ref": "#/$defs/SensorReaderBackend",
@@ -1172,7 +1188,7 @@
       "type": "string"
     },
     "SensorSpec": {
-      "description": "Generalizable sensor descriptor \u2014 covers all modalities.\n\nAttributes:\n    name: Human-readable sensor name, e.g. \"head_rgb\", \"left_wrist_depth\".\n    modality: Physical sensing modality.\n    frame_id: tf2 frame name.\n    parent_frame: tf2 parent frame (for static transform).\n    static_transform_xyz_rpy: Static transform from parent to this sensor.\n    rate_hz: Expected publishing rate in Hz.\n    intrinsics: Pinhole camera intrinsics (if applicable).\n    encoding: Image encoding, e.g. \"rgb8\", \"16UC1\".\n    vla_feature_key: VLA observation dict key this sensor maps to, e.g.\n        'observation.images.camera1'. Used by skill loaders to auto-wire\n        sensors to VLA input_features.\n    ros2_topic: ROS 2 topic name. None for non-ROS robots (USB, sim-only).\n    ros2_msg_type: ROS 2 message type, e.g. \"sensor_msgs/Image\". None for\n        non-ROS robots (USB, sim-only).\n    qos_profile: QoS profile key.\n    catalog_id: Optional sensor catalog id used as provenance for a\n        catalog-backed physical device. The spec remains fully materialized;\n        calibrated intrinsics, placement, feature keys, and serials stay on\n        this instance.\n    vendor: Sensor vendor name.\n    model: Sensor model, e.g. \"RealSense D455\".\n    driver_pkg: ROS 2 driver package name.\n    metadata: Additional key-value metadata.",
+      "description": "Generalizable sensor descriptor \u2014 covers all modalities.\n\nAttributes:\n    name: Human-readable sensor name, e.g. \"head_rgb\", \"left_wrist_depth\".\n    modality: Physical sensing modality.\n    frame_id: tf2 frame name.\n    parent_frame: tf2 parent frame (for static transform).\n    static_transform_xyz_rpy: Static transform from parent to this sensor.\n    rate_hz: Expected publishing rate in Hz.\n    intrinsics: Pinhole camera intrinsics (if applicable).\n    encoding: Image encoding, e.g. \"rgb8\", \"16UC1\".\n    vla_feature_key: VLA observation dict key this sensor maps to, e.g.\n        'observation.images.camera1'. Used by skill loaders to auto-wire\n        sensors to VLA input_features.\n    ros2_topic: The image topic an *external* ROS 2 driver publishes\n        (``/camera/color/image_raw``, ``/zed/zed_node/...``). ``None`` (every\n        in-tree manifest) means OpenRAL itself produces the sensor (sim\n        bridge or sensor leg) under the canonical ``camera_topic(name, kind)``\n        layout. Today it is read only by the RealSense calibration command.\n        Nothing remaps it onto ``camera_topic(name)`` yet (ADR-0108 Decision\n        2, not implemented), so a camera served only by a vendor driver does\n        not reach the canonical topics: bind it through a ``deploy_binding``\n        (e.g. the ``ros2_image`` backend) to publish it there.\n    ros2_msg_type: ROS 2 message type, e.g. \"sensor_msgs/Image\". None for\n        non-ROS robots (USB, sim-only).\n    qos_profile: QoS profile key.\n    catalog_id: Optional sensor catalog id used as provenance for a\n        catalog-backed physical device. The spec remains fully materialized;\n        calibrated intrinsics, placement, feature keys, and serials stay on\n        this instance.\n    vendor: Sensor vendor name.\n    model: Sensor model, e.g. \"RealSense D455\".\n    driver_pkg: ROS 2 driver package name.\n    metadata: Additional key-value metadata.",
       "properties": {
         "name": {
           "title": "Name",

@@ -158,6 +158,16 @@ sensors:
     vla_feature_key: "observation.images.camera1"
     vendor: "luxonis"
     model: "oak_d_pro"
+    # Real-hardware binding (the SO-101 bench host). Host-specific device paths: use kernel-
+    # stable /dev/v4l/* symlinks, never raw /dev/videoN; retune with `ls -l /dev/v4l/by-id
+    # /dev/v4l/by-path` or `openral detect --deployment`.
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-path/pci-0000:80:14.0-usb-0:11:1.0-video-index0
+        width: 640
+        height: 480
+        fps: 30
   - name: "wrist"
     modality: "rgb"
     # The wrist camera is bolted to the terminal gripper body; its own optical
@@ -180,7 +190,7 @@ sensors:
       up: [0.0, 0.0, -1.0]
       fovy_deg: 90.0
     # 640x480 is MEASURED (`v4l2-ctl --get-fmt-video` on the icSpring rig: 640/480
-    # MJPG; scenes/deploy/so101_bench.yaml requests the same) — the previous
+    # MJPG; the deploy_binding below requests the same) — the previous
     # 256x256 entry was fictional. Load-bearing twice: `rSkill.check_sensors`
     # gates min_width/min_height against these intrinsics
     # (openral_rskill/loader.py `_check_resolution`), and
@@ -203,6 +213,16 @@ sensors:
     catalog_id: "generic/usb_uvc_rgb"
     vendor: "generic_usb"
     model: "so101_wrist"
+    # Real-hardware binding (the SO-101 bench host). Host-specific device paths: use kernel-
+    # stable /dev/v4l/* symlinks, never raw /dev/videoN; retune with `ls -l /dev/v4l/by-id
+    # /dev/v4l/by-path` or `openral detect --deployment`.
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-icSpring_icspring_camera_20240307110322-video-index0
+        width: 640
+        height: 480
+        fps: 30
 
 capabilities:
   locomotion: ["none"]

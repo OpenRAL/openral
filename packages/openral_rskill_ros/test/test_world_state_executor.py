@@ -12,10 +12,9 @@ import pytest
 
 
 def test_a_raising_callback_is_handed_to_on_failure_and_a_stop_is_not() -> None:
-    import rclpy
-    from openral_rskill_ros.compose import start_world_state_executor
-
+    rclpy = pytest.importorskip("rclpy", reason="needs a sourced ROS 2 overlay")
     pytest.importorskip("rclpy.experimental", reason="needs rclpy's EventsExecutor")
+    from openral_rskill_ros.compose import start_world_state_executor
 
     rclpy.init()
     try:

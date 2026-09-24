@@ -49,15 +49,14 @@ scene:
   id: openarm_bench
 robot_id: openarm
 
-# Deploy-time host bindings for the manifest's own cameras (same names ->
-# scene entry wins field-wise; `robots/openarm/robot.yaml` stays authoritative
-# for frames, intrinsics and mounts — `merge_deploy_sensors`).
-#
-# INVENTORY, verified on the rig 2026-09-16 (`lsusb`, `ls -l /dev/v4l/by-id`),
+# Camera INVENTORY, verified on the rig 2026-09-16 (`lsusb`, `ls -l /dev/v4l/by-id`),
 # not assumed: ONE StereoLabs ZED-M and TWO Arducam B0495. The ZED serves twice:
 # its SDK depth as `head_zed` and its rectified left image as `top`, the
-# policy's `context` view — so all three manifest RGB slots are bound.
-# Vendor sensor driver this cell needs on the bus. `head_zed` below subscribes
+# policy's `context` view — so all three manifest RGB slots are bound. Every one
+# of them is a robot camera, so the bindings live in robots/openarm/robot.yaml,
+# not here (see the pointer below `drivers:`).
+#
+# Vendor sensor driver this cell needs on the bus. The manifest's `head_zed` binding subscribes
 # `/zed/zed_node/...` and `runtime.octomap_cloud_topic` names the wrapper's
 # cloud; this is what publishes both, so `openral deploy run` starts the ZED
 # itself instead of an operator starting it in a second terminal (forget, and
@@ -91,107 +90,10 @@ drivers:
       publish_map_tf: "false"
       ros_params_override_path: drivers/zedm_openarm_override.yaml
 
-sensors:
-  # head_zed — the ZED-M's depth is COMPUTED BY THE SDK on the host GPU; the
-  # device itself only presents a side-by-side UVC node, so no `/dev/video*`
-  # read can reach it and `opencv_thread` is not an option. `ros2_image`
-  # subscribes to what `zed_wrapper` publishes, and the `drivers:` block above
-  # is what launches it — `deploy run` brings the ZED up itself on the graph's
-  # ROS_DOMAIN_ID, so there is no second terminal to forget.
-  #
-  # POSE AND INTRINSICS ARE STILL THE MANIFEST'S UNCALIBRATED APPROXIMATION
-  # (0.20 m above the shoulder midpoint, pitched 45 deg down, fx/fy from the
-  # published 90 deg HFOV). Run `openral calibrate camera` before trusting
-  # anything geometric off this sensor — see `enable_octomap_kernel_check`.
-  #
-  # `frame_id` is repeated from the manifest because `SensorSpec` requires it;
-  # it MUST match `robots/openarm/robot.yaml` character for character, since a
-  # scene entry wins field-wise over the manifest and a divergent frame here
-  # would silently re-parent the cloud.
-  - name: head_zed
-    modality: depth
-    frame_id: zed_camera_link
-    rate_hz: 10.0
-    deploy_binding:
-      backend: ros2_image
-      backend_params:
-        topic: /zed/zed_node/depth/depth_registered
-        reliability: best_effort
-        qos_depth: 5
-      max_age_ms: 500
-
-  # wrist_left / wrist_right — the two Arducam B0495 (USB3 2.3MP). Kernel-stable
-  # `/dev/v4l/by-id` symlinks, never raw `/dev/videoN`: those are assigned in USB
-  # enumeration order and silently renumber on replug or reboot. `-video-index0`
-  # is the capture node (`-video-index1` is the metadata node and yields no
-  # frames). The vendor burned the cell role into the USB serial string, so
-  # CAM_LEFT / CAM_RIGHT follow the camera across ports.
-  - name: wrist_left
-    modality: rgb
-    frame_id: openarm_left_ee_base_link
-    rate_hz: 30.0
-    deploy_binding:
-      backend: opencv_thread
-      backend_params:
-        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_LEFT-video-index0
-        width: 640
-        height: 480
-        fps: 30
-  - name: wrist_right
-    modality: rgb
-    frame_id: openarm_right_ee_base_link
-    rate_hz: 30.0
-    deploy_binding:
-      backend: opencv_thread
-      backend_params:
-        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_RIGHT-video-index0
-        width: 640
-        height: 480
-        fps: 30
-
-  # top — the ZED-M's rectified LEFT image, bound as the policy's `context`
-  # view. The manifest's `top` is the MuJoCo overview camera
-  # (`observation.images.base`); this entry replaces it wholesale (same name ->
-  # `merge_deploy_sensors` takes the scene entry field-wise), and the one field
-  # that must not drift is `vla_feature_key`: the OpenArm restock policy
-  # (`OpenRAL/rskill-pi05-openarm-restock_shelf-bf16`) was trained on
-  # `observation.images.context` and reads by feature key, not sensor name.
-  # Leave it at `base` and the skill is refused as incompatible; point it at
-  # `base` with a `context` alias and the policy silently gets an OOD stream.
-  #
-  # Same UVC device as `head_zed`, so it is NOT opened here — the wrapper owns
-  # it and publishes the rectified left frame; `ros2_image` subscribes. Frame is
-  # the wrapper's own optical frame, whose chain up to `zed_camera_link` comes
-  # from the wrapper's state publisher; no `parent_frame` here on purpose, so
-  # the launch publishes no second mount transform for it.
-  #
-  # width/height are what the wrapper publishes at the override's HD720. fx/fy
-  # follow from StereoLabs' published 90 deg HFOV, cx/cy are the image centre:
-  # UNCALIBRATED, and inert here — a VLA conditions on pixels — but not if
-  # anything geometric is ever pointed at this entry.
-  - name: top
-    modality: rgb
-    frame_id: zed_left_camera_optical_frame
-    rate_hz: 30.0
-    encoding: bgr8
-    vla_feature_key: "observation.images.context"
-    intrinsics:
-      width: 1280
-      height: 720
-      fx: 640.0
-      fy: 640.0
-      cx: 640.0
-      cy: 360.0
-    catalog_id: "stereolabs/zed_mini"
-    vendor: StereoLabs
-    model: ZED Mini
-    deploy_binding:
-      backend: ros2_image
-      backend_params:
-        topic: /zed/zed_node/rgb/color/rect/image
-        reliability: best_effort
-        qos_depth: 5
-      max_age_ms: 200
+# Cameras: every camera here is a robot sensor, so its real-hardware binding lives in
+# robots/openarm/robot.yaml (a deploy scene never touches a robot camera —
+# openral_core.check_scene_sensor_overrides). A workcell camera would go under
+# `sensors:` with its own name.
 
 runtime:
   # The octomap leg is the reason this scene exists as a separate file.
