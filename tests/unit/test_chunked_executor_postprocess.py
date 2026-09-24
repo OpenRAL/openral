@@ -98,28 +98,42 @@ def test_prefetched_chunk_is_postprocessed_off_the_control_thread() -> None:
     assert len(seen) >= 2 * CHUNK  # every action once; the next prefetch may have landed too
 
 
-def test_rtc_postprocesses_at_pop() -> None:
+def test_rtc_postprocesses_at_merge_and_keeps_raw_rows_for_guidance() -> None:
     from lerobot.policies.rtc import RTCConfig
 
-    seen: list[int] = []
+    pre, post = _processor_pair()
+    post_fn = _postprocess(post)
+    release, produced = threading.Event(), []
 
-    def post(a: torch.Tensor) -> torch.Tensor:
-        seen.append(1)
-        return a + 1000.0
+    def slow_prefetch(batch: dict[str, Any], **kwargs: Any) -> torch.Tensor:
+        if produced:  # hold the prefetch until chunk 0 is popped past its launch
+            assert release.wait(timeout=5.0), "test deadlock"
+        produced.append(1)
+        return _hold_position(batch)
 
     ex = ChunkedExecutor(
-        chunk_fn=_hold_position,
+        chunk_fn=slow_prefetch,
         chunk_size=CHUNK,
         prefetch_at=3,
         rtc_config=RTCConfig(enabled=True, execution_horizon=2),
-        postprocess_action=post,
+        postprocess_action=lambda a: post_fn(a).reshape(-1).numpy(),
     )
     ex.start()
-    first = ex.select_action({})
+    states: list[torch.Tensor] = []
+
+    def batch() -> dict[str, Any]:
+        states.append(torch.full((1, DOF), float(len(states) + 1)))
+        return _preprocess(pre, states[-1])
+
+    first = [ex.select_action(batch) for _ in range(CHUNK)]  # launch fires on the 3rd pop
+    left_over = ex._rtc_queue.get_left_over()
+    release.set()
     ex.stop()
-    # The RTC queue keeps raw model-space actions for the guidance blend.
-    assert seen == [1]
-    assert torch.equal(first, torch.full((1, DOF), 1000.0))
+    assert len(states) == 2  # the prefetch's preprocess ran and cached state 2.0
+    # Served rows are finished NumPy vectors at the state of their own inference, even
+    # after the prefetch launch re-ran the preprocessor; the queue's raw rows stay raw.
+    assert all(a.shape == (DOF,) and (a == 1.0).all() for a in first)
+    assert left_over is not None and torch.count_nonzero(left_over) == 0
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
