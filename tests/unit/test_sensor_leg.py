@@ -161,14 +161,99 @@ def test_merge_keeps_manifest_geometry_the_scene_did_not_mention() -> None:
     assert head.static_transform_xyz_rpy == mount
 
 
-def test_merge_lets_the_scene_override_geometry_when_it_says_so() -> None:
-    """An explicit scene value still wins — an override is still an override."""
-    manifest = [_spec("head", binding=None).model_copy(update={"parent_frame": "openarm_base"})]
-    scene = [_spec("head", binding=None).model_copy(update={"parent_frame": "bench_post"})]
+_OPENARM = Path(__file__).resolve().parents[2] / "robots" / "openarm" / "robot.yaml"
 
-    (head,) = merge_deploy_sensors(manifest, scene)
 
-    assert head.parent_frame == "bench_post"
+def _openarm_sensors() -> list[SensorSpec]:
+    from openral_core import RobotDescription
+
+    return list(RobotDescription.from_yaml(str(_OPENARM)).sensors)
+
+
+@pytest.mark.parametrize(
+    "geometry",
+    [
+        {"parent_frame": "bench_post"},
+        {"static_transform_xyz_rpy": [0.01, 0.0, 0.22, 0.0, 0.8, 0.0]},
+        {
+            "intrinsics": {
+                "width": 1920,
+                "height": 1080,
+                "fx": 1497.9,
+                "fy": 1497.9,
+                "cx": 960.0,
+                "cy": 540.0,
+            }
+        },
+        {"frame_id": "zed_left_camera_frame"},
+    ],
+    ids=["parent_frame", "static_transform", "intrinsics", "frame_id"],
+)
+def test_merge_refuses_a_scene_restating_a_robot_sensors_geometry(
+    geometry: dict[str, object],
+) -> None:
+    """The ZED is bolted to the OpenArm: its pose is in robot.yaml, never in a scene.
+
+    A pose hidden in one scene silently does not apply to the other scenes on that robot,
+    so the merge refuses it instead of letting the scene win.
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    entry = SensorSpec.model_validate(
+        {
+            "name": "head_zed",
+            "modality": "depth",
+            "frame_id": "zed_camera_link",
+            "rate_hz": 10.0,
+            **geometry,
+        }
+    )
+    field = next(iter(geometry))
+    with pytest.raises(ROSConfigError, match=rf"'head_zed'.*{field}.*robot manifest owns"):
+        merge_deploy_sensors(_openarm_sensors(), [entry])
+
+
+def test_merge_accepts_a_binding_and_a_workcell_camera_with_its_own_geometry() -> None:
+    """Host binding on a robot sensor, and geometry on a scene-only sensor, both pass."""
+    manifest = _openarm_sensors()
+    zed = next(s for s in manifest if s.name == "head_zed")
+    scene = [
+        SensorSpec.model_validate(
+            {
+                "name": "head_zed",
+                "modality": "depth",
+                "frame_id": "zed_camera_link",
+                "rate_hz": 15.0,
+                "deploy_binding": {"backend": "ros2_image", "backend_params": {"topic": "/zed/d"}},
+            }
+        ),
+        SensorSpec.model_validate(
+            {
+                "name": "overhead",
+                "modality": "rgb",
+                "frame_id": "overhead_optical",
+                "parent_frame": "openarm_base",
+                "static_transform_xyz_rpy": [0.5, 0.0, 1.2, 0.0, 1.5708, 0.0],
+                "rate_hz": 30.0,
+                "intrinsics": {
+                    "width": 640,
+                    "height": 480,
+                    "fx": 600.0,
+                    "fy": 600.0,
+                    "cx": 320.0,
+                    "cy": 240.0,
+                },
+            }
+        ),
+    ]
+
+    merged = {s.name: s for s in merge_deploy_sensors(manifest, scene)}
+
+    assert merged["head_zed"].rate_hz == 15.0
+    assert merged["head_zed"].deploy_binding is not None
+    assert merged["head_zed"].static_transform_xyz_rpy == zed.static_transform_xyz_rpy
+    assert merged["head_zed"].intrinsics == zed.intrinsics
+    assert merged["overhead"].parent_frame == "openarm_base"
 
 
 def test_unbound_specs_are_skipped() -> None:

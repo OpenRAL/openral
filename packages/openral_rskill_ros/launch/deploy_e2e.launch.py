@@ -2021,9 +2021,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # ray was cast. Same shape and reason as the URDF-root bridge above — the manifest owns the
     # geometry, not the launch file.
     #
-    # Manifest sensors UNION DeployScene sensors, scene winning on a name clash
-    # (`merge_deploy_sensors`'s own rule): iterating only the manifest would silently drop the
-    # mount publish for a workcell-mounted camera declared entirely at scene level.
+    # Manifest sensors UNION DeployScene sensors (`merge_deploy_sensors`): a same-named scene
+    # entry only binds a robot sensor and may not restate its mount, so a robot sensor's pose
+    # is always the manifest's; iterating only the manifest would silently drop the mount
+    # publish for a workcell-mounted camera declared entirely at scene level.
     from openral_rskill_ros.sensor_leg import merge_deploy_sensors
 
     for sensor in merge_deploy_sensors(description.sensors, scene_sensors):

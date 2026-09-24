@@ -1,0 +1,100 @@
+# OpenArm REAL cell with the safety kernel's world-voxel check ON.
+#
+# !!! THIS SCENE DRIVES REAL MOTORS AND LETS A CAMERA STOP THEM. !!!
+#
+# Runbook: docs/tutorials/deploy/openarm-real-world-voxel-check.md — follow it
+# step by step; this header is the short form, not a substitute.
+#
+# Preconditions, ALL of them, every run:
+#   1. head_zed extrinsic calibrated AND verified for exactly the pose in
+#      robots/openarm/robot.yaml: a passing report from
+#      `tools/zed_extrinsic_check.py check` committed at
+#      robots/openarm/calibration/head_zed_extrinsic.json. A mis-framed
+#      cloud is not a bad picture here: it puts obstacles where there are none
+#      (false E-stops) and, worse, moves real obstacles away from where they
+#      are (missed stops). The manifest holds ONE pose; the Thor and Orin
+#      cells have different ZED mounts, so a pose calibrated on one is wrong
+#      on the other (runbook step 2).
+#   2. A person at the cell for the whole run, hardware E-stop in hand, and a
+#      second person on the stop for bringup: `deploy run` activates the
+#      OpenArm controllers, whose on_activate steps all 16 motors to zero
+#      UNRAMPED. Park the arms near zero first. Presence is per run.
+#   3. Both motion gates exported by that person, for that run only:
+#      OPENRAL_OPENARM_ALLOW_MOTION=1 and OPENRAL_OPENARM_ATTENDED=1.
+#   Launch ONLY through `tools/openarm_world_voxel_run.sh`, which refuses
+#   unless 1 and 3 hold. `openral deploy run` itself checks neither.
+#
+# Known gaps on current master, each of which the runbook's attended step is
+# expected to show rather than disprove:
+#   * No depth self-filter exists for a real camera (the sim HAL's is
+#     MuJoCo-only), so any arm link the ZED sees becomes occupancy around that
+#     link and the kernel stops it (KIND_COLLISION, a `voxel_<n>` evidence
+#     cell on the stopping link itself).
+#   * Real hardware runs with attached-payload checking OFF
+#     (`_attached_collision_enabled("real") is False` in deploy_e2e.launch.py)
+#     and nothing on the real graph publishes /openral/attachment_state, so a
+#     grasped object is never cleared from the map: it stops the gripper
+#     holding it.
+#   * openral_octomap_bridge republishes its LAST octree on a wall timer with
+#     a fresh stamp, and the kernel times voxel freshness from receipt. When
+#     the ZED stops, /openral/world_voxels keeps arriving fresh and frozen, so
+#     DROP_VOXEL_UNAVAILABLE is NOT expected on camera loss.
+#
+# Twin pass (motors never powered, same pose, same cloud): run the ZED driver
+# by hand, then `openral deploy sim --config <this file> --hal
+# viewer_enabled=false` — `drivers:` is ignored on the sim path.
+#
+# Verified offline only (resolve + launch composition + validate); never run
+# on hardware as of this commit. The ZED leg was proven on qorin1, not Thor.
+
+robot_id: "openarm"
+
+scene:
+  id: openarm_real_world_voxels
+
+# No `sensors:` entry: head_zed is a robot sensor, so its mount pose (the
+# calibrated extrinsic) lives in robots/openarm/robot.yaml, the same value every
+# OpenArm scene publishes, and a scene may not restate it
+# (openral_core.check_scene_sensor_overrides). The cloud needs no host binding:
+# zed_wrapper publishes it and `runtime.octomap_cloud_topic` points octomap at it.
+
+# The ZED wrapper comes up with the graph (real path only), so the
+# no-second-parent arguments are pinned here instead of remembered by hand:
+# with publish_tf true the wrapper publishes odom -> zed_camera_link from
+# visual odometry while the scene parents zed_camera_link to the arm — two
+# parents, order-dependent tf2 lookups, and octomap_server silently drops
+# clouds. camera_name pins the `zed_` frame/topic prefix the manifest pose and
+# octomap_cloud_topic below both assume. Source the ZED colcon overlay before
+# launching, or the graph refuses to start.
+drivers:
+  - package: zed_wrapper
+    launch_file: zed_camera.launch.py
+    args:
+      camera_model: zedm
+      camera_name: zed
+      publish_tf: "false"
+      publish_map_tf: "false"
+
+runtime:
+  # Direct dispatch only (/openral/execute_rskill): no LLM in the loop, so the
+  # attended operator decides every motion.
+  enable_reasoner: false
+
+  enable_octomap: true
+  octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+  # The point of this scene. Reaches the kernel as world_voxel_enabled: true
+  # with the real-hardware margin (deploy_e2e.launch.py::_world_voxel_margin_m
+  # -> 0.02 m), 20 mm cells and a 1000 ms freshness deadline.
+  enable_octomap_kernel_check: true
+  # The ZED stamps on wall-clock. Under `deploy sim` (the twin pass) a bare twin would run the
+  # graph on the simulated clock and octomap_server would drop every cloud as "from the
+  # future". Needs PR #315's runtime.clock_origin; `deploy run` is host_wall regardless.
+  clock_origin: host_wall
+
+  enable_slam: false
+  enable_nav2: false
+  enable_object_detector: false
+  enable_reward_monitor: false
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null

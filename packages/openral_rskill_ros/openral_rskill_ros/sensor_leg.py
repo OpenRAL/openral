@@ -254,17 +254,27 @@ def merge_deploy_sensors(
 ) -> list[SensorSpec]:
     """Robot-manifest sensors ∪ ``DeployScene.sensors``, merged field-wise.
 
-    On a name collision the scene's explicitly-set fields win (via ``model_fields_set``, so an
-    unmentioned field falls through to the manifest) and the manifest fills the rest — exactly
+    On a name collision the scene's explicitly-set fields are applied over the manifest entry
+    (via ``model_fields_set``, so an unmentioned field falls through to the manifest) — exactly
     one spec survives per name, else the device would be opened and its topic published twice.
 
-    Manifest owns robot-side geometry (``parent_frame`` / ``static_transform_xyz_rpy`` /
-    ``intrinsics``); scene owns the host-side binding (device, topic, fps).
+    Enforced rule (``openral_core.check_scene_sensor_overrides``): the manifest owns a robot
+    sensor's geometry (``parent_frame`` / ``static_transform_xyz_rpy`` / ``intrinsics`` /
+    ``sim_placement``, and its ``frame_id``); a same-named scene entry carries only the
+    host-side binding (device, topic, fps, encoding) and is refused with ``ROSConfigError``
+    otherwise. Scene-only sensors (workcell cameras) keep their own geometry.
+
+    Raises:
+        ROSConfigError: A scene entry restates a manifest sensor's geometry.
     """
+    from openral_core import check_scene_sensor_overrides
+
+    manifest = list(manifest_sensors)
     scene = list(scene_sensors)
+    check_scene_sensor_overrides(manifest, scene)
     by_name = {s.name: s for s in scene}
     merged: list[SensorSpec] = []
-    for spec in manifest_sensors:
+    for spec in manifest:
         override = by_name.pop(spec.name, None)
         if override is None:
             merged.append(spec)

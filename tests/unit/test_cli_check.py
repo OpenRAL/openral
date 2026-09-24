@@ -66,6 +66,28 @@ def test_graph_flags_unresolvable_scene_robot_id(tmp_path: Path) -> None:
     assert "robot.yaml" in robot_id_errors[0].message
 
 
+def test_graph_flags_a_scene_restating_robot_sensor_geometry(tmp_path: Path) -> None:
+    # The real Galaxea A1 manifest + its real bench scene, with the wrist mount restated
+    # in the scene — the duplicate the scene used to carry.
+    robot_dir = tmp_path / "robots" / "galaxea_a1"
+    robot_dir.mkdir(parents=True)
+    (robot_dir / "robot.yaml").write_text(
+        (REPO_ROOT / "robots" / "galaxea_a1" / "robot.yaml").read_text(), encoding="utf-8"
+    )
+    scene = yaml.safe_load((REPO_ROOT / "scenes" / "deploy" / "galaxea_a1_bench.yaml").read_text())
+    (wrist,) = [s for s in scene["sensors"] if s["name"] == "wrist"]
+    wrist["parent_frame"] = "arm_seg6"
+    scene_dir = tmp_path / "scenes" / "deploy"
+    scene_dir.mkdir(parents=True)
+    (scene_dir / "galaxea_a1_bench.yaml").write_text(yaml.safe_dump(scene), encoding="utf-8")
+
+    report = check_description_graph(tmp_path)
+    (finding,) = [f for f in report.errors if f.rule == "scene_sensor_geometry"]
+    assert finding.target == "scenes/deploy/galaxea_a1_bench.yaml"
+    assert "'wrist'" in finding.message
+    assert "parent_frame" in finding.message
+
+
 def test_graph_warns_on_unreachable_embodiment(tmp_path: Path) -> None:
     # A real VLA rSkill with embodiment tags, but no robots to satisfy them.
     real = (REPO_ROOT / "rskills" / "act-libero" / "rskill.yaml").read_text()

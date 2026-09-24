@@ -11,7 +11,7 @@ import base64
 import binascii
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from enum import Enum, StrEnum
 from typing import (
     Annotated,
@@ -640,6 +640,58 @@ def required_vla_camera_slots(
     slots = tuple(sensor_name_to_slot(description).values())
     required = _required_rgb_slots(manifest.sensors_required)
     return tuple(slot for slot in slots if slot in required) if required else slots
+
+
+#: Robot geometry a ``DeployScene.sensors`` entry may not restate for a manifest sensor.
+_SCENE_FORBIDDEN_SENSOR_GEOMETRY: tuple[str, ...] = (
+    "parent_frame",
+    "static_transform_xyz_rpy",
+    "intrinsics",
+    "sim_placement",
+)
+
+
+def check_scene_sensor_overrides(
+    manifest_sensors: Iterable[SensorSpec], scene_sensors: Iterable[SensorSpec]
+) -> None:
+    """Refuse a scene sensor entry that restates a robot-manifest sensor's geometry.
+
+    A sensor the robot manifest declares is bolted to the robot: its mount
+    (``parent_frame`` / ``static_transform_xyz_rpy`` / ``sim_placement``), its
+    ``intrinsics`` and its ``frame_id`` are robot geometry and live only in
+    ``robot.yaml``, so every scene on that robot sees the same pose. A same-named
+    ``DeployScene.sensors`` entry binds that sensor to this host (``deploy_binding``,
+    rate, encoding) and may restate ``frame_id`` only verbatim (it is a required
+    field). A scene-only name is a workcell camera and carries its own geometry.
+
+    Args:
+        manifest_sensors: The robot manifest's ``sensors``.
+        scene_sensors: The ``DeployScene.sensors`` entries.
+
+    Raises:
+        ROSConfigError: A scene entry named like a manifest sensor sets a forbidden
+            geometry field, or a different ``frame_id``.
+
+    Example:
+        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> check_scene_sensor_overrides(desc.sensors, [])
+    """
+    by_name = {s.name: s for s in manifest_sensors}
+    for entry in scene_sensors:
+        robot = by_name.get(entry.name)
+        if robot is None:
+            continue  # workcell-mounted: the scene owns its geometry
+        fields = [f for f in _SCENE_FORBIDDEN_SENSOR_GEOMETRY if f in entry.model_fields_set]
+        if entry.frame_id != robot.frame_id:
+            fields.append(f"frame_id ({entry.frame_id!r} != manifest {robot.frame_id!r})")
+        if fields:
+            raise ROSConfigError(
+                f"scene sensor {entry.name!r} overrides robot-manifest geometry: "
+                f"{', '.join(fields)}. The robot manifest owns a robot sensor's mount, "
+                "intrinsics and frame; a scene entry of the same name binds it to the "
+                "host only (deploy_binding, rate, encoding). Move the value into "
+                "robots/<robot_id>/robot.yaml, or give a workcell camera its own name."
+            )
 
 
 # ─── Joints / Actuation ────────────────────────────────────────────────────────
@@ -9336,13 +9388,14 @@ class DeployScene(BaseModel):
     Two kinds of entry, distinguished by name:
 
     * A name **matching** a robot-manifest sensor (``top`` / ``wrist``) is the
-      deploy-time binding for that robot sensor — the manifest keeps frames /
-      intrinsics authoritative; this entry carries the host-specific
+      deploy-time binding for that robot sensor — the manifest alone owns its
+      frame, mount and intrinsics (``check_scene_sensor_overrides`` refuses an
+      entry that restates them); this entry carries the host-specific
       ``SensorSpec.deploy_binding`` (``deploy run`` loads the robot manifest
       from the canonical ``robots/<robot_id>/`` dir, so a detect-scaffolded
       local robot.yaml is never on that path — the scene is where a committed
-      workcell binds the robot's cameras). On a name collision the scene entry
-      wins over the manifest entry.
+      workcell binds the robot's cameras). On a name collision the entry's
+      explicitly-set binding fields are applied over the manifest entry.
     * A **new** name is a workcell-mounted camera (overhead / front) —
       physically part of the cell, not the robot.
 

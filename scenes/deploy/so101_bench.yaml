@@ -2,8 +2,8 @@
 # deployments/so101.yaml RobotEnvironment.
 #
 # `sensors:` entries are deploy-time bindings for the robot manifest's own
-# `top`/`wrist` cameras (same names -> scene entry wins; manifest stays
-# authoritative for frames/intrinsics). Host-specific — retune /dev/video*
+# `top`/`wrist` cameras (same names -> the scene binds them; frames, mounts and
+# intrinsics stay the manifest's and a scene may not restate them). Host-specific — retune /dev/video*
 # paths per host with `openral detect --deployment`.
 #
 # HAL facts (serial port + lerobot calibration identity) live in the `hal:`

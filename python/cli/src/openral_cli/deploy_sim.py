@@ -857,7 +857,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     YAML. No envelope file is ever written — the launch reads ``robot_yaml``
     and feeds the kernel via ROS params.
     """
-    from openral_core import DeployScene, RobotDescription  # reason: defer schema import
+    from openral_core import (  # reason: defer schema import
+        DeployScene,
+        RobotDescription,
+        check_scene_sensor_overrides,
+    )
 
     if hal_mode not in ("sim", "real"):
         raise ROSConfigError(f"hal_mode must be 'sim' or 'real', got {hal_mode!r}.")
@@ -994,6 +998,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # velocity / effort limits).
     description = RobotDescription.from_yaml(str(robot_yaml))
     description.validate_for_e2e_pipeline()
+    # A robot sensor's geometry lives in its manifest only; refuse a scene that restates it
+    # here, before launch, so `deploy validate` sees it too (the launch's merge re-checks).
+    if deploy_scene is not None:
+        check_scene_sensor_overrides(description.sensors, deploy_scene.sensors)
     # No per-robot table: the HAL node + sim path derive from the manifest
     # and the scene (see `_derive_hal_spec`).
     hal = _derive_hal_spec(robot_id, deploy_scene)

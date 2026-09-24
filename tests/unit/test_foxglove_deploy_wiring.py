@@ -29,11 +29,12 @@ _ROOT = pathlib.Path(__file__).resolve().parents[2]
 _LAUNCH = _ROOT / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.launch.py"
 _MANIFEST = _ROOT / "robots" / "openarm" / "robot.yaml"
 
-# A synthetic real-cell override for the two tests below: the manifest's `top`
-# is a MuJoCo render with no `deploy_binding`, and no in-tree scene currently
-# overrides OpenArm's cameras for a real deploy — so these bind all three rig
-# cameras directly, the same shape a real deploy scene would carry, without
-# depending on one being committed.
+# A synthetic real-cell binding for the tests below: the manifest's `top` is a MuJoCo render
+# with no `deploy_binding`, and no in-tree scene currently binds OpenArm's cameras for a real
+# deploy — so this binds all three rig cameras directly, the same shape a real deploy scene
+# would carry, without depending on one being committed. Host binding ONLY: each name is a
+# robot-manifest sensor, so its frame, mount and intrinsics stay the manifest's
+# (`check_scene_sensor_overrides`); `frame_id` is required and restated verbatim.
 _SCENE_YAML = {
     "scene": {"id": "test_cell"},
     "robot_id": "openarm",
@@ -41,20 +42,9 @@ _SCENE_YAML = {
         {
             "name": "top",
             "modality": "rgb",
-            "frame_id": "openarm_head_camera_optical_frame",
-            "parent_frame": "openarm_base",
+            "frame_id": "world",
             "rate_hz": 30.0,
             "encoding": "bgr8",
-            "intrinsics": {
-                "width": 672,
-                "height": 376,
-                "fx": 336.0,
-                "fy": 336.0,
-                "cx": 336.0,
-                "cy": 188.0,
-            },
-            "vendor": "StereoLabs",
-            "model": "ZED Mini",
             "deploy_binding": {
                 "backend": "ros2_image",
                 "backend_params": {"topic": "/zed/zed_node/rgb/color/rect/image"},
@@ -64,20 +54,8 @@ _SCENE_YAML = {
             "name": "wrist_left",
             "modality": "rgb",
             "frame_id": "openarm_left_ee_base_link",
-            "parent_frame": "openarm_base",
             "rate_hz": 30.0,
             "encoding": "bgr8",
-            "vla_feature_key": "observation.images.wrist_left",
-            "intrinsics": {
-                "width": 960,
-                "height": 600,
-                "fx": 685.5,
-                "fy": 685.5,
-                "cx": 480.0,
-                "cy": 300.0,
-            },
-            "vendor": "Arducam",
-            "model": "B0495",
             "deploy_binding": {
                 "backend": "opencv_thread",
                 "backend_params": {"device": "/dev/camera_wrist_left"},
@@ -87,20 +65,8 @@ _SCENE_YAML = {
             "name": "wrist_right",
             "modality": "rgb",
             "frame_id": "openarm_right_ee_base_link",
-            "parent_frame": "openarm_base",
             "rate_hz": 30.0,
             "encoding": "bgr8",
-            "vla_feature_key": "observation.images.wrist_right",
-            "intrinsics": {
-                "width": 960,
-                "height": 600,
-                "fx": 685.5,
-                "fy": 685.5,
-                "cx": 480.0,
-                "cy": 300.0,
-            },
-            "vendor": "Arducam",
-            "model": "B0495",
             "deploy_binding": {
                 "backend": "opencv_thread",
                 "backend_params": {"device": "/dev/camera_wrist_right"},
@@ -168,10 +134,12 @@ def test_the_real_top_camera_keeps_the_sim_slot(
     """Sim and real feed the policy the same slot, with no scene remap.
 
     The manifest's `top` carries `observation.images.top` in sim, and a real
-    deploy scene overrides only the hardware fields. It must not restate the
-    key: `merge_deploy_sensors` keeps the manifest's, so the checkpoint sees
-    the ZED on the slot it saw the MuJoCo render on. A checkpoint trained on a
+    deploy scene binds only the hardware. It must not restate the key:
+    `merge_deploy_sensors` keeps the manifest's, so the checkpoint sees the real
+    camera on the slot it saw the MuJoCo render on. A checkpoint trained on a
     different name maps it with `image_preprocessing.aliases`, not a scene edit.
+    Nor may it restate geometry: a camera with a different mount or intrinsics
+    is a different manifest entry or a workcell camera with its own name.
     """
     scene = yaml.safe_load(_scene.read_text(encoding="utf-8"))
     manifest = yaml.safe_load(_MANIFEST.read_text(encoding="utf-8"))
@@ -186,24 +154,21 @@ def test_the_real_top_camera_keeps_the_sim_slot(
     from openral_core import DeployScene, RobotDescription
     from openral_rskill_ros.sensor_leg import merge_deploy_sensors
 
+    description = RobotDescription.from_yaml(str(_MANIFEST))
     merged_top = next(
         sensor
         for sensor in merge_deploy_sensors(
-            RobotDescription.from_yaml(str(_MANIFEST)).sensors,
-            DeployScene.from_yaml(str(_scene)).sensors,
+            description.sensors, DeployScene.from_yaml(str(_scene)).sensors
         )
         if sensor.name == "top"
     )
+    robot_top = next(s for s in description.sensors if s.name == "top")
     assert merged_top.vla_feature_key == "observation.images.top"
-    assert merged_top.frame_id == scene_top["frame_id"]
-    # `merge_deploy_sensors` copies only the fields the scene explicitly sets,
-    # so anything the sim entry declares and the scene omits survives into the
-    # real deploy — sim intrinsics on a ZED, for instance.
-    for field in ("frame_id", "rate_hz", "intrinsics", "encoding", "vendor", "model"):
-        assert field in scene_top, (
-            f"the sim `top` sets {field!r}; the override must restate it or the "
-            "MuJoCo value silently describes the ZED"
-        )
+    assert merged_top.deploy_binding is not None
+    # Geometry is the manifest's: the scene binds, the robot describes.
+    assert merged_top.frame_id == robot_top.frame_id
+    assert merged_top.intrinsics == robot_top.intrinsics
+    assert merged_top.parent_frame == robot_top.parent_frame
 
 
 def test_the_launch_generates_its_layout_from_the_bound_cameras() -> None:
