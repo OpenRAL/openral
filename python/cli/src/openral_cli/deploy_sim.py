@@ -882,13 +882,16 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     and feeds the kernel via ROS params.
     """
     from openral_core import (  # reason: defer schema import
+        ROBOT_UNIT_ENV,
         DeployRuntime,
         DeployScene,
         RobotDescription,
+        apply_sensor_overlays,
         check_scene_sensor_overrides,
         deploy_cloud_topic,
         merge_deploy_sensors,
         publishing_sensors,
+        resolve_sensor_overlays,
     )
 
     if hal_mode not in ("sim", "real"):
@@ -1043,6 +1046,23 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # before launch, so `deploy validate` sees it too (the launch's merge re-checks).
     if launched_scene is not None:
         check_scene_sensor_overrides(description.sensors, launched_scene.sensors)
+    # This host's unit overlay (per-host bindings, per-unit calibration). Resolved here AND
+    # by the launch + runtime node from the same inputs (scene `robot_unit`, inherited
+    # $OPENRAL_ROBOT_UNIT), so every pre-launch decision below sees the sensors they publish.
+    scene_unit = launched_scene.robot_unit if launched_scene is not None else None
+    overlays = resolve_sensor_overlays(robot_yaml, scene_unit, required=hal_mode == "real")
+    # The same selection `resolve_sensor_overlays` made; `None` only for a robot without
+    # `units/` on a real deploy (it refuses otherwise). The extrinsic preflight reads that
+    # unit's calibration.
+    robot_unit = os.environ.get(ROBOT_UNIT_ENV) or scene_unit
+    if overlays:
+        _console.print(
+            f"robot unit [bold]{robot_unit}[/bold]: overlays "
+            f"{', '.join(o.name for o in overlays)} ({robot_yaml.parent / 'units'})"
+        )
+        description = description.model_copy(
+            update={"sensors": apply_sensor_overlays(description.sensors, overlays)}
+        )
     # No per-robot table: the HAL node + sim path derive from the manifest
     # and the scene (see `_derive_hal_spec`).
     hal = _derive_hal_spec(robot_id, deploy_scene)
@@ -1182,7 +1202,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             + "."
         )
     if hal_mode == "real" and enable_octomap and enable_octomap_kernel_check:
-        _preflight_depth_extrinsics(description, Path(robot_yaml))
+        _preflight_depth_extrinsics(description, Path(robot_yaml), robot_unit)
     voxel_deadline_s, max_octree_age_s = (
         rt if rt is not None else DeployRuntime()
     ).voxel_freshness_s
@@ -2350,14 +2370,18 @@ def _clean_stale_fastrtps_shm(
     return purged, kept
 
 
-def _preflight_depth_extrinsics(description: RobotDescription, robot_yaml: Path) -> None:
+def _preflight_depth_extrinsics(
+    description: RobotDescription, robot_yaml: Path, unit: str | None
+) -> None:
     """Refuse a real world-voxel deploy whose depth camera extrinsic is not verified.
 
     The kernel's world-voxel check places every obstacle through each depth camera's
-    manifest mount, so every depth camera (``SensorSpec.is_depth_camera``) must have a
-    passing ``robots/<id>/calibration/<sensor>_extrinsic.json`` for its CURRENT pose
-    (``openral_core.depth_extrinsic.verify_extrinsic_report``; measured with
-    ``tools/depth_extrinsic_check.py``). All of them, not only the one the octomap cloud
+    mount as this unit publishes it (``description`` already carries the unit's
+    ``SensorOverlay``), so every depth camera (``SensorSpec.is_depth_camera``) must have a
+    passing ``robots/<id>/calibration/<unit>/<sensor>_extrinsic.json`` (``calibration/
+    <sensor>_extrinsic.json`` for a robot without ``units/``) for its CURRENT pose and
+    that unit (``openral_core.depth_extrinsic.verify_extrinsic_report``; measured with
+    ``tools/depth_extrinsic_check.py --unit``). All of them, not only the one the octomap cloud
     is believed to come from: a pinned ``octomap_cloud_topic`` does not say which. There
     is no override flag: the only other way past is an explicit
     ``--no-enable-octomap-kernel-check`` (no world check at all).
@@ -2373,10 +2397,12 @@ def _preflight_depth_extrinsics(description: RobotDescription, robot_yaml: Path)
 
     problems: list[str] = []
     for spec in (s for s in description.sensors if s.is_depth_camera):
-        report = extrinsic_report_path(robot_yaml, spec.name)
+        report = extrinsic_report_path(robot_yaml, spec.name, unit)
         try:
             checkable_depth_sensor(description, spec.name)
-            found = verify_extrinsic_report(spec, report, base_frame=description.base_frame)
+            found = verify_extrinsic_report(
+                spec, report, base_frame=description.base_frame, unit=unit
+            )
         except ROSConfigError as exc:
             found = [str(exc)]
         problems += [f"{spec.name}: {p}" for p in found]
@@ -2387,7 +2413,9 @@ def _preflight_depth_extrinsics(description: RobotDescription, robot_yaml: Path)
             "the world-voxel check is on for a real deploy, but a depth camera's extrinsic is "
             "not verified — every obstacle would be placed through an unmeasured pose:\n  "
             + "\n  ".join(problems)
-            + "\nMeasure it with `tools/depth_extrinsic_check.py check` and commit the report."
+            + "\nMeasure it with `tools/depth_extrinsic_check.py check --sensor <name>"
+            + (f" --unit {unit}" if unit else "")
+            + "` and commit the report."
         )
 
 

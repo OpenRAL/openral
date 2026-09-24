@@ -4,7 +4,8 @@ Loads every ``robots/*/robot.yaml``, ``rskills/*/rskill.yaml``, and
 ``scenes/{deploy,sim,benchmark}/*.yaml`` and cross-validates them in one pass:
 every manifest parses, every ``file:`` / ``ros2://`` asset ref resolves, every
 scene ``robot_id`` resolves to a real robot directory, no scene names a robot
-sensor (``check_scene_sensor_overrides``), every rSkill's embodiment
+sensor (``check_scene_sensor_overrides``), every ``robots/<id>/units/*.yaml`` overlay
+and scene ``robot_unit`` resolves against its manifest, every rSkill's embodiment
 tags reach at least one in-repo robot, and every sensor ``parent_frame`` is a
 declared tf2 frame. No schema change — pure reuse of the existing Pydantic
 contracts (``RobotDescription.from_yaml`` / ``resolve_asset`` / the scene tiers).
@@ -32,7 +33,9 @@ from openral_core.schemas import (
     RobotDescription,
     RSkillManifest,
     SimScene,
+    apply_sensor_overlays,
     check_scene_sensor_overrides,
+    load_robot_unit,
 )
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from rich.console import Console
@@ -56,6 +59,8 @@ CheckRule = Literal[
     "asset_ref",
     "scene_robot_id",
     "scene_sensor_geometry",
+    "robot_unit",
+    "scene_robot_unit",
     "embodiment_reach",
     "frames",
 ]
@@ -204,6 +209,14 @@ def _check_robots(
         robot_tags |= set(robot.capabilities.embodiment_tags)
         findings.extend(_check_assets(robot_id, robot, path.parent, resolve_remote_assets))
         findings.extend(_check_frames(robot_id, robot, path.parent))
+        for unit_path in sorted((path.parent / "units").glob("*.yaml")):
+            try:
+                unit = load_robot_unit(path, unit_path.stem)
+                apply_sensor_overlays(robot.sensors, unit.sensors)
+            except _LOAD_ERRORS as exc:
+                findings.append(
+                    _error("robot_unit", f"robots/{robot_id}/units/{unit_path.name}", _exc(exc))
+                )
     return robots, robot_tags, findings
 
 
@@ -303,6 +316,14 @@ def _check_scenes(
                     check_scene_sensor_overrides(robots[scene.robot_id].sensors, scene.sensors)
                 except ROSError as exc:
                     findings.append(_error("scene_sensor_geometry", target, str(exc)))
+                unit_name = getattr(scene, "robot_unit", None)
+                if unit_name is not None:
+                    try:
+                        load_robot_unit(
+                            repo_root / "robots" / scene.robot_id / "robot.yaml", unit_name
+                        )
+                    except _LOAD_ERRORS as exc:
+                        findings.append(_error("scene_robot_unit", target, _exc(exc)))
     return n_scenes, findings
 
 

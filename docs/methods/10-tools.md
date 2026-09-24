@@ -34,7 +34,7 @@ _Derives a robot manifest's `tight_geometry` blocks from its real collision mesh
 
 _Two modes: `emit --robot <path>` prints the YAML fragment to paste into the manifest, annotated per link with vertex counts and margins; `check --robot <path>` re-derives from the mesh and verifies every declared block still contains it, exiting 3 on any failure._
 
-- `REPO_ROOT: Path` (L42) — Repo root, derived from this file's location.
+- `REPO_ROOT: Path` (L22) — Repo root, derived from this file's location.
 - `PANDA_GEOM_OF_LINK: dict[str, str]` (L46) — Panda manifest link name → MJCF collision geom name (`panda_link{i}` → `link{i}_collision`).
 - `link_mesh_in_box_frame(xml_path, geom_name, origin_xyz_rpy) -> np.ndarray` (L88) — Collision-mesh vertices of `geom_name`, expressed in the manifest box's frame. Raises when the geom is missing, isn't a mesh, or when `mesh_pos != geom_pos`.
 - `link_mesh_faces(xml_path, geom_name) -> Points` (L124) — Triangle face indices of `geom_name`'s collision mesh, paired with `link_mesh_in_box_frame`'s vertices for the overhang check.
@@ -55,7 +55,7 @@ _Generates JSON Schema files for every public `openral_core` model._
 ### `tools/check_repo_state_map.py`
 _Pre-commit drift guard checking the mechanically verifiable half of `docs/architecture/repo-state-map.html`: that its `pkg:` pointers name something real and its asserted counts haven't rotted. Prose on the map stays a human judgement call._
 
-- `REPO_ROOT` (L37) — Repo root, derived from this file's location.
+- `REPO_ROOT` (L39) — Repo root, derived from this file's location.
 - `MAP_PATH = REPO_ROOT / "docs" / "architecture" / "repo-state-map.html"` (L38) — The map file this script checks.
 - module const `COUNT_TOLERANCE: float` (L45) — Counts are held to within 10%, not to the digit — an exact check would go red on every added test file and get disabled.
 - `iter_cards(html: str) -> list[tuple[str, str]]` — Pair each `pkg:` value with the `desc:` that follows it in the same card. (L71)
@@ -216,14 +216,14 @@ _Shared base for the Isaac Sim sidecar scenes (py3.11 venv only), owning the obs
 ### `tools/isaac_scene.py`
 _Minimal Isaac Sim lift-cube scene for the sidecar, built on Isaac Sim core (not Isaac Lab). Franka on a ground plane, a cube in front, two RTX cameras matching the LIBERO contract. Lifecycle/obs skeleton in `_isaac_scene_base.IsaacSceneBase`._
 
-- `_ARM_DOF = 7` (L36) — arm joint count.
+- `_ARM_DOF = 7` (L38) — arm joint count.
 - `_ACTION_DIM = 8` (L37) — 7 arm joint deltas + 1 gripper command.
 - `_ARM_DELTA_SCALE = 0.05` (L38) — rad per unit action, keeps a unit action sane.
 - `_GRIPPER_OPEN = 0.04` (L39) — Franka finger joint upper bound (m).
 - `_GRIPPER_CLOSED = 0.0` (L40) — Franka finger joint lower bound (m).
 - `_LIFT_SUCCESS_Z = 0.10` (L41) — cube CoM height (m) counted as "lifted".
 - `_CUBE_HALF = 0.025` (L42) — 5 cm cube → 2.5 cm half-extent.
-- `_AGENT_CAMERA_POS: NDArray[np.float64]` (L43) — front agent-view camera position.
+- `_AGENT_CAMERA_POS: NDArray[np.float64]` (L48) — front agent-view camera position.
 - `class IsaacLiftScene(IsaacSceneBase)` (L46) — A real Isaac Sim PhysX + RTX lift-cube scene, driven step-by-step.
   - `IsaacLiftScene.build() -> None` (L62) — Construct the stage: ground + Franka + cube + camera.
 
@@ -288,7 +288,7 @@ _Selective test execution — maps a git diff to the minimal pytest targets that
 ### `tools/lane_report.py`
 _Opt-in lane accounting — decides, records and attests what each dependency lane actually ran. Makes a vacuous green impossible (issue #163). See [`docs/contributing/selective-testing.md`](../contributing/selective-testing.md)._
 
-- `REPO_ROOT: Path` (L43) — Repo root, derived from `__file__`.
+- `REPO_ROOT: Path` (L49) — Repo root, derived from `__file__`.
 - `DEFAULT_CONFIG: Path` (L53) — `REPO_ROOT / "tools" / "test_selection.toml"`.
 - `DEFAULT_LEDGER: Path` (L54) — `REPO_ROOT / ".lane-ledger.jsonl"`.
 - `STATUS_RAN: str` (L58) — Status vocabulary. Deliberately not "skipped": a lane is either coverage got, coverage declared unreachable here, or a failure.
@@ -387,15 +387,15 @@ Measures the wire cost of the dense `uint8[]` payload as publish→receive laten
 
 ### `tools/depth_extrinsic_check.py`
 
-- `check(args) -> int` (L329) — Reads the depth cloud, the camera-internal TF (`frame_id -> cloud frame`) and, when the sensor's `parent_frame` is not the manifest's `base_frame` (G1 head on `torso_link`, SO-100/101 wrist on `gripper`, Galaxea A1 wrist on `arm_seg6`), the recorded `base_frame -> parent_frame` TF chain at each cloud's stamp — refusing if that chain moved during the recording or is missing. Places the cloud through the robot manifest's `--sensor` pose (the only place a robot sensor's mount lives), fits the table plane and marker centroids in the base frame, and writes a JSON report (residuals, pass/fail, `base_frame`, `parent_in_base_xyz_rpy`, and `suggested_static_transform_xyz_rpy` in `parent_frame`, to be copied into the manifest). Returns 0 iff it passes against the `openral_core.depth_extrinsic` limits.
-- `verify(args) -> int` (L401) — `openral_core.depth_extrinsic.verify_extrinsic_report` for one sensor: 0 iff the report passed, at criteria no looser than the shipped limits, for the manifest's *current* pose. `openral deploy run` applies the same check itself.
-- `main(argv=None) -> int` (L422) — CLI: `check --robot --sensor --bag --cloud-topic --table-z --table-roi --marker X Y ...` / `verify --robot --sensor [--report]` (`--sensor` required; report defaults to `robots/<id>/calibration/<sensor>_extrinsic.json`). RGB-only sensors are refused (exit 2): no cloud to fit. Needs a sourced ROS 2 overlay (rosbag2_py, tf2_ros).
+- `check(args) -> int` (L329) — Reads the depth cloud, the camera-internal TF (`frame_id -> cloud frame`) and, when the sensor's `parent_frame` is not the manifest's `base_frame` (G1 head on `torso_link`, SO-100/101 wrist on `gripper`, Galaxea A1 wrist on `arm_seg6`), the recorded `base_frame -> parent_frame` TF chain at each cloud's stamp — refusing if that chain moved during the recording or is missing. Places the cloud through the `--sensor` pose a deploy of `--unit` publishes (the manifest entry with that `RobotUnit`'s `SensorOverlay` applied; a robot that ships `units/` requires `--unit`, via `_unit_description`), fits the table plane and marker centroids in the base frame, and writes a JSON report (residuals, pass/fail, `base_frame`, `parent_in_base_xyz_rpy`, and `suggested_static_transform_xyz_rpy` in `parent_frame`, to be copied into the unit overlay — or the manifest, for a robot without units; the report records the unit). Returns 0 iff it passes against the `openral_core.depth_extrinsic` limits.
+- `verify(args) -> int` (L401) — `openral_core.depth_extrinsic.verify_extrinsic_report` for one sensor: 0 iff the report passed, at criteria no looser than the shipped limits, for the same unit and that unit's *current* pose. `openral deploy run` applies the same check itself.
+- `main(argv=None) -> int` (L422) — CLI: `check --robot --sensor --bag --cloud-topic --table-z --table-roi --marker X Y ...` / `verify --robot --sensor [--unit] [--report]` (`--sensor` required; `--unit` selects `robots/<id>/units/<unit>.yaml`; report defaults to `robots/<id>/calibration/<unit>/<sensor>_extrinsic.json`, or `calibration/<sensor>_extrinsic.json` without units). RGB-only sensors are refused (exit 2): no cloud to fit. Needs a sourced ROS 2 overlay (rosbag2_py, tf2_ros).
 
-Measures the one input the kernel's world-voxel check trusts absolutely on a real depth camera — the extrinsic — which `openral calibrate camera` (intrinsics only) does not. Runbook: `docs/tutorials/deploy/openarm-real-world-voxel-check.md`. Tested in `tests/unit/test_depth_extrinsic_check.py` on real rosbag2 bags (OpenArm `head_zed`, G1 `head`, SO-101 `wrist`).
+Measures the one input the kernel's world-voxel check trusts absolutely on a real depth camera — the extrinsic — which `openral calibrate camera` (intrinsics only) does not. Runbook: `docs/tutorials/deploy/openarm-real-world-voxel-check.md`. Tested in `tests/unit/test_depth_extrinsic_check.py` on real rosbag2 bags (OpenArm `head_zed`, G1 `head`, SO-101 `wrist`; `--unit` on a unit overlay).
 
 ### `tools/openarm_world_voxel_run.sh`
 
-_The only sanctioned launcher for `scenes/deploy/openarm_real_world_voxels.yaml`. Refuses unless `OPENRAL_OPENARM_ALLOW_MOTION=1` and `OPENRAL_OPENARM_ATTENDED=1`, sourced ROS 2, `openral` on PATH, `depth_extrinsic_check.py verify --sensor head_zed` passing against `robots/openarm/robot.yaml` + `robots/openarm/calibration/head_zed_extrinsic.json` (early refusal; `openral deploy run` re-applies the gate), and an interactive terminal; then asks for a typed confirmation and execs `openral deploy run`. Extra args pass through._
+_The only sanctioned launcher for `scenes/deploy/openarm_real_world_voxels.yaml`. Refuses unless `OPENRAL_OPENARM_ALLOW_MOTION=1` and `OPENRAL_OPENARM_ATTENDED=1`, `OPENRAL_ROBOT_UNIT` naming the cell, sourced ROS 2, `openral` on PATH, `depth_extrinsic_check.py verify --sensor head_zed --unit $OPENRAL_ROBOT_UNIT` passing against `robots/openarm/robot.yaml` + `robots/openarm/calibration/<unit>/head_zed_extrinsic.json` (early refusal; `openral deploy run` re-applies the gate), and an interactive terminal; then asks for a typed confirmation and execs `openral deploy run`. Extra args pass through._
 
 ### `tools/stop_ee_speed.py`
 
@@ -513,10 +513,10 @@ _Boot helper + inference server for Xiaomi Robotics XR-1. The launcher provision
 _Boot helper + server for the Qwen3.5-4B scene-VLM sidecar, companion to `QwenSceneVlm`. Provisions an isolated venv and execs into a ZMQ REQ/REP + msgpack server answering scene questions, run out-of-process for dependency/VRAM isolation. Apache-2.0 model._
 
 - `_DEFAULT_HOME: Path` (L34) — `~/.cache/openral/qwen-vlm-sidecar`, overridable via `--home` / `$OPENRAL_QWEN_VLM_SIDECAR_HOME`.
-- `_VENV_ENV: str` (L35) — Env var name for the `--venv` override.
-- `_HOME_ENV: str` (L36) — Env var name for the `--home` override.
+- `_VENV_ENV: str` (L34) — Env var name for the `--venv` override.
+- `_HOME_ENV: str` (L35) — Env var name for the `--home` override.
 - `_LOCK: Path` (L46) — Hash-locked pinned deps file the venv is provisioned from.
-- `_NVRTC_OVERRIDE: Path` (L51) — aarch64 nvrtc override passed at install time alongside `_LOCK`.
+- `_NVRTC_OVERRIDE: Path` (L49) — aarch64 nvrtc override passed at install time alongside `_LOCK`.
 - `ensure_venv(home, *, override=None) -> Path` (L56) — return the sidecar venv python, provisioning + installing pinned deps if absent (sentinel-guarded); honours `$OPENRAL_QWEN_VLM_SIDECAR_VENV`.
 - `main() -> int` (L97) — argparse (`--model`, `--host`, `--port`, `--max-side`, `--home`, `--venv`); strips `PYTHONPATH`/`PYTHONHOME` and `os.execvpe`s into `_qwen_vlm_server.py`.
 - `_load(model_id) -> (processor, model)` (_qwen_vlm_server.py L59) — dual-path NF4 load: auto-detects a pre-quantized checkpoint via its embedded config and loads 4-bit directly, else quantizes at load with serial materialization for 8 GB.

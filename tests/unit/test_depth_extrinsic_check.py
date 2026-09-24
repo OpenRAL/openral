@@ -3,8 +3,8 @@
 The bag is written here with the real ``rosbag2_py`` writer and real ``sensor_msgs`` /
 ``tf2_msgs`` messages: a table plus two flat markers, seen from a known TRUE mount pose
 through a driver-style internal transform (``<frame_id> -> <frame_id>_cloud``). The manifest
-under test is a committed ``robots/<id>/robot.yaml`` with the sensor's pose swapped: the robot
-manifest is the only place a robot sensor's mount lives.
+under test is a committed ``robots/<id>/robot.yaml`` with the sensor's pose swapped, and, for
+``--unit``, a unit overlay carrying the calibrated pose (a report never crosses units).
 
 OpenArm's ``head_zed`` is parented to the base frame. G1's ``head`` (on ``torso_link``, behind
 the waist joints) and SO-101's ``wrist`` (on ``gripper``) are not: their bags carry the
@@ -40,7 +40,7 @@ pytestmark = pytest.mark.skipif(
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ROBOT = _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
-_REPORT = _REPO_ROOT / "robots" / "openarm" / "calibration" / "head_zed_extrinsic.json"
+_REPORT = _REPO_ROOT / "robots" / "openarm" / "calibration" / "thor" / "head_zed_extrinsic.json"
 sys.path.insert(0, str(_REPO_ROOT / "tools"))
 
 import depth_extrinsic_check as zc  # noqa: E402
@@ -218,8 +218,9 @@ def _check(robot: Path, bag: Path, out: Path, sensor: str = "head_zed") -> int:
     return zc.main(argv)
 
 
-def _verify(robot: Path, report: Path, sensor: str = "head_zed") -> int:
-    return zc.main(["verify", "--robot", str(robot), "--sensor", sensor, "--report", str(report)])
+def _verify(robot: Path, report: Path, sensor: str = "head_zed", unit: str | None = None) -> int:
+    argv = ["verify", "--robot", str(robot), "--sensor", sensor, "--report", str(report)]
+    return zc.main([*argv, "--unit", unit] if unit else argv)
 
 
 def test_the_true_pose_passes_and_verifies(bag: Path, tmp_path: Path) -> None:
@@ -273,7 +274,7 @@ def test_the_committed_manifest_is_refused_until_a_calibration_is_committed() ->
     """Fail-closed by default: the shipped pose is a placeholder with no passing report."""
     if _REPORT.exists():
         pytest.skip("a calibration report is committed; the default-refusal state is past")
-    rc = _verify(_ROBOT, _REPORT)
+    rc = _verify(_ROBOT, _REPORT, unit="thor")
     assert rc == 1
 
 
@@ -285,7 +286,12 @@ def test_the_run_script_refuses_without_a_verified_extrinsic() -> None:
     """
     if _REPORT.exists():
         pytest.skip("a calibration report is committed; the default-refusal state is past")
-    env = {**os.environ, "OPENRAL_OPENARM_ALLOW_MOTION": "1", "OPENRAL_OPENARM_ATTENDED": "1"}
+    env = {
+        **os.environ,
+        "OPENRAL_OPENARM_ALLOW_MOTION": "1",
+        "OPENRAL_OPENARM_ATTENDED": "1",
+        "OPENRAL_ROBOT_UNIT": "thor",
+    }
     proc = subprocess.run(
         ["bash", str(_REPO_ROOT / "tools" / "openarm_world_voxel_run.sh")],
         env=env,
@@ -295,7 +301,58 @@ def test_the_run_script_refuses_without_a_verified_extrinsic() -> None:
         check=False,
     )
     assert proc.returncode == 2, proc.stderr
-    assert "head_zed extrinsic not verified for the manifest's pose" in proc.stderr
+    assert "head_zed extrinsic not verified for unit thor's pose" in proc.stderr
+
+
+def test_the_run_script_refuses_without_a_robot_unit() -> None:
+    """Both motion gates set but no unit: the ZED pose is per cell, so nothing is verified."""
+    env = {k: v for k, v in os.environ.items() if k != "OPENRAL_ROBOT_UNIT"}
+    env |= {"OPENRAL_OPENARM_ALLOW_MOTION": "1", "OPENRAL_OPENARM_ATTENDED": "1"}
+    proc = subprocess.run(
+        ["bash", str(_REPO_ROOT / "tools" / "openarm_world_voxel_run.sh")],
+        env=env,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    assert proc.returncode == 2
+    assert "OPENRAL_ROBOT_UNIT is not set" in proc.stderr
+
+
+def test_check_and_verify_measure_the_unit_pose(bag: Path, tmp_path: Path) -> None:
+    """``--unit`` checks the pose that unit publishes, and a report never crosses units.
+
+    The manifest's nominal pose is wrong; unit ``cell_a``'s overlay carries the true one,
+    unit ``cell_b`` has no calibrated pose (so it publishes the wrong nominal).
+    """
+    wrong = [p + d for p, d in zip(_TRUE_POSE, (0.03, 0.0, 0.0, 0.0, 0.08, 0.0), strict=True)]
+    robot_dir = tmp_path / "openarm"
+    robot_dir.mkdir()
+    robot = robot_dir / "robot.yaml"
+    robot.write_text(_robot_with_pose(tmp_path, wrong).read_text(), encoding="utf-8")
+    (robot_dir / "units").mkdir()
+    for unit, pose in (("cell_a", list(_TRUE_POSE)), ("cell_b", None)):
+        entry: dict[str, object] = {"name": "head_zed"}
+        if pose is not None:
+            entry["static_transform_xyz_rpy"] = pose
+        doc = {"robot_id": "openarm", "unit": unit, "sensors": [entry]}
+        (robot_dir / "units" / f"{unit}.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
+    out = tmp_path / "a.json"
+    argv = ["check", "--robot", str(robot), "--sensor", "head_zed", "--unit", "cell_a"]
+    argv += ["--bag", str(bag)]
+    argv += ["--cloud-topic", _CLOUD_TOPIC, "--table-z", str(_TABLE_Z)]
+    argv += ["--table-roi", *map(str, _ROI), "--stride", "1", "--out", str(out)]
+    for mx, my in _MARKERS:
+        argv += ["--marker", str(mx), str(my)]
+    assert zc.main(argv) == 0
+    assert json.loads(out.read_text())["unit"] == "cell_a"
+
+    verify = ["verify", "--robot", str(robot), "--sensor", "head_zed", "--report", str(out)]
+    assert zc.main([*verify, "--unit", "cell_a"]) == 0
+    assert zc.main(verify) == 2  # the robot ships units/: no unit-less check
+    assert zc.main([*verify, "--unit", "cell_b"]) == 1
+    assert zc.main([*verify, "--unit", "no_such_unit"]) == 2
 
 
 def test_the_run_script_refuses_without_both_motion_gates() -> None:
@@ -405,6 +462,7 @@ def test_the_run_script_refuses_when_deploy_would_load_another_manifest(
         "OPENRAL_OPENARM_ALLOW_MOTION": "1",
         "OPENRAL_OPENARM_ATTENDED": "1",
         "OPENRAL_ROBOTS_DIR": str(tmp_path / "robots"),
+        "OPENRAL_ROBOT_UNIT": "thor",
     }
     proc = subprocess.run(
         ["bash", str(_REPO_ROOT / "tools" / "openarm_world_voxel_run.sh")],

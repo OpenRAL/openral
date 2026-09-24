@@ -4,9 +4,10 @@ The kernel's world-voxel check places every obstacle through the depth camera's
 ``parent_frame -> frame_id`` mount, and nothing else measures that pose
 (``openral calibrate camera`` fits intrinsics only). ``tools/depth_extrinsic_check.py
 check`` measures it from a recorded bag and writes a report to
-``robots/<id>/calibration/<sensor>_extrinsic.json``; this module is the part both that
-tool and ``openral deploy run``'s preflight need: the pass limits, derived from the
-real world-voxel margin, and :func:`verify_extrinsic_report`.
+``robots/<id>/calibration/<unit>/<sensor>_extrinsic.json`` (per robot unit;
+``calibration/<sensor>_extrinsic.json`` for a robot without ``units/``); this module is
+the part both that tool and ``openral deploy run``'s preflight need: the pass limits,
+derived from the real world-voxel margin, and :func:`verify_extrinsic_report`.
 
 Kept out of ``openral_core.__init__`` and free of numpy, so the launch file can read
 :data:`REAL_WORLD_VOXEL_MARGIN_M` without loading anything heavy.
@@ -41,14 +42,23 @@ MAX_MARKER_ERR_M: Final[float] = 0.75 * REAL_WORLD_VOXEL_MARGIN_M
 MIN_MARKERS: Final[int] = 2
 
 
-def extrinsic_report_path(robot_yaml: Path, sensor: str) -> Path:
-    """``<manifest dir>/calibration/<sensor>_extrinsic.json`` — next to the manifest.
+def extrinsic_report_path(robot_yaml: Path, sensor: str, unit: str | None = None) -> Path:
+    """Where ``sensor``'s extrinsic report lives, next to the manifest.
+
+    ``<manifest dir>/calibration/<unit>/<sensor>_extrinsic.json`` for a robot unit
+    (``robots/<id>/units/<unit>.yaml``: each unit mounts its camera, so each measures its
+    own pose); ``<manifest dir>/calibration/<sensor>_extrinsic.json`` when ``unit`` is
+    ``None`` — only for a robot that ships no ``units/`` (a real deploy of one that does
+    refuses without a unit: ``openral_core.resolve_sensor_overlays``).
 
     Example:
-        >>> extrinsic_report_path(Path("robots/openarm/robot.yaml"), "head_zed").as_posix()
-        'robots/openarm/calibration/head_zed_extrinsic.json'
+        >>> extrinsic_report_path(Path("robots/openarm/robot.yaml"), "head_zed", "thor").as_posix()
+        'robots/openarm/calibration/thor/head_zed_extrinsic.json'
+        >>> extrinsic_report_path(Path("robots/g1/robot.yaml"), "head").as_posix()
+        'robots/g1/calibration/head_extrinsic.json'
     """
-    return robot_yaml.parent / "calibration" / f"{sensor}_extrinsic.json"
+    calibration = robot_yaml.parent / "calibration"
+    return (calibration / unit if unit else calibration) / f"{sensor}_extrinsic.json"
 
 
 def checkable_depth_sensor(description: RobotDescription, sensor: str) -> SensorSpec:
@@ -127,18 +137,22 @@ def residual_failures(
     return failures
 
 
-def verify_extrinsic_report(spec: SensorSpec, report_path: Path, *, base_frame: str) -> list[str]:
+def verify_extrinsic_report(
+    spec: SensorSpec, report_path: Path, *, base_frame: str, unit: str | None = None
+) -> list[str]:
     """Every reason ``report_path`` does not clear ``spec``'s CURRENT manifest pose.
 
     Empty means verified. Refuses a missing or unreadable report, one that did not pass,
     one whose stored residuals fail this module's limits (the stored verdict is never
-    trusted alone), one measured for another sensor, frame pair, base frame or pose
-    (stale after a manifest edit), and one checked against looser criteria.
+    trusted alone), one measured for another unit, sensor, frame pair, base frame or pose
+    (stale after a manifest or unit-overlay edit), and one checked against looser criteria.
 
     Args:
-        spec: The manifest sensor (see :func:`checkable_depth_sensor`).
+        spec: The sensor as ``unit`` publishes it (manifest entry with the unit's
+            ``SensorOverlay`` applied; see :func:`checkable_depth_sensor`).
         report_path: The ``check`` report (see :func:`extrinsic_report_path`).
         base_frame: The robot base frame the table and markers were measured in.
+        unit: The robot unit the report must be for (``None`` = a robot without units).
     """
     if not report_path.is_file():
         return [f"no extrinsic report at {report_path}"]
@@ -158,6 +172,8 @@ def verify_extrinsic_report(spec: SensorSpec, report_path: Path, *, base_frame: 
         f"residuals fail the shipped limits: {f}"
         for f in residual_failures(residuals if isinstance(residuals, dict) else {})
     ]
+    if report.get("unit") != unit:
+        problems.append(f"report is for unit {report.get('unit')!r}, not {unit!r}")
     measured = (
         report.get("sensor"),
         report.get("parent_frame"),

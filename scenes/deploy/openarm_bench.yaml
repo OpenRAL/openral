@@ -48,13 +48,16 @@
 scene:
   id: openarm_bench
 robot_id: openarm
+# This cell's per-host camera bindings + calibration: robots/openarm/units/orin.yaml.
+# $OPENRAL_ROBOT_UNIT overrides it (e.g. `thor` to run this bench scene on the Thor cell).
+robot_unit: orin
 
 # Camera INVENTORY, verified on the rig 2026-09-16 (`lsusb`, `ls -l /dev/v4l/by-id`),
 # not assumed: ONE StereoLabs ZED-M and TWO Arducam B0495. The ZED serves twice:
 # its SDK depth as `head_zed` and its rectified left image as `top`, the
 # policy's `context` view — so all three manifest RGB slots are bound. Every one
-# of them is a robot camera, so the bindings live in robots/openarm/robot.yaml,
-# not here (see the pointer below `drivers:`).
+# of them is a robot camera, so the bindings live in this host's unit overlay,
+# robots/openarm/units/orin.yaml (selected by `robot_unit` below), not here.
 #
 # Vendor sensor driver this cell needs on the bus. The manifest's `head_zed` binding subscribes
 # `/zed/zed_node/...` and `runtime.octomap_cloud_topic` names the wrapper's
@@ -91,7 +94,7 @@ drivers:
       ros_params_override_path: drivers/zedm_openarm_override.yaml
 
 # Cameras: every camera here is a robot sensor, so its real-hardware binding lives in
-# robots/openarm/robot.yaml (a deploy scene never touches a robot camera —
+# the unit overlay (robot_unit above; a deploy scene never redefines a robot camera —
 # openral_core.check_scene_sensor_overrides). A workcell camera would go under
 # `sensors:` with its own name.
 

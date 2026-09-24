@@ -14,9 +14,11 @@ offline, from a bag the operator records with the robot held still:
   ``--marker-radius`` of each is compared with where it was placed. Two or more are
   required to pass: one marker cannot tell a yaw error from a translation.
 
-The pose under test is the ROBOT MANIFEST's ``--sensor`` entry (a depth camera with
-``parent_frame`` + ``static_transform_xyz_rpy``; RGB-only cameras are refused, there is no
-cloud to fit). The bag supplies the clouds, the camera-internal TF below the mount frame
+The pose under test is the ``--sensor`` entry exactly as a deploy of ``--unit`` publishes
+it: the robot manifest's entry with that unit's overlay (``robots/<id>/units/<unit>.yaml``)
+applied (a depth camera with ``parent_frame`` + ``static_transform_xyz_rpy``; RGB-only
+cameras are refused, there is no cloud to fit). A robot that ships ``units/`` requires
+``--unit``: its mounts are per cell. The bag supplies the clouds, the camera-internal TF below the mount frame
 (``frame_id -> <cloud frame>``, from the driver's own URDF), and — when ``parent_frame`` is
 not the base frame (a head on ``torso_link``, a wrist camera on ``gripper``) — the TF chain
 ``base_frame -> parent_frame`` at the recorded joint pose (record ``/tf`` + ``/tf_static``
@@ -24,26 +26,28 @@ from ``robot_state_publisher``). That chain must hold still across the clouds us
 whose parent IS the base frame needs only the driver in the bag.
 
 The report records the pose, and ``verify`` (``openral_core.depth_extrinsic``) refuses a
-report whose pose no longer matches the manifest or whose criteria are looser than the
-limits derived from the real world-voxel margin. ``openral deploy run`` applies the same
-gate before any real launch with the world-voxel check on. The committed report lives next
-to the manifest, in ``robots/<id>/calibration/<sensor>_extrinsic.json``.
+report for another unit, whose pose no longer matches the manifest + unit overlay, or whose
+criteria are looser than the limits derived from the real world-voxel margin. ``openral
+deploy run`` applies the same gate, for the selected unit, before any real launch with the
+world-voxel check on. The committed report lives next to the manifest, in
+``robots/<id>/calibration/<unit>/<sensor>_extrinsic.json`` (``calibration/<sensor>_extrinsic.json``
+for a robot without ``units/``).
 
 The fitted corrections are also composed into ``suggested_static_transform_xyz_rpy`` (in
-``parent_frame``), to be copied into the manifest. Passing on the bag the suggestion was
+``parent_frame``), to be copied into the unit overlay (or the manifest, without units). Passing on the bag the suggestion was
 fitted to proves nothing (it is zero by construction); verify on a SECOND bag with the
 markers moved.
 
 Run (ROS 2 sourced, for rosbag2_py / tf2)::
 
     uv run python tools/depth_extrinsic_check.py check \\
-        --robot robots/openarm/robot.yaml --sensor head_zed --bag <bag_dir> \\
+        --robot robots/openarm/robot.yaml --sensor head_zed --unit thor --bag <bag_dir> \\
         --cloud-topic /zed/zed_node/point_cloud/cloud_registered \\
         --table-z -0.20 --table-roi 0.30 0.70 -0.30 0.30 \\
         --marker 0.45 0.15 --marker 0.55 -0.15 \\
-        --out robots/openarm/calibration/head_zed_extrinsic.json
+        --out robots/openarm/calibration/thor/head_zed_extrinsic.json
     uv run python tools/depth_extrinsic_check.py verify \\
-        --robot robots/openarm/robot.yaml --sensor head_zed
+        --robot robots/openarm/robot.yaml --sensor head_zed --unit thor
 """
 
 from __future__ import annotations
@@ -57,7 +61,7 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
-from openral_core import RobotDescription
+from openral_core import RobotDescription, apply_sensor_overlays, load_robot_unit
 from openral_core.depth_extrinsic import (
     MAX_HEIGHT_ERR_M,
     MAX_MARKER_ERR_M,
@@ -326,9 +330,33 @@ def _read_bag(
     return pts @ rot.T + trans, frame, len(clouds), base_rot, base_trans
 
 
+def _unit_description(robot_yaml: Path, sensor: str, unit: str | None) -> RobotDescription:
+    """The manifest with ``unit``'s sensor overlay applied: what a deploy of it publishes.
+
+    Raises:
+        ROSConfigError: ``unit`` is invalid, or ``None`` for a robot that ships ``units/``
+            (checked after ``sensor`` itself, so an RGB-only camera is refused as such).
+    """
+    description = RobotDescription.from_yaml(str(robot_yaml))
+    if unit is not None:
+        overlays = load_robot_unit(robot_yaml, unit).sensors
+        description = description.model_copy(
+            update={"sensors": apply_sensor_overlays(description.sensors, overlays)}
+        )
+    checkable_depth_sensor(description, sensor)
+    units_dir = robot_yaml.parent / "units"
+    if unit is None and units_dir.is_dir():
+        have = ", ".join(sorted(p.stem for p in units_dir.glob("*.yaml")))
+        raise ROSConfigError(
+            f"{robot_yaml.parent.name} ships per-unit overlays ({have}); its camera mounts "
+            "are per unit, so pass --unit"
+        )
+    return description
+
+
 def check(args: argparse.Namespace) -> int:
-    """Measure the manifest's pose against the bag and write the JSON report; 0 iff it passes."""
-    description = RobotDescription.from_yaml(str(args.robot))
+    """Measure the unit's pose against the bag and write the JSON report; 0 iff it passes."""
+    description = _unit_description(args.robot, args.sensor, args.unit)
     spec = checkable_depth_sensor(description, args.sensor)
     assert spec.parent_frame is not None and spec.static_transform_xyz_rpy is not None
     base_frame = description.base_frame
@@ -367,6 +395,7 @@ def check(args: argparse.Namespace) -> int:
         max_marker_err_m=args.max_marker_err_m,
     )
     report = {
+        "unit": args.unit,
         "sensor": spec.name,
         "parent_frame": spec.parent_frame,
         "frame_id": spec.frame_id,
@@ -399,11 +428,13 @@ def check(args: argparse.Namespace) -> int:
 
 
 def verify(args: argparse.Namespace) -> int:
-    """0 iff the report passed, at no looser criteria, for the manifest's CURRENT pose."""
-    description = RobotDescription.from_yaml(str(args.robot))
+    """0 iff the report passed, at no looser criteria, for the unit's CURRENT pose."""
+    description = _unit_description(args.robot, args.sensor, args.unit)
     spec = checkable_depth_sensor(description, args.sensor)
-    report = args.report or extrinsic_report_path(args.robot, spec.name)
-    problems = verify_extrinsic_report(spec, report, base_frame=description.base_frame)
+    report = args.report or extrinsic_report_path(args.robot, spec.name, args.unit)
+    problems = verify_extrinsic_report(
+        spec, report, base_frame=description.base_frame, unit=args.unit
+    )
     for p in problems:
         print(f"REFUSE: {p}", file=sys.stderr)
     if not problems:
@@ -427,6 +458,9 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name)
         p.add_argument("--robot", type=Path, required=True, help="robots/<id>/robot.yaml")
         p.add_argument("--sensor", required=True, help="the manifest's depth camera name")
+        p.add_argument(
+            "--unit", default=None, help="robots/<id>/units/<unit>.yaml overlay (this cell)"
+        )
     c = sub.choices["check"]
     finite = _finite_float
     c.add_argument("--bag", type=Path, required=True)
@@ -450,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
         "--report",
         type=Path,
         default=None,
-        help="default: <robot dir>/calibration/<sensor>_extrinsic.json",
+        help="default: <robot dir>/calibration/<unit>/<sensor>_extrinsic.json",
     )
     args = parser.parse_args(argv)
     try:

@@ -72,10 +72,12 @@ from lifecycle_msgs.msg import Transition
 from openral_core import (
     CameraTopicKind,
     DeployRuntime,
+    apply_sensor_overlays,
     camera_topic,
     deploy_cloud_topic,
     merge_deploy_sensors,
     publishing_sensors,
+    resolve_sensor_overlays,
 )
 from openral_foxglove_bringup.topics import (
     ASSET_URI_ALLOWLIST,
@@ -1196,12 +1198,14 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     scene_sensors: list[SensorSpec] = []
     scene_drivers: list = []  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, deferred import
     joint_states_override: str | None = None
+    scene_unit: str | None = None
     if deploy_config:
         from openral_core import DeployScene
 
         _scene = DeployScene.from_yaml(deploy_config)
         scene_sensors = list(_scene.sensors)
         scene_drivers = list(_scene.drivers)
+        scene_unit = _scene.robot_unit
         if _scene.runtime is not None:
             joint_states_override = _scene.runtime.joint_states_topic
     from openral_hal.resolver import hal_joint_states_topic
@@ -1217,6 +1221,17 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             override=joint_states_override,
         )
         or ""
+    )
+    # This host's unit overlay (scene `robot_unit`, or $OPENRAL_ROBOT_UNIT which `openral
+    # deploy` resolved identically before launching): per-host bindings and per-unit mount
+    # calibration replace the manifest's nominal values for every consumer below.
+    description = description.model_copy(
+        update={
+            "sensors": apply_sensor_overlays(
+                description.sensors,
+                resolve_sensor_overlays(robot_yaml, scene_unit, required=hal_mode == "real"),
+            )
+        }
     )
     publishing = publishing_sensors(description.sensors, scene_sensors, hal_mode)
     envelope = compute_intersection(
