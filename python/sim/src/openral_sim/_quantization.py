@@ -371,6 +371,75 @@ def install_prequantized_linears(
     return quantized_count, consumed
 
 
+def overlay_prequantized_state(
+    policy: Any, state: dict[str, Any], *, device: str, torch: Any, family: str, source: str
+) -> None:
+    """Load an nf4 prequant pack into ``policy`` completely, or refuse.
+
+    ``install_prequantized_linears`` rebuilds every ``Linear4bit`` weight the
+    pack carries; every other key is ``copy_``-ed into its slot. Then coverage
+    is checked like ``stream_state_into_policy``: the fast meta-init path has
+    no other weight source, so a parameter or persistent buffer left unfilled
+    (and not a tied alias of a filled one) would run on reset/uninitialised
+    values.
+
+    Args:
+        policy: Policy ``nn.Module`` after ``quantize_nf4_in_place``.
+        state: The pack's state dict (``tools/quantize_rskill.py`` output).
+        device: Where the rebuilt ``Params4bit`` weights go.
+        torch: The imported ``torch`` module.
+        family: Adapter family, the log-event prefix and named in the refusal.
+        source: The pack's repo id, named in the refusal.
+
+    Raises:
+        ROSConfigError: Any missing or unexpected key.
+    """
+    loaded, consumed = install_prequantized_linears(policy, state, device=device, torch=torch)
+    # Every other key is copied into its slot (``copy_`` casts and moves), then
+    # coverage is checked the way ``stream_state_into_policy`` does: the fast
+    # meta-init path has no other weight source, so an unfilled slot would run
+    # on reset/uninitialised values.
+    persistent, _ = _persistent_state_names(policy)
+    targets: dict[str, Any] = dict(policy.named_parameters(remove_duplicate=False))
+    targets.update(
+        (name, buf)
+        for name, buf in policy.named_buffers(remove_duplicate=False)
+        if name in persistent
+    )
+    unexpected: list[str] = []
+    filled = {k for k in consumed if k in targets}
+    with torch.no_grad():
+        for key, tensor in state.items():
+            if key in consumed:
+                continue
+            target = targets.get(key)
+            if target is None:
+                unexpected.append(key)
+                continue
+            target.copy_(tensor)
+            filled.add(key)
+    filled_storage = {targets[n].untyped_storage().data_ptr() for n in filled}
+    missing = sorted(
+        n
+        for n in set(targets) - filled
+        if targets[n].untyped_storage().data_ptr() not in filled_storage
+    )
+    log.info(
+        f"{family}_prequantized_loaded",
+        keys=len(state),
+        quantized_modules=loaded,
+        filled=len(filled),
+        tied_aliases=len(set(targets) - filled) - len(missing),
+    )
+    if missing or unexpected:
+        raise ROSConfigError(
+            f"{family} nf4 prequant pack {source!r} does not match the policy — "
+            f"{len(missing)} missing (would run on reset/garbage values): {missing[:8]}; "
+            f"{len(unexpected)} unexpected: {sorted(unexpected)[:8]}. Rebuild the pack "
+            "with tools/quantize_rskill.py from the same source checkpoint."
+        )
+
+
 # ── rSkill-level entry point ──────────────────────────────────────────────────
 
 
@@ -458,11 +527,13 @@ def load_prequantized_state_for_rskill(  # noqa: PLR0911  # reason: linear early
     bf16->nf4 packing that ``.to(device)`` would otherwise run is
     skipped.
 
-    Silently no-ops when the rSkill manifest does not point at an
-    ``hf://`` repo, or when that repo does not carry a
-    ``quantization_metadata.json``. Back-compat: rSkills that ship
-    bf16 weights (e.g. ``rskills/pi05-libero-int8``) keep their existing
-    on-line nf4 pack path.
+    No-ops when the rSkill manifest does not point at an ``hf://`` repo,
+    or when that repo does not carry a ``quantization_metadata.json``:
+    rSkills that ship bf16 weights keep the on-line nf4 pack path. Once a
+    pack is found it must load completely. There is no fallback, because
+    the fast meta-init path has no other weight source: every parameter
+    and persistent buffer must be filled from the pack (or share storage
+    with a filled tied alias), and every pack key must name one.
 
     Args:
         policy: Policy ``nn.Module`` already rewritten via
@@ -476,6 +547,10 @@ def load_prequantized_state_for_rskill(  # noqa: PLR0911  # reason: linear early
             ("pi05" -> ``pi05_prequantized_fastpath`` etc.). Lets
             adapter-level traces distinguish which policy hit the
             fast-path.
+
+    Raises:
+        ROSConfigError: The pack leaves a parameter/persistent buffer
+            unfilled or carries a key that names none.
     """
     weights_uri = spec.weights_uri or ""
     if weights_uri.startswith(("hf://", "local://", "file://", "http://", "https://")):
@@ -541,30 +616,8 @@ def load_prequantized_state_for_rskill(  # noqa: PLR0911  # reason: linear early
     state = load_file(weights_path, device="cpu")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    try:
-        loaded, skipped = install_prequantized_linears(policy, state, device=device, torch=torch)
-    except Exception as exc:
-        log.warning(
-            f"{log_event_prefix}_prequantized_load_skipped",
-            reason=str(exc).splitlines()[0][:200],
-            note=(
-                "Falling back to the standard bf16->nf4 path "
-                "(`.to(cuda)` will re-pack the bf16 weights). The "
-                "pre-quantized rSkill still loaded cleanly; only the "
-                "fast state-dict overlay is disabled."
-            ),
-        )
-        return
-
-    leftover = {k: v for k, v in state.items() if k not in skipped}
-    missing, unexpected = policy.load_state_dict(leftover, strict=False)
-    log.info(
-        f"{log_event_prefix}_prequantized_loaded",
-        keys=len(state),
-        quantized_modules=loaded,
-        residual_keys=len(leftover),
-        missing=len(missing),
-        unexpected=len(unexpected),
+    overlay_prequantized_state(
+        policy, state, device=device, torch=torch, family=log_event_prefix, source=target_repo
     )
 
 
@@ -1295,6 +1348,7 @@ __all__ = [
     "install_prequantized_linears",
     "load_prequantized_state_for_rskill",
     "normalise_manifest_dtype",
+    "overlay_prequantized_state",
     "peek_safetensors_keys",
     "quantize_int8_in_place",
     "quantize_nf4_in_place",
