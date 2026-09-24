@@ -274,11 +274,15 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
     # ``sensors:`` block is part of the robot description every composed
     # consumer reads (see ``compose_runtime(deploy_sensors=...)``).
     scene = None
+    sensor_overlays: list = []  # type: ignore[type-arg]  # reason: openral_core.SensorOverlay, deferred import
     if deploy_config:
-        from openral_core import DeployScene
+        from openral_core import DeployScene, resolve_sensor_overlays
 
         try:
             scene = DeployScene.from_yaml(deploy_config)
+            # deploy_config reaches this node only on a real deploy, so a unit is required
+            # whenever the robot ships units/ (same rule `openral deploy` applied pre-launch).
+            sensor_overlays = resolve_sensor_overlays(robot_yaml, scene.robot_unit, required=True)
         except Exception as exc:  # surface as exit code, not stack trace
             print(f"runtime_node: deploy_config failed to load: {exc!s}", file=sys.stderr)
             rclpy.try_shutdown()
@@ -288,6 +292,7 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
         runtime = compose_runtime(
             robot_yaml,
             deploy_sensors=scene.sensors if scene is not None else (),
+            sensor_overlays=sensor_overlays,
             skill_resolver_factory=_build_resolver,
             enable_world_cloud_bridge=enable_world_cloud_bridge,
             world_cloud_topic=world_cloud_topic,
@@ -343,10 +348,10 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
                 slam_stereo_cameras=resolved_slam_stereo_cameras,
                 slam_mono_camera=resolved_slam_mono_camera,
             )
-            # ``runtime.description.sensors`` is already robot-manifest ∪ scene
-            # sensors (merged in ``compose_runtime``; scene wins on name
-            # collision — a same-named scene entry is that robot sensor's deploy
-            # binding); the leg opens only those carrying a `deploy_binding`. The shared
+            # ``runtime.description.sensors`` is already robot-manifest (with this
+            # host's unit overlay) ∪ scene sensors (merged in ``compose_runtime``,
+            # which refuses a scene entry reusing a robot sensor's name); the leg
+            # opens only those carrying a `deploy_binding`. The shared
             # aggregator gets frames straight from the readers (the
             # zero-copy vision path — zero-copy NVMM handles survive; no intra-process ROS
             # round trip on the policy leg).

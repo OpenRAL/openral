@@ -8,8 +8,9 @@ run`` drives it: ``resolve_launch_invocation(hal_mode="real")`` produces the arg
 ``deploy_config`` is dropped from the real-mode composition only: the scene's ``drivers:``
 include resolves ``zed_wrapper`` from the ament path, which exists on the rig overlay, not
 here. The kernel/octomap parameters under test come from the argv, not from that include;
-the ZED mount (the robot manifest's ``head_zed``) is covered by composing the scene on the
-sim path, where drivers are ignored.
+the ZED mount (the robot manifest's ``head_zed`` with the Thor unit overlay) is covered by
+composing the scene on the sim path, where drivers are ignored. The scene names no
+``robot_unit`` (it runs on either cell), so ``OPENRAL_ROBOT_UNIT=thor`` selects the unit.
 
 Per CLAUDE.md §1.11: the committed scene, the real ``robots/openarm/robot.yaml``, the real
 CLI resolver and launch composition. No mocks.
@@ -38,6 +39,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _LAUNCH_FILE = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.launch.py"
 _SCENE = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
 _ZED_CLOUD = "/zed/zed_node/point_cloud/cloud_registered"
+
+
+@pytest.fixture(autouse=True)
+def _thor_unit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
 
 
 def _launch_args(hal_mode: str, scene: Path = _SCENE) -> dict[str, str]:
@@ -124,20 +130,20 @@ def test_the_kernel_gets_world_voxel_enabled_at_the_real_margin() -> None:
     assert octo_params["frame_id"] == "openarm_base"
 
 
-def test_the_manifest_pose_is_the_only_mount_published_for_the_zed() -> None:
-    """The robot manifest's head_zed pose reaches /tf_static, once, with one parent.
+def test_the_unit_pose_is_the_only_mount_published_for_the_zed() -> None:
+    """The selected unit's head_zed pose reaches /tf_static, once, with the manifest's parent.
 
     The ZED is bolted to the robot, so its mount is robot geometry: the scene declares no
-    ``head_zed`` entry and may not (``check_scene_sensor_overrides``), and the pose every
-    OpenArm scene publishes is the one in ``robots/openarm/robot.yaml``.
+    ``head_zed`` entry and may not (``check_scene_sensor_overrides``); its frames are the
+    manifest's and its calibrated pose the unit overlay's (``robots/openarm/units/thor.yaml``).
     """
     import yaml
-    from openral_core import RobotDescription
+    from openral_core import load_robot_unit
 
     assert "sensors" not in yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
     (zed,) = [
         s
-        for s in RobotDescription.from_yaml(str(_REPO_ROOT / "robots/openarm/robot.yaml")).sensors
+        for s in load_robot_unit(_REPO_ROOT / "robots/openarm/robot.yaml", "thor").sensors
         if s.name == "head_zed"
     ]
 
@@ -152,11 +158,20 @@ def test_the_manifest_pose_is_the_only_mount_published_for_the_zed() -> None:
             mounts.append(argv)
     assert len(mounts) == 1, mounts
     (argv,) = mounts
-    assert argv[argv.index("--frame-id") + 1] == zed.parent_frame == "openarm_base"
+    assert argv[argv.index("--frame-id") + 1] == "openarm_base"
     flags = ("--x", "--y", "--z", "--roll", "--pitch", "--yaw")
     assert [float(argv[argv.index(f) + 1]) for f in flags] == pytest.approx(
         list(zed.static_transform_xyz_rpy or ())
     )
+
+
+def test_deploy_run_refuses_without_a_unit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both cells run this scene with different ZED mounts: a real run must name its cell."""
+    from openral_core.exceptions import ROSConfigError
+
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT")
+    with pytest.raises(ROSConfigError, match="none is selected"):
+        _launch_args("real")
 
 
 @pytest.mark.parametrize("hal_mode", ["real", "sim"])

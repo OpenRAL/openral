@@ -20,24 +20,25 @@ scene may name that sensor (``openral_core.check_scene_sensor_overrides``). The 
 only the clouds and the camera-internal TF below the mount frame (``zed_camera_link ->
 <cloud frame>``, from the ZED wrapper's own URDF), so the bag can be recorded with the
 ZED driver alone. The report records that pose, and ``verify`` refuses a report whose pose
-no longer matches the manifest or whose criteria are looser than this tool's — the gate
+no longer matches the manifest (with ``--unit``: that unit's overlay applied, and the
+report must be for that unit) or whose criteria are looser than this tool's — the gate
 ``tools/openarm_world_voxel_run.sh`` applies before a real-arm launch. The committed
-report lives next to the manifest, in ``robots/<id>/calibration/<sensor>_extrinsic.json``.
+report lives next to the manifest, in ``robots/<id>/calibration/<unit>/<sensor>_extrinsic.json``.
 
 The fitted corrections are also composed into ``suggested_static_transform_xyz_rpy``, to
-be copied into the manifest. Passing on the bag the suggestion was fitted to proves
+be copied into the unit overlay. Passing on the bag the suggestion was fitted to proves
 nothing (it is zero by construction); verify on a SECOND bag with the markers moved.
 
 Run (ROS 2 sourced, for rosbag2_py / tf2)::
 
     uv run python tools/zed_extrinsic_check.py check \\
-        --robot robots/openarm/robot.yaml --bag <bag_dir> \\
+        --robot robots/openarm/robot.yaml --unit thor --bag <bag_dir> \\
         --cloud-topic /zed/zed_node/point_cloud/cloud_registered \\
         --table-z -0.20 --table-roi 0.30 0.70 -0.30 0.30 \\
         --marker 0.45 0.15 --marker 0.55 -0.15 --out report.json
     uv run python tools/zed_extrinsic_check.py verify \\
-        --robot robots/openarm/robot.yaml \\
-        --report robots/openarm/calibration/head_zed_extrinsic.json
+        --robot robots/openarm/robot.yaml --unit thor \\
+        --report robots/openarm/calibration/thor/head_zed_extrinsic.json
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
+from openral_core.exceptions import ROSConfigError
 
 #: Pass criteria. Proposed, not measured on a rig: each is half or less of the real
 #: world-voxel margin (20 mm) at the ranges the head camera sees the table (<= 1 m,
@@ -211,11 +213,18 @@ def _suggest(
     return rz @ rot, rz @ trans + np.array([shift[0], shift[1], 0.0])
 
 
-def _manifest_sensor(robot_yaml: Path, sensor: str) -> Any:
-    """The sensor's mount exactly as every deploy publishes it: the robot manifest's entry."""
-    from openral_core import RobotDescription
+def _manifest_sensor(robot_yaml: Path, sensor: str, unit: str | None = None) -> Any:
+    """The sensor's mount exactly as a deploy of ``unit`` publishes it.
 
-    for spec in RobotDescription.from_yaml(str(robot_yaml)).sensors:
+    The robot manifest's entry with the unit overlay (``robots/<id>/units/<unit>.yaml``)
+    applied; ``None`` = the manifest's nominal entry.
+    """
+    from openral_core import RobotDescription, apply_sensor_overlays, load_robot_unit
+
+    sensors = RobotDescription.from_yaml(str(robot_yaml)).sensors
+    if unit is not None:
+        sensors = apply_sensor_overlays(sensors, load_robot_unit(robot_yaml, unit).sensors)
+    for spec in sensors:
         if spec.name == sensor:
             if spec.parent_frame is None or spec.static_transform_xyz_rpy is None:
                 raise ValueError(f"sensor {sensor!r} has no parent_frame + static transform")
@@ -277,7 +286,7 @@ def _read_bag(
 
 def check(args: argparse.Namespace) -> int:
     """Measure the manifest's pose against the bag and write the JSON report; 0 iff it passes."""
-    spec = _manifest_sensor(args.robot, args.sensor)
+    spec = _manifest_sensor(args.robot, args.sensor, args.unit)
     mount_pts, cloud_frame, n_clouds = _read_bag(
         args.bag, args.cloud_topic, spec.frame_id, args.max_clouds, args.stride
     )
@@ -305,6 +314,7 @@ def check(args: argparse.Namespace) -> int:
         max_marker_err_m=args.max_marker_err_m,
     )
     report = {
+        "unit": args.unit,
         "sensor": spec.name,
         "parent_frame": spec.parent_frame,
         "frame_id": spec.frame_id,
@@ -371,7 +381,7 @@ def _residual_failures(
 
 def verify(args: argparse.Namespace) -> int:
     """0 iff ``--report`` passed, at no looser criteria, for the manifest's CURRENT pose."""
-    spec = _manifest_sensor(args.robot, args.sensor)
+    spec = _manifest_sensor(args.robot, args.sensor, args.unit)
     if not args.report.is_file():
         print(f"REFUSE: no extrinsic report at {args.report}", file=sys.stderr)
         return 1
@@ -391,6 +401,8 @@ def verify(args: argparse.Namespace) -> int:
             max_marker_err_m=MAX_MARKER_ERR_M,
         )
     ]
+    if report.get("unit") != args.unit:
+        problems.append(f"report is for unit {report.get('unit')!r}, not {args.unit!r}")
     if (report.get("sensor"), report.get("parent_frame"), report.get("frame_id")) != (
         spec.name,
         spec.parent_frame,
@@ -434,6 +446,7 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name)
         p.add_argument("--robot", type=Path, required=True, help="robots/<id>/robot.yaml")
         p.add_argument("--sensor", default="head_zed")
+        p.add_argument("--unit", default=None, help="robots/<id>/units/<unit>.yaml overlay")
     c = sub.choices["check"]
     finite = _finite_float
     c.add_argument("--bag", type=Path, required=True)
@@ -457,7 +470,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return check(args) if args.cmd == "check" else verify(args)
-    except ValueError as exc:
+    except (ValueError, ROSConfigError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

@@ -444,9 +444,10 @@ sensors:
   # Robot-parented per the sensor-leg rule (robot manifest for wrist/head
   # cams, DeployScene.sensors for overhead/front); Enactic mounts it the same
   # way (openarm_zed_wrapper.xacro `mount_origin`, reference_points.yaml
-  # `kind: sensor_mount`). The manifest owns this camera whole — geometry AND the
-  # real-hardware `deploy_binding` below; a deploy scene never touches it
-  # (check_scene_sensor_overrides). The binding is `ros2_image` because the
+  # `kind: sensor_mount`). The manifest owns this camera's identity and frames; a
+  # deploy scene never redefines it (check_scene_sensor_overrides). Its real-hardware
+  # `deploy_binding` and calibrated mount are per unit (units/<unit>.yaml). The
+  # binding is `ros2_image` because the
   # pixels/cloud arrive on zed_wrapper's own topics: the ZED SDK computes depth
   # on the host GPU and the device only emits a side-by-side UVC stream.
   #
@@ -462,22 +463,21 @@ sensors:
   # and remain unmeasured, so the kernel's world-voxel check still requires the
   # extrinsic check below to PASS before it is trusted. fx/fy from StereoLabs'
   # published 90deg horizontal FOV at HD1080 depth (fx=(1920/2)/tan(45deg)=960,
-  # same basis a real deploy scene's `context` override would use). Good
+  # same basis a unit overlay's calibrated intrinsics would replace). Good
   # enough to prove the pipeline, not to project anything geometric. What a
   # geometric consumer (the kernel's world-voxel check) depends on is the
   # EXTRINSIC below, not these intrinsics: the ZED SDK builds its cloud from
   # its own factory calibration. `openral calibrate camera` measures
   # intrinsics only (a monocular checkerboard fit) and cannot fix this pose.
-  # THIS entry is the one place the ZED extrinsic lives: the camera is bolted
-  # to the rig, so every OpenArm scene publishes this pose and no scene may
-  # name this sensor (openral_core.check_scene_sensor_overrides). Calibrate it with
-  # tools/zed_extrinsic_check.py and copy the report's suggested pose here; the
-  # passing report is committed at calibration/head_zed_extrinsic.json and
-  # `verify` refuses it once this pose changes (runbook:
-  # docs/tutorials/deploy/openarm-real-world-voxel-check.md). One manifest
-  # holds ONE pose, but the Thor and Orin cells have different ZED mounts and
-  # units: a calibrated pose here is the Thor cell's until per-unit
-  # calibration exists.
+  # The pose below is the NOMINAL mount (the Thor cell's 2026-09-24 measurement),
+  # used by sim twins and by any unit that has not calibrated its own. The Thor and
+  # Orin cells have different ZED mounts, so each unit's calibrated pose lives in
+  # its overlay, robots/openarm/units/<unit>.yaml (selected by $OPENRAL_ROBOT_UNIT or
+  # the scene's `robot_unit`); no scene may redefine this sensor
+  # (openral_core.check_scene_sensor_overrides). Calibrate with
+  # tools/zed_extrinsic_check.py --unit <unit> and copy the report's suggested pose
+  # into that unit's overlay; `verify --unit <unit>` refuses a report once the
+  # effective pose changes (runbook: docs/tutorials/deploy/openarm-real-world-voxel-check.md).
   #
   # A depth sensor with intrinsics auto-enables the octomap leg, so every
   # in-tree OpenArm scene pins `runtime.enable_octomap` explicitly and must
@@ -507,15 +507,7 @@ sensors:
     catalog_id: "stereolabs/zed_mini"
     vendor: "StereoLabs"
     model: "ZED Mini"
-    # Real-hardware binding (the OpenArm bench cell). Used only by `deploy run`; the sim
-    # renders this camera. zed_wrapper (the bench scene's `drivers:`) publishes the topic.
-    deploy_binding:
-      backend: ros2_image
-      backend_params:
-        topic: /zed/zed_node/depth/depth_registered
-        reliability: best_effort
-        qos_depth: 5
-      max_age_ms: 500
+    # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.
 
   - name: "top"
     modality: "rgb"
@@ -539,15 +531,7 @@ sensors:
     # `observation.images.top`: the restock π0.5 rSkill aliases it onto its checkpoint's
     # `observation.images.context` (`image_preprocessing.aliases: {top: "context"}`), and
     # the ros2_image reader takes the wire encoding from each message, not `encoding`.
-    # Real-hardware binding (the OpenArm bench cell). Used only by `deploy run`; the sim
-    # renders this camera. zed_wrapper (the bench scene's `drivers:`) publishes the topic.
-    deploy_binding:
-      backend: ros2_image
-      backend_params:
-        topic: /zed/zed_node/rgb/color/rect/image
-        reliability: best_effort
-        qos_depth: 5
-      max_age_ms: 200
+    # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.
   - name: "wrist_left"
     modality: "rgb"
     frame_id: "openarm_left_ee_base_link"
@@ -563,15 +547,7 @@ sensors:
     vla_feature_key: "observation.images.wrist_left"
     vendor: "sim"
     model: "mujoco_wrist"
-    # Real-hardware binding (the OpenArm bench cell). Used only by `deploy run`; the sim
-    # renders this camera. Device paths are the cell's kernel-stable by-id symlinks.
-    deploy_binding:
-      backend: opencv_thread
-      backend_params:
-        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_LEFT-video-index0
-        width: 640
-        height: 480
-        fps: 30
+    # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.
   - name: "wrist_right"
     modality: "rgb"
     frame_id: "openarm_right_ee_base_link"
@@ -587,15 +563,7 @@ sensors:
     vla_feature_key: "observation.images.wrist_right"
     vendor: "sim"
     model: "mujoco_wrist"
-    # Real-hardware binding (the OpenArm bench cell). Used only by `deploy run`; the sim
-    # renders this camera. Device paths are the cell's kernel-stable by-id symlinks.
-    deploy_binding:
-      backend: opencv_thread
-      backend_params:
-        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_RIGHT-video-index0
-        width: 640
-        height: 480
-        fps: 30
+    # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.
 
 # MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``.
 # Source: ``enactic/openarm_mujoco/v2/openarm_v20_bimanual.xml`` fetched

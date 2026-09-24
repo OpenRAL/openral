@@ -11,11 +11,14 @@ from openral_cli.main import app
 from typer.testing import CliRunner
 
 
-def _write_deploy_scene_yaml(tmp_path: Path, *, robot_id: str = "so100_follower") -> Path:
+def _write_deploy_scene_yaml(
+    tmp_path: Path, *, robot_id: str = "so100_follower", robot_unit: str | None = None
+) -> Path:
     """Write a minimal, schema-valid DeployScene YAML."""
     out = tmp_path / "deploy_scene.yaml"
+    unit = f"robot_unit: {robot_unit}\n" if robot_unit else ""
     out.write_text(
-        f"scene:\n  id: deploy/zero\n  backend: mujoco\nrobot_id: {robot_id}\n",
+        f"scene:\n  id: deploy/zero\n  backend: mujoco\nrobot_id: {robot_id}\n{unit}",
         encoding="utf-8",
     )
     return out
@@ -129,7 +132,9 @@ def test_real_mode_forwards_deploy_config_for_sensor_leg(
 
     monkeypatch.setattr(_deploy_sim, "run_launch_invocation", _fake_run)
 
-    config = _write_deploy_scene_yaml(tmp_path, robot_id="so101_follower")
+    config = _write_deploy_scene_yaml(
+        tmp_path, robot_id="so101_follower", robot_unit="bench_laptop"
+    )
     result = CliRunner().invoke(app, ["deploy", "run", "--config", str(config)])
 
     assert result.exit_code == 0, result.output
@@ -143,13 +148,29 @@ def test_deploy_validate_flags_missing_calibration(tmp_path: Path) -> None:
     config = tmp_path / "scene.yaml"
     config.write_text(
         "scene:\n  id: so101_bench\n"
-        "robot_id: so101_follower\n"
+        "robot_id: so101_follower\nrobot_unit: bench_laptop\n"
         "hal:\n  defaults:\n    port: /dev/ttyACM0\n    calibrate_on_connect: false\n",
         encoding="utf-8",
     )
     result = CliRunner().invoke(app, ["deploy", "validate", "--config", str(config)])
     assert result.exit_code != 0, result.output
     assert "calibration" in result.output.lower()
+
+
+def test_deploy_validate_refuses_a_robot_with_units_but_no_unit_selected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SO-101 camera bindings are per host: a real deploy that names no unit is refused."""
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
+    config = tmp_path / "scene.yaml"
+    config.write_text(
+        "scene:\n  id: so101_bench\nrobot_id: so101_follower\n"
+        "hal:\n  defaults:\n    port: /dev/ttyACM0\n",
+        encoding="utf-8",
+    )
+    result = CliRunner().invoke(app, ["deploy", "validate", "--config", str(config)])
+    assert result.exit_code != 0, result.output
+    assert "none is selected" in " ".join(result.output.split())
 
 
 def test_deploy_validate_ready_with_committed_calibration(tmp_path: Path) -> None:
@@ -160,7 +181,7 @@ def test_deploy_validate_ready_with_committed_calibration(tmp_path: Path) -> Non
     config = tmp_path / "scene.yaml"
     config.write_text(
         "scene:\n  id: so101_bench\n"
-        "robot_id: so101_follower\n"
+        "robot_id: so101_follower\nrobot_unit: bench_laptop\n"
         "hal:\n  defaults:\n    port: /dev/ttyACM0\n    id: so_follower\n"
         "    calibration_dir: calibration\n    calibrate_on_connect: false\n",
         encoding="utf-8",
@@ -168,7 +189,7 @@ def test_deploy_validate_ready_with_committed_calibration(tmp_path: Path) -> Non
     result = CliRunner().invoke(app, ["deploy", "validate", "--config", str(config)])
     assert result.exit_code == 0, result.output
     assert "ready" in result.output.lower()
-    # The cameras are the manifest's, bound in robot.yaml: the scene needs none.
+    # The cameras are the manifest's, bound in the unit overlay: the scene declares none.
     assert "declare no sensors" not in result.output
     assert "no deploy_binding" not in result.output
 
