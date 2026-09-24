@@ -127,10 +127,12 @@ HF_TOKEN=<token with OpenRAL org access> \
 openral rskill check OpenRAL/rskill-pi05-openarm-restock_shelf-bf16 --robot robots/openarm/robot.yaml
 ```
 
-The cell's cameras are bound in `robot.yaml` itself (each sensor's
-`deploy_binding`, used only by `deploy run`; a deploy scene never touches a
-robot camera): `top` is the ZED's rectified left image, `head_zed` its SDK
-depth, the two Arducams are `wrist_left` / `wrist_right`. The manifest's
+The cell's cameras are bound per unit in `units/<unit>.yaml` (`thor.yaml`,
+`orin.yaml`: each sensor's `deploy_binding`, used only by `deploy run`, plus the
+unit's calibrated `head_zed` mount). Select the unit with `OPENRAL_ROBOT_UNIT=<unit>`
+or the scene's `robot_unit`; a real deploy refuses when neither names one. `top` is
+the ZED's rectified left image, `head_zed` its SDK depth, the two Arducams are
+`wrist_left` / `wrist_right`. The manifest's
 `observation.images.top` key is what the skill requires: its published
 `rskill.yaml` lists `observation.images.top` / `wrist_left` / `wrist_right` in
 `sensors_required` and maps the checkpoint's `observation.images.context` input

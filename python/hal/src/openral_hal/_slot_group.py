@@ -30,7 +30,13 @@ from __future__ import annotations
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode
 
-__all__ = ["GRIPPER_MODES", "SlotGroupStager", "compose_slot_group"]
+__all__ = [
+    "GRIPPER_MODES",
+    "SlotGroupStager",
+    "compose_slot_group",
+    "compose_slot_group_action",
+    "refuse_stale_tick",
+]
 
 GRIPPER_MODES = (ControlMode.GRIPPER_POSITION, ControlMode.GRIPPER_BINARY)
 
@@ -144,6 +150,61 @@ def compose_slot_group(
     return [float(v) for v in targets]  # type: ignore[arg-type]  # reason: `missing` proved no None remains
 
 
+def compose_slot_group_action(group: list[Action], joint_names: list[str]) -> Action:
+    """Compose one tick's slot actions into a single full-dof ``JOINT_POSITION`` action.
+
+    Args:
+        group: Every slot action of one inference tick.
+        joint_names: The robot's actuated joint names, in HAL/action order.
+
+    Returns:
+        A one-step ``JOINT_POSITION`` action carrying the first slot's stamp
+        and confidence.
+
+    Raises:
+        ROSConfigError: The group is unplaceable (see ``compose_slot_group``).
+    """
+    first = group[0]
+    return Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_targets=[compose_slot_group(group, joint_names)],
+        stamp_ns=first.stamp_ns,
+        confidence=first.confidence,
+    )
+
+
+def refuse_stale_tick(tick: int, last_committed: int) -> None:
+    """Refuse a slot whose tick is not after the last committed one.
+
+    A staging buffer only guards the tick in flight; a whole group of an
+    already-committed tick would otherwise replay stale targets, and the
+    lifecycle node's monotonic acknowledgement would hide it. Runner ticks are
+    process-monotonic, so a non-increasing tick is always a replay.
+
+    Args:
+        tick: The slot's ``Action.tick_index``.
+        last_committed: The last tick the HAL applied (``0`` = none).
+
+    Raises:
+        ROSRuntimeError: ``0 < tick <= last_committed``.
+
+    Example:
+        >>> from openral_core.exceptions import ROSRuntimeError
+        >>> refuse_stale_tick(3, 2)
+        >>> try:
+        ...     refuse_stale_tick(2, 2)
+        ... except ROSRuntimeError:
+        ...     print("refused")
+        refused
+    """
+    if 0 < tick <= last_committed:
+        raise ROSRuntimeError(
+            f"stale slot group: tick {tick} is not after the last committed "
+            f"tick {last_committed}; refusing to replay it."
+        )
+
+
 class SlotGroupStager:
     """Buffer one inference tick's slot actions until every slot has arrived.
 
@@ -153,26 +214,56 @@ class SlotGroupStager:
     incomplete tick: the slot that exposed it opens the new tick, so a single
     rejected slot does not wedge the HAL for the rest of the run.
 
+    It also holds the **committed watermark**: the HAL calls ``commit`` once a
+    released group has actually been applied, and ``stage`` then refuses any
+    slot of a tick at or below it (``refuse_stale_tick``), so a replayed group
+    can never re-command the robot. ``last_committed_tick`` is what the HAL
+    lifecycle node acknowledges on ``/openral/action_applied``.
+
     Example:
         >>> stager = SlotGroupStager()
-        >>> stager.pending
-        0
+        >>> stager.pending, stager.last_committed_tick
+        (0, 0)
     """
 
     def __init__(self) -> None:
-        """Start with no tick staged."""
+        """Start with no tick staged and nothing committed."""
         self._actions: list[Action] = []
         self._tick: int | None = None
+        self._last_committed = 0
 
     @property
     def pending(self) -> int:
         """Number of slots staged for the tick in flight."""
         return len(self._actions)
 
-    def reset(self) -> None:
-        """Drop whatever is staged (used on disconnect / estop)."""
+    @property
+    def last_committed_tick(self) -> int:
+        """Tick of the last group the HAL applied (``0`` = none since ``reset``)."""
+        return self._last_committed
+
+    def commit(self, group: list[Action]) -> None:
+        """Record that a group ``stage`` released was applied to the robot.
+
+        Call only after the apply succeeded: the lifecycle node acknowledges
+        ``last_committed_tick``, so committing a group that failed would ack a
+        tick the robot never received.
+        """
+        self._last_committed = int(group[0].tick_index)
+
+    def discard(self) -> None:
+        """Drop the half-staged tick but keep the committed watermark (estop).
+
+        A stop is not a renumbering — the runner's ticks keep increasing — so
+        a pre-stop tick replayed after the stop must still be refused.
+        """
         self._actions.clear()
         self._tick = None
+
+    def reset(self) -> None:
+        """Drop the staged tick AND the watermark (disconnect: numbering restarts)."""
+        self.discard()
+        self._last_committed = 0
 
     def stage(self, action: Action) -> list[Action] | None:
         """Add one slot; return the whole group once complete, else ``None``.
@@ -186,8 +277,10 @@ class SlotGroupStager:
 
         Raises:
             ROSConfigError: The action carries no usable tick index.
-            ROSRuntimeError: The staged tick changed before completing, or the
-                group overran its declared size — both mean a slot was lost.
+            ROSRuntimeError: The tick is at or below ``last_committed_tick``
+                (a replay; nothing is staged), the staged tick changed before
+                completing, or the group overran its declared size — the last
+                two mean a slot was lost.
         """
         group_size = int(action.tick_group_size)
         tick = int(action.tick_index)
@@ -196,6 +289,7 @@ class SlotGroupStager:
                 "slot-group staging requires Action.tick_index > 0; got "
                 f"{tick}. The runner sets it on every slot of a multi-slot tick."
             )
+        refuse_stale_tick(tick, self._last_committed)
         if self._tick is not None and tick != self._tick:
             dropped = [a.control_mode.value for a in self._actions]
             staged, expected = len(self._actions), self._tick
@@ -223,10 +317,10 @@ class SlotGroupStager:
             return None
         if len(self._actions) > group_size:
             staged = len(self._actions)
-            self.reset()
+            self.discard()
             raise ROSRuntimeError(
                 f"slot group for tick {tick} received {staged} slots but declared {group_size}."
             )
         group = list(self._actions)
-        self.reset()
+        self.discard()
         return group

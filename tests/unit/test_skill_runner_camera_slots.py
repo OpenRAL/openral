@@ -160,6 +160,55 @@ class TestDecodeImageFrames:
         )
         assert _decode_image_frames({"cam": frame}, {"cam": "camera1"}) == {}
 
+    def test_jpeg_frames_decode_to_rgb_under_their_slot(self) -> None:
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.fromarray(np.full((4, 6, 3), 90, dtype=np.uint8), mode="RGB").save(buf, "PNG")
+        frame = SensorFrame(
+            sensor_id="top",
+            stamp_monotonic_ns=1,
+            stamp_wall_ns=2,
+            encoding=FrameEncoding.PNG,
+            width=6,
+            height=4,
+            channels=3,
+            data=buf.getvalue(),
+        )
+        img = _decode_image_frames({"top": frame}, {"top": "camera1"})["camera1"]
+        assert img.shape == (4, 6, 3) and int(img[0, 0, 0]) == 90
+
+    def test_undecodable_frame_on_a_required_slot_raises(self) -> None:
+        """SO-101 SmolVLA needs camera1 (``top``): a corrupt MJPEG frame must not blind it."""
+        from openral_core import required_vla_camera_slots
+        from openral_core.exceptions import ROSPerceptionStale
+
+        so101 = RobotDescription.from_yaml(
+            str(_REPO_ROOT / "robots" / "so101_follower" / "robot.yaml")
+        )
+        skill = RSkillManifest.from_yaml(
+            str(_REPO_ROOT / "rskills" / "rskill-smolvla-so101-eraser_place-bf16" / "rskill.yaml")
+        )
+        slot_map = sensor_name_to_slot(so101)
+        required = required_vla_camera_slots(skill, so101)
+        assert slot_map["top"] in required
+        bad = SensorFrame(
+            sensor_id="top",
+            stamp_monotonic_ns=1,
+            stamp_wall_ns=2,
+            encoding=FrameEncoding.JPEG,
+            width=640,
+            height=480,
+            channels=3,
+            data=b"\xff\xd8\xff\xe0not-really-a-jpeg",
+        )
+        with pytest.raises(ROSPerceptionStale, match="top"):
+            _decode_image_frames({"top": bad}, slot_map, required)
+        # The same frame on a sensor no required slot reads is a logged skip only.
+        assert _decode_image_frames({"top": bad}, slot_map, ()) == {}
+
     def test_frames_without_data_are_skipped(self) -> None:
         frame = SensorFrame(
             sensor_id="front",

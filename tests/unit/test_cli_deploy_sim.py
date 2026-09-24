@@ -1641,12 +1641,12 @@ def test_bh_prepare_launch_env_defaults_expandable_segments(
     `deploy sim` shells through deploy_sim_command's own inline env build — so the
     var never reached the runtime_node. Both paths now route through this helper.
     """
-    import openral_cli.deploy_sim as _ds
+    import openral_core.gpu
 
     monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
     # A discrete-GPU host; the Tegra branch has its own test below.
-    monkeypatch.setattr(_ds, "_is_tegra_host", lambda: False)
+    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: False)
     env = _prepare_launch_env()
     chosen = _alloc_conf_var()
     other = "PYTORCH_CUDA_ALLOC_CONF" if chosen == "PYTORCH_ALLOC_CONF" else "PYTORCH_ALLOC_CONF"
@@ -1671,12 +1671,12 @@ def test_bh_prepare_launch_env_leaves_the_allocator_alone_on_tegra(
     also makes the discrete-card fragmentation headroom moot. An operator's
     explicit setting still passes through untouched.
     """
-    import openral_cli.deploy_sim as _ds
+    import openral_core.gpu
 
     chosen = _alloc_conf_var()
     monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
-    monkeypatch.setattr(_ds, "_is_tegra_host", lambda: True)
+    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: True)
     assert chosen not in _prepare_launch_env()
 
     monkeypatch.setenv(chosen, "expandable_segments:True")
@@ -2900,3 +2900,33 @@ def test_scene_preload_pair_is_forwarded_only_when_the_scene_sets_it() -> None:
     )
     assert invocation.preload_rskill_id == ""
     assert "preload_rskill_id:=" not in " ".join(invocation.argv_template)
+
+
+def test_scene_preload_revision_is_forwarded_with_the_preload_id(tmp_path: Path) -> None:
+    """``DeployRuntime.preload_rskill_revision`` → ``preload_rskill_revision:=`` (SO-101 bench).
+
+    The resident key is (id, revision, prompt): a goal pinning a revision the
+    preload did not use evicts the warm skill, so a scene must be able to pin it.
+    """
+    text = (_REPO_ROOT / "scenes" / "deploy" / "so101_bench.yaml").read_text(encoding="utf-8")
+    text = text.replace(
+        "\nruntime:\n",
+        "\nruntime:\n  preload_rskill_id: rskill-smolvla-so101-eraser_place-bf16\n"
+        "  preload_rskill_revision: v1.2.0\n",
+        1,
+    )
+    scene = tmp_path / "so101_bench.yaml"
+    scene.write_text(text, encoding="utf-8")
+    invocation = resolve_launch_invocation(
+        config=scene,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        hal_mode="real",
+    )
+    assert invocation.preload_rskill_revision == "v1.2.0"
+    joined = " ".join(invocation.argv_template)
+    assert "preload_rskill_id:=rskill-smolvla-so101-eraser_place-bf16" in joined
+    assert "preload_rskill_revision:=v1.2.0" in joined
+    assert "preload_prompt:=" not in joined

@@ -156,6 +156,12 @@ safety:
   # declared here so they are visible; provisional until run on this rig.
   starting_pose_max_joint_speed_rad_s: 0.5
   starting_pose_tolerance_rad: 0.05
+  # Joint-state freshness window: the real HAL's read_state and the skill
+  # runner's blocking waits refuse state older than this (one place; build_hal
+  # and deploy_e2e.launch.py read it). provisional: former hal.parameters.defaults value,
+  # not measured on this rig — measure with
+  # tools/joint_state_staleness_probe.py --robot <this manifest>.
+  joint_state_staleness_limit_s: 0.5
 
 sdk_kind: "closed"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
@@ -166,6 +172,9 @@ sdk_kind: "closed"
 # `dim` / `representation` are deliberately not declared: this repo commits no
 # policy action contract for this robot, and the recorder takes the width from
 # the action itself. Only the control rate is a known quantity.
+# provisional: the runner's former 30 Hz default, not measured on this rig. A
+# skill trained at another rate declares action_contract.control_freq_hz and
+# the runner refuses the mismatch.
 action_spec:
   control_freq_hz: 30.0
 
@@ -174,11 +183,6 @@ hal:
   # from the `sim:` block below; no per-robot Python class is involved.
   sim: null
   real: "openral_hal.ur_real:UR5eRealHAL"
-  parameters:
-    defaults:
-      # Max age of a read_state() reading before ROSPerceptionStale.
-      # provisional: former constructor default, not measured on this rig — see issue #303
-      staleness_limit_s: 0.5
 
 # MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``
 # for the sim baseline.  Source: ``universal_robots_ur5e/ur5e.xml`` in
@@ -224,4 +228,4 @@ allowed_collision_pairs:
   - [wrist_1_link, wrist_2_link]
   - [wrist_1_link, wrist_3_link]
   - [wrist_2_link, wrist_3_link]
-schema_version: '0.1'
+schema_version: "0.2"

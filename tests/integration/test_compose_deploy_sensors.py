@@ -131,3 +131,36 @@ def test_merging_a_scene_never_drops_or_renames_a_manifest_slot(scene_path: Path
             _destroy(runtime)
         else:
             rclpy.try_shutdown()
+
+
+@pytest.mark.parametrize("scene_name", ["so101_bench", "openarm_bench"])
+def test_the_scene_unit_overlay_reaches_every_composed_consumer(
+    scene_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``compose_runtime(sensor_overlays=...)``: the unit's bindings are on the one description.
+
+    The sensor leg, world state and runner all read ``runtime.description``; the committed
+    bench scenes name their host's unit, whose bindings must be there and nowhere else.
+    """
+    import rclpy  # type: ignore[import-untyped]
+    from openral_core import DeployScene, resolve_sensor_overlays
+    from openral_rskill_ros.compose import compose_runtime
+
+    monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
+    scene = DeployScene.from_yaml(str(_REPO / "scenes" / "deploy" / f"{scene_name}.yaml"))
+    assert scene.robot_id is not None and scene.robot_unit is not None
+    robot_yaml = _REPO / "robots" / scene.robot_id / "robot.yaml"
+    overlays = resolve_sensor_overlays(robot_yaml, scene.robot_unit, required=True)
+    rclpy.init()
+    runtime = None
+    try:
+        runtime = compose_runtime(
+            robot_yaml, deploy_sensors=scene.sensors, sensor_overlays=overlays
+        )
+        by_name = {s.name: s for s in runtime.description.sensors}
+        for overlay in overlays:
+            assert by_name[overlay.name].deploy_binding == overlay.deploy_binding
+    finally:
+        if runtime is not None:
+            _destroy(runtime)
+        rclpy.try_shutdown()

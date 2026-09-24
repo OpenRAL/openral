@@ -158,16 +158,7 @@ sensors:
     vla_feature_key: "observation.images.camera1"
     vendor: "luxonis"
     model: "oak_d_pro"
-    # Real-hardware binding (the SO-101 bench host). Host-specific device paths: use kernel-
-    # stable /dev/v4l/* symlinks, never raw /dev/videoN; retune with `ls -l /dev/v4l/by-id
-    # /dev/v4l/by-path` or `openral detect --deployment`.
-    deploy_binding:
-      backend: opencv_thread
-      backend_params:
-        device: /dev/v4l/by-path/pci-0000:80:14.0-usb-0:11:1.0-video-index0
-        width: 640
-        height: 480
-        fps: 30
+    # Real-hardware binding: per host, in robots/so101_follower/units/<unit>.yaml.
   - name: "wrist"
     modality: "rgb"
     # The wrist camera is bolted to the terminal gripper body; its own optical
@@ -213,16 +204,7 @@ sensors:
     catalog_id: "generic/usb_uvc_rgb"
     vendor: "generic_usb"
     model: "so101_wrist"
-    # Real-hardware binding (the SO-101 bench host). Host-specific device paths: use kernel-
-    # stable /dev/v4l/* symlinks, never raw /dev/videoN; retune with `ls -l /dev/v4l/by-id
-    # /dev/v4l/by-path` or `openral detect --deployment`.
-    deploy_binding:
-      backend: opencv_thread
-      backend_params:
-        device: /dev/v4l/by-id/usb-icSpring_icspring_camera_20240307110322-video-index0
-        width: 640
-        height: 480
-        fps: 30
+    # Real-hardware binding: per host, in robots/so101_follower/units/<unit>.yaml.
 
 capabilities:
   locomotion: ["none"]
@@ -269,6 +251,12 @@ safety:
   # declared here so they are visible; provisional until run on this rig.
   starting_pose_max_joint_speed_rad_s: 0.5
   starting_pose_tolerance_rad: 0.05
+  # Joint-state freshness window: the real HAL's read_state and the skill
+  # runner's blocking waits refuse state older than this (one place; build_hal
+  # and deploy_e2e.launch.py read it). provisional: SO100FollowerHAL's former constructor default,
+  # not measured on this rig — measure with
+  # tools/joint_state_staleness_probe.py --robot <this manifest>.
+  joint_state_staleness_limit_s: 0.5
 
 sdk_kind: "open"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
@@ -345,4 +333,4 @@ allowed_collision_pairs:
   - [lower_arm, upper_arm]
   - [lower_arm, wrist]
   - [shoulder, upper_arm]
-schema_version: '0.1'
+schema_version: "0.2"
