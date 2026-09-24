@@ -41,7 +41,8 @@ expecting a clean pass:
    occupancy and is checked as attached geometry, does **not** hold here.
 Camera loss **fails closed** (it used to fail open; fixed with hazard-log Entry 033):
 `openral_octomap_bridge` stops publishing `/openral/world_voxels` once its last octree is
-older than `max_octree_age_s` (1.0 s, equal to the kernel's `world_voxel_deadline_ms`), and
+older than `max_octree_age_s` (default 1.0 s, equal to the kernel's `world_voxel_deadline_ms`;
+both are `DeployRuntime` fields), and
 the kernel's deadline then turns the silence into `DROP_VOXEL_UNAVAILABLE`, at most ~2.0 s
 after the last cloud. Verified on Thor with the ZED stopped (bridge half).
 

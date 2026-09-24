@@ -6,15 +6,16 @@ Physical ``/dev/video*`` devices are described by ``SensorSpec.deploy_binding``
 ``DeployScene.sensors`` for workcell-mounted ones (overhead/front).
 
 ``open_deploy_sensor_readers`` opens one reader per bound spec and publishes to
-``camera_topic(name)`` (BEST_EFFORT QoS, matching WorldState's subscription):
+``camera_topic(name)``, or ``camera_topic(name, DEPTH_IMAGE)`` for a depth sensor
+(BEST_EFFORT QoS, matching WorldState's subscription):
 
 * ``gstreamer`` — native in-pipeline ROS tee.
 * ``opencv_thread`` (or any tee-less backend) — wrapped in a polling
   ``SensorRosPublisher``.
 
 On both paths, calibrated ``intrinsics`` also publish ``CameraInfo`` on
-``camera_topic(name, CAMERA_INFO)`` (sim HAL's layout), stamped with the spec's
-``frame_id`` — enabling mono visual SLAM on real hardware.
+``camera_topic(name, CAMERA_INFO)`` / ``DEPTH_CAMERA_INFO`` (sim HAL's layout), stamped
+with the spec's ``frame_id`` — enabling mono visual SLAM on real hardware.
 
 **Direct aggregator path (zero-copy vision path).** When ``aggregator`` is passed (reader,
 aggregator, and skill runner share one process), an ``_AggregatorPump`` per reader writes
@@ -245,6 +246,29 @@ class SensorLeg:
             except Exception as exc:  # reason: teardown must not raise
                 log.warning("sensor_leg.reader_close_failed", error=str(exc))
         self.readers.clear()
+
+
+def _sensor_topics(spec: SensorSpec) -> tuple[str, str]:
+    """``(image, camera_info)`` topics for ``spec``, by modality.
+
+    A depth sensor publishes on the depth kinds, where the sim sensor bridge puts it and
+    every depth consumer (nvblox, the vision attachment bridge) subscribes; anything
+    else on the RGB kinds.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+        >>> image, info = _sensor_topics(next(s for s in desc.sensors if s.name == "front_depth"))
+        >>> image
+        '/openral/cameras/front_depth/depth/image'
+        >>> info
+        '/openral/cameras/front_depth/depth/camera_info'
+    """
+    if spec.modality == "depth":
+        kinds = (CameraTopicKind.DEPTH_IMAGE, CameraTopicKind.DEPTH_CAMERA_INFO)
+    else:
+        kinds = (CameraTopicKind.IMAGE, CameraTopicKind.CAMERA_INFO)
+    return camera_topic(spec.name, kinds[0]), camera_topic(spec.name, kinds[1])
 
 
 def _publish_rate_hz(spec: SensorSpec) -> float:
@@ -520,7 +544,7 @@ def open_deploy_sensor_readers(
         binding = spec.deploy_binding
         if binding is None:
             continue
-        topic = camera_topic(spec.name)
+        topic, _ = _sensor_topics(spec)
         native_tee = binding.backend == SensorReaderBackend.GSTREAMER
         prepared.append(
             (
@@ -578,7 +602,7 @@ def open_deploy_sensor_readers(
                     max_size=None if spec.name in uncapped_sensors else topic_max_size,
                     frame_id=spec.frame_id,
                     camera_info=spec.intrinsics,
-                    info_topic=camera_topic(spec.name, CameraTopicKind.CAMERA_INFO),
+                    info_topic=_sensor_topics(spec)[1],
                     node=ros_node,
                 )
                 leg.publishers.append(publisher)

@@ -447,19 +447,27 @@ def _scene_backend_has_sim_clock(config: Path | None) -> bool:
     return SCENES.meta(scene.scene.id).get("sim_clock") is True
 
 
-def _resolve_clock_origin(*, hal_mode: str, config: Path | None, pinned: str | None = None) -> str:
+def _resolve_clock_origin(
+    *, hal_mode: str, config: Path | None, pinned: str | None = None, cloud_topic: str = ""
+) -> str:
     """Resolve the OpenRAL clock authority origin for the launch graph.
 
     A scene's ``runtime.clock_origin`` (``pinned``) wins. Otherwise real
     deployments use host wall time, and sim deployments use simulator elapsed
     time when the deploy scene backend exposes a sim clock. Scene-attached HALs
     and bare MuJoCo twins both expose ``sim_time_ns``; clock-less scenes stay in
-    host-wall time so ROS node clocks never pin at zero.
+    host-wall time so ROS node clocks never pin at zero. A ``cloud_topic`` outside
+    ``/openral/cameras/`` is a real driver stamping on wall-clock (a twin fed by a
+    real camera), so it selects host wall time: under the sim clock octomap drops
+    every such cloud as from the future.
 
     Raises:
-        ROSConfigError: ``pinned`` is ``"simulation"`` on a real deploy, or on a
-            sim backend that exposes no clock.
+        ROSConfigError: ``pinned`` is ``"simulation"`` on a real deploy, on a
+            sim backend that exposes no clock, or with a real driver's cloud.
     """
+    from openral_core import CAMERA_TOPIC_PREFIX
+
+    external_cloud = bool(cloud_topic) and not cloud_topic.startswith(f"{CAMERA_TOPIC_PREFIX}/")
     has_sim_clock = hal_mode == "sim" and _scene_backend_has_sim_clock(config)
     if pinned == "simulation" and not has_sim_clock:
         where = "a real deploy" if hal_mode != "sim" else "a sim backend without a clock"
@@ -467,9 +475,15 @@ def _resolve_clock_origin(*, hal_mode: str, config: Path | None, pinned: str | N
             f"runtime.clock_origin: simulation is pinned on {where}; nothing would "
             "publish /clock and every node's clock would stay at zero."
         )
+    if pinned == "simulation" and external_cloud:
+        raise ROSConfigError(
+            f"runtime.clock_origin: simulation is pinned but octomap maps {cloud_topic!r}, a "
+            "real driver stamping on wall-clock: octomap_server would drop every cloud as "
+            "from the future. Pin clock_origin: host_wall or leave it unset."
+        )
     if pinned is not None:
         return pinned
-    return "simulation" if has_sim_clock else "host_wall"
+    return "simulation" if has_sim_clock and not external_cloud else "host_wall"
 
 
 def _omdet_runtime_available() -> bool:
@@ -865,9 +879,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     and feeds the kernel via ROS params.
     """
     from openral_core import (  # reason: defer schema import
+        DeployRuntime,
         DeployScene,
         RobotDescription,
         check_scene_sensor_overrides,
+        deploy_cloud_topic,
+        merge_deploy_sensors,
         publishing_sensors,
     )
 
@@ -1124,14 +1141,49 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             raise ROSConfigError(f"{reason}.")
         _console.print(f"[yellow]{reason}; disabling Nav2.[/yellow]")
         enable_nav2 = False
-    # the octomap world-collision leg auto-enables when the
-    # robot manifest declares a usable depth SensorSpec (a camera the HAL
-    # can ray-cast a PointCloud2 from); there is nothing to map otherwise.
+    # The octomap world-collision leg auto-enables when the deploy has a cloud to map:
+    # a pinned driver topic, the sim bridge's back-projected depth camera, or, on real
+    # hardware, any depth / point-cloud sensor (whose driver topic must then be pinned).
     # ``--enable-octomap`` / ``--no-enable-octomap`` overrides.
+    cloud_topic = deploy_cloud_topic(
+        description.sensors, pinned=octomap_cloud_topic, hal_mode=hal_mode
+    )
     if enable_octomap is None:
-        enable_octomap = any(s.is_depth_camera for s in description.sensors)
+        enable_octomap = bool(cloud_topic) or (
+            hal_mode == "real"
+            and any(
+                s.is_cloud_source
+                for s in merge_deploy_sensors(
+                    description.sensors,
+                    deploy_scene.sensors if deploy_scene is not None else [],
+                )
+            )
+        )
+    # Refuse before launch rather than run octomap_server against a topic nothing
+    # publishes: the map stays empty and, with the kernel's world check on, every
+    # chunk drops as DROP_VOXEL_UNAVAILABLE behind healthy nodes.
+    if enable_octomap and not cloud_topic:
+        raise ROSConfigError(
+            "octomap is enabled but nothing publishes a cloud for it: "
+            + (
+                "on a real deploy no in-tree node publishes one, so pin "
+                "runtime.octomap_cloud_topic to the depth driver's PointCloud2 topic "
+                "(zed_wrapper: /<name>/point_cloud/cloud_registered, RealSense: "
+                "/camera/depth/color/points) or set runtime.enable_octomap: false"
+                if hal_mode == "real"
+                else f"robot {description.name!r} declares no depth sensor with intrinsics "
+                "and no runtime.octomap_cloud_topic is pinned"
+            )
+            + "."
+        )
+    voxel_deadline_s, max_octree_age_s = (
+        rt if rt is not None else DeployRuntime()
+    ).voxel_freshness_s
     clock_origin = _resolve_clock_origin(
-        hal_mode=hal_mode, config=config, pinned=rt.clock_origin if rt is not None else None
+        hal_mode=hal_mode,
+        config=config,
+        pinned=rt.clock_origin if rt is not None else None,
+        cloud_topic=cloud_topic,
     )
 
     # The object-detection leg is ON by default (deploy sim is a
@@ -1328,6 +1380,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # use_sim_time internally: simulation → use_sim_time=true + HAL /clock;
         # host_wall → system time and no OpenRAL /clock publisher.
         f"clock_origin:={clock_origin}",
+        # The kernel's voxel deadline and the octomap bridge's octree-age bound, from
+        # the scene (DeployRuntime validates age <= deadline) or the schema defaults.
+        f"world_voxel_deadline_s:={voxel_deadline_s}",
+        f"max_octree_age_s:={max_octree_age_s}",
         f"enable_object_detector:={'true' if enable_object_detector else 'false'}",
         f"object_detector_onnx:={resolved_object_detector_onnx}",
         # reward monitor co-active with the VLA; the reasoner polls

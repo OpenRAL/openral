@@ -164,20 +164,33 @@ def test_the_quantisation_gain_matches_the_matrix_budget_it_is_derived_from() ->
     assert pytest.approx(8.66, abs=0.01) == stop_ee_speed.QUANTISATION_GAIN_M * 1e3
 
 
-def test_the_octree_age_bound_is_derived_from_the_kernel_deadline(launch_module: object) -> None:
-    """The bridge's ``max_octree_age_s`` equals the kernel's voxel deadline (Entry 033).
+def test_voxel_freshness_is_the_declared_rig_value_and_never_exceeds_the_deadline(
+    launch_module: object,
+) -> None:
+    """The bridge's ``max_octree_age_s`` never exceeds the kernel's voxel deadline (Entry 033).
 
-    It must not exceed the deadline, so a silent octree ends in the kernel's
-    ``DROP_VOXEL_UNAVAILABLE`` within bound + deadline (2.0 s), and it must sit well
-    above octomap's measured gaps (0.31 s at Thor's 3.2 Hz; ~0.45 s at 2.2 Hz) so a
-    live camera never silences the grid. The launch also has to pass it to the
-    bridge, and the kernel the same deadline it was derived from.
+    Both are ``DeployRuntime`` fields now, not Thor-tuned constants: the launch takes the
+    scene's pair, defaults the age to the deadline, and refuses a bound above it, so a
+    silent octree still ends in the kernel's ``DROP_VOXEL_UNAVAILABLE`` within bound +
+    deadline whoever launches it. And the launch must pass the pair to the right nodes.
     """
-    deadline_s = launch_module._WORLD_VOXEL_DEADLINE_MS / 1000.0
-    bound = launch_module._MAX_OCTREE_AGE_S
-    assert bound == pytest.approx(deadline_s)
-    assert 0.45 * 2 <= bound <= deadline_s
+    from openral_core import DeployRuntime
+    from pydantic import ValidationError
+
+    freshness = launch_module._voxel_freshness  # type: ignore[attr-defined]
+    default_deadline, default_age = DeployRuntime().voxel_freshness_s
+    assert freshness("", "") == (default_deadline * 1000.0, default_age)
+    assert default_age <= default_deadline
+    for deadline, age in (("2.5", ""), ("2.5", "2.5"), ("2.5", "0.8"), ("0.4", "")):
+        deadline_ms, bound = freshness(deadline, age)
+        assert deadline_ms == float(deadline) * 1000.0
+        assert bound == (float(age) if age else float(deadline))
+        assert bound <= deadline_ms / 1000.0
+    with pytest.raises(ValidationError, match="must not exceed"):
+        freshness("1.0", "1.5")
+    with pytest.raises(ValidationError, match="must not exceed"):
+        freshness("", str(default_deadline + 0.5))
 
     source = LAUNCH.read_text()
-    assert '"max_octree_age_s": _MAX_OCTREE_AGE_S' in source
-    assert '"world_voxel_deadline_ms": _WORLD_VOXEL_DEADLINE_MS' in source
+    assert '"max_octree_age_s": max_octree_age_s' in source
+    assert '"world_voxel_deadline_ms": world_voxel_deadline_ms' in source
