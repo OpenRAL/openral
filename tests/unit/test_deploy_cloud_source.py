@@ -29,6 +29,10 @@ from pydantic import ValidationError
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PANDA_MOBILE = _REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"
 _REALSENSE_POINTS = "/camera/depth/color/points"
+#: With the kernel's world-voxel check on, a real deploy also needs a verified extrinsic
+#: for every depth camera (``_preflight_depth_extrinsics``, covered in
+#: test_deploy_run_real_resolution.py); these tests are about the cloud wiring only.
+_NO_KERNEL_CHECK = "  enable_octomap_kernel_check: false\n"
 
 
 def _front_depth() -> dict[str, object]:
@@ -139,7 +143,8 @@ def test_real_depth_camera_with_the_driver_topic_pinned_runs(
 ) -> None:
     _real_franka_with(tmp_path, monkeypatch, _front_depth())
     invocation = _resolve(
-        _real_scene(tmp_path, f"  octomap_cloud_topic: {_REALSENSE_POINTS}\n"), "real"
+        _real_scene(tmp_path, f"  octomap_cloud_topic: {_REALSENSE_POINTS}\n{_NO_KERNEL_CHECK}"),
+        "real",
     )
     assert invocation.enable_octomap is True
     assert invocation.clock_origin == "host_wall"
@@ -245,7 +250,7 @@ def test_scene_voxel_freshness_reaches_the_launch(
     _real_franka_with(tmp_path, monkeypatch, _front_depth())
     scene = _real_scene(
         tmp_path,
-        f"  octomap_cloud_topic: {_REALSENSE_POINTS}\n"
+        f"  octomap_cloud_topic: {_REALSENSE_POINTS}\n{_NO_KERNEL_CHECK}"
         "  world_voxel_deadline_s: 2.5\n  max_octree_age_s: 2.0\n",
     )
     argv = _resolve(scene, "real").argv_template
