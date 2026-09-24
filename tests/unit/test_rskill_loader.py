@@ -1090,3 +1090,28 @@ def test_snapshot_dir_with_weights_resolves_to_itself(tmp_path: Path) -> None:
     assert repo_id == str(snapshot.resolve())
     assert revision is None
     assert resolve_rskill_to_hf(str(snapshot)) == str(snapshot.resolve())
+
+
+def test_sharded_snapshot_dir_resolves_to_itself(tmp_path: Path) -> None:
+    """A sharded checkpoint (index + shards, as ``save_pretrained`` writes) is weights too.
+
+    Without this it fell through to the manifest's ``hf://`` pointer: a second
+    download online, a hard failure under ``HF_HUB_OFFLINE=1``.
+    """
+    import json
+
+    from openral_rskill.loader import resolve_rskill_to_hf_with_revision
+
+    manifest_src = Path(__file__).resolve().parents[2] / "rskills" / "act-libero" / "rskill.yaml"
+    snapshot = tmp_path / "snapshots" / "sharded"
+    snapshot.mkdir(parents=True)
+    (snapshot / "rskill.yaml").write_text(manifest_src.read_text(encoding="utf-8"))
+    shards = ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"]
+    for shard in shards:
+        (snapshot / shard).write_bytes(b"")
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {}, "weight_map": {"a.weight": shards[0], "b.weight": shards[1]}})
+    )
+    repo_id, revision = resolve_rskill_to_hf_with_revision(str(snapshot))
+    assert repo_id == str(snapshot.resolve())
+    assert revision is None
