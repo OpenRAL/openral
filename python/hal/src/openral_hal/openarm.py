@@ -335,6 +335,7 @@ OPENARM_DESCRIPTION = RobotDescription(
         # runner ramp to starting_pose — the former defaults, declared (issue #303)
         starting_pose_max_joint_speed_rad_s=0.5,
         starting_pose_tolerance_rad=0.05,
+        joint_state_staleness_limit_s=0.1,  # measured on Thor 2026-09-23; the YAML has the data
     ),
     sdk_kind="open",
     # The robot's single control-rate declaration: the runner ticks at it, the
@@ -363,11 +364,6 @@ OPENARM_DESCRIPTION = RobotDescription(
                 # sim (derived MujocoArmHAL)
                 "settle_steps": 4,
                 "gravity_enabled": False,
-                # both — three control periods at 30 Hz; measured on Thor
-                # 2026-09-23 with tools/joint_state_staleness_probe.py (worst
-                # observed callback latency 43 ms under GIL starvation). Mirrors
-                # the YAML, which carries the full measurement.
-                "staleness_limit_s": 0.1,
                 # real (OpenArmRealHAL) — udev-pinned SocketCAN names and the
                 # four bimanual controllers openarm_bringup spawns. The two
                 # interface names are defaults only: `openral detect`

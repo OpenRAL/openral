@@ -189,6 +189,18 @@ safety:
   # declared here so they are visible; provisional until run on this rig.
   starting_pose_max_joint_speed_rad_s: 0.5
   starting_pose_tolerance_rad: 0.05
+  # panda_gripper is typed prismatic but carries the normalised [0, 1] jaw
+  # fraction, not metres. provisional, not measured on this rig: 0.1/s is its
+  # declared velocity_limit (the runner caps at it anyway) and 0.05 is the
+  # former tolerance, 5 % of the range.
+  starting_pose_max_joint_speed_m_s: 0.1
+  starting_pose_tolerance_m: 0.05
+  # Joint-state freshness window: the real HAL's read_state and the skill
+  # runner's blocking waits refuse state older than this (one place; build_hal
+  # and deploy_e2e.launch.py read it). provisional: former hal.parameters.defaults value,
+  # not measured on this rig — measure with
+  # tools/joint_state_staleness_probe.py --robot <this manifest>.
+  joint_state_staleness_limit_s: 0.5
 
 # Two RGB streams mirroring LIBERO's `agentview`/`eye_in_hand` (renamed to
 # `image`/`image2` by the stored SmolVLA preprocessor, surfaced as `top`/`wrist`
@@ -268,6 +280,9 @@ sdk_kind: "closed_with_api"
 # `dim` / `representation` are deliberately not declared: this repo commits no
 # policy action contract for this robot, and the recorder takes the width from
 # the action itself. Only the control rate is a known quantity.
+# provisional: the runner's former 30 Hz default, not measured on this rig. A
+# skill trained at another rate declares action_contract.control_freq_hz and
+# the runner refuses the mismatch.
 action_spec:
   control_freq_hz: 30.0
 
@@ -276,11 +291,6 @@ hal:
   # from the `sim:` block below; no per-robot Python class is involved.
   sim: null
   real: "openral_hal.franka_panda_real:FrankaPandaRealHAL"
-  parameters:
-    defaults:
-      # Max age of a read_state() reading before ROSPerceptionStale.
-      # provisional: former constructor default, not measured on this rig — see issue #303
-      staleness_limit_s: 0.5
 
 # MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``
 # for the sim baseline.  Source: ``franka_emika_panda/panda.xml`` in

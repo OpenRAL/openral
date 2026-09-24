@@ -63,7 +63,7 @@ from openral_core.schemas import (
     UrdfAsset,
 )
 
-from openral_hal._base import HALBase
+from openral_hal._base import HALBase, resolve_staleness_limit_s
 from openral_hal._sensor_wiring import with_sensors
 from openral_hal.protocol import EStopRecovery
 
@@ -206,6 +206,12 @@ SO100_DESCRIPTION = RobotDescription(
         # runner ramp to starting_pose — the former defaults, declared (issue #303)
         starting_pose_max_joint_speed_rad_s=0.5,
         starting_pose_tolerance_rad=0.05,
+        # The in-code gripper is typed prismatic on the normalised [0, 1] jaw
+        # fraction (robots/so100_follower/robot.yaml types it revolute); the
+        # former values, unchanged, in those units.
+        starting_pose_max_joint_speed_m_s=0.5,
+        starting_pose_tolerance_m=0.05,
+        joint_state_staleness_limit_s=0.5,  # provisional, mirrors the YAML
     ),
     sdk_kind="open",
     # Control rate: the runner ticks at it, the HAL node publishes proprio at
@@ -334,7 +340,8 @@ class SO100FollowerHAL(HALBase):
             forwarded to the motor bus.  ``None`` means no capping.  Ignored
             when ``robot`` is provided.
         staleness_limit_s: How old (seconds) a ``read_state()`` timestamp may
-            be before ``ROSPerceptionStale`` is raised.  Defaults to ``0.5``.
+            be before ``ROSPerceptionStale`` is raised. ``None`` (default) reads the manifest's
+            ``safety.joint_state_staleness_limit_s``.
         robot: Optional pre-constructed lerobot ``Robot`` instance.  When
             provided, ``connect()`` calls ``robot.connect()`` directly instead
             of constructing a ``SO100Follower`` and opening the serial port.
@@ -360,7 +367,7 @@ class SO100FollowerHAL(HALBase):
         id: str | None = None,  # reason: mirrors lerobot RobotConfig.id verbatim
         calibration_dir: str | None = None,  # reason: mirrors lerobot RobotConfig.calibration_dir
         max_relative_target: float | dict[str, float] | None = None,
-        staleness_limit_s: float = 0.5,
+        staleness_limit_s: float | None = None,
         robot: _LeRobotRobot | None = None,
         description: RobotDescription | None = None,
     ) -> None:
@@ -387,7 +394,7 @@ class SO100FollowerHAL(HALBase):
         self._id = id
         self._calibration_dir = calibration_dir
         self._max_relative_target = max_relative_target
-        self._staleness_limit_s = staleness_limit_s
+        self._staleness_limit_s = resolve_staleness_limit_s(self.description, staleness_limit_s)
         self._injected_robot: _LeRobotRobot | None = robot
 
         self._robot: _LeRobotRobot | None = None

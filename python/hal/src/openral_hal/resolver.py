@@ -83,7 +83,15 @@ def build_hal(
     # construction kwargs (serial port, robot_ip, …) so a parameterised robot
     # needs no bespoke lifecycle subclass. Explicit ``transport`` overrides
     # them; _construct() then drops any key the constructor does not accept.
-    resolved = {**description.hal.parameters.defaults, **(transport or {})}
+    # The joint-state window is a typed safety field, not a free-form default
+    # (the schema refuses both); it reaches every HAL that takes
+    # `staleness_limit_s`, sim-derived included, as before.
+    staleness = description.safety.joint_state_staleness_limit_s
+    resolved = {
+        **description.hal.parameters.defaults,
+        **({} if staleness is None else {"staleness_limit_s": staleness}),
+        **(transport or {}),
+    }
     if sim_env_yaml is not None and mode != "sim":
         raise ROSConfigError(
             "build_hal: sim_env_yaml is only valid with mode='sim' "

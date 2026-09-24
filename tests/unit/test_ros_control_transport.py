@@ -67,7 +67,8 @@ def _description(n_joints: int = 2, *, control_freq_hz: float | None = 30.0) -> 
             for i in range(n_joints)
         ],
         capabilities=RobotCapabilities(supported_control_modes=[ControlMode.JOINT_POSITION]),
-        safety=SafetyEnvelope(),
+        # A real HAL has no staleness default: it reads the manifest's window.
+        safety=SafetyEnvelope(joint_state_staleness_limit_s=0.5),
     )
 
 
