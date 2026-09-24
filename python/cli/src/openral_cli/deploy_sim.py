@@ -1130,6 +1130,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # ``--enable-octomap`` / ``--no-enable-octomap`` overrides.
     if enable_octomap is None:
         enable_octomap = any(s.is_depth_camera for s in description.sensors)
+    if hal_mode == "real" and enable_octomap and enable_octomap_kernel_check:
+        _preflight_depth_extrinsics(description, Path(robot_yaml))
     clock_origin = _resolve_clock_origin(
         hal_mode=hal_mode, config=config, pinned=rt.clock_origin if rt is not None else None
     )
@@ -2281,6 +2283,47 @@ def _clean_stale_fastrtps_shm(
             entry.unlink()
             purged += 1
     return purged, kept
+
+
+def _preflight_depth_extrinsics(description: RobotDescription, robot_yaml: Path) -> None:
+    """Refuse a real world-voxel deploy whose depth camera extrinsic is not verified.
+
+    The kernel's world-voxel check places every obstacle through each depth camera's
+    manifest mount, so every depth camera (``SensorSpec.is_depth_camera``) must have a
+    passing ``robots/<id>/calibration/<sensor>_extrinsic.json`` for its CURRENT pose
+    (``openral_core.depth_extrinsic.verify_extrinsic_report``; measured with
+    ``tools/depth_extrinsic_check.py``). All of them, not only the one the octomap cloud
+    is believed to come from: a pinned ``octomap_cloud_topic`` does not say which. There
+    is no override flag: the only other way past is an explicit
+    ``--no-enable-octomap-kernel-check`` (no world check at all).
+
+    Raises:
+        ROSConfigError: a depth camera is missing, stale or failed calibration.
+    """
+    from openral_core.depth_extrinsic import (  # reason: keep numpy-free core import lazy
+        checkable_depth_sensor,
+        extrinsic_report_path,
+        verify_extrinsic_report,
+    )
+
+    problems: list[str] = []
+    for spec in (s for s in description.sensors if s.is_depth_camera):
+        report = extrinsic_report_path(robot_yaml, spec.name)
+        try:
+            checkable_depth_sensor(description, spec.name)
+            found = verify_extrinsic_report(spec, report, base_frame=description.base_frame)
+        except ROSConfigError as exc:
+            found = [str(exc)]
+        problems += [f"{spec.name}: {p}" for p in found]
+        if not found:
+            _console.print(f"  extrinsic verified: {spec.name} ({report})")
+    if problems:
+        raise ROSConfigError(
+            "the world-voxel check is on for a real deploy, but a depth camera's extrinsic is "
+            "not verified — every obstacle would be placed through an unmeasured pose:\n  "
+            + "\n  ".join(problems)
+            + "\nMeasure it with `tools/depth_extrinsic_check.py check` and commit the report."
+        )
 
 
 def _required_ros2_packages(invocation: LaunchInvocation) -> list[str]:

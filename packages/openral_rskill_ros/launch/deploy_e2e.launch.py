@@ -166,8 +166,14 @@ def _run_resource_attrs(hal_mode: str) -> str:
 
 
 def _world_voxel_margin_m(hal_mode: str) -> float:
-    """Return the calibrated world-voxel clearance for this boundary."""
-    return 0.0 if hal_mode == "sim" else 0.02
+    """Return the calibrated world-voxel clearance for this boundary.
+
+    The real value is owned by ``openral_core.depth_extrinsic``, whose extrinsic pass
+    limits are derived from it: a margin change re-tightens the calibration gate.
+    """
+    from openral_core.depth_extrinsic import REAL_WORLD_VOXEL_MARGIN_M
+
+    return 0.0 if hal_mode == "sim" else REAL_WORLD_VOXEL_MARGIN_M
 
 
 def _collision_scale_params() -> dict[str, float]:

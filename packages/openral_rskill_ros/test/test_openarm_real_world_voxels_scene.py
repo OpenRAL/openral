@@ -11,13 +11,19 @@ here. The kernel/octomap parameters under test come from the argv, not from that
 the ZED mount (the robot manifest's ``head_zed``) is covered by composing the scene on the
 sim path, where drivers are ignored.
 
+``deploy run`` refuses this scene until ``head_zed``'s extrinsic is verified (no report is
+committed yet), so the real-mode tests resolve against a copy of ``robots/openarm`` served
+via ``OPENRAL_ROBOTS_DIR`` with a passing report for the manifest's pose beside it.
+
 Per CLAUDE.md §1.11: the committed scene, the real ``robots/openarm/robot.yaml``, the real
 CLI resolver and launch composition. No mocks.
 """
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +44,49 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _LAUNCH_FILE = _REPO_ROOT / "packages" / "openral_rskill_ros" / "launch" / "deploy_e2e.launch.py"
 _SCENE = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
 _ZED_CLOUD = "/zed/zed_node/point_cloud/cloud_registered"
+
+
+@pytest.fixture
+def calibrated_openarm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """``robots/openarm`` copied, with a passing head_zed report for its committed pose."""
+    from openral_core import RobotDescription
+    from openral_core.depth_extrinsic import (
+        MAX_HEIGHT_ERR_M,
+        MAX_MARKER_ERR_M,
+        MAX_TILT_DEG,
+        MIN_MARKERS,
+        extrinsic_report_path,
+    )
+
+    robot_dir = tmp_path / "robots" / "openarm"
+    shutil.copytree(_REPO_ROOT / "robots" / "openarm", robot_dir)
+    desc = RobotDescription.from_yaml(str(robot_dir / "robot.yaml"))
+    (zed,) = [s for s in desc.sensors if s.name == "head_zed"]
+    report = extrinsic_report_path(robot_dir / "robot.yaml", "head_zed")
+    report.parent.mkdir(exist_ok=True)
+    markers = [{"expected_xy": [0.5, y], "error_m": 0.002} for y in (-0.15, 0.15)]
+    report.write_text(
+        json.dumps(
+            {
+                "sensor": zed.name,
+                "parent_frame": zed.parent_frame,
+                "frame_id": zed.frame_id,
+                "base_frame": desc.base_frame,
+                "static_transform_xyz_rpy": list(zed.static_transform_xyz_rpy or ()),
+                "criteria": {
+                    "max_tilt_deg": MAX_TILT_DEG,
+                    "max_height_err_m": MAX_HEIGHT_ERR_M,
+                    "max_marker_err_m": MAX_MARKER_ERR_M,
+                    "min_markers": MIN_MARKERS,
+                },
+                "residuals": {"tilt_deg": 0.1, "height_err_m": 0.001, "markers": markers},
+                "passed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENRAL_ROBOTS_DIR", str(tmp_path / "robots"))
+    return robot_dir
 
 
 def _launch_args(hal_mode: str, scene: Path = _SCENE) -> dict[str, str]:
@@ -88,6 +137,17 @@ def _node(entities: list[Any], package: str, executable: str | None = None) -> A
     return found[0]
 
 
+def test_deploy_run_refuses_until_the_zed_extrinsic_is_verified() -> None:
+    """The committed state: no head_zed report, so the real launch never resolves."""
+    from openral_core.exceptions import ROSConfigError
+
+    if (_REPO_ROOT / "robots/openarm/calibration/head_zed_extrinsic.json").exists():
+        pytest.skip("a head_zed calibration report is committed")
+    with pytest.raises(ROSConfigError, match=r"head_zed: no extrinsic report"):
+        _launch_args("real")
+
+
+@pytest.mark.usefixtures("calibrated_openarm")
 def test_deploy_run_resolves_the_zed_cloud_and_the_kernel_check() -> None:
     args = _launch_args("real")
 
@@ -98,6 +158,7 @@ def test_deploy_run_resolves_the_zed_cloud_and_the_kernel_check() -> None:
     assert args["enable_reasoner"] == "false"
 
 
+@pytest.mark.usefixtures("calibrated_openarm")
 def test_the_kernel_gets_world_voxel_enabled_at_the_real_margin() -> None:
     from launch_ros.utilities import evaluate_parameters
 

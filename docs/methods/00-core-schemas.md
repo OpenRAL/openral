@@ -523,6 +523,20 @@ _Robot-agnostic SocketCAN transport discovery — a CAN-bus robot is invisible t
 - `can_link_state(interface, *, sysfs_net=None) -> tuple[bool, str]` — Single-interface counterpart: `(is_up, reason)` naming the specific problem. (L274)
 - `preflight_can_links(interfaces, *, hal_label, remedy="", sysfs_net=None) -> dict[str, str]` — The connect-time gate every CAN robot needs; reports every failing bus in one message and raises `ROSConfigError` otherwise. (L303)
 
+### `python/core/src/openral_core/depth_extrinsic.py`
+_The depth-camera extrinsic gate shared by `tools/depth_extrinsic_check.py` and `openral deploy run`'s real-deploy preflight. numpy-free and not re-exported by `openral_core.__init__`, so the launch file can read the margin cheaply._
+
+- `REAL_WORLD_VOXEL_MARGIN_M: Final[float] = 0.02` (L30) — The kernel's real-deploy `world_voxel_margin_m` (`deploy_e2e.launch.py::_world_voxel_margin_m` returns it); every limit below derives from it.
+- `CHECKED_RANGE_M: Final[float] = 1.0` (L33) — Range at which a tilt error is converted to metres.
+- `MAX_HEIGHT_ERR_M: Final[float]` (L36) — Half the margin (10 mm).
+- `MAX_TILT_DEG: Final[float]` (L37) — `atan(MAX_HEIGHT_ERR_M / CHECKED_RANGE_M)` (~0.57°): tilt error at 1 m plus height error never exceed the margin.
+- `MAX_MARKER_ERR_M: Final[float]` (L39) — Three quarters of the margin (15 mm).
+- `MIN_MARKERS: Final[int] = 2` (L41) — One marker cannot separate yaw from translation.
+- `extrinsic_report_path(robot_yaml, sensor) -> Path` (L44) — `<manifest dir>/calibration/<sensor>_extrinsic.json`.
+- `checkable_depth_sensor(description, sensor) -> SensorSpec` (L54) — The named sensor if it is a depth camera (`is_depth_camera`) with a manifest `parent_frame` + `static_transform_xyz_rpy`; `ROSConfigError` otherwise (RGB-only cameras refused).
+- `residual_failures(res, *, max_tilt_deg=..., max_height_err_m=..., max_marker_err_m=...) -> list[str]` (L97) — Every way the residuals miss the limits; NaN/inf never pass.
+- `verify_extrinsic_report(spec, report_path, *, base_frame) -> list[str]` (L130) — Every reason a report does not clear the sensor's current manifest pose (missing/unreadable, not passed, residuals re-derived against the shipped limits, other sensor/frames/base, stale pose, looser criteria). Empty = verified.
+
 ### `python/core/src/openral_core/geometry.py`
 _Shared rotation geometry — look-at/camera gaze poses plus planar yaw↔quaternion helpers, so every layer uses one implementation instead of duplicating them. Import-on-demand, not re-exported by `openral_core.__init__`, so schemas stay numpy-free on the fast CLI path._
 
