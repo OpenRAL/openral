@@ -392,8 +392,8 @@ Measures the wire cost of the dense `uint8[]` payload as publish→receive laten
 - `MAX_MARKER_ERR_M: float` (L60) — per-marker planar pass limit (15 mm).
 - `MIN_MARKERS: int` (L61) — markers required to pass (2; one cannot separate yaw from translation).
 - `check(args) -> int` (L276) — Reads the ZED cloud and camera-internal TF from a rosbag2 bag, places the cloud through the robot manifest's `--sensor` pose (the only place a robot sensor's mount lives), fits the table plane and marker centroids in the base frame, and writes a JSON report (residuals, pass/fail, and `suggested_static_transform_xyz_rpy` composed from tilt, height and planar corrections, to be copied into the manifest). Returns 0 iff it passes.
-- `verify(args) -> int` (L340) — 0 iff the report passed, at criteria no looser than the defaults, for the manifest's *current* pose. The gate `tools/openarm_world_voxel_run.sh` applies.
-- `main(argv=None) -> int` (L378) — CLI: `check --robot --bag --cloud-topic --table-z --table-roi --marker X Y ...` / `verify --robot --report` (`--sensor` defaults to `head_zed`; committed report at `robots/<id>/calibration/<sensor>_extrinsic.json`). Needs a sourced ROS 2 overlay (rosbag2_py, tf2_ros).
+- `verify(args) -> int` (L370) — 0 iff the report passed, at criteria no looser than the defaults, for the manifest's *current* pose. The gate `tools/openarm_world_voxel_run.sh` applies.
+- `main(argv=None) -> int` (L427) — CLI: `check --robot --bag --cloud-topic --table-z --table-roi --marker X Y ...` / `verify --robot --report` (`--sensor` defaults to `head_zed`; committed report at `robots/<id>/calibration/<sensor>_extrinsic.json`). Needs a sourced ROS 2 overlay (rosbag2_py, tf2_ros).
 
 Measures the one input the kernel's world-voxel check trusts absolutely on a real camera — the extrinsic — which `openral calibrate camera` (intrinsics only) does not. Runbook: `docs/tutorials/deploy/openarm-real-world-voxel-check.md`. Tested in `tests/unit/test_zed_extrinsic_check.py` on a real rosbag2 bag.
 

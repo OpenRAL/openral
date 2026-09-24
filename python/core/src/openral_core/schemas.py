@@ -694,6 +694,73 @@ def check_scene_sensor_overrides(
             )
 
 
+def merge_deploy_sensors(
+    manifest_sensors: Iterable[SensorSpec],
+    scene_sensors: Iterable[SensorSpec],
+) -> list[SensorSpec]:
+    """Robot-manifest sensors plus ``DeployScene.sensors``, merged field-wise.
+
+    On a name collision the scene's explicitly-set fields are applied over the manifest entry
+    (via ``model_fields_set``, so an unmentioned field falls through to the manifest) — exactly
+    one spec survives per name, else the device would be opened and its topic published twice.
+
+    Enforced rule (``check_scene_sensor_overrides``): the manifest owns a robot sensor's
+    geometry (``parent_frame`` / ``static_transform_xyz_rpy`` / ``intrinsics`` /
+    ``sim_placement``, and its ``frame_id``); a same-named scene entry carries only the
+    host-side binding (device, topic, fps, encoding) and is refused with ``ROSConfigError``
+    otherwise. Scene-only sensors (workcell cameras) keep their own geometry.
+
+    Raises:
+        ROSConfigError: A scene entry restates a manifest sensor's geometry.
+
+    Example:
+        >>> desc = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> [s.name for s in merge_deploy_sensors(desc.sensors, [])]
+        ['top', 'wrist']
+    """
+    manifest = list(manifest_sensors)
+    scene = list(scene_sensors)
+    check_scene_sensor_overrides(manifest, scene)
+    by_name = {s.name: s for s in scene}
+    merged: list[SensorSpec] = []
+    for spec in manifest:
+        override = by_name.pop(spec.name, None)
+        if override is None:
+            merged.append(spec)
+            continue
+        merged.append(
+            spec.model_copy(update={f: getattr(override, f) for f in override.model_fields_set})
+        )
+    # Scene-only sensors (workcell-mounted) keep their declaration order.
+    merged.extend(s for s in scene if s.name in by_name)
+    return merged
+
+
+def publishing_sensors(
+    manifest_sensors: Iterable[SensorSpec],
+    scene_sensors: Iterable[SensorSpec],
+    hal_mode: str,
+) -> list[SensorSpec]:
+    """The sensors that actually publish a camera topic on a deploy.
+
+    Sim: the manifest's sensors, which the sim sensor bridge renders (bound or not; a
+    scene-only hardware camera has no sim publisher). Real: ``merge_deploy_sensors``, keeping
+    only sensors with a ``deploy_binding`` — an unbound sensor gets no reader and so no topic.
+    The one rule both ``openral deploy`` (pre-launch decisions) and ``deploy_e2e.launch.py``
+    (which camera each consumer subscribes to) use, so they cannot disagree.
+
+    Example:
+        >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> [s.name for s in publishing_sensors(arm.sensors, [], "sim") if s.modality == "rgb"]
+        ['top', 'wrist_left', 'wrist_right']
+        >>> publishing_sensors(arm.sensors, [], "real")  # the manifest binds no camera
+        []
+    """
+    if hal_mode != "real":
+        return list(manifest_sensors)
+    return [s for s in merge_deploy_sensors(manifest_sensors, scene_sensors) if s.deploy_binding]
+
+
 # ─── Joints / Actuation ────────────────────────────────────────────────────────
 
 

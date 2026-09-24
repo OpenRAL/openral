@@ -34,8 +34,8 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("coverage_center_z", default_value="0.5"),
         DeclareLaunchArgument("publish_rate_hz", default_value="10.0"),
         # Stop republishing an octree older than this, so the kernel's
-        # `world_voxel_deadline_ms` fails closed on a dead camera. About half
-        # that deadline (hazard log Entry 033).
+        # `world_voxel_deadline_ms` fails closed on a dead camera. Equal to that
+        # deadline in deploy_e2e (1.0 s; hazard log Entry 033).
         DeclareLaunchArgument("max_octree_age_s", default_value="1.0"),
     ]
     bridge = Node(

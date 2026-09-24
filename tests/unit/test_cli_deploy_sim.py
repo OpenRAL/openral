@@ -2727,3 +2727,47 @@ def test_a_simulation_pin_is_refused_on_a_clockless_sim_backend(tmp_path: Path) 
     assert _resolve_clock_origin(hal_mode="sim", config=scene) == "host_wall"
     with pytest.raises(ROSConfigError, match="sim backend without a clock"):
         _resolve_clock_origin(hal_mode="sim", config=scene, pinned="simulation")
+
+
+def test_implicit_visual_slam_without_named_cameras_is_downgraded() -> None:
+    """panda_mobile_vslam has vision SLAM and no lidar; with no scene naming a rig, the
+    manifest-derived SLAM default is switched off before launch (Nav2 follows it)."""
+    invocation = resolve_launch_invocation(
+        config=None,
+        robot_override="panda_mobile_vslam",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides={"viewer_enabled": False},
+    )
+    assert invocation.enable_slam is False
+    assert invocation.enable_nav2 is False
+
+
+def test_explicit_visual_slam_without_named_cameras_is_refused() -> None:
+    """An explicit request fails loud before launch instead of a SLAM node dying later."""
+    with pytest.raises(ROSConfigError, match="names no cameras"):
+        resolve_launch_invocation(
+            config=None,
+            robot_override="panda_mobile_vslam",
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides={"viewer_enabled": False},
+            enable_slam=True,
+        )
+
+
+def test_default_detector_is_downgraded_when_no_camera_publishes_on_a_real_deploy(
+    tmp_path: Path,
+) -> None:
+    """OpenArm's manifest binds no camera, so a real deploy with a scene that binds none
+    has no RGB topic: the implicit detector is switched off rather than the launch
+    refusing the whole graph."""
+    invocation = resolve_launch_invocation(
+        config=_openarm_scene_with_octomap(tmp_path, ""),
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        hal_mode="real",
+    )
+    assert invocation.enable_object_detector is False

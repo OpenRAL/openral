@@ -114,7 +114,7 @@ def test_real_deploy_picks_a_bound_camera(launch_module: object) -> None:
     the completion/detector camera must be ``wrist_left``; with no binding at all it is
     empty, which disables the subscription instead of subscribing to silence.
     """
-    from openral_core import SensorDeployBinding, SensorSpec
+    from openral_core import SensorDeployBinding, SensorSpec, publishing_sensors
 
     arm = _robot("openarm")
     manifest_left = next(s for s in arm.sensors if s.name == "wrist_left")
@@ -125,8 +125,7 @@ def test_real_deploy_picks_a_bound_camera(launch_module: object) -> None:
         rate_hz=30.0,
         deploy_binding=SensorDeployBinding(backend_params={"device": "/dev/video0"}),
     )
-    publishing = launch_module._publishing_sensors  # type: ignore[attr-defined]
     pick = launch_module._primary_rgb_camera  # type: ignore[attr-defined]
-    assert pick(publishing(arm, [], "sim")) == "top"
-    assert pick(publishing(arm, [], "real")) == ""
-    assert pick(publishing(arm, [bound_left], "real")) == "wrist_left"
+    assert pick(publishing_sensors(arm.sensors, [], "sim")) == "top"
+    assert pick(publishing_sensors(arm.sensors, [], "real")) == ""
+    assert pick(publishing_sensors(arm.sensors, [bound_left], "real")) == "wrist_left"

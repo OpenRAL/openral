@@ -20,13 +20,13 @@ from openral_core import (
     SensorReaderBackend,
     SensorReaderConfig,
     SensorSpec,
+    merge_deploy_sensors,
 )
 from openral_rskill_ros.sensor_leg import (
     _MAX_FALLBACK_TOPIC_RATE_HZ,
     SensorLeg,
     _fallback_topic_rate_hz,
     _publish_rate_hz,
-    merge_deploy_sensors,
     open_deploy_sensor_readers,
 )
 
@@ -497,20 +497,26 @@ print("SENSOR_LEG_PROBE_OK")
     assert "SENSOR_LEG_PROBE_OK" in result.stdout
 
 
-def test_slam_cameras_are_never_capped_even_when_unnamed() -> None:
+def test_named_slam_cameras_are_never_capped() -> None:
     """Visual SLAM keeps full cadence automatically — no per-binding flag needed.
 
-    ``slam_stereo_cameras=None`` means the impl's built-in left/right default,
-    so unnamed SLAM cameras must still be exempt — cuVSLAM loses tracking on a
-    starved stream.
+    Only named cameras are exempt: visual SLAM with neither a stereo pair nor a mono
+    camera is refused before launch, so there is no implicit rig (ADR-0108 removed the
+    impls' ``left``/``right`` defaults). cuVSLAM loses tracking on a starved stream.
     """
     from openral_rskill_ros.sensor_leg import slam_camera_names
 
     class _Runtime:
         enable_slam = True
+        slam_stereo_cameras = ("left", "right")
+        slam_mono_camera = None
+
+    class _Unnamed:
+        enable_slam = True
         slam_stereo_cameras = None
         slam_mono_camera = None
 
+    assert slam_camera_names(_Unnamed()) == frozenset()
     names = slam_camera_names(_Runtime())
     assert names == frozenset({"left", "right"})
 
@@ -541,7 +547,7 @@ def test_slam_camera_names_covers_explicit_stereo_and_mono() -> None:
         slam_mono_camera = "front"
 
     assert slam_camera_names(_Stereo()) == frozenset({"front_left", "front_right"})
-    assert slam_camera_names(_Mono()) == frozenset({"left", "right", "front"})
+    assert slam_camera_names(_Mono()) == frozenset({"front"})
 
 
 def test_slam_off_means_every_camera_is_capped() -> None:
@@ -730,10 +736,11 @@ def test_launch_overrides_resolve_the_scene_auto_flags() -> None:
     merged = apply_launch_overrides(raw, enable_object_detector=True, enable_slam=False)
     assert topic_frame_size(merged) is None
 
-    # Launch resolved SLAM ON with no camera names → implicit stereo pair exempt.
+    # Launch resolved SLAM ON with no camera names → no implicit rig to exempt (visual
+    # SLAM without names is refused before launch; lidar SLAM reads no camera).
     merged = apply_launch_overrides(raw, enable_object_detector=False, enable_slam=True)
     assert topic_frame_size(merged) is None
-    assert slam_camera_names(merged) == frozenset({"left", "right"})
+    assert slam_camera_names(merged) == frozenset()
 
     # Launch-resolved camera names win over the (unset) scene names.
     merged = apply_launch_overrides(
@@ -755,7 +762,7 @@ def test_launch_overrides_keep_scene_values_when_absent() -> None:
     scene = DeployRuntime(enable_slam=True, slam_mono_camera="front")
     merged = apply_launch_overrides(scene)
     assert topic_frame_size(merged) is None
-    assert slam_camera_names(merged) == frozenset({"left", "right", "front"})
+    assert slam_camera_names(merged) == frozenset({"front"})
 
     # And with no runtime block at all, overrides alone drive the decision —
     # but no block AND no opinion preserves the conservative None contract.

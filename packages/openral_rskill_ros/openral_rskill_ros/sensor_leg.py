@@ -48,7 +48,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "SensorLeg",
-    "merge_deploy_sensors",
     "open_deploy_sensor_readers",
     "slam_camera_names",
     "topic_frame_size",
@@ -248,45 +247,6 @@ class SensorLeg:
         self.readers.clear()
 
 
-def merge_deploy_sensors(
-    manifest_sensors: Iterable[SensorSpec],
-    scene_sensors: Iterable[SensorSpec],
-) -> list[SensorSpec]:
-    """Robot-manifest sensors ∪ ``DeployScene.sensors``, merged field-wise.
-
-    On a name collision the scene's explicitly-set fields are applied over the manifest entry
-    (via ``model_fields_set``, so an unmentioned field falls through to the manifest) — exactly
-    one spec survives per name, else the device would be opened and its topic published twice.
-
-    Enforced rule (``openral_core.check_scene_sensor_overrides``): the manifest owns a robot
-    sensor's geometry (``parent_frame`` / ``static_transform_xyz_rpy`` / ``intrinsics`` /
-    ``sim_placement``, and its ``frame_id``); a same-named scene entry carries only the
-    host-side binding (device, topic, fps, encoding) and is refused with ``ROSConfigError``
-    otherwise. Scene-only sensors (workcell cameras) keep their own geometry.
-
-    Raises:
-        ROSConfigError: A scene entry restates a manifest sensor's geometry.
-    """
-    from openral_core import check_scene_sensor_overrides
-
-    manifest = list(manifest_sensors)
-    scene = list(scene_sensors)
-    check_scene_sensor_overrides(manifest, scene)
-    by_name = {s.name: s for s in scene}
-    merged: list[SensorSpec] = []
-    for spec in manifest:
-        override = by_name.pop(spec.name, None)
-        if override is None:
-            merged.append(spec)
-            continue
-        merged.append(
-            spec.model_copy(update={f: getattr(override, f) for f in override.model_fields_set})
-        )
-    # Scene-only sensors (workcell-mounted) keep their declaration order.
-    merged.extend(s for s in scene if s.name in by_name)
-    return merged
-
-
 def _publish_rate_hz(spec: SensorSpec) -> float:
     """The ROS publish cadence for ``spec`` — binding fps, else spec rate, else 10 Hz."""
     assert spec.deploy_binding is not None  # reason: caller filters on binding
@@ -296,13 +256,6 @@ def _publish_rate_hz(spec: SensorSpec) -> float:
     if spec.rate_hz > 0:
         return float(spec.rate_hz)
     return _DEFAULT_PUBLISH_RATE_HZ
-
-
-#: The camera names visual SLAM tracks when the scene does not name them.
-#: ``DeployRuntime.slam_stereo_cameras=None`` means "the impl's built-in
-#: left/right default", so an implicit stereo rig must be exempted too — a
-#: scene that never mentions camera names would otherwise be silently capped.
-_DEFAULT_SLAM_STEREO_CAMERAS: Final[tuple[str, str]] = ("left", "right")
 
 
 def slam_camera_names(runtime: object | None) -> frozenset[str]:
@@ -332,7 +285,9 @@ def slam_camera_names(runtime: object | None) -> frozenset[str]:
         return frozenset()
     names: set[str] = set()
     stereo = getattr(runtime, "slam_stereo_cameras", None)
-    names.update(stereo if stereo else _DEFAULT_SLAM_STEREO_CAMERAS)
+    # Only named cameras: visual SLAM with no stereo pair and no mono camera is refused
+    # before launch (``resolve_launch_invocation``), so there is no implicit rig to exempt.
+    names.update(stereo or ())
     mono = getattr(runtime, "slam_mono_camera", None)
     if mono:
         names.add(str(mono))

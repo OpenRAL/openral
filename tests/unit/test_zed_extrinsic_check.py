@@ -219,3 +219,33 @@ def test_the_run_script_refuses_without_both_motion_gates() -> None:
     )
     assert proc.returncode == 2
     assert "OPENRAL_OPENARM_ALLOW_MOTION" in proc.stderr
+
+
+def test_nan_cannot_open_the_gate(bag: Path, tmp_path: Path) -> None:
+    """NaN compares False against every limit, so it must never read as a pass.
+
+    ``check`` refuses a non-finite limit at the command line, and ``verify`` re-derives
+    the verdict from the stored residuals against its own limits, so a report edited to
+    ``passed: true`` with NaN criteria or residuals is refused.
+    """
+    robot, out = _robot_with_pose(tmp_path, list(_TRUE_POSE)), tmp_path / "r.json"
+    argv = ["check", "--robot", str(robot), "--bag", str(bag), "--cloud-topic", _CLOUD_TOPIC]
+    argv += ["--table-z", str(_TABLE_Z), "--table-roi", *map(str, _ROI), "--max-tilt-deg", "nan"]
+    with pytest.raises(SystemExit):
+        zc.main(argv)
+
+    assert _check(robot, bag, out) == 0
+    verify = ["verify", "--robot", str(robot), "--report", str(out)]
+    good = json.loads(out.read_text())
+
+    for mutate in (
+        lambda r: r["criteria"].__setitem__("max_tilt_deg", float("nan")),
+        lambda r: r["residuals"].__setitem__("tilt_deg", float("nan")),
+        lambda r: r["residuals"]["markers"][0].__setitem__("error_m", float("nan")),
+        lambda r: r["residuals"].__setitem__("height_err_m", 1.0),  # stored verdict still true
+    ):
+        report = json.loads(json.dumps(good))
+        mutate(report)
+        assert report["passed"] is True
+        out.write_text(json.dumps(report))
+        assert zc.main(verify) == 1

@@ -35,10 +35,10 @@
 #     and nothing on the real graph publishes /openral/attachment_state, so a
 #     grasped object is never cleared from the map: it stops the gripper
 #     holding it.
-#   * openral_octomap_bridge republishes its LAST octree on a wall timer with
-#     a fresh stamp, and the kernel times voxel freshness from receipt. When
-#     the ZED stops, /openral/world_voxels keeps arriving fresh and frozen, so
-#     DROP_VOXEL_UNAVAILABLE is NOT expected on camera loss.
+#   Camera loss fails CLOSED: openral_octomap_bridge stops publishing once its
+#   octree is older than max_octree_age_s (1.0 s = the kernel's voxel deadline),
+#   so the kernel drops with DROP_VOXEL_UNAVAILABLE within ~2.0 s of the last
+#   cloud (hazard-log Entry 033).
 #
 # Twin pass (motors never powered, same pose, same cloud): run the ZED driver
 # by hand, then `openral deploy sim --config <this file> --hal

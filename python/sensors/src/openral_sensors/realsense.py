@@ -390,14 +390,16 @@ def calibrate_camera_cmd(
     square_arg = str(square_size_m)
 
     # ``ros2_topic`` is the *driver's* image topic (ADR-0108); its CameraInfo is the
-    # image_transport sibling in the same namespace, e.g.
-    # /head/color/image_raw → /head/color/camera_info.
+    # image_pipeline sibling in the same namespace (``camera_info_topic_for``, the one rule
+    # every publisher here uses), e.g. /head/color/image_raw → /head/color/camera_info.
     topic = sensor.ros2_topic
     if topic is None:
         raise ValueError(
             f"Sensor '{sensor.name}' has no ros2_topic; cannot derive camera_info remap."
         )
-    info_topic = topic.rsplit("/", 1)[0] + "/camera_info"
+    from openral_sensors.ros_publisher import camera_info_topic_for  # noqa: PLC0415
+
+    info_topic = camera_info_topic_for(topic)
 
     return [
         "ros2",

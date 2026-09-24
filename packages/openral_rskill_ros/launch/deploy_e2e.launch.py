@@ -69,7 +69,7 @@ if TYPE_CHECKING:
     # `from __future__ import annotations` keeps the annotation a string.
     from openral_core import RobotDescription, SensorSpec
 from lifecycle_msgs.msg import Transition
-from openral_core import CameraTopicKind, camera_topic
+from openral_core import CameraTopicKind, camera_topic, merge_deploy_sensors, publishing_sensors
 from openral_foxglove_bringup.topics import (
     ASSET_URI_ALLOWLIST,
     BUCKET1_TOPIC_WHITELIST,
@@ -439,42 +439,13 @@ def _stereo_camera_topics(names_csv: str) -> tuple[str, str, str, str] | None:
     )
 
 
-def _publishing_sensors(
-    description: RobotDescription, scene_sensors: list[SensorSpec], hal_mode: str
-) -> list[SensorSpec]:
-    """The sensors that actually publish a camera topic on this deploy.
-
-    Sim: the manifest's sensors, which SimSensorBridge renders (bound or not; a scene-only
-    hardware camera has no sim publisher). Real: the manifest merged with the deploy scene
-    (``merge_deploy_sensors``), keeping only sensors with a ``deploy_binding`` — an unbound
-    sensor gets no reader and so no topic, and picking it would subscribe to silence.
-
-    Example:
-        >>> from openral_core import RobotDescription
-        >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
-        >>> [s.name for s in _publishing_sensors(arm, [], "sim") if s.modality == "rgb"]
-        ['top', 'wrist_left', 'wrist_right']
-        >>> _publishing_sensors(arm, [], "real")  # the manifest binds no camera
-        []
-    """
-    if hal_mode != "real":
-        return list(description.sensors)
-    from openral_rskill_ros.sensor_leg import merge_deploy_sensors
-
-    return [
-        s
-        for s in merge_deploy_sensors(description.sensors, scene_sensors)
-        if getattr(s, "deploy_binding", None) is not None
-    ]
-
-
 def _primary_rgb_camera(sensors: list[SensorSpec]) -> str:
     """The RGB sensor the perception legs default to, or ``""`` when there is none.
 
     Prefers an optical-framed RGB camera (its intrinsics/extrinsics resolve directly), else
     the first RGB sensor. Shared by the object detector's ``locate_in_view`` camera and the
     reasoner's completion camera so both watch the same view — a hard-coded name is a dead
-    topic on every robot that spells its cameras differently. Pass ``_publishing_sensors``,
+    topic on every robot that spells its cameras differently. Pass ``publishing_sensors``,
     not the raw manifest: on a real deploy only bound cameras have a topic.
 
     Example:
@@ -1195,7 +1166,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         _scene = DeployScene.from_yaml(deploy_config)
         scene_sensors = list(_scene.sensors)
         scene_drivers = list(_scene.drivers)
-    publishing_sensors = _publishing_sensors(description, scene_sensors, hal_mode)
+    publishing = publishing_sensors(description.sensors, scene_sensors, hal_mode)
     envelope = compute_intersection(
         description, skill=None, deploy=workcell.safety if workcell is not None else None
     )
@@ -1557,7 +1528,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # the view from the cameras that actually publish on this deploy (same rule as the
     # detector) so the VLM completion check gets frames on every robot — on a real cell that
     # means a bound camera. Empty disables the subscription when there is none.
-    _completion_camera = _primary_rgb_camera(publishing_sensors)
+    _completion_camera = _primary_rgb_camera(publishing)
     reasoner_params["completion_camera_topic"] = (
         camera_topic(_completion_camera) if _completion_camera else ""
     )
@@ -1634,7 +1605,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # of the same name, so the raw pair could list a camera twice or keep one
     # whose binding the scene replaced.
     bound_rgb_camera_names = (
-        [s.name for s in publishing_sensors if s.modality == "rgb"]
+        [s.name for s in publishing if s.modality == "rgb"]
         if hal_mode == "real"
         else list(rgb_camera_names)
     )
@@ -2077,8 +2048,6 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # entry only binds a robot sensor and may not restate its mount, so a robot sensor's pose
     # is always the manifest's; iterating only the manifest would silently drop the mount
     # publish for a workcell-mounted camera declared entirely at scene level.
-    from openral_rskill_ros.sensor_leg import merge_deploy_sensors
-
     for sensor in merge_deploy_sensors(description.sensors, scene_sensors):
         if sensor.parent_frame is None or sensor.static_transform_xyz_rpy is None:
             continue
@@ -2374,7 +2343,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # reasoner.)
         from openral_core.exceptions import ROSConfigError
 
-        det_camera = _primary_rgb_camera(publishing_sensors)
+        det_camera = _primary_rgb_camera(publishing)
         if not det_camera:
             raise ROSConfigError(
                 f"object detector enabled but robot {description.name!r} has no RGB camera "
@@ -2509,15 +2478,17 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         reward_manifest = reward_monitor_manifest or str(
             pathlib.Path(_RSKILLS_DIR) / "robometer-4b" / "rskill.yaml"
         )
-        # Resolve the camera the monitor scores. Use the robot manifest's first RGB
-        # camera so Robometer follows the same default view order as the deploy graph;
-        # do not special-case wrist.
+        # Resolve the camera the monitor scores: the first RGB camera that publishes on
+        # this deploy (manifest order; on a real cell only bound cameras), so Robometer
+        # follows the same default view order as the deploy graph; do not special-case wrist.
         from openral_core.exceptions import ROSConfigError
 
-        reward_camera = next((s.name for s in description.sensors if s.modality == "rgb"), "")
+        # From the cameras that publish on this deploy (a bound camera on a real cell).
+        reward_camera = next((s.name for s in publishing if s.modality == "rgb"), "")
         if not reward_camera:
             raise ROSConfigError(
-                f"reward monitor enabled but robot {description.name!r} declares no RGB sensor"
+                f"reward monitor enabled but robot {description.name!r} has no RGB camera "
+                f"that publishes on this deploy (hal_mode={hal_mode})"
             )
         reward_image_topic = camera_topic(reward_camera)
         reward_monitor = Node(
@@ -2552,25 +2523,30 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # only on demand, so it is NOT a lifecycle/VRAM peer the reasoner frees
         # before dispatching a policy.
         #
-        # Every manifest RGB camera is offered, not just the first: the reasoner
+        # Every publishing RGB camera is offered, not just the first: the reasoner
         # picks a viewpoint by camera id per query ("is the bowl on the shelf?"
         # wants a different view than "did the gripper close?"), and the node
         # caches each stream's latest frame precisely so it can answer about any
         # of them. The detector leg above resolves cameras the same way.
         scene_vlm_cameras = [
-            f"{s.name}={camera_topic(s.name)}" for s in description.sensors if s.modality == "rgb"
+            f"{s.name}={camera_topic(s.name)}" for s in publishing if s.modality == "rgb"
         ]
+        if not scene_vlm_cameras:
+            from openral_core.exceptions import ROSConfigError
+
+            # The node has no default camera (ADR-0108); refuse here, at launch, rather
+            # than let it die at start-up behind a graph that otherwise came up.
+            raise ROSConfigError(
+                f"scene VLM enabled but robot {description.name!r} has no RGB camera that "
+                f"publishes on this deploy (hal_mode={hal_mode})"
+            )
         scene_vlm_params: dict[str, object] = {
             "manifest_path": scene_vlm_manifest
             or str(pathlib.Path(_RSKILLS_DIR) / "qwen35-4b-nf4" / "rskill.yaml"),
             "use_sim_time": use_sim_time,
         }
-        if scene_vlm_cameras:
-            # Same empty-list-omission rule as lifecycle_peer_node_ids: launch_ros
-            # collapses an empty typed array to ``()`` and then rejects it. The node
-            # declares its own default (single primary_camera on image_topic).
-            scene_vlm_params["cameras"] = scene_vlm_cameras
-            scene_vlm_params["primary_camera"] = scene_vlm_cameras[0].split("=", 1)[0]
+        scene_vlm_params["cameras"] = scene_vlm_cameras
+        scene_vlm_params["primary_camera"] = scene_vlm_cameras[0].split("=", 1)[0]
         extra_nodes.append(
             Node(
                 package="openral_perception_ros",

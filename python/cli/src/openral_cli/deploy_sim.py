@@ -861,6 +861,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         DeployScene,
         RobotDescription,
         check_scene_sensor_overrides,
+        publishing_sensors,
     )
 
     if hal_mode not in ("sim", "real"):
@@ -1038,6 +1039,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # neither stay off — no base to localise, nothing to map.
     # `enable_slam is None` means "auto": honour the manifest; an explicit
     # flag wins.
+    slam_defaulted = enable_slam is None
     if enable_slam is None:
         enable_slam = bool(
             description.capabilities.has_lidar or description.capabilities.has_vision_slam
@@ -1048,6 +1050,31 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         has_vision_slam=bool(description.capabilities.has_vision_slam),
         enable_slam=enable_slam,
     )
+    # Visual SLAM tracks named cameras only: since ADR-0108 no impl guesses a
+    # ``left``/``right`` pair. Decide here, before launch, rather than let the SLAM node
+    # die at configure after the rest of the graph came up. Same policy as the detector:
+    # the implicit (manifest-derived) default is downgraded with a warning; an explicit
+    # --enable-slam / runtime.enable_slam: true fails loud.
+    if slam_backend == "visual" and not slam_stereo_cameras and not slam_mono_camera:
+        missing = (
+            "set runtime.slam_stereo_cameras (a left/right pair) or, with "
+            "slam_visual_impl: pycuvslam, runtime.slam_mono_camera"
+        )
+        if not slam_defaulted:
+            raise ROSConfigError(
+                f"visual SLAM is enabled for robot {description.name!r} but the scene names "
+                f"no cameras: {missing}."
+            )
+        _console.print(
+            f"[yellow]robot {description.name!r} supports visual SLAM but the scene names no "
+            f"cameras ({missing}); disabling SLAM.[/yellow]"
+        )
+        enable_slam = False
+        slam_backend = _resolve_slam_backend(
+            has_lidar=bool(description.capabilities.has_lidar),
+            has_vision_slam=bool(description.capabilities.has_vision_slam),
+            enable_slam=False,
+        )
     # Nav2 auto-enables alongside slam_toolbox: every
     # lidar-equipped mobile robot needs a planner to consume the map.
     # Operators that want the map alone (recording / inspection) pass
@@ -1099,13 +1126,26 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     detector_defaulted = enable_object_detector is None
     if enable_object_detector is None:
         enable_object_detector = True
-    # The detector reads one of the robot's own RGB cameras; the launch refuses a
-    # robot with none. Only the implicit default is downgraded — an explicit
-    # --object-detector still fails loud there.
-    if detector_defaulted and not any(s.modality == "rgb" for s in description.sensors):
+    # The detector reads an RGB camera that actually publishes on this deploy (the
+    # launch picks it from ``publishing_sensors`` and refuses when there is none): on a
+    # real deploy that is a camera with a deploy_binding. Only the implicit default is
+    # downgraded — an explicit --object-detector still fails loud in the launch.
+    sensor_scene = (
+        DeployScene.from_yaml(str(deploy_config)) if deploy_config is not None else deploy_scene
+    )
+    publishing_rgb = [
+        s
+        for s in publishing_sensors(
+            description.sensors,
+            sensor_scene.sensors if sensor_scene is not None else [],
+            hal_mode,
+        )
+        if s.modality == "rgb"
+    ]
+    if detector_defaulted and not publishing_rgb:
         _console.print(
-            f"[yellow]robot {description.name!r} declares no RGB sensor; "
-            "disabling the object detector leg.[/yellow]"
+            f"[yellow]robot {description.name!r} has no RGB camera that publishes on this "
+            f"{hal_mode} deploy; disabling the object detector leg.[/yellow]"
         )
         enable_object_detector = False
     # Downgrade to off (rather than let the node hard-fail at backend build) when

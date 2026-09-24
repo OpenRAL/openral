@@ -18,7 +18,7 @@ real ZED into the map, but it drives a MuJoCo twin and keeps the kernel check of
 Each step is marked **[offline]**, meaning any workstation with ROS 2 Jazzy and this
 checkout, or **[human, rig]**, meaning a person at the cell.
 
-## What to expect: three known gaps on current master
+## What to expect: two known gaps on current master
 
 The evaluation exists to measure these gaps, so expect each one to show up rather than
 expecting a clean pass:
@@ -39,17 +39,13 @@ expecting a clean pass:
    wired into the deploy launch. So the bridge never clears the object's cells, and the
    gripper stops against its own payload. The sim contract, where the payload leaves world
    occupancy and is checked as attached geometry, does **not** hold here.
-3. **Camera loss does not fail closed.** `openral_octomap_bridge` republishes its **last**
-   octree on a 10 Hz wall timer, stamped `now()`
-   (`octomap_voxel_bridge_node.cpp`, `on_timer`), and the kernel times voxel freshness from
-   message **receipt** (`voxel_stamp_ = this->now()`). `octomap_server` publishes only when a
-   cloud arrives, so when the ZED stops, `/openral/world_voxels` keeps arriving on time with
-   a frozen map. Expect **no** `DROP_VOXEL_UNAVAILABLE`, and expect obstacles placed after the
-   loss to be invisible. That fails open. The fix belongs in the bridge: refuse to publish
-   once the octree is older than a bound. It changes a safety input, so it needs a
-   hazard-log entry and a safety-WG reviewer.
+Camera loss **fails closed** (it used to fail open; fixed with hazard-log Entry 033):
+`openral_octomap_bridge` stops publishing `/openral/world_voxels` once its last octree is
+older than `max_octree_age_s` (1.0 s, equal to the kernel's `world_voxel_deadline_ms`), and
+the kernel's deadline then turns the silence into `DROP_VOXEL_UNAVAILABLE`, at most ~2.0 s
+after the last cloud. Verified on Thor with the ZED stopped (bridge half).
 
-The exit criteria in step 5 cannot all be met until gaps 1 and 3 are fixed. Record the
+The exit criteria in step 5 cannot all be met until gap 1 is fixed. Record the
 numbers anyway: they are the evidence those fixes need.
 
 ## Hosts
@@ -208,14 +204,10 @@ If the camera is ever bumped, re-seated or re-mounted, go back to 2a.
 
 The same scene, pose and cloud are used, but the HAL is the MuJoCo twin, so no motor
 command exists. The arms stay unpowered. `drivers:` is ignored on the sim path, so start the
-ZED driver by hand as in step 1, **but only after** `deploy sim` prints
-`dds_transport_ready: … shm_purged=N`. Before launching, `deploy sim` unlinks every Fast-DDS
-shared-memory segment your user owns, so a ZED driver that is already running keeps its
-process alive but silently stops delivering: its cloud reads 0 Hz, octomap never inserts,
-and `/openral/world_voxels` never appears. Seen on Thor on 2026-09-24. With the driver started
-after the marker, the same pass ran at 4.7 Hz cloud / 4.0 Hz octree / 6.4 Hz voxels.
-
-Start `deploy sim` first, then the ZED driver once the marker appears:
+ZED driver by hand as in step 1, before or after `deploy sim`: its launch purge
+(`dds_transport_ready: … shm_purged=N shm_kept_live=M`) only removes Fast-DDS files no live
+process uses, so a running driver keeps publishing (on Thor, 2026-09-24: ZED started first,
+5.4 Hz cloud / 5.6 Hz octree / 4.7 Hz voxels). Then:
 
 ```bash
 openral deploy sim --config scenes/deploy/openarm_real_world_voxels.yaml \
@@ -232,8 +224,8 @@ the verdicts.
 Check and record:
 
 - **Liveness.** `ros2 topic hz /octomap_binary` tracks the cloud, at about 5 Hz on the Orin.
-  `ros2 topic hz /openral/world_voxels` reads about 10 Hz **whatever the camera is doing**
-  (gap 3), so it is not a liveness signal.
+  `/openral/world_voxels` republishes between octrees (up to ~10 Hz) and stops once the
+  octree is older than 1.0 s, so its rate is not a cloud rate but its silence is meaningful.
 - **Frame.** `ros2 topic echo --once /openral/world_voxels --field header` shows
   `frame_id: openarm_base`.
 - **One parent.** `ros2 run tf2_tools view_frames` shows `zed_camera_link` with exactly one
@@ -242,8 +234,9 @@ Check and record:
   arms. The robot model shown is the twin at zero, so park the real arms at zero to compare.
   Note any voxels on the arm links (self-occupancy, gap 1) and any free-floating speckle
   near the arm envelope, each of which is a future false stop.
-- **Unplug.** Pull the ZED USB for 10 s and watch `/octomap_binary` stop while
-  `/openral/world_voxels` keeps coming (gap 3). Record it; do not treat it as a pass.
+- **Unplug.** Pull the ZED USB for 10 s: `/octomap_binary` stops and, about 1 s later,
+  `/openral/world_voxels` stops too (the bridge logs `last octree is … old … publishing
+  nothing`); it resumes when the camera returns. Continuing voxels here is a failure.
 
 Record a bag for the write-up:
 
@@ -326,10 +319,11 @@ Run these tests in order:
    own payload once it closes on the object in view. Record the link, the cell and the
    distance. This is **not** an attached-payload-vs-voxels check: that check is off on real
    hardware.
-4. **Camera unplug.** During a dispatch, unplug the ZED. Per gap 3, expect **no**
-   `DROP_VOXEL_UNAVAILABLE` and the kernel still checking a frozen map. Have the E-stop
-   ready and do not rely on the kernel for anything new that enters the cell. Record the
-   `/octomap_binary` gap against continuing `/openral/world_voxels`.
+4. **Camera unplug.** During a dispatch, unplug the ZED. Expect `/openral/world_voxels` to
+   stop about 1 s after `/octomap_binary`, and the kernel to drop the next chunks with
+   `DROP_VOXEL_UNAVAILABLE` within ~2.0 s of the last cloud (a drop, not a latch). Motion or
+   certified chunks after that window is a failure: have the E-stop ready. Record both
+   topics' last-message times and the first `DROP_VOXEL_UNAVAILABLE`.
 
 ## 5. Exit criteria and what to record [offline]
 
@@ -338,7 +332,8 @@ The criteria for making this check **default-on** for the OpenArm are ADR-0109's
 - zero missed stops on the planted obstacle;
 - a false-stop rate the TSC accepts, counted over a fixed task set, with stops on the table
   and self-occupancy stops counted separately;
-- a staleness drop, not motion, when the camera is unplugged. This is blocked by gap 3.
+- a staleness drop, not motion, when the camera is unplugged (`DROP_VOXEL_UNAVAILABLE`
+  within ~2.0 s of the last cloud).
 
 For the write-up, record:
 

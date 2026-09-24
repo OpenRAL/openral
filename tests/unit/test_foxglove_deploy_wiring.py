@@ -151,8 +151,7 @@ def test_the_real_top_camera_keeps_the_sim_slot(
     assert "vla_feature_key" not in scene_top
 
     # And through the real merge the sensor leg uses, not just the YAML.
-    from openral_core import DeployScene, RobotDescription
-    from openral_rskill_ros.sensor_leg import merge_deploy_sensors
+    from openral_core import DeployScene, RobotDescription, merge_deploy_sensors
 
     description = RobotDescription.from_yaml(str(_MANIFEST))
     merged_top = next(
@@ -179,7 +178,11 @@ def test_the_launch_generates_its_layout_from_the_bound_cameras() -> None:
         "the layout must be generated from the deploy-bound cameras; a hardcoded "
         "default cannot know the scene"
     )
-    assert 'getattr(s, "deploy_binding", None) is not None' in text
+    # The "bound" filter is the shared openral_core rule (real: merged manifest+scene
+    # sensors with a deploy_binding), exercised on real manifests in
+    # test_deploy_e2e_camera_wiring.py::test_real_deploy_picks_a_bound_camera.
+    assert "publishing = publishing_sensors(description.sensors, scene_sensors, hal_mode)" in text
+    assert '[s.name for s in publishing if s.modality == "rgb"]' in text
 
 
 def test_the_shipped_default_matches_how_manifests_spell_wrist_cameras() -> None:

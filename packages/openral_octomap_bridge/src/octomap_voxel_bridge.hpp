@@ -99,12 +99,14 @@ public:
         this->declare_parameter<std::string>("output_topic", "/openral/world_voxels");
     const double rate_hz = this->declare_parameter<double>("publish_rate_hz", 10.0);
     // How long the last octree may keep being republished after it arrived.
-    // Must exceed octomap's normal inter-publish gap (measured 0.25-0.31 s on
-    // the Thor ZED path, ~0.1-0.33 s in sim) and sit below the kernel's
-    // `world_voxel_deadline_ms`, which is what turns the resulting silence into
-    // a fail-closed drop. `deploy_e2e.launch.py` derives it as half that
-    // deadline. Receipt time, on this node's clock: the clock the kernel times
-    // voxel freshness on, immune to a sensor stamping on another clock domain.
+    // Must exceed octomap's normal inter-publish gap with margin (0.25-0.31 s on
+    // the Thor ZED path at 3.2-4.0 Hz, ~0.45 s at 2.2 Hz; ~0.1-0.33 s in sim) and
+    // not exceed the kernel's `world_voxel_deadline_ms`, which is what turns the
+    // resulting silence into a fail-closed drop. `deploy_e2e.launch.py` sets it
+    // equal to that deadline (1.0 s); worst case from the last cloud to the drop
+    // is bound + deadline, 2.0 s (hazard log Entry 033). Receipt time, on this
+    // node's clock: the clock the kernel times voxel freshness on, immune to a
+    // sensor stamping on another clock domain.
     max_octree_age_s_ = this->declare_parameter<double>("max_octree_age_s", 1.0);
 
     // Attached-payload clearing. On by default: `AttachedCollisionObject`

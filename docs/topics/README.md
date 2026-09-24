@@ -62,7 +62,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/scan` | `sensor_msgs/LaserScan` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_scan) | packages/openral_nav2_bringup/openral_nav2_bringup/payload_scan_filter_node.py (main.PayloadScanFilterNode.__init__) [param `input_topic`] |
 | `~/joint_states` | `sensor_msgs/JointState` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | — |
 
-## Per-instance topics (11)
+## Per-instance topics (10)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -76,7 +76,6 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/perception/{kind}` | `openral_msgs/PromptStamped` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | `/openral/prompt_in/{source}` | `openral_msgs/PromptStamped` | — | packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py (PromptRouterNode.on_configure) |
 | `/{which}_costmap/costmap_raw` | `nav2_msgs/Costmap` | — | tools/_nav2_costmap_silhouette_probe.py (SilhouetteProbe.__init__) |
-| `{topic}/camera_info` | `sensor_msgs/CameraInfo` | python/sensors/src/openral_sensors/ros_publisher.py (SensorRosPublisher.prepare) | — |
 
 ## Services (5)
 
@@ -106,7 +105,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/execute_rskill` | `openral_msgs/ExecuteRskill` | packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py (RskillRunnerNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure)<br>tools/_validation_matrix_dispatch.py (main) |
 | `navigate_to_pose` | `nav2_msgs/NavigateToPose` | — | tools/_nav2_costmap_silhouette_probe.py (_drive)<br>tools/_nav2_mppi_loop_probe.py (Probe.__init__) |
 
-## Unresolved endpoints (32)
+## Unresolved endpoints (33)
 
 Names only known at runtime (built from a manifest, a robot id or a
 caller's argument). Shown as their source expression.
@@ -122,6 +121,7 @@ caller's argument). Shown as their source expression.
 | topic | pub | `camera_info_topic_for(self._topic)` | `sensor_msgs/CameraInfo` | python/runner/src/openral_runner/backends/gstreamer/ros_tee.py (RosImagePublisher._start_ros) |
 | topic | pub | `gp('camera_info_topic').get_parameter_value().string_value` | `sensor_msgs/CameraInfo` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
 | topic | pub | `gp('depth_topic').get_parameter_value().string_value` | `sensor_msgs/Image` | packages/openral_perception_ros/openral_perception_ros/depth_provider_node.py (main.DepthProviderNode.__init__) |
+| topic | pub | `self._info_topic` | `sensor_msgs/CameraInfo` | python/sensors/src/openral_sensors/ros_publisher.py (SensorRosPublisher.prepare) |
 | topic | pub | `self._topic` | `openral_msgs/FailureTrigger` | python/observability/src/openral_observability/failure_bus.py (FailureBusPublisher.create_publisher) |
 | topic | pub | `self._topic` | `sensor_msgs/Image` | python/runner/src/openral_runner/backends/gstreamer/ros_tee.py (RosImagePublisher._start_ros) |
 | topic | pub | `self._topic` | `sensor_msgs/Image` | python/sensors/src/openral_sensors/ros_publisher.py (SensorRosPublisher.prepare) |

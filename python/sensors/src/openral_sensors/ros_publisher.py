@@ -96,12 +96,12 @@ class SensorRosPublisher:
             the ROS 2 ``camera_info_manager`` convention. The
             publisher rebuilds the message once and re-publishes at
             the same cadence as the image stream.
-        info_topic: Companion ``CameraInfo`` topic. ``None`` derives
-            ``<topic>/camera_info`` (camera_info_manager convention);
-            the deploy sensor leg overrides it to the OpenRAL sibling
-            ``camera_topic(<name>, CameraTopicKind.CAMERA_INFO)`` so real
-            cameras match the sim HAL's topics (mono visual SLAM
-            subscribes there).
+        info_topic: Companion ``CameraInfo`` topic. ``None`` derives the
+            sibling ``camera_info_topic_for(topic)`` — the same rule the
+            GStreamer tee uses, so ``/openral/cameras/<name>/image`` pairs
+            with ``/openral/cameras/<name>/camera_info`` (the sim HAL's and
+            ``camera_topic(<name>, CameraTopicKind.CAMERA_INFO)``'s layout,
+            where mono visual SLAM subscribes).
         max_size: Optional ``(width, height)`` ceiling for the published
             image. Frames larger than this are downscaled (aspect ratio
             preserved) and ``CameraInfo``'s ``k``/``p`` rescaled to match.
@@ -142,7 +142,7 @@ class SensorRosPublisher:
 
         self._reader = reader
         self._topic = topic
-        self._info_topic = info_topic or f"{topic}/camera_info"
+        self._info_topic = info_topic or camera_info_topic_for(topic)
         self._rate_hz = float(rate_hz)
         self._node_name = node_name or f"openral_sensor_publisher_{reader.sensor_id}"
         self._frame_id = frame_id or reader.sensor_id

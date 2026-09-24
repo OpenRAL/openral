@@ -296,18 +296,12 @@ def check(args: argparse.Namespace) -> int:
         "max_marker_err_m": args.max_marker_err_m,
         "min_markers": MIN_MARKERS,
     }
-    failures = []
-    if res["tilt_deg"] > args.max_tilt_deg:
-        failures.append(f"table tilt {res['tilt_deg']:.2f} deg > {args.max_tilt_deg}")
-    if abs(res["height_err_m"]) > args.max_height_err_m:
-        failures.append(f"table height error {res['height_err_m'] * 1000:+.1f} mm")
-    if len(res["markers"]) < MIN_MARKERS:
-        failures.append(f"{len(res['markers'])} marker(s); {MIN_MARKERS} needed to fix yaw")
-    failures += [
-        f"marker {m['expected_xy']} off by {m['error_m'] * 1000:.1f} mm"
-        for m in res["markers"]
-        if m["error_m"] > args.max_marker_err_m
-    ]
+    failures = _residual_failures(
+        res,
+        max_tilt_deg=args.max_tilt_deg,
+        max_height_err_m=args.max_height_err_m,
+        max_marker_err_m=args.max_marker_err_m,
+    )
     report = {
         "sensor": spec.name,
         "parent_frame": spec.parent_frame,
@@ -337,6 +331,42 @@ def check(args: argparse.Namespace) -> int:
     return 0 if not failures else 1
 
 
+def _within(value: object, limit: float) -> bool:
+    """``value <= limit`` for a finite number; NaN, inf and non-numbers never pass."""
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value <= limit
+    )
+
+
+def _residual_failures(
+    res: dict[str, Any],
+    *,
+    max_tilt_deg: float,
+    max_height_err_m: float,
+    max_marker_err_m: float,
+) -> list[str]:
+    """Every way ``res`` misses the criteria. Written as "not within", so a NaN or inf
+    residual — or limit — fails instead of slipping through a ``>`` comparison."""
+    failures = []
+    if not _within(res.get("tilt_deg"), max_tilt_deg):
+        failures.append(f"table tilt {res.get('tilt_deg')} deg not <= {max_tilt_deg}")
+    height = res.get("height_err_m")
+    if not _within(abs(height) if isinstance(height, (int, float)) else height, max_height_err_m):
+        failures.append(f"table height error {height} m not within {max_height_err_m}")
+    markers = res.get("markers") or []
+    if len(markers) < MIN_MARKERS:
+        failures.append(f"{len(markers)} marker(s); {MIN_MARKERS} needed to fix yaw")
+    failures += [
+        f"marker {m.get('expected_xy')} off by {m.get('error_m')} m (limit {max_marker_err_m})"
+        for m in markers
+        if not _within(m.get("error_m"), max_marker_err_m)
+    ]
+    return failures
+
+
 def verify(args: argparse.Namespace) -> int:
     """0 iff ``--report`` passed, at no looser criteria, for the manifest's CURRENT pose."""
     spec = _manifest_sensor(args.robot, args.sensor)
@@ -348,6 +378,17 @@ def verify(args: argparse.Namespace) -> int:
     problems = []
     if report.get("passed") is not True:
         problems.append(f"report did not pass: {report.get('failures')}")
+    # Never trust the stored verdict alone: re-derive it from the stored residuals against
+    # this tool's own limits, so a hand-edited or NaN-laden report cannot open the gate.
+    problems += [
+        f"residuals fail the shipped limits: {f}"
+        for f in _residual_failures(
+            report.get("residuals") or {},
+            max_tilt_deg=MAX_TILT_DEG,
+            max_height_err_m=MAX_HEIGHT_ERR_M,
+            max_marker_err_m=MAX_MARKER_ERR_M,
+        )
+    ]
     if (report.get("sensor"), report.get("parent_frame"), report.get("frame_id")) != (
         spec.name,
         spec.parent_frame,
@@ -364,7 +405,7 @@ def verify(args: argparse.Namespace) -> int:
         ("max_height_err_m", MAX_HEIGHT_ERR_M),
         ("max_marker_err_m", MAX_MARKER_ERR_M),
     ):
-        if not isinstance(crit.get(key), (int, float)) or crit[key] > limit:
+        if not _within(crit.get(key), limit):
             problems.append(f"criterion {key}={crit.get(key)} is looser than {limit}")
     if not isinstance(crit.get("min_markers"), int) or crit["min_markers"] < MIN_MARKERS:
         problems.append(f"criterion min_markers={crit.get('min_markers')} < {MIN_MARKERS}")
@@ -373,6 +414,14 @@ def verify(args: argparse.Namespace) -> int:
     if not problems:
         print(f"extrinsic verified: {spec.name} {list(spec.static_transform_xyz_rpy)}")
     return 1 if problems else 0
+
+
+def _finite_float(text: str) -> float:
+    """argparse type: a finite float (``nan``/``inf`` would defeat every limit check)."""
+    value = float(text)
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError(f"{text!r} is not a finite number")
+    return value
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -384,20 +433,23 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--robot", type=Path, required=True, help="robots/<id>/robot.yaml")
         p.add_argument("--sensor", default="head_zed")
     c = sub.choices["check"]
+    finite = _finite_float
     c.add_argument("--bag", type=Path, required=True)
     c.add_argument("--cloud-topic", required=True, help="the depth driver's PointCloud2")
-    c.add_argument("--table-z", type=float, required=True, help="table top, base frame (m)")
+    c.add_argument("--table-z", type=finite, required=True, help="table top, base frame (m)")
     c.add_argument(
-        "--table-roi", type=float, nargs=4, required=True, metavar=("XMIN", "XMAX", "YMIN", "YMAX")
+        "--table-roi", type=finite, nargs=4, required=True, metavar=("XMIN", "XMAX", "YMIN", "YMAX")
     )
-    c.add_argument("--marker", type=float, nargs=2, action="append", default=[], metavar=("X", "Y"))
-    c.add_argument("--marker-radius", type=float, default=0.08)
-    c.add_argument("--min-marker-height", type=float, default=0.01)
+    c.add_argument(
+        "--marker", type=finite, nargs=2, action="append", default=[], metavar=("X", "Y")
+    )
+    c.add_argument("--marker-radius", type=finite, default=0.08)
+    c.add_argument("--min-marker-height", type=finite, default=0.01)
     c.add_argument("--max-clouds", type=int, default=10)
     c.add_argument("--stride", type=int, default=4, help="keep every Nth point per cloud")
-    c.add_argument("--max-tilt-deg", type=float, default=MAX_TILT_DEG)
-    c.add_argument("--max-height-err-m", type=float, default=MAX_HEIGHT_ERR_M)
-    c.add_argument("--max-marker-err-m", type=float, default=MAX_MARKER_ERR_M)
+    c.add_argument("--max-tilt-deg", type=finite, default=MAX_TILT_DEG)
+    c.add_argument("--max-height-err-m", type=finite, default=MAX_HEIGHT_ERR_M)
+    c.add_argument("--max-marker-err-m", type=finite, default=MAX_MARKER_ERR_M)
     c.add_argument("--out", type=Path, default=None)
     sub.choices["verify"].add_argument("--report", type=Path, required=True)
     args = parser.parse_args(argv)
