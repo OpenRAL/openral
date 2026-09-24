@@ -212,6 +212,11 @@ private:
   bool voxel_received_{false};
   bool voxel_overflow_{false};
   rclcpp::Time voxel_stamp_{};
+  /// `world_voxel_data_age_budget_ms` in seconds; 0 = not enforced.
+  double world_voxel_data_age_budget_s_{0.0};
+  /// The grid's `source_stamp` (capture of the newest cloud in it), when set.
+  bool voxel_source_known_{false};
+  rclcpp::Time voxel_source_stamp_{};
   /// Frame the occupancy grid is published in. A place region declared in any
   /// other frame is refused: a region measured in one frame and applied in
   /// another is a relaxation aimed at the wrong volume.

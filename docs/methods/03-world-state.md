@@ -142,6 +142,7 @@ _C++ (Layer 2), header-only. When the bridge may still republish the last octree
 
 - `valid_max_octree_age(max_age_s) -> bool` — Is `max_octree_age_s` usable: finite and strictly positive. The node logs an ERROR and publishes nothing otherwise.
 - `octree_is_fresh(age_s, max_age_s) -> bool` — May an octree received `age_s` ago (receipt time, the node's clock — the one the kernel times voxel freshness on) still be published? False for an unusable bound and for a negative or non-finite age, so a map of unknown age is never republished; past the bound the bridge goes silent and the kernel's `world_voxel_deadline_ms` drops with `DROP_VOXEL_UNAVAILABLE`.
+- `OccupancyVoxels.source_stamp` (set by the bridge node in `src/octomap_voxel_bridge.hpp`) — The octree's own stamp, which `octomap_server` takes from the capture stamp of the cloud it inserted, carried into every grid built from it. `header.stamp` is production time (fresh on every republish) and cannot say how old the WORLD is; this can, and the kernel's `world_voxel_data_age_budget_ms` budgets it (an unset value reads as stale). The bridge logs `world_voxels data age N ms at publish` every 5 s.
 
 ### `packages/openral_octomap_bridge/include/openral_octomap_bridge/octree_to_grid.hpp`
 _C++ (Layer 2). OctoMap → dense base-frame grid lowering, ROS-graph-free._

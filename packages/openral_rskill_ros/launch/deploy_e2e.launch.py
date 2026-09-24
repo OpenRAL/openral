@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import site
 import subprocess
 import sys
@@ -170,6 +171,28 @@ def _world_voxel_margin_m(hal_mode: str) -> float:
     return 0.0 if hal_mode == "sim" else 0.02
 
 
+def _cpuset_prefix(env: str) -> str:
+    """A ``taskset`` launch prefix from a cpuset env var, or ``""`` for none.
+
+    ``OPENRAL_PERCEPTION_CPUSET`` pins ``octomap_server`` and the voxel bridge;
+    ``OPENRAL_RUNTIME_CPUSET`` pins the runtime node (inference and its 750 Hz
+    joint-state ingest). Both are unset by default: nothing is pinned and the
+    graph runs as before. The seam exists because a deploy host has no
+    privilege to raise priorities (``ulimit -e`` 0, no ``sudo`` on Thor), while
+    affinity needs none, and the octree stalls of 1.1-1.4 s measured on Thor
+    (2026-09-24) came from CPU contention with the runtime, not from the
+    camera. A value is a ``taskset -c`` list (``"12,13"``, ``"0-9"``); an
+    unparseable one is refused loudly rather than pinning to a set nobody
+    chose.
+    """
+    raw = os.environ.get(env, "").strip()
+    if not raw:
+        return ""
+    if not re.fullmatch(r"[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*", raw):
+        raise RuntimeError(f"{env}={raw!r} is not a taskset cpu list (e.g. '12,13' or '0-9')")
+    return f"taskset -c {raw} "
+
+
 def _collision_scale_params() -> dict[str, float]:
     """Kernel overrides for distance-graded velocity scaling (#188), if asked.
 
@@ -304,6 +327,18 @@ def _world_voxel_max_cells(resolution_m: float) -> int:
 
 # How long the kernel trusts the last `/openral/world_voxels` grid it received.
 _WORLD_VOXEL_DEADLINE_MS = 1000.0
+
+
+# How old the sensor data behind that grid may be when a chunk is checked
+# against it, measured from the grid's ``source_stamp`` (the capture stamp of
+# the newest cloud in the octree, carried by ``octomap_server`` and the bridge).
+# The receipt-based deadline above cannot see pipeline latency: a grid that
+# arrived 10 ms ago may describe the world as it was 1 s ago. Measured on the
+# Thor ZED-M path (2026-09-24): capture->kernel age p50 227 ms, p99 ~1.0 s,
+# max 1.09 s, so 1.5 s clears the measured tail with the same headroom the
+# deadline has over the octree cadence. Past it the chunk is dropped
+# (``DROP_VOXEL_UNAVAILABLE``, reason ``voxel_stale``), not latched.
+_WORLD_VOXEL_DATA_AGE_BUDGET_MS = 1500.0
 
 
 # How long the octomap bridge may republish the last octree it received
@@ -1298,6 +1333,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # is the wrong shape here.
             "world_voxel_max_cells": _world_voxel_max_cells(_octomap_resolution(hal_mode)),
             "world_voxel_deadline_ms": _WORLD_VOXEL_DEADLINE_MS,
+            "world_voxel_data_age_budget_ms": _WORLD_VOXEL_DATA_AGE_BUDGET_MS,
         }
 
     kernel_params = {**kernel_params, **_collision_scale_params()}
@@ -1605,6 +1641,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     runtime = Node(
         package="openral_rskill_ros",
         executable="runtime_node",
+        prefix=_cpuset_prefix("OPENRAL_RUNTIME_CPUSET"),
         parameters=[
             {
                 "robot_yaml": robot_yaml,
@@ -2256,11 +2293,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # odom→base_link broadcast); ``cloud_in`` is remapped to the robot's depth topic.
         # Requires ros-${ROS_DISTRO}-octomap-server + the openral_octomap_bridge package built —
         # opt-in, default off, like slam/nav2.
+        perception_prefix = _cpuset_prefix("OPENRAL_PERCEPTION_CPUSET")
         octomap_server = Node(
             package="octomap_server",
             executable="octomap_server_node",
             name="openral_octomap_server",
             namespace="",
+            prefix=perception_prefix,
             parameters=[
                 {
                     "resolution": _octomap_resolution(hal_mode),
@@ -2304,6 +2343,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             executable="octomap_voxel_bridge",
             name="openral_octomap_voxel_bridge",
             namespace="",
+            prefix=perception_prefix,
             parameters=[
                 {
                     "base_frame": octomap_base_frame,

@@ -26,6 +26,16 @@
 
 std_msgs/Header header
 
+# Capture stamp of the newest sensor data this grid was built from (the
+# octree's stamp, which `octomap_server` takes from the cloud it inserted),
+# on the graph clock. `header.stamp` is when the grid was PRODUCED, which a
+# bridge republishing between octrees keeps fresh; only this field says how
+# old the world it describes is. Consumers budgeting data age (the safety
+# kernel's `world_voxel_data_age_budget_ms`) treat an unset (zero) value as
+# unknown, i.e. stale. Additive field (schema-compatible): older producers
+# leave it zero.
+builtin_interfaces/Time source_stamp
+
 geometry_msgs/Point origin
 geometry_msgs/Quaternion orientation
 float64 resolution
