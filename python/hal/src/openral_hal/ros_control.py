@@ -28,7 +28,7 @@ Example:
     ...     capabilities=RobotCapabilities(
     ...         supported_control_modes=[ControlMode.JOINT_POSITION],
     ...     ),
-    ...     safety=SafetyEnvelope(),
+    ...     safety=SafetyEnvelope(joint_state_staleness_limit_s=0.5),  # required: no default
     ...     action_spec=ActionSpec(dim=1, control_freq_hz=30.0),  # required: sets the deadline
     ... )
     >>> hal = RosControlHAL(desc, controller_name="joint_trajectory_controller")
