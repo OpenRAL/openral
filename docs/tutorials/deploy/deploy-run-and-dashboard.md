@@ -279,17 +279,21 @@ any rectified stream published by a calibration node.
 ### Building a world map from a real depth camera (`octomap_cloud_topic`)
 
 Turning `enable_octomap: true` on is not enough on real hardware. `octomap_server`
-subscribes to whatever `octomap_cloud_topic` names. Left unset, the launch derives
-`/openral/cameras/<name>/points` from the manifest's first depth sensor with
+subscribes to whatever `octomap_cloud_topic` names. Under `deploy sim`, left unset,
+it is `/openral/cameras/<name>/points` of the manifest's one depth sensor with
 intrinsics (e.g. `head_zed` on `openarm`, `front_depth` on `panda_mobile`) — a
 topic published by the **sim** sensor bridge, which back-projects the digital
-twin's depth raster. Nothing publishes it under `hal_mode:=real`. With octomap
-forced on for a robot that declares no such depth sensor, the launch fails with
-`ROSConfigError` instead of mapping silence.
+twin's depth raster; a manifest with several depth sensors must pin the one to map.
+Nothing in-tree publishes a cloud under `hal_mode:=real` (the sensor leg publishes a
+bound depth sensor's *image* on `/openral/cameras/<name>/depth/image`).
 
-Leave it unset on hardware and the failure is silent in the worst way: every node
-comes up healthy, and the octree, `/openral/world_voxels` and the dashboard's
-POINTCLOUD card all just stay empty.
+So `deploy run` refuses with `ROSConfigError` before launch when octomap is on and
+nothing is pinned. That includes the auto-enable: any depth or point-cloud
+(3D lidar) sensor in the manifest or the scene turns octomap on. Before this check
+the failure was silent in the worst way: every node came up healthy, the octree,
+`/openral/world_voxels` and the dashboard's POINTCLOUD card stayed empty, and the
+kernel dropped every chunk as `DROP_VOXEL_UNAVAILABLE`. Pin the driver's topic, or
+set `enable_octomap: false` to run without the world map.
 
 Point it at the cloud your depth driver already publishes:
 
@@ -298,7 +302,17 @@ runtime:
   enable_octomap: true
   # zed_wrapper's own registered cloud. RealSense: /camera/depth/color/points.
   octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+  # Optional, per rig: how long the kernel trusts the last voxel grid (default 1.0 s)
+  # and how long the octomap bridge republishes the last octree (default = the
+  # deadline, never above it). Raise both for a source slower than ~1 Hz.
+  # world_voxel_deadline_s: 2.0
+  # max_octree_age_s: 2.0
 ```
+
+On a `deploy sim` twin, a pinned topic outside `/openral/cameras/` is a real
+driver stamping on wall-clock, so the graph runs on host wall time without a
+`clock_origin` pin (pinning `simulation` with it is refused: octomap would drop
+every cloud as from the future).
 
 Two worked examples make the choice explicitly:
 [`scenes/deploy/openarm_zed_octomap.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_zed_octomap.yaml)

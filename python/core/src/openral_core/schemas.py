@@ -539,8 +539,8 @@ class SensorSpec(BaseModel):
         """A depth / point-cloud camera with intrinsics.
 
         The one test for "can this be back-projected into a cloud": the sim bridge's
-        depth synth, octomap's auto-enable, the Nav2-over-visual-SLAM guard and the
-        launch's depth-camera pick all use it.
+        depth synth, the sim cloud topic (``deploy_cloud_topic``), the
+        Nav2-over-visual-SLAM guard and the launch's depth-camera pick all use it.
 
         Example:
             >>> desc = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
@@ -548,6 +548,23 @@ class SensorSpec(BaseModel):
             'front_depth'
         """
         return self.modality in ("depth", "point_cloud") and self.intrinsics is not None
+
+    @property
+    def is_cloud_source(self) -> bool:
+        """A depth camera or 3D lidar whose driver can feed ``octomap_server`` a cloud.
+
+        Wider than :attr:`is_depth_camera`: a real driver builds its own
+        ``PointCloud2``, so no pinhole intrinsics are needed (a 3D lidar has none).
+        On a real deploy any such sensor auto-enables the octomap leg, which then
+        needs the driver's topic pinned (:func:`deploy_cloud_topic`).
+
+        Example:
+            >>> SensorSpec(
+            ...     name="lidar", modality="point_cloud", frame_id="lidar", rate_hz=10.0
+            ... ).is_cloud_source
+            True
+        """
+        return self.modality in ("depth", "point_cloud")
 
 
 #: Root of the canonical camera topic layout. Spelled here and nowhere else; build
@@ -741,6 +758,50 @@ def publishing_sensors(
     if hal_mode != "real":
         return list(manifest_sensors)
     return [s for s in merge_deploy_sensors(manifest_sensors, scene_sensors) if s.deploy_binding]
+
+
+def deploy_cloud_topic(
+    manifest_sensors: Iterable[SensorSpec],
+    *,
+    pinned: str | None,
+    hal_mode: str,
+) -> str:
+    """The ``PointCloud2`` topic a deploy's cloud consumers read, or ``""`` when it has none.
+
+    ``octomap_server`` (``cloud_in``) and the world-state object lift's depth fallback
+    both read it. A pinned ``DeployRuntime.octomap_cloud_topic`` wins. Otherwise, in
+    sim, the sim sensor bridge back-projects each :attr:`SensorSpec.is_depth_camera`
+    onto ``camera_topic(<name>, POINTS)``, so exactly one such camera names the cloud.
+    On a real deploy nothing in-tree publishes a cloud (the sensor leg publishes depth
+    *images*), so the answer is ``""`` until the driver's own topic is pinned. The one
+    rule ``openral deploy`` (pre-launch refusal) and ``deploy_e2e.launch.py`` share.
+
+    Raises:
+        ROSConfigError: sim, nothing pinned, and several depth cameras: which one is
+            mapped must be declared (pin ``runtime.octomap_cloud_topic``), not "first
+            one wins".
+
+    Example:
+        >>> desc = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+        >>> deploy_cloud_topic(desc.sensors, pinned=None, hal_mode="sim")
+        '/openral/cameras/front_depth/points'
+        >>> deploy_cloud_topic(desc.sensors, pinned=None, hal_mode="real")
+        ''
+        >>> deploy_cloud_topic(desc.sensors, pinned="/camera/depth/color/points", hal_mode="real")
+        '/camera/depth/color/points'
+    """
+    if pinned:
+        return pinned
+    if hal_mode == "real":
+        return ""
+    depth = [s.name for s in manifest_sensors if s.is_depth_camera]
+    if len(depth) > 1:
+        raise ROSConfigError(
+            f"several depth cameras ({', '.join(depth)}) could feed the world map; pin "
+            "runtime.octomap_cloud_topic to the one to map, e.g. "
+            f"{camera_topic(depth[0], CameraTopicKind.POINTS)!r}"
+        )
+    return camera_topic(depth[0], CameraTopicKind.POINTS) if depth else ""
 
 
 # ─── Joints / Actuation ────────────────────────────────────────────────────────
@@ -9428,32 +9489,46 @@ class DeployRuntime(BaseModel):
     enable_octomap_kernel_check: bool | None = None
     octomap_cloud_topic: str | None = None
     """The ``PointCloud2`` topic ``octomap_server`` consumes as ``cloud_in``,
-    i.e. what the world map is actually built from. ``None`` = the launch
-    derives ``/openral/cameras/<name>/points`` from the manifest's first depth
-    sensor with intrinsics (and fails with ``ROSConfigError`` when there is
-    none). That cloud is published by the **sim** sensor bridge's depth
-    back-projection — so a ``hal_mode:=real`` deploy that leaves this unset
-    gives ``octomap_server`` no input at all and the map,
-    ``/openral/world_voxels`` and the dashboard's pointcloud card all stay
-    empty.
+    i.e. what the world map is actually built from (``deploy_cloud_topic``).
+    ``None`` under ``deploy sim`` = ``/openral/cameras/<name>/points`` of the
+    manifest's one depth sensor with intrinsics, which the **sim** sensor bridge
+    back-projects; a manifest with several must pin the one to map.
 
-    On real hardware, set it to whatever the depth driver already publishes
-    rather than adding a conversion node: ``zed_wrapper`` emits
-    ``/<name>/point_cloud/cloud_registered``, RealSense ``/camera/depth/color/points``.
-    Only meaningful when ``enable_octomap`` resolves true."""
+    On real hardware nothing in-tree publishes a cloud, so ``deploy run`` refuses
+    to start octomap (enabled explicitly or auto-enabled by a depth / point-cloud
+    sensor) until this names what the driver already publishes: ``zed_wrapper``
+    emits ``/<name>/point_cloud/cloud_registered``, RealSense
+    ``/camera/depth/color/points``. Set ``enable_octomap: false`` to run without
+    the world map. A pin outside ``/openral/cameras/`` on a ``deploy sim`` twin is
+    a real driver, so the twin runs on host wall time (see ``clock_origin``)."""
     clock_origin: Literal["host_wall", "simulation"] | None = None
     """Pin the graph's clock authority instead of deriving it. ``None`` (auto) =
     host wall time for ``deploy run``; for ``deploy sim``, the simulator's clock
-    whenever the backend exposes one (every bare MuJoCo twin does).
+    whenever the backend exposes one (every bare MuJoCo twin does), unless
+    ``octomap_cloud_topic`` names a real driver's cloud (outside
+    ``/openral/cameras/``), which selects ``host_wall``.
 
-    Pin ``host_wall`` on a twin scene that consumes a **real** sensor — a ZED or
-    RealSense driver stamping on wall-clock. Under the simulated clock
+    A real ZED or RealSense driver stamps on wall-clock. Under the simulated clock
     ``octomap_server`` (``use_sim_time``) sits near t=0, treats every
     wall-stamped cloud as from the future and drops it, so the map and
     ``/openral/world_voxels`` stay empty while every node reports healthy.
 
-    ``simulation`` is refused for ``deploy run`` (a real robot has no sim clock)
-    and for a sim backend that exposes no clock."""
+    ``simulation`` is refused for ``deploy run`` (a real robot has no sim clock),
+    for a sim backend that exposes no clock, and together with a real driver's
+    ``octomap_cloud_topic``."""
+    world_voxel_deadline_s: float = Field(default=1.0, gt=0)
+    """How long the safety kernel trusts the last ``/openral/world_voxels`` grid
+    (its ``world_voxel_deadline_ms``); past it every chunk drops with
+    ``DROP_VOXEL_UNAVAILABLE``. It must exceed the octomap source's
+    insert-to-publish gap on this rig (cloud period plus octomap's insert time),
+    with margin: 1.0 s tolerates octomap down to about 1 Hz. A slower source
+    (a 1 Hz scanning lidar, a CPU-only host inserting dense clouds) needs a
+    longer deadline or the robot never moves; that is fail-closed, not unsafe."""
+    max_octree_age_s: float | None = Field(default=None, gt=0)
+    """How long the octomap bridge republishes the last octree it received.
+    ``None`` = equal to ``world_voxel_deadline_s``. Must not exceed it, so the
+    kernel, not the bridge, fails closed on a silent camera: worst case from the
+    last inserted cloud to the drop is this plus the deadline (hazard log Entry 033)."""
     joint_states_topic: str | None = None
     """Explicit override for the ``sensor_msgs/JointState`` topic the deploy
     runtime's Python nodes (in-process world state + the runner's joint-state
@@ -9549,6 +9624,30 @@ class DeployRuntime(BaseModel):
     deploys, or a dev venv via ``$OPENRAL_DA3_DEPTH_SIDECAR_VENV``). First
     autostart provisions the sidecar venv, which can take minutes; the depth
     provider retries until it answers."""
+
+    @property
+    def voxel_freshness_s(self) -> tuple[float, float]:
+        """``(world_voxel_deadline_s, max_octree_age_s)`` with the age defaulted.
+
+        Example:
+            >>> DeployRuntime().voxel_freshness_s
+            (1.0, 1.0)
+            >>> DeployRuntime(world_voxel_deadline_s=2.0, max_octree_age_s=1.5).voxel_freshness_s
+            (2.0, 1.5)
+        """
+        deadline = self.world_voxel_deadline_s
+        return deadline, self.max_octree_age_s or deadline
+
+    @model_validator(mode="after")
+    def _check_voxel_freshness(self) -> Self:
+        deadline, age = self.voxel_freshness_s
+        if age > deadline:
+            raise ValueError(
+                f"max_octree_age_s ({age}) must not exceed world_voxel_deadline_s ({deadline}): "
+                "the bridge would keep republishing an octree the kernel should already "
+                "have stopped trusting"
+            )
+        return self
 
     @model_validator(mode="after")
     def _check_stereo_cameras(self) -> Self:
