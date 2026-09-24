@@ -22,9 +22,9 @@ import re
 import shutil
 import subprocess
 from enum import Enum
-from pathlib import Path
 from typing import Final
 
+from openral_core.gpu import is_tegra_host
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 __all__ = [
@@ -86,10 +86,6 @@ def leaky_branch(elements: str, *, tee_name: str = TEE_NAME) -> str:
     """
     return f"{tee_name}. ! {LEAKY_BRANCH_QUEUE} ! {elements}"
 
-
-# Path read to identify a Tegra host (Jetson / Spark). Present on every L4T
-# image NVIDIA ships, absent on desktop Ubuntu.
-_TEGRA_RELEASE_PATH: Final[Path] = Path("/etc/nv_tegra_release")
 
 # Timeout for the gst-inspect-1.0 probe. The tool returns in well under a
 # second on a warm host; the timeout exists to keep an unhealthy plugin
@@ -295,7 +291,7 @@ def detect_platform() -> Platform:
         >>> detect_platform() in {Platform.TEGRA, Platform.NVIDIA_DESKTOP, Platform.CPU_ONLY}
         True
     """
-    if _TEGRA_RELEASE_PATH.exists():
+    if is_tegra_host():
         return Platform.TEGRA
     if inspect_element_present("nvjpegdec") and inspect_element_present("nvvideoconvert"):
         return Platform.NVIDIA_DEEPSTREAM
