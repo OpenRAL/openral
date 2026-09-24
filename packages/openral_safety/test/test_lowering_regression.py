@@ -31,7 +31,7 @@ pytest.importorskip("robot_descriptions")
 
 from openral_cli.collision import render_blocks
 from openral_core import RobotDescription
-from openral_core.schemas import CapsuleShape, LinkCollisionGeometry
+from openral_core.schemas import BoxShape, CapsuleShape, LinkCollisionGeometry
 from openral_safety.urdf_lowering import LoweredCollisionModel, lower_robot_auto, select_lowering
 
 # Every committed robot manifest; the test skips those without collision geometry.
@@ -58,8 +58,8 @@ ROBOTS = sorted(Path("robots").glob("*/robot.yaml"))
 #
 # Detected structurally (same as tests/unit/test_collision_lowering_fleet.py): a tool-generated
 # block carries "# GENERATED" directly above ``collision_geometry:``; hand-authored ones don't.
-# openarm also lacks the header, but its MJCF path keeps the manifest geometry verbatim, so it
-# re-lowers byte-identically — not a drift.
+# An MJCF robot WITH the header (openarm) had its geometry fitted to the MJCF meshes, so it is
+# re-lowered with the fit on; one WITHOUT it keeps its manifest geometry verbatim — not a drift.
 
 
 def _has_generated_geometry_header(manifest: Path) -> bool:
@@ -72,9 +72,9 @@ def _has_generated_geometry_header(manifest: Path) -> bool:
 def _is_known_hand_authored_drift(manifest: Path) -> bool:
     """Hand-authored geometry (no GENERATED header) that no current path re-lowers.
 
-    openarm also lacks the header, but its MJCF lowering keeps the manifest
-    capsules verbatim, so it reproduces byte-identically — only robots WITHOUT an
-    MJCF-native keep path (panda_mobile today) genuinely drift.
+    An MJCF robot without the header keeps its manifest geometry verbatim, so it
+    reproduces byte-identically — only robots WITHOUT an MJCF-native keep path
+    (panda_mobile today) genuinely drift.
     """
     desc = RobotDescription.model_validate(yaml.safe_load(manifest.read_text()))
     if _has_generated_geometry_header(manifest):
@@ -97,15 +97,19 @@ def _round(v: float) -> float:
 
 
 def _geom_scalars(g: LinkCollisionGeometry) -> tuple[float, ...]:
-    """A link's numeric capsule/sphere params at committed (4-dp) precision.
+    """A link's numeric primitive params at committed (4-dp) precision.
 
-    radius, then half-length (0.0 for a sphere — it carries no ``length_m``),
-    then the 6-DoF origin (xyz + rpy). The shape kind and link name are compared
+    A box gives its three half-extents; a capsule/sphere its radius, then its
+    length (0.0 for a sphere — it carries no ``length_m``), padded to three. Then
+    the 6-DoF origin (xyz + rpy). The shape kind and link name are compared
     separately (exact, not numeric).
     """
-    radius = _round(g.shape.radius_m)
-    length = _round(g.shape.length_m) if isinstance(g.shape, CapsuleShape) else 0.0
-    return (radius, length, *(_round(x) for x in g.origin_xyz_rpy))
+    if isinstance(g.shape, BoxShape):
+        size = tuple(_round(h) for h in g.shape.half_extents_m)
+    else:
+        length = _round(g.shape.length_m) if isinstance(g.shape, CapsuleShape) else 0.0
+        size = (_round(g.shape.radius_m), length, 0.0)
+    return (*size, *(_round(x) for x in g.origin_xyz_rpy))
 
 
 def _geom_equal(
@@ -175,7 +179,12 @@ def test_lowering_output_unchanged(manifest: Path) -> None:
     if not desc.collision_geometry:
         pytest.skip("no collision_geometry to regress")
 
-    relowered = lower_robot_auto(desc, manifest_dir=manifest.parent)
+    # A GENERATED MJCF block was fitted to the meshes; re-lower it the same way.
+    relowered = lower_robot_auto(
+        desc,
+        manifest_dir=manifest.parent,
+        fit_mjcf_geometry=_has_generated_geometry_header(manifest),
+    )
 
     # 1. Routing picks the provenance-correct source (no silent source flip).
     committed_source = relowered.acm_source
