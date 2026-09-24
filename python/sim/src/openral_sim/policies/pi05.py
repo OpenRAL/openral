@@ -18,12 +18,13 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import structlog
 from numpy.typing import NDArray
-from openral_core.exceptions import ROSConfigError, ROSRuntimeError
+from openral_core.exceptions import ROSConfigError
 from openral_observability import inference_span
 from openral_rskill._diagnostics import phase_timer
 from openral_rskill._vla_core import (
@@ -46,14 +47,18 @@ from openral_rskill.backend_registry import maybe_attach_pro_hooks
 # torch_dtype_for, default_dtype_for_device) also live there so every
 # adapter speaks the same QuantizationDtype enum vocabulary.
 from openral_sim._quantization import (
+    KeyMap,
     default_dtype_for_device,
     detect_prequantized_nf4,
+    expand_covered_keys_via_tied_storage,
     load_prequantized_state_for_rskill,
     peek_safetensors_keys,
     quantize_int8_in_place,
     quantize_nf4_in_place,
+    rebuild_non_persistent_buffers,
     require_supported_dtype,
     resolve_quant_plan,
+    stream_state_into_policy,
     torch_dtype_for,
 )
 from openral_sim._quantization import (
@@ -253,39 +258,6 @@ class _PI05Adapter:
 _log = structlog.get_logger(__name__)
 
 
-def _expand_covered_keys_via_tied_storage(policy: Any, covered_keys: set[str]) -> set[str]:
-    """Extend ``covered_keys`` to include every param tied to a covered one.
-
-    PaliGemma's ``language_model.embed_tokens.weight`` is tied to the LM
-    head; source safetensors store only the head, and our manual fast
-    path (``to_empty`` + a later ``policy.tie_weights()``) materialises
-    both slots separately, so the tie must be detected explicitly via
-    shared-storage groups (``Tensor.untyped_storage().data_ptr()``).
-
-    Without this, the targeted reset walk fires a ~10 s ``normal_`` init
-    across the 256k×2048 ``embed_tokens.weight`` slot that the following
-    ``load_state_dict`` would overwrite anyway via the tie.
-
-    Uses ``named_parameters(remove_duplicate=False)`` rather than
-    ``state_dict()``: the latter triggers ``Linear8bitLt._save_to_state_dict``,
-    which crashes pre-``.to(<cuda>)`` looking for the bnb-only ``SCB`` attr;
-    ``remove_duplicate=False`` is required so both tied keys are visible
-    (default ``named_parameters`` yields each Parameter once).
-    """
-    groups: dict[int, set[str]] = {}
-    for key, param in policy.named_parameters(remove_duplicate=False):
-        try:
-            sid = param.untyped_storage().data_ptr()
-        except (AttributeError, RuntimeError):
-            continue
-        groups.setdefault(sid, set()).add(key)
-    expanded = set(covered_keys)
-    for keys_group in groups.values():
-        if len(keys_group) > 1 and (expanded & keys_group):
-            expanded.update(keys_group)
-    return expanded
-
-
 def _rebuild_int8_params_for_linear8bitlt(policy: Any) -> int:
     """Re-wrap each ``Linear8bitLt.weight`` as a fresh ``bnb.nn.Int8Params``.
 
@@ -331,15 +303,9 @@ def _rebuild_int8_params_for_linear8bitlt(policy: Any) -> int:
     return rebuilt
 
 
-def _init_rope_and_position_buffers(policy: Any, *, torch: Any) -> None:
-    """Recompute the buffers a meta-initialised policy cannot load from safetensors.
+def _rebuild_gemma_buffer(name: str, mod: Any, buf: Any, *, torch: Any) -> bool:
+    """π0.5's ``BufferRebuilder`` hook: the Gemma buffers a meta-init cannot load.
 
-    After ``init_empty_weights`` + ``to_empty`` every buffer holds garbage, and
-    the *non-persistent* ones are not in the checkpoint, so they must be rebuilt
-    the way their modules build them:
-
-    * ``*.position_ids`` — int64 ``arange`` (garbage indices assert on the
-      embedding gather);
     * RoPE ``*.inv_freq`` / ``*.original_inv_freq`` —
       ``1/(theta**(arange(0,d,2)/d))`` with ``theta`` from the module's
       ``config.rope_parameters`` (transformers 5), else its ``rope_theta`` /
@@ -351,151 +317,69 @@ def _init_rope_and_position_buffers(policy: Any, *, torch: Any) -> None:
       nonsense: cosine 0.03 against ``from_pretrained`` on the OpenArm restock
       checkpoint (Thor, 2026-09-23), while all 813 loaded tensors matched.
 
-    A non-persistent buffer this function does not know how to rebuild is
-    refused (``ROSRuntimeError``) rather than run on garbage — the only
-    symptom of a missed one is a policy that is silently wrong. Shared by the
-    nf4, int8 and bf16 fast meta-init paths; call under ``torch.no_grad()``.
+    ``position_ids`` and the refusal of any other non-persistent buffer are the
+    shared ``rebuild_non_persistent_buffers``'s job.
     """
-    persistent = set(policy.state_dict().keys())
-    unhandled: list[str] = []
-    for name, buf in policy.named_buffers():
-        mod = policy
-        for part in name.split(".")[:-1]:
-            mod = getattr(mod, part)
-        if name.endswith(".position_ids") and buf.dtype == torch.int64:
-            n = buf.shape[-1]
-            arange = torch.arange(n, dtype=torch.int64, device=buf.device)
-            buf.copy_(arange.expand_as(buf))
-        elif name.endswith((".inv_freq", ".original_inv_freq")):
-            d = buf.shape[-1] * 2
-            rope_params = getattr(getattr(mod, "config", None), "rope_parameters", None)
-            theta = 10000.0
-            if isinstance(rope_params, dict) and rope_params.get("rope_theta"):
-                theta = float(rope_params["rope_theta"])
-            elif getattr(mod, "rope_theta", None) or getattr(mod, "base", None):
-                theta = float(getattr(mod, "rope_theta", None) or mod.base)
-            freqs = 1.0 / (
-                theta ** (torch.arange(0, d, 2, dtype=torch.float32, device=buf.device).float() / d)
-            )
-            buf.copy_(freqs.to(buf.dtype))
-        elif name.endswith(".embed_scale"):
-            scalar = getattr(mod, "scalar_embed_scale", None)
-            scale = float(scalar) if scalar is not None else float(mod.embedding_dim) ** 0.5
-            buf.copy_(torch.tensor(scale, dtype=buf.dtype, device=buf.device))
-        elif name not in persistent:
-            unhandled.append(name)
-    if unhandled:
-        raise ROSRuntimeError(
-            "pi05 fast meta-init: non-persistent buffers this loader cannot rebuild "
-            f"(they are not in the checkpoint and would run as garbage): {unhandled[:8]}"
+    if name.endswith((".inv_freq", ".original_inv_freq")):
+        d = buf.shape[-1] * 2
+        rope_params = getattr(getattr(mod, "config", None), "rope_parameters", None)
+        theta = 10000.0
+        if isinstance(rope_params, dict) and rope_params.get("rope_theta"):
+            theta = float(rope_params["rope_theta"])
+        elif getattr(mod, "rope_theta", None) or getattr(mod, "base", None):
+            theta = float(getattr(mod, "rope_theta", None) or mod.base)
+        freqs = 1.0 / (
+            theta ** (torch.arange(0, d, 2, dtype=torch.float32, device=buf.device).float() / d)
         )
+        buf.copy_(freqs.to(buf.dtype))
+        return True
+    if name.endswith(".embed_scale"):
+        scalar = getattr(mod, "scalar_embed_scale", None)
+        scale = float(scalar) if scalar is not None else float(mod.embedding_dim) ** 0.5
+        buf.copy_(torch.tensor(scale, dtype=buf.dtype, device=buf.device))
+        return True
+    return False
 
 
-def _stream_bf16_state_to_device(
-    policy: Any, repo_id: str, *, device: str, torch: Any, revision: str | None = None
-) -> None:
-    """Copy ``<repo>/model.safetensors`` tensor-by-tensor into a policy already on ``device``.
-
-    The bf16 fast meta-init path's substitute for lerobot's
-    ``PI05Policy.from_pretrained``, which builds the 3.6 B graph on the CPU
-    and materialises every weight there before anything touches the GPU —
-    347 s idle and 666 s under a live graph on a Jetson AGX Orin (2026-09-22),
-    whose cores have no native bf16. Here the policy is built on meta,
-    allocated straight on ``device`` by ``to_empty``, and each tensor is read
-    on the CPU and ``copy_``-ed into its parameter (the copy moves and casts),
-    so the device peak is one model — never the 2x of a full
-    ``load_state_dict`` from a device-side dict, and never a source-dtype
-    temporary on the GPU (an fp32 checkpoint's 256k x 2048 embedding is 2 GiB
-    on its own). Tied parameters were tied by ``_tie_transformers_weights``
-    before this runs; ``named_parameters(remove_duplicate=False)`` keeps every
-    alias name so a checkpoint may carry either spelling of a tied weight.
-    Logs ``missing`` / ``unexpected`` key counts like the int8 path.
-    """
-    from openral_sim._quantization import resolve_weights_file
-
-    try:
-        from safetensors import safe_open
-    except ImportError as exc:  # pragma: no cover
-        raise ROSConfigError(
-            "bf16 fast meta-init requires safetensors; install with: "
-            "just sync --all-packages --group sim"
-        ) from exc
-    weights_path = resolve_weights_file(repo_id, revision=revision)
-    targets: dict[str, Any] = dict(policy.named_parameters(remove_duplicate=False))
-    targets.update(dict(policy.named_buffers(remove_duplicate=False)))
-    loaded = 0
-    unexpected: list[str] = []
-    # reason: safetensors ships no type stubs for safe_open
-    with torch.no_grad(), safe_open(weights_path, framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]
-        file_keys = list(f.keys())
-        for key in file_keys:
-            target = targets.get(key)
-            if target is None:
-                unexpected.append(key)
-                continue
-            target.copy_(f.get_tensor(key))
-            loaded += 1
-    missing = sorted(set(targets) - set(file_keys))
-    _log.info(
-        "pi05_bf16_state_streamed",
-        repo=repo_id,
-        device=device,
-        loaded=loaded,
-        missing=len(missing),
-        unexpected=len(unexpected),
-        missing_sample=missing[:5],
-        unexpected_sample=unexpected[:5],
+def _init_pi05_buffers(policy: Any, *, torch: Any) -> None:
+    """Rebuild a meta-initialised π0.5's non-persistent buffers (shared rules + Gemma hook)."""
+    rebuild_non_persistent_buffers(
+        policy, torch=torch, family="pi05", rebuild=partial(_rebuild_gemma_buffer, torch=torch)
     )
 
 
-def _load_bf16_state_for_int8(
-    policy: Any, repo_id: str, *, torch: Any, revision: str | None = None
-) -> None:
-    """Download ``<repo>/model.safetensors`` and apply via ``load_state_dict``.
+class _SourceKey(str):
+    """A checkpoint key riding through lerobot's key fixer in place of its tensor.
 
-    The int8 fast meta-init path's substitute for lerobot's slow
-    ``PI05Policy.from_pretrained`` graph allocation: the policy is already
-    built on meta (``init_empty_weights``) and materialised to real CPU
-    storage (``to_empty``); this fills that storage with the source bf16
-    weights so the upcoming ``policy.to(<cuda>)`` has data for bnb's int8
-    pack. Routes through ``hf_download_cached_first`` so
-    ``local_files_only=True`` skips the HF Hub HEAD on a warm cache. Logs
-    ``missing``/``unexpected`` key counts via structlog.
-
-    The loaded ``state`` dict is dropped + GC'd before returning so source
-    bf16 tensors don't stay resident alongside the policy's bf16 copy
-    through the subsequent ``.to(<cuda>)`` — otherwise peak CPU footprint
-    is 2x the model and can overshoot 8 GiB GPUs (observed 6.65 GiB peak
-    vs the slow path's 4.72 GiB final, on a 7.62 GiB RTX 4070 Laptop with
-    ``pi05-libero-int8`` + int8).
+    ``_fix_pytorch_state_dict_keys`` copies the PaliGemma ``lm_head`` tensor
+    into ``embed_tokens`` with ``value.clone()``; a key has nothing to clone.
     """
-    del torch  # consumed by the caller's `.to(device)`; kept for API parity
-    try:
-        from safetensors.torch import load_file
-    except ImportError as exc:  # pragma: no cover
-        raise ROSConfigError(
-            "int8 fast meta-init requires huggingface_hub + safetensors; "
-            "install with: just sync --all-packages --group sim"
-        ) from exc
-    # Directory-aware: a local snapshot never re-resolves through the HF cache.
-    from openral_sim._quantization import resolve_weights_file
 
-    weights_path = resolve_weights_file(repo_id, revision=revision)
-    state = load_file(weights_path, device="cpu")
-    missing, unexpected = policy.load_state_dict(state, strict=False)
-    _log.info(
-        "pi05_int8_bf16_state_loaded",
-        repo=repo_id,
-        keys=len(state),
-        missing=len(missing),
-        unexpected=len(unexpected),
-    )
-    # Drop the source tensors before the caller's `.to(<cuda>)` so the
-    # peak CPU + GPU footprint matches the slow-path baseline.
-    import gc
+    __slots__ = ()
 
-    del state
-    gc.collect()
+    def clone(self) -> _SourceKey:
+        return self
+
+
+def _lerobot_key_map(policy: Any) -> KeyMap:
+    """π0.5's ``KeyMap`` hook: exactly the renames ``PI05Policy.from_pretrained`` applies.
+
+    lerobot 0.6 ``from_pretrained`` runs ``_fix_pytorch_state_dict_keys`` (openpi
+    layout: ``action_time_mlp_*`` -> ``time_mlp_*``, ``state_proj.*`` and
+    adaRMS-mismatched norm weights dropped, ``lm_head`` also written to
+    ``embed_tokens``) and then prefixes ``model.`` onto every key lacking it.
+    This calls the policy's own fixer with the key names as values, so a
+    lerobot upgrade that changes the renames changes them here too.
+    """
+
+    def key_map(keys: list[str]) -> dict[str, str]:
+        fixed = policy._fix_pytorch_state_dict_keys({k: _SourceKey(k) for k in keys}, policy.config)
+        return {
+            (name if name.startswith("model.") else f"model.{name}"): str(source)
+            for name, source in fixed.items()
+        }
+
+    return key_map
 
 
 def _pi05_phase(name: str, **fields: Any) -> Any:
@@ -632,7 +516,11 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     # cost (~60s of a 95s warm-cache load) before this gate. None means
     # the peek failed; fall back to the full reset.
     fast_state_keys: set[str] | None = (
-        peek_safetensors_keys(fast_state_repo) if fast_state_repo is not None else None
+        peek_safetensors_keys(
+            fast_state_repo, revision=revision if fast_state_repo == repo_id else None
+        )
+        if fast_state_repo is not None
+        else None
     )
 
     prev_dtype = torch.get_default_dtype()
@@ -672,6 +560,15 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
     finally:
         torch.set_default_dtype(prev_dtype)
 
+    # The int8 / bf16 loaders stream through lerobot's key normalisation, so the
+    # reset skip-set must speak the normalised names too; the nf4 prequant pack
+    # keeps its own layout.
+    source_keys = (
+        set(_lerobot_key_map(policy)(sorted(fast_state_keys)))
+        if fast_state_keys is not None and (int8_fast_meta_init or bf16_fast_meta_init)
+        else fast_state_keys
+    )
+
     if use_nf4:
         if not device.startswith("cuda"):
             raise ROSConfigError(
@@ -707,15 +604,15 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             # `to_empty` materialises real (uninitialised) CPU storage for
             # every still-meta param (Linear4bit modules from the previous
             # step already have real bnb storage). The prequant state load
-            # below reports ~254 "missing" keys (bnb Params4bit sub-state +
-            # RoPE inv_freq buffers, etc.) it cannot fill — leaving those at
-            # uninit garbage is fatal: RMSNorm.weight=0 zeros its block
-            # output, softmax saturates, NaNs propagate, and an
-            # F.embedding gather later reads an out-of-bounds index and
-            # CUDA asserts. `reset_parameters()` restores PyTorch's normal
-            # __init__ values (kaiming for Linear, ones for norms, zeros
-            # for biases, normal for embeddings) as a safe baseline before
-            # the prequant load overwrites what it has data for.
+            # below refuses any parameter/persistent buffer it cannot fill,
+            # but the non-persistent RoPE inv_freq buffers are never in it
+            # (``init_buffers`` rebuilds them) — leaving uninit garbage is
+            # fatal: RMSNorm.weight=0 zeros its block output, softmax
+            # saturates, NaNs propagate, and an F.embedding gather later
+            # reads an out-of-bounds index and CUDA asserts.
+            # `reset_parameters()` restores PyTorch's normal __init__ values
+            # (kaiming for Linear, ones for norms, zeros for biases, normal
+            # for embeddings) for any module the load does not cover.
             # Staging on CPU (vs `to_empty(device=cuda)` directly, ~19s
             # faster) avoids an 8 GiB OOM: bitsandbytes' Params4bit
             # `__torch_function__` doesn't intercept `empty_like`, so
@@ -739,7 +636,7 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             # gemma_expert with d=128 and theta from the model config;
             # garbage → NaN RoPE rotation contaminating the attention path.
             with _pi05_phase("init_buffers"), torch.no_grad():
-                _init_rope_and_position_buffers(policy, torch=torch)
+                _init_pi05_buffers(policy, torch=torch)
         # If the rSkill ships a prequantized state dict
         # (`quantization_metadata.json` at the HF repo root), load it over
         # the rewritten Linear4bit modules, replacing the ~30s bf16->nf4
@@ -783,8 +680,8 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             # immediately discard via the tie.
             _tie_transformers_weights(policy)
             int8_reset_keys = (
-                _expand_covered_keys_via_tied_storage(policy, fast_state_keys)
-                if fast_state_keys is not None
+                expand_covered_keys_via_tied_storage(policy, source_keys)
+                if source_keys is not None
                 else None
             )
             with _pi05_phase("reset_parameters"):
@@ -794,9 +691,18 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             # since `load_state_dict` won't fill them (not parameters in
             # the source safetensors).
             with _pi05_phase("init_buffers"), torch.no_grad():
-                _init_rope_and_position_buffers(policy, torch=torch)
+                _init_pi05_buffers(policy, torch=torch)
+            # Streamed into the still-bf16 CPU Linear8bitLt weights with the same
+            # key normalisation and fail-closed coverage check as the bf16 path.
             with _pi05_phase("bf16_state_load", repo=repo_id):
-                _load_bf16_state_for_int8(policy, repo_id, torch=torch, revision=revision)
+                stream_state_into_policy(
+                    policy,
+                    repo_id,
+                    torch=torch,
+                    family="pi05",
+                    revision=revision,
+                    key_map=_lerobot_key_map(policy),
+                )
             # `to_empty` above stripped the `Int8Params` subclass from
             # every `Linear8bitLt.weight`; re-wrap so `policy.to(<cuda>)`
             # dispatches through `Int8Params.cuda` (bf16->int8 pack)
@@ -832,17 +738,22 @@ def _build_pi05(env_cfg: Any) -> _PI05Adapter:  # noqa: PLR0915  # reason: load-
             policy.to_empty(device=device)
         _tie_transformers_weights(policy)
         bf16_reset_keys = (
-            _expand_covered_keys_via_tied_storage(policy, fast_state_keys)
-            if fast_state_keys is not None
+            expand_covered_keys_via_tied_storage(policy, source_keys)
+            if source_keys is not None
             else None
         )
         with _pi05_phase("reset_parameters"):
             _targeted_reset_parameters(policy, covered_keys=bf16_reset_keys)
         with _pi05_phase("init_buffers"), torch.no_grad():
-            _init_rope_and_position_buffers(policy, torch=torch)
+            _init_pi05_buffers(policy, torch=torch)
         with _pi05_phase("bf16_state_stream", repo=repo_id, device=device):
-            _stream_bf16_state_to_device(
-                policy, repo_id, device=device, torch=torch, revision=revision
+            stream_state_into_policy(
+                policy,
+                repo_id,
+                torch=torch,
+                family="pi05",
+                revision=revision,
+                key_map=_lerobot_key_map(policy),
             )
     else:
         # Cast on CPU first, then move to GPU. Doing both in one .to() loads

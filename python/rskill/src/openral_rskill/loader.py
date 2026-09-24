@@ -1188,7 +1188,8 @@ def resolve_rskill_to_hf_with_revision(uri: str) -> tuple[str, str | None]:
     manifest = load_rskill_manifest(uri)
     # A directory that already holds the weights resolves to itself. This is
     # exactly the shape ``rSkill.from_pretrained`` leaves behind — a snapshot
-    # carrying ``rskill.yaml`` next to ``model.safetensors`` — and following
+    # carrying ``rskill.yaml`` next to ``model.safetensors`` (or, for a sharded
+    # checkpoint, ``model.safetensors.index.json`` + its shards) — and following
     # its manifest's ``hf://`` pointer from there sends every adapter back to
     # the Hub for a repo that was just downloaded: online that is a second
     # 8 GB fetch into the default HF cache, offline it is a hard failure,
@@ -1196,7 +1197,10 @@ def resolve_rskill_to_hf_with_revision(uri: str) -> tuple[str, str | None]:
     # ``rskills/<name>/`` directories ship no weights, so they keep following
     # their ``weights_uri`` as before.
     snapshot = Path(uri)
-    if snapshot.is_dir() and (snapshot / "model.safetensors").is_file():
+    if snapshot.is_dir() and any(
+        (snapshot / name).is_file()
+        for name in ("model.safetensors", "model.safetensors.index.json")
+    ):
         return str(snapshot.resolve()), None
     weights = manifest.weights_uri
     if weights is None:
