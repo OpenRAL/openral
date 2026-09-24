@@ -70,3 +70,12 @@ per joint type — `safety.starting_pose_max_joint_speed_rad_s` /
 robot has a prismatic joint (the runner also caps each joint at its
 `velocity_limit`). A value copied from another robot rather than measured on
 this one is marked `provisional` in the manifest comment.
+
+Robot manifests are at `schema_version: "0.2"`. A `"0.1"` manifest still loads:
+`openral_core.migrate_robot_manifest` runs on load, moves
+`hal.parameters.defaults.staleness_limit_s` to
+`safety.joint_state_staleness_limit_s` and bumps the version. It never invents a
+safety value: a 0.1 real-hardware manifest still missing a 0.2-required field
+(e.g. a prismatic gripper's `safety.starting_pose_max_joint_speed_m_s` /
+`starting_pose_tolerance_m`) is refused with a `ROSConfigError` naming it —
+measure it on the rig and declare it.

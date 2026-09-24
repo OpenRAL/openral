@@ -429,4 +429,4 @@ sim:
       read_mode: "passthrough"
       write_mode: "passthrough"
   seed_ctrl_from_qpos: true
-schema_version: '0.1'
+schema_version: "0.2"

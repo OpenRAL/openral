@@ -218,4 +218,4 @@ onboard_compute:
   gripper_command_topic: /gripper_position_control_host
   gripper_feedback_topic: /gripper_stroke_host
 
-schema_version: "0.1"
+schema_version: "0.2"

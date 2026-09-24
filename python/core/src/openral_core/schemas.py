@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import math
 import os
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from enum import Enum, StrEnum
 from pathlib import Path
 from typing import (
@@ -34,6 +35,7 @@ from pydantic import (
     Field,
     PositiveFloat,
     StringConstraints,
+    ValidationError,
     field_serializer,
     field_validator,
     model_validator,
@@ -2340,6 +2342,96 @@ class HalEntrypoints(BaseModel):
     )
 
 
+def migrate_robot_manifest(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Migrate a raw ``RobotDescription`` mapping to the current ``schema_version``.
+
+    Pure (the input is not mutated) and mechanical. ``"0.1"`` -> ``"0.2"``:
+
+    * ``hal.parameters.defaults.staleness_limit_s`` moves to
+      ``safety.joint_state_staleness_limit_s`` when the safety field is absent
+      (both present is left for the validator to refuse: one number, one place);
+    * ``schema_version`` becomes ``"0.2"``;
+    * a structured ``robot_manifest.migrated`` event is logged (stderr when
+      structlog is unconfigured, so a ``--json`` stdout stays clean).
+
+    It never invents a value: a 0.1 real-hardware manifest that still lacks a
+    ``0.2``-required safety field (e.g. a prismatic joint's
+    ``safety.starting_pose_max_joint_speed_m_s``) is refused by
+    ``RobotDescription`` after migration, with a ``ROSConfigError`` naming it.
+    ``RobotDescription`` applies this on every load; tooling may call it to
+    rewrite a manifest on disk. A mapping already at ``"0.2"`` (or without the
+    key: the default is current) is returned as a shallow copy.
+
+    Args:
+        data: The manifest as parsed from YAML/JSON.
+
+    Returns:
+        A new mapping at ``schema_version: "0.2"``.
+
+    Raises:
+        ROSConfigError: ``schema_version`` is neither ``"0.1"`` nor ``"0.2"``.
+
+    Example:
+        >>> old = {
+        ...     "name": "arm",
+        ...     "schema_version": "0.1",
+        ...     "hal": {"parameters": {"defaults": {"staleness_limit_s": 0.2}}},
+        ... }
+        >>> new = migrate_robot_manifest(old)
+        >>> new["schema_version"], new["safety"], new["hal"]["parameters"]["defaults"]
+        ('0.2', {'joint_state_staleness_limit_s': 0.2}, {})
+        >>> old["schema_version"]
+        '0.1'
+    """
+    version = str(data.get("schema_version", "0.2"))
+    if version == "0.2":
+        return dict(data)
+    if version != "0.1":
+        raise ROSConfigError(
+            f"robot manifest {data.get('name')!r}: unknown schema_version {version!r}; "
+            "supported: '0.2' (current) and '0.1' (migrated on load)."
+        )
+    out = copy.deepcopy(dict(data))
+    moved: list[str] = []
+    hal = out.get("hal")
+    params = hal.get("parameters") if isinstance(hal, dict) else None
+    defaults = params.get("defaults") if isinstance(params, dict) else None
+    safety = out.get("safety")
+    if safety is None:
+        safety = {}
+    if (
+        isinstance(defaults, dict)
+        and "staleness_limit_s" in defaults
+        and isinstance(safety, dict)
+        and "joint_state_staleness_limit_s" not in safety
+    ):
+        safety["joint_state_staleness_limit_s"] = defaults.pop("staleness_limit_s")
+        out["safety"] = safety
+        moved.append(
+            "hal.parameters.defaults.staleness_limit_s -> safety.joint_state_staleness_limit_s"
+        )
+    out["schema_version"] = "0.2"
+    import sys  # noqa: PLC0415  # reason: only paid when an old manifest is loaded
+
+    import structlog  # noqa: PLC0415  # reason: only paid when an old manifest is loaded
+
+    # Unconfigured structlog prints to stdout and would corrupt a CLI's --json
+    # output (see _warn_deprecated_image_flip_180); fall back to stderr then.
+    log = (
+        structlog.get_logger(__name__)
+        if structlog.is_configured()
+        else structlog.wrap_logger(structlog.PrintLogger(sys.stderr))
+    )
+    log.info(
+        "robot_manifest.migrated",
+        robot=out.get("name"),
+        from_version="0.1",
+        to_version="0.2",
+        moved=moved,
+    )
+    return out
+
+
 class RobotDescription(BaseModel):
     """Top-level robot manifest — one per robot, published to HuggingFace Hub.
 
@@ -2378,7 +2470,8 @@ class RobotDescription(BaseModel):
             when ``None``.
         compute_local: Compute spec for the attached workstation / laptop.
         compute_cloud: Optional remote compute endpoint (SSH or HTTPS).
-        schema_version: On-disk schema version for migration tooling; ``"0.1"`` is current.
+        schema_version: On-disk schema version; ``"0.2"`` is current. A ``"0.1"``
+            manifest is migrated on load by ``migrate_robot_manifest``.
 
     Example:
         >>> desc = RobotDescription(
@@ -2464,9 +2557,12 @@ class RobotDescription(BaseModel):
     compute_edge: ComputeSpec | None = None
     compute_local: ComputeSpec | None = None
     compute_cloud: ComputeSpec | None = None
-    # Current on-disk format (three-slot compute layout). Manifests
-    # without this field load with the default below.
-    schema_version: Literal["0.1"] = "0.1"
+    # Current on-disk format. "0.2": staleness is the typed
+    # safety.joint_state_staleness_limit_s (not hal.parameters.defaults) and a
+    # real manifest declares every REAL_HARDWARE_SAFETY_FIELDS value. A "0.1"
+    # manifest is migrated on load (_migrate_on_load); a manifest without this
+    # field loads as current.
+    schema_version: Literal["0.2"] = "0.2"
 
     #: `SafetyEnvelope` fields the safety kernel's envelope loader reads and
     #: that carry a schema default. A real robot must declare every one of them
@@ -2499,6 +2595,30 @@ class RobotDescription(BaseModel):
         if spec is None or spec.control_freq_hz is None or spec.control_freq_hz <= 0.0:
             return None
         return float(spec.control_freq_hz)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_on_load(cls, data: object) -> object:
+        """Migrate an older ``schema_version`` via ``migrate_robot_manifest``.
+
+        Raises:
+            ROSConfigError: Unknown version, or the migrated manifest still
+                fails validation (a value the migration must not invent, e.g.
+                a real-hardware safety field, is missing) — the message names it.
+        """
+        if not isinstance(data, Mapping) or str(data.get("schema_version", "0.2")) == "0.2":
+            return data
+        migrated = migrate_robot_manifest(data)
+        try:
+            cls.model_validate(migrated)
+        except ValidationError as exc:
+            raise ROSConfigError(
+                f"robot manifest {migrated.get('name')!r} was migrated from schema_version "
+                "0.1 to 0.2 but still fails validation. The migration only moves fields; "
+                "it never invents a safety value. Measure each missing value on this rig "
+                f"and declare it in the manifest:\n{exc}"
+            ) from exc
+        return migrated
 
     @model_validator(mode="after")
     def _validate_real_hardware_contract(self) -> RobotDescription:

@@ -738,4 +738,4 @@ allowed_collision_pairs:
   - [openarm_right_link5, openarm_right_link6]
   - [openarm_right_link5, openarm_right_link7]
   - [openarm_right_link6, openarm_right_link7]
-schema_version: '0.1'
+schema_version: "0.2"
