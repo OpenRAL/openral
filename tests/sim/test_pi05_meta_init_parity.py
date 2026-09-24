@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -181,18 +182,34 @@ def _vram_gib() -> float:
 def test_bf16_fast_meta_init_equals_from_pretrained(reference: dict[str, Digest]) -> None:
     if _vram_gib() < _BF16_MIN_VRAM_GIB:
         pytest.skip(f"bf16 π0.5 needs a >= {_BF16_MIN_VRAM_GIB} GiB GPU; {_vram_gib():.1f} GiB")
+    _free()
+    torch.cuda.reset_peak_memory_stats()
+    t0 = time.perf_counter()
     adapter = _fast_policy("bf16")
+    load_s = time.perf_counter() - t0
+    peak_gib = torch.cuda.max_memory_allocated() / 2**30
     try:
-        got = _state(adapter._policy)
+        policy = adapter._policy
+        got = _state(policy)
         assert got.keys() == reference.keys(), sorted(got.keys() ^ reference.keys())[:8]
         diff = [n for n in reference if got[n] != reference[n]]
         assert not diff, (len(diff), [(n, got[n][:2], reference[n][:2]) for n in diff[:8]])
-        out = _forward(adapter._policy.model)
+        n_params = sum(1 for _ in policy.named_parameters(remove_duplicate=False))
+        n_bufs = sum(1 for _ in policy.named_buffers(remove_duplicate=False))
+        out = _forward(policy.model)
     finally:
         adapter.close()
         _free()
     ref_out = _reference_forward()
-    assert torch.equal(out, ref_out), (out - ref_out).abs().max()
+    cos = torch.nn.functional.cosine_similarity(out.flatten(), ref_out.flatten(), dim=0)
+    max_abs = (out - ref_out).abs().max()
+    # Surfaced with `pytest -s`: the numbers a parity run is recorded with.
+    print(
+        f"\nbf16 parity: {n_params} params + {n_bufs} buffers bit-exact; forward cosine "
+        f"{cos.item():.6f}, max|diff| {max_abs.item():.3g}; fast load {load_s:.1f} s, "
+        f"peak allocated {peak_gib:.2f} GiB"
+    )
+    assert torch.equal(out, ref_out), max_abs
 
 
 def test_int8_fast_meta_init_matches_from_pretrained(reference: dict[str, Digest]) -> None:
@@ -204,7 +221,12 @@ def test_int8_fast_meta_init_matches_from_pretrained(reference: dict[str, Digest
     must be bit-identical to the reference, and the forward must be finite.
     """
     bnb = pytest.importorskip("bitsandbytes")
+    _free()
+    torch.cuda.reset_peak_memory_stats()
+    t0 = time.perf_counter()
     adapter = _fast_policy("int8")
+    load_s = time.perf_counter() - t0
+    peak_gib = torch.cuda.max_memory_allocated() / 2**30
     try:
         policy = adapter._policy
         # A Linear8bitLt replacement holds its weight packed and its bias in the
@@ -224,4 +246,9 @@ def test_int8_fast_meta_init_matches_from_pretrained(reference: dict[str, Digest
     finally:
         adapter.close()
         _free()
+    print(
+        f"\nint8 parity: {len(reference) - len(packed & reference.keys())} tensors bit-exact, "
+        f"{len(packed & reference.keys())} packed Linear8bitLt weight/bias present; fast load "
+        f"{load_s:.1f} s, peak allocated {peak_gib:.2f} GiB; forward finite"
+    )
     assert torch.isfinite(out).all()
