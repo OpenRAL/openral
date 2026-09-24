@@ -2096,14 +2096,17 @@ def _apply_rmw_default(env: dict[str, str]) -> None:
     Only files **no live process uses** are unlinked, so a Fast-DDS
     participant already running on this host (a camera driver started
     first, the ``ros2`` CLI daemon) keeps its segments and keeps
-    publishing. Operators that explicitly opt into Cyclone or Zenoh via
-    ``RMW_IMPLEMENTATION`` skip the clean entirely.
+    publishing. Liveness is only provable from the initial PID namespace,
+    so inside a container nothing is unlinked (see
+    ``_clean_stale_fastrtps_shm``). Operators that explicitly opt into
+    Cyclone or Zenoh via ``RMW_IMPLEMENTATION``, or set
+    ``OPENRAL_FASTDDS_SHM_CLEAN=0``, skip the clean entirely.
     ``DDS_TRANSPORT_READY_MARKER`` is printed on the line after the
     clean, on every RMW path — a waiter needs the signal either way.
     """
     rmw = env.get("RMW_IMPLEMENTATION", "")
     opted_out = "rmw_cyclonedds" in rmw or "rmw_zenoh" in rmw
-    if opted_out:
+    if opted_out or env.get(FASTDDS_SHM_CLEAN_ENV) == "0":
         counts = "shm_purged=n/a shm_kept_live=n/a"
     else:
         purged, kept = _clean_stale_fastrtps_shm()
@@ -2114,13 +2117,37 @@ def _apply_rmw_default(env: dict[str, str]) -> None:
     sys.stdout.flush()
 
 
+#: Set to ``0`` to skip the Fast-DDS shm clean on any RMW (never unlink anything).
+FASTDDS_SHM_CLEAN_ENV: Final[str] = "OPENRAL_FASTDDS_SHM_CLEAN"
+#: Fast-DDS shm file prefixes: ``SHM_MANAGER_DOMAIN`` is ``"fastrtps"`` through 2.x and
+#: ``"fastdds"`` from 3.0 (``src/cpp/rtps/transport/shared_mem/SharedMemTransport.cpp``).
+_FASTDDS_SHM_PREFIXES: Final[tuple[str, ...]] = ("fastrtps_", "fastdds_")
+#: ``PROC_PID_INIT_INO`` (``include/linux/proc_ns.h``): the initial PID namespace's inode.
+_INIT_PID_NS_LINK: Final[str] = "pid:[4026531836]"
+
+
+def _in_initial_pid_namespace(proc_root: Path = Path("/proc")) -> bool:
+    """Whether this process sees every process on the host.
+
+    ``/proc/locks`` omits a lock whose owner is not visible in the reader's PID namespace
+    (``locks_show`` in ``fs/locks.c``), and ``/proc/<pid>`` lists only that namespace. So
+    from inside a container, a Fast-DDS participant in another container or on the host
+    that shares ``/dev/shm`` (``--ipc=host``) looks dead. ``False`` when unreadable.
+    """
+    try:
+        return os.readlink(proc_root / "self" / "ns" / "pid") == _INIT_PID_NS_LINK
+    except OSError:
+        return False
+
+
 def _fastrtps_group(name: str) -> str:
     """Group key tying a Fast-DDS lock file to the segment/port it guards.
 
-    Fast-DDS 2.x names a participant segment ``fastrtps_<hex>`` and a port
-    ``fastrtps_port<N>``; each is guarded by a lock file with the same name
-    plus ``_el`` (exclusive, ``RobustExclusiveLock``) or ``_sl`` (shared,
-    ``RobustSharedLock``). Stripping that suffix yields the group.
+    Fast-DDS names a participant segment ``<domain>_<hex>`` and a port
+    ``<domain>_port<N>`` (``<domain>`` = ``fastrtps`` in 2.x, ``fastdds`` in 3.x); each
+    is guarded by a lock file with the same name plus ``_el`` (exclusive,
+    ``RobustExclusiveLock``) or ``_sl`` (shared, ``RobustSharedLock``). Stripping that
+    suffix yields the group.
     """
     return name[:-3] if name.endswith(("_el", "_sl")) else name
 
@@ -2132,7 +2159,7 @@ _LOCKS_FILE_ID_PARTS: Final[int] = 3
 
 
 def _live_fastrtps_paths(proc_root: Path = Path("/proc")) -> set[str]:
-    """Paths of ``fastrtps_*`` files some readable process has open or mapped.
+    """Paths of Fast-DDS shm files some readable process has open or mapped.
 
     Scans ``<proc_root>/<pid>/fd`` symlinks and ``<proc_root>/<pid>/maps``.
     Processes that exit mid-scan or whose entries this user cannot read are
@@ -2151,12 +2178,14 @@ def _live_fastrtps_paths(proc_root: Path = Path("/proc")) -> set[str]:
             for fd in (pid_dir / "fd").iterdir():
                 with contextlib.suppress(OSError):
                     target = os.readlink(fd)
-                    if "/fastrtps_" in target:
+                    if any(f"/{p}" in target for p in _FASTDDS_SHM_PREFIXES):
                         live.add(target)
         with contextlib.suppress(OSError):
             for line in (pid_dir / "maps").read_text(errors="replace").splitlines():
                 fields = line.split(maxsplit=5)
-                if len(fields) == _MAPS_FIELDS_WITH_PATH and "/fastrtps_" in fields[5]:
+                if len(fields) == _MAPS_FIELDS_WITH_PATH and any(
+                    f"/{p}" in fields[5] for p in _FASTDDS_SHM_PREFIXES
+                ):
                     live.add(fields[5])
     return live
 
@@ -2190,7 +2219,7 @@ def _locked_fastrtps_inodes(proc_root: Path = Path("/proc")) -> set[tuple[int, i
 def _clean_stale_fastrtps_shm(
     shm_dir: Path = Path("/dev/shm"), proc_root: Path = Path("/proc")
 ) -> tuple[int, int]:
-    """Unlink the ``fastrtps_*`` files in ``shm_dir`` that no live process uses.
+    """Unlink the Fast-DDS shm files in ``shm_dir`` that no live process uses.
 
     A file is live when a process has it open or mapped
     (``_live_fastrtps_paths``) or holds a lock on it
@@ -2198,6 +2227,9 @@ def _clean_stale_fastrtps_shm(
     (``_fastrtps_group``): a segment or port and its ``_el``/``_sl`` lock
     files are kept or removed together. If ``/proc/locks`` is unreadable
     nothing is unlinked — never remove what could not be proven unused.
+    Likewise outside the initial PID namespace (``_in_initial_pid_namespace``):
+    there a containerised driver sharing ``/dev/shm`` is invisible, and
+    unlinking its segments silences it.
     Files this user cannot unlink (another user's) are skipped, so this
     never escalates to ``sudo``. Cyclone/Zenoh deployments never call it.
 
@@ -2214,9 +2246,11 @@ def _clean_stale_fastrtps_shm(
     """
     if not shm_dir.is_dir():
         return 0, 0
-    candidates = [e for e in shm_dir.iterdir() if e.name.startswith("fastrtps_")]
+    candidates = [e for e in shm_dir.iterdir() if e.name.startswith(_FASTDDS_SHM_PREFIXES)]
     if not candidates:
         return 0, 0
+    if not _in_initial_pid_namespace(proc_root):
+        return 0, len(candidates)
     locked = _locked_fastrtps_inodes(proc_root)
     if locked is None:
         return 0, len(candidates)
