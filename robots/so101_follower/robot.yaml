@@ -333,4 +333,4 @@ allowed_collision_pairs:
   - [lower_arm, upper_arm]
   - [lower_arm, wrist]
   - [shoulder, upper_arm]
-schema_version: '0.1'
+schema_version: "0.2"

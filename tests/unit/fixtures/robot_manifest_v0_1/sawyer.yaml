@@ -157,21 +157,6 @@ safety:
   # declared here so they are visible; provisional until run on this rig.
   starting_pose_max_joint_speed_rad_s: 0.5
   starting_pose_tolerance_rad: 0.05
-  # Prismatic joints (the 0.041 m gripper stroke), in metres: a rad tolerance of
-  # 0.05 was wider than the whole stroke, so the gripper always "arrived".
-  # provisional, not measured on this rig: the stroke-time and tolerance
-  # fraction of the OpenArm gripper (0.785 rad at 0.5 rad/s, 0.05 rad) scaled
-  # to this stroke. The runner also caps each joint at its velocity_limit.
-  starting_pose_max_joint_speed_m_s: 0.025
-  starting_pose_tolerance_m: 0.0025
-  # Joint-state freshness window: the real HAL's read_state and the skill
-  # runner's blocking waits refuse state older than this (one place; build_hal
-  # and deploy_e2e.launch.py read it). Unmeasured on this rig; 0.2 s is the
-  # real HAL's own former constructor default (sawyer_real.py). OpenArm's 0.1 s
-  # was measured on its own 750 Hz broadcaster and does not transfer.
-  # provisional — re-measure with
-  # tools/joint_state_staleness_probe.py --robot <this manifest>.
-  joint_state_staleness_limit_s: 0.2
 
 # Single corner-view RGB camera mirroring MetaWorld's `pixels` observation
 # (480x480, surfaced as `front` by python/sim/src/openral_sim/backends/metaworld.py:92,
@@ -217,15 +202,17 @@ sdk_kind: "closed_with_api"
 # `dim` / `representation` are deliberately not declared: this repo commits no
 # policy action contract for this robot, and the recorder takes the width from
 # the action itself. Only the control rate is a known quantity.
-# provisional: the runner's former 30 Hz default, not measured on this rig. A
-# skill trained at another rate declares action_contract.control_freq_hz and
-# the runner refuses the mismatch.
 action_spec:
   control_freq_hz: 30.0
 
 hal:
   sim: null
   real: "openral_hal.sawyer_real:SawyerRealHAL"
+  parameters:
+    defaults:
+      # Max age of a read_state() reading before ROSPerceptionStale.
+      # provisional: former constructor default, not measured on this rig — see issue #303
+      staleness_limit_s: 0.5
 
 onboard_compute:
   driver_license: "BSD-3-Clause"             # intera_sdk / sawyer_robot fork
@@ -234,4 +221,4 @@ onboard_compute:
   command_topic: "/sawyer_arm_controller/joint_trajectory"
   joint_state_topic: "/robot/joint_states"
   estop_topic: "/robot/set_super_stop"
-schema_version: "0.2"
+schema_version: '0.1'
