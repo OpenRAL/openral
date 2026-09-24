@@ -52,6 +52,8 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, JointState
 
+from openral_hal._slot_group import refuse_stale_tick
+
 # Module logger — falls through to stderr via the rclpy logging bridge in a
 # ROS node, else plain stdlib logging.
 _log = logging.getLogger(__name__)
@@ -861,6 +863,9 @@ class SimAttachedHAL:
             raise ROSConfigError(
                 "SimAttachedHAL: atomic action-group backend requires Action.tick_index > 0."
             )
+        # Same replay guard as ``SlotGroupStager.stage``: a whole group of an
+        # already-committed tick must not step the simulator again.
+        refuse_stale_tick(tick, self._last_committed_tick)
         if self._pending_action_tick is not None and tick != self._pending_action_tick:
             # Atomicity is preserved: a group missing a safety-rejected slot
             # must never commit its other slots. Under the producer's applied-

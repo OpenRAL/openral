@@ -44,7 +44,11 @@ ProfileName = Literal["slim", "full"]
 #
 # Per-namespace patterns use ``rosbag2``'s ``--regex`` flag so the user
 # does not have to enumerate every sensor / failure subtopic. Bare
-# topics that always exist are listed verbatim.
+# topics that always exist are listed verbatim. Non-camera sensors (2-D
+# lidar, point clouds, IMU) have no fixed topic — a manifest names them
+# (``SensorSpec.ros2_topic``: ``/scan``, ``/<name>/imu/data``, ...) — so the
+# full profile records them by message type (``--topic-types``), whatever
+# the topic is called.
 RECORD_PROFILES: Final[dict[str, dict[str, list[str]]]] = {
     "slim": {
         "topics": [
@@ -64,6 +68,7 @@ RECORD_PROFILES: Final[dict[str, dict[str, list[str]]]] = {
             # ``republish_compressed``), which is what keeps this profile slim.
             re.escape(CAMERA_TOPIC_PREFIX) + r"/[^/]+/image/compressed",
         ],
+        "topic_types": [],
     },
     "full": {
         "topics": [
@@ -83,6 +88,12 @@ RECORD_PROFILES: Final[dict[str, dict[str, list[str]]]] = {
             r"/openral/failure/.*",
             r"/openral/perception/.*",
             re.escape(CAMERA_TOPIC_PREFIX) + r"/.*",
+        ],
+        # One per non-camera ``SensorModality``: LIDAR_2D, POINT_CLOUD, IMU.
+        "topic_types": [
+            "sensor_msgs/msg/LaserScan",
+            "sensor_msgs/msg/PointCloud2",
+            "sensor_msgs/msg/Imu",
         ],
     },
 }
@@ -124,14 +135,20 @@ def build_record_command(
         raise ValueError(msg)
     spec = RECORD_PROFILES[profile]
     topics = list(spec["topics"]) + [t for t in extra_topics if t]
-    regexes = list(spec["regex"]) + [r for r in extra_regex if r]
+    # Verbatim topics ride in the regex, anchored, never as explicit topics:
+    # rosbag2 (Jazzy) stops discovery once as many topics are subscribed as
+    # were listed explicitly, counting regex / type matches too, so mixing the
+    # two silently drops whatever is discovered after that point.
+    regexes = [f"^{re.escape(t)}$" for t in topics]
+    regexes += list(spec["regex"]) + [r for r in extra_regex if r]
 
     cmd: list[str] = ["ros2", "bag", "record", "-s", storage, "-o", str(output_dir)]
+    if spec["topic_types"]:
+        cmd.extend(["--topic-types", *spec["topic_types"]])
     if regexes:
         # rosbag2's --regex takes one combined pattern; we OR the parts.
         combined = "|".join(f"(?:{r})" for r in regexes)
         cmd.extend(["--regex", combined])
-    cmd.extend(topics)
     return cmd
 
 

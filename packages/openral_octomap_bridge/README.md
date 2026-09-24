@@ -108,15 +108,17 @@ logs a throttled WARN. The kernel's own `world_voxel_deadline_ms` then turns
 the silence into `DROP_VOXEL_UNAVAILABLE` (a drop, not a latch). The next
 octree resumes publication automatically (one INFO line). Worst case from
 the last inserted cloud to the kernel's drop: `max_octree_age_s +
-world_voxel_deadline_ms` (1.0 s + 1.0 s in `deploy_e2e.launch.py`).
+world_voxel_deadline_ms` (1.0 s + 1.0 s with the deploy defaults).
 
 The bound has to exceed octomap's normal inter-publish gap with margin
 (0.25–0.31 s measured on the Thor ZED path at 3.2–4.0 Hz, but ~0.45 s in one
 Thor run at 2.2 Hz; ≤ 0.33 s in sim with the depth cast slowed to ~3 Hz) and
 must not exceed the kernel's deadline, so the kernel — not the bridge — is what
-fails closed. `deploy_e2e.launch.py` sets it equal to the deadline it gives the
-kernel (`_MAX_OCTREE_AGE_S`, 1.0 s); an earlier half-deadline bound (0.5 s)
-silenced a healthy camera's grid at 2.2 Hz. A bound that is
+fails closed. Both are per-rig `DeployRuntime` fields: `world_voxel_deadline_s`
+(default 1.0 s) and `max_octree_age_s` (default equal to the deadline; a value above
+it is refused by the schema and by `deploy_e2e.launch.py`). An earlier half-deadline
+bound (0.5 s) silenced a healthy camera's grid at 2.2 Hz; a source slower than about
+1 Hz needs both raised in its scene. A bound that is
 too small only costs availability: silence shorter than the kernel's
 deadline is not a drop. A non-finite or non-positive bound publishes
 nothing (ERROR at start-up). A grid's `header.stamp` is still `now()`: it

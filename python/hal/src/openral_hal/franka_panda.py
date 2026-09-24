@@ -29,7 +29,6 @@ from openral_core.schemas import (
     EmbodimentKind,
     EndEffectorSpec,
     HalEntrypoints,
-    HalParameters,
     Hand,
     JointSpec,
     JointType,
@@ -210,6 +209,9 @@ FRANKA_PANDA_DESCRIPTION = RobotDescription(
         # runner ramp to starting_pose — the former defaults, declared (issue #303)
         starting_pose_max_joint_speed_rad_s=0.5,
         starting_pose_tolerance_rad=0.05,
+        starting_pose_max_joint_speed_m_s=0.1,  # normalised [0, 1] gripper; mirrors the YAML
+        starting_pose_tolerance_m=0.05,
+        joint_state_staleness_limit_s=0.2,  # provisional, mirrors the YAML
     ),
     # The shared ``hal`` block names both the sim HAL
     # (``FrankaPandaHAL``) and the real-HW HAL (``FrankaPandaRealHAL``);
@@ -223,15 +225,12 @@ FRANKA_PANDA_DESCRIPTION = RobotDescription(
     # ros2_control HAL to construct.
     # dim / representation deliberately undeclared (no committed policy
     # contract for this robot); the control rate is the known quantity.
+    # provisional: the runner's former 30 Hz default, not measured on this rig.
     action_spec=ActionSpec(control_freq_hz=30.0),
     hal=HalEntrypoints(
         # sim=None: build_hal derives MujocoArmHAL.from_description(manifest).
         sim=None,
         real="openral_hal.franka_panda_real:FrankaPandaRealHAL",
-        # Max age of a read_state() reading before ROSPerceptionStale. Mirrors
-        # the YAML; provisional: former constructor default, not measured on
-        # this rig — see issue #303.
-        parameters=HalParameters(defaults={"staleness_limit_s": 0.5}),
     ),
     assets=AssetRefs(
         urdf=UrdfAsset(ref="rd:panda_description"),

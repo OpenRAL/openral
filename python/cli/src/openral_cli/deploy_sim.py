@@ -155,6 +155,9 @@ class LaunchInvocation:
     """``DeployRuntime.preload_rskill_id`` forwarded as ``preload_rskill_id:=…``
     so the skill_runner loads the scene's policy right after activation, outside
     any goal's watchdog window. Empty = no preload."""
+    preload_rskill_revision: str
+    """``DeployRuntime.preload_rskill_revision`` forwarded as
+    ``preload_rskill_revision:=…`` with the preload id. Empty = unpinned."""
     preload_prompt: str
     """``DeployRuntime.preload_prompt`` forwarded as ``preload_prompt:=…``; must
     be the exact prompt later goals send (resident key = id, revision, prompt)."""
@@ -447,19 +450,27 @@ def _scene_backend_has_sim_clock(config: Path | None) -> bool:
     return SCENES.meta(scene.scene.id).get("sim_clock") is True
 
 
-def _resolve_clock_origin(*, hal_mode: str, config: Path | None, pinned: str | None = None) -> str:
+def _resolve_clock_origin(
+    *, hal_mode: str, config: Path | None, pinned: str | None = None, cloud_topic: str = ""
+) -> str:
     """Resolve the OpenRAL clock authority origin for the launch graph.
 
     A scene's ``runtime.clock_origin`` (``pinned``) wins. Otherwise real
     deployments use host wall time, and sim deployments use simulator elapsed
     time when the deploy scene backend exposes a sim clock. Scene-attached HALs
     and bare MuJoCo twins both expose ``sim_time_ns``; clock-less scenes stay in
-    host-wall time so ROS node clocks never pin at zero.
+    host-wall time so ROS node clocks never pin at zero. A ``cloud_topic`` outside
+    ``/openral/cameras/`` is a real driver stamping on wall-clock (a twin fed by a
+    real camera), so it selects host wall time: under the sim clock octomap drops
+    every such cloud as from the future.
 
     Raises:
-        ROSConfigError: ``pinned`` is ``"simulation"`` on a real deploy, or on a
-            sim backend that exposes no clock.
+        ROSConfigError: ``pinned`` is ``"simulation"`` on a real deploy, on a
+            sim backend that exposes no clock, or with a real driver's cloud.
     """
+    from openral_core import CAMERA_TOPIC_PREFIX
+
+    external_cloud = bool(cloud_topic) and not cloud_topic.startswith(f"{CAMERA_TOPIC_PREFIX}/")
     has_sim_clock = hal_mode == "sim" and _scene_backend_has_sim_clock(config)
     if pinned == "simulation" and not has_sim_clock:
         where = "a real deploy" if hal_mode != "sim" else "a sim backend without a clock"
@@ -467,9 +478,15 @@ def _resolve_clock_origin(*, hal_mode: str, config: Path | None, pinned: str | N
             f"runtime.clock_origin: simulation is pinned on {where}; nothing would "
             "publish /clock and every node's clock would stay at zero."
         )
+    if pinned == "simulation" and external_cloud:
+        raise ROSConfigError(
+            f"runtime.clock_origin: simulation is pinned but octomap maps {cloud_topic!r}, a "
+            "real driver stamping on wall-clock: octomap_server would drop every cloud as "
+            "from the future. Pin clock_origin: host_wall or leave it unset."
+        )
     if pinned is not None:
         return pinned
-    return "simulation" if has_sim_clock else "host_wall"
+    return "simulation" if has_sim_clock and not external_cloud else "host_wall"
 
 
 def _omdet_runtime_available() -> bool:
@@ -865,10 +882,16 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     and feeds the kernel via ROS params.
     """
     from openral_core import (  # reason: defer schema import
+        ROBOT_UNIT_ENV,
+        DeployRuntime,
         DeployScene,
         RobotDescription,
+        apply_sensor_overlays,
         check_scene_sensor_overrides,
+        deploy_cloud_topic,
+        merge_deploy_sensors,
         publishing_sensors,
+        resolve_sensor_overlays,
     )
 
     if hal_mode not in ("sim", "real"):
@@ -909,6 +932,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # Scene-only, no CLI flag: which policy a cell keeps warm is a property
     # of the workcell, not of one invocation.
     preload_rskill_id = ""
+    preload_rskill_revision = ""
     preload_prompt = ""
     rt = deploy_scene.runtime if deploy_scene is not None else None
     if rt is not None:
@@ -954,6 +978,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             spatial_memory_ingest = rt.spatial_memory_ingest
         approach_skill_id = approach_skill_id or rt.approach_skill_id
         preload_rskill_id = rt.preload_rskill_id or ""
+        preload_rskill_revision = rt.preload_rskill_revision or ""
         preload_prompt = rt.preload_prompt or ""
         if slam_visual_impl is None:
             slam_visual_impl = rt.slam_visual_impl
@@ -1021,6 +1046,23 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # before launch, so `deploy validate` sees it too (the launch's merge re-checks).
     if launched_scene is not None:
         check_scene_sensor_overrides(description.sensors, launched_scene.sensors)
+    # This host's unit overlay (per-host bindings, per-unit calibration). Resolved here AND
+    # by the launch + runtime node from the same inputs (scene `robot_unit`, inherited
+    # $OPENRAL_ROBOT_UNIT), so every pre-launch decision below sees the sensors they publish.
+    scene_unit = launched_scene.robot_unit if launched_scene is not None else None
+    overlays = resolve_sensor_overlays(robot_yaml, scene_unit, required=hal_mode == "real")
+    # The same selection `resolve_sensor_overlays` made; `None` only for a robot without
+    # `units/` on a real deploy (it refuses otherwise). The extrinsic preflight reads that
+    # unit's calibration.
+    robot_unit = os.environ.get(ROBOT_UNIT_ENV) or scene_unit
+    if overlays:
+        _console.print(
+            f"robot unit [bold]{robot_unit}[/bold]: overlays "
+            f"{', '.join(o.name for o in overlays)} ({robot_yaml.parent / 'units'})"
+        )
+        description = description.model_copy(
+            update={"sensors": apply_sensor_overlays(description.sensors, overlays)}
+        )
     # No per-robot table: the HAL node + sim path derive from the manifest
     # and the scene (see `_derive_hal_spec`).
     hal = _derive_hal_spec(robot_id, deploy_scene)
@@ -1124,14 +1166,51 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             raise ROSConfigError(f"{reason}.")
         _console.print(f"[yellow]{reason}; disabling Nav2.[/yellow]")
         enable_nav2 = False
-    # the octomap world-collision leg auto-enables when the
-    # robot manifest declares a usable depth SensorSpec (a camera the HAL
-    # can ray-cast a PointCloud2 from); there is nothing to map otherwise.
+    # The octomap world-collision leg auto-enables when the deploy has a cloud to map:
+    # a pinned driver topic, the sim bridge's back-projected depth camera, or, on real
+    # hardware, any depth / point-cloud sensor (whose driver topic must then be pinned).
     # ``--enable-octomap`` / ``--no-enable-octomap`` overrides.
+    cloud_topic = deploy_cloud_topic(
+        description.sensors, pinned=octomap_cloud_topic, hal_mode=hal_mode
+    )
     if enable_octomap is None:
-        enable_octomap = any(s.is_depth_camera for s in description.sensors)
+        enable_octomap = bool(cloud_topic) or (
+            hal_mode == "real"
+            and any(
+                s.is_cloud_source
+                for s in merge_deploy_sensors(
+                    description.sensors,
+                    deploy_scene.sensors if deploy_scene is not None else [],
+                )
+            )
+        )
+    # Refuse before launch rather than run octomap_server against a topic nothing
+    # publishes: the map stays empty and, with the kernel's world check on, every
+    # chunk drops as DROP_VOXEL_UNAVAILABLE behind healthy nodes.
+    if enable_octomap and not cloud_topic:
+        raise ROSConfigError(
+            "octomap is enabled but nothing publishes a cloud for it: "
+            + (
+                "on a real deploy no in-tree node publishes one, so pin "
+                "runtime.octomap_cloud_topic to the depth driver's PointCloud2 topic "
+                "(zed_wrapper: /<name>/point_cloud/cloud_registered, RealSense: "
+                "/camera/depth/color/points) or set runtime.enable_octomap: false"
+                if hal_mode == "real"
+                else f"robot {description.name!r} declares no depth sensor with intrinsics "
+                "and no runtime.octomap_cloud_topic is pinned"
+            )
+            + "."
+        )
+    if hal_mode == "real" and enable_octomap and enable_octomap_kernel_check:
+        _preflight_depth_extrinsics(description, Path(robot_yaml), robot_unit)
+    voxel_deadline_s, max_octree_age_s = (
+        rt if rt is not None else DeployRuntime()
+    ).voxel_freshness_s
     clock_origin = _resolve_clock_origin(
-        hal_mode=hal_mode, config=config, pinned=rt.clock_origin if rt is not None else None
+        hal_mode=hal_mode,
+        config=config,
+        pinned=rt.clock_origin if rt is not None else None,
+        cloud_topic=cloud_topic,
     )
 
     # The object-detection leg is ON by default (deploy sim is a
@@ -1328,6 +1407,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # use_sim_time internally: simulation → use_sim_time=true + HAL /clock;
         # host_wall → system time and no OpenRAL /clock publisher.
         f"clock_origin:={clock_origin}",
+        # The kernel's voxel deadline and the octomap bridge's octree-age bound, from
+        # the scene (DeployRuntime validates age <= deadline) or the schema defaults.
+        f"world_voxel_deadline_s:={voxel_deadline_s}",
+        f"max_octree_age_s:={max_octree_age_s}",
         f"enable_object_detector:={'true' if enable_object_detector else 'false'}",
         f"object_detector_onnx:={resolved_object_detector_onnx}",
         # reward monitor co-active with the VLA; the reasoner polls
@@ -1403,6 +1486,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # Same rule for the preload pair: forwarded only when the scene sets it.
     if preload_rskill_id:
         argv_template.append(f"preload_rskill_id:={preload_rskill_id}")
+        if preload_rskill_revision:
+            argv_template.append(f"preload_rskill_revision:={preload_rskill_revision}")
         if preload_prompt:
             argv_template.append(f"preload_prompt:={preload_prompt}")
     # only forward the stereo rig when the scene pins it (empty default; the
@@ -1493,6 +1578,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         reset_to_pose_service=service,
         approach_skill_id=approach_skill,
         preload_rskill_id=preload_rskill_id,
+        preload_rskill_revision=preload_rskill_revision,
         preload_prompt=preload_prompt,
         enable_foxglove=enable_foxglove,
         foxglove_port=foxglove_port,
@@ -1630,15 +1716,16 @@ def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:
     # DriverAPI::get()->nvmlDeviceGetGpuFabricInfoV_(...)`` (qorin1, torch
     # 2.13+cu130, 2026-09-22), 363 s into a policy load, while the identical
     # load in the same venv without the variable succeeded.
-    if not _is_tegra_host():
+    # DGX Spark (GB10, DGX OS) is unified-memory too but is deliberately not
+    # excluded: expandable segments are reported to work and help there
+    # (vllm-project/vllm#55569; unslothai/unsloth-zoo#1235 carves GB10 out of
+    # the same Tegra exclusion). Not verified on our hosts.
+    from openral_core.gpu import is_tegra_host  # reason: deferred, tests patch the module
+
+    if not is_tegra_host():
         env.setdefault(_alloc_conf_var(), "expandable_segments:True")
     _apply_rmw_default(env)
     return env
-
-
-def _is_tegra_host() -> bool:
-    """True on an NVIDIA Jetson / L4T host (``/etc/nv_tegra_release`` present)."""
-    return Path("/etc/nv_tegra_release").exists()
 
 
 def run_launch_invocation(invocation: LaunchInvocation, *, run_preflight: bool = True) -> int:
@@ -2096,14 +2183,17 @@ def _apply_rmw_default(env: dict[str, str]) -> None:
     Only files **no live process uses** are unlinked, so a Fast-DDS
     participant already running on this host (a camera driver started
     first, the ``ros2`` CLI daemon) keeps its segments and keeps
-    publishing. Operators that explicitly opt into Cyclone or Zenoh via
-    ``RMW_IMPLEMENTATION`` skip the clean entirely.
+    publishing. Liveness is only provable from the initial PID namespace,
+    so inside a container nothing is unlinked (see
+    ``_clean_stale_fastrtps_shm``). Operators that explicitly opt into
+    Cyclone or Zenoh via ``RMW_IMPLEMENTATION``, or set
+    ``OPENRAL_FASTDDS_SHM_CLEAN=0``, skip the clean entirely.
     ``DDS_TRANSPORT_READY_MARKER`` is printed on the line after the
     clean, on every RMW path — a waiter needs the signal either way.
     """
     rmw = env.get("RMW_IMPLEMENTATION", "")
     opted_out = "rmw_cyclonedds" in rmw or "rmw_zenoh" in rmw
-    if opted_out:
+    if opted_out or env.get(FASTDDS_SHM_CLEAN_ENV) == "0":
         counts = "shm_purged=n/a shm_kept_live=n/a"
     else:
         purged, kept = _clean_stale_fastrtps_shm()
@@ -2114,13 +2204,37 @@ def _apply_rmw_default(env: dict[str, str]) -> None:
     sys.stdout.flush()
 
 
+#: Set to ``0`` to skip the Fast-DDS shm clean on any RMW (never unlink anything).
+FASTDDS_SHM_CLEAN_ENV: Final[str] = "OPENRAL_FASTDDS_SHM_CLEAN"
+#: Fast-DDS shm file prefixes: ``SHM_MANAGER_DOMAIN`` is ``"fastrtps"`` through 2.x and
+#: ``"fastdds"`` from 3.0 (``src/cpp/rtps/transport/shared_mem/SharedMemTransport.cpp``).
+_FASTDDS_SHM_PREFIXES: Final[tuple[str, ...]] = ("fastrtps_", "fastdds_")
+#: ``PROC_PID_INIT_INO`` (``include/linux/proc_ns.h``): the initial PID namespace's inode.
+_INIT_PID_NS_LINK: Final[str] = "pid:[4026531836]"
+
+
+def _in_initial_pid_namespace(proc_root: Path = Path("/proc")) -> bool:
+    """Whether this process sees every process on the host.
+
+    ``/proc/locks`` omits a lock whose owner is not visible in the reader's PID namespace
+    (``locks_show`` in ``fs/locks.c``), and ``/proc/<pid>`` lists only that namespace. So
+    from inside a container, a Fast-DDS participant in another container or on the host
+    that shares ``/dev/shm`` (``--ipc=host``) looks dead. ``False`` when unreadable.
+    """
+    try:
+        return os.readlink(proc_root / "self" / "ns" / "pid") == _INIT_PID_NS_LINK
+    except OSError:
+        return False
+
+
 def _fastrtps_group(name: str) -> str:
     """Group key tying a Fast-DDS lock file to the segment/port it guards.
 
-    Fast-DDS 2.x names a participant segment ``fastrtps_<hex>`` and a port
-    ``fastrtps_port<N>``; each is guarded by a lock file with the same name
-    plus ``_el`` (exclusive, ``RobustExclusiveLock``) or ``_sl`` (shared,
-    ``RobustSharedLock``). Stripping that suffix yields the group.
+    Fast-DDS names a participant segment ``<domain>_<hex>`` and a port
+    ``<domain>_port<N>`` (``<domain>`` = ``fastrtps`` in 2.x, ``fastdds`` in 3.x); each
+    is guarded by a lock file with the same name plus ``_el`` (exclusive,
+    ``RobustExclusiveLock``) or ``_sl`` (shared, ``RobustSharedLock``). Stripping that
+    suffix yields the group.
     """
     return name[:-3] if name.endswith(("_el", "_sl")) else name
 
@@ -2132,7 +2246,7 @@ _LOCKS_FILE_ID_PARTS: Final[int] = 3
 
 
 def _live_fastrtps_paths(proc_root: Path = Path("/proc")) -> set[str]:
-    """Paths of ``fastrtps_*`` files some readable process has open or mapped.
+    """Paths of Fast-DDS shm files some readable process has open or mapped.
 
     Scans ``<proc_root>/<pid>/fd`` symlinks and ``<proc_root>/<pid>/maps``.
     Processes that exit mid-scan or whose entries this user cannot read are
@@ -2151,12 +2265,14 @@ def _live_fastrtps_paths(proc_root: Path = Path("/proc")) -> set[str]:
             for fd in (pid_dir / "fd").iterdir():
                 with contextlib.suppress(OSError):
                     target = os.readlink(fd)
-                    if "/fastrtps_" in target:
+                    if any(f"/{p}" in target for p in _FASTDDS_SHM_PREFIXES):
                         live.add(target)
         with contextlib.suppress(OSError):
             for line in (pid_dir / "maps").read_text(errors="replace").splitlines():
                 fields = line.split(maxsplit=5)
-                if len(fields) == _MAPS_FIELDS_WITH_PATH and "/fastrtps_" in fields[5]:
+                if len(fields) == _MAPS_FIELDS_WITH_PATH and any(
+                    f"/{p}" in fields[5] for p in _FASTDDS_SHM_PREFIXES
+                ):
                     live.add(fields[5])
     return live
 
@@ -2190,7 +2306,7 @@ def _locked_fastrtps_inodes(proc_root: Path = Path("/proc")) -> set[tuple[int, i
 def _clean_stale_fastrtps_shm(
     shm_dir: Path = Path("/dev/shm"), proc_root: Path = Path("/proc")
 ) -> tuple[int, int]:
-    """Unlink the ``fastrtps_*`` files in ``shm_dir`` that no live process uses.
+    """Unlink the Fast-DDS shm files in ``shm_dir`` that no live process uses.
 
     A file is live when a process has it open or mapped
     (``_live_fastrtps_paths``) or holds a lock on it
@@ -2198,6 +2314,9 @@ def _clean_stale_fastrtps_shm(
     (``_fastrtps_group``): a segment or port and its ``_el``/``_sl`` lock
     files are kept or removed together. If ``/proc/locks`` is unreadable
     nothing is unlinked — never remove what could not be proven unused.
+    Likewise outside the initial PID namespace (``_in_initial_pid_namespace``):
+    there a containerised driver sharing ``/dev/shm`` is invisible, and
+    unlinking its segments silences it.
     Files this user cannot unlink (another user's) are skipped, so this
     never escalates to ``sudo``. Cyclone/Zenoh deployments never call it.
 
@@ -2214,9 +2333,11 @@ def _clean_stale_fastrtps_shm(
     """
     if not shm_dir.is_dir():
         return 0, 0
-    candidates = [e for e in shm_dir.iterdir() if e.name.startswith("fastrtps_")]
+    candidates = [e for e in shm_dir.iterdir() if e.name.startswith(_FASTDDS_SHM_PREFIXES)]
     if not candidates:
         return 0, 0
+    if not _in_initial_pid_namespace(proc_root):
+        return 0, len(candidates)
     locked = _locked_fastrtps_inodes(proc_root)
     if locked is None:
         return 0, len(candidates)
@@ -2247,6 +2368,55 @@ def _clean_stale_fastrtps_shm(
             entry.unlink()
             purged += 1
     return purged, kept
+
+
+def _preflight_depth_extrinsics(
+    description: RobotDescription, robot_yaml: Path, unit: str | None
+) -> None:
+    """Refuse a real world-voxel deploy whose depth camera extrinsic is not verified.
+
+    The kernel's world-voxel check places every obstacle through each depth camera's
+    mount as this unit publishes it (``description`` already carries the unit's
+    ``SensorOverlay``), so every depth camera (``SensorSpec.is_depth_camera``) must have a
+    passing ``robots/<id>/calibration/<unit>/<sensor>_extrinsic.json`` (``calibration/
+    <sensor>_extrinsic.json`` for a robot without ``units/``) for its CURRENT pose and
+    that unit (``openral_core.depth_extrinsic.verify_extrinsic_report``; measured with
+    ``tools/depth_extrinsic_check.py --unit``). All of them, not only the one the octomap cloud
+    is believed to come from: a pinned ``octomap_cloud_topic`` does not say which. There
+    is no override flag: the only other way past is an explicit
+    ``--no-enable-octomap-kernel-check`` (no world check at all).
+
+    Raises:
+        ROSConfigError: a depth camera is missing, stale or failed calibration.
+    """
+    from openral_core.depth_extrinsic import (  # reason: keep numpy-free core import lazy
+        checkable_depth_sensor,
+        extrinsic_report_path,
+        verify_extrinsic_report,
+    )
+
+    problems: list[str] = []
+    for spec in (s for s in description.sensors if s.is_depth_camera):
+        report = extrinsic_report_path(robot_yaml, spec.name, unit)
+        try:
+            checkable_depth_sensor(description, spec.name)
+            found = verify_extrinsic_report(
+                spec, report, base_frame=description.base_frame, unit=unit
+            )
+        except ROSConfigError as exc:
+            found = [str(exc)]
+        problems += [f"{spec.name}: {p}" for p in found]
+        if not found:
+            _console.print(f"  extrinsic verified: {spec.name} ({report})")
+    if problems:
+        raise ROSConfigError(
+            "the world-voxel check is on for a real deploy, but a depth camera's extrinsic is "
+            "not verified — every obstacle would be placed through an unmeasured pose:\n  "
+            + "\n  ".join(problems)
+            + "\nMeasure it with `tools/depth_extrinsic_check.py check --sensor <name>"
+            + (f" --unit {unit}" if unit else "")
+            + "` and commit the report."
+        )
 
 
 def _required_ros2_packages(invocation: LaunchInvocation) -> list[str]:

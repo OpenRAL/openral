@@ -443,7 +443,7 @@ class ChunkedExecutor:
                     f"{tuple(chunk.shape)!r}"
                 )
             chunk = chunk[:, : self._chunk_size]
-            if getattr(chunk, "is_cuda", False):
+            if chunk.device.type != "cpu":  # CUDA, MPS, XPU, ...: one whole-chunk copy
                 chunk = chunk.cpu()
             actions = list(chunk.transpose(0, 1))
         else:

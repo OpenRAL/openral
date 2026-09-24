@@ -85,7 +85,7 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 - **Kernel-twin sim tests** — the four `tests/sim/safety/test_kernel_with_<robot>_*.py` files (`so100_digital_twin`, `openarm_twin`, `rizon4_twin`, `h1_humanoid_twin`) all route through `tests/sim/safety/_kernel_subprocess.py::{start_kernel, activate_kernel_node, build_kernel_envelope, terminate_kernel}` and only declare their own joint names + action/state vectors. A fifth robot's kernel-twin test should call the same four helpers, not re-roll the lifecycle ceremony.
 
-- **rSkillBase subclasses** — `GpuPassthroughSkill`, `SmolVLAAdapter`, `SO100SmolVLASkill` all override the same five `_*_impl` hooks; the duplicated names are the `Skill` ABC contract, not redundancy. `GpuPassthroughSkill`'s `_step_impl` is the reference for a torch.cuda-based skill that must be explicit about device placement.
+- **rSkillBase subclasses** — every `rSkillBase` subclass (`GpuPassthroughSkill`, the `ROSActionRskill` family) overrides the same five `_*_impl` hooks; the duplicated names are the `Skill` ABC contract, not redundancy. `GpuPassthroughSkill`'s `_step_impl` is the reference for a torch.cuda-based skill that must be explicit about device placement.
 
 - **Runtime backends** — `NullRuntime`, `PyTorchRuntime`, `ONNXRuntime` (plus `TensorRTRuntime` in the private `openral-pro-trt` package) all implement the `Runtime` Protocol surface (`load`/`infer`/`quantize`/`warmup`/`unload`). Same situation as `Skill`.
 
@@ -120,6 +120,8 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 - **Image-subscription QoS in `openral_perception_ros`** (`ros_image_detector_node`, `scene_vlm_node`, `reward_monitor_node`, `segmenter_node`) — built inline four times with the same parameters. Same package, so a `_qos.py` there is the obvious next step when any of them is next touched.
 
+- **Per-unit sensor values** — `openral_core.resolve_sensor_overlays` + `apply_sensor_overlays` are the one way a host's camera binding or a unit's calibrated mount/intrinsics reach a robot sensor (`robots/<id>/units/<unit>.yaml`, `$OPENRAL_ROBOT_UNIT` / `DeployScene.robot_unit`). Do not add per-host fields to `robot.yaml`, a scene-level copy of a robot sensor, or a second env var.
+
 - **Robot manifest lookup** — `openral_sim.policies.robots.resolve_robot_manifest` is the one `$OPENRAL_ROBOTS_DIR` → `robots/<id>/robot.yaml` resolver, shared by `sim run` (the `ROBOTS` factories), `deploy sim|run` (`resolve_launch_invocation`) and `tools/audit_sim_configs.py`. The former per-robot `openral_cli.deploy_sim._ROBOT_HAL_REGISTRY` table is gone (its fields were derivable); do not reintroduce a robot-id → HAL table.
 
 - **`openral_nav2_bringup._footprint_geometry`** is a private module reached from `tools/_nav2_costmap_silhouette_probe.py` and an integration test. Its public names (`convex_hull_2d`, `base_footprint_polygon`, `SHAPE_*`) are de-facto API; drop the module's underscore when it is next touched.
@@ -135,6 +137,8 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 - **`_h1_group` / `_g1_group`** — one `_mujoco_arm._kinematic_group(joint_name, groups, *, robot)`; each robot keeps its group tuple.
 - **Sidecar port derivation ×5** (`isaac_sim`/`robotwin`/`rlbench`/`lingbot_vla2`/`rldx`) — `_sidecar_common.sidecar_port_for_key`; pinned in `tests/unit/test_sidecar_common.py`.
 - **`_CARTESIAN_KINDS` / `_GRIPPER_KINDS`** — byte-identical to `_CARTESIAN_MODES` / `_GRIPPER_MODES` in `schemas.py`; deleted, second validator uses the surviving pair.
+- **Tegra host probe** (`openral_cli.deploy_sim._is_tegra_host`, `openral_runner.backends.gstreamer.pipeline._TEGRA_RELEASE_PATH`, `openral_detect.probes.gpu._DEFAULT_RELEASE_PATH`) — `openral_core.is_tegra_host()` / `TEGRA_RELEASE_PATH`. Do not re-probe `/etc/nv_tegra_release` elsewhere.
+- **CameraInfo topic rule** — `openral_sensors.ros_publisher.camera_info_topic_for` resolves OpenRAL's own `/openral/cameras/<name>/(depth/)image` through `openral_core.camera_topic(name, CAMERA_INFO | DEPTH_CAMERA_INFO)`; its suffix rules only cover driver topics (a RealSense `ros2_topic`).
 - **Torch-free GPU VRAM probe** (`openral_cli.deploy_sim._detect_gpu_vram_gb` / `openral_reasoner_ros.reasoner_node._query_gpu_gb`) — `openral_core.detect_gpu_vram_gb(field)` (ADR-0103).
 - **Unified-memory-SoC VRAM fallback** in `openral_detect.probes.gpu` (`_probe_nvidia_pynvml` / `_probe_nvidia_smi`) — one `_unified_memory_vram_fallback` helper.
 - **`_MIN_POLYGON_VERTICES`** — `payload_scan_filter_node` imports `_footprint_geometry`'s.
