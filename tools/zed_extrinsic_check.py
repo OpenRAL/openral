@@ -234,14 +234,16 @@ def _read_bag(
     from sensor_msgs_py.point_cloud2 import read_points_numpy
     from tf2_ros import Buffer
 
-    reader = rosbag2_py.SequentialReader()
+    # Any: rosbag2_py has pybind stubs only when a ROS overlay is sourced, so a typed
+    # reader would make `mypy --strict tools/` disagree between CI (no ROS) and a dev host.
+    reader: Any = rosbag2_py.SequentialReader()
     reader.open(
         rosbag2_py.StorageOptions(uri=str(bag), storage_id=""),
         rosbag2_py.ConverterOptions(
             input_serialization_format="cdr", output_serialization_format="cdr"
         ),
     )
-    topics = reader.get_all_topics_and_types()  # type: ignore[no-untyped-call]  # reason: pybind stub
+    topics = reader.get_all_topics_and_types()
     types = {t.name: t.type for t in topics}
     if cloud_topic not in types:
         raise ValueError(f"{bag} has no {cloud_topic}; topics: {sorted(types)}")
