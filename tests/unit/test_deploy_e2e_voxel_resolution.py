@@ -37,6 +37,35 @@ def launch_module() -> object:
     return module
 
 
+def test_the_data_age_budget_clears_the_receipt_window(launch_module: object) -> None:
+    """The kernel's data-age budget must exceed what the receipt-based path already tolerates.
+
+    Receipt deadline plus the bridge's republish bound is the longest a grid can
+    be trusted after the last octree (2.0 s); the data-age budget exists to be
+    the tighter of the two on the world's age, but it must still clear the
+    measured Thor tail (p99 ~1.0 s) or it would drop healthy chunks.
+    """
+    budget = launch_module._WORLD_VOXEL_DATA_AGE_BUDGET_MS  # type: ignore[attr-defined]
+    deadline = launch_module._WORLD_VOXEL_DEADLINE_MS  # type: ignore[attr-defined]
+    bound_s = launch_module._MAX_OCTREE_AGE_S  # type: ignore[attr-defined]
+    assert 1000.0 < budget < deadline + bound_s * 1000.0
+
+
+def test_cpuset_prefix_is_off_by_default_and_refuses_garbage(
+    launch_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = launch_module._cpuset_prefix  # type: ignore[attr-defined]
+    monkeypatch.delenv("OPENRAL_PERCEPTION_CPUSET", raising=False)
+    assert prefix("OPENRAL_PERCEPTION_CPUSET") == ""
+    monkeypatch.setenv("OPENRAL_PERCEPTION_CPUSET", "12,13")
+    assert prefix("OPENRAL_PERCEPTION_CPUSET") == "taskset -c 12,13 "
+    monkeypatch.setenv("OPENRAL_PERCEPTION_CPUSET", "0-9")
+    assert prefix("OPENRAL_PERCEPTION_CPUSET") == "taskset -c 0-9 "
+    monkeypatch.setenv("OPENRAL_PERCEPTION_CPUSET", "12; rm -rf /")
+    with pytest.raises(RuntimeError, match="not a taskset cpu list"):
+        prefix("OPENRAL_PERCEPTION_CPUSET")
+
+
 def test_the_cap_reproduces_the_constant_it_replaced(launch_module: object) -> None:
     """25 mm must still give exactly 614 125, or this refactor changed the shipped graph."""
     assert launch_module._world_voxel_max_cells(0.025) == 614125
