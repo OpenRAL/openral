@@ -495,7 +495,7 @@
         },
         "SensorDeployBinding": {
           "additionalProperties": false,
-          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine).\n\nA robot camera (wrist / head / the robot's own overview) takes it from its\nhost's unit overlay, ``robots/<id>/units/<unit>.yaml`` (``SensorOverlay``),\nor from ``robots/<id>/robot.yaml`` for a robot with a single reference host;\na deploy scene never redefines a robot sensor. A workcell-mounted camera\n(overhead / front) declares it on its own, distinctly named\n``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
           "properties": {
             "backend": {
               "$ref": "#/$defs/SensorReaderBackend",
@@ -1053,7 +1053,7 @@
         },
         "SensorDeployBinding": {
           "additionalProperties": false,
-          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine).\n\nA robot camera (wrist / head / the robot's own overview) takes it from its\nhost's unit overlay, ``robots/<id>/units/<unit>.yaml`` (``SensorOverlay``),\nor from ``robots/<id>/robot.yaml`` for a robot with a single reference host;\na deploy scene never redefines a robot sensor. A workcell-mounted camera\n(overhead / front) declares it on its own, distinctly named\n``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
           "properties": {
             "backend": {
               "$ref": "#/$defs/SensorReaderBackend",
@@ -3761,7 +3761,7 @@
         },
         "SensorDeployBinding": {
           "additionalProperties": false,
-          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine).\n\nA robot camera (wrist / head / the robot's own overview) takes it from its\nhost's unit overlay, ``robots/<id>/units/<unit>.yaml`` (``SensorOverlay``),\nor from ``robots/<id>/robot.yaml`` for a robot with a single reference host;\na deploy scene never redefines a robot sensor. A workcell-mounted camera\n(overhead / front) declares it on its own, distinctly named\n``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
           "properties": {
             "backend": {
               "$ref": "#/$defs/SensorReaderBackend",
@@ -12398,7 +12398,7 @@
         },
         "SensorDeployBinding": {
           "additionalProperties": false,
-          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine).\n\nA robot camera (wrist / head / the robot's own overview) takes it from its\nhost's unit overlay, ``robots/<id>/units/<unit>.yaml`` (``SensorOverlay``),\nor from ``robots/<id>/robot.yaml`` for a robot with a single reference host;\na deploy scene never redefines a robot sensor. A workcell-mounted camera\n(overhead / front) declares it on its own, distinctly named\n``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
           "properties": {
             "backend": {
               "$ref": "#/$defs/SensorReaderBackend",
@@ -12964,6 +12964,18 @@
           },
           "title": "Sensors",
           "type": "array"
+        },
+        "robot_unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Robot Unit"
         },
         "drivers": {
           "items": {
@@ -14204,7 +14216,7 @@
         },
         "SensorDeployBinding": {
           "additionalProperties": false,
-          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine).\n\nA robot camera (wrist / head / the robot's own overview) takes it from its\nhost's unit overlay, ``robots/<id>/units/<unit>.yaml`` (``SensorOverlay``),\nor from ``robots/<id>/robot.yaml`` for a robot with a single reference host;\na deploy scene never redefines a robot sensor. A workcell-mounted camera\n(overhead / front) declares it on its own, distinctly named\n``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
           "properties": {
             "backend": {
               "$ref": "#/$defs/SensorReaderBackend",
@@ -14825,6 +14837,18 @@
           },
           "title": "Sensors",
           "type": "array"
+        },
+        "robot_unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Robot Unit"
         },
         "drivers": {
           "items": {
@@ -16149,7 +16173,7 @@
         },
         "SensorDeployBinding": {
           "additionalProperties": false,
-          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine).\n\nA robot camera (wrist / head / the robot's own overview) takes it from its\nhost's unit overlay, ``robots/<id>/units/<unit>.yaml`` (``SensorOverlay``),\nor from ``robots/<id>/robot.yaml`` for a robot with a single reference host;\na deploy scene never redefines a robot sensor. A workcell-mounted camera\n(overhead / front) declares it on its own, distinctly named\n``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
           "properties": {
             "backend": {
               "$ref": "#/$defs/SensorReaderBackend",
@@ -16769,6 +16793,18 @@
           },
           "title": "Sensors",
           "type": "array"
+        },
+        "robot_unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Robot Unit"
         },
         "drivers": {
           "items": {
@@ -19388,7 +19424,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine): ``openral detect`` fills it per\nhost, and a manifest written for one reference cell commits that cell's.\n\nA ``SensorSpec`` carries this wherever the sensor is *physically\nmounted*: a robot camera (wrist / head / the robot's own overview) declares\nit in ``robots/<id>/robot.yaml`` only \u2014 a deploy scene never touches a robot\nsensor; a workcell-mounted camera (overhead / front) declares it on its own,\ndistinctly named ``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+      "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine).\n\nA robot camera (wrist / head / the robot's own overview) takes it from its\nhost's unit overlay, ``robots/<id>/units/<unit>.yaml`` (``SensorOverlay``),\nor from ``robots/<id>/robot.yaml`` for a robot with a single reference host;\na deploy scene never redefines a robot sensor. A workcell-mounted camera\n(overhead / front) declares it on its own, distinctly named\n``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
       "properties": {
         "backend": {
           "$ref": "#/$defs/SensorReaderBackend",
@@ -19407,6 +19443,393 @@
         }
       },
       "title": "SensorDeployBinding",
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "SensorOverlay": {
+      "$defs": {
+        "IntrinsicsPinhole": {
+          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+          "properties": {
+            "width": {
+              "title": "Width",
+              "type": "integer"
+            },
+            "height": {
+              "title": "Height",
+              "type": "integer"
+            },
+            "fx": {
+              "title": "Fx",
+              "type": "number"
+            },
+            "fy": {
+              "title": "Fy",
+              "type": "number"
+            },
+            "cx": {
+              "title": "Cx",
+              "type": "number"
+            },
+            "cy": {
+              "title": "Cy",
+              "type": "number"
+            },
+            "distortion_model": {
+              "default": "plumb_bob",
+              "enum": [
+                "plumb_bob",
+                "equidistant",
+                "none"
+              ],
+              "title": "Distortion Model",
+              "type": "string"
+            },
+            "distortion_coeffs": {
+              "items": {
+                "type": "number"
+              },
+              "title": "Distortion Coeffs",
+              "type": "array"
+            }
+          },
+          "required": [
+            "width",
+            "height",
+            "fx",
+            "fy",
+            "cx",
+            "cy"
+          ],
+          "title": "IntrinsicsPinhole",
+          "type": "object"
+        },
+        "SensorDeployBinding": {
+          "additionalProperties": false,
+          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine).\n\nA robot camera (wrist / head / the robot's own overview) takes it from its\nhost's unit overlay, ``robots/<id>/units/<unit>.yaml`` (``SensorOverlay``),\nor from ``robots/<id>/robot.yaml`` for a robot with a single reference host;\na deploy scene never redefines a robot sensor. A workcell-mounted camera\n(overhead / front) declares it on its own, distinctly named\n``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+          "properties": {
+            "backend": {
+              "$ref": "#/$defs/SensorReaderBackend",
+              "default": "opencv_thread"
+            },
+            "backend_params": {
+              "additionalProperties": true,
+              "title": "Backend Params",
+              "type": "object"
+            },
+            "max_age_ms": {
+              "default": 100,
+              "exclusiveMinimum": 0,
+              "title": "Max Age Ms",
+              "type": "integer"
+            }
+          },
+          "title": "SensorDeployBinding",
+          "type": "object"
+        },
+        "SensorReaderBackend": {
+          "description": "Which ``SensorReader`` implementation to instantiate.\n\n``opencv_thread`` is the default and mirrors lerobot's per-camera\nbackground-thread pattern. ``galaxea_a1_camera_bridge`` consumes the\nversioned paired raw-frame service owned by an external A1 Runtime process\nwithout importing Runtime or opening either RealSense device.\n``ros2_image`` subscribes to a ROS 2 image topic published by a vendor\ndriver \u2014 the path for streams that exist only because an SDK computed them\n(ZED stereo depth, RealSense aligned depth), which no ``/dev/video*`` read\ncan reach. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
+          "enum": [
+            "opencv_thread",
+            "ros2_image",
+            "gstreamer",
+            "holoscan",
+            "galaxea_a1_camera_bridge"
+          ],
+          "title": "SensorReaderBackend",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Per-host / per-unit values for ONE sensor the robot manifest declares.\n\nThe robot manifest owns a sensor's identity and semantics (name, modality,\n``frame_id``, ``parent_frame``); what differs between two physical units of the\nsame robot type \u2014 the device path or serial in ``deploy_binding``, the vendor\ndriver topic, the calibrated mount pose and intrinsics \u2014 goes here. Any other\nfield is refused (``extra=\"forbid\"``). Applied by ``apply_sensor_overlays``.\n\nAttributes:\n    name: The robot-manifest sensor this overlays.\n    deploy_binding: This host's real-device binding.\n    ros2_topic: This host's vendor-driver topic.\n    static_transform_xyz_rpy: This unit's calibrated mount, in the manifest's\n        ``parent_frame``.\n    intrinsics: This unit's calibrated intrinsics.\n\nExample:\n    >>> SensorOverlay(name=\"top\", ros2_topic=\"/cam/image\").ros2_topic\n    '/cam/image'",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "deploy_binding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SensorDeployBinding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ros2_topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ros2 Topic"
+        },
+        "static_transform_xyz_rpy": {
+          "anyOf": [
+            {
+              "maxItems": 6,
+              "minItems": 6,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Static Transform Xyz Rpy"
+        },
+        "intrinsics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IntrinsicsPinhole"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "SensorOverlay",
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "RobotUnit": {
+      "$defs": {
+        "IntrinsicsPinhole": {
+          "description": "Pinhole camera intrinsics.\n\nAttributes:\n    width: Image width in pixels.\n    height: Image height in pixels.\n    fx: Focal length in x (pixels).\n    fy: Focal length in y (pixels).\n    cx: Principal point x (pixels).\n    cy: Principal point y (pixels).\n    distortion_model: Distortion model name.\n    distortion_coeffs: Distortion coefficients.\n\nExample:\n    >>> IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0)\n    IntrinsicsPinhole(width=640, height=480, fx=600.0, fy=600.0, cx=320.0, cy=240.0, ...)",
+          "properties": {
+            "width": {
+              "title": "Width",
+              "type": "integer"
+            },
+            "height": {
+              "title": "Height",
+              "type": "integer"
+            },
+            "fx": {
+              "title": "Fx",
+              "type": "number"
+            },
+            "fy": {
+              "title": "Fy",
+              "type": "number"
+            },
+            "cx": {
+              "title": "Cx",
+              "type": "number"
+            },
+            "cy": {
+              "title": "Cy",
+              "type": "number"
+            },
+            "distortion_model": {
+              "default": "plumb_bob",
+              "enum": [
+                "plumb_bob",
+                "equidistant",
+                "none"
+              ],
+              "title": "Distortion Model",
+              "type": "string"
+            },
+            "distortion_coeffs": {
+              "items": {
+                "type": "number"
+              },
+              "title": "Distortion Coeffs",
+              "type": "array"
+            }
+          },
+          "required": [
+            "width",
+            "height",
+            "fx",
+            "fy",
+            "cx",
+            "cy"
+          ],
+          "title": "IntrinsicsPinhole",
+          "type": "object"
+        },
+        "SensorDeployBinding": {
+          "additionalProperties": false,
+          "description": "Real-device binding that lets ``openral deploy run`` open a sensor.\n\nThe runtime counterpart to ``SensorSpec.sim_placement``: ``sim_placement``\nsays how the **sim** renders a camera; ``deploy_binding`` says how a **real**\ndeploy opens it \u2014 which ``SensorReaderBackend`` and its\n``/dev/video*`` / pipeline parameters. It is host/site-specific (a\n``/dev/video*`` index differs per machine).\n\nA robot camera (wrist / head / the robot's own overview) takes it from its\nhost's unit overlay, ``robots/<id>/units/<unit>.yaml`` (``SensorOverlay``),\nor from ``robots/<id>/robot.yaml`` for a robot with a single reference host;\na deploy scene never redefines a robot sensor. A workcell-mounted camera\n(overhead / front) declares it on its own, distinctly named\n``DeployScene.sensors`` entry. Either way the deploy\nsensor leg (``openral_rskill_ros.sensor_leg``) opens every\n``SensorSpec`` that carries one and publishes it on\n``/openral/cameras/<name>/image``.\n\nAttributes:\n    backend: Which ``SensorReaderBackend`` opens the device.\n    backend_params: Backend-specific reader kwargs, e.g.\n        ``{\"device\": \"/dev/video0\", \"fps\": 30}`` for ``opencv_thread`` or a\n        ``{\"pipeline\": ...}`` string for ``gstreamer``.\n    max_age_ms: How stale a frame may be before the reader raises.\n\nExample:\n    >>> SensorDeployBinding(\n    ...     backend=SensorReaderBackend.OPENCV_THREAD,\n    ...     backend_params={\"device\": \"/dev/video0\", \"fps\": 30},\n    ... ).backend.value\n    'opencv_thread'",
+          "properties": {
+            "backend": {
+              "$ref": "#/$defs/SensorReaderBackend",
+              "default": "opencv_thread"
+            },
+            "backend_params": {
+              "additionalProperties": true,
+              "title": "Backend Params",
+              "type": "object"
+            },
+            "max_age_ms": {
+              "default": 100,
+              "exclusiveMinimum": 0,
+              "title": "Max Age Ms",
+              "type": "integer"
+            }
+          },
+          "title": "SensorDeployBinding",
+          "type": "object"
+        },
+        "SensorOverlay": {
+          "additionalProperties": false,
+          "description": "Per-host / per-unit values for ONE sensor the robot manifest declares.\n\nThe robot manifest owns a sensor's identity and semantics (name, modality,\n``frame_id``, ``parent_frame``); what differs between two physical units of the\nsame robot type \u2014 the device path or serial in ``deploy_binding``, the vendor\ndriver topic, the calibrated mount pose and intrinsics \u2014 goes here. Any other\nfield is refused (``extra=\"forbid\"``). Applied by ``apply_sensor_overlays``.\n\nAttributes:\n    name: The robot-manifest sensor this overlays.\n    deploy_binding: This host's real-device binding.\n    ros2_topic: This host's vendor-driver topic.\n    static_transform_xyz_rpy: This unit's calibrated mount, in the manifest's\n        ``parent_frame``.\n    intrinsics: This unit's calibrated intrinsics.\n\nExample:\n    >>> SensorOverlay(name=\"top\", ros2_topic=\"/cam/image\").ros2_topic\n    '/cam/image'",
+          "properties": {
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "deploy_binding": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/SensorDeployBinding"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "ros2_topic": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Ros2 Topic"
+            },
+            "static_transform_xyz_rpy": {
+              "anyOf": [
+                {
+                  "maxItems": 6,
+                  "minItems": 6,
+                  "prefixItems": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "number"
+                    }
+                  ],
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Static Transform Xyz Rpy"
+            },
+            "intrinsics": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/IntrinsicsPinhole"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "title": "SensorOverlay",
+          "type": "object"
+        },
+        "SensorReaderBackend": {
+          "description": "Which ``SensorReader`` implementation to instantiate.\n\n``opencv_thread`` is the default and mirrors lerobot's per-camera\nbackground-thread pattern. ``galaxea_a1_camera_bridge`` consumes the\nversioned paired raw-frame service owned by an external A1 Runtime process\nwithout importing Runtime or opening either RealSense device.\n``ros2_image`` subscribes to a ROS 2 image topic published by a vendor\ndriver \u2014 the path for streams that exist only because an SDK computed them\n(ZED stereo depth, RealSense aligned depth), which no ``/dev/video*`` read\ncan reach. ``gstreamer`` runs a GStreamer pipeline whose appsink\ndelivers frames (NVMM / DMA-BUF on Jetson; CPU bytes on x86).\n\n``holoscan`` is **reserved-but-unimplemented**: a 2026-05-12 evaluation\nof NVIDIA Holoscan SDK as a parallel ingest backbone\ndeferred adoption (lean GStreamer with custom NvBufSurface glue\nwon the comparison). The enum value exists so a future PR can add\nthe backend additively without bumping the schema again; configs\nthat select it today raise ``ROSConfigError`` at factory time.",
+          "enum": [
+            "opencv_thread",
+            "ros2_image",
+            "gstreamer",
+            "holoscan",
+            "galaxea_a1_camera_bridge"
+          ],
+          "title": "SensorReaderBackend",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "description": "One physical unit / host of a robot type: ``robots/<robot_id>/units/<unit>.yaml``.\n\nSelected by ``$OPENRAL_ROBOT_UNIT`` or ``DeployScene.robot_unit``; see\n``resolve_sensor_overlays``.\n\nAttributes:\n    schema_version: On-disk schema version.\n    robot_id: The ``robots/<robot_id>`` directory this unit belongs to.\n    unit: The unit name, equal to the file stem.\n    sensors: Overlays for the robot manifest's sensors.\n\nExample:\n    >>> RobotUnit(robot_id=\"so101_follower\", unit=\"bench_laptop\").sensors\n    []",
+      "properties": {
+        "schema_version": {
+          "const": "0.1",
+          "default": "0.1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "robot_id": {
+          "title": "Robot Id",
+          "type": "string"
+        },
+        "unit": {
+          "title": "Unit",
+          "type": "string"
+        },
+        "sensors": {
+          "items": {
+            "$ref": "#/$defs/SensorOverlay"
+          },
+          "title": "Sensors",
+          "type": "array"
+        }
+      },
+      "required": [
+        "robot_id",
+        "unit"
+      ],
+      "title": "RobotUnit",
       "type": "object",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },

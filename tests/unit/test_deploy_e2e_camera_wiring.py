@@ -108,16 +108,18 @@ def test_octomap_without_a_depth_cloud_fails_loud(launch_module: object) -> None
 def test_real_deploy_picks_a_bound_camera(launch_module: object) -> None:
     """On a real deploy only a camera with a ``deploy_binding`` has a topic.
 
-    The committed OpenArm manifest binds all its cameras (a deploy scene never touches
-    a robot camera), so the real pick equals the sim pick, ``top``. Strip the bindings
+    Each committed OpenArm unit overlay binds all its cameras (a deploy scene never
+    touches a robot camera), so the real pick equals the sim pick, ``top``. Strip the bindings
     and a camera the manifest leaves unbound is a dead topic on the real cell: with only
     ``wrist_left`` bound the completion/detector camera must be ``wrist_left``; with no
     binding at all it is empty, which disables the subscription instead of subscribing
     to silence.
     """
-    from openral_core import publishing_sensors
+    from openral_core import apply_sensor_overlays, load_robot_unit, publishing_sensors
 
+    thor = load_robot_unit(REPO_ROOT / "robots" / "openarm" / "robot.yaml", "thor")
     arm = _robot("openarm")
+    arm = arm.model_copy(update={"sensors": apply_sensor_overlays(arm.sensors, thor.sensors)})
     only_left = [
         s if s.name == "wrist_left" else s.model_copy(update={"deploy_binding": None})
         for s in arm.sensors

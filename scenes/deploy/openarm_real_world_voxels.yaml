@@ -6,21 +6,23 @@
 # step by step; this header is the short form, not a substitute.
 #
 # Preconditions, ALL of them, every run:
-#   1. head_zed extrinsic calibrated AND verified for exactly the pose in
-#      robots/openarm/robot.yaml: a passing report from
-#      `tools/zed_extrinsic_check.py check` committed at
-#      robots/openarm/calibration/head_zed_extrinsic.json. A mis-framed
+#   1. OPENRAL_ROBOT_UNIT names this cell, and head_zed's extrinsic is calibrated
+#      AND verified for exactly that unit's pose (robots/openarm/units/<unit>.yaml
+#      over the manifest's nominal): a passing report from
+#      `tools/zed_extrinsic_check.py check --unit <unit>` committed at
+#      robots/openarm/calibration/<unit>/head_zed_extrinsic.json. A mis-framed
 #      cloud is not a bad picture here: it puts obstacles where there are none
 #      (false E-stops) and, worse, moves real obstacles away from where they
-#      are (missed stops). The manifest holds ONE pose; the Thor and Orin
-#      cells have different ZED mounts, so a pose calibrated on one is wrong
-#      on the other (runbook step 2).
+#      are (missed stops). The Thor and Orin cells have different ZED mounts, so
+#      a pose calibrated on one is wrong on the other (runbook step 2).
 #   2. A person at the cell for the whole run, hardware E-stop in hand, and a
 #      second person on the stop for bringup: `deploy run` activates the
 #      OpenArm controllers, whose on_activate steps all 16 motors to zero
 #      UNRAMPED. Park the arms near zero first. Presence is per run.
 #   3. Both motion gates exported by that person, for that run only:
 #      OPENRAL_OPENARM_ALLOW_MOTION=1 and OPENRAL_OPENARM_ATTENDED=1.
+#      No `robot_unit` here on purpose: this scene runs on either cell, so the
+#      unit comes from OPENRAL_ROBOT_UNIT and `deploy run` refuses without it.
 #   Launch ONLY through `tools/openarm_world_voxel_run.sh`, which refuses
 #   unless 1 and 3 hold. `openral deploy run` itself checks neither.
 #
@@ -52,10 +54,10 @@ robot_id: "openarm"
 scene:
   id: openarm_real_world_voxels
 
-# No `sensors:` entry: head_zed is a robot sensor, so its mount pose (the
-# calibrated extrinsic) and its real-hardware binding live in
-# robots/openarm/robot.yaml, the same values every OpenArm scene uses — a deploy
-# scene never touches a robot camera (openral_core.check_scene_sensor_overrides).
+# No `sensors:` entry: head_zed is a robot sensor, so its frames live in
+# robots/openarm/robot.yaml and its calibrated mount pose and real-hardware
+# binding in the unit overlay (robots/openarm/units/<unit>.yaml) — a deploy
+# scene never redefines a robot camera (openral_core.check_scene_sensor_overrides).
 # The cloud itself reaches octomap by topic: zed_wrapper publishes it and
 # `runtime.octomap_cloud_topic` points octomap at it.
 

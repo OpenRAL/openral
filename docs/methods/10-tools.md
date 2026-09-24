@@ -48,9 +48,9 @@ _Two modes: `emit --robot <path>` prints the YAML fragment to paste into the man
 ### `tools/schema_export.py`
 _Generates JSON Schema files for every public `openral_core` model._
 
-- `_enum_schema(cls) -> dict[str, Any]` — Minimal JSON Schema for a `str` Enum. (L177)
-- `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L189)
-- `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L241)
+- `_enum_schema(cls) -> dict[str, Any]` — Minimal JSON Schema for a `str` Enum. (L181)
+- `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L193)
+- `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L245)
 
 ### `tools/check_repo_state_map.py`
 _Pre-commit drift guard checking the mechanically verifiable half of `docs/architecture/repo-state-map.html`: that its `pkg:` pointers name something real and its asserted counts haven't rotted. Prose on the map stays a human judgement call._
@@ -387,19 +387,19 @@ Measures the wire cost of the dense `uint8[]` payload as publish→receive laten
 
 ### `tools/zed_extrinsic_check.py`
 
-- `MAX_TILT_DEG: float` (L58) — table-plane tilt pass limit (0.75°). Proposed, not rig-measured.
-- `MAX_HEIGHT_ERR_M: float` (L59) — table-height pass limit (10 mm).
-- `MAX_MARKER_ERR_M: float` (L60) — per-marker planar pass limit (15 mm).
-- `MIN_MARKERS: int` (L61) — markers required to pass (2; one cannot separate yaw from translation).
-- `check(args) -> int` (L278) — Reads the ZED cloud and camera-internal TF from a rosbag2 bag, places the cloud through the robot manifest's `--sensor` pose (the only place a robot sensor's mount lives), fits the table plane and marker centroids in the base frame, and writes a JSON report (residuals, pass/fail, and `suggested_static_transform_xyz_rpy` composed from tilt, height and planar corrections, to be copied into the manifest). Returns 0 iff it passes.
-- `verify(args) -> int` (L372) — 0 iff the report passed, at criteria no looser than the defaults, for the manifest's *current* pose. The gate `tools/openarm_world_voxel_run.sh` applies.
-- `main(argv=None) -> int` (L429) — CLI: `check --robot --bag --cloud-topic --table-z --table-roi --marker X Y ...` / `verify --robot --report` (`--sensor` defaults to `head_zed`; committed report at `robots/<id>/calibration/<sensor>_extrinsic.json`). Needs a sourced ROS 2 overlay (rosbag2_py, tf2_ros).
+- `MAX_TILT_DEG: float` (L60) — table-plane tilt pass limit (0.75°). Proposed, not rig-measured.
+- `MAX_HEIGHT_ERR_M: float` (L61) — table-height pass limit (10 mm).
+- `MAX_MARKER_ERR_M: float` (L62) — per-marker planar pass limit (15 mm).
+- `MIN_MARKERS: int` (L63) — markers required to pass (2; one cannot separate yaw from translation).
+- `check(args) -> int` (L287) — Reads the ZED cloud and camera-internal TF from a rosbag2 bag, places the cloud through the `--sensor` pose a deploy of `--unit` publishes (manifest with that `RobotUnit` overlay applied; nominal without `--unit`), fits the table plane and marker centroids in the base frame, and writes a JSON report (residuals, pass/fail, and `suggested_static_transform_xyz_rpy` composed from tilt, height and planar corrections, to be copied into the unit overlay); the report records the unit. Returns 0 iff it passes.
+- `verify(args) -> int` (L382) — 0 iff the report passed, at criteria no looser than the defaults, for the same unit and that unit's *current* pose. The gate `tools/openarm_world_voxel_run.sh` applies.
+- `main(argv=None) -> int` (L441) — CLI: `check --robot --bag --cloud-topic --table-z --table-roi --marker X Y ...` / `verify --robot --report` (`--sensor` defaults to `head_zed`; `--unit` selects `robots/<id>/units/<unit>.yaml`; committed report at `robots/<id>/calibration/<unit>/<sensor>_extrinsic.json`). Needs a sourced ROS 2 overlay (rosbag2_py, tf2_ros).
 
 Measures the one input the kernel's world-voxel check trusts absolutely on a real camera — the extrinsic — which `openral calibrate camera` (intrinsics only) does not. Runbook: `docs/tutorials/deploy/openarm-real-world-voxel-check.md`. Tested in `tests/unit/test_zed_extrinsic_check.py` on a real rosbag2 bag.
 
 ### `tools/openarm_world_voxel_run.sh`
 
-_The only sanctioned launcher for `scenes/deploy/openarm_real_world_voxels.yaml`. Refuses unless `OPENRAL_OPENARM_ALLOW_MOTION=1` and `OPENRAL_OPENARM_ATTENDED=1`, sourced ROS 2, `openral` on PATH, `zed_extrinsic_check.py verify` passing against `robots/openarm/robot.yaml` + `robots/openarm/calibration/head_zed_extrinsic.json`, and an interactive terminal; then asks for a typed confirmation and execs `openral deploy run`. Extra args pass through._
+_The only sanctioned launcher for `scenes/deploy/openarm_real_world_voxels.yaml`. Refuses unless `OPENRAL_OPENARM_ALLOW_MOTION=1` and `OPENRAL_OPENARM_ATTENDED=1`, `OPENRAL_ROBOT_UNIT` naming the cell, sourced ROS 2, `openral` on PATH, `zed_extrinsic_check.py verify --unit $OPENRAL_ROBOT_UNIT` passing against `robots/openarm/robot.yaml` + `robots/openarm/calibration/<unit>/head_zed_extrinsic.json`, and an interactive terminal; then asks for a typed confirmation and execs `openral deploy run`. Extra args pass through._
 
 ### `tools/stop_ee_speed.py`
 

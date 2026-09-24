@@ -8,6 +8,8 @@
 #
 # Camera MOUNT lives in `head_zed` (robots/openarm/robot.yaml), since the ZED
 # is bolted to the robot, not the workcell — this scene only declares posture.
+# Export OPENRAL_ROBOT_UNIT=<thor|orin> to use that unit's calibrated mount
+# (robots/openarm/units/); unset, the twin publishes the manifest's nominal pose.
 #
 # Bring up the camera driver on the SAME ROS_DOMAIN_ID first, then:
 #     ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedm \

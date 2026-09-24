@@ -1,0 +1,26 @@
+# SO-101 laptop bench host (scenes/deploy/so101_bench.yaml). Per-host camera bindings,
+# moved out of robot.yaml so a second SO-101 host adds its own units/<unit>.yaml instead
+# of editing the shared manifest. Use kernel-stable /dev/v4l/* symlinks, never raw
+# /dev/videoN; retune with `ls -l /dev/v4l/by-id /dev/v4l/by-path` or
+# `openral detect --deployment`. Selected by the scene's `robot_unit` or $OPENRAL_ROBOT_UNIT.
+schema_version: "0.1"
+robot_id: so101_follower
+unit: bench_laptop
+sensors:
+  - name: top
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        # by-path: the USB port this host's top camera is plugged into.
+        device: /dev/v4l/by-path/pci-0000:80:14.0-usb-0:11:1.0-video-index0
+        width: 640
+        height: 480
+        fps: 30
+  - name: wrist
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-icSpring_icspring_camera_20240307110322-video-index0
+        width: 640
+        height: 480
+        fps: 30

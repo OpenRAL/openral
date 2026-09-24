@@ -865,10 +865,13 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     and feeds the kernel via ROS params.
     """
     from openral_core import (  # reason: defer schema import
+        ROBOT_UNIT_ENV,
         DeployScene,
         RobotDescription,
+        apply_sensor_overlays,
         check_scene_sensor_overrides,
         publishing_sensors,
+        resolve_sensor_overlays,
     )
 
     if hal_mode not in ("sim", "real"):
@@ -1021,6 +1024,20 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # before launch, so `deploy validate` sees it too (the launch's merge re-checks).
     if launched_scene is not None:
         check_scene_sensor_overrides(description.sensors, launched_scene.sensors)
+    # This host's unit overlay (per-host bindings, per-unit calibration). Resolved here AND
+    # by the launch + runtime node from the same inputs (scene `robot_unit`, inherited
+    # $OPENRAL_ROBOT_UNIT), so every pre-launch decision below sees the sensors they publish.
+    scene_unit = launched_scene.robot_unit if launched_scene is not None else None
+    overlays = resolve_sensor_overlays(robot_yaml, scene_unit, required=hal_mode == "real")
+    if overlays:
+        unit = os.environ.get(ROBOT_UNIT_ENV) or scene_unit
+        _console.print(
+            f"robot unit [bold]{unit}[/bold]: overlays "
+            f"{', '.join(o.name for o in overlays)} ({robot_yaml.parent / 'units'})"
+        )
+        description = description.model_copy(
+            update={"sensors": apply_sensor_overlays(description.sensors, overlays)}
+        )
     # No per-robot table: the HAL node + sim path derive from the manifest
     # and the scene (see `_derive_hal_spec`).
     hal = _derive_hal_spec(robot_id, deploy_scene)

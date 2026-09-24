@@ -111,7 +111,7 @@ class TestRealModeResolution:
         config = tmp_path / "deploy.yaml"
         config.write_text(
             "scene:\n  id: so101_bench\n"
-            "robot_id: so101_follower\n"
+            "robot_id: so101_follower\nrobot_unit: bench_laptop\n"
             "hal:\n"
             "  defaults:\n"
             "    port: /dev/ttyACM0\n"
@@ -137,7 +137,7 @@ class TestRealModeResolution:
         config = tmp_path / "deploy.yaml"
         config.write_text(
             "scene:\n  id: so101_bench\n"
-            "robot_id: so101_follower\n"
+            "robot_id: so101_follower\nrobot_unit: bench_laptop\n"
             "hal:\n  defaults:\n    port: /dev/ttyACM0\n",
             encoding="utf-8",
         )
