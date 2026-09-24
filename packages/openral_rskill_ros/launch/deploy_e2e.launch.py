@@ -415,6 +415,76 @@ def _stereo_camera_topics(names_csv: str) -> tuple[str, str, str, str] | None:
     )
 
 
+def _primary_rgb_camera(description: RobotDescription) -> str:
+    """The RGB sensor the perception legs default to, or ``""`` when the robot has none.
+
+    Prefers an optical-framed RGB camera (its intrinsics/extrinsics resolve directly), else
+    the manifest's first RGB sensor. Shared by the object detector's ``locate_in_view`` camera
+    and the reasoner's completion camera so both watch the same view — a hard-coded name is a
+    dead topic on every robot that spells its cameras differently.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> _primary_rgb_camera(RobotDescription.from_yaml("robots/panda_mobile/robot.yaml"))
+        'shoulder_left'
+        >>> _primary_rgb_camera(RobotDescription.from_yaml("robots/so101_follower/robot.yaml"))
+        'top'
+    """
+    rgb = [s for s in description.sensors if s.modality == "rgb"]
+    return next(
+        (s.name for s in rgb if s.frame_id.endswith("_optical_frame")),
+        rgb[0].name if rgb else "",
+    )
+
+
+def _depth_points_topic(description: RobotDescription) -> str:
+    """``/openral/cameras/<name>/points`` of the first depth sensor with intrinsics, else ``""``.
+
+    The world-state object lift's depth-cloud fallback (``object_depth_points_topic``) reads the
+    cloud the sim sensor bridge back-projects for exactly those sensors
+    (``openral_hal.depth_cloud.is_depth_sensor``). Empty disables the fallback rather than
+    subscribing to a name nothing publishes.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> _depth_points_topic(RobotDescription.from_yaml("robots/panda_mobile/robot.yaml"))
+        '/openral/cameras/front_depth/points'
+        >>> _depth_points_topic(RobotDescription.from_yaml("robots/so101_follower/robot.yaml"))
+        ''
+    """
+    from openral_hal.depth_cloud import is_depth_sensor
+
+    name = next((s.name for s in description.sensors if is_depth_sensor(s)), "")
+    return f"/openral/cameras/{name}/points" if name else ""
+
+
+def _octomap_cloud_topic(pinned: str, description: RobotDescription) -> str:
+    """The cloud ``octomap_server`` maps: the pinned topic, else the manifest's depth cloud.
+
+    A scene-pinned ``octomap_cloud_topic`` wins (a real depth driver's topic); otherwise the
+    cloud the sim sensor bridge back-projects for the first depth sensor with intrinsics. A
+    fixed default was silence on every robot whose depth camera is not named ``front_depth``.
+
+    Raises:
+        ROSConfigError: nothing pinned and the robot declares no such depth sensor — never
+            spawn octomap_server against a topic nothing publishes.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> _octomap_cloud_topic("", RobotDescription.from_yaml("robots/openarm/robot.yaml"))
+        '/openral/cameras/head_zed/points'
+    """
+    topic = pinned or _depth_points_topic(description)
+    if not topic:
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"octomap enabled but robot {description.name!r} declares no depth sensor "
+            "with intrinsics and no octomap_cloud_topic was given"
+        )
+    return topic
+
+
 def _build_driver_includes(scene_drivers: list, deploy_config: str) -> list:  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, imported lazily
     """Include the vendor sensor drivers a deploy scene declares.
 
@@ -1386,6 +1456,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # The completion-camera topic is raw (bottom-up for LIBERO/MuJoCo);
     # mirror OPENRAL_DASHBOARD_FLIP_180 so the VLM judges an upright frame (the topic
     # itself is not flipped — sim_sensor_bridge flips only the dashboard thumbnail).
+    # The node's own default names a ``top`` camera that most robots do not declare; derive
+    # the view from the manifest (same rule as the detector) so the VLM completion check gets
+    # frames on every robot. Empty disables the subscription on a camera-less robot.
+    _completion_camera = _primary_rgb_camera(description)
+    reasoner_params["completion_camera_topic"] = (
+        f"/openral/cameras/{_completion_camera}/image" if _completion_camera else ""
+    )
     reasoner_params["completion_camera_flip_180"] = os.environ.get(
         "OPENRAL_DASHBOARD_FLIP_180", ""
     ) not in ("", "0", "false", "False")
@@ -1488,6 +1565,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # `[""]` is the node's own "no cameras" default: launch_ros cannot
                 # type an empty list and refuses it when the node starts.
                 "camera_names": rgb_camera_names or [""],
+                # World-state object-lift depth fallback: the manifest's depth sensor, not
+                # the node's ``front_depth`` default (dead on every other robot).
+                "object_depth_points_topic": _depth_points_topic(description),
                 # 512 px RoboCasa renders can arrive at ~0.6 Hz wall time while
                 # idle. Keep joint/EE diagnostics at 0.5 s, but give simulated
                 # cameras enough room for one slow frame without stale flapping.
@@ -2101,6 +2181,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     octomap_fixed_frame, octomap_base_frame = _octomap_frames(description)
 
     if enable_octomap:
+        octomap_cloud_topic = _octomap_cloud_topic(octomap_cloud_topic, description)
         # The world-collision perception leg. octomap_server builds a 3-D OcTree from the
         # HAL's depth PointCloud2 (``synthesize_depth_image`` back-projected by
         # ``points_from_depth_grid`` → ``octomap_cloud_topic``), and openral_octomap_bridge
@@ -2206,11 +2287,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # reasoner.)
         from openral_core.exceptions import ROSConfigError
 
-        _rgb_sensors = [s for s in description.sensors if s.modality == "rgb"]
-        det_camera = next(
-            (s.name for s in _rgb_sensors if s.frame_id.endswith("_optical_frame")),
-            _rgb_sensors[0].name if _rgb_sensors else "",
-        )
+        det_camera = _primary_rgb_camera(description)
         if not det_camera:
             raise ROSConfigError(
                 f"object detector enabled but robot {description.name!r} declares no RGB sensor"
@@ -2882,11 +2959,13 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "octomap_cloud_topic",
-            default_value="/openral/cameras/front_depth/points",
+            default_value="",
             description=(
                 "Depth PointCloud2 topic octomap_server consumes "
-                "(``cloud_in`` remap). Matches the HAL's depth publisher "
-                "for the robot's depth SensorSpec."
+                "(``cloud_in`` remap). Empty (default) derives "
+                "``/openral/cameras/<name>/points`` from the manifest's first "
+                "depth sensor with intrinsics — the sim sensor bridge's cloud. "
+                "Pin the depth driver's topic on real hardware."
             ),
         ),
         DeclareLaunchArgument(

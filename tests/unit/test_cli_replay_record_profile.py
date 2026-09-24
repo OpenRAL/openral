@@ -229,3 +229,18 @@ def test_ral_profile_session_start_errors_when_lttng_missing(
     )
     assert result.exit_code != 0
     assert "lttng-tools not found" in result.output
+
+
+def test_record_profiles_capture_the_camera_topics_the_graph_publishes() -> None:
+    """Cameras live on ``/openral/cameras/<name>/image``; a profile that records
+    ``/openral/sensors/...`` (the old pattern) bags no frames at all."""
+    import re
+
+    from openral_observability.replay.cli import RECORD_PROFILES
+
+    slim = [re.compile(r) for r in RECORD_PROFILES["slim"]["regex"]]
+    full = [re.compile(r) for r in RECORD_PROFILES["full"]["regex"]]
+    assert any(r.fullmatch("/openral/cameras/top/image/compressed") for r in slim)
+    assert not any(r.fullmatch("/openral/cameras/top/image") for r in slim)
+    assert any(r.fullmatch("/openral/cameras/top/image") for r in full)
+    assert any(r.fullmatch("/openral/cameras/top/depth/image") for r in full)

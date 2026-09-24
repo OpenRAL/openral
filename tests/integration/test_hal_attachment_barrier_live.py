@@ -339,7 +339,7 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
     camera = next(
         spec for spec in description.sensors if spec.name == _VISION_CAMERA and spec.intrinsics
     )
-    depth_topic = f"/openral/cameras/{_VISION_CAMERA}/depth"
+    depth_topic = f"/openral/cameras/{_VISION_CAMERA}/depth/image"
     segment_service = "/openral/perception/segment_in_view_barrier_itest"
 
     rclpy.init()

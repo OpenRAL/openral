@@ -347,11 +347,11 @@ _Query-time joiner for rosbag2 (mcap) ↔ OTel spans. Backs `openral replay` + `
 - `list_bag_trace_ids(bag_messages) -> list[dict]` (correlator.py L68) — Distinct trace_ids in the bag with counts, busiest first.
 - `build_timeline(bag_messages, spans, *, trace_id=None) -> list[TimelineEntry]` (correlator.py L95) — Pure join. Filters both inputs to `trace_id`, merges, sorts ascending by `ts_ns`.
 - `RECORD_PROFILES: dict[str, dict[str, list[str]]]` (cli.py L45) — Slim and full topic + regex presets.
-- `build_record_command(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=()) -> list[str]` (cli.py L85) — Compose `ros2 bag record` argv.
-- `@dataclass(frozen=True) class ReplayResult(trace_id, bag_trace_ids, timeline, bag_path)` (cli.py L133) — `.to_json()` returns a plain dict.
-- `run_replay(*, bag_path, trace_id, dashboard_url) -> ReplayResult` (cli.py L162) — Read a bag, fetch matching spans from the dashboard, return the joined timeline.
-- `run_record(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=(), dry_run=False) -> tuple[list[str], CompletedProcess | None]` (cli.py L210) — Spawn `ros2 bag record` in a new process group; forwards SIGINT/SIGTERM received by the parent as **SIGINT** to the child group so rosbag2 flushes `metadata.yaml` cleanly. Waits up to 5 s after the child exits for that file to appear.
-- `write_timeline(result: ReplayResult, out_path: Path) -> None` (cli.py L283) — Persist the timeline JSON.
+- `build_record_command(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=()) -> list[str]` (cli.py L88) — Compose `ros2 bag record` argv.
+- `@dataclass(frozen=True) class ReplayResult(trace_id, bag_trace_ids, timeline, bag_path)` (cli.py L136) — `.to_json()` returns a plain dict.
+- `run_replay(*, bag_path, trace_id, dashboard_url) -> ReplayResult` (cli.py L165) — Read a bag, fetch matching spans from the dashboard, return the joined timeline.
+- `run_record(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=(), dry_run=False) -> tuple[list[str], CompletedProcess | None]` (cli.py L213) — Spawn `ros2 bag record` in a new process group; forwards SIGINT/SIGTERM received by the parent as **SIGINT** to the child group so rosbag2 flushes `metadata.yaml` cleanly. Waits up to 5 s after the child exits for that file to appear.
+- `write_timeline(result: ReplayResult, out_path: Path) -> None` (cli.py L286) — Persist the timeline JSON.
 
 ### `tools/rskill_publisher.py`
 _Package and publish a local rSkill directory to the HF Hub._

@@ -708,4 +708,4 @@ class VisionAttachmentBridge:
 
     def _depth_topic(self) -> str:
         """Configured depth topic, or the conventional per-camera default."""
-        return self._config.depth_topic or f"/openral/cameras/{self._camera}/depth"
+        return self._config.depth_topic or f"/openral/cameras/{self._camera}/depth/image"

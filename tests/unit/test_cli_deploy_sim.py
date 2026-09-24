@@ -2646,11 +2646,12 @@ def _openarm_scene_with_octomap(tmp_path: Path, extra: str) -> Path:
 def test_scene_pinned_octomap_cloud_topic_is_forwarded(tmp_path: Path) -> None:
     """A workcell can point octomap_server at the topic its depth driver publishes.
 
-    The launch default is ``/openral/cameras/front_depth/points``, back-projected
-    by the **sim** sensor bridge — nothing publishes it under ``hal_mode:=real``.
-    So without this field a real deploy runs octomap_server against silence and
-    the map, ``/openral/world_voxels`` and the dashboard pointcloud card all stay
-    empty while every node reports healthy. The ZED topic below is
+    Unpinned, the launch derives ``/openral/cameras/head_zed/points`` from the
+    manifest's depth sensor, back-projected by the **sim** sensor bridge —
+    nothing publishes it under ``hal_mode:=real``. So without this field a real
+    deploy runs octomap_server against silence and the map,
+    ``/openral/world_voxels`` and the dashboard pointcloud card all stay empty
+    while every node reports healthy. The ZED topic below is
     ``mTopicRoot + "point_cloud/cloud_registered"`` from zed_camera_component.
     """
     topic = "/zed/zed_node/point_cloud/cloud_registered"

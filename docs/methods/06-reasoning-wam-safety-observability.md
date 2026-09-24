@@ -1105,9 +1105,9 @@ _`openral replay` implementation: record a bag with the right topics, then join 
 
 - module constant `ProfileName` (L35) — `Literal["slim", "full"]`, the two `ros2 bag record` topic/regex profiles.
 - module constant `RECORD_PROFILES: dict[str, dict[str, list[str]]]` (L45) — the `slim` (safety/estop/world-state-slow) and `full` (adds world-state-fast, joint_states, tf, all perception/sensors) topic + regex lists.
-- `build_record_command(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=()) -> list[str]` (L85) — Compose the `ros2 bag record` argv for `profile`.
-- `run_record(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=(), dry_run=False) -> tuple[list[str], subprocess.CompletedProcess[bytes] | None]` (L210) — Invoke `ros2 bag record` with the chosen profile.
-- `class ReplayResult` (L133) — Output of `run_replay` — both summary + the joined timeline; fields `trace_id`, `bag_trace_ids`, `timeline`, `bag_path`.
-  - `to_json(self) -> dict[str, Any]` (L152) — Return a plain-dict view suitable for `json.dumps`.
-- `run_replay(*, bag_path, trace_id, dashboard_url) -> ReplayResult` (L162) — Read `bag_path`, fetch matching spans, return the joined timeline.
-- `write_timeline(result, out_path) -> None` (L283) — Persist a `ReplayResult` as pretty-printed JSON to `out_path`.
+- `build_record_command(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=()) -> list[str]` (L88) — Compose the `ros2 bag record` argv for `profile`.
+- `run_record(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=(), dry_run=False) -> tuple[list[str], subprocess.CompletedProcess[bytes] | None]` (L213) — Invoke `ros2 bag record` with the chosen profile.
+- `class ReplayResult` (L136) — Output of `run_replay` — both summary + the joined timeline; fields `trace_id`, `bag_trace_ids`, `timeline`, `bag_path`.
+  - `to_json(self) -> dict[str, Any]` (L155) — Return a plain-dict view suitable for `json.dumps`.
+- `run_replay(*, bag_path, trace_id, dashboard_url) -> ReplayResult` (L165) — Read `bag_path`, fetch matching spans, return the joined timeline.
+- `write_timeline(result, out_path) -> None` (L286) — Persist a `ReplayResult` as pretty-printed JSON to `out_path`.

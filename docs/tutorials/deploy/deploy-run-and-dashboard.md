@@ -213,10 +213,13 @@ any rectified stream published by a calibration node.
 ### Building a world map from a real depth camera (`octomap_cloud_topic`)
 
 Turning `enable_octomap: true` on is not enough on real hardware. `octomap_server`
-subscribes to whatever `octomap_cloud_topic` names, and that argument defaults to
-`/openral/cameras/front_depth/points` — a topic published by the **sim** sensor
-bridge, which back-projects the digital twin's depth raster. Nothing publishes it
-under `hal_mode:=real`.
+subscribes to whatever `octomap_cloud_topic` names. Left unset, the launch derives
+`/openral/cameras/<name>/points` from the manifest's first depth sensor with
+intrinsics (e.g. `head_zed` on `openarm`, `front_depth` on `panda_mobile`) — a
+topic published by the **sim** sensor bridge, which back-projects the digital
+twin's depth raster. Nothing publishes it under `hal_mode:=real`. With octomap
+forced on for a robot that declares no such depth sensor, the launch fails with
+`ROSConfigError` instead of mapping silence.
 
 Leave it unset on hardware and the failure is silent in the worst way: every node
 comes up healthy, and the octree, `/openral/world_voxels` and the dashboard's

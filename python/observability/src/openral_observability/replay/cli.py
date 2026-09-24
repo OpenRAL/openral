@@ -55,8 +55,11 @@ RECORD_PROFILES: Final[dict[str, dict[str, list[str]]]] = {
         ],
         "regex": [
             r"/openral/failure/.*",
-            # One compressed image stream per camera.
-            r"/openral/sensors/[^/]+/compressed",
+            # One compressed image stream per camera. Cameras publish on
+            # ``/openral/cameras/<name>/image``; the ``/compressed`` sibling exists
+            # when the image_transport republishers run (``foxglove.launch.py``
+            # ``republish_compressed``), which is what keeps this profile slim.
+            r"/openral/cameras/[^/]+/image/compressed",
         ],
     },
     "full": {
@@ -76,7 +79,7 @@ RECORD_PROFILES: Final[dict[str, dict[str, list[str]]]] = {
         "regex": [
             r"/openral/failure/.*",
             r"/openral/perception/.*",
-            r"/openral/sensors/.*",
+            r"/openral/cameras/.*",
         ],
     },
 }
