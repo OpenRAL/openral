@@ -1043,9 +1043,10 @@ def test_payload_slip_is_the_distance_between_the_kernels_model_and_the_body() -
 
 
 def test_collision_model_slop_skips_capsule_links_instead_of_crashing() -> None:
-    """A manifest whose collision model is capsules/spheres (the OpenArm) has no OBB
-    corners to budget: those links land in ``unresolved_links`` (no budget, the
-    conservative reading) and the E-stop ground-truth snapshot keeps working.
+    """A capsule/sphere link (the OpenArm's link2 and link6) has no OBB corners to
+    budget: it lands in ``unresolved_links`` (no budget, the conservative reading)
+    while the same manifest's box links still get one, and the E-stop
+    ground-truth snapshot keeps working on a mixed model.
 
     Latent until the HAL ran on its manifest: the Python ``OPENARM_DESCRIPTION``
     carried no collision geometry, so the box-only path was never reached.
@@ -1054,9 +1055,12 @@ def test_collision_model_slop_skips_capsule_links_instead_of_crashing() -> None:
     from openral_hal import build_hal
 
     description = RobotDescription.from_yaml("robots/openarm/robot.yaml")
-    assert all(
-        getattr(e.shape, "half_extents_m", None) is None for e in description.collision_geometry
-    ), "this test wants a non-box collision model; the openarm manifest changed"
+    capsule_links = sorted(
+        e.link_name
+        for e in description.collision_geometry
+        if getattr(e.shape, "half_extents_m", None) is None
+    )
+    assert capsule_links, "this test wants non-box links; the openarm manifest changed"
     from openral_core.exceptions import ROSConfigError
     from openral_hal._openarm_v2_assets import ensure_openarm_v2_mjcf
 
@@ -1070,7 +1074,11 @@ def test_collision_model_slop_skips_capsule_links_instead_of_crashing() -> None:
         slop = collision_model_mesh_slop(hal._model, description)
     finally:
         hal.disconnect()
-    declared = sorted(e.link_name for e in description.collision_geometry)
-    assert slop["links"] == {}
-    assert slop["unresolved_links"] == declared
-    assert slop["max_corner_slop_m"] == 0.0
+    declared = {e.link_name for e in description.collision_geometry}
+    resolved = set(slop["links"])
+    unresolved = set(slop["unresolved_links"])
+    assert set(capsule_links) <= unresolved
+    assert not resolved & set(capsule_links)
+    assert resolved | unresolved == declared
+    assert resolved, "the openarm's box links should get a corner budget"
+    assert slop["max_corner_slop_m"] > 0.0
