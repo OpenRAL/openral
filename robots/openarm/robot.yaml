@@ -341,6 +341,18 @@ safety:
   # that gave 2 rad/s (issue #303).
   starting_pose_max_joint_speed_rad_s: 0.5
   starting_pose_tolerance_rad: 0.05
+  # Joint-state freshness window: the real HAL's read_state and the skill
+  # runner's blocking waits refuse state older than this (one place; build_hal
+  # and deploy_e2e.launch.py read it). Three control periods at 30 Hz.
+  # Measured on Thor 2026-09-23 with tools/joint_state_staleness_probe.py
+  # (750 Hz JointState over the production Fast-DDS path into
+  # RosControlTransport): idle callback gap p99.9 2.6 ms / max 4.6 ms,
+  # read-side age max 32 ms; under deliberate GIL starvation gap max 24 ms,
+  # stamp->callback latency max 43 ms, no gap above 33 ms. 0.1 s is >2x the
+  # worst observed and catches a dead bus within three ticks instead of
+  # fifteen. Confirm on an attended run: a spurious trip shows as
+  # ROSPerceptionStale in the runner log.
+  joint_state_staleness_limit_s: 0.1
 
 # `sdk_kind: open` — the whole real-hardware path is Apache-2.0: the
 # upstream enactic/openarm_mujoco MJCF for sim, and `openarm_can` +
@@ -382,24 +394,14 @@ hal:
   #
   # One flat block serves both entrypoints: build_hal drops every key the
   # target constructor does not accept, so the sim HAL never sees the CAN
-  # interface names and the real HAL never sees `settle_steps`. Only
-  # `staleness_limit_s` is common to both.
+  # interface names and the real HAL never sees `settle_steps`. The joint-state
+  # staleness window is `safety.joint_state_staleness_limit_s`, which build_hal
+  # threads into both.
   parameters:
     defaults:
       # ── sim (derived MujocoArmHAL) ──────────────────────────────────
       settle_steps: 4
       gravity_enabled: false
-      # ── both ────────────────────────────────────────────────────────
-      # Max age of a read_state() reading before ROSPerceptionStale. Three
-      # control periods at 30 Hz. Measured on Thor 2026-09-23 with
-      # tools/joint_state_staleness_probe.py (750 Hz JointState over the
-      # production Fast-DDS path into RosControlTransport): idle callback gap
-      # p99.9 2.6 ms / max 4.6 ms, read-side age max 32 ms; under deliberate
-      # GIL starvation gap max 24 ms, stamp->callback latency max 43 ms, no gap
-      # above 33 ms. 0.1 s is >2x the worst observed and catches a dead bus
-      # within three ticks instead of fifteen. Confirm on an attended run: a
-      # spurious trip shows as ROSPerceptionStale in the runner log.
-      staleness_limit_s: 0.1
       # ── real (OpenArmRealHAL) ───────────────────────────────────────
       # SocketCAN interface names. The OpenArm Jetson provisioning pins
       # these with a udev rule keyed on the PEAK adapter's per-channel

@@ -92,7 +92,7 @@ from openral_core.schemas import (
     SimGripperDescription,
 )
 
-from openral_hal._base import HALBase, _raw_floats
+from openral_hal._base import HALBase, _raw_floats, resolve_staleness_limit_s
 from openral_hal._mujoco_arm import MujocoArmHAL
 from openral_hal._real_description import make_real_description
 from openral_hal.protocol import EStopRecovery
@@ -254,6 +254,9 @@ ALOHA_DESCRIPTION = RobotDescription(
         # runner ramp to starting_pose — the former defaults, declared (issue #303)
         starting_pose_max_joint_speed_rad_s=0.5,
         starting_pose_tolerance_rad=0.05,
+        starting_pose_max_joint_speed_m_s=0.025,  # prismatic gripper; mirrors the YAML
+        starting_pose_tolerance_m=0.0025,
+        joint_state_staleness_limit_s=0.2,  # provisional, mirrors the YAML
     ),
     sdk_kind="open",
     # Control rate: the runner ticks at it, the HAL node publishes proprio at
@@ -436,7 +439,8 @@ class AlohaHAL(HALBase):
             Production use injects the lifecycle node's subscriber
             callback; tests inject ``SimTransport.state``.
         staleness_limit_s: Maximum age of a ``read_state()`` reading
-            before ``ROSPerceptionStale`` is raised.
+            before ``ROSPerceptionStale`` is raised. ``None`` (default) reads the manifest's
+            ``safety.joint_state_staleness_limit_s``.
         description: The loaded ``robots/<id>/robot.yaml`` manifest
             (threaded by ``build_hal``). ``None`` falls back to the
             in-code ``ALOHA_REAL_DESCRIPTION`` mirror.
@@ -482,7 +486,7 @@ class AlohaHAL(HALBase):
         arm_namespaces: Sequence[str] = _DEFAULT_ALOHA_ARM_NAMESPACES,
         publish_fn: _PublishFn | None = None,
         state_fn: _StateFn | None = None,
-        staleness_limit_s: float = 0.2,
+        staleness_limit_s: float | None = None,
         stop_timeout_s: float = 5.0,
         description: RobotDescription | None = None,
     ) -> None:
@@ -498,7 +502,7 @@ class AlohaHAL(HALBase):
         self._arm_namespaces = [str(ns) for ns in arm_namespaces]
         self._publish_fn: _PublishFn = publish_fn or _default_publish
         self._state_fn: _StateFn | None = state_fn
-        self._staleness_limit_s = staleness_limit_s
+        self._staleness_limit_s = resolve_staleness_limit_s(self.description, staleness_limit_s)
         self._stop_timeout_s = stop_timeout_s
         self._torque_seam: InterbotixStopSeam | None = None
         self._last_stop_report: DownstreamStopReport | None = None

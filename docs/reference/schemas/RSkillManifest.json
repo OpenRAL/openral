@@ -2,7 +2,7 @@
   "$defs": {
     "ActionContract": {
       "additionalProperties": false,
-      "description": "Per-rSkill action-vector contract.\n\nMirrors ``StateContract`` for the action side. Carries the\noutput dimensionality the checkpoint emits so the dataset bridge\n(and any downstream consumer) can bind the LeRobot v3 ``action``\nfeature shape without consulting the sim or hardware adapter.\n\nThe sim-specific action contract belongs on the\nper-checkpoint rSkill manifest, not on the physical\n``RobotDescription`` (the same Franka emits 7-D delta-EEF on\nLIBERO vs 8-D joint pos on a hardware deploy).\n\nAttributes:\n    dim: Dimensionality of the action vector emitted by\n        ``Skill.step()`` / ``PolicyAdapter.step()``. Required when\n        this contract is set.\n    representation: Optional named representation (mirrors\n        ``ActionSpec.representation``). When set, downstream\n        consumers can map between equivalent representations\n        (e.g. ``joint_positions`` \u2192 ``delta_ee_6d_plus_gripper``).\n    slots: Declarative slot layout. When set, every\n        index in ``[0, dim)`` must be covered by exactly one\n        ``ActionSlot`` (no gaps, no overlaps). The\n        skill_runner reads this to dispatch slices of the policy\n        vector onto typed ``Action`` objects. When ``None``,\n        the runner falls back to the legacy single-Action path\n        (one implicit ``JOINT_POSITION`` slot covering the whole\n        vector). Manifests carrying ``slots`` are exempt from the\n        ``dim <= len(robot.joints)`` invariant because\n        the slot decoder gives a typed contract per slice instead.\n    cartesian_delta_scale: Per-axis physical range for a normalized\n        Cartesian controller. Predictive safety applies\n        ``clip(raw, -1, 1) * scale``. ``None`` means identity (the policy\n        already emits physical units).\n    joint_names: The checkpoint's joint order on the whole-vector joint\n        path, spelled as ``RobotDescription.joints`` names (matched BY NAME\n        by ``openral_rskill._policy_io.PolicyIOCodec``). ``None`` means the\n        codec derives the order from the checkpoint's own feature names, or\n        identity. Forbidden together with ``slots`` (each JOINT_* slot\n        carries its own ``joint_names``).\n    gripper_scale: Policy-unit gripper value per robot-unit value. The HAL\n        gripper contract is a normalized ``[0, 1]`` jaw fraction; a LeRobot\n        SO-ARM checkpoint's gripper channel is ``[0, 100]`` \u2192 ``100.0``.\n        Applied by the codec on BOTH the joint and the slot path.",
+      "description": "Per-rSkill action-vector contract.\n\nMirrors ``StateContract`` for the action side. Carries the\noutput dimensionality the checkpoint emits so the dataset bridge\n(and any downstream consumer) can bind the LeRobot v3 ``action``\nfeature shape without consulting the sim or hardware adapter.\n\nThe sim-specific action contract belongs on the\nper-checkpoint rSkill manifest, not on the physical\n``RobotDescription`` (the same Franka emits 7-D delta-EEF on\nLIBERO vs 8-D joint pos on a hardware deploy).\n\nAttributes:\n    dim: Dimensionality of the action vector emitted by\n        ``Skill.step()`` / ``PolicyAdapter.step()``. Required when\n        this contract is set.\n    representation: Optional named representation (mirrors\n        ``ActionSpec.representation``). When set, downstream\n        consumers can map between equivalent representations\n        (e.g. ``joint_positions`` \u2192 ``delta_ee_6d_plus_gripper``).\n    slots: Declarative slot layout. When set, every\n        index in ``[0, dim)`` must be covered by exactly one\n        ``ActionSlot`` (no gaps, no overlaps). The\n        skill_runner reads this to dispatch slices of the policy\n        vector onto typed ``Action`` objects. When ``None``,\n        the runner falls back to the legacy single-Action path\n        (one implicit ``JOINT_POSITION`` slot covering the whole\n        vector). Manifests carrying ``slots`` are exempt from the\n        ``dim <= len(robot.joints)`` invariant because\n        the slot decoder gives a typed contract per slice instead.\n    cartesian_delta_scale: Per-axis physical range for a normalized\n        Cartesian controller. Predictive safety applies\n        ``clip(raw, -1, 1) * scale``. ``None`` means identity (the policy\n        already emits physical units).\n    joint_names: The checkpoint's joint order on the whole-vector joint\n        path, spelled as ``RobotDescription.joints`` names (matched BY NAME\n        by ``openral_rskill._policy_io.PolicyIOCodec``). ``None`` means the\n        codec derives the order from the checkpoint's own feature names, or\n        identity. Forbidden together with ``slots`` (each JOINT_* slot\n        carries its own ``joint_names``).\n    gripper_scale: Policy-unit gripper value per robot-unit value. The HAL\n        gripper contract is a normalized ``[0, 1]`` jaw fraction; a LeRobot\n        SO-ARM checkpoint's gripper channel is ``[0, 100]`` \u2192 ``100.0``.\n        Applied by the codec on BOTH the joint and the slot path.\n    control_freq_hz: The rate (Hz) the checkpoint was trained to be\n        executed at \u2014 one action-chunk row per control period. ``None`` =\n        undeclared (the runner uses the robot's\n        ``action_spec.control_freq_hz`` unchecked). When declared, the skill\n        runner refuses a goal whose tick rate differs: there is no temporal\n        resampler, and executing a 15 Hz policy at 30 Hz doubles its\n        commanded speed.",
       "properties": {
         "dim": {
           "exclusiveMinimum": 0,
@@ -19,6 +19,19 @@
             }
           ],
           "default": null
+        },
+        "control_freq_hz": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Control Freq Hz"
         },
         "slots": {
           "anyOf": [
@@ -954,7 +967,7 @@
       "type": "object"
     },
     "SafetyEnvelope": {
-      "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by the per-control-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.\n    starting_pose_max_joint_speed_rad_s: Joint-space speed of the\n        skill runner's ramp from the live pose to a skill's\n        ``starting_pose``. Declared per robot, never derived: a rated\n        ``velocity_limit`` is a ceiling, not an approach speed (issue\n        #303 \u2014 deriving it put the OpenArm at 2 rad/s). ``None`` =\n        undeclared; a real robot must declare it.\n    starting_pose_tolerance_rad: Joint-space distance within which the\n        runner treats the starting pose as reached, both for the ramp\n        and for verifying arrival before the policy starts. ``None`` =\n        undeclared; a real robot must declare it.",
+      "description": "Safety constraints enforced by the C++ safety kernel.\n\nAttributes:\n    workspace_box_min_xyz: Lower corner of allowed workspace (m).\n    workspace_box_max_xyz: Upper corner of allowed workspace (m).\n    no_go_zones: List of polygon definitions (dicts with 'vertices').\n    max_ee_speed_m_s: Maximum end-effector linear speed in m/s.\n        Also used by the per-control-mode supervisor as the\n        CARTESIAN_TWIST linear bound.\n    max_ee_accel_m_s2: Maximum end-effector acceleration in m/s\u00b2.\n    max_joint_speed_factor: Fraction of joint velocity_limit allowed.\n    max_force_n: Maximum contact force in Newtons.\n    max_torque_nm: Maximum joint torque in Nm.\n    deadman_required: Whether a deadman switch is required.\n    e_stop_topic: ROS 2 topic for E-stop commands.\n    e_stop_qos: QoS profile for E-stop topic.\n    contact_force_threshold_n: Force threshold for contact detection.\n    cycle_time_violation_threshold_ms: Control cycle time violation threshold.\n    human_in_loop_required: rSkill names requiring human supervision.\n    max_cartesian_step_m: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means\n        \"no per-mode check declared, skip\"; today's behaviour\n        preserved. Robots that host OSC-trained checkpoints\n        (panda_mobile, future Franka + \u03c00.7) declare this so the\n        supervisor rejects out-of-distribution arm deltas before\n        they reach the controller.\n    max_cartesian_step_rad: Per-control-mode supervisor bound \u2014\n        per-step magnitude bound on\n        CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``\n        skips the check.\n    max_ee_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        angular component bound\n        for CARTESIAN_TWIST (the linear bound reuses\n        ``max_ee_speed_m_s``). ``None`` skips the check.\n    max_base_linear_speed_m_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST linear bound\n        (Euclidean over vx,vy,vz). ``None`` skips the check;\n        mobile manipulators / wheeled bases declare it.\n    max_base_angular_speed_rad_s: Per-control-mode supervisor bound \u2014\n        BODY_TWIST angular\n        bound (Euclidean over wx,wy,wz; for planar bases only\n        wz is non-zero). ``None`` skips the check.\n    self_collision_margin_m: Clearance margin (m) for the\n        kernel's self/world/voxel geometric checks; a pair closer than\n        this fires. Default ``0.0`` (collide on touch). A small\n        **negative** value tolerates the grazing contact inherent to a\n        compact arm's in-distribution operating envelope (e.g. the\n        SO-101 pen VLA, whose links graze at true \u2248 0) while still\n        catching a real jam (deeper penetration). Loosening this is a\n        safety-WG decision and must be justified against the true\n        (non-convex mesh) envelope clearance, not the conservative\n        primitive distance.\n    starting_pose_max_joint_speed_rad_s: Approach speed (rad/s) of every\n        non-prismatic joint on the skill runner's ramp from the live pose to\n        a skill's ``starting_pose``. Declared per robot, never derived: a\n        rated ``velocity_limit`` is a ceiling, not an approach speed (issue\n        #303 \u2014 deriving it put the OpenArm at 2 rad/s). The runner caps each\n        joint at ``min(this, joint.velocity_limit)``. ``None`` = undeclared;\n        a real robot with a non-prismatic joint must declare it.\n    starting_pose_tolerance_rad: Per-joint distance (rad) within which a\n        non-prismatic joint counts as at its starting pose, both for the\n        ramp and for verifying arrival before the policy starts. ``None`` =\n        undeclared; a real robot with a non-prismatic joint must declare it.\n    starting_pose_max_joint_speed_m_s: The same approach speed for\n        **prismatic** joints, in m/s (a gripper's 0.041 m stroke is not\n        comparable to a radian). Also capped by ``joint.velocity_limit``.\n        A real robot with a prismatic joint must declare it.\n    starting_pose_tolerance_m: The per-joint arrival tolerance for\n        prismatic joints, in m. A real robot with a prismatic joint must\n        declare it.\n    joint_state_staleness_limit_s: Age (s) past which a joint-state\n        reading is refused as stale \u2014 by the real HAL's ``read_state``\n        (``ROSPerceptionStale``) and by the skill runner's blocking waits.\n        The one place a rig declares it: ``build_hal`` threads it into the\n        HAL and ``deploy_e2e.launch.py`` into the runner in real mode.\n        Must come from a measurement on the deploy host\n        (``tools/joint_state_staleness_probe.py``). ``None`` = undeclared;\n        a real robot must declare it.",
       "properties": {
         "workspace_box_min_xyz": {
           "anyOf": [
@@ -1162,6 +1175,45 @@
           ],
           "default": null,
           "title": "Starting Pose Tolerance Rad"
+        },
+        "starting_pose_max_joint_speed_m_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Starting Pose Max Joint Speed M S"
+        },
+        "starting_pose_tolerance_m": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Starting Pose Tolerance M"
+        },
+        "joint_state_staleness_limit_s": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Joint State Staleness Limit S"
         }
       },
       "title": "SafetyEnvelope",

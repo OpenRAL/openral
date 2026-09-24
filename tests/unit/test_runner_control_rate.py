@@ -42,18 +42,24 @@ def test_a_manifest_without_a_control_rate_is_reported_not_guessed() -> None:
 
 @pytest.mark.parametrize("robot", ["ur5e", "ur10e", "franka_panda", "sawyer", "openarm"])
 def test_every_ros2_control_robot_declares_its_rate(robot: str) -> None:
-    """Their real HALs refuse to build without it, so the committed manifests must carry it."""
+    """Their real HALs refuse to build without it, so the committed manifests must carry it.
+
+    Only OpenArm's 30 Hz is its real operating rate; the others are the runner's
+    former default, marked provisional in each manifest (audit C F1).
+    """
     desc = RobotDescription.from_yaml(str(REPO_ROOT / f"robots/{robot}/robot.yaml"))
     assert runner.resolve_control_rate_hz(0.0, desc) == 30.0
 
 
 # ── Starting-pose ramp: declared in the manifest, never derived ───────────────
+# Per-joint behaviour (prismatic units, velocity_limit cap) is pinned in
+# test_manifest_actuation_limits.py.
 
 
 def test_the_ramp_comes_from_the_manifest_not_from_rated_joint_limits() -> None:
     """Half the slowest rated velocity_limit would put the OpenArm at 2 rad/s (issue #303)."""
     desc = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
-    assert runner.resolve_starting_pose_ramp(0.0, 0.0, desc) == (0.5, 0.05)
+    assert set(runner.starting_pose_joint_bounds(0.0, 0.0, desc)) == {(0.5, 0.05)}
     slowest = min(j.velocity_limit for j in desc.joints if j.velocity_limit)
     assert slowest * desc.safety.max_joint_speed_factor > 0.5
 
@@ -63,14 +69,14 @@ def test_the_ramp_comes_from_the_manifest_not_from_rated_joint_limits() -> None:
 )
 def test_every_real_robot_declares_its_approach(robot: str) -> None:
     desc = RobotDescription.from_yaml(str(REPO_ROOT / f"robots/{robot}/robot.yaml"))
-    speed, tolerance = runner.resolve_starting_pose_ramp(0.0, 0.0, desc)
-    assert speed > 0.0 and tolerance > 0.0
+    for speed, tolerance in runner.starting_pose_joint_bounds(0.0, 0.0, desc):
+        assert speed > 0.0 and tolerance > 0.0
 
 
 def test_explicit_ramp_params_win() -> None:
     desc = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
-    assert runner.resolve_starting_pose_ramp(0.2, 0.01, desc) == (0.2, 0.01)
-    assert runner.resolve_starting_pose_ramp(0.2, 0.0, desc) == (0.2, 0.05)
+    assert set(runner.starting_pose_joint_bounds(0.2, 0.01, desc)) == {(0.2, 0.01)}
+    assert set(runner.starting_pose_joint_bounds(0.2, 0.0, desc)) == {(0.2, 0.05)}
 
 
 def test_a_manifest_without_the_approach_values_is_refused_not_guessed() -> None:
@@ -88,8 +94,8 @@ def test_a_manifest_without_the_approach_values_is_refused_not_guessed() -> None
         }
     )
     with pytest.raises(ROSConfigError, match="starting_pose_max_joint_speed_rad_s"):
-        runner.resolve_starting_pose_ramp(0.0, 0.0, bare)
+        runner.starting_pose_joint_bounds(0.0, 0.0, bare)
     with pytest.raises(ROSConfigError, match="starting_pose_tolerance_rad"):
-        runner.resolve_starting_pose_ramp(0.3, 0.0, bare)
+        runner.starting_pose_joint_bounds(0.3, 0.0, bare)
     with pytest.raises(ROSConfigError):
-        runner.resolve_starting_pose_ramp(0.0, 0.0, None)
+        runner.starting_pose_joint_bounds(0.0, 0.0, None)

@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any, cast
 import structlog
 from openral_core import required_vla_camera_slots, sensor_name_to_slot
 from openral_core.exceptions import ROSConfigError
+from openral_core.schemas import JointType
 
 if TYPE_CHECKING:
     from openral_core.schemas import Action, ActionSlot, RobotDescription, RSkillManifest
@@ -90,6 +91,12 @@ _MAX_APPROACH_WAYPOINTS = 100_000
 # max_execution_s``. A VLA policy never self-terminates, so without a bound the
 # goal runs forever and the reasoner can never re-evaluate the attempt.
 _DEFAULT_EXECUTION_DEADLINE_S = 45.0
+
+# The tick rate of a robot whose manifest declares no action_spec.control_freq_hz
+# (sim-only manifests today). Logged and recorded on the goal span as
+# control.rate_source=fallback wherever it is used; a real HAL refuses such a
+# manifest. Declaring the field is the fix, not tuning this.
+_FALLBACK_CONTROL_RATE_HZ = 30.0
 
 # ADR-0096 — the latched safety-state topic both the C++ kernel and
 # SafetyPassthroughNode publish on.
@@ -255,12 +262,12 @@ if _ROS2_AVAILABLE:
             # No default: the launch declares it with its rationale, and configure
             # refuses an unset value rather than guessing a staleness window.
             self.declare_parameter("joint_state_staleness_limit_s", 0.0)
-            # Conservative speed for the kernel-checked move from the live pose to an
-            # rSkill's starting_pose. The gripper channel is normalised [0, 1], so the same
-            # bound treats one full jaw stroke like one radian: conservative and tunable.
+            # Speed (rad/s) and arrival tolerance (rad) of the kernel-checked move from
+            # the live pose to an rSkill's starting_pose, for NON-prismatic joints only.
             # 0 = the manifest's safety.starting_pose_max_joint_speed_rad_s /
-            # starting_pose_tolerance_rad, declared per robot. Both used to be
-            # bare constants (0.5 rad/s, 0.05 rad) that came from nowhere.
+            # starting_pose_tolerance_rad. Prismatic joints always use the manifest's
+            # _m_s / _m values, and every joint is capped at its velocity_limit
+            # (see starting_pose_joint_bounds).
             self.declare_parameter("starting_pose_max_delta_per_s", 0.0)
             self.declare_parameter("starting_pose_tolerance", 0.0)
             self.declare_parameter("estop_topic", "/openral/estop")
@@ -1008,6 +1015,7 @@ if _ROS2_AVAILABLE:
                         # the LLM to populate it).
                         goal_params_json=getattr(req, "goal_params_json", ""),
                     )
+                    self._check_skill_control_rate(skill, span)
                 except (ROSConfigError, ROSCapabilityMismatch) as exc:
                     span.record_exception(exc)
                     self.get_logger().error(
@@ -1609,7 +1617,7 @@ if _ROS2_AVAILABLE:
 
             assert self._description is not None
             names = [joint.name for joint in self._description.joints]
-            _, tolerance = self._starting_pose_ramp()
+            bounds = self._starting_pose_bounds()
             deadline = time.monotonic() + float(
                 self.get_parameter("action_applied_timeout_s").value
             )
@@ -1621,13 +1629,9 @@ if _ROS2_AVAILABLE:
                 if (
                     js is not None
                     and int(js.stamp_ns) >= starting_pose_wall_ns
-                    and max(
-                        abs(current - target)
-                        for current, target in zip(
-                            self._joint_positions_in_manifest_order(js, names), pose, strict=True
-                        )
+                    and starting_pose_reached(
+                        self._joint_positions_in_manifest_order(js, names), pose, bounds
                     )
-                    <= tolerance
                 ):
                     self.get_logger().info(
                         "rskill_runner.starting_pose_verified "
@@ -1825,16 +1829,14 @@ if _ROS2_AVAILABLE:
             self._raise_if_safety_aborted("moving to starting_pose")
             current = self._joint_positions_in_manifest_order(self._hal.read_state(), names)
             deltas = [end - start for start, end in zip(current, target, strict=True)]
-            max_delta = max((abs(delta) for delta in deltas), default=0.0)
-            max_delta_per_s, tolerance = self._starting_pose_ramp()
             rate_hz = self._control_rate_hz()
-            if max_delta <= tolerance:
+            steps = starting_pose_ramp_steps(current, target, self._starting_pose_bounds(), rate_hz)
+            if steps == 0:
                 return None
-
-            steps = max(math.ceil(max_delta / max_delta_per_s * rate_hz), 1)
             self.get_logger().info(
                 "rskill_runner.starting_pose_ramp "
-                f"max_delta={max_delta:.3f} duration_s={steps / rate_hz:.2f} steps={steps}"
+                f"max_delta={max(abs(d) for d in deltas):.3f} "
+                f"duration_s={steps / rate_hz:.2f} steps={steps}"
             )
             next_deadline = time.perf_counter()
             for index in range(1, steps + 1):
@@ -1859,9 +1861,9 @@ if _ROS2_AVAILABLE:
                 next_deadline = _pace_tick(next_deadline, 1.0 / rate_hz)
             return None
 
-        def _starting_pose_ramp(self) -> tuple[float, float]:
-            """(max joint speed, arrival tolerance) for the starting-pose move."""
-            return resolve_starting_pose_ramp(
+        def _starting_pose_bounds(self) -> list[tuple[float, float]]:
+            """Per-joint (max speed, arrival tolerance) for the starting-pose move."""
+            return starting_pose_joint_bounds(
                 float(self.get_parameter("starting_pose_max_delta_per_s").value),
                 float(self.get_parameter("starting_pose_tolerance").value),
                 self._description,
@@ -1871,20 +1873,41 @@ if _ROS2_AVAILABLE:
             """The tick rate: the `rate_hz` param, else the manifest's control rate.
 
             A manifest that declares no rate (sim-only robots today) ticks at
-            30 Hz with a warning naming the missing field; a real ros2_control
-            HAL built from such a manifest has already refused to construct.
+            the 30 Hz fallback with a warning naming the missing field (and the
+            goal span records ``control.rate_source=fallback``); a real
+            ros2_control HAL built from such a manifest has already refused to
+            construct.
             """
-            rate = resolve_control_rate_hz(
+            rate, source = resolve_control_rate_source(
                 float(self.get_parameter("rate_hz").value), self._description
             )
-            if rate is None:
+            if source == "fallback":
                 name = self._description.name if self._description is not None else "?"
                 self.get_logger().warning(
                     f"robot {name!r} declares no action_spec.control_freq_hz and no "
-                    "rate_hz param was given; ticking at 30 Hz. Declare the field."
+                    f"rate_hz param was given; ticking at the {rate:g} Hz fallback. "
+                    "Declare the field."
                 )
-                return 30.0
             return rate
+
+        def _check_skill_control_rate(self, skill: Any, span: Any) -> None:
+            """Refuse a skill trained at another rate than this goal would tick at.
+
+            Records the tick rate and where it came from on the goal span, so a
+            fallback or a param override is visible in the trace.
+            """
+            rate, source = resolve_control_rate_source(
+                float(self.get_parameter("rate_hz").value), self._description
+            )
+            span.set_attribute("control.rate_hz", rate)
+            span.set_attribute("control.rate_source", source)
+            contract = getattr(getattr(skill, "manifest", None), "action_contract", None)
+            check_skill_control_rate(
+                getattr(contract, "control_freq_hz", None),
+                self._control_rate_hz(),
+                skill_id=str(getattr(getattr(skill, "manifest", None), "name", "?")),
+                robot=self._description.name if self._description is not None else "?",
+            )
 
         @staticmethod
         def _joint_positions_in_manifest_order(state: Any, names: list[str]) -> list[float]:
@@ -2573,51 +2596,151 @@ def resolve_control_rate_hz(param_hz: float, description: RobotDescription | Non
     return None if description is None else description.control_rate_hz
 
 
-def resolve_starting_pose_ramp(
+def starting_pose_joint_bounds(
     param_max_delta_per_s: float,
     param_tolerance_rad: float,
     description: RobotDescription | None,
-) -> tuple[float, float]:
-    """Ramp speed and arrival tolerance for the move to a skill's starting pose.
+) -> list[tuple[float, float]]:
+    """Per-joint ``(max speed, arrival tolerance)`` for the move to a skill's starting pose.
 
-    An explicit positive param wins (the SO-100 twin tests set both). Otherwise
-    the manifest's ``safety.starting_pose_max_joint_speed_rad_s`` and
-    ``safety.starting_pose_tolerance_rad`` are used — declared per robot, never
-    derived: a rated ``velocity_limit`` is a ceiling, not an approach speed, and
+    Each joint gets values in its own units: a prismatic joint the manifest's
+    ``safety.starting_pose_max_joint_speed_m_s`` / ``starting_pose_tolerance_m``,
+    every other joint ``..._rad_s`` / ``..._rad``. The speed is further capped at
+    the joint's ``velocity_limit`` when declared. Declared per robot, never
+    derived: a rated ``velocity_limit`` is a ceiling, not an approach speed —
     deriving from it put the OpenArm at 2 rad/s where every attended run had
-    used 0.5 (issue #303). No constant lives here.
+    used 0.5 (issue #303). A positive param overrides the rad values only (the
+    SO-100 twin tests set them); it never reaches a prismatic joint.
 
     Raises:
-        ROSConfigError: If a value is neither passed nor declared in the manifest.
+        ROSConfigError: If a value the robot's joint types need is neither
+            passed nor declared in the manifest.
 
     Example:
         >>> from openral_core.schemas import RobotDescription
-        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
-        >>> resolve_starting_pose_ramp(0.0, 0.0, desc)
-        (0.5, 0.05)
-        >>> resolve_starting_pose_ramp(0.2, 0.01, desc)
-        (0.2, 0.01)
+        >>> desc = RobotDescription.from_yaml("robots/sawyer/robot.yaml")
+        >>> bounds = starting_pose_joint_bounds(0.0, 0.0, desc)
+        >>> bounds[0], bounds[-1]  # right_j0 (revolute), right_gripper (prismatic)
+        ((0.5, 0.05), (0.025, 0.0025))
     """
-    safety = None if description is None else description.safety
-    speed = float(param_max_delta_per_s)
-    if speed <= 0.0:
-        declared = None if safety is None else safety.starting_pose_max_joint_speed_rad_s
-        if declared is None:
+    if description is None:
+        raise ROSConfigError("starting_pose_joint_bounds needs the robot description.")
+    safety = description.safety
+
+    def _declared(param: float, field: str) -> float:
+        if param > 0.0:
+            return float(param)
+        value = getattr(safety, field)
+        if value is None:
             raise ROSConfigError(
-                "starting_pose_max_delta_per_s is unset and the manifest declares no "
-                "safety.starting_pose_max_joint_speed_rad_s; declare it (rad/s) or pass the param."
+                f"robot {description.name!r} declares no safety.{field}; the runner's "
+                "approach to a starting pose has no default. Declare it in the manifest."
             )
-        speed = float(declared)
-    tolerance = float(param_tolerance_rad)
-    if tolerance <= 0.0:
-        declared = None if safety is None else safety.starting_pose_tolerance_rad
-        if declared is None:
-            raise ROSConfigError(
-                "starting_pose_tolerance is unset and the manifest declares no "
-                "safety.starting_pose_tolerance_rad; declare it (rad) or pass the param."
-            )
-        tolerance = float(declared)
-    return speed, tolerance
+        return float(value)
+
+    bounds: list[tuple[float, float]] = []
+    for joint in description.joints:
+        if joint.joint_type is JointType.PRISMATIC:
+            speed = _declared(0.0, "starting_pose_max_joint_speed_m_s")
+            tolerance = _declared(0.0, "starting_pose_tolerance_m")
+        else:
+            speed = _declared(param_max_delta_per_s, "starting_pose_max_joint_speed_rad_s")
+            tolerance = _declared(param_tolerance_rad, "starting_pose_tolerance_rad")
+        if joint.velocity_limit is not None and joint.velocity_limit > 0.0:
+            speed = min(speed, float(joint.velocity_limit))
+        bounds.append((speed, tolerance))
+    return bounds
+
+
+def starting_pose_reached(
+    current: Sequence[float], target: Sequence[float], bounds: Sequence[tuple[float, float]]
+) -> bool:
+    """True when every joint is within its own arrival tolerance of ``target``.
+
+    Example:
+        >>> starting_pose_reached([0.0, 0.03], [0.0, 0.0], [(0.5, 0.05), (0.025, 0.0025)])
+        False
+    """
+    return all(
+        abs(end - start) <= tolerance
+        for start, end, (_, tolerance) in zip(current, target, bounds, strict=True)
+    )
+
+
+def starting_pose_ramp_steps(
+    current: Sequence[float],
+    target: Sequence[float],
+    bounds: Sequence[tuple[float, float]],
+    rate_hz: float,
+) -> int:
+    """Ticks of the linear ramp to ``target``; ``0`` when already reached.
+
+    Every joint moves along the same interpolation, so the ramp lasts as long as
+    the joint that needs the most time at its own speed: no joint exceeds it.
+
+    Example:
+        >>> starting_pose_ramp_steps([0.0, 0.0], [0.5, 0.0], [(0.5, 0.05), (0.025, 0.0025)], 30.0)
+        30
+        >>> starting_pose_ramp_steps([0.0, 0.0], [0.0, 0.025], [(0.5, 0.05), (0.025, 0.0025)], 30.0)
+        30
+    """
+    if starting_pose_reached(current, target, bounds):
+        return 0
+    return max(
+        1,
+        *(
+            math.ceil(abs(end - start) / speed * rate_hz)
+            for start, end, (speed, _) in zip(current, target, bounds, strict=True)
+        ),
+    )
+
+
+def resolve_control_rate_source(
+    param_hz: float, description: RobotDescription | None
+) -> tuple[float, str]:
+    """The tick rate and where it came from: ``rate_hz_param``, ``manifest`` or ``fallback``.
+
+    ``fallback`` is the 30 Hz a manifest without ``action_spec.control_freq_hz``
+    (sim-only robots today) ticks at; callers log it and the goal span records it.
+
+    Example:
+        >>> from openral_core.schemas import RobotDescription
+        >>> resolve_control_rate_source(0.0, RobotDescription.from_yaml("robots/widowx/robot.yaml"))
+        (30.0, 'fallback')
+    """
+    if param_hz > 0.0:
+        return float(param_hz), "rate_hz_param"
+    rate = resolve_control_rate_hz(param_hz, description)
+    if rate is None:
+        return _FALLBACK_CONTROL_RATE_HZ, "fallback"
+    return rate, "manifest"
+
+
+def check_skill_control_rate(
+    trained_hz: float | None, tick_hz: float, *, skill_id: str, robot: str
+) -> None:
+    """Refuse to run a skill at a rate other than the one it declares it was trained at.
+
+    ``trained_hz`` is the skill's ``action_contract.control_freq_hz`` (``None`` =
+    undeclared, not checked). There is no temporal resampler: one chunk row is
+    executed per tick, so a 15 Hz policy ticked at 30 Hz commands twice its speed.
+
+    Raises:
+        ROSConfigError: The declared rate differs from ``tick_hz``.
+
+    Example:
+        >>> check_skill_control_rate(None, 30.0, skill_id="s", robot="ur5e")
+        >>> check_skill_control_rate(30.0, 30.0, skill_id="s", robot="ur5e")
+    """
+    if trained_hz is None or math.isclose(trained_hz, tick_hz, rel_tol=1e-6):
+        return
+    raise ROSConfigError(
+        f"rSkill {skill_id!r} was trained at {trained_hz:g} Hz "
+        f"(action_contract.control_freq_hz) but robot {robot!r} ticks at {tick_hz:g} Hz; "
+        "there is no action resampler, so its commanded speed would be off by "
+        f"{tick_hz / trained_hz:.2f}x. Run it on a robot manifest (or rate_hz param) "
+        "at its trained rate."
+    )
 
 
 def _require_positive_param(node: Any, name: str) -> float:  # reason: rclpy Node is untyped
