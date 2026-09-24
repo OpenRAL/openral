@@ -256,7 +256,7 @@ def test_occupancy_grid_validates() -> None:
 
 
 def test_openarm_fixture_loads_collision_geometry() -> None:
-    """``robots/openarm/robot.yaml`` parses its capsule/sphere link geometry."""
+    """``robots/openarm/robot.yaml`` parses its mesh-fitted capsule/box link geometry."""
     desc = RobotDescription.from_yaml(_OPENARM_YAML)
 
     by_link = {g.link_name: g.shape for g in desc.collision_geometry}
@@ -265,9 +265,11 @@ def test_openarm_fixture_loads_collision_geometry() -> None:
     chain_links = {j.parent_link for j in desc.joints} | {j.child_link for j in desc.joints}
     assert set(by_link).issubset(chain_links)
 
-    assert isinstance(by_link["openarm_left_link3"], CapsuleShape)
-    assert isinstance(by_link["openarm_left_finger_pair"], SphereShape)
-    assert by_link["openarm_left_link3"].radius_m > 0.0
+    # Fitted per link to the tighter of a trimmed capsule and a PCA box.
+    assert isinstance(by_link["openarm_left_link2"], CapsuleShape)
+    assert by_link["openarm_left_link2"].radius_m > 0.0
+    assert isinstance(by_link["openarm_left_finger_pair"], BoxShape)
+    assert min(by_link["openarm_left_finger_pair"].half_extents_m) > 0.0
 
 
 def test_openarm_allowed_collision_matrix_excludes_adjacent_not_cross_arm() -> None:
