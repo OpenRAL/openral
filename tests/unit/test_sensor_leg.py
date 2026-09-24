@@ -17,10 +17,13 @@ from typing import Any
 
 import pytest
 from openral_core import (
+    CameraTopicKind,
+    RobotDescription,
     SensorDeployBinding,
     SensorReaderBackend,
     SensorReaderConfig,
     SensorSpec,
+    camera_topic,
     merge_deploy_sensors,
 )
 from openral_rskill_ros.sensor_leg import (
@@ -28,6 +31,7 @@ from openral_rskill_ros.sensor_leg import (
     SensorLeg,
     _fallback_topic_rate_hz,
     _publish_rate_hz,
+    _sensor_topics,
     open_deploy_sensor_readers,
 )
 
@@ -748,4 +752,28 @@ def test_topic_rate_cap_stays_above_the_staleness_limit() -> None:
     assert staleness_s > 1.0 / _MAX_FALLBACK_TOPIC_RATE_HZ, (
         f"cap {_MAX_FALLBACK_TOPIC_RATE_HZ} Hz has period "
         f"{1.0 / _MAX_FALLBACK_TOPIC_RATE_HZ:.3f}s >= staleness {staleness_s}s"
+    )
+
+
+@pytest.mark.parametrize(
+    ("robot", "sensor", "image_kind", "info_kind"),
+    [
+        # A depth camera goes where the sim bridge puts it and depth consumers read.
+        ("panda_mobile", "front_depth", "DEPTH_IMAGE", "DEPTH_CAMERA_INFO"),
+        ("openarm", "head_zed", "DEPTH_IMAGE", "DEPTH_CAMERA_INFO"),
+        ("panda_mobile", "shoulder_left", "IMAGE", "CAMERA_INFO"),
+        ("so101_follower", "top", "IMAGE", "CAMERA_INFO"),
+    ],
+)
+def test_topics_follow_the_sensor_modality(
+    robot: str, sensor: str, image_kind: str, info_kind: str
+) -> None:
+    """A real depth sensor used to land on the RGB ``image`` kind, where no depth consumer looks."""
+    desc = RobotDescription.from_yaml(
+        Path(__file__).resolve().parents[2] / "robots" / robot / "robot.yaml"
+    )
+    spec = next(s for s in desc.sensors if s.name == sensor)
+    assert _sensor_topics(spec) == (
+        camera_topic(sensor, CameraTopicKind[image_kind]),
+        camera_topic(sensor, CameraTopicKind[info_kind]),
     )

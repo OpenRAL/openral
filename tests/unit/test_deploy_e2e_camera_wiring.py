@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from openral_core import CameraTopicKind, RobotDescription, camera_topic
+from openral_core import RobotDescription
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 LAUNCH = REPO_ROOT / "packages/openral_rskill_ros/launch/deploy_e2e.launch.py"
@@ -56,13 +56,10 @@ def test_primary_rgb_camera_follows_the_manifest(
     ("robot", "camera"),
     [("panda_mobile", "front_depth"), ("openarm", "head_zed"), ("so101_follower", "")],
 )
-def test_depth_points_topic_names_the_manifests_depth_sensor(
+def test_depth_camera_names_the_manifests_depth_sensor(
     launch_module: object, robot: str, camera: str
 ) -> None:
-    description = _robot(robot)
-    assert launch_module._depth_camera(description) == camera  # type: ignore[attr-defined]
-    topic = camera_topic(camera, CameraTopicKind.POINTS) if camera else ""
-    assert launch_module._depth_points_topic(description) == topic  # type: ignore[attr-defined]
+    assert launch_module._depth_camera(_robot(robot)) == camera  # type: ignore[attr-defined]
 
 
 def test_the_launch_no_longer_hardcodes_either_camera() -> None:
@@ -70,39 +67,54 @@ def test_the_launch_no_longer_hardcodes_either_camera() -> None:
     source = LAUNCH.read_text(encoding="utf-8")
     assert "/openral/cameras/top/image" not in source
     assert 'reasoner_params["completion_camera_topic"]' in source
-    assert "octomap_cloud_topic or _depth_points_topic(description)" in source
-    assert "octomap_cloud_topic = _octomap_cloud_topic(octomap_cloud_topic, description)" in source
-    # Only the helper's docstring example names ``front_depth`` — no launch default does.
-    assert source.count("/openral/cameras/front_depth/points") == 1
+    # The lift fallback and octomap share one derivation (openral_core.deploy_cloud_topic).
+    assert '"object_depth_points_topic": deploy_cloud_topic(' in source
+    assert (
+        "octomap_cloud_topic = _octomap_cloud_topic(octomap_cloud_topic, description, hal_mode)"
+        in source
+    )
+    assert "/openral/cameras/front_depth/points" not in source
 
 
 @pytest.mark.parametrize(
-    ("pinned", "robot", "topic"),
+    ("pinned", "robot", "hal_mode", "topic"),
     [
-        ("", "openarm", "/openral/cameras/head_zed/points"),  # derived: the sim bridge's cloud
-        ("", "panda_mobile", "/openral/cameras/front_depth/points"),
+        ("", "openarm", "sim", "/openral/cameras/head_zed/points"),  # the sim bridge's cloud
+        ("", "panda_mobile", "sim", "/openral/cameras/front_depth/points"),
         # A scene pin (a real depth driver) wins over the derivation.
         (
             "/zed/zed_node/point_cloud/cloud_registered",
             "openarm",
+            "real",
             "/zed/zed_node/point_cloud/cloud_registered",
         ),
-        ("/camera/depth/color/points", "so101_follower", "/camera/depth/color/points"),
+        ("/camera/depth/color/points", "so101_follower", "sim", "/camera/depth/color/points"),
     ],
 )
 def test_octomap_cloud_topic_prefers_the_pin_then_the_manifest(
-    launch_module: object, pinned: str, robot: str, topic: str
+    launch_module: object, pinned: str, robot: str, hal_mode: str, topic: str
 ) -> None:
-    got = launch_module._octomap_cloud_topic(pinned, _robot(robot))  # type: ignore[attr-defined]
+    got = launch_module._octomap_cloud_topic(pinned, _robot(robot), hal_mode)  # type: ignore[attr-defined]
     assert got == topic
 
 
-def test_octomap_without_a_depth_cloud_fails_loud(launch_module: object) -> None:
-    """``--enable-octomap`` on a depth-less robot must not map silence behind healthy nodes."""
+@pytest.mark.parametrize(
+    ("robot", "hal_mode"),
+    [
+        ("so101_follower", "sim"),  # no depth sensor at all
+        # A depth camera, but on real hardware only the sim bridge's name would be derived.
+        ("panda_mobile", "real"),
+        ("openarm", "real"),
+    ],
+)
+def test_octomap_without_a_published_cloud_fails_loud(
+    launch_module: object, robot: str, hal_mode: str
+) -> None:
+    """Octomap must never map silence behind healthy nodes, even from a direct ros2 launch."""
     from openral_core.exceptions import ROSConfigError
 
-    with pytest.raises(ROSConfigError, match="so101_follower"):
-        launch_module._octomap_cloud_topic("", _robot("so101_follower"))  # type: ignore[attr-defined]
+    with pytest.raises(ROSConfigError, match=robot):
+        launch_module._octomap_cloud_topic("", _robot(robot), hal_mode)  # type: ignore[attr-defined]
 
 
 def test_real_deploy_picks_a_bound_camera(launch_module: object) -> None:
