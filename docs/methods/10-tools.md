@@ -650,10 +650,10 @@ _Shared NF4 quantize + pre-quantized meta-load helpers for the Robometer reward 
 ### `tools/_robometer_scorer.py`
 _In-process stateless scorer for the Robometer-4B reward monitor, companion to `RobometerInProcessReward`. Loaded directly by `reward_monitor_node` — no separate process or dedicated venv. Meta-builds lerobot's native reward-model skeleton and drops in OpenRAL's NF4 pre-quantized weights directly, with no bf16 spike and no extra download._
 
-- `_NATIVE_CONFIG_REPO: str` (L50) — `"lerobot/Robometer-4B"`, the HF repo `_native_config` downloads `config.json` from to meta-build the native module skeleton.
-- `class Scorer` (L103) — Meta-builds the native `RobometerRewardModel` and remaps + loads the NF4 prequant pack.
-  - `__init__(weights, device="cuda", *, meta_buffers=True)` (L106) — `meta_buffers=False` builds buffers for real from the modules' own `__init__`: the reference `tests/sim/test_reward_nf4_buffer_equivalence.py` compares the meta load against (issue #304). Seeding `original_inv_freq` from `inv_freq` raises unless the rotary module's `rope_type` is `"default"`.
-  - `score(frames_rgb, task, num_bins) -> tuple[list[float], list[float]]` (L210) — Computes per-frame progress/success via the module's logit-decoding path (not the scalar-only `compute_reward`). `num_bins` is accepted for interface parity but unused.
+- `_NATIVE_CONFIG_REPO: str` (L51) — `"lerobot/Robometer-4B"`, the HF repo `_native_config` downloads `config.json` from to meta-build the native module skeleton.
+- `class Scorer` (L104) — Meta-builds the native `RobometerRewardModel` and remaps + loads the NF4 prequant pack.
+  - `__init__(weights, device="cuda", *, meta_buffers=True)` (L107) — `meta_buffers=False` builds buffers for real from the modules' own `__init__`: the reference `tests/sim/test_reward_nf4_buffer_equivalence.py` compares the meta load against (issue #304). Seeding `original_inv_freq` from `inv_freq` raises unless the rotary module's `rope_type` is `"default"`.
+  - `score(frames_rgb, task, num_bins) -> tuple[list[float], list[float]]` (L211) — Computes per-frame progress/success via the module's logit-decoding path (not the scalar-only `compute_reward`). `num_bins` is accepted for interface parity but unused.
 
 ### `tools/build_qwen_vlm_nf4_checkpoint.py`
 _Reproducible recipe for the published `OpenRAL/rskill-qwen35_4b-any-general-nf4` pre-quantized NF4 checkpoint. Runs in the sidecar venv. Distinct from `quantize_rskill.py`, which writes an `install_prequantized_linears`-loaded pack for the in-process lerobot runtime; this writes a transformers-native `save_pretrained` checkpoint for the isolated VLM sidecar._
