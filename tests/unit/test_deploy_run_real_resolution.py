@@ -12,6 +12,7 @@ for a simulation-only robot.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from openral_cli.deploy_sim import LaunchInvocation, resolve_launch_invocation
@@ -199,6 +200,36 @@ def _passing_report(spec: SensorSpec, base_frame: str) -> dict[str, object]:
     }
 
 
+#: A real depth driver's cloud. A real deploy with a depth camera and nothing pinned is
+#: refused before the extrinsic gate (no in-tree node publishes a real cloud), so these
+#: tests pin one the way a real scene's ``runtime.octomap_cloud_topic`` does.
+_DRIVER_CLOUD = "/camera/depth/color/points"
+
+
+def _resolve_real(robot_id: str, **kwargs: Any) -> LaunchInvocation:
+    """``deploy run`` of ``robot_id`` through a minimal scene that pins the driver cloud."""
+    import tempfile
+
+    import yaml
+
+    scene = {
+        "scene": {"id": "extrinsic_preflight"},
+        "robot_id": robot_id,
+        "runtime": {"enable_octomap": True, "octomap_cloud_topic": _DRIVER_CLOUD},
+    }
+    with tempfile.TemporaryDirectory() as tmp:
+        config = Path(tmp) / "scene.yaml"
+        config.write_text(yaml.safe_dump(scene), encoding="utf-8")
+        return resolve_launch_invocation(
+            config=config,
+            robot_override=None,
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_mode="real",
+            **kwargs,
+        )
+
+
 class TestDepthExtrinsicPreflight:
     """A real deploy with the world-voxel check on refuses an unverified depth extrinsic.
 
@@ -236,32 +267,25 @@ class TestDepthExtrinsicPreflight:
 
     def test_refuses_without_a_report(self, robot_dir: Path) -> None:
         with pytest.raises(ROSConfigError, match=r"wrist: no extrinsic report"):
-            _resolve("galaxea_a1", "real")
+            _resolve_real("galaxea_a1")
 
     def test_launches_with_a_verified_report(self, robot_dir: Path) -> None:
         self._write_report(robot_dir)
-        inv = _resolve("galaxea_a1", "real")
+        inv = _resolve_real("galaxea_a1")
         assert "enable_octomap_kernel_check:=true" in inv.argv_template
 
     def test_refuses_a_stale_report(self, robot_dir: Path) -> None:
         self._write_report(robot_dir, static_transform_xyz_rpy=[0.05, 0.0, 0.03, 0.0, 0.41, 0.0])
         with pytest.raises(ROSConfigError, match=r"wrist: manifest pose .* != checked pose"):
-            _resolve("galaxea_a1", "real")
+            _resolve_real("galaxea_a1")
 
     def test_refuses_a_failed_report(self, robot_dir: Path) -> None:
         self._write_report(robot_dir, passed=False, failures=["tilt"])
         with pytest.raises(ROSConfigError, match=r"wrist: report did not pass"):
-            _resolve("galaxea_a1", "real")
+            _resolve_real("galaxea_a1")
 
     def test_not_gated_when_the_world_voxel_check_is_off(self, robot_dir: Path) -> None:
-        inv = resolve_launch_invocation(
-            config=None,
-            robot_override="galaxea_a1",
-            dashboard_port=4318,
-            reset_to_pose_service=None,
-            hal_mode="real",
-            enable_octomap_kernel_check=False,
-        )
+        inv = _resolve_real("galaxea_a1", enable_octomap_kernel_check=False)
         assert "enable_octomap_kernel_check:=false" in inv.argv_template
 
     def test_the_committed_openarm_refuses_until_calibrated(
@@ -272,7 +296,7 @@ class TestDepthExtrinsicPreflight:
             pytest.skip("a head_zed calibration report is committed")
         monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
         with pytest.raises(ROSConfigError, match=r"head_zed: no extrinsic report .*/thor/"):
-            _resolve("openarm", "real")
+            _resolve_real("openarm")
 
     def test_a_unit_is_gated_on_its_own_pose_and_report(
         self, robot_dir: Path, monkeypatch: pytest.MonkeyPatch
@@ -297,7 +321,7 @@ class TestDepthExtrinsicPreflight:
         self._write_report(robot_dir)  # the manifest's nominal pose, unit-less path
         monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "cell_a")
         with pytest.raises(ROSConfigError, match=r"wrist: no extrinsic report .*/cell_a/"):
-            _resolve("galaxea_a1", "real")
+            _resolve_real("galaxea_a1")
 
         desc = RobotDescription.from_yaml(str(robot_dir / "robot.yaml"))
         (spec,) = [s for s in desc.sensors if s.name == "wrist"]
@@ -307,8 +331,8 @@ class TestDepthExtrinsicPreflight:
         report = _passing_report(spec, desc.base_frame)
         path.write_text(json.dumps(report), encoding="utf-8")
         with pytest.raises(ROSConfigError, match=r"wrist: report is for unit None, not 'cell_a'"):
-            _resolve("galaxea_a1", "real")
+            _resolve_real("galaxea_a1")
 
         path.write_text(json.dumps({**report, "unit": "cell_a"}), encoding="utf-8")
-        inv = _resolve("galaxea_a1", "real")
+        inv = _resolve_real("galaxea_a1")
         assert "enable_octomap_kernel_check:=true" in inv.argv_template
