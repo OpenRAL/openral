@@ -309,10 +309,9 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
     # autostart guards against).
     sensor_leg = None
     if deploy_config:
-        from openral_core import DeployScene
+        from openral_core import DeployScene, merge_deploy_sensors
         from openral_rskill_ros.sensor_leg import (
             apply_launch_overrides,
-            merge_deploy_sensors,
             open_deploy_sensor_readers,
             slam_camera_names,
             topic_frame_size,

@@ -115,7 +115,7 @@ The bound has to exceed octomap's normal inter-publish gap with margin
 Thor run at 2.2 Hz; ≤ 0.33 s in sim with the depth cast slowed to ~3 Hz) and
 must not exceed the kernel's deadline, so the kernel — not the bridge — is what
 fails closed. `deploy_e2e.launch.py` sets it equal to the deadline it gives the
-kernel (`_max_octree_age_s`, 1.0 s); an earlier half-deadline bound (0.5 s)
+kernel (`_MAX_OCTREE_AGE_S`, 1.0 s); an earlier half-deadline bound (0.5 s)
 silenced a healthy camera's grid at 2.2 Hz. A bound that is
 too small only costs availability: silence shorter than the kernel's
 deadline is not a drop. A non-finite or non-positive bound publishes

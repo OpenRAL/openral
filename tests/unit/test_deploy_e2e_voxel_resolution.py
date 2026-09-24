@@ -174,10 +174,10 @@ def test_the_octree_age_bound_is_derived_from_the_kernel_deadline(launch_module:
     bridge, and the kernel the same deadline it was derived from.
     """
     deadline_s = launch_module._WORLD_VOXEL_DEADLINE_MS / 1000.0
-    bound = launch_module._max_octree_age_s()
+    bound = launch_module._MAX_OCTREE_AGE_S
     assert bound == pytest.approx(deadline_s)
     assert 0.45 * 2 <= bound <= deadline_s
 
     source = LAUNCH.read_text()
-    assert '"max_octree_age_s": _max_octree_age_s()' in source
+    assert '"max_octree_age_s": _MAX_OCTREE_AGE_S' in source
     assert '"world_voxel_deadline_ms": _WORLD_VOXEL_DEADLINE_MS' in source

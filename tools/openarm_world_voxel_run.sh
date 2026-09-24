@@ -11,7 +11,10 @@
 #   2. the head_zed extrinsic report verifies against the pose in robots/openarm/robot.yaml
 #      (the camera is bolted to the robot, so its pose is robot geometry, not the scene's);
 #   3. it runs in an interactive terminal and the operator types the confirmation.
-# Extra arguments pass through to `openral deploy run` (e.g. --foxglove, --dataset-out).
+# Extra arguments pass through to `openral deploy run` only from an allow-list of
+# observability flags (--foxglove, --dataset-out <dir>, ...). Anything else — a second
+# --config, a --no-enable-octomap-kernel-check — could swap or weaken the graph the gates
+# just verified, so it is refused.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,6 +26,25 @@ refuse() {
   echo "REFUSED: $*" >&2
   exit 2
 }
+
+# Allow-listed pass-through only. Flags taking a value consume the next argument.
+passthrough=()
+while (($#)); do
+  case "$1" in
+    --foxglove | --no-dashboard)
+      passthrough+=("$1")
+      shift
+      ;;
+    --dataset-out | --dataset-repo-id | --dataset-license | --dashboard-port | --foxglove-port)
+      (($# >= 2)) || refuse "$1 needs a value."
+      passthrough+=("$1" "$2")
+      shift 2
+      ;;
+    *)
+      refuse "argument '$1' is not allowed here: only observability flags pass through; the scene, robot and safety posture are fixed by this wrapper."
+      ;;
+  esac
+done
 
 [[ "${OPENRAL_OPENARM_ALLOW_MOTION:-}" == "1" ]] ||
   refuse "OPENRAL_OPENARM_ALLOW_MOTION is not 1 — this graph moves the arms at bringup."
@@ -40,4 +62,4 @@ echo "hardware E-stop in your hand, second person on the stop?"
 read -r -p "Type ESTOP IN HAND to launch: " answer
 [[ "${answer}" == "ESTOP IN HAND" ]] || refuse "not confirmed."
 
-exec openral deploy run --config "${scene}" "$@"
+exec openral deploy run --config "${scene}" "${passthrough[@]}"

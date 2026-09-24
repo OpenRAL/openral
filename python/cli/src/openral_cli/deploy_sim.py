@@ -1055,10 +1055,16 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # die at configure after the rest of the graph came up. Same policy as the detector:
     # the implicit (manifest-derived) default is downgraded with a warning; an explicit
     # --enable-slam / runtime.enable_slam: true fails loud.
-    if slam_backend == "visual" and not slam_stereo_cameras and not slam_mono_camera:
+    mono_usable = bool(slam_mono_camera) and slam_visual_impl == "pycuvslam"
+    if slam_backend == "visual" and not slam_stereo_cameras and not mono_usable:
         missing = (
             "set runtime.slam_stereo_cameras (a left/right pair) or, with "
             "slam_visual_impl: pycuvslam, runtime.slam_mono_camera"
+            + (
+                f" — slam_mono_camera is only read by pycuvslam, not {slam_visual_impl!r}"
+                if slam_mono_camera
+                else ""
+            )
         )
         if not slam_defaulted:
             raise ROSConfigError(
@@ -1079,8 +1085,30 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # lidar-equipped mobile robot needs a planner to consume the map.
     # Operators that want the map alone (recording / inspection) pass
     # ``--no-enable-nav2``.
+    nav2_defaulted = enable_nav2 is None
     if enable_nav2 is None:
         enable_nav2 = enable_slam
+    # Stereo visual SLAM gives Nav2 a pose, not a map: nvblox builds the occupancy grid
+    # from the robot's depth sensor (``_depth_camera`` in the launch). The mono path
+    # brings its own DA3 depth. Without a depth sensor there is nothing to map, so decide
+    # before launch — same implicit-downgrade / explicit-refusal policy as above.
+    if (
+        enable_nav2
+        and slam_backend == "visual"
+        and not mono_usable
+        and not any(
+            s.modality in ("depth", "point_cloud") and s.intrinsics is not None
+            for s in description.sensors
+        )
+    ):
+        reason = (
+            f"Nav2 over stereo visual SLAM needs a depth sensor with intrinsics for nvblox, "
+            f"and robot {description.name!r} declares none"
+        )
+        if not nav2_defaulted:
+            raise ROSConfigError(f"{reason}.")
+        _console.print(f"[yellow]{reason}; disabling Nav2.[/yellow]")
+        enable_nav2 = False
     # the octomap world-collision leg auto-enables when the
     # robot manifest declares a usable depth SensorSpec (a camera the HAL
     # can ray-cast a PointCloud2 from); there is nothing to map otherwise.

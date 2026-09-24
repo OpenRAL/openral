@@ -306,23 +306,17 @@ def _world_voxel_max_cells(resolution_m: float) -> int:
 _WORLD_VOXEL_DEADLINE_MS = 1000.0
 
 
-def _max_octree_age_s() -> float:
-    """How long the octomap bridge may republish the last octree it received.
-
-    ``octomap_server`` publishes only when it inserts a cloud, so a dead camera
-    is a silent octree; past this bound the bridge stops publishing and the
-    kernel's ``world_voxel_deadline_ms`` turns the silence into
-    ``DROP_VOXEL_UNAVAILABLE`` (hazard log Entry 033). Equal to the deadline,
-    1.0 s. Octomap's normal gap was 0.25-0.31 s on the Thor ZED path, but one
-    Thor run (2026-09-24) had octomap at 2.2 Hz, gaps ~0.45 s, which sat too
-    close to the earlier half-deadline bound (0.5 s) and silenced a healthy
-    camera's grid; 1.0 s tolerates octomap down to ~1 Hz. The kernel -- not the
-    bridge -- still fails closed: the bridge goes silent, then the kernel's own
-    deadline expires. Worst case from the last inserted cloud to the drop is
-    bound + deadline, 2.0 s. Derived, not hand-kept, for the reason
-    ``_world_voxel_max_cells`` gives.
-    """
-    return _WORLD_VOXEL_DEADLINE_MS / 1000.0
+# How long the octomap bridge may republish the last octree it received
+# (``max_octree_age_s``). ``octomap_server`` publishes only when it inserts a cloud, so a
+# dead camera is a silent octree; past this bound the bridge stops publishing and the
+# kernel's ``world_voxel_deadline_ms`` turns the silence into ``DROP_VOXEL_UNAVAILABLE``
+# (hazard log Entry 033). Equal to the deadline, 1.0 s: octomap's normal gap was
+# 0.25-0.31 s on the Thor ZED path, but one Thor run (2026-09-24) had octomap at 2.2 Hz,
+# gaps ~0.45 s, too close to the earlier half-deadline bound (0.5 s); 1.0 s tolerates
+# octomap down to ~1 Hz. It must not exceed the deadline, so the kernel -- not the bridge
+# -- still fails closed. Worst case from the last inserted cloud to the drop: bound +
+# deadline, 2.0 s. Derived, not hand-kept, for the reason ``_world_voxel_max_cells`` gives.
+_MAX_OCTREE_AGE_S = _WORLD_VOXEL_DEADLINE_MS / 1000.0
 
 
 def _octomap_coverage_radius() -> float:
@@ -1618,9 +1612,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # `[""]` is the node's own "no cameras" default: launch_ros cannot
                 # type an empty list and refuses it when the node starts.
                 "camera_names": rgb_camera_names or [""],
-                # World-state object-lift depth fallback: the manifest's depth sensor, not
-                # the node's ``front_depth`` default (dead on every other robot).
-                "object_depth_points_topic": _depth_points_topic(description),
+                # World-state object-lift depth fallback: the same cloud octomap maps — the
+                # scene-pinned driver cloud when there is one (a real ZED publishes on its
+                # own topic, not the sim bridge's), else the manifest depth sensor's; ""
+                # disables the fallback.
+                "object_depth_points_topic": (
+                    octomap_cloud_topic or _depth_points_topic(description)
+                ),
                 # 512 px RoboCasa renders can arrive at ~0.6 Hz wall time while
                 # idle. Keep joint/EE diagnostics at 0.5 s, but give simulated
                 # cameras enough room for one slow frame without stale flapping.
@@ -2301,7 +2299,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "coverage_radius_m": _octomap_coverage_radius(),
                     # Stop republishing an octree that stopped arriving, so the
                     # kernel's voxel deadline can fail closed (Entry 033).
-                    "max_octree_age_s": _max_octree_age_s(),
+                    "max_octree_age_s": _MAX_OCTREE_AGE_S,
                     # Graph-wide clock domain — matches octomap_server above
                     # (sim-time without a /clock pins its TF lookups at 0).
                     "use_sim_time": use_sim_time,

@@ -249,3 +249,47 @@ def test_nan_cannot_open_the_gate(bag: Path, tmp_path: Path) -> None:
         assert report["passed"] is True
         out.write_text(json.dumps(report))
         assert zc.main(verify) == 1
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--config", "scenes/deploy/openarm_tabletop.yaml"],
+        ["--no-enable-octomap-kernel-check"],
+        ["--hal", "viewer_enabled=false"],
+    ],
+)
+def test_the_run_script_refuses_args_that_could_change_the_verified_graph(
+    extra: list[str],
+) -> None:
+    """Only observability flags pass through; the scene and safety posture are fixed."""
+    script = _REPO_ROOT / "tools" / "openarm_world_voxel_run.sh"
+    proc = subprocess.run(
+        ["bash", str(script), *extra],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    assert proc.returncode == 2
+    assert "is not allowed here" in proc.stderr
+
+
+def test_the_run_script_lets_observability_flags_through_to_the_gates() -> None:
+    """An allowed flag passes the allow-list and stops at the first gate instead."""
+    script = _REPO_ROOT / "tools" / "openarm_world_voxel_run.sh"
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("OPENRAL_OPENARM_ALLOW_MOTION", "OPENRAL_OPENARM_ATTENDED")
+    }
+    proc = subprocess.run(
+        ["bash", str(script), "--foxglove", "--dataset-out", "/tmp/x"],
+        capture_output=True,
+        text=True,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+    assert proc.returncode == 2
+    assert "OPENRAL_OPENARM_ALLOW_MOTION" in proc.stderr

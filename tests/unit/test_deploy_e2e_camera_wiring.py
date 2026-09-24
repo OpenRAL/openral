@@ -70,7 +70,7 @@ def test_the_launch_no_longer_hardcodes_either_camera() -> None:
     source = LAUNCH.read_text(encoding="utf-8")
     assert "/openral/cameras/top/image" not in source
     assert 'reasoner_params["completion_camera_topic"]' in source
-    assert '"object_depth_points_topic": _depth_points_topic(description)' in source
+    assert "octomap_cloud_topic or _depth_points_topic(description)" in source
     assert "octomap_cloud_topic = _octomap_cloud_topic(octomap_cloud_topic, description)" in source
     # Only the helper's docstring example names ``front_depth`` — no launch default does.
     assert source.count("/openral/cameras/front_depth/points") == 1

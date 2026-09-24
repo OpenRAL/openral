@@ -446,11 +446,14 @@ class SensorSpec(BaseModel):
             'observation.images.camera1'. Used by skill loaders to auto-wire
             sensors to VLA input_features.
         ros2_topic: The image topic an *external* ROS 2 driver publishes
-            (``/camera/color/image_raw``, ``/zed/zed_node/...``); the deploy
-            launch remaps it onto ``camera_topic(name)`` so consumers never see
-            a vendor name. ``None`` (every in-tree manifest) means OpenRAL
-            itself produces the sensor (sim bridge or sensor leg) under the
-            canonical ``camera_topic(name, kind)`` layout.
+            (``/camera/color/image_raw``, ``/zed/zed_node/...``). ``None`` (every
+            in-tree manifest) means OpenRAL itself produces the sensor (sim
+            bridge or sensor leg) under the canonical ``camera_topic(name, kind)``
+            layout. Today it is read only by the RealSense calibration command.
+            Nothing remaps it onto ``camera_topic(name)`` yet (ADR-0108 Decision
+            2, not implemented), so a camera served only by a vendor driver does
+            not reach the canonical topics: bind it through a ``deploy_binding``
+            (e.g. the ``ros2_image`` backend) to publish it there.
         ros2_msg_type: ROS 2 message type, e.g. "sensor_msgs/Image". None for
             non-ROS robots (USB, sim-only).
         qos_profile: QoS profile key.

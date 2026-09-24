@@ -480,7 +480,16 @@ class SensorRosPublisher:
 # Last path segments that name an image stream in its camera namespace (OpenRAL's own
 # ``image`` plus image_pipeline's standard names); CameraInfo is their sibling.
 _IMAGE_TOPIC_NAMES: Final[frozenset[str]] = frozenset(
-    {"image", "image_raw", "image_rect", "image_color", "image_mono", "image_rect_color"}
+    {
+        "image",
+        "image_raw",
+        "image_rect",
+        "image_rect_raw",  # realsense2_camera's depth stream
+        "image_color",
+        "image_mono",
+        "image_rect_color",
+        "image_rect_mono",
+    }
 )
 
 

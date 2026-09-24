@@ -36,6 +36,8 @@ def test_camera_info_topic_is_the_image_topics_sibling() -> None:
         "/cameras/wrist_rgb/camera_info"
     )
     assert camera_info_topic_for("/camera/color/image_rect_color") == "/camera/color/camera_info"
+    # realsense2_camera's depth stream is image_rect_raw; its CameraInfo is the sibling.
+    assert camera_info_topic_for("/head/depth/image_rect_raw") == "/head/depth/camera_info"
     assert camera_info_topic_for("/zed/left/rgb") == "/zed/left/rgb/camera_info"
     # Only a trailing ``/image`` segment is replaced, never an inner one.
     assert camera_info_topic_for("/image/cam/image") == "/image/cam/camera_info"

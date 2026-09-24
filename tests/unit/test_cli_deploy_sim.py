@@ -2771,3 +2771,50 @@ def test_default_detector_is_downgraded_when_no_camera_publishes_on_a_real_deplo
         hal_mode="real",
     )
     assert invocation.enable_object_detector is False
+
+
+def _vslam_scene(tmp_path: Path, runtime_edits: dict[str, str]) -> Path:
+    """``robocasa_vslam.yaml`` with some ``runtime:`` keys rewritten or dropped (value None)."""
+    text = (_REPO_ROOT / "scenes" / "deploy" / "robocasa_vslam.yaml").read_text(encoding="utf-8")
+    for key, value in runtime_edits.items():
+        pattern = rf"\n  {key}:[^\n]*"
+        assert re.search(pattern, text), key
+        text = re.sub(pattern, "" if value is None else f"\n  {key}: {value}", text)
+    scene = tmp_path / "vslam.yaml"
+    scene.write_text(text, encoding="utf-8")
+    return scene
+
+
+def test_a_mono_camera_is_not_enough_for_isaac_ros(tmp_path: Path) -> None:
+    """Only pycuvslam reads slam_mono_camera; isaac_ros with no stereo pair is refused."""
+    scene = _vslam_scene(
+        tmp_path,
+        {
+            "slam_visual_impl": "isaac_ros",
+            "slam_stereo_cameras": None,
+            "enable_nav2": "false\n  slam_mono_camera: shoulder_left",
+        },
+    )
+    with pytest.raises(ROSConfigError, match="only read by pycuvslam"):
+        resolve_launch_invocation(
+            config=scene,
+            robot_override=None,
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides={"viewer_enabled": False},
+        )
+
+
+def test_nav2_over_stereo_vslam_resolves_with_a_depth_sensor(tmp_path: Path) -> None:
+    """nvblox maps from the robot's depth sensor; panda_mobile_vslam declares ``front_depth``,
+    so an explicit Nav2 request over its stereo rig resolves. (No in-tree vision-SLAM robot
+    lacks a depth sensor, so the refusal branch has no real manifest to exercise it.)"""
+    scene = _vslam_scene(tmp_path, {"enable_nav2": "true"})
+    ok = resolve_launch_invocation(
+        config=scene,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides={"viewer_enabled": False},
+    )
+    assert ok.enable_nav2 is True

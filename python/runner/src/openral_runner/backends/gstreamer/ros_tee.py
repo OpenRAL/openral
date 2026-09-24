@@ -36,6 +36,7 @@ import time
 from typing import TYPE_CHECKING, Any, Final
 
 import structlog
+from openral_sensors.ros_publisher import build_camera_info_msg, camera_info_topic_for
 
 if TYPE_CHECKING:
     from openral_core import IntrinsicsPinhole
@@ -110,6 +111,8 @@ class RosImagePublisher:
         self._node: Node | None = None
         self._publisher: Publisher | None = None
         self._info_publisher: Publisher | None = None
+        # (width, height) -> the CameraInfo built for it; see _on_new_sample.
+        self._info_cache: tuple[tuple[int, int], Any] | None = None
         self._signal_handler_id: int | None = None
         self._last_publish_monotonic_ns: int = 0
         self._publish_lock = threading.Lock()
@@ -177,7 +180,6 @@ class RosImagePublisher:
         )
         self._publisher = self._node.create_publisher(Image, self._topic, qos)
         if self._camera_info is not None:
-            from openral_sensors.ros_publisher import camera_info_topic_for  # noqa: PLC0415
             from sensor_msgs.msg import CameraInfo  # noqa: PLC0415
 
             # CameraInfo: RELIABLE, KEEP_LAST=1 (camera_info_manager convention),
@@ -215,6 +217,7 @@ class RosImagePublisher:
                     self._node.destroy_publisher(pub)
         self._publisher = None
         self._info_publisher = None
+        self._info_cache = None
         if self._node is not None:
             self._node.destroy_node()
         self._node = None
@@ -263,17 +266,23 @@ class RosImagePublisher:
         msg.data = payload
         self._publisher.publish(msg)
         if self._info_publisher is not None and self._camera_info is not None:
-            from openral_sensors.ros_publisher import build_camera_info_msg  # noqa: PLC0415
-
-            self._info_publisher.publish(
-                build_camera_info_msg(
-                    self._camera_info,
-                    width=int(width),
-                    height=int(height),
-                    stamp=msg.header.stamp,
-                    frame_id=self._frame_id,
+            # Built once per frame size (the intrinsics only rescale when it changes); per
+            # frame only the stamp moves. Runs on the streaming thread, so keep it cheap.
+            size = (int(width), int(height))
+            if self._info_cache is None or self._info_cache[0] != size:
+                self._info_cache = (
+                    size,
+                    build_camera_info_msg(
+                        self._camera_info,
+                        width=size[0],
+                        height=size[1],
+                        stamp=msg.header.stamp,
+                        frame_id=self._frame_id,
+                    ),
                 )
-            )
+            info = self._info_cache[1]
+            info.header.stamp = msg.header.stamp
+            self._info_publisher.publish(info)
         return ok_flow
 
     def _claim_rate_slot(self) -> bool:
