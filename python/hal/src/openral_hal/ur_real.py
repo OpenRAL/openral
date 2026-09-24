@@ -125,6 +125,8 @@ class _URRealHAL(RosControlHAL):
             in unit / integration tests without a live ROS 2 stack.
         staleness_limit_s: Maximum age of a ``read_state()`` reading before
             ``ROSPerceptionStale`` is raised (per the HAL Protocol).
+            ``None`` (default) reads the manifest's
+            ``safety.joint_state_staleness_limit_s``.
         deadman_topic: Topic the safety supervisor subscribes to in order to
             cut motor power when a deadman / E-stop is released.  Defaults to
             ``/io_and_status_controller/safety_mode`` (the topic the UR
@@ -147,7 +149,7 @@ class _URRealHAL(RosControlHAL):
         joint_state_topic: str = _UR_JOINT_STATE_TOPIC,
         publish_fn: Callable[[str, dict[str, object]], None] | None = None,
         state_fn: Callable[[], dict[str, object]] | None = None,
-        staleness_limit_s: float = 0.5,
+        staleness_limit_s: float | None = None,
         deadman_topic: str = _UR_DEADMAN_TOPIC,
         dashboard_stop_service: str = _UR_DASHBOARD_STOP_SERVICE,
     ) -> None:
@@ -232,7 +234,7 @@ class UR5eRealHAL(_URRealHAL):
         robot_ip: str | None = None,
         publish_fn: Callable[[str, dict[str, object]], None] | None = None,
         state_fn: Callable[[], dict[str, object]] | None = None,
-        staleness_limit_s: float = 0.5,
+        staleness_limit_s: float | None = None,
         description: RobotDescription | None = None,
     ) -> None:
         """Initialise the UR5e real-HW HAL; transport defaults match ``ur_robot_driver``.
@@ -280,7 +282,7 @@ class UR10eRealHAL(_URRealHAL):
         robot_ip: str | None = None,
         publish_fn: Callable[[str, dict[str, object]], None] | None = None,
         state_fn: Callable[[], dict[str, object]] | None = None,
-        staleness_limit_s: float = 0.5,
+        staleness_limit_s: float | None = None,
         description: RobotDescription | None = None,
     ) -> None:
         """Initialise the UR10e real-HW HAL; transport defaults match ``ur_robot_driver``.

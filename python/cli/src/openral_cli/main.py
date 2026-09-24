@@ -4082,7 +4082,9 @@ def deploy_validate(  # noqa: PLR0915  # reason: linear readiness checklist; eac
     from openral_core import (  # reason: defer schema import
         DeployScene,
         RobotDescription,
+        apply_sensor_overlays,
         merge_deploy_sensors,
+        resolve_sensor_overlays,
     )
     from openral_core.exceptions import ROSCapabilityMismatch  # reason: defer
     from pydantic import ValidationError  # reason: defer CLI import
@@ -4151,9 +4153,15 @@ def deploy_validate(  # noqa: PLR0915  # reason: linear readiness checklist; eac
             if not cal_file.exists():
                 errors.append(f"calibration file {cal_file} does not exist (id={cal_id!r}).")
 
-    # A robot camera's binding lives in its manifest, a workcell camera's in the scene.
+    # A robot camera's binding lives in its unit overlay (else its manifest), a workcell
+    # camera's in the scene. The unit was already resolved (and required) by
+    # resolve_launch_invocation above; resolved again here for the sensor list.
     deploy_sensors = merge_deploy_sensors(
-        RobotDescription.from_yaml(str(invocation.robot_yaml)).sensors, deploy_scene.sensors
+        apply_sensor_overlays(
+            RobotDescription.from_yaml(str(invocation.robot_yaml)).sensors,
+            resolve_sensor_overlays(invocation.robot_yaml, deploy_scene.robot_unit, required=True),
+        ),
+        deploy_scene.sensors,
     )
     if not deploy_sensors:
         warns.append(

@@ -133,3 +133,21 @@ def test_ros_tee_releases_a_partial_start() -> None:
     assert rclpy.ok() is owned_before
     # A frame that was mid-extraction when teardown ran is dropped, not published.
     assert tee._publish_locked(b"\0\0\0", 1, 1, "rgb8", object) is None
+
+
+def test_openral_camera_topics_resolve_through_camera_topic() -> None:
+    """One spelling: a manifest camera's image/depth topic maps to ``camera_topic``'s info kind."""
+    from openral_core import CameraTopicKind, camera_topic
+
+    desc = RobotDescription.from_yaml(
+        str(Path(__file__).resolve().parents[2] / "robots" / "panda_mobile" / "robot.yaml")
+    )
+    names = [s.name for s in desc.sensors if s.modality in ("rgb", "depth")]
+    assert names
+    for name in names:
+        assert camera_info_topic_for(camera_topic(name)) == camera_topic(
+            name, CameraTopicKind.CAMERA_INFO
+        )
+        assert camera_info_topic_for(
+            camera_topic(name, CameraTopicKind.DEPTH_IMAGE)
+        ) == camera_topic(name, CameraTopicKind.DEPTH_CAMERA_INFO)

@@ -97,6 +97,32 @@ def test_graph_flags_a_scene_naming_a_robot_sensor(tmp_path: Path) -> None:
     assert "defined by the robot manifest" in finding.message
 
 
+def test_graph_flags_a_bad_unit_overlay_and_an_unknown_scene_unit(tmp_path: Path) -> None:
+    # The real SO-101 manifest, its real bench-laptop unit with one overlay retargeted at a
+    # sensor the manifest does not have, and the real bench scene pointing at a unit that
+    # does not exist.
+    robot_dir = tmp_path / "robots" / "so101_follower"
+    (robot_dir / "units").mkdir(parents=True)
+    src = REPO_ROOT / "robots" / "so101_follower"
+    (robot_dir / "robot.yaml").write_text((src / "robot.yaml").read_text(), encoding="utf-8")
+    unit = yaml.safe_load((src / "units" / "bench_laptop.yaml").read_text())
+    unit["sensors"][0]["name"] = "overhead"
+    (robot_dir / "units" / "bench_laptop.yaml").write_text(yaml.safe_dump(unit), "utf-8")
+    scene = yaml.safe_load((REPO_ROOT / "scenes" / "deploy" / "so101_bench.yaml").read_text())
+    scene["robot_unit"] = "second_host"
+    scene_dir = tmp_path / "scenes" / "deploy"
+    scene_dir.mkdir(parents=True)
+    (scene_dir / "so101_bench.yaml").write_text(yaml.safe_dump(scene), encoding="utf-8")
+
+    report = check_description_graph(tmp_path)
+    (bad_unit,) = [f for f in report.errors if f.rule == "robot_unit"]
+    assert bad_unit.target == "robots/so101_follower/units/bench_laptop.yaml"
+    assert "'overhead'" in bad_unit.message
+    (bad_ref,) = [f for f in report.errors if f.rule == "scene_robot_unit"]
+    assert bad_ref.target == "scenes/deploy/so101_bench.yaml"
+    assert "second_host" in bad_ref.message
+
+
 def test_graph_warns_on_unreachable_embodiment(tmp_path: Path) -> None:
     # A real VLA rSkill with embodiment tags, but no robots to satisfy them.
     real = (REPO_ROOT / "rskills" / "act-libero" / "rskill.yaml").read_text()

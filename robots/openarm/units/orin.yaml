@@ -1,0 +1,47 @@
+# OpenArm cell on the Jetson AGX Orin (qorin1). head_zed has NO calibrated pose for this
+# unit yet: it runs on the manifest's nominal mount (the Thor measurement), and the
+# 2026-09-24 plane fit showed this cell's ZED mount differs. Calibrate with
+# tools/depth_extrinsic_check.py --sensor head_zed --unit orin and add
+# static_transform_xyz_rpy under head_zed before trusting the world-voxel check here.
+#
+# Per-host camera bindings. Carried over unchanged from robot.yaml, which served every
+# OpenArm cell before per-unit overlays existed; re-check the Arducam by-id paths with
+# `ls -l /dev/v4l/by-id` on this host. The ros2_image topics are zed_wrapper's, launched
+# by the OpenArm scenes' `drivers:`. Selected by $OPENRAL_ROBOT_UNIT or a scene's
+# `robot_unit`.
+schema_version: "0.1"
+robot_id: openarm
+unit: orin
+sensors:
+  - name: head_zed
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/depth/depth_registered
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 500
+  - name: top
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/rgb/color/rect/image
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 200
+  - name: wrist_left
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_LEFT-video-index0
+        width: 640
+        height: 480
+        fps: 30
+  - name: wrist_right
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_RIGHT-video-index0
+        width: 640
+        height: 480
+        fps: 30

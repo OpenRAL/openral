@@ -10,7 +10,7 @@ stopped, ``/octomap_binary`` silent, ``/openral/world_voxels`` still 7.1 Hz).
 The chain here is all real: the ``octomap_voxel_bridge`` binary, the
 ``safety_kernel_node`` binary with the deploy's ``world_voxel_deadline_ms``, a
 real ``octomap_msgs/Octomap`` in octomap's own binary encoding, a real static
-TF. Octrees arrive at Thor's measured octomap cadence (~3.2 Hz); then they stop;
+TF. Octrees arrive at a cadence the default bound must tolerate; then they stop;
 then they resume. The kernel must certify while they arrive, drop with
 ``DROP_VOXEL_UNAVAILABLE`` (no latch, no E-stop) once the bridge's
 ``max_octree_age_s`` plus the kernel's deadline have passed, and certify again
@@ -40,6 +40,8 @@ pytest.importorskip("openral_msgs")
 pytest.importorskip("octomap_msgs")
 pytest.importorskip("tf2_ros")
 
+from openral_core import DeployRuntime  # noqa: E402
+
 from tests.sim.safety._kernel_subprocess import (  # noqa: E402
     activate_kernel_node,
     isolated_domain_id,
@@ -50,11 +52,15 @@ from tests.sim.safety.test_kernel_voxel_collision_synthetic import (  # noqa: E4
     _kernel_params,
 )
 
-# The deploy's pair (`deploy_e2e.launch.py`): the kernel's deadline, and the
-# bridge bound derived from it as half.
-_WORLD_VOXEL_DEADLINE_MS = 1000.0
-_MAX_OCTREE_AGE_S = 1.0  # deploy_e2e: equal to the kernel deadline
-_OCTREE_PERIOD_S = 0.31  # Thor's measured octomap cadence, 3.2 Hz
+# The deploy's default pair (``DeployRuntime.voxel_freshness_s``, what
+# ``deploy_e2e.launch.py`` passes when the scene declares none): the kernel's
+# deadline and the bridge's octree-age bound, never above it.
+_DEADLINE_S, _MAX_OCTREE_AGE_S = DeployRuntime().voxel_freshness_s
+_WORLD_VOXEL_DEADLINE_MS = _DEADLINE_S * 1000.0
+# Any live source the bound is meant to tolerate: octrees at under half the bound,
+# i.e. at least two per bound, whatever the rig. Not a measured cadence.
+_OCTREE_PERIOD_S = _MAX_OCTREE_AGE_S / 3.0
+assert _OCTREE_PERIOD_S < _MAX_OCTREE_AGE_S <= _DEADLINE_S
 _RESOLUTION = 0.05
 _COVERAGE_RADIUS_M = 0.5  # (2*0.5/0.05 + 1)^3 = 9261 cells, under the cap below
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -193,18 +194,22 @@ def test_build_record_command_slim_profile() -> None:
     assert argv[:3] == ["ros2", "bag", "record"]
     # mcap is the default storage backend.
     assert "mcap" in argv
-    # All slim verbatim topics are present somewhere in argv.
+    assert "--regex" in argv
+    regex_idx = argv.index("--regex")
+    pattern = argv[regex_idx + 1]
+    # Verbatim topics ride in the regex, anchored (rosbag2 stops discovery early
+    # when explicit topics are mixed with a regex), never as positional args.
     for required in (
         "/openral/safe_action",
         "/openral/candidate_action",
         "/openral/estop",
         "/diagnostics",
     ):
-        assert required in argv
+        assert required not in argv
+        assert re.search(pattern, required)
+    assert not re.search(pattern, "/diagnostics_agg")
+    assert "--topic-types" not in argv
     # And the failure-bus + per-camera regex got combined.
-    assert "--regex" in argv
-    regex_idx = argv.index("--regex")
-    pattern = argv[regex_idx + 1]
     assert "/openral/failure/" in pattern
     # Cameras publish on /openral/cameras/<name>/image (its compressed sibling for slim);
     # nothing publishes images under /openral/sensors/.
@@ -214,10 +219,23 @@ def test_build_record_command_slim_profile() -> None:
 
 def test_build_record_command_full_adds_world_state_fast_and_perception() -> None:
     argv = build_record_command(profile="full", output_dir=Path("/tmp/bag_full"))
-    assert "/openral/world_state_fast" in argv
     regex_idx = argv.index("--regex")
     pattern = argv[regex_idx + 1]
+    assert re.search(pattern, "/openral/world_state_fast")
     assert "/openral/perception/" in pattern
+
+
+def test_build_record_command_full_records_non_camera_sensors_by_type() -> None:
+    """``/scan``, lidar clouds and IMUs have manifest-chosen topics; record them by type."""
+    argv = build_record_command(profile="full", output_dir=Path("/tmp/bag_full"))
+    types_idx = argv.index("--topic-types")
+    regex_idx = argv.index("--regex")
+    assert set(argv[types_idx + 1 : regex_idx]) == {
+        "sensor_msgs/msg/LaserScan",
+        "sensor_msgs/msg/PointCloud2",
+        "sensor_msgs/msg/Imu",
+    }
+    assert argv[-2] == "--regex"  # no positional topics after the pattern
 
 
 def test_build_record_command_rejects_unknown_profile() -> None:
