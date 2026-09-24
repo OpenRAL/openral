@@ -136,10 +136,28 @@ def test_rtc_postprocesses_at_merge_and_keeps_raw_rows_for_guidance() -> None:
     assert left_over is not None and torch.count_nonzero(left_over) == 0
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
-def test_device_chunk_is_copied_to_host_once() -> None:
+def _device_available(kind: str) -> bool:
+    backend = getattr(torch, kind, None)
+    return backend is not None and bool(backend.is_available())
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        pytest.param(
+            kind,
+            marks=pytest.mark.skipif(
+                not _device_available(kind), reason=f"needs a torch {kind} device"
+            ),
+        )
+        for kind in ("cuda", "mps", "xpu")
+    ],
+)
+def test_device_chunk_is_copied_to_host_once(device: str) -> None:
+    """Any non-CPU device, not only CUDA: MPS / XPU chunks used to stay on the device."""
+
     def on_gpu(batch: Any, **_: Any) -> torch.Tensor:
-        return torch.arange(CHUNK * DOF, dtype=torch.float32, device="cuda").view(1, CHUNK, DOF)
+        return torch.arange(CHUNK * DOF, dtype=torch.float32, device=device).view(1, CHUNK, DOF)
 
     ex = ChunkedExecutor(chunk_fn=on_gpu, chunk_size=CHUNK, prefetch_at=3)
     ex.start()
