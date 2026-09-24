@@ -314,7 +314,7 @@ def _collision_local_vertices(col: object, handler: object) -> _Arr | None:
             )
             return None
         loaded = trimesh.load(path, force="mesh")
-        verts = np.asarray(loaded.vertices, dtype=np.float64)  # type: ignore[attr-defined]  # reason: force="mesh" yields a Trimesh with .vertices
+        verts = np.asarray(loaded.vertices, dtype=np.float64)
         scale = getattr(mesh, "scale", None)
         if scale is not None:
             verts = verts * np.asarray(scale, dtype=np.float64)
