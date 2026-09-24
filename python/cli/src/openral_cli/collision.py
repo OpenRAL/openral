@@ -437,7 +437,7 @@ collision_app = typer.Typer(
 
 
 def _lower(
-    robot_path: Path, *, acm_only: bool, geometry_only: bool
+    robot_path: Path, *, acm_only: bool, geometry_only: bool, fit_mjcf_geometry: bool = False
 ) -> tuple[RobotDescription, LoweredCollisionModel]:
     """Load a manifest and lower its collision model via the provenance dispatcher.
 
@@ -452,13 +452,17 @@ def _lower(
 
     robot = RobotDescription.from_yaml(str(robot_path))
     model = lower_robot_auto(
-        robot, acm_only=acm_only, geometry_only=geometry_only, manifest_dir=robot_path.parent
+        robot,
+        acm_only=acm_only,
+        geometry_only=geometry_only,
+        manifest_dir=robot_path.parent,
+        fit_mjcf_geometry=fit_mjcf_geometry,
     )
     return robot, model
 
 
 def _lowered_text(
-    robot_path: Path, *, acm_only: bool, geometry_only: bool
+    robot_path: Path, *, acm_only: bool, geometry_only: bool, fit_mjcf_geometry: bool = False
 ) -> tuple[str, str, list[GeometryLoosening]]:
     """``(current_manifest_text, spliced_manifest_text, loosening)`` for a manifest.
 
@@ -474,12 +478,17 @@ def _lowered_text(
     reuses rather than regenerates), so a caller cannot mistake "not compared"
     for "compared and clean".
     """
-    robot, model = _lower(robot_path, acm_only=acm_only, geometry_only=geometry_only)
+    robot, model = _lower(
+        robot_path,
+        acm_only=acm_only,
+        geometry_only=geometry_only,
+        fit_mjcf_geometry=fit_mjcf_geometry,
+    )
     geo_block, acm_block = render_blocks(model)
     current = robot_path.read_text(encoding="utf-8")
     # MJCF-sourced robots keep their hand-authored geometry (the tool reuses it,
-    # doesn't regenerate it), so never rewrite the geometry block for them.
-    write_geometry = not acm_only and model.acm_source != "mjcf"
+    # doesn't regenerate it) unless it was fitted to the meshes on request.
+    write_geometry = not acm_only and (model.acm_source != "mjcf" or model.geometry_fitted)
     loosening = (
         geometry_loosening(list(robot.collision_geometry or []), list(model.collision_geometry))
         if write_geometry
@@ -506,6 +515,15 @@ def lower(
     ),
     geometry_only: bool = typer.Option(
         False, "--geometry-only", help="Only regenerate collision_geometry."
+    ),
+    fit_mjcf_geometry: bool = typer.Option(
+        False,
+        "--fit-mjcf-geometry",
+        help=(
+            "MJCF-sourced robots: fit capsules to the MJCF collision meshes instead of "
+            "keeping the manifest's hand-authored geometry (follower-coupled fingers are "
+            "swept over the gripper stroke)."
+        ),
     ),
     emit_cumotion: Path | None = typer.Option(
         None,
@@ -554,7 +572,10 @@ def lower(
                 f"{emit_cumotion}."
             )
     current, spliced, loosening = _lowered_text(
-        robot, acm_only=acm_only, geometry_only=geometry_only
+        robot,
+        acm_only=acm_only,
+        geometry_only=geometry_only,
+        fit_mjcf_geometry=fit_mjcf_geometry,
     )
     if current == spliced:
         _console.print("[green]No change — manifest already matches the lowered model.[/green]")

@@ -28,9 +28,10 @@ import math
 import warnings
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from openral_core import (
+    BoxShape,
     CapsuleShape,
     LinkCollisionGeometry,
     RobotDescription,
@@ -51,11 +52,16 @@ __all__ = [
     "LoweringSource",
     "acm_for_geometry",
     "fit_capsule_to_vertices",
+    "fit_collision_geometry_from_mjcf",
+    "fit_obb_to_vertices",
+    "fit_tightest_primitive",
+    "fit_trimmed_capsule_to_vertices",
     "lower_joint_fk",
     "lower_link_geometry",
     "lower_robot",
     "lower_robot_auto",
     "lower_robot_from_mjcf",
+    "mjcf_coupled_joints",
     "parse_srdf_disabled_pairs",
     "sample_acm_from_urdf",
     "select_lowering",
@@ -159,6 +165,75 @@ def fit_capsule_to_vertices(vertices: _Arr) -> tuple[CapsuleShape, _Origin]:
         yaw,
     )
     return CapsuleShape(radius_m=radius, length_m=length), origin
+
+
+def _pca_frame(vertices: _Arr) -> tuple[_Arr, _Arr]:
+    """Centroid and a right-handed PCA basis (columns = principal axes, major first)."""
+    import numpy as np
+
+    centroid = vertices.mean(axis=0)
+    _, _, vh = np.linalg.svd(vertices - centroid, full_matrices=False)
+    basis = vh.T.copy()
+    if np.linalg.det(basis) < 0:
+        basis[:, 2] = -basis[:, 2]
+    return centroid, basis
+
+
+def fit_trimmed_capsule_to_vertices(vertices: _Arr) -> tuple[CapsuleShape, _Origin]:
+    """Enclosing capsule on the PCA major axis whose end caps stop at the cloud.
+
+    Same axis and radius as ``fit_capsule_to_vertices`` (the max distance of any
+    vertex from the axis line), but the segment is the SHORTEST one whose
+    capsule still holds every vertex: a vertex at axial position ``t`` and axis
+    distance ``d`` is inside iff the nearer end is within ``sqrt(r² - d²)`` of
+    ``t``. The full projection span instead lets each hemispherical cap overhang
+    the mesh by up to a whole radius, which on the OpenArm put link 3 into link
+    5 at rest (−21 mm against a +74 mm mesh gap). Every vertex lies inside by
+    construction.
+    """
+    import numpy as np
+
+    centroid, basis = _pca_frame(vertices)
+    axis = basis[:, 0]
+    centered = vertices - centroid
+    proj = centered @ axis
+    perp = np.linalg.norm(centered - np.outer(proj, axis), axis=1)
+    radius = max(float(perp.max()), 1e-4)
+    slack = np.sqrt(np.maximum(radius * radius - perp * perp, 0.0))
+    lo = float((proj + slack).min())
+    hi = float((proj - slack).max())
+    if lo > hi:  # a short, fat cloud: one sphere anywhere in [hi, lo] holds it
+        lo = hi = (lo + hi) / 2.0
+    center = centroid + axis * ((lo + hi) / 2.0)
+    # Local +Z onto the major axis: permute the PCA basis to (minor, mid, major).
+    rot = np.column_stack([basis[:, 1], basis[:, 2], basis[:, 0]])
+    roll, pitch, yaw = _mat_to_rpy(rot)
+    origin: _Origin = (float(center[0]), float(center[1]), float(center[2]), roll, pitch, yaw)
+    return CapsuleShape(radius_m=radius, length_m=hi - lo), origin
+
+
+def fit_obb_to_vertices(vertices: _Arr) -> tuple[BoxShape, _Origin]:
+    """Enclosing box on the cloud's PCA axes (every vertex inside by construction)."""
+    import numpy as np
+
+    centroid, basis = _pca_frame(vertices)
+    local = (vertices - centroid) @ basis
+    lo, hi = local.min(axis=0), local.max(axis=0)
+    half = np.maximum((hi - lo) / 2.0, 1e-4)
+    center = centroid + basis @ ((lo + hi) / 2.0)
+    roll, pitch, yaw = _mat_to_rpy(basis)
+    origin: _Origin = (float(center[0]), float(center[1]), float(center[2]), roll, pitch, yaw)
+    return BoxShape(half_extents_m=(float(half[0]), float(half[1]), float(half[2]))), origin
+
+
+def fit_tightest_primitive(vertices: _Arr) -> tuple[CapsuleShape | BoxShape, _Origin]:
+    """The smaller-volume of the trimmed capsule and the PCA box; both enclose the cloud."""
+    cap, cap_origin = fit_trimmed_capsule_to_vertices(vertices)
+    box, box_origin = fit_obb_to_vertices(vertices)
+    cap_vol = math.pi * cap.radius_m**2 * (cap.length_m + 4.0 * cap.radius_m / 3.0)
+    hx, hy, hz = box.half_extents_m
+    box_vol = 8.0 * hx * hy * hz
+    return (box, box_origin) if box_vol < cap_vol else (cap, cap_origin)
 
 
 def _origin_matrix(origin: object) -> _Arr:
@@ -353,6 +428,12 @@ _COARSE_NODES = 7
 # the hazard-log entry. Only `openarm` uses this path, and only with capsules.
 _MJCF_RNG_SEED = 20260610
 _MJCF_N_SAMPLES = 2000
+# Gripper stroke positions a follower-coupled body is sampled at when fitting a
+# leader link's capsule (``fit_collision_geometry_from_mjcf``). The capsule has
+# to hold the follower at every opening; nine evenly spaced positions over a
+# hinge's range leave at most range/16 between a sample and the true extreme,
+# which the fit's own radius absorbs for fingers of this size.
+_MJCF_STROKE_SAMPLES = 9
 
 
 def _parent_joint_map(model: object) -> dict[str, object]:
@@ -734,6 +815,10 @@ class LoweredCollisionModel:
     acm_source: str = "sampling"
     srdf_path: str | None = None
     joint_fk: dict[str, tuple[_Vec3, _Vec3, _Vec3]] = field(default_factory=dict)
+    geometry_fitted: bool = False
+    """``True`` when an MJCF lowering FITTED ``collision_geometry`` to the meshes
+    (``fit_geometry``) rather than reusing the manifest's; the CLI then rewrites
+    the geometry block for an MJCF-sourced robot too."""
 
 
 def _rd_mesh_filename_handler(urdf_path: str) -> object:
@@ -831,6 +916,231 @@ def lower_joint_fk(robot: RobotDescription, urdf_ref: str) -> dict[str, tuple[_V
     return out
 
 
+def _mjcf_link_bodies(robot: RobotDescription, model: object) -> dict[str, int]:
+    """Manifest link name → MJCF body id.
+
+    The two naming schemes can diverge (openarm's manifest ``link0`` / ``link7``
+    are the MJCF's ``base_link`` / ``ee_base_link``), so map via the joint
+    correspondence (``sim_joint_name`` → MJCF joint → its child body), which is
+    unambiguous, and fall back to a direct name match for anything else.
+    """
+    import mujoco
+
+    m: Any = model
+    link_body: dict[str, int] = {}
+    for j in robot.joints:
+        ji = (
+            int(mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, j.sim_joint_name))
+            if j.sim_joint_name
+            else -1
+        )
+        if ji < 0:
+            continue
+        child_b = int(m.jnt_bodyid[ji])
+        link_body[j.child_link] = child_b
+        # The parent link maps to the MJCF body's parent (root link of the chain).
+        if j.parent_link not in link_body:
+            link_body[j.parent_link] = int(m.body_parentid[child_b])
+    for ln in {g.link_name for g in robot.collision_geometry} | {
+        j.parent_link for j in robot.joints
+    }:
+        bid = int(mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, ln))
+        if ln not in link_body and bid >= 0:
+            link_body[ln] = bid
+    return link_body
+
+
+def _collision_mesh_vertices_in_body(model: object, data: object, body_id: int) -> _Arr | None:
+    """Every collidable mesh vertex of MJCF body ``body_id``, in that body's frame."""
+    import mujoco
+    import numpy as np
+
+    m: Any = model
+    d: Any = data
+    body_rot = d.xmat[body_id].reshape(3, 3)
+    body_pos = d.xpos[body_id]
+    parts = []
+    for g in range(m.ngeom):
+        if int(m.geom_bodyid[g]) != body_id or int(m.geom_type[g]) != int(
+            mujoco.mjtGeom.mjGEOM_MESH
+        ):
+            continue
+        if int(m.geom_contype[g]) == 0 and int(m.geom_conaffinity[g]) == 0:
+            continue  # visual-only geometry is not what the robot collides with
+        mesh = int(m.geom_dataid[g])
+        start = int(m.mesh_vertadr[mesh])
+        verts = m.mesh_vert[start : start + int(m.mesh_vertnum[mesh])]
+        world = (d.geom_xmat[g].reshape(3, 3) @ verts.T).T + d.geom_xpos[g]
+        parts.append((world - body_pos) @ body_rot)
+    return np.vstack(parts) if parts else None
+
+
+def mjcf_coupled_joints(model: object) -> dict[int, list[tuple[int, float, float]]]:
+    """Joint equalities as a two-way map: joint id → ``[(other joint, c0, c1)]``.
+
+    MuJoCo's joint equality is ``q[obj1] = c0 + c1·q[obj2]`` (higher terms
+    zero). Which side the manifest drives is arbitrary — the OpenArm's is
+    ``obj1`` (``finger_joint1 = finger_joint2``) — so each coupling is returned
+    from both ends: driving ``obj2`` gives ``obj1 = c0 + c1·q``, driving
+    ``obj1`` gives ``obj2 = (q - c0) / c1``. A non-linear equality (``c2..c4``
+    non-zero) or ``c1 == 0`` cannot be inverted and raises ``ROSConfigError``
+    rather than being silently ignored.
+    """
+    import mujoco
+
+    m: Any = model
+    coupled: dict[int, list[tuple[int, float, float]]] = {}
+    for e in range(m.neq):
+        if int(m.eq_type[e]) != int(mujoco.mjtEq.mjEQ_JOINT):
+            continue
+        a, b = int(m.eq_obj1id[e]), int(m.eq_obj2id[e])
+        if b < 0:
+            continue  # joint pinned to a constant: nothing to follow
+        c = [float(v) for v in m.eq_data[e][:5]]
+        if any(abs(v) > 0.0 for v in c[2:]) or c[1] == 0.0:
+            raise ROSConfigError(
+                f"joint equality {e} ({mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, a)} = "
+                f"poly({mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_JOINT, b)})) is not an "
+                "invertible linear coupling; the collision fit cannot sweep it"
+            )
+        coupled.setdefault(b, []).append((a, c[0], c[1]))
+        coupled.setdefault(a, []).append((b, -c[0] / c[1], 1.0 / c[1]))
+    return coupled
+
+
+def _stroke_swept_vertices(
+    model: object,
+    data: object,
+    body: int,
+    leader: int,
+    followers: list[tuple[int, float, float]],
+    stroke_samples: int,
+) -> list[Any]:
+    """Collision vertices of ``body`` and its equality followers across ``leader``'s stroke.
+
+    ``stroke_samples`` evenly spaced leader positions over the joint range, each
+    follower set to ``c0 + c1·q``; all vertices expressed in ``body``'s frame.
+    Leaves ``data`` posed at the last sample — the caller restores it.
+    """
+    import mujoco
+    import numpy as np
+
+    m: Any = model
+    d: Any = data
+    lo, hi = (float(v) for v in m.jnt_range[leader])
+    parts: list[Any] = []
+    for s in np.linspace(lo, hi, max(stroke_samples, 2)):
+        mujoco.mj_resetData(m, d)
+        d.qpos[int(m.jnt_qposadr[leader])] = s
+        for follower, c0, c1 in followers:
+            d.qpos[int(m.jnt_qposadr[follower])] = c0 + c1 * s
+        mujoco.mj_kinematics(m, d)
+        inner = _collision_mesh_vertices_in_body(m, d, body)
+        if inner is not None:
+            parts.append(inner)
+        rot_b = d.xmat[body].reshape(3, 3)
+        for follower, _c0, _c1 in followers:
+            fbody = int(m.jnt_bodyid[follower])
+            fverts = _collision_mesh_vertices_in_body(m, d, fbody)
+            if fverts is None:
+                continue
+            # follower body frame -> leader's child body frame
+            world = (d.xmat[fbody].reshape(3, 3) @ fverts.T).T + d.xpos[fbody]
+            parts.append((world - d.xpos[body]) @ rot_b)
+    return parts
+
+
+def fit_collision_geometry_from_mjcf(
+    robot: RobotDescription,
+    *,
+    manifest_dir: Path | None = None,
+    stroke_samples: int = _MJCF_STROKE_SAMPLES,
+) -> list[LinkCollisionGeometry]:
+    """Fit one enclosing primitive per manifest link to its MJCF collision meshes.
+
+    For robots whose MJCF collision geometry is meshes, which the primitive
+    lowering (``mjcf_lowering``) skips. Each manifest link maps to an MJCF body
+    by the same joint correspondence the ACM lowering uses; the primitive is
+    ``fit_tightest_primitive`` over every collidable mesh vertex of that body, in
+    the body frame (a trimmed capsule or a PCA box, whichever is smaller), so
+    every vertex lies inside it by construction. A link
+    with no collidable mesh gets no primitive (e.g. openarm's ``openarm_base``,
+    which is MuJoCo's ``world``).
+
+    A body driven by an equality-coupled FOLLOWER joint (openarm's second
+    finger, ``finger_joint2 = finger_joint1``) is not in the manifest's
+    kinematic chain, so its vertices are folded into the LEADER joint's child
+    link: sampled at ``stroke_samples`` evenly spaced leader positions across
+    the joint's range, with the follower set by the equality's polynomial, and
+    expressed in the leader's child body frame. The primitive therefore encloses
+    both fingers at every opening the gripper can reach.
+
+    Raises:
+        ROSConfigError: If the robot has no resolvable MJCF.
+    """
+    import mujoco
+    import numpy as np
+    from openral_core.assets import AssetRefError, resolve_asset
+
+    if not robot.assets.mjcf:
+        raise ROSConfigError(f"{robot.name}: no assets.mjcf to fit collision geometry from")
+    try:
+        mjcf_path = resolve_asset(robot.assets.mjcf, "mjcf", manifest_dir=manifest_dir)
+    except AssetRefError as exc:
+        raise ROSConfigError(f"{robot.name}: {exc}") from exc
+    if mjcf_path is None:
+        raise ROSConfigError(f"{robot.name}: assets.mjcf={robot.assets.mjcf!r} did not resolve")
+    model = mujoco.MjModel.from_xml_path(str(mjcf_path))
+    data = mujoco.MjData(model)
+    link_body = _mjcf_link_bodies(robot, model)
+
+    # Equality-coupled followers of each joint, from whichever side it is driven.
+    followers = mjcf_coupled_joints(model)
+
+    def at_rest() -> None:
+        mujoco.mj_resetData(model, data)
+        mujoco.mj_kinematics(model, data)
+
+    at_rest()
+    geometry: list[LinkCollisionGeometry] = []
+    # Parents too: a chain's root link (each OpenArm arm's ``link0``) is only
+    # ever a parent, and a bimanual robot has one root per arm.
+    ordered_links = [ln for j in robot.joints for ln in (j.parent_link, j.child_link)]
+    seen: set[str] = set()
+    for link in ordered_links:
+        if link in seen or link not in link_body:
+            continue
+        seen.add(link)
+        body = link_body[link]
+        verts = _collision_mesh_vertices_in_body(model, data, body)
+        leader_joint = next(
+            (
+                j
+                for j in robot.joints
+                if j.child_link == link
+                and j.sim_joint_name
+                and int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, j.sim_joint_name))
+                in followers
+            ),
+            None,
+        )
+        if leader_joint is not None and leader_joint.sim_joint_name:
+            leader = int(
+                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, leader_joint.sim_joint_name)
+            )
+            parts = [] if verts is None else [verts]
+            parts += _stroke_swept_vertices(
+                model, data, body, leader, followers[leader], stroke_samples
+            )
+            at_rest()
+            verts = np.vstack(parts) if parts else None
+        if verts is None:
+            continue
+        shape, origin = fit_tightest_primitive(verts)
+        geometry.append(LinkCollisionGeometry(link_name=link, shape=shape, origin_xyz_rpy=origin))
+    return geometry
+
+
 def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJCF lowering pass (load → link-map → FK → sweep → ACM)
     robot: RobotDescription,
     *,
@@ -838,6 +1148,7 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
     seed: int = _MJCF_RNG_SEED,
     margin_m: float = 0.0,
     manifest_dir: Path | None = None,
+    fit_geometry: bool = False,
 ) -> LoweredCollisionModel:
     """Lower joint FK + sampling ACM from a robot's MJCF, keeping its manifest geometry.
 
@@ -874,9 +1185,6 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
     data = mujoco.MjData(model)
     hinge_slide = (int(mujoco.mjtJoint.mjJNT_HINGE), int(mujoco.mjtJoint.mjJNT_SLIDE))
 
-    def name_bid(name: str) -> int:
-        return int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name))
-
     def jid(name: str | None) -> int:
         return int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)) if name else -1
 
@@ -886,26 +1194,15 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
         tf[:3, 3] = data.xpos[i]
         return tf
 
-    # Resolve manifest link names → MJCF body ids. The two naming schemes can
-    # diverge (openarm's manifest ``link0`` / ``link7`` are the MJCF's
-    # ``base_link`` / ``ee_base_link``), so map via the joint correspondence
-    # (``sim_joint_name`` → MJCF joint → its child body), which is unambiguous.
-    link_body: dict[str, int] = {}
-    for j in robot.joints:
-        ji = jid(j.sim_joint_name)
-        if ji < 0:
-            continue
-        child_b = int(model.jnt_bodyid[ji])
-        link_body[j.child_link] = child_b
-        # The parent link maps to the MJCF body's parent (root link of the chain).
-        if j.parent_link not in link_body:
-            link_body[j.parent_link] = int(model.body_parentid[child_b])
-    # Fall back to a direct name match for any link the joint map didn't cover.
-    for ln in {g.link_name for g in robot.collision_geometry} | {
-        j.parent_link for j in robot.joints
-    }:
-        if ln not in link_body and name_bid(ln) >= 0:
-            link_body[ln] = name_bid(ln)
+    link_body = _mjcf_link_bodies(robot, model)
+    # ``fit_geometry``: replace the hand-authored primitives with capsules fitted
+    # to the MJCF's collision meshes (every vertex inside by construction); the
+    # joint FK and the ACM sweep below then run over the fitted geometry.
+    geometry_in = (
+        fit_collision_geometry_from_mjcf(robot, manifest_dir=manifest_dir)
+        if fit_geometry
+        else list(robot.collision_geometry)
+    )
 
     # Joint FK: parent→child transform at the rest pose, axis from the MJCF joint.
     mujoco.mj_resetData(model, data)
@@ -926,7 +1223,7 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
         joint_fk[j.name] = (xyz, (roll, pitch, yaw), axis)
 
     # ACM sweep over the manifest geometry, using mujoco FK for link placement.
-    geoms = {g.link_name: g for g in robot.collision_geometry if g.link_name in link_body}
+    geoms = {g.link_name: g for g in geometry_in if g.link_name in link_body}
     links = list(geoms)
     # Each link's primitive origin in its own body frame; the sweep places it by
     # mujoco FK and asks `shape_distance` — the kernel's own predicate for the
@@ -985,7 +1282,8 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
                 disabled.add(frozenset({a, b}))
 
     return LoweredCollisionModel(
-        collision_geometry=list(robot.collision_geometry),
+        collision_geometry=list(geometry_in),
+        geometry_fitted=fit_geometry,
         allowed_collision_pairs=_scoped_sorted_pairs(disabled, set(links)),
         acm_source="mjcf",
         joint_fk=joint_fk,
@@ -1207,8 +1505,13 @@ def lower_robot_auto(
     acm_only: bool = False,
     geometry_only: bool = False,
     manifest_dir: Path | None = None,
+    fit_mjcf_geometry: bool = False,
 ) -> LoweredCollisionModel:
     """Lower ``robot`` via the provenance-correct source (``select_lowering``).
+
+    ``fit_mjcf_geometry`` applies to the MJCF path only: fit capsules to the
+    MJCF's collision meshes (``fit_collision_geometry_from_mjcf``) instead of
+    keeping the manifest's hand-authored geometry.
 
     The single dispatch the CLI (``openral collision lower``/``check``) and the
     byte-identical regression test both call, so routing can never diverge
@@ -1221,7 +1524,9 @@ def lower_robot_auto(
             ``lower_robot`` / ``lower_robot_from_mjcf``.
     """
     if select_lowering(robot, manifest_dir=manifest_dir) == "mjcf":
-        return lower_robot_from_mjcf(robot, manifest_dir=manifest_dir)
+        return lower_robot_from_mjcf(
+            robot, manifest_dir=manifest_dir, fit_geometry=fit_mjcf_geometry
+        )
     return lower_robot(
         robot, acm_only=acm_only, geometry_only=geometry_only, manifest_dir=manifest_dir
     )
