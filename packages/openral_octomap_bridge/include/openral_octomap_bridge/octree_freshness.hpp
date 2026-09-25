@@ -15,9 +15,16 @@
 
 namespace openral_octomap_bridge {
 
-/// Is `max_age_s` a usable `max_octree_age_s`? Finite and strictly positive.
+/// Hard cap on `max_octree_age_s`: the safety kernel's own cap on
+/// `world_voxel_deadline_ms` (2000 ms), which the bound must not exceed. Mirrors
+/// `openral_core.DeployRuntime.world_voxel_deadline_s <= 2.0`;
+/// `tests/unit/test_perception_caps_mirror.py` pins it.
+inline constexpr double kMaxOctreeAgeS = 2.0;
+
+/// Is `max_age_s` a usable `max_octree_age_s`? In (0, kMaxOctreeAgeS]; NaN and
+/// infinity are not.
 inline bool valid_max_octree_age(double max_age_s) {
-  return std::isfinite(max_age_s) && max_age_s > 0.0;
+  return max_age_s > 0.0 && max_age_s <= kMaxOctreeAgeS;
 }
 
 /// May an octree received `age_s` seconds ago (receipt time, on the node's

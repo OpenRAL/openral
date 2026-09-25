@@ -204,6 +204,18 @@ void place_self_primitives(const SelfModel& model, const std::vector<tf2::Transf
                            std::vector<PayloadPrimitive>& out,
                            std::vector<const SelfHull*>* out_hulls = nullptr);
 
+/// Hard cap on the self-filter's `padding_m`: the width of the blind shell
+/// around the arm (hazard log Entry 035). Mirrors
+/// `openral_core.DeployRuntime.robot_self_filter_padding_m <= 0.10`;
+/// `tests/unit/test_perception_caps_mirror.py` pins it.
+inline constexpr double kMaxSelfFilterPaddingM = 0.10;
+
+/// Is `padding_m` a usable self-filter padding? In [0, kMaxSelfFilterPaddingM];
+/// NaN, infinity and negatives are not. The node forwards nothing otherwise.
+inline bool valid_self_filter_padding(double padding_m) noexcept {
+  return padding_m >= 0.0 && padding_m <= kMaxSelfFilterPaddingM;
+}
+
 /// A set of primitives, all in the cloud's frame, with each one's inverse pose
 /// and broad-phase bound precomputed once per cloud.
 class SelfMask {
