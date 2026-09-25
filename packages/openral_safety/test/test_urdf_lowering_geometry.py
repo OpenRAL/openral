@@ -11,8 +11,13 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from openral_core import CapsuleShape, SphereShape
-from openral_safety.urdf_lowering import fit_capsule_to_vertices, lower_link_geometry
+from openral_core import BoxShape, CapsuleShape, SphereShape
+from openral_safety.urdf_lowering import (
+    CAPSULE_HEADROOM_M,
+    _xyzrpy_matrix,
+    fit_capsule_to_vertices,
+    lower_link_geometry,
+)
 
 
 def _point_in_capsule(p, shape: CapsuleShape, origin_xyz_rpy) -> bool:
@@ -168,13 +173,20 @@ def _write_and_lower(tmp_path, urdf_text):
     return lower_link_geometry(str(path))
 
 
-def test_box_collision_fits_containing_capsule(tmp_path) -> None:
+def test_box_collision_lowers_to_the_box_itself(tmp_path) -> None:
+    """A box ``<collision>`` fits a box: it protrudes by the headroom alone.
+
+    The fitter picks the candidate with the least mean protrusion, and the
+    box's own OBB grown by ``CAPSULE_HEADROOM_M`` beats any capsule around it.
+    """
     geoms = _write_and_lower(tmp_path, _BOX_URDF)
     assert len(geoms) == 1
     g = geoms[0]
     assert g.link_name == "base"
-    assert isinstance(g.shape, CapsuleShape)
-    # box half-diagonal = sqrt(0.05^2+0.1^2+0.15^2) ≈ 0.187 → capsule must reach every corner.
+    assert isinstance(g.shape, BoxShape)
+    assert sorted(g.shape.half_extents_m) == pytest.approx(
+        [0.05 + CAPSULE_HEADROOM_M, 0.1 + CAPSULE_HEADROOM_M, 0.15 + CAPSULE_HEADROOM_M], abs=1e-6
+    )
     corners = np.array(
         [
             [0.01 + sx * 0.05, 0.02 + sy * 0.1, 0.03 + sz * 0.15]
@@ -184,7 +196,9 @@ def test_box_collision_fits_containing_capsule(tmp_path) -> None:
         ],
         dtype=float,
     )
-    assert all(_point_in_capsule(c, g.shape, g.origin_xyz_rpy) for c in corners)
+    tf = _xyzrpy_matrix(g.origin_xyz_rpy)
+    local = (corners - tf[:3, 3]) @ tf[:3, :3]
+    assert (np.abs(local) <= np.asarray(g.shape.half_extents_m) - 0.9 * CAPSULE_HEADROOM_M).all()
 
 
 def test_sphere_collision_maps_to_sphere(tmp_path) -> None:

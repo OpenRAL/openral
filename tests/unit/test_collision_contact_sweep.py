@@ -5,9 +5,11 @@ limits are checked two independent ways:
 
 - **the kernel's verdict** — the exact parameters the deploy launch hands the C++
   kernel (``collision_params_from_description``), placed by the kernel's own
-  forward-kinematics convention and measured with the kernel's own predicate
-  (``kernel_predicates.capsule_distance``), tripping at ``d <= margin`` on every
-  pair the ACM does not exempt;
+  forward-kinematics convention and measured with the kernel's own predicates
+  (``kernel_predicates.shape_distance``, folded over each link's primitives and
+  re-asked of the exact hulls for a refined box pair, as ``check_self_collision``
+  does — ``_collision_kernel_verdict.kernel_link_gap``), tripping at
+  ``d <= margin`` on every pair the ACM does not exempt;
 - **ground truth** — each link's ``<collision>`` + ``<visual>`` geometry placed
   by the URDF's own forward kinematics (yourdfpy). A pair is *clear* only when a
   separating plane between the two convex hulls is proven (GJK witness +
@@ -36,15 +38,16 @@ pytest.importorskip("scipy")
 import trimesh
 from openral_core import RobotDescription
 from openral_core.assets import resolve_asset
+from openral_core.schemas import LinkCollisionGeometry
 from openral_hal.convex_distance import _gjk, separating_axis_bound
 from openral_safety.envelope_loader import collision_params_from_description
-from openral_safety.kernel_predicates import capsule_distance
 from openral_safety.urdf_lowering import (
-    _apply,
-    _collision_local_vertices,
+    _collision_local_mesh,
     _load_urdf,
     _origin_matrix,
 )
+
+from tests.unit._collision_kernel_verdict import kernel_link_gap, surface_pieces
 
 _REPO = Path(__file__).resolve().parents[2]
 URDF_LOWERED = ("franka_panda", "g1", "h1", "rizon4", "so100_follower", "ur10e", "ur5e")
@@ -124,23 +127,37 @@ def test_kernel_trips_on_every_sampled_real_contact(robot_id: str) -> None:
     model = _load_urdf(str(urdf))
     handler = model._filename_handler  # type: ignore[attr-defined]  # reason: yourdfpy URDF
 
-    cap_link = [int(v) for v in params["collision_capsule_link"]]
-    assert not params.get("collision_box_link"), "URDF-lowered robots emit capsules only"
-    cap_r = np.asarray(params["collision_capsule_radius"], dtype=float)
-    cap_h = np.asarray(params["collision_capsule_half_length"], dtype=float)
-    cap_o = np.asarray(params["collision_capsule_origin_xyzrpy"], dtype=float).reshape(-1, 6)
+    # Every primitive the kernel gets, by link index (a link may carry several).
+    prims: dict[int, list[LinkCollisionGeometry]] = {}
+    for g in robot.collision_geometry:
+        prims.setdefault(names.index(g.link_name), []).append(g)
     allowed_flat = [int(v) for v in params["collision_allowed_pairs"]]
     allowed = {frozenset(allowed_flat[i : i + 2]) for i in range(0, len(allowed_flat), 2)}
 
-    # Ground-truth hull (link frame) for every link that carries a capsule.
-    hull: dict[int, np.ndarray] = {}
-    for li in sorted(set(cap_link)):
+    # Ground truth (link frame) for every link that carries a primitive: its
+    # convex hull, or — for a link with several primitives, whose union is not
+    # convex — the hulls of its surface split among them (`surface_pieces`),
+    # which contain the surface without filling the concavities a capsule chain
+    # leaves out (the link's hull there would report contacts no mesh makes).
+    hull: dict[int, list[np.ndarray]] = {}
+    for li in sorted(prims):
         link = model.link_map[names[li]]  # type: ignore[attr-defined]  # reason: yourdfpy URDF
-        clouds = [
-            _apply(_origin_matrix(el.origin), _collision_local_vertices(el, handler))
-            for el in list(link.collisions or []) + list(link.visuals or [])
+        mesh = trimesh.util.concatenate(
+            [
+                _collision_local_mesh(el, handler).apply_transform(_origin_matrix(el.origin))
+                for el in list(link.collisions or []) + list(link.visuals or [])
+            ]
+        )
+        if len(prims[li]) == 1:
+            hull[li] = [np.asarray(trimesh.convex.convex_hull(mesh.vertices).vertices)]
+            continue
+        pieces, uncovered = surface_pieces(
+            np.asarray(mesh.vertices), np.asarray(mesh.faces), prims[li]
+        )
+        assert uncovered == 0, f"{robot_id}/{names[li]}: surface leaves its primitives"
+        hull[li] = [
+            np.asarray(trimesh.convex.convex_hull(p).vertices) for p in pieces if len(p) >= 4
         ]
-        hull[li] = np.asarray(trimesh.convex.convex_hull(np.vstack(clouds)).vertices)
 
     child_to_urdf = {j.child: j.name for j in model.robot.joints}  # type: ignore[attr-defined]  # reason: yourdfpy URDF
     actuated = set(model.actuated_joint_names)  # type: ignore[attr-defined]  # reason: yourdfpy URDF
@@ -167,22 +184,17 @@ def test_kernel_trips_on_every_sampled_real_contact(robot_id: str) -> None:
         )
         base = np.linalg.inv(model.get_transform(root))  # type: ignore[attr-defined]  # reason: yourdfpy URDF
         truth = {}
-        for li, h in hull.items():
+        for li, hs in hull.items():
             t = base @ model.get_transform(names[li])  # type: ignore[attr-defined]  # reason: yourdfpy URDF
             fk_err = max(fk_err, float(np.abs(t - kernel_world[li]).max()))
-            truth[li] = h @ t[:3, :3].T + t[:3, 3]
-        caps: dict[int, list[tuple[np.ndarray, float, float]]] = {}
-        for c, li in enumerate(cap_link):
-            caps.setdefault(li, []).append((kernel_world[li] @ _tf(cap_o[c]), cap_r[c], cap_h[c]))
+            truth[li] = [h @ t[:3, :3].T + t[:3, 3] for h in hs]
         for a, b in pairs:
-            if not _hulls_overlap(truth[a], truth[b]):
+            if not any(_hulls_overlap(ha, hb) for ha in truth[a] for hb in truth[b]):
                 continue
             contacts += 1
-            gap = min(
-                float(capsule_distance(ta[None], ra, ha, tb[None], rb, hb)[0])
-                for ta, ra, ha in caps[a]
-                for tb, rb, hb in caps[b]
-            )
+            # Hull-refined where the kernel refines: a refined box pair is judged
+            # by its hulls, which is exactly where a miss would hide.
+            gap = kernel_link_gap(prims[a], kernel_world[a], prims[b], kernel_world[b], margin)
             if gap > margin:
                 misses.append((names[a], names[b], round(gap, 4), np.round(q, 4).tolist()))
     assert fk_err < 1e-6, f"{robot_id}: manifest FK disagrees with the URDF by {fk_err:.2e} m"

@@ -1053,14 +1053,31 @@ def test_collision_model_slop_skips_capsule_links_instead_of_crashing() -> None:
     """
     from openral_core import RobotDescription
     from openral_hal import build_hal
+    from openral_safety.cumotion_config import sphere_model_geometry
 
     description = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+    # The shipped OpenArm lowers every link to a box (+ hull) since 2026-09-25,
+    # so make the model mixed the way a capsule link would be: link2 and link6
+    # (both arms) as the capsule that bounds their shipped box
+    # (`sphere_model_geometry`, the cuRobo-side capsule of the same box).
+    as_capsule = {"openarm_left_link2", "openarm_left_link6"}
+    capsules = sphere_model_geometry(
+        [e for e in description.collision_geometry if e.link_name in as_capsule]
+    )
+    description = description.model_copy(
+        update={
+            "collision_geometry": [
+                *(e for e in description.collision_geometry if e.link_name not in as_capsule),
+                *(g for gs in capsules.values() for g in gs),
+            ]
+        }
+    )
     capsule_links = sorted(
         e.link_name
         for e in description.collision_geometry
         if getattr(e.shape, "half_extents_m", None) is None
     )
-    assert capsule_links, "this test wants non-box links; the openarm manifest changed"
+    assert capsule_links == sorted(as_capsule)
     from openral_core.exceptions import ROSConfigError
     from openral_hal._openarm_v2_assets import ensure_openarm_v2_mjcf
 

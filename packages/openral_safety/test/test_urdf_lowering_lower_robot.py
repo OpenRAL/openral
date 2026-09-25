@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from openral_core import RobotDescription
 from openral_core.exceptions import ROSConfigError
-from openral_core.schemas import AssetRefs
+from openral_core.schemas import AssetRefs, BoxShape
 from openral_safety.urdf_lowering import lower_robot
 
 pytest.importorskip("yourdfpy")
@@ -116,12 +116,18 @@ def test_lower_robot_falls_back_to_sampling_without_srdf() -> None:
     assert result.allowed_collision_pairs == again.allowed_collision_pairs
 
 
-def test_geometry_only_emits_capsules_no_acm() -> None:
+def test_geometry_only_emits_geometry_no_acm() -> None:
     robot = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
     result = lower_robot(robot, geometry_only=True)
     assert result.allowed_collision_pairs == []
     assert result.collision_geometry, "geometry_only must still emit collision_geometry"
-    assert all(g.shape.radius_m > 0.0 for g in result.collision_geometry)
+    # panda_mobile refines every arm link (tight_geometry), and a refined link
+    # re-lowers as a box plus its hull: the refinement is sticky.
+    assert all(isinstance(g.shape, BoxShape) for g in result.collision_geometry)
+    assert all(
+        g.tight_geometry is not None and g.tight_geometry.hull_vertices_m
+        for g in result.collision_geometry
+    )
 
 
 def test_lower_robot_requires_urdf_path() -> None:

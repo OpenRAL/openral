@@ -107,7 +107,7 @@ nav:
     - RoboCasa start-state collision census: reference/robocasa-start-state-census.md
     - Tight link geometry in the safety kernel: reference/collision-tight-geometry.md
     - Staged hull narrow phase in the safety kernel: reference/collision-hull-narrow-phase.md
-    - Collision geometry review (capsules vs hulls, per robot): reference/collision-geometry-review.md
+    - Collision geometry review (one fitter, capsules and hulls, per robot): reference/collision-geometry-review.md
     - The live world map, measured: reference/world-map-fidelity.md
     - RoboCasa carry survey (base translation while carrying): reference/robocasa-carry-survey.md
     - Collision-safety alternatives survey: reference/collision-safety-alternatives-survey.md

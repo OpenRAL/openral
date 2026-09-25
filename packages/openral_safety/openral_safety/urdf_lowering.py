@@ -28,12 +28,14 @@ from __future__ import annotations
 import math
 import warnings
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from openral_core import (
     BoxShape,
     CapsuleShape,
+    CollisionShape,
     LinkCollisionGeometry,
     RobotDescription,
     SphereShape,
@@ -50,14 +52,15 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CAPSULE_HEADROOM_M",
+    "LinkFit",
     "LoweredCollisionModel",
     "LoweringSource",
     "acm_for_geometry",
     "fit_capsule_to_vertices",
     "fit_collision_geometry_from_mjcf",
+    "fit_link_primitives",
+    "fit_link_with_tight_geometry",
     "fit_obb_to_vertices",
-    "fit_tightest_primitive",
-    "fit_trimmed_capsule_to_vertices",
     "lower_joint_fk",
     "lower_link_geometry",
     "lower_robot",
@@ -256,13 +259,7 @@ def fit_capsule_to_vertices(
     """
     import numpy as np
 
-    pts = np.unique(np.asarray(vertices, dtype=np.float64).reshape(-1, 3), axis=0)
-    if len(pts) >= _HULL_REDUCE_MIN_POINTS:
-        import trimesh
-
-        # A convex capsule holds the cloud iff it holds the cloud's hull
-        # vertices, so fitting those is exact and 10-100x cheaper on CAD meshes.
-        pts = np.asarray(trimesh.convex.convex_hull(pts).vertices, dtype=np.float64)
+    pts = _hull_points(vertices)
     _, _, vh = np.linalg.svd(pts - pts.mean(axis=0), full_matrices=False)
     n = _AXIS_SEARCH_DIRS
     i = np.arange(n) + 0.5
@@ -314,73 +311,376 @@ def fit_capsule_to_vertices(
     return CapsuleShape(radius_m=radius + headroom_m, length_m=length), origin
 
 
-def _pca_frame(vertices: _Arr) -> tuple[_Arr, _Arr]:
-    """Centroid and a right-handed PCA basis (columns = principal axes, major first)."""
-    import numpy as np
+def _hull_points(vertices: _Arr) -> _Arr:
+    """The convex-hull vertices of a cloud (the cloud itself when it is small).
 
-    centroid = vertices.mean(axis=0)
-    _, _, vh = np.linalg.svd(vertices - centroid, full_matrices=False)
-    basis = vh.T.copy()
-    if np.linalg.det(basis) < 0:
-        basis[:, 2] = -basis[:, 2]
-    return centroid, basis
-
-
-def fit_trimmed_capsule_to_vertices(vertices: _Arr) -> tuple[CapsuleShape, _Origin]:
-    """Enclosing capsule on the PCA major axis whose end caps stop at the cloud.
-
-    Same axis and radius as ``fit_capsule_to_vertices`` (the max distance of any
-    vertex from the axis line), but the segment is the SHORTEST one whose
-    capsule still holds every vertex: a vertex at axial position ``t`` and axis
-    distance ``d`` is inside iff the nearer end is within ``sqrt(r² - d²)`` of
-    ``t``. The full projection span instead lets each hemispherical cap overhang
-    the mesh by up to a whole radius, which on the OpenArm put link 3 into link
-    5 at rest (−21 mm against a +74 mm mesh gap). Every vertex lies inside by
-    construction.
+    A convex primitive holds the cloud iff it holds the cloud's hull vertices,
+    so every fitter below works on these: exact, and 10-100x cheaper on CAD
+    meshes.
     """
     import numpy as np
 
-    centroid, basis = _pca_frame(vertices)
-    axis = basis[:, 0]
-    centered = vertices - centroid
-    proj = centered @ axis
-    perp = np.linalg.norm(centered - np.outer(proj, axis), axis=1)
-    radius = max(float(perp.max()), 1e-4)
-    slack = np.sqrt(np.maximum(radius * radius - perp * perp, 0.0))
-    lo = float((proj + slack).min())
-    hi = float((proj - slack).max())
-    if lo > hi:  # a short, fat cloud: one sphere anywhere in [hi, lo] holds it
-        lo = hi = (lo + hi) / 2.0
-    center = centroid + axis * ((lo + hi) / 2.0)
-    # Local +Z onto the major axis: permute the PCA basis to (minor, mid, major).
-    rot = np.column_stack([basis[:, 1], basis[:, 2], basis[:, 0]])
-    roll, pitch, yaw = _mat_to_rpy(rot)
-    origin: _Origin = (float(center[0]), float(center[1]), float(center[2]), roll, pitch, yaw)
-    return CapsuleShape(radius_m=radius, length_m=hi - lo), origin
+    pts = np.unique(np.asarray(vertices, dtype=np.float64).reshape(-1, 3), axis=0)
+    if len(pts) >= _HULL_REDUCE_MIN_POINTS:
+        import trimesh
+
+        pts = np.asarray(trimesh.convex.convex_hull(pts).vertices, dtype=np.float64)
+    return pts
 
 
-def fit_obb_to_vertices(vertices: _Arr) -> tuple[BoxShape, _Origin]:
-    """Enclosing box on the cloud's PCA axes (every vertex inside by construction)."""
+def fit_obb_to_vertices(
+    vertices: _Arr, *, headroom_m: float = CAPSULE_HEADROOM_M
+) -> tuple[BoxShape, _Origin]:
+    """Minimum-volume oriented bounding box of a cloud, grown by ``headroom_m``.
+
+    The frame comes from ``trimesh.bounds.oriented_bounds`` (rotating calipers
+    over the hull); the half-extents are re-measured from the cloud in that
+    frame, so containment is by construction, and then each grows by
+    ``headroom_m`` for the same reason a capsule's radius does.
+
+    Returns:
+        ``(BoxShape, origin_xyz_rpy)`` in the cloud's frame.
+    """
     import numpy as np
+    import trimesh
 
-    centroid, basis = _pca_frame(vertices)
-    local = (vertices - centroid) @ basis
+    pts = _hull_points(vertices)
+    to_box, _ = trimesh.bounds.oriented_bounds(pts)
+    box_to_link = np.linalg.inv(np.asarray(to_box, dtype=np.float64))
+    rot = np.asarray(box_to_link[:3, :3], dtype=np.float64)
+    if np.linalg.det(rot) < 0.0:
+        rot = rot @ np.diag([1.0, 1.0, -1.0])  # a proper rotation; the box is symmetric
+    local = (pts - box_to_link[:3, 3]) @ rot
     lo, hi = local.min(axis=0), local.max(axis=0)
-    half = np.maximum((hi - lo) / 2.0, 1e-4)
-    center = centroid + basis @ ((lo + hi) / 2.0)
-    roll, pitch, yaw = _mat_to_rpy(basis)
+    half = (hi - lo) / 2.0 + headroom_m
+    center = box_to_link[:3, 3] + rot @ ((lo + hi) / 2.0)
+    roll, pitch, yaw = _mat_to_rpy(rot)
     origin: _Origin = (float(center[0]), float(center[1]), float(center[2]), roll, pitch, yaw)
     return BoxShape(half_extents_m=(float(half[0]), float(half[1]), float(half[2]))), origin
 
 
-def fit_tightest_primitive(vertices: _Arr) -> tuple[CapsuleShape | BoxShape, _Origin]:
-    """The smaller-volume of the trimmed capsule and the PCA box; both enclose the cloud."""
-    cap, cap_origin = fit_trimmed_capsule_to_vertices(vertices)
-    box, box_origin = fit_obb_to_vertices(vertices)
-    cap_vol = math.pi * cap.radius_m**2 * (cap.length_m + 4.0 * cap.radius_m / 3.0)
-    hx, hy, hz = box.half_extents_m
-    box_vol = 8.0 * hx * hy * hz
-    return (box, box_origin) if box_vol < cap_vol else (cap, cap_origin)
+def _capsule_axis(shape: CapsuleShape, origin: _Origin) -> _Arr:
+    """The unit axis of a placed capsule (its local +Z) in the cloud's frame."""
+    import numpy as np
+
+    return np.asarray(_xyzrpy_matrix(origin)[:3, 2], dtype=np.float64)
+
+
+def _capsule_chain(
+    mesh: Any, axis: _Arr, k: int, *, headroom_m: float
+) -> list[tuple[CollisionShape, _Origin]] | None:
+    """``k`` capsules holding a mesh: the mesh cut into ``k`` equal slabs along ``axis``.
+
+    Each slab piece keeps its cut points (``trimesh.slice_plane``), so the piece
+    of the solid inside the slab lies in the convex hull of the piece's vertices,
+    which ``fit_capsule_to_vertices`` holds; the union of the ``k`` capsules
+    therefore holds the whole mesh. Cutting the mesh, not its hull, is what buys
+    anything: a hull slab bulges between the fat and thin ends of a link, the
+    mesh slab does not. ``None`` when a slab is degenerate.
+    """
+    import numpy as np
+
+    t = np.asarray(mesh.vertices) @ axis
+    cuts = np.linspace(float(t.min()), float(t.max()), k + 1)
+    out: list[tuple[CollisionShape, _Origin]] = []
+    for i in range(k):
+        piece = mesh
+        if i > 0:
+            piece = piece.slice_plane(axis * cuts[i], axis, cap=False)
+        if i < k - 1 and piece is not None:
+            piece = piece.slice_plane(axis * cuts[i + 1], -axis, cap=False)
+        if piece is None or len(piece.vertices) < 4:
+            return None
+        out.append(fit_capsule_to_vertices(np.asarray(piece.vertices), headroom_m=headroom_m))
+    return out
+
+
+_PROTRUSION_DIRS = 1024
+# Candidates whose mean protrusion is within this fraction of the least are
+# ties; the tie goes to the cheaper kernel kind (capsules over boxes, fewer over more).
+_PROTRUSION_TIE_FRACTION = 0.03
+_UNION_VOLUME_SAMPLES = 60_000
+
+
+def _support(prims: list[tuple[CollisionShape, _Origin]], dirs: _Arr) -> _Arr:
+    """Support function of a primitive union along each row of ``dirs``."""
+    import numpy as np
+
+    best = np.full(len(dirs), -np.inf)
+    for shape, origin in prims:
+        tf = _xyzrpy_matrix(origin)
+        c = tf[:3, 3]
+        if isinstance(shape, BoxShape):
+            h = np.asarray(shape.half_extents_m)
+            s = dirs @ c + np.abs(dirs @ tf[:3, :3]) @ h
+        else:
+            half = shape.length_m / 2.0 if isinstance(shape, CapsuleShape) else 0.0
+            a = tf[:3, 2] * half
+            s = np.maximum(dirs @ (c + a), dirs @ (c - a)) + shape.radius_m
+        best = np.maximum(best, s)
+    return np.asarray(best, dtype=np.float64)
+
+
+def _primitive_volume(shape: CollisionShape) -> float:
+    if isinstance(shape, BoxShape):
+        hx, hy, hz = shape.half_extents_m
+        return 8.0 * hx * hy * hz
+    r = shape.radius_m
+    length = shape.length_m if isinstance(shape, CapsuleShape) else 0.0
+    return math.pi * r * r * length + 4.0 / 3.0 * math.pi * r**3
+
+
+def _union_volume(prims: list[tuple[CollisionShape, _Origin]]) -> float:
+    """Volume of a primitive union: closed form for one, fixed-seed Monte Carlo for more."""
+    import numpy as np
+
+    if len(prims) == 1:
+        return _primitive_volume(prims[0][0])
+    eye = np.eye(3)
+    hi = _support(prims, eye)
+    lo = -_support(prims, -eye)
+    x = np.random.default_rng(0).uniform(lo, hi, (_UNION_VOLUME_SAMPLES, 3))
+    inside = np.zeros(len(x), dtype=bool)
+    for shape, origin in prims:
+        tf = _xyzrpy_matrix(origin)
+        local = (x - tf[:3, 3]) @ tf[:3, :3]
+        if isinstance(shape, BoxShape):
+            inside |= np.all(np.abs(local) <= np.asarray(shape.half_extents_m), axis=1)
+        else:
+            half = shape.length_m / 2.0 if isinstance(shape, CapsuleShape) else 0.0
+            z = np.clip(local[:, 2], -half, half)
+            inside |= np.linalg.norm(local - np.column_stack([0 * z, 0 * z, z]), axis=1) <= (
+                shape.radius_m
+            )
+    return float(np.prod(hi - lo) * inside.mean())
+
+
+@dataclass(frozen=True)
+class LinkFit:
+    """One link's fitted primitive set and how far it protrudes past the link.
+
+    Attributes:
+        primitives: ``(shape, origin_xyz_rpy)`` per primitive; every cloud vertex
+            lies inside their union by at least the declared headroom.
+        kind: ``"capsule"``, ``"box"`` or ``"capsule×k"``.
+        volume_ratio: Union volume ÷ the cloud's convex-hull volume (1 = exact).
+        max_protrusion_m: Largest support-function excess of the union over the
+            hull across ``_PROTRUSION_DIRS`` directions — the worst clearance the
+            kernel under-reports for this link.
+        mean_protrusion_m: The same excess averaged over the directions — the
+            typical clearance the kernel under-reports.
+        candidates: ``{kind: (volume_ratio, max_protrusion_m, mean_protrusion_m)}``
+            for every candidate that was fitted, for the review tables.
+        fitted: ``{kind: primitives}`` — every candidate's primitives, so a
+            review can re-pick under another rule without refitting.
+    """
+
+    primitives: list[tuple[CollisionShape, _Origin]]
+    kind: str
+    volume_ratio: float
+    max_protrusion_m: float
+    mean_protrusion_m: float
+    candidates: dict[str, tuple[float, float, float]]
+    fitted: dict[str, list[tuple[CollisionShape, _Origin]]]
+
+
+def _fibonacci_sphere(n: int) -> _Arr:
+    import numpy as np
+
+    i = np.arange(n) + 0.5
+    polar = np.arccos(1.0 - 2.0 * i / n)
+    azim = math.pi * (1.0 + 5.0**0.5) * i
+    return np.stack(
+        [np.cos(azim) * np.sin(polar), np.sin(azim) * np.sin(polar), np.cos(polar)], axis=1
+    )
+
+
+def fit_link_primitives(
+    mesh: Any,
+    *,
+    headroom_m: float = CAPSULE_HEADROOM_M,
+    max_capsules: int = 3,
+    force_box: bool = False,
+) -> LinkFit:
+    """The primitive set that protrudes least past a mesh: one capsule, one box, or a chain.
+
+    Geometry-source agnostic: the URDF and MJCF readers only collect each link's
+    geometry into one ``trimesh.Trimesh`` (collision and visual, in the link
+    frame) and hand it here. Every candidate contains every vertex by
+    construction with ``headroom_m`` of clearance. The choice between them is
+    the **mean protrusion**: the support-function excess of the candidate over
+    the mesh's convex hull, averaged over ``_PROTRUSION_DIRS`` directions — how
+    far, on average, the kernel's surface stands off the real part, which is
+    the clearance a false stop is made of. Candidates within
+    ``_PROTRUSION_TIE_FRACTION`` of the least are ties, and a tie goes to the
+    cheaper kernel kind: a capsule↔capsule check costs 11 ns against 139 ns
+    box↔box and 669 ns box↔capsule, so capsules first, then fewer capsules,
+    then a box. The excess volume over the hull and the max protrusion are
+    measured for every candidate and reported (``LinkFit.candidates``), not
+    optimised: on the shipped robots the least-volume pick refused MORE poses
+    than the least-mean-protrusion pick (UR10e 498 vs 340 per 1000,
+    ``docs/reference/collision-geometry-review.md`` §3). ``force_box``
+    restricts the choice to the box (a link that will carry ``tight_geometry``,
+    which the kernel refines a box with).
+
+    Args:
+        mesh: The link's geometry as one ``trimesh.Trimesh`` in the link frame
+            (a triangle soup is fine; only the capsule chains use the faces).
+        headroom_m: Declared clearance every primitive keeps around the cloud.
+        max_capsules: Longest capsule chain tried.
+        force_box: Fit only the box candidate.
+
+    Returns:
+        A ``LinkFit``.
+    """
+    import numpy as np
+    import trimesh
+
+    pts = _hull_points(np.asarray(mesh.vertices, dtype=np.float64))
+    hull = trimesh.convex.convex_hull(pts)
+    hull_volume = max(float(hull.volume), 1e-12)
+    dirs = _fibonacci_sphere(_PROTRUSION_DIRS)
+    hull_support = (dirs @ np.asarray(hull.vertices).T).max(axis=1)
+
+    fitted: list[
+        tuple[str, int, list[tuple[CollisionShape, _Origin]]]
+    ] = []  # (kind, cost rank, prims)
+    fitted.append(("box", 10, [fit_obb_to_vertices(pts, headroom_m=headroom_m)]))
+    if not force_box:
+        cap = fit_capsule_to_vertices(pts, headroom_m=headroom_m)
+        fitted.append(("capsule", 0, [cap]))
+        axis = _capsule_axis(*cap)
+        for k in range(2, max_capsules + 1):
+            chain = _capsule_chain(mesh, axis, k, headroom_m=headroom_m)
+            if chain is not None:
+                fitted.append((f"capsule×{k}", k - 1, chain))
+
+    scored: dict[str, tuple[float, float, float]] = {}
+    for kind, _rank, prims in fitted:
+        excess = _support(prims, dirs) - hull_support
+        scored[kind] = (
+            _union_volume(prims) / hull_volume,
+            float(excess.max()),
+            float(excess.mean()),
+        )
+    least = min(v[2] for v in scored.values())
+    kind, _rank, prims = min(
+        (c for c in fitted if scored[c[0]][2] <= least * (1.0 + _PROTRUSION_TIE_FRACTION)),
+        key=lambda c: (c[1], scored[c[0]][2]),
+    )
+    return LinkFit(
+        primitives=prims,
+        kind=kind,
+        volume_ratio=scored[kind][0],
+        max_protrusion_m=scored[kind][1],
+        mean_protrusion_m=scored[kind][2],
+        candidates=scored,
+        fitted={c[0]: c[2] for c in fitted},
+    )
+
+
+#: Decimal places a manifest renders a primitive at (``openral_cli.collision.
+#: render_blocks``). A ``tight_geometry`` is expressed in its box's frame, so it
+#: is derived in the box AS RENDERED — otherwise the 4-dp rounding of the box
+#: origin would move the hull off the mesh it was built to contain.
+_RENDER_DP = 4
+
+
+def fit_link_with_tight_geometry(
+    link_name: str, mesh: Any, *, headroom_m: float = CAPSULE_HEADROOM_M
+) -> LinkCollisionGeometry:
+    """One link as a box plus the ``tight_geometry`` (26-DOP + exact hull) refining it.
+
+    The box is ``fit_obb_to_vertices`` (minimum volume, ``headroom_m``), with its
+    origin rounded and its half-extents rounded **up** to the precision the
+    manifest is written at, and the refinement is derived in that rendered
+    frame (``openral_safety.tight_geometry.tight_geometry_for_box``). So
+    ``mesh ⊆ hull ⊆ DOP ⊆ box`` holds for the box the kernel loads, not for an
+    unrounded twin of it.
+
+    The kernel uses it for a box only: every voxel check on this box runs the
+    DOP then the hull, and a self-collision pair whose two boxes both carry a
+    hull is re-asked of the two hulls (``refine_self_pair``). Against a capsule
+    the box itself is what is checked, so the refinement pays off for pairs of
+    refined links (``docs/reference/collision-geometry-review.md`` §8).
+
+    Args:
+        link_name: The manifest link.
+        mesh: The link's geometry as one ``trimesh.Trimesh`` in the link frame.
+        headroom_m: Declared clearance the box keeps around the mesh.
+
+    Returns:
+        The refined box.
+    """
+    import numpy as np
+
+    from openral_safety.tight_geometry import tight_geometry_for_box
+
+    box, origin = fit_obb_to_vertices(
+        np.asarray(mesh.vertices, dtype=np.float64), headroom_m=headroom_m
+    )
+    scale = 10.0**_RENDER_DP
+    rendered: _Origin = tuple(round(float(v), _RENDER_DP) for v in origin)  # type: ignore[assignment]  # reason: six floats in, six out
+    half = tuple(math.ceil(float(h) * scale) / scale for h in box.half_extents_m)
+    in_box = mesh.copy()
+    in_box.apply_transform(np.linalg.inv(_xyzrpy_matrix(rendered)))
+    return LinkCollisionGeometry(
+        link_name=link_name,
+        shape=BoxShape(half_extents_m=(half[0], half[1], half[2])),
+        origin_xyz_rpy=rendered,
+        tight_geometry=tight_geometry_for_box(in_box, half),
+    )
+
+
+def _rendered(shape: CollisionShape, origin: _Origin) -> tuple[CollisionShape, _Origin]:
+    """A primitive at the precision the manifest writes it (``_RENDER_DP``).
+
+    The lowering hands the ACM certificate and the manifest the SAME numbers the
+    kernel will load: a pair proven always-colliding on the unrounded fit could
+    come out of the 4-dp manifest clear at a pose, and the proof would be about
+    a model the kernel never runs. The declared headroom absorbs the ≤ 0.05 mm
+    shift (the enclosure tests hold every vertex ≥ 0.5 mm inside).
+    """
+    r = _RENDER_DP
+    placed: _Origin = tuple(round(float(v), r) for v in origin)  # type: ignore[assignment]  # reason: six floats in, six out
+    if isinstance(shape, BoxShape):
+        hx, hy, hz = (round(float(h), r) for h in shape.half_extents_m)
+        return BoxShape(half_extents_m=(hx, hy, hz)), placed
+    if isinstance(shape, CapsuleShape):
+        return CapsuleShape(
+            radius_m=round(float(shape.radius_m), r), length_m=round(float(shape.length_m), r)
+        ), placed
+    return SphereShape(radius_m=round(float(shape.radius_m), r)), placed
+
+
+def _fit_link(
+    link_name: str, mesh: Any, tight_links: frozenset[str]
+) -> list[LinkCollisionGeometry]:
+    """A link's entries at manifest precision: box + hull when asked for, else the fit."""
+    if link_name in tight_links:
+        return [fit_link_with_tight_geometry(link_name, mesh)]
+    out = []
+    for shape, origin in fit_link_primitives(mesh).primitives:
+        rendered_shape, rendered_origin = _rendered(shape, origin)
+        out.append(
+            LinkCollisionGeometry(
+                link_name=link_name, shape=rendered_shape, origin_xyz_rpy=rendered_origin
+            )
+        )
+    return out
+
+
+def _tight_links_of(robot: RobotDescription, extra: Iterable[str] | None) -> frozenset[str]:
+    """Links to lower as box + hull: the manifest's refined links plus ``extra``.
+
+    Sticky on purpose: a link the manifest already refines stays refined on a
+    re-lower, so ``openral collision check`` reproduces it byte for byte, and
+    dropping a refinement is a deliberate manifest edit, never a side effect.
+    """
+    return frozenset(
+        {g.link_name for g in robot.collision_geometry if g.tight_geometry is not None}
+        | set(extra or ())
+    )
 
 
 def _origin_matrix(origin: object) -> _Arr:
@@ -444,10 +744,15 @@ def _apply(transform: _Arr, pts: _Arr) -> _Arr:
     return np.asarray((pts @ transform[:3, :3].T) + transform[:3, 3], dtype=np.float64)
 
 
-def lower_link_geometry(urdf_path: str) -> list[LinkCollisionGeometry]:
-    """One conservative ``LinkCollisionGeometry`` per URDF link with geometry.
+def lower_link_geometry(
+    urdf_path: str,
+    *,
+    tight_links: Iterable[str] = (),
+    extra_meshes: Mapping[str, Any] | None = None,
+) -> list[LinkCollisionGeometry]:
+    """The conservative primitive set of every URDF link with geometry.
 
-    The primitive bounds the link's ``<collision>`` **and** ``<visual>``
+    The primitives bound the link's ``<collision>`` **and** ``<visual>``
     geometry together. A vendor's ``<collision>`` block is a simplification, and
     measured on the shipped robots it is often *smaller* than the part: H1's is a
     set of placeholder spheres/cylinders the real torso reaches 549 mm past, G1's
@@ -458,9 +763,16 @@ def lower_link_geometry(urdf_path: str) -> list[LinkCollisionGeometry]:
 
     Boxes map to their 8 corners, cylinders and spheres to circumscribing
     polytopes, meshes to their vertices (``trimesh``); everything is placed in
-    the link frame by its ``<origin>`` and fitted with
-    ``fit_capsule_to_vertices`` (minimum volume, declared headroom). A link whose
-    only geometry is one sphere ``<collision>`` emits that exact ``SphereShape``.
+    the link frame by its ``<origin>`` and handed to ``fit_link_primitives`` —
+    the same fitter the MJCF path uses — which returns one capsule, one box or a
+    capsule chain, whichever has the least excess volume over the link's convex
+    hull (every vertex inside with the declared headroom). A link may therefore
+    yield several entries. A link named in ``tight_links`` is lowered instead
+    as one box plus the exact hull refining it
+    (``fit_link_with_tight_geometry``). ``extra_meshes`` adds geometry per link,
+    already in the link frame, to the cloud (``lower_robot`` passes the robot's
+    MJCF twin meshes, ``_twin_link_meshes``). A link whose only geometry is one
+    sphere ``<collision>`` emits that exact ``SphereShape``.
 
     Fails closed on partial resolution: a link some of whose geometry loads and
     some does not raises, because fitting the part that loaded would under-cover
@@ -471,10 +783,12 @@ def lower_link_geometry(urdf_path: str) -> list[LinkCollisionGeometry]:
     Raises:
         ROSConfigError: If a link's geometry resolves only partially.
     """
-    import numpy as np
+    import trimesh
 
     model = _load_urdf(urdf_path)
     handler = getattr(model, "_filename_handler", None)
+    tight = frozenset(tight_links)
+    extra = dict(extra_meshes or {})
 
     out: list[LinkCollisionGeometry] = []
     for link_name, link in model.link_map.items():  # type: ignore[attr-defined]  # reason: yourdfpy URDF
@@ -483,29 +797,33 @@ def lower_link_geometry(urdf_path: str) -> list[LinkCollisionGeometry]:
         elements = collisions + visuals
         if not collisions:
             continue
-        if len(elements) == 1 and getattr(collisions[0].geometry, "sphere", None) is not None:
+        if (
+            link_name not in tight
+            and link_name not in extra
+            and len(elements) == 1
+            and getattr(collisions[0].geometry, "sphere", None) is not None
+        ):
             sph = collisions[0].geometry.sphere
             tf = _origin_matrix(collisions[0].origin)
             cx, cy, cz = (float(tf[0, 3]), float(tf[1, 3]), float(tf[2, 3]))
+            sphere, placed = _rendered(
+                SphereShape(radius_m=float(sph.radius)), (cx, cy, cz, 0.0, 0.0, 0.0)
+            )
             out.append(
-                LinkCollisionGeometry(
-                    link_name=link_name,
-                    shape=SphereShape(radius_m=float(sph.radius)),
-                    origin_xyz_rpy=(cx, cy, cz, 0.0, 0.0, 0.0),
-                )
+                LinkCollisionGeometry(link_name=link_name, shape=sphere, origin_xyz_rpy=placed)
             )
             continue
 
-        clouds: list[_Arr] = []
+        parts: list[Any] = []
         missing: list[str] = []
         for el in elements:
-            verts = _collision_local_vertices(el, handler)
-            if verts is None or len(verts) == 0:
+            part = _collision_local_mesh(el, handler)
+            if part is None or len(part.vertices) == 0:
                 mesh = getattr(el.geometry, "mesh", None)
                 missing.append(getattr(mesh, "filename", "<unsupported geometry>"))
                 continue
-            clouds.append(_apply(_origin_matrix(el.origin), verts))
-        if not clouds:
+            parts.append(part.apply_transform(_origin_matrix(el.origin)))
+        if not parts:
             continue
         if missing:
             raise ROSConfigError(
@@ -514,20 +832,22 @@ def lower_link_geometry(urdf_path: str) -> list[LinkCollisionGeometry]:
                 "under-cover the link. Resolve the refs (vendored URDFs use "
                 "`rd:<module>:<relpath>`) before lowering."
             )
-        cloud = np.vstack(clouds)
-        if len(cloud) < 4:
+        if link_name in extra:
+            parts.append(extra[link_name])
+        cloud = trimesh.util.concatenate(parts)
+        if len(cloud.vertices) < 4:
             continue
-        shape, origin = fit_capsule_to_vertices(cloud)
-        out.append(LinkCollisionGeometry(link_name=link_name, shape=shape, origin_xyz_rpy=origin))
+        out.extend(_fit_link(link_name, cloud, tight))
     return out
 
 
-def _collision_local_vertices(col: object, handler: object) -> _Arr | None:
-    """Vertices of one ``<collision>``/``<visual>`` geometry, in its own local frame.
+def _collision_local_mesh(col: object, handler: object) -> Any | None:
+    """One ``<collision>``/``<visual>`` geometry as a ``trimesh.Trimesh`` in its own frame.
 
-    Mesh → loaded vertices × scale; box → corners; cylinder / sphere → the
-    vertices of a circumscribing polytope, so a convex primitive holding them
-    holds the whole solid.
+    Mesh → loaded × scale; box → the box; cylinder / sphere → a circumscribing
+    polytope, so a convex primitive holding its vertices holds the whole solid.
+    ``None`` when a mesh file is missing (warned, never silent) or the geometry
+    kind is unknown.
     """
     import os
 
@@ -540,11 +860,11 @@ def _collision_local_vertices(col: object, handler: object) -> _Arr | None:
     sph = getattr(geom, "sphere", None)
     mesh = getattr(geom, "mesh", None)
     if box is not None:
-        return _box_vertices(box.size)
+        return trimesh.convex.convex_hull(_box_vertices(box.size))
     if cyl is not None:
-        return _cylinder_vertices(float(cyl.radius), float(cyl.length))
+        return trimesh.convex.convex_hull(_cylinder_vertices(float(cyl.radius), float(cyl.length)))
     if sph is not None:
-        return _sphere_vertices(float(sph.radius))
+        return trimesh.convex.convex_hull(_sphere_vertices(float(sph.radius)))
     if mesh is not None:
         path = handler(mesh.filename) if callable(handler) else mesh.filename
         if not os.path.isfile(path):
@@ -556,12 +876,19 @@ def _collision_local_vertices(col: object, handler: object) -> _Arr | None:
             )
             return None
         loaded = trimesh.load(path, force="mesh")
-        verts = np.asarray(loaded.vertices, dtype=np.float64)
         scale = getattr(mesh, "scale", None)
         if scale is not None:
-            verts = verts * np.asarray(scale, dtype=np.float64)
-        return np.asarray(verts, dtype=np.float64)
+            loaded.apply_scale(np.asarray(scale, dtype=np.float64))
+        return loaded
     return None
+
+
+def _collision_local_vertices(col: object, handler: object) -> _Arr | None:
+    """Vertices of one ``<collision>``/``<visual>`` geometry, in its own local frame."""
+    import numpy as np
+
+    mesh = _collision_local_mesh(col, handler)
+    return None if mesh is None else np.asarray(mesh.vertices, dtype=np.float64)
 
 
 # ── ACM: certified "always-colliding" over each pair's relative-DoF subspace ───
@@ -616,6 +943,51 @@ _MJCF_N_SAMPLES = 2000
 # hinge's range leave at most range/16 between a sample and the true extreme,
 # which the fit's own radius absorbs for fingers of this size.
 _MJCF_STROKE_SAMPLES = 9
+
+
+_GeomsByLink = Mapping[str, Sequence[LinkCollisionGeometry]]
+
+
+def _by_link(
+    geoms: Mapping[str, LinkCollisionGeometry | Sequence[LinkCollisionGeometry]]
+    | Iterable[LinkCollisionGeometry],
+) -> dict[str, list[LinkCollisionGeometry]]:
+    """Group primitives by link, accepting one-per-link mappings and flat lists alike."""
+    out: dict[str, list[LinkCollisionGeometry]] = {}
+    items: Iterable[LinkCollisionGeometry | Sequence[LinkCollisionGeometry]] = (
+        geoms.values() if isinstance(geoms, Mapping) else geoms
+    )
+    for entry in items:
+        for g in [entry] if isinstance(entry, LinkCollisionGeometry) else entry:
+            out.setdefault(g.link_name, []).append(g)
+    return out
+
+
+def _link_pair_distance(
+    geoms_a: Sequence[LinkCollisionGeometry],
+    link_a: _Arr,
+    geoms_b: Sequence[LinkCollisionGeometry],
+    link_b: _Arr,
+) -> _Arr:
+    """Kernel gap between two links: the minimum over their primitive pairs.
+
+    ``link_a`` / ``link_b`` are ``(n, 4, 4)`` link poses; each primitive is
+    placed by its own origin. This is exactly how ``check_self_collision``
+    folds a link pair, so an ACM decided on it is about the kernel's check.
+    """
+    import numpy as np
+
+    from openral_safety.kernel_predicates import shape_distance
+
+    best: _Arr | None = None
+    for ga in geoms_a:
+        t_a = link_a @ _xyzrpy_matrix(ga.origin_xyz_rpy)
+        for gb in geoms_b:
+            t_b = link_b @ _xyzrpy_matrix(gb.origin_xyz_rpy)
+            d = shape_distance(ga.shape, t_a, gb.shape, t_b)
+            best = d if best is None else np.minimum(best, d)
+    assert best is not None, "a link with no primitives cannot be paired"
+    return best
 
 
 def _parent_joint_map(model: object) -> dict[str, object]:
@@ -713,8 +1085,10 @@ def _chain_transforms(chain: list[object], values: dict[str, _Arr], n: int) -> _
     return out
 
 
-def _axis_radius_bound(chain: list[object], joint: object, geom: LinkCollisionGeometry) -> float:
-    """Bound the distance from ``joint``'s axis to any point of ``geom``.
+def _axis_radius_bound(
+    chain: list[object], joint: object, geoms: Sequence[LinkCollisionGeometry]
+) -> float:
+    """Bound the distance from ``joint``'s axis to any point of the link's ``geoms``.
 
     Configuration-independent, so it is valid over the whole grid cell: rotations
     preserve lengths, so the farthest a point of the distal link's shape can lie
@@ -734,12 +1108,15 @@ def _axis_radius_bound(chain: list[object], joint: object, geom: LinkCollisionGe
             total += float(np.linalg.norm(np.asarray(_origin_matrix(link_joint.origin))[:3, 3]))  # type: ignore[attr-defined]  # reason: yourdfpy Joint
         if link_joint is joint:
             seen = True
-    origin_xyz = np.asarray(geom.origin_xyz_rpy[:3], dtype=np.float64)
-    return total + float(np.linalg.norm(origin_xyz)) + shape_max_extent_m(geom.shape)
+    return total + max(
+        float(np.linalg.norm(np.asarray(g.origin_xyz_rpy[:3], dtype=np.float64)))
+        + shape_max_extent_m(g.shape)
+        for g in geoms
+    )
 
 
 def _pair_relative_dofs(
-    model: object, link_a: str, link_b: str, geoms: dict[str, LinkCollisionGeometry]
+    model: object, link_a: str, link_b: str, geoms: _GeomsByLink
 ) -> list[tuple[object, float, tuple[float, float]]] | None:
     """The joints that move ``link_a`` relative to ``link_b``, with their radius bounds.
 
@@ -767,7 +1144,7 @@ def _pair_relative_dofs(
 
 def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per way the proof can fail; each is a distinct, documented safe refusal
     model: object,
-    geoms: dict[str, LinkCollisionGeometry],
+    geoms: _GeomsByLink,
     link_a: str,
     link_b: str,
     *,
@@ -802,14 +1179,14 @@ def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per w
     """
     import numpy as np
 
-    from openral_safety.kernel_predicates import shape_distance
-
     dofs = _pair_relative_dofs(model, link_a, link_b, geoms)
     if dofs is None or len(dofs) > _CERTIFY_MAX_DOF:
         return False
 
-    geom_a, geom_b = geoms[link_a], geoms[link_b]
-    if geom_a.tight_geometry is not None and geom_b.tight_geometry is not None:
+    geoms_a, geoms_b = geoms[link_a], geoms[link_b]
+    if any(g.tight_geometry is not None for g in geoms_a) and any(
+        g.tight_geometry is not None for g in geoms_b
+    ):
         # The kernel re-asks a box pair it cannot clear of the two exact hulls
         # (`hull_hull_distance`, issue #191), and the hull gap is >= the box gap
         # everywhere. So "the box gap is <= margin at every pose" — all this
@@ -818,8 +1195,6 @@ def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per w
         # check. Withhold instead; the pair stays checked, which is the direction
         # every other refusal here also fails in.
         return False
-    origin_a = _xyzrpy_matrix(geom_a.origin_xyz_rpy)
-    origin_b = _xyzrpy_matrix(geom_b.origin_xyz_rpy)
     chains = _relative_chains(model, link_a, link_b)
     if chains is None:  # pragma: no cover — _pair_relative_dofs already returned non-None
         return False
@@ -830,12 +1205,15 @@ def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per w
     hi = np.asarray([span[1] for _, _, span in dofs], dtype=np.float64)
 
     def gaps_at(centres: _Arr) -> _Arr:
-        """Kernel surface gap at each row of ``centres`` (one joint vector per row)."""
+        """Kernel surface gap at each row of ``centres`` (one joint vector per row).
+
+        The minimum over the two links' primitive pairs, as the kernel folds it.
+        """
         n = int(centres.shape[0])
         values = {name: centres[:, i] for i, name in enumerate(names)}
-        t_a = _chain_transforms(chain_a, values, n) @ origin_a
-        t_b = _chain_transforms(chain_b, values, n) @ origin_b
-        return shape_distance(geom_a.shape, t_a, geom_b.shape, t_b)
+        t_a = _chain_transforms(chain_a, values, n)
+        t_b = _chain_transforms(chain_b, values, n)
+        return _link_pair_distance(geoms_a, t_a, geoms_b, t_b)
 
     if not dofs:  # rigidly related links — one evaluation settles it exactly
         return bool(gaps_at(np.zeros((1, 0)))[0] <= margin_m)
@@ -888,7 +1266,8 @@ def _xyzrpy_matrix(origin: _Origin) -> _Arr:
 
 def acm_for_geometry(
     urdf_path: str,
-    geoms: dict[str, LinkCollisionGeometry],
+    geoms: Mapping[str, LinkCollisionGeometry | Sequence[LinkCollisionGeometry]]
+    | Iterable[LinkCollisionGeometry],
     *,
     srdf_path: str | None = None,
     margin_m: float = 0.0,
@@ -919,7 +1298,8 @@ def acm_for_geometry(
 
     Args:
         urdf_path: Concrete on-disk URDF path (see ``_load_urdf``).
-        geoms: The per-link primitives the kernel will load, by link name.
+        geoms: The primitives the kernel will load: a flat list, or a mapping by
+            link name to one primitive or to the link's list of them.
         srdf_path: Optional SRDF whose ``disable_collisions`` rows are unioned in.
         margin_m: The robot's ``safety.self_collision_margin_m``. The kernel trips
             a pair at ``distance <= margin_m``, so the always-colliding proof must
@@ -931,17 +1311,18 @@ def acm_for_geometry(
         The disabled pairs, as unordered two-element frozensets.
     """
     model = _load_urdf(urdf_path)
-    links = [ln for ln in model.link_map if ln in geoms]  # type: ignore[attr-defined]  # reason: yourdfpy URDF
+    by_link = _by_link(geoms)
+    links = [ln for ln in model.link_map if ln in by_link]  # type: ignore[attr-defined]  # reason: yourdfpy URDF
 
     disabled: _AcmPairs = set()
     for joint in model.robot.joints:  # type: ignore[attr-defined]  # reason: yourdfpy URDF
-        if joint.parent in geoms and joint.child in geoms and joint.parent != joint.child:
+        if joint.parent in by_link and joint.child in by_link and joint.parent != joint.child:
             disabled.add(frozenset({joint.parent, joint.child}))  # adjacent
     for i, a in enumerate(links):
         for b in links[i + 1 :]:
             if frozenset({a, b}) in disabled:
                 continue  # already adjacent; no need to prove anything
-            if _certified_always_colliding(model, geoms, a, b, margin_m=margin_m):
+            if _certified_always_colliding(model, by_link, a, b, margin_m=margin_m):
                 disabled.add(frozenset({a, b}))
 
     if srdf_path is not None:
@@ -969,8 +1350,9 @@ def sample_acm_from_urdf(
     Returns:
         The disabled pairs, as unordered two-element frozensets.
     """
-    geoms = {g.link_name: g for g in lower_link_geometry(urdf_path)}
-    return acm_for_geometry(urdf_path, geoms, srdf_path=None, margin_m=margin_m)
+    return acm_for_geometry(
+        urdf_path, lower_link_geometry(urdf_path), srdf_path=None, margin_m=margin_m
+    )
 
 
 # ── Top-level entry: URDF/SRDF → manifest collision model ──────────────────────
@@ -997,10 +1379,6 @@ class LoweredCollisionModel:
     acm_source: str = "sampling"
     srdf_path: str | None = None
     joint_fk: dict[str, tuple[_Vec3, _Vec3, _Vec3]] = field(default_factory=dict)
-    geometry_fitted: bool = False
-    """``True`` when an MJCF lowering FITTED ``collision_geometry`` to the meshes
-    (``fit_geometry``) rather than reusing the manifest's; the CLI then rewrites
-    the geometry block for an MJCF-sourced robot too."""
 
 
 def _rd_mesh_filename_handler(urdf_path: str) -> object:
@@ -1103,19 +1481,19 @@ def _mjcf_link_bodies(robot: RobotDescription, model: object) -> dict[str, int]:
 
     The two naming schemes can diverge (openarm's manifest ``link0`` / ``link7``
     are the MJCF's ``base_link`` / ``ee_base_link``), so map via the joint
-    correspondence (``sim_joint_name`` → MJCF joint → its child body), which is
-    unambiguous, and fall back to a direct name match for anything else.
+    correspondence (``sim_joint_name``, else the manifest joint name → MJCF
+    joint → its child body), which is unambiguous, and fall back to a direct
+    name match for anything else. A link that maps neither way is absent from
+    the result.
     """
     import mujoco
 
     m: Any = model
     link_body: dict[str, int] = {}
     for j in robot.joints:
-        ji = (
-            int(mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, j.sim_joint_name))
-            if j.sim_joint_name
-            else -1
-        )
+        # `sim_joint_name` when the manifest wires a twin; else a joint of the
+        # manifest's own name (the vendored menagerie twins keep URDF names).
+        ji = int(mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, j.sim_joint_name or j.name))
         if ji < 0:
             continue
         child_b = int(m.jnt_bodyid[ji])
@@ -1132,10 +1510,64 @@ def _mjcf_link_bodies(robot: RobotDescription, model: object) -> dict[str, int]:
     return link_body
 
 
-def _collision_mesh_vertices_in_body(model: object, data: object, body_id: int) -> _Arr | None:
-    """Every collidable mesh vertex of MJCF body ``body_id``, in that body's frame."""
+def _geom_local_mesh(model: object, geom: int) -> Any:
+    """One MJCF geom as a ``trimesh.Trimesh`` in the geom's own frame.
+
+    A mesh gives its vertices and faces; a box / sphere / cylinder / capsule
+    the hull of a circumscribing polytope (the same constructions the URDF
+    reader uses), so a convex primitive holding it holds the solid. Visual-only
+    geoms count: the collision meshes under-cover the parts
+    (``lower_link_geometry``).
+
+    Raises:
+        ROSConfigError: On a geom type this reader cannot bound (a plane, an
+            hfield, an sdf) — fitting the rest would under-cover the link.
+    """
     import mujoco
     import numpy as np
+    import trimesh
+
+    m: Any = model
+    kind = int(m.geom_type[geom])
+    size = np.asarray(m.geom_size[geom], dtype=np.float64)
+    if kind == int(mujoco.mjtGeom.mjGEOM_MESH):
+        mesh = int(m.geom_dataid[geom])
+        v0, nv = int(m.mesh_vertadr[mesh]), int(m.mesh_vertnum[mesh])
+        f0, nf = int(m.mesh_faceadr[mesh]), int(m.mesh_facenum[mesh])
+        return trimesh.Trimesh(
+            vertices=np.asarray(m.mesh_vert[v0 : v0 + nv], dtype=np.float64),
+            faces=np.asarray(m.mesh_face[f0 : f0 + nf]),
+            process=False,
+        )
+    if kind == int(mujoco.mjtGeom.mjGEOM_BOX):
+        return trimesh.convex.convex_hull(_box_vertices(2.0 * size))
+    if kind == int(mujoco.mjtGeom.mjGEOM_SPHERE):
+        return trimesh.convex.convex_hull(_sphere_vertices(float(size[0])))
+    if kind == int(mujoco.mjtGeom.mjGEOM_CYLINDER):
+        return trimesh.convex.convex_hull(_cylinder_vertices(float(size[0]), 2.0 * float(size[1])))
+    if kind == int(mujoco.mjtGeom.mjGEOM_CAPSULE):
+        r, h = float(size[0]), float(size[1])
+        ends = _sphere_vertices(r)
+        lift = np.array([0.0, 0.0, h])
+        return trimesh.convex.convex_hull(
+            np.vstack([ends + lift, ends - lift, _cylinder_vertices(r, 2.0 * h)])
+        )
+    name = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, geom)
+    raise ROSConfigError(
+        f"MJCF geom {name!r} has type {mujoco.mjtGeom(kind).name}, which the collision "
+        "fit cannot bound; give the body a mesh or primitive geom or exclude it"
+    )
+
+
+def _body_mesh(model: object, data: object, body_id: int) -> Any | None:
+    """Every geom of MJCF body ``body_id`` as one ``trimesh.Trimesh`` in the body frame.
+
+    Collision **and** visual geoms: the visual mesh is the CAD of the part, and
+    the shipped collision meshes are simplifications that under-cover it
+    (``docs/reference/collision-geometry-review.md`` §3).
+    """
+    import numpy as np
+    import trimesh
 
     m: Any = model
     d: Any = data
@@ -1143,18 +1575,14 @@ def _collision_mesh_vertices_in_body(model: object, data: object, body_id: int) 
     body_pos = d.xpos[body_id]
     parts = []
     for g in range(m.ngeom):
-        if int(m.geom_bodyid[g]) != body_id or int(m.geom_type[g]) != int(
-            mujoco.mjtGeom.mjGEOM_MESH
-        ):
+        if int(m.geom_bodyid[g]) != body_id:
             continue
-        if int(m.geom_contype[g]) == 0 and int(m.geom_conaffinity[g]) == 0:
-            continue  # visual-only geometry is not what the robot collides with
-        mesh = int(m.geom_dataid[g])
-        start = int(m.mesh_vertadr[mesh])
-        verts = m.mesh_vert[start : start + int(m.mesh_vertnum[mesh])]
-        world = (d.geom_xmat[g].reshape(3, 3) @ verts.T).T + d.geom_xpos[g]
-        parts.append((world - body_pos) @ body_rot)
-    return np.vstack(parts) if parts else None
+        part = _geom_local_mesh(m, g)
+        world = (d.geom_xmat[g].reshape(3, 3) @ np.asarray(part.vertices).T).T + d.geom_xpos[g]
+        parts.append(
+            trimesh.Trimesh(vertices=(world - body_pos) @ body_rot, faces=part.faces, process=False)
+        )
+    return trimesh.util.concatenate(parts) if parts else None
 
 
 def mjcf_coupled_joints(model: object) -> dict[int, list[tuple[int, float, float]]]:
@@ -1190,7 +1618,7 @@ def mjcf_coupled_joints(model: object) -> dict[int, list[tuple[int, float, float
     return coupled
 
 
-def _stroke_swept_vertices(
+def _stroke_swept_meshes(
     model: object,
     data: object,
     body: int,
@@ -1198,14 +1626,15 @@ def _stroke_swept_vertices(
     followers: list[tuple[int, float, float]],
     stroke_samples: int,
 ) -> list[Any]:
-    """Collision vertices of ``body`` and its equality followers across ``leader``'s stroke.
+    """Meshes of ``body`` and its equality followers across ``leader``'s stroke.
 
     ``stroke_samples`` evenly spaced leader positions over the joint range, each
-    follower set to ``c0 + c1·q``; all vertices expressed in ``body``'s frame.
+    follower set to ``c0 + c1·q``; every mesh expressed in ``body``'s frame.
     Leaves ``data`` posed at the last sample — the caller restores it.
     """
     import mujoco
     import numpy as np
+    import trimesh
 
     m: Any = model
     d: Any = data
@@ -1217,18 +1646,22 @@ def _stroke_swept_vertices(
         for follower, c0, c1 in followers:
             d.qpos[int(m.jnt_qposadr[follower])] = c0 + c1 * s
         mujoco.mj_kinematics(m, d)
-        inner = _collision_mesh_vertices_in_body(m, d, body)
+        inner = _body_mesh(m, d, body)
         if inner is not None:
             parts.append(inner)
         rot_b = d.xmat[body].reshape(3, 3)
         for follower, _c0, _c1 in followers:
             fbody = int(m.jnt_bodyid[follower])
-            fverts = _collision_mesh_vertices_in_body(m, d, fbody)
-            if fverts is None:
+            fmesh = _body_mesh(m, d, fbody)
+            if fmesh is None:
                 continue
             # follower body frame -> leader's child body frame
-            world = (d.xmat[fbody].reshape(3, 3) @ fverts.T).T + d.xpos[fbody]
-            parts.append((world - d.xpos[body]) @ rot_b)
+            world = (d.xmat[fbody].reshape(3, 3) @ np.asarray(fmesh.vertices).T).T + d.xpos[fbody]
+            parts.append(
+                trimesh.Trimesh(
+                    vertices=(world - d.xpos[body]) @ rot_b, faces=fmesh.faces, process=False
+                )
+            )
     return parts
 
 
@@ -1237,17 +1670,19 @@ def fit_collision_geometry_from_mjcf(
     *,
     manifest_dir: Path | None = None,
     stroke_samples: int = _MJCF_STROKE_SAMPLES,
+    tight_links: Iterable[str] = (),
 ) -> list[LinkCollisionGeometry]:
-    """Fit one enclosing primitive per manifest link to its MJCF collision meshes.
+    """Fit each manifest link's primitive set to its MJCF geometry.
 
     For robots whose MJCF collision geometry is meshes, which the primitive
     lowering (``mjcf_lowering``) skips. Each manifest link maps to an MJCF body
-    by the same joint correspondence the ACM lowering uses; the primitive is
-    ``fit_tightest_primitive`` over every collidable mesh vertex of that body, in
-    the body frame (a trimmed capsule or a PCA box, whichever is smaller), so
-    every vertex lies inside it by construction. A link
-    with no collidable mesh gets no primitive (e.g. openarm's ``openarm_base``,
-    which is MuJoCo's ``world``).
+    by the same joint correspondence the ACM lowering uses; the body's geoms —
+    collision **and** visual, meshes and primitives — are collected in the body
+    frame (``_body_mesh``) and handed to ``fit_link_primitives``, the same
+    fitter the URDF path uses; a link in ``tight_links`` becomes one box plus the
+    exact hull refining it (``fit_link_with_tight_geometry``). A link with no
+    geometry gets no primitive (e.g. openarm's ``openarm_base``, which is
+    MuJoCo's ``world``).
 
     A body driven by an equality-coupled FOLLOWER joint (openarm's second
     finger, ``finger_joint2 = finger_joint1``) is not in the manifest's
@@ -1261,7 +1696,7 @@ def fit_collision_geometry_from_mjcf(
         ROSConfigError: If the robot has no resolvable MJCF.
     """
     import mujoco
-    import numpy as np
+    import trimesh
     from openral_core.assets import AssetRefError, resolve_asset
 
     if not robot.assets.mjcf:
@@ -1294,7 +1729,7 @@ def fit_collision_geometry_from_mjcf(
             continue
         seen.add(link)
         body = link_body[link]
-        verts = _collision_mesh_vertices_in_body(model, data, body)
+        mesh = _body_mesh(model, data, body)
         leader_joint = next(
             (
                 j
@@ -1310,16 +1745,15 @@ def fit_collision_geometry_from_mjcf(
             leader = int(
                 mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, leader_joint.sim_joint_name)
             )
-            parts = [] if verts is None else [verts]
-            parts += _stroke_swept_vertices(
+            parts = [] if mesh is None else [mesh]
+            parts += _stroke_swept_meshes(
                 model, data, body, leader, followers[leader], stroke_samples
             )
             at_rest()
-            verts = np.vstack(parts) if parts else None
-        if verts is None:
+            mesh = trimesh.util.concatenate(parts) if parts else None
+        if mesh is None:
             continue
-        shape, origin = fit_tightest_primitive(verts)
-        geometry.append(LinkCollisionGeometry(link_name=link, shape=shape, origin_xyz_rpy=origin))
+        geometry.extend(_fit_link(link, mesh, frozenset(tight_links)))
     return geometry
 
 
@@ -1330,16 +1764,26 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
     seed: int = _MJCF_RNG_SEED,
     margin_m: float = 0.0,
     manifest_dir: Path | None = None,
-    fit_geometry: bool = False,
+    acm_only: bool = False,
+    tight_links: Iterable[str] | None = None,
 ) -> LoweredCollisionModel:
-    """Lower joint FK + sampling ACM from a robot's MJCF, keeping its manifest geometry.
+    """Lower geometry, joint FK and the sampling ACM from a robot's MJCF.
 
     For MJCF-native robots with **no URDF** whose collision geoms are meshes (which
-    ``mjcf_lowering``'s primitive path skips) — e.g. the bimanual ``openarm``. The
-    hand-authored manifest capsules are kept; FK is the MJCF transform from each
-    joint's ``parent_link`` to its ``child_link`` at the rest pose (matched to the
-    MJCF by ``sim_joint_name``), and the ACM is the capsule sweep run with **mujoco
-    forward kinematics** over the manifest geometry. ``acm_source = "mjcf"``.
+    ``mjcf_lowering``'s primitive path skips) — e.g. the bimanual ``openarm``.
+    Geometry is fitted to the MJCF meshes by the same fitter the URDF path uses
+    (``fit_collision_geometry_from_mjcf``), or kept from the manifest under
+    ``acm_only`` exactly as ``lower_robot`` keeps it; FK is the MJCF transform
+    from each joint's ``parent_link`` to its ``child_link`` at the rest pose
+    (matched to the MJCF by ``sim_joint_name``), and the ACM is the primitive
+    sweep run with **mujoco forward kinematics** over that geometry.
+    ``acm_source = "mjcf"``. ``tight_links`` adds links to lower as box + hull
+    on top of those the manifest already refines (``_tight_links_of``).
+
+    The sweep never auto-disables a pair whose two links both carry a hull:
+    the kernel re-asks that pair of the exact hulls, which the box overlap it
+    measures says nothing about (the same withholding
+    ``_certified_always_colliding`` applies on the URDF path).
 
     ``manifest_dir`` resolves a ``file:`` MJCF ref against the manifest's own
     directory (no in-tree robot uses one today, but the resolver honours it).
@@ -1351,8 +1795,6 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
     import mujoco
     import numpy as np
     from openral_core.assets import AssetRefError, resolve_asset
-
-    from openral_safety.kernel_predicates import shape_distance
 
     if not robot.assets.mjcf:
         raise ROSConfigError(f"{robot.name}: no urdf and no assets.mjcf to lower from")
@@ -1377,13 +1819,14 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
         return tf
 
     link_body = _mjcf_link_bodies(robot, model)
-    # ``fit_geometry``: replace the hand-authored primitives with capsules fitted
-    # to the MJCF's collision meshes (every vertex inside by construction); the
-    # joint FK and the ACM sweep below then run over the fitted geometry.
+    # The joint FK and the ACM sweep below run over the geometry the kernel will
+    # load: the manifest's under ``acm_only``, else the fresh fit.
     geometry_in = (
-        fit_collision_geometry_from_mjcf(robot, manifest_dir=manifest_dir)
-        if fit_geometry
-        else list(robot.collision_geometry)
+        list(robot.collision_geometry)
+        if acm_only
+        else fit_collision_geometry_from_mjcf(
+            robot, manifest_dir=manifest_dir, tight_links=_tight_links_of(robot, tight_links)
+        )
     )
 
     # Joint FK: parent→child transform at the rest pose, axis from the MJCF joint.
@@ -1405,12 +1848,11 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
         joint_fk[j.name] = (xyz, (roll, pitch, yaw), axis)
 
     # ACM sweep over the manifest geometry, using mujoco FK for link placement.
-    geoms = {g.link_name: g for g in geometry_in if g.link_name in link_body}
+    geoms = _by_link(g for g in geometry_in if g.link_name in link_body)
     links = list(geoms)
-    # Each link's primitive origin in its own body frame; the sweep places it by
-    # mujoco FK and asks `shape_distance` — the kernel's own predicate for the
-    # actual shape, not a stand-in for it (issue #155).
-    local_origin = {ln: _xyzrpy_matrix(geoms[ln].origin_xyz_rpy) for ln in links}
+    # Each link's primitives are placed by mujoco FK and the pair gap is the
+    # kernel's own predicate on the actual shapes, folded over the two links'
+    # primitives as `check_self_collision` folds it (issue #155).
     sweep: list[tuple[int, float, float]] = []
     for j in robot.joints:
         ji = jid(j.sim_joint_name)
@@ -1441,6 +1883,11 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
         if resolved_srdf is not None:
             disabled |= parse_srdf_disabled_pairs(str(resolved_srdf))
 
+    hulled = {
+        ln
+        for ln, gs in geoms.items()
+        if any(g.tight_geometry is not None and g.tight_geometry.hull_vertices_m for g in gs)
+    }
     rng = np.random.default_rng(seed)
     counts: dict[frozenset[str], int] = {}
     for _ in range(n_samples):
@@ -1448,10 +1895,10 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
         for adr, lo, hi in sweep:
             data.qpos[adr] = lo + (hi - lo) * rng.random()
         mujoco.mj_kinematics(model, data)
-        world = {ln: (body_tf(link_body[ln]) @ local_origin[ln])[None] for ln in links}
+        world = {ln: body_tf(link_body[ln])[None] for ln in links}
         for i, a in enumerate(links):
             for b in links[i + 1 :]:
-                gap = shape_distance(geoms[a].shape, world[a], geoms[b].shape, world[b])
+                gap = _link_pair_distance(geoms[a], world[a], geoms[b], world[b])
                 if float(gap[0]) <= margin_m:
                     counts[frozenset({a, b})] = counts.get(frozenset({a, b}), 0) + 1
     for i, a in enumerate(links):
@@ -1460,12 +1907,13 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
             # capsule junctions. Never-collide pairs stay CHECKED — a sweep can't
             # prove a cross-branch bimanual pair never collides (it can miss the
             # tail), so we never auto-disable one.
-            if counts.get(frozenset({a, b}), 0) == n_samples:  # always-colliding
+            if counts.get(frozenset({a, b}), 0) == n_samples and not (
+                a in hulled and b in hulled
+            ):  # always-colliding, and not a pair the kernel re-asks of hulls
                 disabled.add(frozenset({a, b}))
 
     return LoweredCollisionModel(
         collision_geometry=list(geometry_in),
-        geometry_fitted=fit_geometry,
         allowed_collision_pairs=_scoped_sorted_pairs(disabled, set(links)),
         acm_source="mjcf",
         joint_fk=joint_fk,
@@ -1482,6 +1930,104 @@ def _scoped_sorted_pairs(pairs: _AcmPairs, links: set[str]) -> list[tuple[str, s
     return sorted(out)
 
 
+#: How far (metres, and radians) a twin body frame may sit from its manifest
+#: link frame for ``_twin_link_meshes`` to fold the twin's meshes in.
+_TWIN_FRAME_TOL = 1e-6
+
+
+def _twin_link_meshes(
+    robot: RobotDescription, urdf_model: object, manifest_dir: Path | None
+) -> dict[str, Any]:
+    """The robot's MJCF twin meshes per manifest link, in the link frame — when frames agree.
+
+    A URDF-lowered robot is also run as its MJCF twin (``deploy sim``), and the
+    twin's CAD is not always the URDF's: the menagerie H1's forearm reaches
+    46 mm past the h1_description one, its ankle 25 mm wider. The kernel checks
+    the twin with the same primitives, so they have to hold both. Only mesh
+    geoms count (the CAD); a twin's primitive geoms are the simulator's
+    contact proxies, not the robot.
+
+    Folded in only when every mapped twin body frame coincides with its link
+    frame at the zero configuration (``_TWIN_FRAME_TOL``, relative to the first
+    mapped link): a twin in another frame convention (the menagerie UR arms put
+    body origins off the URDF joint origins) would be misplaced, so it is left
+    out and logged — the URDF geometry still bounds the robot.
+
+    Returns:
+        ``{link_name: trimesh.Trimesh}`` in the link frame; empty when the robot
+        has no twin, ``mujoco`` is not installed, or the frames disagree.
+    """
+    import numpy as np
+    import structlog
+    import trimesh
+    from openral_core.assets import AssetRefError, resolve_asset
+
+    log = structlog.get_logger(__name__)
+    if not robot.assets.mjcf:
+        return {}
+    try:
+        import mujoco
+
+        mjcf_path = resolve_asset(robot.assets.mjcf, "mjcf", manifest_dir=manifest_dir)
+    except (ImportError, AssetRefError) as exc:
+        log.warning("collision.twin_unavailable", robot=robot.name, reason=str(exc))
+        return {}
+    if mjcf_path is None:
+        return {}
+    model: Any = mujoco.MjModel.from_xml_path(str(mjcf_path))
+    data: Any = mujoco.MjData(model)
+    mujoco.mj_kinematics(model, data)
+    link_body = _mjcf_link_bodies(robot, model)
+    urdf: Any = urdf_model
+    mapped = [ln for ln in link_body if ln in urdf.link_map]
+    if not mapped:
+        return {}
+
+    def body_tf(b: int) -> _Arr:
+        tf = np.eye(4)
+        tf[:3, :3] = np.asarray(data.xmat[b]).reshape(3, 3)
+        tf[:3, 3] = data.xpos[b]
+        return tf
+
+    ref = mapped[0]
+    mj_ref = np.linalg.inv(body_tf(link_body[ref]))
+    urdf_ref = np.linalg.inv(np.asarray(urdf.get_transform(ref), dtype=np.float64))
+    worst = 0.0
+    for ln in mapped:
+        rel_mj = mj_ref @ body_tf(link_body[ln])
+        rel_urdf = urdf_ref @ np.asarray(urdf.get_transform(ln), dtype=np.float64)
+        worst = max(worst, float(np.abs(rel_mj - rel_urdf).max()))
+    if worst > _TWIN_FRAME_TOL:
+        log.info(
+            "collision.twin_frames_differ",
+            robot=robot.name,
+            max_frame_error=round(worst, 6),
+            note="twin meshes not folded into the fit; the URDF geometry bounds the robot",
+        )
+        return {}
+    out: dict[str, Any] = {}
+    for ln in mapped:
+        body = link_body[ln]
+        rot_b = np.asarray(data.xmat[body]).reshape(3, 3)
+        parts = []
+        for g in range(model.ngeom):
+            if int(model.geom_bodyid[g]) != body or int(model.geom_type[g]) != int(
+                mujoco.mjtGeom.mjGEOM_MESH
+            ):
+                continue
+            part = _geom_local_mesh(model, g)
+            world = (np.asarray(data.geom_xmat[g]).reshape(3, 3) @ np.asarray(part.vertices).T).T
+            world = world + data.geom_xpos[g]
+            parts.append(
+                trimesh.Trimesh(
+                    vertices=(world - data.xpos[body]) @ rot_b, faces=part.faces, process=False
+                )
+            )
+        if parts:
+            out[ln] = trimesh.util.concatenate(parts)
+    return out
+
+
 def lower_robot(
     robot: RobotDescription,
     *,
@@ -1489,6 +2035,7 @@ def lower_robot(
     acm_only: bool = False,
     geometry_only: bool = False,
     manifest_dir: Path | None = None,
+    tight_links: Iterable[str] | None = None,
 ) -> LoweredCollisionModel:
     """Lower a robot's URDF/SRDF into the manifest collision blocks.
 
@@ -1507,6 +2054,8 @@ def lower_robot(
         geometry_only: Emit only ``collision_geometry`` (skip the ACM).
         manifest_dir: Directory the manifest was loaded from; ``file:`` URDF /
             SRDF refs (the vendored arms, every in-tree SRDF) resolve against it.
+        tight_links: Links to lower as box + exact hull, on top of the links
+            the manifest already refines (``_tight_links_of``).
 
     Returns:
         A ``LoweredCollisionModel``.
@@ -1518,10 +2067,11 @@ def lower_robot(
     from openral_core.assets import AssetRefError, resolve_asset
 
     if robot.assets.urdf is None:
-        # MJCF-native robots (no URDF; mesh collision) lower from their sim MJCF —
-        # geometry stays the manifest's hand-authored capsules.
+        # MJCF-native robots (no URDF; mesh collision) lower from their sim MJCF.
         if robot.assets.mjcf:
-            return lower_robot_from_mjcf(robot, manifest_dir=manifest_dir)
+            return lower_robot_from_mjcf(
+                robot, manifest_dir=manifest_dir, acm_only=acm_only, tight_links=tight_links
+            )
         raise ROSConfigError(f"{robot.name}: assets.urdf is required to lower a collision model")
     try:
         urdf = resolve_asset(robot.assets.urdf.ref, "urdf", manifest_dir=manifest_dir)
@@ -1542,7 +2092,15 @@ def lower_robot(
     geometry: list[LinkCollisionGeometry] = []
     joint_fk: dict[str, tuple[_Vec3, _Vec3, _Vec3]] = {}
     if not acm_only:
-        geometry = [g for g in lower_link_geometry(urdf_ref) if g.link_name in chain_links]
+        geometry = [
+            g
+            for g in lower_link_geometry(
+                urdf_ref,
+                tight_links=_tight_links_of(robot, tight_links),
+                extra_meshes=_twin_link_meshes(robot, _load_urdf(urdf_ref), manifest_dir),
+            )
+            if g.link_name in chain_links
+        ]
         if not geometry:
             # Refuse to emit an empty collision model. Zero fitted links means the
             # URDF's <collision> meshes did not resolve on this host (each one
@@ -1574,8 +2132,7 @@ def lower_robot(
         # The ACM is computed against that geometry so a mesh-based SRDF's omitted
         # capsule-junction pairs (always-colliding under the conservative capsules)
         # are added — otherwise the kernel would false-E-stop every step.
-        geom_list = robot.collision_geometry if acm_only else geometry
-        geom_by_link = {g.link_name: g for g in geom_list}
+        geom_list = list(robot.collision_geometry if acm_only else geometry)
         # The kernel trips at `safety.self_collision_margin_m`, so the
         # always-colliding proof must use that same threshold — see
         # `acm_for_geometry`. so101_follower runs -0.06 m; a sweep hardcoded at
@@ -1583,12 +2140,12 @@ def lower_robot(
         # trips on, and exempted a check that was doing real work.
         disabled = acm_for_geometry(
             urdf_ref,
-            geom_by_link,
+            geom_list,
             srdf_path=used_srdf,
             margin_m=float(getattr(robot.safety, "self_collision_margin_m", 0.0) or 0.0),
         )
         source = "srdf" if used_srdf else "sampling"
-        pairs = _scoped_sorted_pairs(disabled, set(geom_by_link))
+        pairs = _scoped_sorted_pairs(disabled, {g.link_name for g in geom_list})
 
     return LoweredCollisionModel(
         collision_geometry=geometry,
@@ -1687,19 +2244,16 @@ def lower_robot_auto(
     acm_only: bool = False,
     geometry_only: bool = False,
     manifest_dir: Path | None = None,
-    fit_mjcf_geometry: bool = False,
+    tight_links: Iterable[str] | None = None,
 ) -> LoweredCollisionModel:
     """Lower ``robot`` via the provenance-correct source (``select_lowering``).
 
-    ``fit_mjcf_geometry`` applies to the MJCF path only: fit capsules to the
-    MJCF's collision meshes (``fit_collision_geometry_from_mjcf``) instead of
-    keeping the manifest's hand-authored geometry.
-
     The single dispatch the CLI (``openral collision lower``/``check``) and the
     byte-identical regression test both call, so routing can never diverge
-    between "what we commit" and "what we verify". ``acm_only`` / ``geometry_only``
-    are forwarded to the URDF path; the MJCF path always emits both blocks (it
-    keeps the manifest geometry and recomputes the ACM).
+    between "what we commit" and "what we verify". ``acm_only`` keeps the
+    manifest geometry on both paths; ``geometry_only`` applies to the URDF path
+    (the MJCF path always emits both blocks); ``tight_links`` names links to
+    lower as box + exact hull on top of those the manifest already refines.
 
     Raises:
         ROSConfigError: Propagated from ``select_lowering`` /
@@ -1707,8 +2261,12 @@ def lower_robot_auto(
     """
     if select_lowering(robot, manifest_dir=manifest_dir) == "mjcf":
         return lower_robot_from_mjcf(
-            robot, manifest_dir=manifest_dir, fit_geometry=fit_mjcf_geometry
+            robot, manifest_dir=manifest_dir, acm_only=acm_only, tight_links=tight_links
         )
     return lower_robot(
-        robot, acm_only=acm_only, geometry_only=geometry_only, manifest_dir=manifest_dir
+        robot,
+        acm_only=acm_only,
+        geometry_only=geometry_only,
+        manifest_dir=manifest_dir,
+        tight_links=tight_links,
     )
