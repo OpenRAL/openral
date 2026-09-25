@@ -315,6 +315,11 @@ runtime:
   # kernel checks a chunk, from capture (default 1.5 s, measured on the Thor ZED-M:
   # p99 ~1.0 s). Measure yours; below the rig's latency tail the robot stops.
   # world_voxel_data_age_budget_s: 1.5
+  # Optional, per rig (real camera only): how far past the robot's collision model a
+  # depth return is removed as the robot before octomap. Provisional 0.05 m; derive
+  # it from depth noise, extrinsic error, capture-to-joint-state motion and half a voxel.
+  # It is also a blind shell around the arm, so do not raise it without that derivation.
+  # robot_self_filter_padding_m: 0.05
 ```
 
 On a `deploy sim` twin, a pinned topic outside `/openral/cameras/` is a real

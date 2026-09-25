@@ -11717,6 +11717,12 @@
               "title": "World Voxel Data Age Budget S",
               "type": "number"
             },
+            "robot_self_filter_padding_m": {
+              "default": 0.05,
+              "minimum": 0,
+              "title": "Robot Self Filter Padding M",
+              "type": "number"
+            },
             "joint_states_topic": {
               "anyOf": [
                 {
@@ -13609,6 +13615,12 @@
               "default": 1.5,
               "exclusiveMinimum": 0,
               "title": "World Voxel Data Age Budget S",
+              "type": "number"
+            },
+            "robot_self_filter_padding_m": {
+              "default": 0.05,
+              "minimum": 0,
+              "title": "Robot Self Filter Padding M",
               "type": "number"
             },
             "joint_states_topic": {
@@ -15642,6 +15654,12 @@
               "default": 1.5,
               "exclusiveMinimum": 0,
               "title": "World Voxel Data Age Budget S",
+              "type": "number"
+            },
+            "robot_self_filter_padding_m": {
+              "default": 0.05,
+              "minimum": 0,
+              "title": "Robot Self Filter Padding M",
               "type": "number"
             },
             "joint_states_topic": {

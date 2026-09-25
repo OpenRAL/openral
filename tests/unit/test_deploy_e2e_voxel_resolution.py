@@ -54,7 +54,7 @@ def test_self_filter_poses_the_kernels_model_with_manifest_and_upstream_joint_na
     description = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
     collision = collision_params_from_description(description)
     params = launch_module._self_filter_params(  # type: ignore[attr-defined]
-        collision, description, "/openral_hal_openarm/joint_states"
+        collision, description, "/openral_hal_openarm/joint_states", 0.03
     )
     for key, value in collision.items():
         if key.startswith("collision_"):
@@ -66,7 +66,7 @@ def test_self_filter_poses_the_kernels_model_with_manifest_and_upstream_joint_na
     assert len(aliases) == len(names)
     assert aliases[names.index("left_joint1")] == "openarm_left_joint1"
     assert params["joint_states_topic"] == "/openral_hal_openarm/joint_states"
-    assert params["padding_m"] == launch_module._SELF_FILTER_PADDING_M  # type: ignore[attr-defined]
+    assert params["padding_m"] == 0.03
     # The filtered cloud is the world map's input, never a camera topic (ADR-0108).
     assert not launch_module._SELF_FILTERED_CLOUD_TOPIC.startswith("/openral/cameras/")  # type: ignore[attr-defined]
 

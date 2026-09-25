@@ -9683,6 +9683,20 @@ class DeployRuntime(BaseModel):
     ``max_octree_age_s``: those bound a silent source by receipt time, this
     bounds the world's age whatever the receipt time, so no ordering between
     them is required, and a smaller budget is only stricter."""
+    robot_self_filter_padding_m: float = Field(default=0.05, ge=0)
+    """How far beyond the robot's collision primitives (and a held payload's) a
+    real depth return still counts as the robot and is removed by
+    ``openral_octomap_bridge``'s ``robot_self_filter`` before octomap inserts
+    the cloud. Real camera path only; sim renders the robot transparent.
+
+    PROVISIONAL: 0.05 m is a starting guess from the Thor bench, not a derived
+    value. Derive it per rig from the camera's depth noise at working range,
+    the camera extrinsic error, how far a link moves between the cloud's
+    capture and the joint state used to pose it, and half a voxel. It is also
+    the width of the blind shell around the arm: an obstacle that close to the
+    robot is removed with it, so a larger value hides more of the world from
+    the kernel's check (hazard log Entry 035). Too small leaves robot surface
+    in the map, which stops the robot against itself (fail closed)."""
     joint_states_topic: str | None = None
     """Explicit override for the ``sensor_msgs/JointState`` topic the deploy
     runtime's Python nodes (in-process world state + the runner's joint-state

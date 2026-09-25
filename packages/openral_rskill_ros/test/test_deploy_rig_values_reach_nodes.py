@@ -1,7 +1,8 @@
 """Per-rig ``DeployRuntime`` perception values reach the nodes that enforce them.
 
 ``world_voxel_data_age_budget_s`` becomes the safety kernel's
-``world_voxel_data_age_budget_ms``, whether a scene declares it or not.
+``world_voxel_data_age_budget_ms`` and ``robot_self_filter_padding_m`` the
+``robot_self_filter``'s ``padding_m``, whether a scene declares them or not.
 Driven the way ``openral deploy`` drives it: ``resolve_launch_invocation``
 produces the argv, every ``key:=value`` is fed to the real
 ``compose_runtime_graph``. Nothing is launched.
@@ -9,7 +10,9 @@ produces the argv, every ``key:=value`` is fed to the real
 The robot is ``franka_panda`` (not OpenArm) with panda_mobile's committed
 ``front_depth`` camera added, served via ``OPENRAL_ROBOTS_DIR``. The kernel
 params come from a sim twin (the kernel check needs no extrinsic report
-there). Per CLAUDE.md §1.11: real manifests, real resolver, no mocks.
+there); the self-filter only exists on the real path, composed with the
+kernel check off (it filters the map's input whether or not the kernel reads
+the map). Per CLAUDE.md §1.11: real manifests, real resolver, no mocks.
 """
 
 from __future__ import annotations
@@ -113,3 +116,15 @@ def test_the_data_age_budget_reaches_the_kernel(
     kernel = _params(ctx, entities, "openral_safety_kernel", "safety_kernel_node")
     assert kernel["world_voxel_enabled"] is True
     assert kernel["world_voxel_data_age_budget_ms"] == expected_ms
+
+
+@pytest.mark.parametrize(("declared", "expected"), [("", 0.05), ("0.03", 0.03)])
+def test_the_self_filter_padding_reaches_the_filter(
+    franka_with_depth: Path, declared: str, expected: float
+) -> None:
+    runtime = f"  octomap_cloud_topic: {_POINTS}\n  enable_octomap_kernel_check: false\n" + (
+        f"  robot_self_filter_padding_m: {declared}\n" if declared else ""
+    )
+    ctx, entities = _compose(_scene(franka_with_depth, runtime), "real")
+    params = _params(ctx, entities, "openral_octomap_bridge", "robot_self_filter")
+    assert params["padding_m"] == expected
