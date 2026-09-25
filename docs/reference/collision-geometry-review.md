@@ -380,7 +380,7 @@ reads the primitives, note the direction this change moves it:
 
 ### 8.5 Draft ADR text (for `OpenRAL/management/adr/`)
 
-> **ADR-XXXX — One primitive fitter for URDF and MJCF robots; box + exact hull where measured**
+> **ADR-0114 — One primitive fitter for URDF and MJCF robots; box + exact hull where measured**
 >
 > *Status:* proposed. *Deciders:* Safety WG. *Date:* 2026-09-25.
 >
@@ -408,22 +408,22 @@ reads the primitives, note the direction this change moves it:
 > on refusals and cost); hulls everywhere on a humanoid (refuses every pose: CAD nesting loses
 > the always-colliding certificate); a smaller hull vertex budget (no cost gain, more refusals).
 
-## 9. Hazard-log and management text needed (not written to the management repo)
+## 9. Hazard-log and management text (recorded in OpenRAL/management#56 as Entries 044, 046 and 047 amended, new Entries 049 and 050, and ADR-0114)
 
-- **Entry 045 (update, OpenArm under-coverage), mitigation:** the OpenArm is fitted by the same
+- **Entry 046 (update, OpenArm under-coverage), mitigation:** the OpenArm is fitted by the same
   fitter as the URDF robots, from every MJCF geom (collision and visual) with the second finger
   swept over the stroke; 0 vertices and 0 surface triangles outside; 0 missed contacts in 3000
   poses (the hand-written primitives missed 79 and left 149,302 vertices outside). Refused poses:
   4.0 % in 1000 poses by the C++ kernel (#325's fit: 16.7 %, the hand capsules: 26.4 %), 0.8 % of them with no collision-mesh contact (#325: 15.8 %).
   - Residual: the swept finger may poke up to 1 mm out between the 9 stroke samples (enclosure
     test tolerance for swept links); cameras and cables absent from the MJCF are not modelled.
-- **Entry 046 (update, URDF under-coverage), mitigation:** unchanged in kind (collision ∪ visual,
+- **Entry 047 (update, URDF under-coverage), mitigation:** unchanged in kind (collision ∪ visual,
   1 mm headroom), now also the **surface** proven inside (not just vertices), and the MJCF twin's
   CAD folded in where its frames coincide (H1, Franka, Rizon 4). H1's twin forearm reaches 46 mm
   and its ankle 25 mm past the URDF CAD; the kernel now covers both.
-- **Entry 043 (update, loss of conservatism):** 0 missed contacts on all eight robots over 3000
+- **Entry 044 (update, loss of conservatism):** 0 missed contacts on all eight robots over 3000
   poses; false stops and refused poses fall on every robot against the pre-refit geometry (§6).
-- **New entry: box + hull links (per-robot list in §8.2).** The kernel's hull narrow phase
+- **Entry 049: box + hull links (per-robot list in §8.2).** The kernel's hull narrow phase
   (Entry 018) now runs on self pairs of eight robots, not only panda_mobile. Hazard: a hull is
   exact (no headroom), so its correctness rests on the containment proof
   (`mesh ⊆ hull ⊆ DOP ⊆ box`, derived in the rendered frame, written at 1 nm, re-validated by the
@@ -437,7 +437,7 @@ reads the primitives, note the direction this change moves it:
 - **G1 twin frames:** the menagerie G1 twin's body frames sit 10 mm off the URDF link frames at
   q = 0 (UR5e/UR10e: different frame convention, 100+ mm). The kernel's FK is the URDF's, so in
   `deploy sim` the kernel and the simulated G1 disagree by up to 10 mm. Not fixed here (§12).
-- **New entry: uncovered grippers (pre-existing, found by the generalised twin test).** Franka's
+- **Entry 050: uncovered grippers (pre-existing, found by the generalised twin test).** Franka's
   fingers and SO-101's gripper/jaw have no collision primitive, so the kernel cannot see them hit
   the arm (§12). Mitigation owed: fit them like the OpenArm's finger pair.
 - **ADR:** the §8.5 draft. The three kernel changes in §8.3 each need their own entry and ADR.
