@@ -226,7 +226,7 @@ def test_slot_is_refused_while_disconnected(case: _Case) -> None:
 def test_tick_one_after_a_higher_watermark_is_a_restarted_runner_everything_else_is_a_replay(
     case: _Case,
 ) -> None:
-    """The slot-group tick rule (hazard log Entry 035), on non-OpenArm twins.
+    """The slot-group tick rule (hazard log Entry 036), on non-OpenArm twins.
 
     A tick at or below the committed watermark is a replay and is refused,
     EXCEPT tick 1 arriving while the watermark is above 1: runner ticks are

@@ -3,8 +3,10 @@
 // where the robot was at the cloud's capture stamp, removes the robot's points
 // when it does, and keeps the capture stamp on what it forwards.
 
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -64,8 +66,8 @@ protected:
     js_ = "/test_sf_js_" + suffix;
     rclcpp::NodeOptions options;
     options.arguments({"--ros-args", "-r", "cloud_in:=" + in_, "-r", "cloud_out:=" + out_});
-    // root (fixed) -> l1 (revolute about z). One capsule on l1 at x = 0.5 m.
-    options.parameter_overrides({
+    // root (fixed) -> l1 (revolute about z); the primitives ride l1.
+    std::vector<rclcpp::Parameter> params = {
         {"collision_n_links", std::int64_t{2}},
         {"collision_parent", std::vector<std::int64_t>{-1, 0}},
         {"collision_joint_kind", std::vector<std::int64_t>{0, 1}},
@@ -73,15 +75,15 @@ protected:
         {"collision_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
         {"collision_axis", std::vector<double>{0, 0, 1, 0, 0, 1}},
         {"collision_link_names", std::vector<std::string>{"root", "l1"}},
-        {"collision_capsule_link", std::vector<std::int64_t>{1}},
-        {"collision_capsule_radius", std::vector<double>{0.05}},
-        {"collision_capsule_half_length", std::vector<double>{0.05}},
-        {"collision_capsule_origin_xyzrpy", std::vector<double>{0.5, 0, 0, 0, 0, 0}},
         {"collision_joint_names", std::vector<std::string>{"j1"}},
         {"joint_states_topic", js_},
         {"padding_m", 0.02},
         {"max_joint_state_skew_s", 0.1},
-    });
+    };
+    for (auto& p : primitive_params()) {
+      params.push_back(std::move(p));
+    }
+    options.parameter_overrides(params);
     filter_ = std::make_shared<bridge::RobotSelfFilter>(options);
     peer_ = std::make_shared<rclcpp::Node>("self_filter_peer_" + suffix);
     tf_ = std::make_unique<tf2_ros::StaticTransformBroadcaster>(peer_);
@@ -102,6 +104,16 @@ protected:
     executor_.add_node(filter_);
     executor_.add_node(peer_);
     spin_for(400ms);
+  }
+
+  /// One capsule on l1 at x = 0.5 m.
+  virtual std::vector<rclcpp::Parameter> primitive_params() const {
+    return {
+        {"collision_capsule_link", std::vector<std::int64_t>{1}},
+        {"collision_capsule_radius", std::vector<double>{0.05}},
+        {"collision_capsule_half_length", std::vector<double>{0.05}},
+        {"collision_capsule_origin_xyzrpy", std::vector<double>{0.5, 0, 0, 0, 0, 0}},
+    };
   }
 
   void TearDown() override {
@@ -182,4 +194,86 @@ TEST_F(SelfFilterNode, AJointStateFarFromTheCaptureStampIsNotUsed) {
   spin_for(400ms);
   EXPECT_EQ(received_.load(), 0) << "a pose 1 s from the capture would filter the wrong place";
   EXPECT_GT(filter_->totals().dropped_no_state, 0U);
+}
+
+namespace {
+
+// A 0.2 m cube on l1 at x = 0.5 m refined by the octahedron inscribed in it
+// (vertices at +-0.1 m on each axis), in the kernel's `collision_box_hull` /
+// `collision_hull_*` layout. The octahedron's 26-DOP is the octahedron itself:
+// its faces are the DOP's four corner-axis slab pairs.
+std::vector<rclcpp::Parameter> octahedron_box_params(std::vector<double> dop_hi_override = {}) {
+  const double c = 0.1 / std::sqrt(3.0);
+  const double e = 0.1 / std::sqrt(2.0);
+  std::vector<double> hi = {0.1, 0.1, 0.1, c, c, c, c, e, e, e, e, e, e};
+  if (!dop_hi_override.empty()) {
+    hi = std::move(dop_hi_override);
+  }
+  std::vector<double> lo(13);
+  for (std::size_t i = 0; i < 13; ++i) {
+    lo[i] = -hi[i];
+  }
+  return {
+      {"collision_box_link", std::vector<std::int64_t>{1}},
+      {"collision_box_half_extents", std::vector<double>{0.1, 0.1, 0.1}},
+      {"collision_box_origin_xyzrpy", std::vector<double>{0.5, 0, 0, 0, 0, 0}},
+      {"collision_box_hull", std::vector<std::int64_t>{0}},
+      {"collision_hull_dop_lo", lo},
+      {"collision_hull_dop_hi", hi},
+      {"collision_hull_vertex_first", std::vector<std::int64_t>{0}},
+      {"collision_hull_vertex_count", std::vector<std::int64_t>{6}},
+      {"collision_hull_vertices",
+       std::vector<double>{0.1, 0, 0, -0.1, 0, 0, 0, 0.1, 0, 0, -0.1, 0, 0, 0, 0.1, 0, 0, -0.1}},
+  };
+}
+
+class HulledBoxNode : public SelfFilterNode {
+protected:
+  std::vector<rclcpp::Parameter> primitive_params() const override {
+    return octahedron_box_params();
+  }
+};
+
+class MalformedHullNode : public SelfFilterNode {
+protected:
+  // The x slab reaches 0.15 m, outside the 0.1 m box it claims to refine.
+  std::vector<rclcpp::Parameter> primitive_params() const override {
+    const double c = 0.1 / std::sqrt(3.0);
+    const double e = 0.1 / std::sqrt(2.0);
+    return octahedron_box_params({0.15, 0.1, 0.1, c, c, c, c, e, e, e, e, e, e});
+  }
+};
+
+}  // namespace
+
+TEST_F(HulledBoxNode, FiltersAgainstTheHullNotTheBoxThatEnclosesIt) {
+  const rclcpp::Time now = peer_->now();
+  send_joint_state(0.0, now);
+  spin_for(100ms);
+  cloud_pub_->publish(make_cloud(
+      {
+          {0.5F, 0.0F, 0.0F},   // inside the hull: robot
+          {0.61F, 0.0F, 0.0F},  // 1 cm off the hull's +x vertex, inside the 2 cm padding
+          {0.6F, 0.1F, 0.1F},   // the box's corner: 11.5 cm from the hull, world
+          {0.63F, 0.0F, 0.0F},  // 3 cm off the +x vertex, past the padding
+      },
+      now));
+  spin_for(400ms);
+  ASSERT_EQ(received_.load(), 1);
+  ASSERT_EQ(last_.width, 2U) << "the box's corner slack is not the robot";
+  float x[2];
+  std::memcpy(&x[0], last_.data.data(), sizeof(float));
+  std::memcpy(&x[1], last_.data.data() + 12, sizeof(float));
+  EXPECT_FLOAT_EQ(x[0], 0.6F);
+  EXPECT_FLOAT_EQ(x[1], 0.63F);
+}
+
+TEST_F(MalformedHullNode, AHullThatEscapesItsBoxForwardsNothing) {
+  const rclcpp::Time now = peer_->now();
+  send_joint_state(0.0, now);
+  spin_for(100ms);
+  cloud_pub_->publish(make_cloud({{2.0F, 0.0F, 0.0F}}, now));
+  spin_for(400ms);
+  EXPECT_EQ(received_.load(), 0) << "a hull the filter cannot trust must not configure the model";
+  EXPECT_GT(filter_->totals().clouds, 0U);
 }

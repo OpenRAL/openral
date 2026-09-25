@@ -34,6 +34,7 @@ from pydantic import (
     Field,
     PositiveFloat,
     StringConstraints,
+    ValidationInfo,
     field_serializer,
     field_validator,
     model_validator,
@@ -9654,20 +9655,26 @@ class DeployRuntime(BaseModel):
     ``simulation`` is refused for ``deploy run`` (a real robot has no sim clock),
     for a sim backend that exposes no clock, and together with a real driver's
     ``octomap_cloud_topic``."""
-    world_voxel_deadline_s: float = Field(default=1.0, gt=0)
+    world_voxel_deadline_s: float = Field(default=1.0, gt=0, json_schema_extra={"maximum": 2.0})
     """How long the safety kernel trusts the last ``/openral/world_voxels`` grid
     (its ``world_voxel_deadline_ms``); past it every chunk drops with
     ``DROP_VOXEL_UNAVAILABLE``. It must exceed the octomap source's
     insert-to-publish gap on this rig (cloud period plus octomap's insert time),
     with margin: 1.0 s tolerates octomap down to about 1 Hz. A slower source
     (a 1 Hz scanning lidar, a CPU-only host inserting dense clouds) needs a
-    longer deadline or the robot never moves; that is fail-closed, not unsafe."""
+    longer deadline or the robot never moves; that is fail-closed, not unsafe.
+
+    Hard cap 2.0 s (2x the pre-2026-09-25 value), refused at load: past it the
+    kernel would keep checking chunks against a map that old. A source that
+    cannot keep octomap under it is not a world-voxel source."""
     max_octree_age_s: float | None = Field(default=None, gt=0)
     """How long the octomap bridge republishes the last octree it received.
     ``None`` = equal to ``world_voxel_deadline_s``. Must not exceed it, so the
     kernel, not the bridge, fails closed on a silent camera: worst case from the
     last inserted cloud to the drop is this plus the deadline (hazard log Entry 033)."""
-    world_voxel_data_age_budget_s: float = Field(default=1.5, gt=0)
+    world_voxel_data_age_budget_s: float = Field(
+        default=1.5, gt=0, json_schema_extra={"maximum": 3.0}
+    )
     """How old the sensor data behind a voxel grid may be when the safety kernel
     checks a chunk against it (its ``world_voxel_data_age_budget_ms``), measured
     from the grid's ``source_stamp``: the capture stamp of the newest cloud in
@@ -9682,21 +9689,33 @@ class DeployRuntime(BaseModel):
     unsafely. It is independent of ``world_voxel_deadline_s`` /
     ``max_octree_age_s``: those bound a silent source by receipt time, this
     bounds the world's age whatever the receipt time, so no ordering between
-    them is required, and a smaller budget is only stricter."""
-    robot_self_filter_padding_m: float = Field(default=0.05, ge=0)
+    them is required, and a smaller budget is only stricter.
+
+    Hard cap 3.0 s (2x the pre-2026-09-25 value), refused at load: a larger
+    budget would certify chunks against a world seconds old."""
+    robot_self_filter_padding_m: float = Field(
+        default=0.02, ge=0, json_schema_extra={"maximum": 0.1}
+    )
     """How far beyond the robot's collision primitives (and a held payload's) a
     real depth return still counts as the robot and is removed by
     ``openral_octomap_bridge``'s ``robot_self_filter`` before octomap inserts
     the cloud. Real camera path only; sim renders the robot transparent.
 
-    PROVISIONAL: 0.05 m is a starting guess from the Thor bench, not a derived
-    value. Derive it per rig from the camera's depth noise at working range,
-    the camera extrinsic error, how far a link moves between the cloud's
-    capture and the joint state used to pose it, and half a voxel. It is also
+    PROVISIONAL: 0.02 m (user decision 2026-09-25, down from the 0.05 m Thor
+    starting guess, since the filter now measures against the kernel's exact
+    link hulls rather than their boxes) is pending a Thor measurement: the p99
+    distance of the robot's own depth points outside its collision geometry,
+    from depth + joint states over several poses. Derive it per rig from the
+    camera's depth noise at working range, the camera extrinsic error, how far
+    a link moves between the cloud's capture and the joint state used to pose
+    it, and half a voxel. It is also
     the width of the blind shell around the arm: an obstacle that close to the
     robot is removed with it, so a larger value hides more of the world from
     the kernel's check (hazard log Entry 035). Too small leaves robot surface
-    in the map, which stops the robot against itself (fail closed)."""
+    in the map, which stops the robot against itself (fail closed).
+
+    Hard cap 0.10 m (2x the pre-2026-09-25 value), refused at load: a wider
+    blind shell hides obstacles the arm can reach within one chunk."""
     joint_states_topic: str | None = None
     """Explicit override for the ``sensor_msgs/JointState`` topic the deploy
     runtime's Python nodes (in-process world state + the runner's joint-state
@@ -9805,6 +9824,34 @@ class DeployRuntime(BaseModel):
         """
         deadline = self.world_voxel_deadline_s
         return deadline, self.max_octree_age_s or deadline
+
+    @field_validator(
+        "world_voxel_deadline_s", "world_voxel_data_age_budget_s", "robot_self_filter_padding_m"
+    )
+    @classmethod
+    def _check_perception_caps(cls, value: float, info: ValidationInfo) -> float:
+        # Hard caps, 2x the values these fields had before 2026-09-25. Raising
+        # one is a safety decision (hazard log Entries 034/035), not a rig knob.
+        cap, why = {
+            "world_voxel_deadline_s": (
+                2.0,
+                "the kernel would keep checking chunks against a voxel grid that old",
+            ),
+            "world_voxel_data_age_budget_s": (
+                3.0,
+                "the kernel would certify chunks against a world seconds old",
+            ),
+            "robot_self_filter_padding_m": (
+                0.1,
+                "a wider blind shell hides obstacles the arm can reach",
+            ),
+        }[str(info.field_name)]
+        if value > cap:
+            raise ValueError(
+                f"{info.field_name} ({value}) exceeds its hard cap {cap} "
+                f"(2x the pre-2026-09-25 value): {why}"
+            )
+        return value
 
     @model_validator(mode="after")
     def _check_voxel_freshness(self) -> Self:
