@@ -286,7 +286,7 @@ def _slot_tick(tick: int) -> list[Action]:
 def test_tick_one_after_a_higher_watermark_is_a_restarted_runner_everything_else_is_a_replay() -> (
     None
 ):
-    """The slot-group tick rule (hazard log Entry 035) on ``SimAttachedHAL``.
+    """The slot-group tick rule (hazard log Entry 036) on ``SimAttachedHAL``.
 
     At or below the committed watermark is a replay, except tick 1 while the
     watermark is above 1, which is a restarted runner's fresh numbering.

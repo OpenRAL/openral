@@ -30,7 +30,7 @@ expecting a clean pass:
    primitives at the cloud's capture stamp (joint states from the topic the runtime nodes
    read: the scene's `joint_states_topic`, else the HAL's `~/joint_states` republish;
    camera pose from tf2) and removes every return within the rig's
-   `runtime.robot_self_filter_padding_m` (default 5 cm, provisional: derive it from depth
+   `runtime.robot_self_filter_padding_m` (default 2 cm, provisional pending a Thor measurement: derive it from depth
    noise, extrinsic error, capture-to-joint-state motion and half a voxel) of them, plus a held payload's primitives once an
    attachment producer exists. Without a pose at the capture stamp it drops the cloud, so
    the map goes stale and the kernel fails closed rather than seeing the arm as an obstacle.

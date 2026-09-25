@@ -118,7 +118,8 @@ fails closed. Both are per-rig `DeployRuntime` fields: `world_voxel_deadline_s`
 (default 1.0 s) and `max_octree_age_s` (default equal to the deadline; a value above
 it is refused by the schema and by `deploy_e2e.launch.py`). An earlier half-deadline
 bound (0.5 s) silenced a healthy camera's grid at 2.2 Hz; a source slower than about
-1 Hz needs both raised in its scene. A bound that is
+1 Hz needs both raised in its scene, up to the schema's hard cap of 2.0 s on the
+deadline (2x its pre-2026-09-25 default; above it the scene is refused at load). A bound that is
 too small only costs availability: silence shorter than the kernel's
 deadline is not a drop. A non-finite or non-positive bound publishes
 nothing (ERROR at start-up). A grid's `header.stamp` is still `now()`: it
@@ -130,13 +131,29 @@ which the octree's own stamp would break. The octree's own stamp rides on
 every grid as `source_stamp` (the capture stamp of the newest cloud inserted),
 and the kernel budgets the world's age from it: `world_voxel_data_age_budget_ms`,
 from the per-rig `DeployRuntime.world_voxel_data_age_budget_s` (default 1.5 s,
-the Thor ZED-M tail); past it the chunk drops as `voxel_stale`.
+the Thor ZED-M tail; hard cap 3.0 s); past it the chunk drops as `voxel_stale`.
 
 `robot_self_filter` (real camera path only) removes the robot's own returns
 before `octomap_server` inserts the cloud: it poses the kernel's collision
 parameters at the cloud's capture stamp and drops every return within
 `padding_m` of a primitive (from `DeployRuntime.robot_self_filter_padding_m`,
-provisional 0.05 m). No pose at the capture stamp drops the whole cloud.
+provisional 0.02 m, hard cap 0.10 m). No pose at the capture stamp drops the whole cloud.
+
+A box that carries the kernel's tight geometry (`collision_box_hull` /
+`collision_hull_*`, lowered from `LinkCollisionGeometry.tight_geometry`) is
+filtered against that geometry, not the box: the box's slack (12–27 mm mean on
+the Panda links, more at the corners) would otherwise widen the blind shell.
+The distance is the kernel's staged narrow phase with the voxel cube shrunk to
+a point — the 26-DOP slab bound, then GJK on the exact hull's vertices with an
+exhaustive support scan — so every value is a lower bound on the true distance
+(never an over-report: a return the hull explains is always removed) and the
+converged value is exact to 1e-9 m. `test_self_filter` pins it against the
+kernel's `hull_cell_distance` on panda_mobile's real hulls. A hull the kernel's
+`validate_tight_hull` chain would not prove (vertex outside its DOP, DOP outside
+its box, over 320 vertices, bad arity) refuses the whole model, so the node
+forwards nothing. Cost, dev laptop, panda_mobile, 230 400-point cloud with 10 %
+of it within 8 cm of the arm: 2.4–2.6 ms box-only → 7.0–8.0 ms with hulls
+(the extra is GJK on the points inside a box's shell; not yet measured on Thor).
 
 Pinned by `test_bridge_staleness` (the real node in-process: publishes while
 fresh, silent past the bound for as long as the silence lasts, resumes on
