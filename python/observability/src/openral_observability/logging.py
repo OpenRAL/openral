@@ -117,7 +117,13 @@ def apply_structlog_level_floor() -> None:
         >>> structlog.get_logger("openral.doctest").debug("dropped")  # prints nothing
         >>> del os.environ["OPENRAL_LOG_LEVEL"]
     """
-    structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(resolve_log_level()))
+    # ``cache_logger_on_first_use=False``: a logger bound before this call
+    # (an import-time proxy that already emitted) re-binds on its next use
+    # and picks the floor up; a cached one would keep the stock wrapper.
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(resolve_log_level()),
+        cache_logger_on_first_use=False,
+    )
 
 
 def install_structlog_bridge(logger_provider: LoggerProvider) -> None:

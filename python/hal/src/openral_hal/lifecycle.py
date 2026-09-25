@@ -1072,6 +1072,12 @@ if _ROS2_AVAILABLE:
                 return
             group_size = int(action.tick_group_size)
             tick = int(action.tick_index)
+            if tick == 1 and self._last_action_applied_tick > 1:
+                # A restarted runner numbers from 1 again; the HAL adopted it
+                # (``refuse_stale_tick``), so the ack renumbers with it. A
+                # monotonic ack would leave the new runner waiting on tick 1.
+                self._last_action_applied_tick = 0
+                self._deferred_action_applied_tick = 0
             if tick <= 0 or tick <= self._last_action_applied_tick:
                 return
             if group_size <= 1:
@@ -1829,6 +1835,12 @@ if _ROS2_AVAILABLE:
                 self._hal,
                 self._hal.description,
                 viewer_enabled=self.get_parameter("viewer_enabled")
+                .get_parameter_value()
+                .bool_value,
+                # One attachment authority per graph: with the vision leg on,
+                # the bridge's "nothing attached" heartbeat would fight its
+                # revisions on the same latched topic.
+                attachment_heartbeat=not self.get_parameter("vision_attachment_enabled")
                 .get_parameter_value()
                 .bool_value,
                 camera_rate_hz=self.get_parameter("camera_publish_rate_hz")

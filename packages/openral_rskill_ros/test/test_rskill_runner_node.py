@@ -1282,3 +1282,37 @@ def test_preload_hands_a_safety_violation_to_the_executor() -> None:
         with pytest.raises(ROSSafetyViolation, match="preload tripped"):
             _spin_for(executor, 3.0)
         assert not runtime.skill_runner_node._preload_in_flight.is_set()
+
+
+def test_reactivating_mid_preload_does_not_start_a_second_worker() -> None:
+    """A deactivate/activate cycle during a preload keeps the one worker and the goal gate.
+
+    A second worker would clear ``_preload_in_flight`` when the first finished,
+    letting a goal through while the second still loads: the goal would then
+    block behind the load inside the deadman's first-chunk window.
+    """
+    built: list[Any] = []
+
+    def _slow_resolver(*_args: Any, **kwargs: Any) -> Any:
+        time.sleep(1.5)
+        skill = _make_named_skill(kwargs.get("rskill_id", "openral/unknown"))
+        built.append(skill)
+        return skill
+
+    params = {"preload_rskill_id": "openral/skill-a", "preload_prompt": "drive"}
+    with _compose_harness(resolver=_slow_resolver, runner_parameters=params) as (
+        executor,
+        runtime,
+        _s,
+        _o,
+    ):
+        node = runtime.skill_runner_node
+        _spin_for(executor, 0.2)
+        assert node._preload_in_flight.is_set()
+        node.trigger_deactivate()
+        node.trigger_activate()
+        _spin_for(executor, 0.2)
+        assert node._preload_in_flight.is_set(), "the gate dropped while the load still ran"
+        _spin_for(executor, 2.5)
+        assert len(built) == 1, "a second preload worker ran"
+        assert not node._preload_in_flight.is_set()

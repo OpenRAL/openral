@@ -49,6 +49,41 @@ def _franka() -> Any:
 
 
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_the_heartbeat_yields_to_another_attachment_authority() -> None:
+    """``attachment_heartbeat=False``: no publisher, no timer, nothing on the latched topic.
+
+    The HAL node's vision attachment leg publishes revisions on the same
+    TRANSIENT_LOCAL topic; a revision-0 heartbeat beside it would move the
+    aggregator's attachment revision backwards on every timer tick.
+    """
+    rclpy = pytest.importorskip("rclpy")
+
+    from openral_hal.sim_sensor_bridge import SimSensorBridge
+    from rclpy.node import Node
+
+    hal = _openarm()
+    rclpy.init()
+    try:
+        node = Node("test_attachment_heartbeat_yields")
+        try:
+            hal.connect()
+            bridge = SimSensorBridge(
+                node, hal, hal.description, viewer_enabled=False, attachment_heartbeat=False
+            )
+            try:
+                bridge.setup()
+                assert bridge._attachment_pub is None
+                assert bridge._attachment_timer is None
+                assert node.count_publishers("/openral/attachment_state") == 0
+            finally:
+                bridge.teardown()
+                hal.disconnect()
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.try_shutdown()
+
+
 @pytest.mark.parametrize(
     "make_hal", [_openarm, _so100, _franka], ids=["openarm_v2", "so100", "franka_panda"]
 )

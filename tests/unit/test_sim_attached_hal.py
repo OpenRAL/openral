@@ -252,17 +252,83 @@ def test_group_of_an_already_committed_tick_is_refused() -> None:
             ),
         ]
 
-    for slot in _tick(2):
-        hal.send_action(slot)
-    assert (env.step_calls, hal.last_committed_tick) == (1, 2)
-    for stale in (2, 1):
-        with pytest.raises(ROSRuntimeError, match="stale slot group"):
-            hal.send_action(_tick(stale)[0])
-    assert (env.step_calls, hal.last_committed_tick) == (1, 2)
-    # Nothing was staged by the refusal: the next tick commits normally.
     for slot in _tick(3):
         hal.send_action(slot)
-    assert (env.step_calls, hal.last_committed_tick) == (2, 3)
+    assert (env.step_calls, hal.last_committed_tick) == (1, 3)
+    for stale in (3, 2):  # not 1: above a watermark of 1 that is a restarted runner
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_tick(stale)[0])
+    assert (env.step_calls, hal.last_committed_tick) == (1, 3)
+    # Nothing was staged by the refusal: the next tick commits normally.
+    for slot in _tick(4):
+        hal.send_action(slot)
+    assert (env.step_calls, hal.last_committed_tick) == (2, 4)
+
+
+def _slot_tick(tick: int) -> list[Action]:
+    """One two-slot tick (Cartesian arm + gripper), as the runner dispatches it."""
+    return [
+        Action(
+            control_mode=ControlMode.CARTESIAN_DELTA,
+            cartesian_delta=[(0.2, -0.1, 0.3, 0.0, 0.1, -0.2)],
+            tick_index=tick,
+            tick_group_size=2,
+        ),
+        Action(
+            control_mode=ControlMode.GRIPPER_POSITION,
+            gripper=[-1.0],
+            tick_index=tick,
+            tick_group_size=2,
+        ),
+    ]
+
+
+def test_tick_one_after_a_higher_watermark_is_a_restarted_runner_everything_else_is_a_replay() -> (
+    None
+):
+    """The slot-group tick rule (hazard log Entry 035) on ``SimAttachedHAL``.
+
+    At or below the committed watermark is a replay, except tick 1 while the
+    watermark is above 1, which is a restarted runner's fresh numbering.
+    """
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+
+    for slot in _slot_tick(7):
+        hal.send_action(slot)
+    assert (env.step_calls, hal.last_committed_tick) == (1, 7)
+    for stale in (7, 5):
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_slot_tick(stale)[0])
+    assert (env.step_calls, hal.last_committed_tick) == (1, 7)
+
+    for slot in _slot_tick(1):  # a restarted runner: adopted
+        hal.send_action(slot)
+    assert (env.step_calls, hal.last_committed_tick) == (2, 1)
+
+    with pytest.raises(ROSRuntimeError, match="stale slot group"):
+        hal.send_action(_slot_tick(1)[0])
+    assert (env.step_calls, hal.last_committed_tick) == (2, 1)
+
+
+def test_estop_keeps_the_watermark_so_a_pre_stop_tick_is_still_refused() -> None:
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    for tick in (1, 2, 3):
+        for slot in _slot_tick(tick):
+            hal.send_action(slot)
+    hal.estop()
+    hal.reset_estop()
+    assert hal.last_committed_tick == 3
+    with pytest.raises(ROSRuntimeError, match="stale slot group"):
+        hal.send_action(_slot_tick(3)[0])
+    assert env.step_calls == 3
+    # A reconnect (env reset) clears it: numbering restarts.
+    hal.disconnect()
+    hal.connect()
+    assert hal.last_committed_tick == 0
 
 
 def test_pack_action_gripper_position_packs_last_slot() -> None:

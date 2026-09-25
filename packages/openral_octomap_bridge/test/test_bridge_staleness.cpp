@@ -186,6 +186,41 @@ TEST_F(BridgeStaleness, AnOctreeKeptArrivingKeepsTheGridFlowing) {
   }
 }
 
+TEST_F(BridgeStaleness, TheGridCarriesTheOctreesCaptureStampAsSourceStamp) {
+  // `header.stamp` is when the grid was produced (fresh on every republish);
+  // `source_stamp` is the octree's own stamp, which octomap_server takes from
+  // the cloud it inserted. Only the latter says how old the world is, and it
+  // is what the kernel budgets.
+  start(kMaxOctreeAgeS);
+  openral_msgs::msg::OccupancyVoxels last;
+  std::atomic<bool> got{false};
+  auto sub = peer_->create_subscription<openral_msgs::msg::OccupancyVoxels>(
+      voxel_topic_, rclcpp::QoS(1).reliable(),
+      [&](openral_msgs::msg::OccupancyVoxels::SharedPtr m) {
+        last = *m;
+        got = true;
+      });
+
+  const rclcpp::Time capture = peer_->now() - rclcpp::Duration::from_seconds(0.2);
+  octomap::OcTree tree(0.05);
+  tree.updateNode(octomap::point3d(0.1F, 0.0F, 0.5F), true);
+  octomap_msgs::msg::Octomap msg;
+  ASSERT_TRUE(octomap_msgs::binaryMapToMsg(tree, msg));
+  msg.header.frame_id = "map";
+  msg.header.stamp = capture;
+  octomap_pub_->publish(msg);
+  spin_for(250ms);
+  ASSERT_TRUE(got.load()) << "no grid published";
+
+  const rclcpp::Time source(last.source_stamp, peer_->get_clock()->get_clock_type());
+  EXPECT_EQ(source.nanoseconds(), capture.nanoseconds())
+      << "source_stamp must be the octree's stamp, unchanged";
+  const rclcpp::Time produced(last.header.stamp, peer_->get_clock()->get_clock_type());
+  EXPECT_GT(produced.nanoseconds(), capture.nanoseconds())
+      << "header.stamp is the production time, after capture";
+  EXPECT_LT((peer_->now() - produced).seconds(), 0.25) << "header.stamp must stay fresh";
+}
+
 TEST_F(BridgeStaleness, AnUnusableBoundPublishesNothing) {
   // Fail closed, as an unset coverage radius does: silence, which the kernel
   // turns into DROP_VOXEL_UNAVAILABLE, never a map of unknown age.

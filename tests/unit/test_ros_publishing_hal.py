@@ -416,6 +416,60 @@ def test_hal_lifecycle_publishes_single_action_ack() -> None:
 
 @pytest.mark.skipif(
     not _rclpy_available(),
+    reason="rclpy / openral_msgs / std_msgs not on PYTHONPATH",
+)
+def test_hal_lifecycle_acks_a_restarted_runners_tick_one() -> None:
+    """The ack follows the HAL's tick rule (hazard log Entry 035).
+
+    The HAL adopts tick 1 above a watermark of 1 (a restarted runner); an ack
+    that stayed monotonic would never report it, and the new runner would
+    time out waiting on tick 1. A replayed tick is still not re-acked.
+    """
+    import rclpy
+    from openral_hal.lifecycle import HALLifecycleNodeBase
+    from rclpy.lifecycle import LifecycleNode
+    from std_msgs.msg import UInt64
+
+    rclpy.init()
+    node: HALLifecycleNodeBase | None = None
+    peer: LifecycleNode | None = None
+    try:
+        node = HALLifecycleNodeBase("openral_restart_ack_test")
+        peer = LifecycleNode("openral_restart_ack_peer")
+        topic = "/openral/test/action_applied_restart"
+        received: list[int] = []
+        node._action_applied_pub = node.create_publisher(UInt64, topic, 10)
+        peer.create_subscription(UInt64, topic, lambda msg: received.append(int(msg.data)), 10)
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and node.count_subscribers(topic) == 0:
+            rclpy.spin_once(node, timeout_sec=0.01)
+            rclpy.spin_once(peer, timeout_sec=0.01)
+        assert node.count_subscribers(topic) == 1
+
+        for tick in (7, 5, 7, 1, 1, 2):
+            node._publish_action_applied_if_complete(
+                Action(
+                    control_mode=ControlMode.JOINT_POSITION,
+                    joint_targets=[[0.0] * 6],
+                    tick_index=tick,
+                )
+            )
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and len(received) < 3:
+            rclpy.spin_once(peer, timeout_sec=0.02)
+        rclpy.spin_once(peer, timeout_sec=0.1)
+        assert received == [7, 1, 2]
+    finally:
+        if peer is not None:
+            peer.destroy_node()
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
+@pytest.mark.skipif(
+    not _rclpy_available(),
     reason="rclpy / sensor_msgs not on PYTHONPATH",
 )
 def test_read_state_caches_joint_states() -> None:
