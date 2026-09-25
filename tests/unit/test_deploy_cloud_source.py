@@ -172,6 +172,8 @@ def test_real_robot_without_a_cloud_source_is_unchanged() -> None:
     rig = DeployRuntime()
     budget = rig.world_voxel_data_age_budget_s
     assert f"world_voxel_data_age_budget_s:={budget}" in invocation.argv_template
+    padding = rig.robot_self_filter_padding_m
+    assert f"robot_self_filter_padding_m:={padding}" in invocation.argv_template
 
 
 def test_explicit_octomap_on_a_depthless_sim_robot_refuses_before_launch(tmp_path: Path) -> None:
@@ -262,28 +264,32 @@ def test_scene_voxel_freshness_reaches_the_launch(
 
 
 def test_rig_perception_values_default_and_are_validated() -> None:
-    """The voxel data-age budget is a per-rig ``DeployRuntime`` value.
+    """The data-age budget and self-filter padding are per-rig ``DeployRuntime`` values.
 
-    Default: the Thor-measured 1.5 s. It must be positive (0 would disable the
-    kernel's check). No relation to the voxel deadline is imposed: a smaller
-    budget is only stricter.
+    Defaults are the Thor-measured budget (1.5 s) and the provisional padding
+    (0.05 m). A budget must be positive (0 would disable the kernel's check);
+    a padding cannot be negative. No relation to the voxel deadline is imposed:
+    a smaller budget is only stricter.
     """
     rig = DeployRuntime()
     assert rig.world_voxel_data_age_budget_s == 1.5
+    assert rig.robot_self_filter_padding_m == 0.05
     DeployRuntime(world_voxel_data_age_budget_s=0.3, world_voxel_deadline_s=2.0)
-    with pytest.raises(ValidationError):
-        DeployRuntime(world_voxel_data_age_budget_s=0.0)
+    for bad in ({"world_voxel_data_age_budget_s": 0.0}, {"robot_self_filter_padding_m": -0.01}):
+        with pytest.raises(ValidationError):
+            DeployRuntime.model_validate(bad)
 
 
 def test_scene_rig_perception_values_reach_the_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A rig declares its measured budget in the scene, not in the launch."""
+    """A rig declares its measured budget and padding in the scene, not in the launch."""
     _real_franka_with(tmp_path, monkeypatch, _front_depth())
     scene = _real_scene(
         tmp_path,
         f"  octomap_cloud_topic: {_REALSENSE_POINTS}\n{_NO_KERNEL_CHECK}"
-        "  world_voxel_data_age_budget_s: 0.8\n",
+        "  world_voxel_data_age_budget_s: 0.8\n  robot_self_filter_padding_m: 0.03\n",
     )
     argv = _resolve(scene, "real").argv_template
     assert "world_voxel_data_age_budget_s:=0.8" in argv
+    assert "robot_self_filter_padding_m:=0.03" in argv

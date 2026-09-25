@@ -345,6 +345,7 @@ _RIG_LAUNCH_ARGS = (
     "world_voxel_deadline_s",
     "max_octree_age_s",
     "world_voxel_data_age_budget_s",
+    "robot_self_filter_padding_m",
 )
 
 
@@ -370,16 +371,6 @@ def _rig_from_launch_args(raw: dict[str, str]) -> DeployRuntime:
     return DeployRuntime.model_validate({k: float(v) for k, v in raw.items() if v.strip()})
 
 
-# Robot self-filter (real camera path). How far beyond the robot's collision
-# primitives a depth return is still treated as the robot itself and removed
-# before octomap inserts the cloud. It has to cover the kernel's world-voxel
-# margin (2 cm on real), one 20 mm cell's worth of quantisation, the camera's
-# depth noise and the hand-authored primitives' fit to the real links; 5 cm is
-# the starting point, tuned from Thor measurements. It is also the width of the
-# blind shell around the arm (hazard log): anything that close to the robot is
-# removed with it.
-_SELF_FILTER_PADDING_M = 0.05
-
 # Where the filtered cloud is published for octomap_server. Not a camera topic
 # (ADR-0108): it is no longer one camera's cloud, it is the world map's input.
 _SELF_FILTERED_CLOUD_TOPIC = "/openral/world_cloud/self_filtered"
@@ -389,6 +380,7 @@ def _self_filter_params(
     collision_params: dict[str, object],
     description: object,
     joint_states_topic: str,
+    padding_m: float,
 ) -> dict[str, object]:
     """Parameters for ``openral_octomap_bridge``'s ``robot_self_filter``.
 
@@ -400,6 +392,7 @@ def _self_filter_params(
     (``hal_joint_states_topic``: the scene's override, else a real
     ros2_control HAL's rate-limited ``~/joint_states``, else ``/joint_states``),
     so the filter poses the robot from the same stream the runner acts on.
+    ``padding_m`` is the rig's ``DeployRuntime.robot_self_filter_padding_m``.
     """
     joints = list(getattr(description, "joints", []))
     params: dict[str, object] = {
@@ -408,7 +401,7 @@ def _self_filter_params(
     params["collision_joint_names"] = [j.name for j in joints]
     params["collision_joint_aliases"] = [j.sim_joint_name or "" for j in joints]
     params["joint_states_topic"] = joint_states_topic
-    params["padding_m"] = _SELF_FILTER_PADDING_M
+    params["padding_m"] = padding_m
     return params
 
 
@@ -2456,6 +2449,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                                 collision_params,
                                 description,
                                 runtime_joint_states_topic or "/joint_states",
+                                rig.robot_self_filter_padding_m,
                             ),
                             "use_sim_time": use_sim_time,
                         }
@@ -3310,6 +3304,15 @@ def generate_launch_description() -> LaunchDescription:
                 "How old the sensor data behind a voxel grid may be when the kernel "
                 "checks a chunk (DeployRuntime.world_voxel_data_age_budget_s). "
                 "Empty = the schema default, 1.5 s."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "robot_self_filter_padding_m",
+            default_value="",
+            description=(
+                "Real camera path: how far past the collision model a depth return is "
+                "removed as the robot (DeployRuntime.robot_self_filter_padding_m). "
+                "Empty = the schema default, 0.05 m (provisional)."
             ),
         ),
         DeclareLaunchArgument(

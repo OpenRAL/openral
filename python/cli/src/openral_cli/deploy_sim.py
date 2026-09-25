@@ -1412,6 +1412,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         f"max_octree_age_s:={max_octree_age_s}",
         # How old the world behind a voxel grid may be at check time (per rig).
         f"world_voxel_data_age_budget_s:={rig.world_voxel_data_age_budget_s}",
+        # Real camera path: how far past the collision model a return is the robot.
+        f"robot_self_filter_padding_m:={rig.robot_self_filter_padding_m}",
         f"enable_object_detector:={'true' if enable_object_detector else 'false'}",
         f"object_detector_onnx:={resolved_object_detector_onnx}",
         # reward monitor co-active with the VLA; the reasoner polls
