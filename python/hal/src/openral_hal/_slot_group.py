@@ -185,7 +185,7 @@ def refuse_stale_tick(tick: int, last_committed: int) -> int:
     above 1 is a restarted runner's fresh numbering (the HAL stayed up). It is
     adopted by returning a reset watermark (``0``); refusing it would wedge the
     HAL for the rest of its node's life. A replay of tick 1 itself (watermark
-    1) is still refused. The rule is hazard-log Entry 035's.
+    1) is still refused. The rule is hazard-log Entry 036's.
 
     Args:
         tick: The slot's ``Action.tick_index``.

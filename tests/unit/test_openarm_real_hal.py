@@ -653,7 +653,7 @@ class TestSlotGroupDispatch:
     def test_tick_one_after_a_higher_watermark_is_a_restarted_runner(
         self, both_buses_up: Path
     ) -> None:
-        # Hazard log Entry 035: tick 1 above a watermark of 1 is adopted (the
+        # Hazard log Entry 036: tick 1 above a watermark of 1 is adopted (the
         # runner restarted while the HAL stayed up); tick 1 replayed is not.
         recorder = _Recorder()
         hal = OpenArmRealHAL(publish_fn=recorder)
