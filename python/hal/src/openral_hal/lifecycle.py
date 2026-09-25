@@ -76,9 +76,51 @@ __all__ = [
     "HALLifecycleNodeBase",
     "ManifestHALLifecycleNode",
     "decode_action_chunk",
+    "joint_state_republish_stamp_ns",
     "make_lifecycle_main",
     "make_lifecycle_main_from_manifest",
 ]
+
+
+# A HAL sample older than this on the wall clock is not a sample from this run's
+# clock domain (a sim HAL stamping sim-elapsed time, a HAL with a hardware epoch);
+# its age cannot be carried over, so the republish keeps the node's own now.
+_MAX_CARRIED_SAMPLE_AGE_NS = 5_000_000_000
+
+
+def joint_state_republish_stamp_ns(
+    node_now_ns: int, sample_stamp_ns: int, *, wall_now_ns: int | None = None
+) -> int:
+    """Stamp for the HAL's ``~/joint_states`` republish: node now minus the sample's age.
+
+    A HAL's ``JointState.stamp_ns`` is wall-clock (``time.time_ns``) on every real HAL,
+    while the node's clock may be sim time, so the absolute stamp cannot be copied. The
+    sample's AGE can: consumers that pair joint states with other sensors by stamp (the
+    robot self-filter's ``max_joint_state_skew_s``) then see a stale sample as stale,
+    instead of as fresh at every republish. An age that is negative or implausibly large
+    (another clock domain) falls back to ``node_now_ns``, the previous behaviour.
+
+    Args:
+        node_now_ns: The node clock's now, in nanoseconds.
+        sample_stamp_ns: The HAL's ``JointState.stamp_ns``.
+        wall_now_ns: Wall-clock now; ``time.time_ns()`` when omitted.
+
+    Returns:
+        The stamp to publish, in the node's clock domain.
+
+    Example:
+        >>> joint_state_republish_stamp_ns(10_000_000_000, 900, wall_now_ns=1_000)
+        9999999900
+        >>> joint_state_republish_stamp_ns(10_000_000_000, 0, wall_now_ns=1_000)
+        10000000000
+    """
+    import time
+
+    wall = time.time_ns() if wall_now_ns is None else wall_now_ns
+    age = wall - int(sample_stamp_ns)
+    if sample_stamp_ns <= 0 or age < 0 or age > _MAX_CARRIED_SAMPLE_AGE_NS:
+        return node_now_ns
+    return node_now_ns - age
 
 
 def decode_action_chunk(msg: object) -> object | None:
@@ -1013,7 +1055,11 @@ if _ROS2_AVAILABLE:
                 )
 
             msg = RosJointState()
-            msg.header.stamp = self.get_clock().now().to_msg()
+            now = self.get_clock().now()
+            msg.header.stamp = type(now)(
+                nanoseconds=joint_state_republish_stamp_ns(now.nanoseconds, state.stamp_ns),
+                clock_type=now.clock_type,
+            ).to_msg()
             msg.name = list(state.name)
             msg.position = list(state.position)
             msg.velocity = list(state.velocity) if state.velocity else []

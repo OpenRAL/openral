@@ -199,6 +199,23 @@ def test_fresh_data_never_goes_stale_however_long_the_hal_has_been_connected() -
     assert len(state.position) == 2
 
 
+def test_read_state_is_stamped_with_the_samples_arrival_not_the_read() -> None:
+    """The stamp says how old the sample is, so a stamp-pairing consumer can refuse it.
+
+    The robot self-filter pairs each cloud with the joint state nearest its capture stamp
+    and trusts a 0.1 s skew bound; a read-time stamp hid a sample up to the staleness
+    limit old.
+    """
+    arrived = time.monotonic() - 0.3
+    hal = _hal(staleness_limit_s=0.5)
+    hal.attach_transport(lambda t, m: None, lambda: {}, lambda: arrived)
+    hal.connect()
+    before = time.time_ns()
+    state = hal.read_state()
+    age_s = (before - state.stamp_ns) / 1e9
+    assert 0.29 <= age_s <= 0.35
+
+
 def test_a_transport_that_stops_delivering_trips_the_watchdog() -> None:
     """The other direction: the check must still fail closed on a dead robot."""
     frozen = time.monotonic() - 5.0
