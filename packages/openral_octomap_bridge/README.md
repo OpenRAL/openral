@@ -118,7 +118,8 @@ fails closed. Both are per-rig `DeployRuntime` fields: `world_voxel_deadline_s`
 (default 1.0 s) and `max_octree_age_s` (default equal to the deadline; a value above
 it is refused by the schema and by `deploy_e2e.launch.py`). An earlier half-deadline
 bound (0.5 s) silenced a healthy camera's grid at 2.2 Hz; a source slower than about
-1 Hz needs both raised in its scene. A bound that is
+1 Hz needs both raised in its scene, up to the schema's hard cap of 2.0 s on the
+deadline (2x its pre-2026-09-25 default; above it the scene is refused at load). A bound that is
 too small only costs availability: silence shorter than the kernel's
 deadline is not a drop. A non-finite or non-positive bound publishes
 nothing (ERROR at start-up). A grid's `header.stamp` is still `now()`: it
@@ -130,13 +131,13 @@ which the octree's own stamp would break. The octree's own stamp rides on
 every grid as `source_stamp` (the capture stamp of the newest cloud inserted),
 and the kernel budgets the world's age from it: `world_voxel_data_age_budget_ms`,
 from the per-rig `DeployRuntime.world_voxel_data_age_budget_s` (default 1.5 s,
-the Thor ZED-M tail); past it the chunk drops as `voxel_stale`.
+the Thor ZED-M tail; hard cap 3.0 s); past it the chunk drops as `voxel_stale`.
 
 `robot_self_filter` (real camera path only) removes the robot's own returns
 before `octomap_server` inserts the cloud: it poses the kernel's collision
 parameters at the cloud's capture stamp and drops every return within
 `padding_m` of a primitive (from `DeployRuntime.robot_self_filter_padding_m`,
-provisional 0.02 m). No pose at the capture stamp drops the whole cloud.
+provisional 0.02 m, hard cap 0.10 m). No pose at the capture stamp drops the whole cloud.
 
 A box that carries the kernel's tight geometry (`collision_box_hull` /
 `collision_hull_*`, lowered from `LinkCollisionGeometry.tight_geometry`) is

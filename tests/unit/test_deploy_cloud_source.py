@@ -235,10 +235,10 @@ def test_voxel_freshness_defaults_and_invariant() -> None:
     """Age defaults to the deadline and may never exceed it, so the kernel fails closed."""
     deadline, age = DeployRuntime().voxel_freshness_s
     assert age <= deadline
-    assert DeployRuntime(world_voxel_deadline_s=3.0).voxel_freshness_s == (3.0, 3.0)
-    assert DeployRuntime(world_voxel_deadline_s=3.0, max_octree_age_s=2.0).voxel_freshness_s == (
-        3.0,
+    assert DeployRuntime(world_voxel_deadline_s=2.0).voxel_freshness_s == (2.0, 2.0)
+    assert DeployRuntime(world_voxel_deadline_s=2.0, max_octree_age_s=1.5).voxel_freshness_s == (
         2.0,
+        1.5,
     )
     with pytest.raises(ValidationError, match="must not exceed"):
         DeployRuntime(world_voxel_deadline_s=1.0, max_octree_age_s=1.5)
@@ -256,11 +256,11 @@ def test_scene_voxel_freshness_reaches_the_launch(
     scene = _real_scene(
         tmp_path,
         f"  octomap_cloud_topic: {_REALSENSE_POINTS}\n{_NO_KERNEL_CHECK}"
-        "  world_voxel_deadline_s: 2.5\n  max_octree_age_s: 2.0\n",
+        "  world_voxel_deadline_s: 2.0\n  max_octree_age_s: 1.5\n",
     )
     argv = _resolve(scene, "real").argv_template
-    assert "world_voxel_deadline_s:=2.5" in argv
-    assert "max_octree_age_s:=2.0" in argv
+    assert "world_voxel_deadline_s:=2.0" in argv
+    assert "max_octree_age_s:=1.5" in argv
 
 
 def test_rig_perception_values_default_and_are_validated() -> None:
@@ -293,3 +293,34 @@ def test_scene_rig_perception_values_reach_the_launch(
     argv = _resolve(scene, "real").argv_template
     assert "world_voxel_data_age_budget_s:=0.8" in argv
     assert "robot_self_filter_padding_m:=0.03" in argv
+
+
+# ── hard caps: 2x the pre-change values, refused at load ────────────────────────
+
+_CAPS = {
+    "world_voxel_deadline_s": 2.0,
+    "world_voxel_data_age_budget_s": 3.0,
+    "robot_self_filter_padding_m": 0.10,
+}
+
+
+@pytest.mark.parametrize(("field", "cap"), sorted(_CAPS.items()))
+def test_rig_perception_values_have_hard_caps(field: str, cap: float) -> None:
+    """A rig value at its cap loads; one above it is refused, naming field, cap and why."""
+    at_cap = DeployRuntime.model_validate({field: cap})
+    assert getattr(at_cap, field) == cap
+    with pytest.raises(ValidationError, match=rf"{field}.*{cap}.*2x"):
+        DeployRuntime.model_validate({field: cap + 0.001})
+
+
+@pytest.mark.parametrize(("field", "cap"), sorted(_CAPS.items()))
+def test_a_scene_above_a_cap_is_refused_before_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, cap: float
+) -> None:
+    """On a franka_panda (not OpenArm) scene: the cap is enforced where the scene loads."""
+    _real_franka_with(tmp_path, monkeypatch, _front_depth())
+    base = f"  octomap_cloud_topic: {_REALSENSE_POINTS}\n{_NO_KERNEL_CHECK}"
+    argv = _resolve(_real_scene(tmp_path, f"{base}  {field}: {cap}\n"), "real").argv_template
+    assert f"{field}:={cap}" in argv
+    with pytest.raises((ROSConfigError, ValidationError), match=field):
+        _resolve(_real_scene(tmp_path, f"{base}  {field}: {cap * 1.5}\n"), "real")

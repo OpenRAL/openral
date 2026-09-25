@@ -364,9 +364,9 @@ def _rig_from_launch_args(raw: dict[str, str]) -> DeployRuntime:
     Example:
         >>> _rig_from_launch_args({}).voxel_freshness_s
         (1.0, 1.0)
-        >>> rig = _rig_from_launch_args({"world_voxel_deadline_s": "2.5", "max_octree_age_s": ""})
+        >>> rig = _rig_from_launch_args({"world_voxel_deadline_s": "2.0", "max_octree_age_s": ""})
         >>> rig.voxel_freshness_s, rig.world_voxel_data_age_budget_s
-        ((2.5, 2.5), 1.5)
+        ((2.0, 2.0), 1.5)
     """
     return DeployRuntime.model_validate({k: float(v) for k, v in raw.items() if v.strip()})
 
@@ -3285,7 +3285,8 @@ def generate_launch_description() -> LaunchDescription:
             default_value="",
             description=(
                 "How long the safety kernel trusts the last /openral/world_voxels grid "
-                "(DeployRuntime.world_voxel_deadline_s). Empty = the schema default, 1.0 s."
+                "(DeployRuntime.world_voxel_deadline_s). Empty = the schema default, 1.0 s; "
+                "hard cap 2.0 s."
             ),
         ),
         DeclareLaunchArgument(
@@ -3303,7 +3304,7 @@ def generate_launch_description() -> LaunchDescription:
             description=(
                 "How old the sensor data behind a voxel grid may be when the kernel "
                 "checks a chunk (DeployRuntime.world_voxel_data_age_budget_s). "
-                "Empty = the schema default, 1.5 s."
+                "Empty = the schema default, 1.5 s; hard cap 3.0 s."
             ),
         ),
         DeclareLaunchArgument(
@@ -3312,7 +3313,7 @@ def generate_launch_description() -> LaunchDescription:
             description=(
                 "Real camera path: how far past the collision model a depth return is "
                 "removed as the robot (DeployRuntime.robot_self_filter_padding_m). "
-                "Empty = the schema default, 0.02 m (provisional)."
+                "Empty = the schema default, 0.02 m (provisional); hard cap 0.10 m."
             ),
         ),
         DeclareLaunchArgument(

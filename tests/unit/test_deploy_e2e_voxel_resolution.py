@@ -236,7 +236,7 @@ def test_voxel_freshness_is_the_declared_rig_value_and_never_exceeds_the_deadlin
     default_deadline, default_age = DeployRuntime().voxel_freshness_s
     assert freshness("", "") == (default_deadline * 1000.0, default_age)
     assert default_age <= default_deadline
-    for deadline, age in (("2.5", ""), ("2.5", "2.5"), ("2.5", "0.8"), ("0.4", "")):
+    for deadline, age in (("2.0", ""), ("2.0", "2.0"), ("2.0", "0.8"), ("0.4", "")):
         deadline_ms, bound = freshness(deadline, age)
         assert deadline_ms == float(deadline) * 1000.0
         assert bound == (float(age) if age else float(deadline))
