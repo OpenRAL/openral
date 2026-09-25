@@ -11711,6 +11711,12 @@
               "default": null,
               "title": "Max Octree Age S"
             },
+            "world_voxel_data_age_budget_s": {
+              "default": 1.5,
+              "exclusiveMinimum": 0,
+              "title": "World Voxel Data Age Budget S",
+              "type": "number"
+            },
             "joint_states_topic": {
               "anyOf": [
                 {
@@ -13598,6 +13604,12 @@
               ],
               "default": null,
               "title": "Max Octree Age S"
+            },
+            "world_voxel_data_age_budget_s": {
+              "default": 1.5,
+              "exclusiveMinimum": 0,
+              "title": "World Voxel Data Age Budget S",
+              "type": "number"
             },
             "joint_states_topic": {
               "anyOf": [
@@ -15625,6 +15637,12 @@
               ],
               "default": null,
               "title": "Max Octree Age S"
+            },
+            "world_voxel_data_age_budget_s": {
+              "default": 1.5,
+              "exclusiveMinimum": 0,
+              "title": "World Voxel Data Age Budget S",
+              "type": "number"
             },
             "joint_states_topic": {
               "anyOf": [

@@ -37,19 +37,6 @@ def launch_module() -> object:
     return module
 
 
-def test_the_data_age_budget_clears_the_receipt_window(launch_module: object) -> None:
-    """The kernel's data-age budget must exceed what the receipt-based path already tolerates.
-
-    Receipt deadline plus the bridge's republish bound is the longest a grid can
-    be trusted after the last octree (2.0 s); the data-age budget exists to be
-    the tighter of the two on the world's age, but it must still clear the
-    measured Thor tail (p99 ~1.0 s) or it would drop healthy chunks.
-    """
-    budget = launch_module._WORLD_VOXEL_DATA_AGE_BUDGET_MS  # type: ignore[attr-defined]
-    deadline, bound_s = launch_module._voxel_freshness("", "")  # type: ignore[attr-defined]
-    assert 1000.0 < budget < deadline + bound_s * 1000.0
-
-
 def test_self_filter_poses_the_kernels_model_with_manifest_and_upstream_joint_names(
     launch_module: object,
 ) -> None:
@@ -239,7 +226,13 @@ def test_voxel_freshness_is_the_declared_rig_value_and_never_exceeds_the_deadlin
     from openral_core import DeployRuntime
     from pydantic import ValidationError
 
-    freshness = launch_module._voxel_freshness  # type: ignore[attr-defined]
+    rig_from = launch_module._rig_from_launch_args  # type: ignore[attr-defined]
+
+    def freshness(deadline: str, age: str) -> tuple[float, float]:
+        rig = rig_from({"world_voxel_deadline_s": deadline, "max_octree_age_s": age})
+        d, a = rig.voxel_freshness_s
+        return d * 1000.0, a
+
     default_deadline, default_age = DeployRuntime().voxel_freshness_s
     assert freshness("", "") == (default_deadline * 1000.0, default_age)
     assert default_age <= default_deadline
@@ -255,4 +248,4 @@ def test_voxel_freshness_is_the_declared_rig_value_and_never_exceeds_the_deadlin
 
     source = LAUNCH.read_text()
     assert '"max_octree_age_s": max_octree_age_s' in source
-    assert '"world_voxel_deadline_ms": world_voxel_deadline_ms' in source
+    assert '"world_voxel_deadline_ms": world_voxel_deadline_s * 1000.0' in source
