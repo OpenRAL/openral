@@ -138,6 +138,22 @@ parameters at the cloud's capture stamp and drops every return within
 `padding_m` of a primitive (from `DeployRuntime.robot_self_filter_padding_m`,
 provisional 0.05 m). No pose at the capture stamp drops the whole cloud.
 
+A box that carries the kernel's tight geometry (`collision_box_hull` /
+`collision_hull_*`, lowered from `LinkCollisionGeometry.tight_geometry`) is
+filtered against that geometry, not the box: the box's slack (12–27 mm mean on
+the Panda links, more at the corners) would otherwise widen the blind shell.
+The distance is the kernel's staged narrow phase with the voxel cube shrunk to
+a point — the 26-DOP slab bound, then GJK on the exact hull's vertices with an
+exhaustive support scan — so every value is a lower bound on the true distance
+(never an over-report: a return the hull explains is always removed) and the
+converged value is exact to 1e-9 m. `test_self_filter` pins it against the
+kernel's `hull_cell_distance` on panda_mobile's real hulls. A hull the kernel's
+`validate_tight_hull` chain would not prove (vertex outside its DOP, DOP outside
+its box, over 320 vertices, bad arity) refuses the whole model, so the node
+forwards nothing. Cost, dev laptop, panda_mobile, 230 400-point cloud with 10 %
+of it within 8 cm of the arm: 2.4–2.6 ms box-only → 7.0–8.0 ms with hulls
+(the extra is GJK on the points inside a box's shell; not yet measured on Thor).
+
 Pinned by `test_bridge_staleness` (the real node in-process: publishes while
 fresh, silent past the bound for as long as the silence lasts, resumes on
 the next octree, keeps flowing at Thor's 3.2 Hz cadence, publishes nothing

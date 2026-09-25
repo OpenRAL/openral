@@ -73,6 +73,15 @@ public:
     params.box_link = declare_ints("collision_box_link");
     params.box_half_extents = declare_doubles("collision_box_half_extents");
     params.box_origin_xyzrpy = declare_doubles("collision_box_origin_xyzrpy");
+    // The kernel's tight geometry for those boxes (a 26-DOP and, within the
+    // kernel's vertex budget, the exact convex hull). A box that carries one is
+    // filtered against it rather than against the box's corner slack.
+    params.box_hull = declare_ints("collision_box_hull");
+    params.hull_dop_lo = declare_doubles("collision_hull_dop_lo");
+    params.hull_dop_hi = declare_doubles("collision_hull_dop_hi");
+    params.hull_vertex_first = declare_ints("collision_hull_vertex_first");
+    params.hull_vertex_count = declare_ints("collision_hull_vertex_count");
+    params.hull_vertices = declare_doubles("collision_hull_vertices");
     const auto joint_names = declare_strings("collision_joint_names");
     // Parallel to `collision_joint_names`: a second spelling each dof answers
     // to (the manifest's `sim_joint_name`, which is the upstream name a vendor
@@ -143,10 +152,12 @@ public:
         [this](sensor_msgs::msg::PointCloud2::SharedPtr msg) { on_cloud(msg); });
     stats_timer_ = this->create_wall_timer(std::chrono::seconds(5), [this]() { log_stats(); });
 
+    const auto hulled = static_cast<std::size_t>(std::count_if(
+        model_.primitive_hull.begin(), model_.primitive_hull.end(), [](int h) { return h >= 0; }));
     RCLCPP_INFO(this->get_logger(),
-                "robot self-filter: %zu links, %zu primitives, padding %.3f m, root %s, "
-                "joint states %s (skew <= %.3f s)",
-                model_.n_links(), model_.primitives.size(), padding_m_,
+                "robot self-filter: %zu links, %zu primitives (%zu boxes refined by the "
+                "kernel's hull), padding %.3f m, root %s, joint states %s (skew <= %.3f s)",
+                model_.n_links(), model_.primitives.size(), hulled, padding_m_,
                 model_.link_names.empty() ? "?" : model_.link_names.front().c_str(),
                 joint_states_topic.c_str(), max_skew_s_);
   }
@@ -271,9 +282,10 @@ private:
 
     self_forward_kinematics(model_, snap->q.data(), snap->q.size(), link_world_);
     primitives_.clear();
-    place_self_primitives(model_, link_world_, cloud_from_root, primitives_);
-    add_payload_primitives(stamp, cloud_from_root);
-    mask_.set(primitives_, padding_m_);
+    primitive_hulls_.clear();
+    place_self_primitives(model_, link_world_, cloud_from_root, primitives_, &primitive_hulls_);
+    add_payload_primitives(stamp, cloud_from_root);  // appended past the hulls: none
+    mask_.set(primitives_, padding_m_, primitive_hulls_);
 
     std::size_t xo = 0;
     std::size_t yo = 0;
@@ -391,6 +403,7 @@ private:
 
   std::vector<tf2::Transform> link_world_;
   std::vector<PayloadPrimitive> primitives_;
+  std::vector<const SelfHull*> primitive_hulls_;  ///< parallel to the robot's primitives
   SelfMask mask_;
   Totals totals_;
   std::uint64_t window_clouds_{0};
