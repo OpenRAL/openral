@@ -136,7 +136,7 @@ the Thor ZED-M tail); past it the chunk drops as `voxel_stale`.
 before `octomap_server` inserts the cloud: it poses the kernel's collision
 parameters at the cloud's capture stamp and drops every return within
 `padding_m` of a primitive (from `DeployRuntime.robot_self_filter_padding_m`,
-provisional 0.05 m). No pose at the capture stamp drops the whole cloud.
+provisional 0.02 m). No pose at the capture stamp drops the whole cloud.
 
 A box that carries the kernel's tight geometry (`collision_box_hull` /
 `collision_hull_*`, lowered from `LinkCollisionGeometry.tight_geometry`) is
