@@ -308,17 +308,19 @@ runtime:
   octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
   # Optional, per rig: how long the kernel trusts the last voxel grid (default 1.0 s)
   # and how long the octomap bridge republishes the last octree (default = the
-  # deadline, never above it). Raise both for a source slower than ~1 Hz.
+  # deadline, never above it). Raise both for a source slower than ~1 Hz, up to the
+  # schema's hard cap of 2.0 s on the deadline (above it the scene is refused).
   # world_voxel_deadline_s: 2.0
   # max_octree_age_s: 2.0
   # Optional, per rig: how old the camera data behind a voxel grid may be when the
   # kernel checks a chunk, from capture (default 1.5 s, measured on the Thor ZED-M:
-  # p99 ~1.0 s). Measure yours; below the rig's latency tail the robot stops.
+  # p99 ~1.0 s; hard cap 3.0 s). Measure yours; below the rig's latency tail the robot stops.
   # world_voxel_data_age_budget_s: 1.5
   # Optional, per rig (real camera only): how far past the robot's collision model a
   # depth return is removed as the robot before octomap. Provisional 0.02 m; derive
   # it from depth noise, extrinsic error, capture-to-joint-state motion and half a voxel.
-  # It is also a blind shell around the arm, so do not raise it without that derivation.
+  # It is also a blind shell around the arm, so do not raise it without that derivation
+  # (hard cap 0.10 m).
   # robot_self_filter_padding_m: 0.02
 ```
 
