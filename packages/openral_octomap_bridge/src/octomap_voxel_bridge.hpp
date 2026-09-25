@@ -192,6 +192,11 @@ private:
     octree_.reset(octree);  // takes ownership
     octomap_frame_ = msg->header.frame_id;
     octree_received_ = this->now();
+    // `octomap_server` stamps the octree with the capture stamp of the cloud it
+    // inserted; carried into every grid built from it as `source_stamp`, so the
+    // kernel can budget the age of the WORLD the grid describes, which the
+    // receipt-based liveness bound above cannot see.
+    octree_stamp_ = rclcpp::Time(msg->header.stamp, this->get_clock()->get_clock_type());
   }
 
   void on_timer() {
@@ -261,8 +266,16 @@ private:
       return;
     }
     clear_attached_payload(grid, base_to_octomap);
-    grid.header.stamp = this->now();
+    const rclcpp::Time produced = this->now();
+    grid.header.stamp = produced;
+    grid.source_stamp = octree_stamp_;
     voxel_pub_->publish(grid);
+    // The one number that says how far behind the world this grid is: capture
+    // of the newest cloud in it to now. Throttled; the kernel carries the same
+    // age on every check span as `safety.world_voxel_data_age_ms`.
+    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 5000,
+                         "world_voxels data age %.0f ms at publish (octree received %.0f ms ago)",
+                         (produced - octree_stamp_).seconds() * 1e3, octree_age_s * 1e3);
   }
 
   /// Remove the grasped payload's own cells from the grid about to be
@@ -397,6 +410,7 @@ private:
   double attached_state_timeout_s_{0.5};
   double max_octree_age_s_{1.0};
   rclcpp::Time octree_received_;
+  rclcpp::Time octree_stamp_;
   bool octree_stale_{false};
   AttachSweepLedger attach_sweep_ledger_;
 

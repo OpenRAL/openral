@@ -37,3 +37,11 @@
             # smooths depth temporally using that tracking; octomap integrates
             # over time anyway, so the smoothing buys nothing here.
             depth_stabilization: 0
+            # The cloud feeds octomap_server, whose insert is CPU-bound and was
+            # skipping a third of a 10 Hz COMPACT cloud on Thor (octree 5-7 Hz,
+            # map data age p50 320 ms / p99 835 ms at the kernel during a
+            # dispatch, 2026-09-24). Half resolution and the cell's reach (the
+            # shelf sits under 1 m from the base) cut the points per insert so
+            # the octree can keep the cloud's cadence.
+            point_cloud_res: 'REDUCED'
+            max_depth: 2.5

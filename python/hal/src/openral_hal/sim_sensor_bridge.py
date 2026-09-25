@@ -2533,6 +2533,7 @@ class SimSensorBridge:
         depth_max_range_m: float = 5.0,
         depth_pixel_stride: int = 4,
         idle_hold_ms: float = 2000.0,
+        attachment_heartbeat: bool = True,
         on_step: Any = None,
         on_attachment_perception_ready: Any = None,
     ) -> None:
@@ -2561,6 +2562,7 @@ class SimSensorBridge:
         self._node = node
         self._on_step = on_step
         self._on_attachment_perception_ready = on_attachment_perception_ready
+        self._attachment_heartbeat = attachment_heartbeat
         self._hal = hal
         self._description = description
         self._viewer_enabled = viewer_enabled
@@ -3424,7 +3426,21 @@ class SimSensorBridge:
         not one joint chunk ever reached the arm. Only the staging path — the
         subscriptions and the MuJoCo evidence tracker that drive real
         attach/release transitions — needs the API.
+
+        ``attachment_heartbeat=False`` (the HAL node sets it when its vision
+        attachment leg is on) opens nothing here for a HAL without the API:
+        that leg publishes revisions on the same latched topic, and a
+        revision-0 heartbeat beside it would move the aggregator's revision
+        backwards on every timer tick.
         """
+        update = getattr(self._hal, "update_attached_objects", None)
+        read = getattr(self._hal, "read_attached_objects", None)
+        if not self._attachment_heartbeat and not (callable(update) and callable(read)):
+            self._node.get_logger().info(
+                "attachment heartbeat off: another attachment authority publishes "
+                "/openral/attachment_state"
+            )
+            return
         from openral_msgs.msg import AttachmentState
         from rclpy.qos import (
             QoSDurabilityPolicy,

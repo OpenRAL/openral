@@ -37,6 +37,68 @@ def launch_module() -> object:
     return module
 
 
+def test_the_data_age_budget_clears_the_receipt_window(launch_module: object) -> None:
+    """The kernel's data-age budget must exceed what the receipt-based path already tolerates.
+
+    Receipt deadline plus the bridge's republish bound is the longest a grid can
+    be trusted after the last octree (2.0 s); the data-age budget exists to be
+    the tighter of the two on the world's age, but it must still clear the
+    measured Thor tail (p99 ~1.0 s) or it would drop healthy chunks.
+    """
+    budget = launch_module._WORLD_VOXEL_DATA_AGE_BUDGET_MS  # type: ignore[attr-defined]
+    deadline, bound_s = launch_module._voxel_freshness("", "")  # type: ignore[attr-defined]
+    assert 1000.0 < budget < deadline + bound_s * 1000.0
+
+
+def test_self_filter_poses_the_kernels_model_with_manifest_and_upstream_joint_names(
+    launch_module: object,
+) -> None:
+    """The real-path self-filter gets exactly the kernel's collision model, on the real fixture.
+
+    Every ``collision_*`` key the kernel is handed goes to the filter unchanged,
+    so the two can never pose different geometry; joints are indexed by the
+    manifest names with the upstream ``sim_joint_name`` as an alias, which is
+    what a vendor ``/joint_states`` spells.
+    """
+    pytest.importorskip("openral_safety", reason="the collision lowering lives in openral_safety")
+    from openral_core import RobotDescription
+    from openral_safety.envelope_loader import collision_params_from_description
+
+    description = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
+    collision = collision_params_from_description(description)
+    params = launch_module._self_filter_params(  # type: ignore[attr-defined]
+        collision, description, "/openral_hal_openarm/joint_states"
+    )
+    for key, value in collision.items():
+        if key.startswith("collision_"):
+            assert params[key] == value, key
+    assert params["collision_link_names"][0] == description.base_frame
+    names = params["collision_joint_names"]
+    aliases = params["collision_joint_aliases"]
+    assert names == [j.name for j in description.joints]
+    assert len(aliases) == len(names)
+    assert aliases[names.index("left_joint1")] == "openarm_left_joint1"
+    assert params["joint_states_topic"] == "/openral_hal_openarm/joint_states"
+    assert params["padding_m"] == launch_module._SELF_FILTER_PADDING_M  # type: ignore[attr-defined]
+    # The filtered cloud is the world map's input, never a camera topic (ADR-0108).
+    assert not launch_module._SELF_FILTERED_CLOUD_TOPIC.startswith("/openral/cameras/")  # type: ignore[attr-defined]
+
+
+def test_cpuset_prefix_is_off_by_default_and_refuses_garbage(
+    launch_module: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix = launch_module._cpuset_prefix  # type: ignore[attr-defined]
+    monkeypatch.delenv("OPENRAL_PERCEPTION_CPUSET", raising=False)
+    assert prefix("OPENRAL_PERCEPTION_CPUSET") == ""
+    monkeypatch.setenv("OPENRAL_PERCEPTION_CPUSET", "12,13")
+    assert prefix("OPENRAL_PERCEPTION_CPUSET") == "taskset -c 12,13 "
+    monkeypatch.setenv("OPENRAL_PERCEPTION_CPUSET", "0-9")
+    assert prefix("OPENRAL_PERCEPTION_CPUSET") == "taskset -c 0-9 "
+    monkeypatch.setenv("OPENRAL_PERCEPTION_CPUSET", "12; rm -rf /")
+    with pytest.raises(RuntimeError, match="not a taskset cpu list"):
+        prefix("OPENRAL_PERCEPTION_CPUSET")
+
+
 def test_the_cap_reproduces_the_constant_it_replaced(launch_module: object) -> None:
     """25 mm must still give exactly 614 125, or this refactor changed the shipped graph."""
     assert launch_module._world_voxel_max_cells(0.025) == 614125

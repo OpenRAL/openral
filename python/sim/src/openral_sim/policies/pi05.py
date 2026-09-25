@@ -335,6 +335,10 @@ def _rebuild_gemma_buffer(name: str, mod: Any, buf: Any, *, torch: Any) -> bool:
         return True
     if name.endswith(".embed_scale"):
         scalar = getattr(mod, "scalar_embed_scale", None)
+        width = getattr(mod, "embedding_dim", None)
+        if scalar is None and width is None:
+            # Unknown layout: leave it to the shared refusal, which names it.
+            return False
         scale = float(scalar) if scalar is not None else float(mod.embedding_dim) ** 0.5
         buf.copy_(torch.tensor(scale, dtype=buf.dtype, device=buf.device))
         return True
