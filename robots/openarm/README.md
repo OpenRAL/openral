@@ -102,15 +102,36 @@ octree behind a graph where every node reports healthy.
 > skill goal is accepted, and the other two have no producer on this cell, so
 > during `return_to_zero()` the hardware E-stop is the only independent stop.
 
-The manifest's hand-authored capsules are what the C++ kernel checks every
-chunk against, and `tests/unit/test_collision_geometry_zero_pose.py` now
-asserts that no non-allowed pair interpenetrates at the zero configuration.
-It exists because the first policy dispatch on this cell was refused for a
-right link 3 / link 5 self-collision of exactly −0.04575 m — at the real zero
-pose and at the twin's bent-elbow pose alike. A distance that ignores the
-elbow angle is a modelling error, not a hazard: link 3's capsule was 0.22 m
-long from a joint 0.154 m above the elbow, reaching 6.6 cm past joint 4 into
-link 5's capsule. It now ends at the elbow, which link 4's capsule covers.
+The manifest's collision primitives are what the C++ kernel checks every
+chunk against. They are **generated from the MJCF**, not hand-authored
+(hazard-log Entry 045: the hand capsules were never measured, and the finger
+meshes reached 83.7 mm outside the finger sphere). Regenerate them with
+
+```bash
+openral collision lower --robot robots/openarm/robot.yaml --write
+```
+
+which fits every link with the same fitter the URDF robots use, from every
+MJCF geom of its body (collision **and** visual), with the second finger swept
+over the gripper stroke into `finger_pair`. Every link is lowered as a box
+plus its exact convex hull (`tight_geometry`); a refined link stays refined on
+re-lowering, and the kernel re-asks a box pair of the two hulls. Measured over
+seeded in-limit poses (`docs/reference/collision-geometry-review.md` §11):
+the kernel refuses 4.0 % of poses (1000-pose kernel run), against 16.7 % for
+the first fit (#325) and 26.4 % for the hand capsules, and it costs up to
+~0.1 ms per configuration.
+
+`tests/unit/test_collision_geometry_enclosure.py` places the meshes with
+MuJoCo and the primitives with the kernel's own model and FK, and fails if a
+mesh vertex sits outside its primitives or its hull at 300 random poses.
+`tests/unit/test_collision_geometry_zero_pose.py` asserts no non-allowed pair
+trips at the zero configuration.
+
+`openarm.srdf` carries the exemptions no convex representation can separate
+(finger_pair ↔ link5/link6, link5 ↔ link7), each with certified collision-mesh
+clearances (`openral_hal.convex_distance`; `mj_geomDistance` is wrong on these
+pairs under MuJoCo 3.8.0). The link1 ↔ link3 exemption was retired: the two
+hulls are at least 12 mm apart, so the pair is checked again.
 
 ### Running the restock policy
 

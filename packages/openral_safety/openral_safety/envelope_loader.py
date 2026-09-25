@@ -278,8 +278,16 @@ def _intersect_workspace_boxes(
             "rSkill envelope declared one of workspace_box_{min,max}_xyz "
             "but not the other; both must be set together."
         )
-    out_min = tuple(max(base_min[i], skill_min[i]) for i in range(3))
-    out_max = tuple(min(base_max[i], skill_max[i]) for i in range(3))
+    out_min = (
+        max(base_min[0], skill_min[0]),
+        max(base_min[1], skill_min[1]),
+        max(base_min[2], skill_min[2]),
+    )
+    out_max = (
+        min(base_max[0], skill_max[0]),
+        min(base_max[1], skill_max[1]),
+        min(base_max[2], skill_max[2]),
+    )
     for i, axis in enumerate(("x", "y", "z")):
         if out_min[i] > out_max[i] + 1e-9:
             raise ROSConfigError(
@@ -587,23 +595,23 @@ def _component(root: str, children_of: dict[str, list[str]]) -> list[str]:
     return seen
 
 
-def _capsules_by_link(
+def _primitives_by_link(
     robot: RobotDescription, index: dict[str, int]
-) -> dict[str, LinkCollisionGeometry]:
-    """Map each link to its single collision primitive, validating references."""
-    capsule_of: dict[str, LinkCollisionGeometry] = {}
+) -> dict[str, list[LinkCollisionGeometry]]:
+    """Map each link to its collision primitives, in manifest order, validating references.
+
+    A link may carry several (a capsule chain, a box plus a capsule): the kernel
+    skips same-link pairs in ``check_self_collision`` and folds a link pair's
+    gap as the minimum over its primitives, so more primitives on a link can
+    only add trips, never remove one.
+    """
+    by_link: dict[str, list[LinkCollisionGeometry]] = {}
     for geom in robot.collision_geometry:
         if geom.link_name not in index:
             msg = f"collision_geometry references unknown link {geom.link_name!r}"
             raise ROSConfigError(msg)
-        if geom.link_name in capsule_of:
-            msg = (
-                f"link {geom.link_name!r} has >1 collision primitive; "
-                "split it into separate links (unsupported in this lowering phase)"
-            )
-            raise ROSConfigError(msg)
-        capsule_of[geom.link_name] = geom
-    return capsule_of
+        by_link.setdefault(geom.link_name, []).append(geom)
+    return by_link
 
 
 def collision_params_from_description(  # noqa: PLR0912, PLR0915
@@ -629,7 +637,9 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     joint index is its defining joint's position in ``robot.joints`` (same
     ordering as the envelope joint arrays and ``ActionChunk.flat``).
 
-    A boxed link declaring ``LinkCollisionGeometry.tight_geometry`` also
+    A link may carry any number of primitives (a capsule chain, a box plus a
+    capsule); each is emitted under the link's index. A boxed link declaring
+    ``LinkCollisionGeometry.tight_geometry`` also
     lowers a CSR-packed 26-DOP (and, when it fits the kernel's vertex budget,
     an exact convex hull) into ``collision_box_hull``/``collision_hull_*`` —
     these drive the kernel's staged arm-link-vs-world-voxel narrow phase; box
@@ -649,10 +659,8 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
 
     Raises:
         ROSConfigError: If the collision links do not form exactly one
-            connected tree (missing ``fixed_attachments``, or a cycle); if a
-            link carries more than one collision primitive (unsupported in this
-            version — split it into separate links); or if a capsule references
-            an unknown link.
+            connected tree (missing ``fixed_attachments``, or a cycle), or if a
+            primitive references an unknown link.
     """
     if not robot.collision_geometry:
         return {"self_collision_enabled": False}
@@ -663,7 +671,7 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
         margin_m = float(getattr(robot.safety, "self_collision_margin_m", 0.0) or 0.0)
 
     ordered, index, edge_of_child = _ordered_collision_links(robot)
-    capsule_of = _capsules_by_link(robot, index)
+    primitives_of = _primitives_by_link(robot, index)
 
     parent: list[int] = []
     joint_kind: list[int] = []
@@ -709,49 +717,47 @@ def collision_params_from_description(  # noqa: PLR0912, PLR0915
     hull_vertex_count: list[int] = []
     hull_vertices: list[float] = []
     for name in ordered:
-        geom = capsule_of.get(name)
-        if geom is None:
-            continue
-        shape = geom.shape
-        if isinstance(shape, BoxShape):
-            box_link.append(index[name])
-            box_half_extents.extend([float(h) for h in shape.half_extents_m])
-            box_origin_xyzrpy.extend([float(v) for v in geom.origin_xyz_rpy])
-            tight = geom.tight_geometry
-            if tight is None:
-                box_hull.append(-1)
+        for geom in primitives_of.get(name, []):
+            shape = geom.shape
+            if isinstance(shape, BoxShape):
+                box_link.append(index[name])
+                box_half_extents.extend([float(h) for h in shape.half_extents_m])
+                box_origin_xyzrpy.extend([float(v) for v in geom.origin_xyz_rpy])
+                tight = geom.tight_geometry
+                if tight is None:
+                    box_hull.append(-1)
+                else:
+                    box_hull.append(len(hull_vertex_count))
+                    hull_dop_lo.extend(float(v) for v in tight.dop_lo_m)
+                    hull_dop_hi.extend(float(v) for v in tight.dop_hi_m)
+                    hull_vertex_first.append(len(hull_vertices) // 3)
+                    hull_vertex_count.append(len(tight.hull_vertices_m))
+                    for vertex in tight.hull_vertices_m:
+                        hull_vertices.extend(float(c) for c in vertex)
+            elif isinstance(shape, CapsuleShape | SphereShape):
+                # A sphere is a zero-length capsule; both share `radius_m`.
+                half_length = shape.length_m / 2.0 if isinstance(shape, CapsuleShape) else 0.0
+                capsule_link.append(index[name])
+                capsule_radius.append(float(shape.radius_m))
+                capsule_half_length.append(float(half_length))
+                capsule_origin_xyzrpy.extend([float(v) for v in geom.origin_xyz_rpy])
             else:
-                box_hull.append(len(hull_vertex_count))
-                hull_dop_lo.extend(float(v) for v in tight.dop_lo_m)
-                hull_dop_hi.extend(float(v) for v in tight.dop_hi_m)
-                hull_vertex_first.append(len(hull_vertices) // 3)
-                hull_vertex_count.append(len(tight.hull_vertices_m))
-                for vertex in tight.hull_vertices_m:
-                    hull_vertices.extend(float(c) for c in vertex)
-        elif isinstance(shape, CapsuleShape | SphereShape):
-            # A sphere is a zero-length capsule; both share `radius_m`.
-            half_length = shape.length_m / 2.0 if isinstance(shape, CapsuleShape) else 0.0
-            capsule_link.append(index[name])
-            capsule_radius.append(float(shape.radius_m))
-            capsule_half_length.append(float(half_length))
-            capsule_origin_xyzrpy.extend([float(v) for v in geom.origin_xyz_rpy])
-        else:
-            # Fail closed on a primitive this lowering does not understand.
-            # The branch above used to be a bare `else`, so ANY future member of
-            # `CollisionShape` was lowered as a zero-length capsule of its
-            # `radius_m` — silently, and in the UNSAFE direction: a capsule of
-            # radius r is contained in every non-spherical primitive that
-            # carries r, so the kernel would have received a strictly SMALLER
-            # volume than the manifest declared and missed real contacts inside
-            # the difference. Refusing to build the params instead is
-            # at-least-as-conservative by construction: no envelope is emitted,
-            # so no motion is authorised against a wrong one.
-            raise ROSConfigError(
-                f"link {name!r} declares collision primitive {shape.shape!r}, which "
-                f"{__name__} cannot lower. Add it to the capsule/box routing here "
-                "(and to the kernel's distance routines) before using it in a "
-                "manifest — it must never be lowered as an assumed capsule."
-            )
+                # Fail closed on a primitive this lowering does not understand.
+                # The branch above used to be a bare `else`, so ANY future member of
+                # `CollisionShape` was lowered as a zero-length capsule of its
+                # `radius_m` — silently, and in the UNSAFE direction: a capsule of
+                # radius r is contained in every non-spherical primitive that
+                # carries r, so the kernel would have received a strictly SMALLER
+                # volume than the manifest declared and missed real contacts inside
+                # the difference. Refusing to build the params instead is
+                # at-least-as-conservative by construction: no envelope is emitted,
+                # so no motion is authorised against a wrong one.
+                raise ROSConfigError(
+                    f"link {name!r} declares collision primitive {shape.shape!r}, which "
+                    f"{__name__} cannot lower. Add it to the capsule/box routing here "
+                    "(and to the kernel's distance routines) before using it in a "
+                    "manifest — it must never be lowered as an assumed capsule."
+                )
 
     allowed_pairs: list[int] = []
     for a, b in robot.allowed_collision_pairs:
@@ -825,7 +831,8 @@ def merge_extra_allowed_pairs(
     allowed_pairs = list(cast(list[int], existing_raw))
     seen: set[tuple[int, int]] = set()
     for i in range(0, len(allowed_pairs), 2):
-        seen.add(tuple(sorted((allowed_pairs[i], allowed_pairs[i + 1]))))
+        lo, hi = sorted((allowed_pairs[i], allowed_pairs[i + 1]))
+        seen.add((lo, hi))
 
     valid = ", ".join(names)
     for a, b in pairs:
@@ -836,7 +843,8 @@ def merge_extra_allowed_pairs(
                 f"unknown extra_allowed_collision_pairs link {a!r}<->{b!r}; "
                 f"valid collision links: {valid}"
             )
-        pair = tuple(sorted((index[a], index[b])))
+        ia, ib = sorted((index[a], index[b]))
+        pair = (ia, ib)
         if pair in seen:
             continue
         seen.add(pair)

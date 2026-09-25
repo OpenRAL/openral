@@ -116,7 +116,7 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 - **msgpack `_encode_ndarray` / `_decode_ndarray` in nine `tools/_*_server.py` sidecars** — structurally forced: each server runs in its own isolated venv and must not import the workspace. A shared file copied into each sidecar's venv at provisioning time is the only consolidation that would not break isolation; not done.
 
-- **`_sim_attachment_evidence._tight_geometry_from_points` vs `tools/generate_tight_geometry.derive_tight_geometry`** — intentional online/offline twins of the DOP + hull refinement (same two stages, same `MAX_TIGHT_HULL_VERTICES` ceiling); the offline one is the certificate, the online one the evidence. Keep both, keep them equal.
+- **`_sim_attachment_evidence._tight_geometry_from_points` vs `openral_safety.tight_geometry.derive_tight_geometry`** — intentional online/offline twins of the DOP + hull refinement (same two stages, same `MAX_TIGHT_HULL_VERTICES` ceiling); the offline one is the certificate, the online one the evidence. Keep both, keep them equal.
 
 - **`openral_human_estop.forwarder_node` QoS copy** — byte-identical to the watchdog package's `_qos` helpers, left in place because sharing needs a package edge (`openral_human_estop → openral_safety_watchdog` or `→ openral_observability`) that neither `package.xml` declares. Adding that edge is a decision, not a cleanup.
 
