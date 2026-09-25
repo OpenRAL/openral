@@ -422,6 +422,10 @@ class OpenArmRealHAL(RosControlHAL):
                 modes=[a.control_mode.value for a in group],
             )
             action = compose_slot_group_action(group, [j.name for j in self.description.joints])
+        else:
+            # Ungrouped ticked actions (starting-pose ramp, approach) share the
+            # watermark, so a restarted runner's renumbering is seen here too.
+            self._slot_group.admit(int(action.tick_index))
 
         self._validate_action(action)
 
@@ -465,6 +469,8 @@ class OpenArmRealHAL(RosControlHAL):
             self._publish_fn(topic, msg)
         if group is not None:
             self._slot_group.commit(group)
+        else:
+            self._slot_group.commit_tick(int(action.tick_index))
 
         log.debug(
             "hal.send_action",
@@ -497,15 +503,13 @@ class OpenArmRealHAL(RosControlHAL):
     def estop(self) -> None:
         """Trigger an emergency stop, dropping any half-staged slot group.
 
-        ``SlotGroupStager.reset`` is documented as the disconnect/estop path,
-        but the base ``estop`` never routes through ``disconnect``. Without
-        this override a slot staged when the stop landed would survive the
-        stop, and the first tick of the resumed run would be spent raising the
-        incomplete-group error against a tick from before the e-stop. The
-        committed watermark is kept: a pre-stop tick replayed after the stop
-        is still refused as stale. The
-        downstream stop itself — deactivating all four controllers through
-        ``controller_manager`` — is the base implementation's.
+        ``SlotGroupStager.discard`` is the estop path (``reset``, which also clears the watermark,
+        is disconnect-only), and the base ``estop`` never routes through either. Without this
+        override a slot staged when the stop landed would survive the stop, and the first tick of
+        the resumed run would be spent raising the incomplete-group error against a tick from before
+        the e-stop. The committed watermark is kept: a pre-stop tick replayed after the stop is
+        still refused as stale. The downstream stop itself — deactivating all four controllers
+        through ``controller_manager`` — is the base implementation's.
 
         Raises:
             ROSEStopRequested: Always, from the base implementation.

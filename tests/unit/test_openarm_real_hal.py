@@ -669,6 +669,56 @@ class TestSlotGroupDispatch:
         assert len(recorder.sent) == published
         hal.disconnect()
 
+    def test_a_restarted_runners_ramp_renumbers_the_ungrouped_path_too(
+        self, both_buses_up: Path
+    ) -> None:
+        # The runner numbers the starting-pose ramp and the approach from the same
+        # counter as policy ticks, but ungrouped. A restarted runner's ramp is ticks
+        # 1..N; if only grouped ticks moved the watermark, its first policy tick
+        # N+1 landed under the old one and every goal failed until a disconnect.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=40):
+            hal.send_action(action)
+        for ramp_tick in (1, 2, 3):
+            hal.send_action(
+                Action(
+                    control_mode=ControlMode.JOINT_POSITION,
+                    horizon=1,
+                    joint_targets=[[0.0] * 16],
+                    tick_index=ramp_tick,
+                )
+            )
+        assert hal.last_committed_tick == 3
+        for action in _bimanual_slot_group(tick=4):
+            hal.send_action(action)
+        assert hal.last_committed_tick == 4
+        # A replayed ungrouped tick is refused like a grouped one.
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(
+                Action(
+                    control_mode=ControlMode.JOINT_POSITION,
+                    horizon=1,
+                    joint_targets=[[0.0] * 16],
+                    tick_index=2,
+                )
+            )
+
+    def test_a_stray_tick_one_slot_does_not_drop_the_watermark(self, both_buses_up: Path) -> None:
+        # The restart adoption is decided per slot but applied on commit: one
+        # delayed tick-1 slot from the OLD runner must not reset the watermark and
+        # re-admit its other in-flight ticks.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=9):
+            hal.send_action(action)
+        hal.send_action(_bimanual_slot_group(tick=1)[0])  # staged, not committed
+        assert hal.last_committed_tick == 9
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_bimanual_slot_group(tick=5)[0])
+
     def test_estop_keeps_the_committed_watermark(self, both_buses_up: Path) -> None:
         # A stop is not a renumbering: a pre-estop tick replayed after the
         # reconnect is still stale. Only disconnect() restarts the numbering.

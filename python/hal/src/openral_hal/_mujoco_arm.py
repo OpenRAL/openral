@@ -618,6 +618,10 @@ class MujocoArmHAL(HALBase):
             if group is None:
                 return
             action = compose_slot_group_action(group, self._joint_names)
+        else:
+            # Ungrouped ticked actions (starting-pose ramp, approach) share the
+            # watermark, so a restarted runner's renumbering is seen here too.
+            self._slot_group.admit(int(action.tick_index))
         self._validate_action(action)
 
         assert self._data is not None and self._model is not None
@@ -639,6 +643,8 @@ class MujocoArmHAL(HALBase):
 
         if group is not None:
             self._slot_group.commit(group)
+        else:
+            self._slot_group.commit_tick(int(action.tick_index))
 
         log.debug(
             "hal.send_action",
