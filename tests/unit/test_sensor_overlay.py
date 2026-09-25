@@ -68,19 +68,29 @@ def test_openarm_units_keep_frames_and_pin_the_thor_mount() -> None:
         assert zed.deploy_binding.backend_params["topic"] == (  # type: ignore[attr-defined]
             "/zed/zed_node/depth/depth_registered"
         )
+    # Each unit pins its own fitted mount (2026-09-25), so re-fitting one cell's camera
+    # never moves the other's; both differ from the manifest's nominal mount.
     assert thor["head_zed"].static_transform_xyz_rpy == (  # type: ignore[attr-defined]
-        0.0,
-        0.0,
-        0.20,
+        -0.0206,
+        -0.0023,
+        0.2157,
         -0.0123,
         1.1823,
-        0.0,
+        0.0062,
     )
-    # Orin has no calibrated pose: it publishes the manifest's nominal mount.
-    assert (
-        orin["head_zed"].static_transform_xyz_rpy  # type: ignore[attr-defined]
-        == manifest["head_zed"].static_transform_xyz_rpy
+    assert orin["head_zed"].static_transform_xyz_rpy == (  # type: ignore[attr-defined]
+        -0.0170,
+        -0.0098,
+        0.2163,
+        -0.0123,
+        1.1823,
+        -0.0076,
     )
+    nominal = manifest["head_zed"].static_transform_xyz_rpy
+    assert nominal not in (
+        thor["head_zed"].static_transform_xyz_rpy,
+        orin["head_zed"].static_transform_xyz_rpy,
+    )  # type: ignore[attr-defined]
     bench = DeployScene.from_yaml(str(_ROOT / "scenes" / "deploy" / "openarm_bench.yaml"))
     assert bench.robot_unit == "orin"
 
@@ -95,7 +105,8 @@ def test_the_env_var_wins_over_the_scene(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv(ROBOT_UNIT_ENV, "thor")
     overlays = resolve_sensor_overlays(_OPENARM, "orin", required=True)
     zed = next(o for o in overlays if o.name == "head_zed")
-    assert zed.static_transform_xyz_rpy is not None  # thor's, orin has none
+    assert zed.static_transform_xyz_rpy is not None
+    assert zed.static_transform_xyz_rpy[0] == -0.0206  # thor's mount, not orin's
 
 
 def test_a_sim_robot_without_units_needs_none_and_takes_an_overlay() -> None:
