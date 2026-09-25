@@ -1072,6 +1072,12 @@ if _ROS2_AVAILABLE:
                 return
             group_size = int(action.tick_group_size)
             tick = int(action.tick_index)
+            if tick == 1 and self._last_action_applied_tick > 1:
+                # A restarted runner numbers from 1 again; the HAL adopted it
+                # (``refuse_stale_tick``), so the ack renumbers with it. A
+                # monotonic ack would leave the new runner waiting on tick 1.
+                self._last_action_applied_tick = 0
+                self._deferred_action_applied_tick = 0
             if tick <= 0 or tick <= self._last_action_applied_tick:
                 return
             if group_size <= 1:

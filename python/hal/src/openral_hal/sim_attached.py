@@ -864,8 +864,9 @@ class SimAttachedHAL:
                 "SimAttachedHAL: atomic action-group backend requires Action.tick_index > 0."
             )
         # Same replay guard as ``SlotGroupStager.stage``: a whole group of an
-        # already-committed tick must not step the simulator again.
-        refuse_stale_tick(tick, self._last_committed_tick)
+        # already-committed tick must not step the simulator again; tick 1
+        # above a watermark of 1 is a restarted runner and resets it.
+        self._last_committed_tick = refuse_stale_tick(tick, self._last_committed_tick)
         if self._pending_action_tick is not None and tick != self._pending_action_tick:
             # Atomicity is preserved: a group missing a safety-rejected slot
             # must never commit its other slots. Under the producer's applied-
