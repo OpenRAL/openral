@@ -800,11 +800,13 @@ def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]
         half_extents = getattr(entry.shape, "half_extents_m", None)
         half = np.asarray(half_extents if half_extents is not None else [], dtype=np.float64)
         if body_id is None or half.size != _XYZ:
-            unresolved.append(name)
+            if name not in links and name not in unresolved:
+                unresolved.append(name)
             continue
         points = _body_collision_points(model, int(body_id))
         if points.shape[0] == 0:
-            unresolved.append(name)
+            if name not in links and name not in unresolved:
+                unresolved.append(name)
             continue
         origin = np.asarray(entry.origin_xyz_rpy, dtype=np.float64)
         rot = _rpy_to_matrix(float(origin[3]), float(origin[4]), float(origin[5]))
@@ -823,6 +825,11 @@ def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]
             max(float(np.min(np.linalg.norm(local - corner, axis=1))) for corner in corners)
         )
         worst = max(worst, corner_slop)
+        if name in unresolved:  # a capsule entry came first; the box resolves the link
+            unresolved.remove(name)
+        previous = links.get(name)
+        if isinstance(previous, dict) and float(previous["corner_slop_m"]) >= corner_slop:
+            continue  # a link with several boxes keeps its worst one
         tight = getattr(entry, "tight_geometry", None)
         overhang = None if tight is None else tight.hull_overhang_m
         hull_vertices = () if tight is None else (tight.hull_vertices_m or ())

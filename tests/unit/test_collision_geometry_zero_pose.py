@@ -22,9 +22,11 @@ geometry is checked with a small forward-kinematics pass over its own
 ``joints`` and ``fixed_attachments`` — the same inputs
 ``collision_params_from_description`` lowers — and the kernel's own distance
 predicates (``openral_safety.kernel_predicates.shape_distance``, a line-by-line
-port of ``collision.cpp``), tripping at ``d <= safety.self_collision_margin_m``
-as the kernel does. Every robot whose rest pose is fixed here also gets a
-negative case: a configuration where the real meshes collide must still trip.
+port of ``collision.cpp``, folded per link and hull-refined as the kernel does —
+``tests/unit/_collision_kernel_verdict.kernel_link_gap``), tripping at
+``d <= safety.self_collision_margin_m`` as the kernel does. Every robot whose
+rest pose is fixed here also gets a negative case: a configuration where the
+real meshes collide must still trip.
 """
 
 from __future__ import annotations
@@ -35,8 +37,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from openral_core.schemas import JointType, RobotDescription
-from openral_safety.kernel_predicates import shape_distance
+from openral_core.schemas import JointType, LinkCollisionGeometry, RobotDescription
+
+from tests.unit._collision_kernel_verdict import kernel_link_gap
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MANIFESTS = sorted(_REPO_ROOT.glob("robots/*/robot.yaml"))
@@ -144,30 +147,26 @@ def _rest_pose(robot: RobotDescription, manifest_path: Path) -> tuple[str, dict[
 
 
 def _tripping_pairs(robot: RobotDescription, q: dict[str, float]) -> list[tuple[str, str, float]]:
-    """Every non-allowed pair the kernel would trip on at ``q``, with its gap."""
+    """Every non-allowed link pair the kernel would trip on at ``q``, with its gap.
+
+    Judged by ``kernel_link_gap``: a link pair's gap is the minimum over its
+    primitives, and a box pair whose two boxes both carry a ``tight_geometry``
+    hull is re-asked of the hulls, as ``check_self_collision`` does. (It used to
+    skip such pairs and defer them to the ROS-gated kernel test; judging them
+    here checks strictly more.)
+    """
     poses = _link_poses(robot, q)
     margin = float(robot.safety.self_collision_margin_m or 0.0)
     allowed = {frozenset(p) for p in robot.allowed_collision_pairs}
-    placed = [
-        (
-            g.link_name,
-            g.shape,
-            (poses[g.link_name] @ _tf(g.origin_xyz_rpy[:3], g.origin_xyz_rpy[3:]))[None],
-        )
-        for g in robot.collision_geometry
-        if g.link_name in poses
-    ]
-    # A box pair whose links both declare `tight_geometry` is decided by the
-    # kernel's exact-hull narrow phase (`hull_hull_distance`), which this port
-    # does not model; the box distance would report the box's corner slop as a
-    # trip. That verdict is pinned end to end by
-    # tests/sim/safety/test_kernel_panda_link5_link7.py instead.
-    tight = {g.link_name for g in robot.collision_geometry if g.tight_geometry is not None}
+    by_link: dict[str, list[LinkCollisionGeometry]] = {}
+    for g in robot.collision_geometry:
+        if g.link_name in poses:
+            by_link.setdefault(g.link_name, []).append(g)
     out = []
-    for (a, sa, ta), (b, sb, tb) in itertools.combinations(sorted(placed, key=lambda c: c[0]), 2):
-        if a == b or frozenset((a, b)) in allowed or {a, b} <= tight:
+    for a, b in itertools.combinations(sorted(by_link), 2):
+        if frozenset((a, b)) in allowed:
             continue
-        gap = float(shape_distance(sa, ta, sb, tb)[0])
+        gap = kernel_link_gap(by_link[a], poses[a], by_link[b], poses[b], margin)
         if gap <= margin:
             out.append((a, b, round(gap, 4)))
     return out
@@ -178,26 +177,18 @@ def _load(name: str) -> RobotDescription:
 
 
 # Manifests whose geometry still trips at rest, pending a safety-WG decision.
-# Strict xfails so a fix flips them green and a regression is loud. All three
-# are the same finding (docs/reference/collision-geometry-review.md §5): the
-# capsules now bound the whole link (collision + visual geometry, 1 mm headroom),
-# and at rest these links sit closer than any capsule set can express — the
-# exact convex hulls are clear, but single capsules AND chains of 2-4 capsules
-# per link still overlap. The honest fix is a representation change (the
-# kernel's existing box + tight_geometry hull narrow phase), not an exemption.
+# Strict xfails so a fix flips them green and a regression is loud
+# (docs/reference/collision-geometry-review.md §5). H1 and G1 left this list when
+# their resting links were lowered to a box plus the exact hull (the hulls clear
+# by +0.9 ... +55 mm where no capsule set could); SO-100 cannot: at its folded
+# q = 0 the upper arm rests ON the base.
 _UNADJUDICATED: dict[str, str] = {
-    # q = 0, arms hanging: shoulder_yaw <-> torso hull gap +7.8 / +9.2 mm
-    # (left/right); the capsules overlap by -12.6 / -17.1 mm.
-    "g1": "shoulder_yaw vs torso hull gap +7.8 mm at q = 0; no capsule set clears it",
-    # q = 0: shoulder_roll <-> torso hull gap +1.2 mm, shoulder_yaw +27.4 mm,
-    # elbow +55.0 mm, hip_pitch <-> pelvis +38.3 mm; capsules -0.4 ... -12.1 mm.
-    "h1": "shoulder_roll vs torso hull gap +1.2 mm at q = 0; no capsule set clears it",
-    # q = 0 is this URDF's folded rest: base <-> upper_arm hulls overlap (nearest
-    # vertices 1.0 mm apart, the arm resting on the base), lower_arm <-> shoulder
-    # +0.9 mm, shoulder/upper_arm <-> wrist +14-16 mm. There is no declared rest
-    # pose (no SRDF) to check instead. Needs a measured rest pose or the hull
-    # narrow phase, and a WG call on the resting contact.
-    "so100_follower": "folded q = 0: base/upper_arm resting contact, lower_arm/shoulder +0.9 mm",
+    # q = 0 is this URDF's folded rest: base <-> upper_arm exact hulls touch
+    # (nearest mesh vertices 1.0 mm apart, the arm resting on the base), so
+    # every conservative representation trips, the exact hull included. There
+    # is no declared rest pose (no SRDF) to check instead. Needs a measured
+    # rest pose or a WG call on the resting contact, never an exemption.
+    "so100_follower": "folded q = 0: the upper arm rests on the base (exact hulls touch)",
 }
 
 

@@ -59,8 +59,6 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 - **`SensorSpec`-by-name search — two ROS packages, deliberately.** Private `_sensor_spec` in `packages/world_state/…/lifecycle_node.py` vs. public `sensor_spec_by_name` in `segmenter_node.py`. Two call sites in two packages; promoting it to `openral_core.schemas` is worth doing when a third caller appears, not before.
 
-- **Point-cloud primitive fitters — `fit_capsule_to_vertices` vs `fit_trimmed_capsule_to_vertices` / `fit_obb_to_vertices` (`urdf_lowering.py`).** Two capsule fitters on purpose: the URDF path keeps the untrimmed PCA capsule its committed manifests were lowered with (switching would re-lower every URDF robot), the MJCF fit uses the trimmed one inside `fit_tightest_primitive`. Moving the URDF path onto `fit_tightest_primitive` is a deliberate fleet re-lower with safety-WG review, and then the untrimmed fitter goes.
-
 ---
 
 ### Already correctly DRY (do not flag)
@@ -116,7 +114,7 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 - **msgpack `_encode_ndarray` / `_decode_ndarray` in nine `tools/_*_server.py` sidecars** — structurally forced: each server runs in its own isolated venv and must not import the workspace. A shared file copied into each sidecar's venv at provisioning time is the only consolidation that would not break isolation; not done.
 
-- **`_sim_attachment_evidence._tight_geometry_from_points` vs `tools/generate_tight_geometry.derive_tight_geometry`** — intentional online/offline twins of the DOP + hull refinement (same two stages, same `MAX_TIGHT_HULL_VERTICES` ceiling); the offline one is the certificate, the online one the evidence. Keep both, keep them equal.
+- **`_sim_attachment_evidence._tight_geometry_from_points` vs `openral_safety.tight_geometry.derive_tight_geometry`** — intentional online/offline twins of the DOP + hull refinement (same two stages, same `MAX_TIGHT_HULL_VERTICES` ceiling); the offline one is the certificate, the online one the evidence. Keep both, keep them equal.
 
 - **`openral_human_estop.forwarder_node` QoS copy** — byte-identical to the watchdog package's `_qos` helpers, left in place because sharing needs a package edge (`openral_human_estop → openral_safety_watchdog` or `→ openral_observability`) that neither `package.xml` declares. Adding that edge is a decision, not a cleanup.
 

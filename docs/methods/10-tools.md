@@ -34,16 +34,13 @@ _Derives a robot manifest's `tight_geometry` blocks from its real collision mesh
 
 _Two modes: `emit --robot <path>` prints the YAML fragment to paste into the manifest, annotated per link with vertex counts and margins; `check --robot <path>` re-derives from the mesh and verifies every declared block still contains it, exiting 3 on any failure._
 
-- `REPO_ROOT: Path` (L42) — Repo root, derived from this file's location.
-- `PANDA_GEOM_OF_LINK: dict[str, str]` (L46) — Panda manifest link name → MJCF collision geom name (`panda_link{i}` → `link{i}_collision`).
-- `link_mesh_in_box_frame(xml_path, geom_name, origin_xyz_rpy) -> np.ndarray` (L88) — Collision-mesh vertices of `geom_name`, expressed in the manifest box's frame. Raises when the geom is missing, isn't a mesh, or when `mesh_pos != geom_pos`.
-- `link_mesh_faces(xml_path, geom_name) -> Points` (L124) — Triangle face indices of `geom_name`'s collision mesh, paired with `link_mesh_in_box_frame`'s vertices for the overhang check.
-- `hull_overhang_m(...)` (L152) — Sampled lower bound on how far a declared hull envelope sits outside the real mesh surface, batched and capped to bound peak memory.
-- `derive_tight_geometry(points, half_extents) -> dict[str, Any]` (L307) — Builds the DOP slabs and, when the exact hull fits the vertex budget, its vertex list; over budget the hull is dropped and the link ships stage 1 only. Returns a mapping ready for `TightCollisionGeometry` plus reviewer diagnostics.
-- `ROBOT_MESH_SOURCES: dict[str, tuple[str, dict[str, str]]]` (L50) — Robot name → its MJCF asset path and manifest-link → MJCF-geom name map. A new robot must be registered here before either mode will run for it.
-- `main(argv=None) -> int` (L498) — CLI entry; `emit --robot <path>` / `check --robot <path>` subcommands.
-- `refine_dop_to_budget(points, dop_lo, dop_hi, budget) -> Points` (L223) — A ≤`budget`-vertex convex envelope strictly tighter than the 26-DOP, for a link whose exact hull is over budget; intersects the DOP with the hull's face planes so containment stays guaranteed. Refuses rather than emit an envelope that cuts its mesh; not currently shipped by any manifest.
-- `_OVERHANG_BATCH: int`, `_OVERHANG_MAX_SAMPLES: int` — Bound `hull_overhang_m`'s peak memory and sample count; coarsening can only make the check more permissive, never wrongly fail a correct manifest.
+- `REPO_ROOT: Path` (L46) — Repo root, derived from this file's location.
+- `PANDA_GEOM_OF_LINK: dict[str, str]` (L78) — Panda manifest link name → MJCF collision geom name (`panda_link{i}` → `link{i}_collision`).
+- `link_mesh_in_box_frame(xml_path, geom_name, origin_xyz_rpy) -> np.ndarray` (L112) — Collision-mesh vertices of `geom_name`, expressed in the manifest box's frame. Raises when the geom is missing, isn't a mesh, or when `mesh_pos != geom_pos`.
+- `link_mesh_faces(xml_path, geom_name) -> Points` (L148) — Triangle face indices of `geom_name`'s collision mesh, paired with `link_mesh_in_box_frame`'s vertices for the overhang check.
+- `ROBOT_MESH_SOURCES: dict[str, tuple[str, dict[str, str]]]` (L82) — Robot name → its MJCF asset path and manifest-link → MJCF-geom name map. A new robot must be registered here before either mode will run for it.
+- `main(argv=None) -> int` (L295) — CLI entry; `emit --robot <path>` / `check --robot <path>` subcommands.
+- Re-exported from `openral_safety.tight_geometry` (moved there so the collision lowering can refine links; see `06-reasoning-wam-safety-observability.md`): `derive_tight_geometry`, `hull_overhang_m`, `refine_dop_to_budget`, `_dop_axes`, and `_round_up_m` / `_HULL_OVERHANG_SAFETY_MARGIN` under their old names. The tool inserts `packages/openral_safety` on `sys.path` for a standalone run.
 
 ### `tools/schema_export.py`
 _Generates JSON Schema files for every public `openral_core` model._

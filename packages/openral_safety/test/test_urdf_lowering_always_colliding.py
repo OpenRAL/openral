@@ -16,7 +16,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from openral_core import BoxShape, CapsuleShape, RobotDescription, SphereShape
+from openral_core import (
+    BoxShape,
+    CapsuleShape,
+    LinkCollisionGeometry,
+    RobotDescription,
+    SphereShape,
+)
 
 pytest.importorskip("yourdfpy")
 pytest.importorskip("robot_descriptions")
@@ -31,42 +37,45 @@ from openral_safety.kernel_predicates import (
 from openral_safety.urdf_lowering import (
     _certified_always_colliding,
     _chain_transforms,
+    _link_pair_distance,
     _load_urdf,
     _pair_relative_dofs,
     _relative_chains,
-    _xyzrpy_matrix,
     acm_for_geometry,
 )
 
 
-def _load(name: str) -> tuple[object, dict[str, object], float]:
-    """(yourdfpy model, geometry by link, the robot's own self-collision margin)."""
+def _load(name: str) -> tuple[object, dict[str, list[LinkCollisionGeometry]], float]:
+    """(yourdfpy model, primitives by link, the robot's own self-collision margin)."""
     robot = RobotDescription.from_yaml(f"robots/{name}/robot.yaml")
     manifest_dir = Path(f"robots/{name}")
     urdf = resolve_asset(robot.assets.urdf.ref, "urdf", manifest_dir=manifest_dir)
     assert urdf is not None
-    geoms = {g.link_name: g for g in robot.collision_geometry}
+    geoms: dict[str, list[LinkCollisionGeometry]] = {}
+    for g in robot.collision_geometry:  # a link may carry several primitives
+        geoms.setdefault(g.link_name, []).append(g)
     margin = float(getattr(robot.safety, "self_collision_margin_m", 0.0) or 0.0)
     return _load_urdf(str(urdf)), geoms, margin
 
 
 def _pair_gaps(model: object, geoms: dict, a: str, b: str, n_per_axis: int) -> np.ndarray:
-    """Kernel surface gaps over a dense grid of the pair's relative-DoF subspace."""
+    """Kernel surface gaps over a dense grid of the pair's relative-DoF subspace.
+
+    Folded over the two links' primitives as the kernel folds them.
+    """
     dofs = _pair_relative_dofs(model, a, b, geoms)
     assert dofs is not None
     chains = _relative_chains(model, a, b)
     assert chains is not None
     chain_a, chain_b = chains
-    origin_a = _xyzrpy_matrix(geoms[a].origin_xyz_rpy)
-    origin_b = _xyzrpy_matrix(geoms[b].origin_xyz_rpy)
     axes = [np.linspace(lo, hi, n_per_axis) for _, _, (lo, hi) in dofs]
     grids = np.meshgrid(*axes, indexing="ij")
     flat = [g.ravel() for g in grids]
     values = {str(j.name): flat[i] for i, (j, _, _) in enumerate(dofs)}
     n = int(flat[0].size)
-    t_a = _chain_transforms(chain_a, values, n) @ origin_a
-    t_b = _chain_transforms(chain_b, values, n) @ origin_b
-    return shape_distance(geoms[a].shape, t_a, geoms[b].shape, t_b)
+    t_a = _chain_transforms(chain_a, values, n)
+    t_b = _chain_transforms(chain_b, values, n)
+    return _link_pair_distance(geoms[a], t_a, geoms[b], t_b)
 
 
 # ── The relative-DoF subspace is what makes the proof tractable ───────────────
@@ -116,7 +125,7 @@ def test_inscribed_sphere_would_have_hidden_the_separation() -> None:
     verdict; ``bounding_capsule_segment`` (over-covering) is for planners.
     """
     _model, geoms, _ = _load("panda_mobile")
-    box5 = geoms["panda_link5"].shape
+    box5 = geoms["panda_link5"][0].shape
     assert isinstance(box5, BoxShape)
     # The inscribed sphere is dramatically smaller than the box it stands in for.
     assert min(box5.half_extents_m) < shape_max_extent_m(box5) / 3.0
@@ -171,15 +180,15 @@ def test_a_hull_carrying_pair_is_never_certified_from_its_boxes() -> None:
     would grant an ACM entry that hides a live check, so the criterion withholds.
     """
     model, geoms, margin = _load("panda_mobile")
-    assert geoms["panda_link5"].tight_geometry is not None
-    assert geoms["panda_link7"].tight_geometry is not None
+    assert geoms["panda_link5"][0].tight_geometry is not None
+    assert geoms["panda_link7"][0].tight_geometry is not None
     assert not _certified_always_colliding(
         model, geoms, "panda_link5", "panda_link7", margin_m=margin
     )
     # Not a vacuous pass: strip the hulls and the criterion still refuses, for
     # the *original* reason (#169 — the boxes genuinely separate somewhere), so
     # the guard above is an additional refusal rather than the only one.
-    bare = {k: v.model_copy(update={"tight_geometry": None}) for k, v in geoms.items()}
+    bare = {k: [g.model_copy(update={"tight_geometry": None}) for g in v] for k, v in geoms.items()}
     assert not _certified_always_colliding(
         model, bare, "panda_link5", "panda_link7", margin_m=margin
     )
@@ -202,7 +211,7 @@ def test_generated_acm_never_invents_the_exemption() -> None:
     "link_a,link_b",
     [
         ("left_knee_link", "left_ankle_roll_link"),
-        ("left_elbow_link", "left_wrist_pitch_link"),
+        ("right_knee_link", "right_ankle_roll_link"),
         ("torso_link", "left_shoulder_roll_link"),
     ],
 )
@@ -214,7 +223,9 @@ def test_certified_pairs_are_genuinely_always_colliding(link_a: str, link_b: str
     criterion did not choose. (The 4-DoF hip-pitch-vs-torso pair this used to pin
     stopped being always-colliding once the lowering stopped overhanging capsule
     caps, and the 3-DoF torso-vs-shoulder-yaw pair once the capsules were fitted
-    at minimum volume: both are live checks now.)
+    at minimum volume: both are live checks now. The elbow-vs-wrist-pitch pair
+    left the certified set when the elbow became a box + hull on 2026-09-25:
+    certified on the box, it is not always-colliding, so it is checked.)
     """
     model, geoms, margin = _load("g1")
     assert _certified_always_colliding(model, geoms, link_a, link_b, margin_m=margin)
@@ -228,7 +239,7 @@ def test_certification_is_deterministic() -> None:
     model, geoms, margin = _load("g1")
     verdicts = [
         _certified_always_colliding(
-            model, geoms, "left_elbow_link", "left_wrist_pitch_link", margin_m=margin
+            model, geoms, "left_knee_link", "left_ankle_roll_link", margin_m=margin
         )
         for _ in range(3)
     ]
@@ -256,7 +267,7 @@ def test_running_out_of_budget_withholds_the_exemption(
     import openral_safety.urdf_lowering as ul
 
     model, geoms, margin = _load("g1")
-    pair = ("left_elbow_link", "left_wrist_pitch_link")
+    pair = ("left_knee_link", "left_ankle_roll_link")
     assert _certified_always_colliding(model, geoms, *pair, margin_m=margin)
     monkeypatch.setattr(ul, constant, starved)
     assert not _certified_always_colliding(model, geoms, *pair, margin_m=margin)
