@@ -12,11 +12,11 @@ regenerated ACM never changes silently (safety input — CLAUDE.md §3).
 ``check`` fails (exit 1) on any manifest drift from its lowered model.
 
 **A re-lower may not silently loosen a hand-tightened collision model.**
-``urdf_lowering.lower_link_geometry`` emits a PCA bounding capsule for any
-mesh collision — correct for onboarding, but looser than a hand-fitted
-oriented box. ``panda_mobile`` carries boxes (#103); re-lowering from
-``rd:panda_description`` would replace all seven with capsules of
-**1.9-3.7x the volume** and **1.4-1.5x the circumradius**. So ``lower``
+``urdf_lowering.lower_link_geometry`` emits a bounding capsule for every link
+— correct for onboarding, but looser than a hand-fitted oriented box on
+flanged links. ``panda_mobile`` carries boxes (#103); re-lowering from
+``rd:panda_description`` would replace five of its seven with capsules of up
+to **1.31x the volume** (``test_collision_geometry_no_loosening``). So ``lower``
 compares against the shipped geometry (``geometry_loosening``) and
 **refuses to write** a looser one — no override flag (CLAUDE.md §3): dropping
 tighter geometry means deleting it from the manifest first, a reviewable diff.
@@ -37,6 +37,7 @@ from rich.console import Console
 
 if TYPE_CHECKING:
     from openral_core import CollisionShape, LinkCollisionGeometry, RobotDescription
+    from openral_core.schemas import TightCollisionGeometry
     from openral_safety.urdf_lowering import LoweredCollisionModel
 
 __all__ = [
@@ -251,7 +252,8 @@ def geometry_loosening(
     collision model, which is the worst version of the same failure.
 
     A link the tool adds and the manifest lacks is **not** reported: new coverage
-    is not a loosening.
+    is not a loosening. A link with several primitives is measured as a set:
+    the sum of their volumes and the largest circumradius.
 
     Args:
         shipped: the manifest's committed ``collision_geometry``.
@@ -265,30 +267,44 @@ def geometry_loosening(
         >>> geometry_loosening([], [])
         []
     """
-    by_link = {g.link_name: g for g in lowered}
-    out: list[GeometryLoosening] = []
+    shipped_by_link: dict[str, list[LinkCollisionGeometry]] = {}
     for entry in shipped:
-        old_volume, old_circ = collision_primitive_envelope(_writer_quantized(entry.shape))
-        new = by_link.get(entry.link_name)
-        if new is None:
+        shipped_by_link.setdefault(entry.link_name, []).append(entry)
+    lowered_by_link: dict[str, list[LinkCollisionGeometry]] = {}
+    for entry in lowered:
+        lowered_by_link.setdefault(entry.link_name, []).append(entry)
+
+    def envelope(entries: list[LinkCollisionGeometry]) -> tuple[float, float]:
+        # A link's primitives are summed by volume (an upper bound on their
+        # union, exact when they do not overlap) and take the largest
+        # circumradius; equal on both sides for a re-render of the same set.
+        measured = [collision_primitive_envelope(_writer_quantized(e.shape)) for e in entries]
+        return sum(v for v, _ in measured), max(c for _, c in measured)
+
+    out: list[GeometryLoosening] = []
+    for link_name, old_entries in shipped_by_link.items():
+        old_volume, old_circ = envelope(old_entries)
+        rendered_old = " + ".join(_render_primitive(e.shape) for e in old_entries)
+        new_entries = lowered_by_link.get(link_name)
+        if new_entries is None:
             out.append(
                 GeometryLoosening(
-                    link_name=entry.link_name,
-                    shipped=_render_primitive(entry.shape),
+                    link_name=link_name,
+                    shipped=rendered_old,
                     lowered="",
                     volume_ratio=math.inf,
                     circumradius_ratio=math.inf,
                 )
             )
             continue
-        new_volume, new_circ = collision_primitive_envelope(_writer_quantized(new.shape))
+        new_volume, new_circ = envelope(new_entries)
         if new_volume <= old_volume and new_circ <= old_circ:
             continue
         out.append(
             GeometryLoosening(
-                link_name=entry.link_name,
-                shipped=_render_primitive(entry.shape),
-                lowered=_render_primitive(new.shape),
+                link_name=link_name,
+                shipped=rendered_old,
+                lowered=" + ".join(_render_primitive(e.shape) for e in new_entries),
                 volume_ratio=new_volume / old_volume if old_volume > 0.0 else math.inf,
                 circumradius_ratio=new_circ / old_circ if old_circ > 0.0 else math.inf,
             )
@@ -317,8 +333,9 @@ def _report_loosening(robot_path: Path, findings: list[GeometryLoosening]) -> No
             highlight=False,
         )
     _console.print(
-        "[yellow]`lower_link_geometry` PCA-fits a bounding capsule to any mesh collision; "
-        "that is conservative for onboarding but looser than hand-fitted boxes. To adopt "
+        "[yellow]`lower_link_geometry` fits a bounding capsule to each link's collision + "
+        "visual geometry; that is conservative, but can be larger than the shipped primitive "
+        "(a hand-fitted box, or a capsule that did not hold the visual mesh). To adopt "
         "the lowered geometry anyway, delete the affected `collision_geometry` entries "
         "from the manifest first — there is no override flag (CLAUDE.md §3).[/yellow]"
     )
@@ -387,6 +404,31 @@ def inject_joint_fk(text: str, joint_fk: dict[str, tuple[_Vec3, _Vec3, _Vec3]]) 
     return "".join(out)
 
 
+def _render_tight(tight: TightCollisionGeometry) -> list[str]:
+    """A box's ``tight_geometry`` block, at full float precision.
+
+    Unlike the primitives (4 dp), the refinement is written exactly: it is
+    derived in the box's rendered frame and its hull is ``conv(mesh)`` itself,
+    with no headroom, so rounding a vertex inward would cut the mesh.
+    """
+    lines = [
+        "    tight_geometry:\n",
+        "      dop_lo_m: [" + ", ".join(repr(float(v)) for v in tight.dop_lo_m) + "]\n",
+        "      dop_hi_m: [" + ", ".join(repr(float(v)) for v in tight.dop_hi_m) + "]\n",
+    ]
+    if tight.hull_vertices_m:
+        lines.append("      hull_vertices_m:\n")
+        lines.extend(
+            "        - [" + ", ".join(repr(float(c)) for c in v) + "]\n"
+            for v in tight.hull_vertices_m
+        )
+    else:
+        lines.append("      hull_vertices_m: []\n")
+    if tight.hull_overhang_m is not None:
+        lines.append(f"      hull_overhang_m: {float(tight.hull_overhang_m)!r}\n")
+    return lines
+
+
 def render_blocks(model: LoweredCollisionModel) -> tuple[str, str]:
     """Render a ``LoweredCollisionModel`` to ``(geometry_block, acm_block)`` YAML.
 
@@ -416,6 +458,8 @@ def render_blocks(model: LoweredCollisionModel) -> tuple[str, str]:
         geo_lines.append(
             f"    origin_xyz_rpy: [{', '.join(f'{v:.4f}' for v in g.origin_xyz_rpy)}]\n"
         )
+        if g.tight_geometry is not None:
+            geo_lines.extend(_render_tight(g.tight_geometry))
 
     acm_lines = [
         f"# GENERATED by `openral collision lower` (source: {model.acm_source}) — "
@@ -437,7 +481,11 @@ collision_app = typer.Typer(
 
 
 def _lower(
-    robot_path: Path, *, acm_only: bool, geometry_only: bool
+    robot_path: Path,
+    *,
+    acm_only: bool,
+    geometry_only: bool,
+    tight_links: tuple[str, ...] = (),
 ) -> tuple[RobotDescription, LoweredCollisionModel]:
     """Load a manifest and lower its collision model via the provenance dispatcher.
 
@@ -452,13 +500,21 @@ def _lower(
 
     robot = RobotDescription.from_yaml(str(robot_path))
     model = lower_robot_auto(
-        robot, acm_only=acm_only, geometry_only=geometry_only, manifest_dir=robot_path.parent
+        robot,
+        acm_only=acm_only,
+        geometry_only=geometry_only,
+        manifest_dir=robot_path.parent,
+        tight_links=tight_links,
     )
     return robot, model
 
 
 def _lowered_text(
-    robot_path: Path, *, acm_only: bool, geometry_only: bool
+    robot_path: Path,
+    *,
+    acm_only: bool,
+    geometry_only: bool,
+    tight_links: tuple[str, ...] = (),
 ) -> tuple[str, str, list[GeometryLoosening]]:
     """``(current_manifest_text, spliced_manifest_text, loosening)`` for a manifest.
 
@@ -474,12 +530,12 @@ def _lowered_text(
     reuses rather than regenerates), so a caller cannot mistake "not compared"
     for "compared and clean".
     """
-    robot, model = _lower(robot_path, acm_only=acm_only, geometry_only=geometry_only)
+    robot, model = _lower(
+        robot_path, acm_only=acm_only, geometry_only=geometry_only, tight_links=tight_links
+    )
     geo_block, acm_block = render_blocks(model)
     current = robot_path.read_text(encoding="utf-8")
-    # MJCF-sourced robots keep their hand-authored geometry (the tool reuses it,
-    # doesn't regenerate it), so never rewrite the geometry block for them.
-    write_geometry = not acm_only and model.acm_source != "mjcf"
+    write_geometry = not acm_only
     loosening = (
         geometry_loosening(list(robot.collision_geometry or []), list(model.collision_geometry))
         if write_geometry
@@ -512,6 +568,14 @@ def lower(
         "--emit-cumotion",
         help="Also write a cuRobo robot-config (collision spheres + ACM) to this path.",
     ),
+    tight_link: list[str] = typer.Option(
+        [],
+        "--tight-link",
+        help=(
+            "Lower this link as a box plus its exact convex hull (tight_geometry), "
+            "repeatable. Links the manifest already refines stay refined."
+        ),
+    ),
 ) -> None:
     """Lower URDF/SRDF → collision model. Prints a diff; mutates only with ``--write``.
 
@@ -531,7 +595,9 @@ def lower(
         from openral_core.assets import resolve_asset
         from openral_safety.cumotion_config import render_cumotion_config
 
-        desc, model = _lower(robot, acm_only=False, geometry_only=False)
+        desc, model = _lower(
+            robot, acm_only=False, geometry_only=False, tight_links=tuple(tight_link)
+        )
         # The URDF lets the emitter re-derive the ACM against the spheres it
         # actually writes, instead of copying the kernel's (see
         # `render_cumotion_config`). A manifest with no URDF asset falls back to
@@ -554,7 +620,7 @@ def lower(
                 f"{emit_cumotion}."
             )
     current, spliced, loosening = _lowered_text(
-        robot, acm_only=acm_only, geometry_only=geometry_only
+        robot, acm_only=acm_only, geometry_only=geometry_only, tight_links=tuple(tight_link)
     )
     if current == spliced:
         _console.print("[green]No change — manifest already matches the lowered model.[/green]")

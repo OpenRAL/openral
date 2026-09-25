@@ -5,31 +5,45 @@
   This SRDF exists ONLY to carry deliberate ACM exemptions into the MJCF
   collision lowering (`openral collision lower`, source: mjcf). The sweep can
   auto-disable a pair only when it collides in EVERY sampled pose; these pairs
-  do NOT (fractions below, 2000 seeded samples over the joint limits with the
-  manifest capsules + mujoco FK), yet they DO collide at the robot's rest pose,
-  so checking them would E-stop the arm at home. Disabling them is therefore a
-  reviewed usability judgment, not a sweep result — recorded here, the same
-  explicit channel URDF robots use, instead of hand edits to the generated ACM
-  block (which are unreproducible and broke the fleet lowering regression).
+  do NOT, so each one is a reviewed judgment recorded here, the same explicit
+  channel URDF robots use, instead of hand edits to the generated ACM block.
 
-  Originally introduced with the 2026-06-20 capsule re-placement
-  ("fix(robots): correct OpenArm collision-capsule placement + wrist/gripper
-  ACM"); re-measured 2026-07-09:
-    link1<->link3         collides in ~23% of poses, rest pose d=-0.0006 m
-    finger_pair<->link5   collides in ~50% of poses, rest pose d=-0.051 m
-    finger_pair<->link6   collides in ~57% of poses, rest pose d=-0.052 m
-  The former finger_pair<->link4 exemption was REMOVED: it never collides
-  (min clearance +0.021 m across 2000 poses, clear at rest) — the kernel now
-  checks it.
+  Re-measured 2026-09-24 against the geometry fitted to the MJCF meshes
+  (`openral collision lower`, hazard-log Entry 045),
+  over seeded in-limit poses:
+    primitives - the kernel collision model, kernel_predicates.shape_distance, 2000 poses
+    meshes     - the MJCF collision meshes, openral_hal.convex_distance (certified
+                 GJK/SAT; every result certified), 1500 poses. Not mj_geomDistance:
+                 under MuJoCo 3.8.0 native CCD returns false zeros and libccd false
+                 overlaps on these very pairs (libccd put link5/link7 at 38% overlap).
 
+                         primitives                meshes: min clearance
+    link1<->link3        overlap 62%, rest +12 mm  14.8 mm
+    finger_pair<->link5  overlap ~70%, rest -28 mm 16.1 mm
+    finger_pair<->link6  overlap 100%, rest -37 mm 23.8 mm
+    link5<->link7        overlap ~68%, rest +25 mm 2.9 mm (1st percentile 3.0 mm)
+
+  The meshes of every pair here never touch; one primitive per link cannot
+  separate them. link5<->link7 is the thin one: the wrist housings either side
+  of link6 pass within 3 mm, but the flat floor (min 2.9 / p1 3.0 mm) is the
+  wrist geometry, not sampling luck. It was exempt on master too
+  (always-colliding under the old capsules).
+
+  RETIRED 2026-09-25 (PR #324, docs/reference/collision-geometry-review.md §11):
+  link1<->link3 on both arms. Both links now lower to a box plus their exact
+  convex hull (tight_geometry), and the kernel re-asks the pair of the two
+  hulls; the hulls are 12.1 mm apart at their closest over 500 seeded in-limit
+  poses and +16.6 mm at rest, so the pair is CHECKED again instead of exempted.
+  The retired rows only ever removed a check; putting one back needs the same
+  WG sign-off as any other row here.
   SAFETY (CLAUDE.md §3): every row here REDUCES what the kernel checks and
   needs safety-WG sign-off to change.
 -->
 <robot name="openarm">
-  <disable_collisions link1="openarm_left_link1" link2="openarm_left_link3" reason="Rest-pose contact (d=-0.0006 m at qpos0) under the conservative capsules; not always-colliding (23%)."/>
-  <disable_collisions link1="openarm_right_link1" link2="openarm_right_link3" reason="Rest-pose contact (d=-0.0006 m at qpos0) under the conservative capsules; not always-colliding (23%)."/>
-  <disable_collisions link1="openarm_left_finger_pair" link2="openarm_left_link5" reason="Folded gripper rests beside the forearm (d=-0.051 m at qpos0); not always-colliding (50%)."/>
-  <disable_collisions link1="openarm_right_finger_pair" link2="openarm_right_link5" reason="Folded gripper rests beside the forearm (d=-0.051 m at qpos0); not always-colliding (49%)."/>
-  <disable_collisions link1="openarm_left_finger_pair" link2="openarm_left_link6" reason="Folded gripper rests beside the wrist (d=-0.052 m at qpos0); not always-colliding (57%)."/>
-  <disable_collisions link1="openarm_right_finger_pair" link2="openarm_right_link6" reason="Folded gripper rests beside the wrist (d=-0.052 m at qpos0); not always-colliding (56%)."/>
+  <disable_collisions link1="openarm_left_finger_pair" link2="openarm_left_link5" reason="Meshes never closer than 16.3 mm (1500 certified poses); fitted primitives overlap at rest (d=-0.028 m)."/>
+  <disable_collisions link1="openarm_right_finger_pair" link2="openarm_right_link5" reason="Meshes never closer than 16.1 mm (1500 certified poses); fitted primitives overlap at rest (d=-0.028 m)."/>
+  <disable_collisions link1="openarm_left_finger_pair" link2="openarm_left_link6" reason="Meshes never closer than 23.8 mm (1500 certified poses); fitted primitives overlap in every pose."/>
+  <disable_collisions link1="openarm_right_finger_pair" link2="openarm_right_link6" reason="Meshes never closer than 23.8 mm (1500 certified poses); fitted primitives overlap in every pose."/>
+  <disable_collisions link1="openarm_left_link5" link2="openarm_left_link7" reason="Wrist housings either side of link6: meshes never closer than 2.9 mm (1500 certified poses, 1st percentile 3.0 mm); fitted primitives overlap in 67%. Exempt on master too."/>
+  <disable_collisions link1="openarm_right_link5" link2="openarm_right_link7" reason="Wrist housings either side of link6: meshes never closer than 2.9 mm (1500 certified poses, 1st percentile 3.0 mm); fitted primitives overlap in 69%. Exempt on master too."/>
 </robot>

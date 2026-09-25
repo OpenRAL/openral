@@ -1,38 +1,53 @@
-"""No non-allowed capsule pair may interpenetrate at a robot's zero configuration.
+"""No non-allowed collision pair may interpenetrate at a robot's rest pose.
 
 The C++ safety kernel evaluates every candidate chunk against the manifest's
-``collision_geometry`` capsules, skipping only ``allowed_collision_pairs``. A
-pair that already overlaps with every joint at zero is not a hazard the kernel
-can act on: it is a modelling error that makes the kernel refuse *every* chunk
-near the rest pose. That is exactly what stopped the first OpenArm policy
-dispatch on qorin1 (2026-09-22): ``openarm_*_link3``'s hand-authored capsule
-was 0.22 m long from a joint 0.154 m above the elbow, so it reached 6.6 cm past
-joint 4 into link 5's capsule — a constant ``-0.04575 m`` at every elbow angle,
-on both arms, on the twin and on the real cell.
+``collision_geometry``, skipping only ``allowed_collision_pairs``. A pair that
+already overlaps at the pose the robot rests in is not a hazard the kernel can
+act on: it is a modelling error that makes the kernel refuse *every* chunk near
+rest. That is exactly what stopped the first OpenArm policy dispatch on qorin1
+(2026-09-22): ``openarm_*_link3``'s hand-authored capsule was 0.22 m long from
+a joint 0.154 m above the elbow, so it reached 6.6 cm past joint 4 into link 5's
+capsule — a constant ``-0.04575 m`` at every elbow angle, on both arms, on the
+twin and on the real cell.
 
-Real fixtures only: every ``robots/*/robot.yaml`` that declares capsules is
-checked with a small forward-kinematics pass over its own ``joints`` and
-``fixed_attachments`` — the same inputs the kernel lowers — and the standard
-segment-segment distance. Sphere entries and entries whose ``link_name`` is not
-a link of the kinematic tree (composite finger frames) are skipped, since the
-kernel resolves those through its own link table.
+The rest pose is ``q = 0`` when every joint's ``position_limits`` admit it.
+When they do not (the Panda's joint 4 tops out at -0.0698 rad, and its meshes
+interpenetrate at q = 0 anyway), zero is not a pose the robot can be in, and
+the rest pose is the ``ready`` / ``home`` ``group_state`` of the manifest's own
+SRDF. A robot with neither fails loudly rather than being checked at a pose it
+cannot reach.
+
+Real fixtures only: every ``robots/*/robot.yaml`` that declares collision
+geometry is checked with a small forward-kinematics pass over its own
+``joints`` and ``fixed_attachments`` — the same inputs
+``collision_params_from_description`` lowers — and the kernel's own distance
+predicates (``openral_safety.kernel_predicates.shape_distance``, a line-by-line
+port of ``collision.cpp``, folded per link and hull-refined as the kernel does —
+``tests/unit/_collision_kernel_verdict.kernel_link_gap``), tripping at
+``d <= safety.self_collision_margin_m`` as the kernel does. Every robot whose
+rest pose is fixed here also gets a negative case: a configuration where the
+real meshes collide must still trip.
 """
 
 from __future__ import annotations
 
 import itertools
+import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pytest
-import yaml
+from openral_core.schemas import JointType, LinkCollisionGeometry, RobotDescription
+
+from tests.unit._collision_kernel_verdict import kernel_link_gap
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MANIFESTS = sorted(_REPO_ROOT.glob("robots/*/robot.yaml"))
+# SRDF group_state names read as the robot's rest pose, in preference order.
+_REST_STATE_NAMES = ("ready", "home")
 
 
-def _rot(rpy: list[float]) -> np.ndarray:
+def _rot(rpy: tuple[float, float, float]) -> np.ndarray:
     r, p, y = rpy
     cr, sr, cp, sp, cy, sy = np.cos(r), np.sin(r), np.cos(p), np.sin(p), np.cos(y), np.sin(y)
     rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
@@ -41,95 +56,139 @@ def _rot(rpy: list[float]) -> np.ndarray:
     return rz @ ry @ rx
 
 
-def _tf(xyz: list[float], rpy: list[float]) -> np.ndarray:
+def _tf(xyz: tuple[float, ...], rpy: tuple[float, ...]) -> np.ndarray:
     m = np.eye(4)
-    m[:3, :3] = _rot(rpy)
+    m[:3, :3] = _rot((rpy[0], rpy[1], rpy[2]))
     m[:3, 3] = xyz
     return m
 
 
-def _link_poses_at_zero(manifest: dict[str, Any]) -> dict[str, np.ndarray]:
-    """World pose of every link at q = 0, walking joints from their parent links."""
-    joints = manifest.get("joints", [])
-    attachments = manifest.get("fixed_attachments", [])
-    base = manifest.get("base_frame", "base_link")
-    poses: dict[str, np.ndarray] = {base: np.eye(4)}
-    zero3 = [0.0, 0.0, 0.0]
+def _joint_motion(joint_type: JointType, axis: tuple[float, float, float], q: float) -> np.ndarray:
+    """The joint's own motion (URDF: applied after its origin transform)."""
+    m = np.eye(4)
+    a = np.asarray(axis, dtype=float)
+    if joint_type in (JointType.REVOLUTE, JointType.CONTINUOUS):
+        a = a / np.linalg.norm(a)
+        k = np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
+        m[:3, :3] = np.eye(3) + np.sin(q) * k + (1.0 - np.cos(q)) * (k @ k)
+    elif joint_type == JointType.PRISMATIC:
+        m[:3, 3] = a * q
+    return m
+
+
+def _link_poses(robot: RobotDescription, q: dict[str, float]) -> dict[str, np.ndarray]:
+    """World pose of every link at joint positions ``q`` (missing joints at 0)."""
+    edges = [*robot.fixed_attachments, *robot.joints]
+    roots = {e.parent_link for e in edges} - {e.child_link for e in edges}
+    # The kernel roots its model at the chain's single root; a `base_frame`
+    # outside the chain (UR's `ur5e_base_link`) names that same frame.
+    root = robot.base_frame if robot.base_frame in roots or len(roots) != 1 else roots.pop()
+    poses: dict[str, np.ndarray] = {root: np.eye(4)}
     pending = [
-        (e["parent_link"], e["child_link"], e.get("origin_xyz", zero3), e.get("origin_rpy", zero3))
-        for e in (*attachments, *joints)
+        (a.parent_link, a.child_link, _tf(a.origin_xyz, a.origin_rpy))
+        for a in robot.fixed_attachments
+    ] + [
+        (
+            j.parent_link,
+            j.child_link,
+            _tf(j.origin_xyz, j.origin_rpy) @ _joint_motion(j.joint_type, j.axis_xyz, q[j.name]),
+        )
+        for j in robot.joints
     ]
     # Fixed-point pass: parents may be declared after children.
     progressed = True
     while pending and progressed:
         progressed = False
         for entry in list(pending):
-            parent, child, xyz, rpy = entry
+            parent, child, local = entry
             if parent in poses:
-                poses[child] = poses[parent] @ _tf(list(xyz), list(rpy))
+                poses[child] = poses[parent] @ local
                 pending.remove(entry)
                 progressed = True
     if pending:
         # Links that do not chain back to ``base_frame`` would have to be
         # placed by guessing a root, and a guessed root superimposes subtrees
         # at the origin — false overlaps. Refuse rather than guess.
-        raise LookupError(sorted({child for _p, child, _x, _r in pending}))
+        raise LookupError(sorted({child for _p, child, _l in pending}))
     return poses
 
 
-def _segment_distance(p1: np.ndarray, q1: np.ndarray, p2: np.ndarray, q2: np.ndarray) -> float:
-    """Closest distance between segments p1-q1 and p2-q2 (Ericson, RTCD 5.1.9)."""
-    d1, d2, r = q1 - p1, q2 - p2, p1 - p2
-    a, e, f = float(d1 @ d1), float(d2 @ d2), float(d2 @ r)
-    eps = 1e-12
-    if a < eps and e < eps:
-        return float(np.linalg.norm(r))
-    if a < eps:
-        s, t = 0.0, float(np.clip(f / e, 0.0, 1.0))
-    else:
-        c = float(d1 @ r)
-        if e < eps:
-            t, s = 0.0, float(np.clip(-c / a, 0.0, 1.0))
-        else:
-            b = float(d1 @ d2)
-            den = a * e - b * b
-            s = float(np.clip((b * f - c * e) / den, 0.0, 1.0)) if den > eps else 0.0
-            t = (b * s + f) / e
-            if t < 0.0:
-                t, s = 0.0, float(np.clip(-c / a, 0.0, 1.0))
-            elif t > 1.0:
-                t, s = 1.0, float(np.clip((b - c) / a, 0.0, 1.0))
-    return float(np.linalg.norm((p1 + d1 * s) - (p2 + d2 * t)))
+def _srdf_states(robot: RobotDescription, manifest_path: Path) -> dict[str, dict[str, float]]:
+    ref = robot.assets.srdf
+    if not ref or not ref.startswith("file:"):
+        return {}
+    root = ET.parse(manifest_path.parent / ref.removeprefix("file:")).getroot()
+    return {
+        state.attrib["name"]: {j.attrib["name"]: float(j.attrib["value"]) for j in state}
+        for state in root.iter("group_state")
+    }
 
 
-def _capsules_at_zero(manifest: dict[str, Any]) -> list[tuple[str, np.ndarray, np.ndarray, float]]:
-    """Every capsule as ``(link_name, a, b, radius)`` — a link may declare several."""
-    poses = _link_poses_at_zero(manifest)
-    out: list[tuple[str, np.ndarray, np.ndarray, float]] = []
-    for entry in manifest.get("collision_geometry", []):
-        shape = entry["shape"]
-        if shape.get("shape") != "capsule" or entry["link_name"] not in poses:
+def _rest_pose(robot: RobotDescription, manifest_path: Path) -> tuple[str, dict[str, float]]:
+    """``q = 0`` when the joint limits admit it, else the SRDF ready/home state."""
+    q = {j.name: 0.0 for j in robot.joints}
+    outside = [
+        j.name
+        for j in robot.joints
+        if j.position_limits is not None
+        and not (j.position_limits[0] <= 0.0 <= j.position_limits[1])
+    ]
+    if not outside:
+        return "q = 0", q
+    states = _srdf_states(robot, manifest_path)
+    for name in _REST_STATE_NAMES:
+        if name in states and set(outside) <= states[name].keys():
+            return f"SRDF group_state {name!r}", q | states[name]
+    pytest.fail(
+        f"{robot.name}: q = 0 is outside the limits of {outside} and the manifest's SRDF "
+        f"declares no {' / '.join(_REST_STATE_NAMES)} group_state covering them, so "
+        "there is no declared rest pose to check."
+    )
+
+
+def _tripping_pairs(robot: RobotDescription, q: dict[str, float]) -> list[tuple[str, str, float]]:
+    """Every non-allowed link pair the kernel would trip on at ``q``, with its gap.
+
+    Judged by ``kernel_link_gap``: a link pair's gap is the minimum over its
+    primitives, and a box pair whose two boxes both carry a ``tight_geometry``
+    hull is re-asked of the hulls, as ``check_self_collision`` does. (It used to
+    skip such pairs and defer them to the ROS-gated kernel test; judging them
+    here checks strictly more.)
+    """
+    poses = _link_poses(robot, q)
+    margin = float(robot.safety.self_collision_margin_m or 0.0)
+    allowed = {frozenset(p) for p in robot.allowed_collision_pairs}
+    by_link: dict[str, list[LinkCollisionGeometry]] = {}
+    for g in robot.collision_geometry:
+        if g.link_name in poses:
+            by_link.setdefault(g.link_name, []).append(g)
+    out = []
+    for a, b in itertools.combinations(sorted(by_link), 2):
+        if frozenset((a, b)) in allowed:
             continue
-        o = entry["origin_xyz_rpy"]
-        c = poses[entry["link_name"]] @ _tf(o[:3], o[3:])
-        half = shape["length_m"] / 2.0
-        a = (c @ np.array([0.0, 0.0, -half, 1.0]))[:3]
-        b = (c @ np.array([0.0, 0.0, half, 1.0]))[:3]
-        out.append((entry["link_name"], a, b, float(shape["radius_m"])))
+        gap = kernel_link_gap(by_link[a], poses[a], by_link[b], poses[b], margin)
+        if gap <= margin:
+            out.append((a, b, round(gap, 4)))
     return out
 
 
-# Manifests whose hand-authored capsules this check finds overlapping at zero
-# but which have NOT been confirmed against the C++ kernel the way OpenArm's
-# pair was (the kernel's own verdict, -0.04575 m, matched this FK to 4 digits).
-# Strict xfails so a fix flips them green and a regression is loud; whether
-# each is a real kernel refusal at rest or a convention this FK does not
-# model is the safety WG's to adjudicate before anyone edits those fixtures.
+def _load(name: str) -> RobotDescription:
+    return RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / name / "robot.yaml"))
+
+
+# Manifests whose geometry still trips at rest, pending a safety-WG decision.
+# Strict xfails so a fix flips them green and a regression is loud
+# (docs/reference/collision-geometry-review.md §5). H1 and G1 left this list when
+# their resting links were lowered to a box plus the exact hull (the hulls clear
+# by +0.9 ... +55 mm where no capsule set could); SO-100 cannot: at its folded
+# q = 0 the upper arm rests ON the base.
 _UNADJUDICATED: dict[str, str] = {
-    "franka_panda": "panda_hand/panda_link5 -0.108 m, panda_link5/panda_link7 -0.093 m",
-    "g1": "several torso_link pairs, -0.037 .. -0.074 m",
-    "h1": "shoulder_yaw_link/torso_link -0.0007 m both sides",
-    "so100_follower": "five base/arm pairs, -0.040 .. -0.089 m",
+    # q = 0 is this URDF's folded rest: base <-> upper_arm exact hulls touch
+    # (nearest mesh vertices 1.0 mm apart, the arm resting on the base), so
+    # every conservative representation trips, the exact hull included. There
+    # is no declared rest pose (no SRDF) to check instead. Needs a measured
+    # rest pose or a WG call on the resting contact, never an exemption.
+    "so100_follower": "folded q = 0: the upper arm rests on the base (exact hulls touch)",
 }
 
 
@@ -148,27 +207,155 @@ _UNADJUDICATED: dict[str, str] = {
         for p in _MANIFESTS
     ],
 )
-def test_no_non_allowed_capsule_pair_interpenetrates_at_zero(manifest_path: Path) -> None:
-    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    if not manifest.get("collision_geometry"):
+def test_no_non_allowed_pair_interpenetrates_at_rest(manifest_path: Path) -> None:
+    robot = RobotDescription.from_yaml(str(manifest_path))
+    if not robot.collision_geometry:
         pytest.skip("manifest declares no collision_geometry")
-    allowed = {frozenset(p) for p in manifest.get("allowed_collision_pairs", [])}
+    label, q = _rest_pose(robot, manifest_path)
     try:
-        capsules = _capsules_at_zero(manifest)
+        overlaps = _tripping_pairs(robot, q)
     except LookupError as unrooted:
         pytest.skip(f"links not rooted at base_frame, FK unvalidated here: {unrooted.args[0]}")
-    overlaps = []
-    # The kernel keeps every capsule and checks pairs on different links, so
-    # a link with two capsules contributes both; same-link pairs are skipped.
-    for (a, p1, q1, r1), (b, p2, q2, r2) in itertools.combinations(
-        sorted(capsules, key=lambda c: c[0]), 2
-    ):
-        if a == b or frozenset((a, b)) in allowed:
-            continue
-        surface = _segment_distance(p1, q1, p2, q2) - r1 - r2
-        if surface < 0.0:
-            overlaps.append((a, b, round(surface, 4)))
     assert not overlaps, (
-        f"{manifest_path.parent.name}: capsule pairs interpenetrating at the zero "
-        f"configuration, which the kernel would refuse on every chunk: {overlaps}"
+        f"{robot.name}: collision pairs the kernel trips on at its rest pose ({label}), "
+        f"so it would refuse every chunk near rest: {overlaps}"
     )
+
+
+# A configuration per robot, inside every joint limit, where the real meshes
+# interpenetrate — tightening a primitive must never have bought anything by
+# blinding the kernel there. Evidence (vertices of the first link's visual mesh
+# inside the second link's watertight mesh at this q, robot_descriptions meshes):
+#   franka_panda: 40 panda_hand vertices inside panda_link1 — elbow fully folded.
+#   h1 (1): 627 left_elbow_link vertices inside torso_link — forearm into the chest.
+#   h1 (2): the PR #324 review's "forearm miss": 13 604 left_elbow_link vertices
+#     inside torso_link, which the placeholder-derived capsules did not trip on.
+#   ur5e / ur10e: 32 601 / 33 530 wrist_2_link vertices inside upper_arm_link.
+#   rizon4: 93 base_link vertices inside link6.
+#   so100_follower: 207 wrist vertices inside base.
+#   g1: 163 torso_link vertices inside right_elbow_link.
+_REAL_COLLISIONS: list[tuple[str, dict[str, float], tuple[str, str]]] = [
+    (
+        "franka_panda",
+        {"panda_joint2": -0.3, "panda_joint4": -3.0, "panda_joint6": 0.2},
+        ("panda_hand", "panda_link1"),
+    ),
+    (
+        "h1",
+        {
+            "left_shoulder_pitch": -0.84,
+            "left_shoulder_roll": -0.3,
+            "left_shoulder_yaw": 4.05,
+            "left_elbow": -0.33,
+        },
+        ("left_elbow_link", "torso_link"),
+    ),
+    (
+        "h1",
+        {
+            "left_shoulder_pitch": 0.99,
+            "left_shoulder_roll": -0.15,
+            "left_shoulder_yaw": -1.03,
+            "left_elbow": -0.62,
+        },
+        ("left_elbow_link", "torso_link"),
+    ),
+    (
+        "ur5e",
+        {
+            "shoulder_pan_joint": -0.04,
+            "shoulder_lift_joint": -3.17,
+            "elbow_joint": -3.07,
+            "wrist_1_joint": -3.87,
+            "wrist_2_joint": 2.41,
+            "wrist_3_joint": -3.76,
+        },
+        ("upper_arm_link", "wrist_2_link"),
+    ),
+    (
+        "ur10e",
+        {
+            "shoulder_pan_joint": -0.04,
+            "shoulder_lift_joint": -3.17,
+            "elbow_joint": -3.07,
+            "wrist_1_joint": -3.87,
+            "wrist_2_joint": 2.41,
+            "wrist_3_joint": -3.76,
+        },
+        ("upper_arm_link", "wrist_2_link"),
+    ),
+    (
+        "rizon4",
+        {
+            "joint1": 1.82,
+            "joint2": -2.29,
+            "joint3": 0.78,
+            "joint4": 1.8,
+            "joint5": 0.08,
+            "joint6": 2.95,
+            "joint7": -1.67,
+        },
+        ("base_link", "link6"),
+    ),
+    (
+        "so100_follower",
+        {
+            "shoulder_pan": 0.52,
+            "shoulder_lift": 1.39,
+            "elbow_flex": 0.96,
+            "wrist_flex": -0.96,
+            "wrist_roll": -1.26,
+            "gripper": 0.87,
+        },
+        ("base", "wrist"),
+    ),
+    (
+        "g1",
+        {
+            "left_hip_pitch_joint": 2.76,
+            "left_hip_roll_joint": 1.54,
+            "left_hip_yaw_joint": 0.58,
+            "left_knee_joint": 1.81,
+            "left_ankle_pitch_joint": 0.07,
+            "left_ankle_roll_joint": -0.18,
+            "right_hip_pitch_joint": -0.15,
+            "right_hip_roll_joint": -2.13,
+            "right_hip_yaw_joint": -0.54,
+            "right_knee_joint": 0.2,
+            "right_ankle_pitch_joint": 0.48,
+            "right_ankle_roll_joint": -0.15,
+            "waist_yaw_joint": 0.9,
+            "waist_roll_joint": -0.21,
+            "waist_pitch_joint": 0.39,
+            "left_shoulder_pitch_joint": 0.72,
+            "left_shoulder_roll_joint": -1.08,
+            "left_shoulder_yaw_joint": 1.81,
+            "left_elbow_joint": 1.92,
+            "left_wrist_roll_joint": 1.59,
+            "left_wrist_pitch_joint": 0.23,
+            "left_wrist_yaw_joint": -1.14,
+            "right_shoulder_pitch_joint": -1.98,
+            "right_shoulder_roll_joint": 1.31,
+            "right_shoulder_yaw_joint": 0.27,
+            "right_elbow_joint": -0.48,
+            "right_wrist_roll_joint": 1.51,
+            "right_wrist_pitch_joint": 0.46,
+            "right_wrist_yaw_joint": 0.23,
+        },
+        ("right_elbow_link", "torso_link"),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("name", "q_overrides", "pair"),
+    _REAL_COLLISIONS,
+    ids=[f"{r[0]}-{i}" for i, r in enumerate(_REAL_COLLISIONS)],
+)
+def test_real_self_collision_still_trips(
+    name: str, q_overrides: dict[str, float], pair: tuple[str, str]
+) -> None:
+    robot = _load(name)
+    q = {j.name: 0.0 for j in robot.joints} | q_overrides
+    tripped = {frozenset((a, b)) for a, b, _gap in _tripping_pairs(robot, q)}
+    assert frozenset(pair) in tripped, f"{name}: {pair} no longer trips at {q_overrides}"

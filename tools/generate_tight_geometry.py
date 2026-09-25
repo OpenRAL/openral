@@ -9,6 +9,10 @@ geometry, not fits it: the 26-DOP is the intersection of 26 tangent halfspaces
 the hull is ``conv(mesh vertices)`` (containment definitional); both are in the
 manifest box's own frame, and the tool refuses to emit anything outside that box.
 
+The derivation itself (DOP, hull, budget refinement, overhang) lives in
+``openral_safety.tight_geometry``, which the collision lowering also uses; this
+tool keeps the panda_mobile mesh sources and the ``check`` gate.
+
 Mesh placement follows ``docs/reference/collision-tight-geometry.md`` §11:
 MuJoCo folds mesh recentring into the geom frame, so vertices are placed by the
 GEOM transform only — applying ``mesh_pos`` too double-counts it (PR #158).
@@ -40,6 +44,34 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     Points = npt.NDArray[Any]
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# `openral_safety` is a ROS package, not a workspace member: the pytest root
+# conftest puts it on the path for the tests; a standalone run needs the same.
+if str(REPO_ROOT / "packages" / "openral_safety") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "packages" / "openral_safety"))
+
+# Re-exported under their historical names: the tests and tools/stop_ee_speed.py
+# reach them through this module.
+from openral_safety.tight_geometry import (  # noqa: E402
+    HULL_OVERHANG_SAFETY_MARGIN as _HULL_OVERHANG_SAFETY_MARGIN,
+)
+from openral_safety.tight_geometry import (  # noqa: E402
+    _dop_axes,
+    derive_tight_geometry,
+    hull_overhang_m,
+    refine_dop_to_budget,
+)
+from openral_safety.tight_geometry import round_up_m as _round_up_m  # noqa: E402
+
+__all__ = [
+    "PANDA_GEOM_OF_LINK",
+    "ROBOT_MESH_SOURCES",
+    "derive_tight_geometry",
+    "hull_overhang_m",
+    "link_mesh_faces",
+    "link_mesh_in_box_frame",
+    "main",
+    "refine_dop_to_budget",
+]
 
 # The MuJoCo geom that carries each manifest link's collision mesh. Manifest
 # link names are the URDF/TF names; robosuite's MJCF uses bare `linkN`.
@@ -55,14 +87,6 @@ ROBOT_MESH_SOURCES: dict[str, tuple[str, dict[str, str]]] = {
     # land on both or fail.
     "panda_mobile_vslam": (_PANDA_XML, PANDA_GEOM_OF_LINK),
 }
-
-
-def _dop_axes() -> Points:
-    import numpy as np
-    from openral_core.schemas import DOP_AXES
-
-    axes: Points = np.asarray(DOP_AXES, dtype=float)
-    return axes
 
 
 def _rpy_to_matrix(roll: float, pitch: float, yaw: float) -> Points:
@@ -139,217 +163,6 @@ def link_mesh_faces(xml_path: Path, geom_name: str) -> Points:
     return faces
 
 
-#: Samples per `closest_point_naive` call. The query allocates
-#: `samples x mesh-faces x 3` floats, so this bounds peak memory independently
-#: of how large a link's mesh is.
-_OVERHANG_BATCH = 512
-
-#: Cap on total barycentric samples across all facets, so overhang cost is
-#: bounded by mesh size rather than by hull complexity.
-_OVERHANG_MAX_SAMPLES = 12_000
-
-
-def hull_overhang_m(
-    hull_points: Points, mesh_points: Points, mesh_faces: Points, *, samples_per_edge: int = 24
-) -> float:
-    """How far the hull's surface reaches past the real source mesh, in metres.
-
-    Containment (``mesh ⊆ hull``) is exact and definitional. This is the other
-    direction: the hull's faces bridge over mesh concavities, and the worst
-    point can fall anywhere on a facet (not just at a hull vertex, which sits
-    ON the mesh). So this samples a barycentric grid per hull facet and
-    measures each sample's distance to the real mesh surface.
-
-    Args:
-        hull_points: The hull's own vertices, box-frame, the same array
-            ``scipy.spatial.ConvexHull`` was built from.
-        mesh_points: Real mesh vertices, box-frame (``link_mesh_in_box_frame``).
-        mesh_faces: Real mesh triangle indices into ``mesh_points``
-            (``link_mesh_faces``).
-        samples_per_edge: Barycentric grid resolution per hull facet (24 gives
-            325 samples/facet). A sampled lower bound on the true continuous
-            supremum (measured max creeps up a couple % per doubling), which
-            is why the caller pads it (see ``_emit``) rather than shipping it raw.
-
-    Returns:
-        The sampled maximum distance, in metres, with NO margin applied.
-        ``_check`` re-samples independently, at a different resolution, to
-        guard against a shipped number a denser grid would exceed.
-    """
-    import numpy as np
-    import trimesh
-
-    # reason: scipy ships no type stubs and scipy-stubs is not a workspace dependency.
-    from scipy.spatial import ConvexHull  # type: ignore[import-untyped]
-
-    mesh = _trimesh(mesh_points, mesh_faces)
-    hull = ConvexHull(hull_points)
-    # Keep TOTAL samples bounded, not samples-per-facet: cost is
-    # (facets x samples-per-facet) x mesh-faces, and a 320-vertex envelope has
-    # ~636 facets vs ~300 for a 152-vertex hull, so a fixed `samples_per_edge`
-    # makes the largest link minutes slower than the rest.
-    #
-    # Coarsening only lowers the sampled maximum (a LOWER bound on the true
-    # supremum), and `_check` fails when the declared overhang is *below* a
-    # fresh resample — so a coarser resample can only make that gate more
-    # permissive, never pass a manifest that is actually wrong.
-    n = samples_per_edge
-    while n > 4 and len(hull.simplices) * (n + 1) * (n + 2) // 2 > _OVERHANG_MAX_SAMPLES:
-        n -= 1
-    bary = np.array(
-        [(i / n, j / n, (n - i - j) / n) for i in range(n + 1) for j in range(n + 1 - i)]
-    )
-    tris = hull_points[hull.simplices]  # (n_facets, 3, 3)
-    samples = np.einsum("fvc,sv->fsc", tris, bary).reshape(-1, 3)
-    # `closest_point` (`mesh.nearest`) needs `rtree`, an optional trimesh dep
-    # this workspace does not pin, so query naive brute-force in batches: the
-    # largest panda link is ~207k samples x ~12k triangles = 57.8 GiB in one
-    # call (raised `numpy._core._exceptions._ArrayMemoryError`). Batching bounds
-    # peak memory at `_OVERHANG_BATCH x faces x 3` regardless of link size.
-    worst = 0.0
-    for start in range(0, len(samples), _OVERHANG_BATCH):
-        batch = samples[start : start + _OVERHANG_BATCH]
-        _, distances, _ = trimesh.proximity.closest_point_naive(mesh, batch)
-        worst = max(worst, float(distances.max()))
-    return worst
-
-
-def _trimesh(points: Points, faces: Points) -> Any:
-    import trimesh
-
-    return trimesh.Trimesh(vertices=points, faces=faces, process=False)
-
-
-def refine_dop_to_budget(points: Points, dop_lo: Points, dop_hi: Points, budget: int) -> Points:
-    """A ≤``budget``-vertex convex envelope strictly tighter than the 26-DOP.
-
-    ``panda_link1``: exact hull is 1588 vertices vs a 320-vertex kernel budget,
-    so it ships stage-1 only (26-DOP: median 4.52 mm / max 25.68 mm support gap
-    vs the real mesh) — "over budget" need not mean "fall back to the DOP".
-    Not worth it for ``link1`` on the evidence: a live battery on 2026-09-07
-    moved the refined envelope's predicted stops by only 0.0003 mm (deficit was
-    against the box, already collected by the DOP — see
-    ``docs/reference/collision-validation-evidence.md``), so no manifest ships
-    a refined envelope without a fresh measurement.
-
-    Construction: greedy halfspace refinement, not hull-vertex subsetting,
-    because containment must stay definitional. Every candidate plane is a
-    face of ``conv(mesh)`` (tangent, can never cut the mesh); the starting
-    polytope is the DOP so the result is ``⊆ DOP`` by construction (what
-    ``TightCollisionGeometry`` requires; ``link1``'s DOP has only 0.083 mm of
-    room inside its manifest box); planes are added worst-violation-first and
-    skipped if they'd push the vertex count over budget. So
-    ``mesh ⊆ result ⊆ DOP ⊆ box`` holds throughout (CLAUDE.md §3). For
-    ``link1``: 162 planes, 0.18 mm median / 0.65 mm max support gap.
-
-    Args:
-        points: every mesh vertex, in the manifest box's frame.
-        dop_lo: per-axis minima already computed for the 26-DOP.
-        dop_hi: per-axis maxima already computed for the 26-DOP.
-        budget: the kernel's ``kMaxTightHullVertices``.
-
-    Returns:
-        The refined polytope's vertices, at most ``budget`` of them.
-    """
-    import numpy as np
-    from scipy.spatial import ConvexHull, HalfspaceIntersection
-
-    axes = _dop_axes()
-    halfspaces = np.vstack(
-        [
-            np.hstack([axes, -np.asarray(dop_hi)[:, None]]),
-            np.hstack([-axes, np.asarray(dop_lo)[:, None]]),
-        ]
-    )
-    candidates = ConvexHull(points).equations
-    interior = points.mean(axis=0)
-
-    def vertices_of(planes: Points) -> Points:
-        found: Points = HalfspaceIntersection(planes, interior).intersections
-        return found
-
-    used = np.zeros(len(candidates), dtype=bool)
-    while True:
-        current = vertices_of(halfspaces)
-        if len(current) > budget:
-            break
-        # Score each unused tangent plane by how far the current polytope pokes
-        # past it: the plane that trims the most is the one worth spending
-        # vertices on.
-        overshoot = current @ candidates[:, :3].T + candidates[:, 3]
-        score = overshoot.max(axis=0)
-        score[used] = -np.inf
-        best = int(np.argmax(score))
-        if score[best] <= 1e-9:
-            break  # nothing left to trim; this IS the hull within tolerance
-        used[best] = True
-        trial = np.vstack([halfspaces, candidates[best]])
-        if len(vertices_of(trial)) > budget:
-            continue  # would overrun the budget; try the next-worst plane
-        halfspaces = trial
-
-    refined = vertices_of(halfspaces)
-    # Refuse rather than emit an envelope that does not contain its mesh.
-    residual = float(
-        (
-            points @ ConvexHull(refined).equations[:, :3].T + ConvexHull(refined).equations[:, 3]
-        ).max()
-    )
-    if residual > 1e-9:
-        msg = (
-            f"refined envelope cuts the mesh by {residual * 1e3:.9f} mm; refusing to "
-            "emit an envelope smaller than the geometry it must contain"
-        )
-        raise ValueError(msg)
-    return refined
-
-
-def derive_tight_geometry(points: Points, half_extents: tuple[float, ...]) -> dict[str, Any]:
-    """Build the DOP slabs and (when it fits the budget) the exact hull.
-
-    Returns a mapping ready for ``openral_core.schemas.TightCollisionGeometry``,
-    plus the diagnostics a reviewer needs: vertex counts and the achieved inward
-    margin of the DOP inside the shipped box.
-    """
-    import numpy as np
-    from openral_core.schemas import MAX_TIGHT_HULL_VERTICES
-
-    # mypy only requires the `import-untyped` ignore on this module's FIRST
-    # import site in the file (hull_overhang_m, above); a second one here is
-    # flagged as unused.
-    from scipy.spatial import ConvexHull
-
-    axes = _dop_axes()
-    proj = points @ axes.T
-    lo = proj.min(axis=0)
-    hi = proj.max(axis=0)
-
-    hull = ConvexHull(points)
-    hull_vertices = points[hull.vertices]
-    exact_count = int(len(hull_vertices))
-    fits_budget = exact_count <= MAX_TIGHT_HULL_VERTICES
-    decimated = False
-    if not fits_budget:
-        # Over budget is not a reason to fall back to the DOP — it is a reason to
-        # refine the DOP toward the hull. See `refine_dop_to_budget`.
-        hull_vertices = refine_dop_to_budget(points, lo, hi, MAX_TIGHT_HULL_VERTICES)
-        fits_budget = True
-        decimated = True
-
-    he = np.asarray(half_extents, dtype=float)
-    inward = float(np.minimum(he - hi[:3], he + lo[:3]).min())
-    return {
-        "dop_lo_m": [float(v) for v in lo],
-        "dop_hi_m": [float(v) for v in hi],
-        "hull_vertices_m": ([[float(c) for c in v] for v in hull_vertices] if fits_budget else []),
-        "_hull_vertex_count": int(len(hull_vertices)),
-        "_exact_hull_vertex_count": exact_count,
-        "_decimated": decimated,
-        "_stage2": bool(fits_budget),
-        "_dop_inward_margin_m": inward,
-    }
-
-
 def _load_robot(path: Path) -> Any:
     from openral_core.schemas import RobotDescription
 
@@ -406,23 +219,6 @@ def _emit(robot_path: Path) -> int:
     return 0
 
 
-# The sampled max keeps creeping up a couple of percent per grid doubling
-# (measured up to samples_per_edge=32 on every panda link with a stage-2
-# hull); this pads the shipped number well past that residual drift instead
-# of chasing convergence with an ever-finer, ever-slower grid.
-_HULL_OVERHANG_SAFETY_MARGIN = 1.2
-
-
-def _round_up_m(value: float, precision_m: float = 1e-6) -> float:
-    """Round a sampled distance up to the next ``precision_m``, never down.
-
-    The sampled maximum is a lower bound on the true continuous supremum; this
-    keeps the shipped number from ever quietly under-stating it by less than a
-    micron of rounding.
-    """
-    return math.ceil(value / precision_m) * precision_m
-
-
 def _check(robot_path: Path) -> int:
     import numpy as np
 
@@ -454,7 +250,8 @@ def _check(robot_path: Path) -> int:
             hull_pts = np.asarray(tight.hull_vertices_m, dtype=float)
             # And the mesh is inside the declared hull -- checked against every
             # facet, so a stale or truncated vertex list cannot pass.
-            from scipy.spatial import ConvexHull
+            # reason: scipy ships no type stubs and scipy-stubs is not a workspace dependency.
+            from scipy.spatial import ConvexHull  # type: ignore[import-untyped]
 
             hull = ConvexHull(hull_pts)
             normals = hull.equations[:, :3]
