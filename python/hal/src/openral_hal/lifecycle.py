@@ -168,6 +168,8 @@ def decode_action_chunk(msg: object) -> object | None:
     kwargs["confidence"] = 1.0 if confidence_raw is None else float(confidence_raw)
     kwargs["tick_index"] = int(getattr(msg, "tick_index", 0) or 0)
     kwargs["tick_group_size"] = max(int(getattr(msg, "tick_group_size", 1) or 1), 1)
+    # A pre-session IDL (no field) decodes to 0, the legacy "unknown runner".
+    kwargs["runner_session_id"] = int(getattr(msg, "runner_session_id", 0) or 0)
     # ADR-0102. Empty (or a pre-0102 IDL with no such field) decodes to None,
     # which is the whole-vector-in-manifest-order meaning the field replaced.
     slot_joint_names = [str(n) for n in (getattr(msg, "joint_names", None) or [])]
@@ -452,6 +454,8 @@ if _ROS2_AVAILABLE:
             self._safe_action_sub: Any = None
             self._action_applied_pub: Any = None
             self._last_action_applied_tick: int = 0
+            # runner_session_id the ack counter above belongs to (0 = legacy/none).
+            self._last_action_applied_session: int = 0
             self._deferred_action_applied_tick: int = 0
             self._safe_group_tick: int | None = None
             self._safe_group_count: int = 0
@@ -1118,20 +1122,26 @@ if _ROS2_AVAILABLE:
                 return
             group_size = int(action.tick_group_size)
             tick = int(action.tick_index)
-            if tick == 1 and self._last_action_applied_tick > 1:
-                # A restarted runner numbers from 1 again; the HAL adopted it
-                # (``refuse_stale_tick``), so the ack renumbers with it. A
-                # monotonic ack would leave the new runner waiting on tick 1.
+            session = int(action.runner_session_id)
+            # A different, non-legacy runner session is a restarted runner whose
+            # ticks start over; the HAL adopts it only when its first group
+            # commits (``TickWatermark``), so the ack renumbers only on completion
+            # below. A monotonic ack would leave the new runner waiting on tick 1.
+            new_session = session not in (0, self._last_action_applied_session)
+            if session == 0 and tick == 1 and self._last_action_applied_tick > 1:
+                # Legacy (no session id): Entry 036's heuristic — tick 1 is a
+                # restarted runner (``refuse_stale_tick``).
                 self._last_action_applied_tick = 0
                 self._deferred_action_applied_tick = 0
-            if tick <= 0 or tick <= self._last_action_applied_tick:
+            if tick <= 0 or (not new_session and tick <= self._last_action_applied_tick):
                 return
             if group_size <= 1:
                 complete = True
             else:
                 committed_tick = getattr(self._hal, "last_committed_tick", None)
                 if committed_tick is not None:
-                    complete = int(committed_tick) == tick
+                    committed_session = getattr(self._hal, "last_committed_session", session)
+                    complete = int(committed_tick) == tick and int(committed_session) == session
                 else:
                     if self._safe_group_tick is None:
                         self._safe_group_tick = tick
@@ -1142,6 +1152,10 @@ if _ROS2_AVAILABLE:
                     complete = self._safe_group_count == group_size
             if not complete:
                 return
+            if new_session:
+                self._last_action_applied_tick = 0
+                self._deferred_action_applied_tick = 0
+            self._last_action_applied_session = session
             if not self._attachment_perception_ready():
                 self._deferred_action_applied_tick = tick
                 self.get_logger().info(

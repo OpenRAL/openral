@@ -415,9 +415,14 @@ TEST_F(LifecycleKernelTest, VelocityChunkPassesWithFreshSeedWhenClear) {
   js_qos.best_effort();
   auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
   std::atomic<int> safe_count{0};
+  std::atomic<std::uint64_t> safe_session{0};
+  std::atomic<std::uint32_t> safe_tick{0};
   auto safe_sub = helper.create_subscription<openral_msgs::msg::ActionChunk>(
-      "/openral/safe_action", chunk_qos,
-      [&safe_count](const openral_msgs::msg::ActionChunk::SharedPtr) { ++safe_count; });
+      "/openral/safe_action", chunk_qos, [&](const openral_msgs::msg::ActionChunk::SharedPtr m) {
+        safe_session = m->runner_session_id;
+        safe_tick = m->tick_index;
+        ++safe_count;
+      });
 
   rclcpp::executors::SingleThreadedExecutor exec;
   exec.add_node(node->get_node_base_interface());
@@ -439,6 +444,8 @@ TEST_F(LifecycleKernelTest, VelocityChunkPassesWithFreshSeedWhenClear) {
   vel->horizon = 1;
   vel->n_dof = 2;
   vel->flat = {0.05, 0.05};
+  vel->tick_index = 42;
+  vel->runner_session_id = 0xFEEDFACECAFEBEEFull;  // uses the top bit of the uint64
   cand_pub->publish(*vel);
 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
@@ -448,6 +455,10 @@ TEST_F(LifecycleKernelTest, VelocityChunkPassesWithFreshSeedWhenClear) {
   }
   EXPECT_GT(safe_count.load(), 0)
       << "a clear velocity chunk with a fresh measured seed must pass to /openral/safe_action";
+  // The HAL keys its replay watermark on (runner_session_id, tick_index), so
+  // the kernel must forward both unchanged.
+  EXPECT_EQ(safe_session.load(), 0xFEEDFACECAFEBEEFull);
+  EXPECT_EQ(safe_tick.load(), 42u);
   EXPECT_FALSE(node->fault_latched());
 }
 

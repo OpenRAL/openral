@@ -16,6 +16,7 @@ decoder is duck-typed so any object exposing the wire field names works.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import pytest
 from openral_core.schemas import CONTROL_MODE_TO_UINT8, Action, ControlMode
@@ -40,6 +41,7 @@ class FakeChunk:
     confidence: float = 1.0
     tick_index: int = 0
     tick_group_size: int = 1
+    runner_session_id: int = 0
     cartesian_delta_scale: list[float] = field(default_factory=list)
     joint_names: list[str] = field(default_factory=list)
 
@@ -109,6 +111,7 @@ class TestDecodeActionChunk:
             confidence=0.75,
             tick_index=42,
             tick_group_size=3,
+            runner_session_id=0xDEADBEEFCAFE,
         )
         action = decode_action_chunk(chunk)
         assert isinstance(action, Action)
@@ -117,6 +120,15 @@ class TestDecodeActionChunk:
         assert action.confidence == pytest.approx(0.75)
         assert action.tick_index == 42
         assert action.tick_group_size == 3
+        assert action.runner_session_id == 0xDEADBEEFCAFE
+
+    def test_a_chunk_without_a_session_id_decodes_as_legacy(self) -> None:
+        # A pre-session IDL has no such attribute: 0 = unknown runner, which
+        # keeps the HAL on the tick-only Entry-036 heuristic.
+        chunk = SimpleNamespace(flat=[0.1], n_dof=1, tick_index=3)
+        action = decode_action_chunk(chunk)
+        assert isinstance(action, Action)
+        assert action.runner_session_id == 0
 
     def test_zero_confidence_round_trips(self) -> None:
         """confidence=0.0 (policy disowns the action) must not decode as 1.0.

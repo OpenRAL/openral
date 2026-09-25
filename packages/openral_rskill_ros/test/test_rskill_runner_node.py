@@ -296,6 +296,7 @@ def test_execute_skill_goal_publishes_chunks_through_safety_passthrough() -> Non
     from rclpy.action import ActionClient
 
     with _compose_harness() as (executor, runtime, _safety, observed):
+        session = runtime.skill_runner_node._runner_session_id
         client = ActionClient(
             runtime.skill_runner_node,
             ExecuteRskill,
@@ -344,6 +345,11 @@ def test_execute_skill_goal_publishes_chunks_through_safety_passthrough() -> Non
     # safety_node should have passed the chunks through.
     assert observed["safe"], "no ActionChunk landed on /openral/safe_action"
     assert observed["safe"][0].rskill_id == "openral/test-constant-skill"
+    # Every chunk carries this runner process's random session id, unchanged
+    # across the safety hop — the HAL keys its replay watermark on it.
+    assert session != 0
+    assert {int(c.runner_session_id) for c in observed["candidate"]} == {session}
+    assert {int(c.runner_session_id) for c in observed["safe"]} == {session}
 
     # Diagnostics: at least one heartbeat from each of the three
     # lifecycle nodes (world_state, skill_runner, safety).

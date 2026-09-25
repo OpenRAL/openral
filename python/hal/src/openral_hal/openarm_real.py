@@ -425,7 +425,7 @@ class OpenArmRealHAL(RosControlHAL):
         else:
             # Ungrouped ticked actions (starting-pose ramp, approach) share the
             # watermark, so a restarted runner's renumbering is seen here too.
-            self._slot_group.admit(int(action.tick_index))
+            self._slot_group.admit(action)
 
         self._validate_action(action)
 
@@ -470,7 +470,7 @@ class OpenArmRealHAL(RosControlHAL):
         if group is not None:
             self._slot_group.commit(group)
         else:
-            self._slot_group.commit_tick(int(action.tick_index))
+            self._slot_group.commit_tick(action)
 
         log.debug(
             "hal.send_action",
@@ -499,6 +499,11 @@ class OpenArmRealHAL(RosControlHAL):
         than by counting slots that reached ``send_action``.
         """
         return self._slot_group.last_committed_tick
+
+    @property
+    def last_committed_session(self) -> int:
+        """``runner_session_id`` of ``last_committed_tick`` (0 = none/legacy)."""
+        return self._slot_group.last_committed_session
 
     def estop(self) -> None:
         """Trigger an emergency stop, dropping any half-staged slot group.
