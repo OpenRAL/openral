@@ -19,6 +19,37 @@ from openral_core.schemas import Action, ControlMode, RobotDescription
 log = structlog.get_logger(__name__)
 
 
+def resolve_staleness_limit_s(description: RobotDescription, override: float | None) -> float:
+    """A real HAL's joint-state freshness window: an explicit value, else the manifest's.
+
+    The manifest's ``safety.joint_state_staleness_limit_s`` is the one place a rig
+    declares it (``build_hal`` passes it as ``staleness_limit_s``); a HAL built
+    directly without it reads its description. No constructor default: a window
+    nobody measured must not reach the actuation path silently.
+
+    Raises:
+        ROSConfigError: Neither an override nor a manifest value exists.
+
+    Example:
+        >>> from openral_core.schemas import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/aloha_bimanual/robot.yaml")
+        >>> resolve_staleness_limit_s(desc, None)
+        0.2
+        >>> resolve_staleness_limit_s(desc, 0.05)
+        0.05
+    """
+    if override is not None:
+        return float(override)
+    declared = description.safety.joint_state_staleness_limit_s
+    if declared is None:
+        raise ROSConfigError(
+            f"robot {description.name!r} declares no safety.joint_state_staleness_limit_s "
+            "and no staleness_limit_s was passed; declare the measured window in the "
+            "manifest (tools/joint_state_staleness_probe.py --robot)."
+        )
+    return float(declared)
+
+
 class HALBase:
     """Shared state + helpers for every HAL adapter.
 

@@ -29,7 +29,7 @@ import time
 from typing import TYPE_CHECKING, Final, cast
 
 import structlog
-from openral_core import FrameEncoding
+from openral_core import CAMERA_TOPIC_PREFIX, CameraTopicKind, FrameEncoding, camera_topic
 from openral_core.exceptions import ROSPerceptionStale
 
 if TYPE_CHECKING:
@@ -493,6 +493,13 @@ _IMAGE_TOPIC_NAMES: Final[frozenset[str]] = frozenset(
 )
 
 
+# OpenRAL image stream kind -> its CameraInfo kind (``camera_topic`` layout).
+_OPENRAL_INFO_KIND: Final[dict[str, CameraTopicKind]] = {
+    CameraTopicKind.IMAGE.value: CameraTopicKind.CAMERA_INFO,
+    CameraTopicKind.DEPTH_IMAGE.value: CameraTopicKind.DEPTH_CAMERA_INFO,
+}
+
+
 def camera_info_topic_for(image_topic: str) -> str:
     """Return the ``CameraInfo`` topic that sits beside ``image_topic``.
 
@@ -501,7 +508,10 @@ def camera_info_topic_for(image_topic: str) -> str:
     (the sim HAL's and the deploy sensor leg's layout), and ``image_pipeline``'s
     ``image_raw`` / ``image_rect`` / ``image_color`` / ``image_mono`` /
     ``image_rect_color`` do the same. Any other topic falls back to
-    ``<topic>/camera_info``.
+    ``<topic>/camera_info``. OpenRAL's own camera topics are resolved through
+    ``openral_core.camera_topic`` (the one spelling of that layout); the
+    suffix rules here only cover driver topics such as a RealSense
+    ``ros2_topic``.
 
     Example:
         >>> camera_info_topic_for("/openral/cameras/wrist/image")
@@ -511,6 +521,12 @@ def camera_info_topic_for(image_topic: str) -> str:
         >>> camera_info_topic_for("/zed/left/rgb")
         '/zed/left/rgb/camera_info'
     """
+    prefix = f"{CAMERA_TOPIC_PREFIX}/"
+    if image_topic.startswith(prefix):
+        name, _, kind = image_topic.removeprefix(prefix).partition("/")
+        info_kind = _OPENRAL_INFO_KIND.get(kind)
+        if name and info_kind is not None:
+            return camera_topic(name, info_kind)
     namespace, _, last = image_topic.rpartition("/")
     if last in _IMAGE_TOPIC_NAMES:
         return f"{namespace}/camera_info"
@@ -548,7 +564,10 @@ def build_camera_info_msg(
 
     Returns:
         A populated ``CameraInfo`` (plumb-bob / manifest distortion, identity
-        ``r``, monocular ``p``).
+        ``r``, monocular ``p``). ``p``'s ``Tx`` is always 0: no manifest field
+        declares a stereo baseline (``IntrinsicsPinhole`` is per-camera), so a
+        right stereo camera fed through here publishes a monocular projection
+        and stereo consumers must take the baseline from TF.
 
     Example:
         >>> # Needs sensor_msgs; exercised in tests/unit/test_camera_info_msg.py

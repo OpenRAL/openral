@@ -28,7 +28,7 @@ Example:
     ...     capabilities=RobotCapabilities(
     ...         supported_control_modes=[ControlMode.JOINT_POSITION],
     ...     ),
-    ...     safety=SafetyEnvelope(),
+    ...     safety=SafetyEnvelope(joint_state_staleness_limit_s=0.5),  # required: no default
     ...     action_spec=ActionSpec(dim=1, control_freq_hz=30.0),  # required: sets the deadline
     ... )
     >>> hal = RosControlHAL(desc, controller_name="joint_trajectory_controller")
@@ -54,7 +54,7 @@ from openral_core.exceptions import (
 )
 from openral_core.schemas import Action, JointState, RobotDescription
 
-from openral_hal._base import HALBase, _raw_floats
+from openral_hal._base import HALBase, _raw_floats, resolve_staleness_limit_s
 from openral_hal.protocol import EStopRecovery
 
 __all__ = [
@@ -281,7 +281,9 @@ class RosControlHAL(HALBase):
             ``JointState``.  Replace with a real subscriber callback in
             integration tests.
         staleness_limit_s: Maximum age (seconds) of a ``read_state()`` reading
-            before ``ROSPerceptionStale`` is raised.  Defaults to ``0.5 s``.
+            before ``ROSPerceptionStale`` is raised. ``None`` (default) reads
+            the manifest's ``safety.joint_state_staleness_limit_s``; neither
+            raises ``ROSConfigError``.
         stop_timeout_s: How long ``estop`` / ``reset_estop`` wait for the
             controller switch and the vendor stop to be acknowledged.
 
@@ -328,7 +330,7 @@ class RosControlHAL(HALBase):
         command_topic: str | None = None,
         publish_fn: _PublishFn | None = None,
         state_fn: Callable[[], dict[str, object]] | None = None,
-        staleness_limit_s: float = 0.5,
+        staleness_limit_s: float | None = None,
         stop_timeout_s: float = _DEFAULT_STOP_TIMEOUT_S,
     ) -> None:
         """Initialise the adapter; does not open any connection yet."""
@@ -355,7 +357,7 @@ class RosControlHAL(HALBase):
         self._command_topic = command_topic or f"/{controller_name}/joint_trajectory"
         self._publish_fn: _PublishFn = publish_fn or _default_publish
         self._state_fn = state_fn
-        self._staleness_limit_s = staleness_limit_s
+        self._staleness_limit_s = resolve_staleness_limit_s(description, staleness_limit_s)
         self._stop_timeout_s = stop_timeout_s
         self._stop_seam: ControllerStopSeam | None = None
         self._last_stop_report: DownstreamStopReport | None = None

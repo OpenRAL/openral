@@ -18,7 +18,10 @@ Conversion order:
 * action, slot path: the SAME per-channel unit conversion, in policy order, per slot
   (JOINT_POSITION / JOINT_VELOCITY channels deg->rad, gripper channels and
   GRIPPER_POSITION slots descaled). No permutation: slots route by their own
-  ``joint_names``, and permuting first would shift every slot range.
+  ``joint_names``, and permuting first would shift every slot range. JOINT_POSITION
+  slot channels are then clamped like the joint path (``_CLAMP_EPS`` inside the
+  limits), keyed by the slot's ``joint_names`` or, when it declares none, by
+  ``RobotDescription.joints`` order.
 """
 
 from __future__ import annotations
@@ -300,7 +303,9 @@ class PolicyIOCodec(BaseModel):
         """Policy action -> robot units (and robot order on the whole-vector path).
 
         With ``slots`` the vector stays in policy order (slots index it) and each
-        slot's channels get the unit conversion its control mode implies.
+        slot's channels get the unit conversion its control mode implies;
+        JOINT_POSITION slot channels are also clamped strictly inside their joint's
+        position limits (the whole-vector path clamps separately via ``clamp``).
         """
         if slots:
             return self._slots_to_robot_units(policy_action, slots)
@@ -320,6 +325,7 @@ class PolicyIOCodec(BaseModel):
     ) -> NDArray[Any]:
         out = policy_action.copy()
         grip_by_name = dict(zip(self.robot_joint_names, self.robot_is_gripper, strict=True))
+        index_by_name = {n: i for i, n in enumerate(self.robot_joint_names)}
         for slot in slots:
             if slot.discard:
                 continue
@@ -339,8 +345,20 @@ class PolicyIOCodec(BaseModel):
                     val /= self.gripper_scale
                 elif self.joint_units_are_degrees:
                     val = math.radians(val)
+                if slot.control_mode is ControlMode.JOINT_POSITION:
+                    joint = index_by_name.get(slot.joint_names[k]) if slot.joint_names else k
+                    val = self._clamp_joint(joint, val)
                 out[lo + k] = val
         return out
+
+    def _clamp_joint(self, joint: int | None, value: float) -> float:
+        """Pull one robot joint's target strictly inside its limits (unknown joint: as is)."""
+        if joint is None or joint >= len(self.joint_limits):
+            return value
+        lims = self.joint_limits[joint]
+        if lims is None:
+            return value
+        return min(max(value, lims[0] + _CLAMP_EPS), lims[1] - _CLAMP_EPS)
 
     def clamp(self, robot_action: NDArray[Any]) -> NDArray[Any]:
         """Pull each joint strictly inside its declared position limits.
@@ -351,7 +369,6 @@ class PolicyIOCodec(BaseModel):
         out = robot_action.copy()
         if not self.joint_limits or out.shape[0] != len(self.joint_limits):
             return out
-        for i, lims in enumerate(self.joint_limits):
-            if lims is not None:
-                out[i] = min(max(float(out[i]), lims[0] + _CLAMP_EPS), lims[1] - _CLAMP_EPS)
+        for i in range(len(self.joint_limits)):
+            out[i] = self._clamp_joint(i, float(out[i]))
         return out

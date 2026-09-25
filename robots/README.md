@@ -57,3 +57,22 @@ for the shape (joints, `capabilities.embodiment_tags`, `safety`,
 `hal.{sim,real}`, optional `sim:` MuJoCo wiring). A new manifest is
 auto-registered on next import; no code change is needed to make it visible
 to `openral sim list` / `openral rskill check` / the eval registry.
+
+A manifest with `hal.real` set must declare every value the real path reads —
+the schema refuses it otherwise, naming each gap: `action_spec.control_freq_hz`,
+the kernel's `safety` thresholds, `safety.joint_state_staleness_limit_s` (the
+HAL's and the runner's joint-state window, measured on the raw stream; measure
+it with `tools/joint_state_staleness_probe.py --robot`. A runner that reads the
+HAL's rate-limited `~/joint_states` republish gets two republish periods on top,
+capped at 0.5 s), and the starting-pose approach
+per joint type — `safety.starting_pose_max_joint_speed_rad_s` /
+`starting_pose_tolerance_rad` for revolute joints, `..._m_s` / `..._m` when the
+robot has a prismatic joint (the runner also caps each joint at its
+`velocity_limit`). A value copied from another robot rather than measured on
+this one is marked `provisional` in the manifest comment.
+
+Robot manifests are at `schema_version: "0.2"`, and only `"0.2"` loads. There is
+no migration path: a `"0.1"` manifest is refused with a `ROSConfigError`. To update
+one, move `hal.parameters.defaults.staleness_limit_s` to
+`safety.joint_state_staleness_limit_s`, measure and declare every real-hardware
+safety field above on the rig, and set `schema_version: "0.2"`.

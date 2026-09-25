@@ -21,6 +21,7 @@ from types import ModuleType
 import numpy as np
 import pytest
 from openral_core import Action, ActionSlot, ControlMode
+from openral_rskill._policy_io import PolicyIOCodec
 
 
 def _load_skill_runner_module() -> ModuleType:
@@ -390,7 +391,13 @@ def test_joint_position_slots_are_clamped_inside_the_robots_joint_limits(
     vec = np.zeros(16, dtype=np.float32)
     vec[4] = -1.58973  # left_joint5, 0.019 rad past its limit
     vec[12] = float(hi) + 0.5  # right_joint5, well past the other end
-    actions = runner_mod._dispatch_slots(slots, vec, description=desc)
+    actions = runner_mod._policy_action_to_actions(
+        vec,
+        codec=PolicyIOCodec.from_manifest(None, desc),
+        slots=slots,
+        description=desc,
+        cartesian_delta_scale=None,
+    )
 
     left_action = next(a for a in actions if a.joint_names == left)
     right_action = next(a for a in actions if a.joint_names == right)
@@ -401,26 +408,65 @@ def test_joint_position_slots_are_clamped_inside_the_robots_joint_limits(
     assert left_action.joint_targets[0][4] > float(lo)
 
 
-def test_clamping_leaves_a_mismatched_slice_for_the_payload_check(
+def test_an_unnamed_joint_position_slot_is_clamped_in_description_order(
     runner_mod: ModuleType,
 ) -> None:
-    """A slice wider than its ``joint_names`` is returned untouched, never truncated.
+    """A JOINT_POSITION slot without ``joint_names`` is clamped too (audit A.md F4).
 
-    ``_pad_joint_payload`` refuses the mismatch by name; a ``zip`` that stopped
-    at the shorter side would drop the extra column and let it pass.
+    Such a slot is a whole-vector action in ``RobotDescription.joints`` order
+    (``_slot_joint_names``). The runner's old slot clamp keyed on names only,
+    so it proposed these targets raw; the clamp now lives in the one codec
+    (``PolicyIOCodec``) with the same epsilon as the whole-vector path.
+    Real fixture: the Franka Panda manifest, an arm + gripper contract.
     """
     import yaml
     from openral_core import RobotDescription
 
     repo_root = Path(__file__).resolve().parents[2]
     desc = RobotDescription.model_validate(
-        yaml.safe_load((repo_root / "robots" / "openarm" / "robot.yaml").read_text())
+        yaml.safe_load((repo_root / "robots" / "franka_panda" / "robot.yaml").read_text())
     )
-    names = [f"left_joint{i}" for i in range(1, 8)]
-    wide = [5.0] * 8
-    assert runner_mod._clamp_joint_position_slice(wide, names, desc) == wide
-    narrow = [5.0] * 6
-    assert runner_mod._clamp_joint_position_slice(narrow, names, desc) == narrow
-    # The matching width still clamps.
-    exact = runner_mod._clamp_joint_position_slice([5.0] * 7, names, desc)
-    assert all(v < 5.0 for v in exact)
+    n = len(desc.joints)
+    slots = [ActionSlot(range=(0, n - 1), control_mode=ControlMode.JOINT_POSITION)]
+    limits = [j.position_limits for j in desc.joints]
+    lo4, hi4 = limits[3]
+    vec = np.zeros(n, dtype=np.float32)
+    vec[3] = float(hi4) + 0.3  # panda_joint4 past its upper limit
+    vec[0] = float(limits[0][0]) - 0.3  # panda_joint1 past its lower limit
+    codec = PolicyIOCodec.from_manifest(None, desc)
+
+    (action,) = runner_mod._policy_action_to_actions(
+        vec, codec=codec, slots=slots, description=desc, cartesian_delta_scale=None
+    )
+    row = action.joint_targets[0]
+    assert row[3] == pytest.approx(float(hi4) - 1e-3)
+    assert row[0] == pytest.approx(float(limits[0][0]) + 1e-3)
+    # Same result as the whole-vector path: one clamp, one epsilon.
+    assert row == pytest.approx(list(codec.clamp(codec.to_robot_action(vec))))
+    assert float(lo4) < row[3] < float(hi4)
+
+
+def test_a_joint_position_slot_whose_width_differs_from_its_joint_names_is_refused() -> None:
+    """A width/``joint_names`` mismatch never reaches the clamp (#289's slice fix).
+
+    ``PolicyIOCodec._slots_to_robot_units`` indexes ``slot.joint_names[k]`` over
+    the slot width, so a mismatch there would clamp against the wrong joint or
+    truncate. ``ActionSlot``'s own validator refuses it at manifest load, naming
+    ``joint_names``, so no codec-side guard is needed. Real joint names: the
+    Franka Panda manifest.
+    """
+    import yaml
+    from openral_core import RobotDescription
+    from pydantic import ValidationError
+
+    repo_root = Path(__file__).resolve().parents[2]
+    desc = RobotDescription.model_validate(
+        yaml.safe_load((repo_root / "robots" / "franka_panda" / "robot.yaml").read_text())
+    )
+    names = [j.name for j in desc.joints][:7]
+    for width in (6, 8):  # narrower and wider than the seven names
+        with pytest.raises(ValidationError, match=r"joint_names length \(7\) must equal"):
+            ActionSlot(
+                range=(0, width - 1), control_mode=ControlMode.JOINT_POSITION, joint_names=names
+            )
+    ActionSlot(range=(0, 6), control_mode=ControlMode.JOINT_POSITION, joint_names=names)

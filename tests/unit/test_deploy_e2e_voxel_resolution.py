@@ -37,20 +37,6 @@ def launch_module() -> object:
     return module
 
 
-def test_the_data_age_budget_clears_the_receipt_window(launch_module: object) -> None:
-    """The kernel's data-age budget must exceed what the receipt-based path already tolerates.
-
-    Receipt deadline plus the bridge's republish bound is the longest a grid can
-    be trusted after the last octree (2.0 s); the data-age budget exists to be
-    the tighter of the two on the world's age, but it must still clear the
-    measured Thor tail (p99 ~1.0 s) or it would drop healthy chunks.
-    """
-    budget = launch_module._WORLD_VOXEL_DATA_AGE_BUDGET_MS  # type: ignore[attr-defined]
-    deadline = launch_module._WORLD_VOXEL_DEADLINE_MS  # type: ignore[attr-defined]
-    bound_s = launch_module._MAX_OCTREE_AGE_S  # type: ignore[attr-defined]
-    assert 1000.0 < budget < deadline + bound_s * 1000.0
-
-
 def test_self_filter_poses_the_kernels_model_with_manifest_and_upstream_joint_names(
     launch_module: object,
 ) -> None:
@@ -68,7 +54,7 @@ def test_self_filter_poses_the_kernels_model_with_manifest_and_upstream_joint_na
     description = RobotDescription.from_yaml(str(REPO_ROOT / "robots/openarm/robot.yaml"))
     collision = collision_params_from_description(description)
     params = launch_module._self_filter_params(  # type: ignore[attr-defined]
-        collision, description, "/openral_hal_openarm/joint_states"
+        collision, description, "/openral_hal_openarm/joint_states", 0.03
     )
     for key, value in collision.items():
         if key.startswith("collision_"):
@@ -80,7 +66,7 @@ def test_self_filter_poses_the_kernels_model_with_manifest_and_upstream_joint_na
     assert len(aliases) == len(names)
     assert aliases[names.index("left_joint1")] == "openarm_left_joint1"
     assert params["joint_states_topic"] == "/openral_hal_openarm/joint_states"
-    assert params["padding_m"] == launch_module._SELF_FILTER_PADDING_M  # type: ignore[attr-defined]
+    assert params["padding_m"] == 0.03
     # The filtered cloud is the world map's input, never a camera topic (ADR-0108).
     assert not launch_module._SELF_FILTERED_CLOUD_TOPIC.startswith("/openral/cameras/")  # type: ignore[attr-defined]
 
@@ -227,20 +213,39 @@ def test_the_quantisation_gain_matches_the_matrix_budget_it_is_derived_from() ->
     assert pytest.approx(8.66, abs=0.01) == stop_ee_speed.QUANTISATION_GAIN_M * 1e3
 
 
-def test_the_octree_age_bound_is_derived_from_the_kernel_deadline(launch_module: object) -> None:
-    """The bridge's ``max_octree_age_s`` equals the kernel's voxel deadline (Entry 033).
+def test_voxel_freshness_is_the_declared_rig_value_and_never_exceeds_the_deadline(
+    launch_module: object,
+) -> None:
+    """The bridge's ``max_octree_age_s`` never exceeds the kernel's voxel deadline (Entry 033).
 
-    It must not exceed the deadline, so a silent octree ends in the kernel's
-    ``DROP_VOXEL_UNAVAILABLE`` within bound + deadline (2.0 s), and it must sit well
-    above octomap's measured gaps (0.31 s at Thor's 3.2 Hz; ~0.45 s at 2.2 Hz) so a
-    live camera never silences the grid. The launch also has to pass it to the
-    bridge, and the kernel the same deadline it was derived from.
+    Both are ``DeployRuntime`` fields now, not Thor-tuned constants: the launch takes the
+    scene's pair, defaults the age to the deadline, and refuses a bound above it, so a
+    silent octree still ends in the kernel's ``DROP_VOXEL_UNAVAILABLE`` within bound +
+    deadline whoever launches it. And the launch must pass the pair to the right nodes.
     """
-    deadline_s = launch_module._WORLD_VOXEL_DEADLINE_MS / 1000.0
-    bound = launch_module._MAX_OCTREE_AGE_S
-    assert bound == pytest.approx(deadline_s)
-    assert 0.45 * 2 <= bound <= deadline_s
+    from openral_core import DeployRuntime
+    from pydantic import ValidationError
+
+    rig_from = launch_module._rig_from_launch_args  # type: ignore[attr-defined]
+
+    def freshness(deadline: str, age: str) -> tuple[float, float]:
+        rig = rig_from({"world_voxel_deadline_s": deadline, "max_octree_age_s": age})
+        d, a = rig.voxel_freshness_s
+        return d * 1000.0, a
+
+    default_deadline, default_age = DeployRuntime().voxel_freshness_s
+    assert freshness("", "") == (default_deadline * 1000.0, default_age)
+    assert default_age <= default_deadline
+    for deadline, age in (("2.0", ""), ("2.0", "2.0"), ("2.0", "0.8"), ("0.4", "")):
+        deadline_ms, bound = freshness(deadline, age)
+        assert deadline_ms == float(deadline) * 1000.0
+        assert bound == (float(age) if age else float(deadline))
+        assert bound <= deadline_ms / 1000.0
+    with pytest.raises(ValidationError, match="must not exceed"):
+        freshness("1.0", "1.5")
+    with pytest.raises(ValidationError, match="must not exceed"):
+        freshness("", str(default_deadline + 0.5))
 
     source = LAUNCH.read_text()
-    assert '"max_octree_age_s": _MAX_OCTREE_AGE_S' in source
-    assert '"world_voxel_deadline_ms": _WORLD_VOXEL_DEADLINE_MS' in source
+    assert '"max_octree_age_s": max_octree_age_s' in source
+    assert '"world_voxel_deadline_ms": world_voxel_deadline_s * 1000.0' in source

@@ -24,11 +24,9 @@ Public surface
   a start path.
 - ``validate_skill_ref``: Validate a bare rSkill reference string.
 
-Heavy-dependency adapters (``SmolVLAAdapter``, ``SO100SmolVLASkill``) and
-backends (``PyTorchRuntime``, ``ONNXRuntime``) are **not** imported here.
-Import them explicitly when their dependencies are installed:
+Heavy-dependency backends (``PyTorchRuntime``, ``ONNXRuntime``) are **not**
+imported here. Import them explicitly when their dependencies are installed:
 
-    from openral_rskill.smolvla import SmolVLAAdapter, SO100SmolVLASkill
     from openral_rskill.runtime_pytorch import PyTorchRuntime
     from openral_rskill.runtime_onnx import ONNXRuntime
 
