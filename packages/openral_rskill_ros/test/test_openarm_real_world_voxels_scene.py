@@ -194,11 +194,21 @@ def test_the_kernel_gets_world_voxel_enabled_at_the_real_margin() -> None:
     # Real hardware has no attachment producer, so payload checking stays off.
     assert kernel_params.get("attached_collision_enabled", False) is False
 
+    def remaps(node: Any) -> dict[str, str]:
+        return {
+            "".join(s.text for s in k): "".join(s.text for s in v)
+            for k, v in node._Node__remappings
+        }
+
+    # Real camera: the robot self-filter sits between the ZED cloud and octomap.
+    self_filter = _node(entities, "openral_octomap_bridge", "robot_self_filter")
+    assert remaps(self_filter)["cloud_in"] == _ZED_CLOUD
     octomap = _node(entities, "octomap_server")
-    remaps = {
-        "".join(s.text for s in k): "".join(s.text for s in v) for k, v in octomap._Node__remappings
-    }
-    assert remaps["cloud_in"] == _ZED_CLOUD
+    assert remaps(octomap)["cloud_in"] == remaps(self_filter)["cloud_out"]
+    (filter_params,) = evaluate_parameters(ctx, self_filter._Node__parameters)
+    # The filter poses the robot from the stream the runtime nodes read: the real
+    # ros2_control HAL's rate-limited republish (hal_joint_states_topic).
+    assert filter_params["joint_states_topic"] == "/openral_hal_openarm/joint_states"
     (octo_params,) = evaluate_parameters(ctx, octomap._Node__parameters)
     assert octo_params["resolution"] == 0.02
     assert octo_params["frame_id"] == "openarm_base"
