@@ -107,6 +107,11 @@ if(BUILD_TESTING)
   target_link_libraries(test_bridge_staleness octree_to_grid)
   ament_target_dependencies(test_bridge_staleness
     rclcpp octomap_msgs tf2 tf2_ros tf2_geometry_msgs geometry_msgs openral_msgs)
+  ament_add_gtest(test_bridge_rate_budget test/test_bridge_rate_budget.cpp TIMEOUT 60)
+  target_include_directories(test_bridge_rate_budget PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_bridge_rate_budget octree_to_grid)
+  ament_target_dependencies(test_bridge_rate_budget
+    rclcpp octomap_msgs tf2 tf2_ros tf2_geometry_msgs geometry_msgs openral_msgs)
 endif()
 
 ament_package()
