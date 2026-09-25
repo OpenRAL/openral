@@ -89,8 +89,13 @@ if(BUILD_TESTING)
   # kernel's own CMakeLists).
   find_package(Protobuf REQUIRED)
   find_package(openral_safety_kernel REQUIRED)
+  # The manifest test reads robots/panda_mobile/robot.yaml straight from the
+  # source tree (yaml-cpp, test-only), so it runs on real tight geometry.
+  find_package(yaml-cpp REQUIRED)
   ament_add_gtest(test_self_filter test/test_self_filter.cpp)
-  target_link_libraries(test_self_filter octree_to_grid)
+  target_link_libraries(test_self_filter octree_to_grid yaml-cpp::yaml-cpp)
+  target_compile_definitions(test_self_filter
+    PRIVATE OPENRAL_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../..")
   ament_target_dependencies(test_self_filter openral_safety_kernel openral_msgs tf2)
   ament_add_gtest(test_robot_self_filter_node test/test_robot_self_filter_node.cpp TIMEOUT 60)
   target_include_directories(test_robot_self_filter_node PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
