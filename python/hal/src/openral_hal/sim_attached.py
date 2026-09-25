@@ -865,8 +865,10 @@ class SimAttachedHAL:
             )
         # Same replay guard as ``SlotGroupStager.stage``: a whole group of an
         # already-committed tick must not step the simulator again; tick 1
-        # above a watermark of 1 is a restarted runner and resets it.
-        self._last_committed_tick = refuse_stale_tick(tick, self._last_committed_tick)
+        # above a watermark of 1 is a restarted runner and is admitted. A check
+        # only: the watermark moves when the group commits below, so one delayed
+        # tick-1 slot of the old runner cannot drop it and re-admit stale ticks.
+        refuse_stale_tick(tick, self._last_committed_tick)
         if self._pending_action_tick is not None and tick != self._pending_action_tick:
             # Atomicity is preserved: a group missing a safety-rejected slot
             # must never commit its other slots. Under the producer's applied-

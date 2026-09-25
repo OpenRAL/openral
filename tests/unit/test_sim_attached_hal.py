@@ -312,6 +312,27 @@ def test_tick_one_after_a_higher_watermark_is_a_restarted_runner_everything_else
     assert (env.step_calls, hal.last_committed_tick) == (2, 1)
 
 
+def test_a_stray_tick_one_slot_does_not_drop_the_watermark() -> None:
+    """Adopting a restart is decided per slot but applied on commit.
+
+    One delayed tick-1 slot from the OLD runner must not reset the watermark: the
+    old runner's other in-flight ticks would then be re-admitted and stepped.
+    """
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    for slot in _slot_tick(9):
+        hal.send_action(slot)
+    hal.send_action(_slot_tick(1)[0])  # staged, not committed
+    assert hal.last_committed_tick == 9
+    with pytest.raises(ROSRuntimeError):
+        hal.send_action(_slot_tick(5)[0])
+    for slot in _slot_tick(5):
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(slot)
+    assert (env.step_calls, hal.last_committed_tick) == (1, 9)
+
+
 def test_estop_keeps_the_watermark_so_a_pre_stop_tick_is_still_refused() -> None:
     env = FakeSimEnv(action_dim=11)
     hal = SimAttachedHAL(env, _two_dof_description())
