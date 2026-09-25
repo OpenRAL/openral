@@ -149,7 +149,7 @@ def test_real_kernel_mobile_base_world_collision_estops() -> None:
             # Panda's link5 and link7 really interpenetrate, by 5.65 mm at their
             # own collision meshes. That was invisible until issue #191 retired
             # the link5↔link7 ACM exemption, and it is a genuine SELF collision
-            # -- which would pre-empt the WORLD stop this test is about. 1.571 is
+            # -- which would preempt the WORLD stop this test is about. 1.571 is
             # the SRDF's own `ready` value for that joint and clears by 22.07 mm.
             js = JointState()
             js.name = joint_names
