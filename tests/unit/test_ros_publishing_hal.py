@@ -419,7 +419,7 @@ def test_hal_lifecycle_publishes_single_action_ack() -> None:
     reason="rclpy / openral_msgs / std_msgs not on PYTHONPATH",
 )
 def test_hal_lifecycle_acks_a_restarted_runners_tick_one() -> None:
-    """The ack follows the HAL's tick rule (hazard log Entry 035).
+    """The ack follows the HAL's tick rule (hazard log Entry 036).
 
     The HAL adopts tick 1 above a watermark of 1 (a restarted runner); an ack
     that stayed monotonic would never report it, and the new runner would
