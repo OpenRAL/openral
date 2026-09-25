@@ -122,6 +122,21 @@ _IoU-gated spatial object memory — pure, ROS-free, unit-testable._
 - `class ObjectMemory(*, iou_threshold=0.3, max_misses=1)` — IoU-gated spatial memory with freeze-on-match, in-FOV-guarded eviction, and out-of-FOV retention. Maintains a monotonic `track_id` counter. (L30)
   - `tick(candidates: list[DetectedObject], *, stamp_ns: int, in_fov: Callable[[DetectedObject], bool]) -> list[DetectedObject]` — Run one association+eviction step: greedy highest-confidence matching by same-label + `aabb_iou_3d ≥ iou_threshold` freezes a track (unchanged pose/bbox, bumped confidence); no match mints a new track. An unmatched track in FOV accrues `miss_count` and is evicted at `max_misses`; out of FOV it's retained unchanged. (L64)
 
+### `packages/openral_octomap_bridge/include/openral_octomap_bridge/self_filter.hpp`
+_C++ (Layer 2). The real-camera counterpart of the sim depth renderer's robot transparency: removes the robot's (and a held payload's) own returns from a depth cloud before `octomap_server` inserts it. Poses the kernel's own collision primitives via an FK that mirrors the kernel's operation for operation (a test links the kernel library to pin it; the runtime does not, since Layer 2 may not depend on Layer 5). The node is `src/robot_self_filter.hpp` (`robot_self_filter` executable), wired by `deploy_e2e.launch.py` on the real path only._
+
+- `enum class SelfJointKind` — The kernel's joint codes: `kFixed` / `kRevolute` / `kPrismatic`.
+- `struct SelfModelParams` — The kernel's `collision_*` parameter arrays, exactly as the launch passes them.
+- `struct SelfModel` — Flattened tree + every link-attached primitive (capsule, sphere as a zero-length capsule, box) in its link frame; `link_index(name) -> int`.
+- `self_transform_from_xyz_rpy(x, y, z, roll, pitch, yaw) -> tf2::Transform` — `Rz·Ry·Rx`, the kernel's `transform_from_xyz_rpy` element for element.
+- `build_self_model(params, out, error) -> bool` — All-or-nothing, like the kernel's `load_collision_model`: any shape disagreement, out-of-order parent, unknown joint code, out-of-range primitive link or non-finite/negative dimension refuses the model.
+- `self_forward_kinematics(model, q, n_dof, link_world)` — Link frames in the model root; pinned to 1e-12 against `openral_safety_kernel::forward_kinematics` by `test_self_filter.cpp`.
+- `place_self_primitives(model, link_world, frame_from_root, out)` — Every robot primitive placed in the cloud's frame.
+- `class SelfMask` — Primitives in the cloud frame with inverse poses and broad-phase bounds precomputed once per cloud; `set(primitives, padding_m)`, `contains(p) -> bool`.
+- `struct SelfFilterStats` — `points_in`, `non_finite`, `removed`, `kept` for one call.
+- `filter_xyz_points(data, n_points, point_step, x_offset, y_offset, z_offset, mask, out) -> SelfFilterStats` — Copies every finite point the mask does not contain, whole records, in order.
+- `class RobotSelfFilter` (src/robot_self_filter.hpp) — The node: joint positions from a short history at the cloud's CAPTURE stamp (`max_joint_state_skew_s`, manifest names or their `collision_joint_aliases`), camera pose from tf2 at that stamp, held payloads from `/openral/world_state_fast`. No pose at the stamp drops the cloud (the map goes stale and the kernel fails closed); an unplaceable payload stays in the cloud. Forwards the capture stamp unchanged; logs `self-filter:` every 5 s.
+
 ### `packages/openral_octomap_bridge/include/openral_octomap_bridge/payload_clearing.hpp`
 _C++ (Layer 2). The attached payload's own occupancy leaves the published `OccupancyVoxels` grid here, partitioned against the safety kernel's support-contact witness (ADR-0092 D6); header-documented and gtested against a real `octomap::OcTree`._
 
@@ -142,6 +157,7 @@ _C++ (Layer 2), header-only. When the bridge may still republish the last octree
 
 - `valid_max_octree_age(max_age_s) -> bool` — Is `max_octree_age_s` usable: finite and strictly positive. The node logs an ERROR and publishes nothing otherwise.
 - `octree_is_fresh(age_s, max_age_s) -> bool` — May an octree received `age_s` ago (receipt time, the node's clock — the one the kernel times voxel freshness on) still be published? False for an unusable bound and for a negative or non-finite age, so a map of unknown age is never republished; past the bound the bridge goes silent and the kernel's `world_voxel_deadline_ms` drops with `DROP_VOXEL_UNAVAILABLE`.
+- `OccupancyVoxels.source_stamp` (set by the bridge node in `src/octomap_voxel_bridge.hpp`) — The octree's own stamp, which `octomap_server` takes from the capture stamp of the cloud it inserted, carried into every grid built from it. `header.stamp` is production time (fresh on every republish) and cannot say how old the WORLD is; this can, and the kernel's `world_voxel_data_age_budget_ms` budgets it (an unset value reads as stale). The bridge logs `world_voxels data age N ms at publish` every 5 s.
 
 ### `packages/openral_octomap_bridge/include/openral_octomap_bridge/octree_to_grid.hpp`
 _C++ (Layer 2). OctoMap → dense base-frame grid lowering, ROS-graph-free._

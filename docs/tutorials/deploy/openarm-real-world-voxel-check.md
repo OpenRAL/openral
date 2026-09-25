@@ -23,15 +23,21 @@ checkout, or **[human, rig]**, meaning a person at the cell.
 The evaluation exists to measure these gaps, so expect each one to show up rather than
 expecting a clean pass:
 
-1. **The arm sees itself.** No depth self-filter exists for a real camera; the only one,
-   `exclude_body_ids` in the sim HAL's depth synthesis, is MuJoCo-only. Any arm link inside
-   the ZED's field of view therefore becomes occupancy around that link. The kernel then
-   stops that link against its own surface with `KIND_COLLISION` and a `voxel_<n>` cell. With
-   the arms hanging at zero, below and behind a camera pitched ~68° down, they may be out of
-   view; a policy reaching into the workspace brings them into view. A ROS 2 candidate is
-   `leggedrobotics/robot_self_filter` (BSD-3-Clause, see §22.4 of the
-   [collision-safety alternatives survey](../../reference/collision-safety-alternatives-survey.md)),
-   but that is its own decision.
+1. **The arm sees itself — now filtered, with a blind shell to accept.** The sim HAL's
+   depth synthesis makes the robot transparent (`exclude_body_ids`); a real camera cannot.
+   `deploy run` therefore routes the depth cloud through `openral_octomap_bridge`'s
+   `robot_self_filter` before `octomap_server`: it poses the kernel's own collision
+   primitives at the cloud's capture stamp (joint states from the topic the runtime nodes
+   read: the scene's `joint_states_topic`, else the HAL's `~/joint_states` republish;
+   camera pose from tf2) and removes every return within the rig's
+   `runtime.robot_self_filter_padding_m` (default 5 cm, provisional: derive it from depth
+   noise, extrinsic error, capture-to-joint-state motion and half a voxel) of them, plus a held payload's primitives once an
+   attachment producer exists. Without a pose at the capture stamp it drops the cloud, so
+   the map goes stale and the kernel fails closed rather than seeing the arm as an obstacle.
+   The cost is a padding-wide shell around the arm in which the kernel cannot see a real obstacle
+   (hazard log). Before the filter, the ZED's view of the left gripper stopped tick 1
+   (`safety.collision kind=world a=openarm_left_finger_pair`). Record the filter's
+   `self-filter:` log line (share of points removed, ms per cloud, drops).
 2. **A grasped object stops the gripper holding it.** Real hardware runs with
    attached-payload checking **off** (`_attached_collision_enabled("real")` returns `False`
    in `deploy_e2e.launch.py`). Nothing on the real graph publishes

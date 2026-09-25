@@ -116,6 +116,27 @@ def test_an_unknown_non_persistent_buffer_is_refused() -> None:
     )
 
 
+def test_an_embed_scale_buffer_without_a_known_width_is_refused_by_name() -> None:
+    """``embed_scale`` on a module with neither ``scalar_embed_scale`` nor ``embedding_dim``.
+
+    The π0.5 hook declines it, so the shared refusal names it instead of the
+    hook raising ``AttributeError`` (#289's fix, ported onto the generic rebuild).
+    """
+
+    class _Odd(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.register_buffer("embed_scale", torch.tensor(float("nan")), persistent=False)
+
+    class _Parent(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.emb = _Odd()  # ".embed_scale" suffix: reaches the Gemma hook
+
+    with pytest.raises(ROSRuntimeError, match=r"pi05 fast meta-init.*emb\.embed_scale"):
+        _init_pi05_buffers(_Parent(), torch=torch)
+
+
 def _write_state(tmp_path: Path, model: torch.nn.Module, **edits: torch.Tensor | None) -> Path:
     """Save ``model``'s state as fp32 safetensors; ``edits`` add (tensor) or drop (None) keys."""
     snapshot = tmp_path / "snapshots" / "abc"

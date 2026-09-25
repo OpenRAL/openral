@@ -126,7 +126,17 @@ names when the grid was placed in `base_frame` (the TF it was rasterized
 with). Nothing reads it as data age (the kernel and World State time grids
 from receipt), and the HAL's evidence decoder
 (`openral_hal.sim_sensor_bridge`) picks "the grid current at time t" by it,
-which the octree's own stamp would break.
+which the octree's own stamp would break. The octree's own stamp rides on
+every grid as `source_stamp` (the capture stamp of the newest cloud inserted),
+and the kernel budgets the world's age from it: `world_voxel_data_age_budget_ms`,
+from the per-rig `DeployRuntime.world_voxel_data_age_budget_s` (default 1.5 s,
+the Thor ZED-M tail); past it the chunk drops as `voxel_stale`.
+
+`robot_self_filter` (real camera path only) removes the robot's own returns
+before `octomap_server` inserts the cloud: it poses the kernel's collision
+parameters at the cloud's capture stamp and drops every return within
+`padding_m` of a primitive (from `DeployRuntime.robot_self_filter_padding_m`,
+provisional 0.05 m). No pose at the capture stamp drops the whole cloud.
 
 Pinned by `test_bridge_staleness` (the real node in-process: publishes while
 fresh, silent past the bound for as long as the silence lasts, resumes on

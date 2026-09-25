@@ -9667,6 +9667,36 @@ class DeployRuntime(BaseModel):
     ``None`` = equal to ``world_voxel_deadline_s``. Must not exceed it, so the
     kernel, not the bridge, fails closed on a silent camera: worst case from the
     last inserted cloud to the drop is this plus the deadline (hazard log Entry 033)."""
+    world_voxel_data_age_budget_s: float = Field(default=1.5, gt=0)
+    """How old the sensor data behind a voxel grid may be when the safety kernel
+    checks a chunk against it (its ``world_voxel_data_age_budget_ms``), measured
+    from the grid's ``source_stamp``: the capture stamp of the newest cloud in
+    the octree. Past it, or with no source stamp, the chunk drops as
+    ``DROP_VOXEL_UNAVAILABLE`` (``voxel_stale``), not latched (hazard log Entry
+    034). The receipt deadline above cannot see pipeline latency; this can.
+
+    The default is the Thor ZED-M measurement (mock hardware, 2026-09-24):
+    capture-to-kernel age p50 227 ms, p99 ~1.0 s, max 1.09 s, so 1.5 s clears
+    the tail with headroom. Measure your own rig and declare its value: set
+    below the rig's latency tail the robot stops (fail closed), never moves
+    unsafely. It is independent of ``world_voxel_deadline_s`` /
+    ``max_octree_age_s``: those bound a silent source by receipt time, this
+    bounds the world's age whatever the receipt time, so no ordering between
+    them is required, and a smaller budget is only stricter."""
+    robot_self_filter_padding_m: float = Field(default=0.05, ge=0)
+    """How far beyond the robot's collision primitives (and a held payload's) a
+    real depth return still counts as the robot and is removed by
+    ``openral_octomap_bridge``'s ``robot_self_filter`` before octomap inserts
+    the cloud. Real camera path only; sim renders the robot transparent.
+
+    PROVISIONAL: 0.05 m is a starting guess from the Thor bench, not a derived
+    value. Derive it per rig from the camera's depth noise at working range,
+    the camera extrinsic error, how far a link moves between the cloud's
+    capture and the joint state used to pose it, and half a voxel. It is also
+    the width of the blind shell around the arm: an obstacle that close to the
+    robot is removed with it, so a larger value hides more of the world from
+    the kernel's check (hazard log Entry 035). Too small leaves robot surface
+    in the map, which stops the robot against itself (fail closed)."""
     joint_states_topic: str | None = None
     """Explicit override for the ``sensor_msgs/JointState`` topic the deploy
     runtime's Python nodes (in-process world state + the runner's joint-state

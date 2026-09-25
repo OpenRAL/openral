@@ -704,6 +704,118 @@ TEST_F(LifecycleKernelTest, MobileBaseArmCaughtAgainstVoxelWall) {
       << node->chunks_dropped() << " chunks_passed=" << node->chunks_passed();
 }
 
+// A grid whose WORLD is older than `world_voxel_data_age_budget_ms` is dropped
+// (fail-closed, no latch) even though the grid itself just arrived; the same
+// wall with a fresh `source_stamp` trips the collision. The receipt deadline
+// alone cannot tell the two apart: both grids are milliseconds old on arrival.
+TEST_F(LifecycleKernelTest, AGridDescribingAStaleWorldIsDroppedNotTrusted) {
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides({
+      {"n_dof", std::int64_t{2}},
+      {"joint_position_min", std::vector<double>{-10.0, -3.14}},
+      {"joint_position_max", std::vector<double>{10.0, 3.14}},
+      {"joint_velocity_max", std::vector<double>{5.0, 5.0}},
+      {"joint_torque_max", std::vector<double>{5.0, 5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", true},
+      {"world_voxel_margin_m", 0.0},
+      {"world_voxel_deadline_ms", 2000.0},
+      {"world_voxel_data_age_budget_ms", 300.0},
+      {"world_voxel_max_cells", std::int64_t{4096}},
+      {"collision_n_links", std::int64_t{2}},
+      {"collision_parent", std::vector<std::int64_t>{-1, 0}},
+      {"collision_joint_kind", std::vector<std::int64_t>{2, 1}},
+      {"collision_dof_index", std::vector<std::int64_t>{0, 1}},
+      {"collision_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0.3, 0, 0, 0, 0, 0}},
+      {"collision_axis", std::vector<double>{1, 0, 0, 0, 0, 1}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0, 1}},
+      {"collision_capsule_radius", std::vector<double>{0.05, 0.1}},
+      {"collision_capsule_half_length", std::vector<double>{0.05, 0.1}},
+      {"collision_capsule_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{0, 1}},
+      {"collision_link_names", std::vector<std::string>{"base", "arm"}},
+      {"collision_joint_names", std::vector<std::string>{"j_base", "j_arm"}},
+      {"collision_base_dofs", std::vector<std::int64_t>{0}},
+      {"collision_state_deadline_ms", 2000.0},
+  });
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_stale_world", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  ASSERT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper("stale_world_helper");
+  rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+  chunk_qos.reliable();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", chunk_qos);
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
+  voxel_qos.reliable();
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", voxel_qos);
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  // The same occupied wall as MobileBaseArmCaughtAgainstVoxelWall: the arm
+  // capsule at (0.3,0,0) lands inside it.
+  openral_msgs::msg::OccupancyVoxels vox;
+  vox.orientation.w = 1.0;
+  vox.resolution = 0.1;
+  vox.size_x = 8;
+  vox.size_y = 4;
+  vox.size_z = 4;
+  vox.origin.y = -0.2;
+  vox.origin.z = -0.2;
+  vox.occupancy.assign(static_cast<std::size_t>(vox.size_x) * vox.size_y * vox.size_z, 0);
+  for (std::uint32_t iz = 0; iz < vox.size_z; ++iz) {
+    for (std::uint32_t iy = 0; iy < vox.size_y; ++iy) {
+      for (std::uint32_t ix = 0; ix < vox.size_x; ++ix) {
+        if (vox.origin.x + (ix + 0.5) * vox.resolution >= 0.2) {
+          vox.occupancy[ix + vox.size_x * (iy + vox.size_y * iz)] = 1;
+        }
+      }
+    }
+  }
+  sensor_msgs::msg::JointState js;
+  js.name = {"j_base", "j_arm"};
+  js.position = {0.0, 0.0};
+  openral_msgs::msg::ActionChunk vel;
+  vel.control_mode = 1;  // JOINT_VELOCITY: reactive check against the measured seed
+  vel.horizon = 1;
+  vel.n_dof = 2;
+  vel.flat = {0.0, 0.0};
+
+  // Phase 1: the grid arrives now but describes the world of one second ago.
+  const auto stale_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
+  while (std::chrono::steady_clock::now() < stale_deadline) {
+    vox.source_stamp = helper.now() - rclcpp::Duration::from_seconds(1.0);
+    js_pub->publish(js);
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    cand_pub->publish(vel);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  EXPECT_FALSE(node->fault_latched()) << "a stale world must not be trusted enough to latch";
+  EXPECT_GT(node->chunks_dropped(), 0U) << "chunks against a stale world must be dropped";
+  EXPECT_EQ(node->chunks_passed(), 0U) << "no chunk may pass on a world older than the budget";
+
+  // Phase 2: the same wall, captured just now: the collision is adjudicated.
+  const auto fresh_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+  while (!node->fault_latched() && std::chrono::steady_clock::now() < fresh_deadline) {
+    vox.source_stamp = helper.now();
+    js_pub->publish(js);
+    voxel_pub->publish(vox);
+    exec.spin_some(std::chrono::milliseconds(10));
+    cand_pub->publish(vel);
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  EXPECT_TRUE(node->fault_latched()) << "a fresh world with the arm inside a wall must E-stop";
+}
+
 namespace {
 
 // Pull a "key":"value" / "key":number field out of the kernel's evidence_json

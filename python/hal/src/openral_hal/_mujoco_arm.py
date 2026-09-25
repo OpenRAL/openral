@@ -597,7 +597,8 @@ class MujocoArmHAL(HALBase):
         ``Action.joint_names``, grippers via ``ee_name``) into one full-dof
         ``JOINT_POSITION`` step, so one arm / the gripper never moves on a new
         chunk while the rest holds a stale one. A slot of a tick at or below
-        ``last_committed_tick`` is refused as a replay.
+        ``last_committed_tick`` is refused as a replay, except tick 1 above a
+        watermark of 1: a restarted runner, adopted (``refuse_stale_tick``).
 
         Args:
             action: ``Action`` produced by a Skill.  Must declare a

@@ -635,19 +635,39 @@ class TestSlotGroupDispatch:
         recorder = _Recorder()
         hal = OpenArmRealHAL(publish_fn=recorder)
         hal.connect()
-        for action in _bimanual_slot_group(tick=2):
-            hal.send_action(action)
-        assert hal.last_committed_tick == 2
-        published = len(recorder.sent)
-        for stale in (2, 1):
-            with pytest.raises(ROSRuntimeError, match="stale slot group"):
-                hal.send_action(_bimanual_slot_group(tick=stale)[0])
-        assert len(recorder.sent) == published
         for action in _bimanual_slot_group(tick=3):
             hal.send_action(action)
         assert hal.last_committed_tick == 3
+        published = len(recorder.sent)
+        # Tick 1 is left out: above a watermark of 1 it is a restarted runner.
+        for stale in (3, 2):
+            with pytest.raises(ROSRuntimeError, match="stale slot group"):
+                hal.send_action(_bimanual_slot_group(tick=stale)[0])
+        assert len(recorder.sent) == published
+        for action in _bimanual_slot_group(tick=4):
+            hal.send_action(action)
+        assert hal.last_committed_tick == 4
         hal.disconnect()
         assert hal.last_committed_tick == 0
+
+    def test_tick_one_after_a_higher_watermark_is_a_restarted_runner(
+        self, both_buses_up: Path
+    ) -> None:
+        # Hazard log Entry 035: tick 1 above a watermark of 1 is adopted (the
+        # runner restarted while the HAL stayed up); tick 1 replayed is not.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=7):
+            hal.send_action(action)
+        for action in _bimanual_slot_group(tick=1):
+            hal.send_action(action)
+        assert hal.last_committed_tick == 1
+        published = len(recorder.sent)
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_bimanual_slot_group(tick=1)[0])
+        assert len(recorder.sent) == published
+        hal.disconnect()
 
     def test_estop_keeps_the_committed_watermark(self, both_buses_up: Path) -> None:
         # A stop is not a renumbering: a pre-estop tick replayed after the

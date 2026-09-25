@@ -36,8 +36,11 @@ bool pose_from_msg(const geometry_msgs::msg::Pose& pose, tf2::Transform& out) {
   return true;
 }
 
+}  // namespace
+
 // Signed distance from a point to the primitive's surface (negative inside).
-double surface_distance(const PayloadPrimitive& prim, const tf2::Vector3& local) {
+double primitive_surface_distance(const PayloadPrimitive& prim,
+                                  const tf2::Vector3& local) noexcept {
   switch (prim.shape_type) {
   case Wire::SHAPE_SPHERE:
     return local.length() - prim.radius;
@@ -59,7 +62,7 @@ double surface_distance(const PayloadPrimitive& prim, const tf2::Vector3& local)
 }
 
 // Radius of a sphere at the primitive's origin that contains it.
-double bounding_radius(const PayloadPrimitive& prim) {
+double primitive_bounding_radius(const PayloadPrimitive& prim) noexcept {
   switch (prim.shape_type) {
   case Wire::SHAPE_SPHERE:
     return prim.radius;
@@ -70,8 +73,6 @@ double bounding_radius(const PayloadPrimitive& prim) {
     return prim.half_extents.length();
   }
 }
-
-}  // namespace
 
 bool place_attached_object(const openral_msgs::msg::AttachedCollisionObject& object,
                            const tf2::Transform& grid_from_link, std::vector<PayloadPrimitive>& out,
@@ -230,13 +231,12 @@ std::size_t clear_attached_payload_cells(openral_msgs::msg::OccupancyVoxels& gri
     // lattice we cannot place would remove cells somewhere the payload is not.
     return 0;
   }
-  const tf2::Transform base_from_grid(
-      q, tf2::Vector3(grid.origin.x, grid.origin.y, grid.origin.z));
+  const tf2::Transform base_from_grid(q, tf2::Vector3(grid.origin.x, grid.origin.y, grid.origin.z));
   const tf2::Transform grid_from_base = base_from_grid.inverse();
 
   std::size_t cleared = 0;
   for (const auto& prim : primitives) {
-    const double span = bounding_radius(prim) + reach;
+    const double span = primitive_bounding_radius(prim) + reach;
     const tf2::Vector3 origin = prim.pose.getOrigin();
     if (!std::isfinite(span) || !std::isfinite(origin.x()) || !std::isfinite(origin.y()) ||
         !std::isfinite(origin.z())) {
@@ -275,7 +275,7 @@ std::size_t clear_attached_payload_cells(openral_msgs::msg::OccupancyVoxels& gri
               base_from_grid * tf2::Vector3((static_cast<double>(ix) + 0.5) * res,
                                             (static_cast<double>(iy) + 0.5) * res,
                                             (static_cast<double>(iz) + 0.5) * res);
-          if (surface_distance(prim, primitive_from_grid * center) > reach) {
+          if (primitive_surface_distance(prim, primitive_from_grid * center) > reach) {
             continue;
           }
           // The partition: a cell an attested support patch claims is the
