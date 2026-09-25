@@ -131,6 +131,7 @@ def _drive(joints: list[str]):  # type: ignore[no-untyped-def]  # reason: rclpy 
     exists here.
     """
     from openral_core.schemas import (
+        ActionSpec,
         ControlMode,
         EmbodimentKind,
         JointSpec,
@@ -155,7 +156,13 @@ def _drive(joints: list[str]):  # type: ignore[no-untyped-def]  # reason: rclpy 
             for i, name in enumerate(joints)
         ],
         capabilities=RobotCapabilities(supported_control_modes=[ControlMode.JOINT_POSITION]),
-        safety=SafetyEnvelope(),
+        # A real HAL has no staleness default; 0.1 s is the OpenArm manifest's window.
+        safety=SafetyEnvelope(joint_state_staleness_limit_s=0.1),
+        # A RosControlHAL refuses to build without a control rate (it sets every
+        # trajectory point's time_from_start); 30 Hz is the OpenArm manifest's.
+        action_spec=ActionSpec(
+            dim=len(joints), representation="joint_positions", control_freq_hz=30.0
+        ),
     )
     return RosControlHAL(description, controller_name=_ARM_CONTROLLER), RosControlTransport
 
