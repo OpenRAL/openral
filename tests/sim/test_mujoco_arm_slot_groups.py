@@ -220,3 +220,62 @@ def test_slot_is_refused_while_disconnected(case: _Case) -> None:
     hal = case.make()
     with pytest.raises(ROSRuntimeError, match="not connected"):
         hal.send_action(_group(hal, case, tick=1)[0])
+
+
+@pytest.mark.parametrize("case", _CASES)
+def test_tick_one_after_a_higher_watermark_is_a_restarted_runner_everything_else_is_a_replay(
+    case: _Case,
+) -> None:
+    """The slot-group tick rule (hazard log Entry 035), on non-OpenArm twins.
+
+    A tick at or below the committed watermark is a replay and is refused,
+    EXCEPT tick 1 arriving while the watermark is above 1: runner ticks are
+    process-monotonic from 1, so that is a restarted runner's fresh numbering,
+    and refusing it would wedge the HAL for the rest of its node's life.
+    """
+    hal = case.make()
+    hal.connect()
+    try:
+
+        def commit(tick: int) -> None:
+            for slot in _group(hal, case, tick=tick):
+                hal.send_action(slot)
+            assert hal.last_committed_tick == tick
+
+        commit(7)
+        for stale_tick in (7, 5):  # the committed tick replayed, and a lower one
+            with pytest.raises(ROSRuntimeError, match="stale slot group"):
+                hal.send_action(_group(hal, case, tick=stale_tick)[0])
+            assert hal.last_committed_tick == 7
+
+        commit(1)  # a restarted runner: adopted, not refused
+
+        # Tick 1 replayed once tick 1 is the committed one: a replay again.
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_group(hal, case, tick=1)[0])
+        commit(2)
+    finally:
+        hal.disconnect()
+
+
+@pytest.mark.parametrize("case", _CASES)
+def test_estop_keeps_the_watermark_so_a_pre_stop_tick_is_still_refused(case: _Case) -> None:
+    from openral_core import ROSEStopRequested
+
+    hal = case.make()
+    hal.connect()
+    try:
+        for tick in (1, 2, 3):
+            for slot in _group(hal, case, tick=tick):
+                hal.send_action(slot)
+        with pytest.raises(ROSEStopRequested):
+            hal.estop()
+        hal.connect()
+        assert hal.last_committed_tick == 3
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_group(hal, case, tick=3)[0])
+        # Disconnect clears the watermark: numbering restarts.
+        hal.disconnect()
+        assert hal.last_committed_tick == 0
+    finally:
+        hal.disconnect()

@@ -174,35 +174,53 @@ def compose_slot_group_action(group: list[Action], joint_names: list[str]) -> Ac
     )
 
 
-def refuse_stale_tick(tick: int, last_committed: int) -> None:
-    """Refuse a slot whose tick is not after the last committed one.
+def refuse_stale_tick(tick: int, last_committed: int) -> int:
+    """Refuse a replayed slot tick; return the watermark to stage against.
 
     A staging buffer only guards the tick in flight; a whole group of an
     already-committed tick would otherwise replay stale targets, and the
     lifecycle node's monotonic acknowledgement would hide it. Runner ticks are
-    process-monotonic, so a non-increasing tick is always a replay.
+    process-monotonic from 1, so a tick at or below the watermark is a replay
+    and is refused, with ONE exception: ``tick == 1`` while the watermark is
+    above 1 is a restarted runner's fresh numbering (the HAL stayed up). It is
+    adopted by returning a reset watermark (``0``); refusing it would wedge the
+    HAL for the rest of its node's life. A replay of tick 1 itself (watermark
+    1) is still refused. The rule is hazard-log Entry 035's.
 
     Args:
         tick: The slot's ``Action.tick_index``.
         last_committed: The last tick the HAL applied (``0`` = none).
 
+    Returns:
+        ``last_committed`` unchanged, or ``0`` when a restart was adopted.
+
     Raises:
-        ROSRuntimeError: ``0 < tick <= last_committed``.
+        ROSRuntimeError: ``0 < tick <= last_committed``, except the adoption.
 
     Example:
         >>> from openral_core.exceptions import ROSRuntimeError
         >>> refuse_stale_tick(3, 2)
-        >>> try:
-        ...     refuse_stale_tick(2, 2)
-        ... except ROSRuntimeError:
-        ...     print("refused")
+        2
+        >>> refuse_stale_tick(1, 7)  # a restarted runner
+        0
+        >>> for tick, last in ((2, 2), (5, 7), (1, 1)):
+        ...     try:
+        ...         refuse_stale_tick(tick, last)
+        ...     except ROSRuntimeError:
+        ...         print("refused")
+        refused
+        refused
         refused
     """
+    if tick == 1 and last_committed > 1:
+        return 0
     if 0 < tick <= last_committed:
         raise ROSRuntimeError(
             f"stale slot group: tick {tick} is not after the last committed "
-            f"tick {last_committed}; refusing to replay it."
+            f"tick {last_committed}; refusing to replay it (only tick 1, a "
+            "restarted runner, may renumber)."
         )
+    return last_committed
 
 
 class SlotGroupStager:
@@ -217,7 +235,9 @@ class SlotGroupStager:
     It also holds the **committed watermark**: the HAL calls ``commit`` once a
     released group has actually been applied, and ``stage`` then refuses any
     slot of a tick at or below it (``refuse_stale_tick``), so a replayed group
-    can never re-command the robot. ``last_committed_tick`` is what the HAL
+    can never re-command the robot; tick 1 above a watermark of 1 is a
+    restarted runner and resets the watermark instead. ``discard`` (E-stop)
+    keeps the watermark, ``reset`` (disconnect) clears it. ``last_committed_tick`` is what the HAL
     lifecycle node acknowledges on ``/openral/action_applied``.
 
     Example:
@@ -278,9 +298,10 @@ class SlotGroupStager:
         Raises:
             ROSConfigError: The action carries no usable tick index.
             ROSRuntimeError: The tick is at or below ``last_committed_tick``
-                (a replay; nothing is staged), the staged tick changed before
-                completing, or the group overran its declared size — the last
-                two mean a slot was lost.
+                (a replay; nothing is staged — except tick 1 above a watermark
+                of 1, a restarted runner, which resets the watermark), the
+                staged tick changed before completing, or the group overran
+                its declared size — the last two mean a slot was lost.
         """
         group_size = int(action.tick_group_size)
         tick = int(action.tick_index)
@@ -289,7 +310,7 @@ class SlotGroupStager:
                 "slot-group staging requires Action.tick_index > 0; got "
                 f"{tick}. The runner sets it on every slot of a multi-slot tick."
             )
-        refuse_stale_tick(tick, self._last_committed)
+        self._last_committed = refuse_stale_tick(tick, self._last_committed)
         if self._tick is not None and tick != self._tick:
             dropped = [a.control_mode.value for a in self._actions]
             staged, expected = len(self._actions), self._tick
