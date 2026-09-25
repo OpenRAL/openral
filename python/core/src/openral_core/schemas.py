@@ -9667,6 +9667,22 @@ class DeployRuntime(BaseModel):
     ``None`` = equal to ``world_voxel_deadline_s``. Must not exceed it, so the
     kernel, not the bridge, fails closed on a silent camera: worst case from the
     last inserted cloud to the drop is this plus the deadline (hazard log Entry 033)."""
+    world_voxel_data_age_budget_s: float = Field(default=1.5, gt=0)
+    """How old the sensor data behind a voxel grid may be when the safety kernel
+    checks a chunk against it (its ``world_voxel_data_age_budget_ms``), measured
+    from the grid's ``source_stamp``: the capture stamp of the newest cloud in
+    the octree. Past it, or with no source stamp, the chunk drops as
+    ``DROP_VOXEL_UNAVAILABLE`` (``voxel_stale``), not latched (hazard log Entry
+    034). The receipt deadline above cannot see pipeline latency; this can.
+
+    The default is the Thor ZED-M measurement (mock hardware, 2026-09-24):
+    capture-to-kernel age p50 227 ms, p99 ~1.0 s, max 1.09 s, so 1.5 s clears
+    the tail with headroom. Measure your own rig and declare its value: set
+    below the rig's latency tail the robot stops (fail closed), never moves
+    unsafely. It is independent of ``world_voxel_deadline_s`` /
+    ``max_octree_age_s``: those bound a silent source by receipt time, this
+    bounds the world's age whatever the receipt time, so no ordering between
+    them is required, and a smaller budget is only stricter."""
     joint_states_topic: str | None = None
     """Explicit override for the ``sensor_msgs/JointState`` topic the deploy
     runtime's Python nodes (in-process world state + the runner's joint-state

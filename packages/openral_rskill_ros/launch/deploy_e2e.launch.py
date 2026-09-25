@@ -340,42 +340,34 @@ def _world_voxel_max_cells(resolution_m: float) -> int:
     return per_axis**3
 
 
-def _voxel_freshness(deadline_s: str, max_octree_age_s: str) -> tuple[float, float]:
-    """``(world_voxel_deadline_ms, max_octree_age_s)`` from the launch args.
+# The per-rig ``DeployRuntime`` fields ``openral deploy`` forwards as launch args.
+_RIG_LAUNCH_ARGS = (
+    "world_voxel_deadline_s",
+    "max_octree_age_s",
+    "world_voxel_data_age_budget_s",
+)
 
-    The kernel's deadline is how long it trusts the last ``/openral/world_voxels``
+
+def _rig_from_launch_args(raw: dict[str, str]) -> DeployRuntime:
+    """The per-rig ``DeployRuntime`` values from their launch args (empty = schema default).
+
+    The kernel's voxel deadline is how long it trusts the last ``/openral/world_voxels``
     grid; the bridge's bound is how long it republishes the last octree
     (``octomap_server`` publishes only when it inserts a cloud, so a dead camera is a
     silent octree). Past both, the kernel drops with ``DROP_VOXEL_UNAVAILABLE`` (hazard
-    log Entry 033). Both are per-rig ``DeployRuntime`` fields; empty args take its
-    defaults, and it refuses a bound above the deadline, so the kernel -- not the
-    bridge -- fails closed whoever launches this file.
+    log Entry 033). The data-age budget bounds the age of the world behind a grid, from
+    its ``source_stamp`` (Entry 034). Validated through ``DeployRuntime``, which refuses
+    an octree age above the deadline, so the kernel -- not the bridge -- fails closed
+    whoever launches this file.
 
     Example:
-        >>> _voxel_freshness("", "")
-        (1000.0, 1.0)
-        >>> _voxel_freshness("2.5", "")
-        (2500.0, 2.5)
+        >>> _rig_from_launch_args({}).voxel_freshness_s
+        (1.0, 1.0)
+        >>> rig = _rig_from_launch_args({"world_voxel_deadline_s": "2.5", "max_octree_age_s": ""})
+        >>> rig.voxel_freshness_s, rig.world_voxel_data_age_budget_s
+        ((2.5, 2.5), 1.5)
     """
-    fields: dict[str, float] = {}
-    if deadline_s:
-        fields["world_voxel_deadline_s"] = float(deadline_s)
-    if max_octree_age_s:
-        fields["max_octree_age_s"] = float(max_octree_age_s)
-    deadline, age = DeployRuntime.model_validate(fields).voxel_freshness_s
-    return deadline * 1000.0, age
-
-
-# How old the sensor data behind that grid may be when a chunk is checked
-# against it, measured from the grid's ``source_stamp`` (the capture stamp of
-# the newest cloud in the octree, carried by ``octomap_server`` and the bridge).
-# The receipt-based deadline above cannot see pipeline latency: a grid that
-# arrived 10 ms ago may describe the world as it was 1 s ago. Measured on the
-# Thor ZED-M path (2026-09-24): capture->kernel age p50 227 ms, p99 ~1.0 s,
-# max 1.09 s, so 1.5 s clears the measured tail with the same headroom the
-# deadline has over the octree cadence. Past it the chunk is dropped
-# (``DROP_VOXEL_UNAVAILABLE``, reason ``voxel_stale``), not latched.
-_WORLD_VOXEL_DATA_AGE_BUDGET_MS = 1500.0
+    return DeployRuntime.model_validate({k: float(v) for k, v in raw.items() if v.strip()})
 
 
 # Robot self-filter (real camera path). How far beyond the robot's collision
@@ -1177,10 +1169,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         context
     ).lower() in ("1", "true", "yes")
     octomap_cloud_topic = LaunchConfiguration("octomap_cloud_topic").perform(context)
-    world_voxel_deadline_ms, max_octree_age_s = _voxel_freshness(
-        LaunchConfiguration("world_voxel_deadline_s").perform(context).strip(),
-        LaunchConfiguration("max_octree_age_s").perform(context).strip(),
+    rig = _rig_from_launch_args(
+        {name: LaunchConfiguration(name).perform(context) for name in _RIG_LAUNCH_ARGS}
     )
+    world_voxel_deadline_s, max_octree_age_s = rig.voxel_freshness_s
     # Object-detection perception leg. Off by default; when on,
     # the ROS-Image detector node runs RT-DETR over the agentview RGB tee and
     # publishes ObjectsMetadata to /openral/perception/objects, which the
@@ -1471,8 +1463,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # See `_world_voxel_max_cells` for why a hand-kept derived constant
             # is the wrong shape here.
             "world_voxel_max_cells": _world_voxel_max_cells(_octomap_resolution(hal_mode)),
-            "world_voxel_deadline_ms": world_voxel_deadline_ms,
-            "world_voxel_data_age_budget_ms": _WORLD_VOXEL_DATA_AGE_BUDGET_MS,
+            "world_voxel_deadline_ms": world_voxel_deadline_s * 1000.0,
+            # How old the world behind a grid may be at check time (Entry 034).
+            "world_voxel_data_age_budget_ms": rig.world_voxel_data_age_budget_s * 1000.0,
         }
 
     kernel_params = {**kernel_params, **_collision_scale_params()}
@@ -3308,6 +3301,15 @@ def generate_launch_description() -> LaunchDescription:
                 "How long the octomap bridge republishes the last octree "
                 "(DeployRuntime.max_octree_age_s). Empty = the deadline; a value "
                 "above the deadline is refused."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "world_voxel_data_age_budget_s",
+            default_value="",
+            description=(
+                "How old the sensor data behind a voxel grid may be when the kernel "
+                "checks a chunk (DeployRuntime.world_voxel_data_age_budget_s). "
+                "Empty = the schema default, 1.5 s."
             ),
         ),
         DeclareLaunchArgument(

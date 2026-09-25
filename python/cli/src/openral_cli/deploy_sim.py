@@ -1203,9 +1203,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         )
     if hal_mode == "real" and enable_octomap and enable_octomap_kernel_check:
         _preflight_depth_extrinsics(description, Path(robot_yaml), robot_unit)
-    voxel_deadline_s, max_octree_age_s = (
-        rt if rt is not None else DeployRuntime()
-    ).voxel_freshness_s
+    rig = rt if rt is not None else DeployRuntime()
+    voxel_deadline_s, max_octree_age_s = rig.voxel_freshness_s
     clock_origin = _resolve_clock_origin(
         hal_mode=hal_mode,
         config=config,
@@ -1411,6 +1410,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # the scene (DeployRuntime validates age <= deadline) or the schema defaults.
         f"world_voxel_deadline_s:={voxel_deadline_s}",
         f"max_octree_age_s:={max_octree_age_s}",
+        # How old the world behind a voxel grid may be at check time (per rig).
+        f"world_voxel_data_age_budget_s:={rig.world_voxel_data_age_budget_s}",
         f"enable_object_detector:={'true' if enable_object_detector else 'false'}",
         f"object_detector_onnx:={resolved_object_detector_onnx}",
         # reward monitor co-active with the VLA; the reasoner polls

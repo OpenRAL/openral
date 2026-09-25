@@ -311,6 +311,10 @@ runtime:
   # deadline, never above it). Raise both for a source slower than ~1 Hz.
   # world_voxel_deadline_s: 2.0
   # max_octree_age_s: 2.0
+  # Optional, per rig: how old the camera data behind a voxel grid may be when the
+  # kernel checks a chunk, from capture (default 1.5 s, measured on the Thor ZED-M:
+  # p99 ~1.0 s). Measure yours; below the rig's latency tail the robot stops.
+  # world_voxel_data_age_budget_s: 1.5
 ```
 
 On a `deploy sim` twin, a pinned topic outside `/openral/cameras/` is a real
