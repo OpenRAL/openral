@@ -4493,6 +4493,11 @@ class Action(BaseModel):
             can commit a multi-surface action atomically after every slot passes.
         tick_group_size: Number of non-discard slots emitted for this inference
             tick. ``1`` keeps single-surface actions unchanged.
+        runner_session_id: Random nonzero id of the rSkill runner process that
+            emitted this action (``ActionChunk.runner_session_id``). A HAL keys
+            its replay watermark on ``(runner_session_id, tick_index)`` because
+            ``tick_index`` restarts with every runner process. ``0`` = unknown
+            (legacy producer), which keeps the tick-only replay heuristic.
         safety_overrides: Operator-approved safety override tokens.
     """
 
@@ -4529,6 +4534,7 @@ class Action(BaseModel):
     joint_names: list[str] | None = None
     tick_index: int = Field(default=0, ge=0)
     tick_group_size: int = Field(default=1, ge=1)
+    runner_session_id: int = Field(default=0, ge=0, le=2**64 - 1)
     safety_overrides: dict[str, object] = Field(default_factory=dict)
 
     @model_validator(mode="after")

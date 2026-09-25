@@ -301,6 +301,7 @@ _action_st = st.builds(
     horizon=st.integers(min_value=1, max_value=64),
     confidence=_prob,
     stamp_ns=_ns,
+    runner_session_id=st.integers(min_value=0, max_value=2**64 - 1),
 )
 
 # ─── Collision geometry ──────────────────────────────────────────────────────────
