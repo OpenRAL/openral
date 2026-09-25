@@ -238,7 +238,8 @@ class SlotGroupStager:
     can never re-command the robot; tick 1 above a watermark of 1 is a
     restarted runner and resets the watermark instead. ``discard`` (E-stop)
     keeps the watermark, ``reset`` (disconnect) clears it. ``last_committed_tick`` is what the HAL
-    lifecycle node acknowledges on ``/openral/action_applied``.
+    lifecycle node acknowledges on ``/openral/action_applied``. Ungrouped ticked actions
+    go through ``admit`` / ``commit_tick`` so they share the same watermark.
 
     Example:
         >>> stager = SlotGroupStager()
@@ -270,6 +271,27 @@ class SlotGroupStager:
         tick the robot never received.
         """
         self._last_committed = int(group[0].tick_index)
+
+    def admit(self, tick: int) -> None:
+        """Check an UNGROUPED ticked action against the watermark before it is applied.
+
+        The runner numbers every action it dispatches from one counter, including
+        ungrouped ones (the starting-pose ramp, the MoveIt approach). Those never pass
+        through ``stage``, so without this a restarted runner's ramp ticks 1..N left a
+        pre-restart watermark in place and its first grouped tick was refused as stale.
+        Same rule as ``stage``; the watermark moves only on ``commit_tick``.
+
+        Raises:
+            ROSRuntimeError: ``0 < tick <= last_committed_tick`` (a replay), except
+                a restarted runner's tick 1.
+        """
+        if tick > 0:
+            refuse_stale_tick(tick, self._last_committed)
+
+    def commit_tick(self, tick: int) -> None:
+        """Record that an ungrouped action of ``tick`` was applied (see ``admit``)."""
+        if tick > 0:
+            self._last_committed = int(tick)
 
     def discard(self) -> None:
         """Drop the half-staged tick but keep the committed watermark (estop).
@@ -310,7 +332,11 @@ class SlotGroupStager:
                 "slot-group staging requires Action.tick_index > 0; got "
                 f"{tick}. The runner sets it on every slot of a multi-slot tick."
             )
-        self._last_committed = refuse_stale_tick(tick, self._last_committed)
+        # A check only: the watermark moves on ``commit``, never here. Adopting a
+        # restart (tick 1) by resetting the watermark on its FIRST slot would let one
+        # delayed tick-1 slot of the old runner drop the watermark to 0 before any new
+        # group was applied, re-admitting every stale tick behind it.
+        refuse_stale_tick(tick, self._last_committed)
         if self._tick is not None and tick != self._tick:
             dropped = [a.control_mode.value for a in self._actions]
             staged, expected = len(self._actions), self._tick
