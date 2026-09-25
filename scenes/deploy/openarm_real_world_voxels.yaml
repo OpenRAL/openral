@@ -85,11 +85,9 @@ runtime:
 
   enable_octomap: true
   octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
-  # The ZED-M's grid reaches /openral/world_voxels at 4.4-6 Hz with gaps up to 1.0-1.1 s
-  # (Orin cell, mock hardware, 2026-09-25): right at the 1.0 s default, so the kernel's world
-  # check would drop chunks as voxels-unavailable with the robot at rest. 1.5 s clears that
-  # tail with headroom (cap 2.0 s). max_octree_age_s follows it (unset = the deadline).
-  world_voxel_deadline_s: 1.5
+  # world_voxel_deadline_s stays at the 1.0 s default. The grid reaches a RELIABLE subscriber
+  # (the kernel's QoS) at 10.0 Hz, max gap 0.36 s (Orin cell, mock hardware, 2026-09-26, 240 s);
+  # the 4.4-6 Hz once read here was a BEST_EFFORT probe dropping the fragmented 1.19 MB grid.
   # Measured, not provisional, AT REST (2026-09-25; Thor and Orin ZED-M, arms unpowered at
   # q = 0, each unit's arm-fitted mount, 40 stacked clouds): the robot's own returns end
   # 5-7.5 mm outside the kernel's hulls, so 2 cm clears them with ~12 mm to spare. That spare
