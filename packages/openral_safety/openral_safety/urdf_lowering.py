@@ -28,7 +28,7 @@ from __future__ import annotations
 import math
 import warnings
 import xml.etree.ElementTree as ET
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -137,64 +137,76 @@ _AXIS_REFINE_MIN_STEP = 1e-4
 _HULL_REDUCE_MIN_POINTS = 64
 
 
-def _circle_2(a: _Arr, b: _Arr) -> tuple[_Arr, float]:
-    import numpy as np
-
-    c = (a + b) / 2.0
-    return c, float(np.linalg.norm(a - c))
-
-
-def _circle_3(a: _Arr, b: _Arr, c: _Arr) -> tuple[_Arr, float]:
-    """Circumcircle of three 2-D points (the widest pair's circle if collinear)."""
-    import numpy as np
-
-    d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]))
-    if abs(d) < 1e-18:
-        pairs = [(a, b), (a, c), (b, c)]
-        return _circle_2(*max(pairs, key=lambda p: float(np.linalg.norm(p[0] - p[1]))))
-    sa, sb, sc = a @ a, b @ b, c @ c
-    ux = (sa * (b[1] - c[1]) + sb * (c[1] - a[1]) + sc * (a[1] - b[1])) / d
-    uy = (sa * (c[0] - b[0]) + sb * (a[0] - c[0]) + sc * (b[0] - a[0])) / d
-    center = np.array([ux, uy])
-    return center, float(np.linalg.norm(a - center))
-
-
-def _next_outside(pts: _Arr, start: int, stop: int, center: _Arr, radius: float) -> int:
-    """Index of the first point in ``pts[start:stop]`` outside the circle, or -1."""
-    import numpy as np
-
-    d = np.linalg.norm(pts[start:stop] - center, axis=1)
-    out = np.flatnonzero(d > radius * (1.0 + 1e-12) + 1e-15)
-    return start + int(out[0]) if out.size else -1
-
-
 def _min_enclosing_circle(pts: _Arr) -> tuple[_Arr, float]:
-    """Smallest circle holding every 2-D point (Welzl, iterative, vectorised scans).
+    """Smallest circle holding every 2-D point (Welzl, iterative).
 
     Each loop only scans forward, so it terminates whatever floating point does
     at the boundary. The capsule built on the centre takes its radius as the
     true max distance (``_capsule_for_axis``), so a last-ulp miss here can only
     loosen the fit, never let a point out. The fixed-seed shuffle keeps the
     expected cost linear and the result reproducible.
+
+    Plain Python floats, not numpy: this runs ~40k times per robot on clouds of
+    a few hundred points, where numpy's per-call overhead dominated the whole
+    lowering. The arithmetic is the one numpy did — ``sqrt(dx*dx + dy*dy)`` is
+    what ``np.linalg.norm`` computes for a 2-vector — so the circle is the same
+    to the last bit.
     """
     import numpy as np
 
     p = pts[np.random.default_rng(0).permutation(len(pts))]
-    n = len(p)
-    center, radius = p[0].copy(), 0.0
-    i = _next_outside(p, 1, n, center, radius)
+    xs: list[float] = p[:, 0].tolist()
+    ys: list[float] = p[:, 1].tolist()
+    sqrt = math.sqrt
+
+    def next_outside(start: int, stop: int, cx: float, cy: float, r: float) -> int:
+        """The first index in ``[start, stop)`` outside the circle, or -1."""
+        limit = r * (1.0 + 1e-12) + 1e-15
+        for q in range(start, stop):
+            dx = xs[q] - cx
+            dy = ys[q] - cy
+            if sqrt(dx * dx + dy * dy) > limit:
+                return q
+        return -1
+
+    def circle_2(i: int, j: int) -> tuple[float, float, float]:
+        cx = (xs[i] + xs[j]) / 2.0
+        cy = (ys[i] + ys[j]) / 2.0
+        dx, dy = xs[i] - cx, ys[i] - cy
+        return cx, cy, sqrt(dx * dx + dy * dy)
+
+    def circle_3(i: int, j: int, k: int) -> tuple[float, float, float]:
+        """Circumcircle of three points (the widest pair's circle if collinear)."""
+        ax, ay, bx, by, qx, qy = xs[i], ys[i], xs[j], ys[j], xs[k], ys[k]
+        d = 2.0 * (ax * (by - qy) + bx * (qy - ay) + qx * (ay - by))
+        if abs(d) < 1e-18:
+
+            def span(pair: tuple[int, int]) -> float:
+                dx, dy = xs[pair[0]] - xs[pair[1]], ys[pair[0]] - ys[pair[1]]
+                return sqrt(dx * dx + dy * dy)
+
+            return circle_2(*max([(i, j), (i, k), (j, k)], key=span))
+        sa, sb, sc = ax * ax + ay * ay, bx * bx + by * by, qx * qx + qy * qy
+        ux = (sa * (by - qy) + sb * (qy - ay) + sc * (ay - by)) / d
+        uy = (sa * (qx - bx) + sb * (ax - qx) + sc * (bx - ax)) / d
+        dx, dy = ax - ux, ay - uy
+        return ux, uy, sqrt(dx * dx + dy * dy)
+
+    n = len(xs)
+    cx, cy, radius = xs[0], ys[0], 0.0
+    i = next_outside(1, n, cx, cy, radius)
     while i >= 0:
-        center, radius = p[i].copy(), 0.0
-        j = _next_outside(p, 0, i, center, radius)
+        cx, cy, radius = xs[i], ys[i], 0.0
+        j = next_outside(0, i, cx, cy, radius)
         while j >= 0:
-            center, radius = _circle_2(p[i], p[j])
-            k = _next_outside(p, 0, j, center, radius)
+            cx, cy, radius = circle_2(i, j)
+            k = next_outside(0, j, cx, cy, radius)
             while k >= 0:
-                center, radius = _circle_3(p[i], p[j], p[k])
-                k = _next_outside(p, k + 1, j, center, radius)
-            j = _next_outside(p, j + 1, i, center, radius)
-        i = _next_outside(p, i + 1, n, center, radius)
-    return center, radius
+                cx, cy, radius = circle_3(i, j, k)
+                k = next_outside(k + 1, j, cx, cy, radius)
+            j = next_outside(j + 1, i, cx, cy, radius)
+        i = next_outside(i + 1, n, cx, cy, radius)
+    return np.array([cx, cy]), radius
 
 
 def _capsule_for_axis(pts: _Arr, axis: _Arr) -> tuple[float, _Arr, _Arr, float]:
@@ -783,14 +795,34 @@ def lower_link_geometry(
     Raises:
         ROSConfigError: If a link's geometry resolves only partially.
     """
+    tight = frozenset(tight_links)
+    out: list[LinkCollisionGeometry] = []
+    for link_name, item in _link_clouds(urdf_path, tight, extra_meshes):
+        if isinstance(item, LinkCollisionGeometry):
+            out.append(item)
+        else:
+            out.extend(_fit_link(link_name, item, tight))
+    return out
+
+
+def _link_clouds(
+    urdf_path: str, tight: frozenset[str], extra_meshes: Mapping[str, Any] | None
+) -> Iterator[tuple[str, LinkCollisionGeometry | Any]]:
+    """Each URDF link's geometry, ready to fit: an exact sphere entry or a link-frame mesh.
+
+    The resolution half of ``lower_link_geometry`` (which documents the rules),
+    without the fit, so ``_urdf_has_collision_geometry`` can ask whether a URDF
+    yields geometry at the cost of loading it rather than fitting it.
+
+    Raises:
+        ROSConfigError: If a link's geometry resolves only partially.
+    """
     import trimesh
 
     model = _load_urdf(urdf_path)
     handler = getattr(model, "_filename_handler", None)
-    tight = frozenset(tight_links)
     extra = dict(extra_meshes or {})
 
-    out: list[LinkCollisionGeometry] = []
     for link_name, link in model.link_map.items():  # type: ignore[attr-defined]  # reason: yourdfpy URDF
         collisions = list(getattr(link, "collisions", None) or [])
         visuals = list(getattr(link, "visuals", None) or [])
@@ -809,8 +841,9 @@ def lower_link_geometry(
             sphere, placed = _rendered(
                 SphereShape(radius_m=float(sph.radius)), (cx, cy, cz, 0.0, 0.0, 0.0)
             )
-            out.append(
-                LinkCollisionGeometry(link_name=link_name, shape=sphere, origin_xyz_rpy=placed)
+            yield (
+                link_name,
+                LinkCollisionGeometry(link_name=link_name, shape=sphere, origin_xyz_rpy=placed),
             )
             continue
 
@@ -837,8 +870,7 @@ def lower_link_geometry(
         cloud = trimesh.util.concatenate(parts)
         if len(cloud.vertices) < 4:
             continue
-        out.extend(_fit_link(link_name, cloud, tight))
-    return out
+        yield link_name, cloud
 
 
 def _collision_local_mesh(col: object, handler: object) -> Any | None:
@@ -1889,27 +1921,27 @@ def lower_robot_from_mjcf(  # noqa: PLR0912, PLR0915  # reason: one cohesive MJC
         if any(g.tight_geometry is not None and g.tight_geometry.hull_vertices_m for g in gs)
     }
     rng = np.random.default_rng(seed)
-    counts: dict[frozenset[str], int] = {}
-    for _ in range(n_samples):
+    # Pose every link at every sample first, then ask each pair's gap once over
+    # the whole (n_samples, 4, 4) batch: the predicates are row-wise, so this is
+    # the per-sample answer at a fraction of the per-call overhead.
+    world = {ln: np.empty((n_samples, 4, 4)) for ln in links}
+    for s in range(n_samples):
         mujoco.mj_resetData(model, data)
         for adr, lo, hi in sweep:
             data.qpos[adr] = lo + (hi - lo) * rng.random()
         mujoco.mj_kinematics(model, data)
-        world = {ln: body_tf(link_body[ln])[None] for ln in links}
-        for i, a in enumerate(links):
-            for b in links[i + 1 :]:
-                gap = _link_pair_distance(geoms[a], world[a], geoms[b], world[b])
-                if float(gap[0]) <= margin_m:
-                    counts[frozenset({a, b})] = counts.get(frozenset({a, b}), 0) + 1
+        for ln in links:
+            world[ln][s] = body_tf(link_body[ln])
     for i, a in enumerate(links):
         for b in links[i + 1 :]:
             # Conservative (no SRDF ground truth): disable only ALWAYS-colliding
             # capsule junctions. Never-collide pairs stay CHECKED — a sweep can't
             # prove a cross-branch bimanual pair never collides (it can miss the
             # tail), so we never auto-disable one.
-            if counts.get(frozenset({a, b}), 0) == n_samples and not (
-                a in hulled and b in hulled
-            ):  # always-colliding, and not a pair the kernel re-asks of hulls
+            if a in hulled and b in hulled:
+                continue  # a pair the kernel re-asks of hulls
+            gap = _link_pair_distance(geoms[a], world[a], geoms[b], world[b])
+            if bool(np.all(gap <= margin_m)):  # always-colliding
                 disabled.add(frozenset({a, b}))
 
     return LoweredCollisionModel(
@@ -2189,8 +2221,12 @@ def _urdf_has_collision_geometry(urdf_path: str) -> bool:
     geometry; such a robot must lower from its MJCF instead, where its
     hand-authored manifest capsules are kept. ``lower_link_geometry`` warns per
     missing mesh, so the unusable URDF is never silently dropped.
+
+    Resolves every link (so a partially resolving link raises here exactly as
+    in ``lower_link_geometry``) but fits none: the answer is whether any link
+    yields geometry, which does not depend on the fit.
     """
-    return len(lower_link_geometry(urdf_path)) > 0
+    return len(list(_link_clouds(urdf_path, frozenset(), None))) > 0
 
 
 def select_lowering(robot: RobotDescription, *, manifest_dir: Path | None = None) -> LoweringSource:
