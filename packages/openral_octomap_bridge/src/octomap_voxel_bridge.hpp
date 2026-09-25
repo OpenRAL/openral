@@ -160,9 +160,10 @@ public:
     }
     if (!valid_max_octree_age(max_octree_age_s_)) {
       RCLCPP_ERROR(this->get_logger(),
-                   "max_octree_age_s must be finite and > 0 (got %g): publishing NOTHING — a "
-                   "bound that cannot be applied is a map of unknown age.",
-                   max_octree_age_s_);
+                   "max_octree_age_s must be in (0, %g] (got %g): publishing NOTHING — a "
+                   "bound that cannot be applied, or one past the kernel's deadline cap, is a "
+                   "map of unknown age.",
+                   kMaxOctreeAgeS, max_octree_age_s_);
     }
     RCLCPP_INFO(this->get_logger(),
                 "octomap→voxel bridge: %s → %s, base=%s, covering r=%g m @[%g %g %g], "

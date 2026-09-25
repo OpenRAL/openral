@@ -42,6 +42,16 @@ inline constexpr double kDefaultEstopResetCooldownSec = 0.5;
 /// well under this on the reference host (≤1 ms target).
 inline constexpr std::int64_t kDefaultChunkValidationDeadlineUs = 1000;
 
+/// Hard caps on the world-voxel freshness parameters, enforced at configure
+/// whenever `world_voxel_enabled` (hazard log Entries 033/034). Mirror
+/// `openral_core.DeployRuntime`'s caps (`world_voxel_deadline_s <= 2.0`,
+/// `world_voxel_data_age_budget_s <= 3.0`, default 1.5) so a node launched
+/// outside `openral deploy` cannot run looser than a validated scene;
+/// `tests/unit/test_perception_caps_mirror.py` pins both sides equal.
+inline constexpr double kMaxWorldVoxelDeadlineMs = 2000.0;
+inline constexpr double kMaxWorldVoxelDataAgeBudgetMs = 3000.0;
+inline constexpr double kDefaultWorldVoxelDataAgeBudgetMs = 1500.0;
+
 class SafetyKernelLifecycleNode : public rclcpp_lifecycle::LifecycleNode {
 public:
   explicit SafetyKernelLifecycleNode(const std::string& node_name = "openral_safety_kernel",
@@ -212,8 +222,9 @@ private:
   bool voxel_received_{false};
   bool voxel_overflow_{false};
   rclcpp::Time voxel_stamp_{};
-  /// `world_voxel_data_age_budget_ms` in seconds; 0 = not enforced.
-  double world_voxel_data_age_budget_s_{0.0};
+  /// `world_voxel_data_age_budget_ms` in seconds; in (0, 3] s whenever the
+  /// world check is enabled (configure refuses anything else).
+  double world_voxel_data_age_budget_s_{kDefaultWorldVoxelDataAgeBudgetMs / 1000.0};
   /// The grid's `source_stamp` (capture of the newest cloud in it), when set.
   bool voxel_source_known_{false};
   rclcpp::Time voxel_source_stamp_{};

@@ -175,7 +175,7 @@ def _kernel_params() -> dict[str, object]:
         "joint_torque_max": [100.0],
         "world_voxel_enabled": True,
         "world_voxel_margin_m": 0.0,
-        "world_voxel_deadline_ms": 30000.0,
+        "world_voxel_deadline_ms": 2000.0,
         "world_voxel_max_cells": 4096,
         "attached_collision_enabled": True,
         "attached_collision_margin_m": _ATTACHED_MARGIN_M,

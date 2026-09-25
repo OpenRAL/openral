@@ -167,7 +167,18 @@ def publish_occupancy_grid() -> Callable[..., None]:
         occupancy = [0] * (grid_n**3)
         occupancy[occ_index] = 1
         grid.occupancy = occupancy
-        voxel_pub.publish(grid)
+
+        # Republished at 5 Hz, freshly stamped, as the octomap bridge does: the
+        # kernel caps `world_voxel_deadline_ms` at 2 s and budgets the world's
+        # age from `source_stamp` (unset reads as stale), so a grid sent once
+        # would expire mid-test.
+        def _publish() -> None:
+            grid.header.stamp = helper.get_clock().now().to_msg()
+            grid.source_stamp = grid.header.stamp
+            voxel_pub.publish(grid)
+
+        _publish()
+        helper.create_timer(0.2, _publish)
         spin(0.4)
 
     return _publish_grid
