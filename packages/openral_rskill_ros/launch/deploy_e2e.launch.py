@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import site
 import subprocess
 import sys
@@ -185,6 +186,28 @@ def _world_voxel_margin_m(hal_mode: str) -> float:
     return 0.0 if hal_mode == "sim" else REAL_WORLD_VOXEL_MARGIN_M
 
 
+def _cpuset_prefix(env: str) -> str:
+    """A ``taskset`` launch prefix from a cpuset env var, or ``""`` for none.
+
+    ``OPENRAL_PERCEPTION_CPUSET`` pins ``octomap_server`` and the voxel bridge;
+    ``OPENRAL_RUNTIME_CPUSET`` pins the runtime node (inference and its 750 Hz
+    joint-state ingest). Both are unset by default: nothing is pinned and the
+    graph runs as before. The seam exists because a deploy host has no
+    privilege to raise priorities (``ulimit -e`` 0, no ``sudo`` on Thor), while
+    affinity needs none, and the octree stalls of 1.1-1.4 s measured on Thor
+    (2026-09-24) came from CPU contention with the runtime, not from the
+    camera. A value is a ``taskset -c`` list (``"12,13"``, ``"0-9"``); an
+    unparseable one is refused loudly rather than pinning to a set nobody
+    chose.
+    """
+    raw = os.environ.get(env, "").strip()
+    if not raw:
+        return ""
+    if not re.fullmatch(r"[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*", raw):
+        raise RuntimeError(f"{env}={raw!r} is not a taskset cpu list (e.g. '12,13' or '0-9')")
+    return f"taskset -c {raw} "
+
+
 def _collision_scale_params() -> dict[str, float]:
     """Kernel overrides for distance-graded velocity scaling (#188), if asked.
 
@@ -341,6 +364,60 @@ def _voxel_freshness(deadline_s: str, max_octree_age_s: str) -> tuple[float, flo
         fields["max_octree_age_s"] = float(max_octree_age_s)
     deadline, age = DeployRuntime.model_validate(fields).voxel_freshness_s
     return deadline * 1000.0, age
+
+
+# How old the sensor data behind that grid may be when a chunk is checked
+# against it, measured from the grid's ``source_stamp`` (the capture stamp of
+# the newest cloud in the octree, carried by ``octomap_server`` and the bridge).
+# The receipt-based deadline above cannot see pipeline latency: a grid that
+# arrived 10 ms ago may describe the world as it was 1 s ago. Measured on the
+# Thor ZED-M path (2026-09-24): capture->kernel age p50 227 ms, p99 ~1.0 s,
+# max 1.09 s, so 1.5 s clears the measured tail with the same headroom the
+# deadline has over the octree cadence. Past it the chunk is dropped
+# (``DROP_VOXEL_UNAVAILABLE``, reason ``voxel_stale``), not latched.
+_WORLD_VOXEL_DATA_AGE_BUDGET_MS = 1500.0
+
+
+# Robot self-filter (real camera path). How far beyond the robot's collision
+# primitives a depth return is still treated as the robot itself and removed
+# before octomap inserts the cloud. It has to cover the kernel's world-voxel
+# margin (2 cm on real), one 20 mm cell's worth of quantisation, the camera's
+# depth noise and the hand-authored primitives' fit to the real links; 5 cm is
+# the starting point, tuned from Thor measurements. It is also the width of the
+# blind shell around the arm (hazard log): anything that close to the robot is
+# removed with it.
+_SELF_FILTER_PADDING_M = 0.05
+
+# Where the filtered cloud is published for octomap_server. Not a camera topic
+# (ADR-0108): it is no longer one camera's cloud, it is the world map's input.
+_SELF_FILTERED_CLOUD_TOPIC = "/openral/world_cloud/self_filtered"
+
+
+def _self_filter_params(
+    collision_params: dict[str, object],
+    description: object,
+    joint_states_topic: str,
+) -> dict[str, object]:
+    """Parameters for ``openral_octomap_bridge``'s ``robot_self_filter``.
+
+    The filter poses the SAME collision model the kernel checks (every
+    ``collision_*`` key the kernel receives), indexed by the manifest's joint
+    names, with each joint's ``sim_joint_name`` as an alias so a vendor
+    ``/joint_states`` that spells joints the upstream way still matches.
+    ``joint_states_topic`` is the one the runtime nodes read
+    (``hal_joint_states_topic``: the scene's override, else a real
+    ros2_control HAL's rate-limited ``~/joint_states``, else ``/joint_states``),
+    so the filter poses the robot from the same stream the runner acts on.
+    """
+    joints = list(getattr(description, "joints", []))
+    params: dict[str, object] = {
+        k: v for k, v in collision_params.items() if k.startswith("collision_")
+    }
+    params["collision_joint_names"] = [j.name for j in joints]
+    params["collision_joint_aliases"] = [j.sim_joint_name or "" for j in joints]
+    params["joint_states_topic"] = joint_states_topic
+    params["padding_m"] = _SELF_FILTER_PADDING_M
+    return params
 
 
 def _octomap_coverage_radius() -> float:
@@ -1395,6 +1472,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # is the wrong shape here.
             "world_voxel_max_cells": _world_voxel_max_cells(_octomap_resolution(hal_mode)),
             "world_voxel_deadline_ms": world_voxel_deadline_ms,
+            "world_voxel_data_age_budget_ms": _WORLD_VOXEL_DATA_AGE_BUDGET_MS,
         }
 
     kernel_params = {**kernel_params, **_collision_scale_params()}
@@ -1702,6 +1780,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     runtime = Node(
         package="openral_rskill_ros",
         executable="runtime_node",
+        prefix=_cpuset_prefix("OPENRAL_RUNTIME_CPUSET"),
         parameters=[
             {
                 "robot_yaml": robot_yaml,
@@ -2362,11 +2441,46 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # odom→base_link broadcast); ``cloud_in`` is remapped to the robot's depth topic.
         # Requires ros-${ROS_DISTRO}-octomap-server + the openral_octomap_bridge package built —
         # opt-in, default off, like slam/nav2.
+        perception_prefix = _cpuset_prefix("OPENRAL_PERCEPTION_CPUSET")
+        # Real camera: remove the robot's (and a held payload's) own returns
+        # before octomap inserts the cloud, as the sim depth renderer does by
+        # making those bodies transparent. Sim needs no filter; a robot with
+        # no collision model has nothing to filter against.
+        octomap_input_topic = octomap_cloud_topic
+        self_filter_nodes: list = []  # type: ignore[type-arg]  # reason: launch_ros.actions.Node, deferred import
+        if hal_mode == "real" and has_collision_capsules:
+            octomap_input_topic = _SELF_FILTERED_CLOUD_TOPIC
+            self_filter_nodes.append(
+                Node(
+                    package="openral_octomap_bridge",
+                    executable="robot_self_filter",
+                    name="openral_robot_self_filter",
+                    namespace="",
+                    prefix=perception_prefix,
+                    parameters=[
+                        {
+                            **_self_filter_params(
+                                collision_params,
+                                description,
+                                runtime_joint_states_topic or "/joint_states",
+                            ),
+                            "use_sim_time": use_sim_time,
+                        }
+                    ],
+                    remappings=[
+                        ("cloud_in", octomap_cloud_topic),
+                        ("cloud_out", _SELF_FILTERED_CLOUD_TOPIC),
+                    ],
+                    additional_env=otel_env,
+                    output="screen",
+                )
+            )
         octomap_server = Node(
             package="octomap_server",
             executable="octomap_server_node",
             name="openral_octomap_server",
             namespace="",
+            prefix=perception_prefix,
             parameters=[
                 {
                     "resolution": _octomap_resolution(hal_mode),
@@ -2401,7 +2515,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "use_sim_time": use_sim_time,
                 }
             ],
-            remappings=[("cloud_in", octomap_cloud_topic)],
+            remappings=[("cloud_in", octomap_input_topic)],
             additional_env=otel_env,
             output="screen",
         )
@@ -2410,6 +2524,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             executable="octomap_voxel_bridge",
             name="openral_octomap_voxel_bridge",
             namespace="",
+            prefix=perception_prefix,
             parameters=[
                 {
                     "base_frame": octomap_base_frame,
@@ -2428,7 +2543,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             additional_env=otel_env,
             output="screen",
         )
-        extra_nodes.extend([octomap_server, octomap_bridge])
+        extra_nodes.extend([*self_filter_nodes, octomap_server, octomap_bridge])
 
     if enable_object_detector or locator_specs:
         # The perception leg runs when EITHER the continuous detector is on OR an on-demand

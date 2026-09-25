@@ -92,6 +92,16 @@ struct PayloadPrimitive {
   tf2::Vector3 half_extents{0.0, 0.0, 0.0};  ///< box half extents (m)
 };
 
+/// Signed distance from `local` (a point in the primitive's own frame) to the
+/// primitive's surface: negative inside a sphere or capsule, `0` anywhere
+/// inside a box (outside distance only). Shared by the payload clearing and the
+/// robot self-filter so both measure against the same shapes.
+double primitive_surface_distance(const PayloadPrimitive& prim, const tf2::Vector3& local) noexcept;
+
+/// Radius of a sphere about the primitive's origin that contains it: the broad
+/// phase in front of `primitive_surface_distance`.
+double primitive_bounding_radius(const PayloadPrimitive& prim) noexcept;
+
 /// One attested support-contact patch, already placed in the grid frame.
 ///
 /// The wire form (`openral_msgs/SupportContactWitness`, carried on

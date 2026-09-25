@@ -282,6 +282,12 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<bool>("world_voxel_enabled", false);
   this->declare_parameter<double>("world_voxel_margin_m", 0.0);
   this->declare_parameter<double>("world_voxel_deadline_ms", 500.0);
+  // How old the sensor data behind the grid may be at check time, from the
+  // grid's `source_stamp` (the capture stamp of the newest cloud in the
+  // octree). The deadline above is measured from receipt and cannot see the
+  // pipeline's latency; this one can. 0 = not enforced (the deploy launch sets
+  // it; a producer that leaves `source_stamp` unset is then treated as stale).
+  this->declare_parameter<double>("world_voxel_data_age_budget_ms", 0.0);
   // Sized by the ROBOT, not by taste: must cover wherever the kernel-checked
   // geometry can reach — a ball on a lattice-aligned grid (axes are the
   // map's, turn relative to base, so a base-aligned box isn't invariant).
@@ -817,6 +823,24 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           unavailable(voxel_overflow_ ? "voxel_overflow" : "voxel_unavailable",
                       voxel_overflow_ ? openral_msgs::msg::SafetyStatus::DROP_VOXEL_OVERFLOW
                                       : openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE);
+          return;
+        }
+        // Data age: how old the WORLD in the grid is, not how long ago the grid
+        // arrived. A grid received 10 ms ago can describe the cell as it was a
+        // second ago; the receipt deadline above is blind to that.
+        if (voxel_source_known_) {
+          const double data_age_ms = (this->now() - voxel_source_stamp_).seconds() * 1e3;
+          span->SetAttribute("safety.world_voxel_data_age_ms", data_age_ms);
+          if (world_voxel_data_age_budget_s_ > 0.0 &&
+              data_age_ms > world_voxel_data_age_budget_s_ * 1e3) {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                 "safety.voxel_stale data_age_ms=%.0f budget_ms=%.0f", data_age_ms,
+                                 world_voxel_data_age_budget_s_ * 1e3);
+            unavailable("voxel_stale", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE);
+            return;
+          }
+        } else if (world_voxel_data_age_budget_s_ > 0.0) {
+          unavailable("voxel_stale", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE);
           return;
         }
       }
@@ -1607,6 +1631,9 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   world_voxel_enabled_ = this->get_parameter("world_voxel_enabled").as_bool();
   world_voxel_margin_m_ = this->get_parameter("world_voxel_margin_m").as_double();
   world_voxel_deadline_s_ = this->get_parameter("world_voxel_deadline_ms").as_double() / 1000.0;
+  world_voxel_data_age_budget_s_ =
+      this->get_parameter("world_voxel_data_age_budget_ms").as_double() / 1000.0;
+  voxel_source_known_ = false;
   world_voxel_max_cells_ =
       static_cast<std::size_t>(this->get_parameter("world_voxel_max_cells").as_int());
   voxel_received_ = false;
@@ -1975,6 +2002,11 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   }
   voxel_received_ = true;
   voxel_stamp_ = this->now();
+  // Zero = the producer said nothing about when its world was captured.
+  voxel_source_known_ = msg->source_stamp.sec != 0 || msg->source_stamp.nanosec != 0;
+  if (voxel_source_known_) {
+    voxel_source_stamp_ = rclcpp::Time(msg->source_stamp, this->get_clock()->get_clock_type());
+  }
 }
 
 void SafetyKernelLifecycleNode::on_world_state(

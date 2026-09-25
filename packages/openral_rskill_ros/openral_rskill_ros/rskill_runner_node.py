@@ -664,7 +664,15 @@ if _ROS2_AVAILABLE:
             if self._heartbeat is not None:
                 self._heartbeat.start()
             preload_id = str(self.get_parameter("preload_rskill_id").value or "")
-            if preload_id:
+            if preload_id and self._preload_thread is not None and self._preload_thread.is_alive():
+                # A deactivate/activate cycle mid-load: the running worker
+                # keeps the skill (it re-checks ``_lifecycle_active`` when it
+                # finishes). A second worker would clear ``_preload_in_flight``
+                # while the first still loads and let a goal through.
+                self.get_logger().info(
+                    "rskill_runner.preload_in_flight: activate while a preload runs; not restarted"
+                )
+            elif preload_id:
                 # Off the lifecycle thread: the orchestrator bounds each
                 # transition, and a transition that takes minutes reads as a
                 # hung node. The worker takes ``_execute_serial`` itself.
