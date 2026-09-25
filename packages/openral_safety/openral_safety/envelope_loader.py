@@ -278,8 +278,16 @@ def _intersect_workspace_boxes(
             "rSkill envelope declared one of workspace_box_{min,max}_xyz "
             "but not the other; both must be set together."
         )
-    out_min = tuple(max(base_min[i], skill_min[i]) for i in range(3))
-    out_max = tuple(min(base_max[i], skill_max[i]) for i in range(3))
+    out_min = (
+        max(base_min[0], skill_min[0]),
+        max(base_min[1], skill_min[1]),
+        max(base_min[2], skill_min[2]),
+    )
+    out_max = (
+        min(base_max[0], skill_max[0]),
+        min(base_max[1], skill_max[1]),
+        min(base_max[2], skill_max[2]),
+    )
     for i, axis in enumerate(("x", "y", "z")):
         if out_min[i] > out_max[i] + 1e-9:
             raise ROSConfigError(
@@ -825,7 +833,8 @@ def merge_extra_allowed_pairs(
     allowed_pairs = list(cast(list[int], existing_raw))
     seen: set[tuple[int, int]] = set()
     for i in range(0, len(allowed_pairs), 2):
-        seen.add(tuple(sorted((allowed_pairs[i], allowed_pairs[i + 1]))))
+        lo, hi = sorted((allowed_pairs[i], allowed_pairs[i + 1]))
+        seen.add((lo, hi))
 
     valid = ", ".join(names)
     for a, b in pairs:
@@ -836,7 +845,8 @@ def merge_extra_allowed_pairs(
                 f"unknown extra_allowed_collision_pairs link {a!r}<->{b!r}; "
                 f"valid collision links: {valid}"
             )
-        pair = tuple(sorted((index[a], index[b])))
+        ia, ib = sorted((index[a], index[b]))
+        pair = (ia, ib)
         if pair in seen:
             continue
         seen.add(pair)
