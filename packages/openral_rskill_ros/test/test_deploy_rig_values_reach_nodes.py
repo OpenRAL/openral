@@ -118,7 +118,7 @@ def test_the_data_age_budget_reaches_the_kernel(
     assert kernel["world_voxel_data_age_budget_ms"] == expected_ms
 
 
-@pytest.mark.parametrize(("declared", "expected"), [("", 0.05), ("0.03", 0.03)])
+@pytest.mark.parametrize(("declared", "expected"), [("", 0.02), ("0.03", 0.03)])
 def test_the_self_filter_padding_reaches_the_filter(
     franka_with_depth: Path, declared: str, expected: float
 ) -> None:

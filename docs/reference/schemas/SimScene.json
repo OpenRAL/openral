@@ -367,7 +367,7 @@
           "type": "number"
         },
         "robot_self_filter_padding_m": {
-          "default": 0.05,
+          "default": 0.02,
           "minimum": 0,
           "title": "Robot Self Filter Padding M",
           "type": "number"

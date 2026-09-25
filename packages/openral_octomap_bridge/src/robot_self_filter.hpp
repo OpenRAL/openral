@@ -88,7 +88,7 @@ public:
     // `/joint_states` uses). Empty entries are ignored.
     const auto joint_aliases = declare_strings("collision_joint_aliases");
 
-    padding_m_ = this->declare_parameter<double>("padding_m", 0.05);
+    padding_m_ = this->declare_parameter<double>("padding_m", 0.02);
     max_skew_s_ = this->declare_parameter<double>("max_joint_state_skew_s", 0.1);
     tf_timeout_s_ = this->declare_parameter<double>("tf_timeout_s", 0.05);
     history_s_ = this->declare_parameter<double>("joint_state_history_s", 2.0);
@@ -394,7 +394,7 @@ private:
   std::vector<std::uint8_t> seen_;
   std::deque<Snapshot> history_;
 
-  double padding_m_{0.05};
+  double padding_m_{0.02};
   double max_skew_s_{0.1};
   double tf_timeout_s_{0.05};
   double history_s_{2.0};

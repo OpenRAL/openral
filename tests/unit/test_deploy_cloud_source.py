@@ -267,13 +267,13 @@ def test_rig_perception_values_default_and_are_validated() -> None:
     """The data-age budget and self-filter padding are per-rig ``DeployRuntime`` values.
 
     Defaults are the Thor-measured budget (1.5 s) and the provisional padding
-    (0.05 m). A budget must be positive (0 would disable the kernel's check);
+    (0.02 m, 2026-09-25). A budget must be positive (0 would disable the kernel's check);
     a padding cannot be negative. No relation to the voxel deadline is imposed:
     a smaller budget is only stricter.
     """
     rig = DeployRuntime()
     assert rig.world_voxel_data_age_budget_s == 1.5
-    assert rig.robot_self_filter_padding_m == 0.05
+    assert rig.robot_self_filter_padding_m == 0.02
     DeployRuntime(world_voxel_data_age_budget_s=0.3, world_voxel_deadline_s=2.0)
     for bad in ({"world_voxel_data_age_budget_s": 0.0}, {"robot_self_filter_padding_m": -0.01}):
         with pytest.raises(ValidationError):
