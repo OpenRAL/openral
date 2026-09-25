@@ -67,6 +67,7 @@ from openral_core.schemas import (
     ResolvePlaceTool,
     RobotCapabilities,
     RobotDescription,
+    RobotUnit,
     RSkillAction,
     RSkillLatencyBudget,
     RSkillLicensePosture,
@@ -80,8 +81,10 @@ from openral_core.schemas import (
     SegmenterContract,
     SegmenterEngine,
     SensorBundle,
+    SensorDeployBinding,
     SensorFrame,
     SensorModality,
+    SensorOverlay,
     SensorReaderBackend,
     SensorReaderConfig,
     SensorSpec,
@@ -149,6 +152,28 @@ _sensor_spec_st = st.builds(
     catalog_id=st.none()
     | st.sampled_from(["generic/usb_uvc_rgb", "intel/realsense_d435i", "luxonis/oak_d_pro"]),
     sim_placement=st.none() | _camera_sim_placement_st,
+)
+
+_sensor_overlay_st = st.builds(
+    SensorOverlay,
+    name=_name,
+    deploy_binding=st.none()
+    | st.builds(
+        SensorDeployBinding,
+        backend=st.sampled_from(list(SensorReaderBackend)),
+        backend_params=st.dictionaries(_name, _name | st.integers(), max_size=3),
+        max_age_ms=st.integers(min_value=1, max_value=10_000),
+    ),
+    ros2_topic=st.none() | _topic,
+    static_transform_xyz_rpy=st.none() | st.tuples(*[_safe_float] * 6),
+    intrinsics=st.none() | _intrinsics_st,
+)
+
+_robot_unit_st = st.builds(
+    RobotUnit,
+    robot_id=_name,
+    unit=_name,
+    sensors=st.lists(_sensor_overlay_st, max_size=3),
 )
 
 _sensor_bundle_st = st.builds(
@@ -438,6 +463,20 @@ def test_fuzz_camera_sim_placement(instance: CameraSimPlacement) -> None:
 def test_fuzz_sensor_spec(instance: SensorSpec) -> None:
     """SensorSpec round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(SensorSpec, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_sensor_overlay_st)
+def test_fuzz_sensor_overlay(instance: SensorOverlay) -> None:
+    """SensorOverlay round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(SensorOverlay, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_robot_unit_st)
+def test_fuzz_robot_unit(instance: RobotUnit) -> None:
+    """RobotUnit round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(RobotUnit, instance)
 
 
 @_FUZZ_SETTINGS

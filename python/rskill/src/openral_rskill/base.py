@@ -35,8 +35,8 @@ Hot path
 server at the skill's control frequency.  Override ``_step_impl`` in
 subclasses; do not override ``step`` directly.
 
-See `openral_rskill.gpu_passthrough` for a minimal real example and
-`openral_rskill.smolvla.SmolVLAAdapter` for a production VLA wiring.
+See `openral_rskill.gpu_passthrough` for a minimal real example. Production
+VLA policies run through the `openral_sim.policies` adapters (`make_policy`).
 """
 
 from __future__ import annotations

@@ -138,4 +138,4 @@ sensors:
 sdk_kind: "open"
 # observation_spec / action_spec deliberately omitted, per the robot/sim split convention. The
 # per-sim IO contracts live in the matching scene adapters.
-schema_version: '0.1'
+schema_version: "0.2"

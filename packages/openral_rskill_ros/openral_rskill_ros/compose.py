@@ -29,7 +29,7 @@ from openral_core import RobotDescription
 from openral_world_state import WorldStateAggregator
 
 if TYPE_CHECKING:
-    from openral_core import SensorSpec
+    from openral_core import SensorOverlay, SensorSpec
     from openral_world_state_ros.lifecycle_node import _WorldStateLifecycleNode
 
     from openral_rskill_ros.rskill_runner_node import RskillRunnerNode, SkillResolver
@@ -168,6 +168,7 @@ def compose_runtime(
     dataset_fps: float | None = None,
     image_staleness_limit_s: float | None = None,
     deploy_sensors: Sequence[SensorSpec] = (),
+    sensor_overlays: Sequence[SensorOverlay] = (),
 ) -> ComposedRuntime:
     """Build the composed world_state + skill_runner runtime for any robot.
 
@@ -220,6 +221,10 @@ def compose_runtime(
             see it. Merging only for the sensor readers fed the policy a camera it then
             filed under the manifest's key, and lerobot replaced the view it was trained on
             with a masked blank.
+        sensor_overlays: This host's ``RobotUnit`` overlays (``resolve_sensor_overlays``),
+            laid over the manifest's sensors (``apply_sensor_overlays``) before the scene's
+            are appended, so the readers, world state and runner all see the unit's binding
+            and calibration.
 
     Returns:
         A ``ComposedRuntime`` bundle. The caller attaches both nodes to a single
@@ -234,11 +239,15 @@ def compose_runtime(
     from openral_rskill_ros.rskill_runner_node import RskillRunnerNode
 
     description = RobotDescription.from_yaml(str(robot_yaml))
-    if deploy_sensors:
-        from openral_core import merge_deploy_sensors
+    if deploy_sensors or sensor_overlays:
+        from openral_core import apply_sensor_overlays, merge_deploy_sensors
 
         description = description.model_copy(
-            update={"sensors": merge_deploy_sensors(description.sensors, deploy_sensors)}
+            update={
+                "sensors": merge_deploy_sensors(
+                    apply_sensor_overlays(description.sensors, sensor_overlays), deploy_sensors
+                )
+            }
         )
     aggregator = WorldStateAggregator(
         description,

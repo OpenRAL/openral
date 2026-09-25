@@ -92,3 +92,14 @@ def test_probe_jetson_returns_none_when_both_paths_missing(tmp_path: Path) -> No
     )
     assert info is None
     assert warnings == []
+
+
+@pytest.mark.parametrize("board_dir", ["thor_agx", "orin_agx", "xavier_nx"])
+def test_is_tegra_host_is_the_one_release_file_probe(board_dir: str, tmp_path: Path) -> None:
+    """``openral_core.is_tegra_host`` is what the CLI, GStreamer and this probe share."""
+    from openral_core import TEGRA_RELEASE_PATH, is_tegra_host
+    from openral_detect.probes.gpu import _DEFAULT_RELEASE_PATH
+
+    assert _DEFAULT_RELEASE_PATH == TEGRA_RELEASE_PATH
+    assert is_tegra_host(FIXTURE_ROOT / board_dir / "nv_tegra_release")
+    assert not is_tegra_host(tmp_path / "nv_tegra_release")

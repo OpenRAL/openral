@@ -99,7 +99,11 @@ Detection records robot-owned facts in `robot.yaml`; it does not create a
 deploy scene unless `--deployment` is passed. The wizard always runs (there is
 no `--interactive` flag) and opens the camera binding wizard: a robot camera's
 binding lands in `robot.yaml`, a workcell camera (its own name) in that deploy
-scene — a deploy scene never touches a robot camera.
+scene — a deploy scene never touches a robot camera. A robot type with more than
+one unit or host keeps each host's camera bindings (and per-unit calibration) in
+`robots/<id>/units/<unit>.yaml` instead; the scene's `robot_unit` or
+`OPENRAL_ROBOT_UNIT` selects it, and a real deploy of such a robot refuses until
+one is selected (SO-101 bench: `units/bench_laptop.yaml`; OpenArm: `thor`, `orin`).
 Use `--include usb,gpu,cameras_v4l2,cameras_realsense` to limit probes, and
 `--report detect.json --no-write` when you only want the raw detection report.
 The rSkill that drives the robot is **not** set in deploy config — the reasoner
@@ -250,7 +254,12 @@ encoding (`decode_inline_frame`): the depth frame rides along in the policy's
 observation as a `uint16` `(H, W, 1)` array under its own sensor name, and an
 RGB-only policy simply never reads it. Until 2026-09-22 the runner read every
 frame as `uint8`, and a ZED depth frame next to the RGB slots aborted the first
-real OpenArm dispatch with `cannot reshape array of size 1843200`.
+real OpenArm dispatch with `cannot reshape array of size 1843200`. A camera
+that delivers JPEG or PNG (an MJPEG USB camera) is decoded to RGB the same way.
+A frame the decoder cannot handle is logged as `runner.frame_skipped` with the
+sensor and encoding; if that sensor feeds one of the policy's required camera
+slots, the goal fails with `ROSPerceptionStale` rather than running the policy
+without that view.
 
 Prerequisites on the host: the **ZED SDK** installed, and `zed_wrapper` running
 and publishing. Without them the reader opens fine and then every `read_latest`
@@ -274,17 +283,21 @@ any rectified stream published by a calibration node.
 ### Building a world map from a real depth camera (`octomap_cloud_topic`)
 
 Turning `enable_octomap: true` on is not enough on real hardware. `octomap_server`
-subscribes to whatever `octomap_cloud_topic` names. Left unset, the launch derives
-`/openral/cameras/<name>/points` from the manifest's first depth sensor with
+subscribes to whatever `octomap_cloud_topic` names. Under `deploy sim`, left unset,
+it is `/openral/cameras/<name>/points` of the manifest's one depth sensor with
 intrinsics (e.g. `head_zed` on `openarm`, `front_depth` on `panda_mobile`) — a
 topic published by the **sim** sensor bridge, which back-projects the digital
-twin's depth raster. Nothing publishes it under `hal_mode:=real`. With octomap
-forced on for a robot that declares no such depth sensor, the launch fails with
-`ROSConfigError` instead of mapping silence.
+twin's depth raster; a manifest with several depth sensors must pin the one to map.
+Nothing in-tree publishes a cloud under `hal_mode:=real` (the sensor leg publishes a
+bound depth sensor's *image* on `/openral/cameras/<name>/depth/image`).
 
-Leave it unset on hardware and the failure is silent in the worst way: every node
-comes up healthy, and the octree, `/openral/world_voxels` and the dashboard's
-POINTCLOUD card all just stay empty.
+So `deploy run` refuses with `ROSConfigError` before launch when octomap is on and
+nothing is pinned. That includes the auto-enable: any depth or point-cloud
+(3D lidar) sensor in the manifest or the scene turns octomap on. Before this check
+the failure was silent in the worst way: every node came up healthy, the octree,
+`/openral/world_voxels` and the dashboard's POINTCLOUD card stayed empty, and the
+kernel dropped every chunk as `DROP_VOXEL_UNAVAILABLE`. Pin the driver's topic, or
+set `enable_octomap: false` to run without the world map.
 
 Point it at the cloud your depth driver already publishes:
 
@@ -293,7 +306,28 @@ runtime:
   enable_octomap: true
   # zed_wrapper's own registered cloud. RealSense: /camera/depth/color/points.
   octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+  # Optional, per rig: how long the kernel trusts the last voxel grid (default 1.0 s)
+  # and how long the octomap bridge republishes the last octree (default = the
+  # deadline, never above it). Raise both for a source slower than ~1 Hz, up to the
+  # schema's hard cap of 2.0 s on the deadline (above it the scene is refused).
+  # world_voxel_deadline_s: 2.0
+  # max_octree_age_s: 2.0
+  # Optional, per rig: how old the camera data behind a voxel grid may be when the
+  # kernel checks a chunk, from capture (default 1.5 s, measured on the Thor ZED-M:
+  # p99 ~1.0 s; hard cap 3.0 s). Measure yours; below the rig's latency tail the robot stops.
+  # world_voxel_data_age_budget_s: 1.5
+  # Optional, per rig (real camera only): how far past the robot's collision model a
+  # depth return is removed as the robot before octomap. Provisional 0.02 m; derive
+  # it from depth noise, extrinsic error, capture-to-joint-state motion and half a voxel.
+  # It is also a blind shell around the arm, so do not raise it without that derivation
+  # (hard cap 0.10 m).
+  # robot_self_filter_padding_m: 0.02
 ```
+
+On a `deploy sim` twin, a pinned topic outside `/openral/cameras/` is a real
+driver stamping on wall-clock, so the graph runs on host wall time without a
+`clock_origin` pin (pinning `simulation` with it is refused: octomap would drop
+every cloud as from the future).
 
 Two worked examples make the choice explicitly:
 [`scenes/deploy/openarm_zed_octomap.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_zed_octomap.yaml)
@@ -373,7 +407,7 @@ It checks three things:
   and `calibration_dir`, and `<calibration_dir>/<id>.json` is actually there.
   Missing, and every `send_action` fails with "has no calibration registered".
 - **Camera bindings** — each deploy sensor (the robot manifest's cameras, bound
-  in `robot.yaml`, plus the scene's workcell cameras) has a `deploy_binding`
+  in the host's unit overlay or `robot.yaml`, plus the scene's workcell cameras) has a `deploy_binding`
   (without one it is never published, and a camera VLA silently gets an empty
   observation), and any `/dev/*` path exists now.
 

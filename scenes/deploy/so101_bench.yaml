@@ -2,9 +2,11 @@
 # deployments/so101.yaml RobotEnvironment.
 #
 # No `sensors:` block: `top` and `wrist` are robot cameras, so their real-hardware
-# `deploy_binding`s live in robots/so101_follower/robot.yaml (a deploy scene never
-# touches a robot camera). Host-specific — retune the /dev/video* paths there per
-# host with `openral detect --deployment`.
+# `deploy_binding`s live in this host's unit overlay,
+# robots/so101_follower/units/bench_laptop.yaml (`robot_unit` below; a deploy scene
+# never redefines a robot camera). Host-specific — retune the /dev/v4l paths there
+# with `openral detect --deployment`; another host adds its own unit file and sets
+# $OPENRAL_ROBOT_UNIT.
 #
 # HAL facts (serial port + lerobot calibration identity) live in the `hal:`
 # binding below (the HAL analogue of a sensor `deploy_binding`), so this scene
@@ -17,6 +19,7 @@
 scene:
   id: so101_bench
 robot_id: so101_follower
+robot_unit: bench_laptop
 # Host-specific HAL binding. port: this arm enumerates on
 # /dev/ttyACM0 (robot.yaml's generic default is /dev/ttyUSB0). id +
 # calibration_dir load the committed Feetech calibration
@@ -29,7 +32,7 @@ hal:
     calibration_dir: "calibration"
     calibrate_on_connect: false
 # Cameras: every camera here is a robot sensor, so its real-hardware binding lives in
-# robots/so101_follower/robot.yaml (a deploy scene never touches a robot camera —
+# the unit overlay (robot_unit above; a deploy scene never redefines a robot camera —
 # openral_core.check_scene_sensor_overrides). A workcell camera would go under
 # `sensors:` with its own name.
 
@@ -42,7 +45,7 @@ hal:
 # Both perception legs are gstreamer-free ROS-topic consumers: the detector
 # (ros_image_detector_node) and reward monitor (reward_monitor_node) each
 # subscribe to /openral/cameras/<name>/image — here published by the
-# opencv_thread bindings in robot.yaml — and need no GStreamer/NVMM. The detector
+# opencv_thread bindings in the unit overlay — and need no GStreamer/NVMM. The detector
 # auto-selects its CPU-ONNX tier when gst-inspect-1.0/nvinfer is absent.
 runtime:
   enable_slam: false

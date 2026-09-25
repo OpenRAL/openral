@@ -1105,10 +1105,10 @@ _Minimal read-only HTTP client for the dashboard's F7 trace-query endpoints (`GE
 _`openral replay` implementation: record a bag with the right topics, then join it against dashboard-indexed OTel spans by trace_id._
 
 - module constant `ProfileName` (L38) — `Literal["slim", "full"]`, the two `ros2 bag record` topic/regex profiles.
-- module constant `RECORD_PROFILES: dict[str, dict[str, list[str]]]` (L48) — the `slim` (safety/estop/world-state-slow + compressed camera images) and `full` (adds world-state-fast, joint_states, tf, all perception and every camera stream) topic + regex lists; camera regexes are built from `re.escape(CAMERA_TOPIC_PREFIX)`.
-- `build_record_command(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=()) -> list[str]` (L91) — Compose the `ros2 bag record` argv for `profile`.
-- `run_record(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=(), dry_run=False) -> tuple[list[str], subprocess.CompletedProcess[bytes] | None]` (L216) — Invoke `ros2 bag record` with the chosen profile.
-- `class ReplayResult` (L139) — Output of `run_replay` — both summary + the joined timeline; fields `trace_id`, `bag_trace_ids`, `timeline`, `bag_path`.
-  - `to_json(self) -> dict[str, Any]` (L158) — Return a plain-dict view suitable for `json.dumps`.
-- `run_replay(*, bag_path, trace_id, dashboard_url) -> ReplayResult` (L168) — Read `bag_path`, fetch matching spans, return the joined timeline.
-- `write_timeline(result, out_path) -> None` (L289) — Persist a `ReplayResult` as pretty-printed JSON to `out_path`.
+- module constant `RECORD_PROFILES: dict[str, dict[str, list[str]]]` (L52) — the `slim` (safety/estop/world-state-slow + compressed camera images) and `full` (adds world-state-fast, joint_states, tf, all perception, every camera stream, and — by `topic_types` — every `LaserScan` / `PointCloud2` / `Imu` topic whatever a manifest names it) topic + regex + topic-type lists; camera regexes are built from `re.escape(CAMERA_TOPIC_PREFIX)`.
+- `build_record_command(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=()) -> list[str]` (L102) — Compose the `ros2 bag record` argv for `profile`. Verbatim topics are folded into the `--regex` as anchored patterns, never passed as explicit topics: rosbag2 (Jazzy) stops discovery once as many topics are subscribed as were listed explicitly, so mixing the two silently dropped later topics. `topic_types` go to `--topic-types`.
+- `run_record(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=(), dry_run=False) -> tuple[list[str], subprocess.CompletedProcess[bytes] | None]` (L233) — Invoke `ros2 bag record` with the chosen profile.
+- `class ReplayResult` (L156) — Output of `run_replay` — both summary + the joined timeline; fields `trace_id`, `bag_trace_ids`, `timeline`, `bag_path`.
+  - `to_json(self) -> dict[str, Any]` (L175) — Return a plain-dict view suitable for `json.dumps`.
+- `run_replay(*, bag_path, trace_id, dashboard_url) -> ReplayResult` (L185) — Read `bag_path`, fetch matching spans, return the joined timeline.
+- `write_timeline(result, out_path) -> None` (L306) — Persist a `ReplayResult` as pretty-printed JSON to `out_path`.

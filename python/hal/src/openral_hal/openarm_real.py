@@ -69,10 +69,10 @@ from collections.abc import Callable
 import structlog
 from openral_core.can import preflight_can_links
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
-from openral_core.schemas import Action, ControlMode, JointState, RobotDescription
+from openral_core.schemas import Action, JointState, RobotDescription
 
 from openral_hal._real_description import make_real_description
-from openral_hal._slot_group import GRIPPER_MODES, SlotGroupStager, compose_slot_group
+from openral_hal._slot_group import GRIPPER_MODES, SlotGroupStager, compose_slot_group_action
 from openral_hal.openarm import OPENARM_DESCRIPTION
 from openral_hal.protocol import EStopRecovery, HALHealthReport
 from openral_hal.ros_control import ControllerKind, RosControlHAL
@@ -140,6 +140,8 @@ class OpenArmRealHAL(RosControlHAL):
             ``name`` / ``position`` / ``velocity`` / ``effort`` keys, in
             ros2_control joint naming.
         staleness_limit_s: Maximum age of a ``read_state()`` reading.
+            ``None`` (default) reads the manifest's
+            ``safety.joint_state_staleness_limit_s``.
         require_can_links: When ``True`` (the default), ``connect``
             verifies both CAN interfaces are up and refuses otherwise.  Set
             ``False`` only to exercise the ROS wiring against a bringup whose
@@ -181,7 +183,7 @@ class OpenArmRealHAL(RosControlHAL):
         joint_state_topic: str = _JOINT_STATE_TOPIC,
         publish_fn: Callable[[str, dict[str, object]], None] | None = None,
         state_fn: Callable[[], dict[str, object]] | None = None,
-        staleness_limit_s: float = 0.5,
+        staleness_limit_s: float | None = None,
         require_can_links: bool = True,
     ) -> None:
         """Initialise the adapter; opens neither ROS nor the CAN bus yet."""
@@ -407,11 +409,19 @@ class OpenArmRealHAL(RosControlHAL):
         # none of which is a whole-robot command on its own. Reassemble the
         # tick and fall through to the single-vector publish below, so the
         # all-or-nothing guarantee covers the composed group too.
+        group: list[Action] | None = None
         if int(action.tick_group_size) > 1:
             group = self._slot_group.stage(action)
             if group is None:
                 return
-            action = self._compose_group(group)
+            log.debug(
+                "hal.send_action.slot_group",
+                robot=self.description.name,
+                slots=len(group),
+                tick=group[0].tick_index,
+                modes=[a.control_mode.value for a in group],
+            )
+            action = compose_slot_group_action(group, [j.name for j in self.description.joints])
 
         self._validate_action(action)
 
@@ -453,6 +463,8 @@ class OpenArmRealHAL(RosControlHAL):
             )
         for topic, msg in outbound:
             self._publish_fn(topic, msg)
+        if group is not None:
+            self._slot_group.commit(group)
 
         log.debug(
             "hal.send_action",
@@ -472,6 +484,16 @@ class OpenArmRealHAL(RosControlHAL):
         self._slot_group.reset()
         super().disconnect()
 
+    @property
+    def last_committed_tick(self) -> int:
+        """Inference tick of the last slot group published (0 = none since disconnect).
+
+        Read by the HAL lifecycle node to acknowledge a grouped tick on
+        ``/openral/action_applied`` only once the whole group went out, rather
+        than by counting slots that reached ``send_action``.
+        """
+        return self._slot_group.last_committed_tick
+
     def estop(self) -> None:
         """Trigger an emergency stop, dropping any half-staged slot group.
 
@@ -480,46 +502,16 @@ class OpenArmRealHAL(RosControlHAL):
         this override a slot staged when the stop landed would survive the
         stop, and the first tick of the resumed run would be spent raising the
         incomplete-group error against a tick from before the e-stop. The
+        committed watermark is kept: a pre-stop tick replayed after the stop
+        is still refused as stale. The
         downstream stop itself — deactivating all four controllers through
         ``controller_manager`` — is the base implementation's.
 
         Raises:
             ROSEStopRequested: Always, from the base implementation.
         """
-        self._slot_group.reset()
+        self._slot_group.discard()
         super().estop()
-
-    def _compose_group(self, group: list[Action]) -> Action:
-        """Merge one tick's slot actions into a single 16-DoF joint action.
-
-        Args:
-            group: Every slot action of one inference tick.
-
-        Returns:
-            A ``JOINT_POSITION`` ``Action`` covering all 16 joints, which
-            ``send_action`` then fans out to the four controllers exactly
-            as it does a whole-vector action.
-
-        Raises:
-            ROSConfigError: The group is unplaceable — see
-                ``openral_hal._slot_group.compose_slot_group``.
-        """
-        targets = compose_slot_group(group, [j.name for j in self.description.joints])
-        first = group[0]
-        log.debug(
-            "hal.send_action.slot_group",
-            robot=self.description.name,
-            slots=len(group),
-            tick=first.tick_index,
-            modes=[a.control_mode.value for a in group],
-        )
-        return Action(
-            control_mode=ControlMode.JOINT_POSITION,
-            horizon=1,
-            joint_targets=[targets],
-            stamp_ns=first.stamp_ns,
-            confidence=first.confidence,
-        )
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
 

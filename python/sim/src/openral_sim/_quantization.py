@@ -41,7 +41,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -371,6 +371,75 @@ def install_prequantized_linears(
     return quantized_count, consumed
 
 
+def overlay_prequantized_state(
+    policy: Any, state: dict[str, Any], *, device: str, torch: Any, family: str, source: str
+) -> None:
+    """Load an nf4 prequant pack into ``policy`` completely, or refuse.
+
+    ``install_prequantized_linears`` rebuilds every ``Linear4bit`` weight the
+    pack carries; every other key is ``copy_``-ed into its slot. Then coverage
+    is checked like ``stream_state_into_policy``: the fast meta-init path has
+    no other weight source, so a parameter or persistent buffer left unfilled
+    (and not a tied alias of a filled one) would run on reset/uninitialised
+    values.
+
+    Args:
+        policy: Policy ``nn.Module`` after ``quantize_nf4_in_place``.
+        state: The pack's state dict (``tools/quantize_rskill.py`` output).
+        device: Where the rebuilt ``Params4bit`` weights go.
+        torch: The imported ``torch`` module.
+        family: Adapter family, the log-event prefix and named in the refusal.
+        source: The pack's repo id, named in the refusal.
+
+    Raises:
+        ROSConfigError: Any missing or unexpected key.
+    """
+    loaded, consumed = install_prequantized_linears(policy, state, device=device, torch=torch)
+    # Every other key is copied into its slot (``copy_`` casts and moves), then
+    # coverage is checked the way ``stream_state_into_policy`` does: the fast
+    # meta-init path has no other weight source, so an unfilled slot would run
+    # on reset/uninitialised values.
+    persistent, _ = _persistent_state_names(policy)
+    targets: dict[str, Any] = dict(policy.named_parameters(remove_duplicate=False))
+    targets.update(
+        (name, buf)
+        for name, buf in policy.named_buffers(remove_duplicate=False)
+        if name in persistent
+    )
+    unexpected: list[str] = []
+    filled = {k for k in consumed if k in targets}
+    with torch.no_grad():
+        for key, tensor in state.items():
+            if key in consumed:
+                continue
+            target = targets.get(key)
+            if target is None:
+                unexpected.append(key)
+                continue
+            target.copy_(tensor)
+            filled.add(key)
+    filled_storage = {targets[n].untyped_storage().data_ptr() for n in filled}
+    missing = sorted(
+        n
+        for n in set(targets) - filled
+        if targets[n].untyped_storage().data_ptr() not in filled_storage
+    )
+    log.info(
+        f"{family}_prequantized_loaded",
+        keys=len(state),
+        quantized_modules=loaded,
+        filled=len(filled),
+        tied_aliases=len(set(targets) - filled) - len(missing),
+    )
+    if missing or unexpected:
+        raise ROSConfigError(
+            f"{family} nf4 prequant pack {source!r} does not match the policy — "
+            f"{len(missing)} missing (would run on reset/garbage values): {missing[:8]}; "
+            f"{len(unexpected)} unexpected: {sorted(unexpected)[:8]}. Rebuild the pack "
+            "with tools/quantize_rskill.py from the same source checkpoint."
+        )
+
+
 # ── rSkill-level entry point ──────────────────────────────────────────────────
 
 
@@ -458,11 +527,13 @@ def load_prequantized_state_for_rskill(  # noqa: PLR0911  # reason: linear early
     bf16->nf4 packing that ``.to(device)`` would otherwise run is
     skipped.
 
-    Silently no-ops when the rSkill manifest does not point at an
-    ``hf://`` repo, or when that repo does not carry a
-    ``quantization_metadata.json``. Back-compat: rSkills that ship
-    bf16 weights (e.g. ``rskills/pi05-libero-int8``) keep their existing
-    on-line nf4 pack path.
+    No-ops when the rSkill manifest does not point at an ``hf://`` repo,
+    or when that repo does not carry a ``quantization_metadata.json``:
+    rSkills that ship bf16 weights keep the on-line nf4 pack path. Once a
+    pack is found it must load completely. There is no fallback, because
+    the fast meta-init path has no other weight source: every parameter
+    and persistent buffer must be filled from the pack (or share storage
+    with a filled tied alias), and every pack key must name one.
 
     Args:
         policy: Policy ``nn.Module`` already rewritten via
@@ -476,6 +547,10 @@ def load_prequantized_state_for_rskill(  # noqa: PLR0911  # reason: linear early
             ("pi05" -> ``pi05_prequantized_fastpath`` etc.). Lets
             adapter-level traces distinguish which policy hit the
             fast-path.
+
+    Raises:
+        ROSConfigError: The pack leaves a parameter/persistent buffer
+            unfilled or carries a key that names none.
     """
     weights_uri = spec.weights_uri or ""
     if weights_uri.startswith(("hf://", "local://", "file://", "http://", "https://")):
@@ -541,70 +616,82 @@ def load_prequantized_state_for_rskill(  # noqa: PLR0911  # reason: linear early
     state = load_file(weights_path, device="cpu")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    try:
-        loaded, skipped = install_prequantized_linears(policy, state, device=device, torch=torch)
-    except Exception as exc:
-        log.warning(
-            f"{log_event_prefix}_prequantized_load_skipped",
-            reason=str(exc).splitlines()[0][:200],
-            note=(
-                "Falling back to the standard bf16->nf4 path "
-                "(`.to(cuda)` will re-pack the bf16 weights). The "
-                "pre-quantized rSkill still loaded cleanly; only the "
-                "fast state-dict overlay is disabled."
-            ),
-        )
-        return
-
-    leftover = {k: v for k, v in state.items() if k not in skipped}
-    missing, unexpected = policy.load_state_dict(leftover, strict=False)
-    log.info(
-        f"{log_event_prefix}_prequantized_loaded",
-        keys=len(state),
-        quantized_modules=loaded,
-        residual_keys=len(leftover),
-        missing=len(missing),
-        unexpected=len(unexpected),
+    overlay_prequantized_state(
+        policy, state, device=device, torch=torch, family=log_event_prefix, source=target_repo
     )
 
 
-def resolve_weights_file(
-    repo_id: str, *, filename: str = "model.safetensors", revision: str | None = None
-) -> str:
-    """Local path of ``filename`` for ``repo_id``, whether that is a directory or a Hub repo.
+WEIGHTS_FILE = "model.safetensors"
+"""The single-file transformers / lerobot checkpoint layout."""
 
-    ``resolve_rskill_to_hf_with_revision`` hands adapters a *directory* for an
-    rSkill installed with ``openral rskill install`` (the snapshot under
-    ``~/.cache/openral/rskills``) and a bare repo id otherwise. Every weights
-    read that went straight to ``hf_hub_download`` broke on the directory
-    case; this is the one place that tells the two apart. A directory that
-    lacks the file falls through to the cached-first Hub download, so a
-    mixed layout still resolves. ``revision`` is the pinned Hub revision the
-    adapter resolved for ``config.json``; the Hub path forwards it so the
-    weights can never come from a different revision than the config.
+WEIGHTS_INDEX_FILE = "model.safetensors.index.json"
+"""The sharded layout's index (``save_pretrained`` above its shard size): ``weight_map`` names
+each tensor's shard file."""
+
+
+def _shards_from_index(index_path: str) -> list[str]:
+    """Shard file names listed in a ``model.safetensors.index.json``, in first-seen order."""
+    weight_map = json.loads(Path(index_path).read_text()).get("weight_map")
+    if not isinstance(weight_map, dict) or not weight_map:
+        raise ROSConfigError(f"{index_path}: no 'weight_map' to name the checkpoint shards")
+    return list(dict.fromkeys(str(v) for v in weight_map.values()))
+
+
+def resolve_weights_files(repo_id: str, *, revision: str | None = None) -> list[str]:
+    """Local paths of the weights for ``repo_id``: one file, or every shard of a sharded one.
+
+    ``repo_id`` is a *directory* for an rSkill installed with ``openral rskill install``
+    (the snapshot ``resolve_rskill_to_hf_with_revision`` returns) and a bare Hub repo id
+    otherwise; every weights read that went straight to ``hf_hub_download`` broke on the
+    directory case, and this is the one place that tells the two apart. Both shapes
+    accept ``model.safetensors`` or a sharded ``model.safetensors.index.json`` + the
+    shards it names. A directory holding neither falls through to the cached-first Hub
+    download. ``revision`` is the pinned Hub revision the adapter resolved for
+    ``config.json``, forwarded so weights never come from a different revision.
+
+    Example:
+        >>> import tempfile, pathlib
+        >>> d = pathlib.Path(tempfile.mkdtemp())
+        >>> _ = (d / "model.safetensors").write_bytes(b"")
+        >>> resolve_weights_files(str(d)) == [str(d / "model.safetensors")]
+        True
     """
-    from pathlib import Path
-
     candidate = Path(repo_id)
-    if candidate.is_dir() and (candidate / filename).is_file():
-        return str(candidate / filename)
+    if candidate.is_dir():
+        if (candidate / WEIGHTS_FILE).is_file():
+            return [str(candidate / WEIGHTS_FILE)]
+        if (candidate / WEIGHTS_INDEX_FILE).is_file():
+            return [
+                str(candidate / shard)
+                for shard in _shards_from_index(str(candidate / WEIGHTS_INDEX_FILE))
+            ]
     from huggingface_hub import hf_hub_download
-    from huggingface_hub.errors import LocalEntryNotFoundError
+    from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
     from openral_rskill._vla_core import hf_download_cached_first
 
-    return str(
-        hf_download_cached_first(
-            hf_hub_download,
-            LocalEntryNotFoundError,
-            repo_id=repo_id,
-            filename=filename,
-            revision=revision,
+    def _fetch(filename: str) -> str:
+        return str(
+            hf_download_cached_first(
+                hf_hub_download,
+                LocalEntryNotFoundError,
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+            )
         )
-    )
+
+    try:
+        return [_fetch(WEIGHTS_FILE)]
+    except EntryNotFoundError as single_file_missing:
+        try:
+            index_path = _fetch(WEIGHTS_INDEX_FILE)
+        except EntryNotFoundError:
+            raise single_file_missing from None
+    return [_fetch(shard) for shard in _shards_from_index(index_path)]
 
 
-def peek_safetensors_keys(repo_id: str, *, filename: str = "model.safetensors") -> set[str] | None:
-    """Return the key set of a safetensors file without loading tensors.
+def peek_safetensors_keys(repo_id: str, *, revision: str | None = None) -> set[str] | None:
+    """Return the key set of a (possibly sharded) safetensors checkpoint without loading tensors.
 
     Used by adapters that want to skip ``reset_parameters()`` on
     modules whose params are about to be overwritten by an upcoming
@@ -612,25 +699,19 @@ def peek_safetensors_keys(repo_id: str, *, filename: str = "model.safetensors") 
     ``to_empty_cpu`` phase even though every kaiming / normal / ones
     init it produces is thrown away seconds later.
 
-    Reads only the safetensors header (~10 ms warm), so calling this
-    eagerly during the build phase is cheap. Routes the file fetch
-    through ``hf_download_cached_first`` so the
-    ``local_files_only=True`` fast path applies. Works for both
-    prequantized packs (caller passes the nf4 prequant repo id) and
-    bare source checkpoints (caller passes the bf16 source repo id —
-    used by the int8 fast meta-init path that loads bf16 weights via
-    ``load_state_dict`` instead of going through lerobot's
-    ``PI05Policy.from_pretrained``).
+    Reads only the safetensors headers (~10 ms warm), so calling this
+    eagerly during the build phase is cheap. Resolves through
+    ``resolve_weights_files`` (directory-aware, cached-first, sharded). Works for
+    prequantized packs and bare source checkpoints alike. The keys are the
+    file's raw spelling: an adapter whose loader renames keys maps them itself.
 
     Args:
-        repo_id: HF Hub repo id carrying the safetensors file.
-        filename: Path within the repo. Defaults to the standard
-            single-file checkpoint layout (``model.safetensors``).
+        repo_id: HF Hub repo id or local snapshot directory.
+        revision: Pinned Hub revision, forwarded to the download.
 
     Returns:
-        The set of tensor keys present in ``filename``, or ``None``
-        if the file cannot be downloaded / parsed (caller falls back
-        to a full ``reset_parameters`` walk).
+        The set of tensor keys, or ``None`` if the checkpoint cannot be
+        downloaded / parsed (caller falls back to a full ``reset_parameters`` walk).
     """
     try:
         from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
@@ -639,16 +720,228 @@ def peek_safetensors_keys(repo_id: str, *, filename: str = "model.safetensors") 
         return None
 
     try:
-        weights_path = resolve_weights_file(repo_id, filename=filename)
-    except (EntryNotFoundError, RepositoryNotFoundError, OSError):
+        paths = resolve_weights_files(repo_id, revision=revision)
+    except (EntryNotFoundError, RepositoryNotFoundError, OSError, ROSConfigError):
         return None
 
+    keys: set[str] = set()
     try:
-        # reason: safetensors ships no type stubs for safe_open
-        with safe_open(weights_path, framework="pt") as f:  # type: ignore[no-untyped-call]
-            return set(f.keys())
+        for path in paths:
+            # reason: safetensors ships no type stubs for safe_open
+            with safe_open(path, framework="pt") as f:  # type: ignore[no-untyped-call]
+                keys.update(f.keys())
     except (OSError, ValueError):
         return None
+    return keys
+
+
+# ── Meta-init loading (family-neutral) ───────────────────────────────────────
+#
+# A multi-billion-parameter VLA built by ``from_pretrained`` is allocated and
+# initialised on the CPU before its weights are read — minutes on a Jetson.
+# The fast path builds it on meta (``accelerate.init_empty_weights``),
+# allocates with ``to_empty``, and fills it from the checkpoint. Two things
+# ``from_pretrained`` did implicitly then become the loader's job, and both
+# fail *silently* (a plausible-looking, wrong policy) when missed: the
+# non-persistent buffers the checkpoint does not carry, and the checkpoint's
+# key spelling. These helpers make both explicit and fail closed.
+
+BufferRebuilder = Callable[[str, Any, Any], bool]
+"""A family hook ``(buffer_name, owning_module, buffer) -> handled``.
+
+It rebuilds, in place, a non-persistent buffer only its family knows how to
+compute (π0.5: Gemma RoPE ``inv_freq`` and ``embed_scale``) and returns
+``True``; ``False`` leaves the buffer to the generic rules / the refusal."""
+
+KeyMap = Callable[[list[str]], dict[str, str]]
+"""A family hook mapping a checkpoint's raw keys to ``{parameter_name: source_key}``.
+
+It is the family's own ``from_pretrained`` key normalisation (renames,
+prefixes, deliberately dropped keys), so the fast path loads exactly what the
+slow path would. A source key it leaves out is a deliberate drop."""
+
+
+def _persistent_state_names(policy: Any) -> tuple[set[str], set[str]]:
+    """``(persistent_buffer_names, non_persistent_buffer_names)`` of ``policy``.
+
+    Read from each module's ``_non_persistent_buffers_set`` rather than
+    ``state_dict()``, which a pre-``.to(cuda)`` bitsandbytes ``Linear8bitLt``
+    cannot serialise.
+    """
+    persistent: set[str] = set()
+    transient: set[str] = set()
+    for prefix, module in policy.named_modules(remove_duplicate=False):
+        hidden: set[str] = getattr(module, "_non_persistent_buffers_set", set())
+        for name, buf in module._buffers.items():
+            if buf is None:
+                continue
+            full = f"{prefix}.{name}" if prefix else name
+            (transient if name in hidden else persistent).add(full)
+    return persistent, transient
+
+
+def rebuild_non_persistent_buffers(
+    policy: Any, *, torch: Any, family: str, rebuild: BufferRebuilder | None = None
+) -> None:
+    """Recompute every buffer a meta-initialised policy cannot load from its checkpoint.
+
+    After ``init_empty_weights`` + ``to_empty`` every buffer holds garbage, and
+    the *non-persistent* ones are not in the checkpoint, so each must be rebuilt
+    the way its module builds it. Generic rule: ``*.position_ids`` (int64
+    ``arange``; garbage indices assert on the embedding gather). Everything
+    else goes to the family's ``rebuild`` hook.
+
+    A non-persistent buffer nobody rebuilt is refused (``ROSRuntimeError``)
+    rather than run on garbage — the only symptom of a missed one is a policy
+    that is silently wrong (π0.5's ``embed_scale``: cosine 0.03 against
+    ``from_pretrained`` with every loaded tensor matching). Call under
+    ``torch.no_grad()``.
+
+    Args:
+        policy: The meta-then-materialised policy ``nn.Module``.
+        torch: The imported ``torch`` module.
+        family: Adapter family, named in the refusal.
+        rebuild: The family's hook for its own buffers (see ``BufferRebuilder``).
+
+    Raises:
+        ROSRuntimeError: A non-persistent buffer no rule rebuilt.
+    """
+    from openral_core.exceptions import ROSRuntimeError
+
+    _, transient = _persistent_state_names(policy)
+    unhandled: list[str] = []
+    # Persistent buffers the rules know are rebuilt too (a strict=False loader,
+    # e.g. the nf4 prequant overlay, may not fill them); only an unhandled
+    # *non-persistent* one is refused, the checkpoint covers the rest.
+    for name, buf in policy.named_buffers():
+        mod = policy.get_submodule(name.rpartition(".")[0])
+        if name.endswith(".position_ids") and buf.dtype == torch.int64:
+            arange = torch.arange(buf.shape[-1], dtype=torch.int64, device=buf.device)
+            buf.copy_(arange.expand_as(buf))
+        elif rebuild is not None and rebuild(name, mod, buf):
+            continue
+        elif name in transient:
+            unhandled.append(name)
+    if unhandled:
+        raise ROSRuntimeError(
+            f"{family} fast meta-init: non-persistent buffers this loader cannot rebuild "
+            f"(they are not in the checkpoint and would run as garbage): {unhandled[:8]}"
+        )
+
+
+def expand_covered_keys_via_tied_storage(policy: Any, covered_keys: set[str]) -> set[str]:
+    """Extend ``covered_keys`` to include every parameter tied to a covered one.
+
+    A checkpoint stores a tied pair (PaliGemma's ``embed_tokens`` / ``lm_head``)
+    under one name; after ``to_empty`` + ``tie_transformers_weights`` both names
+    share storage, detected here by ``untyped_storage().data_ptr()``. Without
+    this, ``targeted_reset_parameters`` pays a ~10 s ``normal_`` init on a slot
+    the load fills through the tie. ``named_parameters(remove_duplicate=False)``
+    keeps both alias names visible (and avoids ``state_dict()``, which a
+    pre-``.to(cuda)`` ``Linear8bitLt`` cannot serialise).
+    """
+    groups: dict[int, set[str]] = {}
+    for key, param in policy.named_parameters(remove_duplicate=False):
+        try:
+            sid = param.untyped_storage().data_ptr()
+        except (AttributeError, RuntimeError):
+            continue
+        groups.setdefault(sid, set()).add(key)
+    expanded = set(covered_keys)
+    for keys_group in groups.values():
+        if len(keys_group) > 1 and (expanded & keys_group):
+            expanded.update(keys_group)
+    return expanded
+
+
+def stream_state_into_policy(
+    policy: Any,
+    repo_id: str,
+    *,
+    torch: Any,
+    family: str,
+    revision: str | None = None,
+    key_map: KeyMap | None = None,
+) -> None:
+    """Copy a (possibly sharded) safetensors checkpoint tensor-by-tensor into ``policy``.
+
+    The meta-init substitute for a family's ``from_pretrained`` weight load. The
+    policy is already materialised where it will run (``to_empty(device)``);
+    each tensor is read on the CPU and ``copy_``-ed into its target, which moves
+    and casts it — so the device peak is one model plus one tensor, never a
+    second full state dict, and never a source-dtype temporary on the GPU.
+
+    ``key_map`` applies the family's own key normalisation first (π0.5:
+    lerobot's ``_fix_pytorch_state_dict_keys`` + the ``model.`` prefix), so the
+    fast path loads the same tensors into the same slots as ``from_pretrained``.
+    Then it fails closed:
+
+    * a mapped key that names no parameter / persistent buffer is *unexpected*;
+    * a parameter or persistent buffer nothing was copied into is *missing* —
+      it would keep its reset/uninitialised value. The one allowed exception
+      is a **tied alias**: a slot sharing storage with one that was loaded
+      (a checkpoint stores a tied ``embed_tokens`` / ``lm_head`` pair once).
+
+    Either raises ``ROSConfigError``. Source keys the family's ``key_map`` drops
+    on purpose are counted as ``dropped`` in the ``meta_init_state_streamed`` log.
+    Tie weights (``tie_transformers_weights``) before calling.
+
+    Raises:
+        ROSConfigError: safetensors missing, or any missing / unexpected key.
+    """
+    try:
+        from safetensors import safe_open
+    except ImportError as exc:  # pragma: no cover
+        raise ROSConfigError(
+            f"{family} fast meta-init requires safetensors; install with: "
+            "just sync --all-packages --group sim"
+        ) from exc
+    paths = resolve_weights_files(repo_id, revision=revision)
+    persistent, _ = _persistent_state_names(policy)
+    targets: dict[str, Any] = dict(policy.named_parameters(remove_duplicate=False))
+    targets.update(
+        (name, buf)
+        for name, buf in policy.named_buffers(remove_duplicate=False)
+        if name in persistent
+    )
+    loaded: set[str] = set()
+    unexpected: list[str] = []
+    dropped = 0
+    with torch.no_grad():
+        for path in paths:
+            # reason: safetensors ships no type stubs for safe_open
+            with safe_open(path, framework="pt", device="cpu") as f:  # type: ignore[no-untyped-call]
+                raw = list(f.keys())
+                mapping = key_map(raw) if key_map is not None else {k: k for k in raw}
+                dropped += len(set(raw) - set(mapping.values()))
+                for name, source in mapping.items():
+                    target = targets.get(name)
+                    if target is None:
+                        unexpected.append(name)
+                        continue
+                    target.copy_(f.get_tensor(source))
+                    loaded.add(name)
+    loaded_storage = {targets[n].untyped_storage().data_ptr() for n in loaded}
+    missing = sorted(
+        n
+        for n in set(targets) - loaded
+        if targets[n].untyped_storage().data_ptr() not in loaded_storage
+    )
+    log.info(
+        "meta_init_state_streamed",
+        family=family,
+        repo=repo_id,
+        shards=len(paths),
+        loaded=len(loaded),
+        tied_aliases=len(set(targets) - loaded) - len(missing),
+        dropped=dropped,
+    )
+    if missing or unexpected:
+        raise ROSConfigError(
+            f"{family} fast meta-init: checkpoint {repo_id!r} does not match the policy "
+            f"after key normalisation — {len(missing)} missing (would run on reset/garbage "
+            f"values): {missing[:8]}; {len(unexpected)} unexpected: {sorted(unexpected)[:8]}"
+        )
 
 
 # ── Manifest-driven dtype resolution ──────────────────────────────────────────
@@ -1045,17 +1338,26 @@ def tie_transformers_weights(policy: Any) -> None:
 
 __all__ = [
     "DEFAULT_MIN_PARAMS_TO_QUANTIZE",
+    "WEIGHTS_FILE",
+    "WEIGHTS_INDEX_FILE",
+    "BufferRebuilder",
+    "KeyMap",
     "default_dtype_for_device",
     "detect_prequantized_nf4",
+    "expand_covered_keys_via_tied_storage",
     "install_prequantized_linears",
     "load_prequantized_state_for_rskill",
     "normalise_manifest_dtype",
+    "overlay_prequantized_state",
     "peek_safetensors_keys",
     "quantize_int8_in_place",
     "quantize_nf4_in_place",
+    "rebuild_non_persistent_buffers",
     "require_supported_dtype",
     "resolve_quant_plan",
+    "resolve_weights_files",
     "sidecar_quant_token",
+    "stream_state_into_policy",
     "targeted_reset_parameters",
     "tie_transformers_weights",
     "torch_dtype_for",
