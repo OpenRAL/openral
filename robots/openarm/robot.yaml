@@ -492,6 +492,9 @@ sensors:
   # tools/depth_extrinsic_check.py --sensor head_zed --unit <unit> and copy the
   # report's suggested pose into that unit's overlay; `verify --unit <unit>` refuses a report once the
   # effective pose changes (runbook: docs/tutorials/deploy/openarm-real-world-voxel-check.md).
+  # Both units now carry their own x/y/z/yaw, fitted 2026-09-25 from the unpowered arms'
+  # own returns (unit overlay headers): about 2 cm back and 1.6 cm up from this nominal
+  # mount on both cells. That aligns the self-filter; it is not a marker calibration.
   #
   # A depth sensor with intrinsics auto-enables the octomap leg, so every
   # in-tree OpenArm scene pins `runtime.enable_octomap` explicitly and must
