@@ -47,7 +47,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -59,7 +59,7 @@ from openral_core.gpu import detect_gpu_vram_gb
 from rich.console import Console
 
 if TYPE_CHECKING:
-    from openral_core import DeployScene, RobotDescription, RSkillManifest
+    from openral_core import DeployScene, RobotDescription, RSkillManifest, SensorSpec
 
 __all__ = [
     "LaunchInvocation",
@@ -1202,7 +1202,12 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             + "."
         )
     if hal_mode == "real" and enable_octomap and enable_octomap_kernel_check:
-        _preflight_depth_extrinsics(description, Path(robot_yaml), robot_unit)
+        _preflight_depth_extrinsics(
+            description,
+            Path(robot_yaml),
+            robot_unit,
+            deploy_scene.sensors if deploy_scene is not None else (),
+        )
     rig = rt if rt is not None else DeployRuntime()
     voxel_deadline_s, max_octree_age_s = rig.voxel_freshness_s
     clock_origin = _resolve_clock_origin(
@@ -2374,7 +2379,10 @@ def _clean_stale_fastrtps_shm(
 
 
 def _preflight_depth_extrinsics(
-    description: RobotDescription, robot_yaml: Path, unit: str | None
+    description: RobotDescription,
+    robot_yaml: Path,
+    unit: str | None,
+    scene_sensors: Sequence[SensorSpec] = (),
 ) -> None:
     """Refuse a real world-voxel deploy whose depth camera extrinsic is not verified.
 
@@ -2389,9 +2397,16 @@ def _preflight_depth_extrinsics(
     is no override flag: the only other way past is an explicit
     ``--no-enable-octomap-kernel-check`` (no world check at all).
 
+    The same goes for every OTHER cloud source that can feed octomap on a real deploy
+    (``SensorSpec.is_cloud_source`` over the robot's and the scene's sensors): a
+    scene-mounted depth camera, a 3D lidar, a depth camera without intrinsics. The
+    extrinsic check cannot measure those yet, so they are refused rather than passed
+    unmeasured.
+
     Raises:
         ROSConfigError: a depth camera is missing, stale or failed calibration.
     """
+    from openral_core import merge_deploy_sensors
     from openral_core.depth_extrinsic import (  # reason: keep numpy-free core import lazy
         checkable_depth_sensor,
         extrinsic_report_path,
@@ -2399,6 +2414,16 @@ def _preflight_depth_extrinsics(
     )
 
     problems: list[str] = []
+    robot_names = {s.name for s in description.sensors}
+    for spec in merge_deploy_sensors(description.sensors, scene_sensors):
+        if spec.is_cloud_source and not (spec.name in robot_names and spec.is_depth_camera):
+            where = "robot" if spec.name in robot_names else "scene"
+            problems.append(
+                f"{spec.name}: a {where} {spec.modality} sensor"
+                + (" without intrinsics" if spec.intrinsics is None else "")
+                + " can feed octomap, but tools/depth_extrinsic_check.py measures only "
+                "robot-manifest depth cameras with intrinsics, so its pose is unmeasured"
+            )
     for spec in (s for s in description.sensors if s.is_depth_camera):
         report = extrinsic_report_path(robot_yaml, spec.name, unit)
         try:
