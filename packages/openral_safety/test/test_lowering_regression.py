@@ -58,8 +58,8 @@ ROBOTS = sorted(Path("robots").glob("*/robot.yaml"))
 #
 # Detected structurally (same as tests/unit/test_collision_lowering_fleet.py): a tool-generated
 # block carries "# GENERATED" directly above ``collision_geometry:``; hand-authored ones don't.
-# An MJCF robot WITH the header (openarm) had its geometry fitted to the MJCF meshes, so it is
-# re-lowered with the fit on; one WITHOUT it keeps its manifest geometry verbatim — not a drift.
+# openarm's MJCF path keeps the manifest geometry verbatim, so it re-lowers byte-identically
+# whether or not the block carries the header — not a drift.
 
 
 def _has_generated_geometry_header(manifest: Path) -> bool:
@@ -72,8 +72,8 @@ def _has_generated_geometry_header(manifest: Path) -> bool:
 def _is_known_hand_authored_drift(manifest: Path) -> bool:
     """Hand-authored geometry (no GENERATED header) that no current path re-lowers.
 
-    An MJCF robot without the header keeps its manifest geometry verbatim, so it
-    reproduces byte-identically — only robots WITHOUT an MJCF-native keep path
+    An MJCF robot keeps its manifest geometry verbatim, so it reproduces
+    byte-identically — only robots WITHOUT an MJCF-native keep path
     (panda_mobile today) genuinely drift.
     """
     desc = RobotDescription.model_validate(yaml.safe_load(manifest.read_text()))
@@ -179,12 +179,7 @@ def test_lowering_output_unchanged(manifest: Path) -> None:
     if not desc.collision_geometry:
         pytest.skip("no collision_geometry to regress")
 
-    # A GENERATED MJCF block was fitted to the meshes; re-lower it the same way.
-    relowered = lower_robot_auto(
-        desc,
-        manifest_dir=manifest.parent,
-        fit_mjcf_geometry=_has_generated_geometry_header(manifest),
-    )
+    relowered = lower_robot_auto(desc, manifest_dir=manifest.parent)
 
     # 1. Routing picks the provenance-correct source (no silent source flip).
     committed_source = relowered.acm_source

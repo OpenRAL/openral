@@ -106,15 +106,10 @@ The manifest's collision primitives are what the C++ kernel checks every
 chunk against. Since 2026-09-24 they are **fitted to the MJCF collision
 meshes**, not hand-authored (hazard-log Entry 045): the hand capsules were
 never measured, and the finger meshes reached 83.7 mm outside the finger
-sphere. Regenerate them with
-
-```bash
-openral collision lower --robot robots/openarm/robot.yaml --fit-mjcf-geometry --write
-```
-
-which gives each link the smaller of a trimmed capsule and a PCA box around
-its meshes, with the second finger swept over the gripper stroke into
-`finger_pair`. `tests/unit/test_collision_geometry_enclosure.py` places the
+sphere. Each link carries the smaller of a trimmed capsule and a PCA box
+around its meshes, with the second finger swept over the gripper stroke into
+`finger_pair`. The fitting tool lands separately; `openral collision lower`
+keeps these primitives verbatim and regenerates only the ACM. `tests/unit/test_collision_geometry_enclosure.py` places the
 meshes with MuJoCo and the primitives with the kernel's own model and FK,
 and fails if any mesh vertex sits outside its primitive at 300 random poses.
 `tests/unit/test_collision_geometry_zero_pose.py` asserts no non-allowed pair

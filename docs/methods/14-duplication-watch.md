@@ -61,8 +61,6 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 - **`SensorSpec`-by-name search — two ROS packages, deliberately.** Private `_sensor_spec` in `packages/world_state/…/lifecycle_node.py` vs. public `sensor_spec_by_name` in `segmenter_node.py`. Two call sites in two packages; promoting it to `openral_core.schemas` is worth doing when a third caller appears, not before.
 
-- **Point-cloud primitive fitters — `fit_capsule_to_vertices` vs `fit_trimmed_capsule_to_vertices` / `fit_obb_to_vertices` (`urdf_lowering.py`).** Two capsule fitters on purpose: the URDF path keeps the untrimmed PCA capsule its committed manifests were lowered with (switching would re-lower every URDF robot), the MJCF fit uses the trimmed one inside `fit_tightest_primitive`. Moving the URDF path onto `fit_tightest_primitive` is a deliberate fleet re-lower with safety-WG review, and then the untrimmed fitter goes.
-
 ---
 
 ### Already correctly DRY (do not flag)

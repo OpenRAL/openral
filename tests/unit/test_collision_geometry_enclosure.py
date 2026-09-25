@@ -3,8 +3,8 @@
 Hazard-log Entry 045: the OpenArm's hand-written primitives were smaller than the
 links they stood for (the finger meshes reached 83.7 mm outside the finger sphere),
 so the kernel's self- and world-collision checks were not conservative. The
-geometry is now fitted to the MJCF meshes (`openral collision lower
---fit-mjcf-geometry`); this pins the property that fit exists to guarantee.
+geometry is now fitted to the MJCF meshes; this pins the property that fit
+exists to guarantee, independently of the tool that produced it.
 
 The two sides are placed independently, which is the point:
 
@@ -35,8 +35,7 @@ from openral_core.assets import resolve_asset  # noqa: E402
 from openral_safety.envelope_loader import collision_params_from_description  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
-# Robots whose collision geometry is fitted to MJCF meshes. A robot joins by being
-# re-lowered with `--fit-mjcf-geometry`.
+# Robots whose collision geometry is fitted to their MJCF meshes.
 FITTED = ["openarm"]
 N_POSES = 300
 SEED = 20260924
@@ -113,10 +112,37 @@ def _mesh_vertices_world(model: object, data: object, body: int) -> np.ndarray |
     return np.vstack(parts) if parts else None
 
 
+def _link_bodies(robot: RobotDescription, model: object) -> dict[str, int]:
+    """Manifest link -> MJCF body, via ``sim_joint_name`` (child body; parent body for the root)."""
+    link_body: dict[str, int] = {}
+    for j in robot.joints:
+        ji = int(mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, j.sim_joint_name or ""))
+        if ji < 0:
+            continue
+        child = int(model.jnt_bodyid[ji])
+        link_body[j.child_link] = child
+        link_body.setdefault(j.parent_link, int(model.body_parentid[child]))
+    return link_body
+
+
+def _coupled_joints(model: object) -> dict[int, list[tuple[int, float, float]]]:
+    """Linear joint equalities ``q[a] = c0 + c1*q[b]``, both ends: joint -> [(other, c0, c1)]"""
+    coupled: dict[int, list[tuple[int, float, float]]] = {}
+    for e in range(model.neq):
+        if int(model.eq_type[e]) != int(mujoco.mjtEq.mjEQ_JOINT):
+            continue
+        a, b = int(model.eq_obj1id[e]), int(model.eq_obj2id[e])
+        c = [float(v) for v in model.eq_data[e][:5]]
+        if b < 0:
+            continue
+        assert not any(c[2:]) and c[1] != 0.0, f"joint equality {e} is not an invertible line"
+        coupled.setdefault(b, []).append((a, c[0], c[1]))
+        coupled.setdefault(a, []).append((b, -c[0] / c[1], 1.0 / c[1]))
+    return coupled
+
+
 @pytest.mark.parametrize("robot_id", FITTED)
 def test_every_mesh_vertex_is_inside_its_links_primitive(robot_id: str) -> None:
-    from openral_safety.urdf_lowering import _mjcf_link_bodies, mjcf_coupled_joints
-
     manifest = REPO / "robots" / robot_id / "robot.yaml"
     robot = RobotDescription.from_yaml(str(manifest))
     params = collision_params_from_description(robot)
@@ -125,11 +151,11 @@ def test_every_mesh_vertex_is_inside_its_links_primitive(robot_id: str) -> None:
         str(resolve_asset(robot.assets.mjcf, "mjcf", manifest_dir=manifest.parent))
     )
     data = mujoco.MjData(model)
-    link_body = _mjcf_link_bodies(robot, model)
+    link_body = _link_bodies(robot, model)
 
     # Which MJCF bodies each link's primitive has to hold: its own body, plus the
     # bodies of joints equality-coupled to the joint that drives it (followers).
-    coupled = mjcf_coupled_joints(model)
+    coupled = _coupled_joints(model)
     driven: dict[int, int] = {}  # MJCF joint the manifest drives -> its qpos address
     bodies_of: dict[str, list[int]] = {ln: [b] for ln, b in link_body.items()}
     for j in robot.joints:

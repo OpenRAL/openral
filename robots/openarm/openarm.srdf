@@ -9,7 +9,7 @@
   channel URDF robots use, instead of hand edits to the generated ACM block.
 
   Re-measured 2026-09-24 against the geometry fitted to the MJCF meshes
-  (`openral collision lower` with its fit-mjcf-geometry flag, hazard-log Entry 045),
+  (hazard-log Entry 045),
   over seeded in-limit poses:
     primitives - the kernel collision model, kernel_predicates.shape_distance, 2000 poses
     meshes     - the MJCF collision meshes, openral_hal.convex_distance (certified
