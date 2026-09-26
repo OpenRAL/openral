@@ -33,6 +33,7 @@ from __future__ import annotations
 import contextlib
 import math
 import os
+import secrets
 import sys
 import threading
 import time
@@ -429,6 +430,12 @@ if _ROS2_AVAILABLE:
                     tf_lookup=self._tf_lookup,
                 )
 
+            # Random nonzero id of this runner session, stamped on every
+            # ActionChunk: tick numbering restarts with each runner process, so
+            # the HAL keys its replay watermark on (session, tick) and refuses a
+            # superseded session outright (hazard log Entry 036, Amendment 3).
+            self._runner_session_id = secrets.randbits(64) or 1
+            self.get_logger().info(f"rskill_runner session id {self._runner_session_id:#018x}")
             # F1 — ROSPublishingHAL replaces the motor-driving HAL.
             self._hal = ROSPublishingHAL(
                 node=self,
@@ -440,6 +447,7 @@ if _ROS2_AVAILABLE:
                 skill_id_getter=lambda: self._active_skill_id,
                 skill_revision_getter=lambda: self._active_skill_revision,
                 tick_index_getter=lambda: self._current_tick_index,
+                runner_session_id=self._runner_session_id,
                 # Hand the adapter the estop latch this node already keeps
                 # from its own /openral/estop subscription (below), so an
                 # atomic-group apply-wait that a latched kernel silenced
