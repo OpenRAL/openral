@@ -539,18 +539,25 @@ _Robot-agnostic SocketCAN transport discovery — a CAN-bus robot is invisible t
 - `preflight_can_links(interfaces, *, hal_label, remedy="", sysfs_net=None) -> dict[str, str]` — The connect-time gate every CAN robot needs; reports every failing bus in one message and raises `ROSConfigError` otherwise. (L303)
 
 ### `python/core/src/openral_core/depth_extrinsic.py`
-_The depth-camera extrinsic gate shared by `tools/depth_extrinsic_check.py` and `openral deploy run`'s real-deploy preflight. numpy-free and not re-exported by `openral_core.__init__`, so the launch file can read the margin cheaply._
+_The depth-camera extrinsic gate shared by `tools/depth_extrinsic_check.py` (which fits the mount to the robot itself, `tools/_extrinsic_fit.py`) and `openral deploy run`'s real-deploy preflight. numpy-free and not re-exported by `openral_core.__init__`, so the launch file can read the margin cheaply._
 
-- `REAL_WORLD_VOXEL_MARGIN_M: Final[float] = 0.02` (L31) — The kernel's real-deploy `world_voxel_margin_m` (`deploy_e2e.launch.py::_world_voxel_margin_m` returns it); every limit below derives from it.
-- `CHECKED_RANGE_M: Final[float] = 1.0` (L34) — Range at which a tilt error is converted to metres.
-- `MAX_HEIGHT_ERR_M: Final[float]` (L37) — Half the margin (10 mm).
-- `MAX_TILT_DEG: Final[float]` (L38) — `atan(MAX_HEIGHT_ERR_M / CHECKED_RANGE_M)` (~0.57°): tilt error at 1 m plus height error never exceed the margin.
-- `MAX_MARKER_ERR_M: Final[float]` (L40) — Three quarters of the margin (15 mm).
-- `MIN_MARKERS: Final[int] = 2` (L42) — One marker cannot separate yaw from translation.
-- `extrinsic_report_path(robot_yaml, sensor, unit=None) -> Path` (L45) — `<manifest dir>/calibration/<unit>/<sensor>_extrinsic.json` for a robot unit; `calibration/<sensor>_extrinsic.json` with no unit (a robot without `units/`).
-- `checkable_depth_sensor(description, sensor) -> SensorSpec` (L64) — The named sensor if it is a depth camera (`is_depth_camera`) with a manifest `parent_frame` + `static_transform_xyz_rpy`; `ROSConfigError` otherwise (RGB-only cameras refused).
-- `residual_failures(res, *, max_tilt_deg=..., max_height_err_m=..., max_marker_err_m=...) -> list[str]` (L107) — Every way the residuals miss the limits; NaN/inf never pass.
-- `verify_extrinsic_report(spec, report_path, *, base_frame, unit=None) -> list[str]` (L140) — Every reason a report does not clear the sensor's current pose as `unit` publishes it (missing/unreadable, not passed, residuals re-derived against the shipped limits, another unit/sensor/frames/base, stale pose, looser criteria). Empty = verified.
+- `REAL_WORLD_VOXEL_MARGIN_M: Final[float] = 0.02` (L35) — The kernel's real-deploy `world_voxel_margin_m` (`deploy_e2e.launch.py::_world_voxel_margin_m` returns it); every limit below derives from it.
+- `CHECKED_RANGE_M: Final[float] = 1.0` (L38) — Range at which an angular error is converted to metres.
+- `MAX_HEIGHT_ERR_M: Final[float]` (L41) — Half the margin (10 mm).
+- `MAX_TILT_DEG: Final[float]` (L42) — `atan(MAX_HEIGHT_ERR_M / CHECKED_RANGE_M)` (~0.57°): tilt error at 1 m plus height error never exceed the margin.
+- `MAX_PLANAR_ERR_M: Final[float]` (L45) — Three quarters of the margin (15 mm): the camera's horizontal error.
+- `MAX_YAW_DEG: Final[float]` (L46) — `atan(MAX_PLANAR_ERR_M / CHECKED_RANGE_M)` (~0.86°).
+- `MAX_FIT_RESIDUAL_M: Final[float]` (L50) — Half the margin: the median distance of the robot's returns from its meshes after the fit.
+- `MIN_FIT_POSES: Final[int] = 4` (L52) — Fewer poses cannot leave one out and still pin six DoF.
+- `MAX_AXIS_UNRECOVERED: Final[float] = 0.5` (L57) — Restarted one limit off along an axis, the fit must return within half a limit; an axis the poses cannot show (arms hanging: height, yaw) fails.
+- `ERROR_LIMITS: Final[dict[str, float]]` (L60) — `height_m` / `planar_m` / `tilt_deg` / `yaw_deg` and their limits; applied to the mount error plus the held-out spread.
+- `FIT_AXES: Final[dict[str, str]]` (L67) — The six mount axes the recovery test displaces, each mapped to the metric that measures it.
+- `extrinsic_criteria() -> dict[str, float | int]` (L77) — The shipped criteria exactly as a report records them; `verify` refuses any looser.
+- `extrinsic_report_path(robot_yaml, sensor, unit=None) -> Path` (L95) — `<manifest dir>/calibration/<unit>/<sensor>_extrinsic.json` for a robot unit; `calibration/<sensor>_extrinsic.json` with no unit (a robot without `units/`).
+- `fit_poses_path(robot_yaml) -> Path` (L114) — `<manifest dir>/calibration/extrinsic_fit_poses.yaml`: the robot type's committed extrinsic-fit poses, shared by its units.
+- `checkable_depth_sensor(description, sensor) -> SensorSpec` (L127) — The named sensor if it is a depth camera (`is_depth_camera`) with a manifest `parent_frame` + `static_transform_xyz_rpy`; `ROSConfigError` otherwise (RGB-only cameras refused).
+- `residual_failures(res) -> list[str]` (L182) — Every way a robot-fit report's residuals miss the limits: pose count, median robot residual, mount error + held-out spread per metric, per-axis recovery. NaN/inf/missing never pass.
+- `verify_extrinsic_report(spec, report_path, *, base_frame, unit=None) -> list[str]` (L222) — Every reason a report does not clear the sensor's current pose as `unit` publishes it (missing/unreadable, not passed, residuals re-derived against the shipped limits, another unit/sensor/frames/base, stale pose, looser criteria). Empty = verified.
 
 ### `python/core/src/openral_core/geometry.py`
 _Shared rotation geometry — look-at/camera gaze poses plus planar yaw↔quaternion helpers, so every layer uses one implementation instead of duplicating them. Import-on-demand, not re-exported by `openral_core.__init__`, so schemas stay numpy-free on the fast CLI path._
