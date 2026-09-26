@@ -272,7 +272,7 @@ def test_rig_perception_values_default_and_are_validated() -> None:
     """The data-age budget and self-filter padding are per-rig ``DeployRuntime`` values.
 
     Defaults are the Thor-measured budget (1.5 s) and the provisional padding
-    (0.02 m, 2026-09-25). A budget must be positive (0 would disable the kernel's check);
+    (0.02 m, 2026-09-25). A budget must be positive (the kernel refuses 0 too; it once meant off);
     a padding cannot be negative. No relation to the voxel deadline is imposed:
     a smaller budget is only stricter.
     """

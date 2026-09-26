@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -692,6 +693,7 @@ TEST_F(LifecycleKernelTest, MobileBaseArmCaughtAgainstVoxelWall) {
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
   while (!node->fault_latched() && std::chrono::steady_clock::now() < deadline) {
     js_pub->publish(js);
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
     cand_pub->publish(vel);
@@ -944,6 +946,7 @@ TEST_F(LifecycleKernelTest, CollisionEvidenceNamesTheVoxelItsDistanceDescribes) 
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
   while (evidence_json.empty() && std::chrono::steady_clock::now() < deadline) {
     js_pub->publish(js);
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
     cand_pub->publish(vel);
@@ -1077,6 +1080,7 @@ TEST_F(LifecycleKernelTest, CartesianDeltaPredictiveCatchesChunkDrivingEeIntoWal
   auto seed_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
   while (std::chrono::steady_clock::now() < seed_deadline) {
     js_pub->publish(js);
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -1086,6 +1090,7 @@ TEST_F(LifecycleKernelTest, CartesianDeltaPredictiveCatchesChunkDrivingEeIntoWal
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
   while (!node->fault_latched() && std::chrono::steady_clock::now() < deadline) {
     js_pub->publish(js);
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
     cand_pub->publish(cart);
@@ -1201,7 +1206,7 @@ openral_msgs::msg::OccupancyVoxels wall_voxels() {
 // through a second, identically configured kernel as a JOINT_POSITION row,
 // require the same pair and distance to 1e-8.
 TEST_F(LifecycleKernelTest, CollisionEvidenceReplaysThePredictedConfigurationItAdjudicated) {
-  const auto vox = wall_voxels();
+  auto vox = wall_voxels();
 
   rclcpp::Node helper("evidence_config_helper");
   rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
@@ -1264,6 +1269,7 @@ TEST_F(LifecycleKernelTest, CollisionEvidenceReplaysThePredictedConfigurationItA
   auto seed_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
   while (std::chrono::steady_clock::now() < seed_deadline) {
     js_pub->publish(js);
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -1273,6 +1279,7 @@ TEST_F(LifecycleKernelTest, CollisionEvidenceReplaysThePredictedConfigurationItA
   auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
   while (evidence_json.empty() && std::chrono::steady_clock::now() < deadline) {
     js_pub->publish(js);
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
     cand_pub->publish(cart);
@@ -1319,6 +1326,7 @@ TEST_F(LifecycleKernelTest, CollisionEvidenceReplaysThePredictedConfigurationItA
   // subscription time to match before a candidate can trip `voxel_unavailable`.
   seed_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
   while (std::chrono::steady_clock::now() < seed_deadline) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -1327,6 +1335,7 @@ TEST_F(LifecycleKernelTest, CollisionEvidenceReplaysThePredictedConfigurationItA
   evidence_json.clear();
   deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
   while (evidence_json.empty() && std::chrono::steady_clock::now() < deadline) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
     cand_pub->publish(pos);
@@ -1455,6 +1464,7 @@ TEST_F(LifecycleKernelTest, CartesianDeltaFirstStepUsesConfiguredMargin) {
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(800);
   while (safe_count.load() == 0 && std::chrono::steady_clock::now() < deadline) {
     js_pub->publish(js);
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
     cand_pub->publish(cart);
@@ -1613,6 +1623,7 @@ void run_multistep_cartesian_predict(const std::string& node_name, double wall_f
   auto seed_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
   while (std::chrono::steady_clock::now() < seed_deadline) {
     js_pub->publish(js);
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -1623,6 +1634,7 @@ void run_multistep_cartesian_predict(const std::string& node_name, double wall_f
   while (!node->fault_latched() && safe_count.load() == 0 &&
          std::chrono::steady_clock::now() < deadline) {
     js_pub->publish(js);
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
     cand_pub->publish(cart);
@@ -1811,6 +1823,7 @@ TEST_F(LifecycleKernelTest, ReactiveCollisionEvidenceReportsHorizonStepMinusOne)
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
   while (evidence.empty() && std::chrono::steady_clock::now() < deadline) {
     js_pub->publish(js);
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
     cand_pub->publish(cart);
@@ -2252,7 +2265,7 @@ std::vector<rclcpp::Parameter> place_declaration_params() {
       {"self_collision_enabled", false},
       {"world_voxel_enabled", true},
       {"world_voxel_margin_m", 0.0},
-      {"world_voxel_deadline_ms", 5000.0},
+      {"world_voxel_deadline_ms", 2000.0},
       {"world_voxel_max_cells", std::int64_t{64}},
       {"attached_collision_enabled", true},
       {"attached_collision_margin_m", 0.03},
@@ -2507,7 +2520,7 @@ TEST_F(LifecycleKernelTest, StalledAttachmentStreamRefusesEveryCandidateEvenWith
   exec.add_node(node->get_node_base_interface());
   exec.add_node(helper.get_node_base_interface());
 
-  const auto vox = declared_target_voxels();
+  auto vox = declared_target_voxels();
   sensor_msgs::msg::JointState js;
   js.name = {"j0"};
   js.position = {0.0};
@@ -2520,6 +2533,7 @@ TEST_F(LifecycleKernelTest, StalledAttachmentStreamRefusesEveryCandidateEvenWith
   // stopped for the right reason at the wrong time and the fault latches.
   const auto warm_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
   while (std::chrono::steady_clock::now() < warm_deadline) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(5));
@@ -2534,6 +2548,7 @@ TEST_F(LifecycleKernelTest, StalledAttachmentStreamRefusesEveryCandidateEvenWith
   // observation of the armed region and not just of a clear scene.
   const auto pass_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   while (safe_count.load() == 0 && std::chrono::steady_clock::now() < pass_deadline) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(5));
@@ -2556,6 +2571,7 @@ TEST_F(LifecycleKernelTest, StalledAttachmentStreamRefusesEveryCandidateEvenWith
   // that arrives after it really is a chunk the stale gate let through.
   const auto settle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
   while (std::chrono::steady_clock::now() < settle_deadline) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(10));
@@ -2563,6 +2579,7 @@ TEST_F(LifecycleKernelTest, StalledAttachmentStreamRefusesEveryCandidateEvenWith
   const int passed_before = safe_count.load();
   const std::uint64_t dropped_before = node->chunks_dropped();
   for (std::uint64_t i = 0; i < 3; ++i) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(10));
@@ -2641,7 +2658,7 @@ TEST_F(LifecycleKernelTest, PlaceDeclarationBackstopExpiresTheAllowancePerCandid
   exec.add_node(node->get_node_base_interface());
   exec.add_node(helper.get_node_base_interface());
 
-  const auto vox = declared_target_voxels();
+  auto vox = declared_target_voxels();
   sensor_msgs::msg::JointState js;
   js.name = {"j0"};
   js.position = {0.0};
@@ -2656,6 +2673,7 @@ TEST_F(LifecycleKernelTest, PlaceDeclarationBackstopExpiresTheAllowancePerCandid
   // declaration, and no candidate action until the region is armed.
   const auto warm_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
   while (std::chrono::steady_clock::now() < warm_deadline) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(5));
@@ -2666,6 +2684,7 @@ TEST_F(LifecycleKernelTest, PlaceDeclarationBackstopExpiresTheAllowancePerCandid
 
   const auto pass_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(600);
   while (safe_count.load() == 0 && std::chrono::steady_clock::now() < pass_deadline) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(5));
@@ -2691,6 +2710,7 @@ TEST_F(LifecycleKernelTest, PlaceDeclarationBackstopExpiresTheAllowancePerCandid
   const auto expiry_deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(1600);  // > the 1.5 s backstop
   while (std::chrono::steady_clock::now() < expiry_deadline) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(5));
@@ -2701,6 +2721,7 @@ TEST_F(LifecycleKernelTest, PlaceDeclarationBackstopExpiresTheAllowancePerCandid
   const int passed_before = safe_count.load();
   const auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   while (!node->fault_latched() && std::chrono::steady_clock::now() < stop_deadline) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(5));
@@ -2765,10 +2786,11 @@ TEST_F(LifecycleKernelTest, PreGraspDeclarationIsAnnouncedOnceAndNotAsARejection
   exec.add_node(node->get_node_base_interface());
   exec.add_node(helper.get_node_base_interface());
 
-  const auto vox = declared_target_voxels();
+  auto vox = declared_target_voxels();
   // The grid frame first, so the region is judged against a frame the kernel
   // knows (a frame mismatch is a different refusal with its own reason).
   for (int i = 0; i < 5; ++i) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
   }
@@ -2824,8 +2846,9 @@ TEST_F(LifecycleKernelTest, CleanDetachDropsTheRegionOnceInsteadOfRejectingIt) {
   exec.add_node(node->get_node_base_interface());
   exec.add_node(helper.get_node_base_interface());
 
-  const auto vox = declared_target_voxels();
+  auto vox = declared_target_voxels();
   for (int i = 0; i < 5; ++i) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
   }
@@ -2931,7 +2954,7 @@ TEST_F(LifecycleKernelTest, AnArrivedPlaceRefusesTheChunkWithoutLatching) {
   exec.add_node(node->get_node_base_interface());
   exec.add_node(helper.get_node_base_interface());
 
-  const auto vox = declared_target_voxels();
+  auto vox = declared_target_voxels();
   sensor_msgs::msg::JointState js;
   js.name = {"j0"};
   js.position = {0.0};
@@ -2942,6 +2965,7 @@ TEST_F(LifecycleKernelTest, AnArrivedPlaceRefusesTheChunkWithoutLatching) {
   // having arrived, not by the region never being armed.
   const auto warm_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   while (safe_count.load() == 0 && std::chrono::steady_clock::now() < warm_deadline) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(5));
@@ -2959,6 +2983,7 @@ TEST_F(LifecycleKernelTest, AnArrivedPlaceRefusesTheChunkWithoutLatching) {
   // and reads as "the arrived pose was passed through".
   const auto settle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
   while (std::chrono::steady_clock::now() < settle_deadline) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(10));
@@ -2973,6 +2998,7 @@ TEST_F(LifecycleKernelTest, AnArrivedPlaceRefusesTheChunkWithoutLatching) {
   offer_one_chunk(
       exec,
       [&] {
+        vox.source_stamp = helper.now();
         voxel_pub->publish(vox);
         js_pub->publish(js);
         ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
@@ -3058,7 +3084,7 @@ TEST_F(LifecycleKernelTest, ADeclaredTargetsGeometryAdjudicatesAndNamesTheBody) 
   exec.add_node(node->get_node_base_interface());
   exec.add_node(helper.get_node_base_interface());
 
-  const auto vox = declared_target_voxels();
+  auto vox = declared_target_voxels();
   sensor_msgs::msg::JointState js;
   js.name = {"j0"};
   js.position = {0.0};
@@ -3068,6 +3094,7 @@ TEST_F(LifecycleKernelTest, ADeclaredTargetsGeometryAdjudicatesAndNamesTheBody) 
   const LogCapture arming_logs;
   const auto warm_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   while (safe_count.load() == 0 && std::chrono::steady_clock::now() < warm_deadline) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(5));
@@ -3086,6 +3113,7 @@ TEST_F(LifecycleKernelTest, ADeclaredTargetsGeometryAdjudicatesAndNamesTheBody) 
 
   const auto settle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
   while (std::chrono::steady_clock::now() < settle_deadline) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(10));
@@ -3096,6 +3124,7 @@ TEST_F(LifecycleKernelTest, ADeclaredTargetsGeometryAdjudicatesAndNamesTheBody) 
   offer_one_chunk(
       exec,
       [&] {
+        vox.source_stamp = helper.now();
         voxel_pub->publish(vox);
         js_pub->publish(js);
         ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
@@ -3114,6 +3143,7 @@ TEST_F(LifecycleKernelTest, ADeclaredTargetsGeometryAdjudicatesAndNamesTheBody) 
   offer_one_chunk(
       exec,
       [&] {
+        vox.source_stamp = helper.now();
         voxel_pub->publish(vox);
         js_pub->publish(js);
         ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
@@ -3175,7 +3205,7 @@ TEST_F(LifecycleKernelTest, AnUnbrokenAdvisoryRunLatchesAtItsCap) {
   exec.add_node(node->get_node_base_interface());
   exec.add_node(helper.get_node_base_interface());
 
-  const auto vox = declared_target_voxels();
+  auto vox = declared_target_voxels();
   sensor_msgs::msg::JointState js;
   js.name = {"j0"};
   js.position = {0.0};
@@ -3183,6 +3213,7 @@ TEST_F(LifecycleKernelTest, AnUnbrokenAdvisoryRunLatchesAtItsCap) {
 
   const auto warm_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
   while (safe_count.load() == 0 && std::chrono::steady_clock::now() < warm_deadline) {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     js_pub->publish(js);
     exec.spin_some(std::chrono::milliseconds(5));
@@ -3197,6 +3228,7 @@ TEST_F(LifecycleKernelTest, AnUnbrokenAdvisoryRunLatchesAtItsCap) {
 
   const LogCapture logs;
   const auto arrived_inputs = [&] {
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     js_pub->publish(js);
     ws_pub->publish(declared_carry_state(node->now().nanoseconds(), node->now().nanoseconds(),
@@ -3343,7 +3375,7 @@ ScaleOutcome run_one_chunk(const std::string& node_name, std::vector<rclcpp::Par
   exec.add_node(node->get_node_base_interface());
   exec.add_node(helper.get_node_base_interface());
 
-  const auto vox = one_cell_at_x_025();
+  auto vox = one_cell_at_x_025();
   sensor_msgs::msg::JointState js;
   js.name = {"j0"};
   js.position = {0.0};
@@ -3353,6 +3385,7 @@ ScaleOutcome run_one_chunk(const std::string& node_name, std::vector<rclcpp::Par
   auto seed_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
   while (std::chrono::steady_clock::now() < seed_deadline) {
     js_pub->publish(js);
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -3361,6 +3394,7 @@ ScaleOutcome run_one_chunk(const std::string& node_name, std::vector<rclcpp::Par
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
   while (!out.published && std::chrono::steady_clock::now() < deadline) {
     js_pub->publish(js);
+    vox.source_stamp = helper.now();
     voxel_pub->publish(vox);
     exec.spin_some(std::chrono::milliseconds(10));
     cand_pub->publish(chunk);
@@ -3581,4 +3615,97 @@ TEST_F(LifecycleKernelTest, GradedScalingClampsThenScalesOnlyTheTwistColumns) {
                                   "carries";
   EXPECT_GE(out.scaled, 1U);
   EXPECT_FALSE(out.latched);
+}
+
+// ── Node-side perception caps (hazard log Entries 033/034) ───────────────────
+// DeployRuntime caps these, but a kernel launched outside `openral deploy`
+// never sees that schema; configure must refuse the same values itself.
+namespace {
+
+osk::SafetyKernelLifecycleNode::CallbackReturn
+configure_world_voxel(const std::string& name, const std::vector<rclcpp::Parameter>& overrides) {
+  auto params = planar_2r_predictive_params();
+  for (const auto& o : overrides) {
+    auto it = std::find_if(params.begin(), params.end(), [&o](const rclcpp::Parameter& p) {
+      return p.get_name() == o.get_name();
+    });
+    if (it != params.end()) {
+      *it = o;
+    } else {
+      params.push_back(o);
+    }
+  }
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(params);
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>(name, opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  return node->on_configure(unconf);
+}
+
+using CR = osk::SafetyKernelLifecycleNode::CallbackReturn;
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, WorldVoxelDeadlineAboveTheCapRefusesToConfigure) {
+  EXPECT_DOUBLE_EQ(osk::kMaxWorldVoxelDeadlineMs, 2000.0);
+  EXPECT_EQ(
+      configure_world_voxel("kernel_cap_deadline_over",
+                            {{"world_voxel_deadline_ms", osk::kMaxWorldVoxelDeadlineMs + 1.0}}),
+      CR::FAILURE);
+  EXPECT_EQ(
+      configure_world_voxel("kernel_cap_deadline_huge", {{"world_voxel_deadline_ms", 30000.0}}),
+      CR::FAILURE);
+}
+
+TEST_F(LifecycleKernelTest, WorldVoxelDeadlineNotPositiveRefusesToConfigure) {
+  for (const double bad : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN()}) {
+    EXPECT_EQ(configure_world_voxel("kernel_cap_deadline_bad", {{"world_voxel_deadline_ms", bad}}),
+              CR::FAILURE)
+        << bad;
+  }
+}
+
+TEST_F(LifecycleKernelTest, WorldVoxelDataAgeBudgetAboveTheCapRefusesToConfigure) {
+  EXPECT_DOUBLE_EQ(osk::kMaxWorldVoxelDataAgeBudgetMs, 3000.0);
+  EXPECT_EQ(configure_world_voxel(
+                "kernel_cap_age_over",
+                {{"world_voxel_data_age_budget_ms", osk::kMaxWorldVoxelDataAgeBudgetMs + 1.0}}),
+            CR::FAILURE);
+}
+
+TEST_F(LifecycleKernelTest, AZeroDataAgeBudgetNoLongerDisablesTheCheck) {
+  // 0 used to mean "not enforced"; with the world check on it is refused.
+  for (const double bad : {0.0, -1.0, std::numeric_limits<double>::infinity()}) {
+    EXPECT_EQ(
+        configure_world_voxel("kernel_cap_age_bad", {{"world_voxel_data_age_budget_ms", bad}}),
+        CR::FAILURE)
+        << bad;
+  }
+}
+
+TEST_F(LifecycleKernelTest, WorldVoxelLimitsAtTheCapsConfigure) {
+  EXPECT_EQ(configure_world_voxel(
+                "kernel_cap_at",
+                {{"world_voxel_deadline_ms", osk::kMaxWorldVoxelDeadlineMs},
+                 {"world_voxel_data_age_budget_ms", osk::kMaxWorldVoxelDataAgeBudgetMs}}),
+            CR::SUCCESS);
+}
+
+TEST_F(LifecycleKernelTest, TheDataAgeBudgetDefaultIsEnforcedNotOff) {
+  EXPECT_DOUBLE_EQ(osk::kDefaultWorldVoxelDataAgeBudgetMs, 1500.0);
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(planar_2r_predictive_params());
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_cap_default", opts);
+  EXPECT_DOUBLE_EQ(node->get_parameter("world_voxel_data_age_budget_ms").as_double(),
+                   osk::kDefaultWorldVoxelDataAgeBudgetMs);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  EXPECT_EQ(node->on_configure(unconf), CR::SUCCESS);
+}
+
+TEST_F(LifecycleKernelTest, UncappedVoxelLimitsAreIgnoredWhileTheWorldCheckIsOff) {
+  // No world check, nothing to cap: an envelope-only config is untouched.
+  EXPECT_EQ(configure_world_voxel("kernel_cap_off", {{"world_voxel_enabled", false},
+                                                     {"world_voxel_deadline_ms", 30000.0},
+                                                     {"world_voxel_data_age_budget_ms", 0.0}}),
+            CR::SUCCESS);
 }

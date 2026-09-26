@@ -58,6 +58,18 @@ retired 2026-09-23 by ADR-0109, and still appear in older recorded bags. The
 kernel's only world-geometry input is now the voxel grid on
 `/openral/world_voxels` (plus attached payloads on `/openral/world_state_fast`).
 
+**World-voxel freshness is capped in the kernel, not only in the schema.**
+With `world_voxel_enabled`, `on_configure` returns FAILURE (and logs why) for a
+`world_voxel_deadline_ms` outside (0, `kMaxWorldVoxelDeadlineMs` = 2000] or a
+`world_voxel_data_age_budget_ms` outside (0, `kMaxWorldVoxelDataAgeBudgetMs` =
+3000]. The budget defaults to `kDefaultWorldVoxelDataAgeBudgetMs` = 1500 and
+0 no longer means "not enforced", so a grid without a `source_stamp` always
+drops as `voxel_stale`. These mirror `DeployRuntime`'s caps (hazard log
+Entries 033/034) so a kernel started with `ros2 run` or another launch file
+cannot run looser than a validated scene; `tests/unit/test_perception_caps_mirror.py`
+pins the two sides. With the world check off the two values are unused and
+not checked.
+
 Two rules make the durable value trustworthy (hazard-log HZ-0096-1):
 
 1. **Publish on every activation**, not only on the next fault — a
