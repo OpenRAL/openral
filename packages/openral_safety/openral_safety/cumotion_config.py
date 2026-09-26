@@ -155,7 +155,7 @@ def link_collision_spheres(
 
 def sphere_model_geometry(
     geoms: list[LinkCollisionGeometry],
-) -> dict[str, LinkCollisionGeometry]:
+) -> dict[str, list[LinkCollisionGeometry]]:
     """Each link as the **capsule cuRobo's spheres actually cover**, by link name.
 
     ``link_collision_spheres`` samples spheres along
@@ -169,12 +169,13 @@ def sphere_model_geometry(
     A link that is already a capsule or a sphere is returned unchanged.
 
     Returns:
-        ``{link_name: geometry}`` where every box has become its bounding capsule.
+        ``{link_name: [geometry, ...]}`` (a link may carry several primitives)
+        where every box has become its bounding capsule.
     """
-    out: dict[str, LinkCollisionGeometry] = {}
+    out: dict[str, list[LinkCollisionGeometry]] = {}
     for geom in geoms:
         if not isinstance(geom.shape, BoxShape):
-            out[geom.link_name] = geom
+            out.setdefault(geom.link_name, []).append(geom)
             continue
         p0, p1, radius = bounding_capsule_segment(geom.shape, geom.origin_xyz_rpy)
         dx, dy, dz = (b - a for a, b in zip(p0, p1, strict=True))
@@ -185,17 +186,19 @@ def sphere_model_geometry(
         flat = math.hypot(dx, dy)
         yaw = math.atan2(dy, dx) if flat > 0.0 else 0.0
         pitch = math.atan2(flat, dz) if length > 0.0 else 0.0
-        out[geom.link_name] = LinkCollisionGeometry(
-            link_name=geom.link_name,
-            shape=CapsuleShape(radius_m=radius, length_m=length),
-            origin_xyz_rpy=(
-                (p0[0] + p1[0]) / 2.0,
-                (p0[1] + p1[1]) / 2.0,
-                (p0[2] + p1[2]) / 2.0,
-                0.0,
-                pitch,
-                yaw,
-            ),
+        out.setdefault(geom.link_name, []).append(
+            LinkCollisionGeometry(
+                link_name=geom.link_name,
+                shape=CapsuleShape(radius_m=radius, length_m=length),
+                origin_xyz_rpy=(
+                    (p0[0] + p1[0]) / 2.0,
+                    (p0[1] + p1[1]) / 2.0,
+                    (p0[2] + p1[2]) / 2.0,
+                    0.0,
+                    pitch,
+                    yaw,
+                ),
+            )
         )
     return out
 
@@ -247,20 +250,20 @@ def render_cumotion_config(
     """
     # The kernel checks the MANIFEST's geometry; `model.collision_geometry` is what the
     # lowering tool would *write*, a different (looser) solid for a hand-authored box manifest
-    # (`urdf_lowering.lower_link_geometry` still emits a PCA capsule for a mesh collision —
+    # (`urdf_lowering.lower_link_geometry` emits a capsule for every link —
     # collision-primitive-study 8.5). Prefer the manifest; fall back to the lowered model only
     # during onboarding, when the manifest has no geometry block yet.
     geometry = list(robot.collision_geometry or []) or list(model.collision_geometry)
 
     collision_spheres: dict[str, list[dict[str, object]]] = {}
-    for g in geometry:
-        collision_spheres[g.link_name] = [
+    for g in geometry:  # a link with several primitives gets all their spheres
+        collision_spheres.setdefault(g.link_name, []).extend(
             {
                 "center": [round(c, _SPHERE_DP) for c in s.center],
                 "radius": round(s.radius, _SPHERE_DP),
             }
             for s in link_collision_spheres(g)
-        ]
+        )
 
     pairs = {frozenset({a, b}) for a, b in model.allowed_collision_pairs}
     if urdf_path is not None:
@@ -285,7 +288,7 @@ def render_cumotion_config(
         "robot_cfg": {
             "kinematics": {
                 "base_link": robot.base_frame,
-                "collision_link_names": [g.link_name for g in geometry],
+                "collision_link_names": list(collision_spheres),
                 "collision_spheres": collision_spheres,
                 "self_collision_ignore": self_collision_ignore,
                 "cspace": {"joint_names": actuated_joint_names(robot)},

@@ -84,7 +84,7 @@ Live status: [docs/roadmap/index.md](docs/roadmap/index.md). Per-module canvas: 
 | Simulation engines | MuJoCo (LIBERO, MetaWorld, ManiSkill3, SimplerEnv, gym-aloha, gym-pusht), RoboCasa, RoboTwin 2.0 (SAPIEN), Isaac Sim, BEHAVIOR-1K/OmniGibson, RLBench/CoppeliaSim | `python/sim/`, `docs/reference/sim-environments.md` |
 | Observability | OpenTelemetry SDK + OTLP exporter, span helpers, structlog bridge, live `openral dashboard`, read-only Foxglove live-scene surface | `python/observability/` |
 | CLI (`openral`) | `doctor`, `detect`, `connect`, `calibrate`, `check`, `install`, `rskill`, `sensor`, `sim`, `behavior`, `benchmark`, `deploy`, `dashboard`, `prompt`, `record`, `replay`, `dataset`, `collision`, `robot`, `profile`. Bare `openral` → interactive REPL. | `python/cli/` |
-| Schemas | Pydantic v2 + JSON Schema export; manifests at `schema_version: "0.1"` | `python/core/`, `tools/schema_export.py` |
+| Schemas | Pydantic v2 + JSON Schema export; robot manifests at `schema_version: "0.2"` (0.1 migrated on load), other manifests at `"0.1"` | `python/core/`, `tools/schema_export.py` |
 | ROS 2 IDL | `openral_msgs` (.msg, .action) — normative across the runtime | `packages/msgs/` |
 
 ## OpenRAL Pro boundary
@@ -429,8 +429,8 @@ OpenRAL's safety posture is **"Python proposes, C++ disposes."** A candidate act
 
 - **Envelope limits** — joint position, joint velocity, joint torque (plus a global torque cap), Cartesian workspace AABB, end-effector linear/angular speed.
 - **Sanity** — NaN/Inf rejection, action-dimension and n-DoF validation, fail-closed on an unconfigured envelope.
-- **Geometric collision** — self-collision, world-obstacle collision, and voxel/occupancy-grid collision, including predictive checks over the action horizon (velocity integration and Cartesian-delta IK).
-- **Freshness gates** — stale measured state / world model / voxel grid drops the chunk (fail-closed).
+- **Geometric collision** — self-collision, attached-payload collision, and voxel/occupancy-grid world collision, including predictive checks over the action horizon (velocity integration and Cartesian-delta IK).
+- **Freshness gates** — stale measured state / attached-payload set / voxel grid drops the chunk (fail-closed).
 - **Defense in depth** — an independent **deadman** watchdog process (safe-action staleness) that survives a kernel crash, and which the deploy graph will not start without; an E-stop latches and requires an explicit, cooldown-gated reset. A **hardware E-stop** bridge ships alongside it, but no per-vendor pendant driver does: without one the node reports not-ready rather than posing as an armed source.
 
 `ROSSafetyViolation` is never silently caught. Acceleration/jerk limits and formal certification are the remaining work. See the safety hazard log (private `OpenRAL/management` repo).

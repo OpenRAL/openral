@@ -45,16 +45,20 @@ _SHARED_KINDS = (
 
 _DROP_CONSTANTS = (
     "DROP_ENVELOPE_UNCONFIGURED",
-    "DROP_WORLD_UNAVAILABLE",
     "DROP_VOXEL_UNAVAILABLE",
     "DROP_STATE_UNAVAILABLE",
-    "DROP_WORLD_OVERFLOW",
     "DROP_VOXEL_OVERFLOW",
     "DROP_EXTERNAL_ESTOP",
     "DROP_ATTACHED_UNAVAILABLE",
     "DROP_ATTACHED_OVERFLOW",
     "DROP_NONE",
 )
+
+
+# Values of retired DROP_* constants. Recorded bags still carry them, so a new
+# constant must never reuse one: 101/104 were the capsule world phase's
+# DROP_WORLD_UNAVAILABLE / DROP_WORLD_OVERFLOW, retired by ADR-0109.
+_RESERVED_DROP_VALUES = frozenset({101, 104})
 
 
 @pytest.mark.parametrize("name", _SHARED_KINDS)
@@ -73,6 +77,14 @@ def test_drop_constants_are_disjoint_from_kind_constants() -> None:
     drops = {getattr(SafetyStatus, name) for name in _DROP_CONSTANTS}
     assert kinds.isdisjoint(drops), f"DROP_*/KIND_* overlap: {sorted(kinds & drops)}"
     assert len(drops) == len(_DROP_CONSTANTS), "two DROP_* constants share a value"
+
+
+def test_no_drop_constant_reuses_a_reserved_value() -> None:
+    """Retired ``DROP_*`` values stay retired, so old bags cannot be misread."""
+    drops = {n: getattr(SafetyStatus, n) for n in dir(SafetyStatus) if n.startswith("DROP_")}
+    assert set(_DROP_CONSTANTS) == set(drops), "update _DROP_CONSTANTS with the IDL"
+    reused = {n: v for n, v in drops.items() if v in _RESERVED_DROP_VALUES}
+    assert not reused, f"reserved DROP_* value reused: {reused}"
 
 
 def test_drop_none_is_not_the_default_wire_value() -> None:

@@ -209,6 +209,38 @@ def test_aggregator_replaces_multiple_attachments_atomically() -> None:
     assert aggregator.snapshot().attached_objects == []
 
 
+def test_aggregator_logs_attachment_changes_not_heartbeats(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The producer republishes its set on a heartbeat (~5 Hz on the real OpenArm
+    bench, 2026-09-23); logging each one buried the runner's preload lines."""
+    import structlog
+    from openral_world_state import aggregator as aggregator_module
+    from structlog.testing import CapturingLogger
+
+    # A level-filtering wrapper is configured session-wide, so capture_logs()
+    # never sees INFO; record the module logger's calls directly.
+    sink = CapturingLogger()
+    monkeypatch.setattr(
+        aggregator_module,
+        "log",
+        structlog.wrap_logger(sink, wrapper_class=structlog.BoundLogger, processors=[]),
+    )
+    aggregator = WorldStateAggregator(RobotDescription.from_yaml(_ROBOT_YAML))
+    for revision in range(3):
+        aggregator.update_attached_objects([], revision=revision)
+    aggregator.update_attached_objects([_attachment()], revision=3)
+    aggregator.update_attached_objects([_attachment()], revision=4)
+    aggregator.update_attached_objects([], revision=5)
+
+    counts = [
+        c.kwargs["count"]
+        for c in sink.calls
+        if c.kwargs.get("event") == "world_state.attached_objects.updated"
+    ]
+    assert counts == [1, 0]
+
+
 def test_aggregator_rejects_duplicate_attachment_ids() -> None:
     aggregator = WorldStateAggregator(RobotDescription.from_yaml(_ROBOT_YAML))
 

@@ -3143,6 +3143,7 @@ dependencies = [
     { name = "openral-hal" },
     { name = "openral-observability" },
     { name = "openral-rskill" },
+    { name = "openral-sensors" },
     { name = "openral-world-state" },
     { name = "structlog" },
 ]
@@ -3163,6 +3164,7 @@ requires-dist = [
     { name = "openral-hal", editable = "python/hal" },
     { name = "openral-observability", editable = "python/observability" },
     { name = "openral-rskill", editable = "python/rskill" },
+    { name = "openral-sensors", editable = "python/sensors" },
     { name = "openral-world-state", editable = "python/world_state" },
     { name = "pygobject", marker = "extra == 'gstreamer'", specifier = ">=3.42" },
     { name = "structlog", specifier = ">=24.1" },

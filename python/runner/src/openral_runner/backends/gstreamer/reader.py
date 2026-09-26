@@ -60,6 +60,8 @@ from openral_runner.backends.gstreamer.pipeline import (  # noqa: E402
 if TYPE_CHECKING:
     from types import TracebackType
 
+    from openral_core import IntrinsicsPinhole
+
 __all__ = ["GStreamerSensorReader"]
 
 log = structlog.get_logger(__name__)
@@ -106,6 +108,10 @@ class GStreamerSensorReader:
         appsink_name: Name of the openral appsink. Defaults to
             ``bh_sink``; only override when supplying an explicit
             ``pipeline`` whose appsink uses a different name.
+        ros_frame_id: ``frame_id`` for the ROS tee's headers; ``None``
+            stamps ``sensor_id``.
+        ros_camera_info: Manifest intrinsics; when set the ROS tee also
+            publishes ``CameraInfo`` beside each ``Image``.
         default_max_age_ms: Default staleness budget applied when
             ``read_latest`` is called with ``max_age_ms=None``.
 
@@ -128,6 +134,8 @@ class GStreamerSensorReader:
         ros_appsink_name: str = "ros_sink",
         ros_topic: str | None = None,
         ros_rate_hz: float | None = None,
+        ros_frame_id: str | None = None,
+        ros_camera_info: IntrinsicsPinhole | None = None,
         default_max_age_ms: int = _DEFAULT_MAX_AGE_MS,
     ) -> None:
         """Stash configuration; no GStreamer I/O until ``open``."""
@@ -165,6 +173,8 @@ class GStreamerSensorReader:
             )
         self._ros_topic = ros_topic
         self._ros_rate_hz = ros_rate_hz
+        self._ros_frame_id = ros_frame_id
+        self._ros_camera_info = ros_camera_info
 
         self.sensor_id = sensor_id
         self._default_max_age_ms = default_max_age_ms
@@ -288,10 +298,15 @@ class GStreamerSensorReader:
             appsink=ros_appsink,
             topic=self._ros_topic,
             rate_hz=self._ros_rate_hz,
+            frame_id=self._ros_frame_id,
+            camera_info=self._ros_camera_info,
         )
         try:
             publisher.start()
-        except RuntimeError as exc:
+        except Exception as exc:
+            # Not only the documented RuntimeError: any failure part-way (a ROS
+            # publisher, the appsink hook) leaves nothing half-open — the publisher
+            # released its own partial state, the pipeline goes down here.
             self._teardown_pipeline()
             raise ROSConfigError(
                 f"GStreamerSensorReader({self.sensor_id!r}): ROS tee start failed: {exc}"

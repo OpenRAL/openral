@@ -134,3 +134,57 @@ class TestBadEntrypoint:
         )
         with pytest.raises(ROSConfigError, match="malformed"):
             build_hal(desc, mode="real")
+
+
+class TestHalJointStatesTopic:
+    """``hal_joint_states_topic`` — the Python nodes' JointState topic, derived from the HAL.
+
+    A real ros2_control arm's ``/joint_states`` is the broadcaster's full-rate
+    stream; the runtime reads the HAL's rate-limited ``~/joint_states`` instead.
+    Every other HAL publishes ``/joint_states`` itself and keeps the default.
+    """
+
+    @pytest.mark.parametrize("robot_id", ["ur5e", "ur10e", "franka_panda", "sawyer", "openarm"])
+    def test_real_ros2_control_arm_reads_the_hal_republish(self, robot_id: str) -> None:
+        from openral_hal import hal_joint_states_topic
+
+        node = f"openral_hal_{robot_id}"
+        topic = hal_joint_states_topic(_load(robot_id), mode="real", hal_node_name=node)
+        assert topic == f"/{node}/joint_states"
+
+    @pytest.mark.parametrize("robot_id", ["so100_follower", "so101_follower", "aloha_bimanual"])
+    def test_non_ros2_control_real_hal_keeps_the_default(self, robot_id: str) -> None:
+        """Serial SO-100/101 and interbotix ALOHA publish /joint_states themselves."""
+        from openral_hal import hal_joint_states_topic
+
+        desc = _load(robot_id)
+        assert hal_joint_states_topic(desc, mode="real", hal_node_name="n") is None
+
+    def test_sim_mode_and_sim_only_robot_keep_the_default(self) -> None:
+        from openral_hal import hal_joint_states_topic
+
+        assert hal_joint_states_topic(_load("ur5e"), mode="sim", hal_node_name="n") is None
+        assert hal_joint_states_topic(_load("pusht_2d"), mode="real", hal_node_name="n") is None
+
+    def test_scene_override_wins(self) -> None:
+        from openral_hal import hal_joint_states_topic
+
+        desc = _load("so100_follower")
+        got = hal_joint_states_topic(desc, mode="sim", hal_node_name="n", override="/x/js")
+        assert got == "/x/js"
+
+    def test_openarm_bench_needs_no_pin(self) -> None:
+        """The bench scene dropped its hand-written pin; derivation yields the same topic."""
+        from openral_core import DeployScene
+        from openral_hal import hal_joint_states_topic
+
+        scene = DeployScene.from_yaml(str(REPO_ROOT / "scenes" / "deploy" / "openarm_bench.yaml"))
+        assert scene.runtime is not None
+        assert scene.runtime.joint_states_topic is None
+        topic = hal_joint_states_topic(
+            _load(scene.robot_id),
+            mode="real",
+            hal_node_name=f"openral_hal_{scene.robot_id}",
+            override=scene.runtime.joint_states_topic,
+        )
+        assert topic == "/openral_hal_openarm/joint_states"

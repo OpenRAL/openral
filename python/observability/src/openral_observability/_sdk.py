@@ -152,12 +152,21 @@ def configure_observability(
 
     resolved = endpoint if endpoint is not None else os.environ.get(_ENV_ENDPOINT)
     with _lock:
-        if _service_name == service_name and _endpoint == resolved:
-            return resolved is not None
         if resolved is None:
             _service_name = service_name
             _endpoint = None
+            # No exporters, but the log floor still applies (see
+            # ``apply_structlog_level_floor``): the stock structlog config
+            # prints every DEBUG event, and a deploy runtime emits hundreds
+            # per second. Re-applied on every no-endpoint call, not only the
+            # first, so a changed ``OPENRAL_LOG_LEVEL`` takes effect instead
+            # of the previous filtering wrapper staying installed.
+            from openral_observability.logging import apply_structlog_level_floor
+
+            apply_structlog_level_floor()
             return False
+        if _service_name == service_name and _endpoint == resolved:
+            return True
 
         resource = Resource.create({"service.name": service_name})
 

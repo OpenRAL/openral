@@ -37,6 +37,7 @@ from openral_core.exceptions import (
 )
 from openral_core.schemas import (
     Action,
+    ActionSpec,
     ControlMode,
     EmbodimentKind,
     EndEffectorSpec,
@@ -199,8 +200,22 @@ GALAXEA_A1_DESCRIPTION = RobotDescription(
         max_force_n=40.0,
         max_torque_nm=40.0,
         deadman_required=True,
+        # provisional: former schema default, not measured on this rig — see issue #303
+        max_ee_accel_m_s2=1.0,
+        contact_force_threshold_n=30.0,
+        self_collision_margin_m=0.0,
+        # runner ramp to starting_pose — the former defaults, declared (issue #303)
+        starting_pose_max_joint_speed_rad_s=0.5,
+        starting_pose_tolerance_rad=0.05,
+        joint_state_staleness_limit_s=0.5,  # provisional, mirrors the YAML
     ),
     sdk_kind="closed_with_api",
+    # Control rate: the runner ticks at it, the HAL node publishes proprio at
+    # it, and the recorder stamps it as fps (issue #303). Mirrors the YAML.
+    # dim / representation deliberately undeclared (no committed policy
+    # contract for this robot); the control rate is the known quantity.
+    # provisional: the runner's former 30 Hz default, not measured on this rig.
+    action_spec=ActionSpec(control_freq_hz=30.0),
     hal=HalEntrypoints(
         real="openral_hal.galaxea_a1:GalaxeaA1HAL",
         parameters={

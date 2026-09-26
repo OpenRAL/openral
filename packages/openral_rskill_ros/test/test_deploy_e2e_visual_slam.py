@@ -3,7 +3,7 @@
 Hermetic (no live ROS graph). Asserts:
 
 * ``_stereo_camera_topics`` maps a ``"<left>,<right>"`` scene rig to the four
-  ``/openral/cameras/<name>/…`` topics (and stays out of the way when unset).
+  ``openral_core.camera_topic(<name>, …)`` topics (and stays out of the way when unset).
 * ``_build_visual_slam_includes`` composes the right launch file per
   ``slam_visual_impl`` and remaps each impl's own camera arg names, plus nvblox
   only when navigating.
@@ -21,6 +21,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+from openral_core import CameraTopicKind, camera_topic
 
 _LAUNCH_FILE = Path(__file__).resolve().parent.parent / "launch" / "deploy_e2e.launch.py"
 
@@ -67,16 +68,16 @@ def _source_file(include: object) -> str:
 def test_stereo_camera_topics_maps_names_to_bus_topics() -> None:
     mod = _import_launch_module()
     assert mod._stereo_camera_topics("front_left, front_right") == (
-        "/openral/cameras/front_left/image",
-        "/openral/cameras/front_left/camera_info",
-        "/openral/cameras/front_right/image",
-        "/openral/cameras/front_right/camera_info",
+        camera_topic("front_left"),
+        camera_topic("front_left", CameraTopicKind.CAMERA_INFO),
+        camera_topic("front_right"),
+        camera_topic("front_right", CameraTopicKind.CAMERA_INFO),
     )
 
 
 @pytest.mark.parametrize("csv", ["", "solo", "a,b,c"])
 def test_stereo_camera_topics_none_when_not_a_pair(csv: str) -> None:
-    """Unset / malformed rig → None so the impl keeps its own default topics."""
+    """Unset / malformed rig → None: no camera-topic overrides are passed."""
     mod = _import_launch_module()
     assert mod._stereo_camera_topics(csv) is None
 
@@ -96,15 +97,15 @@ def test_visual_includes_pycuvslam_with_stereo_rig() -> None:
     assert _source_file(includes[0]).endswith("pycuvslam.launch.py")
     rendered = {_render(k): _render(v) for k, v in includes[0].launch_arguments}
     assert rendered["use_sim_time"] == "true"
-    assert rendered["left_image_topic"] == "/openral/cameras/cam_l/image"
-    assert rendered["right_image_topic"] == "/openral/cameras/cam_r/image"
-    assert rendered["left_camera_info_topic"] == "/openral/cameras/cam_l/camera_info"
+    assert rendered["left_image_topic"] == camera_topic("cam_l")
+    assert rendered["right_image_topic"] == camera_topic("cam_r")
+    assert rendered["left_camera_info_topic"] == camera_topic("cam_l", CameraTopicKind.CAMERA_INFO)
     # robot_yaml is threaded so the node derives the rig frame (multi-camera mode).
     assert rendered["robot_yaml"] == "/robots/x/robot.yaml"
 
 
 def test_visual_includes_isaac_ros_default_and_nvblox_on_nav2() -> None:
-    """Default impl composes cuvslam.launch.py; nav2 adds nvblox with no rig override."""
+    """Default impl composes cuvslam.launch.py; nav2 adds nvblox fed the manifest depth camera."""
     mod = _import_launch_module()
     includes = mod._build_visual_slam_includes(
         "/slam_share",
@@ -113,16 +114,23 @@ def test_visual_includes_isaac_ros_default_and_nvblox_on_nav2() -> None:
         stereo_cameras_csv="",
         enable_nav2=True,
         robot_yaml="/robots/x/robot.yaml",
+        nav2_depth_camera="front_depth",
     )
     assert len(includes) == 2
     files = [_source_file(inc) for inc in includes]
     assert files[0].endswith("cuvslam.launch.py")
     assert files[1].endswith("nvblox.launch.py")
-    # No scene rig → no camera-topic overrides (the impl's own defaults stand).
+    # No scene rig → no camera-topic overrides (the stereo impl then refuses to start).
     cuvslam_args = {_render(k): _render(v) for k, v in includes[0].launch_arguments}
     assert cuvslam_args == {"use_sim_time": "false"}
     nvblox_args = {_render(k): _render(v) for k, v in includes[1].launch_arguments}
     assert nvblox_args["robot_yaml"] == "/robots/x/robot.yaml"
+    assert nvblox_args["depth_image_topic"] == camera_topic(
+        "front_depth", CameraTopicKind.DEPTH_IMAGE
+    )
+    assert nvblox_args["depth_camera_info_topic"] == camera_topic(
+        "front_depth", CameraTopicKind.DEPTH_CAMERA_INFO
+    )
 
 
 def test_visual_slam_launch_args_declared_with_defaults() -> None:

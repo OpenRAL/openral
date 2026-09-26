@@ -423,10 +423,78 @@ class TestManifestWiring:
         hal.disconnect()
 
 
+# ── Trajectory deadline (issue #303) ──────────────────────────────────────────
+
+
+def _manifest_hal(recorder: _Recorder) -> OpenArmRealHAL:
+    """The HAL exactly as `build_hal` constructs it from the committed manifest."""
+    import inspect
+
+    manifest = RobotDescription.from_yaml(str(OPENARM_MANIFEST))
+    accepted = set(inspect.signature(OpenArmRealHAL.__init__).parameters)
+    kwargs = {k: v for k, v in manifest.hal.parameters.defaults.items() if k in accepted}
+    return OpenArmRealHAL(manifest, publish_fn=recorder, **kwargs)  # type: ignore[arg-type]  # reason: manifest-typed
+
+
+class TestTrajectoryDeadline:
+    """Every published point's `time_from_start` follows `action_spec.control_freq_hz`.
+
+    Without it the transport's 100 ms default asked a 30 Hz stream to cover each
+    step in a third of its period — one of the two jitter causes on the attended
+    Thor run (issue #303).
+    """
+
+    def test_every_controller_gets_one_control_period_for_a_single_step(
+        self, both_buses_up: Path
+    ) -> None:
+        recorder = _Recorder()
+        hal = _manifest_hal(recorder)
+        hal.connect()
+        hal.send_action(_action(horizon=1))
+        spec = RobotDescription.from_yaml(str(OPENARM_MANIFEST)).action_spec
+        assert spec is not None and spec.control_freq_hz is not None
+        rate = spec.control_freq_hz
+        assert len(recorder.sent) == 4
+        for _topic, msg in recorder.sent:
+            assert msg["time_from_start_s"] == pytest.approx(1.0 / rate)
+
+    def test_a_chunk_gets_one_period_per_step(self, both_buses_up: Path) -> None:
+        recorder = _Recorder()
+        hal = _manifest_hal(recorder)
+        hal.connect()
+        hal.send_action(_action(horizon=3))
+        for _topic, msg in recorder.sent:
+            assert msg["time_from_start_s"] == pytest.approx(3.0 / 30.0)
+
+    def test_the_in_code_description_agrees_with_the_manifest(self) -> None:
+        manifest = RobotDescription.from_yaml(str(OPENARM_MANIFEST))
+        assert OPENARM_REAL_DESCRIPTION.action_spec == manifest.action_spec
+
+    def test_a_manifest_without_a_rate_cannot_build_the_hal(self) -> None:
+        """`build_hal(mode="real")` and so the node's configure stop here, naming the field."""
+        rateless = OPENARM_REAL_DESCRIPTION.model_copy(update={"action_spec": None})
+        with pytest.raises(ROSConfigError, match=r"action_spec\.control_freq_hz"):
+            OpenArmRealHAL(rateless, require_can_links=False)
+
+    @pytest.mark.parametrize("rate", [0.0, -30.0])
+    def test_a_non_positive_rate_is_refused(self, rate: float) -> None:
+        spec = OPENARM_REAL_DESCRIPTION.action_spec
+        assert spec is not None
+        bad = OPENARM_REAL_DESCRIPTION.model_copy(
+            update={"action_spec": spec.model_copy(update={"control_freq_hz": rate})}
+        )
+        with pytest.raises(ROSConfigError, match="control_freq_hz"):
+            OpenArmRealHAL(bad, require_can_links=False)
+
+
 # ── ADR-0102 slot groups ──────────────────────────────────────────────────────
 
 
-def _bimanual_slot_group(tick: int = 1) -> list[Action]:
+_RUNNER_A = 0xA11CE
+_RUNNER_B = 0xB0B
+
+
+def _bimanual_slot_group(tick: int = 1, session: int = 0) -> list[Action]:
     """The four actions `_dispatch_slots` emits for the bimanual contract.
 
     Mirrors `rskill_runner_node._dispatch_slots` exactly: arm slots are padded
@@ -450,6 +518,7 @@ def _bimanual_slot_group(tick: int = 1) -> list[Action]:
             joint_names=names,
             tick_index=tick,
             tick_group_size=4,
+            runner_session_id=session,
         )
 
     def _grip(value: float, ee: str) -> Action:
@@ -460,6 +529,7 @@ def _bimanual_slot_group(tick: int = 1) -> list[Action]:
             ee_name=ee,
             tick_index=tick,
             tick_group_size=4,
+            runner_session_id=session,
         )
 
     return [
@@ -563,6 +633,182 @@ class TestSlotGroupDispatch:
         for action in _bimanual_slot_group(tick=2):
             hal.send_action(action)  # no incomplete-group raise
         assert recorder.by_topic(hal.command_topics()[1])["joint_targets"] == [[7.0]]
+
+    def test_a_group_of_an_already_committed_tick_is_refused(self, both_buses_up: Path) -> None:
+        # The stager only guards the tick in flight; without a watermark a
+        # replayed group of a committed tick re-publishes stale targets to the
+        # motors (audit B.md 3 — the guard lived only in the MuJoCo twin).
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=3):
+            hal.send_action(action)
+        assert hal.last_committed_tick == 3
+        published = len(recorder.sent)
+        # Tick 1 is left out: above a watermark of 1 it is a restarted runner.
+        for stale in (3, 2):
+            with pytest.raises(ROSRuntimeError, match="stale slot group"):
+                hal.send_action(_bimanual_slot_group(tick=stale)[0])
+        assert len(recorder.sent) == published
+        for action in _bimanual_slot_group(tick=4):
+            hal.send_action(action)
+        assert hal.last_committed_tick == 4
+        hal.disconnect()
+        assert hal.last_committed_tick == 0
+
+    def test_tick_one_after_a_higher_watermark_is_a_restarted_runner(
+        self, both_buses_up: Path
+    ) -> None:
+        # Hazard log Entry 036: tick 1 above a watermark of 1 is adopted (the
+        # runner restarted while the HAL stayed up); tick 1 replayed is not.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=7):
+            hal.send_action(action)
+        for action in _bimanual_slot_group(tick=1):
+            hal.send_action(action)
+        assert hal.last_committed_tick == 1
+        published = len(recorder.sent)
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_bimanual_slot_group(tick=1)[0])
+        assert len(recorder.sent) == published
+        hal.disconnect()
+
+    def test_a_restarted_runners_ramp_renumbers_the_ungrouped_path_too(
+        self, both_buses_up: Path
+    ) -> None:
+        # The runner numbers the starting-pose ramp and the approach from the same
+        # counter as policy ticks, but ungrouped. A restarted runner's ramp is ticks
+        # 1..N; if only grouped ticks moved the watermark, its first policy tick
+        # N+1 landed under the old one and every goal failed until a disconnect.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=40):
+            hal.send_action(action)
+        for ramp_tick in (1, 2, 3):
+            hal.send_action(
+                Action(
+                    control_mode=ControlMode.JOINT_POSITION,
+                    horizon=1,
+                    joint_targets=[[0.0] * 16],
+                    tick_index=ramp_tick,
+                )
+            )
+        assert hal.last_committed_tick == 3
+        for action in _bimanual_slot_group(tick=4):
+            hal.send_action(action)
+        assert hal.last_committed_tick == 4
+        # A replayed ungrouped tick is refused like a grouped one.
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(
+                Action(
+                    control_mode=ControlMode.JOINT_POSITION,
+                    horizon=1,
+                    joint_targets=[[0.0] * 16],
+                    tick_index=2,
+                )
+            )
+
+    def test_a_stray_tick_one_slot_does_not_drop_the_watermark(self, both_buses_up: Path) -> None:
+        # The restart adoption is decided per slot but applied on commit: one
+        # delayed tick-1 slot from the OLD runner must not reset the watermark and
+        # re-admit its other in-flight ticks.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=9):
+            hal.send_action(action)
+        hal.send_action(_bimanual_slot_group(tick=1)[0])  # staged, not committed
+        assert hal.last_committed_tick == 9
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_bimanual_slot_group(tick=5)[0])
+
+    def test_same_session_replay_is_refused_even_tick_one(self, both_buses_up: Path) -> None:
+        # With a runner session id the rule is exact: tick 1 is no longer a
+        # restart signal, so the same runner's tick 1 above its watermark is a
+        # replay like any other tick.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=7, session=_RUNNER_A):
+            hal.send_action(action)
+        published = len(recorder.sent)
+        for stale in (7, 3, 1):
+            with pytest.raises(ROSRuntimeError, match="stale slot group"):
+                hal.send_action(_bimanual_slot_group(tick=stale, session=_RUNNER_A)[0])
+        assert len(recorder.sent) == published
+        assert (hal.last_committed_tick, hal.last_committed_session) == (7, _RUNNER_A)
+
+    def test_new_session_is_adopted_on_commit_and_the_old_one_retired(
+        self, both_buses_up: Path
+    ) -> None:
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=40, session=_RUNNER_A):
+            hal.send_action(action)
+        # A stray first slot of the new runner does not move the watermark...
+        new_group = _bimanual_slot_group(tick=1, session=_RUNNER_B)
+        hal.send_action(new_group[0])
+        assert (hal.last_committed_tick, hal.last_committed_session) == (40, _RUNNER_A)
+        for action in new_group[1:]:
+            hal.send_action(action)
+        # ...its committed group does.
+        assert (hal.last_committed_tick, hal.last_committed_session) == (1, _RUNNER_B)
+        published = len(recorder.sent)
+        # A late message of the dead runner is refused, even numbered above
+        # the new watermark — the case a tick-only rule cannot see.
+        with pytest.raises(ROSRuntimeError, match="superseded"):
+            hal.send_action(_bimanual_slot_group(tick=41, session=_RUNNER_A)[0])
+        with pytest.raises(ROSRuntimeError, match="superseded"):
+            hal.send_action(
+                Action(
+                    control_mode=ControlMode.JOINT_POSITION,
+                    horizon=1,
+                    joint_targets=[[0.0] * 16],
+                    tick_index=42,
+                    runner_session_id=_RUNNER_A,
+                )
+            )
+        assert len(recorder.sent) == published
+        for action in _bimanual_slot_group(tick=2, session=_RUNNER_B):
+            hal.send_action(action)
+        assert hal.last_committed_tick == 2
+
+    def test_a_new_sessions_ungrouped_ramp_is_adopted_on_commit(self, both_buses_up: Path) -> None:
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=40, session=_RUNNER_A):
+            hal.send_action(action)
+        hal.send_action(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[[0.0] * 16],
+                tick_index=1,
+                runner_session_id=_RUNNER_B,
+            )
+        )
+        assert (hal.last_committed_tick, hal.last_committed_session) == (1, _RUNNER_B)
+        with pytest.raises(ROSRuntimeError, match="superseded"):
+            hal.send_action(_bimanual_slot_group(tick=41, session=_RUNNER_A)[0])
+
+    def test_estop_keeps_the_committed_watermark(self, both_buses_up: Path) -> None:
+        # A stop is not a renumbering: a pre-estop tick replayed after the
+        # reconnect is still stale. Only disconnect() restarts the numbering.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=2):
+            hal.send_action(action)
+        with pytest.raises(ROSEStopRequested):
+            hal.estop()
+        hal.connect()
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_bimanual_slot_group(tick=2)[0])
 
     def test_an_unnamed_joint_slot_is_refused(self, both_buses_up: Path) -> None:
         # Without joint_names a padded chunk cannot be placed, and guessing from

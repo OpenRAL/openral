@@ -34,23 +34,20 @@ _Derives a robot manifest's `tight_geometry` blocks from its real collision mesh
 
 _Two modes: `emit --robot <path>` prints the YAML fragment to paste into the manifest, annotated per link with vertex counts and margins; `check --robot <path>` re-derives from the mesh and verifies every declared block still contains it, exiting 3 on any failure._
 
-- `REPO_ROOT: Path` (L42) — Repo root, derived from this file's location.
-- `PANDA_GEOM_OF_LINK: dict[str, str]` (L46) — Panda manifest link name → MJCF collision geom name (`panda_link{i}` → `link{i}_collision`).
-- `link_mesh_in_box_frame(xml_path, geom_name, origin_xyz_rpy) -> np.ndarray` (L88) — Collision-mesh vertices of `geom_name`, expressed in the manifest box's frame. Raises when the geom is missing, isn't a mesh, or when `mesh_pos != geom_pos`.
-- `link_mesh_faces(xml_path, geom_name) -> Points` (L124) — Triangle face indices of `geom_name`'s collision mesh, paired with `link_mesh_in_box_frame`'s vertices for the overhang check.
-- `hull_overhang_m(...)` (L152) — Sampled lower bound on how far a declared hull envelope sits outside the real mesh surface, batched and capped to bound peak memory.
-- `derive_tight_geometry(points, half_extents) -> dict[str, Any]` (L307) — Builds the DOP slabs and, when the exact hull fits the vertex budget, its vertex list; over budget the hull is dropped and the link ships stage 1 only. Returns a mapping ready for `TightCollisionGeometry` plus reviewer diagnostics.
-- `ROBOT_MESH_SOURCES: dict[str, tuple[str, dict[str, str]]]` (L50) — Robot name → its MJCF asset path and manifest-link → MJCF-geom name map. A new robot must be registered here before either mode will run for it.
-- `main(argv=None) -> int` (L498) — CLI entry; `emit --robot <path>` / `check --robot <path>` subcommands.
-- `refine_dop_to_budget(points, dop_lo, dop_hi, budget) -> Points` (L223) — A ≤`budget`-vertex convex envelope strictly tighter than the 26-DOP, for a link whose exact hull is over budget; intersects the DOP with the hull's face planes so containment stays guaranteed. Refuses rather than emit an envelope that cuts its mesh; not currently shipped by any manifest.
-- `_OVERHANG_BATCH: int`, `_OVERHANG_MAX_SAMPLES: int` — Bound `hull_overhang_m`'s peak memory and sample count; coarsening can only make the check more permissive, never wrongly fail a correct manifest.
+- `REPO_ROOT: Path` (L46) — Repo root, derived from this file's location.
+- `PANDA_GEOM_OF_LINK: dict[str, str]` (L78) — Panda manifest link name → MJCF collision geom name (`panda_link{i}` → `link{i}_collision`).
+- `link_mesh_in_box_frame(xml_path, geom_name, origin_xyz_rpy) -> np.ndarray` (L112) — Collision-mesh vertices of `geom_name`, expressed in the manifest box's frame. Raises when the geom is missing, isn't a mesh, or when `mesh_pos != geom_pos`.
+- `link_mesh_faces(xml_path, geom_name) -> Points` (L148) — Triangle face indices of `geom_name`'s collision mesh, paired with `link_mesh_in_box_frame`'s vertices for the overhang check.
+- `ROBOT_MESH_SOURCES: dict[str, tuple[str, dict[str, str]]]` (L82) — Robot name → its MJCF asset path and manifest-link → MJCF-geom name map. A new robot must be registered here before either mode will run for it.
+- `main(argv=None) -> int` (L295) — CLI entry; `emit --robot <path>` / `check --robot <path>` subcommands.
+- Re-exported from `openral_safety.tight_geometry` (moved there so the collision lowering can refine links; see `06-reasoning-wam-safety-observability.md`): `derive_tight_geometry`, `hull_overhang_m`, `refine_dop_to_budget`, `_dop_axes`, and `_round_up_m` / `_HULL_OVERHANG_SAFETY_MARGIN` under their old names. The tool inserts `packages/openral_safety` on `sys.path` for a standalone run.
 
 ### `tools/schema_export.py`
 _Generates JSON Schema files for every public `openral_core` model._
 
-- `_enum_schema(cls) -> dict[str, Any]` — Minimal JSON Schema for a `str` Enum. (L177)
-- `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L189)
-- `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L241)
+- `_enum_schema(cls) -> dict[str, Any]` — Minimal JSON Schema for a `str` Enum. (L181)
+- `export_schemas(out_dir=_OUT_DIR) -> dict[str, Any]` — Export JSON Schema for every public model. (L193)
+- `check_drift(out_dir=_OUT_DIR) -> bool` — On-disk schemas == regenerated. (L245)
 
 ### `tools/check_repo_state_map.py`
 _Pre-commit drift guard checking the mechanically verifiable half of `docs/architecture/repo-state-map.html`: that its `pkg:` pointers name something real and its asserted counts haven't rotted. Prose on the map stays a human judgement call._
@@ -93,7 +90,7 @@ _The four-scene collision-stack validation matrix as one versioned command, emit
 - `OUTPUT_ROOT: Final[Path]` (L61) — `REPO_ROOT/"outputs"/"validation-matrix"`.
 - `DEFAULT_RSKILL_ID: Final[str]` (L119) — `"OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4"`.
 - `LAUNCH_FAILED_MARKER: Final[str] = "launch_failed.txt"` (L1089) — Suffix of the runner's own launch-failure marker file, the first thing `detect_launch_failure` checks for.
-- `DISPATCH_READY_TIMEOUT_S: Final[float] = 180.0` (L2182) — Timeout bound for the goal re-dispatch loop when the graph answers but is not assembled yet (paired with `DISPATCH_RETRY_INTERVAL_S`).
+- `DISPATCH_READY_TIMEOUT_S: Final[float] = 180.0` (L2183) — Timeout bound for the goal re-dispatch loop when the graph answers but is not assembled yet (paired with `DISPATCH_RETRY_INTERVAL_S`).
 - `@dataclass(frozen=True) class SceneSpec(key, config, prompt, deadline_s)` — One matrix row; `config` is the tracked DeployScene YAML, and the round launches a resolved copy carrying the seed and CLI-less pins. (L79)
 - `MATRIX: tuple[SceneSpec, ...]` — The four scenes: `baguette`, `sink_cup`, `fridge`, `utensil`. (L96)
 - `SYNC_GROUPS = ("robocasa", "sidecar-wire")` — Both, always: `--group robocasa` alone strips `pyzmq` and breaks the XR-1 adapter. (L123)
@@ -118,8 +115,8 @@ _The four-scene collision-stack validation matrix as one versioned command, emit
 - `detect_launch_failure(run_dir, stem, deploy_lines) -> str` — Why a scene is not a run at all: a launch-failure marker, a `ros2 launch` exception, a CLI usage-error banner, no log, a Nav2 bond teardown, or a graph that never came up. Empty when the scene ran; this is what `artifacts_complete` checks. (L1236)
 - `_nav2_bond_teardown(deploy_lines) -> str` — A Nav2 bond-heartbeat timeout tears the whole stack down silently, leaving the graph inert until its deadline — which the harness would otherwise score as a policy failure to grasp. Discriminated from a late teardown by how early the loss occurs.
 - `_lacks_stage2_hull(link) -> bool` — Whether a link is known to carry no stage-2 hull. Only an explicit `False` counts — an older snapshot without the field must read as unknown, never as "no hull". Used by `_link_link_hull_gap_m`.
-- `dispatch_not_ready_reason(goal_log) -> str` (L2186) — Why a dispatch reports the graph as not assembled yet (e.g. a disconnected TF tree or a camera that published nothing), so the goal can be retried instead of scored as a non-completion. Never matches a real E-stop, deadline or capability mismatch. `tests/unit/test_dispatch_readiness.py`.
-- `DISPATCH_RETRY_INTERVAL_S: float` (L2183) — `12.0`; how often `dispatch_not_ready_reason` triggers a re-dispatch.
+- `dispatch_not_ready_reason(goal_log) -> str` (L2187) — Why a dispatch reports the graph as not assembled yet (e.g. a disconnected TF tree or a camera that published nothing), so the goal can be retried instead of scored as a non-completion. Never matches a real E-stop, deadline or capability mismatch. `tests/unit/test_dispatch_readiness.py`.
+- `DISPATCH_RETRY_INTERVAL_S: float` (L2184) — `12.0`; how often `dispatch_not_ready_reason` triggers a re-dispatch.
 - `_NAV2_BOND_LOSS_EARLY_S: float` (L1129) — `120.0`; a bond-loss timestamp inside this window of the log's start is scored as `_nav2_bond_teardown`, not an ordinary non-completion.
 - `_lifecycle_never_came_up(deploy_lines) -> str` — A lifecycle node never completed a transition, so the graph never came up and nothing after it is a policy outcome; bucketed alongside `_nav2_bond_teardown` since both represent absence rather than a real attempt.
 - `parse_goal_log(lines) -> tuple[dict[str, Any] | None, str]` — The dispatcher's single JSON status line, or why it never wrote one (e.g. a traceback with no `status` field). (L1306)
@@ -138,19 +135,19 @@ _The four-scene collision-stack validation matrix as one versioned command, emit
 - `gpu_status() -> tuple[str | None, list[str]]` — GPU name + resident compute processes; the host is shared. (L1945)
 - `pin_runtime_block(text, pins) -> str` — Splice `runtime:` pins into a scene YAML, changing nothing else (comments and safety commentary survive verbatim). (L1979)
 - `materialise_scene(spec, seed, run_dir) -> tuple[str, Path]` — Write the round's resolved scene copy (seed + `SCENE_RUNTIME_PIN`), re-parse it to prove the pins landed, and check it against the tracked scene. The tracked file is never touched. (L2030)
-- `wait_for_dds_transport_ready(deploy_log, proc, *, timeout_s, poll_s=0.05) -> str` — Block until the deploy log confirms the shared-memory purge is done and before `ros2 launch` spawns, so the monitor's DDS participant isn't created too early and silently receives nothing. Returns `""` on timeout or a dead deploy. (L2115)
-- `render_notes(verdicts) -> str` — The round's Markdown summary: names scenes whose monitor received nothing (a harness fault) separately from those that stopped before seeing a voxel grid (a fact about the run), plus any with an uncertified probe or a lower-bound-only budget. (L2430)
-- `round_exit_code(verdicts) -> int` — `4` when any scene bucketed `harness-error`, else `0`: a round in which a scene never launched must not exit successfully. (L2559)
-- `parse_launch_argv(lines) -> list[str]` — The resolved `argv: … launch …` the deploy CLI echoed: the only artifact stating the stack a run actually got; head-agnostic, so a venv-wrapped `ros2` still parses. (L2651)
-- `stack_tokens(argv) -> list[str]` — The stack-defining `key:=value` tokens of that argv, per-scene tokens dropped. (L2694)
-- `robot_facts_from_launch_argv(argv) -> dict[str, str]` — `repo_root` / `robot_id` / `robot_manifest_path`, from the argv's `robot_yaml:=` token. (L2713)
-- `parse_log_start_time(lines) -> str | None` — UTC timestamp of the log's first ROS stamp; pre-harness rounds recorded no start time, their logs did. (L2742)
-- `resolve_scene_dirs(round_dir, aliases) -> dict[str, str]` — Map each matrix scene onto the directory a round kept it in; `--scene-alias` wins over `LEGACY_SCENE_DIRS`. (L2766)
-- `cmd_verdicts(round_dir, *, stem=None) -> int` (L2575) — `stem=None` reads the round's recorded `artifact_stem`.
-- `cmd_diff(round_dir, baseline_dir, out_path) -> int` (L2626) — `verdicts` subcommand body: field-by-field round comparison via `diff_rounds`.
-- `cmd_import(args) -> int` (L2796) — `import-round` subcommand body.
-- `cmd_run(args) -> int` (L2885) — `run` subcommand body.
-- `main(argv=None) -> int` — CLI entry; `run` / `verdicts` / `diff` / `import-round`. `3` on a guardrail refusal (nothing written), `4` when a scene bucketed `harness-error`. (L2965)
+- `wait_for_dds_transport_ready(deploy_log, proc, *, timeout_s, poll_s=0.05) -> str` — Block until the deploy log shows `dds_transport_ready:` (stale shared-memory clean done, `ros2 launch` not yet spawned), so the monitor joins the graph being launched. Returns `""` on timeout or a dead deploy. (L2115)
+- `render_notes(verdicts) -> str` — The round's Markdown summary: names scenes whose monitor received nothing (a harness fault) separately from those that stopped before seeing a voxel grid (a fact about the run), plus any with an uncertified probe or a lower-bound-only budget. (L2431)
+- `round_exit_code(verdicts) -> int` — `4` when any scene bucketed `harness-error`, else `0`: a round in which a scene never launched must not exit successfully. (L2560)
+- `parse_launch_argv(lines) -> list[str]` — The resolved `argv: … launch …` the deploy CLI echoed: the only artifact stating the stack a run actually got; head-agnostic, so a venv-wrapped `ros2` still parses. (L2652)
+- `stack_tokens(argv) -> list[str]` — The stack-defining `key:=value` tokens of that argv, per-scene tokens dropped. (L2695)
+- `robot_facts_from_launch_argv(argv) -> dict[str, str]` — `repo_root` / `robot_id` / `robot_manifest_path`, from the argv's `robot_yaml:=` token. (L2714)
+- `parse_log_start_time(lines) -> str | None` — UTC timestamp of the log's first ROS stamp; pre-harness rounds recorded no start time, their logs did. (L2743)
+- `resolve_scene_dirs(round_dir, aliases) -> dict[str, str]` — Map each matrix scene onto the directory a round kept it in; `--scene-alias` wins over `LEGACY_SCENE_DIRS`. (L2767)
+- `cmd_verdicts(round_dir, *, stem=None) -> int` (L2576) — `stem=None` reads the round's recorded `artifact_stem`.
+- `cmd_diff(round_dir, baseline_dir, out_path) -> int` (L2627) — `verdicts` subcommand body: field-by-field round comparison via `diff_rounds`.
+- `cmd_import(args) -> int` (L2797) — `import-round` subcommand body.
+- `cmd_run(args) -> int` (L2886) — `run` subcommand body.
+- `main(argv=None) -> int` — CLI entry; `run` / `verdicts` / `diff` / `import-round`. `3` on a guardrail refusal (nothing written), `4` when a scene bucketed `harness-error`. (L2966)
 - `octomap_resolution_env() -> dict[str, float]` — The world-voxel resolution the round actually runs with, read from `OPENRAL_OCTOMAP_RESOLUTION_M`; a finer grid is less conservative than the shipped default. Returns `{}` (not a value) when the override is absent, so metadata never misdescribes the run. (L1792)
 
 ### `tools/_validation_matrix_monitor.py`
@@ -346,12 +343,12 @@ _Query-time joiner for rosbag2 (mcap) ↔ OTel spans. Backs `openral replay` + `
 - `@dataclass(frozen=True) class TimelineEntry(kind, ts_ns, trace_id, topic, span_name, attrs, duration_ms)` (correlator.py L27) — One row of the joined timeline; `.to_json()` returns a plain dict.
 - `list_bag_trace_ids(bag_messages) -> list[dict]` (correlator.py L68) — Distinct trace_ids in the bag with counts, busiest first.
 - `build_timeline(bag_messages, spans, *, trace_id=None) -> list[TimelineEntry]` (correlator.py L95) — Pure join. Filters both inputs to `trace_id`, merges, sorts ascending by `ts_ns`.
-- `RECORD_PROFILES: dict[str, dict[str, list[str]]]` (cli.py L45) — Slim and full topic + regex presets.
-- `build_record_command(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=()) -> list[str]` (cli.py L85) — Compose `ros2 bag record` argv.
-- `@dataclass(frozen=True) class ReplayResult(trace_id, bag_trace_ids, timeline, bag_path)` (cli.py L133) — `.to_json()` returns a plain dict.
-- `run_replay(*, bag_path, trace_id, dashboard_url) -> ReplayResult` (cli.py L162) — Read a bag, fetch matching spans from the dashboard, return the joined timeline.
-- `run_record(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=(), dry_run=False) -> tuple[list[str], CompletedProcess | None]` (cli.py L210) — Spawn `ros2 bag record` in a new process group; forwards SIGINT/SIGTERM received by the parent as **SIGINT** to the child group so rosbag2 flushes `metadata.yaml` cleanly. Waits up to 5 s after the child exits for that file to appear.
-- `write_timeline(result: ReplayResult, out_path: Path) -> None` (cli.py L283) — Persist the timeline JSON.
+- `RECORD_PROFILES: dict[str, dict[str, list[str]]]` (cli.py L52) — Slim and full topic + regex + topic-type presets (`full` records `LaserScan` / `PointCloud2` / `Imu` by type).
+- `build_record_command(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=()) -> list[str]` (cli.py L102) — Compose `ros2 bag record` argv.
+- `@dataclass(frozen=True) class ReplayResult(trace_id, bag_trace_ids, timeline, bag_path)` (cli.py L156) — `.to_json()` returns a plain dict.
+- `run_replay(*, bag_path, trace_id, dashboard_url) -> ReplayResult` (cli.py L185) — Read a bag, fetch matching spans from the dashboard, return the joined timeline.
+- `run_record(*, profile, output_dir, storage="mcap", extra_topics=(), extra_regex=(), dry_run=False) -> tuple[list[str], CompletedProcess | None]` (cli.py L233) — Spawn `ros2 bag record` in a new process group; forwards SIGINT/SIGTERM received by the parent as **SIGINT** to the child group so rosbag2 flushes `metadata.yaml` cleanly. Waits up to 5 s after the child exits for that file to appear.
+- `write_timeline(result: ReplayResult, out_path: Path) -> None` (cli.py L306) — Persist the timeline JSON.
 
 ### `tools/rskill_publisher.py`
 _Package and publish a local rSkill directory to the HF Hub._
@@ -384,6 +381,18 @@ _Package and publish a local rSkill directory to the HF Hub._
 - CLI: `uv run python tools/voxel_transport_probe.py sweep [--resolutions ...] [--count N]`. Needs a sourced ROS 2 overlay.
 
 Measures the wire cost of the dense `uint8[]` payload as publish→receive latency, i.e. map staleness. Result is transport- and host-specific.
+
+### `tools/depth_extrinsic_check.py`
+
+- `check(args) -> int` (L357) — Reads the depth cloud, the camera-internal TF (`frame_id -> cloud frame`) and, when the sensor's `parent_frame` is not the manifest's `base_frame` (G1 head on `torso_link`, SO-100/101 wrist on `gripper`, Galaxea A1 wrist on `arm_seg6`), the recorded `base_frame -> parent_frame` TF chain at each cloud's stamp — refusing if that chain moved during the recording or is missing. Places the cloud through the `--sensor` pose a deploy of `--unit` publishes (the manifest entry with that `RobotUnit`'s `SensorOverlay` applied; a robot that ships `units/` requires `--unit`, via `_unit_description`), fits the table plane and marker centroids in the base frame, and writes a JSON report (residuals, pass/fail, `base_frame`, `parent_in_base_xyz_rpy`, and `suggested_static_transform_xyz_rpy` in `parent_frame`, to be copied into the unit overlay — or the manifest, for a robot without units; the report records the unit). Returns 0 iff it passes against the `openral_core.depth_extrinsic` limits.
+- `verify(args) -> int` (L430) — `openral_core.depth_extrinsic.verify_extrinsic_report` for one sensor: 0 iff the report passed, at criteria no looser than the shipped limits, for the same unit and that unit's *current* pose. `openral deploy run` applies the same check itself.
+- `main(argv=None) -> int` (L453) — CLI: `check --robot --sensor --bag --cloud-topic --table-z --table-roi --marker X Y ...` / `verify --robot --sensor [--unit] [--report]` (`--sensor` required; `--unit` selects `robots/<id>/units/<unit>.yaml`; report defaults to `robots/<id>/calibration/<unit>/<sensor>_extrinsic.json`, or `calibration/<sensor>_extrinsic.json` without units). RGB-only sensors are refused (exit 2): no cloud to fit. Needs a sourced ROS 2 overlay (rosbag2_py, tf2_ros).
+
+Measures the one input the kernel's world-voxel check trusts absolutely on a real depth camera — the extrinsic — which `openral calibrate camera` (intrinsics only) does not. Runbook: `docs/tutorials/deploy/openarm-real-world-voxel-check.md`. Tested in `tests/unit/test_depth_extrinsic_check.py` on real rosbag2 bags (OpenArm `head_zed`, G1 `head`, SO-101 `wrist`; `--unit` on a unit overlay).
+
+### `tools/openarm_world_voxel_run.sh`
+
+_The only sanctioned launcher for `scenes/deploy/openarm_real_world_voxels.yaml`. Refuses unless `OPENRAL_OPENARM_ALLOW_MOTION=1` and `OPENRAL_OPENARM_ATTENDED=1`, `OPENRAL_ROBOT_UNIT` naming the cell, sourced ROS 2, `openral` on PATH, `depth_extrinsic_check.py verify --sensor head_zed --unit $OPENRAL_ROBOT_UNIT` passing against `robots/openarm/robot.yaml` + `robots/openarm/calibration/<unit>/head_zed_extrinsic.json` (early refusal; `openral deploy run` re-applies the gate), and an interactive terminal; then asks for a typed confirmation and execs `openral deploy run`. Extra args pass through._
 
 ### `tools/stop_ee_speed.py`
 
@@ -634,9 +643,10 @@ _Shared NF4 quantize + pre-quantized meta-load helpers for the Robometer reward 
 ### `tools/_robometer_scorer.py`
 _In-process stateless scorer for the Robometer-4B reward monitor, companion to `RobometerInProcessReward`. Loaded directly by `reward_monitor_node` — no separate process or dedicated venv. Meta-builds lerobot's native reward-model skeleton and drops in OpenRAL's NF4 pre-quantized weights directly, with no bf16 spike and no extra download._
 
-- `_NATIVE_CONFIG_REPO: str` (L50) — `"lerobot/Robometer-4B"`, the HF repo `_native_config` downloads `config.json` from to meta-build the native module skeleton.
-- `class Scorer` (L103) — Meta-builds the native `RobometerRewardModel` and remaps + loads the NF4 prequant pack.
-  - `score(frames_rgb, task, num_bins) -> tuple[list[float], list[float]]` (L179) — Computes per-frame progress/success via the module's logit-decoding path (not the scalar-only `compute_reward`). `num_bins` is accepted for interface parity but unused.
+- `_NATIVE_CONFIG_REPO: str` (L51) — `"lerobot/Robometer-4B"`, the HF repo `_native_config` downloads `config.json` from to meta-build the native module skeleton.
+- `class Scorer` (L104) — Meta-builds the native `RobometerRewardModel` and remaps + loads the NF4 prequant pack.
+  - `__init__(weights, device="cuda", *, meta_buffers=True)` (L107) — `meta_buffers=False` builds buffers for real from the modules' own `__init__`: the reference `tests/sim/test_reward_nf4_buffer_equivalence.py` compares the meta load against (issue #304). Seeding `original_inv_freq` from `inv_freq` raises unless the rotary module's `rope_type` is `"default"`.
+  - `score(frames_rgb, task, num_bins) -> tuple[list[float], list[float]]` (L211) — Computes per-frame progress/success via the module's logit-decoding path (not the scalar-only `compute_reward`). `num_bins` is accepted for interface parity but unused.
 
 ### `tools/build_qwen_vlm_nf4_checkpoint.py`
 _Reproducible recipe for the published `OpenRAL/rskill-qwen35_4b-any-general-nf4` pre-quantized NF4 checkpoint. Runs in the sidecar venv. Distinct from `quantize_rskill.py`, which writes an `install_prequantized_linears`-loaded pack for the in-process lerobot runtime; this writes a transformers-native `save_pretrained` checkpoint for the isolated VLM sidecar._
@@ -683,6 +693,18 @@ _Generates `packages/openral_nav2_bringup/config/nav2_visual.yaml` (the Nav2 cos
 
 - `render(base_text: str) -> str` — The derived visual-SLAM profile text for a base-profile text; pure, so the sync test can diff it against the checked-in file. (L51)
 - `main(argv=None) -> int` — Writes the derived profile; `--check` exits 1 when the checked-in copy is stale (run by `just lint`). (L80)
+
+### `tools/gen_ros_topic_graph.py`
+_Generates `docs/topics/README.md`, the ROS 2 topic / service / action graph, by statically joining every publisher, subscriber, server and client in `python/`, `packages/`, `tools/` and `cpp/` (tests excluded) on its resolved name, plus launch-file remappings. Pre-commit rewrites the page; `just lint` and the quality workflow run `--check`._
+
+- `prop REPO_ROOT, OUT_PATH, SCAN_ROOTS` (L48–50) — Repo root, the generated page (`docs/topics/README.md`), and the scanned top-level trees (`python`, `packages`, `cpp`, `tools`).
+- `class Endpoint` — One side of a connection: `kind` (topic/service/action), `role`, resolved `name` (or the source expression), `resolved`, canonical `pkg/Type`, and `where` (`path (Class.method)` plus a `[param `x`]` note). (L90)
+- `extract_python(files) -> list[Endpoint]` — Endpoints from Python sources; names resolve through literals, f-strings, enclosing-scope and module constants (across `from x import`), class and `self._x` attributes, parameter defaults (a parameter without one stays unresolved), `declare_parameter` defaults, argparse `add_argument(default=...)` and `openral_core.camera_topic(name, kind)` (a non-literal name becomes `{sensor}`); name and type are read positionally or by rclpy's keywords (`topic`/`msg_type`, `srv_name`/`srv_type`, `action_name`/`action_type`). (L428)
+- `extract_cpp(files) -> list[Endpoint]` — Endpoints from C++ sources; arguments are split with balanced brackets, both `rclcpp_action::create_server`/`create_client` overloads (node, or the four node interfaces) are handled, and a name resolves from a string literal or a `declare_parameter<T>("x", "default")` variable. (L471)
+- `extract_remappings(files) -> list[tuple[str, str, str]]` — `(from, to, launch file)` for every `remappings=` pair. (L537)
+- `render(endpoints, remaps) -> str` — The Markdown page: concrete and per-instance (`{placeholder}`) topics, services and actions, unresolved endpoints, remappings. (L569)
+- `build() -> str` — Scans the tree and renders the page. (L639)
+- `main(argv=None) -> int` — Writes the page; `--check` exits 1 when the checked-in copy is stale. (L647)
 
 ### `tools/quantize_lingbot_vla2.py`
 _Pre-quantizes LingBot-VLA 2.0's Qwen3-VL backbone to an NF4 pack ahead of time (the sidecar normally does this at load) so deploys download ~7 GB instead of 25.5 GB and skip the per-boot conversion. Runs in the sidecar venv (torch 2.9 / transformers 4.57.3 / bitsandbytes) importing `tools/_lingbot_vla2_server.py`'s own helpers so the pack matches the runtime shells byte-for-byte. Frugal streaming keeps GPU peak at a few hundred MB and host peak at ~30 GB._
@@ -753,3 +775,12 @@ _Galaxea A1 ROS 1 sidecar for `openral_hal.galaxea_a1.GalaxeaA1HAL`; owns roscor
   - `Bridge.state(config)` (L394) — Assemble the current feedback+relay JSON state, raising `RuntimeError` on stale feedback, a latched fault, or an out-of-limits reading.
   - `Bridge.apply(packet, config, first_joint_command)` (L457) — Validate and forward one command packet (`joint_targets` / gripper) to the host driver after re-checking state and motor status.
 - `main() -> int` (L709) — argparse (`--bind`, `--port`, `--serial`, `--startup-timeout-s`); starts roscore + the vendor serial driver + tracker via `Stack`, wires `Bridge`, serves the sidecar's TCP/JSON protocol.
+
+### `tools/joint_state_staleness_probe.py`
+
+- `pct(xs, p) -> float` (L68) — nearest-rank percentile; NaN when empty.
+- `build_probe_hal(robot_yaml) -> RosControlHAL` (L76) — builds the robot's real HAL from its manifest via `build_hal(mode="real")` (so it reads at the manifest's `safety.joint_state_staleness_limit_s` on the manifest's joint-state topic); refuses a non-`RosControlHAL` robot (SO-100, ALOHA, Galaxea) with `SystemExit`.
+- `run(robot_yaml, duration_s, rate_hz, read_hz, load) -> int` (L103) — publishes synthetic `JointState` at `rate_hz` over real DDS into `RosControlTransport` (production QoS + callback) on one executor, and prints callback inter-arrival gaps, stamp→callback latency, the read-side age `now - last_arrival()` at `read_hz` (default: the manifest's control rate), and how often `hal.read_state()` raised `ROSPerceptionStale` at the manifest's limit. `load=True` adds a GIL-contending thread in the same process.
+- `main(argv=None) -> int` (L257) — CLI: `uv run python tools/joint_state_staleness_probe.py --robot robots/<id>/robot.yaml --rate <joint_states Hz> [--duration 60] [--read-hz N] [--load]`. Needs a sourced ROS 2 overlay; uses `ROS_DOMAIN_ID` 77 unless set, so it never touches a live graph.
+
+Backs `safety.joint_state_staleness_limit_s` in a real manifest — the age past which `read_state` (and the runner's waits) refuse to answer. The number must come from a measurement on the deploy host, not a schema default. Thor 2026-09-23 (Fast-DDS): idle gap p99.9 2.6 ms / max 4.6 ms, read-side age max 32 ms; under GIL starvation latency max 43 ms, no gap above 33 ms → `robots/openarm/robot.yaml` declares 0.1 s (three control periods). The other real manifests are unmeasured and marked provisional (Franka / Sawyer 0.2 s, the real HALs' former constructor default).

@@ -48,12 +48,14 @@ _rclpy → OTLP bridge rendering the octomap occupied-voxel cloud (`/octomap_poi
 ### `python/runner/src/openral_runner/dataset_recorder_bridge.py`
 _Bus-attached LeRobot/rosbag recorder for the deploy graph (mirrors `WorldCloudBridge`)._
 
-- module constant `_PHASE_START = 0` (L60) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
-- module constant `_PHASE_END = 1` (L61) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
-- module constant `ACTION_TOPIC_DEFAULT = "/openral/candidate_action"` (L63) — default `ActionChunk` topic.
-- module constant `EPISODE_TOPIC_DEFAULT = "/openral/episode"` (L64) — default `Episode` marker topic.
-- `class DatasetRecorderBridge(node, *, robot, aggregator, recorder, output_path=None, action_topic="/openral/candidate_action", episode_topic="/openral/episode")` — Subscribes `Episode` (drives `recorder.episode_start/end`) and `ActionChunk`, joins each tick's action with the `WorldStateAggregator` snapshot, and writes frames via `Rosbag2Sink`. Logs `dataset_recorder.nothing_recorded` at `destroy()` if no episode marker ever fired, so an empty recording is never silent. (L67)
-  - `destroy() -> None` (L164) — Flushes the pending tick, closes any open episode (marking it a failure), finalizes the recorder, releases the subscriptions; idempotent.
+- `decode_inline_frame(frame: SensorFrame) -> np.ndarray | None` (L104) — Decode one aggregator `SensorFrame` with inline `data` into an `HxWxC` array whose **dtype comes from `frame.encoding`** (`DEPTH16` → uint16 millimetres; `BGR8` / `RGB8` / `MONO8` / `RAW` → uint8; `JPEG` / `PNG` decoded with Pillow to RGB, or mono when `channels == 1`). `None` silently for topic/handle delivery (`data is None`); `None` plus a `runner.frame_skipped` warning (sensor, encoding, reason) for anything it cannot decode — inline bytes on a device-handle encoding (CUDA_*), a corrupt or wrongly-sized compressed image, a raw payload whose byte count is off. Shared by the recorder's `_decode_images` — which additionally keeps only `(H, W, 3) uint8` frames, the contract of `DatasetRecorder.record_frame` — and the runner's `_decode_image_frames`, which raises `ROSPerceptionStale` when the skipped sensor feeds a required policy slot. Reading everything as uint8 aborted the first real-hardware OpenArm dispatch (qorin1, 2026-09-22): the ZED depth sensor's `16UC1` 1280x720 frame is two bytes per pixel and `reshape(720, 1280, 1)` raised `ValueError: cannot reshape array of size 1843200`.
+
+- module constant `_PHASE_START = 0` (L62) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
+- module constant `_PHASE_END = 1` (L63) — `Episode.phase` enum value; mirrors `packages/msgs/msg/Episode.msg`.
+- module constant `ACTION_TOPIC_DEFAULT = "/openral/candidate_action"` (L65) — default `ActionChunk` topic.
+- module constant `EPISODE_TOPIC_DEFAULT = "/openral/episode"` (L66) — default `Episode` marker topic.
+- `class DatasetRecorderBridge(node, *, robot, aggregator, recorder, output_path=None, action_topic="/openral/candidate_action", episode_topic="/openral/episode")` — Subscribes `Episode` (drives `recorder.episode_start/end`) and `ActionChunk`, joins each tick's action with the `WorldStateAggregator` snapshot, and writes frames via `Rosbag2Sink`. Logs `dataset_recorder.nothing_recorded` at `destroy()` if no episode marker ever fired, so an empty recording is never silent. (L159)
+  - `destroy() -> None` (L256) — Flushes the pending tick, closes any open episode (marking it a failure), finalizes the recorder, releases the subscriptions; idempotent.
 
 ### `python/runner/src/openral_runner/sensor_reader.py`
 _``SensorReader`` Protocol — seam between per-sensor capture backends and the inference runner._
@@ -95,8 +97,8 @@ _``Ros2ImageSensorReader`` — backend for a stream a device only publishes over
   - `close() -> None` (L252) — Destroys the subscription; calls `rclpy.shutdown()` only if this reader initialised it. Idempotent, guarding per-resource rather than on `is_open`.
   - `read_latest(max_age_ms=None) -> SensorFrame` (L301) — Lock-protected snapshot; `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on a closed reader. Frames carry inlined `data`, not a `topic` reference.
   - `_on_image(msg) -> None` (L343) — Subscription callback; conversion failures are counted and logged, never raised, since an exception here would kill the spin loop and silently stop the camera.
-- `_rows(raw, dtype, msg, height, width, channels) -> NDArray` (L427) — Unpacks an `Image` payload honouring `msg.step` (row stride), needed when a publisher hands out pitch-aligned buffers (e.g. Isaac/NITROS) or a cropped ROI. An implausible `step` falls back to the packed stride, so a wrong value fails loud rather than yielding a skewed image.
-- `_byte_order(msg) -> str` (L468) — Honours `Image.is_bigendian`; a 16-bit depth image from a big-endian publisher read little-endian is byte-swapped garbage.
+- `_rows(raw, dtype, msg, height, width, channels) -> NDArray` (L445) — Unpacks an `Image` payload honouring `msg.step` (row stride), needed when a publisher hands out pitch-aligned buffers (e.g. Isaac/NITROS) or a cropped ROI. An implausible `step` falls back to the packed stride, so a wrong value fails loud rather than yielding a skewed image.
+- `_byte_order(msg) -> str` (L486) — Honours `Image.is_bigendian`; a 16-bit depth image from a big-endian publisher read little-endian is byte-swapped garbage.
 
 ### `python/runner/src/openral_runner/backends/galaxea_a1_camera_bridge.py`
 _Real-deploy reader for the public A1 Runtime paired-frame bridge. It never
@@ -145,62 +147,61 @@ _GStreamer pipeline-string builder + platform detection. Pure-Python — does **
 - `LEAKY_BRANCH_QUEUE: Final[str]` (L63) — `"queue leaky=downstream max-size-buffers=2"`. The single definition of the per-branch isolation policy, shared by the static builder and the runtime `TeeManager`.
 - `leaky_branch(elements, *, tee_name=TEE_NAME) -> str` (L66) — Returns one `tee` branch `<tee>. ! <leaky queue> ! <elements>`. The shared branch-construction primitive so the static builder and the dynamic `TeeManager` build branches identically.
 - module constant `_DEFAULT_APPSINK_NAME: Final[str] = "bh_sink"` (L48) — default name attached to the trailing appsink so the reader can look it up via `Gst.Bin.get_by_name`.
-- module constant `_TEGRA_RELEASE_PATH: Final[Path] = Path("/etc/nv_tegra_release")` (L92) — path read to identify a Tegra host (Jetson / Spark).
-- module constant `_GST_INSPECT_TIMEOUT_S: Final[float] = 5.0` (L97) — timeout for the `gst-inspect-1.0` probe.
-- module constant `_NVVIDEOCONVERT: Final[str] = "nvvideoconvert"` (L101) — the DeepStream NVMM colour-convert element.
-- module constant `_NVVIDCONV: Final[str] = "nvvidconv"` (L102) — the Tegra / L4T multimedia-stack NVMM colour-convert element.
-- module constant `_VIDEOCONVERT: Final[str] = "videoconvert"` (L103) — the stock system-memory / CPU colour-convert element.
-- module constant `_NVVIDCONV_BGR_BRIDGE_FORMAT: Final[str] = "BGRx"` (L107) — the closest packed format `nvvidconv` advertises; bridged to `BGR` via `bgr_convert_chain`.
-- `class PipelineSpec(BaseModel)` (L167) — Validated description of a GStreamer ingest pipeline; `jpeg` (MJPG UVC, USB-only) is exclusive with `encoded`, and `event_appsink_name` is validated as a legal GStreamer element name.
-- `class Platform(str, Enum)` (L110) — GStreamer platform tier: `TEGRA` / `NVIDIA_DEEPSTREAM` / `NVIDIA_DESKTOP` / `CPU_ONLY`. `NVIDIA_DEEPSTREAM` is the x86 `ds-on` image, decoding and converting NVMM-native on GPU.
-- `class Source(str, Enum)` (L143) — `USB | CSI | RTSP | FILE | TESTSRC`.
-- `detect_platform() -> Platform` (L272) — Cached; detects the platform by reading `/etc/nv_tegra_release` then probing `gst-inspect-1.0` for DeepStream/nvcodec elements.
-- `inspect_element_present(element_name) -> bool` (L307) — Generic `gst-inspect-1.0 --exists` probe with timeout.
-- `nvmm_convert_element() -> str | None` (L337) — Probes for the host's NVMM colour-convert element: `nvvideoconvert` (DeepStream/x86) preferred, else `nvvidconv` (Tegra/L4T), else `None`.
-- `bgr_convert_chain(convert) -> str` (L357) — Bridges a converter element to system-memory `BGR`: passthrough for `nvvideoconvert`/`videoconvert`, but `nvvidconv` needs a `BGRx`→`videoconvert` bridge since pinning `format=BGR` on it fails to link on a plain-L4T Jetson.
-- `ensure_appsink_name(pipeline, name) -> str` (L401) — Rewrites a trailing `appsink` to carry `name=<name>`.
-- `build_pipeline_string(spec, platform=None) -> str` (L453) — Builds the pipeline string, adding a `tee` leg per enabled `ros`/`event` branch via `leaky_branch` so a stalled observability or detector branch never backpressures the policy leg.
-- `_build_event_tee_branch(spec, platform) -> str` (L726) — Returns the event leg of the `tee`: lifts NVMM to system memory, pins `format=BGR`, rate-caps via `videorate` to `event_rate_hz`, terminates in `appsink name=event_sink`.
-- `_build_ros_tee_branch(spec, platform) -> str` (L710) — Returns the observability leg (system memory BGR `appsink name=ros_sink`).
-- `_platform_convert_element(platform) -> str` (L613) — The bare colour-convert element for a platform: `nvvidconv` (Tegra) / `nvvideoconvert` (DeepStream) / `videoconvert` (else). Shared by the policy leg and the tee legs.
-- `_use_nvmm(spec, platform) -> bool` (L637) — Single definition of "does the policy leg negotiate `memory:NVMM`", shared by `_build_convert` and `_build_caps` so converter and caps can never disagree.
-- `_build_convert(spec, platform) -> str` (L648) — The policy leg's conversion stage: the bare element on the NVMM path (`NV12`/`RGBA` are on its own src template), `bgr_convert_chain(...)` on the system-memory `BGR` path.
-- `_lift_convert(platform) -> str` (L751) — The chain a tee leg uses to lift NVMM → system-memory BGR: `_platform_convert_element` passed through `bgr_convert_chain`, so Tegra legs bridge via `BGRx` while DeepStream legs stay direct-to-`BGR`.
+- module constant `_GST_INSPECT_TIMEOUT_S: Final[float] = 5.0` (L93) — timeout for the `gst-inspect-1.0` probe.
+- module constant `_NVVIDEOCONVERT: Final[str] = "nvvideoconvert"` (L97) — the DeepStream NVMM colour-convert element.
+- module constant `_NVVIDCONV: Final[str] = "nvvidconv"` (L98) — the Tegra / L4T multimedia-stack NVMM colour-convert element.
+- module constant `_VIDEOCONVERT: Final[str] = "videoconvert"` (L99) — the stock system-memory / CPU colour-convert element.
+- module constant `_NVVIDCONV_BGR_BRIDGE_FORMAT: Final[str] = "BGRx"` (L103) — the closest packed format `nvvidconv` advertises; bridged to `BGR` via `bgr_convert_chain`.
+- `class PipelineSpec(BaseModel)` (L163) — Validated description of a GStreamer ingest pipeline; `jpeg` (MJPG UVC, USB-only) is exclusive with `encoded`, and `event_appsink_name` is validated as a legal GStreamer element name.
+- `class Platform(str, Enum)` (L106) — GStreamer platform tier: `TEGRA` / `NVIDIA_DEEPSTREAM` / `NVIDIA_DESKTOP` / `CPU_ONLY`. `NVIDIA_DEEPSTREAM` is the x86 `ds-on` image, decoding and converting NVMM-native on GPU.
+- `class Source(str, Enum)` (L139) — `USB | CSI | RTSP | FILE | TESTSRC`.
+- `detect_platform() -> Platform` (L268) — Cached; detects the platform via `openral_core.is_tegra_host()` then probing `gst-inspect-1.0` for DeepStream/nvcodec elements.
+- `inspect_element_present(element_name) -> bool` (L303) — Generic `gst-inspect-1.0 --exists` probe with timeout.
+- `nvmm_convert_element() -> str | None` (L333) — Probes for the host's NVMM colour-convert element: `nvvideoconvert` (DeepStream/x86) preferred, else `nvvidconv` (Tegra/L4T), else `None`.
+- `bgr_convert_chain(convert) -> str` (L353) — Bridges a converter element to system-memory `BGR`: passthrough for `nvvideoconvert`/`videoconvert`, but `nvvidconv` needs a `BGRx`→`videoconvert` bridge since pinning `format=BGR` on it fails to link on a plain-L4T Jetson.
+- `ensure_appsink_name(pipeline, name) -> str` (L397) — Rewrites a trailing `appsink` to carry `name=<name>`.
+- `build_pipeline_string(spec, platform=None) -> str` (L449) — Builds the pipeline string, adding a `tee` leg per enabled `ros`/`event` branch via `leaky_branch` so a stalled observability or detector branch never backpressures the policy leg.
+- `_build_event_tee_branch(spec, platform) -> str` (L722) — Returns the event leg of the `tee`: lifts NVMM to system memory, pins `format=BGR`, rate-caps via `videorate` to `event_rate_hz`, terminates in `appsink name=event_sink`.
+- `_build_ros_tee_branch(spec, platform) -> str` (L706) — Returns the observability leg (system memory BGR `appsink name=ros_sink`).
+- `_platform_convert_element(platform) -> str` (L609) — The bare colour-convert element for a platform: `nvvidconv` (Tegra) / `nvvideoconvert` (DeepStream) / `videoconvert` (else). Shared by the policy leg and the tee legs.
+- `_use_nvmm(spec, platform) -> bool` (L633) — Single definition of "does the policy leg negotiate `memory:NVMM`", shared by `_build_convert` and `_build_caps` so converter and caps can never disagree.
+- `_build_convert(spec, platform) -> str` (L644) — The policy leg's conversion stage: the bare element on the NVMM path (`NV12`/`RGBA` are on its own src template), `bgr_convert_chain(...)` on the system-memory `BGR` path.
+- `_lift_convert(platform) -> str` (L747) — The chain a tee leg uses to lift NVMM → system-memory BGR: `_platform_convert_element` passed through `bgr_convert_chain`, so Tegra legs bridge via `BGRx` while DeepStream legs stay direct-to-`BGR`.
 
 ### `python/runner/src/openral_runner/backends/gstreamer/reader.py`
 _GStreamer-backed `SensorReader` (CPU appsink path + NVMM zero-copy path). Mirrors the latest-only contract of `OpenCVThreadSensorReader`. `Gst.init` runs immediately after the `gi` import, before anything else, to avoid a Fast-DDS/GStreamer thread-init SIGSEGV._
 
-- module constant `_BUS_POLL_TIMEOUT_NS: Final[int] = 100_000_000` (L69) — bus poll timeout (100 ms) when listening for ERROR / EOS.
-- module constant `_DEFAULT_MAX_AGE_MS: Final[int] = 100` (L72) — default staleness budget; matches the OpenCV reader default.
-- module constant `_GST_FORMAT_TO_ENCODING: Final[dict[str, FrameEncoding]]` (L78) — maps GStreamer caps `format=...` (`BGR`/`RGB`/`GRAY8`) to `FrameEncoding` for the CPU path; NV12 is deliberately absent (handled by the NVMM path instead).
-- `class GStreamerSensorReader` (L85) — `SensorReader` backed by a GStreamer pipeline; construct from an explicit `pipeline=` string or a generated `spec=` (`PipelineSpec`). CPU path delivers `SensorFrame(data=bytes)`; NVMM/CUDA zero-copy populates `handle` + `encoding` ∈ `{CUDA_NV12, CUDA_RGBA}`.
-  - `open() -> None` (L200) — Initialise GStreamer, parse the pipeline, start the ROS tee (if enabled) and the bus-drain thread, transition to PLAYING. Idempotent.
-  - `close() -> None` (L301) — Stop the ROS publisher (if any), tear down the pipeline, join the bus thread, release the latched frame/handle. Idempotent.
-  - `__enter__() / __exit__()` (L333) — Context-manager sugar; calls `open` / `close`.
-  - `read_latest(max_age_ms: int | None = None) -> SensorFrame` (L349) — Non-blocking snapshot of the latched frame; raises `ROSRuntimeError` on a bus-reported error, `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on a closed reader.
-  - `_start_ros_publisher()` (L266) — Look up the `ros_sink` appsink and start a `RosImagePublisher`; tears the pipeline back down with an actionable `ROSConfigError` if `rclpy` is unavailable.
-  - `_on_new_sample(appsink) -> int` (L430) — Streaming-thread callback; branches on `memory:NVMM` caps features to the zero-copy or CPU handler.
-  - `_handle_cpu_buffer(buffer, structure) -> int` (L459) — Map → copy → latch `data`; unsupported format latches a bus error.
-  - `_handle_nvmm_buffer(buffer, structure) -> int` (L501) — Map → wrap as an `NvBufSurfaceHandle` (lazy `openral_pro_trt.nvbufsurface` import) → DtoD-mirror into a reader-owned `StableSurfaceMirror` → latch `handle`; an absent/unloadable NVMM backend latches a bus error rather than silently falling back.
-  - `_bus_loop()` (L608) — Background thread draining the GStreamer bus for ERROR / EOS.
-  - `_teardown_pipeline()` (L640) — Drop the pipeline and join the bus thread; shared by `close()` and `open()`'s rollback path.
-  - `_wrap_in_pipeline(element) -> Gst.Pipeline` (L652) [@staticmethod] — Wraps a bare `Gst.Element` from `Gst.parse_launch` in a `Pipeline` bin (single-element strings only).
-- module constant `_GST_INIT_LOCK` (L665) — one-shot-init guard lock.
-- module constant `_GST_INITIALISED` (L666) — one-shot-init guard flag.
-- `_ensure_gst_initialised() -> None` (L669) — Calls `Gst.init` exactly once per process, thread-safely.
+- module constant `_BUS_POLL_TIMEOUT_NS: Final[int] = 100_000_000` (L71) — bus poll timeout (100 ms) when listening for ERROR / EOS.
+- module constant `_DEFAULT_MAX_AGE_MS: Final[int] = 100` (L74) — default staleness budget; matches the OpenCV reader default.
+- module constant `_GST_FORMAT_TO_ENCODING: Final[dict[str, FrameEncoding]]` (L80) — maps GStreamer caps `format=...` (`BGR`/`RGB`/`GRAY8`) to `FrameEncoding` for the CPU path; NV12 is deliberately absent (handled by the NVMM path instead).
+- `class GStreamerSensorReader` (L87) — `SensorReader` backed by a GStreamer pipeline; construct from an explicit `pipeline=` string or a generated `spec=` (`PipelineSpec`). CPU path delivers `SensorFrame(data=bytes)`; NVMM/CUDA zero-copy populates `handle` + `encoding` ∈ `{CUDA_NV12, CUDA_RGBA}`. `ros_topic` / `ros_rate_hz` / `ros_frame_id` / `ros_camera_info` configure the optional ROS tee (`RosImagePublisher`).
+  - `open() -> None` (L210) — Initialise GStreamer, parse the pipeline, start the ROS tee (if enabled) and the bus-drain thread, transition to PLAYING. Idempotent.
+  - `close() -> None` (L316) — Stop the ROS publisher (if any), tear down the pipeline, join the bus thread, release the latched frame/handle. Idempotent.
+  - `__enter__() / __exit__()` (L348) — Context-manager sugar; calls `open` / `close`.
+  - `read_latest(max_age_ms: int | None = None) -> SensorFrame` (L364) — Non-blocking snapshot of the latched frame; raises `ROSRuntimeError` on a bus-reported error, `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on a closed reader.
+  - `_start_ros_publisher()` (L276) — Look up the `ros_sink` appsink and start a `RosImagePublisher`; tears the pipeline back down with an actionable `ROSConfigError` if `rclpy` is unavailable.
+  - `_on_new_sample(appsink) -> int` (L445) — Streaming-thread callback; branches on `memory:NVMM` caps features to the zero-copy or CPU handler.
+  - `_handle_cpu_buffer(buffer, structure) -> int` (L474) — Map → copy → latch `data`; unsupported format latches a bus error.
+  - `_handle_nvmm_buffer(buffer, structure) -> int` (L516) — Map → wrap as an `NvBufSurfaceHandle` (lazy `openral_pro_trt.nvbufsurface` import) → DtoD-mirror into a reader-owned `StableSurfaceMirror` → latch `handle`; an absent/unloadable NVMM backend latches a bus error rather than silently falling back.
+  - `_bus_loop()` (L623) — Background thread draining the GStreamer bus for ERROR / EOS.
+  - `_teardown_pipeline()` (L655) — Drop the pipeline and join the bus thread; shared by `close()` and `open()`'s rollback path.
+  - `_wrap_in_pipeline(element) -> Gst.Pipeline` (L667) [@staticmethod] — Wraps a bare `Gst.Element` from `Gst.parse_launch` in a `Pipeline` bin (single-element strings only).
+- module constant `_GST_INIT_LOCK` (L680) — one-shot-init guard lock.
+- module constant `_GST_INITIALISED` (L681) — one-shot-init guard flag.
+- `_ensure_gst_initialised() -> None` (L684) — Calls `Gst.init` exactly once per process, thread-safely.
 
 ### `python/runner/src/openral_runner/backends/gstreamer/ros_tee.py`
-_ROS 2 image-publisher tee for `GStreamerSensorReader`. Republishes the `ros_sink` appsink branch as `sensor_msgs/Image` on a configurable topic, independently rate-limited from the inference loop. `rclpy` is lazy-imported inside `start()` so the module is import-safe without a sourced ROS env._
+_ROS 2 image-publisher tee for `GStreamerSensorReader`. Republishes the `ros_sink` appsink branch as `sensor_msgs/Image` on a configurable topic, independently rate-limited from the inference loop, plus — when manifest intrinsics are supplied — a companion `sensor_msgs/CameraInfo` on the sibling topic built by `openral_sensors.ros_publisher.build_camera_info_msg`. `rclpy` is lazy-imported inside `start()` so the module is import-safe without a sourced ROS env._
 
-- module constant `_DEFAULT_QOS_DEPTH: Final[int] = 5` (L47) — default QoS depth for the image publisher (mirrors gscam2's shallow, `BEST_EFFORT`-friendly default).
-- `class RosImagePublisher` (L50) — `__init__(*, sensor_id, appsink, topic, rate_hz=None, node_name=None, qos_depth=_DEFAULT_QOS_DEPTH)` — validates `topic` is absolute and `rate_hz` is positive or `None`; no ROS I/O until `start`.
-  - `is_started` [@property] (L105) — `True` between `start` and `stop`.
-  - `start() -> None` (L109) — Initialise rclpy (if needed), create the `sensor_msgs/Image` publisher (`BEST_EFFORT`+`VOLATILE`+`KEEP_LAST`), hook the appsink; raises `RuntimeError` if `rclpy` is unavailable.
-  - `stop() -> None` (L158) — Disconnect the signal, destroy the publisher, shut down rclpy if this instance initialised it. Idempotent.
-  - `_on_new_sample(appsink) -> int` (L183) — Rate-gate → map → build `sensor_msgs/Image` → publish.
-  - `_claim_rate_slot() -> bool` (L219) — Monotonic-clock token gate enforcing `rate_hz`.
-  - `_extract_image_payload(appsink, gst) -> tuple[bytes, int, int, str] | None` (L234) — Pull the latest sample; `None` on malformed sample / unsupported format / map failure.
-- `_gst_format_to_ros_encoding(gst_format) -> str | None` (L276) — Maps a GStreamer caps `format` (`BGR`/`RGB`/`GRAY8`) to a ROS `Image.encoding` (`bgr8`/`rgb8`/`mono8`).
+- module constant `_DEFAULT_QOS_DEPTH: Final[int] = 5` (L52) — default QoS depth for the image publisher (mirrors gscam2's shallow, `BEST_EFFORT`-friendly default).
+- `class RosImagePublisher` (L55) — `__init__(*, sensor_id, appsink, topic, rate_hz=None, node_name=None, qos_depth=_DEFAULT_QOS_DEPTH, frame_id=None, camera_info=None)` — `frame_id` (default `sensor_id`) stamps both headers; `camera_info` enables the `CameraInfo` companion on `camera_info_topic_for(topic)`. Validates `topic` is absolute and `rate_hz` is positive or `None`; no ROS I/O until `start`.
+  - `is_started` [@property] (L128) — `True` between `start` and `stop`.
+  - `start() -> None` (L132) — Initialise rclpy (if needed), create the `sensor_msgs/Image` publisher (`BEST_EFFORT`+`VOLATILE`+`KEEP_LAST`), plus a `CameraInfo` publisher (`RELIABLE`+`VOLATILE`+`KEEP_LAST=1`) when `camera_info` is set, hook the appsink; raises `RuntimeError` if `rclpy` is unavailable.
+  - `stop() -> None` (L206) — Disconnect the signal, destroy the publisher, shut down rclpy if this instance initialised it. Idempotent.
+  - `_on_new_sample(appsink) -> int` (L244) — Rate-gate → map → build `sensor_msgs/Image` → publish, then the matching `CameraInfo` (frame width/height, same stamp) when enabled.
+  - `_claim_rate_slot() -> bool` (L313) — Monotonic-clock token gate enforcing `rate_hz`.
+  - `_extract_image_payload(appsink, gst) -> tuple[bytes, int, int, str] | None` (L328) — Pull the latest sample; `None` on malformed sample / unsupported format / map failure.
+- `_gst_format_to_ros_encoding(gst_format) -> str | None` (L370) — Maps a GStreamer caps `format` (`BGR`/`RGB`/`GRAY8`) to a ROS `Image.encoding` (`bgr8`/`rgb8`/`mono8`).
 
 ### `python/runner/src/openral_runner/backends/gstreamer/perception_tee.py`
 _Perception event tee for `GStreamerSensorReader`. Pulls frames from the event leg's `appsink`, runs `EventDetector`s, publishes `openral_msgs/PromptStamped` on `/openral/perception/<kind>`. `rclpy` lazy-imported in `start()` so the module stays import-safe on hosts without a sourced ROS env._
@@ -372,16 +373,16 @@ _Public surface of the inference runner. Imports are PEP 562 lazy: heavy symbols
 _Library deploy runner used by runtime nodes; the public deploy CLI now shells the ROS graph from a `DeployScene`._
 
 - `SKILL_REGISTRY: dict[str, Callable[[dict[str, object]], rSkillBase]]` — `vla.id` → skill factory. Today: `hello`, `gpu_passthrough`. (L98)
-- `SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]` — `backend` id → reader factory. Today: `opencv_thread`, `ros2_image`, `gstreamer`, `galaxea_a1_camera_bridge`. (`ros2_image` was in the `SensorReaderBackend` enum but absent here, so selecting it raised `unknown sensor reader backend`.) (L383)
+- `SENSOR_BACKEND_REGISTRY: dict[str, Callable[[SensorReaderConfig], SensorReader]]` — `backend` id → reader factory. Today: `opencv_thread`, `ros2_image`, `gstreamer`, `galaxea_a1_camera_bridge`. (`ros2_image` was in the `SensorReaderBackend` enum but absent here, so selecting it raised `unknown sensor reader backend`.) (L387)
 - `_to_int(value, *, field, sensor_id) -> int` — YAML `object` → `int` coercion helper used across factories; rejects bools explicitly. (L48)
 - `_make_gpu_passthrough_skill(extra) -> rSkillBase` — Builds `GpuPassthroughSkill`; recognised `extra`: `sensor_id` (default `"wrist_rgb"`), `n_joints`, `horizon`, `device` (default `"cuda"`, raises if unavailable). (L75)
 - `_make_opencv_thread_reader(cfg) -> SensorReader` — Builds `OpenCVThreadSensorReader` from a `SensorReaderConfig`; requires `backend_params.device`, forwards optional `fps`/`width`/`height`/`crop` (`[x, y, width, height]`); an invalid value raises `ROSConfigError`.
-- `_make_ros2_image_reader(cfg) -> SensorReader` — Builds `Ros2ImageSensorReader`; requires `backend_params.topic` (e.g. `/zed/depth/depth_registered`), optional `reliability` (`best_effort` default / `reliable`) and `qos_depth` (default 5). `cfg.max_age_ms` becomes the reader's staleness budget. Imported lazily so the factory module stays importable without ROS. (L346)
-- `_make_gstreamer_reader(cfg) -> SensorReader` — Builds `GStreamerSensorReader` from a `SensorReaderConfig`. Translates `publish_to_ros` / `publish_topic` / `publish_rate_hz` → `PipelineSpec.enable_ros_tee`. (L159)
+- `_make_ros2_image_reader(cfg) -> SensorReader` — Builds `Ros2ImageSensorReader`; requires `backend_params.topic` (e.g. `/zed/depth/depth_registered`), optional `reliability` (`best_effort` default / `reliable`) and `qos_depth` (default 5). `cfg.max_age_ms` becomes the reader's staleness budget. Imported lazily so the factory module stays importable without ROS. (L350)
+- `_make_gstreamer_reader(cfg) -> SensorReader` — Builds `GStreamerSensorReader` from a `SensorReaderConfig`. Translates `publish_to_ros` / `publish_topic` / `publish_rate_hz` → `PipelineSpec.enable_ros_tee`, and forwards `publish_frame_id` / `publish_camera_info` to the reader's ROS tee. (L159)
 - `_make_galaxea_a1_camera_bridge_reader(cfg) -> SensorReader` — Builds the
   native A1 Runtime paired-camera connector. Accepts only `camera`; unknown
   values are rejected.
-- `make_sensor_readers(configs) -> list[SensorReader]` (L266) — Batch constructor that
+- `make_sensor_readers(configs) -> list[SensorReader]` (L270) — Batch constructor that
   preserves config order and shares one A1 paired-camera session across both
   views. Other backends still dispatch through `SENSOR_BACKEND_REGISTRY`.
 

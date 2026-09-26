@@ -76,9 +76,51 @@ __all__ = [
     "HALLifecycleNodeBase",
     "ManifestHALLifecycleNode",
     "decode_action_chunk",
+    "joint_state_republish_stamp_ns",
     "make_lifecycle_main",
     "make_lifecycle_main_from_manifest",
 ]
+
+
+# A HAL sample older than this on the wall clock is not a sample from this run's
+# clock domain (a sim HAL stamping sim-elapsed time, a HAL with a hardware epoch);
+# its age cannot be carried over, so the republish keeps the node's own now.
+_MAX_CARRIED_SAMPLE_AGE_NS = 5_000_000_000
+
+
+def joint_state_republish_stamp_ns(
+    node_now_ns: int, sample_stamp_ns: int, *, wall_now_ns: int | None = None
+) -> int:
+    """Stamp for the HAL's ``~/joint_states`` republish: node now minus the sample's age.
+
+    A HAL's ``JointState.stamp_ns`` is wall-clock (``time.time_ns``) on every real HAL,
+    while the node's clock may be sim time, so the absolute stamp cannot be copied. The
+    sample's AGE can: consumers that pair joint states with other sensors by stamp (the
+    robot self-filter's ``max_joint_state_skew_s``) then see a stale sample as stale,
+    instead of as fresh at every republish. An age that is negative or implausibly large
+    (another clock domain) falls back to ``node_now_ns``, the previous behaviour.
+
+    Args:
+        node_now_ns: The node clock's now, in nanoseconds.
+        sample_stamp_ns: The HAL's ``JointState.stamp_ns``.
+        wall_now_ns: Wall-clock now; ``time.time_ns()`` when omitted.
+
+    Returns:
+        The stamp to publish, in the node's clock domain.
+
+    Example:
+        >>> joint_state_republish_stamp_ns(10_000_000_000, 900, wall_now_ns=1_000)
+        9999999900
+        >>> joint_state_republish_stamp_ns(10_000_000_000, 0, wall_now_ns=1_000)
+        10000000000
+    """
+    import time
+
+    wall = time.time_ns() if wall_now_ns is None else wall_now_ns
+    age = wall - int(sample_stamp_ns)
+    if sample_stamp_ns <= 0 or age < 0 or age > _MAX_CARRIED_SAMPLE_AGE_NS:
+        return node_now_ns
+    return node_now_ns - age
 
 
 def decode_action_chunk(msg: object) -> object | None:
@@ -126,6 +168,8 @@ def decode_action_chunk(msg: object) -> object | None:
     kwargs["confidence"] = 1.0 if confidence_raw is None else float(confidence_raw)
     kwargs["tick_index"] = int(getattr(msg, "tick_index", 0) or 0)
     kwargs["tick_group_size"] = max(int(getattr(msg, "tick_group_size", 1) or 1), 1)
+    # A pre-session IDL (no field) decodes to 0, the legacy "unknown runner".
+    kwargs["runner_session_id"] = int(getattr(msg, "runner_session_id", 0) or 0)
     # ADR-0102. Empty (or a pre-0102 IDL with no such field) decodes to None,
     # which is the whole-vector-in-manifest-order meaning the field replaced.
     slot_joint_names = [str(n) for n in (getattr(msg, "joint_names", None) or [])]
@@ -410,6 +454,8 @@ if _ROS2_AVAILABLE:
             self._safe_action_sub: Any = None
             self._action_applied_pub: Any = None
             self._last_action_applied_tick: int = 0
+            # runner_session_id the ack counter above belongs to (0 = legacy/none).
+            self._last_action_applied_session: int = 0
             self._deferred_action_applied_tick: int = 0
             self._safe_group_tick: int | None = None
             self._safe_group_count: int = 0
@@ -446,7 +492,11 @@ if _ROS2_AVAILABLE:
             # within a single goal lifecycle.
             self._read_tick_idx: int = 0
             self._send_tick_idx: int = 0
-            self.declare_parameter("publish_rate_hz", 30.0)
+            # 0 = the manifest's action_spec.control_freq_hz — the runner reads
+            # state once per tick, so proprio is published once per tick. A
+            # sim-only manifest that declares no rate falls back to 30 Hz with a
+            # warning; a real manifest cannot load without one (issue #303).
+            self.declare_parameter("publish_rate_hz", 0.0)
             self.get_logger().info(f"{node_name} HAL node initialised.")
 
         # ── Subclass hooks ────────────────────────────────────────────────
@@ -715,6 +765,16 @@ if _ROS2_AVAILABLE:
             rate_hz: float = (
                 self.get_parameter("publish_rate_hz").get_parameter_value().double_value
             )
+            if rate_hz <= 0.0:
+                assert self._hal is not None  # invariant: configure built it
+                declared = self._hal.description.control_rate_hz
+                if declared is None:
+                    self.get_logger().warning(
+                        f"robot {self._hal.description.name!r} declares no "
+                        "action_spec.control_freq_hz and no publish_rate_hz param was "
+                        "given; publishing proprio at 30 Hz. Declare the field."
+                    )
+                rate_hz = 30.0 if declared is None else declared
             # For sim-attached HALs, joint_state (and odom, in
             # MobileBaseBridge) is published off a dedicated thread reading the
             # snapshot, NOT a timer on the single executor thread (which is busy
@@ -999,7 +1059,11 @@ if _ROS2_AVAILABLE:
                 )
 
             msg = RosJointState()
-            msg.header.stamp = self.get_clock().now().to_msg()
+            now = self.get_clock().now()
+            msg.header.stamp = type(now)(
+                nanoseconds=joint_state_republish_stamp_ns(now.nanoseconds, state.stamp_ns),
+                clock_type=now.clock_type,
+            ).to_msg()
             msg.name = list(state.name)
             msg.position = list(state.position)
             msg.velocity = list(state.velocity) if state.velocity else []
@@ -1058,14 +1122,26 @@ if _ROS2_AVAILABLE:
                 return
             group_size = int(action.tick_group_size)
             tick = int(action.tick_index)
-            if tick <= 0 or tick <= self._last_action_applied_tick:
+            session = int(action.runner_session_id)
+            # A different, non-legacy runner session is a restarted runner whose
+            # ticks start over; the HAL adopts it only when its first group
+            # commits (``TickWatermark``), so the ack renumbers only on completion
+            # below. A monotonic ack would leave the new runner waiting on tick 1.
+            new_session = session not in (0, self._last_action_applied_session)
+            if session == 0 and tick == 1 and self._last_action_applied_tick > 1:
+                # Legacy (no session id): Entry 036's heuristic — tick 1 is a
+                # restarted runner (``refuse_stale_tick``).
+                self._last_action_applied_tick = 0
+                self._deferred_action_applied_tick = 0
+            if tick <= 0 or (not new_session and tick <= self._last_action_applied_tick):
                 return
             if group_size <= 1:
                 complete = True
             else:
                 committed_tick = getattr(self._hal, "last_committed_tick", None)
                 if committed_tick is not None:
-                    complete = int(committed_tick) == tick
+                    committed_session = getattr(self._hal, "last_committed_session", session)
+                    complete = int(committed_tick) == tick and int(committed_session) == session
                 else:
                     if self._safe_group_tick is None:
                         self._safe_group_tick = tick
@@ -1076,6 +1152,10 @@ if _ROS2_AVAILABLE:
                     complete = self._safe_group_count == group_size
             if not complete:
                 return
+            if new_session:
+                self._last_action_applied_tick = 0
+                self._deferred_action_applied_tick = 0
+            self._last_action_applied_session = session
             if not self._attachment_perception_ready():
                 self._deferred_action_applied_tick = tick
                 self.get_logger().info(
@@ -1815,6 +1895,12 @@ if _ROS2_AVAILABLE:
                 self._hal,
                 self._hal.description,
                 viewer_enabled=self.get_parameter("viewer_enabled")
+                .get_parameter_value()
+                .bool_value,
+                # One attachment authority per graph: with the vision leg on,
+                # the bridge's "nothing attached" heartbeat would fight its
+                # revisions on the same latched topic.
+                attachment_heartbeat=not self.get_parameter("vision_attachment_enabled")
                 .get_parameter_value()
                 .bool_value,
                 camera_rate_hz=self.get_parameter("camera_publish_rate_hz")

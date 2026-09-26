@@ -44,7 +44,8 @@ Parameters:
     cameras (str[]): logical cameras as ``"id=topic"`` entries. Empty = a single
         camera ``primary_camera`` on ``image_topic``.
     primary_camera (str): id of the primary (continuously-detected) camera.
-    image_topic (str): single-camera fallback topic.
+    image_topic (str): single-camera fallback topic; default empty — ``cameras`` or this
+        must name a camera (ADR-0108), else configure raises ``ROSConfigError``.
     output_topic (str): perception topic. Default /openral/perception/objects
     sensor_id (str): sensor name stamped on the metadata. Default "front_depth"
     onnx_path (str): RT-DETR ONNX path (legacy / onnx path).
@@ -196,7 +197,7 @@ def main(args: Any = None) -> None:
             super().__init__("openral_ros_image_detector")
             self.declare_parameter("cameras", [""])
             self.declare_parameter("primary_camera", "default")
-            self.declare_parameter("image_topic", "/openral/cameras/agentview_left/image")
+            self.declare_parameter("image_topic", "")
             self.declare_parameter("output_topic", "/openral/perception/objects")
             self.declare_parameter("sensor_id", "front_depth")
             self.declare_parameter("onnx_path", "")

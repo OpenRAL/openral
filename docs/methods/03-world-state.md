@@ -37,11 +37,11 @@ _WorldStateAggregator — tf2-aware, injectable snapshot producer._
   - `update_base_pose(pose, twist=None) -> None` — Record base pose (and optional twist). (L356)
   - `update_battery(pct) -> None` — Record battery %. (L373)
   - `update_attached_objects(objects: list[AttachedCollisionObject], *, revision=0, stamp_ns=None, place_declaration: PlaceDeclaration | None = None) -> None` — Atomically replaces the complete attached-payload set; duplicate ids or backwards revisions raise `ValueError`. `place_declaration` is replaced in the same atomic step as its payload, and liveness is judged against the stream's own `stamp_ns`, never `clock_fn`, so a sim-clock declaration is never wrongly judged stale by the wall clock. (L397)
-  - `set_error(component, status='error') -> None` — Latch a forced diagnostic. (L455)
-  - `clear_error(component) -> None` — Remove a forced diagnostic. (L471)
-  - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock), emitting OTel span/metrics for staleness and latched errors. `staleness_latched` fires only for a component that has had data before — a never-received one counts as stale but doesn't latch, so bringup stays quiet before the HAL's first publish. (L482)
+  - `set_error(component, status='error') -> None` — Latch a forced diagnostic. (L459)
+  - `clear_error(component) -> None` — Remove a forced diagnostic. (L475)
+  - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock), emitting OTel span/metrics for staleness and latched errors. `staleness_latched` fires only for a component that has had data before — a never-received one counts as stale but doesn't latch, so bringup stays quiet before the HAL's first publish. (L486)
   - `update_detected_objects(objects: list[DetectedObject]) -> None` — Replace the remembered detected-object set (thread-safe); the next `snapshot()` reflects it. Called by the world-state lifecycle node's memory tick. (L382)
-  - `_emit_snapshot_telemetry(span, diag, ages_ms) -> None` — Internal: lift the snapshot diagnostics onto the OTel span + meter instruments. (L618)
+  - `_emit_snapshot_telemetry(span, diag, ages_ms) -> None` — Internal: lift the snapshot diagnostics onto the OTel span + meter instruments. (L622)
 
 ### `python/world_state/src/openral_world_state/spatial_memory.py`
 _SpatialMemory — persistent object-centric scene-graph memory (advisory; never a safety input)._
@@ -122,6 +122,25 @@ _IoU-gated spatial object memory — pure, ROS-free, unit-testable._
 - `class ObjectMemory(*, iou_threshold=0.3, max_misses=1)` — IoU-gated spatial memory with freeze-on-match, in-FOV-guarded eviction, and out-of-FOV retention. Maintains a monotonic `track_id` counter. (L30)
   - `tick(candidates: list[DetectedObject], *, stamp_ns: int, in_fov: Callable[[DetectedObject], bool]) -> list[DetectedObject]` — Run one association+eviction step: greedy highest-confidence matching by same-label + `aabb_iou_3d ≥ iou_threshold` freezes a track (unchanged pose/bbox, bumped confidence); no match mints a new track. An unmatched track in FOV accrues `miss_count` and is evicted at `max_misses`; out of FOV it's retained unchanged. (L64)
 
+### `packages/openral_octomap_bridge/include/openral_octomap_bridge/self_filter.hpp`
+_C++ (Layer 2). The real-camera counterpart of the sim depth renderer's robot transparency: removes the robot's (and a held payload's) own returns from a depth cloud before `octomap_server` inserts it. Poses the kernel's own collision primitives via an FK that mirrors the kernel's operation for operation (a test links the kernel library to pin it; the runtime does not, since Layer 2 may not depend on Layer 5). The node is `src/robot_self_filter.hpp` (`robot_self_filter` executable), wired by `deploy_e2e.launch.py` on the real path only._
+
+- `enum class SelfJointKind` — The kernel's joint codes: `kFixed` / `kRevolute` / `kPrismatic`.
+- `kSelfDopAxes` / `kSelfDopAxis` / `kSelfMaxHullVertices` / `kSelfHullContainmentEpsilonM` / `kSelfGjkMaxIterations` / `kSelfGjkTolerance` — The kernel's `kDopAxes` / `kDopAxis` / `kMaxTightHullVertices` / `kTightContainmentEpsilonM` / `kGjkMaxIterations` / `kGjkTolerance`, pinned equal by `test_self_filter.cpp`.
+- `struct SelfHull` — One box's tight geometry in the box frame: 13 `dop_lo` / `dop_hi` slabs plus the exact hull's `vertices` (empty = DOP only).
+- `self_hull_distance(hull, local, stop_above, stop_at_or_below = -inf) -> double` — Lower bound on the point-to-hull distance (`<= 0` inside): the 26-DOP slab bound, then GJK on the vertices with an exhaustive support scan; exact to 1e-9 on convergence, never an over-report. Stops early once the answer is settled against either threshold. Pinned against the kernel's `dop_cell_lower_bound` + `hull_cell_distance` (`half_side = 0`) on panda_mobile's hulls. Allocation-free.
+- `struct SelfModelParams` — The kernel's `collision_*` parameter arrays, exactly as the launch passes them, including the tight-geometry CSR arrays (`box_hull`, `hull_dop_lo`/`_hi`, `hull_vertex_first`/`_count`, `hull_vertices`).
+- `struct SelfModel` — Flattened tree + every link-attached primitive (capsule, sphere as a zero-length capsule, box) in its link frame, `primitive_hull` (parallel, index into `hulls` or -1) and `hulls`; `link_index(name) -> int`.
+- `self_transform_from_xyz_rpy(x, y, z, roll, pitch, yaw) -> tf2::Transform` — `Rz·Ry·Rx`, the kernel's `transform_from_xyz_rpy` element for element.
+- `build_self_model(params, out, error) -> bool` — All-or-nothing, like the kernel's `load_collision_model`: any shape disagreement, out-of-order parent, unknown joint code, out-of-range primitive link or non-finite/negative dimension refuses the model. Tight geometry is held to the kernel's loader shape checks and `validate_tight_hull` chain (vertices ⊆ DOP ⊆ box, finite, non-inverted, positive extent, <= 320 vertices); where the kernel falls back to the box, the filter refuses the model.
+- `self_forward_kinematics(model, q, n_dof, link_world)` — Link frames in the model root; pinned to 1e-12 against `openral_safety_kernel::forward_kinematics` by `test_self_filter.cpp`.
+- `place_self_primitives(model, link_world, frame_from_root, out, out_hulls = nullptr)` — Every robot primitive placed in the cloud's frame; `out_hulls` receives each one's `SelfHull*` (or null) in parallel.
+- `kMaxSelfFilterPaddingM = 0.10` / `valid_self_filter_padding(padding_m) -> bool` — Cap on the self-filter's `padding_m` (the blind shell around the arm, hazard log Entry 035) and its check: in [0, 0.10], finite. `RobotSelfFilter` logs an ERROR and forwards nothing otherwise. Mirrors `DeployRuntime.robot_self_filter_padding_m <= 0.10` (pinned by `tests/unit/test_perception_caps_mirror.py`).
+- `class SelfMask` — Primitives in the cloud frame with inverse poses and broad-phase bounds precomputed once per cloud; `set(primitives, padding_m, hulls = {})`, `contains(p) -> bool`. A box with a hull: box shell first (cheap reject, hull ⊆ box), then `self_hull_distance`.
+- `struct SelfFilterStats` — `points_in`, `non_finite`, `removed`, `kept` for one call.
+- `filter_xyz_points(data, n_points, point_step, x_offset, y_offset, z_offset, mask, out) -> SelfFilterStats` — Copies every finite point the mask does not contain, whole records, in order.
+- `class RobotSelfFilter` (src/robot_self_filter.hpp) — The node: joint positions from a short history at the cloud's CAPTURE stamp (`max_joint_state_skew_s`, manifest names or their `collision_joint_aliases`), camera pose from tf2 at that stamp, held payloads from `/openral/world_state_fast`. No pose at the stamp drops the cloud (the map goes stale and the kernel fails closed); an unplaceable payload stays in the cloud. Forwards the capture stamp unchanged; logs `self-filter:` every 5 s.
+
 ### `packages/openral_octomap_bridge/include/openral_octomap_bridge/payload_clearing.hpp`
 _C++ (Layer 2). The attached payload's own occupancy leaves the published `OccupancyVoxels` grid here, partitioned against the safety kernel's support-contact witness (ADR-0092 D6); header-documented and gtested against a real `octomap::OcTree`._
 
@@ -136,6 +155,14 @@ _C++ (Layer 2). The attached payload's own occupancy leaves the published `Occup
   - `sweep(present, window_m) -> vector<uint8_t>` — Which of `present` are still inside their attach-transition window, answering and recording in one call. A key seen for the first time opens its window; the window latches closed once the payload has moved more than `window_m` from its anchor, and an absent object is forgotten (so detach restarts the window).
   - `size() -> size_t` — How many windows the last swept grid carried.
 - `attach_transition_padding(steady_padding_m, attach_sweep_padding_m) -> double` — The clearing padding one object gets on one grid: steady padding plus the attach-sweep padding while its window is open, so widened sweep is never tighter than an ordinary frame. Non-finite or negative inputs contribute 0 — a parameter can never narrow the clearing below what the payload's volume explains.
+
+### `packages/openral_octomap_bridge/include/openral_octomap_bridge/octree_freshness.hpp`
+_C++ (Layer 2), header-only. When the bridge may still republish the last octree it received (hazard log Entry 033)._
+
+- `kMaxOctreeAgeS = 2.0` — Cap on `max_octree_age_s`: the kernel's own `world_voxel_deadline_ms` cap. Mirrors `DeployRuntime.world_voxel_deadline_s <= 2.0` (pinned by `tests/unit/test_perception_caps_mirror.py`).
+- `valid_max_octree_age(max_age_s) -> bool` — Is `max_octree_age_s` usable: in (0, `kMaxOctreeAgeS`]; NaN and infinity are not. The node logs an ERROR and publishes nothing otherwise.
+- `octree_is_fresh(age_s, max_age_s) -> bool` — May an octree received `age_s` ago (receipt time, the node's clock — the one the kernel times voxel freshness on) still be published? False for an unusable bound and for a negative or non-finite age, so a map of unknown age is never republished; past the bound the bridge goes silent and the kernel's `world_voxel_deadline_ms` drops with `DROP_VOXEL_UNAVAILABLE`.
+- `OccupancyVoxels.source_stamp` (set by the bridge node in `src/octomap_voxel_bridge.hpp`) — The octree's own stamp, which `octomap_server` takes from the capture stamp of the cloud it inserted, carried into every grid built from it. `header.stamp` is production time (fresh on every republish) and cannot say how old the WORLD is; this can, and the kernel's `world_voxel_data_age_budget_ms` budgets it (an unset value reads as stale). The bridge logs `world_voxels data age N ms at publish` every 5 s.
 
 ### `packages/openral_octomap_bridge/include/openral_octomap_bridge/octree_to_grid.hpp`
 _C++ (Layer 2). OctoMap → dense base-frame grid lowering, ROS-graph-free._

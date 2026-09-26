@@ -278,17 +278,20 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<std::vector<std::string>>("collision_link_names",
                                                     std::vector<std::string>{});
 
-  // World phase — world-obstacle collision check (opt-in). Obstacles
-  // arrive on /openral/world_collision in the robot base frame.
-  this->declare_parameter<bool>("world_collision_enabled", false);
-  this->declare_parameter<double>("world_collision_margin_m", 0.0);
-  this->declare_parameter<double>("world_collision_deadline_ms", 500.0);
-  this->declare_parameter<std::int64_t>("world_collision_max_primitives", 64);
-
   // Voxel phase — dense occupancy-grid world check (octomap path).
   this->declare_parameter<bool>("world_voxel_enabled", false);
   this->declare_parameter<double>("world_voxel_margin_m", 0.0);
   this->declare_parameter<double>("world_voxel_deadline_ms", 500.0);
+  // How old the sensor data behind the grid may be at check time, from the
+  // grid's `source_stamp` (the capture stamp of the newest cloud in the
+  // octree). The deadline above is measured from receipt and cannot see the
+  // pipeline's latency; this one can. A grid with no `source_stamp` is stale.
+  // There is no "off": with the world check enabled, configure refuses a
+  // budget outside (0, kMaxWorldVoxelDataAgeBudgetMs] and a deadline outside
+  // (0, kMaxWorldVoxelDeadlineMs], so a node launched directly (not through
+  // `openral deploy`) is held to DeployRuntime's caps too.
+  this->declare_parameter<double>("world_voxel_data_age_budget_ms",
+                                  kDefaultWorldVoxelDataAgeBudgetMs);
   // Sized by the ROBOT, not by taste: must cover wherever the kernel-checked
   // geometry can reach — a ball on a lattice-aligned grid (axes are the
   // map's, turn relative to base, so a base-aligned box isn't invariant).
@@ -523,7 +526,7 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     }
   }
   const bool seed_ready = !collision_joint_names_.empty() && !collision_fk_dofs_.empty();
-  if (self_collision_enabled_ || world_collision_enabled_ || world_voxel_enabled_) {
+  if (self_collision_enabled_ || world_voxel_enabled_) {
     RCLCPP_INFO(this->get_logger(),
                 "velocity+cartesian collision: %s (joint_names=%zu, fk_dofs=%zu, dt=%gs, "
                 "state_deadline=%gs)",
@@ -556,8 +559,7 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
 
   // Subscribe /joint_states only when a geometric check is enabled
   // and the joint-name map is plumbed (otherwise there is nothing to seed).
-  if ((self_collision_enabled_ || world_collision_enabled_ || world_voxel_enabled_ ||
-       attached_collision_enabled_) &&
+  if ((self_collision_enabled_ || world_voxel_enabled_ || attached_collision_enabled_) &&
       !collision_joint_names_.empty()) {
     rclcpp::QoS js_qos(rclcpp::KeepLast(1));
     js_qos.best_effort();
@@ -567,14 +569,6 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
         std::bind(&SafetyKernelLifecycleNode::on_joint_state, this, std::placeholders::_1));
   }
 
-  if (world_collision_enabled_) {
-    rclcpp::QoS world_qos(rclcpp::KeepLast(1));
-    world_qos.reliable();
-    world_qos.durability_volatile();
-    world_sub_ = this->create_subscription<openral_msgs::msg::WorldCollision>(
-        "/openral/world_collision", world_qos,
-        std::bind(&SafetyKernelLifecycleNode::on_world_collision, this, std::placeholders::_1));
-  }
   if (world_voxel_enabled_) {
     rclcpp::QoS voxel_qos(rclcpp::KeepLast(1));
     voxel_qos.reliable();
@@ -653,7 +647,6 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   estop_reset_srv_.reset();
   candidate_sub_.reset();
   estop_sub_.reset();
-  world_sub_.reset();
   voxel_sub_.reset();
   world_state_sub_.reset();
   joint_state_sub_.reset();
@@ -761,8 +754,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
     // Geometric collision over the chunk horizon (self + world).
     // Runs only for absolute joint-position chunks (the rows are full joint
     // configs FK can place). Allocation-free: FK reuses the pre-sized scratch.
-    const bool geom_enabled = self_collision_enabled_ || world_collision_enabled_ ||
-                              world_voxel_enabled_ || attached_collision_enabled_;
+    const bool geom_enabled =
+        self_collision_enabled_ || world_voxel_enabled_ || attached_collision_enabled_;
     const auto mode = static_cast<ControlMode>(view.control_mode);
     // Smallest clearance ABOVE its own gate margin anywhere in this chunk's
     // sweep (#188). Slack, not raw distance: every check carries a different
@@ -827,16 +820,6 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         unavailable("state_unavailable", openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE);
         return;
       }
-      if (world_collision_enabled_) {
-        const bool fresh = world_received_ && !world_overflow_ &&
-                           (this->now() - world_stamp_).seconds() <= world_collision_deadline_s_;
-        if (!fresh) {
-          unavailable(world_overflow_ ? "world_overflow" : "world_unavailable",
-                      world_overflow_ ? openral_msgs::msg::SafetyStatus::DROP_WORLD_OVERFLOW
-                                      : openral_msgs::msg::SafetyStatus::DROP_WORLD_UNAVAILABLE);
-          return;
-        }
-      }
       if (world_voxel_enabled_) {
         const bool fresh = voxel_received_ && !voxel_overflow_ &&
                            (this->now() - voxel_stamp_).seconds() <= world_voxel_deadline_s_;
@@ -844,6 +827,23 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           unavailable(voxel_overflow_ ? "voxel_overflow" : "voxel_unavailable",
                       voxel_overflow_ ? openral_msgs::msg::SafetyStatus::DROP_VOXEL_OVERFLOW
                                       : openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE);
+          return;
+        }
+        // Data age: how old the WORLD in the grid is, not how long ago the grid
+        // arrived. A grid received 10 ms ago can describe the cell as it was a
+        // second ago; the receipt deadline above is blind to that.
+        if (voxel_source_known_) {
+          const double data_age_ms = (this->now() - voxel_source_stamp_).seconds() * 1e3;
+          span->SetAttribute("safety.world_voxel_data_age_ms", data_age_ms);
+          if (data_age_ms > world_voxel_data_age_budget_s_ * 1e3) {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
+                                 "safety.voxel_stale data_age_ms=%.0f budget_ms=%.0f", data_age_ms,
+                                 world_voxel_data_age_budget_s_ * 1e3);
+            unavailable("voxel_stale", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE);
+            return;
+          }
+        } else {
+          unavailable("voxel_stale", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE);
           return;
         }
       }
@@ -874,13 +874,6 @@ void SafetyKernelLifecycleNode::on_candidate_action(
           return collision_link_names_[static_cast<std::size_t>(idx)];
         }
         return std::string("link_") + std::to_string(idx);
-      };
-      const auto world_label = [this](int idx) -> std::string {
-        if (idx >= 0 && static_cast<std::size_t>(idx) < world_labels_.size() &&
-            !world_labels_[static_cast<std::size_t>(idx)].empty()) {
-          return world_labels_[static_cast<std::size_t>(idx)];
-        }
-        return std::string("world_") + std::to_string(idx);
       };
       const auto attached_label = [this](int idx) -> std::string {
         if (idx >= 0 && static_cast<std::size_t>(idx) < attached_labels_.size() &&
@@ -1052,15 +1045,6 @@ void SafetyKernelLifecycleNode::on_candidate_action(
             return true;
           }
         }
-        if (world_collision_enabled_) {
-          const auto hit = check_world_collision(collision_model_, collision_scratch_, world_model_,
-                                                 world_collision_margin_m_ + extra_margin);
-          note_slack(hit, world_collision_margin_m_ + extra_margin);
-          if (hit.hit) {
-            report("world", link_name(hit.link_a), world_label(hit.link_b), step, hit);
-            return true;
-          }
-        }
         if (world_voxel_enabled_) {
           // The band is handed in as extra SCAN width, not extra margin: a
           // cell still trips at the margin, but a cell that is merely inside
@@ -1081,20 +1065,11 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         }
         if (attached_collision_enabled_ && attached_model_.n_objects > 0) {
           // Grasped payloads (ADR-0092): check the attach-link-composed payload
-          // geometry against world obstacles, occupancy voxels, and the robot's
-          // own links (except the attach link + explicit touch links). The
+          // geometry against occupancy voxels and the robot's own links
+          // (except the attach link + explicit touch links). The
           // collision_kind stays "self"/"world" to satisfy CollisionEvidence;
           // the attach:<object_id> label marks it as a payload hit.
           const double amargin = attached_collision_margin_m_ + extra_margin;
-          if (world_collision_enabled_) {
-            const auto hit = check_attached_world_collision(
-                collision_model_, attached_model_, collision_scratch_, world_model_, amargin);
-            note_slack(hit, amargin);
-            if (hit.hit) {
-              report("world", attached_label(hit.link_a), world_label(hit.link_b), step, hit);
-              return true;
-            }
-          }
           // Legacy contact phase: without an attestation the kernel still can
           // not tell a legitimate support contact from a real one, so it keeps
           // skipping the predicted Cartesian steps. With a live witness it does
@@ -1654,24 +1629,34 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   collision_required_dof_ = 0;
   self_collision_enabled_ = this->get_parameter("self_collision_enabled").as_bool();
 
-  // World-collision config (shares the robot collision model — the same link
-  // capsules are checked against world obstacles).
-  world_collision_enabled_ = this->get_parameter("world_collision_enabled").as_bool();
-  world_collision_margin_m_ = this->get_parameter("world_collision_margin_m").as_double();
-  world_collision_deadline_s_ =
-      this->get_parameter("world_collision_deadline_ms").as_double() / 1000.0;
-  world_collision_max_primitives_ =
-      static_cast<std::size_t>(this->get_parameter("world_collision_max_primitives").as_int());
-  world_received_ = false;
-  world_overflow_ = false;
-  world_model_.capsules.clear();
-  world_labels_.clear();
-
   // Voxel (dense occupancy grid) config. Pre-size the occupancy buffer once so
   // the subscription callback never reallocates and the view pointer is stable.
   world_voxel_enabled_ = this->get_parameter("world_voxel_enabled").as_bool();
   world_voxel_margin_m_ = this->get_parameter("world_voxel_margin_m").as_double();
-  world_voxel_deadline_s_ = this->get_parameter("world_voxel_deadline_ms").as_double() / 1000.0;
+  const double deadline_ms = this->get_parameter("world_voxel_deadline_ms").as_double();
+  const double data_age_budget_ms =
+      this->get_parameter("world_voxel_data_age_budget_ms").as_double();
+  world_voxel_deadline_s_ = deadline_ms / 1000.0;
+  world_voxel_data_age_budget_s_ = data_age_budget_ms / 1000.0;
+  // Hard caps, mirroring DeployRuntime (hazard log Entries 033/034). Refused,
+  // never clamped: a cap exceeded here means a launch path bypassed the
+  // schema, and the operator must see it rather than run on a guess.
+  if (world_voxel_enabled_) {
+    if (!(deadline_ms > 0.0 && deadline_ms <= kMaxWorldVoxelDeadlineMs)) {
+      error = "world_voxel_deadline_ms=" + std::to_string(deadline_ms) + " is outside (0, " +
+              std::to_string(kMaxWorldVoxelDeadlineMs) +
+              "]: the kernel would check chunks against a voxel grid that old";
+      return false;
+    }
+    if (!(data_age_budget_ms > 0.0 && data_age_budget_ms <= kMaxWorldVoxelDataAgeBudgetMs)) {
+      error = "world_voxel_data_age_budget_ms=" + std::to_string(data_age_budget_ms) +
+              " is outside (0, " + std::to_string(kMaxWorldVoxelDataAgeBudgetMs) +
+              "]: the kernel would certify chunks against a world that old (0 no longer "
+              "disables the check)";
+      return false;
+    }
+  }
+  voxel_source_known_ = false;
   world_voxel_max_cells_ =
       static_cast<std::size_t>(this->get_parameter("world_voxel_max_cells").as_int());
   voxel_received_ = false;
@@ -1783,8 +1768,7 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
 
   // The robot collision model is needed for any geometric check; skip loading
   // only when all of them are disabled.
-  if (!self_collision_enabled_ && !world_collision_enabled_ && !world_voxel_enabled_ &&
-      !attached_collision_enabled_) {
+  if (!self_collision_enabled_ && !world_voxel_enabled_ && !attached_collision_enabled_) {
     return true;
   }
 
@@ -1997,39 +1981,6 @@ void SafetyKernelLifecycleNode::publish_collision_failure(
   failure_pub_->publish(trigger);
 }
 
-void SafetyKernelLifecycleNode::on_world_collision(
-    const openral_msgs::msg::WorldCollision::SharedPtr msg) {
-  if (msg == nullptr) {
-    return;
-  }
-  const std::size_t n = msg->radius.size();
-  // Shape + capacity validation. Over-capacity or malformed → fail closed:
-  // mark the world invalid so the next chunk is dropped until a good one lands.
-  if (msg->half_length.size() != n || msg->origin_xyzrpy.size() != 6 * n ||
-      n > world_collision_max_primitives_) {
-    world_overflow_ = true;
-    world_received_ = true;
-    world_stamp_ = this->now();
-    return;
-  }
-  world_overflow_ = false;
-  world_model_.capsules.resize(n);
-  world_labels_.assign(n, std::string{});
-  for (std::size_t i = 0; i < n; ++i) {
-    world_model_.capsules[i].radius = msg->radius[i];
-    world_model_.capsules[i].half_length = msg->half_length[i];
-    world_model_.capsules[i].origin =
-        transform_from_xyz_rpy(msg->origin_xyzrpy[6 * i + 0], msg->origin_xyzrpy[6 * i + 1],
-                               msg->origin_xyzrpy[6 * i + 2], msg->origin_xyzrpy[6 * i + 3],
-                               msg->origin_xyzrpy[6 * i + 4], msg->origin_xyzrpy[6 * i + 5]);
-    if (i < msg->object_id.size()) {
-      world_labels_[i] = msg->object_id[i];
-    }
-  }
-  world_received_ = true;
-  world_stamp_ = this->now();
-}
-
 void SafetyKernelLifecycleNode::on_world_voxels(
     const openral_msgs::msg::OccupancyVoxels::SharedPtr msg) {
   if (msg == nullptr) {
@@ -2074,6 +2025,11 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   }
   voxel_received_ = true;
   voxel_stamp_ = this->now();
+  // Zero = the producer said nothing about when its world was captured.
+  voxel_source_known_ = msg->source_stamp.sec != 0 || msg->source_stamp.nanosec != 0;
+  if (voxel_source_known_) {
+    voxel_source_stamp_ = rclcpp::Time(msg->source_stamp, this->get_clock()->get_clock_type());
+  }
 }
 
 void SafetyKernelLifecycleNode::on_world_state(

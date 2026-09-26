@@ -134,9 +134,8 @@ class FrankaPandaRealHAL(RosControlHAL):
             Production use injects the lifecycle node's subscriber callback;
             tests inject ``SimTransport.state``.
         staleness_limit_s: Maximum age of a ``read_state()`` reading before
-            ``ROSPerceptionStale`` is raised.  Defaults to ``0.2 s``
-            (tighter than the ``RosControlHAL`` default because the FCI
-            feedback lands at 1 kHz).
+            ``ROSPerceptionStale`` is raised. ``None`` (default) reads the manifest's
+            ``safety.joint_state_staleness_limit_s``.
         description: The loaded ``robots/<id>/robot.yaml`` manifest
             (threaded by ``build_hal``). ``None`` falls back to the
             in-code ``FRANKA_PANDA_REAL_DESCRIPTION`` mirror.
@@ -173,7 +172,7 @@ class FrankaPandaRealHAL(RosControlHAL):
         error_recovery_action: str = _DEFAULT_FRANKA_ERROR_RECOVERY,
         publish_fn: _PublishFn | None = None,
         state_fn: _StateFn | None = None,
-        staleness_limit_s: float = 0.2,
+        staleness_limit_s: float | None = None,
         description: RobotDescription | None = None,
     ) -> None:
         """Initialise the adapter; no TCP connection is opened until ``connect()``."""

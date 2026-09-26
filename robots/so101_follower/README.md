@@ -90,9 +90,12 @@ just hil-so101       # tests/hil/test_so101_serial_live.py
 resolves the scene, then checks the inputs a real run needs and otherwise
 discovers late — a declared serial port, a calibration file that actually
 exists (the "has no calibration registered" failure), and a `deploy_binding`
-per scene sensor. Camera paths are host-specific; a stale one is reported as a
-warning, and retuning the scene against `ls -l /dev/v4l/by-id /dev/v4l/by-path`
-is the fix. Never bind a raw `/dev/videoN` — USB enumeration order renumbers
+per camera. The `top` / `wrist` bindings are per host, in
+`units/<unit>.yaml` (the bench laptop's is `units/bench_laptop.yaml`, which
+`so101_bench.yaml` selects with `robot_unit`; `OPENRAL_ROBOT_UNIT` overrides it). A
+second SO-101 host adds its own unit file instead of editing `robot.yaml`. A stale
+path is reported as a warning, and retuning the unit file against
+`ls -l /dev/v4l/by-id /dev/v4l/by-path` is the fix. Never bind a raw `/dev/videoN` — USB enumeration order renumbers
 them on replug.
 
 `just hil-so101` is the HIL gate. It opens the real serial bus, runs the

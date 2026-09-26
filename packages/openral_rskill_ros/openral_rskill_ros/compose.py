@@ -20,14 +20,16 @@ entry point or a test ``trigger_configure`` sequence) configures + activates aft
 from __future__ import annotations
 
 import pathlib
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import structlog
 from openral_core import RobotDescription
 from openral_world_state import WorldStateAggregator
 
 if TYPE_CHECKING:
+    from openral_core import SensorOverlay, SensorSpec
     from openral_world_state_ros.lifecycle_node import _WorldStateLifecycleNode
 
     from openral_rskill_ros.rskill_runner_node import RskillRunnerNode, SkillResolver
@@ -78,6 +80,80 @@ class ComposedRuntime:
     caller must invoke ``.destroy()`` on teardown so the bag is finalized."""
 
 
+log = structlog.get_logger(__name__)
+
+
+def start_world_state_executor(
+    world_state_node: Any, *, on_failure: Callable[[BaseException], None] | None = None
+) -> Callable[[], None] | None:
+    """Spin ``world_state_node`` on rclpy's C++ ``EventsExecutor`` in a daemon thread.
+
+    The Python ``MultiThreadedExecutor`` rebuilds its wait set in Python on
+    every wake-up, walking every entity of every node it holds. With the
+    world-state node's ~40 topics, TF and lifecycle services on it, that loop
+    alone held 64 % of the deploy runtime's GIL on an AGX Orin — starving the
+    in-process π0.5 inference thread (1.6 s idle, ~300 s live). The events
+    executor is event-driven in C++ and only enters Python to run the
+    callbacks themselves; the world-state callbacks are all short, so a single
+    thread is enough. The skill runner stays on the multi-threaded executor,
+    whose reentrant group keeps ``execute_rskill``'s accept/cancel/result live
+    while a goal blocks a worker.
+
+    A world-state callback that raises ends ``spin`` on this thread, and a
+    daemon thread has nothing above it: ingestion would stop while the skill
+    runner kept executing on stale world state. So an exception that is not
+    the stop callable's own shutdown is logged as ``world_state.executor_died``
+    and handed to ``on_failure`` (the runtime uses it to stop its own executor
+    and exit non-zero); without a handler it is re-raised on this thread.
+
+    Args:
+        world_state_node: The node to spin.
+        on_failure: Called with the exception that ended ``spin``, unless the
+            stop callable asked for the shutdown.
+
+    Returns:
+        A stop callable (shuts the executor down and joins the thread), or
+        ``None`` when this rclpy has no ``rclpy.experimental.EventsExecutor``
+        (pre-Jazzy 7.1) — the caller then adds the node to its own executor.
+    """
+    try:
+        from rclpy.experimental import EventsExecutor
+    except ImportError:
+        return None
+    import threading
+
+    from rclpy.executors import ExternalShutdownException
+
+    executor = EventsExecutor()
+    executor.add_node(world_state_node)
+    stopping = threading.Event()
+
+    def _spin() -> None:
+        try:
+            executor.spin()
+        except ExternalShutdownException:
+            # Ctrl-C / rclpy.shutdown() from outside: the context went away
+            # before `_stop` ran. A clean exit, not a dead executor.
+            return
+        except Exception as exc:  # reason: the thread's boundary; nothing above it
+            if stopping.is_set():
+                return
+            log.error("world_state.executor_died", kind=type(exc).__name__, error=str(exc))
+            if on_failure is None:
+                raise
+            on_failure(exc)
+
+    thread = threading.Thread(target=_spin, name="world-state-events", daemon=True)
+    thread.start()
+
+    def _stop() -> None:
+        stopping.set()
+        executor.shutdown()
+        thread.join(timeout=5.0)
+
+    return _stop
+
+
 def compose_runtime(
     robot_yaml: str | pathlib.Path,
     *,
@@ -91,6 +167,8 @@ def compose_runtime(
     dataset_license: str = "CC-BY-4.0",
     dataset_fps: float | None = None,
     image_staleness_limit_s: float | None = None,
+    deploy_sensors: Sequence[SensorSpec] = (),
+    sensor_overlays: Sequence[SensorOverlay] = (),
 ) -> ComposedRuntime:
     """Build the composed world_state + skill_runner runtime for any robot.
 
@@ -134,6 +212,19 @@ def compose_runtime(
             ``action_spec.control_freq_hz`` or 30.0.
         image_staleness_limit_s: Camera-specific freshness window for the shared world-state
             aggregator. ``None`` keeps its general default.
+        deploy_sensors: A ``DeployScene``'s ``sensors:`` block — the cell's workcell
+            cameras, appended to the robot manifest's sensors (``merge_deploy_sensors``,
+            which refuses an entry reusing a manifest sensor's name) before anything is
+            built from the description. A workcell camera may carry the
+            ``vla_feature_key`` naming a checkpoint's view, so every consumer of this one
+            description (the runner's camera slots, the dataset recorder, world state) must
+            see it. Merging only for the sensor readers fed the policy a camera it then
+            filed under the manifest's key, and lerobot replaced the view it was trained on
+            with a masked blank.
+        sensor_overlays: This host's ``RobotUnit`` overlays (``resolve_sensor_overlays``),
+            laid over the manifest's sensors (``apply_sensor_overlays``) before the scene's
+            are appended, so the readers, world state and runner all see the unit's binding
+            and calibration.
 
     Returns:
         A ``ComposedRuntime`` bundle. The caller attaches both nodes to a single
@@ -148,6 +239,16 @@ def compose_runtime(
     from openral_rskill_ros.rskill_runner_node import RskillRunnerNode
 
     description = RobotDescription.from_yaml(str(robot_yaml))
+    if deploy_sensors or sensor_overlays:
+        from openral_core import apply_sensor_overlays, merge_deploy_sensors
+
+        description = description.model_copy(
+            update={
+                "sensors": merge_deploy_sensors(
+                    apply_sensor_overlays(description.sensors, sensor_overlays), deploy_sensors
+                )
+            }
+        )
     aggregator = WorldStateAggregator(
         description,
         image_staleness_limit_s=image_staleness_limit_s,

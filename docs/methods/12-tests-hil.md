@@ -32,6 +32,29 @@ it is a fact about the bench and not about the code. The round-trip is
 read-only by construction: it queries motor state and never calls
 `enable_all()`, so it cannot energise or move the arm.
 
+Above that sits the full-graph gate, `tests/hil/test_openarm_deploy.py`,
+which attaches to a running `openral deploy run` and asserts only
+observations. On this robot the deploy graph cannot be started by a test:
+`real_bringup.launch.py` starts `openarm_bringup`, whose
+`OpenArmHW::on_activate` calls `enable_all()` then `return_to_zero()` — an
+unramped MIT position command to 0.0 on all seven joints per side, issued
+before the current pose is sampled. Bringing the cell up is therefore an
+attended operator act, and the test's whole job is to prove what the operator
+brought up.
+
+### `tests/hil/_can_gate.py`
+_The CAN-link skip gate every OpenArm HIL file shares._
+
+- `_can_links_up(can_links) -> bool` — True when every named SocketCAN interface exists and is up, via `openral_cli.autodetect.enumerate_can_interfaces`. (L15)
+- Lives in a `_`-prefixed module rather than `conftest.py` **because a conftest is not importable as a module**: pytest registers it under its own private name, so `from tests.hil.conftest import ...` raises `ModuleNotFoundError` on the lab hosts these tests run on. Found the hard way on `qorin1`.
+
+### `tests/hil/test_openarm_deploy.py`
+_Full-graph, non-motion gate for the real bimanual deploy. `[self-hosted, lab-openarm]`._
+
+- Modelled on `test_galaxea_a1_deploy.py`, but every assertion is an observation — it publishes no candidate action at any point. That absence is itself an assertion: any `/openral/safe_action` on the wire would mean the kernel is a source of commands rather than a filter on them.
+- Seven checks against one module-scoped `rclpy` node: graph observable; HAL connected with both buses reported up (`preflight_can_links` renders a dead bus as `"<name> (DOWN)"`, so the bare name is the test); `controller_manager` reporting all four `JointTrajectoryController`s **and** `joint_state_broadcaster` `active`; `/joint_states` carrying all sixteen ros2_control joints above a 20 Hz floor; the TF tree resolving `world` to both `*_ee_base_link`; the C++ kernel ACTIVE with `envelope_loaded=true` at 16 DoF; and `/openral/world_voxels` arriving with a unit-quaternion lattice and a non-zero occupied count.
+- The last one is the point of `scenes/deploy/openarm_bench.yaml`. `head_zed` auto-enables the octomap leg, but `octomap_cloud_topic` keeps its sim-only launch default (`/openral/cameras/front_depth/points`) unless the scene pins it — leaving the octree, `world_voxels` and the dashboard card empty forever while every node reports healthy.
+- Gated on `OPENARM_DEPLOY_HIL=1` **and** both CAN links up, so a stray `pytest tests/hil/` never attaches to a live cell. Run it via `just hil-openarm-deploy`, which also sets `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` — a sourced ROS overlay drags system Python's `launch_testing` plugin into the workspace's pytest, where it is incompatible.
 The SO-101 bench arm has no `ros2_control` bridge either — it is a serial
 robot (`SO100FollowerHAL` over a Feetech `scservo_sdk` bus, shared verbatim
 with the SO-100), so its gate (`tests/hil/test_so101_serial_live.py`) runs on
@@ -66,7 +89,7 @@ _Single-controller bridge. Used by UR5e, UR10e, Franka Panda, Sawyer._
 ### `tests/hil/_openarm_ros_transport.py`
 _4-way fan-out bridge for the bimanual OpenArm v2 HAL — the only thing between `OpenArmRealHAL` and a physical arm._
 
-- `OpenArmHILTransport(node, joint_names, *, command_topics, joint_state_topic, time_from_start_s=0.8)` — Four `JointTrajectory` publishers plus one aggregated `JointState` subscriber. Simpler than the ALOHA bridge since ADR-0102 puts `joint_names` in the message, so the transport forwards them rather than keeping a second, driftable slice table. Build it from `OpenArmRealHAL.ros2_control_joint_names()` — the URDF namespace `/joint_states` is keyed by, not the manifest's. (L54)
+- `OpenArmHILTransport(node, joint_names, *, command_topics, joint_state_topic, time_from_start_s=0.8)` — Four `JointTrajectory` publishers plus one aggregated `JointState` subscriber. Simpler than the ALOHA bridge since ADR-0102 puts `joint_names` in the message, so the transport forwards them rather than keeping a second, driftable slice table. Build it from `OpenArmRealHAL.ros2_control_joint_names()` — the URDF namespace `/joint_states` is keyed by, not the manifest's. (L55)
 - `time_from_start_s` is a constructor argument, unlike the 100 ms the production transports hardcode. A `JointTrajectoryController` given an absolute target and a 100 ms deadline moves at `(target - current) / 0.1s`, so the rate is set by how wrong the command is. A longer window bounds it by construction; a test that cares about production timing passes 0.1.
 - `publish(topic, msg)` dispatches by topic match and raises on an unknown topic or a name/value width mismatch — silently dropping a command is the ADR-0102 failure mode itself. `state()` zero-fills joints it has never heard from; `missing_joints()` / `wait_for_every_joint()` are what let a caller tell that apart from a real pose.
 - Its own tests (`tests/hil/test_openarm_ros_transport.py`) need only a ROS install, not the cell: real publishers and real messages over DDS on an isolated domain with LOCALHOST discovery, since a stray graph could otherwise reach a live OpenArm on another host.
@@ -101,4 +124,3 @@ _One attended test per real HAL, last in its file (`test_zz_estop_*`): it stops 
 - `tests/hil/test_sawyer.py::TestSawyerDownstreamEStop` — Same seam; asserts `sawyer_arm_controller` `inactive`, `vendor_stop == /robot/set_super_stop`, and — when `intera_core_msgs` is installed — `/robot/state.stopped` turns true.
 - `tests/hil/test_aloha.py::TestAlohaDownstreamEStop` — Attaches the production `InterbotixXSTransport`; asserts every arm's `torque_enable(false)` was acknowledged (`controller_states` all `torque_off`). Both ViperX arms go limp, so the bench must be clear.
 - The SO-101 (`tests/hil/test_so101_serial_live.py::test_estop_disconnects_the_live_motor_bus`) and Galaxea A1 (`tests/hil/test_galaxea_a1*.py`) gates already end by driving their own downstream stop; the OpenArm's is proven off-rig in `tests/integration/test_real_hal_estop_ros2_control_live.py` (its CAN gate does not command motion).
-

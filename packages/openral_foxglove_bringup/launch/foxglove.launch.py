@@ -130,8 +130,8 @@ def generate_launch_description() -> LaunchDescription:
             default_value="",
             description=(
                 "Comma- or space-separated list of raw sensor_msgs/Image topics to "
-                "compress when ``republish_compressed`` is true. Example: "
-                '"/openral/cameras/base/image /openral/cameras/left_wrist/image". '
+                "compress when ``republish_compressed`` is true, e.g. the "
+                "openral_core.camera_topic(<name>) of each camera. "
                 "Each topic gains a /compressed sibling republished by "
                 "image_transport."
             ),

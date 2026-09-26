@@ -51,6 +51,7 @@ from openral_core.schemas import (
 )
 
 from openral_hal._base import HALBase
+from openral_hal._slot_group import SlotGroupStager, compose_slot_group_action
 
 if TYPE_CHECKING:
     import mujoco
@@ -261,6 +262,11 @@ class MujocoArmHAL(HALBase):
         self._render_failed: bool = False
         self._mjcf_cameras: set[str] = set()
         self._render_missing_warned: set[str] = set()
+        # ADR-0102 slot groups: a slot-dispatched tick arrives as one typed
+        # action per slot (arm JOINT_POSITION slots, GRIPPER_POSITION slots),
+        # none a whole-robot command. They are staged here and applied as ONE
+        # step once the tick is complete, for every twin in this hierarchy.
+        self._slot_group = SlotGroupStager()
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -341,7 +347,12 @@ class MujocoArmHAL(HALBase):
         )
 
     def disconnect(self) -> None:
-        """Release the MuJoCo model + renderer.  Idempotent."""
+        """Release the MuJoCo model + renderer; drop any staged slot group.  Idempotent.
+
+        Also restarts slot-group tick numbering (``last_committed_tick`` -> 0),
+        including after an ``estop`` (which already released the model).
+        """
+        self._slot_group.reset()
         if not self._connected:
             return
         log.info("hal.disconnect", robot=self.description.name)
@@ -569,19 +580,54 @@ class MujocoArmHAL(HALBase):
             stamp_ns=time.time_ns(),
         )
 
+    @property
+    def last_committed_tick(self) -> int:
+        """Inference tick of the last slot group applied to MuJoCo (0 = none).
+
+        Read by the HAL lifecycle node to acknowledge a grouped tick on
+        ``/openral/action_applied`` only once every slot has landed.
+        """
+        return self._slot_group.last_committed_tick
+
+    @property
+    def last_committed_session(self) -> int:
+        """``runner_session_id`` of ``last_committed_tick`` (0 = none/legacy)."""
+        return self._slot_group.last_committed_session
+
     def send_action(self, action: Action) -> None:
         """Forward the **last** waypoint of *action* to MuJoCo and step.
+
+        A slot action (``tick_group_size > 1``, ADR-0102) is staged until its
+        tick is complete, then composed by name (joints via
+        ``Action.joint_names``, grippers via ``ee_name``) into one full-dof
+        ``JOINT_POSITION`` step, so one arm / the gripper never moves on a new
+        chunk while the rest holds a stale one. A slot of a tick at or below
+        ``last_committed_tick`` of the same runner session is refused as a replay;
+        a new runner session is adopted when its first group commits and the
+        old one is refused from then on (``TickWatermark``).
 
         Args:
             action: ``Action`` produced by a Skill.  Must declare a
                 ``control_mode`` in ``description.capabilities.supported_control_modes``.
 
         Raises:
-            ROSRuntimeError: If not connected.
-            ROSConfigError: If the action's control mode is unsupported, or if
-                the joint dimensions do not match the robot.
+            ROSRuntimeError: If not connected, the slot group is stale or
+                incomplete (see ``SlotGroupStager.stage``).
+            ROSConfigError: If the action's control mode is unsupported, if
+                the joint dimensions do not match the robot, or the slot group
+                cannot be composed (see ``compose_slot_group``).
         """
         self._require_connected("send_action")
+        group: list[Action] | None = None
+        if int(action.tick_group_size) > 1:
+            group = self._slot_group.stage(action)
+            if group is None:
+                return
+            action = compose_slot_group_action(group, self._joint_names)
+        else:
+            # Ungrouped ticked actions (starting-pose ramp, approach) share the
+            # watermark, so a restarted runner's renumbering is seen here too.
+            self._slot_group.admit(action)
         self._validate_action(action)
 
         assert self._data is not None and self._model is not None
@@ -601,12 +647,18 @@ class MujocoArmHAL(HALBase):
         self._last_state_time = time.monotonic()
         self._last_action_ns = time.monotonic_ns()
 
+        if group is not None:
+            self._slot_group.commit(group)
+        else:
+            self._slot_group.commit_tick(action)
+
         log.debug(
             "hal.send_action",
             robot=self.description.name,
             control_mode=action.control_mode,
             horizon=action.horizon,
             settle_steps=self._settle_steps,
+            slots=len(group) if group is not None else 1,
         )
 
     # ── Pose reset ─────────────────────────────────────────────────────────────
@@ -691,6 +743,9 @@ class MujocoArmHAL(HALBase):
             ROSEStopRequested: Always.
         """
         log.critical("hal.estop", robot=self.description.name)
+        # The survivors of a half-staged tick must never be committed later;
+        # the committed watermark stays (a stop is not a renumbering).
+        self._slot_group.discard()
         if self._data is not None:
             self._data.ctrl[:] = 0.0
         self._model = None

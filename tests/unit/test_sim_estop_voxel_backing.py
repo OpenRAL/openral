@@ -1043,20 +1043,41 @@ def test_payload_slip_is_the_distance_between_the_kernels_model_and_the_body() -
 
 
 def test_collision_model_slop_skips_capsule_links_instead_of_crashing() -> None:
-    """A manifest whose collision model is capsules/spheres (the OpenArm) has no OBB
-    corners to budget: those links land in ``unresolved_links`` (no budget, the
-    conservative reading) and the E-stop ground-truth snapshot keeps working.
+    """A capsule/sphere link (the OpenArm's link2 and link6) has no OBB corners to
+    budget: it lands in ``unresolved_links`` (no budget, the conservative reading)
+    while the same manifest's box links still get one, and the E-stop
+    ground-truth snapshot keeps working on a mixed model.
 
     Latent until the HAL ran on its manifest: the Python ``OPENARM_DESCRIPTION``
     carried no collision geometry, so the box-only path was never reached.
     """
     from openral_core import RobotDescription
     from openral_hal import build_hal
+    from openral_safety.cumotion_config import sphere_model_geometry
 
     description = RobotDescription.from_yaml("robots/openarm/robot.yaml")
-    assert all(
-        getattr(e.shape, "half_extents_m", None) is None for e in description.collision_geometry
-    ), "this test wants a non-box collision model; the openarm manifest changed"
+    # The shipped OpenArm lowers every link to a box (+ hull) since 2026-09-25,
+    # so make the model mixed the way a capsule link would be: link2 and link6
+    # (both arms) as the capsule that bounds their shipped box
+    # (`sphere_model_geometry`, the cuRobo-side capsule of the same box).
+    as_capsule = {"openarm_left_link2", "openarm_left_link6"}
+    capsules = sphere_model_geometry(
+        [e for e in description.collision_geometry if e.link_name in as_capsule]
+    )
+    description = description.model_copy(
+        update={
+            "collision_geometry": [
+                *(e for e in description.collision_geometry if e.link_name not in as_capsule),
+                *(g for gs in capsules.values() for g in gs),
+            ]
+        }
+    )
+    capsule_links = sorted(
+        e.link_name
+        for e in description.collision_geometry
+        if getattr(e.shape, "half_extents_m", None) is None
+    )
+    assert capsule_links == sorted(as_capsule)
     from openral_core.exceptions import ROSConfigError
     from openral_hal._openarm_v2_assets import ensure_openarm_v2_mjcf
 
@@ -1070,7 +1091,11 @@ def test_collision_model_slop_skips_capsule_links_instead_of_crashing() -> None:
         slop = collision_model_mesh_slop(hal._model, description)
     finally:
         hal.disconnect()
-    declared = sorted(e.link_name for e in description.collision_geometry)
-    assert slop["links"] == {}
-    assert slop["unresolved_links"] == declared
-    assert slop["max_corner_slop_m"] == 0.0
+    declared = {e.link_name for e in description.collision_geometry}
+    resolved = set(slop["links"])
+    unresolved = set(slop["unresolved_links"])
+    assert set(capsule_links) <= unresolved
+    assert not resolved & set(capsule_links)
+    assert resolved | unresolved == declared
+    assert resolved, "the openarm's box links should get a corner budget"
+    assert slop["max_corner_slop_m"] > 0.0

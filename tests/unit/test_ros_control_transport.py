@@ -30,6 +30,7 @@ import pytest
 from openral_core.exceptions import ROSConfigError, ROSPerceptionStale
 from openral_core.schemas import (
     Action,
+    ActionSpec,
     ControlMode,
     EmbodimentKind,
     JointSpec,
@@ -47,10 +48,15 @@ requires_rclpy = pytest.mark.skipif(
 )
 
 
-def _description(n_joints: int = 2) -> RobotDescription:
+def _description(n_joints: int = 2, *, control_freq_hz: float | None = 30.0) -> RobotDescription:
     return RobotDescription(
         name="bench_arm",
         embodiment_kind=EmbodimentKind.MANIPULATOR,
+        action_spec=(
+            None
+            if control_freq_hz is None
+            else ActionSpec(dim=n_joints, control_freq_hz=control_freq_hz)
+        ),
         joints=[
             JointSpec(
                 name=f"j{i}",
@@ -61,12 +67,17 @@ def _description(n_joints: int = 2) -> RobotDescription:
             for i in range(n_joints)
         ],
         capabilities=RobotCapabilities(supported_control_modes=[ControlMode.JOINT_POSITION]),
-        safety=SafetyEnvelope(),
+        # A real HAL has no staleness default: it reads the manifest's window.
+        safety=SafetyEnvelope(joint_state_staleness_limit_s=0.5),
     )
 
 
-def _hal(**kw: object) -> RosControlHAL:
-    return RosControlHAL(_description(), controller_name="joint_trajectory_controller", **kw)  # type: ignore[arg-type]  # reason: kwargs are the documented optional transport knobs
+def _hal(control_freq_hz: float | None = 30.0, **kw: object) -> RosControlHAL:
+    return RosControlHAL(
+        _description(control_freq_hz=control_freq_hz),
+        controller_name="joint_trajectory_controller",
+        **kw,  # type: ignore[arg-type]  # reason: kwargs are the documented optional transport knobs
+    )
 
 
 # ── The generalisation surface ────────────────────────────────────────────────
@@ -147,6 +158,33 @@ def test_send_action_carries_joint_names_so_the_transport_needs_no_mapping() -> 
     assert sent[0][1]["joint_names"] == ["j0", "j1"]
 
 
+def test_send_action_carries_the_deadline_the_control_rate_implies() -> None:
+    """`time_from_start` is one control period per step, not the transport's 100 ms (#303)."""
+    sent: list[tuple[str, dict[str, object]]] = []
+    hal = _hal(control_freq_hz=50.0)
+    hal.attach_transport(lambda t, m: sent.append((t, m)), lambda: {}, None)
+    hal.connect()
+    hal.send_action(
+        Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[[0.1, 0.2]])
+    )
+    hal.send_action(
+        Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            horizon=4,
+            joint_targets=[[0.1, 0.2]] * 4,
+        )
+    )
+    assert sent[0][1]["time_from_start_s"] == pytest.approx(0.02)
+    assert sent[1][1]["time_from_start_s"] == pytest.approx(0.08)
+
+
+@pytest.mark.parametrize("rate", [None, 0.0, -30.0])
+def test_a_manifest_without_a_positive_rate_cannot_build_the_hal(rate: float | None) -> None:
+    """No deadline fallback exists, so the HAL refuses at construction and names the field."""
+    with pytest.raises(ROSConfigError, match=r"action_spec\.control_freq_hz"):
+        _hal(control_freq_hz=rate)
+
+
 # ── The watchdog ──────────────────────────────────────────────────────────────
 
 
@@ -159,6 +197,23 @@ def test_fresh_data_never_goes_stale_however_long_the_hal_has_been_connected() -
     hal._last_state_time -= 60.0  # a long-lived connection, as on a real rig
     state = hal.read_state()  # must not raise
     assert len(state.position) == 2
+
+
+def test_read_state_is_stamped_with_the_samples_arrival_not_the_read() -> None:
+    """The stamp says how old the sample is, so a stamp-pairing consumer can refuse it.
+
+    The robot self-filter pairs each cloud with the joint state nearest its capture stamp
+    and trusts a 0.1 s skew bound; a read-time stamp hid a sample up to the staleness
+    limit old.
+    """
+    arrived = time.monotonic() - 0.3
+    hal = _hal(staleness_limit_s=0.5)
+    hal.attach_transport(lambda t, m: None, lambda: {}, lambda: arrived)
+    hal.connect()
+    before = time.time_ns()
+    state = hal.read_state()
+    age_s = (before - state.stamp_ns) / 1e9
+    assert 0.29 <= age_s <= 0.35
 
 
 def test_a_transport_that_stops_delivering_trips_the_watchdog() -> None:
@@ -291,8 +346,8 @@ def test_transport_publishes_the_chunks_last_step_to_the_named_controller() -> N
         hal.send_action(
             Action(
                 control_mode=ControlMode.JOINT_POSITION,
-                horizon=2,
-                joint_targets=[[0.1, 0.2], [0.3, 0.4]],
+                horizon=3,
+                joint_targets=[[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]],
             )
         )
 
@@ -310,9 +365,18 @@ def test_transport_publishes_the_chunks_last_step_to_the_named_controller() -> N
         assert received, "no JointTrajectory reached the controller topic"
         traj = received[0]
         assert list(traj.joint_names) == ["j0", "j1"]
-        # Only the final step: a trajectory point is an absolute target the
-        # controller interpolates toward, not a step to replay.
-        assert [round(p, 3) for p in traj.points[0].positions] == [0.3, 0.4]
+        # Every row is a point, one control period apart (30 Hz manifest), so
+        # the controller interpolates through the chunk's shape rather than
+        # driving a straight line to its last row (issue #303).
+        assert [[round(p, 3) for p in pt.positions] for pt in traj.points] == [
+            [0.1, 0.2],
+            [0.3, 0.4],
+            [0.5, 0.6],
+        ]
+        deadlines = [
+            pt.time_from_start.sec + pt.time_from_start.nanosec / 1e9 for pt in traj.points
+        ]
+        assert deadlines == pytest.approx([1 / 30, 2 / 30, 3 / 30], abs=1e-6)
     finally:
         node.destroy_node()
         sink.destroy_node()
@@ -444,6 +508,11 @@ def test_an_unexpressible_payload_raises_instead_of_vanishing() -> None:
             tr.publish("/g/command", {"position": 0.5, "stamp_ns": 0})
         # An empty chunk is a different thing: the HAL had nothing to send.
         tr.publish("/g/command", {"joint_targets": [], "joint_names": ["g0"]})
+        # A chunk with no deadline is refused rather than driven at some
+        # arbitrary speed — the 100 ms constant that used to fill this gap is
+        # the defect of issue #303.
+        with pytest.raises(ROSConfigError, match="time_from_start_s"):
+            tr.publish("/g/command", {"joint_targets": [[0.1]], "joint_names": ["g0"]})
     finally:
         node.destroy_node()
         ctx.shutdown()

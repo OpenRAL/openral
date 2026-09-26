@@ -48,7 +48,6 @@ DOCTEST_TARGETS: list[str] = [
     "python/rskill/src/openral_rskill/runtime.py",
     "python/rskill/src/openral_rskill/runtime_onnx.py",
     "python/rskill/src/openral_rskill/runtime_pytorch.py",
-    "python/rskill/src/openral_rskill/smolvla.py",
     "python/rskill/src/openral_rskill/executor.py",
     "python/runner/src/openral_runner/clock.py",
     "python/runner/src/openral_runner/safety.py",

@@ -86,6 +86,119 @@ Tests (`test_octree_to_grid`, no ROS graph, real `octomap::OcTree`):
   `RasterizingTheKitchenStaysInsideThePublishBudget` — hold the publish
   budget to a quarter of the 10 Hz period.
 
+## A stopped octree stops the grid (fail-closed on a dead camera)
+
+The bridge re-rasterizes the **last** octree it received on a
+`publish_rate_hz` timer, so between octrees the grid follows the robot
+through TF and the payload clearing follows the payload's live pose.
+`octomap_server` publishes `/octomap_binary` only when it inserts a cloud,
+so a dead camera is a silent octree — and until hazard log Entry 033 the
+timer kept republishing that frozen map, stamped `now()`, forever. The
+kernel times voxel freshness from **receipt**, so its fail-closed
+`DROP_VOXEL_UNAVAILABLE` never fired and anything that entered the
+workspace afterwards was invisible (Thor, 2026-09-24: ZED driver stopped,
+`/octomap_binary` silent, `/openral/world_voxels` still arriving at 7.1 Hz).
+
+Now the republish is bounded by `max_octree_age_s`, measured from the
+octree's **receipt** on this node's clock (the clock the kernel times voxel
+freshness on; the octree's header stamp is the sensor's and may sit on
+another clock domain). Past the bound the node publishes **nothing** — not
+even a payload-cleared grid, which would be a fresh-looking stale map — and
+logs a throttled WARN. The kernel's own `world_voxel_deadline_ms` then turns
+the silence into `DROP_VOXEL_UNAVAILABLE` (a drop, not a latch). The next
+octree resumes publication automatically (one INFO line). Worst case from
+the last inserted cloud to the kernel's drop: `max_octree_age_s +
+world_voxel_deadline_ms` (1.0 s + 1.0 s with the deploy defaults).
+
+The bound has to exceed octomap's normal inter-publish gap with margin
+(0.25–0.31 s measured on the Thor ZED path at 3.2–4.0 Hz, but ~0.45 s in one
+Thor run at 2.2 Hz; ≤ 0.33 s in sim with the depth cast slowed to ~3 Hz) and
+must not exceed the kernel's deadline, so the kernel — not the bridge — is what
+fails closed. Both are per-rig `DeployRuntime` fields: `world_voxel_deadline_s`
+(default 1.0 s) and `max_octree_age_s` (default equal to the deadline; a value above
+it is refused by the schema and by `deploy_e2e.launch.py`). An earlier half-deadline
+bound (0.5 s) silenced a healthy camera's grid at 2.2 Hz; a source slower than about
+1 Hz needs both raised in its scene, up to the schema's hard cap of 2.0 s on the
+deadline (2x its pre-2026-09-25 default; above it the scene is refused at load). A bound that is
+too small only costs availability: silence shorter than the kernel's
+deadline is not a drop. A non-finite or non-positive bound publishes
+nothing (ERROR at start-up). A grid's `header.stamp` is still `now()`: it
+names when the grid was placed in `base_frame` (the TF it was rasterized
+with). Nothing reads it as data age (the kernel and World State time grids
+from receipt), and the HAL's evidence decoder
+(`openral_hal.sim_sensor_bridge`) picks "the grid current at time t" by it,
+which the octree's own stamp would break. The octree's own stamp rides on
+every grid as `source_stamp` (the capture stamp of the newest cloud inserted),
+and the kernel budgets the world's age from it: `world_voxel_data_age_budget_ms`,
+from the per-rig `DeployRuntime.world_voxel_data_age_budget_s` (default 1.5 s,
+the Thor ZED-M tail; hard cap 3.0 s); past it the chunk drops as `voxel_stale`.
+The kernel enforces the caps itself: with `world_voxel_enabled` it refuses to
+configure on a `world_voxel_deadline_ms` outside (0, 2000] or a
+`world_voxel_data_age_budget_ms` outside (0, 3000] (its own default is 1500;
+0 no longer disables the check), so a kernel started with `ros2 run` is held
+to the same limits as a validated scene.
+
+`robot_self_filter` (real camera path only) removes the robot's own returns
+before `octomap_server` inserts the cloud: it poses the kernel's collision
+parameters at the cloud's capture stamp and drops every return within
+`padding_m` of a primitive (from `DeployRuntime.robot_self_filter_padding_m`,
+provisional 0.02 m, hard cap 0.10 m). No pose at the capture stamp drops the whole cloud.
+The node enforces the cap itself: a `padding_m` outside [0, 0.10] (or
+non-finite) logs an ERROR and forwards nothing.
+
+A box that carries the kernel's tight geometry (`collision_box_hull` /
+`collision_hull_*`, lowered from `LinkCollisionGeometry.tight_geometry`) is
+filtered against that geometry, not the box: the box's slack (12–27 mm mean on
+the Panda links, more at the corners) would otherwise widen the blind shell.
+The distance is the kernel's staged narrow phase with the voxel cube shrunk to
+a point — the 26-DOP slab bound, then GJK on the exact hull's vertices with an
+exhaustive support scan — so every value is a lower bound on the true distance
+(never an over-report: a return the hull explains is always removed) and the
+converged value is exact to 1e-9 m. `test_self_filter` pins it against the
+kernel's `hull_cell_distance` on panda_mobile's real hulls. A hull the kernel's
+`validate_tight_hull` chain would not prove (vertex outside its DOP, DOP outside
+its box, over 320 vertices, bad arity) refuses the whole model, so the node
+forwards nothing. Cost, dev laptop, panda_mobile, 230 400-point cloud with 10 %
+of it within 8 cm of the arm: 2.4–2.6 ms box-only → 7.0–8.0 ms with hulls
+(the extra is GJK on the points inside a box's shell; not yet measured on Thor).
+
+Pinned by `test_bridge_staleness` (the real node in-process: publishes while
+fresh, silent past the bound for as long as the silence lasts, resumes on
+the next octree, keeps flowing at Thor's 3.2 Hz cadence, publishes nothing
+under an unusable bound; plus the `octree_is_fresh` boundaries) and, end to
+end against the real kernel,
+`tests/sim/safety/test_kernel_voxel_bridge_staleness.py` (certifies while
+octrees arrive, `DROP_VOXEL_UNAVAILABLE` with no latch or E-stop once they
+stop, certifies again when they resume). That test was checked to discriminate
+by hand when it was written: rerun with the bridge bound set to 1e9 (the pre-fix
+behaviour), the stale chunk is certified — the fail-open, reproduced. The
+committed suite does not carry that control.
+
+**Not covered:** a camera that keeps publishing garbage, or a frozen image
+re-published by a driver, still reaches `octomap_server` as fresh inserts.
+
+## Publish rate: measure it RELIABLE
+
+The grid goes out on the `publish_rate_hz` timer (10 Hz) whenever the octree
+is fresh. At the real-arm deploy geometry (0.02 m, radius 1.05 m) it is
+106³ = 1 191 016 cells, a **1.19 MB** sample. A `BEST_EFFORT` subscriber
+loses such a fragmented sample whole whenever it misses one fragment, so a
+best-effort `ros2 topic hz` or rate probe under-reads it; the safety kernel
+subscribes `RELIABLE` and does not. On the Orin OpenArm cell (mock hardware,
+2026-09-26, 240 s) the same run read **10.01 Hz, max gap 0.36 s** on a reliable
+subscriber, 7.0 Hz (max gap 1.1 s) on a best-effort one, and 5.7 Hz on a
+best-effort all-topics probe. A 4.4–6.1 Hz reading of that probe the day
+before was briefly taken for a slow bridge.
+
+The per-octree work is small beside the period: the real Orin map (14k leaves,
+~4.6k occupied cells in the ball, replayed from recorded ZED clouds) costs
+0.7 ms to deserialize and 0.3 ms to rasterize on a dev laptop. Deserializing
+walks the **whole** map, not the ball, so it grows with the mapped volume
+(~60 ms at 437k leaves); rasterizing is bounded by the ball's bbx query.
+`test_bridge_rate_budget` pins both: deserialize + rasterize of a ray-cast
+map under half the period, and the real node reaching a reliable
+`KEEP_LAST(1)` subscriber at more than 7 Hz with the deploy-sized grid.
+
 ## What the grid covers: a ball, sized by the robot
 
 `coverage_radius_m` / `coverage_center_*` name a **ball** in `base_frame`,
@@ -287,8 +400,7 @@ fails the whole object closed and clears nothing (same rule
 
 **Conservative.** The payload stays collision-active attached geometry;
 `check_attached_voxel_collision` keeps testing it against every remaining
-occupied cell, plus `check_attached_world_collision` and
-`check_attached_self_collision`. Only self-stops are removed.
+occupied cell, plus `check_attached_self_collision`. Only self-stops are removed.
 `AttachedVoxelCollision.ClearingThePayloadsOwnCellsKeepsThePayloadVsWorldCheck`
 (`cpp/openral_safety_kernel/test/test_collision.cpp`) pins it: payload cells
 cleared, a real obstacle 90 mm off its surface stays, kernel still stops and
@@ -401,6 +513,7 @@ Requires TF from `base_frame` into the OctoMap's `header.frame_id` (usually
 | `coverage_radius_m` | `0.0` | Local volume radius around the robot (m). |
 | `coverage_center_{x,y,z}` | `0.0, 0.0, 0.5` | Local volume centre in `base_frame`. |
 | `publish_rate_hz` | `10.0` | Republish rate (the grid follows the robot via TF). |
+| `max_octree_age_s` | `1.0` | Stop publishing once the last octree was received longer ago than this, so the kernel's `world_voxel_deadline_ms` fails closed on a dead camera. Well above octomap's normal gap, not above the kernel's deadline (`deploy_e2e.launch.py`: equal to it). Non-finite, ≤ 0, or above the kernel's 2.0 s deadline cap (`kMaxOctreeAgeS`) publishes nothing. |
 | `attached_clear_enabled` | `true` | Clear an attached payload's own cells out of the published grid. Off = pre-#110 behaviour (payload stays in the map and can stop the robot against itself). |
 | `world_state_topic` | `/openral/world_state_fast` | Where the attachment set is read from — the kernel's own source. |
 | `attached_clear_padding_m` | `0.0` | Extra reach beyond the cell circumradius **on every frame**, for pose uncertainty. |
@@ -426,10 +539,13 @@ ros2 run octomap_server octomap_server_node \
 ## Testing
 
 `test_octree_to_grid` unit-tests `rasterize_octree_to_grid` against a real
-`octomap::OcTree` — no ROS graph. A full octomap → bridge → kernel chain
-needs a live OctoMap producer and is a HIL / on-robot test (`octomap`
-Python bindings aren't in CI, so a synthetic OctoMap publisher would itself
-need to be C++). Test list is in "How a cell becomes occupied" above.
+`octomap::OcTree` — no ROS graph. Test list is in "How a cell becomes
+occupied" above. `test_bridge_staleness` runs the real node in-process
+(see "A stopped octree stops the grid"). The octree → bridge → kernel
+chain's liveness is covered by
+`tests/sim/safety/test_kernel_voxel_bridge_staleness.py`, which publishes
+an all-free octree in octomap's binary encoding from Python; a chain with
+a live OctoMap producer (camera → `octomap_server`) is still HIL.
 
 `test_occupancy_persistence` pins the occupancy semantics the deploy-sim
 launch tunes for, on a real `OcTree` seeded with `occupancy_thres 0.8`,

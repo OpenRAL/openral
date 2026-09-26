@@ -477,6 +477,7 @@ class TestSmolVLAAdapterBuildBatch:
             {"chunk_prefetch": True, "chunk_prefetch_at": 1},
             policy=policy,
             adapter_name="smolvla",
+            postprocess_action=adapter._finished_action,
         )
         observation = {"images": {}, "state": np.zeros(6, dtype=np.float32)}
 

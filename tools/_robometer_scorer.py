@@ -41,6 +41,7 @@ q.set_cublas_workspace_env()  # MUST precede CUDA init (torch import below)
 import numpy as np  # noqa: E402
 import torch  # noqa: E402
 from numpy.typing import NDArray  # noqa: E402
+from openral_core.exceptions import ROSConfigError  # noqa: E402
 
 q.apply_determinism()
 
@@ -103,16 +104,26 @@ def _remap_backbone_key(key: str) -> str:
 class Scorer:
     """Loads the NF4 Robometer model once and scores clips (discrete -> [0,1])."""
 
-    def __init__(self, weights: str, device: str = "cuda") -> None:
+    def __init__(self, weights: str, device: str = "cuda", *, meta_buffers: bool = True) -> None:
+        """Load the NF4 checkpoint at ``weights`` onto ``device``.
+
+        Args:
+            weights: HF repo id (``repo@rev`` allowed) or local directory.
+            device: Torch device for the model.
+            meta_buffers: Build the skeleton fully on meta (production). ``False``
+                runs every module ``__init__`` for real buffers instead — the
+                equivalence reference ``tests/sim/test_reward_nf4_buffer_equivalence.py``
+                compares the meta load against.
+        """
         self.device = device
         local = _resolve_local_dir(weights)
         if not q.is_prequantized_checkpoint(local):
-            raise RuntimeError(
+            raise ROSConfigError(
                 f"{local} is not an NF4 pre-quantized checkpoint (no bnb nf4 keys). "
                 "The native scorer loads OpenRAL/rskill-robometer_4b-any-general-nf4; the bf16 "
                 "lerobot/Robometer-4B is too large for an 8 GB GPU."
             )
-        self.cfg, self.model = self._load_prequantized(local)
+        self.cfg, self.model = self._load_prequantized(local, meta_buffers=meta_buffers)
         self.model.eval()
 
         from lerobot.rewards.robometer.processor_robometer import RobometerEncoderProcessorStep
@@ -132,16 +143,28 @@ class Scorer:
             vram = torch.cuda.memory_allocated() / 1e9
             print(f"[robometer] ready (native nf4): {vram:.2f} GB on {device}", flush=True)
 
-    def _load_prequantized(self, local: str) -> tuple[RobometerConfig, Any]:
-        """Meta-build the native module, then drop in the packed NF4 weights."""
+    def _load_prequantized(
+        self, local: str, *, meta_buffers: bool = True
+    ) -> tuple[RobometerConfig, Any]:
+        """Meta-build the native module, then drop in the packed NF4 weights.
+
+        ``meta_buffers=False`` keeps parameters on meta but builds buffers for
+        real, so they come from the modules' own ``__init__``, not the checkpoint.
+        """
         from lerobot.rewards.robometer.modeling_robometer import RobometerRewardModel
         from safetensors.torch import load_file
 
         cfg = _native_config()
         cfg.device = self.device
         print(f"[robometer] native meta-build ({cfg.progress_discrete_bins} bins) ...", flush=True)
-        with torch.device("meta"):
-            model = RobometerRewardModel(cfg)
+        if meta_buffers:
+            with torch.device("meta"):
+                model = RobometerRewardModel(cfg)
+        else:
+            from accelerate import init_empty_weights
+
+            with init_empty_weights(include_buffers=False):
+                model = RobometerRewardModel(cfg)
         # Direct construction defaults to "eager"; production + determinism use "sdpa".
         for c in (
             model.model.config,
@@ -162,16 +185,25 @@ class Scorer:
         model.load_state_dict(leftover, strict=False, assign=True)
         # ``original_inv_freq`` is a non-persistent rope buffer equal to
         # ``inv_freq`` at init (default rope scaling), so it's absent from the
-        # checkpoint — seed it so ``assign_meta_buffers`` can fill it.
+        # checkpoint — seed it so ``assign_meta_buffers`` can fill it. Any other
+        # rope type rescales ``inv_freq`` at init, so the copy would be wrong.
         for bname, _buf in list(model.named_buffers()):
             if bname.endswith("original_inv_freq") and bname not in state:
+                rope_type = getattr(model.get_submodule(bname.rsplit(".", 1)[0]), "rope_type", None)
+                if rope_type != "default":
+                    raise ROSConfigError(
+                        f"{bname}: rope_type {rope_type!r} is not 'default'; "
+                        "original_inv_freq cannot be seeded from inv_freq"
+                    )
                 src = bname.replace("original_inv_freq", "inv_freq")
                 if src in state:
                     state[bname] = state[src]
         n_buf = q.assign_meta_buffers(model, state, self.device)
+        if not meta_buffers:
+            model.to(self.device)  # the real buffers were built on CPU
         still_meta = [n for n, p in model.named_parameters() if p.is_meta]
         if still_meta:
-            raise RuntimeError(f"meta params left after prequant load: {still_meta[:5]}")
+            raise ROSConfigError(f"meta params left after prequant load: {still_meta[:5]}")
         print(f"[robometer] installed NF4 + {n_buf} rotary buffers", flush=True)
         return cfg, model
 

@@ -24,7 +24,6 @@
 #include <openral_msgs/msg/failure_trigger.hpp>
 #include <openral_msgs/msg/occupancy_voxels.hpp>
 #include <openral_msgs/msg/safety_status.hpp>
-#include <openral_msgs/msg/world_collision.hpp>
 #include <openral_msgs/msg/world_state_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
@@ -42,6 +41,16 @@ inline constexpr double kDefaultEstopResetCooldownSec = 0.5;
 /// Default chunk-validation deadline. The validator p99 must come in
 /// well under this on the reference host (≤1 ms target).
 inline constexpr std::int64_t kDefaultChunkValidationDeadlineUs = 1000;
+
+/// Hard caps on the world-voxel freshness parameters, enforced at configure
+/// whenever `world_voxel_enabled` (hazard log Entries 033/034). Mirror
+/// `openral_core.DeployRuntime`'s caps (`world_voxel_deadline_s <= 2.0`,
+/// `world_voxel_data_age_budget_s <= 3.0`, default 1.5) so a node launched
+/// outside `openral deploy` cannot run looser than a validated scene;
+/// `tests/unit/test_perception_caps_mirror.py` pins both sides equal.
+inline constexpr double kMaxWorldVoxelDeadlineMs = 2000.0;
+inline constexpr double kMaxWorldVoxelDataAgeBudgetMs = 3000.0;
+inline constexpr double kDefaultWorldVoxelDataAgeBudgetMs = 1500.0;
 
 class SafetyKernelLifecycleNode : public rclcpp_lifecycle::LifecycleNode {
 public:
@@ -121,7 +130,7 @@ private:
 
   // Publish a FailureTrigger(KIND_COLLISION) carrying CollisionEvidence.
   // `collision_kind` is "self" or "world"; `link_a`/`link_b` name the colliding
-  // entities (robot links, or a world obstacle for the world check).
+  // entities (robot links, or an occupied voxel cell for the voxel check).
   // `min_distance` MUST be `CollisionHit::min_distance` — the distance of the
   // very pair `link_a`/`link_b` names. The sweep-wide
   // `CollisionHit::sweep_min_distance` belongs to no named pair and never
@@ -135,10 +144,6 @@ private:
                                  const char* collision_kind, const std::string& link_a,
                                  const std::string& link_b, int horizon_step, double min_distance,
                                  const std::vector<double>& joint_positions);
-
-  // World phase — ingest bounded world obstacles into a pre-sized
-  // buffer (single-threaded executor → no lock needed).
-  void on_world_collision(const openral_msgs::msg::WorldCollision::SharedPtr msg);
 
   // Voxel phase — ingest a dense occupancy grid into a pre-sized buffer.
   void on_world_voxels(const openral_msgs::msg::OccupancyVoxels::SharedPtr msg);
@@ -180,7 +185,6 @@ private:
 
   // Subscriptions / publishers / service / timer.
   rclcpp::Subscription<openral_msgs::msg::ActionChunk>::SharedPtr candidate_sub_;
-  rclcpp::Subscription<openral_msgs::msg::WorldCollision>::SharedPtr world_sub_;
   rclcpp::Subscription<openral_msgs::msg::OccupancyVoxels>::SharedPtr voxel_sub_;
   rclcpp::Subscription<openral_msgs::msg::WorldStateStamped>::SharedPtr world_state_sub_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr estop_sub_;
@@ -207,17 +211,6 @@ private:
   double self_collision_margin_m_{0.0};
   std::size_t collision_required_dof_{0};
 
-  // World phase — bounded world-obstacle buffer + freshness tracking.
-  WorldModel world_model_;
-  std::vector<std::string> world_labels_;
-  bool world_collision_enabled_{false};
-  double world_collision_margin_m_{0.0};
-  double world_collision_deadline_s_{0.5};
-  std::size_t world_collision_max_primitives_{0};
-  bool world_received_{false};
-  bool world_overflow_{false};
-  rclcpp::Time world_stamp_{};
-
   // Voxel phase — dense occupancy grid (octomap path). `voxel_grid_`
   // is a view into the pre-sized `voxel_occupancy_` buffer.
   VoxelGrid voxel_grid_;
@@ -229,6 +222,12 @@ private:
   bool voxel_received_{false};
   bool voxel_overflow_{false};
   rclcpp::Time voxel_stamp_{};
+  /// `world_voxel_data_age_budget_ms` in seconds; in (0, 3] s whenever the
+  /// world check is enabled (configure refuses anything else).
+  double world_voxel_data_age_budget_s_{kDefaultWorldVoxelDataAgeBudgetMs / 1000.0};
+  /// The grid's `source_stamp` (capture of the newest cloud in it), when set.
+  bool voxel_source_known_{false};
+  rclcpp::Time voxel_source_stamp_{};
   /// Frame the occupancy grid is published in. A place region declared in any
   /// other frame is refused: a region measured in one frame and applied in
   /// another is a relaxation aimed at the wrong volume.

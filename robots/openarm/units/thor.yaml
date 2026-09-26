@@ -1,0 +1,52 @@
+# OpenArm cell on the Jetson Thor. head_zed's mount below is this unit's own:
+# - roll/pitch: 2026-09-24 level-surface fit on a real ZED cloud, arms unpowered;
+# - x/y/z and yaw: 2026-09-25 fit of the arms' own returns (links 4-6 of both arms, hanging
+#   at q = 0, 40 stacked clouds) to their MJCF meshes, roll/pitch held so the table stays
+#   level (0.22 deg). Median arm point-to-mesh 8.3 -> 3.4 mm; correction -20.6 mm x,
+#   -2.3 mm y, +15.7 mm z, +0.36 deg yaw from the manifest's nominal mount.
+# The arm fit is NOT a marker calibration: it assumes the unpowered arms hang at q = 0, and
+# translation along a link is weakly observed. It aligns the robot self-filter; the
+# world-voxel check still needs a verified report (tools/depth_extrinsic_check.py --unit thor).
+#
+# Per-host camera bindings. Carried over unchanged from robot.yaml, which served every
+# OpenArm cell before per-unit overlays existed; re-check the Arducam by-id paths with
+# `ls -l /dev/v4l/by-id` on this host. The ros2_image topics are zed_wrapper's, launched
+# by the OpenArm scenes' `drivers:`. Selected by $OPENRAL_ROBOT_UNIT or a scene's
+# `robot_unit`.
+schema_version: "0.1"
+robot_id: openarm
+unit: thor
+sensors:
+  - name: head_zed
+    static_transform_xyz_rpy: [-0.0206, -0.0023, 0.2157, -0.0123, 1.1823, 0.0062]
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/depth/depth_registered
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 500
+  - name: top
+    deploy_binding:
+      backend: ros2_image
+      backend_params:
+        topic: /zed/zed_node/rgb/color/rect/image
+        reliability: best_effort
+        qos_depth: 5
+      max_age_ms: 200
+  - name: wrist_left
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_LEFT-video-index0
+        width: 640
+        height: 480
+        fps: 30
+  - name: wrist_right
+    deploy_binding:
+      backend: opencv_thread
+      backend_params:
+        device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_RIGHT-video-index0
+        width: 640
+        height: 480
+        fps: 30

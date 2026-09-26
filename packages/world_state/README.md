@@ -127,7 +127,7 @@ consumers (e.g. a reasoner reading `/openral/world_state_slow`) see the spatial 
 | `object_lift_enabled` | `True` | Master toggle. `False` → feature fully inert; no subscriptions or timer are created. |
 | `object_detections_topic` | `/openral/perception/objects` | `PromptStamped` topic carrying `ObjectsMetadata` detections. |
 | `object_voxels_topic` | `/openral/world_voxels` | `OccupancyVoxels` topic (base frame, row-major x-fastest). Preferred depth source when fresh. |
-| `object_depth_points_topic` | `/openral/cameras/front_depth/points` | Depth-fallback amendment (#11) — depth `PointCloud2` used as the lift's depth source when no fresh voxel grid exists (e.g. `--no-enable-octomap`). Empty disables the fallback. |
+| `object_depth_points_topic` | `""` (disabled) | Depth-fallback amendment (#11) — depth `PointCloud2` used as the lift's depth source when no fresh voxel grid exists (e.g. `--no-enable-octomap`). Empty disables the fallback. `deploy_e2e.launch.py` passes `openral_core.deploy_cloud_topic`: the scene-pinned `runtime.octomap_cloud_topic` (a real driver's cloud) when set, else in sim the manifest's one depth sensor's `camera_topic(<name>, CameraTopicKind.POINTS)`, else empty (a real deploy with nothing pinned, or no depth sensor) — ADR-0108: consumers derive, never guess. |
 | `object_lift_depth_max_points` | `4000` | Cap on depth-cloud points fed to the lift (uniform subsample) so a dense cloud can't stall per-detection projection. |
 | `object_lift_map_frame` | `map` | Fixed frame used to anchor the object memory. |
 | `object_lift_k_nearest` | `25` | K voxels (nearest to box centre) used to estimate the 3D centre. |

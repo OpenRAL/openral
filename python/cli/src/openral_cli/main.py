@@ -4070,15 +4070,22 @@ def deploy_validate(  # noqa: PLR0915  # reason: linear readiness checklist; eac
     * **Calibration** — a serial HAL with `calibrate_on_connect=false` has an
       `id` + `calibration_dir`, and the `<calibration_dir>/<id>.json` file exists
       (missing → "has no calibration registered" at every send_action).
-    * **Camera bindings** — each scene sensor has a `deploy_binding` (else it is
-      never published and a camera VLA gets an empty observation), and any
-      `/dev/*` device path exists now.
+    * **Camera bindings** — each deploy sensor (the robot manifest's cameras, whose
+      bindings live in `robot.yaml`, plus the scene's workcell cameras) has a
+      `deploy_binding` (else it is never published and a camera VLA gets an empty
+      observation), and any `/dev/*` device path exists now.
 
     Reports ERROR (missing committed data — exits non-zero) vs WARN (device just
     not attached right now). HAL param precedence matches `deploy run`
     (`--hal` > scene `hal` > `robot.yaml`).
     """
-    from openral_core import DeployScene  # reason: defer schema import
+    from openral_core import (  # reason: defer schema import
+        DeployScene,
+        RobotDescription,
+        apply_sensor_overlays,
+        merge_deploy_sensors,
+        resolve_sensor_overlays,
+    )
     from openral_core.exceptions import ROSCapabilityMismatch  # reason: defer
     from pydantic import ValidationError  # reason: defer CLI import
 
@@ -4117,7 +4124,10 @@ def deploy_validate(  # noqa: PLR0915  # reason: linear readiness checklist; eac
             hal_mode="real",
             enable_dashboard=False,
         )
-    except (ROSConfigError, ROSCapabilityMismatch) as exc:
+    except (ROSConfigError, ROSCapabilityMismatch, ValidationError) as exc:
+        # ValidationError: the robot manifest failed its real-hardware contract
+        # (control rate, explicit safety limits, joint velocity limits) — the
+        # message names every missing value.
         console.print(f"[red]✗ resolve:[/red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -4143,9 +4153,21 @@ def deploy_validate(  # noqa: PLR0915  # reason: linear readiness checklist; eac
             if not cal_file.exists():
                 errors.append(f"calibration file {cal_file} does not exist (id={cal_id!r}).")
 
-    if not deploy_scene.sensors:
-        warns.append("scene declares no sensors → a camera VLA will get an empty observation")
-    for sensor in deploy_scene.sensors:
+    # A robot camera's binding lives in its unit overlay (else its manifest), a workcell
+    # camera's in the scene. The unit was already resolved (and required) by
+    # resolve_launch_invocation above; resolved again here for the sensor list.
+    deploy_sensors = merge_deploy_sensors(
+        apply_sensor_overlays(
+            RobotDescription.from_yaml(str(invocation.robot_yaml)).sensors,
+            resolve_sensor_overlays(invocation.robot_yaml, deploy_scene.robot_unit, required=True),
+        ),
+        deploy_scene.sensors,
+    )
+    if not deploy_sensors:
+        warns.append(
+            "robot and scene declare no sensors → a camera VLA will get an empty observation"
+        )
+    for sensor in deploy_sensors:
         binding = sensor.deploy_binding
         if binding is None:
             warns.append(

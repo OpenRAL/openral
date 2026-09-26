@@ -33,6 +33,8 @@ jobs:
       - run: uv run mypy --strict tools/
       - name: Check schema drift
         run: uv run python tools/schema_export.py --check
+      - name: Check ROS topic graph drift
+        run: uv run python tools/gen_ros_topic_graph.py --check
       - name: Check rSkill SKILL.md drift
         run: uv run python tools/generate_rskill_skillmd.py --check
       - name: Validate robot/skill/scene manifests

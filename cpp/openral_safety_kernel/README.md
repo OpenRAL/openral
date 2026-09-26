@@ -47,10 +47,28 @@ Published on **every transition**:
 | geometric collision | `true` | `KIND_COLLISION` |
 | external `/openral/estop` | `true` | `DROP_EXTERNAL_ESTOP` |
 | `envelope_unconfigured` drop | `false` | `DROP_ENVELOPE_UNCONFIGURED` |
-| world/voxel/state unavailable or overflow | `false` | `DROP_{WORLD,VOXEL,STATE}_UNAVAILABLE`, `DROP_{WORLD,VOXEL}_OVERFLOW` |
+| voxel/state unavailable or overflow | `false` | `DROP_{VOXEL,STATE}_UNAVAILABLE`, `DROP_VOXEL_OVERFLOW` |
 | attached payload unverifiable (ADR-0092) | `false` | `DROP_ATTACHED_UNAVAILABLE`, `DROP_ATTACHED_OVERFLOW` |
 | chunk accepted after a drop | `false` | `DROP_NONE` |
 | `/openral/estop_reset` succeeded | `false` | `DROP_NONE` |
+
+Values `101` and `104` are reserved and never reused: they were
+`DROP_WORLD_UNAVAILABLE` / `DROP_WORLD_OVERFLOW` of the capsule world phase,
+retired 2026-09-23 by ADR-0109, and still appear in older recorded bags. The
+kernel's only world-geometry input is now the voxel grid on
+`/openral/world_voxels` (plus attached payloads on `/openral/world_state_fast`).
+
+**World-voxel freshness is capped in the kernel, not only in the schema.**
+With `world_voxel_enabled`, `on_configure` returns FAILURE (and logs why) for a
+`world_voxel_deadline_ms` outside (0, `kMaxWorldVoxelDeadlineMs` = 2000] or a
+`world_voxel_data_age_budget_ms` outside (0, `kMaxWorldVoxelDataAgeBudgetMs` =
+3000]. The budget defaults to `kDefaultWorldVoxelDataAgeBudgetMs` = 1500 and
+0 no longer means "not enforced", so a grid without a `source_stamp` always
+drops as `voxel_stale`. These mirror `DeployRuntime`'s caps (hazard log
+Entries 033/034) so a kernel started with `ros2 run` or another launch file
+cannot run looser than a validated scene; `tests/unit/test_perception_caps_mirror.py`
+pins the two sides. With the world check off the two values are unused and
+not checked.
 
 Two rules make the durable value trustworthy (hazard-log HZ-0096-1):
 
@@ -930,8 +948,7 @@ cells. Its 26-DOP still cuts the link's support excess from 53.27 mm to 25.69 mm
 `panda_link5` (152-vertex, 45.20 mm) and `panda_link7` (102-vertex, 28.25 mm) —
 added for the self-collision path below.
 
-Everything else keeps the primitive path unchanged: world-capsule obstacles,
-capsule-lowered robots, and every link that declares no tight geometry. Hazard-log
+Everything else keeps the primitive path unchanged: capsule-lowered robots, and every link that declares no tight geometry. Hazard-log
 Entry 012's lockstep is **not engaged** — `check_attached_self_collision` still
 reads the same link boxes it always did. Carried payloads got their own staged
 path in #266, below.
@@ -978,8 +995,8 @@ is not known until something is carried:
 Untouched on purpose: **ADR-0098's place-target adjudication**, whose
 `target_distance ≤ d + allowance` bound keeps reading the shipped box distance
 (that bound is calibrated against the box model the declaration is adjudicated
-on); `check_attached_self_collision` and `check_attached_world_collision`, which
-are 3 % of measured stops and whose adjudication budget
+on); `check_attached_self_collision` (and, until its retirement on 2026-09-23 by
+ADR-0109, `check_attached_world_collision`), which were 3 % of measured stops and whose adjudication budget
 (`attached_payload_mesh_slop`) is stated against exactly that box; and the
 support-witness liveness probe, where a tighter payload would *shorten* an
 exemption.

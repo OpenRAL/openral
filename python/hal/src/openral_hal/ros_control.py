@@ -14,6 +14,7 @@ Example:
     ...     JointType,
     ...     RobotCapabilities,
     ...     SafetyEnvelope,
+    ...     ActionSpec,
     ...     ControlMode,
     ... )
     >>> desc = RobotDescription(
@@ -27,7 +28,8 @@ Example:
     ...     capabilities=RobotCapabilities(
     ...         supported_control_modes=[ControlMode.JOINT_POSITION],
     ...     ),
-    ...     safety=SafetyEnvelope(),
+    ...     safety=SafetyEnvelope(joint_state_staleness_limit_s=0.5),  # required: no default
+    ...     action_spec=ActionSpec(dim=1, control_freq_hz=30.0),  # required: sets the deadline
     ... )
     >>> hal = RosControlHAL(desc, controller_name="joint_trajectory_controller")
     >>> hal.connect()
@@ -52,7 +54,7 @@ from openral_core.exceptions import (
 )
 from openral_core.schemas import Action, JointState, RobotDescription
 
-from openral_hal._base import HALBase, _raw_floats
+from openral_hal._base import HALBase, _raw_floats, resolve_staleness_limit_s
 from openral_hal.protocol import EStopRecovery
 
 __all__ = [
@@ -279,12 +281,26 @@ class RosControlHAL(HALBase):
             ``JointState``.  Replace with a real subscriber callback in
             integration tests.
         staleness_limit_s: Maximum age (seconds) of a ``read_state()`` reading
-            before ``ROSPerceptionStale`` is raised.  Defaults to ``0.5 s``.
+            before ``ROSPerceptionStale`` is raised. ``None`` (default) reads
+            the manifest's ``safety.joint_state_staleness_limit_s``; neither
+            raises ``ROSConfigError``.
         stop_timeout_s: How long ``estop`` / ``reset_estop`` wait for the
             controller switch and the vendor stop to be acknowledged.
 
+    The control rate comes from the manifest's ``action_spec.control_freq_hz``
+    — the same field the runner ticks at and the dataset recorder stamps as
+    fps — so there is exactly one place a rig declares it. Every published
+    trajectory point gets ``time_from_start = horizon / control_freq_hz``:
+    the controller is asked to reach each target exactly when the next
+    command is due. A manifest without the field is **refused at
+    construction**, so ``build_hal(mode="real")`` — and with it the lifecycle
+    node's configure — stops and names the missing value. There is no
+    fallback deadline: the 100 ms constant that used to fill this gap asked a
+    30 Hz stream to cover each step in a third of its period (issue #303).
+
     Raises:
-        ROSConfigError: If ``description.joints`` is empty.
+        ROSConfigError: If ``description.joints`` is empty, or the manifest
+            declares no positive ``action_spec.control_freq_hz``.
 
     **Lifecycle e-stop.** Every ``RosControlHAL`` implements
     ``LifecycleEStopHAL``: ``/openral/estop`` reaches ``estop()``, which
@@ -314,7 +330,7 @@ class RosControlHAL(HALBase):
         command_topic: str | None = None,
         publish_fn: _PublishFn | None = None,
         state_fn: Callable[[], dict[str, object]] | None = None,
-        staleness_limit_s: float = 0.5,
+        staleness_limit_s: float | None = None,
         stop_timeout_s: float = _DEFAULT_STOP_TIMEOUT_S,
     ) -> None:
         """Initialise the adapter; does not open any connection yet."""
@@ -323,13 +339,25 @@ class RosControlHAL(HALBase):
                 f"RobotDescription '{description.name}' has no joints; "
                 "cannot initialise RosControlHAL."
             )
+        spec = description.action_spec
+        control_rate_hz = None if spec is None else spec.control_freq_hz
+        if control_rate_hz is None or not control_rate_hz > 0.0:
+            raise ROSConfigError(
+                f"RobotDescription '{description.name}' declares no positive "
+                f"action_spec.control_freq_hz (got {control_rate_hz!r}); "
+                f"{type(self).__name__} cannot be built without it. It sets every "
+                "trajectory point's time_from_start (horizon / rate) and the runner's "
+                "tick — add `action_spec: {dim, representation, control_freq_hz}` "
+                "to the robot manifest."
+            )
+        self._control_rate_hz: float = float(control_rate_hz)
         self.description = description
         self._controller_name = controller_name
         self._joint_state_topic = joint_state_topic
         self._command_topic = command_topic or f"/{controller_name}/joint_trajectory"
         self._publish_fn: _PublishFn = publish_fn or _default_publish
         self._state_fn = state_fn
-        self._staleness_limit_s = staleness_limit_s
+        self._staleness_limit_s = resolve_staleness_limit_s(description, staleness_limit_s)
         self._stop_timeout_s = stop_timeout_s
         self._stop_seam: ControllerStopSeam | None = None
         self._last_stop_report: DownstreamStopReport | None = None
@@ -520,6 +548,7 @@ class RosControlHAL(HALBase):
             age = float("inf") if last <= 0.0 else time.monotonic() - last
         else:
             age = time.monotonic() - self._last_state_time
+        sample_age_s = age if self._stamp_fn is not None else 0.0
         if age > self._staleness_limit_s:
             raise ROSPerceptionStale(
                 f"Joint state is {age:.3f} s old (limit {self._staleness_limit_s} s)."
@@ -535,7 +564,10 @@ class RosControlHAL(HALBase):
             position=_raw_floats(raw, "position", n),
             velocity=_raw_floats(raw, "velocity", n),
             effort=_raw_floats(raw, "effort", n),
-            stamp_ns=int(time.time_ns()),
+            # When the sample arrived, not when it was read: a consumer that pairs
+            # joint states with other sensors by stamp (the robot self-filter's
+            # skew check) must see how old the sample really is.
+            stamp_ns=int(time.time_ns()) - int(max(sample_age_s, 0.0) * 1e9),
         )
 
     def send_action(self, action: Action) -> None:
@@ -563,6 +595,7 @@ class RosControlHAL(HALBase):
             "joint_targets": action.joint_targets,
             "stamp_ns": action.stamp_ns,
         }
+        msg["time_from_start_s"] = self.time_from_start_s(action)
         self._publish_fn(self._command_topic, msg)
         log.debug(
             "hal.send_action",
@@ -570,6 +603,27 @@ class RosControlHAL(HALBase):
             control_mode=action.control_mode,
             horizon=action.horizon,
         )
+
+    def time_from_start_s(self, action: Action) -> float:
+        """Trajectory deadline for ``action``: ``horizon / control_freq_hz``.
+
+        One command arrives per control period, so a chunk of ``horizon``
+        steps should be reached just as its replacement is due; the transport
+        spreads the chunk's rows evenly up to this deadline.
+
+        Example:
+            >>> from openral_core.schemas import Action, ControlMode
+            >>> from openral_hal.openarm_real import OpenArmRealHAL
+            >>> hal = OpenArmRealHAL(require_can_links=False)  # manifest: 30 Hz
+            >>> a = Action(
+            ...     control_mode=ControlMode.JOINT_POSITION,
+            ...     horizon=3,
+            ...     joint_targets=[[0.0] * 16] * 3,
+            ... )
+            >>> round(hal.time_from_start_s(a), 3)
+            0.1
+        """
+        return max(int(action.horizon), 1) / self._control_rate_hz
 
     # ── Safety ─────────────────────────────────────────────────────────────────
 

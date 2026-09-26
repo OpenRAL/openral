@@ -76,10 +76,12 @@ nav:
     - Write & publish an rSkill: tutorials/rskill/write-and-publish-an-rskill.md
     - Quantize an rSkill: tutorials/rskill/quantize-an-rskill.md
     - Deploy on a robot & open the dashboard: tutorials/deploy/deploy-run-and-dashboard.md
+    - OpenArm real-cell world-voxel check: tutorials/deploy/openarm-real-world-voxel-check.md
   - Architecture:
     - Overview: architecture/overview.md
     - Repo map: architecture/repo-map.md
     - Methods inventory: METHODS.md
+    - ROS 2 topic graph: topics/README.md
     # The repo state map ships as a static .html under docs/architecture/ —
     # mkdocs nav only renders Markdown, so it is linked from
     # architecture/overview.md instead of listed here. mkdocs copies it to
@@ -105,6 +107,7 @@ nav:
     - RoboCasa start-state collision census: reference/robocasa-start-state-census.md
     - Tight link geometry in the safety kernel: reference/collision-tight-geometry.md
     - Staged hull narrow phase in the safety kernel: reference/collision-hull-narrow-phase.md
+    - Collision geometry review (one fitter, capsules and hulls, per robot): reference/collision-geometry-review.md
     - The live world map, measured: reference/world-map-fidelity.md
     - RoboCasa carry survey (base translation while carrying): reference/robocasa-carry-survey.md
     - Collision-safety alternatives survey: reference/collision-safety-alternatives-survey.md

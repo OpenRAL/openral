@@ -25,7 +25,7 @@ import time
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
-from openral_core import sensor_name_to_slot
+from openral_core import CameraTopicKind, camera_topic, sensor_name_to_slot
 
 from openral_hal.convex_distance import ConvexDistance, convex_geom_distance
 from openral_hal.mobile_base_bridge import describes_mobile_base
@@ -800,11 +800,13 @@ def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]
         half_extents = getattr(entry.shape, "half_extents_m", None)
         half = np.asarray(half_extents if half_extents is not None else [], dtype=np.float64)
         if body_id is None or half.size != _XYZ:
-            unresolved.append(name)
+            if name not in links and name not in unresolved:
+                unresolved.append(name)
             continue
         points = _body_collision_points(model, int(body_id))
         if points.shape[0] == 0:
-            unresolved.append(name)
+            if name not in links and name not in unresolved:
+                unresolved.append(name)
             continue
         origin = np.asarray(entry.origin_xyz_rpy, dtype=np.float64)
         rot = _rpy_to_matrix(float(origin[3]), float(origin[4]), float(origin[5]))
@@ -823,6 +825,11 @@ def collision_model_mesh_slop(model: Any, description: Any) -> dict[str, object]
             max(float(np.min(np.linalg.norm(local - corner, axis=1))) for corner in corners)
         )
         worst = max(worst, corner_slop)
+        if name in unresolved:  # a capsule entry came first; the box resolves the link
+            unresolved.remove(name)
+        previous = links.get(name)
+        if isinstance(previous, dict) and float(previous["corner_slop_m"]) >= corner_slop:
+            continue  # a link with several boxes keeps its worst one
         tight = getattr(entry, "tight_geometry", None)
         overhang = None if tight is None else tight.hull_overhang_m
         hull_vertices = () if tight is None else (tight.hull_vertices_m or ())
@@ -2363,6 +2370,7 @@ def candidate_chunk_digest(
     rskill_id: str = "",
     trace_id: str = "",
     tick_index: int = 0,
+    runner_session_id: int = 0,
 ) -> dict[str, object]:
     """One ``openral_msgs/ActionChunk``'s fields as a JSON-safe FK input.
 
@@ -2380,6 +2388,10 @@ def candidate_chunk_digest(
     ``flat`` is reshaped into ``horizon`` rows of ``n_dof``; a length that
     disagrees with ``horizon * n_dof`` is reported as-is under
     ``flat`` with ``shape_mismatch: true`` rather than silently truncated.
+
+    ``runner_session_id`` (0 = a legacy producer) is recorded with ``tick_index``:
+    the tick number alone is ambiguous across a runner restart, so an adjudicator
+    needs the pair to tell which runner produced the chunk the kernel stopped on.
 
     Example:
         >>> digest = candidate_chunk_digest(
@@ -2404,6 +2416,7 @@ def candidate_chunk_digest(
         "rskill_id": str(rskill_id),
         "trace_id": str(trace_id),
         "tick_index": int(tick_index),
+        "runner_session_id": int(runner_session_id),
     }
     if int(horizon) > 0 and int(n_dof) > 0 and len(values) == int(horizon) * int(n_dof):
         width = int(n_dof)
@@ -2533,6 +2546,7 @@ class SimSensorBridge:
         depth_max_range_m: float = 5.0,
         depth_pixel_stride: int = 4,
         idle_hold_ms: float = 2000.0,
+        attachment_heartbeat: bool = True,
         on_step: Any = None,
         on_attachment_perception_ready: Any = None,
     ) -> None:
@@ -2561,6 +2575,7 @@ class SimSensorBridge:
         self._node = node
         self._on_step = on_step
         self._on_attachment_perception_ready = on_attachment_perception_ready
+        self._attachment_heartbeat = attachment_heartbeat
         self._hal = hal
         self._description = description
         self._viewer_enabled = viewer_enabled
@@ -2861,15 +2876,13 @@ class SimSensorBridge:
         from sensor_msgs.msg import CameraInfo
         from sensor_msgs.msg import Image as RosImage
 
-        pub = self._node.create_publisher(
-            RosImage, f"/openral/cameras/{name}/image", self._camera_qos
-        )
+        pub = self._node.create_publisher(RosImage, camera_topic(name), self._camera_qos)
         self._image_pubs[name] = pub
         self._camera_info_pubs[name] = self._node.create_publisher(
-            CameraInfo, f"/openral/cameras/{name}/camera_info", self._camera_qos
+            CameraInfo, camera_topic(name, CameraTopicKind.CAMERA_INFO), self._camera_qos
         )
         self._node.get_logger().info(
-            f"SimSensorBridge: advertising /openral/cameras/{name}/image "
+            f"SimSensorBridge: advertising {camera_topic(name)} "
             f"(obs key '{self._image_obs_key.get(name, name)}')"
         )
         return pub
@@ -2916,7 +2929,7 @@ class SimSensorBridge:
                         f"SimSensorBridge: no frame for camera '{name}' "
                         f"(expected obs key '{obs_key}' or name '{name}'); "
                         f"available keys: {sorted(images.keys())}. "
-                        f"/openral/cameras/{name}/image stays unadvertised "
+                        f"{camera_topic(name)} stays unadvertised "
                         "until a frame arrives. Check the scene's --robot "
                         "override matches sensor layout, and whether this "
                         "camera is opt-in (robocasa's synthetic 'head' nav cam "
@@ -3410,10 +3423,36 @@ class SimSensorBridge:
 
     # -- Depth PointCloud2 --
     def _setup_attachment_state(self) -> None:
-        """Subscribe atomic attachment snapshots when the sim HAL supports them."""
+        """Publish attachment snapshots; stage revisions when the sim HAL supports them.
+
+        Every sim HAL gets the publisher and its 5 Hz heartbeat. The deploy
+        launch enables the kernel's attached-payload check for every sim robot
+        with collision capsules, and that check is fail-closed on a payload it
+        cannot verify — including one it has *never heard about*: a world state
+        whose ``attachment_stamp_ns`` is still 0 is treated as unverifiable and
+        every JOINT chunk is dropped as ``attached_overflow``. A HAL without the
+        attachment API (``update_attached_objects`` / ``read_attached_objects``,
+        i.e. every ``MujocoArmHAL`` twin) has no attach mechanics at all, so
+        "nothing attached, fresh" is the exact truth for it, and saying so is
+        what lets the kernel certify its motion. Seen on the OpenArm twin,
+        qorin1 2026-09-22: zero publishers on ``/openral/attachment_state`` and
+        not one joint chunk ever reached the arm. Only the staging path — the
+        subscriptions and the MuJoCo evidence tracker that drive real
+        attach/release transitions — needs the API.
+
+        ``attachment_heartbeat=False`` (the HAL node sets it when its vision
+        attachment leg is on) opens nothing here for a HAL without the API:
+        that leg publishes revisions on the same latched topic, and a
+        revision-0 heartbeat beside it would move the aggregator's revision
+        backwards on every timer tick.
+        """
         update = getattr(self._hal, "update_attached_objects", None)
         read = getattr(self._hal, "read_attached_objects", None)
-        if not callable(update) or not callable(read):
+        if not self._attachment_heartbeat and not (callable(update) and callable(read)):
+            self._node.get_logger().info(
+                "attachment heartbeat off: another attachment authority publishes "
+                "/openral/attachment_state"
+            )
             return
         from openral_msgs.msg import AttachmentState
         from rclpy.qos import (
@@ -3427,6 +3466,19 @@ class SimSensorBridge:
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
             depth=1,
         )
+        self._attachment_pub = self._node.create_publisher(
+            AttachmentState,
+            "/openral/attachment_state",
+            qos,
+        )
+        self._attachment_timer = self._node.create_timer(
+            0.2,
+            self._publish_attachment_state,
+        )
+        update = getattr(self._hal, "update_attached_objects", None)
+        read = getattr(self._hal, "read_attached_objects", None)
+        if not callable(update) or not callable(read):
+            return
         self._attachment_sub = self._node.create_subscription(
             AttachmentState,
             "/openral/attachment_state",
@@ -3453,15 +3505,6 @@ class SimSensorBridge:
             "/openral/world_voxels",
             self._on_attachment_world_voxels,
             voxel_qos,
-        )
-        self._attachment_pub = self._node.create_publisher(
-            AttachmentState,
-            "/openral/attachment_state",
-            qos,
-        )
-        self._attachment_timer = self._node.create_timer(
-            0.2,
-            self._publish_attachment_state,
         )
         handles = getattr(self._hal, "mujoco_handles", lambda: None)()
         if handles is not None:
@@ -3818,16 +3861,15 @@ class SimSensorBridge:
             depth=1,
         )
         for spec in depth_specs:
-            base = f"/openral/cameras/{spec.name}"
             self._depth_pubs[spec.name] = self._node.create_publisher(
-                PointCloud2, f"{base}/points", depth_qos
+                PointCloud2, camera_topic(spec.name, CameraTopicKind.POINTS), depth_qos
             )
             # Dense depth image + CameraInfo for nvblox's depth integrator.
             self._depth_image_pubs[spec.name] = self._node.create_publisher(
-                Image, f"{base}/depth/image", depth_qos
+                Image, camera_topic(spec.name, CameraTopicKind.DEPTH_IMAGE), depth_qos
             )
             self._depth_info_pubs[spec.name] = self._node.create_publisher(
-                CameraInfo, f"{base}/depth/camera_info", info_qos
+                CameraInfo, camera_topic(spec.name, CameraTopicKind.DEPTH_CAMERA_INFO), info_qos
             )
         self._depth_timer = self._node.create_timer(
             1.0 / max(self._depth_rate_hz, 1.0), self._publish_depth_clouds
@@ -4266,6 +4308,7 @@ class SimSensorBridge:
                 rskill_id=str(msg.rskill_id),  # type: ignore[attr-defined]
                 trace_id=str(msg.trace_id),  # type: ignore[attr-defined]
                 tick_index=int(msg.tick_index),  # type: ignore[attr-defined]
+                runner_session_id=int(msg.runner_session_id),  # type: ignore[attr-defined]
             )
         )
 

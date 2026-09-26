@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import site
 import subprocess
 import sys
@@ -69,6 +70,16 @@ if TYPE_CHECKING:
     # `from __future__ import annotations` keeps the annotation a string.
     from openral_core import RobotDescription, SensorSpec
 from lifecycle_msgs.msg import Transition
+from openral_core import (
+    CameraTopicKind,
+    DeployRuntime,
+    apply_sensor_overlays,
+    camera_topic,
+    deploy_cloud_topic,
+    merge_deploy_sensors,
+    publishing_sensors,
+    resolve_sensor_overlays,
+)
 from openral_foxglove_bringup.topics import (
     ASSET_URI_ALLOWLIST,
     BUCKET1_TOPIC_WHITELIST,
@@ -165,8 +176,36 @@ def _run_resource_attrs(hal_mode: str) -> str:
 
 
 def _world_voxel_margin_m(hal_mode: str) -> float:
-    """Return the calibrated world-voxel clearance for this boundary."""
-    return 0.0 if hal_mode == "sim" else 0.02
+    """Return the calibrated world-voxel clearance for this boundary.
+
+    The real value is owned by ``openral_core.depth_extrinsic``, whose extrinsic pass
+    limits are derived from it: a margin change re-tightens the calibration gate.
+    """
+    from openral_core.depth_extrinsic import REAL_WORLD_VOXEL_MARGIN_M
+
+    return 0.0 if hal_mode == "sim" else REAL_WORLD_VOXEL_MARGIN_M
+
+
+def _cpuset_prefix(env: str) -> str:
+    """A ``taskset`` launch prefix from a cpuset env var, or ``""`` for none.
+
+    ``OPENRAL_PERCEPTION_CPUSET`` pins ``octomap_server`` and the voxel bridge;
+    ``OPENRAL_RUNTIME_CPUSET`` pins the runtime node (inference and its 750 Hz
+    joint-state ingest). Both are unset by default: nothing is pinned and the
+    graph runs as before. The seam exists because a deploy host has no
+    privilege to raise priorities (``ulimit -e`` 0, no ``sudo`` on Thor), while
+    affinity needs none, and the octree stalls of 1.1-1.4 s measured on Thor
+    (2026-09-24) came from CPU contention with the runtime, not from the
+    camera. A value is a ``taskset -c`` list (``"12,13"``, ``"0-9"``); an
+    unparseable one is refused loudly rather than pinning to a set nobody
+    chose.
+    """
+    raw = os.environ.get(env, "").strip()
+    if not raw:
+        return ""
+    if not re.fullmatch(r"[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*", raw):
+        raise RuntimeError(f"{env}={raw!r} is not a taskset cpu list (e.g. '12,13' or '0-9')")
+    return f"taskset -c {raw} "
 
 
 def _collision_scale_params() -> dict[str, float]:
@@ -301,6 +340,71 @@ def _world_voxel_max_cells(resolution_m: float) -> int:
     return per_axis**3
 
 
+# The per-rig ``DeployRuntime`` fields ``openral deploy`` forwards as launch args.
+_RIG_LAUNCH_ARGS = (
+    "world_voxel_deadline_s",
+    "max_octree_age_s",
+    "world_voxel_data_age_budget_s",
+    "robot_self_filter_padding_m",
+)
+
+
+def _rig_from_launch_args(raw: dict[str, str]) -> DeployRuntime:
+    """The per-rig ``DeployRuntime`` values from their launch args (empty = schema default).
+
+    The kernel's voxel deadline is how long it trusts the last ``/openral/world_voxels``
+    grid; the bridge's bound is how long it republishes the last octree
+    (``octomap_server`` publishes only when it inserts a cloud, so a dead camera is a
+    silent octree). Past both, the kernel drops with ``DROP_VOXEL_UNAVAILABLE`` (hazard
+    log Entry 033). The data-age budget bounds the age of the world behind a grid, from
+    its ``source_stamp`` (Entry 034). Validated through ``DeployRuntime``, which refuses
+    an octree age above the deadline, so the kernel -- not the bridge -- fails closed
+    whoever launches this file.
+
+    Example:
+        >>> _rig_from_launch_args({}).voxel_freshness_s
+        (1.0, 1.0)
+        >>> rig = _rig_from_launch_args({"world_voxel_deadline_s": "2.0", "max_octree_age_s": ""})
+        >>> rig.voxel_freshness_s, rig.world_voxel_data_age_budget_s
+        ((2.0, 2.0), 1.5)
+    """
+    return DeployRuntime.model_validate({k: float(v) for k, v in raw.items() if v.strip()})
+
+
+# Where the filtered cloud is published for octomap_server. Not a camera topic
+# (ADR-0108): it is no longer one camera's cloud, it is the world map's input.
+_SELF_FILTERED_CLOUD_TOPIC = "/openral/world_cloud/self_filtered"
+
+
+def _self_filter_params(
+    collision_params: dict[str, object],
+    description: object,
+    joint_states_topic: str,
+    padding_m: float,
+) -> dict[str, object]:
+    """Parameters for ``openral_octomap_bridge``'s ``robot_self_filter``.
+
+    The filter poses the SAME collision model the kernel checks (every
+    ``collision_*`` key the kernel receives), indexed by the manifest's joint
+    names, with each joint's ``sim_joint_name`` as an alias so a vendor
+    ``/joint_states`` that spells joints the upstream way still matches.
+    ``joint_states_topic`` is the one the runtime nodes read
+    (``hal_joint_states_topic``: the scene's override, else a real
+    ros2_control HAL's rate-limited ``~/joint_states``, else ``/joint_states``),
+    so the filter poses the robot from the same stream the runner acts on.
+    ``padding_m`` is the rig's ``DeployRuntime.robot_self_filter_padding_m``.
+    """
+    joints = list(getattr(description, "joints", []))
+    params: dict[str, object] = {
+        k: v for k, v in collision_params.items() if k.startswith("collision_")
+    }
+    params["collision_joint_names"] = [j.name for j in joints]
+    params["collision_joint_aliases"] = [j.sim_joint_name or "" for j in joints]
+    params["joint_states_topic"] = joint_states_topic
+    params["padding_m"] = padding_m
+    return params
+
+
 def _octomap_coverage_radius() -> float:
     """How far from the grid centre the world map has to reach.
 
@@ -391,10 +495,10 @@ def _resolve_clock_origin(value: str) -> str:
 def _stereo_camera_topics(names_csv: str) -> tuple[str, str, str, str] | None:
     """Map a ``"<left>,<right>"`` camera-name CSV to the four stereo topics.
 
-    Returns ``(left_image, left_camera_info, right_image, right_camera_info)`` by
-    the OpenRAL ``/openral/cameras/<name>/image`` (+ ``/camera_info``) convention,
-    or ``None`` when unset or not exactly two names — in which case the visual
-    SLAM impl keeps its own default ``left``/``right`` topics.
+    Returns ``(left_image, left_camera_info, right_image, right_camera_info)`` built by
+    ``openral_core.camera_topic``, or ``None`` when unset or not exactly two names — in
+    which case the stereo visual SLAM impl gets no camera topics and refuses to start
+    (its launch arguments carry no default, ADR-0108).
 
     Example:
         >>> t = _stereo_camera_topics("l, r")
@@ -408,11 +512,134 @@ def _stereo_camera_topics(names_csv: str) -> tuple[str, str, str, str] | None:
         return None
     left, right = parts
     return (
-        f"/openral/cameras/{left}/image",
-        f"/openral/cameras/{left}/camera_info",
-        f"/openral/cameras/{right}/image",
-        f"/openral/cameras/{right}/camera_info",
+        camera_topic(left),
+        camera_topic(left, CameraTopicKind.CAMERA_INFO),
+        camera_topic(right),
+        camera_topic(right, CameraTopicKind.CAMERA_INFO),
     )
+
+
+def _primary_rgb_camera(sensors: list[SensorSpec]) -> str:
+    """The RGB sensor the perception legs default to, or ``""`` when there is none.
+
+    Prefers an optical-framed RGB camera (its intrinsics/extrinsics resolve directly), else
+    the first RGB sensor. Shared by the object detector's ``locate_in_view`` camera and the
+    reasoner's completion camera so both watch the same view — a hard-coded name is a dead
+    topic on every robot that spells its cameras differently. Pass ``publishing_sensors``,
+    not the raw manifest: on a real deploy only bound cameras have a topic.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> mobile = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+        >>> _primary_rgb_camera(mobile.sensors)
+        'shoulder_left'
+        >>> so101 = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+        >>> _primary_rgb_camera(so101.sensors)
+        'top'
+    """
+    rgb = [s for s in sensors if s.modality == "rgb"]
+    return next(
+        (s.name for s in rgb if s.frame_id.endswith("_optical_frame")),
+        rgb[0].name if rgb else "",
+    )
+
+
+# Sim runner joint-state window: the former node default. A sim bridge's
+# /joint_states is not the rig the manifest's window was measured on, so sim
+# keeps it rather than the (possibly much tighter) real value. It is also the
+# ceiling of a real runner window: the value every real deploy shipped with.
+_SIM_JOINT_STATE_STALENESS_S = 0.5
+
+
+def _runner_joint_state_staleness_s(
+    description: RobotDescription, hal_mode: str, *, republished: bool
+) -> float:
+    """The runner's joint-state freshness window for this deploy.
+
+    Real, raw ``/joint_states``: the manifest's
+    ``safety.joint_state_staleness_limit_s`` — the same number ``build_hal``
+    hands the real HAL, so the two cannot disagree.
+
+    Real, HAL republish (``republished``: the runner reads the HAL node's
+    rate-limited ``~/joint_states``, see ``hal_joint_states_topic``): source
+    staleness plus two republish periods, ``limit + 2 / control_freq_hz``. The
+    manifest window was measured on the raw stream; the republish timer adds up
+    to one period of age per sample, and a window of ~3 periods (OpenArm: 0.1 s
+    at 30 Hz) trips on two late timer ticks under GIL load. The HAL itself still
+    checks its source at the manifest value. Capped at
+    ``_SIM_JOINT_STATE_STALENESS_S`` so no real runner is looser than it shipped.
+
+    Sim: ``_SIM_JOINT_STATE_STALENESS_S``.
+
+    Raises:
+        ROSConfigError: ``hal_mode == "real"`` and the manifest declares no
+            window, or ``republished`` and it declares no
+            ``action_spec.control_freq_hz`` (the republish rate).
+    """
+    if hal_mode != "real":
+        return _SIM_JOINT_STATE_STALENESS_S
+    from openral_core.exceptions import ROSConfigError
+
+    declared = description.safety.joint_state_staleness_limit_s
+    if declared is None:
+        raise ROSConfigError(
+            f"robot {description.name!r} declares no safety.joint_state_staleness_limit_s; "
+            "a real deploy needs the measured window (tools/joint_state_staleness_probe.py)."
+        )
+    if not republished:
+        return float(declared)
+    rate_hz = description.control_rate_hz
+    if rate_hz is None:
+        raise ROSConfigError(
+            f"robot {description.name!r} declares no action_spec.control_freq_hz; the "
+            "runner reads the HAL's ~/joint_states republish at that rate and needs it "
+            "to size its staleness window."
+        )
+    return min(float(declared) + 2.0 / rate_hz, _SIM_JOINT_STATE_STALENESS_S)
+
+
+def _depth_camera(description: RobotDescription) -> str:
+    """Name of the manifest's first depth sensor with intrinsics, else ``""``.
+
+    The sensors the sim bridge back-projects (``SensorSpec.is_depth_camera``) and
+    publishes ``depth/image`` + ``depth/camera_info`` + ``points`` for.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> _depth_camera(RobotDescription.from_yaml("robots/panda_mobile/robot.yaml"))
+        'front_depth'
+    """
+    return next((s.name for s in description.sensors if s.is_depth_camera), "")
+
+
+def _octomap_cloud_topic(pinned: str, description: RobotDescription, hal_mode: str) -> str:
+    """The cloud ``octomap_server`` maps (``openral_core.deploy_cloud_topic``), never silence.
+
+    A scene-pinned ``octomap_cloud_topic`` wins (a real depth driver's topic); otherwise, in
+    sim, the cloud the sim sensor bridge back-projects for the manifest's one depth sensor
+    with intrinsics. ``openral deploy`` refuses the same cases before launch; this repeats
+    the check for a direct ``ros2 launch``.
+
+    Raises:
+        ROSConfigError: nothing publishes a cloud (a real deploy with nothing pinned, or a
+            robot with no depth sensor) or several depth sensors and nothing pinned --
+            never spawn octomap_server against a topic nothing publishes.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> _octomap_cloud_topic("", RobotDescription.from_yaml("robots/openarm/robot.yaml"), "sim")
+        '/openral/cameras/head_zed/points'
+    """
+    topic = deploy_cloud_topic(description.sensors, pinned=pinned, hal_mode=hal_mode)
+    if not topic:
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"octomap enabled but nothing publishes a cloud for robot {description.name!r} "
+            f"(hal_mode={hal_mode}): pin octomap_cloud_topic to the depth driver's "
+            "PointCloud2 topic, or declare a depth sensor with intrinsics for sim"
+        )
+    return topic
 
 
 def _build_driver_includes(scene_drivers: list, deploy_config: str) -> list:  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, imported lazily
@@ -642,6 +869,7 @@ def _build_visual_slam_includes(
     mono_camera: str = "",
     mono_depth_frame: str = "",
     depth_sidecar_autostart: bool = True,
+    nav2_depth_camera: str = "",
 ) -> list[object]:
     """Build the cuVSLAM (+ optional nvblox) includes for the visual backend.
 
@@ -651,9 +879,11 @@ def _build_visual_slam_includes(
     ``visual_impl`` picks the engine — ``"pycuvslam"`` composes the in-process PyCuVSLAM wheel
     node (``pycuvslam.launch.py``, rectified stereo, no Isaac ROS apt stack); anything else
     composes the composable ``isaac_ros_visual_slam`` C++ node (``cuvslam.launch.py``).
-    ``stereo_cameras_csv`` (``"<left>,<right>"``) overrides the impl's default left/right
-    topics, keyed to each impl's own arg names. ``enable_nav2`` also composes nvblox (cuVSLAM
-    gives pose, not an occupancy grid).
+    ``stereo_cameras_csv`` (``"<left>,<right>"``) supplies the stereo camera topics, keyed to
+    each impl's own arg names (the impls carry no default, ADR-0108). ``enable_nav2`` also
+    composes nvblox (cuVSLAM gives pose, not an occupancy grid), fed ``nav2_depth_camera``'s
+    depth stream (the manifest's depth sensor, ``_depth_camera``); empty leaves nvblox without
+    an input, which its depth height filter refuses at startup.
 
     ``mono_camera`` (pycuvslam only) selects the mono RGBD path: one RGB camera + the DA3
     metric-depth provider. Auto-composes ``depth_provider_node`` (RGB → 32FC1 depth, framed at
@@ -670,10 +900,10 @@ def _build_visual_slam_includes(
     sim_time_arg = "true" if use_sim_time else "false"
     mono_camera = mono_camera.strip()
     if visual_impl == "pycuvslam" and mono_camera:
-        rgb_image = f"/openral/cameras/{mono_camera}/image"
-        rgb_info = f"/openral/cameras/{mono_camera}/camera_info"
-        depth_image = f"/openral/cameras/{mono_camera}/depth/image"
-        depth_info = f"/openral/cameras/{mono_camera}/depth/camera_info"
+        rgb_image = camera_topic(mono_camera)
+        rgb_info = camera_topic(mono_camera, CameraTopicKind.CAMERA_INFO)
+        depth_image = camera_topic(mono_camera, CameraTopicKind.DEPTH_IMAGE)
+        depth_info = camera_topic(mono_camera, CameraTopicKind.DEPTH_CAMERA_INFO)
         depth_frame = mono_depth_frame or f"{mono_camera}_optical_frame"
         actions: list[object] = []
         if depth_sidecar_autostart:
@@ -787,6 +1017,18 @@ def _build_visual_slam_includes(
                 launch_arguments={
                     "use_sim_time": sim_time_arg,
                     "robot_yaml": robot_yaml,
+                    **(
+                        {
+                            "depth_image_topic": camera_topic(
+                                nav2_depth_camera, CameraTopicKind.DEPTH_IMAGE
+                            ),
+                            "depth_camera_info_topic": camera_topic(
+                                nav2_depth_camera, CameraTopicKind.DEPTH_CAMERA_INFO
+                            ),
+                        }
+                        if nav2_depth_camera
+                        else {}
+                    ),
                 }.items(),
             )
         )
@@ -842,6 +1084,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     hal_params_file = LaunchConfiguration("hal_params_file").perform(context)
     reset_to_pose_service = LaunchConfiguration("reset_to_pose_service").perform(context)
     approach_skill_id = LaunchConfiguration("approach_skill_id").perform(context)
+    preload_rskill_id = LaunchConfiguration("preload_rskill_id").perform(context)
+    preload_rskill_revision = LaunchConfiguration("preload_rskill_revision").perform(context)
+    preload_prompt = LaunchConfiguration("preload_prompt").perform(context)
     place_declaration_json = LaunchConfiguration("place_declaration_json").perform(context)
     # Record the deploy session to a rosbag2 mcap.
     dataset_out = LaunchConfiguration("dataset_out").perform(context)
@@ -917,6 +1162,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         context
     ).lower() in ("1", "true", "yes")
     octomap_cloud_topic = LaunchConfiguration("octomap_cloud_topic").perform(context)
+    rig = _rig_from_launch_args(
+        {name: LaunchConfiguration(name).perform(context) for name in _RIG_LAUNCH_ARGS}
+    )
+    world_voxel_deadline_s, max_octree_age_s = rig.voxel_freshness_s
     # Object-detection perception leg. Off by default; when on,
     # the ROS-Image detector node runs RT-DETR over the agentview RGB tee and
     # publishes ObjectsMetadata to /openral/perception/objects, which the
@@ -1029,6 +1278,48 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # kernel reload, not by mounting a different envelope at boot.
     description = RobotDescription.from_yaml(robot_yaml)
     description.validate_for_e2e_pipeline()  # loud failure on missing fields
+    # The deploy scene's sensors and drivers, loaded once: the reasoner's completion camera,
+    # the detector's camera, WorldState's subscriptions and the vendor driver includes all
+    # need to know which cameras exist (and, on a real deploy, which are bound).
+    scene_sensors: list[SensorSpec] = []
+    scene_drivers: list = []  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, deferred import
+    joint_states_override: str | None = None
+    scene_unit: str | None = None
+    if deploy_config:
+        from openral_core import DeployScene
+
+        _scene = DeployScene.from_yaml(deploy_config)
+        scene_sensors = list(_scene.sensors)
+        scene_drivers = list(_scene.drivers)
+        scene_unit = _scene.robot_unit
+        if _scene.runtime is not None:
+            joint_states_override = _scene.runtime.joint_states_topic
+    from openral_hal.resolver import hal_joint_states_topic
+
+    # The Python nodes' JointState topic: the scene's override, else the HAL's
+    # rate-limited `~/joint_states` on a real ros2_control arm (whose global
+    # `/joint_states` is the broadcaster's full-rate stream), else "" = default.
+    runtime_joint_states_topic = (
+        hal_joint_states_topic(
+            description,
+            mode="real" if hal_mode == "real" else "sim",
+            hal_node_name=hal_node_name,
+            override=joint_states_override,
+        )
+        or ""
+    )
+    # This host's unit overlay (scene `robot_unit`, or $OPENRAL_ROBOT_UNIT which `openral
+    # deploy` resolved identically before launching): per-host bindings and per-unit mount
+    # calibration replace the manifest's nominal values for every consumer below.
+    description = description.model_copy(
+        update={
+            "sensors": apply_sensor_overlays(
+                description.sensors,
+                resolve_sensor_overlays(robot_yaml, scene_unit, required=hal_mode == "real"),
+            )
+        }
+    )
+    publishing = publishing_sensors(description.sensors, scene_sensors, hal_mode)
     envelope = compute_intersection(
         description, skill=None, deploy=workcell.safety if workcell is not None else None
     )
@@ -1165,7 +1456,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # See `_world_voxel_max_cells` for why a hand-kept derived constant
             # is the wrong shape here.
             "world_voxel_max_cells": _world_voxel_max_cells(_octomap_resolution(hal_mode)),
-            "world_voxel_deadline_ms": 1000.0,
+            "world_voxel_deadline_ms": world_voxel_deadline_s * 1000.0,
+            # How old the world behind a grid may be at check time (Entry 034).
+            "world_voxel_data_age_budget_ms": rig.world_voxel_data_age_budget_s * 1000.0,
         }
 
     kernel_params = {**kernel_params, **_collision_scale_params()}
@@ -1386,6 +1679,14 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # The completion-camera topic is raw (bottom-up for LIBERO/MuJoCo);
     # mirror OPENRAL_DASHBOARD_FLIP_180 so the VLM judges an upright frame (the topic
     # itself is not flipped — sim_sensor_bridge flips only the dashboard thumbnail).
+    # The node's own default names a ``top`` camera that most robots do not declare; derive
+    # the view from the cameras that actually publish on this deploy (same rule as the
+    # detector) so the VLM completion check gets frames on every robot — on a real cell that
+    # means a bound camera. Empty disables the subscription when there is none.
+    _completion_camera = _primary_rgb_camera(publishing)
+    reasoner_params["completion_camera_topic"] = (
+        camera_topic(_completion_camera) if _completion_camera else ""
+    )
     reasoner_params["completion_camera_flip_180"] = os.environ.get(
         "OPENRAL_DASHBOARD_FLIP_180", ""
     ) not in ("", "0", "false", "False")
@@ -1436,62 +1737,63 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # in sim, SimSensorBridge renders the manifest's cameras only, so a
     # scene-only camera would be a subscription with no publisher (a stale
     # diagnostic forever).
-    scene_sensors: list[SensorSpec] = []
-    scene_drivers: list = []  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, deferred import
-    if deploy_config:
-        from openral_core import DeployScene
-
-        _scene = DeployScene.from_yaml(deploy_config)
-        scene_sensors = list(_scene.sensors)
-        scene_drivers = list(_scene.drivers)
-        if hal_mode == "real":
-            scene_rgb = [
-                s.name
-                for s in scene_sensors
-                if s.modality == "rgb" and s.name not in rgb_camera_names
-            ]
-            rgb_camera_names = [*rgb_camera_names, *scene_rgb]
+    if deploy_config and hal_mode == "real":
+        scene_rgb = [
+            s.name for s in scene_sensors if s.modality == "rgb" and s.name not in rgb_camera_names
+        ]
+        rgb_camera_names = [*rgb_camera_names, *scene_rgb]
 
     # Cameras that will actually publish on a real deploy: a declared RGB sensor
     # only gets a reader (and therefore a topic) when it carries a
-    # `deploy_binding`. A sim-only sensor has none — `robots/openarm` declares
-    # its `top` camera as a MuJoCo render — so on a real cell that slot has zero
+    # `deploy_binding`. A sim-only sensor (a MuJoCo render the manifest never
+    # bound to hardware) has none — so on a real cell that slot has zero
     # publishers while the Foxglove bridge still advertises the channel (its
     # allowlist is the pattern `/openral/cameras/.*/image`), and the panel reads
-    # "Image topic does not exist", indistinguishable from a broken camera. A
-    # deploy scene fixes that by binding the slot to real hardware. The
+    # "Image topic does not exist", indistinguishable from a broken camera. The
+    # robot manifest fixes that by binding the slot to real hardware. The
     # Foxglove layout is generated from this list rather than a hardcoded
     # default, which cannot know the scene (see `_write_foxglove_layout`).
     # In sim the publishers are SimSensorBridge's renders of the manifest's RGB
     # sensors (deploy_binding or not) — exactly `rgb_camera_names`, which already
     # leaves out scene-only hardware cameras there.
-    # On real, read the merged list: a scene entry overrides the manifest sensor
-    # of the same name, so the raw pair could list a camera twice or keep one
-    # whose binding the scene replaced.
-    from openral_rskill_ros.sensor_leg import merge_deploy_sensors
-
+    # On real, read the merged list: the manifest's bound cameras plus the
+    # scene's bound workcell cameras (`merge_deploy_sensors` refuses a name clash).
     bound_rgb_camera_names = (
-        [
-            s.name
-            for s in merge_deploy_sensors(description.sensors, scene_sensors)
-            if s.modality == "rgb" and getattr(s, "deploy_binding", None) is not None
-        ]
+        [s.name for s in publishing if s.modality == "rgb"]
         if hal_mode == "real"
         else list(rgb_camera_names)
     )
     runtime = Node(
         package="openral_rskill_ros",
         executable="runtime_node",
+        prefix=_cpuset_prefix("OPENRAL_RUNTIME_CPUSET"),
         parameters=[
             {
                 "robot_yaml": robot_yaml,
                 # `[""]` is the node's own "no cameras" default: launch_ros cannot
                 # type an empty list and refuses it when the node starts.
                 "camera_names": rgb_camera_names or [""],
+                # World-state object-lift depth fallback: the same cloud octomap maps — the
+                # scene-pinned driver cloud when there is one (a real ZED publishes on its
+                # own topic, not the sim bridge's), else in sim the manifest depth
+                # sensor's; "" (a real deploy with nothing pinned) disables the fallback.
+                "object_depth_points_topic": deploy_cloud_topic(
+                    description.sensors, pinned=octomap_cloud_topic, hal_mode=hal_mode
+                ),
                 # 512 px RoboCasa renders can arrive at ~0.6 Hz wall time while
                 # idle. Keep joint/EE diagnostics at 0.5 s, but give simulated
                 # cameras enough room for one slow frame without stale flapping.
                 "image_staleness_limit_s": 5.0 if hal_mode == "sim" else 0.5,
+                # Joint state older than this aborts the blocking wait as a
+                # perception fault. The node has no default. Real: the manifest's
+                # safety.joint_state_staleness_limit_s (the HAL's window too), plus
+                # two republish periods when the runner reads the HAL's
+                # ~/joint_states; sim: the former node default (audit C F3).
+                "joint_state_staleness_limit_s": _runner_joint_state_staleness_s(
+                    description,
+                    hal_mode,
+                    republished=runtime_joint_states_topic == f"/{hal_node_name}/joint_states",
+                ),
                 # One grouped action may synchronously attach a payload, then
                 # wait for a transparent depth frame + the next OctoMap raster
                 # before acknowledging application. Real HALs keep the 5 s
@@ -1500,6 +1802,16 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 "rskill_search_paths": [_RSKILLS_DIR],
                 "reset_to_pose_service": reset_to_pose_service,
                 "approach_skill_id": approach_skill_id,
+                # Load the scene's policy before any goal exists, so the
+                # deadman watchdog's first-chunk window (armed on goal accept)
+                # never has to cover a multi-minute cold load. Empty = the
+                # first goal loads its own skill, as before.
+                "preload_rskill_id": preload_rskill_id,
+                "preload_rskill_revision": preload_rskill_revision,
+                "preload_prompt": preload_prompt,
+                # Applied by runtime_node to both composed nodes (world_state
+                # ingest + the runner's joint-state cache); "" = /joint_states.
+                "joint_states_topic": runtime_joint_states_topic,
                 # ADR-0097 — the scene's committed place-phase declaration for a
                 # direct dispatch. Empty (every scene today) = no declaration, so
                 # no place witness can arm and payload contact mid-carry stops.
@@ -1507,7 +1819,11 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # Attach the WorldCloudBridge → dashboard world.pointcloud when a
                 # voxel cloud exists: octomap's centers, or (mono visual SLAM)
                 # nvblox's ESDF cloud so the card shows the vision-built voxels.
-                "enable_world_cloud_bridge": enable_octomap or bool(slam_mono_camera),
+                # Dashboard-only (PNG + `world.pointcloud` span per cloud): with the
+                # dashboard off it still cost the runner's executor a Python
+                # deserialize of every octomap cloud, so it is gated on it.
+                "enable_world_cloud_bridge": (enable_octomap or bool(slam_mono_camera))
+                and enable_dashboard,
                 "world_cloud_topic": (
                     "/openral_nvblox/static_esdf_pointcloud"
                     if (slam_mono_camera and not enable_octomap)
@@ -1911,11 +2227,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # ray was cast. Same shape and reason as the URDF-root bridge above — the manifest owns the
     # geometry, not the launch file.
     #
-    # Manifest sensors UNION DeployScene sensors, scene winning on a name clash
-    # (`merge_deploy_sensors`'s own rule): iterating only the manifest would silently drop the
-    # mount publish for a workcell-mounted camera declared entirely at scene level.
-    from openral_rskill_ros.sensor_leg import merge_deploy_sensors
-
+    # Manifest sensors then DeployScene sensors (`merge_deploy_sensors`): a scene never names
+    # a robot sensor, so a robot sensor's pose is always the manifest's; iterating only the
+    # manifest would silently drop the mount publish for a workcell-mounted camera declared
+    # entirely at scene level.
     for sensor in merge_deploy_sensors(description.sensors, scene_sensors):
         if sensor.parent_frame is None or sensor.static_transform_xyz_rpy is None:
             continue
@@ -1992,6 +2307,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     mono_camera=slam_mono_camera,
                     mono_depth_frame=mono_depth_frame,
                     depth_sidecar_autostart=slam_depth_sidecar_autostart,
+                    nav2_depth_camera=_depth_camera(description),
                 )
             )
         else:
@@ -2101,6 +2417,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     octomap_fixed_frame, octomap_base_frame = _octomap_frames(description)
 
     if enable_octomap:
+        octomap_cloud_topic = _octomap_cloud_topic(octomap_cloud_topic, description, hal_mode)
         # The world-collision perception leg. octomap_server builds a 3-D OcTree from the
         # HAL's depth PointCloud2 (``synthesize_depth_image`` back-projected by
         # ``points_from_depth_grid`` → ``octomap_cloud_topic``), and openral_octomap_bridge
@@ -2110,11 +2427,47 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # odom→base_link broadcast); ``cloud_in`` is remapped to the robot's depth topic.
         # Requires ros-${ROS_DISTRO}-octomap-server + the openral_octomap_bridge package built —
         # opt-in, default off, like slam/nav2.
+        perception_prefix = _cpuset_prefix("OPENRAL_PERCEPTION_CPUSET")
+        # Real camera: remove the robot's (and a held payload's) own returns
+        # before octomap inserts the cloud, as the sim depth renderer does by
+        # making those bodies transparent. Sim needs no filter; a robot with
+        # no collision model has nothing to filter against.
+        octomap_input_topic = octomap_cloud_topic
+        self_filter_nodes: list = []  # type: ignore[type-arg]  # reason: launch_ros.actions.Node, deferred import
+        if hal_mode == "real" and has_collision_capsules:
+            octomap_input_topic = _SELF_FILTERED_CLOUD_TOPIC
+            self_filter_nodes.append(
+                Node(
+                    package="openral_octomap_bridge",
+                    executable="robot_self_filter",
+                    name="openral_robot_self_filter",
+                    namespace="",
+                    prefix=perception_prefix,
+                    parameters=[
+                        {
+                            **_self_filter_params(
+                                collision_params,
+                                description,
+                                runtime_joint_states_topic or "/joint_states",
+                                rig.robot_self_filter_padding_m,
+                            ),
+                            "use_sim_time": use_sim_time,
+                        }
+                    ],
+                    remappings=[
+                        ("cloud_in", octomap_cloud_topic),
+                        ("cloud_out", _SELF_FILTERED_CLOUD_TOPIC),
+                    ],
+                    additional_env=otel_env,
+                    output="screen",
+                )
+            )
         octomap_server = Node(
             package="octomap_server",
             executable="octomap_server_node",
             name="openral_octomap_server",
             namespace="",
+            prefix=perception_prefix,
             parameters=[
                 {
                     "resolution": _octomap_resolution(hal_mode),
@@ -2149,7 +2502,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "use_sim_time": use_sim_time,
                 }
             ],
-            remappings=[("cloud_in", octomap_cloud_topic)],
+            remappings=[("cloud_in", octomap_input_topic)],
             additional_env=otel_env,
             output="screen",
         )
@@ -2158,6 +2511,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             executable="octomap_voxel_bridge",
             name="openral_octomap_voxel_bridge",
             namespace="",
+            prefix=perception_prefix,
             parameters=[
                 {
                     "base_frame": octomap_base_frame,
@@ -2165,6 +2519,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "output_topic": "/openral/world_voxels",
                     "resolution": _octomap_resolution(hal_mode),
                     "coverage_radius_m": _octomap_coverage_radius(),
+                    # Stop republishing an octree that stopped arriving, so the
+                    # kernel's voxel deadline can fail closed (Entry 033).
+                    "max_octree_age_s": max_octree_age_s,
                     # Graph-wide clock domain — matches octomap_server above
                     # (sim-time without a /clock pins its TF lookups at 0).
                     "use_sim_time": use_sim_time,
@@ -2173,7 +2530,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             additional_env=otel_env,
             output="screen",
         )
-        extra_nodes.extend([octomap_server, octomap_bridge])
+        extra_nodes.extend([*self_filter_nodes, octomap_server, octomap_bridge])
 
     if enable_object_detector or locator_specs:
         # The perception leg runs when EITHER the continuous detector is on OR an on-demand
@@ -2206,16 +2563,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # reasoner.)
         from openral_core.exceptions import ROSConfigError
 
-        _rgb_sensors = [s for s in description.sensors if s.modality == "rgb"]
-        det_camera = next(
-            (s.name for s in _rgb_sensors if s.frame_id.endswith("_optical_frame")),
-            _rgb_sensors[0].name if _rgb_sensors else "",
-        )
+        det_camera = _primary_rgb_camera(publishing)
         if not det_camera:
             raise ROSConfigError(
-                f"object detector enabled but robot {description.name!r} declares no RGB sensor"
+                f"object detector enabled but robot {description.name!r} has no RGB camera "
+                f"that publishes on this deploy (hal_mode={hal_mode})"
             )
-        det_image_topic = f"/openral/cameras/{det_camera}/image"
+        det_image_topic = camera_topic(det_camera)
 
         # Shared QoS / clock note: clock domain follows the graph-wide flag
         # (see _resolve_clock_origin). The node stamps its output from the input
@@ -2344,17 +2698,19 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         reward_manifest = reward_monitor_manifest or str(
             pathlib.Path(_RSKILLS_DIR) / "robometer-4b" / "rskill.yaml"
         )
-        # Resolve the camera the monitor scores. Use the robot manifest's first RGB
-        # camera so Robometer follows the same default view order as the deploy graph;
-        # do not special-case wrist.
+        # Resolve the camera the monitor scores: the first RGB camera that publishes on
+        # this deploy (manifest order; on a real cell only bound cameras), so Robometer
+        # follows the same default view order as the deploy graph; do not special-case wrist.
         from openral_core.exceptions import ROSConfigError
 
-        reward_camera = next((s.name for s in description.sensors if s.modality == "rgb"), "")
+        # From the cameras that publish on this deploy (a bound camera on a real cell).
+        reward_camera = next((s.name for s in publishing if s.modality == "rgb"), "")
         if not reward_camera:
             raise ROSConfigError(
-                f"reward monitor enabled but robot {description.name!r} declares no RGB sensor"
+                f"reward monitor enabled but robot {description.name!r} has no RGB camera "
+                f"that publishes on this deploy (hal_mode={hal_mode})"
             )
-        reward_image_topic = f"/openral/cameras/{reward_camera}/image"
+        reward_image_topic = camera_topic(reward_camera)
         reward_monitor = Node(
             package="openral_perception_ros",
             executable="reward_monitor_node.py",
@@ -2387,27 +2743,30 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # only on demand, so it is NOT a lifecycle/VRAM peer the reasoner frees
         # before dispatching a policy.
         #
-        # Every manifest RGB camera is offered, not just the first: the reasoner
+        # Every publishing RGB camera is offered, not just the first: the reasoner
         # picks a viewpoint by camera id per query ("is the bowl on the shelf?"
         # wants a different view than "did the gripper close?"), and the node
         # caches each stream's latest frame precisely so it can answer about any
         # of them. The detector leg above resolves cameras the same way.
         scene_vlm_cameras = [
-            f"{s.name}=/openral/cameras/{s.name}/image"
-            for s in description.sensors
-            if s.modality == "rgb"
+            f"{s.name}={camera_topic(s.name)}" for s in publishing if s.modality == "rgb"
         ]
+        if not scene_vlm_cameras:
+            from openral_core.exceptions import ROSConfigError
+
+            # The node has no default camera (ADR-0108); refuse here, at launch, rather
+            # than let it die at start-up behind a graph that otherwise came up.
+            raise ROSConfigError(
+                f"scene VLM enabled but robot {description.name!r} has no RGB camera that "
+                f"publishes on this deploy (hal_mode={hal_mode})"
+            )
         scene_vlm_params: dict[str, object] = {
             "manifest_path": scene_vlm_manifest
             or str(pathlib.Path(_RSKILLS_DIR) / "qwen35-4b-nf4" / "rskill.yaml"),
             "use_sim_time": use_sim_time,
         }
-        if scene_vlm_cameras:
-            # Same empty-list-omission rule as lifecycle_peer_node_ids: launch_ros
-            # collapses an empty typed array to ``()`` and then rejects it. The node
-            # declares its own default (single primary_camera on image_topic).
-            scene_vlm_params["cameras"] = scene_vlm_cameras
-            scene_vlm_params["primary_camera"] = scene_vlm_cameras[0].split("=", 1)[0]
+        scene_vlm_params["cameras"] = scene_vlm_cameras
+        scene_vlm_params["primary_camera"] = scene_vlm_cameras[0].split("=", 1)[0]
         extra_nodes.append(
             Node(
                 package="openral_perception_ros",
@@ -2538,14 +2897,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 flush=True,
             )
 
-        # Bucket-2 converter. The layout's collision/voxel panels read
-        # `/openral/world_collisions_markers` + `/openral/world_voxels_cloud`,
-        # which are `visualization_msgs` / `sensor_msgs` re-publications of the
-        # custom `openral_msgs` world types — Foxglove renders the standard
-        # types natively and the custom ones not at all. Nothing else in the
-        # graph produces them, so without this the panels sit empty on every
+        # Bucket-2 converter. The layout's voxel panels read
+        # `/openral/world_voxels_cloud`, a `sensor_msgs` re-publication of the
+        # custom `openral_msgs/OccupancyVoxels` — Foxglove renders the standard
+        # type natively and the custom one not at all. Nothing else in the
+        # graph produces it, so without this the panels sit empty on every
         # deploy while the underlying world state is perfectly healthy.
-        # Read-only viz: it subscribes two topics and publishes two, and
+        # Read-only viz: it subscribes one topic and publishes one, and
         # actuates nothing.
         nodes.append(
             Node(
@@ -2623,6 +2981,36 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ),
         DeclareLaunchArgument(
+            "preload_rskill_id",
+            default_value="",
+            description=(
+                "rSkill the skill_runner resolves and loads right after "
+                "activation (worker thread), so the first goal finds it "
+                "GPU-resident instead of paying a multi-minute cold load "
+                "inside the deadman watchdog's first-chunk window. Goals "
+                "are rejected until rskill_runner.preload_done is logged. "
+                "Empty = no preload."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "preload_rskill_revision",
+            default_value="",
+            description=(
+                "Hub revision pinned for preload_rskill_id; part of the "
+                "resident key, so it must equal the revision later goals "
+                "send. Empty = the unpinned default revision."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "preload_prompt",
+            default_value="",
+            description=(
+                "Exact prompt the preloaded skill is bound to; the resident "
+                "key is (rskill_id, revision, prompt), so a later goal must "
+                "send the same string or the skill is evicted and reloaded."
+            ),
+        ),
+        DeclareLaunchArgument(
             "dataset_out",
             default_value="",
             description=(
@@ -2643,7 +3031,7 @@ def generate_launch_description() -> LaunchDescription:
                 "hal_mode:=real only, the runtime node also opens one "
                 "SensorReader per deploy-bound SensorSpec (robot "
                 "manifest + scene `sensors:`) and publishes each "
-                "camera onto /openral/cameras/<name>/image (the "
+                "camera onto its openral_core.camera_topic(<name>) (the "
                 "real-hardware counterpart of the sim HAL's "
                 "SimSensorBridge); in sim the HAL bridge stays the only "
                 "camera source."
@@ -2813,9 +3201,9 @@ def generate_launch_description() -> LaunchDescription:
             default_value="",
             description=(
                 "Optional ``<left>,<right>`` camera names for the visual SLAM "
-                "stereo rig; each maps to /openral/cameras/<name>/image "
-                "(+ /camera_info) and overrides the visual impl's default "
-                "left/right topics. Empty keeps the impl defaults."
+                "stereo rig; each maps to openral_core.camera_topic(<name>) "
+                "(+ camera_info). Required by the stereo visual impls, whose "
+                "camera topics carry no default."
             ),
         ),
         DeclareLaunchArgument(
@@ -2882,11 +3270,50 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "octomap_cloud_topic",
-            default_value="/openral/cameras/front_depth/points",
+            default_value="",
             description=(
                 "Depth PointCloud2 topic octomap_server consumes "
-                "(``cloud_in`` remap). Matches the HAL's depth publisher "
-                "for the robot's depth SensorSpec."
+                "(``cloud_in`` remap). Empty (default) derives, in sim, "
+                "the ``points`` camera topic of the manifest's one depth "
+                "sensor with intrinsics — the sim sensor bridge's cloud. "
+                "Required on real hardware (the depth driver's topic): "
+                "octomap refuses to start without it."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "world_voxel_deadline_s",
+            default_value="",
+            description=(
+                "How long the safety kernel trusts the last /openral/world_voxels grid "
+                "(DeployRuntime.world_voxel_deadline_s). Empty = the schema default, 1.0 s; "
+                "hard cap 2.0 s."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "max_octree_age_s",
+            default_value="",
+            description=(
+                "How long the octomap bridge republishes the last octree "
+                "(DeployRuntime.max_octree_age_s). Empty = the deadline; a value "
+                "above the deadline is refused."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "world_voxel_data_age_budget_s",
+            default_value="",
+            description=(
+                "How old the sensor data behind a voxel grid may be when the kernel "
+                "checks a chunk (DeployRuntime.world_voxel_data_age_budget_s). "
+                "Empty = the schema default, 1.5 s; hard cap 3.0 s."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "robot_self_filter_padding_m",
+            default_value="",
+            description=(
+                "Real camera path: how far past the collision model a depth return is "
+                "removed as the robot (DeployRuntime.robot_self_filter_padding_m). "
+                "Empty = the schema default, 0.02 m (provisional); hard cap 0.10 m."
             ),
         ),
         DeclareLaunchArgument(
