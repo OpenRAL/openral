@@ -177,6 +177,28 @@ committed suite does not carry that control.
 **Not covered:** a camera that keeps publishing garbage, or a frozen image
 re-published by a driver, still reaches `octomap_server` as fresh inserts.
 
+## Publish rate: measure it RELIABLE
+
+The grid goes out on the `publish_rate_hz` timer (10 Hz) whenever the octree
+is fresh. At the real-arm deploy geometry (0.02 m, radius 1.05 m) it is
+106³ = 1 191 016 cells, a **1.19 MB** sample. A `BEST_EFFORT` subscriber
+loses such a fragmented sample whole whenever it misses one fragment, so a
+best-effort `ros2 topic hz` or rate probe under-reads it; the safety kernel
+subscribes `RELIABLE` and does not. On the Orin OpenArm cell (mock hardware,
+2026-09-26, 240 s) the same run read **10.01 Hz, max gap 0.36 s** on a reliable
+subscriber, 7.0 Hz (max gap 1.1 s) on a best-effort one, and 5.7 Hz on a
+best-effort all-topics probe. A 4.4–6.1 Hz reading of that probe the day
+before was briefly taken for a slow bridge.
+
+The per-octree work is small beside the period: the real Orin map (14k leaves,
+~4.6k occupied cells in the ball, replayed from recorded ZED clouds) costs
+0.7 ms to deserialize and 0.3 ms to rasterize on a dev laptop. Deserializing
+walks the **whole** map, not the ball, so it grows with the mapped volume
+(~60 ms at 437k leaves); rasterizing is bounded by the ball's bbx query.
+`test_bridge_rate_budget` pins both: deserialize + rasterize of a ray-cast
+map under half the period, and the real node reaching a reliable
+`KEEP_LAST(1)` subscriber at more than 7 Hz with the deploy-sized grid.
+
 ## What the grid covers: a ball, sized by the robot
 
 `coverage_radius_m` / `coverage_center_*` name a **ball** in `base_frame`,
