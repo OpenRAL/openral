@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -77,7 +78,7 @@ protected:
         {"collision_link_names", std::vector<std::string>{"root", "l1"}},
         {"collision_joint_names", std::vector<std::string>{"j1"}},
         {"joint_states_topic", js_},
-        {"padding_m", 0.02},
+        {"padding_m", padding_m()},
         {"max_joint_state_skew_s", 0.1},
     };
     for (auto& p : primitive_params()) {
@@ -105,6 +106,8 @@ protected:
     executor_.add_node(peer_);
     spin_for(400ms);
   }
+
+  virtual double padding_m() const { return 0.02; }
 
   /// One capsule on l1 at x = 0.5 m.
   virtual std::vector<rclcpp::Parameter> primitive_params() const {
@@ -194,6 +197,69 @@ TEST_F(SelfFilterNode, AJointStateFarFromTheCaptureStampIsNotUsed) {
   spin_for(400ms);
   EXPECT_EQ(received_.load(), 0) << "a pose 1 s from the capture would filter the wrong place";
   EXPECT_GT(filter_->totals().dropped_no_state, 0U);
+}
+
+namespace {
+
+// `padding_m` is capped in the node itself (DeployRuntime's cap, hazard log
+// Entry 035), so a filter launched outside `openral deploy` cannot widen the
+// blind shell around the arm.
+class AtCapPaddingNode : public SelfFilterNode {
+protected:
+  double padding_m() const override { return bridge::kMaxSelfFilterPaddingM; }
+};
+class OverCapPaddingNode : public SelfFilterNode {
+protected:
+  double padding_m() const override { return bridge::kMaxSelfFilterPaddingM + 1e-6; }
+};
+class NegativePaddingNode : public SelfFilterNode {
+protected:
+  double padding_m() const override { return -0.01; }
+};
+class NanPaddingNode : public SelfFilterNode {
+protected:
+  double padding_m() const override { return std::numeric_limits<double>::quiet_NaN(); }
+};
+
+}  // namespace
+
+TEST_F(AtCapPaddingNode, APaddingAtTheCapIsAccepted) {
+  const rclcpp::Time now = peer_->now();
+  send_joint_state(0.0, now);
+  spin_for(100ms);
+  // Capsule surface at x = 0.55: 0.64 is inside a 0.10 m shell, 2.0 is world.
+  cloud_pub_->publish(make_cloud({{0.64F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}}, now));
+  spin_for(400ms);
+  ASSERT_EQ(received_.load(), 1);
+  EXPECT_EQ(last_.width, 1U);
+}
+
+TEST_F(OverCapPaddingNode, APaddingPastTheCapForwardsNothing) {
+  const rclcpp::Time now = peer_->now();
+  send_joint_state(0.0, now);
+  spin_for(100ms);
+  cloud_pub_->publish(make_cloud({{2.0F, 0.0F, 0.0F}}, now));
+  spin_for(400ms);
+  EXPECT_EQ(received_.load(), 0) << "a refused padding must not configure the filter";
+  EXPECT_GT(filter_->totals().clouds, 0U);
+}
+
+TEST_F(NegativePaddingNode, ANegativePaddingForwardsNothing) {
+  const rclcpp::Time now = peer_->now();
+  send_joint_state(0.0, now);
+  spin_for(100ms);
+  cloud_pub_->publish(make_cloud({{2.0F, 0.0F, 0.0F}}, now));
+  spin_for(400ms);
+  EXPECT_EQ(received_.load(), 0) << "a refused padding must not configure the filter";
+}
+
+TEST_F(NanPaddingNode, ANonFinitePaddingForwardsNothing) {
+  const rclcpp::Time now = peer_->now();
+  send_joint_state(0.0, now);
+  spin_for(100ms);
+  cloud_pub_->publish(make_cloud({{2.0F, 0.0F, 0.0F}}, now));
+  spin_for(400ms);
+  EXPECT_EQ(received_.load(), 0) << "a refused padding must not configure the filter";
 }
 
 namespace {

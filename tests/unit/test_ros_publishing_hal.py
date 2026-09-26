@@ -470,6 +470,102 @@ def test_hal_lifecycle_acks_a_restarted_runners_tick_one() -> None:
 
 @pytest.mark.skipif(
     not _rclpy_available(),
+    reason="rclpy / openral_msgs / std_msgs not on PYTHONPATH",
+)
+def test_hal_lifecycle_ack_renumbers_only_for_a_new_runner_session() -> None:
+    """With a runner session id the ack follows ``TickWatermark`` exactly.
+
+    The same session's tick 1 is a replay (no re-ack); a new session's tick 1
+    is acked once its action completed, and the counter continues from there.
+    """
+    import rclpy
+    from openral_hal.lifecycle import HALLifecycleNodeBase
+    from rclpy.lifecycle import LifecycleNode
+    from std_msgs.msg import UInt64
+
+    rclpy.init()
+    node: HALLifecycleNodeBase | None = None
+    peer: LifecycleNode | None = None
+    try:
+        node = HALLifecycleNodeBase("openral_session_ack_test")
+        peer = LifecycleNode("openral_session_ack_peer")
+        topic = "/openral/test/action_applied_session"
+        received: list[int] = []
+        node._action_applied_pub = node.create_publisher(UInt64, topic, 10)
+        peer.create_subscription(UInt64, topic, lambda msg: received.append(int(msg.data)), 10)
+
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and node.count_subscribers(topic) == 0:
+            rclpy.spin_once(node, timeout_sec=0.01)
+            rclpy.spin_once(peer, timeout_sec=0.01)
+        assert node.count_subscribers(topic) == 1
+
+        for tick, session in ((7, 0xA), (1, 0xA), (5, 0xA), (1, 0xB), (1, 0xB), (2, 0xB)):
+            node._publish_action_applied_if_complete(
+                Action(
+                    control_mode=ControlMode.JOINT_POSITION,
+                    joint_targets=[[0.0] * 6],
+                    tick_index=tick,
+                    runner_session_id=session,
+                )
+            )
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and len(received) < 3:
+            rclpy.spin_once(peer, timeout_sec=0.02)
+        rclpy.spin_once(peer, timeout_sec=0.1)
+        assert received == [7, 1, 2]
+    finally:
+        if peer is not None:
+            peer.destroy_node()
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()
+
+
+@pytest.mark.skipif(
+    not _rclpy_available(),
+    reason="rclpy / openral_msgs not on PYTHONPATH",
+)
+def test_runner_session_id_round_trips_through_the_real_idl() -> None:
+    """Encoder -> ``openral_msgs/ActionChunk`` -> ``decode_action_chunk`` keeps the id.
+
+    The full uint64 range survives (the runner draws 64 random bits).
+    """
+    from openral_hal.lifecycle import decode_action_chunk
+
+    class _StubNode:
+        pass
+
+    session = 2**64 - 1
+    hal = ROSPublishingHAL(
+        node=_StubNode(),  # type: ignore[arg-type]
+        description=_so100_like_description(),
+        tick_index_getter=lambda: 5,
+        runner_session_id=session,
+    )
+    chunk = hal._action_to_chunk(
+        Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[[0.1] * 6])
+    )
+    assert chunk.runner_session_id == session  # type: ignore[attr-defined]  # reason: rosidl class
+    decoded = decode_action_chunk(chunk)
+    assert isinstance(decoded, Action)
+    assert (decoded.tick_index, decoded.runner_session_id) == (5, session)
+
+
+def test_runner_session_id_must_fit_the_uint64_wire_field() -> None:
+    class _StubNode:
+        pass
+
+    with pytest.raises(ROSConfigError, match="uint64"):
+        ROSPublishingHAL(
+            node=_StubNode(),  # type: ignore[arg-type]
+            description=_so100_like_description(),
+            runner_session_id=2**64,
+        )
+
+
+@pytest.mark.skipif(
+    not _rclpy_available(),
     reason="rclpy / sensor_msgs not on PYTHONPATH",
 )
 def test_read_state_caches_joint_states() -> None:

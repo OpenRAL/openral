@@ -168,6 +168,7 @@ class ROSPublishingHAL:
         skill_id_getter: Callable[[], str] = lambda: "",
         skill_revision_getter: Callable[[], str] = lambda: "",
         tick_index_getter: Callable[[], int] = lambda: 0,
+        runner_session_id: int = 0,
         joint_state_topic: str = "/joint_states",
         candidate_action_topic: str = "/openral/candidate_action",
         action_applied_topic: str = "/openral/action_applied",
@@ -183,6 +184,11 @@ class ROSPublishingHAL:
         # Stamps every emitted ActionChunk with the current 1-based
         # inference-tick index so a recorder can group a tick's slot chunks.
         self._tick_index_getter = tick_index_getter
+        # Stamped on every chunk so a HAL can tell this runner process's ticks
+        # from a restarted one's (0 = unknown, the legacy tick-only heuristic).
+        if not 0 <= runner_session_id < 2**64:
+            raise ROSConfigError("ROSPublishingHAL: runner_session_id must fit in uint64")
+        self._runner_session_id = runner_session_id
         self._joint_state_topic = joint_state_topic
         self._candidate_action_topic = candidate_action_topic
         self._action_applied_topic = action_applied_topic
@@ -450,6 +456,7 @@ class ROSPublishingHAL:
         chunk.rskill_revision = self._skill_revision_getter()
         chunk.tick_index = int(self._tick_index_getter()) & 0xFFFFFFFF
         chunk.tick_group_size = int(action.tick_group_size) & 0xFFFF
+        chunk.runner_session_id = self._runner_session_id
         # ADR-0102 — empty list = "whole-vector action in description.joints
         # order", the pre-0102 meaning that every single-slot skill still has.
         chunk.joint_names = list(action.joint_names or ())

@@ -21,6 +21,13 @@ string trace_id
 uint32 tick_index
 # Number of non-discard slots emitted for this tick. 1 = single-surface.
 uint16 tick_group_size
+# Random nonzero id the rSkill runner draws once per process and stamps on
+# every chunk it emits. tick_index restarts at 1 with each runner process,
+# so a HAL keys its replay watermark on (runner_session_id, tick_index):
+# the same session must strictly increase, a new session is adopted when its
+# first group commits, and a retired session is refused. 0 = unknown (a
+# producer that predates the field), which keeps the tick-only heuristic.
+uint64 runner_session_id
 
 # Robot joint names this chunk's `flat` rows target, in the slot's own
 # order (ADR-0102). Empty = the chunk is a whole-vector action in

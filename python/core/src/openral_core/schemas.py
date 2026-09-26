@@ -4493,6 +4493,11 @@ class Action(BaseModel):
             can commit a multi-surface action atomically after every slot passes.
         tick_group_size: Number of non-discard slots emitted for this inference
             tick. ``1`` keeps single-surface actions unchanged.
+        runner_session_id: Random nonzero id of the rSkill runner process that
+            emitted this action (``ActionChunk.runner_session_id``). A HAL keys
+            its replay watermark on ``(runner_session_id, tick_index)`` because
+            ``tick_index`` restarts with every runner process. ``0`` = unknown
+            (legacy producer), which keeps the tick-only replay heuristic.
         safety_overrides: Operator-approved safety override tokens.
     """
 
@@ -4529,6 +4534,7 @@ class Action(BaseModel):
     joint_names: list[str] | None = None
     tick_index: int = Field(default=0, ge=0)
     tick_group_size: int = Field(default=1, ge=1)
+    runner_session_id: int = Field(default=0, ge=0, le=2**64 - 1)
     safety_overrides: dict[str, object] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -9666,7 +9672,9 @@ class DeployRuntime(BaseModel):
 
     Hard cap 2.0 s (2x the pre-2026-09-25 value), refused at load: past it the
     kernel would keep checking chunks against a map that old. A source that
-    cannot keep octomap under it is not a world-voxel source."""
+    cannot keep octomap under it is not a world-voxel source. The kernel and the
+    octomap bridge (``max_octree_age_s``) refuse it themselves too, so a node
+    launched without this schema cannot run looser."""
     max_octree_age_s: float | None = Field(default=None, gt=0)
     """How long the octomap bridge republishes the last octree it received.
     ``None`` = equal to ``world_voxel_deadline_s``. Must not exceed it, so the
@@ -9692,7 +9700,9 @@ class DeployRuntime(BaseModel):
     them is required, and a smaller budget is only stricter.
 
     Hard cap 3.0 s (2x the pre-2026-09-25 value), refused at load: a larger
-    budget would certify chunks against a world seconds old."""
+    budget would certify chunks against a world seconds old. The kernel refuses
+    it at configure too, and its own default is this 1.5 s: there is no
+    "off" while the world check is enabled."""
     robot_self_filter_padding_m: float = Field(
         default=0.02, ge=0, json_schema_extra={"maximum": 0.1}
     )
@@ -9715,7 +9725,9 @@ class DeployRuntime(BaseModel):
     in the map, which stops the robot against itself (fail closed).
 
     Hard cap 0.10 m (2x the pre-2026-09-25 value), refused at load: a wider
-    blind shell hides obstacles the arm can reach within one chunk."""
+    blind shell hides obstacles the arm can reach within one chunk. The
+    self-filter node refuses it too (and a negative or non-finite value),
+    forwarding nothing."""
     joint_states_topic: str | None = None
     """Explicit override for the ``sensor_msgs/JointState`` topic the deploy
     runtime's Python nodes (in-process world state + the runner's joint-state
@@ -9832,6 +9844,7 @@ class DeployRuntime(BaseModel):
     def _check_perception_caps(cls, value: float, info: ValidationInfo) -> float:
         # Hard caps, 2x the values these fields had before 2026-09-25. Raising
         # one is a safety decision (hazard log Entries 034/035), not a rig knob.
+        # Mirrored in the nodes (tests/unit/test_perception_caps_mirror.py).
         cap, why = {
             "world_voxel_deadline_s": (
                 2.0,

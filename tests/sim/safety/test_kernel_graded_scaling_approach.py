@@ -102,7 +102,7 @@ def _kernel_params(*, band_m: float) -> dict[str, object]:
         {
             "world_voxel_enabled": True,
             "world_voxel_margin_m": 0.0,
-            "world_voxel_deadline_ms": 5000.0,
+            "world_voxel_deadline_ms": 2000.0,
             "world_voxel_max_cells": _SX * _SY * _SZ,
             "collision_joint_names": [j.name for j in desc.joints],
             "collision_base_dofs": [
@@ -229,6 +229,7 @@ def _run_approach(*, band_m: float) -> list[dict[str, float]]:
                     now = helper.get_clock().now().to_msg()
                     js.header.stamp = now
                     grid.header.stamp = now
+                    grid.source_stamp = grid.header.stamp
                     js_pub.publish(js)
                     voxel_pub.publish(grid)
                     executor.spin_once(timeout_sec=0.02)
@@ -238,6 +239,7 @@ def _run_approach(*, band_m: float) -> list[dict[str, float]]:
                     now = helper.get_clock().now().to_msg()
                     js.header.stamp = now
                     grid.header.stamp = now
+                    grid.source_stamp = grid.header.stamp
                     js_pub.publish(js)
                     voxel_pub.publish(grid)
                     cand_pub.publish(chunk)

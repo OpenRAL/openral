@@ -589,6 +589,11 @@ class MujocoArmHAL(HALBase):
         """
         return self._slot_group.last_committed_tick
 
+    @property
+    def last_committed_session(self) -> int:
+        """``runner_session_id`` of ``last_committed_tick`` (0 = none/legacy)."""
+        return self._slot_group.last_committed_session
+
     def send_action(self, action: Action) -> None:
         """Forward the **last** waypoint of *action* to MuJoCo and step.
 
@@ -597,8 +602,9 @@ class MujocoArmHAL(HALBase):
         ``Action.joint_names``, grippers via ``ee_name``) into one full-dof
         ``JOINT_POSITION`` step, so one arm / the gripper never moves on a new
         chunk while the rest holds a stale one. A slot of a tick at or below
-        ``last_committed_tick`` is refused as a replay, except tick 1 above a
-        watermark of 1: a restarted runner, adopted (``refuse_stale_tick``).
+        ``last_committed_tick`` of the same runner session is refused as a replay;
+        a new runner session is adopted when its first group commits and the
+        old one is refused from then on (``TickWatermark``).
 
         Args:
             action: ``Action`` produced by a Skill.  Must declare a
@@ -618,6 +624,10 @@ class MujocoArmHAL(HALBase):
             if group is None:
                 return
             action = compose_slot_group_action(group, self._joint_names)
+        else:
+            # Ungrouped ticked actions (starting-pose ramp, approach) share the
+            # watermark, so a restarted runner's renumbering is seen here too.
+            self._slot_group.admit(action)
         self._validate_action(action)
 
         assert self._data is not None and self._model is not None
@@ -639,6 +649,8 @@ class MujocoArmHAL(HALBase):
 
         if group is not None:
             self._slot_group.commit(group)
+        else:
+            self._slot_group.commit_tick(action)
 
         log.debug(
             "hal.send_action",

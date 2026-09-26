@@ -71,6 +71,9 @@ runtime:
   # /openral/cameras/head_zed/points — published only by the SIM sensor
   # bridge, so a real-camera deploy maps silence.
   octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+  # world_voxel_deadline_s stays at the 1.0 s default. The grid reaches a RELIABLE subscriber
+  # (the kernel's QoS) at 10.0 Hz, max gap 0.36 s (Orin cell, mock hardware, 2026-09-26, 240 s);
+  # the 4.4-6 Hz once read here was a BEST_EFFORT probe dropping the fragmented 1.19 MB grid.
 
   # The ZED stamps its clouds on wall-clock. A bare MuJoCo twin would otherwise
   # run the graph on the simulator's clock, and octomap_server (use_sim_time)
