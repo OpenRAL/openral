@@ -229,26 +229,31 @@ def refine_dop_to_budget(points: Points, dop_lo: Points, dop_hi: Points, budget:
         return found
 
     used = np.zeros(len(candidates), dtype=bool)
-    while True:
-        current = vertices_of(halfspaces)
-        if len(current) > budget:
-            break
+    current = vertices_of(halfspaces)
+    while len(current) <= budget:
         # Score each unused tangent plane by how far the current polytope pokes
         # past it: the plane that trims the most is the one worth spending
-        # vertices on.
-        overshoot = current @ candidates[:, :3].T + candidates[:, 3]
-        score = overshoot.max(axis=0)
+        # vertices on. A rejected plane leaves the polytope — and so every
+        # score — unchanged, so the planes are tried in this one ranking
+        # (stable: ties go to the lower index, as `argmax` would) until one is
+        # accepted, and only then re-scored.
+        score = (current @ candidates[:, :3].T + candidates[:, 3]).max(axis=0)
         score[used] = -np.inf
-        best = int(np.argmax(score))
-        if score[best] <= 1e-9:
-            break  # nothing left to trim; this IS the hull within tolerance
-        used[best] = True
-        trial = np.vstack([halfspaces, candidates[best]])
-        if len(vertices_of(trial)) > budget:
-            continue  # would overrun the budget; try the next-worst plane
-        halfspaces = trial
+        accepted = False
+        for best in np.argsort(-score, kind="stable"):
+            if score[best] <= 1e-9:
+                break  # nothing left to trim; this IS the hull within tolerance
+            used[best] = True
+            trial = np.vstack([halfspaces, candidates[best]])
+            trial_vertices = vertices_of(trial)
+            if len(trial_vertices) > budget:
+                continue  # would overrun the budget; try the next-worst plane
+            halfspaces, current, accepted = trial, trial_vertices, True
+            break
+        if not accepted:
+            break
 
-    refined = vertices_of(halfspaces)
+    refined = current
     # Refuse rather than emit an envelope that does not contain its mesh.
     eq = ConvexHull(refined).equations
     residual = float((points @ eq[:, :3].T + eq[:, 3]).max())
