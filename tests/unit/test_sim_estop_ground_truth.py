@@ -237,6 +237,7 @@ def test_candidate_chunk_digest_reshapes_a_cartesian_delta_chunk() -> None:
         rskill_id="pi05_libero",
         trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
         tick_index=12,
+        runner_session_id=0x9E3779B97F4A7C15,
     )
 
     assert digest["control_mode"] == "cartesian_delta"
@@ -249,6 +250,8 @@ def test_candidate_chunk_digest_reshapes_a_cartesian_delta_chunk() -> None:
     assert digest["ee_name"] == "panda_hand_tcp"
     assert digest["rskill_id"] == "pi05_libero"
     assert digest["trace_id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
+    # The tick alone is ambiguous across a runner restart; the pair is not.
+    assert (digest["runner_session_id"], digest["tick_index"]) == (0x9E3779B97F4A7C15, 12)
 
 
 def test_candidate_chunk_digest_flags_a_shape_mismatch() -> None:
@@ -263,6 +266,7 @@ def test_candidate_chunk_digest_flags_a_shape_mismatch() -> None:
 
     assert digest["shape_mismatch"] is True
     assert digest["flat"] == [0.0, 0.1, 0.2]
+    assert digest["runner_session_id"] == 0  # a legacy producer
     assert "ticks" not in digest
 
 
