@@ -132,12 +132,19 @@ every grid as `source_stamp` (the capture stamp of the newest cloud inserted),
 and the kernel budgets the world's age from it: `world_voxel_data_age_budget_ms`,
 from the per-rig `DeployRuntime.world_voxel_data_age_budget_s` (default 1.5 s,
 the Thor ZED-M tail; hard cap 3.0 s); past it the chunk drops as `voxel_stale`.
+The kernel enforces the caps itself: with `world_voxel_enabled` it refuses to
+configure on a `world_voxel_deadline_ms` outside (0, 2000] or a
+`world_voxel_data_age_budget_ms` outside (0, 3000] (its own default is 1500;
+0 no longer disables the check), so a kernel started with `ros2 run` is held
+to the same limits as a validated scene.
 
 `robot_self_filter` (real camera path only) removes the robot's own returns
 before `octomap_server` inserts the cloud: it poses the kernel's collision
 parameters at the cloud's capture stamp and drops every return within
 `padding_m` of a primitive (from `DeployRuntime.robot_self_filter_padding_m`,
 provisional 0.02 m, hard cap 0.10 m). No pose at the capture stamp drops the whole cloud.
+The node enforces the cap itself: a `padding_m` outside [0, 0.10] (or
+non-finite) logs an ERROR and forwards nothing.
 
 A box that carries the kernel's tight geometry (`collision_box_hull` /
 `collision_hull_*`, lowered from `LinkCollisionGeometry.tight_geometry`) is
@@ -169,6 +176,28 @@ committed suite does not carry that control.
 
 **Not covered:** a camera that keeps publishing garbage, or a frozen image
 re-published by a driver, still reaches `octomap_server` as fresh inserts.
+
+## Publish rate: measure it RELIABLE
+
+The grid goes out on the `publish_rate_hz` timer (10 Hz) whenever the octree
+is fresh. At the real-arm deploy geometry (0.02 m, radius 1.05 m) it is
+106³ = 1 191 016 cells, a **1.19 MB** sample. A `BEST_EFFORT` subscriber
+loses such a fragmented sample whole whenever it misses one fragment, so a
+best-effort `ros2 topic hz` or rate probe under-reads it; the safety kernel
+subscribes `RELIABLE` and does not. On the Orin OpenArm cell (mock hardware,
+2026-09-26, 240 s) the same run read **10.01 Hz, max gap 0.36 s** on a reliable
+subscriber, 7.0 Hz (max gap 1.1 s) on a best-effort one, and 5.7 Hz on a
+best-effort all-topics probe. A 4.4–6.1 Hz reading of that probe the day
+before was briefly taken for a slow bridge.
+
+The per-octree work is small beside the period: the real Orin map (14k leaves,
+~4.6k occupied cells in the ball, replayed from recorded ZED clouds) costs
+0.7 ms to deserialize and 0.3 ms to rasterize on a dev laptop. Deserializing
+walks the **whole** map, not the ball, so it grows with the mapped volume
+(~60 ms at 437k leaves); rasterizing is bounded by the ball's bbx query.
+`test_bridge_rate_budget` pins both: deserialize + rasterize of a ray-cast
+map under half the period, and the real node reaching a reliable
+`KEEP_LAST(1)` subscriber at more than 7 Hz with the deploy-sized grid.
 
 ## What the grid covers: a ball, sized by the robot
 
@@ -484,7 +513,7 @@ Requires TF from `base_frame` into the OctoMap's `header.frame_id` (usually
 | `coverage_radius_m` | `0.0` | Local volume radius around the robot (m). |
 | `coverage_center_{x,y,z}` | `0.0, 0.0, 0.5` | Local volume centre in `base_frame`. |
 | `publish_rate_hz` | `10.0` | Republish rate (the grid follows the robot via TF). |
-| `max_octree_age_s` | `1.0` | Stop publishing once the last octree was received longer ago than this, so the kernel's `world_voxel_deadline_ms` fails closed on a dead camera. Well above octomap's normal gap, not above the kernel's deadline (`deploy_e2e.launch.py`: equal to it). Non-finite or ≤ 0 publishes nothing. |
+| `max_octree_age_s` | `1.0` | Stop publishing once the last octree was received longer ago than this, so the kernel's `world_voxel_deadline_ms` fails closed on a dead camera. Well above octomap's normal gap, not above the kernel's deadline (`deploy_e2e.launch.py`: equal to it). Non-finite, ≤ 0, or above the kernel's 2.0 s deadline cap (`kMaxOctreeAgeS`) publishes nothing. |
 | `attached_clear_enabled` | `true` | Clear an attached payload's own cells out of the published grid. Off = pre-#110 behaviour (payload stays in the map and can stop the robot against itself). |
 | `world_state_topic` | `/openral/world_state_fast` | Where the attachment set is read from — the kernel's own source. |
 | `attached_clear_padding_m` | `0.0` | Extra reach beyond the cell circumradius **on every frame**, for pose uncertainty. |

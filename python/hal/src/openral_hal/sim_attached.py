@@ -52,7 +52,7 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, JointState
 
-from openral_hal._slot_group import refuse_stale_tick
+from openral_hal._slot_group import TickWatermark
 
 # Module logger — falls through to stderr via the rclpy logging bridge in a
 # ROS node, else plain stdlib logging.
@@ -453,9 +453,10 @@ class SimAttachedHAL:
         # ``step_action_group(actions)`` receive every safety-approved slot from
         # one ActionChunk.tick_index and step exactly once when their declared
         # ``action_group_size`` is complete.
-        self._pending_action_tick: int | None = None
+        # Keyed by (runner_session_id, tick_index): ticks restart per runner.
+        self._pending_action_key: tuple[int, int] | None = None
         self._pending_actions: list[Action] = []
-        self._last_committed_tick: int = 0
+        self._watermark = TickWatermark()
         # Wall-clock stamp of the oldest pending slot so a skill that dies
         # mid-tick cannot block ``idle_step`` forever.
         self._pending_since_ns: int = 0
@@ -531,9 +532,9 @@ class SimAttachedHAL:
         self._last_obs = dict(obs) if isinstance(obs, dict) else None
         self._last_state_ns = time.time_ns()
         self._connected = True
-        self._pending_action_tick = None
+        self._pending_action_key = None
         self._pending_actions.clear()
-        self._last_committed_tick = 0
+        self._watermark.reset()
         self._joint_index = None  # rebuilt on next read_state (model identity stable per env)
         # A reset re-randomises the scene, so the previous episode's success
         # verdict no longer describes anything live. Re-seed the witness from
@@ -863,36 +864,40 @@ class SimAttachedHAL:
             raise ROSConfigError(
                 "SimAttachedHAL: atomic action-group backend requires Action.tick_index > 0."
             )
-        # Same replay guard as ``SlotGroupStager.stage``: a whole group of an
-        # already-committed tick must not step the simulator again; tick 1
-        # above a watermark of 1 is a restarted runner and resets it.
-        self._last_committed_tick = refuse_stale_tick(tick, self._last_committed_tick)
-        if self._pending_action_tick is not None and tick != self._pending_action_tick:
+        # Same replay guard as ``SlotGroupStager.stage`` (``TickWatermark``): a
+        # group of an already-committed tick of the same runner session, or any
+        # slot of a retired session, must not step the simulator again. A check
+        # only: the watermark moves (and a new session is adopted) when the
+        # group commits below, so one stray slot cannot move it.
+        session = int(action.runner_session_id)
+        self._watermark.check(tick, session=session)
+        key = (session, tick)
+        if self._pending_action_key is not None and key != self._pending_action_key:
             # Atomicity is preserved: a group missing a safety-rejected slot
             # must never commit its other slots. Under the producer's applied-
             # tick barrier, any transition to a newer tick is a contract error.
             dropped_modes = [a.control_mode.value for a in self._pending_actions]
             print(
                 f"[sim_attached.send_action] ERROR dropping incomplete safe action group "
-                f"tick={self._pending_action_tick} "
+                f"(session, tick)={self._pending_action_key} "
                 f"slots={len(self._pending_actions)}/{group_size} "
                 f"modes={dropped_modes}; starting tick={tick}",
                 flush=True,
             )
             self._pending_actions.clear()
-            self._pending_action_tick = None
+            self._pending_action_key = None
             raise ROSRuntimeError(
                 f"SimAttachedHAL: incomplete action group tick staged "
                 f"{len(dropped_modes)}/{group_size} slots, modes={dropped_modes}; "
                 "the safety supervisor rejected/dropped a slot or the rSkill contract "
                 "declared the wrong group size."
             )
-        if self._pending_action_tick is None:
-            self._pending_action_tick = tick
+        if self._pending_action_key is None:
+            self._pending_action_key = key
         elif action.tick_group_size != self._pending_actions[0].tick_group_size:
             expected_group_size = self._pending_actions[0].tick_group_size
             self._pending_actions.clear()
-            self._pending_action_tick = None
+            self._pending_action_key = None
             raise ROSRuntimeError(
                 f"SimAttachedHAL: action group tick={tick} changed size from "
                 f"{expected_group_size} to {action.tick_group_size}."
@@ -903,16 +908,16 @@ class SimAttachedHAL:
             return
         if len(self._pending_actions) > group_size:
             self._pending_actions.clear()
-            self._pending_action_tick = None
+            self._pending_action_key = None
             raise ROSRuntimeError(
                 f"SimAttachedHAL: action group tick={tick} exceeded {group_size} slots."
             )
         actions = list(self._pending_actions)
         self._pending_actions.clear()
-        self._pending_action_tick = None
+        self._pending_action_key = None
         if group_step is None:
             self._step_packed_action_group(actions)
-            self._last_committed_tick = tick
+            self._watermark.commit(tick, session=session)
             return
         try:
             step_result = group_step(actions)
@@ -946,7 +951,7 @@ class SimAttachedHAL:
         else:
             self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self._cache_step_result(step_result)
-        self._last_committed_tick = tick
+        self._watermark.commit(tick, session=session)
 
     def _step_packed_action_group(self, actions: list[Action]) -> None:
         """Pack every safe slot, then execute exactly one simulator step."""
@@ -1248,13 +1253,13 @@ class SimAttachedHAL:
                 return False
             print(
                 f"[sim_attached.idle_step] ERROR discarding stale pending action group "
-                f"tick={self._pending_action_tick} "
+                f"(session, tick)={self._pending_action_key} "
                 f"slots={len(self._pending_actions)} (no new slot for "
                 f"{_PENDING_GROUP_STALE_NS / 1e9:.0f}s); resuming idle stepping",
                 flush=True,
             )
             self._pending_actions.clear()
-            self._pending_action_tick = None
+            self._pending_action_key = None
         # No MuJoCo-handle gate: valid for ANY wrapped SimRollout, including
         # non-MuJoCo backends (Isaac Sim sidecar, ManiSkill3). Steps via the
         # same env.step idiom as send_action's tail (not robocasa.refresh_obs,
@@ -1639,7 +1644,7 @@ class SimAttachedHAL:
     def estop(self) -> None:
         """Latch e-stop. Subsequent send_action calls are dropped."""
         self._estop_latched = True
-        self._pending_action_tick = None
+        self._pending_action_key = None
         self._pending_actions.clear()
 
     # ── Helpers exposed to the lifecycle node ──────────────────────────
@@ -1658,7 +1663,12 @@ class SimAttachedHAL:
     @property
     def last_committed_tick(self) -> int:
         """Most recent atomic action-group tick committed to the simulator."""
-        return self._last_committed_tick
+        return self._watermark.tick
+
+    @property
+    def last_committed_session(self) -> int:
+        """``runner_session_id`` of ``last_committed_tick`` (0 = none/legacy)."""
+        return self._watermark.session
 
     def _rollout_sim_time_ns(self) -> int | None:
         """Read the wrapped rollout's per-episode sim time, or ``None``.

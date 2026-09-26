@@ -117,6 +117,14 @@ public:
                    joint_names.size(), model_.required_dof);
       model_ok_ = false;
     }
+    if (!valid_self_filter_padding(padding_m_)) {
+      // Fail closed, as a bad model does: a wider shell hides obstacles the arm
+      // can reach, and a negative or non-finite one is a misconfiguration.
+      RCLCPP_ERROR(this->get_logger(),
+                   "padding_m=%g is outside [0, %g] m: forwarding NOTHING (hazard log Entry 035)",
+                   padding_m_, kMaxSelfFilterPaddingM);
+      model_ok_ = false;
+    }
     for (std::size_t d = 0; d < joint_names.size(); ++d) {
       dof_of_name_.emplace(joint_names[d], d);
     }

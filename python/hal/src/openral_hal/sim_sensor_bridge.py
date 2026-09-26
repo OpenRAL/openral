@@ -2370,6 +2370,7 @@ def candidate_chunk_digest(
     rskill_id: str = "",
     trace_id: str = "",
     tick_index: int = 0,
+    runner_session_id: int = 0,
 ) -> dict[str, object]:
     """One ``openral_msgs/ActionChunk``'s fields as a JSON-safe FK input.
 
@@ -2387,6 +2388,10 @@ def candidate_chunk_digest(
     ``flat`` is reshaped into ``horizon`` rows of ``n_dof``; a length that
     disagrees with ``horizon * n_dof`` is reported as-is under
     ``flat`` with ``shape_mismatch: true`` rather than silently truncated.
+
+    ``runner_session_id`` (0 = a legacy producer) is recorded with ``tick_index``:
+    the tick number alone is ambiguous across a runner restart, so an adjudicator
+    needs the pair to tell which runner produced the chunk the kernel stopped on.
 
     Example:
         >>> digest = candidate_chunk_digest(
@@ -2411,6 +2416,7 @@ def candidate_chunk_digest(
         "rskill_id": str(rskill_id),
         "trace_id": str(trace_id),
         "tick_index": int(tick_index),
+        "runner_session_id": int(runner_session_id),
     }
     if int(horizon) > 0 and int(n_dof) > 0 and len(values) == int(horizon) * int(n_dof):
         width = int(n_dof)
@@ -4302,6 +4308,7 @@ class SimSensorBridge:
                 rskill_id=str(msg.rskill_id),  # type: ignore[attr-defined]
                 trace_id=str(msg.trace_id),  # type: ignore[attr-defined]
                 tick_index=int(msg.tick_index),  # type: ignore[attr-defined]
+                runner_session_id=int(msg.runner_session_id),  # type: ignore[attr-defined]
             )
         )
 

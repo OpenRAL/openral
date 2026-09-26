@@ -132,7 +132,12 @@ def test_real_3d_lidar_also_needs_its_cloud_pinned(
     _real_franka_with(tmp_path, monkeypatch, lidar)
     with pytest.raises(ROSConfigError, match="octomap_cloud_topic"):
         _resolve(None, "real", robot="franka_panda")
-    scene = _real_scene(tmp_path, "  octomap_cloud_topic: /ouster/points\n")
+    # With the kernel's world check on, a lidar is refused: nothing measures its
+    # extrinsic yet, and the world check would place obstacles through that pose.
+    checked = _real_scene(tmp_path, "  octomap_cloud_topic: /ouster/points\n")
+    with pytest.raises(ROSConfigError, match="top_lidar: a robot point_cloud sensor"):
+        _resolve(checked, "real")
+    scene = _real_scene(tmp_path, f"  octomap_cloud_topic: /ouster/points\n{_NO_KERNEL_CHECK}")
     invocation = _resolve(scene, "real")
     assert invocation.enable_octomap is True
     assert "octomap_cloud_topic:=/ouster/points" in invocation.argv_template
@@ -267,7 +272,7 @@ def test_rig_perception_values_default_and_are_validated() -> None:
     """The data-age budget and self-filter padding are per-rig ``DeployRuntime`` values.
 
     Defaults are the Thor-measured budget (1.5 s) and the provisional padding
-    (0.02 m, 2026-09-25). A budget must be positive (0 would disable the kernel's check);
+    (0.02 m, 2026-09-25). A budget must be positive (the kernel refuses 0 too; it once meant off);
     a padding cannot be negative. No relation to the voxel deadline is imposed:
     a smaller budget is only stricter.
     """
@@ -324,3 +329,21 @@ def test_a_scene_above_a_cap_is_refused_before_launch(
     assert f"{field}:={cap}" in argv
     with pytest.raises((ROSConfigError, ValidationError), match=field):
         _resolve(_real_scene(tmp_path, f"{base}  {field}: {cap * 1.5}\n"), "real")
+
+
+def test_the_extrinsic_preflight_refuses_a_cloud_source_it_cannot_measure(tmp_path: Path) -> None:
+    """A scene-mounted depth camera or a 3D lidar feeds octomap too.
+
+    The preflight used to iterate only the robot manifest's depth cameras with
+    intrinsics, so a scene-mounted RealSense or a lidar passed it with nothing checked,
+    and the kernel would place obstacles through an unmeasured pose.
+    """
+    from openral_cli.deploy_sim import _preflight_depth_extrinsics
+
+    robot = RobotDescription.from_yaml(str(_PANDA_MOBILE))
+    workcell = SensorSpec(
+        name="workcell_lidar", modality="point_cloud", frame_id="workcell_lidar", rate_hz=10.0
+    )
+    with pytest.raises(ROSConfigError) as err:
+        _preflight_depth_extrinsics(robot, tmp_path / "robot.yaml", None, [workcell])
+    assert "workcell_lidar: a scene point_cloud sensor without intrinsics" in str(err.value)

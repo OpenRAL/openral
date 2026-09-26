@@ -125,7 +125,11 @@ intrinsics were fx = 1497.9 (Thor) and fx = 1492.4 (Orin). Each cell has a unit 
 `robots/openarm/units/<unit>.yaml` (`thor`, `orin`), selected by `OPENRAL_ROBOT_UNIT` or a
 scene's `robot_unit`. A unit's calibrated pose is `static_transform_xyz_rpy` under its
 `head_zed` entry; a unit without one publishes the manifest's nominal pose (the Thor
-measurement). The camera is bolted to the rig, so its pose is robot geometry: every OpenArm
+measurement). Since 2026-09-25 both units carry their own x/y/z and yaw, fitted from the
+unpowered arms' own returns to their meshes, with roll/pitch held level: about 2 cm back and
+1.6 cm up from nominal on both cells, and the median arm residual falls from 7-8 mm to under
+4 mm. That fit assumes the arms hang exactly at q = 0, so it is not a calibration: it aligns
+the robot self-filter, and the markers below are still what the world-voxel check requires. The camera is bolted to the rig, so its pose is robot geometry: every OpenArm
 scene publishes it as the only parent of `zed_camera_link`, and no scene may redefine the
 sensor. `openral check`, `openral deploy validate`, `deploy run` and `deploy sim` all
 refuse a scene sensor entry that reuses a robot sensor's name

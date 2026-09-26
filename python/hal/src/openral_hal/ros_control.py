@@ -548,6 +548,7 @@ class RosControlHAL(HALBase):
             age = float("inf") if last <= 0.0 else time.monotonic() - last
         else:
             age = time.monotonic() - self._last_state_time
+        sample_age_s = age if self._stamp_fn is not None else 0.0
         if age > self._staleness_limit_s:
             raise ROSPerceptionStale(
                 f"Joint state is {age:.3f} s old (limit {self._staleness_limit_s} s)."
@@ -563,7 +564,10 @@ class RosControlHAL(HALBase):
             position=_raw_floats(raw, "position", n),
             velocity=_raw_floats(raw, "velocity", n),
             effort=_raw_floats(raw, "effort", n),
-            stamp_ns=int(time.time_ns()),
+            # When the sample arrived, not when it was read: a consumer that pairs
+            # joint states with other sensors by stamp (the robot self-filter's
+            # skew check) must see how old the sample really is.
+            stamp_ns=int(time.time_ns()) - int(max(sample_age_s, 0.0) * 1e9),
         )
 
     def send_action(self, action: Action) -> None:

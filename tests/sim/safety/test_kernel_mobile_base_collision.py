@@ -74,7 +74,7 @@ def _kernel_params() -> dict[str, object]:
         {
             "world_voxel_enabled": True,
             "world_voxel_margin_m": 0.0,
-            "world_voxel_deadline_ms": 5000.0,
+            "world_voxel_deadline_ms": 2000.0,
             "world_voxel_max_cells": _SX * _SY * _SZ,
             # Exactly what deploy_e2e.launch.py emits for this robot.
             "collision_joint_names": [j.name for j in desc.joints],
@@ -149,7 +149,7 @@ def test_real_kernel_mobile_base_world_collision_estops() -> None:
             # Panda's link5 and link7 really interpenetrate, by 5.65 mm at their
             # own collision meshes. That was invisible until issue #191 retired
             # the link5↔link7 ACM exemption, and it is a genuine SELF collision
-            # -- which would pre-empt the WORLD stop this test is about. 1.571 is
+            # -- which would preempt the WORLD stop this test is about. 1.571 is
             # the SRDF's own `ready` value for that joint and clears by 22.07 mm.
             js = JointState()
             js.name = joint_names
@@ -177,6 +177,7 @@ def test_real_kernel_mobile_base_world_collision_estops() -> None:
             while time.time() < warm:
                 js.header.stamp = helper.get_clock().now().to_msg()
                 grid.header.stamp = helper.get_clock().now().to_msg()
+                grid.source_stamp = grid.header.stamp
                 js_pub.publish(js)
                 voxel_pub.publish(grid)
                 executor.spin_once(timeout_sec=0.02)
@@ -195,6 +196,7 @@ def test_real_kernel_mobile_base_world_collision_estops() -> None:
             while time.time() < end and not estops:
                 js.header.stamp = helper.get_clock().now().to_msg()
                 grid.header.stamp = helper.get_clock().now().to_msg()
+                grid.source_stamp = grid.header.stamp
                 js_pub.publish(js)
                 voxel_pub.publish(grid)
                 cand_pub.publish(chunk)

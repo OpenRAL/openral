@@ -96,7 +96,7 @@ def _kernel_params() -> dict[str, object]:
         "joint_torque_max": [100.0],
         "world_voxel_enabled": True,
         "world_voxel_margin_m": 0.0,
-        "world_voxel_deadline_ms": 5000.0,
+        "world_voxel_deadline_ms": 2000.0,
         "world_voxel_max_cells": 4096,
     }
     params.update(collision_params_from_description(_one_link_arm()))
@@ -163,6 +163,7 @@ def test_kernel_voxel_collision_fail_closed_then_rejects() -> None:
                 grid = OccupancyVoxels()
                 grid.header.frame_id = "base"
                 grid.header.stamp = helper.get_clock().now().to_msg()
+                grid.source_stamp = grid.header.stamp
                 grid.origin = Point(x=-0.25, y=-0.25, z=0.0)
                 # Synthetic base-aligned lattice: `OccupancyVoxels` is oriented,
                 # and its unset orientation is the all-zero quaternion, which

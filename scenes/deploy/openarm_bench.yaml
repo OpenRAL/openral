@@ -115,6 +115,17 @@ runtime:
   # OpenArm deploy on this host.
   enable_octomap: true
   octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
+  # world_voxel_deadline_s stays at the 1.0 s default. The grid reaches a RELIABLE subscriber
+  # (the kernel's QoS) at 10.0 Hz, max gap 0.36 s (Orin cell, mock hardware, 2026-09-26, 240 s);
+  # the 4.4-6 Hz once read here was a BEST_EFFORT probe dropping the fragmented 1.19 MB grid.
+  # Measured, not provisional, AT REST (2026-09-25; Thor and Orin ZED-M, arms unpowered at
+  # q = 0, each unit's arm-fitted mount, 40 stacked clouds): the robot's own returns end
+  # 5-7.5 mm outside the kernel's hulls, so 2 cm clears them with ~12 mm to spare. That spare
+  # is the motion budget: the filter pairs each cloud with the nearest 30 Hz joint state
+  # (<= ~17 ms off), i.e. ~8.5 mm at 0.5 m/s at the gripper. Do not tighten below 1.5 cm
+  # until the tail is measured with the arms MOVING (attended real bringup). Wider costs real
+  # obstacles: the restock box sits 2-4 cm from the hanging grippers.
+  robot_self_filter_padding_m: 0.02
   # No `joint_states_topic`: on `deploy run` the launch derives the HAL's 30 Hz
   # `/openral_hal_openarm/joint_states` republish for any ros2_control arm
   # (`openral_hal.hal_joint_states_topic`) instead of the broadcaster's 750 Hz
