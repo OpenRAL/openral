@@ -1093,6 +1093,7 @@ def detect(
     output.write_text(yaml_text, encoding="utf-8")
     console.print(f"\n[green]Wrote[/green] {output} (RobotDescription, {description.name})")
     console.print(f"[dim]Next step:[/dim] openral rskill check --robot {output}")
+    _print_safety_fitting_reminders(description, output)
 
     if deployment is not None:
         _write_deploy_scene_scaffold(
@@ -1385,6 +1386,44 @@ def _grab_camera_thumbnail(device_path: str, out_dir: Path) -> Path | None:
     if not cv2.imwrite(str(out), frame):
         return None
     return out
+
+
+def _print_safety_fitting_reminders(description: RobotDescription, output: Path) -> None:
+    """Nudge toward the two offline fits every real deploy needs, right after detect writes.
+
+    Neither is optional for a real robot, and both are easy to skip because nothing else
+    forces them before ``deploy run``:
+
+    - **Self/world collision geometry** (``openral collision lower``): a template's
+      hand-authored or unfitted capsules can miss the robot's own meshes by a wide margin
+      (hazard-log Entry 045 — an OpenArm gripper's mesh reached 83.7 mm outside its
+      declared sphere), which makes the kernel's self- and world-collision checks silently
+      not conservative. Needs an MJCF or URDF asset to fit against.
+    - **Depth-camera extrinsic** (``tools/depth_extrinsic_check.py`` /
+      ``depth_extrinsic_capture.py``): the world-voxel check places every obstacle through
+      a depth camera's mount absolutely, so an unfitted one causes both false stops
+      (phantom obstacles) and missed stops (real ones placed too far away). Only prompted
+      when the manifest declares a robot-mounted depth camera (``parent_frame`` set); a
+      workcell-mounted depth camera goes through the same ``depth_extrinsic_check.py``
+      manually, unprompted here.
+    """
+    if description.assets.mjcf or description.assets.urdf:
+        console.print(
+            "[dim]Before real hardware:[/dim] openral collision lower "
+            f"--robot {output} --write"
+            "  [dim](fits self-collision geometry to the meshes; see"
+            " docs/tutorials/deploy/deploy-run-and-dashboard.md)[/dim]"
+        )
+    depth_cameras = [
+        s for s in description.sensors if s.is_depth_camera and s.parent_frame is not None
+    ]
+    for spec in depth_cameras:
+        console.print(
+            f"[dim]Before the world-voxel check:[/dim] uv run python "
+            f"tools/depth_extrinsic_check.py plan --robot {output} --sensor {spec.name}"
+            "  [dim](fits its extrinsic to the robot; see"
+            " docs/tutorials/deploy/deploy-run-and-dashboard.md)[/dim]"
+        )
 
 
 def _write_deploy_scene_scaffold(

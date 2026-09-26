@@ -11,11 +11,19 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 from openral_cli.main import app
 from typer.testing import CliRunner
 
 runner = CliRunner()
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _flat(text: str) -> str:
+    """Collapse whitespace/newlines: Rich wraps a long line at the console width, which
+    would otherwise break a printed path across lines and fail a plain substring check."""
+    return " ".join(text.split())
 
 
 class TestBhDetect:
@@ -205,6 +213,71 @@ class TestBhDetect:
         )
         assert result.exit_code == 0, result.output
         assert "Calibration required" not in result.output
+
+    def test_reminds_to_fit_collision_geometry_but_not_a_camera_with_none(
+        self, tmp_path: Path
+    ) -> None:
+        """SO-101 has an MJCF/URDF to fit collision geometry against, but its one
+        camera (``wrist``) is RGB-only: no extrinsic to fit, so no second nudge."""
+        out = tmp_path / "robot.yaml"
+        result = runner.invoke(
+            app,
+            [
+                "detect",
+                "--robot",
+                "so101",
+                "--output",
+                str(out),
+                "--include",
+                "network",
+                "--dds-timeout",
+                "0",
+                "--yes",
+            ],
+            input="\nn\n",
+        )
+        assert result.exit_code == 0, result.output
+        assert f"openral collision lower --robot {out} --write" in _flat(result.output)
+        assert "depth_extrinsic_check.py" not in result.output
+
+    def test_reminds_to_fit_a_robot_mounted_depth_cameras_extrinsic(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A robot-mounted depth camera (OpenArm's ``head_zed``, ``parent_frame`` set)
+        gets its own nudge toward the robot-as-target extrinsic fit, one per sensor."""
+        from openral_cli.main import _print_safety_fitting_reminders
+        from openral_core import RobotDescription
+
+        # A long absolute path would otherwise make Rich wrap mid-word at the
+        # default 80-column fallback, breaking the plain substring checks below.
+        monkeypatch.setenv("COLUMNS", "300")
+        robot = _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
+        description = RobotDescription.from_yaml(str(robot))
+        _print_safety_fitting_reminders(description, robot)
+        out = _flat(capsys.readouterr().out)
+        assert f"openral collision lower --robot {robot} --write" in out
+        for sensor in ("head_zed", "wrist_left", "wrist_right"):
+            # wrist_left/wrist_right are RGB (real Arducams, no depth): only head_zed
+            # (the ZED) gets the extrinsic-fit nudge.
+            depth_line = f"depth_extrinsic_check.py plan --robot {robot} --sensor {sensor}"
+            assert (depth_line in out) == (sensor == "head_zed")
+
+    def test_a_urdf_only_robot_with_a_depth_camera_is_also_reminded(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """panda_mobile has no MJCF, only a URDF, and its ``front_depth`` is parented
+        directly to ``base_frame`` -- both reminders still fire."""
+        from openral_cli.main import _print_safety_fitting_reminders
+        from openral_core import RobotDescription
+
+        monkeypatch.setenv("COLUMNS", "300")
+        robot = _REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"
+        description = RobotDescription.from_yaml(str(robot))
+        assert description.assets.mjcf is None and description.assets.urdf is not None
+        _print_safety_fitting_reminders(description, robot)
+        out = _flat(capsys.readouterr().out)
+        assert f"openral collision lower --robot {robot} --write" in out
+        assert f"depth_extrinsic_check.py plan --robot {robot} --sensor front_depth" in out
 
     def test_detect_scene_uses_detected_serial_port(self, tmp_path: Path) -> None:
         """The scaffolded scene's HAL port comes from the USB probe, not the
