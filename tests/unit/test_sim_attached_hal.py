@@ -265,7 +265,7 @@ def test_group_of_an_already_committed_tick_is_refused() -> None:
     assert (env.step_calls, hal.last_committed_tick) == (2, 4)
 
 
-def _slot_tick(tick: int) -> list[Action]:
+def _slot_tick(tick: int, session: int = 0) -> list[Action]:
     """One two-slot tick (Cartesian arm + gripper), as the runner dispatches it."""
     return [
         Action(
@@ -273,14 +273,72 @@ def _slot_tick(tick: int) -> list[Action]:
             cartesian_delta=[(0.2, -0.1, 0.3, 0.0, 0.1, -0.2)],
             tick_index=tick,
             tick_group_size=2,
+            runner_session_id=session,
         ),
         Action(
             control_mode=ControlMode.GRIPPER_POSITION,
             gripper=[-1.0],
             tick_index=tick,
             tick_group_size=2,
+            runner_session_id=session,
         ),
     ]
+
+
+_RUNNER_A = 0xA11CE
+_RUNNER_B = 0xB0B
+
+
+def test_same_session_replay_is_refused_including_tick_one() -> None:
+    """With a runner session id tick 1 is not a restart signal: it is a replay."""
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    for slot in _slot_tick(7, _RUNNER_A):
+        hal.send_action(slot)
+    for stale in (7, 4, 1):
+        with pytest.raises(ROSRuntimeError, match="stale slot group"):
+            hal.send_action(_slot_tick(stale, _RUNNER_A)[0])
+    assert (env.step_calls, hal.last_committed_tick, hal.last_committed_session) == (
+        1,
+        7,
+        _RUNNER_A,
+    )
+
+
+def test_new_session_adopted_on_commit_old_session_refused_after() -> None:
+    """A new runner is adopted only when its group commits; then the old one is dead."""
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    for slot in _slot_tick(40, _RUNNER_A):
+        hal.send_action(slot)
+    first, second = _slot_tick(1, _RUNNER_B)
+    hal.send_action(first)  # a stray new-session slot: staged, watermark untouched
+    assert (hal.last_committed_tick, hal.last_committed_session) == (40, _RUNNER_A)
+    hal.send_action(second)
+    assert (env.step_calls, hal.last_committed_tick, hal.last_committed_session) == (
+        2,
+        1,
+        _RUNNER_B,
+    )
+    # A late group of the dead runner numbered ABOVE the new watermark: a
+    # tick-only rule would step it; the session rule refuses it.
+    for slot in _slot_tick(41, _RUNNER_A):
+        with pytest.raises(ROSRuntimeError, match="superseded"):
+            hal.send_action(slot)
+    assert env.step_calls == 2
+
+
+def test_a_same_numbered_tick_of_two_sessions_never_merges() -> None:
+    """The group in flight is keyed by (session, tick), not the tick alone."""
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    hal.send_action(_slot_tick(3, _RUNNER_A)[0])
+    with pytest.raises(ROSRuntimeError, match="incomplete action group"):
+        hal.send_action(_slot_tick(3, _RUNNER_B)[1])
+    assert env.step_calls == 0
 
 
 def test_tick_one_after_a_higher_watermark_is_a_restarted_runner_everything_else_is_a_replay() -> (

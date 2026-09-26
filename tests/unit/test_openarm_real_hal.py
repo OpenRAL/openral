@@ -490,7 +490,11 @@ class TestTrajectoryDeadline:
 # ── ADR-0102 slot groups ──────────────────────────────────────────────────────
 
 
-def _bimanual_slot_group(tick: int = 1) -> list[Action]:
+_RUNNER_A = 0xA11CE
+_RUNNER_B = 0xB0B
+
+
+def _bimanual_slot_group(tick: int = 1, session: int = 0) -> list[Action]:
     """The four actions `_dispatch_slots` emits for the bimanual contract.
 
     Mirrors `rskill_runner_node._dispatch_slots` exactly: arm slots are padded
@@ -514,6 +518,7 @@ def _bimanual_slot_group(tick: int = 1) -> list[Action]:
             joint_names=names,
             tick_index=tick,
             tick_group_size=4,
+            runner_session_id=session,
         )
 
     def _grip(value: float, ee: str) -> Action:
@@ -524,6 +529,7 @@ def _bimanual_slot_group(tick: int = 1) -> list[Action]:
             ee_name=ee,
             tick_index=tick,
             tick_group_size=4,
+            runner_session_id=session,
         )
 
     return [
@@ -718,6 +724,77 @@ class TestSlotGroupDispatch:
         assert hal.last_committed_tick == 9
         with pytest.raises(ROSRuntimeError, match="stale slot group"):
             hal.send_action(_bimanual_slot_group(tick=5)[0])
+
+    def test_same_session_replay_is_refused_even_tick_one(self, both_buses_up: Path) -> None:
+        # With a runner session id the rule is exact: tick 1 is no longer a
+        # restart signal, so the same runner's tick 1 above its watermark is a
+        # replay like any other tick.
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=7, session=_RUNNER_A):
+            hal.send_action(action)
+        published = len(recorder.sent)
+        for stale in (7, 3, 1):
+            with pytest.raises(ROSRuntimeError, match="stale slot group"):
+                hal.send_action(_bimanual_slot_group(tick=stale, session=_RUNNER_A)[0])
+        assert len(recorder.sent) == published
+        assert (hal.last_committed_tick, hal.last_committed_session) == (7, _RUNNER_A)
+
+    def test_new_session_is_adopted_on_commit_and_the_old_one_retired(
+        self, both_buses_up: Path
+    ) -> None:
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=40, session=_RUNNER_A):
+            hal.send_action(action)
+        # A stray first slot of the new runner does not move the watermark...
+        new_group = _bimanual_slot_group(tick=1, session=_RUNNER_B)
+        hal.send_action(new_group[0])
+        assert (hal.last_committed_tick, hal.last_committed_session) == (40, _RUNNER_A)
+        for action in new_group[1:]:
+            hal.send_action(action)
+        # ...its committed group does.
+        assert (hal.last_committed_tick, hal.last_committed_session) == (1, _RUNNER_B)
+        published = len(recorder.sent)
+        # A late message of the dead runner is refused, even numbered above
+        # the new watermark — the case a tick-only rule cannot see.
+        with pytest.raises(ROSRuntimeError, match="superseded"):
+            hal.send_action(_bimanual_slot_group(tick=41, session=_RUNNER_A)[0])
+        with pytest.raises(ROSRuntimeError, match="superseded"):
+            hal.send_action(
+                Action(
+                    control_mode=ControlMode.JOINT_POSITION,
+                    horizon=1,
+                    joint_targets=[[0.0] * 16],
+                    tick_index=42,
+                    runner_session_id=_RUNNER_A,
+                )
+            )
+        assert len(recorder.sent) == published
+        for action in _bimanual_slot_group(tick=2, session=_RUNNER_B):
+            hal.send_action(action)
+        assert hal.last_committed_tick == 2
+
+    def test_a_new_sessions_ungrouped_ramp_is_adopted_on_commit(self, both_buses_up: Path) -> None:
+        recorder = _Recorder()
+        hal = OpenArmRealHAL(publish_fn=recorder)
+        hal.connect()
+        for action in _bimanual_slot_group(tick=40, session=_RUNNER_A):
+            hal.send_action(action)
+        hal.send_action(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[[0.0] * 16],
+                tick_index=1,
+                runner_session_id=_RUNNER_B,
+            )
+        )
+        assert (hal.last_committed_tick, hal.last_committed_session) == (1, _RUNNER_B)
+        with pytest.raises(ROSRuntimeError, match="superseded"):
+            hal.send_action(_bimanual_slot_group(tick=41, session=_RUNNER_A)[0])
 
     def test_estop_keeps_the_committed_watermark(self, both_buses_up: Path) -> None:
         # A stop is not a renumbering: a pre-estop tick replayed after the
