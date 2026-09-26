@@ -172,29 +172,24 @@ class TestSimModeUnchanged:
 
 def _passing_report(spec: SensorSpec, base_frame: str) -> dict[str, object]:
     """A ``tools/depth_extrinsic_check.py check`` report that clears ``spec``'s pose."""
-    from openral_core.depth_extrinsic import (
-        MAX_HEIGHT_ERR_M,
-        MAX_MARKER_ERR_M,
-        MAX_TILT_DEG,
-        MIN_MARKERS,
-    )
+    from openral_core.depth_extrinsic import FIT_AXES, MIN_FIT_POSES, extrinsic_criteria
 
-    markers = [
-        {"expected_xy": [0.4, y], "measured_xy": [0.4, y], "error_m": 0.002} for y in (-1, 1)
-    ]
+    small = {"height_m": 0.001, "planar_m": 0.001, "tilt_deg": 0.05, "yaw_deg": 0.05}
     return {
+        "method": "robot_fit",
         "sensor": spec.name,
         "parent_frame": spec.parent_frame,
         "frame_id": spec.frame_id,
         "base_frame": base_frame,
         "static_transform_xyz_rpy": list(spec.static_transform_xyz_rpy or ()),
-        "criteria": {
-            "max_tilt_deg": MAX_TILT_DEG,
-            "max_height_err_m": MAX_HEIGHT_ERR_M,
-            "max_marker_err_m": MAX_MARKER_ERR_M,
-            "min_markers": MIN_MARKERS,
+        "criteria": extrinsic_criteria(),
+        "residuals": {
+            "poses": MIN_FIT_POSES,
+            "median_residual_m": 0.004,
+            "mount_error": small,
+            "heldout_spread": small,
+            "axis_unrecovered": dict.fromkeys(FIT_AXES, 0.1),
         },
-        "residuals": {"tilt_deg": 0.1, "height_err_m": 0.001, "markers": markers},
         "passed": True,
         "failures": [],
     }

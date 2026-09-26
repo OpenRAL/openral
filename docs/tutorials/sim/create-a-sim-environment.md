@@ -427,6 +427,31 @@ robot = ROBOTS.get("my_arm")()         # invokes the cached factory
 print(robot.name, len(robot.joints))
 ```
 
+### Before this robot touches real hardware
+
+Sim runs fine on hand-authored geometry and a nominal camera mount; a real
+deploy does not. Two fits the safety kernel's collision checks depend on,
+neither optional, both easy to skip because nothing in `deploy sim` forces
+them:
+
+- **Self-collision geometry** — `openral collision lower --robot
+  robots/my_arm/robot.yaml --write` fits the manifest's collision capsules to
+  the actual MJCF/URDF meshes. An unfitted template capsule can miss its own
+  mesh by centimeters, which makes the kernel's self- and world-collision
+  checks silently not conservative.
+- **Depth-camera extrinsic** — if `my_arm` carries a robot-mounted depth
+  camera (`parent_frame` set on a depth/point-cloud `SensorSpec`), fit its
+  mount to the robot itself with `tools/depth_extrinsic_check.py plan
+  --robot robots/my_arm/robot.yaml --sensor <name>` (see
+  [`docs/tutorials/deploy/openarm-real-world-voxel-check.md`](../deploy/openarm-real-world-voxel-check.md)
+  for the full plan → capture → check → adopt flow). An unfitted extrinsic
+  places world-voxel obstacles at the wrong place relative to the robot,
+  causing both phantom stops and missed real ones.
+
+`openral detect` prints both reminders automatically once it writes a
+manifest with an MJCF/URDF and, for the second one, a robot-mounted depth
+camera.
+
 ### Match the manifest to a sim scene
 
 Every scene adapter expects a specific embodiment. LIBERO assumes a 7-DoF arm

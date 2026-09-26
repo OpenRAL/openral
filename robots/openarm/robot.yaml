@@ -489,12 +489,13 @@ sensors:
   # its overlay, robots/openarm/units/<unit>.yaml (selected by $OPENRAL_ROBOT_UNIT or
   # the scene's `robot_unit`); no scene may redefine this sensor
   # (openral_core.check_scene_sensor_overrides). Calibrate with
-  # tools/depth_extrinsic_check.py --sensor head_zed --unit <unit> and copy the
-  # report's suggested pose into that unit's overlay; `verify --unit <unit>` refuses a report once the
-  # effective pose changes (runbook: docs/tutorials/deploy/openarm-real-world-voxel-check.md).
-  # Both units now carry their own x/y/z/yaw, fitted 2026-09-25 from the unpowered arms'
-  # own returns (unit overlay headers): about 2 cm back and 1.6 cm up from this nominal
-  # mount on both cells. That aligns the self-filter; it is not a marker calibration.
+  # the robot itself: tools/depth_extrinsic_capture.py records the arms in the poses of
+  # calibration/extrinsic_fit_poses.yaml, tools/depth_extrinsic_check.py check --unit <unit>
+  # fits the mount to them; copy the report's suggested pose into that unit's overlay.
+  # `verify --unit <unit>` refuses a report once the effective pose changes (runbook:
+  # docs/tutorials/deploy/openarm-real-world-voxel-check.md). Both units' current x/y/z/yaw
+  # came from the RESTING arms only (2026-09-25, unit overlay headers): enough to align the
+  # self-filter, but from hanging arms the height and yaw are unresolved (~2 cm / 2 deg).
   #
   # A depth sensor with intrinsics auto-enables the octomap leg, so every
   # in-tree OpenArm scene pins `runtime.enable_octomap` explicitly and must

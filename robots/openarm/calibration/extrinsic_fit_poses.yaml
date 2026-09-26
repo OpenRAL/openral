@@ -1,0 +1,45 @@
+# Poses tools/depth_extrinsic_capture.py drives the OpenArm through to fit head_zed's mount to
+# the robot itself (tools/depth_extrinsic_check.py; runbook:
+# docs/tutorials/deploy/openarm-real-world-voxel-check.md). Joints not listed go to 0.
+#
+# Why these: with the arms hanging straight down the camera's height and yaw are
+# unobservable (the fit can slide along the arms), so the forearms are brought forward and
+# up into the head camera's view at several angles, twisted and asymmetric, so every axis
+# of the mount shows. Joint signs are mirrored between the arms (joint1 forward: left -,
+# right +; joint2 outward: left -, right +; joint4 flexes both forward and up).
+#
+# Designed 2026-09-26 in simulation (`depth_extrinsic_check.py plan`), not yet run on a rig:
+# - every pose, and every straight joint-space ramp between consecutive poses (rest first
+#   and last), clears the safety kernel's hull-refined self-collision check by >= 5.5 mm;
+# - everything in front of the shoulders stays >= 8.5 cm above the Thor cell's table top
+#   (z = -0.34 m in openarm_base; the Orin cell's is lower). Clear the space in front of
+#   the robot between shoulder and table height before recording.
+# - on a simulated capture through head_zed's field of view with the mount displaced
+#   10 mm / 0.7 deg, the fit recovers it to 2 mm / 0.15 deg and every axis recovers.
+schema_version: "0.1"
+robot_id: openarm
+poses:
+  - name: rest
+    joints: {}
+  - name: elbows_forward
+    joints: {left_joint4: 1.7, right_joint4: 1.7}
+  - name: reach_forward
+    joints: {left_joint1: -0.5, right_joint1: 0.5, left_joint4: 1.1, right_joint4: 1.1}
+  - name: elbows_out_turned
+    joints:
+      left_joint2: -0.2
+      right_joint2: 0.1
+      left_joint3: -0.5
+      right_joint3: 0.5
+      left_joint4: 1.7
+      right_joint4: 1.7
+  - name: asymmetric
+    joints: {left_joint1: -0.4, left_joint4: 1.4, right_joint3: -0.4, right_joint4: 2.0}
+  - name: wrists
+    joints:
+      left_joint4: 1.7
+      right_joint4: 1.7
+      left_joint5: 0.8
+      right_joint5: -0.8
+      left_joint6: 0.5
+      right_joint6: -0.5

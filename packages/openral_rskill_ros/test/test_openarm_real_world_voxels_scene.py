@@ -53,10 +53,9 @@ def calibrated_openarm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """``robots/openarm`` copied, with a passing head_zed report for the Thor unit's pose."""
     from openral_core import RobotDescription, apply_sensor_overlays, load_robot_unit
     from openral_core.depth_extrinsic import (
-        MAX_HEIGHT_ERR_M,
-        MAX_MARKER_ERR_M,
-        MAX_TILT_DEG,
-        MIN_MARKERS,
+        FIT_AXES,
+        MIN_FIT_POSES,
+        extrinsic_criteria,
         extrinsic_report_path,
     )
 
@@ -67,23 +66,25 @@ def calibrated_openarm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (zed,) = [s for s in apply_sensor_overlays(desc.sensors, thor) if s.name == "head_zed"]
     report = extrinsic_report_path(robot_dir / "robot.yaml", "head_zed", "thor")
     report.parent.mkdir(parents=True, exist_ok=True)
-    markers = [{"expected_xy": [0.5, y], "error_m": 0.002} for y in (-0.15, 0.15)]
+    small = {"height_m": 0.001, "planar_m": 0.001, "tilt_deg": 0.05, "yaw_deg": 0.05}
     report.write_text(
         json.dumps(
             {
+                "method": "robot_fit",
                 "unit": "thor",
                 "sensor": zed.name,
                 "parent_frame": zed.parent_frame,
                 "frame_id": zed.frame_id,
                 "base_frame": desc.base_frame,
                 "static_transform_xyz_rpy": list(zed.static_transform_xyz_rpy or ()),
-                "criteria": {
-                    "max_tilt_deg": MAX_TILT_DEG,
-                    "max_height_err_m": MAX_HEIGHT_ERR_M,
-                    "max_marker_err_m": MAX_MARKER_ERR_M,
-                    "min_markers": MIN_MARKERS,
+                "criteria": extrinsic_criteria(),
+                "residuals": {
+                    "poses": MIN_FIT_POSES,
+                    "median_residual_m": 0.004,
+                    "mount_error": small,
+                    "heldout_spread": small,
+                    "axis_unrecovered": dict.fromkeys(FIT_AXES, 0.1),
                 },
-                "residuals": {"tilt_deg": 0.1, "height_err_m": 0.001, "markers": markers},
                 "passed": True,
             }
         ),

@@ -382,13 +382,45 @@ _Package and publish a local rSkill directory to the HF Hub._
 
 Measures the wire cost of the dense `uint8[]` payload as publish→receive latency, i.e. map staleness. Result is transport- and host-specific.
 
+### `tools/_extrinsic_fit.py`
+_The robot-as-target extrinsic fit behind `depth_extrinsic_check.py` and `depth_extrinsic_capture.py`. Robot-agnostic: the sensor, frames and joints come from the manifest (plus unit overlay); the shape from the robot's MJCF (MuJoCo, equality-coupled followers honoured) or else its URDF (yourdfpy + trimesh). The mount's parent may be any link (posed by FK per recorded configuration)._
+
+- `class FitPose(BaseModel)` (L72) — One pose: `name`, `joints` (unlisted joints are 0).
+- `class FitPoseFile(BaseModel)` (L81) — `robots/<id>/calibration/extrinsic_fit_poses.yaml`: `schema_version`, `robot_id`, `poses`.
+  - `load(cls, path) -> FitPoseFile` [@classmethod] (L98)
+  - `targets(robot_id, description) -> list[tuple[str, dict[str, float]]]` (L102) — Full, limit-checked joint targets; refuses another robot's file, unknown joints, out-of-limit values, fewer than `MIN_FIT_POSES`.
+- `xyzrpy_to_matrix(v) -> NDArray` (L139) — `static_transform_publisher` convention (fixed-axis XYZ).
+- `matrix_to_xyzrpy(m) -> list[float]` (L160) — Its inverse.
+- `class RobotSurface` (L205) — The robot's surfaces and frames at a configuration, in its base frame; MJCF (preferred) or URDF.
+  - `set(q) -> None` (L336) — Pose the robot (manifest joint names); MJCF equality followers are set from their leaders.
+  - `frame(name) -> NDArray` (L376) — `base_frame -> name`; a manifest link maps to the MJCF body its joint moves, and the base frame is the MJCF world when it is not a body. For a URDF robot whose own root link differs from `base_frame` (panda_mobile's Franka arm rooted at `panda_link0`, mounted on a `base_link` mobile platform), bridges through `UrdfAsset.root_frame` / `base_to_root_xyz_rpy`, the same fixed transform `deploy_e2e.launch.py` publishes on `/tf_static`; `name == base_frame` itself is always identity, since a sensor may be parented directly to it (a frame the URDF need not know at all).
+  - `surface() -> tuple[NDArray, NDArray]` (L397) — Every robot mesh sampled at the current pose, with normals, in the base frame.
+  - `self_contact_depth(qa, qb, samples) -> float | None` (L353) — Deepest robot-on-robot mesh contact along a straight joint-space ramp; `None` for URDF-only robots (the live kernel is the guard there).
+- `class PoseCapture` (L425) — Frozen dataclass: `name`, `points` (depth points in the camera's mount frame), `joints` (real readings).
+- `write_capture(directory, meta, captures) -> None` (L433) — `capture.json` + one `pose_NN.npz` per pose.
+- `read_capture(directory) -> tuple[dict, list[PoseCapture]]` (L450) — Its inverse.
+- `camera_axes(frame_id) -> NDArray` (L475) — Optical → frame rotation (REP 103/105: `*_optical_frame` optical, else body x-forward).
+- `simulate_capture(robot, spec, true_mount, q, *, noise_m, rng, max_points) -> NDArray` (L486) — What the camera would return from the robot at `q` (field of view from the manifest intrinsics, back-face culled, range noise). Used by `plan` and the tests.
+- `mount_error(a, b, parent) -> dict[str, float]` (L598) — Height, planar, tilt and yaw between two mounts, in the base frame.
+- `fit_mount(robot, spec, captures, *, progress=None) -> tuple[NDArray, dict]` (L636) — Trimmed, coarse-to-fine ICP of the mount against the robot's surfaces over all poses at once, from the manifest mount; residuals: median robot residual, manifest mount error, held-out spread (refit with each pose left out), per-axis recovery (restart one limit off).
+
 ### `tools/depth_extrinsic_check.py`
 
-- `check(args) -> int` (L357) — Reads the depth cloud, the camera-internal TF (`frame_id -> cloud frame`) and, when the sensor's `parent_frame` is not the manifest's `base_frame` (G1 head on `torso_link`, SO-100/101 wrist on `gripper`, Galaxea A1 wrist on `arm_seg6`), the recorded `base_frame -> parent_frame` TF chain at each cloud's stamp — refusing if that chain moved during the recording or is missing. Places the cloud through the `--sensor` pose a deploy of `--unit` publishes (the manifest entry with that `RobotUnit`'s `SensorOverlay` applied; a robot that ships `units/` requires `--unit`, via `_unit_description`), fits the table plane and marker centroids in the base frame, and writes a JSON report (residuals, pass/fail, `base_frame`, `parent_in_base_xyz_rpy`, and `suggested_static_transform_xyz_rpy` in `parent_frame`, to be copied into the unit overlay — or the manifest, for a robot without units; the report records the unit). Returns 0 iff it passes against the `openral_core.depth_extrinsic` limits.
-- `verify(args) -> int` (L430) — `openral_core.depth_extrinsic.verify_extrinsic_report` for one sensor: 0 iff the report passed, at criteria no looser than the shipped limits, for the same unit and that unit's *current* pose. `openral deploy run` applies the same check itself.
-- `main(argv=None) -> int` (L453) — CLI: `check --robot --sensor --bag --cloud-topic --table-z --table-roi --marker X Y ...` / `verify --robot --sensor [--unit] [--report]` (`--sensor` required; `--unit` selects `robots/<id>/units/<unit>.yaml`; report defaults to `robots/<id>/calibration/<unit>/<sensor>_extrinsic.json`, or `calibration/<sensor>_extrinsic.json` without units). RGB-only sensors are refused (exit 2): no cloud to fit. Needs a sourced ROS 2 overlay (rosbag2_py, tf2_ros).
+- `plan(args) -> int` (L120) — Offline, no robot: validates the pose file (limits, self-contact along each ramp between poses, lowest robot point per pose) and fits a simulated capture through the camera's field of view; 0 iff clear and every axis observable.
+- `check(args) -> int` (L175) — Fits the `--unit`'s mount (manifest entry with that `RobotUnit`'s `SensorOverlay`, via `_unit_description`; a robot with `units/` needs `--unit`) to a `depth_extrinsic_capture.py` capture and writes the report (`method: robot_fit`, residuals, criteria, pass/fail, `suggested_static_transform_xyz_rpy` in `parent_frame`). Refuses a capture of another sensor/frame. 0 iff it passes.
+- `verify(args) -> int` (L216) — `openral_core.depth_extrinsic.verify_extrinsic_report` for one sensor: 0 iff the report passed, at criteria no looser than the shipped limits, for the same unit and that unit's *current* pose. `openral deploy run` applies the same check itself.
+- `main(argv=None) -> int` (L231) — CLI: `plan --robot --sensor [--unit] [--poses]` / `check --robot --sensor [--unit] --capture [--out]` / `verify --robot --sensor [--unit] [--report]`. RGB-only sensors refused (exit 2). No ROS needed.
 
-Measures the one input the kernel's world-voxel check trusts absolutely on a real depth camera — the extrinsic — which `openral calibrate camera` (intrinsics only) does not. Runbook: `docs/tutorials/deploy/openarm-real-world-voxel-check.md`. Tested in `tests/unit/test_depth_extrinsic_check.py` on real rosbag2 bags (OpenArm `head_zed`, G1 `head`, SO-101 `wrist`; `--unit` on a unit overlay).
+Measures the one input the kernel's world-voxel check trusts absolutely on a real depth camera — the extrinsic — with the robot itself as the target, no markers. Runbook: `docs/tutorials/deploy/openarm-real-world-voxel-check.md` step 2. Tested in `tests/unit/test_depth_extrinsic_check.py` on captures simulated from the robots' real MJCF meshes (OpenArm `head_zed`; G1 `head` on a moving `torso_link`).
+
+### `tools/depth_extrinsic_capture.py`
+
+_MOVES THE ROBOT. Drives it through the committed fit poses and records depth points (in the mount frame, via the driver's TF) with the real joint readings. Every waypoint goes through the safety kernel: `ROSPublishingHAL` on `/openral/candidate_action` with the runner's bounded starting-pose ramp, waiting for `/openral/action_applied`; stops on `/openral/estop` or a latched `/openral/safety_status`. Refuses unless `OPENRAL_EXTRINSIC_CAPTURE_ALLOW_MOTION=1`, `OPENRAL_EXTRINSIC_CAPTURE_ATTENDED=1` and an interactive terminal; asks before every move. Not yet run on a rig._
+
+- `GATES: tuple[str, str]` (L59) — The two motion gates.
+- `refuse_reason(env, interactive) -> str | None` (L64) — Why the tool must not move the robot, or `None`.
+- `ramp(current, target, steps) -> list[list[float]]` (L80) — The runner's linear joint-space ramp, ending exactly at `target`.
+- `main(argv=None) -> int` (L93) — Gate, then move and record each pose; writes the capture even when stopped early.
 
 ### `tools/openarm_world_voxel_run.sh`
 

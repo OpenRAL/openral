@@ -4,9 +4,12 @@
 #   at q = 0, 40 stacked clouds) to their MJCF meshes, roll/pitch held so the table stays
 #   level (0.22 deg). Median arm point-to-mesh 8.3 -> 3.4 mm; correction -20.6 mm x,
 #   -2.3 mm y, +15.7 mm z, +0.36 deg yaw from the manifest's nominal mount.
-# The arm fit is NOT a marker calibration: it assumes the unpowered arms hang at q = 0, and
-# translation along a link is weakly observed. It aligns the robot self-filter; the
-# world-voxel check still needs a verified report (tools/depth_extrinsic_check.py --unit thor).
+# That fit used the RESTING arms only, so it is not a calibration: it assumes they hang at
+# q = 0, and from hanging arms the camera's height and yaw are unresolved (re-fitting moved
+# them by millimetres to centimetres with no change in residual, 2026-09-26). It aligns the
+# robot self-filter. For the world-voxel check, fit over several poses with real joint
+# readings (tools/depth_extrinsic_capture.py, then tools/depth_extrinsic_check.py check
+# --unit thor) and commit the verified report.
 #
 # Per-host camera bindings. Carried over unchanged from robot.yaml, which served every
 # OpenArm cell before per-unit overlays existed; re-check the Arducam by-id paths with
