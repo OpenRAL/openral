@@ -74,10 +74,15 @@ def _robot_with_pose(
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "robot.yaml"
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
-    for extra in ("openarm.srdf", "openarm.urdf", "patches"):
-        link = out_dir / extra
-        if (src.parent / extra).exists() and not link.exists():
-            link.symlink_to(src.parent / extra)
+    # Any robot's own sibling files a relative `file:` asset ref might resolve against
+    # (an SRDF, a vendored URDF, patches/); symlinked rather than hardcoded to one robot's
+    # filenames, since this helper is shared across robots.
+    for extra in src.parent.iterdir():
+        if extra.name in ("robot.yaml", "units"):
+            continue
+        link = out_dir / extra.name
+        if not link.exists():
+            link.symlink_to(extra)
     return path
 
 
@@ -317,6 +322,73 @@ def test_a_camera_on_a_moving_link_is_fitted_through_forward_kinematics(tmp_path
     assert _check(fixed, capture, tmp_path / "fixed.json", "head") == 0, json.loads(
         (tmp_path / "fixed.json").read_text()
     )["failures"]
+
+
+@pytest.mark.slow
+def test_a_urdf_only_robot_is_fitted_through_its_urdf_meshes(tmp_path: Path) -> None:
+    """panda_mobile has no MJCF: RobotSurface falls back to its URDF (yourdfpy + trimesh).
+
+    Its Franka arm URDF's own root link, ``panda_link0``, differs from the manifest's
+    ``base_frame`` (``base_link``, the mobile base) -- ``assets.urdf.root_frame`` bridges
+    them, the same fixed transform ``deploy_e2e.launch.py`` publishes on ``/tf_static``.
+    Its ``front_depth`` is parented directly to ``base_frame`` itself (not a link the URDF
+    knows at all), the other edge case: base -> base is identity, never a URDF lookup.
+    """
+    true_pose = [0.25, 0.0, 0.55, 0.0, math.radians(60), 0.0]
+    robot = _robot_with_pose(tmp_path, true_pose, "panda_mobile", "front_depth")
+    desc = RobotDescription.from_yaml(str(robot))
+    assert desc.assets.mjcf is None and desc.assets.urdf is not None
+    zero = {j.name: 0.0 for j in desc.joints}
+
+    def pose(**kw: float) -> dict[str, float]:
+        return {**zero, **kw}
+
+    targets = [
+        ("low_reach", pose(panda_joint2=-0.2, panda_joint4=-2.2, panda_joint6=1.6)),
+        (
+            "twisted",
+            pose(
+                panda_joint1=0.3,
+                panda_joint2=-0.4,
+                panda_joint4=-1.9,
+                panda_joint6=1.9,
+                panda_joint7=0.8,
+            ),
+        ),
+        (
+            "low_left",
+            pose(panda_joint1=0.2, panda_joint2=-0.2, panda_joint4=-2.2, panda_joint6=1.6),
+        ),
+        (
+            "low_right",
+            pose(panda_joint1=-0.2, panda_joint2=-0.2, panda_joint4=-2.2, panda_joint6=1.6),
+        ),
+        (
+            "extended_low",
+            pose(panda_joint2=-0.5, panda_joint4=-2.0, panda_joint6=2.0, panda_joint7=0.4),
+        ),
+        (
+            "roll_wrist",
+            pose(panda_joint2=-0.2, panda_joint4=-2.2, panda_joint6=1.6, panda_joint7=1.2),
+        ),
+    ]
+    capture = _capture(tmp_path, robot, true_pose, targets, sensor="front_depth")
+    wrong = [
+        p + d for p, d in zip(true_pose, (0.012, -0.008, 0.01, 0.01, -0.012, 0.01), strict=True)
+    ]
+    wrong_robot = _robot_with_pose(tmp_path / "wrong", wrong, "panda_mobile", "front_depth")
+    out = tmp_path / "r.json"
+    assert _check(wrong_robot, capture, out, "front_depth") == 1
+    report = json.loads(out.read_text())
+    assert report["parent_frame"] == report["base_frame"] == "base_link"
+    suggested = report["suggested_static_transform_xyz_rpy"]
+    assert np.allclose(suggested[:3], true_pose[:3], atol=0.004), suggested
+    assert np.allclose(suggested[3:], true_pose[3:], atol=math.radians(0.3)), suggested
+    fixed = _robot_with_pose(tmp_path / "fixed", suggested, "panda_mobile", "front_depth")
+    fixed_out = tmp_path / "fixed.json"
+    assert _check(fixed, capture, fixed_out, "front_depth") == 0, json.loads(fixed_out.read_text())[
+        "failures"
+    ]
 
 
 @pytest.mark.slow

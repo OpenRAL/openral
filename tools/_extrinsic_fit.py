@@ -316,6 +316,19 @@ class RobotSurface:
         # Any: yourdfpy ships no type information.
         self._urdf: Any = yourdfpy.URDF.load(str(path), load_meshes=True, build_scene_graph=True)
         self._kind = "urdf"
+        # A URDF whose own root link differs from the manifest's base_frame (a Franka's
+        # panda_link0 mounted on a mobile base_link) bridges through UrdfAsset.root_frame /
+        # base_to_root_xyz_rpy, the same fixed transform deploy_e2e.launch.py publishes on
+        # /tf_static (frame-id base_frame, child-frame-id root_frame). root_frame is the URDF
+        # link name to hand yourdfpy; None means the URDF's own root IS named base_frame.
+        urdf_asset = self.description.assets.urdf
+        assert urdf_asset is not None
+        self._urdf_root = urdf_asset.root_frame or self.description.base_frame
+        self._base_to_root = (
+            xyzrpy_to_matrix(urdf_asset.base_to_root_xyz_rpy)
+            if urdf_asset.base_to_root_xyz_rpy is not None
+            else np.eye(4)
+        )
         self.set({j.name: 0.0 for j in self.description.joints})
 
     # Common -------------------------------------------------------------------
@@ -365,10 +378,21 @@ class RobotSurface:
         if self._kind == "mjcf":
             out: Mat = self._base_inv @ self._mj_body_pose(name)
             return out
-        base = self.description.base_frame
-        return np.asarray(
-            self._urdf.get_transform(frame_to=name, frame_from=base), dtype=np.float64
+        if name == self.description.base_frame:
+            # base_frame is not necessarily a link the URDF itself knows at all (a sensor
+            # parented directly to it, e.g. panda_mobile's front_depth on "base_link", while
+            # the Franka URDF only has links from "panda_link0" down): base -> base is
+            # trivially identity, and asking the URDF graph for a frame it never declared
+            # would raise.
+            return np.eye(4)
+        # Otherwise resolve from the URDF's own root, then prepend the fixed
+        # base_frame -> root_frame bridge (panda_mobile's base_link -> panda_link0).
+        root_to_name = np.asarray(
+            self._urdf.get_transform(frame_to=name, frame_from=self._urdf_root),
+            dtype=np.float64,
         )
+        out2: Mat = self._base_to_root @ root_to_name
+        return out2
 
     def surface(self) -> tuple[Points, Points]:
         """Every robot mesh sampled at the current configuration, in the base frame."""
@@ -385,11 +409,7 @@ class RobotSurface:
         import trimesh
 
         mesh = self._urdf.scene.to_geometry()
-        base = self.description.base_frame
-        root_in_base = np.asarray(
-            self._urdf.get_transform(frame_to=self._urdf.base_link, frame_from=base),
-            dtype=np.float64,
-        )
+        root_in_base = self.frame(self._urdf.base_link)
         pts, face = trimesh.sample.sample_surface(
             mesh, max(1, int(mesh.area * _SAMPLES_PER_M2)), seed=0
         )

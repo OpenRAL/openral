@@ -392,17 +392,17 @@ _The robot-as-target extrinsic fit behind `depth_extrinsic_check.py` and `depth_
 - `xyzrpy_to_matrix(v) -> NDArray` (L139) — `static_transform_publisher` convention (fixed-axis XYZ).
 - `matrix_to_xyzrpy(m) -> list[float]` (L160) — Its inverse.
 - `class RobotSurface` (L205) — The robot's surfaces and frames at a configuration, in its base frame; MJCF (preferred) or URDF.
-  - `set(q) -> None` (L323) — Pose the robot (manifest joint names); MJCF equality followers are set from their leaders.
-  - `frame(name) -> NDArray` (L363) — `base_frame -> name`; a manifest link maps to the MJCF body its joint moves, and the base frame is the MJCF world when it is not a body.
-  - `surface() -> tuple[NDArray, NDArray]` (L373) — Every robot mesh sampled at the current pose, with normals, in the base frame.
-  - `self_contact_depth(qa, qb, samples) -> float | None` (L340) — Deepest robot-on-robot mesh contact along a straight joint-space ramp; `None` for URDF-only robots (the live kernel is the guard there).
-- `class PoseCapture` (L405) — Frozen dataclass: `name`, `points` (depth points in the camera's mount frame), `joints` (real readings).
-- `write_capture(directory, meta, captures) -> None` (L413) — `capture.json` + one `pose_NN.npz` per pose.
-- `read_capture(directory) -> tuple[dict, list[PoseCapture]]` (L430) — Its inverse.
-- `camera_axes(frame_id) -> NDArray` (L455) — Optical → frame rotation (REP 103/105: `*_optical_frame` optical, else body x-forward).
-- `simulate_capture(robot, spec, true_mount, q, *, noise_m, rng, max_points) -> NDArray` (L466) — What the camera would return from the robot at `q` (field of view from the manifest intrinsics, back-face culled, range noise). Used by `plan` and the tests.
-- `mount_error(a, b, parent) -> dict[str, float]` (L578) — Height, planar, tilt and yaw between two mounts, in the base frame.
-- `fit_mount(robot, spec, captures, *, progress=None) -> tuple[NDArray, dict]` (L616) — Trimmed, coarse-to-fine ICP of the mount against the robot's surfaces over all poses at once, from the manifest mount; residuals: median robot residual, manifest mount error, held-out spread (refit with each pose left out), per-axis recovery (restart one limit off).
+  - `set(q) -> None` (L336) — Pose the robot (manifest joint names); MJCF equality followers are set from their leaders.
+  - `frame(name) -> NDArray` (L376) — `base_frame -> name`; a manifest link maps to the MJCF body its joint moves, and the base frame is the MJCF world when it is not a body. For a URDF robot whose own root link differs from `base_frame` (panda_mobile's Franka arm rooted at `panda_link0`, mounted on a `base_link` mobile platform), bridges through `UrdfAsset.root_frame` / `base_to_root_xyz_rpy`, the same fixed transform `deploy_e2e.launch.py` publishes on `/tf_static`; `name == base_frame` itself is always identity, since a sensor may be parented directly to it (a frame the URDF need not know at all).
+  - `surface() -> tuple[NDArray, NDArray]` (L397) — Every robot mesh sampled at the current pose, with normals, in the base frame.
+  - `self_contact_depth(qa, qb, samples) -> float | None` (L353) — Deepest robot-on-robot mesh contact along a straight joint-space ramp; `None` for URDF-only robots (the live kernel is the guard there).
+- `class PoseCapture` (L425) — Frozen dataclass: `name`, `points` (depth points in the camera's mount frame), `joints` (real readings).
+- `write_capture(directory, meta, captures) -> None` (L433) — `capture.json` + one `pose_NN.npz` per pose.
+- `read_capture(directory) -> tuple[dict, list[PoseCapture]]` (L450) — Its inverse.
+- `camera_axes(frame_id) -> NDArray` (L475) — Optical → frame rotation (REP 103/105: `*_optical_frame` optical, else body x-forward).
+- `simulate_capture(robot, spec, true_mount, q, *, noise_m, rng, max_points) -> NDArray` (L486) — What the camera would return from the robot at `q` (field of view from the manifest intrinsics, back-face culled, range noise). Used by `plan` and the tests.
+- `mount_error(a, b, parent) -> dict[str, float]` (L598) — Height, planar, tilt and yaw between two mounts, in the base frame.
+- `fit_mount(robot, spec, captures, *, progress=None) -> tuple[NDArray, dict]` (L636) — Trimmed, coarse-to-fine ICP of the mount against the robot's surfaces over all poses at once, from the manifest mount; residuals: median robot residual, manifest mount error, held-out spread (refit with each pose left out), per-axis recovery (restart one limit off).
 
 ### `tools/depth_extrinsic_check.py`
 
