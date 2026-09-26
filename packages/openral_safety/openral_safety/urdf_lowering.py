@@ -1140,10 +1140,13 @@ def _axis_radius_bound(
             total += float(np.linalg.norm(np.asarray(_origin_matrix(link_joint.origin))[:3, 3]))  # type: ignore[attr-defined]  # reason: yourdfpy Joint
         if link_joint is joint:
             seen = True
-    return total + max(
-        float(np.linalg.norm(np.asarray(g.origin_xyz_rpy[:3], dtype=np.float64)))
-        + shape_max_extent_m(g.shape)
-        for g in geoms
+    return float(
+        total
+        + max(
+            float(np.linalg.norm(np.asarray(g.origin_xyz_rpy[:3], dtype=np.float64)))
+            + shape_max_extent_m(g.shape)
+            for g in geoms
+        )
     )
 
 
