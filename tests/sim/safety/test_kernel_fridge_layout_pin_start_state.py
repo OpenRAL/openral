@@ -388,7 +388,7 @@ def _kernel_params(desc: RobotDescription, margin_m: float) -> dict[str, object]
         {
             "world_voxel_enabled": True,
             "world_voxel_margin_m": float(margin_m),
-            "world_voxel_deadline_ms": 5000.0,
+            "world_voxel_deadline_ms": 2000.0,
             "world_voxel_max_cells": 2_000_000,
             "collision_joint_names": [j.name for j in desc.joints],
             "collision_base_dofs": [
@@ -475,6 +475,7 @@ def _kernel_verdict(
             while time.time() < warm:
                 js.header.stamp = helper.get_clock().now().to_msg()
                 grid.header.stamp = js.header.stamp
+                grid.source_stamp = grid.header.stamp
                 js_pub.publish(js)
                 voxel_pub.publish(grid)
                 executor.spin_once(timeout_sec=0.02)
@@ -491,6 +492,7 @@ def _kernel_verdict(
             while time.time() < end and not estops:
                 js.header.stamp = helper.get_clock().now().to_msg()
                 grid.header.stamp = js.header.stamp
+                grid.source_stamp = grid.header.stamp
                 js_pub.publish(js)
                 voxel_pub.publish(grid)
                 cand_pub.publish(chunk)
@@ -719,6 +721,7 @@ def test_the_narrow_phase_meets_the_chunk_budget_on_a_real_grid(pinned: _StartSt
             while time.time() < warm:
                 js.header.stamp = helper.get_clock().now().to_msg()
                 grid.header.stamp = js.header.stamp
+                grid.source_stamp = grid.header.stamp
                 js_pub.publish(js)
                 voxel_pub.publish(grid)
                 executor.spin_once(timeout_sec=0.02)
@@ -735,6 +738,7 @@ def test_the_narrow_phase_meets_the_chunk_budget_on_a_real_grid(pinned: _StartSt
                 trace = f"lat-{i:04d}"
                 js.header.stamp = helper.get_clock().now().to_msg()
                 grid.header.stamp = js.header.stamp
+                grid.source_stamp = grid.header.stamp
                 js_pub.publish(js)
                 voxel_pub.publish(grid)
                 chunk.trace_id = trace

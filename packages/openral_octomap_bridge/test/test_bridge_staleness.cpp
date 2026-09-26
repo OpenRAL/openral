@@ -65,6 +65,17 @@ TEST(OctreeFreshness, AnUnusableBoundMakesNothingFresh) {
   EXPECT_TRUE(bridge::valid_max_octree_age(0.5));
 }
 
+TEST(OctreeFreshness, ABoundPastTheKernelsDeadlineCapIsUnusable) {
+  // The kernel refuses a world_voxel_deadline_ms above 2000 ms; a bound past it
+  // would keep a frozen map alive longer than any configurable deadline.
+  EXPECT_DOUBLE_EQ(bridge::kMaxOctreeAgeS, 2.0);
+  EXPECT_TRUE(bridge::valid_max_octree_age(bridge::kMaxOctreeAgeS));
+  EXPECT_TRUE(bridge::octree_is_fresh(bridge::kMaxOctreeAgeS, bridge::kMaxOctreeAgeS));
+  EXPECT_FALSE(bridge::valid_max_octree_age(bridge::kMaxOctreeAgeS + 1e-9));
+  EXPECT_FALSE(bridge::valid_max_octree_age(5.0));
+  EXPECT_FALSE(bridge::octree_is_fresh(0.0, 5.0));
+}
+
 // ── The node ─────────────────────────────────────────────────────────────────
 
 constexpr double kMaxOctreeAgeS = 0.4;
@@ -228,6 +239,21 @@ TEST_F(BridgeStaleness, AnUnusableBoundPublishesNothing) {
   send_octree();
   spin_for(500ms);
   EXPECT_EQ(grids_.load(), 0);
+}
+
+TEST_F(BridgeStaleness, ABoundPastTheCapPublishesNothing) {
+  // Launched directly with a bound DeployRuntime would refuse: silence.
+  start(bridge::kMaxOctreeAgeS + 0.5);
+  send_octree();
+  spin_for(500ms);
+  EXPECT_EQ(grids_.load(), 0);
+}
+
+TEST_F(BridgeStaleness, ABoundAtTheCapStillPublishes) {
+  start(bridge::kMaxOctreeAgeS);
+  send_octree();
+  spin_for(250ms);
+  EXPECT_GT(grids_.load(), 0);
 }
 
 }  // namespace

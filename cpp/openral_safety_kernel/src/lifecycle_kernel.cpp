@@ -285,9 +285,13 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   // How old the sensor data behind the grid may be at check time, from the
   // grid's `source_stamp` (the capture stamp of the newest cloud in the
   // octree). The deadline above is measured from receipt and cannot see the
-  // pipeline's latency; this one can. 0 = not enforced (the deploy launch sets
-  // it; a producer that leaves `source_stamp` unset is then treated as stale).
-  this->declare_parameter<double>("world_voxel_data_age_budget_ms", 0.0);
+  // pipeline's latency; this one can. A grid with no `source_stamp` is stale.
+  // There is no "off": with the world check enabled, configure refuses a
+  // budget outside (0, kMaxWorldVoxelDataAgeBudgetMs] and a deadline outside
+  // (0, kMaxWorldVoxelDeadlineMs], so a node launched directly (not through
+  // `openral deploy`) is held to DeployRuntime's caps too.
+  this->declare_parameter<double>("world_voxel_data_age_budget_ms",
+                                  kDefaultWorldVoxelDataAgeBudgetMs);
   // Sized by the ROBOT, not by taste: must cover wherever the kernel-checked
   // geometry can reach — a ball on a lattice-aligned grid (axes are the
   // map's, turn relative to base, so a base-aligned box isn't invariant).
@@ -831,15 +835,14 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         if (voxel_source_known_) {
           const double data_age_ms = (this->now() - voxel_source_stamp_).seconds() * 1e3;
           span->SetAttribute("safety.world_voxel_data_age_ms", data_age_ms);
-          if (world_voxel_data_age_budget_s_ > 0.0 &&
-              data_age_ms > world_voxel_data_age_budget_s_ * 1e3) {
+          if (data_age_ms > world_voxel_data_age_budget_s_ * 1e3) {
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                                  "safety.voxel_stale data_age_ms=%.0f budget_ms=%.0f", data_age_ms,
                                  world_voxel_data_age_budget_s_ * 1e3);
             unavailable("voxel_stale", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE);
             return;
           }
-        } else if (world_voxel_data_age_budget_s_ > 0.0) {
+        } else {
           unavailable("voxel_stale", openral_msgs::msg::SafetyStatus::DROP_VOXEL_UNAVAILABLE);
           return;
         }
@@ -1630,9 +1633,29 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   // the subscription callback never reallocates and the view pointer is stable.
   world_voxel_enabled_ = this->get_parameter("world_voxel_enabled").as_bool();
   world_voxel_margin_m_ = this->get_parameter("world_voxel_margin_m").as_double();
-  world_voxel_deadline_s_ = this->get_parameter("world_voxel_deadline_ms").as_double() / 1000.0;
-  world_voxel_data_age_budget_s_ =
-      this->get_parameter("world_voxel_data_age_budget_ms").as_double() / 1000.0;
+  const double deadline_ms = this->get_parameter("world_voxel_deadline_ms").as_double();
+  const double data_age_budget_ms =
+      this->get_parameter("world_voxel_data_age_budget_ms").as_double();
+  world_voxel_deadline_s_ = deadline_ms / 1000.0;
+  world_voxel_data_age_budget_s_ = data_age_budget_ms / 1000.0;
+  // Hard caps, mirroring DeployRuntime (hazard log Entries 033/034). Refused,
+  // never clamped: a cap exceeded here means a launch path bypassed the
+  // schema, and the operator must see it rather than run on a guess.
+  if (world_voxel_enabled_) {
+    if (!(deadline_ms > 0.0 && deadline_ms <= kMaxWorldVoxelDeadlineMs)) {
+      error = "world_voxel_deadline_ms=" + std::to_string(deadline_ms) + " is outside (0, " +
+              std::to_string(kMaxWorldVoxelDeadlineMs) +
+              "]: the kernel would check chunks against a voxel grid that old";
+      return false;
+    }
+    if (!(data_age_budget_ms > 0.0 && data_age_budget_ms <= kMaxWorldVoxelDataAgeBudgetMs)) {
+      error = "world_voxel_data_age_budget_ms=" + std::to_string(data_age_budget_ms) +
+              " is outside (0, " + std::to_string(kMaxWorldVoxelDataAgeBudgetMs) +
+              "]: the kernel would certify chunks against a world that old (0 no longer "
+              "disables the check)";
+      return false;
+    }
+  }
   voxel_source_known_ = false;
   world_voxel_max_cells_ =
       static_cast<std::size_t>(this->get_parameter("world_voxel_max_cells").as_int());

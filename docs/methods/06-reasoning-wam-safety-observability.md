@@ -289,6 +289,11 @@ _Day-1 Python safety envelope: `candidate_action` → `safe_action` pass-through
 - module constant `_RATE_VIOLATION_KINDS: frozenset[str]` (L94) — `{"cartesian_step", "cartesian_step_rot", "ee_linear_speed", "ee_angular_speed", "base_linear_speed", "base_angular_speed"}`, the rate/speed-bound violation kinds.
 - module constant `DEFAULT_ESTOP_RESET_COOLDOWN_S: float = 0.5` (L82) — default cooldown `_on_estop_reset` enforces since the last estop before clearing the latch.
 
+### `cpp/openral_safety_kernel/include/openral_safety_kernel/lifecycle_kernel.hpp`
+_C++ (Layer 5). Node-side caps on the world-voxel freshness parameters (hazard log Entries 033/034)._
+
+- `kMaxWorldVoxelDeadlineMs = 2000.0`, `kMaxWorldVoxelDataAgeBudgetMs = 3000.0`, `kDefaultWorldVoxelDataAgeBudgetMs = 1500.0` — With `world_voxel_enabled`, `on_configure` returns FAILURE for a `world_voxel_deadline_ms` outside (0, 2000] or a `world_voxel_data_age_budget_ms` outside (0, 3000]; the budget defaults to 1500 and 0 no longer disables it. Deliberate mirror of `DeployRuntime`'s caps, pinned by `tests/unit/test_perception_caps_mirror.py`.
+
 ### `cpp/openral_safety_kernel/include/openral_safety_kernel/collision.hpp`
 _Allocation-free attached-payload contact handling, plus the staged 26-DOP → exact-convex-hull narrow phase for the arm-link-vs-world-voxel check ([`collision-hull-narrow-phase.md`](../reference/collision-hull-narrow-phase.md), [`collision-tight-geometry.md`](../reference/collision-tight-geometry.md))._
 
