@@ -43,6 +43,17 @@ def _gated(unit: str) -> dict[str, str]:
     }
 
 
+def _skip_unless_ros_and_openral() -> None:
+    """The gates after the unit one need a sourced ROS 2 and ``openral`` on PATH."""
+    if (
+        "ROS_DISTRO" not in os.environ
+        or subprocess.run(
+            ["bash", "-c", "command -v openral"], capture_output=True, check=False
+        ).returncode
+    ):
+        pytest.skip("needs a sourced ROS 2 and openral on PATH to reach this gate")
+
+
 def test_the_run_script_refuses_without_both_motion_gates() -> None:
     proc = _run_script(_NO_GATES)
     assert proc.returncode == 2
@@ -80,6 +91,7 @@ def test_the_run_script_lets_observability_flags_through_to_the_gates() -> None:
 
 def test_the_run_script_refuses_when_deploy_would_load_another_manifest(tmp_path: Path) -> None:
     """With OPENRAL_ROBOTS_DIR pointing elsewhere, deploy would publish that copy's pose."""
+    _skip_unless_ros_and_openral()
     other = tmp_path / "robots" / "openarm"
     other.mkdir(parents=True)
     (other / "robot.yaml").write_text(_ROBOT.read_text(encoding="utf-8"), encoding="utf-8")
@@ -91,13 +103,7 @@ def test_the_run_script_refuses_when_deploy_would_load_another_manifest(tmp_path
 def test_thors_declared_mount_passes_the_gate_and_orins_undeclared_one_does_not() -> None:
     """Thor's overlay declares head_zed's mount, so the script gets past the mount gate and
     stops at the last refusal before motion (no interactive terminal); Orin's does not yet."""
-    if (
-        "ROS_DISTRO" not in os.environ
-        or subprocess.run(
-            ["bash", "-c", "command -v openral"], capture_output=True, check=False
-        ).returncode
-    ):
-        pytest.skip("needs a sourced ROS 2 and openral on PATH to reach the mount gate")
+    _skip_unless_ros_and_openral()
     proc = _run_script(_gated("thor"))
     assert proc.returncode == 2, proc.stderr
     assert "not an interactive terminal" in proc.stderr, proc.stderr
@@ -108,13 +114,7 @@ def test_thors_declared_mount_passes_the_gate_and_orins_undeclared_one_does_not(
 
 def test_the_run_script_refuses_a_unit_that_does_not_exist() -> None:
     """A unit nobody wrote declares nothing: the mount gate refuses before the prompt."""
-    if (
-        "ROS_DISTRO" not in os.environ
-        or subprocess.run(
-            ["bash", "-c", "command -v openral"], capture_output=True, check=False
-        ).returncode
-    ):
-        pytest.skip("needs a sourced ROS 2 and openral on PATH to reach the mount gate")
+    _skip_unless_ros_and_openral()
     proc = _run_script(_gated("no_such_cell"))
     assert proc.returncode == 2, proc.stderr
     assert "head_zed's mount is not declared for unit no_such_cell" in proc.stderr
