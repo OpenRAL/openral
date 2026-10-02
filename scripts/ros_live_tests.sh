@@ -64,6 +64,10 @@ TARGETS=(
     # Grasp masks back-project in the depth header's optical frame through the
     # driver's CameraInfo, never the manifest's body frame or nominal K.
     tests/integration/test_vision_attachment_optical_frame_live.py
+    # The pre-grasp target leg measures the declared target's region from the
+    # search box, the voxel map and a SegmentInView mask; freezes it under a TTL
+    # on a lost view, refuses two candidates, dies with the declaration.
+    tests/integration/test_grasp_target_leg_live.py
     # A world-voxel stop names its cell only as an index; the grid that index
     # addresses arrives on a different topic, and until joined the record
     # can't look at the map -- how the 2026-08-22 round adjudicated two stops

@@ -50,3 +50,12 @@ bool active
 # empty for a grasp declaration; a consumer refuses the region otherwise.
 bool region_valid
 PlaceRegion region
+
+# Optional search box (real pick-and-place design §2.2), in the voxel grid's base
+# frame: where the target producer looks in the occupancy map for the seed it
+# prompts the segmenter with. It only SEEDS perception and arms nothing — the
+# exemption is always the measured `region` above. Unlike `region`, a scene may
+# supply it and dispatch passes it through unchanged. search_box_valid false =
+# no search, so no region is ever measured. `search_box.geometry[]` MUST be empty.
+bool search_box_valid
+PlaceRegion search_box

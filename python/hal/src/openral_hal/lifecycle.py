@@ -1606,6 +1606,16 @@ if _ROS2_AVAILABLE:
             # "manifest_link=tf_frame" entries for links the published TF tree
             # names differently (same body only — see VisionAttachmentConfig).
             self.declare_parameter("vision_attachment_tf_frames", [""])
+            # Pre-grasp target producer leg (real pick-and-place design §2.2),
+            # owned by the vision attachment bridge. OFF by default: it measures
+            # the region a grasp-target exemption would be armed with.
+            self.declare_parameter("vision_attachment_grasp_target_enabled", False)
+            self.declare_parameter("vision_attachment_grasp_target_rate_hz", 3.0)
+            # Seconds the last accepted region survives a lost view (<= 2x the
+            # real cell's 1.0 s kernel voxel deadline).
+            self.declare_parameter("vision_attachment_grasp_target_freeze_s", 2.0)
+            self.declare_parameter("vision_attachment_grasp_target_min_cells", 8)
+            self.declare_parameter("vision_attachment_grasp_target_min_cover", 0.5)
             self._bridge: Any = None
             self._mobile_base: Any = None
             self._vision_attachment: Any = None
@@ -2057,6 +2067,21 @@ if _ROS2_AVAILABLE:
                     ),
                     tf_frames=tf_frames,
                     evidence_timeout_s=gp("vision_attachment_evidence_timeout_s")
+                    .get_parameter_value()
+                    .double_value,
+                    grasp_target_enabled=gp("vision_attachment_grasp_target_enabled")
+                    .get_parameter_value()
+                    .bool_value,
+                    grasp_target_rate_hz=gp("vision_attachment_grasp_target_rate_hz")
+                    .get_parameter_value()
+                    .double_value,
+                    grasp_target_freeze_s=gp("vision_attachment_grasp_target_freeze_s")
+                    .get_parameter_value()
+                    .double_value,
+                    grasp_target_min_cells=gp("vision_attachment_grasp_target_min_cells")
+                    .get_parameter_value()
+                    .integer_value,
+                    grasp_target_min_cover=gp("vision_attachment_grasp_target_min_cover")
                     .get_parameter_value()
                     .double_value,
                 ),

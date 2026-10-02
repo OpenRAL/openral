@@ -3419,6 +3419,12 @@ class GraspDeclaration(BaseModel):
         active: ``False`` retracts the declaration.
         region: Producer-measured oriented box around the target; ``None`` =
             no exemption. Dies with the declaration.
+        search_box: Optional box (in the voxel grid's base frame) the target
+            producer searches the occupancy map in for a seed. It only *seeds*
+            perception and never arms anything: the exemption is always the
+            measured ``region``. Unlike ``region`` a scene may supply it, and
+            dispatch passes it through unchanged. ``None`` = no search, so the
+            producer never measures a region.
 
     Example:
         >>> declaration = GraspDeclaration(
@@ -3452,6 +3458,7 @@ class GraspDeclaration(BaseModel):
     stamp_ns: int = Field(ge=0)
     active: bool = True
     region: PlaceRegion | None = None
+    search_box: PlaceRegion | None = None
 
     @model_validator(mode="after")
     def _validate_declaration(self) -> GraspDeclaration:
@@ -3466,6 +3473,11 @@ class GraspDeclaration(BaseModel):
             raise ValueError("An active GraspDeclaration must name its gripper contact_links.")
         if any(not link for link in self.contact_links):
             raise ValueError("GraspDeclaration.contact_links may not contain an empty name.")
+        if self.search_box is not None and self.search_box.geometry:
+            raise ValueError(
+                "GraspDeclaration.search_box.geometry must be empty; a search box is only "
+                "the oriented box the target producer looks for a seed in."
+            )
         if self.region is not None:
             if self.region.geometry:
                 raise ValueError(
@@ -3524,6 +3536,11 @@ class GraspDeclaration(BaseModel):
                 if bool(getattr(msg, "region_valid", False))
                 else None
             ),
+            search_box=(
+                PlaceRegion.from_idl(msg.search_box)  # type: ignore[attr-defined]
+                if bool(getattr(msg, "search_box_valid", False))
+                else None
+            ),
         )
 
     def fill_idl(self, msg: object) -> None:
@@ -3543,6 +3560,9 @@ class GraspDeclaration(BaseModel):
         msg.region_valid = self.region is not None  # type: ignore[attr-defined]
         if self.region is not None:
             self.region.fill_idl(msg.region)  # type: ignore[attr-defined]
+        msg.search_box_valid = self.search_box is not None  # type: ignore[attr-defined]
+        if self.search_box is not None:
+            self.search_box.fill_idl(msg.search_box)  # type: ignore[attr-defined]
 
 
 class SupportContactWitness(BaseModel):
@@ -10305,6 +10325,12 @@ class DeployScene(BaseModel):
         The same rule, for the same reason, applies to
         ``grasp_declaration.region``: only the producer that measured the
         grasp target may supply it (HZ-01xx-2).
+
+        ``grasp_declaration.search_box`` is **not** refused, deliberately: it
+        tells the target producer where in the occupancy map to look for a
+        seed and arms nothing. The exemption is only ever the region the
+        producer measured from the camera and cross-checked against the map
+        inside that box (real pick-and-place design §2.2).
         """
         if self.grasp_declaration is not None and self.grasp_declaration.region is not None:
             raise ValueError(

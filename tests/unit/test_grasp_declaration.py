@@ -166,6 +166,36 @@ def test_a_scene_may_not_supply_the_grasp_region() -> None:
         DeployScene.model_validate(raw)
 
 
+def test_a_scene_may_supply_a_search_box_which_only_seeds_perception() -> None:
+    raw = _scene_dict()
+    raw["grasp_declaration"]["search_box"] = _region(half=(0.15, 0.15, 0.10)).model_dump(
+        mode="json"
+    )
+    scene = DeployScene.model_validate(raw)
+    assert scene.grasp_declaration is not None
+    assert scene.grasp_declaration.search_box is not None
+    assert scene.grasp_declaration.region is None
+
+
+def test_search_box_geometry_must_be_empty() -> None:
+    box = _region().model_copy(
+        update={
+            "geometry": (
+                AttachedCollisionPrimitive(
+                    shape=BoxShape(half_extents_m=(0.05, 0.04, 0.03)),
+                    pose_in_object=Pose6D(
+                        xyz=(0.45, 0.0, 0.12),
+                        quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+                        frame_id="openarm_base",
+                    ),
+                ),
+            )
+        }
+    )
+    with pytest.raises(ValidationError, match=r"search_box\.geometry must be empty"):
+        GraspDeclaration.model_validate(_declaration().model_dump() | {"search_box": box})
+
+
 # -- aggregator ----------------------------------------------------------------
 
 
