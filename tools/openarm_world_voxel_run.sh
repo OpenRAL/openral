@@ -9,10 +9,10 @@
 # unless, in this order:
 #   1. OPENRAL_OPENARM_ALLOW_MOTION=1 and OPENRAL_OPENARM_ATTENDED=1 (the HIL tier's gates);
 #   2. OPENRAL_ROBOT_UNIT names this cell (robots/openarm/units/<unit>.yaml), and that unit's
-#      head_zed extrinsic report (calibration/<unit>/head_zed_extrinsic.json) verifies against
-#      the pose `deploy run` publishes for it (manifest + unit overlay; the camera is bolted to
-#      the robot, so its pose is robot geometry, not the scene's). `openral deploy run`
-#      applies the same gate; this copy only refuses earlier;
+#      overlay declares head_zed's calibrated mount (static_transform_xyz_rpy): the camera is
+#      bolted to the robot, so its pose is robot geometry, measured per cell by the operator,
+#      never the manifest's nominal value. `openral deploy run` applies the same gate; this
+#      copy only refuses earlier;
 #   3. it runs in an interactive terminal and the operator types the confirmation.
 # Extra arguments pass through to `openral deploy run` only from an allow-list of
 # observability flags (--foxglove, --dataset-out <dir>, ...). Anything else — a second
@@ -54,8 +54,7 @@ done
   refuse "OPENRAL_OPENARM_ATTENDED is not 1 — export it only while you are at the E-stop."
 unit="${OPENRAL_ROBOT_UNIT:-}"
 [[ -n "${unit}" ]] ||
-  refuse "OPENRAL_ROBOT_UNIT is not set — name this cell (robots/openarm/units/<unit>.yaml); its ZED mount and calibration are per unit."
-report="${root}/robots/openarm/calibration/${unit}/head_zed_extrinsic.json"
+  refuse "OPENRAL_ROBOT_UNIT is not set — name this cell (robots/openarm/units/<unit>.yaml); its ZED mount is per unit."
 [[ -n "${ROS_DISTRO:-}" ]] || refuse "ROS 2 is not sourced (and source the ZED overlay too)."
 command -v openral >/dev/null || refuse "openral is not on PATH (activate the venv)."
 
@@ -79,9 +78,22 @@ PY
 
 # `openral deploy run` re-applies this gate itself (any robot, world-voxel check on); checking
 # here too refuses before the operator is asked to confirm, not after.
-python "${root}/tools/depth_extrinsic_check.py" verify --robot "${robot}" --sensor head_zed \
-  --unit "${unit}" --report "${report}" ||
-  refuse "head_zed extrinsic not verified for unit ${unit}'s pose (runbook step 2)."
+"${openral_python}" - "${robot}" "${unit}" <<'PY' ||
+import sys
+from pathlib import Path
+
+from openral_core import RobotDescription, apply_sensor_overlays, load_robot_unit
+from openral_core.depth_extrinsic import depth_extrinsic_problems
+
+robot, unit = Path(sys.argv[1]), sys.argv[2]
+desc = RobotDescription.from_yaml(str(robot))
+overlays = load_robot_unit(robot, unit).sensors
+desc = desc.model_copy(update={"sensors": apply_sensor_overlays(desc.sensors, overlays)})
+problems = depth_extrinsic_problems(desc, overlays)
+print("\n".join(problems), file=sys.stderr)
+sys.exit(1 if problems else 0)
+PY
+  refuse "head_zed's mount is not declared for unit ${unit} (runbook step 2)."
 [[ -t 0 ]] || refuse "not an interactive terminal; a person at the cell launches this."
 
 echo "Bringup steps all 16 motors to zero UNRAMPED. Arms parked near zero, cell clear,"

@@ -30,8 +30,9 @@ expecting a clean pass:
    primitives at the cloud's capture stamp (joint states from the topic the runtime nodes
    read: the scene's `joint_states_topic`, else the HAL's `~/joint_states` republish;
    camera pose from tf2) and removes every return within the rig's
-   `runtime.robot_self_filter_padding_m` (default 2 cm, provisional pending a Thor measurement: derive it from depth
-   noise, extrinsic error, capture-to-joint-state motion and half a voxel) of them, plus a held payload's primitives once an
+   `runtime.robot_self_filter_padding_m` (2 cm: measured at rest on both cells, 2026-09-25,
+   where the robot's own returns end 5-7.5 mm outside the hulls; the tail with the arms
+   moving is still to be measured) of them, plus a held payload's primitives once an
    attachment producer exists. Without a pose at the capture stamp it drops the cloud, so
    the map goes stale and the kernel fails closed rather than seeing the arm as an obstacle.
    The cost is a padding-wide shell around the arm in which the kernel cannot see a real obstacle
@@ -108,120 +109,55 @@ ros2 topic hz /zed/zed_node/point_cloud/cloud_registered
 Topic names differ between `zed_wrapper` 4.x and 5.x. Pick from the listing rather than
 assuming. The cloud topic above is the one the scene pins, and it was verified on the Orin.
 
-## 2. Extrinsic: measure and verify with a pass criterion
+## 2. Extrinsic: calibrate the camera yourself, declare it per unit [human, rig]
 
-The kernel places every obstacle through `openarm_base -> zed_camera_link`. The manifest's
-value is **partly measured**: roll −0.7° / pitch 67.7° come from a level-surface fit on a real
-ZED cloud in the Thor cell (2026-09-24; the earlier 45° placeholder was 22.7° off), but the
-position (0.20 m above `openarm_base`, x = y = 0) and yaw are still approximations, because
-one level plane cannot observe them. A
-wrong pose does two things. It puts obstacles where there are none, which causes false
-stops. It also moves real obstacles away from where they are, which causes missed stops.
+The kernel places every obstacle through `openarm_base -> zed_camera_link`, so this one
+transform has to be right to about the kernel's 2 cm world margin. A wrong pose does two
+things. It puts obstacles where there are none (false stops, including the robot "hitting"
+its own leftover returns), and it moves real obstacles away from where they are (missed
+stops). Only the world-voxel check needs it: the policy uses images alone, and the
+environment itself is never calibrated (octomap senses it live).
 
-The pose is per unit. There are two physical OpenArm cells, on **Thor** and on the **Orin**
-(`qorin1`), and their ZED mounts and units differ: measured on 2026-09-24, the old
-placeholder's pitch error was 22.5° on Thor and 24.9° on the Orin, and the two units'
-intrinsics were fx = 1497.9 (Thor) and fx = 1492.4 (Orin). Each cell has a unit overlay,
-`robots/openarm/units/<unit>.yaml` (`thor`, `orin`), selected by `OPENRAL_ROBOT_UNIT` or a
-scene's `robot_unit`. A unit's calibrated pose is `static_transform_xyz_rpy` under its
-`head_zed` entry; a unit without one publishes the manifest's nominal pose (the Thor
-measurement). Since 2026-09-25 both units carry their own x/y/z and yaw, fitted from the
-unpowered arms' own returns to their meshes, with roll/pitch held level: about 2 cm back and
-1.6 cm up from nominal on both cells, and the median arm residual falls from 7-8 mm to under
-4 mm. That fit assumes the arms hang exactly at q = 0, so it is not a calibration: it aligns
-the robot self-filter, and the markers below are still what the world-voxel check requires. The camera is bolted to the rig, so its pose is robot geometry: every OpenArm
-scene publishes it as the only parent of `zed_camera_link`, and no scene may redefine the
-sensor. `openral check`, `openral deploy validate`, `deploy run` and `deploy sim` all
-refuse a scene sensor entry that reuses a robot sensor's name
-(`openral_core.check_scene_sensor_overrides`), and a unit overlay may only set the
-binding, driver topic, pose and intrinsics, never the frames (`SensorOverlay`).
-`tools/depth_extrinsic_check.py --sensor head_zed --unit <unit>` measures exactly that
-unit's effective pose, and `openral deploy run` itself (for any robot, whenever the
-world-voxel check is on and the robot has a depth camera) refuses to launch until
-`OPENRAL_ROBOT_UNIT` (or the scene's `robot_unit`) names the cell and a passing report for
-exactly that unit's pose is committed at
-`robots/openarm/calibration/<unit>/head_zed_extrinsic.json`.
-`tools/openarm_world_voxel_run.sh` checks the same report before asking for the operator's
-confirmation. Only the Thor unit has a
-calibrated pose today; do not enable the kernel check on the Orin cell until `orin.yaml`
-carries its own.
+**OpenRAL does not measure this transform.** Calibrate it with the tool you trust and
+declare the result. A hand-eye calibration against a printed ChArUco board on the ZED's
+rectified left image (`/zed/zed_node/left/image_rect_color` + its `camera_info`) is the
+standard route and works for any robot with a gripper. What OpenRAL fixes is the contract:
 
-### 2a. Record a calibration bag [human, rig]
+- **Frames.** The pose is `parent_frame -> frame_id` of the manifest's `head_zed` entry:
+  `openarm_base` (the manifest `base_frame`, at shoulder height; the URDF root `world` is
+  0.698 m below it) to `zed_camera_link`, the ZED **body** frame, midway between the
+  lenses. The ZED driver publishes its cloud in `zed_left_camera_frame` and places that
+  frame relative to `zed_camera_link` from the camera's factory calibration (half the
+  63 mm baseline), so a hand-eye result for the left lens is converted through the
+  driver's own TF, not declared directly.
+- **Accuracy** (`openral_core.depth_extrinsic.MAX_*`, derived from the real world-voxel
+  margin, `REAL_WORLD_VOXEL_MARGIN_M` = 20 mm): height within 10 mm,
+  planar x/y within 15 mm, tilt within atan(10 mm / 1 m) ≈ 0.57°, yaw within
+  atan(15 mm / 1 m) ≈ 0.86°, at the 1 m range the check covers. A hand-eye calibration
+  reaches this; a tape measure does not.
+- **Where it goes.** The unit overlay, `robots/openarm/units/<unit>.yaml`, selected by
+  `OPENRAL_ROBOT_UNIT` or a scene's `robot_unit`: `static_transform_xyz_rpy` under its
+  `head_zed` entry, `[x, y, z, roll, pitch, yaw]` in metres and radians, fixed-axis XYZ
+  (`static_transform_publisher` convention). The Thor and Orin cells have different ZED
+  mounts, so each unit carries its own; a value measured on one is wrong on the other. The
+  camera is robot geometry: no scene may redefine it
+  (`openral_core.check_scene_sensor_overrides`), and a unit overlay may only set the
+  binding, driver topic, pose and intrinsics (`SensorOverlay`). Record how and when it was
+  measured in the file's header comment.
+- **The gate.** `openral deploy run` (any robot, whenever the world-voxel check is on) and
+  `tools/openarm_world_voxel_run.sh` refuse to launch unless every cloud source's mount is
+  declared by the selected unit's overlay
+  (`openral_core.depth_extrinsic.depth_extrinsic_problems`). Every manifest ships a
+  nominal mount from CAD, so a value being present proves nothing; a unit overlay
+  exists only because someone set that cell up. The gate checks provenance, not
+  correctness: a wrong number in the unit file runs.
 
-Arms unpowered. Only the ZED driver runs; the OpenRAL graph is not needed.
-
-1. Leave a clear patch of table in front of the robot, in the ZED's view.
-2. Measure the table-top height `TABLE_Z` in `openarm_base`. The frame is `x` forward,
-   `z` up, and its origin is between the two arm mounts: `openarm_base -> openarm_left_link0`
-   is `(0, +0.031, 0)` per the manifest's `fixed_attachments`. Measure from the left arm's
-   base flange with a square and tape. If you can, confirm that offset first on a running
-   twin pass (step 3) with `ros2 run tf2_ros tf2_echo openarm_base openarm_left_link0`.
-3. Place **two** flat markers, 20–30 mm thick and about 8 cm square (a block or a thick
-   board), at least 30 cm apart. Tape-measure the `(x, y)` of each centre in
-   `openarm_base`. Two are required: one marker cannot tell a yaw error from a translation.
-4. Start the recorder **before** the driver, so the ZED's own `/tf_static` is captured.
-   Record for about 3 s: a full-resolution cloud is tens of MB per message.
-
-```bash
-ros2 bag record -s mcap -o ~/zed_extrinsic_$(date +%F-%H%M) \
-    /zed/zed_node/point_cloud/cloud_registered /tf_static
-# other terminal: the step-1 zed_wrapper launch; Ctrl-C the recorder after ~3 s of clouds
-```
-
-### 2b. Compute residuals and a suggested pose [offline]
-
-```bash
-source /opt/ros/jazzy/setup.bash && source install/setup.bash
-uv run python tools/depth_extrinsic_check.py check \
-    --robot robots/openarm/robot.yaml --sensor head_zed --unit <unit> --bag <bag_dir> \
-    --cloud-topic /zed/zed_node/point_cloud/cloud_registered \
-    --table-z <TABLE_Z> --table-roi <XMIN> <XMAX> <YMIN> <YMAX> \
-    --marker <X1> <Y1> --marker <X2> <Y2> --out /tmp/zed_extrinsic.json
-```
-
-On a host without `uv` (Thor), use `python` from the activated venv. The table ROI must
-contain only bare table and the markers, with no arm and no clutter.
-
-The report gives:
-
-- `residuals`: table tilt and height error, and each marker's `(x, y)` error, all for the
-  **current** effective pose of that unit.
-- `suggested_static_transform_xyz_rpy`: the same data with its tilt, height and planar
-  (`x`, `y`, yaw) corrections composed onto the pose. It is fitted to this bag, so its own
-  residuals are near zero by construction and prove nothing.
-
-The pass criteria are derived in `openral_core.depth_extrinsic` from the real world-voxel
-margin (`REAL_WORLD_VOXEL_MARGIN_M`, 20 mm, the value the launch gives the kernel), so a
-margin change moves them too. They are **proposed**, not measured on a rig.
-
-| residual | pass |
-|---|---|
-| table tilt | ≤ atan(10 mm / 1 m) ≈ 0.57° (half the margin at 1 m) |
-| table height error | ≤ 10 mm (half the margin) |
-| each marker's `(x, y)` error | ≤ 15 mm (three quarters of the margin) |
-| markers | ≥ 2 |
-
-`head_zed`'s parent is the base frame, so the bag needs only the ZED driver. For a depth
-camera whose `parent_frame` is a moving link (a head on a torso, a wrist camera), also record
-`/tf` from `robot_state_publisher` with the robot held still: the tool resolves
-`base_frame -> parent_frame` from it and refuses if that chain moved during the recording.
-RGB-only cameras cannot be checked: there is no cloud to fit.
-
-### 2c. Adopt the suggestion, then verify on a new bag [human, rig] + [offline]
-
-1. Copy `suggested_static_transform_xyz_rpy` into `static_transform_xyz_rpy` under the
-   `head_zed` entry of `robots/openarm/units/<unit>.yaml`.
-2. **Move both markers** to new measured positions and record a **second** bag, as in 2a.
-3. Run `check --unit <unit>` on the second bag with
-   `--out robots/openarm/calibration/<unit>/head_zed_extrinsic.json`.
-   It must print `PASS`. Do not loosen the criteria: `verify` refuses a report checked at
-   looser ones.
-4. `uv run python tools/depth_extrinsic_check.py verify --robot robots/openarm/robot.yaml --sensor head_zed --unit <unit>` (the report defaults to `robots/openarm/calibration/<unit>/head_zed_extrinsic.json`)
-   must print `extrinsic verified`.
-5. Commit the unit's pose and the report together. Any later edit to the pose invalidates the
-   report, and `openral deploy run` (and the launch script) refuse until the pose is re-verified.
-
-If the camera is ever bumped, re-seated or re-mounted, go back to 2a.
+If the camera is ever bumped, re-seated or re-mounted, measure again. Nothing in the stack
+notices a camera that moved: on Thor the ZED's view of the floor shifted by about 1°
+between two days (2026-10-01/02) with nothing deliberately touched. A cheap check that
+needs no motion: with the arms at rest, the robot's own returns should end within the
+self-filter's padding of the kernel's collision primitives (step 3 reads this off the
+filter's log line); a mount that is centimetres off shows up there first.
 
 ## 3. Twin pass: real ZED, MuJoCo twin, motors unpowered [human, rig]
 
@@ -255,7 +191,7 @@ Check and record:
   `frame_id: openarm_base`.
 - **One parent.** `ros2 run tf2_tools view_frames` shows `zed_camera_link` with exactly one
   parent, `openarm_base`. A second parent means `publish_tf` was left on.
-- **Overlay.** In Foxglove, check that the voxels sit on the table, the markers and the real
+- **Overlay.** In Foxglove, check that the voxels sit on the table, the fixtures and the real
   arms. The robot model shown is the twin at zero, so park the real arms at zero to compare.
   Note any voxels on the arm links (self-occupancy, gap 1) and any free-floating speckle
   near the arm envelope, each of which is a future false stop.
@@ -281,7 +217,8 @@ export OPENRAL_OPENARM_ALLOW_MOTION=1 OPENRAL_OPENARM_ATTENDED=1 OPENRAL_ROBOT_U
 tools/openarm_world_voxel_run.sh --foxglove
 ```
 
-The script refuses without both gates, without `OPENRAL_ROBOT_UNIT`, without a verified extrinsic for that unit (step 2), and without an
+The script refuses without both gates, without `OPENRAL_ROBOT_UNIT`, without a declared
+head_zed mount in that unit's overlay (step 2), and without an
 interactive terminal. It asks you to type `ESTOP IN HAND`, then runs
 `openral deploy run --config scenes/deploy/openarm_real_world_voxels.yaml`, which brings up
 the vendor controllers (**arms snap to zero**), the ZED driver, octomap, the bridge and the
@@ -362,7 +299,7 @@ The criteria for making this check **default-on** for the OpenArm are ADR-0109's
 
 For the write-up, record:
 
-- the extrinsic report (committed), with its `residuals` and the bag names;
+- the unit overlay's `head_zed` pose and how it was measured (its header comment);
 - the twin-pass numbers: `/octomap_binary` rate, the `/openral/world_voxels` rate and
   frame, and self-occupancy observed yes or no;
 - for every attended dispatch: the rSkill id, the outcome, and each stop's `drop_reason`,
@@ -375,10 +312,10 @@ For the write-up, record:
 
 - `scenes/deploy/openarm_real_world_voxels.yaml`: the real-cell scene. The check is on, and
   it holds the ZED driver include. It declares no `head_zed` entry.
-- `robots/openarm/robot.yaml`: `head_zed`'s nominal `static_transform_xyz_rpy`.
-- `robots/openarm/units/<unit>.yaml`: each cell's camera bindings and calibrated ZED pose.
-- `tools/depth_extrinsic_check.py`: `check` (bag to residuals and report) and `verify`
-  (report against the unit's effective pose).
+- `robots/openarm/robot.yaml`: `head_zed`'s nominal `static_transform_xyz_rpy` (sim twins
+  only; a real world-voxel deploy never runs on it).
+- `robots/openarm/units/<unit>.yaml`: each cell's camera bindings and its calibrated ZED
+  pose, measured by the operator (step 2).
+- `python/core/src/openral_core/depth_extrinsic.py`: the accuracy the pose needs and the
+  gate `deploy run` applies.
 - `tools/openarm_world_voxel_run.sh`: the guarded launcher for step 4.
-- `robots/openarm/calibration/<unit>/head_zed_extrinsic.json`: the committed passing report.
-  It does not exist until step 2 is done, and until then the launcher refuses.

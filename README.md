@@ -240,6 +240,15 @@ Name the links after the robot with a udev rule (`openarm_left`,
 enumeration order. If the report shows a bus that is up but `ERROR-PASSIVE`,
 the adapter is transmitting into silence: the motors are unpowered.
 
+Before real hardware, `openral detect` reminds you of two things the safety
+kernel's collision checks depend on and that nothing else forces:
+`openral collision lower --write` fits the robot's self-collision capsules to
+its own MJCF/URDF meshes, and — for any robot-mounted depth camera — its
+extrinsic must be calibrated by you and declared in the unit overlay
+(`robots/<id>/units/<unit>.yaml`); `deploy run` refuses a real world-voxel
+launch on the manifest's nominal mount. Skipping either leaves the
+world-voxel and self-collision checks looking at the wrong geometry.
+
 → **Full wizard, depth cameras & calibration:** [python/detect/README.md](python/detect/README.md)
 
 ---

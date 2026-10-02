@@ -1,12 +1,16 @@
-# OpenArm cell on the Jetson Thor. head_zed's mount below is this unit's own:
-# - roll/pitch: 2026-09-24 level-surface fit on a real ZED cloud, arms unpowered;
-# - x/y/z and yaw: 2026-09-25 fit of the arms' own returns (links 4-6 of both arms, hanging
-#   at q = 0, 40 stacked clouds) to their MJCF meshes, roll/pitch held so the table stays
-#   level (0.22 deg). Median arm point-to-mesh 8.3 -> 3.4 mm; correction -20.6 mm x,
-#   -2.3 mm y, +15.7 mm z, +0.36 deg yaw from the manifest's nominal mount.
-# The arm fit is NOT a marker calibration: it assumes the unpowered arms hang at q = 0, and
-# translation along a link is weakly observed. It aligns the robot self-filter; the
-# world-voxel check still needs a verified report (tools/depth_extrinsic_check.py --unit thor).
+# OpenArm cell on the Jetson Thor. head_zed's mount below was measured on 2026-10-02 by
+# fitting the ZED's depth returns of the arms, posed at their real joint readings over 13
+# poses, to the robot's own meshes (median arm residual 2.3 mm; held-out spread 0.6 mm
+# height / 1.2 mm planar / 0.15 deg tilt / 0.07 deg yaw; its 65.6 deg downward pitch agrees
+# with an inclinometer on the camera). That fitting tool is not part of OpenRAL (it took four
+# pose designs and two days to constrain the camera's tilt, and its accuracy is bounded by
+# the arm's ~1 cm of joint play); the value is declared here as the
+# operator's calibration, which is what `deploy run` requires (runbook step 2).
+# Measure again if the ZED head is touched: the camera's view of the floor shifted by about
+# 1 deg between 2026-10-01 and 2026-10-02 with nothing deliberately moved. Earlier starting
+# estimates for this cell, oldest first: 2026-09-25 resting-arm fit (height and yaw
+# unresolved), 2026-10-01 table-plane + tape-measure correction (the ZED had been
+# reconnected and moved), 2026-10-01 fits over 3-10 poses (tilt unresolved).
 #
 # Per-host camera bindings. Carried over unchanged from robot.yaml, which served every
 # OpenArm cell before per-unit overlays existed; re-check the Arducam by-id paths with
@@ -18,7 +22,7 @@ robot_id: openarm
 unit: thor
 sensors:
   - name: head_zed
-    static_transform_xyz_rpy: [-0.0206, -0.0023, 0.2157, -0.0123, 1.1823, 0.0062]
+    static_transform_xyz_rpy: [0.06597, -0.004548, 0.094539, -0.055916, 1.145014, -0.036625]
     deploy_binding:
       backend: ros2_image
       backend_params:

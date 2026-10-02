@@ -484,17 +484,14 @@ sensors:
   # its own factory calibration. `openral calibrate camera` measures
   # intrinsics only (a monocular checkerboard fit) and cannot fix this pose.
   # The pose below is the NOMINAL mount (the Thor cell's 2026-09-24 measurement),
-  # used by sim twins and by any unit that has not calibrated its own. The Thor and
-  # Orin cells have different ZED mounts, so each unit's calibrated pose lives in
-  # its overlay, robots/openarm/units/<unit>.yaml (selected by $OPENRAL_ROBOT_UNIT or
-  # the scene's `robot_unit`); no scene may redefine this sensor
-  # (openral_core.check_scene_sensor_overrides). Calibrate with
-  # tools/depth_extrinsic_check.py --sensor head_zed --unit <unit> and copy the
-  # report's suggested pose into that unit's overlay; `verify --unit <unit>` refuses a report once the
-  # effective pose changes (runbook: docs/tutorials/deploy/openarm-real-world-voxel-check.md).
-  # Both units now carry their own x/y/z/yaw, fitted 2026-09-25 from the unpowered arms'
-  # own returns (unit overlay headers): about 2 cm back and 1.6 cm up from this nominal
-  # mount on both cells. That aligns the self-filter; it is not a marker calibration.
+  # used by sim twins only. The Thor and Orin cells have different ZED mounts, so
+  # each unit's calibrated pose lives in its overlay, robots/openarm/units/<unit>.yaml
+  # (selected by $OPENRAL_ROBOT_UNIT or the scene's `robot_unit`); no scene may
+  # redefine this sensor (openral_core.check_scene_sensor_overrides). OpenRAL does
+  # not calibrate that pose: measure it yourself (a hand-eye calibration) to the
+  # accuracy in openral_core.depth_extrinsic and declare it in the unit overlay; a
+  # real deploy with the world-voxel check on refuses to run on this nominal value
+  # (runbook: docs/tutorials/deploy/openarm-real-world-voxel-check.md, step 2).
   #
   # A depth sensor with intrinsics auto-enables the octomap leg, so every
   # in-tree OpenArm scene pins `runtime.enable_octomap` explicitly and must

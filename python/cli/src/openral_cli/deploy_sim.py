@@ -59,7 +59,13 @@ from openral_core.gpu import detect_gpu_vram_gb
 from rich.console import Console
 
 if TYPE_CHECKING:
-    from openral_core import DeployScene, RobotDescription, RSkillManifest, SensorSpec
+    from openral_core import (
+        DeployScene,
+        RobotDescription,
+        RSkillManifest,
+        SensorOverlay,
+        SensorSpec,
+    )
 
 __all__ = [
     "LaunchInvocation",
@@ -1204,7 +1210,7 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     if hal_mode == "real" and enable_octomap and enable_octomap_kernel_check:
         _preflight_depth_extrinsics(
             description,
-            Path(robot_yaml),
+            overlays,
             robot_unit,
             deploy_scene.sensors if deploy_scene is not None else (),
         )
@@ -2380,71 +2386,49 @@ def _clean_stale_fastrtps_shm(
 
 def _preflight_depth_extrinsics(
     description: RobotDescription,
-    robot_yaml: Path,
+    overlays: Sequence[SensorOverlay],
     unit: str | None,
     scene_sensors: Sequence[SensorSpec] = (),
 ) -> None:
-    """Refuse a real world-voxel deploy whose depth camera extrinsic is not verified.
+    """Refuse a real world-voxel deploy whose depth camera mount nobody has declared.
 
-    The kernel's world-voxel check places every obstacle through each depth camera's
+    The kernel's world-voxel check places every obstacle through each cloud source's
     mount as this unit publishes it (``description`` already carries the unit's
-    ``SensorOverlay``), so every depth camera (``SensorSpec.is_depth_camera``) must have a
-    passing ``robots/<id>/calibration/<unit>/<sensor>_extrinsic.json`` (``calibration/
-    <sensor>_extrinsic.json`` for a robot without ``units/``) for its CURRENT pose and
-    that unit (``openral_core.depth_extrinsic.verify_extrinsic_report``; measured with
-    ``tools/depth_extrinsic_check.py --unit``). All of them, not only the one the octomap cloud
-    is believed to come from: a pinned ``octomap_cloud_topic`` does not say which. There
-    is no override flag: the only other way past is an explicit
-    ``--no-enable-octomap-kernel-check`` (no world check at all).
-
-    The same goes for every OTHER cloud source that can feed octomap on a real deploy
-    (``SensorSpec.is_cloud_source`` over the robot's and the scene's sensors): a
-    scene-mounted depth camera, a 3D lidar, a depth camera without intrinsics. The
-    extrinsic check cannot measure those yet, so they are refused rather than passed
-    unmeasured.
+    ``SensorOverlay``), and OpenRAL does not measure that mount: the operator
+    calibrates it and declares it in ``robots/<id>/units/<unit>.yaml``
+    (``openral_core.depth_extrinsic.depth_extrinsic_problems``: a robot-mounted cloud
+    source must get its pose from the unit overlay, not the manifest's nominal value; a
+    scene-mounted one must declare it in the scene). There is no override flag: the only
+    other way past is an explicit ``--no-enable-octomap-kernel-check`` (no world check at
+    all).
 
     Raises:
-        ROSConfigError: a depth camera is missing, stale or failed calibration.
+        ROSConfigError: a cloud source's mount is undeclared.
     """
-    from openral_core import merge_deploy_sensors
+    from openral_core import ROBOT_UNIT_ENV
     from openral_core.depth_extrinsic import (  # reason: keep numpy-free core import lazy
-        checkable_depth_sensor,
-        extrinsic_report_path,
-        verify_extrinsic_report,
+        depth_extrinsic_problems,
     )
 
-    problems: list[str] = []
-    robot_names = {s.name for s in description.sensors}
-    for spec in merge_deploy_sensors(description.sensors, scene_sensors):
-        if spec.is_cloud_source and not (spec.name in robot_names and spec.is_depth_camera):
-            where = "robot" if spec.name in robot_names else "scene"
-            problems.append(
-                f"{spec.name}: a {where} {spec.modality} sensor"
-                + (" without intrinsics" if spec.intrinsics is None else "")
-                + " can feed octomap, but tools/depth_extrinsic_check.py measures only "
-                "robot-manifest depth cameras with intrinsics, so its pose is unmeasured"
-            )
-    for spec in (s for s in description.sensors if s.is_depth_camera):
-        report = extrinsic_report_path(robot_yaml, spec.name, unit)
-        try:
-            checkable_depth_sensor(description, spec.name)
-            found = verify_extrinsic_report(
-                spec, report, base_frame=description.base_frame, unit=unit
-            )
-        except ROSConfigError as exc:
-            found = [str(exc)]
-        problems += [f"{spec.name}: {p}" for p in found]
-        if not found:
-            _console.print(f"  extrinsic verified: {spec.name} ({report})")
+    problems = depth_extrinsic_problems(description, overlays, scene_sensors)
     if problems:
         raise ROSConfigError(
-            "the world-voxel check is on for a real deploy, but a depth camera's extrinsic is "
-            "not verified — every obstacle would be placed through an unmeasured pose:\n  "
+            "the world-voxel check is on for a real deploy, but a depth camera's mount is not "
+            "declared for this unit — every obstacle would be placed through the manifest's "
+            "nominal pose:\n  "
             + "\n  ".join(problems)
-            + "\nMeasure it with `tools/depth_extrinsic_check.py check --sensor <name>"
-            + (f" --unit {unit}" if unit else "")
-            + "` and commit the report."
+            + "\nCalibrate it and set static_transform_xyz_rpy under that sensor in "
+            + (
+                f"robots/<id>/units/{unit}.yaml"
+                if unit
+                else "robots/<id>/units/<unit>.yaml, and select that unit with "
+                f"{ROBOT_UNIT_ENV} or the scene's robot_unit"
+            )
+            + " (docs/tutorials/deploy/openarm-real-world-voxel-check.md, step 2)."
         )
+    for spec in description.sensors:
+        if spec.is_cloud_source:
+            _console.print(f"  mount declared by unit {unit!r}: {spec.name}")
 
 
 def _required_ros2_packages(invocation: LaunchInvocation) -> list[str]:
