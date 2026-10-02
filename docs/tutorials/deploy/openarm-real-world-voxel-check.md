@@ -99,12 +99,20 @@ touch CAN.
 ```bash
 source /opt/ros/jazzy/setup.bash && source <zed_ws>/install/setup.bash
 ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedm camera_name:=zed \
-    publish_tf:=false publish_map_tf:=false
+    publish_tf:=false publish_map_tf:=false \
+    param_overrides:="depth.point_cloud_freq:=30.0;depth.point_cloud_res:=REDUCED;depth.max_depth:=2.5"
 # second terminal
 ros2 topic list | grep -E 'camera_info|point_cloud'
 ros2 topic echo --once <one of the left camera_info topics>   # k[] non-zero, width/height match
 ros2 topic hz /zed/zed_node/point_cloud/cloud_registered
 ```
+
+The `param_overrides` are the same ones the scene's `drivers:` entry passes under
+`deploy run`: a 30 Hz, REDUCED (224x128) cloud cut at 2.5 m. `deploy sim` ignores
+`drivers:`, so a hand-launched ZED needs them too. With them, and the launch's clip of the
+octomap input to the coverage ball, `octomap_server` on Thor runs at ~20 Hz with a worst
+gap of 0.2 s (2026-10-02); the stock 10 Hz COMPACT cloud with 10 m depth gave ~2 Hz and
+gaps of up to 3 s, which the kernel's 1 s voxel deadline turned into stops.
 
 Topic names differ between `zed_wrapper` 4.x and 5.x. Pick from the listing rather than
 assuming. The cloud topic above is the one the scene pins, and it was verified on the Orin.

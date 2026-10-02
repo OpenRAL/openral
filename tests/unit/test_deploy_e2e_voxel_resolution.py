@@ -249,3 +249,25 @@ def test_voxel_freshness_is_the_declared_rig_value_and_never_exceeds_the_deadlin
     source = LAUNCH.read_text()
     assert '"max_octree_age_s": max_octree_age_s' in source
     assert '"world_voxel_deadline_ms": world_voxel_deadline_s * 1000.0' in source
+
+
+def test_octomap_only_integrates_the_coverage_ball(launch_module: object) -> None:
+    """The input clip is the ball's bounding box and a ray ends within one diameter.
+
+    Thor, 2026-10-02: with 4 m rays and no clip, octomap_server integrated the floor
+    0.7 m below the base and the wall 3 m out — most of the ZED cloud — and ran at
+    ~2 Hz with multi-second gaps, i.e. a map the kernel's deadline kept failing closed on.
+    """
+    r = launch_module._octomap_coverage_radius()
+    cx, cy, cz = launch_module._OCTOMAP_COVERAGE_CENTRE
+    bounds = launch_module._octomap_input_bounds()
+    assert bounds == {
+        "point_cloud_min_x": cx - r,
+        "point_cloud_max_x": cx + r,
+        "point_cloud_min_y": cy - r,
+        "point_cloud_max_y": cy + r,
+        "point_cloud_min_z": cz - r,
+        "point_cloud_max_z": cz + r,
+    }
+    assert bounds["point_cloud_min_z"] > -0.698  # the OpenArm floor stays out
+    assert 2.0 * r == pytest.approx(2.1)

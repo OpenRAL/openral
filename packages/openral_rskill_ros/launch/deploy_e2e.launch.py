@@ -424,6 +424,31 @@ def _octomap_coverage_radius() -> float:
     return 1.05
 
 
+#: Centre of the coverage ball in ``base_frame`` (the voxel bridge's default): half a
+#: metre up, where a tabletop arm's reach is centred.
+_OCTOMAP_COVERAGE_CENTRE: tuple[float, float, float] = (0.0, 0.0, 0.5)
+
+
+def _octomap_input_bounds() -> dict[str, float]:
+    """``octomap_server``'s input-cloud clip: the coverage ball's bounding box.
+
+    Returns the ``point_cloud_{min,max}_{x,y,z}`` parameters, in the map frame
+    (``base_frame``). Returns outside the ball never reach the kernel (the bridge
+    publishes the ball alone), so integrating them is pure cost: on Thor the floor
+    0.7 m below the base and the wall 3 m out were most of the ZED cloud.
+    """
+    r = _octomap_coverage_radius()
+    cx, cy, cz = _OCTOMAP_COVERAGE_CENTRE
+    return {
+        "point_cloud_min_x": cx - r,
+        "point_cloud_max_x": cx + r,
+        "point_cloud_min_y": cy - r,
+        "point_cloud_max_y": cy + r,
+        "point_cloud_min_z": cz - r,
+        "point_cloud_max_z": cz + r,
+    }
+
+
 def _attached_collision_enabled(hal_mode: str) -> bool:
     """Enable payload collision only where the sim attachment manager exists."""
     return hal_mode == "sim"
@@ -2473,7 +2498,15 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "resolution": _octomap_resolution(hal_mode),
                     "frame_id": octomap_fixed_frame,
                     "base_frame_id": octomap_base_frame,
-                    "sensor_model.max_range": 4.0,
+                    # Only the coverage ball reaches the kernel, so octomap only
+                    # integrates returns inside it: the input cloud is clipped to the
+                    # ball's bounding box (in ``frame_id`` == the ball's frame) and a ray
+                    # from any camera inside the ball ends within one diameter. On Thor
+                    # the unclipped ZED cloud (4 m rays, floor and far wall) held
+                    # octomap_server at ~2 Hz with multi-second gaps, i.e. a stale map
+                    # (2026-10-02).
+                    "sensor_model.max_range": 2.0 * _octomap_coverage_radius(),
+                    **_octomap_input_bounds(),
                     # Keep the map fresh for manipulation: octomap ray-clears
                     # free space, so a grasped/moved object's old cells decay
                     # back to free once re-observed. A slightly higher
@@ -2519,6 +2552,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "output_topic": "/openral/world_voxels",
                     "resolution": _octomap_resolution(hal_mode),
                     "coverage_radius_m": _octomap_coverage_radius(),
+                    "coverage_center_x": _OCTOMAP_COVERAGE_CENTRE[0],
+                    "coverage_center_y": _OCTOMAP_COVERAGE_CENTRE[1],
+                    "coverage_center_z": _OCTOMAP_COVERAGE_CENTRE[2],
                     # Stop republishing an octree that stopped arriving, so the
                     # kernel's voxel deadline can fail closed (Entry 033).
                     "max_octree_age_s": max_octree_age_s,
