@@ -311,6 +311,83 @@ def test_transport_merges_state_by_name_and_stamps_arrival() -> None:
 
 
 @requires_rclpy
+def test_an_absent_effort_channel_reads_as_empty_not_as_zero() -> None:
+    """Zero effort means "unloaded"; a driver that publishes no effort must not say that.
+
+    Zero-filling a missing effort channel made `GripperEffortTrigger.missing_effort_ticks`
+    unreachable: the trigger saw a calm, unloaded gripper forever and never attached.
+    Positions keep their zero-fill for an unheard joint (a separate, named-joint check
+    guards that).
+    """
+    import rclpy
+    from openral_hal.ros_control_transport import RosControlTransport
+    from rclpy.node import Node
+    from sensor_msgs.msg import JointState as RosJointState
+
+    ctx = rclpy.Context()
+    ctx.init()
+    node = Node("t_effort", context=ctx)
+    try:
+        tr = RosControlTransport(
+            node, command_topics=["/c/joint_trajectory"], joint_names=["j0", "j1", "j2"]
+        )
+        msg = RosJointState()
+        msg.name = ["j2", "j0", "j1"]
+        msg.position = [0.3, 0.1, 0.2]
+        tr._on_joint_state(msg)  # no effort field at all
+        assert tr.state()["effort"] == []
+
+        msg.effort = [3.0, 1.0]  # shorter than the joint list: j1 has none
+        tr._on_joint_state(msg)
+        assert tr.state()["effort"] == []
+
+        msg.effort = [3.0, 1.0, 2.0]
+        tr._on_joint_state(msg)
+        assert tr.state()["effort"] == [1.0, 2.0, 3.0]  # projected into HAL order
+    finally:
+        node.destroy_node()
+        ctx.shutdown()
+
+
+@requires_rclpy
+def test_a_driver_without_effort_reaches_the_grasp_trigger_as_missing() -> None:
+    """End to end over the real SO-101 manifest: transport -> HAL -> grasp trigger."""
+    import rclpy
+    from openral_hal._grasp_trigger import GripperEffortTrigger
+    from openral_hal.ros_control_transport import RosControlTransport
+    from rclpy.node import Node
+    from sensor_msgs.msg import JointState as RosJointState
+
+    description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    names = [j.name for j in description.joints]
+    ctx = rclpy.Context()
+    ctx.init()
+    node = Node("t_effort_chain", context=ctx)
+    try:
+        tr = RosControlTransport(node, command_topics=["/c/joint_trajectory"], joint_names=names)
+        hal = RosControlHAL(description, controller_name="joint_trajectory_controller")
+        hal.attach_transport(lambda t, m: None, tr.state, tr.last_arrival)
+        msg = RosJointState()
+        msg.name = names
+        msg.position = [0.0] * len(names)
+        tr._on_joint_state(msg)
+        hal.connect()
+        trigger = GripperEffortTrigger(description)
+
+        assert hal.read_state().effort == []
+        assert trigger.update(hal.read_state()) is None
+        assert trigger.missing_effort_ticks == 1
+
+        msg.effort = [0.0] * len(names)
+        tr._on_joint_state(msg)
+        trigger.update(hal.read_state())
+        assert trigger.missing_effort_ticks == 1  # a real zero is a reading, not a gap
+    finally:
+        node.destroy_node()
+        ctx.shutdown()
+
+
+@requires_rclpy
 def test_transport_publishes_the_chunks_last_step_to_the_named_controller() -> None:
     """End-to-end over real DDS: HAL action in, JointTrajectory out."""
     import rclpy

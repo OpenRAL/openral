@@ -373,17 +373,21 @@ class OpenArmRealHAL(RosControlHAL):
                 "publishes its own joints."
             )
 
-        def _reordered(key: str) -> list[float]:
+        def _reordered(key: str, *, absent: list[float]) -> list[float]:
             values = raw.get(key)
             if not isinstance(values, list) or len(values) != len(incoming):
-                return [0.0] * len(self._ros2_names)
+                return absent
             return [float(values[index_of[n]]) for n in self._ros2_names]
 
+        zeros = [0.0] * len(self._ros2_names)
         return JointState(
             name=list(self._joint_names),
-            position=_reordered("position"),
-            velocity=_reordered("velocity"),
-            effort=_reordered("effort"),
+            position=_reordered("position", absent=zeros),
+            velocity=_reordered("velocity", absent=zeros),
+            # An absent effort channel stays empty, never zero-filled: zeros
+            # would read as "gripper unloaded" and hide a driver that publishes
+            # no effort from the grasp trigger's missing-effort count.
+            effort=_reordered("effort", absent=[]),
             stamp_ns=state.stamp_ns,
         )
 
