@@ -45,8 +45,8 @@ Three properties of that wait are non-negotiable:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -54,7 +54,12 @@ from numpy.typing import NDArray
 from openral_core import CameraTopicKind, camera_topic
 from openral_core.exceptions import ROSConfigError
 
-from openral_hal._grasp_trigger import GraspEvent, GraspTriggerConfig, GripperEffortTrigger
+from openral_hal._grasp_trigger import (
+    GraspEvent,
+    GraspTriggerConfig,
+    GripperEffortTrigger,
+    gripper_joints,
+)
 from openral_hal._vision_attachment_evidence import (
     VisionAttachmentEvidenceProducer,
     VisionGateConfig,
@@ -74,6 +79,44 @@ __all__ = [
 
 #: Service the perception-side segmenter node offers by default.
 DEFAULT_SEGMENT_SERVICE = "/openral/perception/segment_in_view"
+
+
+@dataclass
+class _GripperLeg:
+    """One gripper's trigger, producer, and in-flight segmentation state.
+
+    A bimanual robot carries one leg per ``role: gripper`` joint; the two hands
+    grasp independently, and each leg owns its own slot in the published
+    attachment set.
+
+    Attributes:
+        joint_name: The gripper joint this leg watches.
+        trigger: Effort trigger on that joint.
+        producer: Evidence producer attached to that joint's parent link.
+        object_id: Attachment identity, unique across legs.
+        tcp_frame: tf2 frame to look the TCP up from, or empty to use
+            ``tcp_in_link`` directly.
+        tcp_in_link: TCP in the attach link — the gripper joint's
+            ``origin_xyz``, i.e. the jaw child link's origin in the parent link.
+            Needs no TF, so it holds even where the attach link is missing from
+            the published tree (the vendored OpenArm URDF has no ``link7``).
+        attachment: What this leg currently holds, or ``None``.
+        inflight: The outstanding ``SegmentInView`` future, if any.
+        deadline_timer: The one-shot deadline timer for that future, if any.
+        pending: Whether this leg is holding the ack barrier.
+    """
+
+    joint_name: str
+    trigger: GripperEffortTrigger
+    producer: VisionAttachmentEvidenceProducer
+    object_id: str
+    tcp_frame: str
+    tcp_in_link: tuple[float, float, float]
+    attachment: Any = None
+    inflight: Any = None
+    deadline_timer: Any = None
+    pending: bool = False
+
 
 #: What one grasp needs from TF and the manifest before it can prompt:
 #: ``(t_link_from_cam, tcp_in_link, negative_points_in_link)``.
@@ -103,17 +146,33 @@ class VisionAttachmentConfig:
             far slower than that and must raise this deliberately; leaving it at
             the default there means every grasp falls back, which is safe,
             visible in the log, and useless.
-        tcp_frame: tf2 frame of the tool center point. Empty resolves to the
-            gripper joint's ``child_link`` — the moving jaw — which is the
-            closest thing every manifest already declares. A robot with a
-            calibrated mid-jaw frame should name it here rather than accept the
-            approximation.
+        tcp_frame: tf2 frame of the tool center point. Empty resolves, on a
+            single-gripper robot, to the gripper joint's ``child_link`` — the
+            moving jaw — looked up through tf2, and on a multi-gripper robot to
+            each gripper joint's ``origin_xyz`` (the same jaw link origin,
+            read from the manifest without TF). A robot with a calibrated
+            mid-jaw frame should name it here rather than accept the
+            approximation. Single-gripper only: set on a robot with several
+            gripper joints it is a ``ROSConfigError``.
         jaw_tip_frames: Optional tf2 frames used as **negative** prompt points,
             pushing the mask off the gripper fingers. Empty = none; the single
             positive point at the TCP is what makes the prompt meaningful.
-        object_id: Identity stamped on the attachment. Vision cannot name what
-            it segmented, so this is a stable slot ("the thing in the jaws"),
-            not a recognition result.
+            Single-gripper only, like ``tcp_frame``.
+        object_id: Identity stamped on the attachment, suffixed
+            ``:<gripper joint>`` so each hand's slot is unique. Vision cannot
+            name what it segmented, so this is a stable slot ("the thing in the
+            jaws"), not a recognition result.
+        tf_frames: Manifest link name -> tf2 frame name, for robots whose
+            published TF tree spells a link differently from the manifest. Used
+            only for tf2 lookups (attach link <- camera / TCP / jaw tips) and as
+            the ``SegmentInView`` request frame; the published attachment keeps
+            the manifest link, because the kernel's collision model is keyed on
+            manifest links. Every entry must be a **proven identity** — the
+            same rigid body with the same origin — never a nearby frame. The
+            OpenArm case: the manifest's ``openarm_<side>_link7`` is the body
+            joint7 drives, which the MJCF and the vendor URDF the real cell
+            publishes both call ``openarm_<side>_ee_base_link`` (origin at
+            joint7). Empty = look every link up by its manifest name.
     """
 
     camera: str = ""
@@ -123,6 +182,7 @@ class VisionAttachmentConfig:
     tcp_frame: str = ""
     jaw_tip_frames: tuple[str, ...] = ()
     object_id: str = "grasped_payload"
+    tf_frames: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -222,6 +282,11 @@ def decode_mono8_mask(data: bytes, *, height: int, width: int) -> NDArray[np.boo
 class VisionAttachmentBridge:
     """Drive SegmentInView from grasp events and hold the ack barrier for it.
 
+    One leg per ``role: gripper`` joint: each has its own effort trigger,
+    evidence producer, and in-flight request, and the barrier stays shut while
+    any leg is pending. Every publish carries the union of every leg's current
+    attachment, so one hand's grasp never erases the other's payload.
+
     Args:
         node: The HAL lifecycle node. Owns the executor these callbacks run on.
         description: The robot manifest — gripper joints, camera intrinsics,
@@ -235,7 +300,18 @@ class VisionAttachmentBridge:
 
     Raises:
         ROSConfigError: If the manifest cannot support the producer or the
-            trigger (no gripper joints, no effort limit, no camera intrinsics).
+            trigger (no gripper joints, no effort limit, no camera intrinsics),
+            or ``tcp_frame`` / ``jaw_tip_frames`` is set on a robot with more
+            than one gripper joint.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> bridge = VisionAttachmentBridge(
+        ...     None, d, config=VisionAttachmentConfig(camera="head_zed")
+        ... )
+        >>> bridge.gripper_joint_names
+        ('left_gripper', 'right_gripper')
     """
 
     def __init__(
@@ -253,10 +329,17 @@ class VisionAttachmentBridge:
         self._description = description
         self._config = config or VisionAttachmentConfig()
         self._on_perception_ready = on_perception_ready
-        self._producer = VisionAttachmentEvidenceProducer(description, config=gate_config)
-        self._trigger = GripperEffortTrigger(description, config=trigger_config)
+        self._legs = self._build_legs(gate_config, trigger_config)
         self._camera, self._intrinsics = self._resolve_camera()
-        self._tcp_frame = self._config.tcp_frame or self._resolve_tcp_frame()
+        links = {j.parent_link for j in description.joints} | {
+            j.child_link for j in description.joints
+        }
+        unknown = sorted(set(self._config.tf_frames) - links)
+        if unknown:
+            raise ROSConfigError(
+                f"vision attachment: tf_frames names {unknown}, which are not links of "
+                f"{description.name!r}."
+            )
 
         self._depth: tuple[NDArray[np.float64], int] | None = None
         self._depth_sub: Any = None
@@ -264,9 +347,6 @@ class VisionAttachmentBridge:
         self._attachment_pub: Any = None
         self._tf_buffer: Any = None
         self._tf_listener: Any = None
-        self._deadline_timer: Any = None
-        self._inflight: Any = None
-        self._pending = False
         self._revision = 0
 
     # ── wiring ───────────────────────────────────────────────────────────────
@@ -307,16 +387,20 @@ class VisionAttachmentBridge:
             AttachmentState, "/openral/attachment_state", state_qos
         )
         self._client = self._node.create_client(SegmentInView, self._config.service_name)
-        self._node.get_logger().info(
-            f"vision attachment bridge: camera={self._camera!r} depth={self._depth_topic()!r} "
-            f"service={self._config.service_name!r} tcp_frame={self._tcp_frame!r} "
-            f"deadline={self._config.deadline_s:.3f}s "
-            f"effort_thresholds_n={self._trigger.thresholds_n}"
-        )
+        for leg in self._legs:
+            self._node.get_logger().info(
+                f"vision attachment bridge: gripper={leg.joint_name!r} camera={self._camera!r} "
+                f"depth={self._depth_topic()!r} service={self._config.service_name!r} "
+                f"attach_link={leg.producer.attach_link!r} "
+                f"tcp={leg.tcp_frame or leg.tcp_in_link!r} "
+                f"deadline={self._config.deadline_s:.3f}s "
+                f"effort_thresholds_n={leg.trigger.thresholds_n}"
+            )
 
     def teardown(self) -> None:
         """Destroy every ROS entity; idempotent, and never leaves the barrier shut."""
-        self._cancel_deadline()
+        for leg in self._legs:
+            self._cancel_deadline(leg)
         if self._depth_sub is not None:
             self._node.destroy_subscription(self._depth_sub)
             self._depth_sub = None
@@ -326,14 +410,15 @@ class VisionAttachmentBridge:
         self._client = None
         self._tf_listener = None
         self._tf_buffer = None
-        self._inflight = None
         # A bridge torn down mid-flight must not leave the node deferring an
         # acknowledgement forever. Clearing the flag is not enough now that the
         # node re-checks every barrier holder before releasing: a swallowed
         # notify is only safe because each holder re-issues one when it settles,
         # so the holder that goes away has to issue its last one here.
-        if self._pending:
-            self._release_barrier()
+        for leg in self._legs:
+            leg.inflight = None
+            if leg.pending:
+                self._release_barrier(leg)
 
     # ── barrier ──────────────────────────────────────────────────────────────
 
@@ -343,45 +428,70 @@ class VisionAttachmentBridge:
         The same shape ``SimSensorBridge``
         exposes, so the node's deferred-ack path treats both identically.
         """
-        return not self._pending
+        return not any(leg.pending for leg in self._legs)
+
+    def tf_frame(self, link: str) -> str:
+        """The tf2 frame a manifest link is looked up as (``tf_frames``, else itself).
+
+        Args:
+            link: A manifest link name.
+
+        Returns:
+            The tf2 frame name.
+        """
+        return self._config.tf_frames.get(link, link)
+
+    @property
+    def gripper_joint_names(self) -> tuple[str, ...]:
+        """The gripper joints this bridge watches, one leg each, in manifest order."""
+        return tuple(leg.joint_name for leg in self._legs)
 
     # ── trigger ──────────────────────────────────────────────────────────────
 
     def observe_joint_state(self, state: JointState) -> None:
-        """Fold one HAL read into the grasp trigger and act on any transition.
+        """Fold one HAL read into every leg's grasp trigger and act on transitions.
 
         Args:
             state: The tick's joint state, straight from the HAL.
         """
-        event = self._trigger.update(state)
-        if event is None:
-            return
-        if event is GraspEvent.DETACH:
-            self._node.get_logger().info("grasp trigger: DETACH — publishing an empty attachment")
-            self._publish_attachment([])
-            return
-        self._node.get_logger().info(
-            f"grasp trigger: {event.value.upper()} — holding the action ack for segmentation"
-        )
-        self._begin_segmentation(stamp_ns=int(state.stamp_ns))
+        for leg in self._legs:
+            event = leg.trigger.update(state)
+            if event is None:
+                continue
+            if event is GraspEvent.DETACH:
+                self._node.get_logger().info(
+                    f"grasp trigger {leg.joint_name}: DETACH — dropping its attachment"
+                )
+                leg.attachment = None
+                self._publish_attachment()
+                continue
+            self._node.get_logger().info(
+                f"grasp trigger {leg.joint_name}: {event.value.upper()} — holding the action "
+                "ack for segmentation"
+            )
+            self._begin_segmentation(leg, stamp_ns=int(state.stamp_ns))
 
     @property
     def missing_effort_ticks(self) -> int:
-        """Ticks whose gripper carried no effort value — a driver-health signal."""
-        return self._trigger.missing_effort_ticks
+        """Ticks whose gripper carried no effort value, summed over every leg.
+
+        A driver-health signal.
+        """
+        return sum(leg.trigger.missing_effort_ticks for leg in self._legs)
 
     # ── segmentation round trip ──────────────────────────────────────────────
 
-    def _begin_segmentation(self, *, stamp_ns: int) -> None:
+    def _begin_segmentation(self, leg: _GripperLeg, *, stamp_ns: int) -> None:
         """Close the barrier and dispatch one bounded SegmentInView request."""
-        self._pending = True
-        context = self._gather_context()
+        leg.pending = True
+        context = self._gather_context(leg)
         if isinstance(context, str):  # a typed precondition failure
-            self._finish(stamp_ns=stamp_ns, masks=[], scores=[], reason=context)
+            self._finish(leg, stamp_ns=stamp_ns, masks=[], scores=[], reason=context)
             return
         t_link_from_cam, tcp_in_link, negatives = context
         if self._client is None or not self._client.service_is_ready():
             self._finish(
+                leg,
                 stamp_ns=stamp_ns,
                 masks=[],
                 scores=[],
@@ -401,23 +511,25 @@ class VisionAttachmentBridge:
         request = SegmentInView.Request()
         request.stamp = Time(sec=stamp_ns // 1_000_000_000, nanosec=stamp_ns % 1_000_000_000)
         request.camera = self._camera
-        request.frame_id = self._producer.attach_link
+        request.frame_id = self.tf_frame(leg.producer.attach_link)
         request.tcp_point = Point(x=tcp_in_link[0], y=tcp_in_link[1], z=tcp_in_link[2])
         request.negative_points = [Point(x=x, y=y, z=z) for x, y, z in negatives]
 
         future = self._client.call_async(request)
-        self._inflight = future
+        leg.inflight = future
         future.add_done_callback(
             lambda fut: self._on_reply(
+                leg,
                 fut,
                 stamp_ns=stamp_ns,
                 t_link_from_cam=t_link_from_cam,
                 tcp_in_link=tcp_in_link,
             )
         )
-        self._deadline_timer = self._node.create_timer(
+        leg.deadline_timer = self._node.create_timer(
             self._config.deadline_s,
             lambda: self._on_deadline(
+                leg,
                 stamp_ns=stamp_ns,
                 t_link_from_cam=t_link_from_cam,
                 tcp_in_link=tcp_in_link,
@@ -426,6 +538,7 @@ class VisionAttachmentBridge:
 
     def _on_reply(
         self,
+        leg: _GripperLeg,
         future: Any,
         *,
         stamp_ns: int,
@@ -433,14 +546,15 @@ class VisionAttachmentBridge:
         tcp_in_link: tuple[float, float, float],
     ) -> None:
         """Resolve the attachment from a SegmentInView reply (or its exception)."""
-        if future is not self._inflight:
+        if future is not leg.inflight:
             return  # already resolved by the deadline; this reply is late
-        self._cancel_deadline()
-        self._inflight = None
+        self._cancel_deadline(leg)
+        leg.inflight = None
         try:
             response = future.result()
         except Exception as exc:  # a service exception must degrade, not propagate
             self._finish(
+                leg,
                 stamp_ns=stamp_ns,
                 masks=[],
                 scores=[],
@@ -455,6 +569,7 @@ class VisionAttachmentBridge:
             # here would be swallowed by rclpy's callback wrapper and leave the
             # barrier held with no explanation anywhere.
             self._finish(
+                leg,
                 stamp_ns=stamp_ns,
                 masks=[],
                 scores=[],
@@ -478,6 +593,7 @@ class VisionAttachmentBridge:
             else []
         )
         self._finish(
+            leg,
             stamp_ns=stamp_ns,
             masks=masks,
             scores=[float(s) for s in response.mask_scores_advisory] if outcome.use_masks else [],
@@ -488,24 +604,26 @@ class VisionAttachmentBridge:
 
     def _on_deadline(
         self,
+        leg: _GripperLeg,
         *,
         stamp_ns: int,
         t_link_from_cam: NDArray[np.float64],
         tcp_in_link: tuple[float, float, float],
     ) -> None:
         """Resolve conservatively when the segmenter overran its budget."""
-        self._cancel_deadline()
-        inflight = self._inflight
+        self._cancel_deadline(leg)
+        inflight = leg.inflight
         if inflight is None:
             return
         # Drop the handle BEFORE cancelling. ``rclpy.Future.cancel`` completes
         # the future, which synchronously runs the done callback we registered —
         # and that callback's "is this still the in-flight one?" guard is the
         # only thing keeping it from resolving a reply that never arrived.
-        self._inflight = None
+        leg.inflight = None
         inflight.cancel()
         outcome = resolve_segment_outcome(timed_out=True, ok=False, failure_reason="", mask_count=0)
         self._finish(
+            leg,
             stamp_ns=stamp_ns,
             masks=[],
             scores=[],
@@ -516,6 +634,7 @@ class VisionAttachmentBridge:
 
     def _finish(
         self,
+        leg: _GripperLeg,
         *,
         stamp_ns: int,
         masks: Sequence[NDArray[np.bool_]],
@@ -534,13 +653,13 @@ class VisionAttachmentBridge:
         transform = t_link_from_cam if t_link_from_cam is not None else np.eye(4, dtype=np.float64)
 
         def _fit(candidates: Sequence[NDArray[np.bool_]], advisory: Sequence[float]) -> Any:
-            return self._producer.on_grasp(
+            return leg.producer.on_grasp(
                 masks=candidates,
                 depth_m=depth,
                 intrinsics=self._intrinsics,
                 t_link_from_cam=transform,
                 tcp_in_link=tcp_in_link,
-                object_id=self._config.object_id,
+                object_id=leg.object_id,
                 stamp_ns=stamp_ns,
                 mask_scores_advisory=advisory,
             )
@@ -556,35 +675,37 @@ class VisionAttachmentBridge:
             attachment, report = _fit([], [])
         if reason:
             self._node.get_logger().warning(
-                f"vision attachment fell back to GRIPPER_FORCE: {reason}"
+                f"vision attachment {leg.joint_name} fell back to GRIPPER_FORCE: {reason}"
             )
         self._node.get_logger().info(
-            f"vision attachment: accepted={report.accepted} rejections={list(report.rejections)} "
+            f"vision attachment {leg.joint_name}: accepted={report.accepted} "
+            f"rejections={list(report.rejections)} "
             f"candidate={report.candidate_index}/{report.candidate_count} "
             f"points={report.point_count} extents_m={report.extents_m} "
             f"depth_valid={report.depth_valid_fraction:.2f} "
             f"mask_score_advisory={report.mask_score_advisory:.3f} (advisory only)"
         )
-        self._publish_attachment([attachment])
-        self._release_barrier()
+        leg.attachment = attachment
+        self._publish_attachment()
+        self._release_barrier(leg)
 
-    def _release_barrier(self) -> None:
-        """Reopen the barrier and let the node publish its deferred tick."""
-        self._pending = False
+    def _release_barrier(self, leg: _GripperLeg) -> None:
+        """Reopen this leg's hold and let the node re-check the barrier."""
+        leg.pending = False
         if callable(self._on_perception_ready):
             self._on_perception_ready()
 
-    def _cancel_deadline(self) -> None:
-        """Cancel and drop the one-shot deadline timer, if any."""
-        if self._deadline_timer is None:
+    def _cancel_deadline(self, leg: _GripperLeg) -> None:
+        """Cancel and drop a leg's one-shot deadline timer, if any."""
+        if leg.deadline_timer is None:
             return
-        self._deadline_timer.cancel()
-        self._node.destroy_timer(self._deadline_timer)
-        self._deadline_timer = None
+        leg.deadline_timer.cancel()
+        self._node.destroy_timer(leg.deadline_timer)
+        leg.deadline_timer = None
 
     # ── inputs ───────────────────────────────────────────────────────────────
 
-    def _gather_context(self) -> _PromptContext | str:
+    def _gather_context(self, leg: _GripperLeg) -> _PromptContext | str:
         """Collect depth, transforms and prompt geometry, or name what is missing.
 
         Returns the ``(t_link_from_cam, tcp_in_link, negative_points)`` tuple, or
@@ -593,21 +714,24 @@ class VisionAttachmentBridge:
         """
         if self._depth is None:
             return f"ROSPerceptionStale: no depth frame yet on {self._depth_topic()!r}"
+        link = self.tf_frame(leg.producer.attach_link)
         camera_frame = self._camera_frame()
-        t_link_from_cam = self._lookup(self._producer.attach_link, camera_frame)
+        t_link_from_cam = self._lookup(link, camera_frame)
         if t_link_from_cam is None:
-            return f"ROSPerceptionStale: no tf2 {self._producer.attach_link} <- {camera_frame}"
-        t_link_from_tcp = self._lookup(self._producer.attach_link, self._tcp_frame)
-        if t_link_from_tcp is None:
-            return f"ROSPerceptionStale: no tf2 {self._producer.attach_link} <- {self._tcp_frame}"
-        tcp = (
-            float(t_link_from_tcp[0, 3]),
-            float(t_link_from_tcp[1, 3]),
-            float(t_link_from_tcp[2, 3]),
-        )
+            return f"ROSPerceptionStale: no tf2 {link} <- {camera_frame}"
+        tcp = leg.tcp_in_link
+        if leg.tcp_frame:
+            t_link_from_tcp = self._lookup(link, leg.tcp_frame)
+            if t_link_from_tcp is None:
+                return f"ROSPerceptionStale: no tf2 {link} <- {leg.tcp_frame}"
+            tcp = (
+                float(t_link_from_tcp[0, 3]),
+                float(t_link_from_tcp[1, 3]),
+                float(t_link_from_tcp[2, 3]),
+            )
         negatives: list[tuple[float, float, float]] = []
         for frame in self._config.jaw_tip_frames:
-            tip = self._lookup(self._producer.attach_link, frame)
+            tip = self._lookup(link, frame)
             if tip is not None:
                 negatives.append((float(tip[0, 3]), float(tip[1, 3]), float(tip[2, 3])))
         return t_link_from_cam, tcp, negatives
@@ -639,10 +763,11 @@ class VisionAttachmentBridge:
         t, q = tf.transform.translation, tf.transform.rotation
         return homogeneous_from_quat_xyz((t.x, t.y, t.z), (q.x, q.y, q.z, q.w))
 
-    def _publish_attachment(self, objects: Sequence[Any]) -> None:
-        """Publish one authoritative attachment snapshot at a fresh revision."""
+    def _publish_attachment(self) -> None:
+        """Publish every leg's current attachment as one snapshot at a fresh revision."""
         if self._attachment_pub is None:
             return
+        objects = [leg.attachment for leg in self._legs if leg.attachment is not None]
         from openral_msgs.msg import (
             AttachedCollisionObject,
             AttachedCollisionPrimitive,
@@ -692,20 +817,44 @@ class VisionAttachmentBridge:
                 return str(spec.frame_id)
         raise ROSConfigError(f"vision attachment: camera {self._camera!r} vanished from manifest.")
 
-    def _resolve_tcp_frame(self) -> str:
-        """Default TCP frame: the gripper joint's moving-jaw child link.
+    def _build_legs(
+        self,
+        gate_config: VisionGateConfig | None,
+        trigger_config: GraspTriggerConfig | None,
+    ) -> list[_GripperLeg]:
+        """One leg per gripper joint, with its TCP resolved.
 
-        An approximation, and named as one: no schema field carries a calibrated
-        tool center point today, and the moving jaw is the closest frame every
-        manifest already declares. ``VisionAttachmentConfig.tcp_frame`` overrides
-        it on a robot that knows better.
+        The TCP is the gripper's moving-jaw child link — an approximation, and
+        named as one: no schema field carries a calibrated tool center point
+        today, and the jaw link is the closest frame every manifest declares.
+        With one gripper it is looked up through tf2 (``tcp_frame``, defaulting
+        to the child link) exactly as before. With several, it is the joint's
+        ``origin_xyz`` — the child link origin in the attach link, read from
+        the manifest — because the attach link may be absent from the published
+        TF tree, and per-hand frame overrides are not supported.
         """
-        joints = [joint for joint in self._description.joints if joint.role == "gripper"]
-        if not joints:
+        joints = gripper_joints(self._description)
+        if len(joints) > 1 and (self._config.tcp_frame or self._config.jaw_tip_frames):
             raise ROSConfigError(
-                "vision attachment needs a role='gripper' joint to derive the TCP frame."
+                f"vision attachment: tcp_frame / jaw_tip_frames are single-gripper settings, "
+                f"but {self._description.name!r} has gripper joints "
+                f"{[joint.name for joint in joints]}."
             )
-        return str(joints[0].child_link)
+        return [
+            _GripperLeg(
+                joint_name=joint.name,
+                trigger=GripperEffortTrigger(
+                    self._description, joint_name=joint.name, config=trigger_config
+                ),
+                producer=VisionAttachmentEvidenceProducer(
+                    self._description, gripper_joint=joint.name, config=gate_config
+                ),
+                object_id=f"{self._config.object_id}:{joint.name}",
+                tcp_frame=(self._config.tcp_frame or joint.child_link) if len(joints) == 1 else "",
+                tcp_in_link=joint.origin_xyz,
+            )
+            for joint in joints
+        ]
 
     def _depth_topic(self) -> str:
         """Configured depth topic, or the conventional per-camera default."""

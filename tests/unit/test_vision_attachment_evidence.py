@@ -205,6 +205,7 @@ def test_producer_resolves_attach_and_touch_links_from_the_real_manifest() -> No
     """Attach link and touch links come from the manifest's gripper-role joints."""
     producer = VisionAttachmentEvidenceProducer(_robot())
     assert producer.attach_link == "gripper_base"
+    assert producer.touch_links == ("moving_jaw",)
     assert producer.on_release() == []
 
 
@@ -528,3 +529,26 @@ def test_volume_backstop_fires_on_a_thick_over_large_payload() -> None:
     assert report.rejections == ("payload_volume",)
     assert report.volume_m3 > 0.004
     assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_FORCE
+
+
+def test_a_per_joint_producer_serves_one_openarm_hand() -> None:
+    """On a bimanual robot each hand gets its own attach link and touch link."""
+    openarm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+    left = VisionAttachmentEvidenceProducer(openarm, gripper_joint="left_gripper")
+    assert left.attach_link == "openarm_left_link7"
+    assert list(left.touch_links) == ["openarm_left_finger_pair"]
+    right = VisionAttachmentEvidenceProducer(openarm, gripper_joint="right_gripper")
+    assert right.attach_link == "openarm_right_link7"
+
+
+def test_an_unnamed_producer_still_needs_one_parent_link() -> None:
+    """Without ``gripper_joint`` two hands on two parents stay an error."""
+    openarm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+    with pytest.raises(ROSConfigError, match="one gripper parent link"):
+        VisionAttachmentEvidenceProducer(openarm)
+
+
+def test_a_non_gripper_joint_is_rejected_by_the_producer() -> None:
+    """Naming an arm joint is a typed error."""
+    with pytest.raises(ROSConfigError, match="not a gripper-role joint"):
+        VisionAttachmentEvidenceProducer(_robot(), gripper_joint="wrist_roll")
