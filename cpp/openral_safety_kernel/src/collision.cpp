@@ -1237,6 +1237,39 @@ Vec3 obb_extent(const Transform& box, const Vec3& he) noexcept {
               std::fabs(box.r[6]) * he.x + std::fabs(box.r[7]) * he.y + std::fabs(box.r[8]) * he.z};
 }
 
+namespace {
+
+// Exact point-in-OBB: express `p` in the box's own frame (Rᵀ·(p - origin))
+// and compare against the half-extents. A degenerate or non-finite box
+// contains nothing. Shared by the place allowance and the grasp exemption so
+// the two declaration-scoped regions can never disagree on "inside".
+bool point_in_obb(const Transform& box, const Vec3& half, const Vec3& p) noexcept {
+  if (!(half.x > 0.0) || !(half.y > 0.0) || !(half.z > 0.0) || !std::isfinite(half.x) ||
+      !std::isfinite(half.y) || !std::isfinite(half.z)) {
+    return false;
+  }
+  const Vec3 d = sub(p, box.t);
+  const double lx = box.r[0] * d.x + box.r[3] * d.y + box.r[6] * d.z;
+  const double ly = box.r[1] * d.x + box.r[4] * d.y + box.r[7] * d.z;
+  const double lz = box.r[2] * d.x + box.r[5] * d.y + box.r[8] * d.z;
+  // `<=`, so a non-finite point is never inside (fails closed).
+  return std::fabs(lx) <= half.x && std::fabs(ly) <= half.y && std::fabs(lz) <= half.z;
+}
+
+// Is `link` one the live grasp region may exempt at all? Evaluated once per
+// capsule/box, outside the cell loop, so a link outside the mask pays nothing.
+bool grasp_mask_has(const GraspTargetRegion& region, int link) noexcept {
+  return region.valid && link >= 0 && static_cast<std::size_t>(link) < kMaxGraspMaskLinks &&
+         region.link_mask[static_cast<std::size_t>(link)];
+}
+
+}  // namespace
+
+bool grasp_target_exempts(const VoxelGrid& grid, int link_index, const Vec3& center) noexcept {
+  return grasp_mask_has(grid.grasp_region, link_index) &&
+         point_in_obb(grid.grasp_region.pose, grid.grasp_region.half_extents, center);
+}
+
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const VoxelGrid& grid, double margin, double band_m) noexcept {
   CollisionHit result;
@@ -1273,6 +1306,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
     Vec3 p1;
     capsule_endpoints(cap, model.capsules[c].half_length, p0, p1);
     const double r = model.capsules[c].radius;
+    const bool grasp_link = grasp_mask_has(grid.grasp_region, li);
     // `band_m` widens the WINDOW only; `d <= margin` below is still the trip.
     const double reach = r + margin + band_m + half_side;
     const auto [ix0, ix1] =
@@ -1292,7 +1326,12 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           voxel.t = voxel_center_local(grid, ix, iy, iz);
           const double d =
               box_capsule_distance(voxel, voxel_half, cap, r, model.capsules[c].half_length);
-          fold_pair(result, sweep_min, d, d <= margin, li, static_cast<int>(idx));
+          // ADR-01xx: a declared contact link vs a cell centred in the grasp
+          // region reaches sweep_min only, never the reported evidence.
+          const bool tripped =
+              d <= margin &&
+              !(grasp_link && grasp_target_exempts(grid, li, apply(grid.pose, voxel.t)));
+          fold_pair(result, sweep_min, d, tripped, li, static_cast<int>(idx));
         }
       }
     }
@@ -1317,6 +1356,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
                 compose(scratch.link_world[static_cast<std::size_t>(lb)], model.boxes[b].origin));
     const Vec3 he = model.boxes[b].half_extents;
     const int hull_index = has_tight ? model.box_hull[b] : -1;
+    const bool grasp_link = grasp_mask_has(grid.grasp_region, lb);
     TightPose tight;
     GjkWitness witness;
     if (hull_index >= 0) {
@@ -1373,7 +1413,13 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
               }
             }
           }
-          fold_pair(result, sweep_min, d, d <= margin, lb, static_cast<int>(idx));
+          // ADR-01xx, as in the capsule pass. `d` was computed (and the
+          // stage-2 budget spent) exactly as without a region, so every other
+          // pair's answer is unchanged.
+          const bool tripped =
+              d <= margin &&
+              !(grasp_link && grasp_target_exempts(grid, lb, apply(grid.pose, center)));
+          fold_pair(result, sweep_min, d, tripped, lb, static_cast<int>(idx));
         }
       }
     }
@@ -2010,21 +2056,11 @@ double place_approach_allowance(const VoxelGrid& grid, std::size_t object_index,
   if ((region.object_mask & (1U << object_index)) == 0) {
     return 0.0;
   }
-  const Vec3& half = region.half_extents;
-  if (!(half.x > 0.0) || !(half.y > 0.0) || !(half.z > 0.0) || !std::isfinite(half.x) ||
-      !std::isfinite(half.y) || !std::isfinite(half.z)) {
-    return 0.0;
-  }
-  // Exact point-in-OBB: express the cell centre in the region box's own frame
-  // (Rᵀ·(centre - box origin)) and compare against the half-extents. An oriented
-  // box is what the producer can actually measure — the axis-aligned hull of a
-  // rotated receptacle would be strictly larger, i.e. strictly more permissive.
-  const Vec3 d = sub(center, region.pose.t);
-  const double* r = region.pose.r;
-  const double lx = r[0] * d.x + r[3] * d.y + r[6] * d.z;
-  const double ly = r[1] * d.x + r[4] * d.y + r[7] * d.z;
-  const double lz = r[2] * d.x + r[5] * d.y + r[8] * d.z;
-  if (std::fabs(lx) > half.x || std::fabs(ly) > half.y || std::fabs(lz) > half.z) {
+  // Exact point-in-OBB (a degenerate or non-finite box contains nothing). An
+  // oriented box is what the producer can actually measure — the axis-aligned
+  // hull of a rotated receptacle would be strictly larger, i.e. strictly more
+  // permissive.
+  if (!point_in_obb(region.pose, region.half_extents, center)) {
     return 0.0;
   }
   // Condition 1 of the amendment (as calibrated by its Second Amendment,
@@ -2164,6 +2200,64 @@ const char* place_region_status_reason(PlaceRegionStatus status) noexcept {
     return "bad_geometry";
   case PlaceRegionStatus::kGeometryOverflow:
     return "geometry_overflow";
+  }
+  return "unknown";
+}
+
+GraspRegionStatus ingest_grasp_region(const Transform& pose, const Vec3& half_extents,
+                                      const std::bitset<kMaxGraspMaskLinks>& link_mask,
+                                      GraspTargetRegion& out) noexcept {
+  out = GraspTargetRegion{};
+  if (link_mask.none()) {
+    return GraspRegionStatus::kNoLinks;
+  }
+  if (!std::isfinite(pose.t.x) || !std::isfinite(pose.t.y) || !std::isfinite(pose.t.z)) {
+    return GraspRegionStatus::kBadPose;
+  }
+  for (std::size_t k = 0; k < 9; ++k) {
+    if (!std::isfinite(pose.r[k])) {
+      return GraspRegionStatus::kBadPose;
+    }
+  }
+  const double hx = half_extents.x;
+  const double hy = half_extents.y;
+  const double hz = half_extents.z;
+  if (!std::isfinite(hx) || !std::isfinite(hy) || !std::isfinite(hz)) {
+    return GraspRegionStatus::kBadExtents;
+  }
+  if (hx <= 0.0 || hy <= 0.0 || hz <= 0.0) {
+    return GraspRegionStatus::kDegenerate;
+  }
+  if (hx > kMaxGraspRegionHalfExtentM || hy > kMaxGraspRegionHalfExtentM ||
+      hz > kMaxGraspRegionHalfExtentM) {
+    return GraspRegionStatus::kOversize;
+  }
+  if (8.0 * hx * hy * hz > kMaxGraspRegionVolumeM3) {
+    return GraspRegionStatus::kOversizeVolume;
+  }
+  out.valid = true;
+  out.link_mask = link_mask;
+  out.pose = pose;
+  out.half_extents = half_extents;
+  return GraspRegionStatus::kOk;
+}
+
+const char* grasp_region_status_reason(GraspRegionStatus status) noexcept {
+  switch (status) {
+  case GraspRegionStatus::kOk:
+    return "ok";
+  case GraspRegionStatus::kNoLinks:
+    return "no_links";
+  case GraspRegionStatus::kBadPose:
+    return "bad_pose";
+  case GraspRegionStatus::kBadExtents:
+    return "bad_extents";
+  case GraspRegionStatus::kDegenerate:
+    return "degenerate";
+  case GraspRegionStatus::kOversize:
+    return "oversize";
+  case GraspRegionStatus::kOversizeVolume:
+    return "oversize_volume";
   }
   return "unknown";
 }
