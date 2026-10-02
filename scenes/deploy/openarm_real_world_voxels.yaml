@@ -76,6 +76,16 @@ drivers:
       camera_name: zed
       publish_tf: "false"
       publish_map_tf: "false"
+      # The cloud octomap gets: 30 Hz (the ZED-M's grab rate), the wrapper's
+      # REDUCED grid (224x128 at HD1080, ~7 mm between returns at 1 m, fine for
+      # 20 mm cells) and nothing past 2.5 m — the coverage ball ends at ~1.6 m
+      # from the camera. Thor, 2026-10-02: the default 10 Hz COMPACT cloud with
+      # 10 m depth plus unclipped 4 m rays held octomap_server at ~2 Hz with
+      # multi-second gaps; with this and the launch's coverage-ball clip it runs
+      # at ~19 Hz (15 mm cells) with a worst gap of 0.17 s. Under `deploy sim`
+      # drivers are ignored: pass the same overrides to the hand-launched ZED
+      # (runbook step 3).
+      param_overrides: "depth.point_cloud_freq:=30.0;depth.point_cloud_res:=REDUCED;depth.max_depth:=2.5"
 
 runtime:
   # Direct dispatch only (/openral/execute_rskill): no LLM in the loop, so the
