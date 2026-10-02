@@ -1229,6 +1229,14 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     vision_attachment_enabled = LaunchConfiguration("enable_vision_attachment").perform(
         context
     ).lower() in ("1", "true", "yes")
+    # The scene's manifest-link -> TF-frame renames ("link=frame", comma-joined), the same
+    # strings the HAL gets as `vision_attachment_tf_frames`. The octomap bridge needs them
+    # to find a held payload's attach link on TF; empty = every link is its own frame.
+    attach_link_tf_frames = [
+        e
+        for e in LaunchConfiguration("vision_attachment_tf_frames").perform(context).split(",")
+        if e
+    ]
     # Grasp-target exemption (DeployRuntime.grasp_allowance_enabled). Default off.
     grasp_allowance_enabled = LaunchConfiguration("grasp_allowance_enabled").perform(
         context
@@ -2616,6 +2624,14 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     # Graph-wide clock domain — matches octomap_server above
                     # (sim-time without a /clock pins its TF lookups at 0).
                     "use_sim_time": use_sim_time,
+                    # A held payload is cleared by looking its (manifest) attach link up
+                    # on TF; a cell that names that body differently needs the rename.
+                    # Omitted when there is none (an empty list has no ROS param type).
+                    **(
+                        {"attach_link_tf_frames": attach_link_tf_frames}
+                        if attach_link_tf_frames
+                        else {}
+                    ),
                 }
             ],
             additional_env=otel_env,
@@ -3513,6 +3529,14 @@ def generate_launch_description() -> LaunchDescription:
             "vision_attachment_segmenter_device",
             default_value="auto",
             description="Segmenter torch device: auto, cuda or cpu.",
+        ),
+        DeclareLaunchArgument(
+            "vision_attachment_tf_frames",
+            default_value="",
+            description=(
+                "Comma-joined 'link=frame' renames (the scene's vision_attachment.tf_frames, "
+                "as the HAL gets them): the octomap bridge's attach_link_tf_frames."
+            ),
         ),
         DeclareLaunchArgument(
             "object_detector_onnx",

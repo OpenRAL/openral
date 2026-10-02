@@ -64,7 +64,8 @@ using SAM 2.1 to see the object.
    trigger; the TCP comes from the gripper joint's origin, not TF; and
    `VisionAttachmentConfig.tf_frames` maps a manifest link to its TF frame as a proven identity
    (`openarm_*_link7` is the MJCF/URDF body `openarm_*_ee_base_link`, the one the vendor
-   `openarm_ros2` description publishes).
+   `openarm_ros2` description publishes). The octomap bridge clears a held payload by looking
+   its attach link up on TF too, so it gets the same renames (`attach_link_tf_frames`).
 6. **Place has no real producer for any of its inputs.** Region (sim: MuJoCo subtree), support
    witness (sim: `mj_geomDistance`), release (sim: contact loss + 10 mm rigid-follow tolerance),
    and nothing subscribes `/openral/place_declaration` on real. Three real-only hazards sim never
