@@ -3441,11 +3441,13 @@ class SimSensorBridge:
         subscriptions and the MuJoCo evidence tracker that drive real
         attach/release transitions — needs the API.
 
-        ``attachment_heartbeat=False`` (the HAL node sets it when its vision
-        attachment leg is on) opens nothing here for a HAL without the API:
-        that leg publishes revisions on the same latched topic, and a
-        revision-0 heartbeat beside it would move the aggregator's revision
-        backwards on every timer tick.
+        ``attachment_heartbeat=False`` opens nothing here for a HAL without the
+        API. The HAL node sets it (``lifecycle.sim_attachment_heartbeat``) when
+        its vision attachment leg is on — that leg publishes revisions on the
+        same latched topic, and a revision-0 heartbeat beside it would move the
+        aggregator's revision backwards on every timer tick — and under
+        ``hal_mode:=real``, where "nothing attached" is a claim no evidence
+        backs.
         """
         update = getattr(self._hal, "update_attached_objects", None)
         read = getattr(self._hal, "read_attached_objects", None)

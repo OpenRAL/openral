@@ -144,3 +144,47 @@ def test_a_hal_without_the_attachment_api_still_heartbeats_an_empty_fresh_set(
             node.destroy_node()
     finally:
         rclpy.shutdown()
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_a_real_arm_without_the_vision_leg_claims_nothing_about_its_jaws() -> None:
+    """``hal_mode=real``, vision leg off: no publisher, no heartbeat, nothing latched.
+
+    The HAL node builds ``SimSensorBridge`` in real mode too. A real arm has no
+    attachment API, so before this fix the bridge heartbeated "nothing
+    attached, fresh" for it — a claim no real evidence backs, which would let
+    the kernel certify motion against an empty payload set while the jaws hold
+    something. Silence makes the kernel's attached check fail closed instead.
+
+    Real ``OpenArmRealHAL`` (CAN preflight off: the wiring under test never
+    touches the bus) and the node's own heartbeat decision.
+    """
+    rclpy = pytest.importorskip("rclpy")
+
+    from openral_hal.lifecycle import sim_attachment_heartbeat
+    from openral_hal.openarm_real import OpenArmRealHAL
+    from openral_hal.sim_sensor_bridge import SimSensorBridge
+    from rclpy.node import Node
+
+    heartbeat = sim_attachment_heartbeat(hal_mode="real", vision_attachment_enabled=False)
+    assert heartbeat is False
+    hal = OpenArmRealHAL(require_can_links=False)
+    assert not hasattr(hal, "update_attached_objects"), "a real arm has no attach mechanics"
+    rclpy.init()
+    try:
+        node = Node("test_attachment_heartbeat_real_mode")
+        try:
+            bridge = SimSensorBridge(
+                node, hal, hal.description, viewer_enabled=False, attachment_heartbeat=heartbeat
+            )
+            try:
+                bridge.setup()
+                assert bridge._attachment_pub is None
+                assert bridge._attachment_timer is None
+                assert node.count_publishers("/openral/attachment_state") == 0
+            finally:
+                bridge.teardown()
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.try_shutdown()
