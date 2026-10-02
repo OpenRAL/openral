@@ -189,8 +189,8 @@ _Composed-runtime entry point installed as `lib/openral_rskill_ros/runtime_node`
 
 ### `packages/openral_rskill_ros/launch/deploy_e2e.launch.py`
 
-- `compose_runtime_graph(context, *_args, **_kwargs) -> list` (L1098) — Resolves every launch arg, loads the robot manifest, and assembles the full deploy-sim ROS graph — HAL, safety kernel, reasoner, SLAM/Nav2, sensor drivers, optional Foxglove viz. On `hal_mode:=real` it also starts the robot's vendor `ros2_control` bringup itself.
-- `generate_launch_description() -> LaunchDescription` (L3032) — Robot-agnostic deploy-sim launch graph entry point; wraps `compose_runtime_graph` in an `OpaqueFunction`.
+- `compose_runtime_graph(context, *_args, **_kwargs) -> list` (L1098) — Resolves every launch arg, loads the robot manifest, and assembles the full deploy-sim ROS graph — HAL, safety kernel, reasoner, SLAM/Nav2, sensor drivers, optional Foxglove viz. On `hal_mode:=real` it also starts the robot's vendor `ros2_control` bringup itself. Always passes the kernel `grasp_allowance_enabled` (launch arg, default `false`, from `DeployRuntime.grasp_allowance_enabled`) and `grasp_contact_links` = the manifest's `role: gripper` `child_link`s (omitted when empty); `grasp_allowance_enabled:=true` on a robot with no gripper joint raises `ROSConfigError`.
+- `generate_launch_description() -> LaunchDescription` (L3052) — Robot-agnostic deploy-sim launch graph entry point; wraps `compose_runtime_graph` in an `OpaqueFunction`.
 - `_build_real_bringup_include(real_bringup) -> object | None` (L785) — `IncludeLaunchDescription` of the manifest's `hal.real_bringup` (`"<pkg>:<file>.launch.py"`) on `hal_mode:=real`; `None` when the manifest declares none; raises `RuntimeError` when the declared package or file is not installed. There is no package-name convention fallback.
 - `_VENV_SITE` (L43) — Optional workspace-editable-install site-dir from `OPENRAL_VENV_SITE`, registered via `site.addsitedir` (plain `PYTHONPATH` is not enough: `.pth` files are only processed by the `site` module on registered site-dirs).
 - `_REPO_ROOT` (L123) — Resolved repo root (`_resolve_repo_root()`).

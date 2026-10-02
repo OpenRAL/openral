@@ -354,3 +354,67 @@ def test_the_vision_leg_off_leaves_the_real_graph_as_without_it(tmp_path: Path) 
     assert kernel_off == kernel_absent
     # Only the scene path differs (sim_env_yaml is never set on real).
     assert hal_off == hal_absent
+
+
+# ── Grasp-target exemption (DeployRuntime.grasp_allowance_enabled) ───────────
+
+_OPENARM_FINGER_LINKS = ("openarm_left_finger_pair", "openarm_right_finger_pair")
+
+
+def _scene_with_grasp_allowance(tmp_path: Path, *, enabled: bool | None) -> Path:
+    """The committed scene with the flag on, explicitly off, or absent (the default)."""
+    import yaml
+
+    data = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
+    if enabled is None:
+        data["runtime"].pop("grasp_allowance_enabled", None)
+    else:
+        data["runtime"]["grasp_allowance_enabled"] = enabled
+    scene = tmp_path / f"grasp_allowance_{enabled}.yaml"
+    scene.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return scene
+
+
+def _kernel_params(args: dict[str, str]) -> dict[str, Any]:
+    from launch_ros.utilities import evaluate_parameters
+
+    args = dict(args)
+    args.pop("deploy_config", None)  # drivers: needs zed_wrapper on the ament path (rig only)
+    ctx, entities = _compose(args)
+    (params,) = evaluate_parameters(ctx, _node(entities, "openral_safety_kernel")._Node__parameters)
+    return dict(params)
+
+
+@pytest.mark.usefixtures("calibrated_openarm")
+@pytest.mark.parametrize("hal_mode", ["real", "sim"])
+def test_grasp_allowance_on_reaches_the_kernel_with_the_manifest_finger_links(
+    tmp_path: Path, hal_mode: str
+) -> None:
+    args = _launch_args(hal_mode, _scene_with_grasp_allowance(tmp_path, enabled=True))
+    assert args["grasp_allowance_enabled"] == "true"
+
+    kernel = _kernel_params(args)
+    assert kernel["grasp_allowance_enabled"] is True
+    assert tuple(kernel["grasp_contact_links"]) == _OPENARM_FINGER_LINKS
+    # The kernel refuses at configure a name its collision model lacks.
+    assert set(_OPENARM_FINGER_LINKS) <= set(kernel["collision_link_names"])
+
+
+@pytest.mark.usefixtures("calibrated_openarm")
+@pytest.mark.parametrize("hal_mode", ["real", "sim"])
+def test_grasp_allowance_off_still_passes_the_links_and_changes_nothing_else(
+    tmp_path: Path, hal_mode: str
+) -> None:
+    """Off (the committed posture and the default): the flag is False, the allowlist is
+    still passed, the argv carries no grasp key, and explicitly-off equals absent."""
+    args_off = _launch_args(hal_mode, _scene_with_grasp_allowance(tmp_path, enabled=False))
+    args_absent = _launch_args(hal_mode, _scene_with_grasp_allowance(tmp_path, enabled=None))
+
+    assert "grasp_allowance_enabled" not in args_off
+    del args_off["deploy_config"], args_absent["deploy_config"]  # the scene paths differ
+    assert args_off == args_absent
+
+    kernel_off = _kernel_params(args_off)
+    assert kernel_off["grasp_allowance_enabled"] is False
+    assert tuple(kernel_off["grasp_contact_links"]) == _OPENARM_FINGER_LINKS
+    assert kernel_off == _kernel_params(args_absent)

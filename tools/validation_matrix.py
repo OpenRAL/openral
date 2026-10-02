@@ -180,12 +180,16 @@ _SCENE_SAFETY_KEYS: Final[tuple[str, ...]] = (
     "place_declaration",
 )
 
-# Inside `runtime:`, exactly one key is a safety knob rather than stack
-# composition: the octomap→kernel collision gate. `enable_reasoner`,
+# Inside `runtime:`, two keys are safety knobs rather than stack composition:
+# the octomap→kernel collision gate and the kernel's grasp-target exemption
+# (which the `allowance` pattern would also catch). `enable_reasoner`,
 # `enable_slam`, `enable_nav2`, `enable_octomap`, the detector and the scene VLM
 # compose the stack and are the whole point of pinning a scene, so they stay
 # pinnable.
-_SCENE_SAFETY_RUNTIME_KEYS: Final[tuple[str, ...]] = ("enable_octomap_kernel_check",)
+_SCENE_SAFETY_RUNTIME_KEYS: Final[tuple[str, ...]] = (
+    "enable_octomap_kernel_check",
+    "grasp_allowance_enabled",
+)
 
 # Sources whose change invalidates the built ROS overlay: the C++ kernel, the
 # IDL, the octomap bridge and every HAL/ROS package colcon compiles.
@@ -1882,8 +1886,9 @@ def scene_safety_surface(document: Mapping[str, Any]) -> dict[str, object]:
 
     The kernel envelope, the collision-pair allowlist, the HAL parameter block
     and the place declaration are safety-relevant wholesale; inside
-    ``runtime:`` only the octomap→kernel gate is, because SLAM/Nav2/octomap/
-    detector/scene-VLM/reasoner enablement is stack *composition* — pinning it
+    ``runtime:`` only the octomap→kernel gate and the grasp-target exemption
+    are, because SLAM/Nav2/octomap/detector/scene-VLM/reasoner enablement is
+    stack *composition* — pinning it
     is what the harness is for. Anything else whose leaf name looks like a
     margin, tolerance, allowance, limit, watchdog or E-stop is caught by name.
 
@@ -1898,6 +1903,8 @@ def scene_safety_surface(document: Mapping[str, Any]) -> dict[str, object]:
         {}
         >>> scene_safety_surface({"runtime": {"enable_octomap_kernel_check": False}})
         {'runtime.enable_octomap_kernel_check': False}
+        >>> scene_safety_surface({"runtime": {"grasp_allowance_enabled": True}})
+        {'runtime.grasp_allowance_enabled': True}
     """
     return {
         key: value for key, value in _flatten_scene(document) if key and _is_scene_safety_key(key)
