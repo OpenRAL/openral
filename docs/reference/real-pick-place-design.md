@@ -124,8 +124,15 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   `clustered_obb_primitives`), extruded down to the support plane, padded by ≥ √3·10 mm plus
   extrinsic error. Cross-check: the OBB must contain enough occupied cells or it is refused.
   *Pure-geometry core landed:* `openral_hal._grasp_target` (seed, prompt projection, region, map
-  cross-check, tracking gate; tests in `tests/unit/test_grasp_target.py`); the ROS wiring waits for
-  `GraspDeclaration`.
+  cross-check, tracking gate; tests in `tests/unit/test_grasp_target.py`). *ROS wiring landed,
+  default off:* `openral_hal._grasp_target_leg`, owned by `VisionAttachmentBridge`
+  (`vision_attachment_grasp_target_enabled`): the search box is `GraspDeclaration.search_box`
+  (optional, scene-supplied, passed through by the runner; the support plane is its bottom face),
+  re-measured at `grasp_target_rate_hz` (3 Hz), the region filled onto every attachment
+  publication; contradicting evidence retracts at once, a lost view freezes the last accepted region
+  for `grasp_target_freeze_s` (2 s) from its depth stamp. Tests: `tests/unit/test_grasp_target_leg.py`,
+  live `tests/integration/test_grasp_target_leg_live.py`. The occlusion freeze is a bare TTL; an
+  FK-based "is the hand what occludes it" test is a follow-up.
 - **Representation:** an oriented box in `openarm_base` (reuse `PlaceRegion`): ~150 B, grid-instance
   independent, exact point-in-OBB already in the kernel.
 - **Tracking:** re-prompt from geometry at 2-5 Hz (project the previous centroid, re-fit, gate on
@@ -183,7 +190,7 @@ Everything is off by default until the last step; nothing before it can actuate.
 | 4 | `feat(deploy)`: `DeployRuntime.vision_attachment`, segmenter lifecycle node in the launch, **vision leg on real always turns the kernel attached check on** (1000 ms deadline) | CLI, launch | **Safety-WG + hazard log**. *Implemented, committed off* (`enabled: false` in `scenes/deploy/openarm_real_world_voxels.yaml`) pending WG review and the hazard-log entry |
 | 5 | `test(hil)`: attended OpenArm gripper-effort readback (gripper-only motion, user at the E-stop) | HIL | decides whether effort is a grasp signal at all |
 | 6 | `feat(kernel)`: `GraspDeclaration` across IDL/core/world-state/runner/HAL/launch/kernel + conservativeness tests | all | **ADR + hazard log; split (>800 lines)**. *Wire landed* (IDL, `openral_core.GraspDeclaration`, World State relay, runner arm/retract on `/openral/grasp_declaration`, CLI/launch `grasp_declaration_json`, committed target in `scenes/deploy/openarm_real_world_voxels.yaml`); producers and the kernel consumer (default off) pending |
-| 7 | `feat(perception)`: pre-grasp target producer (search box → SAM 2.1 → OBB → region), tracking, handover | HAL/perception | develop on the twin pass (real ZED, twin HAL) |
+| 7 | `feat(perception)`: pre-grasp target producer (search box → SAM 2.1 → OBB → region), tracking, handover | HAL/perception | develop on the twin pass (real ZED, twin HAL). *Producer leg implemented, default off* (`_grasp_target_leg`); the OpenArm scene's committed declaration carries no `search_box` yet, and the thresholds are uncalibrated |
 | 8 | `feat(hal)`: place on real — unit fixture + map verification + proximity witness + frozen release | HAL, bridge | **ADR-0097/0092 amendments** |
 | 9 | `feat(scenes)`: enable on the Thor scene with measured thresholds | scenes | only after 5's verdict |
 

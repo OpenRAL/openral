@@ -214,6 +214,7 @@ def test_a_dispatch_supplied_region_never_leaves_this_node() -> None:
             timeout_s=30.0,
             stamp_ns=0,
             region=_measured_region(),
+            search_box=_measured_region(),
         ).fill_idl(request.grasp_declaration)
         assert request.grasp_declaration.region_valid
         runtime.skill_runner_node._arm_grasp_declaration(
@@ -226,6 +227,7 @@ def test_a_dispatch_supplied_region_never_leaves_this_node() -> None:
     assert active[-1].rskill_id == "openral/z"
     assert active[-1].trace_id == "t4"
     assert not active[-1].region_valid, "a dispatch-supplied region reached the kernel's path"
+    assert active[-1].search_box_valid, "the search box only seeds perception; it must pass"
 
 
 def test_a_malformed_scene_declaration_is_refused_not_guessed() -> None:

@@ -2158,6 +2158,7 @@ if _ROS2_AVAILABLE:
                     "stamp_ns": int(self.get_clock().now().nanoseconds),
                     "active": True,
                     # Dispatch never publishes a region; the producer measures it.
+                    # `search_box` passes through unchanged: it only seeds perception.
                     "region": None,
                 }
             )

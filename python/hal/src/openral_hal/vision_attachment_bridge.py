@@ -51,6 +51,12 @@ reported within ``VisionAttachmentConfig.evidence_timeout_s``, for at least
 ``GraspTriggerConfig.consecutive_ticks`` samples in a row, with no grasp
 being resolved. A dead effort channel therefore ages into a kernel drop, never
 into a stale "nothing attached".
+
+With ``VisionAttachmentConfig.grasp_target_enabled`` (default off) the bridge
+also owns the pre-grasp target producer leg (``_grasp_target_leg``): it
+measures the live ``GraspDeclaration``'s region and every publication — event
+or heartbeat — carries that declaration on the envelope, so the kernel reads
+the region and the attachment set from one snapshot.
 """
 
 from __future__ import annotations
@@ -65,6 +71,7 @@ from numpy.typing import NDArray
 from openral_core import CameraTopicKind, camera_topic
 from openral_core.exceptions import ROSConfigError
 
+from openral_hal._grasp_target_leg import GraspTargetLeg
 from openral_hal._grasp_trigger import (
     GraspEvent,
     GraspTriggerConfig,
@@ -116,6 +123,8 @@ class _GripperLeg:
         inflight: The outstanding ``SegmentInView`` future, if any.
         deadline_timer: The one-shot deadline timer for that future, if any.
         pending: Whether this leg is holding the ack barrier.
+        jaw_link: The gripper joint's child link — what a ``GraspDeclaration``
+            names in ``contact_links``.
     """
 
     joint_name: str
@@ -128,6 +137,7 @@ class _GripperLeg:
     inflight: Any = None
     deadline_timer: Any = None
     pending: bool = False
+    jaw_link: str = ""
 
 
 #: Mask/depth aspect-ratio agreement below which a resample is a resolution change.
@@ -260,6 +270,19 @@ class VisionAttachmentConfig:
             ticks at any rate the cell runs, and well inside the kernel's
             attached-collision deadline, so a dead effort channel surfaces as a
             kernel drop rather than as a stale "nothing attached".
+        grasp_target_enabled: Run the pre-grasp target producer leg
+            (``_grasp_target_leg``): measure the live ``GraspDeclaration``'s
+            region from its ``search_box``, the voxel map and ``SegmentInView``,
+            and put it on every attachment publication. Default off.
+        grasp_target_rate_hz: Re-measurement rate, 2-5 Hz (design §2.2).
+        grasp_target_freeze_s: How long past its ``stamp_ns`` the last accepted
+            region survives while the view is lost (the gripper occluding the
+            target). *Calibration point*, ``2.0`` s — at most twice the real
+            cell's 1.0 s kernel voxel deadline.
+        grasp_target_min_cells: Fewest occupied cells the seed cluster above the
+            support plane may have. *Calibration point.*
+        grasp_target_min_cover: Fraction of the region's footprint cell count
+            that must be occupied in the map. *Calibration point.*
     """
 
     camera: str = ""
@@ -272,6 +295,11 @@ class VisionAttachmentConfig:
     object_id: str = "grasped_payload"
     tf_frames: Mapping[str, str] = field(default_factory=dict)
     evidence_timeout_s: float = 0.5
+    grasp_target_enabled: bool = False
+    grasp_target_rate_hz: float = 3.0
+    grasp_target_freeze_s: float = 2.0
+    grasp_target_min_cells: int = 8
+    grasp_target_min_cover: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -495,6 +523,9 @@ class VisionAttachmentBridge:
             timeout_s=self._config.evidence_timeout_s,
         )
         self._revision = 0
+        self._grasp_target: GraspTargetLeg | None = (
+            GraspTargetLeg(node, self, self._config) if self._config.grasp_target_enabled else None
+        )
 
     # ── wiring ───────────────────────────────────────────────────────────────
 
@@ -546,6 +577,8 @@ class VisionAttachmentBridge:
         # read the latched topic's last revision before the first publish.
         self._revision = int(self._node.get_clock().now().nanoseconds)
         self._heartbeat_timer = self._node.create_timer(_HEARTBEAT_PERIOD_S, self._heartbeat)
+        if self._grasp_target is not None:
+            self._grasp_target.setup()
         for leg in self._legs:
             self._node.get_logger().info(
                 f"vision attachment bridge: gripper={leg.joint_name!r} camera={self._camera!r} "
@@ -561,6 +594,8 @@ class VisionAttachmentBridge:
         """Destroy every ROS entity; idempotent, and never leaves the barrier shut."""
         for leg in self._legs:
             self._cancel_deadline(leg)
+        if self._grasp_target is not None:
+            self._grasp_target.teardown()
         if self._heartbeat_timer is not None:
             self._heartbeat_timer.cancel()
             self._node.destroy_timer(self._heartbeat_timer)
@@ -863,6 +898,8 @@ class VisionAttachmentBridge:
             f"mask_score_advisory={report.mask_score_advisory:.3f} (advisory only)"
         )
         leg.attachment = attachment
+        if self._grasp_target is not None and attachment is not None:
+            self._grasp_target.tracker.on_attach(leg.jaw_link)
         self._publish_attachment()
         self._release_barrier(leg)
 
@@ -1052,8 +1089,11 @@ class VisionAttachmentBridge:
         )
 
         msg = AttachmentState()
-        msg.header.stamp = self._node.get_clock().now().to_msg()
+        now = self._node.get_clock().now()
+        msg.header.stamp = now.to_msg()
         msg.revision = self._revision
+        if self._grasp_target is not None:
+            self._grasp_target.fill(msg, now_ns=int(now.nanoseconds))
         for obj in objects:
             item = AttachedCollisionObject()
             obj.fill_idl(item, primitive_factory=AttachedCollisionPrimitive)
@@ -1128,6 +1168,7 @@ class VisionAttachmentBridge:
                 object_id=f"{self._config.object_id}:{joint.name}",
                 tcp_frame=(self._config.tcp_frame or joint.child_link) if len(joints) == 1 else "",
                 tcp_in_link=joint.origin_xyz,
+                jaw_link=joint.child_link,
             )
             for joint in joints
         ]
