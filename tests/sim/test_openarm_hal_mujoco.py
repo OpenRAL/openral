@@ -670,3 +670,91 @@ class TestFullLifecycle:
             hal.disconnect()
         with pytest.raises(ROSRuntimeError):
             hal.read_state()
+
+
+# ── Cameras the twin renders ──────────────────────────────────────────────────
+
+
+class TestTwinCameras:
+    """Every RGB sensor the manifest declares must come out of the twin's MJCF.
+
+    Thor, 2026-10-02: the wrist panels stayed on "Waiting for image messages"
+    through a whole twin pass because the manifest named the cameras
+    ``wrist_left`` / ``wrist_right`` while the MJCF names them with a
+    ``camera_`` prefix, and ``top`` had no twin camera at all.
+    """
+
+    def test_every_rgb_sensor_names_a_camera_the_twin_has(
+        self, connected_hal: OpenArmMujocoHAL
+    ) -> None:
+        handles = connected_hal.mujoco_handles()
+        assert handles is not None
+        model, _ = handles
+        for sensor in OPENARM_DESCRIPTION.sensors:
+            if sensor.modality != "rgb":
+                continue
+            cam = sensor.sim_camera_name or sensor.name
+            assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, cam) >= 0, (
+                f"{sensor.name}: MJCF has no camera {cam!r}"
+            )
+
+    def test_the_head_camera_is_rigged_at_the_zed_mount(
+        self, connected_hal: OpenArmMujocoHAL
+    ) -> None:
+        """``top`` is spliced in by the camera rig (the upstream MJCF ships none)."""
+        handles = connected_hal.mujoco_handles()
+        assert handles is not None
+        model, _ = handles
+        upstream = mujoco.MjModel.from_xml_path(_OPENARM_MJCF)
+        assert mujoco.mj_name2id(upstream, mujoco.mjtObj.mjOBJ_CAMERA, "top") < 0
+        cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "top")
+        assert cam >= 0
+        # head_zed lives only in the manifest (the code constant mirrors the RGB set).
+        from openral_core import RobotDescription
+
+        repo = os.path.join(os.path.dirname(__file__), "..", "..")
+        manifest = os.path.join(repo, "robots", "openarm", "robot.yaml")
+        sensors = RobotDescription.from_yaml(manifest).sensors
+        zed = next(s for s in sensors if s.name == "head_zed")
+        assert zed.static_transform_xyz_rpy is not None
+        # In MJCF world coordinates (== openarm_base) the rigged camera sits at the mount.
+        body = model.cam_bodyid[cam]
+        world_pos = model.body_pos[body] + model.cam_pos[cam]
+        assert world_pos == pytest.approx(zed.static_transform_xyz_rpy[:3], abs=1e-6)
+
+
+# ── Depth self-filter bodies resolve once ─────────────────────────────────────
+
+
+class TestDepthSelfFilterResolvesOnce:
+    def test_a_second_resolve_is_a_no_op(self, connected_hal: OpenArmMujocoHAL) -> None:
+        """A fixed dual-arm resolves both base bodies to ``None``; that must not read as
+        "not resolved yet" (Thor, 2026-10-02: re-resolved on every depth frame)."""
+        rclpy = pytest.importorskip("rclpy")
+        from openral_hal.sim_sensor_bridge import SimSensorBridge
+
+        handles = connected_hal.mujoco_handles()
+        assert handles is not None
+        model, _ = handles
+        bridge = SimSensorBridge.__new__(SimSensorBridge)
+        bridge._hal = connected_hal
+        bridge._depth_base_body = None
+        bridge._depth_base_body_id = -1
+        bridge._base_frame_body = None
+        bridge._depth_self_bodies = frozenset()
+        bridge._depth_bodies_resolved = False
+        rclpy.init()
+        try:
+            bridge._node = rclpy.create_node("test_depth_self_filter_resolve")
+            bridge._resolve_depth_base_body(model)
+            assert bridge._depth_bodies_resolved
+            assert bridge._depth_base_body is None  # the OpenArm case that looped
+            resolved = bridge._depth_self_bodies
+            assert resolved
+            bridge._depth_self_bodies = frozenset({-1})  # sentinel a re-resolve overwrites
+            bridge._resolve_depth_base_body(model)
+            assert bridge._depth_self_bodies == frozenset({-1})
+            bridge._depth_self_bodies = resolved
+        finally:
+            bridge._node.destroy_node()
+            rclpy.shutdown()

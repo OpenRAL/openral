@@ -69,6 +69,7 @@ from openral_core.schemas import (
     ActionRepresentation,
     ActionSpec,
     AssetRefs,
+    CameraSimPlacement,
     ControlMode,
     EmbodimentKind,
     EndEffectorSpec,
@@ -262,9 +263,10 @@ OPENARM_DESCRIPTION = RobotDescription(
     # RGB cameras (issue #191 Phase 3b): the manifest-driven node's
     # SimSensorBridge publishes these via MujocoArmHAL.read_images, which renders
     # the MJCF camera `sim_camera_name or name`. Kept in sync with
-    # robots/openarm/robot.yaml. The MJCF overview camera is named "top" and the
-    # canonical sensor name is also "top", so sim_camera_name is
-    # no longer set explicitly. vla_feature_key values are checkpoint-frozen.
+    # robots/openarm/robot.yaml. The bimanual MJCF names its wrist cameras
+    # `camera_wrist_*` and ships no head camera, so `top` is rigged in at
+    # head_zed's nominal mount (see the manifest). vla_feature_key values are
+    # checkpoint-frozen.
     sensors=[
         SensorSpec(
             name="top",
@@ -278,6 +280,11 @@ OPENARM_DESCRIPTION = RobotDescription(
             vla_feature_key="observation.images.top",
             vendor="sim",
             model="mujoco_top",
+            sim_placement=CameraSimPlacement(
+                parent_body="openarm_left_base_link",
+                pos=(0.0, -0.031, 0.20),
+                target=(0.379, -0.031, -0.725),
+            ),
         ),
         SensorSpec(
             name="wrist_left",
@@ -291,6 +298,7 @@ OPENARM_DESCRIPTION = RobotDescription(
             vla_feature_key="observation.images.wrist_left",
             vendor="sim",
             model="mujoco_wrist",
+            sim_camera_name="camera_wrist_left",
         ),
         SensorSpec(
             name="wrist_right",
@@ -304,6 +312,7 @@ OPENARM_DESCRIPTION = RobotDescription(
             vla_feature_key="observation.images.wrist_right",
             vendor="sim",
             model="mujoco_wrist",
+            sim_camera_name="camera_wrist_right",
         ),
     ],
     capabilities=RobotCapabilities(
