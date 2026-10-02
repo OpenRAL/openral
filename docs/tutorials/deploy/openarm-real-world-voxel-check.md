@@ -76,6 +76,18 @@ expecting a clean pass:
    (`openarm_left_finger_pair`, `openarm_right_finger_pair`). With it on, the exemption still
    applies only inside a producer-measured `GraspDeclaration` region, which nothing on the
    real graph measures yet. Do not enable it in this runbook.
+
+   **Place producer leg (off by default).** The HAL parameter
+   `vision_attachment_place_fixture_enabled` (default `false`; nothing in the launch sets it)
+   runs the real place producer inside the vision attachment bridge: a `PlaceDeclaration`
+   naming a `cell:<name>` fixture of this unit's overlay (`vision_attachment_robot_unit`, else
+   `$OPENRAL_ROBOT_UNIT`) gets that fixture's box as its region only while the live voxel map
+   shows its top face and an empty volume above it, and a carried payload resting on the face
+   gets a `declared_fixture` support witness — proximity to a verified plane, not sensed
+   contact. It rests on drafted, unapproved ADR-0097 / ADR-0092 D6 amendments, and no unit
+   carries a surveyed fixture yet (`robots/openarm/units/thor.yaml`). Do not enable it in this
+   runbook.
+
 Camera loss **fails closed** (it used to fail open; fixed with hazard-log Entry 033):
 `openral_octomap_bridge` stops publishing `/openral/world_voxels` once its last octree is
 older than `max_octree_age_s` (default 1.0 s, equal to the kernel's `world_voxel_deadline_ms`;
