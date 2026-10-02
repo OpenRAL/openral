@@ -42,6 +42,7 @@ from openral_core.schemas import (
     EmbodimentKind,
     EndEffectorSpec,
     FrameEncoding,
+    GraspDeclaration,
     GripperConvention,
     HalConfig,
     HalEntrypoints,
@@ -53,6 +54,7 @@ from openral_core.schemas import (
     LinkCollisionGeometry,
     OccupancyGridRef,
     PhysicsBackend,
+    PlaceRegion,
     Pose6D,
     QuantizationBackend,
     QuantizationConfig,
@@ -289,11 +291,37 @@ _detected_object_st = st.builds(
     pose=_pose6d_st,
 )
 
+# Grasp region: every half-extent <= 0.15 m keeps the box under both
+# GraspDeclaration caps (0.20 m, 8 * 0.15^3 = 0.027 m^3 < 0.03 m^3).
+_grasp_region_st = st.builds(
+    PlaceRegion,
+    frame_id=_name,
+    pose=_pose6d_st,
+    half_extents=st.tuples(
+        *[st.floats(min_value=1e-3, max_value=0.15, allow_nan=False) for _ in range(3)]
+    ),
+    evidence_ref=_name,
+    stamp_ns=_ns,
+)
+_grasp_declaration_st = st.builds(
+    GraspDeclaration,
+    target_id=_name,
+    object_id=st.text(max_size=16),
+    contact_links=st.lists(_name, min_size=1, max_size=3).map(tuple),
+    rskill_id=st.text(max_size=16),
+    trace_id=st.text(max_size=16),
+    timeout_s=st.floats(min_value=1e-3, max_value=GraspDeclaration.MAX_TIMEOUT_S),
+    stamp_ns=_ns,
+    active=st.booleans(),
+    region=st.none() | _grasp_region_st,
+)
+
 _world_state_st = st.builds(
     WorldState,
     stamp_ns=_ns,
     joint_state=_joint_state_st,
     detected_objects=st.lists(_detected_object_st, max_size=4),
+    grasp_declaration=st.none() | _grasp_declaration_st,
 )
 
 _action_st = st.builds(
@@ -587,6 +615,13 @@ def test_fuzz_detected_object(instance: DetectedObject) -> None:
 def test_fuzz_world_state(instance: WorldState) -> None:
     """WorldState round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(WorldState, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_grasp_declaration_st)
+def test_fuzz_grasp_declaration(instance: GraspDeclaration) -> None:
+    """GraspDeclaration round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(GraspDeclaration, instance)
 
 
 @_FUZZ_SETTINGS

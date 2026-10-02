@@ -36,6 +36,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   # bounded approach allowance of the 2026-08-14 amendment.
   msg/PlaceRegion.msg
   msg/PlaceDeclaration.msg
+  # dispatch's typed grasp-phase declaration (real pick-and-place design §2.1).
+  # Exempts nothing on its own; the producer measures the region.
+  msg/GraspDeclaration.msg
   # DIAGNOSTIC-only mirror of the latest SegmentInView reply, so the dashboard's
   # mask overlay has a producer. Off by default on the segmenter node; nothing
   # in the safety or attachment path reads it.

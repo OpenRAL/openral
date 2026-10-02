@@ -82,3 +82,10 @@ int64 attachment_stamp_ns
 # no place witness and no approach allowance.
 bool place_declaration_valid
 PlaceDeclaration place_declaration
+
+# The grasp declaration World State is relaying from the evidence producer
+# (real pick-and-place design §2.1), beside the place declaration and for the
+# same reason: the kernel applies region and attachment set from one snapshot.
+# False means no grasp declaration is in force — no exemption.
+bool grasp_declaration_valid
+GraspDeclaration grasp_declaration

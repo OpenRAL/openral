@@ -3025,6 +3025,10 @@ class PlaceRegion(BaseModel):
     pre-amendment margins, unchanged. A degenerate or over-large region is
     rejected here and again in the kernel, both times toward "no allowance".
 
+    The same type also carries the producer-measured region of a
+    ``GraspDeclaration`` (real pick-and-place design §2.1), under that
+    declaration's tighter caps and with ``geometry`` always empty.
+
     Attributes:
         frame_id: Frame ``pose`` is expressed in. Must be the robot base
             frame — the frame ``OccupancyVoxels`` is published in. The kernel
@@ -3375,6 +3379,170 @@ class PlaceDeclaration(BaseModel):
                 msg.region,  # type: ignore[attr-defined]
                 primitive_factory=primitive_factory,
             )
+
+
+class GraspDeclaration(BaseModel):
+    """Dispatch's typed statement that a grasp phase is active for a target.
+
+    Field-for-field the grasp mirror of ``PlaceDeclaration`` (real
+    pick-and-place design §2.1; ADR draft "Declaration-scoped grasp-target
+    contact for gripper finger links" in
+    ``docs/reference/real-pick-place-adr-drafts.md``): dispatch names the
+    target and the gripper contact links, the attachment evidence producer
+    measures the target's oriented ``region``, and the safety kernel bounds
+    the exemption. On its own it exempts nothing — dispatch never supplies a
+    region (the rSkill runner strips one) and ``region is None`` means no
+    exemption. Scoped to one goal execution; dies on retraction, goal
+    end/cancel, E-stop, or ``timeout_s`` after ``stamp_ns``.
+
+    The caps ``MAX_TIMEOUT_S`` / ``MAX_HALF_EXTENT_M`` / ``MAX_VOLUME_M3`` are
+    **Safety-WG placeholders** from the ADR draft, not ratified bounds; they
+    sit far below ``PlaceRegion``'s own caps because a grasp region names one
+    graspable object, not a receptacle. ``region.geometry`` must be empty in
+    v1.
+
+    Attributes:
+        target_id: Identity of the declared grasp target, e.g.
+            ``"cell:restock_box"``. Required while ``active``.
+        object_id: Payload identity the grasp produces once attached
+            (``AttachedCollisionObject.object_id``); empty = discovered at
+            attach time.
+        contact_links: Gripper links the declaration names, e.g.
+            ``("openarm_left_finger_pair",)``. Non-empty while ``active``. A
+            consumer intersects these with its own launch-derived allowlist.
+        rskill_id: Dispatching skill, for attributability (HZ-01xx-2).
+        trace_id: OTel trace id, for attributability (HZ-01xx-2).
+        timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped
+            at ``MAX_TIMEOUT_S``.
+        stamp_ns: Dispatcher timestamp; with ``active`` this is the whole
+            liveness key.
+        active: ``False`` retracts the declaration.
+        region: Producer-measured oriented box around the target; ``None`` =
+            no exemption. Dies with the declaration.
+
+    Example:
+        >>> declaration = GraspDeclaration(
+        ...     target_id="cell:restock_box",
+        ...     contact_links=("openarm_left_finger_pair",),
+        ...     timeout_s=70.0,
+        ...     stamp_ns=1_000_000_000,
+        ... )
+        >>> declaration.is_live(now_ns=31_000_000_000)
+        True
+        >>> declaration.is_live(now_ns=72_000_000_000)
+        False
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Ceiling on ``timeout_s`` (Safety-WG placeholder): a grasp is one phase
+    #: of a goal, not the goal.
+    MAX_TIMEOUT_S: ClassVar[float] = 120.0
+    #: Ceiling on one region half-extent (Safety-WG placeholder).
+    MAX_HALF_EXTENT_M: ClassVar[float] = 0.20
+    #: Ceiling on the region volume (Safety-WG placeholder).
+    MAX_VOLUME_M3: ClassVar[float] = 0.03
+
+    target_id: str = ""
+    object_id: str = ""
+    contact_links: tuple[str, ...] = ()
+    rskill_id: str = ""
+    trace_id: str = ""
+    timeout_s: float = Field(gt=0.0)
+    stamp_ns: int = Field(ge=0)
+    active: bool = True
+    region: PlaceRegion | None = None
+
+    @model_validator(mode="after")
+    def _validate_declaration(self) -> GraspDeclaration:
+        if self.timeout_s > self.MAX_TIMEOUT_S:
+            raise ValueError(
+                f"GraspDeclaration.timeout_s {self.timeout_s!r} exceeds the "
+                f"{self.MAX_TIMEOUT_S} s backstop ceiling."
+            )
+        if self.active and not self.target_id:
+            raise ValueError("An active GraspDeclaration must name a target_id.")
+        if self.active and not self.contact_links:
+            raise ValueError("An active GraspDeclaration must name its gripper contact_links.")
+        if any(not link for link in self.contact_links):
+            raise ValueError("GraspDeclaration.contact_links may not contain an empty name.")
+        if self.region is not None:
+            if self.region.geometry:
+                raise ValueError(
+                    "GraspDeclaration.region.geometry must be empty in v1; a grasp region is "
+                    "the measured oriented box only."
+                )
+            for axis, value in zip("xyz", self.region.half_extents, strict=True):
+                if value > self.MAX_HALF_EXTENT_M:
+                    raise ValueError(
+                        f"GraspDeclaration region half-extent {axis}={value!r} exceeds the "
+                        f"{self.MAX_HALF_EXTENT_M} m bound; a grasp region names one object."
+                    )
+            if self.region.volume_m3() > self.MAX_VOLUME_M3:
+                raise ValueError(
+                    f"GraspDeclaration region volume {self.region.volume_m3()!r} m^3 exceeds "
+                    f"the {self.MAX_VOLUME_M3} m^3 bound."
+                )
+        return self
+
+    def is_live(self, *, now_ns: int) -> bool:
+        """Is this declaration still in force at ``now_ns``?
+
+        Same rule and same clock-domain contract as
+        ``PlaceDeclaration.is_live``: ``now_ns`` must be a reading of the
+        publishing graph's ROS clock (simulator time under ``use_sim_time``),
+        or the newest stamp on the stream that carried the declaration — never
+        ``time.time_ns``. Retracted, expired and future-stamped declarations
+        are all dead; a dead declaration exempts nothing.
+
+        Args:
+            now_ns: Consumer's current time, same clock as ``stamp_ns``.
+
+        Returns:
+            ``True`` only while the declaration is active and inside its
+            backstop window.
+        """
+        if not self.active:
+            return False
+        elapsed_ns = now_ns - self.stamp_ns
+        return 0 <= elapsed_ns <= int(self.timeout_s * 1e9)
+
+    @classmethod
+    def from_idl(cls, msg: object) -> Self:
+        """Decode the duck-typed OpenRAL ROS IDL message without importing ROS."""
+        return cls(
+            target_id=str(msg.target_id),  # type: ignore[attr-defined]
+            object_id=str(msg.object_id),  # type: ignore[attr-defined]
+            contact_links=tuple(str(link) for link in msg.contact_links),  # type: ignore[attr-defined]
+            rskill_id=str(msg.rskill_id),  # type: ignore[attr-defined]
+            trace_id=str(msg.trace_id),  # type: ignore[attr-defined]
+            timeout_s=float(msg.timeout_s),  # type: ignore[attr-defined]
+            stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
+            active=bool(msg.active),  # type: ignore[attr-defined]
+            region=(
+                PlaceRegion.from_idl(msg.region)  # type: ignore[attr-defined]
+                if bool(getattr(msg, "region_valid", False))
+                else None
+            ),
+        )
+
+    def fill_idl(self, msg: object) -> None:
+        """Populate a duck-typed ``openral_msgs/GraspDeclaration`` without importing ROS.
+
+        A grasp region never carries geometry (v1), so no primitive factory is
+        needed.
+        """
+        msg.target_id = self.target_id  # type: ignore[attr-defined]
+        msg.object_id = self.object_id  # type: ignore[attr-defined]
+        msg.contact_links = list(self.contact_links)  # type: ignore[attr-defined]
+        msg.rskill_id = self.rskill_id  # type: ignore[attr-defined]
+        msg.trace_id = self.trace_id  # type: ignore[attr-defined]
+        msg.timeout_s = float(self.timeout_s)  # type: ignore[attr-defined]
+        msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
+        msg.active = bool(self.active)  # type: ignore[attr-defined]
+        msg.region_valid = self.region is not None  # type: ignore[attr-defined]
+        if self.region is not None:
+            self.region.fill_idl(msg.region)  # type: ignore[attr-defined]
 
 
 class SupportContactWitness(BaseModel):
@@ -4140,6 +4308,11 @@ class WorldState(BaseModel):
             payload already crossing the dispatch → HAL → World State boundary,
             and because the kernel must apply the region and the attachment set
             it is scoped to from one and the same snapshot.
+        grasp_declaration: The grasp-phase declaration in force as the
+            evidence producer resolved it (real pick-and-place design §2.1),
+            including the producer-measured target region. ``None`` means no
+            grasp phase is declared, i.e. no exemption. Carried beside
+            ``place_declaration`` for the same one-snapshot reason.
         occupancy_grid: Optional 2D occupancy grid reference for mobile-base
             footprint checks. ``None`` until populated; an absent or stale
             grid is treated as unavailable (fail-closed).
@@ -4163,6 +4336,7 @@ class WorldState(BaseModel):
     attachment_revision: int = Field(default=0, ge=0)
     attachment_stamp_ns: int = Field(default=0, ge=0)
     place_declaration: PlaceDeclaration | None = None
+    grasp_declaration: GraspDeclaration | None = None
     occupancy_grid: OccupancyGridRef | None = None
 
 
@@ -10094,6 +10268,17 @@ class DeployScene(BaseModel):
     resolves the target measures it (in sim, from the declared body's MuJoCo
     subtree), so ``place_declaration.region`` is rejected here rather than
     carried to the kernel — see ``_reject_scene_supplied_place_region``."""
+    grasp_declaration: GraspDeclaration | None = None
+    """Committed grasp-phase declaration for **direct** dispatch (real
+    pick-and-place design §2.1), the grasp mirror of ``place_declaration``.
+
+    Names the grasp target and the gripper ``contact_links``; ``openral deploy
+    sim`` / ``deploy run`` inject it into the rSkill runner, which scopes it to
+    each goal it dispatches (armed on start, retracted on end / cancel /
+    E-stop) unless the goal carries its own. ``None`` means no declaration and
+    no exemption. Same rule as the place one: a scene names a target, never a
+    **region** — ``grasp_declaration.region`` is rejected by
+    ``_reject_scene_supplied_place_region``."""
 
     @model_validator(mode="before")
     @classmethod
@@ -10116,7 +10301,17 @@ class DeployScene(BaseModel):
         around a volume nobody observed (hazard log HZ-0097-2/4). Rejecting it
         leaves exactly the pre-amendment margins, which is the fail-closed
         direction.
+
+        The same rule, for the same reason, applies to
+        ``grasp_declaration.region``: only the producer that measured the
+        grasp target may supply it (HZ-01xx-2).
         """
+        if self.grasp_declaration is not None and self.grasp_declaration.region is not None:
+            raise ValueError(
+                "grasp_declaration.region is producer-supplied (real pick-and-place design "
+                "§2.1): a scene file cannot measure the grasp target. Declare the target and "
+                "contact_links only — the evidence producer attaches the measured region."
+            )
         if self.place_declaration is not None and self.place_declaration.region is not None:
             raise ValueError(
                 "place_declaration.region is producer-supplied (ADR-0097's 2026-08-14 "
@@ -10535,6 +10730,7 @@ SensorOverlay.model_rebuild()
 # embeds a `PlaceRegion`, so it is rebuilt with it.
 PlaceRegion.model_rebuild()
 PlaceDeclaration.model_rebuild()
+GraspDeclaration.model_rebuild()
 
 
 class HalConfig(BaseModel):
