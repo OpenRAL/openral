@@ -1,0 +1,191 @@
+# Pick and place on the real OpenArm cell with the world-voxel check on
+
+Status: **investigation and proposal**, 2026-10-02. Branch `feat/real-pick-place-attachment`.
+Nothing here is implemented. Facts cite code at `fe3c8944`; proposals are marked.
+
+Goal: on the real OpenArm cell (Thor: ZED-M head camera, RGB-only wrist Arducams,
+`openral deploy run` with the safety kernel's world-voxel check at the real 20 mm margin on
+20 mm cells), pick an object (the restock box) and place it (on a shelf) without a kernel stop,
+using SAM 2.1 to see the object.
+
+## 1. Why it cannot work today (facts)
+
+1. **The approach stops first.** The robot-link-vs-voxel check
+   (`cpp/openral_safety_kernel/src/collision.cpp` `check_voxel_collision`, L1240-1380) has no
+   exemption of any kind. Every exemption the kernel has — ADR-0092 D6 support witness,
+   attach residue, ADR-0097/0098 place allowance — applies to an *attached payload* only. On the
+   real margin the finger hull trips on the target's own cells before gripper effort can rise, so
+   no grasp event, no attachment, no payload path. Sim hides this behind a 0 mm margin
+   (`deploy_e2e.launch.py` L178-186).
+2. **A margin reduction cannot fix it on the OpenArm.** `openarm_<side>_finger_pair` is one convex
+   hull of both jaws swept over the stroke (`docs/reference/collision-geometry-review.md`
+   L90-92, L349-351); a grasped box sits centimetres inside it, and 20 mm cube quantisation plus
+   the 20 mm margin already exceeds the ADR-0097 cap of min(1.5 voxel, 40 mm) = 30 mm.
+3. **The real attachment leg cannot construct for a bimanual robot.** `GripperEffortTrigger` and
+   `VisionAttachmentEvidenceProducer` require exactly one `role: gripper` joint / one parent link
+   (`_grasp_trigger.py` L164-185, `_vision_attachment_evidence.py` L476-483); OpenArm has two.
+   It has no heartbeat (`vision_attachment_bridge.py` L642-660) and its revision restarts at 0 on
+   every activate (L270), so with the kernel's attached check on every chunk drops as
+   `DROP_ATTACHED_OVERFLOW`/`_UNAVAILABLE`. Nothing launches the segmenter; `DeployRuntime` has no
+   field for it; `_attached_collision_enabled(hal_mode)` is sim-only (`deploy_e2e.launch.py`
+   L452-454).
+4. **Three latent geometry bugs on the head camera.** `head_zed.frame_id` is `zed_camera_link`
+   (ZED *body* frame) while the segmenter, the object lift and the attachment bridge all treat
+   `SensorSpec.frame_id` as an optical frame; the manifest's ZED intrinsics are nominal; the
+   attachment leg requires mask, depth and intrinsics at exactly one resolution
+   (`_vision_attachment_evidence.py` L275-283) while the ZED publishes RGB at native resolution
+   and depth at `pub_resolution`. Any geometry taken from `head_zed` today is rotated or refused.
+5. **Two more HAL bugs.** Both effort read paths zero-fill a missing effort channel
+   (`ros_control_transport.py` L617-627, `openarm_real.py` L380-383), so the trigger can never
+   notice the channel is gone. The attach link (`openarm_*_link7`) and finger frames do not exist
+   in the vendored URDF's TF tree (it describes a different assembly, `robot.yaml` L650-660); the
+   vendor bringup's `robot_description` is what the real cell publishes and is unverified.
+6. **Place has no real producer for any of its inputs.** Region (sim: MuJoCo subtree), support
+   witness (sim: `mj_geomDistance`), release (sim: contact loss + 10 mm rigid-follow tolerance),
+   and nothing subscribes `/openral/place_declaration` on real. Three real-only hazards sim never
+   shows: fingers vs the shelf at the 20 mm link margin; the released object reappearing inside
+   the finger margin on retreat (worse on real: DETACH fires when the jaws open, before the
+   fingers move); ~1 cm joint play against zero-clearance place geometry.
+7. **Already true on real, and dangerous once anything publishes attachments:** the octomap
+   bridge's payload clearing (`attached_clear_enabled` default true) and the self-filter both
+   consume `/openral/world_state_fast` regardless of the kernel flag. A vision leg turned on
+   without the kernel's attached check would clear the payload from the map while nothing checks
+   it — an invisible payload.
+
+## 2. The design (proposal)
+
+One discipline, copied from ADR-0097: **dispatch names, a producer measures, the kernel bounds,
+everything dies with the goal.** One goal-scoped declaration carries both halves.
+
+### 2.1 Grasp-target exemption (kernel; Safety-WG)
+
+- New `GraspDeclaration` (msgs + `openral_core`), field-for-field a mirror of `PlaceDeclaration`:
+  `target_id`, `object_id`, `contact_links`, `rskill_id`, `trace_id`, `timeout_s`, `stamp_ns`,
+  `active`, `region_valid`, `region` (reuse `PlaceRegion`; `geometry[]` must be empty in v1).
+  Rides the `AttachmentState` → `WorldStateStamped` envelope beside the place declaration so
+  the kernel applies region and attachment set from one snapshot. Additive optional fields: no
+  `schema_version` bump.
+- Dispatch (`rskill_runner_node.py`, cloned from `_arm_place_declaration` L2020-2063) names the
+  target and **strips any region**; retracts on every exit incl. E-stop (L977, L2102, L2228).
+- Kernel: while live, cells whose centre lies in the producer-measured oriented box are exempt
+  **for the declared gripper's finger link only** (intersection of a launch-derived manifest
+  allowlist — the `role: gripper` joints' `child_link`s — and the declaration's `contact_links`).
+  Every other link, every cell outside the region, self-collision, attached checks and the force
+  gate are unchanged. An exempt pair reaches `sweep_min` only and never supplies the reported
+  identity (the attached-path contract). Fail-closed on: retraction, timeout, future stamp, stale
+  world state, frame mismatch, oversize/degenerate region, non-empty geometry, non-allowlisted
+  link, grid-frame change, rejected attachment set. Feature parameter default **off**.
+- Handover: on the attachment edge that adds the declared object the exemption stays alive only
+  while the payload origin (FK of the measured configuration) is inside the region, then retires
+  permanently; a detach retires it. From then on the existing path applies (bridge clears the
+  payload cells; kernel checks it as attached geometry).
+- Rejected: masking target cells out of the map upstream (object invisible to every consumer,
+  decision outside the kernel, breaks the bridge's "an occupied cell is an obstacle" invariant);
+  lowering the global real margin (HZ-0095-2 class; it also derives the extrinsic gate).
+- Caps are WG placeholders: half-extent ≤ 0.20 m, volume ≤ 0.03 m³, `timeout_s` ≤ 120 s, a region
+  max age. Monotonicity property to pin in gtest: `trips_with ⊆ trips_without` and the difference
+  ⊆ {(finger link, cell in region)}.
+
+### 2.2 Target perception before the grasp
+
+- **Prompt:** the scene names the target (`pick_declaration{target_id, search_box}`, mirroring
+  `place_declaration`); the search box only *seeds* perception. The exemption region is always the
+  measured one — a scene may never supply it (HZ-0097-2/4 precedent, `schemas.py` L10024-10043).
+  An open-vocabulary detector (OmDet locator, Apache-2.0, already deployable) can confirm or fill
+  the seed later; policy attention and LLM-named regions are rejected as safety inputs.
+- **Measurement:** occupied voxels inside the search box → cluster above the support plane →
+  cluster top-centre projected into the ZED left image as SAM 2.1's positive point → mask (eroded
+  2-3 px) → masked ZED depth → base-frame cloud → robust PCA OBB (reuse `_pca_basis` /
+  `clustered_obb_primitives`), extruded down to the support plane, padded by ≥ √3·10 mm plus
+  extrinsic error. Cross-check: the OBB must contain enough occupied cells or it is refused.
+- **Representation:** an oriented box in `openarm_base` (reuse `PlaceRegion`): ~150 B, grid-instance
+  independent, exact point-in-OBB already in the kernel.
+- **Tracking:** re-prompt from geometry at 2-5 Hz (project the previous centroid, re-fit, gate on
+  ≤ 1 voxel centroid shift), stateless and replayable; no SAM 2 video memory. Under gripper
+  occlusion (expected: the hand covers the box in the head view) freeze the last validated box
+  under a short TTL (≈ 2 s); the TTL ends at attach, goal end, cancel or E-stop. Target lost →
+  exemption retracted → kernel holds at the normal margin.
+- **Handover:** at the ATTACH event reuse the pre-grasp box as the payload (gated by containment),
+  with `object_id = target_id` and a new `AttachmentEvidenceKind`; the head view is occluded
+  exactly then and the wrist cams have no depth, so re-segmenting at the TCP is the worse option
+  on this robot.
+- Must be fixed first (all three are silent): `head_zed` optical frame, intrinsics from the
+  driver's `camera_info`, explicit mask/depth resampling.
+
+### 2.3 Place
+
+- Reuse `PlaceDeclaration`/`PlaceRegion` on the wire; **no kernel change for the payload path.**
+- Region source: a unit-surveyed shelf fixture (`robots/openarm/units/<unit>.yaml`, cell-specific
+  like the ZED mount, fixed-base robots only) that the producer **verifies live against the voxel
+  map** before it arms (face occupied within ±1 voxel, free volume above it empty); on failure the
+  declaration goes out region-less (margins unchanged = fail-closed). ADR-0097 amendment: a
+  unit-surveyed + map-verified fixture counts as producer-measured on a fixed base.
+- Witness substitute: a proximity-based attestation (`DECLARED_FIXTURE` evidence kind, labelled as
+  not sensed contact), once per declaration, when the payload's lowest primitive is within
+  max(1 voxel, survey uncertainty) of the verified plane and the gripper is still loaded.
+- Release: keep gripper-effort DETACH as "jaws opened", but keep the object as an attached record
+  (frozen at the DETACH-stamp FK pose, still checked against arm and world) until every finger
+  hull is > margin + 1 voxel from it, a timeout, a new ATTACH or goal end; only then publish `[]`.
+  The bridge keeps clearing the frozen primitives at zero padding until then (extends
+  `AttachSweepLedger`).
+- Open: fingers vs shelf at the 20 mm link margin. Either accept and measure finger-shelf
+  clearance in the attended runs first, or extend the map-verified region's allowance to the
+  finger link for cells inside the region and below the plane + 1 voxel — the same exemption class
+  as §2.1, WG.
+
+### 2.4 Shared declaration
+
+Extend `PlaceDeclaration` additively or add a `TaskDeclaration`: `grasp_target` (id + source
+fixture), `place_target` (id + fixture), `object_id`, `rskill_id`, `trace_id`, `stamp_ns`,
+`timeout_s`, `active`, monotonic `revision`. One runner arm/retract lifecycle, one producer (the
+single `/openral/attachment_state` authority), per-arm gripper legs, one heartbeat. A grasp
+exemption never applies to the place target and vice versa: scope each by its own `target_id`
+and region.
+
+## 3. Order of work
+
+Everything is off by default until the last step; nothing before it can actuate.
+
+| # | PR | Layer | Notes |
+|---|---|---|---|
+| 0 | `fix(hal)`: report an absent effort channel instead of zero-filling it | HAL | pre-existing bug (§1.5), own commit |
+| 1 | `feat(hal)`: one grasp trigger + evidence producer per gripper; TCP from the gripper joint origin, not TF | HAL | B1, B7 |
+| 2 | `fix(hal)`: 5 Hz attachment heartbeat gated on live effort evidence; time-seeded monotonic revision; real-mode `SimSensorBridge` stops claiming "nothing attached" | HAL | B2, B3 |
+| 3 | `fix(hal,perception)`: back-project in the depth header's optical frame; intrinsics from live `camera_info`; explicit mask resampling; `top`/`head_zed` optical `frame_id` | HAL, perception | B4, B5 |
+| 4 | `feat(deploy)`: `DeployRuntime.vision_attachment`, segmenter lifecycle node in the launch, **vision leg on real always turns the kernel attached check on** (1000 ms deadline) | CLI, launch | **Safety-WG + hazard log** |
+| 5 | `test(hil)`: attended OpenArm gripper-effort readback (gripper-only motion, user at the E-stop) | HIL | decides whether effort is a grasp signal at all |
+| 6 | `feat(kernel)`: `GraspDeclaration` across IDL/core/world-state/runner/HAL/launch/kernel + conservativeness tests | all | **ADR + hazard log; split (>800 lines)** |
+| 7 | `feat(perception)`: pre-grasp target producer (search box → SAM 2.1 → OBB → region), tracking, handover | HAL/perception | develop on the twin pass (real ZED, twin HAL) |
+| 8 | `feat(hal)`: place on real — unit fixture + map verification + proximity witness + frozen release | HAL, bridge | **ADR-0097/0092 amendments** |
+| 9 | `feat(scenes)`: enable on the Thor scene with measured thresholds | scenes | only after 5's verdict |
+
+Steps 0-3 are plain bug fixes on code that exists and can start now. Step 4 is where safety
+posture first changes on real hardware. Steps 6 and 8 are the semantics the Safety-WG has to
+decide; 7 and 8 need the attended cell for calibration.
+
+## 4. Safety-WG items (private `OpenRAL/management`)
+
+1. ADR: declaration-scoped grasp-target exemption for gripper finger links (amends ADR-0097's
+   "arm-vs-world unchanged" for those links only); caps; measure-once vs re-measured region;
+   handover retirement rule; whether `link7` is a contact link; the producer's prompt source.
+2. Hazard HZ-01xx: exemption misapplied (non-target body inside the region; wrong object; stale
+   declaration; target moved while frozen; leak to other links/arms; fingers into the support).
+3. Turning `attached_collision_enabled` on for real, with the deadline, and trusting vision
+   geometry for map clearing (undersized box clears a real obstacle; phantom fallback box on a
+   closed-on-nothing gripper; dead effort channel → kernel drop window).
+4. ADR-0097 amendment (unit-surveyed + map-verified fixture = measured region on fixed bases);
+   ADR-0092 D6 amendment (proximity witness); the ADR-0098 joint-play offset if adopted;
+   the frozen-release window; finger allowance inside the place region.
+5. Bimanual attachment (two attach links) — shared by both halves.
+
+## 5. Measure before deciding (attended, cell)
+
+- `/joint_states` effort presence and raw gripper values; close-on-nothing vs close-on-foam
+  percentiles → are the 0.30/0.10 × 333 thresholds meaningful at all.
+- `header.frame_id` of `/zed/zed_node/depth/depth_registered` and the RGB; `camera_info` K and
+  size at the cell's resolution; `tf2_echo openarm_left_link7 zed_left_camera_optical_frame`.
+- SAM 2.1 latency and VRAM on Thor beside π0.5 (53 ms warm on an RTX 4070 Laptop; Thor unmeasured).
+- The restock box dimensions (for the caps) and finger-shelf clearance during a real place.
+
+Sources: four read-only investigations of this branch (kernel allowance, pre-grasp perception,
+HAL vision leg, place path), 2026-10-02.
