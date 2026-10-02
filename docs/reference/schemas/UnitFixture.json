@@ -1,0 +1,156 @@
+{
+  "$defs": {
+    "Pose6D": {
+      "description": "6D pose: position + quaternion.\n\nAttributes:\n    xyz: Position (x, y, z) in meters.\n    quat_xyzw: Quaternion (x, y, z, w).\n    frame_id: tf2 reference frame.",
+      "properties": {
+        "xyz": {
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Xyz",
+          "type": "array"
+        },
+        "quat_xyzw": {
+          "maxItems": 4,
+          "minItems": 4,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Quat Xyzw",
+          "type": "array"
+        },
+        "frame_id": {
+          "title": "Frame Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "xyz",
+        "quat_xyzw",
+        "frame_id"
+      ],
+      "title": "Pose6D",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A surveyed, cell-specific fixed fixture a fixed-base robot places on or picks from.\n\nA shelf, or the table under the front box: furniture of ONE cell, so it lives in that\ncell's unit overlay (``robots/<robot_id>/units/<unit>.yaml``) next to its camera mount,\nnever in the robot manifest or a deploy scene. Real pick-and-place design \u00a72.3.\n\nA fixture is a **declared** volume and arms nothing by itself. Before it may become a\n``PlaceRegion`` (or a grasp region) the producer must verify it live against the voxel\nmap \u2014 the top face occupied within one voxel, the free volume above it empty \u2014 and on\nfailure publish the declaration region-less (ADR-0097 amendment, drafted). Only then\ndoes a unit-surveyed fixture count as producer-measured on a fixed base.\n\nFixed-base robots only, in the robot's ``base_frame``: ``fixture_problems`` refuses\nanything else, and ``load_robot_unit`` applies it to every unit that carries fixtures.\n\nAttributes:\n    id: The ``target_id`` a place / grasp declaration names, ``cell:<name>``.\n    frame_id: Frame ``pose`` is in; must be the robot's ``base_frame``.\n    pose: Fixture box centre pose in ``frame_id`` (its ``frame_id`` must match).\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, PlaceRegion.MAX_HALF_EXTENT_M]``, volume at most\n        ``PlaceRegion.MAX_VOLUME_M3`` \u2014 the kernel-mirrored place caps.\n    top_plane_normal: Unit normal of the support face, in the box's own axes.\n    survey_uncertainty_m: Survey accuracy bound (m), in ``(0, 0.05]``.\n    surveyed_on: Date the survey was taken.\n    surveyed_by: Who surveyed it.\n    method: How it was measured \u2014 provenance, like the camera mount's header comment.\n    notes: Free text.\n\nExample:\n    >>> shelf = UnitFixture(\n    ...     id=\"cell:shelf_top\",\n    ...     frame_id=\"openarm_base\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.45, 0.0, 0.30), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"openarm_base\"\n    ...     ),\n    ...     half_extents=(0.20, 0.40, 0.01),\n    ...     survey_uncertainty_m=0.01,\n    ...     surveyed_on=\"2026-10-02\",\n    ...     surveyed_by=\"operator\",\n    ...     method=\"tape measure from the pedestal edge\",\n    ... )\n    >>> shelf.top_plane_normal\n    (0.0, 0.0, 1.0)",
+  "properties": {
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "frame_id": {
+      "minLength": 1,
+      "title": "Frame Id",
+      "type": "string"
+    },
+    "pose": {
+      "$ref": "#/$defs/Pose6D"
+    },
+    "half_extents": {
+      "maxItems": 3,
+      "minItems": 3,
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "title": "Half Extents",
+      "type": "array"
+    },
+    "top_plane_normal": {
+      "default": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "maxItems": 3,
+      "minItems": 3,
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "title": "Top Plane Normal",
+      "type": "array"
+    },
+    "survey_uncertainty_m": {
+      "exclusiveMinimum": 0.0,
+      "maximum": 0.05,
+      "title": "Survey Uncertainty M",
+      "type": "number"
+    },
+    "surveyed_on": {
+      "format": "date",
+      "title": "Surveyed On",
+      "type": "string"
+    },
+    "surveyed_by": {
+      "title": "Surveyed By",
+      "type": "string"
+    },
+    "method": {
+      "title": "Method",
+      "type": "string"
+    },
+    "notes": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Notes"
+    }
+  },
+  "required": [
+    "id",
+    "frame_id",
+    "pose",
+    "half_extents",
+    "survey_uncertainty_m",
+    "surveyed_on",
+    "surveyed_by",
+    "method"
+  ],
+  "title": "UnitFixture",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

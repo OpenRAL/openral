@@ -1,0 +1,20 @@
+# TEST FIXTURE, not a survey: an OpenArm unit overlay carrying one fixture, so the
+# `UnitFixture` contract is exercised through the real loader. The shelf numbers are
+# illustrative; a real cell's fixture is measured, then verified live against the voxel map
+# by the producer before it can become a place region (real pick-and-place design §2.3).
+schema_version: "0.1"
+robot_id: openarm
+unit: shelf_cell
+fixtures:
+  - id: "cell:shelf_top"
+    frame_id: openarm_base
+    pose:
+      xyz: [0.45, 0.0, 0.30]
+      quat_xyzw: [0.0, 0.0, 0.0, 1.0]
+      frame_id: openarm_base
+    half_extents: [0.20, 0.40, 0.01]
+    top_plane_normal: [0.0, 0.0, 1.0]
+    survey_uncertainty_m: 0.01
+    surveyed_on: 2026-10-02
+    surveyed_by: "test fixture"
+    method: "illustrative values for the schema tests; not measured"

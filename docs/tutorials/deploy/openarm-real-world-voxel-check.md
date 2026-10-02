@@ -341,7 +341,13 @@ For the write-up, record:
 - `robots/openarm/robot.yaml`: `head_zed`'s nominal `static_transform_xyz_rpy` (sim twins
   only; a real world-voxel deploy never runs on it).
 - `robots/openarm/units/<unit>.yaml`: each cell's camera bindings and its calibrated ZED
-  pose, measured by the operator (step 2).
+  pose, measured by the operator (step 2). It can also list the cell's surveyed fixed
+  fixtures (`fixtures:`, `openral_core.UnitFixture`: a shelf or table a place / grasp
+  declaration names as `cell:<name>`, in the robot's base frame, fixed-base robots only,
+  checked by `fixture_problems` when the unit loads). None is committed yet: a fixture is a
+  measured, declared volume that arms nothing until the producer verifies it live against
+  the voxel map ([real pick-and-place design](../../reference/real-pick-place-design.md)
+  §2.3).
 - `python/core/src/openral_core/depth_extrinsic.py`: the accuracy the pose needs and the
   gate `deploy run` applies.
 - `tools/openarm_world_voxel_run.sh`: the guarded launcher for step 4.
