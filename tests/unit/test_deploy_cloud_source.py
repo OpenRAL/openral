@@ -29,8 +29,8 @@ from pydantic import ValidationError
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PANDA_MOBILE = _REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml"
 _REALSENSE_POINTS = "/camera/depth/color/points"
-#: With the kernel's world-voxel check on, a real deploy also needs a verified extrinsic
-#: for every depth camera (``_preflight_depth_extrinsics``, covered in
+#: With the kernel's world-voxel check on, a real deploy also needs every depth camera's
+#: mount declared by the unit overlay (``_preflight_depth_extrinsics``, covered in
 #: test_deploy_run_real_resolution.py); these tests are about the cloud wiring only.
 _NO_KERNEL_CHECK = "  enable_octomap_kernel_check: false\n"
 
@@ -132,10 +132,10 @@ def test_real_3d_lidar_also_needs_its_cloud_pinned(
     _real_franka_with(tmp_path, monkeypatch, lidar)
     with pytest.raises(ROSConfigError, match="octomap_cloud_topic"):
         _resolve(None, "real", robot="franka_panda")
-    # With the kernel's world check on, a lidar is refused: nothing measures its
-    # extrinsic yet, and the world check would place obstacles through that pose.
+    # With the kernel's world check on, a lidar with no declared mount is refused: the
+    # world check would place obstacles through a pose nobody wrote down.
     checked = _real_scene(tmp_path, "  octomap_cloud_topic: /ouster/points\n")
-    with pytest.raises(ROSConfigError, match="top_lidar: a robot point_cloud sensor"):
+    with pytest.raises(ROSConfigError, match="top_lidar: no parent_frame"):
         _resolve(checked, "real")
     scene = _real_scene(tmp_path, f"  octomap_cloud_topic: /ouster/points\n{_NO_KERNEL_CHECK}")
     invocation = _resolve(scene, "real")
@@ -331,19 +331,31 @@ def test_a_scene_above_a_cap_is_refused_before_launch(
         _resolve(_real_scene(tmp_path, f"{base}  {field}: {cap * 1.5}\n"), "real")
 
 
-def test_the_extrinsic_preflight_refuses_a_cloud_source_it_cannot_measure(tmp_path: Path) -> None:
+def test_the_extrinsic_preflight_refuses_a_cloud_source_with_no_declared_mount() -> None:
     """A scene-mounted depth camera or a 3D lidar feeds octomap too.
 
     The preflight used to iterate only the robot manifest's depth cameras with
     intrinsics, so a scene-mounted RealSense or a lidar passed it with nothing checked,
-    and the kernel would place obstacles through an unmeasured pose.
+    and the kernel would place obstacles through a pose nobody declared.
     """
     from openral_cli.deploy_sim import _preflight_depth_extrinsics
+    from openral_core import apply_sensor_overlays, load_robot_unit
 
-    robot = RobotDescription.from_yaml(str(_PANDA_MOBILE))
+    robot_yaml = _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
+    thor = load_robot_unit(robot_yaml, "thor").sensors
+    robot = RobotDescription.from_yaml(str(robot_yaml))
+    robot = robot.model_copy(update={"sensors": apply_sensor_overlays(robot.sensors, thor)})
     workcell = SensorSpec(
         name="workcell_lidar", modality="point_cloud", frame_id="workcell_lidar", rate_hz=10.0
     )
     with pytest.raises(ROSConfigError) as err:
-        _preflight_depth_extrinsics(robot, tmp_path / "robot.yaml", None, [workcell])
-    assert "workcell_lidar: a scene point_cloud sensor without intrinsics" in str(err.value)
+        _preflight_depth_extrinsics(robot, thor, "thor", [workcell])
+    assert "workcell_lidar: a scene point_cloud sensor" in str(err.value)
+    assert "head_zed" not in str(err.value)  # declared by the unit overlay
+    placed = workcell.model_copy(
+        update={
+            "parent_frame": robot.base_frame,
+            "static_transform_xyz_rpy": (1.0, 0.0, 1.5, 0.0, 0.0, 0.0),
+        }
+    )
+    _preflight_depth_extrinsics(robot, thor, "thor", [placed])

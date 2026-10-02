@@ -1,11 +1,14 @@
-# OpenArm cell on the Jetson AGX Orin (qorin1). head_zed's mount below is this unit's own,
-# fitted 2026-09-25 from the arms' own returns (links 4-6 of both arms, hanging at q = 0, 40
-# stacked clouds, mock hardware) to their MJCF meshes, with roll/pitch held at the Thor
-# level-surface values, which keep this cell's table level too (0.25 deg). Median arm
-# point-to-mesh 7.3 -> 3.9 mm; correction -17.0 mm x, -9.8 mm y, +16.3 mm z, -0.44 deg yaw
-# from the manifest's nominal mount. NOT a marker calibration (it assumes the unpowered arms
-# hang at q = 0); it aligns the robot self-filter. The world-voxel check still needs a
-# verified report: tools/depth_extrinsic_check.py --sensor head_zed --unit orin.
+# OpenArm cell on the Jetson AGX Orin (qorin1). head_zed's mount is NOT declared here: this
+# cell's camera has not been calibrated to the accuracy the world-voxel check needs, so a
+# real deploy with that check on refuses on this unit until it is (runbook step 2), and
+# everything else runs on the manifest's nominal mount. The best estimate so far, fitted
+# 2026-09-25 from the arms' own returns (links 4-6 of both arms, hanging at q = 0, 40 stacked
+# clouds, mock hardware) to their MJCF meshes with roll/pitch held at the Thor level-surface
+# values, is [-0.0170, -0.0098, 0.2163, -0.0123, 1.1823, -0.0076]: median arm point-to-mesh
+# 7.3 -> 3.9 mm, correction -17.0 mm x, -9.8 mm y, +16.3 mm z, -0.44 deg yaw from the
+# nominal mount. From
+# hanging arms the height and yaw are unresolved (a re-fit moved the height 28 mm with no
+# change in residual, 2026-09-26), so it is a starting point for the calibration, not one.
 #
 # Per-host camera bindings. Carried over unchanged from robot.yaml, which served every
 # OpenArm cell before per-unit overlays existed; re-check the Arducam by-id paths with
@@ -17,7 +20,6 @@ robot_id: openarm
 unit: orin
 sensors:
   - name: head_zed
-    static_transform_xyz_rpy: [-0.0170, -0.0098, 0.2163, -0.0123, 1.1823, -0.0076]
     deploy_binding:
       backend: ros2_image
       backend_params:
