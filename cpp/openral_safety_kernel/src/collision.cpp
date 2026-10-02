@@ -1265,9 +1265,13 @@ bool grasp_mask_has(const GraspTargetRegion& region, int link) noexcept {
 
 }  // namespace
 
+bool grasp_region_contains(const GraspTargetRegion& region, const Vec3& p) noexcept {
+  return region.valid && point_in_obb(region.pose, region.half_extents, p);
+}
+
 bool grasp_target_exempts(const VoxelGrid& grid, int link_index, const Vec3& center) noexcept {
   return grasp_mask_has(grid.grasp_region, link_index) &&
-         point_in_obb(grid.grasp_region.pose, grid.grasp_region.half_extents, center);
+         grasp_region_contains(grid.grasp_region, center);
 }
 
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,

@@ -379,6 +379,12 @@ inline constexpr double kMaxGraspRegionHalfExtentM = 0.20;
 /// own. Past it the region grants nothing.
 inline constexpr double kMaxGraspRegionVolumeM3 = 0.03;
 
+/// Ceiling on a grasp declaration's `timeout_s` backstop (s). **A Safety-WG
+/// placeholder** mirroring `openral_core.GraspDeclaration.MAX_TIMEOUT_S`; the
+/// lifecycle refuses a declaration past it (or non-positive / non-finite)
+/// rather than trusting the schema ran. HZ-01xx-3.
+inline constexpr double kMaxGraspDeclarationTimeoutS = 120.0;
+
 /// Producer-measured region of a live grasp declaration (ADR-01xx draft,
 /// hazard HZ-01xx), lowered into the kernel's frame convention: an oriented
 /// box in the robot base frame, like `PlaceApproachRegion`.
@@ -400,6 +406,11 @@ struct GraspTargetRegion {
   std::bitset<kMaxGraspMaskLinks> link_mask{};  ///< bit l: robot link l may contact the target
   Transform pose{};                             ///< region box centre pose, robot base frame
   Vec3 half_extents{};                          ///< region box half-extents (m, all > 0)
+  /// Lifecycle bookkeeping, never read by the geometry: the declared object is
+  /// attached, so the exemption survives only while that payload's origin (FK of
+  /// the measured configuration) stays inside the box, then retires for good.
+  bool handover{false};
+  std::size_t object_index{0};  ///< attached-object index of that payload, when `handover`
 };
 
 /// Outcome of a grasp-region ingest attempt (`ingest_grasp_region`). Every
@@ -1234,6 +1245,12 @@ const char* place_region_status_reason(PlaceRegionStatus status) noexcept;
 ///
 /// Allocation-free.
 bool grasp_target_exempts(const VoxelGrid& grid, int link_index, const Vec3& center) noexcept;
+
+/// Is base-frame point `p` inside `region`'s box? The containment half of
+/// `grasp_target_exempts`, without the link test: the lifecycle asks it of the
+/// declared payload's origin during the handover. False for an invalid,
+/// degenerate or non-finite region, and for a non-finite point. Allocation-free.
+bool grasp_region_contains(const GraspTargetRegion& region, const Vec3& p) noexcept;
 
 /// Validate a producer-measured grasp region and lower it into `out`.
 ///
