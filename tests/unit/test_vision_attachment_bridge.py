@@ -21,11 +21,12 @@ without one:
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import numpy as np
 import pytest
-from openral_core import RobotDescription
+from openral_core import JointState, RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_hal.vision_attachment_bridge import (
     DEFAULT_SEGMENT_SERVICE,
@@ -296,3 +297,45 @@ def test_tf_frames_rejects_a_link_the_manifest_does_not_have() -> None:
                 camera="head_zed", tf_frames={"openarm_left_ee_base_link": "x"}
             ),
         )
+
+
+def _gripper_sample(*, left: float | None, right: float | None, stamp_ns: int) -> JointState:
+    """One OpenArm read carrying effort for whichever grippers have a value."""
+    names = [
+        name
+        for name, value in (("left_gripper", left), ("right_gripper", right))
+        if value is not None
+    ]
+    efforts = [value for value in (left, right) if value is not None]
+    return JointState(
+        name=names or ["left_gripper"],
+        position=[0.0] * max(len(names), 1),
+        effort=efforts,
+        stamp_ns=stamp_ns,
+    )
+
+
+def test_the_heartbeat_evidence_needs_every_gripper_for_n_samples_in_a_row() -> None:
+    """Evidence is live only after N complete samples; one hand going quiet restarts it.
+
+    Real bimanual bridge, no ROS: ``observe_joint_state`` with unloaded jaws
+    fires no event, so it never touches the (absent) node.
+    """
+    bridge = VisionAttachmentBridge(
+        None, _openarm(), config=VisionAttachmentConfig(camera="head_zed")
+    )
+    unloaded = 0.01  # well under both release thresholds, but present
+    now = time.monotonic
+    for tick in range(2):
+        bridge.observe_joint_state(_gripper_sample(left=unloaded, right=unloaded, stamp_ns=tick))
+    assert not bridge._evidence.live(now_s=now()), "two samples are under the debounce"
+    bridge.observe_joint_state(_gripper_sample(left=unloaded, right=None, stamp_ns=2))
+    bridge.observe_joint_state(_gripper_sample(left=unloaded, right=unloaded, stamp_ns=3))
+    assert not bridge._evidence.live(now_s=now()), "a missing hand must restart the count"
+    for tick in range(4, 6):
+        bridge.observe_joint_state(_gripper_sample(left=unloaded, right=unloaded, stamp_ns=tick))
+    assert bridge._evidence.live(now_s=now())
+    assert not bridge._evidence.live(now_s=now() + 0.6), "evidence older than 0.5 s is dead"
+    later = now() + 1.0
+    bridge._evidence.observe(complete=True, now_s=later)
+    assert not bridge._evidence.live(now_s=later), "a channel back from a gap must re-earn N"
