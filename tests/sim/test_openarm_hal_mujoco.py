@@ -729,23 +729,20 @@ class TestTwinCameras:
 class TestDepthSelfFilterResolvesOnce:
     def test_a_second_resolve_is_a_no_op(self, connected_hal: OpenArmMujocoHAL) -> None:
         """A fixed dual-arm resolves both base bodies to ``None``; that must not read as
-        "not resolved yet" (Thor, 2026-10-02: re-resolved on every depth frame)."""
+        "not resolved yet" (Thor, 2026-10-02: re-resolved on every depth frame). Built
+        through the real constructor: the first cut of this fix set the flag only in the
+        reset path and the HAL node died on its first frame."""
         rclpy = pytest.importorskip("rclpy")
         from openral_hal.sim_sensor_bridge import SimSensorBridge
 
         handles = connected_hal.mujoco_handles()
         assert handles is not None
         model, _ = handles
-        bridge = SimSensorBridge.__new__(SimSensorBridge)
-        bridge._hal = connected_hal
-        bridge._depth_base_body = None
-        bridge._depth_base_body_id = -1
-        bridge._base_frame_body = None
-        bridge._depth_self_bodies = frozenset()
-        bridge._depth_bodies_resolved = False
         rclpy.init()
+        node = rclpy.create_node("test_depth_self_filter_resolve")
         try:
-            bridge._node = rclpy.create_node("test_depth_self_filter_resolve")
+            bridge = SimSensorBridge(node, connected_hal, OPENARM_DESCRIPTION, viewer_enabled=False)
+            assert not bridge._depth_bodies_resolved
             bridge._resolve_depth_base_body(model)
             assert bridge._depth_bodies_resolved
             assert bridge._depth_base_body is None  # the OpenArm case that looped
@@ -756,5 +753,5 @@ class TestDepthSelfFilterResolvesOnce:
             assert bridge._depth_self_bodies == frozenset({-1})
             bridge._depth_self_bodies = resolved
         finally:
-            bridge._node.destroy_node()
+            node.destroy_node()
             rclpy.shutdown()

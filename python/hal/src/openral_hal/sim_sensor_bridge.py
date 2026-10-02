@@ -2683,6 +2683,7 @@ class SimSensorBridge:
         # Robot's own MJCF body ids — dropped from the depth cloud so the
         # base-mounted camera doesn't voxelise the arm into its own world map.
         self._depth_self_bodies: frozenset[int] = frozenset()
+        self._depth_bodies_resolved: bool = False
         self._tf_broadcaster: Any = None
         # Static world->base_frame TF (gives a fixed-base sim arm the
         # world root its TF tree otherwise lacks, so task-space state layouts
