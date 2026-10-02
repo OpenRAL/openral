@@ -123,6 +123,8 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 - **`_sim_attachment_evidence._tight_geometry_from_points` vs `openral_safety.tight_geometry.derive_tight_geometry`** — intentional online/offline twins of the DOP + hull refinement (same two stages, same `MAX_TIGHT_HULL_VERTICES` ceiling); the offline one is the certificate, the online one the evidence. Keep both, keep them equal.
 
+- **URDF fixed-axis RPY → matrix in the HAL** — `vision_attachment_bridge._xyz_rpy_matrix` (the release window, real path) and `sim_sensor_bridge._rpy_to_matrix` (sim path) are the same `R = Rz Ry Rx`. Kept apart so the real bridge does not import the sim bridge's private helpers; the consolidation is an `openral_core.geometry.rpy_to_matrix`, done when either is next touched. `box_gap_lower_bound_m` is deliberately not a kernel mirror (see "Convex distance" above).
+
 - **`openral_human_estop.forwarder_node` QoS copy** — byte-identical to the watchdog package's `_qos` helpers, left in place because sharing needs a package edge (`openral_human_estop → openral_safety_watchdog` or `→ openral_observability`) that neither `package.xml` declares. Adding that edge is a decision, not a cleanup.
 
 - **Image-subscription QoS in `openral_perception_ros`** (`ros_image_detector_node`, `scene_vlm_node`, `reward_monitor_node`, `segmenter_node`) — built inline four times with the same parameters. Same package, so a `_qos.py` there is the obvious next step when any of them is next touched.

@@ -165,6 +165,19 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   hull is > margin + 1 voxel from it, a timeout, a new ATTACH or goal end; only then publish `[]`.
   The bridge keeps clearing the frozen primitives at zero padding until then (extends
   `AttachSweepLedger`).
+  *Implemented* in the vision leg (`VisionAttachmentBridge`, default behaviour; the leg itself
+  stays off): the frozen record is attached to the collision model's root link
+  (`base_frame` = `openarm_base`, identity FK, no primitives), not to the hand — the kernel
+  places an attached object at `link_world[attach_link]` for every predicted configuration, so
+  a hand-attached record would ride the retreating hand through a whole chunk while the real
+  object stays put. `touch_links` = the held record's hand + finger links (no link the held
+  record did not already exempt); the separation test is a separating-axis lower bound between
+  the manifest's hand/finger boxes (posed by tf2 + the jaw angle) and the payload, against
+  `release_clear_m` (0.04 m); `release_timeout_s` (3.0 s) bounds it, since the bridge sees no
+  goal end. No octomap-bridge change was needed: payload clearing clears every attached object
+  on `/openral/world_state_fast`, and the frozen record does not move, so its
+  `AttachSweepLedger` window behaves as a held payload's. Proven on the real kernel by
+  `tests/integration/test_vision_attachment_release_window_live.py`.
 - Open: fingers vs shelf at the 20 mm link margin. Either accept and measure finger-shelf
   clearance in the attended runs first, or extend the map-verified region's allowance to the
   finger link for cells inside the region and below the plane + 1 voxel — the same exemption class
@@ -193,7 +206,7 @@ Everything is off by default until the last step; nothing before it can actuate.
 | 5 | `test(hil)`: attended OpenArm gripper-effort readback (gripper-only motion, user at the E-stop) | HIL | decides whether effort is a grasp signal at all |
 | 6 | `feat(kernel)`: `GraspDeclaration` across IDL/core/world-state/runner/HAL/launch/kernel + conservativeness tests | all | **ADR + hazard log; split (>800 lines)**. *Wire landed* (IDL, `openral_core.GraspDeclaration`, World State relay, runner arm/retract on `/openral/grasp_declaration`, CLI/launch `grasp_declaration_json`, committed target in `scenes/deploy/openarm_real_world_voxels.yaml`); the sim producer landed (`SimAttachmentEvidenceTracker.set_grasp_declaration` / `grasp_declaration`: the target subtree's box, base frame, no geometry, on every `AttachmentState` envelope), the launch flag `DeployRuntime.grasp_allowance_enabled` (default off) with the always-passed manifest-derived `grasp_contact_links`, and the kernel consumer landed (`ingest_grasp_declaration`, default off; per-candidate scoping, handover retirement against the region latched at handover, proven on the twin control pair `tests/sim/test_gripper_twin_hal_mujoco_grasp_pair.py`); the real producer pending |
 | 7 | `feat(perception)`: pre-grasp target producer (search box → SAM 2.1 → OBB → region), tracking, handover | HAL/perception | develop on the twin pass (real ZED, twin HAL). *Producer leg implemented, default off* (`_grasp_target_leg`); the OpenArm scene's committed declaration carries no `search_box` yet, and the thresholds are uncalibrated |
-| 8 | `feat(hal)`: place on real — unit fixture + map verification + proximity witness + frozen release | HAL, bridge | **ADR-0097/0092 amendments**. *Schema landed*: `openral_core.UnitFixture` on `RobotUnit.fixtures` (checked by `fixture_problems` in `load_robot_unit`) and `AttachmentEvidenceKind.DECLARED_FIXTURE`; no unit carries a fixture yet and no producer reads one |
+| 8 | `feat(hal)`: place on real — unit fixture + map verification + proximity witness + frozen release | HAL, bridge | **ADR-0097/0092 amendments**. *Schema landed*: `openral_core.UnitFixture` on `RobotUnit.fixtures` (checked by `fixture_problems` in `load_robot_unit`) and `AttachmentEvidenceKind.DECLARED_FIXTURE`; no unit carries a fixture yet and no producer reads one Frozen release window implemented* in the vision leg (§2.3 "Release"); fixture, map verification and witness pending |
 | 9 | `feat(scenes)`: enable on the Thor scene with measured thresholds | scenes | only after 5's verdict |
 
 Steps 0-3 are plain bug fixes on code that exists and can start now. Step 4 is where safety
