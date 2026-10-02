@@ -13,9 +13,9 @@ methods (PLC0415, ruff-exempt for ``packages/**``).
 from __future__ import annotations
 
 import math
-import struct
 from collections.abc import Sequence
 
+import numpy as np
 import structlog
 
 __all__ = [
@@ -64,7 +64,6 @@ def occupied_voxel_centers(
     Raises:
         ValueError: On a length mismatch, or a non-unit ``orientation_xyzw``.
     """
-    ox, oy, oz = origin
     sx, sy, sz = size
     expected = sx * sy * sz
     if len(occupancy) != expected:
@@ -76,29 +75,22 @@ def occupied_voxel_centers(
             f"orientation {orientation_xyzw!r} is not a unit quaternion "
             "(an unset OccupancyVoxels.orientation is all zeros, not identity)"
         )
-    rot = (
-        (1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)),
-        (2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)),
-        (2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)),
+    rot = np.array(
+        (
+            (1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)),
+            (2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)),
+            (2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)),
+        )
     )
-
-    centers: list[tuple[float, float, float]] = []
-    for z in range(sz):
-        for y in range(sy):
-            for x in range(sx):
-                idx = x + sx * (y + sy * z)
-                if occupancy[idx]:
-                    lx = (x + 0.5) * resolution
-                    ly = (y + 0.5) * resolution
-                    lz = (z + 0.5) * resolution
-                    centers.append(
-                        (
-                            ox + rot[0][0] * lx + rot[0][1] * ly + rot[0][2] * lz,
-                            oy + rot[1][0] * lx + rot[1][1] * ly + rot[1][2] * lz,
-                            oz + rot[2][0] * lx + rot[2][1] * ly + rot[2][2] * lz,
-                        )
-                    )
-    return centers
+    # Vectorised: the grid is ~10^6 cells (r = 1.05 m at 20 mm) at several Hz; a Python
+    # loop over it pinned a Thor core (2026-10-02) and starved octomap_server beside it.
+    idx = np.flatnonzero(np.asarray(occupancy))
+    x = idx % sx
+    y = (idx // sx) % sy
+    z = idx // (sx * sy)
+    local = (np.stack((x, y, z), axis=1) + 0.5) * resolution
+    centers = local @ rot.T + np.array(origin)
+    return [tuple(c) for c in centers.tolist()]
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +145,7 @@ class Bucket2MarkersNode:
 
         origin = (msg.origin.x, msg.origin.y, msg.origin.z)  # type: ignore[union-attr]
         size = (int(msg.size_x), int(msg.size_y), int(msg.size_z))  # type: ignore[union-attr]
-        occupancy = list(msg.occupancy)  # type: ignore[union-attr]
+        occupancy = np.asarray(msg.occupancy)  # type: ignore[attr-defined]
         resolution = float(msg.resolution)  # type: ignore[union-attr]
         # The grid's lattice is the OctoMap's; without its rotation every voxel
         # is drawn somewhere the obstacle is not.
@@ -186,11 +178,7 @@ class Bucket2MarkersNode:
         cloud.point_step = 12
         cloud.row_step = cloud.point_step * cloud.width
 
-        raw = bytearray(cloud.row_step)
-        for i, (cx, cy, cz) in enumerate(centers):
-            offset = i * 12
-            struct.pack_into("fff", raw, offset, cx, cy, cz)
-        cloud.data = bytes(raw)
+        cloud.data = np.asarray(centers, dtype="<f4").reshape(-1, 3).tobytes()
 
         self._pub_cloud.publish(cloud)
         log.debug("bucket2: published world_voxels_cloud", points=len(centers))

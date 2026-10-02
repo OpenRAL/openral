@@ -178,3 +178,20 @@ class TestOccupiedVoxelCenters:
         assert (1.5, 0.5, 0.5) in c_set
         # (0,1,0) → center (0.5, 1.5, 0.5)
         assert (0.5, 1.5, 0.5) in c_set
+
+
+class TestOccupiedVoxelCentersFromTheWire:
+    def test_a_numpy_occupancy_array_matches_the_list_form(self) -> None:
+        """The node hands the message's occupancy over as an ndarray, never a list copy:
+        the grid is ~10^6 cells at several Hz, and the list copy plus a Python loop
+        pinned a Thor core (2026-10-02)."""
+        import numpy as np
+
+        occupancy = np.zeros(4 * 3 * 2, dtype=np.uint8)
+        occupancy[[0, 5, 23]] = 1
+        from_array = occupied_voxel_centers((1.0, 2.0, 3.0), 0.02, (4, 3, 2), occupancy)
+        from_list = occupied_voxel_centers((1.0, 2.0, 3.0), 0.02, (4, 3, 2), occupancy.tolist())
+        assert from_array == from_list
+        assert len(from_array) == 3
+        last = (1.0 + 3.5 * 0.02, 2.0 + 2.5 * 0.02, 3.0 + 1.5 * 0.02)
+        assert from_array[-1] == pytest.approx(last)
