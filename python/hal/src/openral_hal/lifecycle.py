@@ -1616,6 +1616,15 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("vision_attachment_grasp_target_freeze_s", 2.0)
             self.declare_parameter("vision_attachment_grasp_target_min_cells", 8)
             self.declare_parameter("vision_attachment_grasp_target_min_cover", 0.5)
+            # Real place producer leg (real pick-and-place design §2.3). OFF by
+            # default: drafted, unapproved ADR-0097 / ADR-0092 D6 amendments. Needs
+            # the robot unit whose surveyed fixtures it verifies against the map:
+            # `vision_attachment_robot_unit`, else $OPENRAL_ROBOT_UNIT.
+            self.declare_parameter("vision_attachment_place_fixture_enabled", False)
+            self.declare_parameter("vision_attachment_place_fixture_rate_hz", 2.0)
+            self.declare_parameter("vision_attachment_place_fixture_min_face_cover", 0.5)
+            self.declare_parameter("vision_attachment_place_fixture_free_height_m", 0.10)
+            self.declare_parameter("vision_attachment_robot_unit", "")
             self._bridge: Any = None
             self._mobile_base: Any = None
             self._vision_attachment: Any = None
@@ -2040,6 +2049,30 @@ if _ROS2_AVAILABLE:
                         f"vision_attachment_tf_frames entry {entry!r} is not 'link=frame'."
                     )
                 tf_frames[link] = frame
+            place_fixture_enabled = (
+                gp("vision_attachment_place_fixture_enabled").get_parameter_value().bool_value
+            )
+            robot_unit = ""
+            unit_fixtures: list[Any] = []
+            if place_fixture_enabled:
+                import os
+
+                from openral_core import ROBOT_UNIT_ENV, load_robot_unit
+
+                robot_unit = gp(
+                    "vision_attachment_robot_unit"
+                ).get_parameter_value().string_value or os.environ.get(ROBOT_UNIT_ENV, "")
+                if not robot_unit:
+                    raise ROSConfigError(
+                        "vision_attachment_place_fixture_enabled needs the robot unit whose "
+                        "fixtures it verifies: set vision_attachment_robot_unit or "
+                        f"${ROBOT_UNIT_ENV}."
+                    )
+                unit_fixtures = list(
+                    load_robot_unit(
+                        gp("robot_yaml").get_parameter_value().string_value, robot_unit
+                    ).fixtures
+                )
             self._vision_attachment = VisionAttachmentBridge(
                 self,
                 self._hal.description,
@@ -2084,6 +2117,20 @@ if _ROS2_AVAILABLE:
                     grasp_target_min_cover=gp("vision_attachment_grasp_target_min_cover")
                     .get_parameter_value()
                     .double_value,
+                    place_fixture_enabled=place_fixture_enabled,
+                    place_fixture_rate_hz=gp("vision_attachment_place_fixture_rate_hz")
+                    .get_parameter_value()
+                    .double_value,
+                    place_fixture_min_face_cover=gp(
+                        "vision_attachment_place_fixture_min_face_cover"
+                    )
+                    .get_parameter_value()
+                    .double_value,
+                    place_fixture_free_height_m=gp("vision_attachment_place_fixture_free_height_m")
+                    .get_parameter_value()
+                    .double_value,
+                    unit_fixtures=unit_fixtures,
+                    robot_unit=robot_unit,
                 ),
             )
             self._vision_attachment.setup()

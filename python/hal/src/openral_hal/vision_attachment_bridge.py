@@ -57,6 +57,12 @@ also owns the pre-grasp target producer leg (``_grasp_target_leg``): it
 measures the live ``GraspDeclaration``'s region and every publication — event
 or heartbeat — carries that declaration on the envelope, so the kernel reads
 the region and the attachment set from one snapshot.
+
+With ``VisionAttachmentConfig.place_fixture_enabled`` (default off) it also owns
+the real place producer leg (``_place_fixture_leg``): the live
+``PlaceDeclaration`` rides every publication, with the unit fixture it names as
+the region only while the voxel map verifies it, and the carried payload gets a
+proximity witness (not sensed contact) once per declaration.
 """
 
 from __future__ import annotations
@@ -78,6 +84,7 @@ from openral_hal._grasp_trigger import (
     GripperEffortTrigger,
     gripper_joints,
 )
+from openral_hal._place_fixture_leg import PlaceFixtureLeg
 from openral_hal._vision_attachment_evidence import (
     VisionAttachmentEvidenceProducer,
     VisionGateConfig,
@@ -89,6 +96,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
         IntrinsicsPinhole,
         JointState,
         RobotDescription,
+        UnitFixture,
     )
 
 __all__ = [
@@ -636,6 +644,20 @@ class VisionAttachmentConfig:
             retreat still inside its margin (fail-closed). The bridge sees no goal
             end, so this is the window's bound when the hand does not retreat.
             *Calibration point*, ``3.0`` s.
+        place_fixture_enabled: Run the real place producer leg
+            (``_place_fixture_leg``): resolve the live ``PlaceDeclaration``'s
+            target to a unit fixture, verify it against the voxel map, publish it
+            as the region, and attest the proximity witness. Default off; it
+            rests on drafted, unapproved ADR-0097 / ADR-0092 D6 amendments.
+        place_fixture_rate_hz: Map re-verification rate.
+        place_fixture_min_face_cover: Fraction of the fixture's top-face cell
+            footprint that must be occupied within one voxel of the surveyed
+            height. *Calibration point.*
+        place_fixture_free_height_m: Height above the face up to which the
+            face's prism must be free (one voxel above the face upward).
+            *Calibration point.*
+        unit_fixtures: This cell's surveyed fixtures (``RobotUnit.fixtures``).
+        robot_unit: The unit those fixtures came from, for ``evidence_ref``.
     """
 
     camera: str = ""
@@ -655,6 +677,12 @@ class VisionAttachmentConfig:
     grasp_target_min_cover: float = 0.5
     release_clear_m: float = 0.04
     release_timeout_s: float = 3.0
+    place_fixture_enabled: bool = False
+    place_fixture_rate_hz: float = 2.0
+    place_fixture_min_face_cover: float = 0.5
+    place_fixture_free_height_m: float = 0.10
+    unit_fixtures: Sequence[UnitFixture] = ()
+    robot_unit: str = ""
 
 
 @dataclass(frozen=True)
@@ -887,6 +915,11 @@ class VisionAttachmentBridge:
         self._grasp_target: GraspTargetLeg | None = (
             GraspTargetLeg(node, self, self._config) if self._config.grasp_target_enabled else None
         )
+        self._place_fixture: PlaceFixtureLeg | None = (
+            PlaceFixtureLeg(node, self, self._config)
+            if self._config.place_fixture_enabled
+            else None
+        )
 
     # ── wiring ───────────────────────────────────────────────────────────────
 
@@ -940,6 +973,8 @@ class VisionAttachmentBridge:
         self._heartbeat_timer = self._node.create_timer(_HEARTBEAT_PERIOD_S, self._heartbeat)
         if self._grasp_target is not None:
             self._grasp_target.setup()
+        if self._place_fixture is not None:
+            self._place_fixture.setup()
         for leg in self._legs:
             self._node.get_logger().info(
                 f"vision attachment bridge: gripper={leg.joint_name!r} camera={self._camera!r} "
@@ -957,6 +992,8 @@ class VisionAttachmentBridge:
             self._cancel_deadline(leg)
         if self._grasp_target is not None:
             self._grasp_target.teardown()
+        if self._place_fixture is not None:
+            self._place_fixture.teardown()
         if self._heartbeat_timer is not None:
             self._heartbeat_timer.cancel()
             self._node.destroy_timer(self._heartbeat_timer)
@@ -1041,6 +1078,8 @@ class VisionAttachmentBridge:
             )
             self._begin_segmentation(leg, stamp_ns=int(state.stamp_ns))
         self._evidence.observe(complete=complete, now_s=time.monotonic())
+        if self._place_fixture is not None:
+            self._place_fixture.on_joint_state()
 
     @property
     def missing_effort_ticks(self) -> int:
@@ -1525,6 +1564,9 @@ class VisionAttachmentBridge:
         msg.revision = self._revision
         if self._grasp_target is not None:
             self._grasp_target.fill(msg, now_ns=int(now.nanoseconds))
+        if self._place_fixture is not None:
+            self._place_fixture.fill(msg, now_ns=int(now.nanoseconds))
+            objects = self._place_fixture.decorate(objects)
         for obj in objects:
             item = AttachedCollisionObject()
             obj.fill_idl(item, primitive_factory=AttachedCollisionPrimitive)
