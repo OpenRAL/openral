@@ -776,9 +776,9 @@ path skipped them whenever attach-time contact was active, because it had no
 pose-dependent way to tell the support contact apart. The skip remains only for
 the unattested legacy case.
 
-## Grasp-target exemption (ADR-01xx draft) — collision layer only, not wired
+## Grasp-target exemption (ADR-01xx draft) — default off
 
-**Draft for Safety-WG review; nothing arms it.** The real OpenArm cell runs the
+**Draft for Safety-WG review; off unless `grasp_allowance_enabled`.** The real OpenArm cell runs the
 world-voxel check at a 20 mm margin on 20 mm cells, and the finger link
 (`openarm_<side>_finger_pair`, one hull swept over the stroke) contains the grasp
 target during a grasp, so `check_voxel_collision` stops on the target's own
@@ -787,12 +787,39 @@ cells before any attachment can exist. The spec is
 the decision and hazard drafts (ADR-01xx, HZ-01xx) are in
 [`real-pick-place-adr-drafts.md`](../../docs/reference/real-pick-place-adr-drafts.md).
 
-What exists today is the geometry half: `VoxelGrid::grasp_region`
-(`GraspTargetRegion`: a validity flag, a robot-link mask, a base-frame oriented
-box), `ingest_grasp_region` and `grasp_target_exempts`. The region is invalid by
-default and nothing in the lifecycle node sets it yet (the `grasp_allowance_enabled`
-parameter, default off, lands with the `GraspDeclaration` wire), so the kernel
-behaves bit-for-bit as before.
+Geometry: `VoxelGrid::grasp_region` (`GraspTargetRegion`: a validity flag, a
+robot-link mask, a base-frame oriented box), `ingest_grasp_region`,
+`grasp_target_exempts`, `grasp_region_contains`. With `grasp_allowance_enabled`
+false (the default) the region is never set and the kernel behaves bit-for-bit
+as before.
+
+Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fast`):
+
+* **Parameters.** `grasp_allowance_enabled` (default `false`) and
+  `grasp_contact_links` (the launch-derived allowlist — the manifest's
+  `role: gripper` joints' child links). Enabled with an empty allowlist, or an
+  allowlist naming a link the collision model does not have, fails configure.
+  Enabling it subscribes to the world state even with attached checking off.
+* **Arming** (`ingest_grasp_declaration`, transition-only logs
+  `safety.grasp_region_armed|dropped|rejected reason=… target=… links=… half_m=…
+  rskill=… trace=… evidence=…`): target, stamp and timeout are recorded before any
+  decision; the region must be valid, in the grid's frame, with empty `geometry`,
+  a backstop in (0, `kMaxGraspDeclarationTimeoutS` = 120 s] (WG placeholder),
+  and every `contact_links` entry must be allowlisted (one that is not refuses the
+  whole declaration). The exempt mask is exactly those links.
+* **Per candidate** (`grasp_declaration_live`): dead on retraction, `timeout_s`
+  lapsed, a future stamp, or a world-state stream older than
+  `attached_collision_deadline_ms`. Stale is "no exemption", never a drop by
+  itself.
+* **Handover.** Once the declared object is attached, the exemption lives only
+  while that payload's origin (FK of the measured configuration) is inside the
+  region; when it leaves, the declaration is retired. A detach, a rejected
+  attachment set or a grid-frame change also retires it. A retired declaration's
+  heartbeat never re-arms it; only a new declaration (new target or stamp) can.
+* **Disclosure.** `/diagnostics` key `grasp_region` (`off`, `-`,
+  `live|expired:<target>:links=<n>[:handover]`, or `<reason>:<target>`), span
+  attribute `safety.grasp_exemption_active`, and `grasp_exemption_active=` /
+  `grasp_target=` on every `safety.collision` stop line.
 
 * **Scope.** While valid, a cell whose base-frame centre is inside the box does
   not trip **for a link in the mask only**. Every other link takes the unchanged
