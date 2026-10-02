@@ -179,6 +179,10 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   on `/openral/world_state_fast`, and the frozen record does not move, so its
   `AttachSweepLedger` window behaves as a held payload's. Proven on the real kernel by
   `tests/integration/test_vision_attachment_release_window_live.py`.
+  A place witness armed while held carries onto the frozen record (same object and stamp, so
+  the kernel's latch key does not change) until the window closes, keeping the support patch
+  exempt in the kernel and partitioned by the octomap bridge — proven against the real kernel
+  by `tests/integration/test_place_fixture_release_live.py`.
 - Open: fingers vs shelf at the 20 mm link margin. Either accept and measure finger-shelf
   clearance in the attended runs first, or extend the map-verified region's allowance to the
   finger link for cells inside the region and below the plane + 1 voxel — the same exemption class

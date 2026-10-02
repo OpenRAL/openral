@@ -41,14 +41,15 @@ base; ADR-0092 D6 amendment: a proximity witness). Default off
    plane, not sensed contact**, and every log line and ``evidence_ref`` says so. It
    stays on the object (same stamp, so the kernel's latch key does not change) until
    the declaration is retracted, times out, is replaced, the region stops verifying,
-   or the payload changes; each of those re-publishes without it.
+   or the payload changes; each of those re-publishes without it. A payload released
+   on the face keeps it on its frozen release record until the window closes.
 """
 
 from __future__ import annotations
 
 import math
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -73,7 +74,11 @@ from openral_hal._grasp_target import VoxelLattice
 from openral_hal._grasp_target_leg import lattice_from_msg
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
-    from openral_hal.vision_attachment_bridge import VisionAttachmentBridge, VisionAttachmentConfig
+    from openral_hal.vision_attachment_bridge import (
+        VisionAttachmentBridge,
+        VisionAttachmentConfig,
+        _GripperLeg,
+    )
 
 __all__ = [
     "FixtureFace",
@@ -523,8 +528,13 @@ class PlaceFixtureTracker:
         """Arm or drop the witness; ``True`` when the published set must change.
 
         Args:
-            candidates: ``(attachment, T_grid_from_attach_link or None, trigger loaded)``
-                per gripper leg holding something.
+            candidates: ``(attachment, T_grid_from_attach_link or None, payload live)``
+                per gripper leg holding something — ``payload live`` is the trigger's
+                loaded bit for a held payload — plus ``(record, None, True)`` per
+                frozen release record (design note §2.3 "Release"): there ``True``
+                means the payload the witness names is still published, so a witness
+                armed while held carries through the window, and the ``None`` pose
+                arms no new one. The window closing removes the candidate and drops it.
             now_ns: The node clock.
         """
         declaration = self.live(now_ns=now_ns)
@@ -578,6 +588,28 @@ class PlaceFixtureTracker:
             else obj
             for obj in objects
         ]
+
+
+def _witness_candidates(
+    legs: Iterable[_GripperLeg],
+    pose: Callable[[AttachedCollisionObject], NDArray[np.float64] | None],
+) -> list[tuple[AttachedCollisionObject, NDArray[np.float64] | None, bool]]:
+    """``PlaceFixtureTracker.attest`` candidates from the bridge's gripper legs.
+
+    A held payload is ``(attachment, pose(attachment), trigger loaded)``. A leg
+    whose window holds a frozen release record (design note §2.3 "Release") is
+    ``(record, None, True)``: the record keeps the witness it had — same object
+    and stamp, now resting on the face, exactly when the kernel needs the
+    support-contact exemption — and the ``None`` pose arms no new one. The
+    window closing removes the candidate, which drops the witness.
+    """
+    candidates: list[tuple[AttachedCollisionObject, NDArray[np.float64] | None, bool]] = []
+    for leg in legs:
+        if leg.attachment is not None:
+            candidates.append((leg.attachment, pose(leg.attachment), bool(leg.trigger.attached)))
+        elif leg.release is not None:
+            candidates.append((leg.release.record, None, True))
+    return candidates
 
 
 # ── ROS wiring ───────────────────────────────────────────────────────────────
@@ -708,15 +740,9 @@ class PlaceFixtureLeg:
         self._last_witness_s = now_s
         self._check_grid_age()
         frame = self._grid[0].frame_id if self._grid is not None else ""
-        candidates = [
-            (
-                leg.attachment,
-                self._pose(leg.attachment, frame) if frame else None,
-                bool(leg.trigger.attached),
-            )
-            for leg in self._bridge._legs
-            if leg.attachment is not None
-        ]
+        candidates = _witness_candidates(
+            self._bridge._legs, lambda obj: self._pose(obj, frame) if frame else None
+        )
         if self.tracker.attest(candidates, now_ns=self._now_ns()):
             self._bridge._publish_attachment()
 

@@ -19,6 +19,7 @@ from numpy.typing import NDArray
 from openral_core import (
     AttachedCollisionObject,
     AttachmentEvidenceKind,
+    JointState,
     PlaceDeclaration,
     Pose6D,
     RobotDescription,
@@ -26,9 +27,11 @@ from openral_core import (
     load_robot_unit,
 )
 from openral_hal._grasp_target import VoxelLattice
+from openral_hal._grasp_trigger import GraspTriggerConfig, GripperEffortTrigger
 from openral_hal._place_fixture_leg import (
     PlaceFixtureTracker,
     _posed_primitives,
+    _witness_candidates,
     fixture_region,
     verify_fixture,
 )
@@ -37,6 +40,7 @@ from openral_hal._vision_attachment_evidence import (
     VisionGateConfig,
     jaw_span_primitive,
 )
+from openral_hal.vision_attachment_bridge import ReleaseWindow, _GripperLeg
 
 _ROOT = Path(__file__).resolve().parents[2]
 _OPENARM = _ROOT / "robots" / "openarm" / "robot.yaml"
@@ -276,3 +280,55 @@ def test_retraction_drops_it_and_a_new_declaration_re_arms(shelf: UnitFixture) -
     assert tracker.attest([(obj, t_base_link, True)], now_ns=3_300_000_000)
     second = tracker.decorate([obj])[0].support_contact
     assert second is not None and first is not None and second.stamp_ns != first.stamp_ns
+
+
+def test_a_frozen_release_record_keeps_the_witness_until_the_window_closes(
+    shelf: UnitFixture,
+) -> None:
+    """Design note §2.3 "Release": the set-down payload keeps its shelf witness."""
+    lines: list[str] = []
+    tracker = _verified_tracker(shelf, lines)
+    obj, t_base_link = _payload(bottom_z=_FACE_Z + 0.004)
+    description = RobotDescription.from_yaml(str(_OPENARM))
+    joint = next(j for j in description.joints if j.name == "left_gripper")
+    assert joint.effort_limit is not None
+    trigger = GripperEffortTrigger(
+        description, joint_name="left_gripper", config=GraspTriggerConfig(consecutive_ticks=1)
+    )
+    trigger.update(
+        JointState(name=["left_gripper"], position=[0.0], effort=[joint.effort_limit], stamp_ns=0)
+    )
+    assert trigger.attached
+    leg = _GripperLeg(
+        joint_name="left_gripper",
+        trigger=trigger,
+        producer=VisionAttachmentEvidenceProducer(description, gripper_joint="left_gripper"),
+        object_id=obj.object_id,
+        tcp_frame="",
+        tcp_in_link=joint.origin_xyz,
+        attachment=obj,
+    )
+    # Held and loaded on the face: the witness arms.
+    assert tracker.attest(_witness_candidates([leg], lambda _: t_base_link), now_ns=3_000_000_000)
+    witness = tracker.decorate([obj])[0].support_contact
+    assert witness is not None
+    # DETACH: the trigger unloads, the attachment goes, the window freezes it in base.
+    trigger.update(JointState(name=["left_gripper"], position=[0.0], effort=[0.0], stamp_ns=1))
+    assert not trigger.attached
+    leg.release = ReleaseWindow.open(
+        description, obj, base_link=_BASE, t_base_from_link=t_base_link, now_s=0.0
+    )
+    leg.attachment = None
+    record = leg.release.record
+    assert (record.object_id, record.stamp_ns) == (obj.object_id, obj.stamp_ns), "key preserved"
+    assert record.attach_link == _BASE
+    assert not tracker.attest(
+        _witness_candidates([leg], lambda _: t_base_link), now_ns=3_100_000_000
+    ), "the witness carries through the window"
+    (decorated,) = tracker.decorate([record])
+    assert decorated.support_contact == witness, "and rides the frozen record"
+    # The window closes: no candidate, the witness drops and the set re-publishes.
+    leg.release = None
+    assert tracker.attest(_witness_candidates([leg], lambda _: t_base_link), now_ns=3_200_000_000)
+    assert tracker.decorate([record])[0].support_contact is None
+    assert any("witness dropped" in line for line in lines)
