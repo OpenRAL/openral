@@ -17,13 +17,12 @@ over to the carried payload and keeps it while the payload is inside the measure
 and a later approach of the same finger to a different obstacle (a post outside the region)
 is still refused.
 
-**Known deviation (xfail, not patched):** design §2.1 says the handover retires the
-exemption permanently once the payload origin leaves the region. It never does here: the
-sim producer re-measures the target's box at the body's *live* pose on every envelope, so
-the region rides along with the carried block and the payload origin never leaves it. The
-post stop still holds only because the post is outside the moved region, and the kernel
-discloses ``grasp_exemption_active=1 grasp_target=sim:block`` on it. The test runs every
-other assertion first and ends in ``pytest.xfail`` naming the measured region centre.
+**The moving region.** The sim producer re-measures the target's box at the body's *live*
+pose on every envelope, so after the grasp the region rides along with the carried block.
+The kernel latches the region at the handover edge and ignores later moves of the same
+declaration (``safety.grasp_region_moved_after_handover ... ignored``), so lifting the
+payload out of the latched box still retires the exemption and the post stop discloses
+``grasp_exemption_active=0``.
 
 What is real (CLAUDE.md §1.11): ``safety_kernel_node`` (colcon binary, lifecycle-driven,
 attached check on as ``deploy_e2e.launch.py`` sets it for sim), the World State lifecycle
@@ -675,21 +674,14 @@ def test_declared_grasp_target_is_reachable_and_undeclared_stops() -> None:
                         if "safety.collision" in line and "a=right_finger" in line
                     ]
                     assert stop, kernel_log()
-                    if not exited:
-                        # Deviation from the spec, reported rather than patched: the sim
-                        # producer re-measures the declared target's box at the body's LIVE
-                        # pose on every envelope, so once the block is carried the region
-                        # rides along with it, the payload origin never leaves it, and the
-                        # kernel's handover never retires. The post stop above still holds
-                        # only because the post's cells are outside the moved region.
-                        pytest.xfail(
-                            "handover never retires: the sim grasp region follows the carried "
-                            f"payload (envelope region centre after lift = "
-                            f"({lifted_region.x:.4f}, {lifted_region.y:.4f}, "
-                            f"{lifted_region.z:.4f}) vs pre-grasp {_BLOCK_C}); no "
-                            "handover_exit line, and the post stop reports "
-                            f"{stop[-1].split('grasp_exemption_active=')[1]!r}"
-                        )
+                    # The producer's region followed the carried block (lifted_region);
+                    # the kernel compares against the box it latched at handover, so the
+                    # lift retires the exemption anyway.
+                    assert exited, (lifted_region, _BLOCK_C, kernel_log())
+                    assert f"safety.grasp_region_latched target={_TARGET}" in kernel_log()
+                    assert kernel_log().count("safety.grasp_region_moved_after_handover") == 1, (
+                        kernel_log()
+                    )
                     assert "grasp_exemption_active=0" in stop[-1], stop
                 finally:
                     bridge.teardown()

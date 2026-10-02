@@ -3797,6 +3797,7 @@ struct GraspBeat {
   std::uint64_t revision{0};
   bool carrying{false};
   double payload_x{0.05};  ///< payload origin along link0's x (the region spans 0.03..0.07)
+  double region_x{0.05};   ///< producer-measured region centre along x
 };
 
 // The producer-measured grasp declaration on the world-state envelope, stamped
@@ -3830,7 +3831,7 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
   d.active = b.active;
   d.region_valid = true;
   d.region.frame_id = b.region_frame;
-  d.region.pose.position.x = 0.05;
+  d.region.pose.position.x = b.region_x;
   d.region.pose.orientation.w = 1.0;
   d.region.half_extents.x = 0.02;
   d.region.half_extents.y = 0.02;
@@ -4113,6 +4114,59 @@ TEST_F(LifecycleKernelTest, GraspHandoverSurvivesTheAttachInsideAndRetiresOnExit
   b.payload_x = 0.05;
   rig.warm(&b, 0.0, 300);
   EXPECT_EQ(logs.count("safety.grasp_region_armed"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AGraspRegionThatFollowsTheCarriedPayloadStillRetiresOnExit) {
+  // The twin's producer re-measures the target at the carried body's live pose,
+  // so after the attach its region moves with the payload. The kernel latched
+  // the box at the handover edge: the payload leaving THAT box retires the
+  // declaration, whatever the moving region says.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_follow");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0));
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_EQ(logs.count("safety.grasp_region_latched target=cell:cube at handover"), 1U)
+      << logs.joined();
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << "inside the latched region the exemption survives";
+  // Lift: the payload origin leaves the latched box, and the producer's region
+  // follows it, so the payload is still inside the region on the wire.
+  b.payload_x = 0.10;
+  b.region_x = 0.10;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_exit"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("grasp_exemption_active=0"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("grasp_exemption_active=1"), 0U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_moved_after_handover target=cell:cube"), 1U)
+      << "announced once, not on every heartbeat: " << logs.joined();
+  EXPECT_EQ(logs.max_severity("safety.grasp_region_moved_after_handover"),
+            static_cast<int>(RCUTILS_LOG_SEVERITY_WARN));
+}
+
+TEST_F(LifecycleKernelTest, AGraspRegionMovedBeforeTheAttachIsStillUpdated) {
+  // Only the post-handover region is latched: before the grasp the producer's
+  // re-measurement replaces the box, so a box moved off the cell exempts nothing.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_premove");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.region_x = 0.06;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << "the cell centre 0.05 is inside 0.04..0.08";
+  b.region_x = 0.10;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "the moved box no longer covers the cell";
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.grasp_region_latched"), 0U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_moved_after_handover"), 0U) << logs.joined();
 }
 
 TEST_F(LifecycleKernelTest, AGraspDetachRetiresTheExemption) {
