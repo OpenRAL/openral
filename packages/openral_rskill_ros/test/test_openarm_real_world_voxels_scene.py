@@ -356,6 +356,47 @@ def test_the_vision_leg_off_leaves_the_real_graph_as_without_it(tmp_path: Path) 
     assert hal_off == hal_absent
 
 
+def _voxel_bridge_params(ctx: Any, entities: list[Any]) -> dict[str, Any]:
+    from launch_ros.utilities import evaluate_parameters
+
+    bridge = _node(entities, "openral_octomap_bridge", "octomap_voxel_bridge")
+    (params,) = evaluate_parameters(ctx, bridge._Node__parameters)
+    return dict(params)
+
+
+@pytest.mark.usefixtures("calibrated_openarm")
+def test_the_voxel_bridge_finds_the_held_payload_under_the_hals_tf_frames(
+    tmp_path: Path,
+) -> None:
+    """The published attach link is the manifest's (``openarm_left_link7``); the cell's TF
+    tree names that body ``openarm_left_ee_base_link``. The bridge clears a held payload by
+    looking its attach link up on TF, so it gets the scene's ``tf_frames`` as the very strings
+    the HAL gets — else the payload stays an obstacle to its own gripper."""
+    hal_params, _, ctx, entities = _real_graph(_scene_with_vision_leg(tmp_path, enabled=True))
+
+    params = _voxel_bridge_params(ctx, entities)
+    assert tuple(params["attach_link_tf_frames"]) == tuple(
+        hal_params["vision_attachment_tf_frames"]  # type: ignore[arg-type]  # reason: dict[str, object]
+    )
+    assert tuple(params["attach_link_tf_frames"]) == (
+        "openarm_left_link7=openarm_left_ee_base_link",
+        "openarm_right_link7=openarm_right_ee_base_link",
+    )
+
+
+@pytest.mark.usefixtures("calibrated_openarm")
+def test_the_voxel_bridge_gets_no_tf_frames_without_the_vision_leg(tmp_path: Path) -> None:
+    """Leg off (committed) or block absent: the HAL gets no renames, so neither does the
+    bridge — and its parameters are those of a scene that never had the block."""
+    _, _, ctx_off, entities_off = _real_graph(_scene_with_vision_leg(tmp_path, enabled=False))
+    _, _, ctx_absent, entities_absent = _real_graph(_scene_with_vision_leg(tmp_path, enabled=None))
+
+    off = _voxel_bridge_params(ctx_off, entities_off)
+    absent = _voxel_bridge_params(ctx_absent, entities_absent)
+    assert "attach_link_tf_frames" not in absent
+    assert off == absent
+
+
 # ── Grasp-target exemption (DeployRuntime.grasp_allowance_enabled) ───────────
 
 _OPENARM_FINGER_LINKS = ("openarm_left_finger_pair", "openarm_right_finger_pair")

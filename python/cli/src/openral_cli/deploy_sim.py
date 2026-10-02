@@ -1584,6 +1584,14 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
                 f"vision_attachment_segmenter_device:={vision_leg.device}",
             ]
         )
+        # The octomap bridge clears a held payload by looking its attach link up on TF, so it
+        # needs the same manifest-link -> TF-frame renames as the HAL: the exact strings the
+        # HAL gets (scene `tf_frames`, or a `--hal` override), never a second spelling.
+        va_tf_frames = hal_params.get("vision_attachment_tf_frames")
+        if isinstance(va_tf_frames, list) and va_tf_frames:
+            argv_template.append(
+                f"vision_attachment_tf_frames:={','.join(str(e) for e in va_tf_frames)}"
+            )
 
     # only forward the dataset args when recording is opted in
     # (empty defaults; ros2 launch rejects an empty ``name:=`` value, and the
