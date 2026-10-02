@@ -838,6 +838,12 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   positive half-extents ≤ `kMaxGraspRegionHalfExtentM` (0.20 m) and a volume ≤
   `kMaxGraspRegionVolumeM3` (0.03 m³). Both caps are **WG placeholders**. A
   refusal means no exemption, under its own `reason=` token.
+* **End to end.** `tests/integration/test_safety_kernel_grasp_target_band.py`
+  runs the real node on the real OpenArm collision model at the real cell's
+  20 mm margin and 20 mm cells: undeclared, feature off, wrist in the region,
+  other hand only, expired, wrong frame and the support plane all refuse; only
+  the declared left finger in its region is accepted, and the stop line and
+  `/diagnostics` disclose the exemption.
 
 ## The contact-force gate (ADR-0100, survey Path C)
 
