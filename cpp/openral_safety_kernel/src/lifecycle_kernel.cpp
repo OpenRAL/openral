@@ -29,6 +29,11 @@ namespace openral_safety_kernel {
 
 namespace {
 
+// Largest per-component difference (m for translation and half-extents, unit
+// rotation-matrix entries) between a re-measured grasp region and the one
+// latched at handover that still counts as the same box: float noise only.
+constexpr double kGraspRegionLatchNoise = 1e-6;
+
 rclcpp::QoS chunk_qos() {
   // openral slot dispatcher publishes N chunks/tick on /openral/candidate_action
   // (arm CARTESIAN_DELTA + gripper GRIPPER_POSITION + optional base
@@ -724,6 +729,11 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   grasp_retired_stamp_ns_ = 0;
   grasp_region_refusal_reason_.clear();
   grasp_region_refusal_target_.clear();
+  grasp_latched_region_ = GraspTargetRegion{};
+  grasp_latched_target_.clear();
+  grasp_latched_stamp_ns_ = 0;
+  grasp_latched_ = false;
+  grasp_latched_moved_warned_ = false;
   // Drop the remembered status so the next activation's publish is never
   // suppressed by the transition gate (HZ-0096-1 mitigation 1).
   status_msg_ = openral_msgs::msg::SafetyStatus{};
@@ -1852,6 +1862,11 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   grasp_retired_stamp_ns_ = 0;
   grasp_region_refusal_reason_.clear();
   grasp_region_refusal_target_.clear();
+  grasp_latched_region_ = GraspTargetRegion{};
+  grasp_latched_target_.clear();
+  grasp_latched_stamp_ns_ = 0;
+  grasp_latched_ = false;
+  grasp_latched_moved_warned_ = false;
   place_declaration_stamp_ns_ = 0;
   place_declaration_timeout_s_ = 0.0;
   place_declaration_target_.clear();
@@ -2722,6 +2737,40 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
       grasp_region_.object_index = i;
       break;
     }
+  }
+  // Latch at the handover edge: the first snapshot that sees the declared object
+  // attached freezes the box for this (target, stamp). Later snapshots of the
+  // same declaration keep the latched box whatever region they carry — the
+  // producer cannot extend the exemption by moving the box with the payload.
+  // Before any handover the region still updates on every snapshot.
+  if (grasp_latched_ && grasp_latched_target_ == declaration.target_id &&
+      grasp_latched_stamp_ns_ == declaration.stamp_ns) {
+    double moved = 0.0;
+    for (std::size_t k = 0; k < 9; ++k) {
+      moved = std::max(moved, std::abs(grasp_region_.pose.r[k] - grasp_latched_region_.pose.r[k]));
+    }
+    const Vec3& t = grasp_region_.pose.t;
+    const Vec3& lt = grasp_latched_region_.pose.t;
+    const Vec3& h = grasp_region_.half_extents;
+    const Vec3& lh = grasp_latched_region_.half_extents;
+    moved = std::max({moved, std::abs(t.x - lt.x), std::abs(t.y - lt.y), std::abs(t.z - lt.z),
+                      std::abs(h.x - lh.x), std::abs(h.y - lh.y), std::abs(h.z - lh.z)});
+    if (moved > kGraspRegionLatchNoise && !grasp_latched_moved_warned_) {
+      grasp_latched_moved_warned_ = true;
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.grasp_region_moved_after_handover target=%s max_delta=%g ignored",
+                  declaration.target_id.c_str(), moved);
+    }
+    grasp_region_.pose = grasp_latched_region_.pose;
+    grasp_region_.half_extents = grasp_latched_region_.half_extents;
+  } else if (grasp_region_.handover) {
+    grasp_latched_ = true;
+    grasp_latched_target_ = declaration.target_id;
+    grasp_latched_stamp_ns_ = declaration.stamp_ns;
+    grasp_latched_region_ = grasp_region_;
+    grasp_latched_moved_warned_ = false;
+    RCLCPP_INFO(this->get_logger(), "safety.grasp_region_latched target=%s at handover",
+                declaration.target_id.c_str());
   }
   grasp_region_refusal_reason_.clear();
   grasp_region_refusal_target_.clear();

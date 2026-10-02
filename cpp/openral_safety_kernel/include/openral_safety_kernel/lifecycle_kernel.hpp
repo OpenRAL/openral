@@ -332,6 +332,15 @@ private:
   std::string grasp_retired_target_;
   std::int64_t grasp_retired_stamp_ns_{0};
   bool grasp_retired_{false};
+  /// Region latched at the handover edge, keyed by (target, stamp) like the
+  /// retirement memory. Later snapshots of that declaration cannot move or
+  /// resize it, so a producer re-measuring the carried payload at its live pose
+  /// cannot extend the exemption by dragging the box along with it.
+  GraspTargetRegion grasp_latched_region_{};
+  std::string grasp_latched_target_;
+  std::int64_t grasp_latched_stamp_ns_{0};
+  bool grasp_latched_{false};
+  bool grasp_latched_moved_warned_{false};
   /// Last announced refusal (reason, target): refusals are logged on a change
   /// only; the standing state is on the 1 Hz `/diagnostics` `grasp_region` key.
   std::string grasp_region_refusal_reason_;

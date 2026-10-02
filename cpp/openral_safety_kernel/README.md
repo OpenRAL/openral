@@ -813,7 +813,15 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   itself.
 * **Handover.** Once the declared object is attached, the exemption lives only
   while that payload's origin (FK of the measured configuration) is inside the
-  region; when it leaves, the declaration is retired. A detach, a rejected
+  region; when it leaves, the declaration is retired. The region is **latched at
+  the handover edge** (keyed by target + stamp, like the retirement memory): later
+  snapshots of that declaration keep the latched box whatever region they carry
+  (`safety.grasp_region_latched target=… at handover` once; a re-measured region
+  that differs beyond float noise is ignored with one WARN
+  `safety.grasp_region_moved_after_handover … ignored`), so a producer that
+  re-measures the target at the carried payload's live pose cannot extend the
+  exemption by moving the box with it. Before the handover the region still
+  updates on every snapshot. A detach, a rejected
   attachment set or a grid-frame change also retires it. A retired declaration's
   heartbeat never re-arms it; only a new declaration (new target or stamp) can.
 * **Disclosure.** `/diagnostics` key `grasp_region` (`off`, `-`,
