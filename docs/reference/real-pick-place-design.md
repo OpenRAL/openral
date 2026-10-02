@@ -35,6 +35,12 @@ using SAM 2.1 to see the object.
    attachment leg requires mask, depth and intrinsics at exactly one resolution
    (`_vision_attachment_evidence.py` L275-283) while the ZED publishes RGB at native resolution
    and depth at `pub_resolution`. Any geometry taken from `head_zed` today is rotated or refused.
+   *Partly fixed since:* the segmenter now projects in the image header's frame through the
+   driver's `CameraInfo` (`camera_infos` parameter; measured K fx = fy = 1498.18,
+   cx 936.11, cy 541.81 vs the manifest's nominal 960/960/540), and
+   `openral_hal.depth_cloud.intrinsics_from_camera_info` / `resample_mask_nearest` exist for the
+   attachment bridge to consume. Still open: the attachment bridge's own consumption, and the
+   world-state object lift (`ObjectsMetadata` carries no image frame).
 5. **Two more HAL bugs.** Both effort read paths zero-fill a missing effort channel
    (`ros_control_transport.py` L617-627, `openarm_real.py` L380-383), so the trigger can never
    notice the channel is gone. The attach link (`openarm_*_link7`) and finger frames do not exist

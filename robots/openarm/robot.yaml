@@ -499,6 +499,19 @@ sensors:
   # Optional hardware: entry is inert (no device/topic) on cells without the
   # stereo camera.
   #
+  # IMAGE GEOMETRY — `frame_id` IS NOT THE IMAGE FRAME, AND THE INTRINSICS ARE
+  # NOT THE CAMERA'S. `frame_id: zed_camera_link` is the ZED *body* frame
+  # (x forward, REP-103 body), kept because the kernel's world-voxel mount
+  # (openarm_base -> zed_camera_link) and the unit overlays are keyed on it. The
+  # driver publishes its depth (/zed/zed_node/depth/depth_registered) AND RGB
+  # (/zed/zed_node/rgb/color/rect/image) in `zed_left_camera_frame_optical`, both
+  # 1920x1080, with camera_info (/zed/zed_node/depth/camera_info,
+  # .../rgb/color/rect/camera_info) K = [1498.18, 0, 936.11; 0, 1498.18, 541.81;
+  # 0, 0, 1] (Thor cell, 2026-10-02): that focal length is 56 % longer than the
+  # nominal fx = fy = 960 below. Anything that projects or back-projects pixels
+  # MUST use the image header's frame_id and the driver's camera_info, never this
+  # frame_id or these intrinsics (segmenter_node: `camera_infos` parameter).
+  #
   # SIM cost, accepted: MuJoCo twin's MJCF has no `head_zed` camera, so
   # SimSensorBridge's `synthesize_depth_pointcloud` raises ROSConfigError once,
   # the bridge logs one warning and disables the sensor for the run — bounded,

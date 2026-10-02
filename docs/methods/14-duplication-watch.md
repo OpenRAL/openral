@@ -46,7 +46,7 @@ Repeated bodies that consolidation would make worse: different contracts, illega
 
 - **`UsbDevice` / `UsbDeviceRecord` — not consolidated, deliberately different types.** `openral_cli.autodetect.UsbDevice` is a `NamedTuple` (hot in OS-probing loops); `openral_detect.report.UsbDeviceRecord` is a Pydantic `BaseModel` (the JSON/YAML report boundary, CLAUDE.md §2). Same fields, same reason to stay two types.
 
-- **`camera_info_from_intrinsics` — not consolidated, illegal import.** `openral_hal.depth_cloud` and `openral_perception_ros.depth_convert` carry near-identical builders, but `openral_perception_ros/package.xml` doesn't depend on `openral_hal`, so the ROS package can't legally import the HAL's copy without a new dependency.
+- **`camera_info_from_intrinsics` — not consolidated yet.** `openral_hal.depth_cloud` and `openral_perception_ros.depth_convert` carry near-identical builders. `openral_perception_ros/package.xml` now exec-depends on `python3-openral-hal` (for `intrinsics_from_camera_info` in `segmenter_node`), so the ROS package's copy could import the HAL's; left for the next PR that touches `depth_convert`.
 
 - **MJCF compile trio in three sim tests — four lines each.** `sim`/`_compiled`/`_model_data` in `test_sim_attachment_evidence.py`, `test_sim_estop_payload_slop.py`, `test_sim_estop_voxel_backing.py` — four lines; sharing needs a parameter at every call site.
 - **`_wait_until` in two live tests — not hoisted.** `test_hal_attachment_barrier_live.py` vs. `test_estop_voxel_backing_live.py`; a seven-line spin-wait, hoisting costs a 21-call-site refactor.

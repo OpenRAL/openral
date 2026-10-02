@@ -6,9 +6,9 @@ the real SO-101 manifest for wrist intrinsics/optical frame, real static TF, and
 in-tree wrist frame holding an eraser. Calls the service over a real DDS graph with a real
 ``rclpy`` client, checking the whole contract the HAL's attachment bridge depends on:
 
-    RGB frame + 3-D TCP point (attach link's frame) → tf2 into camera optical frame →
-    manifest intrinsics → pixel prompt → SAM 2.1 → plural mono8 masks, area ascending,
-    parallel advisory scores
+    RGB frame + 3-D TCP point (attach link's frame) → tf2 into the image header's optical
+    frame → manifest intrinsics (no camera_infos here) → pixel prompt → SAM 2.1 → plural
+    mono8 masks, area ascending, parallel advisory scores, the image's own header
 
 No doubles (CLAUDE.md §1.11), including the model: SAM 2.1 runs for real, on CPU — the dev
 box's GTX 1060 is sm_61 with no CUDA kernels for it, so ``device:=cpu``. Measured: ~9 s to
@@ -170,6 +170,8 @@ def test_segment_in_view_returns_plural_masks_for_a_real_wrist_grasp() -> None:
 
         frame = Image()
         frame.header.frame_id = _CAMERA_FRAME
+        # The capture stamp the masks must echo — distinct from the request's.
+        frame.header.stamp = Time(sec=5, nanosec=7)
         frame.height, frame.width = height, width
         frame.encoding = "rgb8"
         frame.step = width * 3
@@ -222,8 +224,9 @@ def test_segment_in_view_returns_plural_masks_for_a_real_wrist_grasp() -> None:
             )
             assert mask.step == width
             assert len(mask.data) == height * width
-            # The CALLER's stamp, so the trace replays against the attach instant.
-            assert (mask.header.stamp.sec, mask.header.stamp.nanosec) == (17, 42)
+            # The segmented IMAGE's header (capture stamp + the frame the driver
+            # declared), so a consumer can pair the mask with its depth frame.
+            assert (mask.header.stamp.sec, mask.header.stamp.nanosec) == (5, 7)
             assert mask.header.frame_id == _CAMERA_FRAME
             decoded = np.frombuffer(bytes(mask.data), dtype=np.uint8)
             assert set(np.unique(decoded).tolist()) <= {0, 255}
@@ -397,6 +400,8 @@ def test_the_diagnostic_mask_topic_is_off_by_default_and_feeds_the_dashboard() -
 
         frame = Image()
         frame.header.frame_id = _CAMERA_FRAME
+        # The capture stamp the masks must echo — distinct from the request's.
+        frame.header.stamp = Time(sec=5, nanosec=7)
         frame.height, frame.width = height, width
         frame.encoding = "rgb8"
         frame.step = width * 3
@@ -432,9 +437,9 @@ def test_the_diagnostic_mask_topic_is_off_by_default_and_feeds_the_dashboard() -
 
         lane = store.snapshot()["topics"]["perception"]["overlays"]["wrist"]["masks"]
         assert lane["rskill_id"] == _SEGMENTER_ID, "whose masks these are must not be a guess"
-        # The CALLER's attach stamp, copied through the topic — a stale overlay
+        # The segmented image's capture stamp, copied through the topic — a stale overlay
         # has to be detectable rather than plausible.
-        assert lane["stamp_unix"] == pytest.approx(17 + 42e-9)
+        assert lane["stamp_unix"] == pytest.approx(5 + 7e-9)
         assert len(lane["masks"]) == len(response.masks) > 1
         for drawn, served in zip(lane["masks"], response.masks, strict=True):
             assert (drawn["width"], drawn["height"]) == (served.width, served.height)
