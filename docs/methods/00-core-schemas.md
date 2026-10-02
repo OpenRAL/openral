@@ -69,7 +69,7 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
 - `check_scene_sensor_overrides(manifest_sensors, scene_sensors) -> None` (L684) — Raises `ROSConfigError` when a `DeployScene.sensors` entry reuses the name of a sensor the robot manifest defines. A deploy scene never redefines a robot camera: its name, modality and frames live in `robots/<robot_id>/robot.yaml`, its per-host binding / per-unit calibration in a `RobotUnit` overlay; the scene only adds workcell cameras under new names. Called by `merge_deploy_sensors`, `resolve_launch_invocation` (so `deploy sim/run/validate`) and `openral check`.
 - `merge_deploy_sensors(manifest_sensors, scene_sensors) -> list[SensorSpec]` (L720) — The deploy's sensor set: the manifest's sensors, then the scene's workcell sensors; a checked concatenation (`check_scene_sensor_overrides` refuses a name clash). Shared by the CLI, the launch and `compose_runtime`.
 - `ROBOT_UNIT_ENV: str` — `"OPENRAL_ROBOT_UNIT"`, names the host's `robots/<id>/units/<unit>.yaml`; wins over `DeployScene.robot_unit`. (L743)
-- `apply_sensor_overlays(sensors, overlays) -> list[SensorSpec]` — Lays each `SensorOverlay`'s set fields (binding, driver topic, mount pose, intrinsics) over the named manifest sensor and re-validates; `ROSConfigError` on an unknown or repeated name. Applied by `resolve_launch_invocation`, `deploy_e2e.launch.py`, `compose_runtime(sensor_overlays=)`, `deploy validate`, `openral check` and `tools/depth_extrinsic_check.py --unit`. (L749)
+- `apply_sensor_overlays(sensors, overlays) -> list[SensorSpec]` — Lays each `SensorOverlay`'s set fields (binding, driver topic, mount pose, intrinsics) over the named manifest sensor and re-validates; `ROSConfigError` on an unknown or repeated name. Applied by `resolve_launch_invocation`, `deploy_e2e.launch.py`, `compose_runtime(sensor_overlays=)`, `deploy validate` and `openral check`. (L749)
 - `load_robot_unit(robot_yaml, unit) -> RobotUnit` — Loads `<robot_yaml dir>/units/<unit>.yaml`; `ROSConfigError` when missing (lists the available units) or when its `robot_id`/`unit` disagree with the directory / request. (L790)
 - `resolve_sensor_overlays(robot_yaml, scene_unit, *, required) -> list[SensorOverlay]` — The host's overlays: unit = `$OPENRAL_ROBOT_UNIT` or the scene's `robot_unit`; none → `[]`, except `required` (real deploy) on a robot that ships `units/` → `ROSConfigError`. (L817)
 - `publishing_sensors(manifest_sensors, scene_sensors, hal_mode) -> list[SensorSpec]` (L848) — The sensors that actually publish a camera topic on a deploy: sim → the manifest's (the sim bridge renders them); real → `merge_deploy_sensors` filtered to sensors with a `deploy_binding`. The one rule `openral deploy` (detector auto-downgrade) and `deploy_e2e.launch.py` (completion, detector, reward-monitor and scene-VLM cameras) share.
@@ -539,18 +539,15 @@ _Robot-agnostic SocketCAN transport discovery — a CAN-bus robot is invisible t
 - `preflight_can_links(interfaces, *, hal_label, remedy="", sysfs_net=None) -> dict[str, str]` — The connect-time gate every CAN robot needs; reports every failing bus in one message and raises `ROSConfigError` otherwise. (L303)
 
 ### `python/core/src/openral_core/depth_extrinsic.py`
-_The depth-camera extrinsic gate shared by `tools/depth_extrinsic_check.py` and `openral deploy run`'s real-deploy preflight. numpy-free and not re-exported by `openral_core.__init__`, so the launch file can read the margin cheaply._
+_The depth-camera extrinsic a real world-voxel deploy runs on. OpenRAL does not measure it: the operator calibrates the mount and declares it in the unit overlay; this module states the accuracy that needs (`MAX_*`, derived from the real world-voxel margin) and the provenance gate `openral deploy run` applies. numpy-free, outside `openral_core.__init__`, so the launch file can import the margin cheaply._
 
-- `REAL_WORLD_VOXEL_MARGIN_M: Final[float] = 0.02` (L31) — The kernel's real-deploy `world_voxel_margin_m` (`deploy_e2e.launch.py::_world_voxel_margin_m` returns it); every limit below derives from it.
-- `CHECKED_RANGE_M: Final[float] = 1.0` (L34) — Range at which a tilt error is converted to metres.
-- `MAX_HEIGHT_ERR_M: Final[float]` (L37) — Half the margin (10 mm).
-- `MAX_TILT_DEG: Final[float]` (L38) — `atan(MAX_HEIGHT_ERR_M / CHECKED_RANGE_M)` (~0.57°): tilt error at 1 m plus height error never exceed the margin.
-- `MAX_MARKER_ERR_M: Final[float]` (L40) — Three quarters of the margin (15 mm).
-- `MIN_MARKERS: Final[int] = 2` (L42) — One marker cannot separate yaw from translation.
-- `extrinsic_report_path(robot_yaml, sensor, unit=None) -> Path` (L45) — `<manifest dir>/calibration/<unit>/<sensor>_extrinsic.json` for a robot unit; `calibration/<sensor>_extrinsic.json` with no unit (a robot without `units/`).
-- `checkable_depth_sensor(description, sensor) -> SensorSpec` (L64) — The named sensor if it is a depth camera (`is_depth_camera`) with a manifest `parent_frame` + `static_transform_xyz_rpy`; `ROSConfigError` otherwise (RGB-only cameras refused).
-- `residual_failures(res, *, max_tilt_deg=..., max_height_err_m=..., max_marker_err_m=...) -> list[str]` (L107) — Every way the residuals miss the limits; NaN/inf never pass.
-- `verify_extrinsic_report(spec, report_path, *, base_frame, unit=None) -> list[str]` (L140) — Every reason a report does not clear the sensor's current pose as `unit` publishes it (missing/unreadable, not passed, residuals re-derived against the shipped limits, another unit/sensor/frames/base, stale pose, looser criteria). Empty = verified.
+- `REAL_WORLD_VOXEL_MARGIN_M: Final[float] = 0.02` (L30) — The kernel's real-deploy `world_voxel_margin_m` (`deploy_e2e.launch.py::_world_voxel_margin_m` returns it); the required accuracy below derives from it.
+- `CHECKED_RANGE_M: Final[float] = 1.0` (L33) — Range at which an angular error is converted to metres.
+- `MAX_HEIGHT_ERR_M: Final[float]` (L36) — Half the margin (10 mm).
+- `MAX_TILT_DEG: Final[float]` (L37) — `atan(MAX_HEIGHT_ERR_M / CHECKED_RANGE_M)` (~0.57°): tilt error at 1 m plus height error never exceed the margin.
+- `MAX_PLANAR_ERR_M: Final[float]` (L40) — Three quarters of the margin (15 mm): the camera's horizontal error.
+- `MAX_YAW_DEG: Final[float]` (L41) — `atan(MAX_PLANAR_ERR_M / CHECKED_RANGE_M)` (~0.86°).
+- `depth_extrinsic_problems(description, overlays, scene_sensors=()) -> list[str]` (L44) — Every cloud source whose mount a real world-voxel deploy may not trust: a robot-mounted one (`SensorSpec.is_cloud_source`) must get its `static_transform_xyz_rpy` from one of the unit's `SensorOverlay`s, never the manifest's nominal value; a scene-mounted one must declare `parent_frame` + `static_transform_xyz_rpy`. Provenance, not correctness. Empty = go.
 
 ### `python/core/src/openral_core/geometry.py`
 _Shared rotation geometry — look-at/camera gaze poses plus planar yaw↔quaternion helpers, so every layer uses one implementation instead of duplicating them. Import-on-demand, not re-exported by `openral_core.__init__`, so schemas stay numpy-free on the fast CLI path._

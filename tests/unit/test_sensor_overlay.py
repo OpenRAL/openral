@@ -58,8 +58,17 @@ def test_so101_bench_scene_binds_its_host_cameras_through_its_unit() -> None:
     assert [s.name for s in bound] == ["top", "wrist"]
 
 
+def _unit_mount(unit: str) -> tuple[float, ...] | None:
+    """``head_zed``'s mount in ``robots/openarm/units/<unit>.yaml``; ``None`` if undeclared."""
+    raw = yaml.safe_load((_OPENARM.parent / "units" / f"{unit}.yaml").read_text(encoding="utf-8"))
+    zed = next(s for s in raw["sensors"] if s["name"] == "head_zed")
+    value = zed.get("static_transform_xyz_rpy")
+    return tuple(value) if value is not None else None
+
+
 def test_openarm_units_keep_frames_and_pin_the_thor_mount() -> None:
     manifest = {s.name: s for s in RobotDescription.from_yaml(str(_OPENARM)).sensors}
+    nominal = manifest["head_zed"].static_transform_xyz_rpy
     thor, orin = _effective(_OPENARM, "thor"), _effective(_OPENARM, "orin")
     for unit in (thor, orin):
         zed = unit["head_zed"]
@@ -68,29 +77,14 @@ def test_openarm_units_keep_frames_and_pin_the_thor_mount() -> None:
         assert zed.deploy_binding.backend_params["topic"] == (  # type: ignore[attr-defined]
             "/zed/zed_node/depth/depth_registered"
         )
-    # Each unit pins its own fitted mount (2026-09-25), so re-fitting one cell's camera
-    # never moves the other's; both differ from the manifest's nominal mount.
-    assert thor["head_zed"].static_transform_xyz_rpy == (  # type: ignore[attr-defined]
-        -0.0206,
-        -0.0023,
-        0.2157,
-        -0.0123,
-        1.1823,
-        0.0062,
-    )
-    assert orin["head_zed"].static_transform_xyz_rpy == (  # type: ignore[attr-defined]
-        -0.0170,
-        -0.0098,
-        0.2163,
-        -0.0123,
-        1.1823,
-        -0.0076,
-    )
-    nominal = manifest["head_zed"].static_transform_xyz_rpy
-    assert nominal not in (
-        thor["head_zed"].static_transform_xyz_rpy,
-        orin["head_zed"].static_transform_xyz_rpy,
-    )  # type: ignore[attr-defined]
+    # Each unit carries its own calibrated mount, so re-calibrating one cell's camera never
+    # moves the other's. Thor's is declared (read from the unit file: it changes with every
+    # re-calibration); Orin's is not yet, so it falls back to the manifest's nominal mount.
+    assert thor["head_zed"].static_transform_xyz_rpy == _unit_mount("thor")  # type: ignore[attr-defined]
+    assert _unit_mount("orin") is None
+    orin_zed = orin["head_zed"]
+    assert orin_zed.static_transform_xyz_rpy == nominal  # type: ignore[attr-defined]
+    assert thor["head_zed"].static_transform_xyz_rpy != nominal  # type: ignore[attr-defined]
     bench = DeployScene.from_yaml(str(_ROOT / "scenes" / "deploy" / "openarm_bench.yaml"))
     assert bench.robot_unit == "orin"
 
@@ -106,7 +100,7 @@ def test_the_env_var_wins_over_the_scene(monkeypatch: pytest.MonkeyPatch) -> Non
     overlays = resolve_sensor_overlays(_OPENARM, "orin", required=True)
     zed = next(o for o in overlays if o.name == "head_zed")
     assert zed.static_transform_xyz_rpy is not None
-    assert zed.static_transform_xyz_rpy[0] == -0.0206  # thor's mount, not orin's
+    assert zed.static_transform_xyz_rpy == _unit_mount("thor")  # thor's mount, not orin's
 
 
 def test_a_sim_robot_without_units_needs_none_and_takes_an_overlay() -> None:

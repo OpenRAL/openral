@@ -12,10 +12,9 @@ the ZED mount (the robot manifest's ``head_zed`` with the Thor unit overlay) is 
 composing the scene on the sim path, where drivers are ignored. The scene names no
 ``robot_unit`` (it runs on either cell), so ``OPENRAL_ROBOT_UNIT=thor`` selects the unit.
 
-``deploy run`` refuses this scene until ``head_zed``'s extrinsic is verified (no report is
-committed yet), so the real-mode tests resolve against a copy of ``robots/openarm`` served
-via ``OPENRAL_ROBOTS_DIR`` with a passing report for the Thor unit's pose (manifest + unit
-overlay) at ``calibration/thor/head_zed_extrinsic.json``.
+``deploy run`` refuses this scene unless the selected unit's overlay declares ``head_zed``'s
+mount (OpenRAL does not calibrate it); the real-mode tests resolve against a copy of
+``robots/openarm`` served via ``OPENRAL_ROBOTS_DIR``, whose Thor overlay declares it.
 
 Per CLAUDE.md §1.11: the committed scene, the real ``robots/openarm/robot.yaml``, the real
 CLI resolver and launch composition. No mocks.
@@ -23,7 +22,6 @@ CLI resolver and launch composition. No mocks.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 from pathlib import Path
@@ -50,45 +48,9 @@ _ZED_CLOUD = "/zed/zed_node/point_cloud/cloud_registered"
 
 @pytest.fixture
 def calibrated_openarm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """``robots/openarm`` copied, with a passing head_zed report for the Thor unit's pose."""
-    from openral_core import RobotDescription, apply_sensor_overlays, load_robot_unit
-    from openral_core.depth_extrinsic import (
-        MAX_HEIGHT_ERR_M,
-        MAX_MARKER_ERR_M,
-        MAX_TILT_DEG,
-        MIN_MARKERS,
-        extrinsic_report_path,
-    )
-
+    """``robots/openarm`` copied: its Thor unit overlay declares head_zed's calibrated mount."""
     robot_dir = tmp_path / "robots" / "openarm"
     shutil.copytree(_REPO_ROOT / "robots" / "openarm", robot_dir)
-    desc = RobotDescription.from_yaml(str(robot_dir / "robot.yaml"))
-    thor = load_robot_unit(robot_dir / "robot.yaml", "thor").sensors
-    (zed,) = [s for s in apply_sensor_overlays(desc.sensors, thor) if s.name == "head_zed"]
-    report = extrinsic_report_path(robot_dir / "robot.yaml", "head_zed", "thor")
-    report.parent.mkdir(parents=True, exist_ok=True)
-    markers = [{"expected_xy": [0.5, y], "error_m": 0.002} for y in (-0.15, 0.15)]
-    report.write_text(
-        json.dumps(
-            {
-                "unit": "thor",
-                "sensor": zed.name,
-                "parent_frame": zed.parent_frame,
-                "frame_id": zed.frame_id,
-                "base_frame": desc.base_frame,
-                "static_transform_xyz_rpy": list(zed.static_transform_xyz_rpy or ()),
-                "criteria": {
-                    "max_tilt_deg": MAX_TILT_DEG,
-                    "max_height_err_m": MAX_HEIGHT_ERR_M,
-                    "max_marker_err_m": MAX_MARKER_ERR_M,
-                    "min_markers": MIN_MARKERS,
-                },
-                "residuals": {"tilt_deg": 0.1, "height_err_m": 0.001, "markers": markers},
-                "passed": True,
-            }
-        ),
-        encoding="utf-8",
-    )
     monkeypatch.setenv("OPENRAL_ROBOTS_DIR", str(tmp_path / "robots"))
     return robot_dir
 
@@ -146,23 +108,18 @@ def _node(entities: list[Any], package: str, executable: str | None = None) -> A
     return found[0]
 
 
-def test_deploy_run_refuses_until_the_zed_extrinsic_is_verified() -> None:
-    """The committed state: no head_zed report, so the real launch never resolves."""
+def test_deploy_run_refuses_a_unit_that_declares_no_zed_mount(calibrated_openarm: Path) -> None:
+    """The gate is the unit overlay: strip head_zed's mount from Thor's and the real launch
+    never resolves, whatever the manifest's nominal pose says."""
+    import yaml
     from openral_core.exceptions import ROSConfigError
 
-    if (_REPO_ROOT / "robots/openarm/calibration/thor/head_zed_extrinsic.json").exists():
-        pytest.skip("a head_zed calibration report is committed")
-    with pytest.raises(ROSConfigError, match=r"head_zed: no extrinsic report .*/thor/"):
-        _launch_args("real")
-
-
-def test_deploy_run_reads_only_the_selected_units_report(calibrated_openarm: Path) -> None:
-    """A report left at the unit-less path does not clear the selected unit."""
-    from openral_core.exceptions import ROSConfigError
-
-    report = calibrated_openarm / "calibration" / "thor" / "head_zed_extrinsic.json"
-    report.rename(calibrated_openarm / "calibration" / "head_zed_extrinsic.json")
-    with pytest.raises(ROSConfigError, match=r"head_zed: no extrinsic report .*/thor/"):
+    unit_file = calibrated_openarm / "units" / "thor.yaml"
+    doc = yaml.safe_load(unit_file.read_text(encoding="utf-8"))
+    (zed,) = [s for s in doc["sensors"] if s["name"] == "head_zed"]
+    del zed["static_transform_xyz_rpy"]
+    unit_file.write_text(yaml.safe_dump(doc), encoding="utf-8")
+    with pytest.raises(ROSConfigError, match=r"head_zed: mount is the manifest's nominal"):
         _launch_args("real")
 
 
