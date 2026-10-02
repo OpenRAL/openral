@@ -1,9 +1,11 @@
 # Pick and place on the real OpenArm cell with the world-voxel check on
 
-Status: **proposal, groundwork landed**, 2026-10-02. Branch `feat/real-pick-place-attachment`
-(draft PR #332). Steps 0-4 of §3 are implemented and committed off by default; §2 (the kernel
-exemption, the target producer, place) is not. Facts cite code at `fe3c8944` unless marked
-*since*; proposals are marked.
+Status: **implemented on the branch, default-off, pending Safety-WG review**, 2026-10-03.
+Branch `feat/real-pick-place-attachment` (draft PR #332). Every step of §3 except 5 (the attended
+effort measurement) and 9 (enabling the Thor scene) is implemented and committed off; the
+kernel exemption, the release window and the place witness are each proven against the real
+`safety_kernel_node` (the tests named in §3). The §4 items are still decisions, not code.
+Facts in §1 cite code at `fe3c8944` unless marked *since*; §2 is now the design as built.
 
 Goal: on the real OpenArm cell (Thor: ZED-M head camera, RGB-only wrist Arducams,
 `openral deploy run` with the safety kernel's world-voxel check at the real 20 mm margin on
