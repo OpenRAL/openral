@@ -31,11 +31,11 @@
 #     MuJoCo-only), so any arm link the ZED sees becomes occupancy around that
 #     link and the kernel stops it (KIND_COLLISION, a `voxel_<n>` evidence
 #     cell on the stopping link itself).
-#   * Real hardware runs with attached-payload checking OFF
-#     (`_attached_collision_enabled("real") is False` in deploy_e2e.launch.py)
-#     and nothing on the real graph publishes /openral/attachment_state, so a
-#     grasped object is never cleared from the map: it stops the gripper
-#     holding it.
+#   * Real hardware runs with attached-payload checking OFF while
+#     `runtime.vision_attachment.enabled` is false (below; the committed
+#     posture), and then nothing on the real graph publishes
+#     /openral/attachment_state, so a grasped object is never cleared from the
+#     map: it stops the gripper holding it.
 #   Camera loss fails CLOSED: openral_octomap_bridge stops publishing once its
 #   octree is older than max_octree_age_s (1.0 s = the kernel's voxel deadline),
 #   so the kernel drops with DROP_VOXEL_UNAVAILABLE within ~2.0 s of the last
@@ -121,3 +121,25 @@ runtime:
   enable_critic: false
   spatial_memory_ingest: false
   approach_skill_id: null
+
+  # The vision attachment leg (SAM 2.1 segmenter + the HAL's attachment-evidence
+  # bridge), wired but OFF: the gripper-effort grasp thresholds are unmeasured on
+  # the OpenArm and turning it on for real is pending Safety-WG review and a
+  # hazard-log entry (docs/reference/real-pick-place-design.md §3 row 4, §4 item 3).
+  # Enabled, `deploy run` also turns the kernel's attached-payload check on
+  # (1000 ms deadline) — never the leg alone. Topics are the Thor ZED-M driver's;
+  # the bridge and the segmenter project only through its CameraInfo, never the
+  # manifest's nominal intrinsics (driver fx 1498 vs nominal 960, 2026-10-02).
+  vision_attachment:
+    enabled: false
+    camera: head_zed
+    rgb_topic: /zed/zed_node/rgb/color/rect/image
+    rgb_camera_info_topic: /zed/zed_node/rgb/color/rect/camera_info
+    depth_topic: /zed/zed_node/depth/depth_registered
+    depth_camera_info_topic: /zed/zed_node/depth/camera_info
+    # The attach links are not frames of the real cell's TF tree (the vendored
+    # URDF describes a different assembly); renamed to the vendor bringup's
+    # frames. Unverified on the cell (design doc §1.5).
+    tf_frames:
+      openarm_left_link7: openarm_left_ee_base_link
+      openarm_right_link7: openarm_right_ee_base_link

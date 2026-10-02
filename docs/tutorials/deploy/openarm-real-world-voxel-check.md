@@ -40,12 +40,23 @@ expecting a clean pass:
    (`safety.collision kind=world a=openarm_left_finger_pair`). Record the filter's
    `self-filter:` log line (share of points removed, ms per cloud, drops).
 2. **A grasped object stops the gripper holding it.** Real hardware runs with
-   attached-payload checking **off** (`_attached_collision_enabled("real")` returns `False`
-   in `deploy_e2e.launch.py`). Nothing on the real graph publishes
-   `/openral/attachment_state`: the HAL's vision attachment leg exists but is opt-in and not
-   wired into the deploy launch. So the bridge never clears the object's cells, and the
+   attached-payload checking **off** while the scene's `runtime.vision_attachment.enabled`
+   is false (`_attached_collision_enabled("real", False)` returns `False` in
+   `deploy_e2e.launch.py`), and then nothing on the real graph publishes
+   `/openral/attachment_state`. So the bridge never clears the object's cells, and the
    gripper stops against its own payload. The sim contract, where the payload leaves world
    occupancy and is checked as attached geometry, does **not** hold here.
+
+   **Vision attachment leg (off by default).** `runtime.vision_attachment` in this scene
+   wires the leg — the SAM 2.1 segmenter lifecycle node (`openral_segmenter`) plus the HAL's
+   attachment-evidence bridge, fed by the ZED's RGB, depth and their `camera_info` topics —
+   but commits it **off**: the gripper-effort grasp thresholds are unmeasured on the OpenArm
+   and turning it on for real is pending Safety-WG review and a hazard-log entry. Enabled,
+   `deploy run` always turns the kernel's attached-payload check on with it
+   (`attached_collision_enabled`, 1000 ms deadline), never the leg alone: the bridge's payload
+   clearing and the self-filter act on any published attachment whatever the kernel flag, so a
+   leg without the kernel check would hide the payload from every check. Do not enable it in
+   this runbook.
 Camera loss **fails closed** (it used to fail open; fixed with hazard-log Entry 033):
 `openral_octomap_bridge` stops publishing `/openral/world_voxels` once its last octree is
 older than `max_octree_age_s` (default 1.0 s, equal to the kernel's `world_voxel_deadline_ms`;

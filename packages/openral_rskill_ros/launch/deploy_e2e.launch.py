@@ -449,9 +449,26 @@ def _octomap_input_bounds() -> dict[str, float]:
     }
 
 
-def _attached_collision_enabled(hal_mode: str) -> bool:
-    """Enable payload collision only where the sim attachment manager exists."""
-    return hal_mode == "sim"
+def _attached_collision_enabled(hal_mode: str, vision_attachment_enabled: bool) -> bool:
+    """Whether the kernel checks attached payloads: where something publishes attachments.
+
+    Sim: the sim attachment manager. Real: only with the vision attachment leg
+    (``DeployRuntime.vision_attachment``), and then ALWAYS. The coupling rule is that the
+    vision leg on real turns the kernel's attached check on with it, never the leg alone:
+    the octomap bridge clears a published payload from the map and the robot self-filter
+    removes it from the cloud regardless of this flag, so a leg without the kernel check
+    would leave the payload checked by nothing (an invisible payload).
+    """
+    return hal_mode == "sim" or vision_attachment_enabled
+
+
+def _attached_collision_deadline_ms(hal_mode: str) -> float:
+    """How long the kernel trusts the last attachment state.
+
+    Sim keeps 5000 ms. Real is 1000 ms: the HAL's attachment heartbeat runs at 5 Hz, and a
+    real payload must not stay trusted for seconds after its producer went silent.
+    """
+    return 5000.0 if hal_mode == "sim" else 1000.0
 
 
 def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list:
@@ -1205,6 +1222,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     object_detector_onnx = LaunchConfiguration("object_detector_onnx").perform(context)
     object_detector_manifest = LaunchConfiguration("object_detector_manifest").perform(context)
     object_detector_query = LaunchConfiguration("object_detector_query").perform(context)
+    # Vision attachment leg (DeployRuntime.vision_attachment): the SAM 2.1 segmenter the
+    # HAL's attachment-evidence bridge asks at grasp events. Off by default; on, it also
+    # turns the kernel's attached check on (_attached_collision_enabled).
+    vision_attachment_enabled = LaunchConfiguration("enable_vision_attachment").perform(
+        context
+    ).lower() in ("1", "true", "yes")
     # Reward-monitor leg. Off by default; when on, a reward_monitor_node
     # runs PARALLEL to the VLA, buffering the agentview RGB stream, and the reasoner
     # is told task_progress_available=True so its LLM may poll
@@ -1450,12 +1473,21 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # observability), but the kernel voxel check stays off so the kernel configures cleanly on
     # its scalar envelope.
     has_collision_capsules = int(collision_params.get("collision_n_links", 0)) > 0
-    if has_collision_capsules and _attached_collision_enabled(hal_mode):
+    if vision_attachment_enabled and not has_collision_capsules:
+        from openral_core.exceptions import ROSConfigError
+
+        # Coupling rule: the vision leg never runs without the kernel's attached check, and
+        # that check needs the robot's collision model.
+        raise ROSConfigError(
+            f"enable_vision_attachment is on but robot {description.name!r} declares no "
+            "collision geometry, so the kernel could not check the payload the leg publishes."
+        )
+    if has_collision_capsules and _attached_collision_enabled(hal_mode, vision_attachment_enabled):
         kernel_params = {
             **kernel_params,
             "attached_collision_enabled": True,
             "attached_collision_margin_m": 0.0,
-            "attached_collision_deadline_ms": 5000.0,
+            "attached_collision_deadline_ms": _attached_collision_deadline_ms(hal_mode),
             # No tolerance override (HZ-0095-2). This used to be raised to the
             # octomap resolution because a legitimate support contact read as
             # ~one voxel of penetration and there was nothing else to absorb it.
@@ -2725,6 +2757,45 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             extra_nodes.append(locator_node)
             autostart += _autostart_lifecycle(locator_node, spec["node"])
 
+    if vision_attachment_enabled:
+        # The segmenter the HAL's vision attachment bridge calls at grasp events
+        # (/openral/perception/segment_in_view). It projects through the driver's live
+        # CameraInfo (camera_infos), never the manifest's nominal intrinsics.
+        va_camera = LaunchConfiguration("vision_attachment_camera").perform(context)
+        segmenter = LifecycleNode(
+            package="openral_perception_ros",
+            executable="segmenter_node.py",
+            name="openral_segmenter",
+            namespace="",
+            parameters=[
+                {
+                    "robot_yaml": robot_yaml,
+                    "manifest_path": LaunchConfiguration(
+                        "vision_attachment_segmenter_manifest"
+                    ).perform(context),
+                    "cameras": [
+                        f"{va_camera}="
+                        + LaunchConfiguration("vision_attachment_rgb_topic").perform(context)
+                    ],
+                    "camera_infos": [
+                        f"{va_camera}="
+                        + LaunchConfiguration("vision_attachment_rgb_camera_info_topic").perform(
+                            context
+                        )
+                    ],
+                    "primary_camera": va_camera,
+                    "device": LaunchConfiguration("vision_attachment_segmenter_device").perform(
+                        context
+                    ),
+                    "use_sim_time": use_sim_time,
+                }
+            ],
+            additional_env=otel_env,
+            output="screen",
+        )
+        extra_nodes.append(segmenter)
+        autostart += _autostart_lifecycle(segmenter, "openral_segmenter")
+
     if enable_reward_monitor:
         # Reward monitor runs PARALLEL to the VLA (not a lifecycle/VRAM
         # peer the reasoner frees before a policy; it stays co-active). Plain Node:
@@ -3366,6 +3437,41 @@ def generate_launch_description() -> LaunchDescription:
                 "exist. Requires the openral_perception_ros package built "
                 "and the rtdetr-coco-r18 rSkill ONNX present."
             ),
+        ),
+        DeclareLaunchArgument(
+            "enable_vision_attachment",
+            default_value="false",
+            description=(
+                "Bring up the vision attachment leg (DeployRuntime.vision_attachment): the "
+                "SAM 2.1 segmenter lifecycle node the HAL's attachment-evidence bridge calls. "
+                "Always turns the safety kernel's attached-payload check on with it "
+                "(1000 ms deadline on real). Default off."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "vision_attachment_camera",
+            default_value="",
+            description="Manifest sensor name the segmenter serves (e.g. head_zed).",
+        ),
+        DeclareLaunchArgument(
+            "vision_attachment_rgb_topic",
+            default_value="",
+            description="The camera driver's RGB Image topic the segmenter caches.",
+        ),
+        DeclareLaunchArgument(
+            "vision_attachment_rgb_camera_info_topic",
+            default_value="",
+            description="The driver's CameraInfo for that RGB stream (live K).",
+        ),
+        DeclareLaunchArgument(
+            "vision_attachment_segmenter_manifest",
+            default_value="",
+            description="kind: segmenter rSkill manifest (absolute path).",
+        ),
+        DeclareLaunchArgument(
+            "vision_attachment_segmenter_device",
+            default_value="auto",
+            description="Segmenter torch device: auto, cuda or cpu.",
         ),
         DeclareLaunchArgument(
             "object_detector_onnx",

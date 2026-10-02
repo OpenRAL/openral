@@ -242,3 +242,115 @@ def test_deploy_refuses_a_scene_that_names_the_zed(tmp_path: Path, hal_mode: str
 
     with pytest.raises(ROSConfigError, match=r"'head_zed'.*defined by the robot manifest"):
         _launch_args(hal_mode, scene)
+
+
+# ── Vision attachment leg (DeployRuntime.vision_attachment) ──────────────────
+
+_SEGMENTER_MANIFEST = _REPO_ROOT / "rskills/rskill-sam2_1-any-grasped_object_mask-bf16/rskill.yaml"
+
+
+def _scene_with_vision_leg(tmp_path: Path, *, enabled: bool | None) -> Path:
+    """The committed scene with its vision leg enabled, as committed (off), or removed."""
+    import yaml
+
+    data = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
+    if enabled is None:
+        del data["runtime"]["vision_attachment"]
+    else:
+        data["runtime"]["vision_attachment"]["enabled"] = enabled
+    scene = tmp_path / f"vision_leg_{enabled}.yaml"
+    scene.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return scene
+
+
+def _real_graph(scene: Path) -> tuple[dict[str, object], dict[str, Any], Any, list[Any]]:
+    """``(hal_params, kernel_params, ctx, entities)`` for a ``deploy run`` of ``scene``."""
+    from launch_ros.utilities import evaluate_parameters
+    from openral_cli.deploy_sim import resolve_launch_invocation
+
+    invocation = resolve_launch_invocation(
+        config=scene,
+        robot_override="openarm",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        deploy_config=scene,
+        hal_param_overrides={},
+        hal_mode="real",
+        enable_dashboard=False,
+    )
+    args = dict(tok.split(":=", 1) for tok in invocation.argv_template if ":=" in tok)
+    args["hal_params_file"] = "/tmp/openral-test-hal-params.yaml"
+    del args["deploy_config"]  # drivers: needs zed_wrapper on the ament path (rig only)
+    ctx, entities = _compose(args)
+    (kernel_params,) = evaluate_parameters(
+        ctx, _node(entities, "openral_safety_kernel")._Node__parameters
+    )
+    return invocation.hal_params, kernel_params, ctx, entities
+
+
+def _segmenters(entities: list[Any]) -> list[Any]:
+    return [
+        e
+        for e in entities
+        if getattr(e, "_Node__package", None) == "openral_perception_ros"
+        and getattr(e, "_Node__node_executable", None) == "segmenter_node.py"
+    ]
+
+
+def test_the_vision_leg_on_real_turns_the_kernel_attached_check_on(
+    tmp_path: Path, calibrated_openarm: Path
+) -> None:
+    """Enabled on ``deploy run``: segmenter up, HAL bridge configured, kernel check on."""
+    from launch_ros.actions import LifecycleNode
+    from launch_ros.utilities import evaluate_parameters
+
+    hal_params, kernel_params, ctx, entities = _real_graph(
+        _scene_with_vision_leg(tmp_path, enabled=True)
+    )
+
+    # Coupling rule: the leg never runs without the kernel's attached check.
+    assert kernel_params["attached_collision_enabled"] is True
+    assert kernel_params["attached_collision_deadline_ms"] == 1000.0
+
+    assert {k: v for k, v in hal_params.items() if k.startswith("vision_attachment_")} == {
+        "vision_attachment_enabled": True,
+        "vision_attachment_camera": "head_zed",
+        "vision_attachment_depth_topic": "/zed/zed_node/depth/depth_registered",
+        "vision_attachment_camera_info_topic": "/zed/zed_node/depth/camera_info",
+        "vision_attachment_deadline_s": 0.25,
+        "vision_attachment_evidence_timeout_s": 0.5,
+        "vision_attachment_attach_effort": 0.0,
+        "vision_attachment_release_effort": 0.0,
+        "vision_attachment_tf_frames": [
+            "openarm_left_link7=openarm_left_ee_base_link",
+            "openarm_right_link7=openarm_right_ee_base_link",
+        ],
+    }
+
+    (segmenter,) = _segmenters(entities)
+    assert isinstance(segmenter, LifecycleNode)
+    (params,) = evaluate_parameters(ctx, segmenter._Node__parameters)
+    assert params == {
+        "robot_yaml": str(calibrated_openarm / "robot.yaml"),
+        "manifest_path": str(_SEGMENTER_MANIFEST),
+        "cameras": ("head_zed=/zed/zed_node/rgb/color/rect/image",),
+        "camera_infos": ("head_zed=/zed/zed_node/rgb/color/rect/camera_info",),
+        "primary_camera": "head_zed",
+        "device": "auto",
+        "use_sim_time": False,
+    }
+
+
+@pytest.mark.usefixtures("calibrated_openarm")
+def test_the_vision_leg_off_leaves_the_real_graph_as_without_it(tmp_path: Path) -> None:
+    """Committed posture (``enabled: false``): no segmenter, no attached check, and the HAL
+    and kernel parameters equal those of the scene without the block at all."""
+    hal_off, kernel_off, _, entities = _real_graph(_scene_with_vision_leg(tmp_path, enabled=False))
+    hal_absent, kernel_absent, _, _ = _real_graph(_scene_with_vision_leg(tmp_path, enabled=None))
+
+    assert _segmenters(entities) == []
+    assert kernel_off.get("attached_collision_enabled", False) is False
+    assert not any(k.startswith("vision_attachment_") for k in hal_off)
+    assert kernel_off == kernel_absent
+    # Only the scene path differs (sim_env_yaml is never set on real).
+    assert hal_off == hal_absent

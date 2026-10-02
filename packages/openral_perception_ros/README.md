@@ -173,6 +173,33 @@ It is **strictly diagnostic**, and that is a property to preserve:
 - a publish failure is logged and swallowed: a display path must never be able
   to degrade a grasp.
 
+### Segmenter launch
+
+`deploy_e2e.launch.py` composes it as the `openral_segmenter` lifecycle node
+(executable `segmenter_node.py`, autostarted to ACTIVE) only when the deploy
+scene enables the vision attachment leg, **off by default**:
+
+```yaml
+runtime:
+  vision_attachment:
+    enabled: false          # pending Safety-WG review on real hardware
+    camera: head_zed        # manifest sensor name
+    rgb_topic: /zed/zed_node/rgb/color/rect/image
+    rgb_camera_info_topic: /zed/zed_node/rgb/color/rect/camera_info
+    depth_topic: /zed/zed_node/depth/depth_registered
+    depth_camera_info_topic: /zed/zed_node/depth/camera_info
+```
+
+`openral deploy` forwards it as `enable_vision_attachment`, `vision_attachment_camera`,
+`vision_attachment_rgb_topic`, `vision_attachment_rgb_camera_info_topic`,
+`vision_attachment_segmenter_manifest` and `vision_attachment_segmenter_device`; the
+launch sets `cameras` / `camera_infos` to `<camera>=<topic>`, `primary_camera`,
+`robot_yaml`, `manifest_path`, `device` and `use_sim_time`. The depth pair goes to
+the HAL's `vision_attachment_*` parameters, not here. Enabled, the launch **always**
+turns the safety kernel's attached-payload check on too (1000 ms deadline on real):
+the leg never runs alone, because the octomap bridge clears and the self-filter
+removes a published payload whatever the kernel flag.
+
 ### Segmenter parameters
 
 | Name | Type | Default | Notes |

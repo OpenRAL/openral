@@ -2930,3 +2930,71 @@ def test_scene_preload_revision_is_forwarded_with_the_preload_id(tmp_path: Path)
     assert "preload_rskill_id:=rskill-smolvla-so101-eraser_place-bf16" in joined
     assert "preload_rskill_revision:=v1.2.0" in joined
     assert "preload_prompt:=" not in joined
+
+
+def test_deploy_vision_attachment_block_maps_to_hal_params_and_launch_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``runtime.vision_attachment`` reaches the HAL as ``vision_attachment_*`` params and
+    the launch as the segmenter args; an explicit ``--hal`` override still wins."""
+    import yaml
+
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    scene_src = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
+    data = yaml.safe_load(scene_src.read_text(encoding="utf-8"))
+    data["runtime"]["vision_attachment"].update(
+        enabled=True, attach_effort=12.5, device="cpu", evidence_timeout_s=0.75
+    )
+    scene = tmp_path / "vision_leg.yaml"
+    scene.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    invocation = resolve_launch_invocation(
+        config=scene,
+        robot_override="openarm",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides={"vision_attachment_deadline_s": 0.4},
+        enable_dashboard=False,
+    )
+
+    hal = {k: v for k, v in invocation.hal_params.items() if k.startswith("vision_attachment_")}
+    assert hal == {
+        "vision_attachment_enabled": True,
+        "vision_attachment_camera": "head_zed",
+        "vision_attachment_depth_topic": "/zed/zed_node/depth/depth_registered",
+        "vision_attachment_camera_info_topic": "/zed/zed_node/depth/camera_info",
+        "vision_attachment_deadline_s": 0.4,  # --hal wins over the scene's 0.25
+        "vision_attachment_evidence_timeout_s": 0.75,
+        "vision_attachment_attach_effort": 12.5,
+        "vision_attachment_release_effort": 0.0,
+        "vision_attachment_tf_frames": [
+            "openarm_left_link7=openarm_left_ee_base_link",
+            "openarm_right_link7=openarm_right_ee_base_link",
+        ],
+    }
+    manifest = _REPO_ROOT / "rskills/rskill-sam2_1-any-grasped_object_mask-bf16/rskill.yaml"
+    assert manifest.is_file()
+    for arg in (
+        "enable_vision_attachment:=true",
+        "vision_attachment_camera:=head_zed",
+        "vision_attachment_rgb_topic:=/zed/zed_node/rgb/color/rect/image",
+        "vision_attachment_rgb_camera_info_topic:=/zed/zed_node/rgb/color/rect/camera_info",
+        f"vision_attachment_segmenter_manifest:={manifest.resolve()}",
+        "vision_attachment_segmenter_device:=cpu",
+    ):
+        assert arg in invocation.argv_template
+
+
+def test_deploy_vision_attachment_off_forwards_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The committed scene keeps the leg off: no HAL param, no launch arg."""
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    invocation = resolve_launch_invocation(
+        config=_REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml",
+        robot_override="openarm",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        enable_dashboard=False,
+    )
+    assert not any(k.startswith("vision_attachment_") for k in invocation.hal_params)
+    assert not any("vision_attachment" in a for a in invocation.argv_template)
