@@ -2797,6 +2797,7 @@ class SimSensorBridge:
         self._depth_base_body_id = -1
         self._base_frame_body = None
         self._depth_self_bodies = frozenset()
+        self._depth_bodies_resolved = False
         self._camera_tf_disabled.clear()
         self._tf_broadcaster = None
         self._static_tf_broadcaster = None
@@ -3046,8 +3047,7 @@ class SimSensorBridge:
         if handle is None:
             return
         model, data = handle
-        if self._depth_base_body is None and self._depth_base_body_id < 0:
-            self._resolve_depth_base_body(model)
+        self._resolve_depth_base_body(model)
         if self._base_frame_body is None:
             return
 
@@ -3899,7 +3899,14 @@ class SimSensorBridge:
         Also populates ``_depth_self_bodies`` — the robot's own MJCF body ids
         for the depth self-filter, derived from the manifest's sim_joint_name
         prefixes (arm + base + gripper).
+
+        Runs once per configure. The result is cached by a flag, not by the
+        resolved names: a fixed dual-arm (OpenArm) legitimately resolves both
+        bodies to ``None``, and keying "already resolved" on that re-ran this on
+        every depth frame (Thor, 2026-10-02: 31k log lines in 14 min).
         """
+        if self._depth_bodies_resolved:
+            return
         import mujoco  # reason: defer optional sim dep
 
         from openral_hal.depth_cloud import (
@@ -3923,6 +3930,7 @@ class SimSensorBridge:
             [j.sim_joint_name for j in description.joints] if description is not None else []
         )
         self._depth_self_bodies = robot_self_body_ids(model, sim_names)
+        self._depth_bodies_resolved = True
         self._node.get_logger().info(
             "SimSensorBridge: depth self-filter "
             f"base_body={self._depth_base_body!r} "
@@ -4009,8 +4017,7 @@ class SimSensorBridge:
             points_from_depth_grid,
         )
 
-        if self._depth_base_body is None and self._depth_base_body_id < 0:
-            self._resolve_depth_base_body(model)
+        self._resolve_depth_base_body(model)
         exclude_id = self._depth_base_body_id if self._depth_base_body_id >= 0 else None
         excluded_bodies = self._depth_excluded_body_ids()
 
@@ -4399,9 +4406,8 @@ class SimSensorBridge:
         if handles is None:
             return
         model, data = handles
-        if not self._depth_self_bodies:
-            # Cameras/depth may never have run (they own the lazy resolve).
-            self._resolve_depth_base_body(model)
+        # Cameras/depth may never have run (they own the lazy resolve).
+        self._resolve_depth_base_body(model)
         attached = self._depth_excluded_body_ids() - self._depth_self_bodies
         # Rank the near-miss probes over the links the KERNEL checks. Probing
         # the whole robot buries the arm under the base's 0-2 mm floor

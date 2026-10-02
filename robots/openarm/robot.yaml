@@ -546,6 +546,15 @@ sensors:
     # `observation.images.context` (`image_preprocessing.aliases: {top: "context"}`), and
     # the ros2_image reader takes the wire encoding from each message, not `encoding`.
     # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.
+    # Twin: the bimanual MJCF ships no head camera, so the generic camera rig splices one
+    # in at head_zed's nominal mount. The MJCF world origin IS `openarm_base` (its
+    # `openarm_left_base_link` sits at [0, 0.031, 0], the manifest's
+    # openarm_base->openarm_left_link0), so the mount is expressed from that body;
+    # `target` is one metre along the nominal 1.1823 rad down-pitch.
+    sim_placement:
+      parent_body: "openarm_left_base_link"
+      pos: [0.0, -0.031, 0.20]
+      target: [0.379, -0.031, -0.725]
   - name: "wrist_left"
     modality: "rgb"
     frame_id: "openarm_left_ee_base_link"
@@ -561,6 +570,9 @@ sensors:
     vla_feature_key: "observation.images.wrist_left"
     vendor: "sim"
     model: "mujoco_wrist"
+    # The twin's MJCF (openarm_v20_bimanual.xml) names its wrist cameras with a
+    # `camera_` prefix; without this the sim HAL logs `camera_absent` and renders nothing.
+    sim_camera_name: "camera_wrist_left"
     # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.
   - name: "wrist_right"
     modality: "rgb"
@@ -577,6 +589,7 @@ sensors:
     vla_feature_key: "observation.images.wrist_right"
     vendor: "sim"
     model: "mujoco_wrist"
+    sim_camera_name: "camera_wrist_right"
     # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.
 
 # MuJoCo wiring consumed by ``openral_hal.MujocoArmHAL.from_description``.
