@@ -74,6 +74,9 @@ TARGETS=(
     # The sim producer measures a dispatched grasp declaration's target box and
     # rides it on every attachment envelope, revision unchanged, until retracted.
     tests/integration/test_sim_bridge_grasp_declaration_live.py
+    # Grasp-target control pair on a MuJoCo twin: real kernel (20 mm margin,
+    # grasp_allowance_enabled), World State node, SimSensorBridge producer.
+    tests/sim/test_gripper_twin_hal_mujoco_grasp_pair.py
     # A world-voxel stop names its cell only as an index; the grid that index
     # addresses arrives on a different topic, and until joined the record
     # can't look at the map -- how the 2026-08-22 round adjudicated two stops
