@@ -57,6 +57,13 @@ expecting a clean pass:
    clearing and the self-filter act on any published attachment whatever the kernel flag, so a
    leg without the kernel check would hide the payload from every check. Do not enable it in
    this runbook.
+
+   **Grasp-target exemption (off by default).** `runtime.grasp_allowance_enabled` (default
+   `false`) forwards `grasp_allowance_enabled:=true` to the kernel; the launch always passes
+   `grasp_contact_links` = the manifest's `role: gripper` child links
+   (`openarm_left_finger_pair`, `openarm_right_finger_pair`). With it on, the exemption still
+   applies only inside a producer-measured `GraspDeclaration` region, which nothing on the
+   real graph measures yet. Do not enable it in this runbook.
 Camera loss **fails closed** (it used to fail open; fixed with hazard-log Entry 033):
 `openral_octomap_bridge` stops publishing `/openral/world_voxels` once its last octree is
 older than `max_octree_age_s` (default 1.0 s, equal to the kernel's `world_voxel_deadline_ms`;

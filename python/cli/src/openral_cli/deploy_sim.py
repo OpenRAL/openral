@@ -1559,6 +1559,10 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # carries the sim default and ros2 launch rejects an empty ``name:=``.
     if octomap_cloud_topic:
         argv_template.append(f"octomap_cloud_topic:={octomap_cloud_topic}")
+    # Grasp-target exemption: forwarded only when enabled, so the off path's argv is
+    # unchanged. The launch always passes the kernel the manifest's gripper links.
+    if rt is not None and rt.grasp_allowance_enabled:
+        argv_template.append("grasp_allowance_enabled:=true")
     # Vision attachment leg: forwarded only when enabled, so a scene without it composes
     # exactly as before. The launch couples it to the kernel's attached check.
     if vision_leg is not None and vision_leg.enabled:

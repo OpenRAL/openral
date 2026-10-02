@@ -647,6 +647,11 @@
             }
           ],
           "default": null
+        },
+        "grasp_allowance_enabled": {
+          "default": false,
+          "title": "Grasp Allowance Enabled",
+          "type": "boolean"
         }
       },
       "title": "DeployRuntime",

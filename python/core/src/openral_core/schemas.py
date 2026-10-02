@@ -10101,6 +10101,15 @@ class DeployRuntime(BaseModel):
     ``None`` or ``enabled: false`` = not launched, and the graph is exactly as without
     it. Enabled on ``deploy run``, it always turns the kernel's attached check on too
     (see ``VisionAttachmentRuntime``). Backward-compatible addition."""
+    grasp_allowance_enabled: bool = False
+    """Turn on the safety kernel's grasp-target exemption (its ``grasp_allowance_enabled``):
+    while a live ``GraspDeclaration`` carries a producer-measured region, world-voxel cells
+    centred in that box do not trip the declared gripper contact links. The launch always
+    passes the kernel its allowlist, ``grasp_contact_links`` = the manifest's
+    ``role: gripper`` joints' ``child_link``s, so a declaration can never name a link the
+    robot does not grip with. Default off, and off is the graph exactly as without it;
+    turning it on is pending Safety-WG review (real pick-and-place design §2.1/§3,
+    ``docs/reference/real-pick-place-adr-drafts.md``). Backward-compatible addition."""
 
     @property
     def voxel_freshness_s(self) -> tuple[float, float]:

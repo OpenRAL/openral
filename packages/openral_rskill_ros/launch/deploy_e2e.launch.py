@@ -1229,6 +1229,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     vision_attachment_enabled = LaunchConfiguration("enable_vision_attachment").perform(
         context
     ).lower() in ("1", "true", "yes")
+    # Grasp-target exemption (DeployRuntime.grasp_allowance_enabled). Default off.
+    grasp_allowance_enabled = LaunchConfiguration("grasp_allowance_enabled").perform(
+        context
+    ).lower() in ("1", "true", "yes")
     # Reward-monitor leg. Off by default; when on, a reward_monitor_node
     # runs PARALLEL to the VLA, buffering the agentview RGB stream, and the reasoner
     # is told task_progress_available=True so its LLM may poll
@@ -1500,6 +1504,22 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             "attached_max_primitives": 16,
             "attached_max_touch_links": 32,
         }
+    # Grasp-target exemption (real pick-and-place design §2.1; ADR draft in
+    # docs/reference/real-pick-place-adr-drafts.md). The allowlist is ALWAYS the manifest's
+    # gripper links, on or off, so the kernel resolves the same names either way and a
+    # GraspDeclaration can never name a link the robot does not grip with. Omitted when
+    # empty (an empty list has no ROS parameter type), and refused when the flag is on.
+    grasp_contact_links = [j.child_link for j in description.joints if j.role == "gripper"]
+    if grasp_allowance_enabled and not grasp_contact_links:
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            f"grasp_allowance_enabled is on but robot {description.name!r} declares no "
+            "role: gripper joint, so there is no contact link the exemption could apply to."
+        )
+    kernel_params["grasp_allowance_enabled"] = grasp_allowance_enabled
+    if grasp_contact_links:
+        kernel_params["grasp_contact_links"] = grasp_contact_links
     if enable_octomap and has_collision_capsules and enable_octomap_kernel_check:
         kernel_params = {
             **kernel_params,
@@ -3458,6 +3478,15 @@ def generate_launch_description() -> LaunchDescription:
                 "SAM 2.1 segmenter lifecycle node the HAL's attachment-evidence bridge calls. "
                 "Always turns the safety kernel's attached-payload check on with it "
                 "(1000 ms deadline on real). Default off."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "grasp_allowance_enabled",
+            default_value="false",
+            description=(
+                "Safety kernel grasp-target exemption (DeployRuntime.grasp_allowance_enabled): "
+                "world-voxel cells inside a live GraspDeclaration's producer-measured region "
+                "do not trip the manifest's gripper contact links. Default off."
             ),
         ),
         DeclareLaunchArgument(

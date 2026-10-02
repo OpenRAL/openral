@@ -280,3 +280,20 @@ def test_an_unparseable_collision_scale_arms_nothing(
     monkeypatch.delenv("OPENRAL_COLLISION_SCALE_K", raising=False)
     monkeypatch.delenv("OPENRAL_COLLISION_SCALE_MIN", raising=False)
     assert module._collision_scale_params() == {}
+
+
+def test_a_robot_without_a_gripper_omits_the_grasp_links_and_refuses_the_allowance() -> None:
+    """UR5e declares no ``role: gripper`` joint: off, the allowlist is omitted (an empty list
+    has no ROS parameter type); on, the launch refuses rather than arm an exemption with
+    nothing to apply to."""
+    from openral_core.exceptions import ROSConfigError
+
+    params = _safety_kernel_params("ur5e")
+    assert params["grasp_allowance_enabled"] is False
+    assert "grasp_contact_links" not in params
+
+    module = _import_launch_module(_LAUNCH_FILE)
+    ctx = _make_launch_context(_REPO_ROOT / "robots" / "ur5e" / "robot.yaml")
+    ctx.launch_configurations["grasp_allowance_enabled"] = "true"  # type: ignore[attr-defined]
+    with pytest.raises(ROSConfigError, match="no role: gripper joint"):
+        module.compose_runtime_graph(ctx)  # type: ignore[attr-defined]

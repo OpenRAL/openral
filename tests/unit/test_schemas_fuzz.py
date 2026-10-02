@@ -448,6 +448,7 @@ _deploy_runtime_st = st.builds(
     # distinct pair — the model_validator rejects two equal names.
     slam_stereo_cameras=st.none() | st.lists(_name, min_size=2, max_size=2, unique=True).map(tuple),
     vision_attachment=st.none() | _vision_attachment_st,
+    grasp_allowance_enabled=st.booleans(),
 )
 
 _collision_evidence_st = st.builds(
