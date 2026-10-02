@@ -84,16 +84,16 @@ _openral schema v0 — normative Pydantic v2 contracts for all layers._
   fields: `compute_tops, system_memory_gb, num_gpus, gpu_vram_gb, cuda_compute_capability, cuda_toolkit_version, tensorrt_version, gpu_supported_runtimes, gpu_supported_dtypes, nvmm_available, endpoint, network_latency_ms`
   - `supports_cumotion() -> bool` — True when the host meets the cuMotion (Isaac ROS) GPU floor on compute capability, CUDA toolkit version, and VRAM; used by the MoveIt planner gate to pick cuMotion vs OMPL. (L1132)
 - `prop _CUMOTION_MIN_COMPUTE_CAPABILITY, _CUMOTION_MIN_CUDA_MAJOR, _CUMOTION_MIN_VRAM_GIB` — The cuMotion GPU floor `supports_cumotion()` checks against. (L1047–1049)
-- `ReasonerDialect = Literal["anthropic", "openai"]` — Wire dialect a `ReasonerModel` / named endpoint speaks; only needed on `OPENRAL_REASONER_DIALECT` for a bare, unclassified URL. (L11367)
-- `ReasonerHosting = Literal["cloud", "managed_local", "byo_local"]` — Where a `ReasonerModel` runs; drives `ReasonerModel.is_local`. (L11370)
-- `class ReasonerModel(BaseModel)` — Frozen curated S2 model registry entry. `REASONER_MODELS` is the curated map; membership means the model passed the robotics tool-calling contract. (L11380)
-  - `is_local(self) -> bool` [@property] — True for `managed_local` / `byo_local` hosting (needs local compute); False for `cloud`. (L11449)
-- `REASONER_MANAGED_ENDPOINT: str = "managed"` — Sentinel for `ReasonerModel.default_endpoint` meaning OpenRAL spawns and manages the local server, resolved to the model's managed loopback endpoint at client-build time. (L11377)
-- `_OPENROUTER_ENDPOINT: str` — OpenRouter's OpenAI-compatible endpoint URL; default gateway for the curated GPT-5.x entries. (L11456)
-- `REASONER_MODELS: dict[str, ReasonerModel]` — The curated model registry keyed by `id`; adding a model means adding one entry here after it clears the tool-calling bar. (L11460)
-- `class ReasonerEndpointPreset(NamedTuple)` — Everything a named `OPENRAL_REASONER_ENDPOINT` implies beyond its URL (dialect, auth, cold-start timeout, tool_choice). (L11529)
-- `REASONER_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset]` — Presets for the accepted `OPENRAL_REASONER_ENDPOINT` names. (L11563)
-- `prop ANTHROPIC_BASE_URL, OPENROUTER_BASE_URL, OLLAMA_BASE_URL, VLLM_BASE_URL, GEMINI_BASE_URL, XAI_BASE_URL, DEEPSEEK_BASE_URL, HUGGINGFACE_BASE_URL` — Base URLs backing the named `OPENRAL_REASONER_ENDPOINT` presets. (L11509–11526)
+- `ReasonerDialect = Literal["anthropic", "openai"]` — Wire dialect a `ReasonerModel` / named endpoint speaks; only needed on `OPENRAL_REASONER_DIALECT` for a bare, unclassified URL. (L11393)
+- `ReasonerHosting = Literal["cloud", "managed_local", "byo_local"]` — Where a `ReasonerModel` runs; drives `ReasonerModel.is_local`. (L11396)
+- `class ReasonerModel(BaseModel)` — Frozen curated S2 model registry entry. `REASONER_MODELS` is the curated map; membership means the model passed the robotics tool-calling contract. (L11406)
+  - `is_local(self) -> bool` [@property] — True for `managed_local` / `byo_local` hosting (needs local compute); False for `cloud`. (L11475)
+- `REASONER_MANAGED_ENDPOINT: str = "managed"` — Sentinel for `ReasonerModel.default_endpoint` meaning OpenRAL spawns and manages the local server, resolved to the model's managed loopback endpoint at client-build time. (L11403)
+- `_OPENROUTER_ENDPOINT: str` — OpenRouter's OpenAI-compatible endpoint URL; default gateway for the curated GPT-5.x entries. (L11482)
+- `REASONER_MODELS: dict[str, ReasonerModel]` — The curated model registry keyed by `id`; adding a model means adding one entry here after it clears the tool-calling bar. (L11486)
+- `class ReasonerEndpointPreset(NamedTuple)` — Everything a named `OPENRAL_REASONER_ENDPOINT` implies beyond its URL (dialect, auth, cold-start timeout, tool_choice). (L11555)
+- `REASONER_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset]` — Presets for the accepted `OPENRAL_REASONER_ENDPOINT` names. (L11589)
+- `prop ANTHROPIC_BASE_URL, OPENROUTER_BASE_URL, OLLAMA_BASE_URL, VLLM_BASE_URL, GEMINI_BASE_URL, XAI_BASE_URL, DEEPSEEK_BASE_URL, HUGGINGFACE_BASE_URL` — Base URLs backing the named `OPENRAL_REASONER_ENDPOINT` presets. (L11535–11552)
 - `class RobotCapabilities(BaseModel)` — Physical capability flags for skill compatibility; `has_vision_slam` gates the camera-based SLAM backend for lidar-less robots, independent of `has_lidar` (lidar backend wins when both set). (L1158)
   fields: `locomotion, can_lift_kg, has_dexterous_hands, has_tactile, has_force_control, has_vision, has_lidar, has_vision_slam, has_audio, bimanual, supported_control_modes, supported_vla_embodiments, embodiment_tags`
 - `class SafetyEnvelope(BaseModel)` — Constraints enforced by the C++ safety kernel; `self_collision_margin_m` can go negative to tolerate a compact arm's known in-distribution grazing contact while gross folds still trip. Also carries the runner's starting-pose approach per joint type (`starting_pose_max_joint_speed_rad_s` / `starting_pose_tolerance_rad` for non-prismatic joints, `starting_pose_max_joint_speed_m_s` / `starting_pose_tolerance_m` for prismatic ones) and `joint_state_staleness_limit_s`, the one place a rig declares its joint-state freshness window (read by `build_hal` and `deploy_e2e.launch.py`). (L1206)
@@ -379,19 +379,19 @@ Written by `tools/validation_matrix.py`; the machine-readable half of [`docs/ref
 - `class SimEnvironment(BaseModel)` — Runtime (robot × scene × task × VLA) tuple, composed at the CLI from a `SimScene`/`BenchmarkScene` YAML plus an `RSkillManifest`; never loaded from YAML directly. (L9670)
   fields: `robot_id, scene, task, vla, base_pose, seed, n_episodes, record_video, save_dir, metadata`
   - `base_pose: Pose6D | None = None` — Per-rollout robot mounting pose in the scene's world frame; honoured by free-axis scenes only.
-  - `model_post_init(_context: object) -> None` — Cross-field validation `task.scene_id == scene.id`. (L9709)
-- `class BenchmarkMetadata(BaseModel)` — Provenance block required on every `BenchmarkScene`; suite invariants treat it as byte-identical across scenes. (L9719)
-- `class LaunchInclude` — A vendor ROS 2 launch a deploy must bring up alongside the graph, since a `SensorDeployBinding` names a topic to subscribe to but not who publishes it. Carried by `DeployScene.drivers`, real path only. (L9743)
-- `class VisionAttachmentRuntime(BaseModel)` — `DeployRuntime.vision_attachment`: the real-hardware vision attachment leg (SAM 2.1 segmenter lifecycle node + the HAL's attachment-evidence bridge). Fields: `enabled: bool = False`, `camera: str` (manifest sensor), `rgb_topic` / `rgb_camera_info_topic` / `depth_topic` / `depth_camera_info_topic: str | None` (all four required when enabled: the leg projects only through the driver's CameraInfo, never the manifest's nominal intrinsics), `segmenter_manifest: str` (SAM 2.1 rSkill default), `device: str = "auto"`, `deadline_s: float = 0.25`, `evidence_timeout_s: float = 0.5`, `attach_effort` / `release_effort: float | None` (`None` = effort-limit fraction), `tf_frames: dict[str, str]` (manifest link → TF frame). Coupling rule: enabled on real it always turns the kernel's attached check on (`attached_collision_enabled`, 1000 ms deadline), never the leg alone. Default off pending Safety-WG review. (L9781)
-- `class DeployRuntime(BaseModel)` — Committed deploy-posture toggles for a workcell scene (SLAM, Nav2, octomap, object detector, reward monitor, critic, spatial-memory ingest), all tri-state with explicit CLI flag > scene `runtime:` > auto/built-in default precedence. **`vision_attachment: VisionAttachmentRuntime | None`** (scene-only): the vision attachment leg; `None`/off composes the graph exactly as without it. **`grasp_allowance_enabled: bool = False`** (scene-only): the safety kernel's grasp-target exemption, forwarded as `grasp_allowance_enabled:=true` only when on; the launch always passes the kernel `grasp_allowance_enabled` and the allowlist `grasp_contact_links` (the manifest's `role: gripper` joints' `child_link`s, omitted when empty; on with none is refused). Default off pending Safety-WG review. **`preload_rskill_id` / `preload_rskill_revision` / `preload_prompt`** (optional, scene-only): the rSkill the skill_runner resolves and loads right after it activates, in a worker thread, so the first `execute_rskill` goal finds it resident — the deadman watchdog opens its first-chunk window on goal ACCEPT, so a multi-minute cold load inside a goal is E-stopped, correctly; revision and prompt must be exactly what later goals send (resident key = id, revision, prompt). Forwarded as `preload_rskill_id:=` / `preload_rskill_revision:=` / `preload_prompt:=` only when set. (L9860) **`joint_states_topic: str | None`** (scene-only): explicit override for the `JointState` topic the deploy runtime's Python nodes ingest; `None` = derived by `openral_hal.hal_joint_states_topic` (a real ros2_control HAL's rate-limited `/<hal_node>/joint_states`, else `/joint_states`). The C++ kernel keeps the full-rate topic. `clock_origin` (`host_wall` | `simulation` | `None`) pins the graph's clock authority; `None` on a twin whose `octomap_cloud_topic` lies outside `/openral/cameras/` already selects `host_wall` (`simulation` with it is refused). **`world_voxel_deadline_s: float = 1.0`** / **`max_octree_age_s: float | None`**: the kernel's voxel deadline and the octomap bridge's octree-age bound, per rig (a source slower than ~1 Hz raises both); a validator refuses an age above the deadline so the kernel, not the bridge, fails closed (hazard log Entry 033). **Hard caps** (`_check_perception_caps`, 2x the pre-2026-09-25 values, refused at load with the field, the cap and why): `world_voxel_deadline_s <= 2.0`, `world_voxel_data_age_budget_s <= 3.0`, `robot_self_filter_padding_m <= 0.10`; also exported as the JSON Schema `maximum`, and enforced again by the nodes themselves (kernel configure, self-filter, voxel bridge; a deliberate mirror pinned by `tests/unit/test_perception_caps_mirror.py`). **`world_voxel_data_age_budget_s: float = 1.5`** (> 0): how old the world behind a grid may be at check time, from the grid's `source_stamp`; the kernel's `world_voxel_data_age_budget_ms` (Entry 034). Default = the Thor ZED-M measurement (p99 ~1.0 s, max 1.09 s, 2026-09-24); declare a measured value per rig. Independent of the deadline pair (they bound receipt, this bounds the world's age), so no ordering is imposed; smaller is only stricter. **`robot_self_filter_padding_m: float = 0.02`** (>= 0, PROVISIONAL, 2026-09-25, pending a Thor p99 measurement of the robot's own depth points outside its geometry): how far past the collision model a real depth return is removed as the robot by `robot_self_filter`; derive per rig from depth noise + extrinsic error + capture/joint-state sync motion + half a voxel. Also the width of the blind shell around the arm (Entry 035).
-  - `voxel_freshness_s -> tuple[float, float]` [@property] (L10095) — `(world_voxel_deadline_s, max_octree_age_s)` with the age defaulted to the deadline; what `openral deploy` forwards to the launch.
-- `class DeployScene(BaseModel)` — Unified deploy/workcell scene for `openral deploy sim`/`run`; `place_declaration` is the committed place-phase declaration for a direct dispatch (`None` means no place witness can arm), and a scene may not supply its own `place_declaration.region` since that must be producer-measured; `grasp_declaration` is the grasp-phase sibling under the same no-region rule (`_reject_scene_supplied_place_region` refuses both). No `tasks` field — deploy goals come from the operator via `--initial-task` / `/openral/prompt`. `robot_unit` names the cell's `RobotUnit` overlay (`$OPENRAL_ROBOT_UNIT` overrides). (L10168)
-  - `from_yaml(cls, path: str) -> Self` [@classmethod] — Load and validate a scene YAML from disk; inherited by `SimScene`/`BenchmarkScene`, which validate against their own stricter schemas. (L10335)
-- `class SimScene(DeployScene)` — Extends `DeployScene` with `task`, `seed`, `n_episodes`, `record_video`, `save_dir`, `metadata`; cross-validates `task.scene_id == scene.id`; accepted by `openral sim run`. (L10344)
-- `class BenchmarkScene(SimScene)` — Extends `SimScene` with required eval fields (`n_episodes`, `seed`, `metadata`, `task.success_key`, `task.max_steps`); consumed by `openral benchmark`. (L10371)
-- `class ProtocolSpec(BaseModel)` — Standalone eval-protocol schema, retained for decision-record drafts and report tooling that quote a published protocol verbatim; never embedded in a benchmark suite. (L10416)
+  - `model_post_init(_context: object) -> None` — Cross-field validation `task.scene_id == scene.id`. (L9729)
+- `class BenchmarkMetadata(BaseModel)` — Provenance block required on every `BenchmarkScene`; suite invariants treat it as byte-identical across scenes. (L9739)
+- `class LaunchInclude` — A vendor ROS 2 launch a deploy must bring up alongside the graph, since a `SensorDeployBinding` names a topic to subscribe to but not who publishes it. Carried by `DeployScene.drivers`, real path only. (L9763)
+- `class VisionAttachmentRuntime(BaseModel)` — `DeployRuntime.vision_attachment`: the real-hardware vision attachment leg (SAM 2.1 segmenter lifecycle node + the HAL's attachment-evidence bridge). Fields: `enabled: bool = False`, `camera: str` (manifest sensor), `rgb_topic` / `rgb_camera_info_topic` / `depth_topic` / `depth_camera_info_topic: str | None` (all four required when enabled: the leg projects only through the driver's CameraInfo, never the manifest's nominal intrinsics), `segmenter_manifest: str` (SAM 2.1 rSkill default), `device: str = "auto"`, `deadline_s: float = 0.25`, `evidence_timeout_s: float = 0.5`, `attach_effort` / `release_effort: float | None` (`None` = effort-limit fraction), `tf_frames: dict[str, str]` (manifest link → TF frame). Coupling rule: enabled on real it always turns the kernel's attached check on (`attached_collision_enabled`, 1000 ms deadline), never the leg alone. Default off pending Safety-WG review. (L9801)
+- `class DeployRuntime(BaseModel)` — Committed deploy-posture toggles for a workcell scene (SLAM, Nav2, octomap, object detector, reward monitor, critic, spatial-memory ingest), all tri-state with explicit CLI flag > scene `runtime:` > auto/built-in default precedence. **`vision_attachment: VisionAttachmentRuntime | None`** (scene-only): the vision attachment leg; `None`/off composes the graph exactly as without it. **`grasp_allowance_enabled: bool = False`** (scene-only): the safety kernel's grasp-target exemption, forwarded as `grasp_allowance_enabled:=true` only when on; the launch always passes the kernel `grasp_allowance_enabled` and the allowlist `grasp_contact_links` (the manifest's `role: gripper` joints' `child_link`s, omitted when empty; on with none is refused). Default off pending Safety-WG review. **`preload_rskill_id` / `preload_rskill_revision` / `preload_prompt`** (optional, scene-only): the rSkill the skill_runner resolves and loads right after it activates, in a worker thread, so the first `execute_rskill` goal finds it resident — the deadman watchdog opens its first-chunk window on goal ACCEPT, so a multi-minute cold load inside a goal is E-stopped, correctly; revision and prompt must be exactly what later goals send (resident key = id, revision, prompt). Forwarded as `preload_rskill_id:=` / `preload_rskill_revision:=` / `preload_prompt:=` only when set. (L9880) **`joint_states_topic: str | None`** (scene-only): explicit override for the `JointState` topic the deploy runtime's Python nodes ingest; `None` = derived by `openral_hal.hal_joint_states_topic` (a real ros2_control HAL's rate-limited `/<hal_node>/joint_states`, else `/joint_states`). The C++ kernel keeps the full-rate topic. `clock_origin` (`host_wall` | `simulation` | `None`) pins the graph's clock authority; `None` on a twin whose `octomap_cloud_topic` lies outside `/openral/cameras/` already selects `host_wall` (`simulation` with it is refused). **`world_voxel_deadline_s: float = 1.0`** / **`max_octree_age_s: float | None`**: the kernel's voxel deadline and the octomap bridge's octree-age bound, per rig (a source slower than ~1 Hz raises both); a validator refuses an age above the deadline so the kernel, not the bridge, fails closed (hazard log Entry 033). **Hard caps** (`_check_perception_caps`, 2x the pre-2026-09-25 values, refused at load with the field, the cap and why): `world_voxel_deadline_s <= 2.0`, `world_voxel_data_age_budget_s <= 3.0`, `robot_self_filter_padding_m <= 0.10`; also exported as the JSON Schema `maximum`, and enforced again by the nodes themselves (kernel configure, self-filter, voxel bridge; a deliberate mirror pinned by `tests/unit/test_perception_caps_mirror.py`). **`world_voxel_data_age_budget_s: float = 1.5`** (> 0): how old the world behind a grid may be at check time, from the grid's `source_stamp`; the kernel's `world_voxel_data_age_budget_ms` (Entry 034). Default = the Thor ZED-M measurement (p99 ~1.0 s, max 1.09 s, 2026-09-24); declare a measured value per rig. Independent of the deadline pair (they bound receipt, this bounds the world's age), so no ordering is imposed; smaller is only stricter. **`robot_self_filter_padding_m: float = 0.02`** (>= 0, PROVISIONAL, 2026-09-25, pending a Thor p99 measurement of the robot's own depth points outside its geometry): how far past the collision model a real depth return is removed as the robot by `robot_self_filter`; derive per rig from depth noise + extrinsic error + capture/joint-state sync motion + half a voxel. Also the width of the blind shell around the arm (Entry 035).
+  - `voxel_freshness_s -> tuple[float, float]` [@property] (L10115) — `(world_voxel_deadline_s, max_octree_age_s)` with the age defaulted to the deadline; what `openral deploy` forwards to the launch.
+- `class DeployScene(BaseModel)` — Unified deploy/workcell scene for `openral deploy sim`/`run`; `place_declaration` is the committed place-phase declaration for a direct dispatch (`None` means no place witness can arm), and a scene may not supply its own `place_declaration.region` since that must be producer-measured; `grasp_declaration` is the grasp-phase sibling under the same no-region rule (`_reject_scene_supplied_place_region` refuses both). No `tasks` field — deploy goals come from the operator via `--initial-task` / `/openral/prompt`. `robot_unit` names the cell's `RobotUnit` overlay (`$OPENRAL_ROBOT_UNIT` overrides). (L10188)
+  - `from_yaml(cls, path: str) -> Self` [@classmethod] — Load and validate a scene YAML from disk; inherited by `SimScene`/`BenchmarkScene`, which validate against their own stricter schemas. (L10361)
+- `class SimScene(DeployScene)` — Extends `DeployScene` with `task`, `seed`, `n_episodes`, `record_video`, `save_dir`, `metadata`; cross-validates `task.scene_id == scene.id`; accepted by `openral sim run`. (L10370)
+- `class BenchmarkScene(SimScene)` — Extends `SimScene` with required eval fields (`n_episodes`, `seed`, `metadata`, `task.success_key`, `task.max_steps`); consumed by `openral benchmark`. (L10397)
+- `class ProtocolSpec(BaseModel)` — Standalone eval-protocol schema, retained for decision-record drafts and report tooling that quote a published protocol verbatim; never embedded in a benchmark suite. (L10442)
   fields: `n_episodes, seeds, success_key, max_steps, min_reps`
-  - `model_post_init(_context: object) -> None` — Cross-field validation: `len(seeds) >= n_episodes` and `min_reps <= n_episodes`. (L10459)
+  - `model_post_init(_context: object) -> None` — Cross-field validation: `len(seeds) >= n_episodes` and `min_reps <= n_episodes`. (L10485)
 
 **Pydantic models — inference runner**
 
@@ -401,100 +401,100 @@ On-disk + runtime contracts for the hardware inference runner (`openral deploy -
   `BGR8, RGB8, MONO8, DEPTH16, JPEG, PNG, CUDA_NV12, CUDA_RGBA, RAW` — `CUDA_NV12` is the Tegra NVMM handle layout, `CUDA_RGBA` the x86 DeepStream one
 - `class SensorFrame(BaseModel)` — Single sensor frame: metadata plus optional inline/topic/handle payload; JSON-serializes the binary payload as base64. (L4198)
   fields: `sensor_id, stamp_monotonic_ns, stamp_wall_ns, encoding, width, height, channels, data, topic, handle, metadata`
-  - `_decode_data(cls, value: Any) -> bytes | None` [@field_validator("data", mode="before")] — Accepts raw `bytes` or a base64-encoded `str` on JSON parse. (L4245)
-  - `_encode_data(self, value: bytes | None) -> str | None` [@field_serializer("data", when_used="json")] — JSON-serializes the binary payload as base64. (L4261)
-  - `model_post_init(_context: object) -> None` — Cross-field validation: exactly one of `(data, topic, handle)` must be set. (L4265)
-- `class SensorReaderBackend(str, Enum)` — Which `SensorReader` implementation a sensor uses. (L10489)
+  - `_decode_data(cls, value: Any) -> bytes | None` [@field_validator("data", mode="before")] — Accepts raw `bytes` or a base64-encoded `str` on JSON parse. (L4265)
+  - `_encode_data(self, value: bytes | None) -> str | None` [@field_serializer("data", when_used="json")] — JSON-serializes the binary payload as base64. (L4281)
+  - `model_post_init(_context: object) -> None` — Cross-field validation: exactly one of `(data, topic, handle)` must be set. (L4285)
+- `class SensorReaderBackend(str, Enum)` — Which `SensorReader` implementation a sensor uses. (L10515)
   `OPENCV_THREAD, ROS2_IMAGE, GSTREAMER`
-- `class DeadlineOverrunPolicy(str, Enum)` — Behaviour when a tick exceeds `1 / rate_hz`. (L10517)
+- `class DeadlineOverrunPolicy(str, Enum)` — Behaviour when a tick exceeds `1 / rate_hz`. (L10543)
   `WARN, DROP, RAISE`
-- `class SensorReaderConfig(BaseModel)` — Per-sensor reader backend plus optional ROS-tee. (L10531)
+- `class SensorReaderConfig(BaseModel)` — Per-sensor reader backend plus optional ROS-tee. (L10557)
   fields: `sensor_id, backend, backend_params, max_age_ms, publish_to_ros, publish_topic, publish_rate_hz, publish_frame_id, publish_camera_info` — `publish_frame_id` stamps the tee's `Image`/`CameraInfo` headers (default `sensor_id`); `publish_camera_info: IntrinsicsPinhole | None` makes the tee also publish `CameraInfo` on the image topic's sibling.
-  - `model_post_init(self, _context: object) -> None` — Cross-field validation for the ROS tee: `publish_to_ros ↔ publish_topic`; `publish_frame_id` / `publish_camera_info` require `publish_to_ros`. (L10593)
-- `class SensorDeployBinding(BaseModel)` — Optional `SensorSpec.deploy_binding` payload letting `openral deploy run` open the physical camera; the runtime counterpart of `sim_placement`. Robot cameras carry it in their host's unit overlay (or `robot.yaml`); a deploy scene never touches them. (L10623)
-- `class SensorOverlay(BaseModel)` — Per-host / per-unit values for one robot-manifest sensor: `deploy_binding`, `ros2_topic`, `static_transform_xyz_rpy`, `intrinsics`; `extra="forbid"` refuses identity/semantics (`frame_id`, `parent_frame`, `modality`, …). (L10664)
+  - `model_post_init(self, _context: object) -> None` — Cross-field validation for the ROS tee: `publish_to_ros ↔ publish_topic`; `publish_frame_id` / `publish_camera_info` require `publish_to_ros`. (L10619)
+- `class SensorDeployBinding(BaseModel)` — Optional `SensorSpec.deploy_binding` payload letting `openral deploy run` open the physical camera; the runtime counterpart of `sim_placement`. Robot cameras carry it in their host's unit overlay (or `robot.yaml`); a deploy scene never touches them. (L10649)
+- `class SensorOverlay(BaseModel)` — Per-host / per-unit values for one robot-manifest sensor: `deploy_binding`, `ros2_topic`, `static_transform_xyz_rpy`, `intrinsics`; `extra="forbid"` refuses identity/semantics (`frame_id`, `parent_frame`, `modality`, …). (L10690)
   fields: `name, deploy_binding, ros2_topic, static_transform_xyz_rpy, intrinsics`
-- `class RobotUnit(BaseModel)` — One physical unit / host of a robot type, `robots/<robot_id>/units/<unit>.yaml`; selected by `$OPENRAL_ROBOT_UNIT` or `DeployScene.robot_unit`. (L10695)
+- `class RobotUnit(BaseModel)` — One physical unit / host of a robot type, `robots/<robot_id>/units/<unit>.yaml`; selected by `$OPENRAL_ROBOT_UNIT` or `DeployScene.robot_unit`. (L10721)
   fields: `schema_version, robot_id, unit, sensors`
-  - `from_yaml(path) -> RobotUnit` [@classmethod] (L10720)
-- `class HalConfig(BaseModel)` — Which HAL adapter to instantiate plus transport params (serial port / FCI URI / ROS namespace). (L10745)
+  - `from_yaml(path) -> RobotUnit` [@classmethod] (L10746)
+- `class HalConfig(BaseModel)` — Which HAL adapter to instantiate plus transport params (serial port / FCI URI / ROS namespace). (L10771)
   fields: `adapter, transport, params`
-- `class TickResult(BaseModel)` — One tick's record returned by `InferenceRunner.tick`; optional sim-only fields and trace context default to `None` so hardware ticks serialize unchanged from v1. (L10778)
+- `class TickResult(BaseModel)` — One tick's record returned by `InferenceRunner.tick`; optional sim-only fields and trace context default to `None` so hardware ticks serialize unchanged from v1. (L10804)
   fields: `stamp_ns, tick_idx, sensors_ms, world_state_ms, inference_ms, safety_ms, hal_ms, tick_ms, chunk_index, safety_violations, action_applied, step_idx, episode_idx, reward, terminated, truncated`
-- `class RunResult(BaseModel)` — Aggregated summary returned by `InferenceRunner.run`. (L10864)
+- `class RunResult(BaseModel)` — Aggregated summary returned by `InferenceRunner.run`. (L10890)
   fields: `n_ticks, success, budget_violations, avg_inference_ms, p99_inference_ms, avg_tick_ms, p99_tick_ms, trace_id, save_dir, metadata`
 
 **Pydantic models — failure evidence**
 
 Discriminated union backing the `evidence_json` field of `openral_msgs/msg/FailureTrigger`. Discriminator is `kind`; decode via `pydantic.TypeAdapter(FailureEvidence).validate_json(...)`. All variants are frozen and reject extra fields.
 
-- `class _FailureEvidenceBase(BaseModel)` — Private base. (L10900)
-- `class TimeoutEvidence` (L10911) — `kind="timeout"`; fields `operation, deadline_s, elapsed_s`.
-- `class ForceEvidence` (L10928) — `kind="force"`; fields `joint_or_ee, measured_n, limit_n`.
-- `class WorkspaceEvidence` (L10944) — `kind="workspace"`; fields `ee_name, measured_xyz, box_min, box_max`.
-- `class PerceptionStaleEvidence` (L10962) — `kind="perception"`; fields `sensor_id, staleness_ms, threshold_ms`.
-- `class CriticEvidence` (L10978) — `kind="critic"`; fields `critic_id, score, threshold`.
-- `class ControllerEvidence` (L10994) — `kind="controller"`; fields `controller_name, state, detail`.
-- `class SelfVerifyEvidence` (L11010) — `kind="selfverify"`; fields `check, expected, observed`.
-- `class HumanEvidence` (L11026) — `kind="human"`; fields `actor, reason`.
-- `class WamEvidence` (L11040) — `kind="wam"`; fields `horizon, discrepancy, wam_id`.
-- `class ReasonerTimeoutEvidence` (L11056) — `kind="reasoner_timeout"`; fields `model, deadline_s, elapsed_s`.
-- `class CollisionEvidence` (L11072) — `kind="collision"`; `horizon_step=-1` (`REACTIVE_HORIZON_STEP`) marks the kernel's reactive measured-state check rather than a predicted chunk step; `joint_positions_rad` is the FK'd configuration for that step, making a predicted stop adjudicatable. Maps to `FailureTrigger.KIND_COLLISION`.
+- `class _FailureEvidenceBase(BaseModel)` — Private base. (L10926)
+- `class TimeoutEvidence` (L10937) — `kind="timeout"`; fields `operation, deadline_s, elapsed_s`.
+- `class ForceEvidence` (L10954) — `kind="force"`; fields `joint_or_ee, measured_n, limit_n`.
+- `class WorkspaceEvidence` (L10970) — `kind="workspace"`; fields `ee_name, measured_xyz, box_min, box_max`.
+- `class PerceptionStaleEvidence` (L10988) — `kind="perception"`; fields `sensor_id, staleness_ms, threshold_ms`.
+- `class CriticEvidence` (L11004) — `kind="critic"`; fields `critic_id, score, threshold`.
+- `class ControllerEvidence` (L11020) — `kind="controller"`; fields `controller_name, state, detail`.
+- `class SelfVerifyEvidence` (L11036) — `kind="selfverify"`; fields `check, expected, observed`.
+- `class HumanEvidence` (L11052) — `kind="human"`; fields `actor, reason`.
+- `class WamEvidence` (L11066) — `kind="wam"`; fields `horizon, discrepancy, wam_id`.
+- `class ReasonerTimeoutEvidence` (L11082) — `kind="reasoner_timeout"`; fields `model, deadline_s, elapsed_s`.
+- `class CollisionEvidence` (L11098) — `kind="collision"`; `horizon_step=-1` (`REACTIVE_HORIZON_STEP`) marks the kernel's reactive measured-state check rather than a predicted chunk step; `joint_positions_rad` is the FK'd configuration for that step, making a predicted stop adjudicatable. Maps to `FailureTrigger.KIND_COLLISION`.
   fields: `collision_kind: Literal["self"|"world"], link_a, link_b_or_object, horizon_step, min_distance_m, joint_positions_rad: list[float]`
   - `REACTIVE_HORIZON_STEP: ClassVar[int]` — the `-1` sentinel; use it instead of a literal.
-  - `is_reactive` (property) — `True` when `horizon_step == REACTIVE_HORIZON_STEP`. (L11129)
-- `class SuppressedSummaryEvidence` (L11134) — `kind="suppressed_summary"`; fields `window_s, kinds: list[int], severities: list[int], counts: list[int]`. A model-validator enforces the arrays stay parallel.
-- `FailureEvidence: TypeAlias` (L11168) — Discriminated union over the twelve variants above.
+  - `is_reactive` (property) — `True` when `horizon_step == REACTIVE_HORIZON_STEP`. (L11155)
+- `class SuppressedSummaryEvidence` (L11160) — `kind="suppressed_summary"`; fields `window_s, kinds: list[int], severities: list[int], counts: list[int]`. A model-validator enforces the arrays stay parallel.
+- `FailureEvidence: TypeAlias` (L11194) — Discriminated union over the twelve variants above.
 
 **Pydantic models — perception event metadata**
 
 Discriminated union backing the `metadata_json` field of `openral_msgs/msg/PromptStamped` when published on `/openral/perception/<kind>`. Discriminator is `kind`; decode via `pydantic.TypeAdapter(PerceptionEventMetadata).validate_json(...)`. New kinds mean new topics, not a schema bump.
 
-- `class _PerceptionEventBase(BaseModel)` — Private base; carries `sensor_id`. (L11203)
-- `class ObjectDetection2D(BaseModel)` (L11222) — Single 2D detection inside `ObjectsMetadata`; `det_id` is a stable per-detector/per-camera identity assigned at detection time, letting an object be de-duplicated without the 3D lift, then propagated into `DetectedObject.track_id`.
+- `class _PerceptionEventBase(BaseModel)` — Private base; carries `sensor_id`. (L11229)
+- `class ObjectDetection2D(BaseModel)` (L11248) — Single 2D detection inside `ObjectsMetadata`; `det_id` is a stable per-detector/per-camera identity assigned at detection time, letting an object be de-duplicated without the 3D lift, then propagated into `DetectedObject.track_id`.
   fields: `label, confidence, bbox_xyxy, det_id: int = -1`
-- `class MotionMetadata` (L11251) — `kind="motion"`; fields `magnitude, threshold, region_bbox`.
-- `class ObjectsMetadata` (L11274) — `kind="objects"`; `frame_width`/`frame_height` make the pixel space of `bbox_xyxy` explicit so the voxel lifter can scale it to the camera's intrinsics resolution.
+- `class MotionMetadata` (L11277) — `kind="motion"`; fields `magnitude, threshold, region_bbox`.
+- `class ObjectsMetadata` (L11300) — `kind="objects"`; `frame_width`/`frame_height` make the pixel space of `bbox_xyxy` explicit so the voxel lifter can scale it to the camera's intrinsics resolution.
   fields: `detections: list[ObjectDetection2D], model_id, frame_width: int (>0), frame_height: int (>0)`
-- `class OcrMetadata` (L11299) — `kind="ocr"`; fields `text, confidence, region_bbox`.
-- `class SceneChangeMetadata` (L11317) — `kind="scene_change"`; fields `distance, threshold, metric`.
-- `PerceptionEventMetadata: TypeAlias` (L11340) — Discriminated union over the four variants above.
+- `class OcrMetadata` (L11325) — `kind="ocr"`; fields `text, confidence, region_bbox`.
+- `class SceneChangeMetadata` (L11343) — `kind="scene_change"`; fields `distance, threshold, metric`.
+- `PerceptionEventMetadata: TypeAlias` (L11366) — Discriminated union over the four variants above.
 
 **Pydantic models — reasoner tool calls**
 
 Discriminated union over the closed palette of typed tool calls the reasoner can emit each tick. Discriminator is `tool`; decode via `pydantic.TypeAdapter(ReasonerToolCall).validate_json(...)`. All variants are frozen and reject extra fields so an LLM cannot smuggle ad-hoc ones onto the wire. The reasoner holds no direct actuation authority — it never publishes `ActionChunk` itself; `ExecuteRskillTool` dispatches indirectly via the action server, which gates through safety.
 
-- `class _ReasonerToolBase(BaseModel)` — Private base; carries optional `rationale`. (L11581)
-- `class ExecuteRskillTool` (L11616) — `tool="execute_rskill"`; fields `rskill_id: str` (min_length=1), `prompt: str` (default ""), `goal_params_json: str` (default ""), `deadline_s: float` (ge=0.0; default 0.0; 0 = use manifest latency budget), `patience_s: float | None` (default None; gt=0.0; task-adaptive execution ceiling override — None uses the reward model's `default_patience_s`), `progress_tolerance: float | None` (default None; ge=0.0; overrides the reward model's `plateau_tolerance` for a noisy critic — None uses the model default).
-- `class ReloadGstPipelineTool` (L11666) — `tool="reload_gst_pipeline"`; fields `sensor_id, pipeline_yaml`.
-- `class LifecycleTransitionTool` (L11690) — `tool="lifecycle_transition"`; `shutdown` is deliberately absent — that authority belongs to the safety supervisor. Canonical primitive for managing long-lived background services (slam_toolbox, RTAB-Map, perception trees), which are LifecycleNode peers, not rSkills.
+- `class _ReasonerToolBase(BaseModel)` — Private base; carries optional `rationale`. (L11607)
+- `class ExecuteRskillTool` (L11642) — `tool="execute_rskill"`; fields `rskill_id: str` (min_length=1), `prompt: str` (default ""), `goal_params_json: str` (default ""), `deadline_s: float` (ge=0.0; default 0.0; 0 = use manifest latency budget), `patience_s: float | None` (default None; gt=0.0; task-adaptive execution ceiling override — None uses the reward model's `default_patience_s`), `progress_tolerance: float | None` (default None; ge=0.0; overrides the reward model's `plateau_tolerance` for a noisy critic — None uses the model default).
+- `class ReloadGstPipelineTool` (L11692) — `tool="reload_gst_pipeline"`; fields `sensor_id, pipeline_yaml`.
+- `class LifecycleTransitionTool` (L11716) — `tool="lifecycle_transition"`; `shutdown` is deliberately absent — that authority belongs to the safety supervisor. Canonical primitive for managing long-lived background services (slam_toolbox, RTAB-Map, perception trees), which are LifecycleNode peers, not rSkills.
   fields: `node, transition: Literal["configure"|"activate"|"deactivate"|"cleanup"]`
-- `class EmitPromptTool` (L11714) — `tool="emit_prompt"`; the reasoner node publishes on `target_topic` itself via a per-topic publisher cache.
+- `class EmitPromptTool` (L11740) — `tool="emit_prompt"`; the reasoner node publishes on `target_topic` itself via a per-topic publisher cache.
   fields: `target_topic` (must start with `/`), `text`, `metadata_json`
-- `class WaitTool` — deliberate no-op; `tool="wait"`, no fields beyond `rationale`. Since the reasoner's tool choice is forced, this lets the LLM choose "observe and wait" instead of acting every tick. No actuation authority. (L12100)
-- `class RecallObjectTool` — read-only query; `tool="recall_object"`; recalls an object from the scene-graph memory. No actuation authority. Dispatch is planned Phase 2, not yet in the live provider palette. (L11742)
+- `class WaitTool` — deliberate no-op; `tool="wait"`, no fields beyond `rationale`. Since the reasoner's tool choice is forced, this lets the LLM choose "observe and wait" instead of acting every tick. No actuation authority. (L12126)
+- `class RecallObjectTool` — read-only query; `tool="recall_object"`; recalls an object from the scene-graph memory. No actuation authority. Dispatch is planned Phase 2, not yet in the live provider palette. (L11768)
   fields: `query` (free-text/label), `limit`
-- `class ResolvePlaceTool` — read-only query; `tool="resolve_place"`; resolves a place/room/agent to a goal pose plus path. No actuation authority. Dispatch is planned Phase 2. (L11764)
+- `class ResolvePlaceTool` — read-only query; `tool="resolve_place"`; resolves a place/room/agent to a goal pose plus path. No actuation authority. Dispatch is planned Phase 2. (L11790)
   fields: `reference` ("the kitchen", "where I was standing")
-- `class LocateInViewTool` — read-only query; `tool="locate_in_view"`; asks a live VLM detector whether an object is in the current frame (vs `recall_object`'s remembered objects). No actuation authority. (L11781)
+- `class LocateInViewTool` — read-only query; `tool="locate_in_view"`; asks a live VLM detector whether an object is in the current frame (vs `recall_object`'s remembered objects). No actuation authority. (L11807)
   fields: `query` (concrete object noun(s)), `camera` (optional viewpoint id, default primary), `detector` (optional locator selector, default the deployment default)
-- `class QuerySceneTool` — read-only query; `tool="query_scene"`; asks a scene VLM an open-ended question about the current frame, answer fed back as a re-prompt. Distinct from `locate_in_view`: returns free text, not boxes. (L11827)
+- `class QuerySceneTool` — read-only query; `tool="query_scene"`; asks a scene VLM an open-ended question about the current frame, answer fed back as a re-prompt. Distinct from `locate_in_view`: returns free text, not boxes. (L11853)
   fields: `question` (open-ended scene-state question, min_length=1), `camera` (optional viewpoint id)
-- `class QueryTaskProgressTool` — read-only query; `tool="query_task_progress"`; asks the reward monitor for a windowed progress/success assessment, fed back to drive the replanning ladder. Distinct from `query_scene`: returns normalized scalars, not free text. (L11860)
+- `class QueryTaskProgressTool` — read-only query; `tool="query_task_progress"`; asks the reward monitor for a windowed progress/success assessment, fed back to drive the replanning ladder. Distinct from `query_scene`: returns normalized scalars, not free text. (L11886)
   fields: `window_s` (seconds of recent frames to assess, > 0, default 8.0), `task` (optional instruction override)
 - `MemorySection: TypeAlias = Literal[...]` — the five fixed sections of the self-maintained `MEMORY.md` core: `home_map`, `preferences`, `lessons`, `object_locations`, `open_tasks`.
-- `class MemoryWriteTool` — write; the reasoner's first write-capable variant; `tool="memory_write"`; edits the advisory `MEMORY.md` via an explicit add/update/supersede/delete op. Writes the memory file only — no actuation authority. (L11905)
+- `class MemoryWriteTool` — write; the reasoner's first write-capable variant; `tool="memory_write"`; edits the advisory `MEMORY.md` via an explicit add/update/supersede/delete op. Writes the memory file only — no actuation authority. (L11931)
   fields: `op` (`add`/`update`/`supersede`/`delete`), `section: MemorySection`, `content` (required unless `delete`), `importance` (0–1, default 0.5), `target` (required for `update`/`supersede`/`delete`)
-- `class MemorySearchTool` — read-only; `tool="memory_search"`; pages archived entries evicted from the bounded core back in. No actuation. (L11946)
+- `class MemorySearchTool` — read-only; `tool="memory_search"`; pages archived entries evicted from the bounded core back in. No actuation. (L11972)
   fields: `query` (min_length=1), `section: MemorySection | None`, `limit` (1–100, default 5)
-- `is_collective_target(text) -> bool` — True when `text` targets a set rather than one specific object (a quantifier or bare generic plural); shared by `GroundedSubtask`'s validator and the reasoner node's runtime execute gate. (L11982)
-- `_COLLECTIVE_TARGET_RE: re.Pattern[str]` — Backing regex for `is_collective_target`. (L11976)
-- `class GroundedSubtask` — One subtask bound to exactly one specific object; a validator forbids a collective `object_ref`/`text` and requires `text` to name `object_ref`, so "the first batch of objects" isn't representable. (L11998)
+- `is_collective_target(text) -> bool` — True when `text` targets a set rather than one specific object (a quantifier or bare generic plural); shared by `GroundedSubtask`'s validator and the reasoner node's runtime execute gate. (L12008)
+- `_COLLECTIVE_TARGET_RE: re.Pattern[str]` — Backing regex for `is_collective_target`. (L12002)
+- `class GroundedSubtask` — One subtask bound to exactly one specific object; a validator forbids a collective `object_ref`/`text` and requires `text` to name `object_ref`, so "the first batch of objects" isn't representable. (L12024)
   fields: `object_ref: str` (min_length=1), `text: str` (min_length=1)
-  - `render(self) -> str` — The instruction string handed to `MissionState` / the skill. (L12053)
-- `class DecomposeMissionTool` — task-ledger write; `tool="decompose_mission"`; the typed path for a playbook to write the deterministic `MissionState` — empty `target_task_id` replaces the whole queue, a set one flat-splices into that blocked task. Edits the S2 task ledger only, no actuation authority. (L12058)
+  - `render(self) -> str` — The instruction string handed to `MissionState` / the skill. (L12079)
+- `class DecomposeMissionTool` — task-ledger write; `tool="decompose_mission"`; the typed path for a playbook to write the deterministic `MissionState` — empty `target_task_id` replaces the whole queue, a set one flat-splices into that blocked task. Edits the S2 task ledger only, no actuation authority. (L12084)
   fields: `subtasks: list[GroundedSubtask]` (min_length=1), `target_task_id: str` (default `""`)
-  - `rendered_subtasks(self) -> list[str]` — The ordered subtask instruction strings for `MissionState`. (L12095)
+  - `rendered_subtasks(self) -> list[str]` — The ordered subtask instruction strings for `MissionState`. (L12121)
 - `ReasonerToolCall: TypeAlias` — Discriminated union over the thirteen variants above.
 
 **Module-level functions (Layer 0)**
