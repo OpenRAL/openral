@@ -206,7 +206,9 @@ class RosControlTransport:
         self._node = node
         self._joint_names = list(joint_names)
         self._joint_state_topic = joint_state_topic
-        self._latest: dict[str, tuple[float, float, float]] = {}
+        # Effort is `None` for a joint whose message carried no effort value: an
+        # absent channel must stay distinguishable from a zero (unloaded) reading.
+        self._latest: dict[str, tuple[float, float, float | None]] = {}
         self._last_arrival: float = 0.0
 
         command_qos = QoSProfile(
@@ -404,21 +406,25 @@ class RosControlTransport:
         """Return the newest joint state, projected onto the HAL's joint order.
 
         Includes `name` so a HAL that reorders by name (OpenArm) sees what
-        actually arrived rather than an assumed layout.
+        actually arrived rather than an assumed layout. Positions and velocities
+        of an unheard joint read as 0.0; `effort` is `[]` unless every joint
+        carries a real effort value, so a driver that publishes no effort reads
+        as "no effort channel" rather than as an unloaded gripper.
         """
         positions: list[float] = []
         velocities: list[float] = []
-        efforts: list[float] = []
+        efforts: list[float | None] = []
         for name in self._joint_names:
-            p, v, e = self._latest.get(name, (0.0, 0.0, 0.0))
+            p, v, e = self._latest.get(name, (0.0, 0.0, None))
             positions.append(p)
             velocities.append(v)
             efforts.append(e)
+        complete = [e for e in efforts if e is not None]
         return {
             "name": list(self._joint_names),
             "position": positions,
             "velocity": velocities,
-            "effort": efforts,
+            "effort": complete if len(complete) == len(efforts) else [],
         }
 
     def last_arrival(self) -> float:
@@ -622,7 +628,7 @@ class RosControlTransport:
             self._latest[str(name)] = (
                 positions[i] if i < len(positions) else 0.0,
                 velocities[i] if i < len(velocities) else 0.0,
-                efforts[i] if i < len(efforts) else 0.0,
+                efforts[i] if i < len(efforts) else None,
             )
         self._last_arrival = time.monotonic()
 
