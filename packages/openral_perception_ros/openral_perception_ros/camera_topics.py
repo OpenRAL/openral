@@ -17,7 +17,33 @@ from collections.abc import Sequence
 
 from openral_core import ROSConfigError
 
-__all__ = ["resolve_camera_topics"]
+__all__ = ["parse_camera_entries", "resolve_camera_topics"]
+
+
+def parse_camera_entries(entries: Sequence[str]) -> dict[str, str]:
+    """Parse ``"id=topic"`` strings into an ordered camera-id → topic map.
+
+    The parsing half of :func:`resolve_camera_topics`, with no fallback: used
+    as-is for optional per-camera side streams such as the segmenter's
+    ``camera_infos``, where "none configured" is a valid answer.
+
+    Args:
+        entries: ``"id=topic"`` strings. Empty strings and entries missing
+            either half are skipped (rclpy's empty string array is ``[""]``).
+
+    Returns:
+        Camera id → topic, in declaration order; possibly empty.
+
+    Example:
+        >>> parse_camera_entries(["", "head=/zed/camera_info", "bad"])
+        {'head': '/zed/camera_info'}
+    """
+    cameras: dict[str, str] = {}
+    for entry in entries:
+        cid, _, topic = entry.partition("=")
+        if cid and topic:
+            cameras[cid] = topic
+    return cameras
 
 
 def resolve_camera_topics(
@@ -56,13 +82,7 @@ def resolve_camera_topics(
         >>> resolve_camera_topics([""], primary_camera="", image_topic="/cam/image")
         {'default': '/cam/image'}
     """
-    cameras: dict[str, str] = {}
-    for entry in entries:
-        if not entry:
-            continue
-        cid, _, topic = entry.partition("=")
-        if cid and topic:
-            cameras[cid] = topic
+    cameras = parse_camera_entries(entries)
     if not cameras:
         if not image_topic:
             raise ROSConfigError(
