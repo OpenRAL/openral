@@ -382,18 +382,9 @@ _Package and publish a local rSkill directory to the HF Hub._
 
 Measures the wire cost of the dense `uint8[]` payload as publish→receive latency, i.e. map staleness. Result is transport- and host-specific.
 
-### `tools/depth_extrinsic_check.py`
-
-- `check(args) -> int` (L357) — Reads the depth cloud, the camera-internal TF (`frame_id -> cloud frame`) and, when the sensor's `parent_frame` is not the manifest's `base_frame` (G1 head on `torso_link`, SO-100/101 wrist on `gripper`, Galaxea A1 wrist on `arm_seg6`), the recorded `base_frame -> parent_frame` TF chain at each cloud's stamp — refusing if that chain moved during the recording or is missing. Places the cloud through the `--sensor` pose a deploy of `--unit` publishes (the manifest entry with that `RobotUnit`'s `SensorOverlay` applied; a robot that ships `units/` requires `--unit`, via `_unit_description`), fits the table plane and marker centroids in the base frame, and writes a JSON report (residuals, pass/fail, `base_frame`, `parent_in_base_xyz_rpy`, and `suggested_static_transform_xyz_rpy` in `parent_frame`, to be copied into the unit overlay — or the manifest, for a robot without units; the report records the unit). Returns 0 iff it passes against the `openral_core.depth_extrinsic` limits.
-- `verify(args) -> int` (L430) — `openral_core.depth_extrinsic.verify_extrinsic_report` for one sensor: 0 iff the report passed, at criteria no looser than the shipped limits, for the same unit and that unit's *current* pose. `openral deploy run` applies the same check itself.
-- `main(argv=None) -> int` (L453) — CLI: `check --robot --sensor --bag --cloud-topic --table-z --table-roi --marker X Y ...` / `verify --robot --sensor [--unit] [--report]` (`--sensor` required; `--unit` selects `robots/<id>/units/<unit>.yaml`; report defaults to `robots/<id>/calibration/<unit>/<sensor>_extrinsic.json`, or `calibration/<sensor>_extrinsic.json` without units). RGB-only sensors are refused (exit 2): no cloud to fit. Needs a sourced ROS 2 overlay (rosbag2_py, tf2_ros).
-
-Measures the one input the kernel's world-voxel check trusts absolutely on a real depth camera — the extrinsic — which `openral calibrate camera` (intrinsics only) does not. Runbook: `docs/tutorials/deploy/openarm-real-world-voxel-check.md`. Tested in `tests/unit/test_depth_extrinsic_check.py` on real rosbag2 bags (OpenArm `head_zed`, G1 `head`, SO-101 `wrist`; `--unit` on a unit overlay).
-
 ### `tools/openarm_world_voxel_run.sh`
 
-_The only sanctioned launcher for `scenes/deploy/openarm_real_world_voxels.yaml`. Refuses unless `OPENRAL_OPENARM_ALLOW_MOTION=1` and `OPENRAL_OPENARM_ATTENDED=1`, `OPENRAL_ROBOT_UNIT` naming the cell, sourced ROS 2, `openral` on PATH, `depth_extrinsic_check.py verify --sensor head_zed --unit $OPENRAL_ROBOT_UNIT` passing against `robots/openarm/robot.yaml` + `robots/openarm/calibration/<unit>/head_zed_extrinsic.json` (early refusal; `openral deploy run` re-applies the gate), and an interactive terminal; then asks for a typed confirmation and execs `openral deploy run`. Extra args pass through._
-
+_The only sanctioned launcher for `scenes/deploy/openarm_real_world_voxels.yaml`. Refuses unless `OPENRAL_OPENARM_ALLOW_MOTION=1` and `OPENRAL_OPENARM_ATTENDED=1`, `OPENRAL_ROBOT_UNIT` naming the cell, sourced ROS 2, `openral` on PATH, `openral deploy run` resolving this checkout's `robots/openarm/robot.yaml`, that unit's overlay declaring head_zed's mount (`openral_core.depth_extrinsic.depth_extrinsic_problems`, the same gate `deploy run` applies, refused here before the operator confirms), an interactive terminal and the typed confirmation `ESTOP IN HAND`; only observability flags pass through to `openral deploy run`._
 ### `tools/stop_ee_speed.py`
 
 - `REPO_ROOT: Path` (L49) — Repo root, derived from `__file__`.

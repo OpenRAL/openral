@@ -6,11 +6,10 @@
 # step by step; this header is the short form, not a substitute.
 #
 # Preconditions, ALL of them, every run:
-#   1. OPENRAL_ROBOT_UNIT names this cell, and head_zed's extrinsic is calibrated
-#      AND verified for exactly that unit's pose (robots/openarm/units/<unit>.yaml
-#      over the manifest's nominal): a passing report from
-#      `tools/depth_extrinsic_check.py check --sensor head_zed --unit <unit>` committed at
-#      robots/openarm/calibration/<unit>/head_zed_extrinsic.json. A mis-framed
+#   1. OPENRAL_ROBOT_UNIT names this cell, and that unit's overlay
+#      (robots/openarm/units/<unit>.yaml) declares head_zed's calibrated mount
+#      (static_transform_xyz_rpy), measured by you: OpenRAL does not calibrate
+#      it, and `deploy run` refuses the manifest's nominal mount. A mis-framed
 #      cloud is not a bad picture here: it puts obstacles where there are none
 #      (false E-stops) and, worse, moves real obstacles away from where they
 #      are (missed stops). The Thor and Orin cells have different ZED mounts, so

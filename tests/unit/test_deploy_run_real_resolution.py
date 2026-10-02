@@ -16,7 +16,6 @@ from typing import Any
 
 import pytest
 from openral_cli.deploy_sim import LaunchInvocation, resolve_launch_invocation
-from openral_core import SensorSpec
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 
 
@@ -170,36 +169,6 @@ class TestSimModeUnchanged:
         assert inv.hal_params["hal_mode"] == "sim"
 
 
-def _passing_report(spec: SensorSpec, base_frame: str) -> dict[str, object]:
-    """A ``tools/depth_extrinsic_check.py check`` report that clears ``spec``'s pose."""
-    from openral_core.depth_extrinsic import (
-        MAX_HEIGHT_ERR_M,
-        MAX_MARKER_ERR_M,
-        MAX_TILT_DEG,
-        MIN_MARKERS,
-    )
-
-    markers = [
-        {"expected_xy": [0.4, y], "measured_xy": [0.4, y], "error_m": 0.002} for y in (-1, 1)
-    ]
-    return {
-        "sensor": spec.name,
-        "parent_frame": spec.parent_frame,
-        "frame_id": spec.frame_id,
-        "base_frame": base_frame,
-        "static_transform_xyz_rpy": list(spec.static_transform_xyz_rpy or ()),
-        "criteria": {
-            "max_tilt_deg": MAX_TILT_DEG,
-            "max_height_err_m": MAX_HEIGHT_ERR_M,
-            "max_marker_err_m": MAX_MARKER_ERR_M,
-            "min_markers": MIN_MARKERS,
-        },
-        "residuals": {"tilt_deg": 0.1, "height_err_m": 0.001, "markers": markers},
-        "passed": True,
-        "failures": [],
-    }
-
-
 #: A real depth driver's cloud. A real deploy with a depth camera and nothing pinned is
 #: refused before the extrinsic gate (no in-tree node publishes a real cloud), so these
 #: tests pin one the way a real scene's ``runtime.octomap_cloud_topic`` does.
@@ -231,11 +200,12 @@ def _resolve_real(robot_id: str, **kwargs: Any) -> LaunchInvocation:
 
 
 class TestDepthExtrinsicPreflight:
-    """A real deploy with the world-voxel check on refuses an unverified depth extrinsic.
+    """A real deploy with the world-voxel check on refuses an undeclared depth mount.
 
-    Galaxea A1 is a real-HAL robot whose manifest ``wrist`` camera (on ``arm_seg6``) is
-    RGB in-tree; it is made a depth camera here, in a copy served via
-    ``OPENRAL_ROBOTS_DIR``, which is how ``deploy run`` resolves manifests.
+    OpenRAL does not measure a depth camera's extrinsic; the operator does, and declares
+    it in the unit overlay. Galaxea A1 is a real-HAL robot whose manifest ``wrist``
+    camera (on ``arm_seg6``) is RGB in-tree; it is made a depth camera here, in a copy
+    served via ``OPENRAL_ROBOTS_DIR``, which is how ``deploy run`` resolves manifests.
     """
 
     @pytest.fixture
@@ -252,87 +222,53 @@ class TestDepthExtrinsicPreflight:
         monkeypatch.setenv("OPENRAL_ROBOTS_DIR", str(tmp_path / "robots"))
         return out
 
-    def _write_report(self, robot_dir: Path, **edit: object) -> None:
-        import json
+    @staticmethod
+    def _write_unit(robot_dir: Path, unit: str, sensors: list[dict[str, object]]) -> None:
+        import yaml
 
-        from openral_core import RobotDescription
-        from openral_core.depth_extrinsic import extrinsic_report_path
+        (robot_dir / "units").mkdir(exist_ok=True)
+        doc = {"robot_id": "galaxea_a1", "unit": unit, "sensors": sensors}
+        (robot_dir / "units" / f"{unit}.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
 
-        desc = RobotDescription.from_yaml(str(robot_dir / "robot.yaml"))
-        (spec,) = [s for s in desc.sensors if s.name == "wrist"]
-        report = {**_passing_report(spec, desc.base_frame), **edit}
-        path = extrinsic_report_path(robot_dir / "robot.yaml", "wrist")
-        path.parent.mkdir()
-        path.write_text(json.dumps(report), encoding="utf-8")
-
-    def test_refuses_without_a_report(self, robot_dir: Path) -> None:
-        with pytest.raises(ROSConfigError, match=r"wrist: no extrinsic report"):
+    def test_refuses_the_manifests_nominal_mount(self, robot_dir: Path) -> None:
+        """No ``units/``: the only mount is the manifest's nominal one, which proves nothing."""
+        with pytest.raises(ROSConfigError, match=r"wrist: mount is the manifest's nominal"):
             _resolve_real("galaxea_a1")
 
-    def test_launches_with_a_verified_report(self, robot_dir: Path) -> None:
-        self._write_report(robot_dir)
+    def test_refuses_a_unit_that_declares_no_mount(
+        self, robot_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A unit overlay that only binds the camera still leaves its pose nominal."""
+        self._write_unit(robot_dir, "cell_a", [{"name": "wrist"}])
+        monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "cell_a")
+        with pytest.raises(ROSConfigError, match=r"wrist: mount is the manifest's nominal"):
+            _resolve_real("galaxea_a1")
+
+    def test_launches_with_the_units_declared_mount(
+        self, robot_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._write_unit(
+            robot_dir,
+            "cell_a",
+            [{"name": "wrist", "static_transform_xyz_rpy": [0.06, 0.0, 0.03, 0.0, 0.45, 0.0]}],
+        )
+        monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "cell_a")
         inv = _resolve_real("galaxea_a1")
         assert "enable_octomap_kernel_check:=true" in inv.argv_template
-
-    def test_refuses_a_stale_report(self, robot_dir: Path) -> None:
-        self._write_report(robot_dir, static_transform_xyz_rpy=[0.05, 0.0, 0.03, 0.0, 0.41, 0.0])
-        with pytest.raises(ROSConfigError, match=r"wrist: manifest pose .* != checked pose"):
-            _resolve_real("galaxea_a1")
-
-    def test_refuses_a_failed_report(self, robot_dir: Path) -> None:
-        self._write_report(robot_dir, passed=False, failures=["tilt"])
-        with pytest.raises(ROSConfigError, match=r"wrist: report did not pass"):
-            _resolve_real("galaxea_a1")
 
     def test_not_gated_when_the_world_voxel_check_is_off(self, robot_dir: Path) -> None:
         inv = _resolve_real("galaxea_a1", enable_octomap_kernel_check=False)
         assert "enable_octomap_kernel_check:=false" in inv.argv_template
 
-    def test_the_committed_openarm_refuses_until_calibrated(
+    def test_the_committed_openarm_units_gate_on_their_declared_mount(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """head_zed is a depth camera with no committed report: bare `deploy run` refuses."""
-        if Path("robots/openarm/calibration/thor/head_zed_extrinsic.json").exists():
-            pytest.skip("a head_zed calibration report is committed")
+        """Thor's overlay declares head_zed's calibrated mount, so bare `deploy run` with that
+        unit passes the gate (its correctness is the operator's); Orin's does not yet, so the
+        same launch refuses there."""
         monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
-        with pytest.raises(ROSConfigError, match=r"head_zed: no extrinsic report .*/thor/"):
-            _resolve_real("openarm")
-
-    def test_a_unit_is_gated_on_its_own_pose_and_report(
-        self, robot_dir: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """With ``units/``, the preflight checks the selected unit's overlaid pose against
-        ``calibration/<unit>/``: the manifest-pose report at the unit-less path clears
-        nothing, and a report must name the unit it was measured on."""
-        import json
-
-        import yaml
-        from openral_core import RobotDescription
-        from openral_core.depth_extrinsic import extrinsic_report_path
-
-        unit_pose = [0.06, 0.0, 0.03, 0.0, 0.45, 0.0]
-        (robot_dir / "units").mkdir()
-        doc = {
-            "robot_id": "galaxea_a1",
-            "unit": "cell_a",
-            "sensors": [{"name": "wrist", "static_transform_xyz_rpy": unit_pose}],
-        }
-        (robot_dir / "units" / "cell_a.yaml").write_text(yaml.safe_dump(doc), encoding="utf-8")
-        self._write_report(robot_dir)  # the manifest's nominal pose, unit-less path
-        monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "cell_a")
-        with pytest.raises(ROSConfigError, match=r"wrist: no extrinsic report .*/cell_a/"):
-            _resolve_real("galaxea_a1")
-
-        desc = RobotDescription.from_yaml(str(robot_dir / "robot.yaml"))
-        (spec,) = [s for s in desc.sensors if s.name == "wrist"]
-        spec = spec.model_copy(update={"static_transform_xyz_rpy": tuple(unit_pose)})
-        path = extrinsic_report_path(robot_dir / "robot.yaml", "wrist", "cell_a")
-        path.parent.mkdir()
-        report = _passing_report(spec, desc.base_frame)
-        path.write_text(json.dumps(report), encoding="utf-8")
-        with pytest.raises(ROSConfigError, match=r"wrist: report is for unit None, not 'cell_a'"):
-            _resolve_real("galaxea_a1")
-
-        path.write_text(json.dumps({**report, "unit": "cell_a"}), encoding="utf-8")
-        inv = _resolve_real("galaxea_a1")
+        inv = _resolve_real("openarm")
         assert "enable_octomap_kernel_check:=true" in inv.argv_template
+        monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "orin")
+        with pytest.raises(ROSConfigError, match=r"head_zed: mount is the manifest's nominal"):
+            _resolve_real("openarm")

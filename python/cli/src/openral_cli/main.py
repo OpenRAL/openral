@@ -1093,6 +1093,7 @@ def detect(
     output.write_text(yaml_text, encoding="utf-8")
     console.print(f"\n[green]Wrote[/green] {output} (RobotDescription, {description.name})")
     console.print(f"[dim]Next step:[/dim] openral rskill check --robot {output}")
+    _print_safety_fitting_reminders(description, output)
 
     if deployment is not None:
         _write_deploy_scene_scaffold(
@@ -1248,7 +1249,15 @@ def _run_camera_binding_wizard(  # noqa: PLR0915  # reason: one linear per-camer
 
     from openral_core import SensorDeployBinding, SensorSpec
 
-    canonical_rgb = {s.name: s for s in canonical.sensors if s.modality == "rgb"}
+    # Every canonical camera-modality sensor is offered for reuse, not just rgb —
+    # a depth camera (OpenArm's head_zed) must stay reusable verbatim (its own
+    # modality/intrinsics via model_copy below), or the wizard silently drops it
+    # and no camera of that name survives into the written manifest at all.
+    canonical_cameras = {
+        s.name: s
+        for s in canonical.sensors
+        if s.modality in ("rgb", "depth", "stereo", "ir", "point_cloud")
+    }
     robot_sensors: list[SensorSpec] = []
     workcell_sensors: list[SensorSpec] = []
     # Names actually bound so far, keyed by target manifest — a canonical-name
@@ -1266,7 +1275,7 @@ def _run_camera_binding_wizard(  # noqa: PLR0915  # reason: one linear per-camer
             f"\n[bold]{device_path or label}[/bold] — {label}"
             + (f"  [dim](thumbnail: {thumb})[/dim]" if thumb else "  [dim](no thumbnail)[/dim]")
         )
-        options = ", ".join(canonical_rgb) if canonical_rgb else "<none in manifest>"
+        options = ", ".join(canonical_cameras) if canonical_cameras else "<none in manifest>"
 
         # Re-prompt the same camera when the resolved target name is already
         # claimed, so two cameras can never land on the same sensor name
@@ -1305,17 +1314,27 @@ def _run_camera_binding_wizard(  # noqa: PLR0915  # reason: one linear per-camer
         elif serial:
             params["serial"] = serial
         binding = SensorDeployBinding(backend_params=params if (device_path or serial) else {})
-        if answer in canonical_rgb:
-            ref = canonical_rgb[answer]
+        if answer in canonical_cameras:
+            ref = canonical_cameras[answer]
             console.print(
                 f"  [yellow]reusing canonical intrinsics for {answer!r} — best to "
                 f"supply your rig's calibrated fx/fy/cx/cy.[/yellow]"
             )
-            robot_sensors.append(ref.model_copy(update={"deploy_binding": binding}, deep=True))
+            if ref.modality == "rgb":
+                robot_sensors.append(ref.model_copy(update={"deploy_binding": binding}, deep=True))
+                console.print(
+                    f"  [green]bound[/green] {answer} → {device_path or label} (robot sensor)"
+                )
+            else:
+                # A depth/stereo/IR/point-cloud camera is opened by its vendor driver and read
+                # from that driver's ROS topic, not through a /dev/video reader: an OpenCV
+                # binding here would feed its depth pipeline raw side-by-side frames.
+                robot_sensors.append(ref.model_copy(deep=True))
+                console.print(
+                    f"  [green]kept[/green] {answer} ({ref.modality}) — bind it to its driver's "
+                    f"topic (backend ros2_image) in this host's robots/<id>/units/<unit>.yaml"
+                )
             robot_claimed.add(answer)
-            console.print(
-                f"  [green]bound[/green] {answer} → {device_path or label} (robot sensor)"
-            )
         elif answer.startswith("w:") and answer.removeprefix("w:").strip():
             name = answer.removeprefix("w:").strip()
             workcell_sensors.append(
@@ -1385,6 +1404,45 @@ def _grab_camera_thumbnail(device_path: str, out_dir: Path) -> Path | None:
     if not cv2.imwrite(str(out), frame):
         return None
     return out
+
+
+def _print_safety_fitting_reminders(description: RobotDescription, output: Path) -> None:
+    """Nudge toward the two things every real deploy needs, right after detect writes.
+
+    Neither is optional for a real robot, and both are easy to skip because nothing else
+    forces them before ``deploy run`` (the second one, ``deploy run`` does enforce):
+
+    - **Self/world collision geometry** (``openral collision lower``): a template's
+      hand-authored or unfitted capsules can miss the robot's own meshes by a wide margin
+      (hazard-log Entry 045 — an OpenArm gripper's mesh reached 83.7 mm outside its
+      declared sphere), which makes the kernel's self- and world-collision checks silently
+      not conservative. Needs an MJCF or URDF asset to fit against.
+    - **Depth-camera extrinsic**: the world-voxel check places every obstacle through a
+      depth camera's mount absolutely, so an uncalibrated one causes both false stops
+      (phantom obstacles) and missed stops (real ones placed too far away). OpenRAL does
+      not measure it; the operator calibrates the mount and declares it in the unit's
+      overlay (``robots/<id>/units/<unit>.yaml``), which ``deploy run`` requires before a
+      real world-voxel launch. Only prompted when the manifest declares a robot-mounted
+      depth camera (``parent_frame`` set).
+    """
+    if description.assets.mjcf or description.assets.urdf:
+        console.print(
+            "[dim]Before real hardware:[/dim] openral collision lower "
+            f"--robot {output} --write"
+            "  [dim](fits self-collision geometry to the meshes; see"
+            " docs/tutorials/deploy/deploy-run-and-dashboard.md)[/dim]"
+        )
+    depth_cameras = [
+        s for s in description.sensors if s.is_depth_camera and s.parent_frame is not None
+    ]
+    for spec in depth_cameras:
+        console.print(
+            f"[dim]Before the world-voxel check:[/dim] calibrate {spec.name}'s mount "
+            f"({spec.parent_frame} -> {spec.frame_id}) and declare it in "
+            "robots/<id>/units/<unit>.yaml"
+            "  [dim](OpenRAL does not measure it; see"
+            " docs/tutorials/deploy/openarm-real-world-voxel-check.md, step 2)[/dim]"
+        )
 
 
 def _write_deploy_scene_scaffold(
