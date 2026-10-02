@@ -9604,6 +9604,85 @@ class LaunchInclude(BaseModel):
     args: dict[str, str] = Field(default_factory=dict)
 
 
+class VisionAttachmentRuntime(BaseModel):
+    """The real-hardware vision attachment leg of a deploy (``DeployRuntime.vision_attachment``).
+
+    When ``enabled``, ``openral deploy`` launches the SAM 2.1 segmenter lifecycle node
+    (``openral_perception_ros`` ``segmenter_node``) and turns on the HAL's vision
+    attachment-evidence bridge (the ``vision_attachment_*`` HAL parameters), which publishes
+    the grasped payload on ``/openral/attachment_state``.
+
+    **Coupling rule:** on real hardware the leg ALWAYS turns the safety kernel's attached-payload
+    check on with it (``attached_collision_enabled``, 1000 ms deadline), never the leg alone. The
+    octomap bridge clears a published payload from the map and the robot self-filter removes it
+    from the cloud regardless of the kernel flag, so a leg without the kernel check would make
+    the payload invisible to every collision check.
+
+    Default off. Turning it on for a real cell is a Safety-WG decision (hazard log): the
+    gripper-effort thresholds are unmeasured on the OpenArm.
+
+    Attributes:
+        enabled: Bring the leg up. Requires all four topics below.
+        camera: Manifest sensor name the segmenter and the bridge use (e.g. ``head_zed``).
+        rgb_topic: The camera driver's RGB ``Image`` topic the segmenter caches.
+        rgb_camera_info_topic: The driver's ``CameraInfo`` for that RGB stream.
+        depth_topic: The driver's metric depth ``Image`` the bridge back-projects.
+        depth_camera_info_topic: The driver's ``CameraInfo`` for the depth stream.
+        segmenter_manifest: ``kind: segmenter`` rSkill manifest (repo- or scene-relative).
+        device: Segmenter torch device (``auto`` / ``cuda`` / ``cpu``).
+        deadline_s: How long the bridge waits for one segmenter reply.
+        evidence_timeout_s: How long the bridge waits for depth / mask evidence at an event.
+        attach_effort: Absolute gripper effort that reads as a grasp; ``None`` = the
+            trigger's fraction of the joint's effort limit.
+        release_effort: Absolute gripper effort that reads as a release; ``None`` = fraction.
+        tf_frames: ``{manifest link: TF frame}`` renames where the live TF tree's frame names
+            differ from the manifest's links.
+
+    Example:
+        >>> VisionAttachmentRuntime(camera="head_zed").enabled
+        False
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    camera: str = Field(min_length=1)
+    rgb_topic: str | None = None
+    rgb_camera_info_topic: str | None = None
+    depth_topic: str | None = None
+    depth_camera_info_topic: str | None = None
+    segmenter_manifest: str = "rskills/rskill-sam2_1-any-grasped_object_mask-bf16/rskill.yaml"
+    device: str = "auto"
+    deadline_s: float = Field(default=0.25, gt=0)
+    evidence_timeout_s: float = Field(default=0.5, gt=0)
+    attach_effort: float | None = Field(default=None, gt=0)
+    release_effort: float | None = Field(default=None, gt=0)
+    tf_frames: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _require_driver_topics(self) -> Self:
+        # Every topic comes from the driver: on real hardware the manifest's nominal
+        # intrinsics must never be projected (Thor 2026-10-02: driver fx 1498 vs nominal 960).
+        if self.enabled:
+            missing = [
+                name
+                for name in (
+                    "rgb_topic",
+                    "rgb_camera_info_topic",
+                    "depth_topic",
+                    "depth_camera_info_topic",
+                )
+                if not getattr(self, name)
+            ]
+            if missing:
+                raise ValueError(
+                    f"vision_attachment.enabled requires {', '.join(missing)}: the leg projects "
+                    "only through the driver's own topics and CameraInfo, never the manifest's "
+                    "nominal intrinsics"
+                )
+        return self
+
+
 class DeployRuntime(BaseModel):
     """Committed deploy-posture toggles for a workcell scene.
 
@@ -9823,6 +9902,11 @@ class DeployRuntime(BaseModel):
     deploys, or a dev venv via ``$OPENRAL_DA3_DEPTH_SIDECAR_VENV``). First
     autostart provisions the sidecar venv, which can take minutes; the depth
     provider retries until it answers."""
+    vision_attachment: VisionAttachmentRuntime | None = None
+    """The vision attachment leg (segmenter + the HAL's attachment-evidence bridge).
+    ``None`` or ``enabled: false`` = not launched, and the graph is exactly as without
+    it. Enabled on ``deploy run``, it always turns the kernel's attached check on too
+    (see ``VisionAttachmentRuntime``). Backward-compatible addition."""
 
     @property
     def voxel_freshness_s(self) -> tuple[float, float]:

@@ -96,6 +96,7 @@ from openral_core.schemas import (
     SphereShape,
     TaskSpec,
     TickResult,
+    VisionAttachmentRuntime,
     VLASpec,
     WaitTool,
     WorldState,
@@ -382,6 +383,22 @@ _clock_authority_st = st.one_of(
 )
 
 _opt_bool = st.none() | st.booleans()
+_vision_attachment_st = st.builds(
+    VisionAttachmentRuntime,
+    # enabled requires every driver topic; topics are filled so both states are drawn.
+    enabled=st.booleans(),
+    camera=_name,
+    rgb_topic=_topic,
+    rgb_camera_info_topic=_topic,
+    depth_topic=_topic,
+    depth_camera_info_topic=_topic,
+    segmenter_manifest=_name,
+    deadline_s=st.floats(min_value=0.01, max_value=5.0),
+    evidence_timeout_s=st.floats(min_value=0.01, max_value=5.0),
+    attach_effort=st.none() | st.floats(min_value=0.01, max_value=500.0),
+    release_effort=st.none() | st.floats(min_value=0.01, max_value=500.0),
+    tf_frames=st.dictionaries(_name, _name, max_size=3),
+)
 _deploy_runtime_st = st.builds(
     DeployRuntime,
     enable_slam=_opt_bool,
@@ -402,6 +419,7 @@ _deploy_runtime_st = st.builds(
     slam_visual_impl=st.none() | st.sampled_from(["isaac_ros", "pycuvslam"]),
     # distinct pair — the model_validator rejects two equal names.
     slam_stereo_cameras=st.none() | st.lists(_name, min_size=2, max_size=2, unique=True).map(tuple),
+    vision_attachment=st.none() | _vision_attachment_st,
 )
 
 _collision_evidence_st = st.builds(
@@ -1370,3 +1388,10 @@ def test_fuzz_wait_tool(instance: WaitTool) -> None:
 def test_fuzz_deploy_runtime(instance: DeployRuntime) -> None:
     """DeployRuntime round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(DeployRuntime, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_vision_attachment_st)
+def test_fuzz_vision_attachment_runtime(instance: VisionAttachmentRuntime) -> None:
+    """VisionAttachmentRuntime round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(VisionAttachmentRuntime, instance)

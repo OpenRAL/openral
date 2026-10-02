@@ -636,6 +636,17 @@
           "default": true,
           "title": "Slam Depth Sidecar Autostart",
           "type": "boolean"
+        },
+        "vision_attachment": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VisionAttachmentRuntime"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "title": "DeployRuntime",
@@ -1801,6 +1812,130 @@
         "dop_hi_m"
       ],
       "title": "TightCollisionGeometry",
+      "type": "object"
+    },
+    "VisionAttachmentRuntime": {
+      "additionalProperties": false,
+      "description": "The real-hardware vision attachment leg of a deploy (``DeployRuntime.vision_attachment``).\n\nWhen ``enabled``, ``openral deploy`` launches the SAM 2.1 segmenter lifecycle node\n(``openral_perception_ros`` ``segmenter_node``) and turns on the HAL's vision\nattachment-evidence bridge (the ``vision_attachment_*`` HAL parameters), which publishes\nthe grasped payload on ``/openral/attachment_state``.\n\n**Coupling rule:** on real hardware the leg ALWAYS turns the safety kernel's attached-payload\ncheck on with it (``attached_collision_enabled``, 1000 ms deadline), never the leg alone. The\noctomap bridge clears a published payload from the map and the robot self-filter removes it\nfrom the cloud regardless of the kernel flag, so a leg without the kernel check would make\nthe payload invisible to every collision check.\n\nDefault off. Turning it on for a real cell is a Safety-WG decision (hazard log): the\ngripper-effort thresholds are unmeasured on the OpenArm.\n\nAttributes:\n    enabled: Bring the leg up. Requires all four topics below.\n    camera: Manifest sensor name the segmenter and the bridge use (e.g. ``head_zed``).\n    rgb_topic: The camera driver's RGB ``Image`` topic the segmenter caches.\n    rgb_camera_info_topic: The driver's ``CameraInfo`` for that RGB stream.\n    depth_topic: The driver's metric depth ``Image`` the bridge back-projects.\n    depth_camera_info_topic: The driver's ``CameraInfo`` for the depth stream.\n    segmenter_manifest: ``kind: segmenter`` rSkill manifest (repo- or scene-relative).\n    device: Segmenter torch device (``auto`` / ``cuda`` / ``cpu``).\n    deadline_s: How long the bridge waits for one segmenter reply.\n    evidence_timeout_s: How long the bridge waits for depth / mask evidence at an event.\n    attach_effort: Absolute gripper effort that reads as a grasp; ``None`` = the\n        trigger's fraction of the joint's effort limit.\n    release_effort: Absolute gripper effort that reads as a release; ``None`` = fraction.\n    tf_frames: ``{manifest link: TF frame}`` renames where the live TF tree's frame names\n        differ from the manifest's links.\n\nExample:\n    >>> VisionAttachmentRuntime(camera=\"head_zed\").enabled\n    False",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "camera": {
+          "minLength": 1,
+          "title": "Camera",
+          "type": "string"
+        },
+        "rgb_topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rgb Topic"
+        },
+        "rgb_camera_info_topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rgb Camera Info Topic"
+        },
+        "depth_topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Depth Topic"
+        },
+        "depth_camera_info_topic": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Depth Camera Info Topic"
+        },
+        "segmenter_manifest": {
+          "default": "rskills/rskill-sam2_1-any-grasped_object_mask-bf16/rskill.yaml",
+          "title": "Segmenter Manifest",
+          "type": "string"
+        },
+        "device": {
+          "default": "auto",
+          "title": "Device",
+          "type": "string"
+        },
+        "deadline_s": {
+          "default": 0.25,
+          "exclusiveMinimum": 0,
+          "title": "Deadline S",
+          "type": "number"
+        },
+        "evidence_timeout_s": {
+          "default": 0.5,
+          "exclusiveMinimum": 0,
+          "title": "Evidence Timeout S",
+          "type": "number"
+        },
+        "attach_effort": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Attach Effort"
+        },
+        "release_effort": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Release Effort"
+        },
+        "tf_frames": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Tf Frames",
+          "type": "object"
+        }
+      },
+      "required": [
+        "camera"
+      ],
+      "title": "VisionAttachmentRuntime",
       "type": "object"
     }
   },

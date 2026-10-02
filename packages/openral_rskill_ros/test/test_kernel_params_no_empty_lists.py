@@ -76,12 +76,16 @@ def test_sim_octomap_requires_repeated_occupancy_hits() -> None:
     assert module._octomap_occupancy_threshold("real") == 0.6
 
 
-def test_attached_collision_is_enabled_only_for_sim_manager() -> None:
-    """Sim has an attachment heartbeat; real remains off until its manager lands."""
+def test_attached_collision_follows_the_attachment_producer() -> None:
+    """Sim has its attachment manager; real only with the vision leg, and then always."""
     module = _import_launch_module(_LAUNCH_FILE)
 
-    assert module._attached_collision_enabled("sim") is True
-    assert module._attached_collision_enabled("real") is False
+    assert module._attached_collision_enabled("sim", False) is True
+    assert module._attached_collision_enabled("sim", True) is True
+    assert module._attached_collision_enabled("real", False) is False
+    assert module._attached_collision_enabled("real", True) is True
+    assert module._attached_collision_deadline_ms("sim") == 5000.0
+    assert module._attached_collision_deadline_ms("real") == 1000.0
 
 
 def _make_launch_context(robot_yaml: Path) -> object:

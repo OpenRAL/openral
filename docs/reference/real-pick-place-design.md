@@ -29,6 +29,8 @@ using SAM 2.1 to see the object.
    `DROP_ATTACHED_OVERFLOW`/`_UNAVAILABLE`. Nothing launches the segmenter; `DeployRuntime` has no
    field for it; `_attached_collision_enabled(hal_mode)` is sim-only (`deploy_e2e.launch.py`
    L452-454).
+   *Since wired, off by default (§3 row 4):* `DeployRuntime.vision_attachment` launches the
+   segmenter and couples the leg to the kernel's attached check.
 4. **Three latent geometry bugs on the head camera.** `head_zed.frame_id` is `zed_camera_link`
    (ZED *body* frame) while the segmenter, the object lift and the attachment bridge all treat
    `SensorSpec.frame_id` as an optical frame; the manifest's ZED intrinsics are nominal; the
@@ -165,7 +167,7 @@ Everything is off by default until the last step; nothing before it can actuate.
 | 1 | `feat(hal)`: one grasp trigger + evidence producer per gripper; TCP from the gripper joint origin, not TF | HAL | B1, B7 |
 | 2 | `fix(hal)`: 5 Hz attachment heartbeat gated on live effort evidence; time-seeded monotonic revision; real-mode `SimSensorBridge` stops claiming "nothing attached" | HAL | B2, B3 |
 | 3 | `fix(hal,perception)`: back-project in the depth header's optical frame; intrinsics from live `camera_info`; explicit mask resampling; `top`/`head_zed` optical `frame_id` | HAL, perception | B4, B5 |
-| 4 | `feat(deploy)`: `DeployRuntime.vision_attachment`, segmenter lifecycle node in the launch, **vision leg on real always turns the kernel attached check on** (1000 ms deadline) | CLI, launch | **Safety-WG + hazard log** |
+| 4 | `feat(deploy)`: `DeployRuntime.vision_attachment`, segmenter lifecycle node in the launch, **vision leg on real always turns the kernel attached check on** (1000 ms deadline) | CLI, launch | **Safety-WG + hazard log**. *Implemented, committed off* (`enabled: false` in `scenes/deploy/openarm_real_world_voxels.yaml`) pending WG review and the hazard-log entry |
 | 5 | `test(hil)`: attended OpenArm gripper-effort readback (gripper-only motion, user at the E-stop) | HIL | decides whether effort is a grasp signal at all |
 | 6 | `feat(kernel)`: `GraspDeclaration` across IDL/core/world-state/runner/HAL/launch/kernel + conservativeness tests | all | **ADR + hazard log; split (>800 lines)** |
 | 7 | `feat(perception)`: pre-grasp target producer (search box → SAM 2.1 → OBB → region), tracking, handover | HAL/perception | develop on the twin pass (real ZED, twin HAL) |

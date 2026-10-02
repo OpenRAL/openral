@@ -197,6 +197,41 @@ def test_deploy_runtime_rejects_mono_and_stereo_together():
         )
 
 
+def test_real_openarm_scene_commits_the_vision_leg_off_with_driver_topics():
+    # The committed real scene carries the wired leg, OFF pending Safety-WG review.
+    from openral_core import DeployScene
+
+    scene = DeployScene.from_yaml("scenes/deploy/openarm_real_world_voxels.yaml")
+    assert scene.runtime is not None
+    leg = scene.runtime.vision_attachment
+    assert leg is not None
+    assert leg.enabled is False
+    assert leg.camera == "head_zed"
+    assert leg.rgb_camera_info_topic == "/zed/zed_node/rgb/color/rect/camera_info"
+    assert leg.depth_camera_info_topic == "/zed/zed_node/depth/camera_info"
+    assert leg.tf_frames == {
+        "openarm_left_link7": "openarm_left_ee_base_link",
+        "openarm_right_link7": "openarm_right_ee_base_link",
+    }
+    # The same block turned on validates: every driver topic is present.
+    assert type(leg).model_validate({**leg.model_dump(), "enabled": True}).enabled
+
+
+@pytest.mark.parametrize(
+    "missing", ["rgb_topic", "rgb_camera_info_topic", "depth_topic", "depth_camera_info_topic"]
+)
+def test_vision_leg_enabled_refuses_a_missing_driver_topic(missing):
+    # On real the manifest's nominal intrinsics must never be projected.
+    from openral_core import DeployScene
+
+    data = DeployScene.from_yaml("scenes/deploy/openarm_real_world_voxels.yaml").model_dump()
+    leg = data["runtime"]["vision_attachment"]
+    leg["enabled"] = True
+    leg[missing] = None
+    with pytest.raises(ValidationError, match=missing):
+        DeployScene.model_validate(data)
+
+
 # ── SimScene ─────────────────────────────────────────────────────────────
 
 
