@@ -79,6 +79,7 @@ __all__ = [
     "joint_state_republish_stamp_ns",
     "make_lifecycle_main",
     "make_lifecycle_main_from_manifest",
+    "sim_attachment_heartbeat",
 ]
 
 
@@ -121,6 +122,34 @@ def joint_state_republish_stamp_ns(
     if sample_stamp_ns <= 0 or age < 0 or age > _MAX_CARRIED_SAMPLE_AGE_NS:
         return node_now_ns
     return node_now_ns - age
+
+
+def sim_attachment_heartbeat(*, hal_mode: str, vision_attachment_enabled: bool) -> bool:
+    """Whether ``SimSensorBridge`` may heartbeat "nothing attached, fresh".
+
+    That heartbeat is the exact truth only for a simulated HAL with no attach
+    mechanics. On a real arm no evidence backs it: something can be in the jaws
+    and the kernel would certify motion against an empty payload set. So it is
+    sim-only, and even there it yields to the vision attachment leg, which is
+    the attachment authority on the same latched topic when enabled. A real arm
+    without the vision leg then publishes no attachment state at all, and the
+    kernel's attached-payload check (when on) fails closed instead of trusting
+    a claim nobody measured.
+
+    Args:
+        hal_mode: The node's ``hal_mode`` parameter (``"sim"`` or ``"real"``).
+        vision_attachment_enabled: The node's ``vision_attachment_enabled``.
+
+    Returns:
+        ``True`` only for ``hal_mode == "sim"`` with the vision leg off.
+
+    Example:
+        >>> sim_attachment_heartbeat(hal_mode="sim", vision_attachment_enabled=False)
+        True
+        >>> sim_attachment_heartbeat(hal_mode="real", vision_attachment_enabled=False)
+        False
+    """
+    return hal_mode == "sim" and not vision_attachment_enabled
 
 
 def decode_action_chunk(msg: object) -> object | None:
@@ -1900,12 +1929,13 @@ if _ROS2_AVAILABLE:
                 viewer_enabled=self.get_parameter("viewer_enabled")
                 .get_parameter_value()
                 .bool_value,
-                # One attachment authority per graph: with the vision leg on,
-                # the bridge's "nothing attached" heartbeat would fight its
-                # revisions on the same latched topic.
-                attachment_heartbeat=not self.get_parameter("vision_attachment_enabled")
-                .get_parameter_value()
-                .bool_value,
+                attachment_heartbeat=sim_attachment_heartbeat(
+                    hal_mode=self.get_parameter("hal_mode").get_parameter_value().string_value
+                    or "sim",
+                    vision_attachment_enabled=self.get_parameter("vision_attachment_enabled")
+                    .get_parameter_value()
+                    .bool_value,
+                ),
                 camera_rate_hz=self.get_parameter("camera_publish_rate_hz")
                 .get_parameter_value()
                 .double_value,
