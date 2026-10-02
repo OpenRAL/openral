@@ -965,28 +965,28 @@ _The pre-grasp target producer (design note `docs/reference/real-pick-place-desi
 
 _The real place producer (design note `docs/reference/real-pick-place-design.md` §2.3; drafted, unapproved ADR-0097 / ADR-0092 D6 amendments in `docs/reference/real-pick-place-adr-drafts.md`), owned by `VisionAttachmentBridge`, default off. Subscribes `/openral/place_declaration` (RELIABLE + TRANSIENT_LOCAL, depth 1; dispatch's region is never relayed) and `/openral/world_voxels` (the kernel's profile); resolves `target_id` to a `UnitFixture` (unknown → `unknown_fixture`, region-less). At `place_fixture_rate_hz` verifies the fixture against the newest grid (older than 1.0 s → `grid_stale`): the top face (the box face along `top_plane_normal`, which must be a box axis) occupied over `place_fixture_min_face_cover` of its cell footprint within ±1 voxel of the surveyed height, and the face's prism from 1 voxel to `place_fixture_free_height_m` above it empty, not counting cells within 1 voxel of a carried payload's primitives posed by tf2 (an unposable payload excludes nothing). Verified → the envelope's declaration carries the fixture box as `region` (grid frame, no `geometry`, `stamp_ns` = grid stamp, `evidence_ref = unit_fixture:<unit>/<id>@<surveyed_on>;map_verified@<grid stamp>`); otherwise region-less, `place_fixture_unverified reason=...` logged once per transition. The witness (`DECLARED_FIXTURE`, proximity to a verified plane, **not sensed contact**) is attested once per (declaration, payload) and dropped on retraction, expiry, a new declaration, an unverified region or the payload changing / unloading; each change re-publishes at a new revision._
 
-- `class FixtureFace` (L110) — Frozen dataclass: face `centre`, outward unit `normal`, in-plane `axes` `(2, 3)`, in-plane `half` extents.
-- `fixture_face(fixture) -> FixtureFace` (L126) — The box face `top_plane_normal` points out of; a normal that is not a box axis is a `ROSConfigError`.
-- `verify_fixture(grid, fixture, *, min_face_cover, free_height_m, payload=()) -> tuple[str, str] | None` (L228) — `None` = verified, else `(reason, detail)` with reason `frame_mismatch` / `fixture_normal` / `face_missing` / `free_volume_occupied`.
-- `fixture_region(fixture, *, unit, grid_stamp_ns) -> PlaceRegion` (L289) — The verified fixture box as a region, with the provenance `evidence_ref`.
-- `payload_witness(obj, t_base_link, fixture, *, resolution, stamp_ns) -> tuple[SupportContactWitness | None, str]` (L303) — Lowest primitive point (exact per-shape support along the normal) within `max(resolution, survey_uncertainty_m)` of the plane and centre over the face → the witness: plane in the object frame, `patch_radius_m` = the payload's footprint radius (≤ 0.5), `max_penetration_m = min(survey_uncertainty_m, 0.01)`, `confidence=0.5`.
-- `class PlaceFixtureTracker(*, fixtures, unit, log)` (L365) — Pure state machine on a caller-supplied ROS-clock `now_ns`.
-  - `on_declaration(declaration) -> None` (L437) — `active=False` clears; a new `(target_id, stamp_ns)` resets region and witness; the latched copy again is a no-op.
-  - `grid_fresh(age_s) -> bool` (L476) — A missing (`no_grid`) or > 1 s old (`grid_stale`) grid unverifies the region.
-  - `unverified(reason, detail) -> None` (L427) — Drop region and witness; logged once per transition.
-  - `verified(region, *, resolution) -> None` (L493) — Hold a map-verified region.
-  - `live(*, now_ns) -> PlaceDeclaration | None` (L502) — The live declaration; expiry clears it.
-  - `envelope(*, now_ns) -> PlaceDeclaration | None` (L510) — Dispatch's fields + the verified region (or `None`).
-  - `attest(candidates, *, now_ns) -> bool` (L517) — Arm or drop the witness from `(attachment, T_grid_from_attach_link | None, loaded)` per leg; `True` when the published set must change.
-  - `decorate(objects) -> list[AttachedCollisionObject]` (L570) — The set with the held witness on the object it names.
-  - **(property)** `declaration -> PlaceDeclaration | None` (L405) — dispatch's live copy, region-less.
-  - **(property)** `fixture -> UnitFixture | None` (L410) — the fixture the declaration names, when surveyed.
-  - **(property)** `region -> PlaceRegion | None` (L415) — the map-verified region.
-- `class PlaceFixtureLeg(node, bridge, config)` (L586) — ROS wiring; reuses the bridge's tf2 buffer, legs and publisher. `ROSConfigError` with no fixtures, a non-positive rate / free height, or a face cover outside `(0, 1]`.
-  - `setup() -> None` (L635) — Subscriptions + the verification timer.
-  - `teardown() -> None` (L679) — Idempotent.
-  - `fill(msg, *, now_ns) -> None` (L691) — Sets `place_declaration_valid` / `place_declaration` on one `AttachmentState`.
-  - `decorate(objects) -> list[AttachedCollisionObject]` (L699) — `PlaceFixtureTracker.decorate`.
-  - `on_joint_state() -> None` (L703) — Witness re-evaluation (throttled to 20 Hz); republishes on a change.
+- `class FixtureFace` (L115) — Frozen dataclass: face `centre`, outward unit `normal`, in-plane `axes` `(2, 3)`, in-plane `half` extents.
+- `fixture_face(fixture) -> FixtureFace` (L131) — The box face `top_plane_normal` points out of; a normal that is not a box axis is a `ROSConfigError`.
+- `verify_fixture(grid, fixture, *, min_face_cover, free_height_m, payload=()) -> tuple[str, str] | None` (L233) — `None` = verified, else `(reason, detail)` with reason `frame_mismatch` / `fixture_normal` / `face_missing` / `free_volume_occupied`.
+- `fixture_region(fixture, *, unit, grid_stamp_ns) -> PlaceRegion` (L294) — The verified fixture box as a region, with the provenance `evidence_ref`.
+- `payload_witness(obj, t_base_link, fixture, *, resolution, stamp_ns) -> tuple[SupportContactWitness | None, str]` (L308) — Lowest primitive point (exact per-shape support along the normal) within `max(resolution, survey_uncertainty_m)` of the plane and centre over the face → the witness: plane in the object frame, `patch_radius_m` = the payload's footprint radius (≤ 0.5), `max_penetration_m = min(survey_uncertainty_m, 0.01)`, `confidence=0.5`.
+- `class PlaceFixtureTracker(*, fixtures, unit, log)` (L370) — Pure state machine on a caller-supplied ROS-clock `now_ns`.
+  - `on_declaration(declaration) -> None` (L442) — `active=False` clears; a new `(target_id, stamp_ns)` resets region and witness; the latched copy again is a no-op.
+  - `grid_fresh(age_s) -> bool` (L481) — A missing (`no_grid`) or > 1 s old (`grid_stale`) grid unverifies the region.
+  - `unverified(reason, detail) -> None` (L432) — Drop region and witness; logged once per transition.
+  - `verified(region, *, resolution) -> None` (L498) — Hold a map-verified region.
+  - `live(*, now_ns) -> PlaceDeclaration | None` (L507) — The live declaration; expiry clears it.
+  - `envelope(*, now_ns) -> PlaceDeclaration | None` (L515) — Dispatch's fields + the verified region (or `None`).
+  - `attest(candidates, *, now_ns) -> bool` (L522) — Arm or drop the witness from `(attachment, T_grid_from_attach_link | None, loaded)` per leg; `True` when the published set must change.
+  - `decorate(objects) -> list[AttachedCollisionObject]` (L580) — The set with the held witness on the object it names.
+  - **(property)** `declaration -> PlaceDeclaration | None` (L410) — dispatch's live copy, region-less.
+  - **(property)** `fixture -> UnitFixture | None` (L415) — the fixture the declaration names, when surveyed.
+  - **(property)** `region -> PlaceRegion | None` (L420) — the map-verified region.
+- `class PlaceFixtureLeg(node, bridge, config)` (L618) — ROS wiring; reuses the bridge's tf2 buffer, legs and publisher. `ROSConfigError` with no fixtures, a non-positive rate / free height, or a face cover outside `(0, 1]`.
+  - `setup() -> None` (L667) — Subscriptions + the verification timer.
+  - `teardown() -> None` (L711) — Idempotent.
+  - `fill(msg, *, now_ns) -> None` (L723) — Sets `place_declaration_valid` / `place_declaration` on one `AttachmentState`.
+  - `decorate(objects) -> list[AttachedCollisionObject]` (L731) — `PlaceFixtureTracker.decorate`.
+  - `on_joint_state() -> None` (L735) — Witness re-evaluation (throttled to 20 Hz); republishes on a change.
 
 **Node wiring** (`ManifestHALLifecycleNode`): `vision_attachment_*` params (`enabled` defaults to False; `vision_attachment_tf_frames` takes `"link=frame"` strings); built in `_setup_vision_attachment` on activate, torn down on deactivate/cleanup. `_attachment_barrier_holders()` / `_attachment_perception_ready()` require every present holder (sim bridge + vision bridge) to clear before a tick is acknowledged.
