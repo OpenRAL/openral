@@ -112,6 +112,7 @@ nav:
     - RoboCasa carry survey (base translation while carrying): reference/robocasa-carry-survey.md
     - Collision-safety alternatives survey: reference/collision-safety-alternatives-survey.md
     - Real pick and place on the OpenArm cell (investigation and plan): reference/real-pick-place-design.md
+    - Real pick and place, Safety-WG drafts (ADR + hazard log): reference/real-pick-place-adr-drafts.md
     - Design decisions: decisions.md
   - Contributing:
     - Development: contributing/development.md
