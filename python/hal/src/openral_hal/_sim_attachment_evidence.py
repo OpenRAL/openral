@@ -20,6 +20,7 @@ from openral_core import (
     CapsuleShape,
     CollisionShape,
     ContactForceWitness,
+    GraspDeclaration,
     JointSpec,
     PlaceDeclaration,
     PlaceRegion,
@@ -1502,7 +1503,7 @@ def probe_contact_force(
 class SimAttachmentEvidenceTracker:
     """Confirm free-object grasp/release from exact MuJoCo contacts and motion."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0915  # reason: flat attribute-init list
         self,
         model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
         description: RobotDescription,
@@ -1539,6 +1540,16 @@ class SimAttachmentEvidenceTracker:
         self._place_target_body_name: str = ""
         self._place_region_local: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None
         self._place_geometry_local: tuple[AttachedCollisionPrimitive, ...] | None = None
+        # -- Grasp-phase declaration (real pick-and-place design §2.1) --
+        # The grasp mirror of the place target: dispatch names it, this producer
+        # measures the target subtree's box (never its geometry — v1 is box-only)
+        # and the kernel bounds the exemption. No hysteresis lives here: the
+        # region simply dies with the declaration, and handover to the attached
+        # payload is the kernel's.
+        self._grasp_declaration: GraspDeclaration | None = None
+        self._grasp_target_body_id: int | None = None
+        self._grasp_target_body_name: str = ""
+        self._grasp_region_local: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None
 
         gripper_joints = [joint for joint in description.joints if joint.role == "gripper"]
         if not gripper_joints:
@@ -1908,11 +1919,37 @@ class SimAttachmentEvidenceTracker:
                 return None
         if self._place_geometry_local is None:
             self._place_geometry_local = self._place_target_geometry(data)
-        centre_in_body, half_extents = self._place_region_local
+        return self._region_in_base(
+            data,
+            body_id=self._place_target_body_id,
+            body_name=self._place_target_body_name,
+            region_local=self._place_region_local,
+            geometry_local=self._place_geometry_local,
+            stamp_ns=stamp_ns,
+        )
+
+    def _region_in_base(
+        self,
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+        *,
+        body_id: int,
+        body_name: str,
+        region_local: tuple[NDArray[np.float64], NDArray[np.float64]],
+        geometry_local: tuple[AttachedCollisionPrimitive, ...],
+        stamp_ns: int,
+    ) -> PlaceRegion | None:
+        """Pose a body-frame measured box (and its primitives) in the robot base frame.
+
+        Shared by the place and the grasp region so both producers pose a
+        measurement identically; ``None`` when the schema refuses the box.
+        """
+        if self._base_body_id is None:
+            return None
+        centre_in_body, half_extents = region_local
         translation, rotation = _relative_pose(
             data,
             parent_body_id=self._base_body_id,
-            child_body_id=self._place_target_body_id,
+            child_body_id=body_id,
         )
         centre_in_base = translation + rotation @ centre_in_body
         try:
@@ -1920,7 +1957,7 @@ class SimAttachmentEvidenceTracker:
                 frame_id=self._base_frame_id,
                 geometry=tuple(
                     self._primitive_in_base(primitive, translation, rotation)
-                    for primitive in self._place_geometry_local
+                    for primitive in geometry_local
                 ),
                 pose=Pose6D(
                     xyz=(
@@ -1936,7 +1973,7 @@ class SimAttachmentEvidenceTracker:
                     float(half_extents[1]),
                     float(half_extents[2]),
                 ),
-                evidence_ref=f"mujoco_body_subtree:{self._place_target_body_name}",
+                evidence_ref=f"mujoco_body_subtree:{body_name}",
                 stamp_ns=stamp_ns,
             )
         except ValueError:
@@ -1945,6 +1982,104 @@ class SimAttachmentEvidenceTracker:
             # unlike a malformed witness, a bad region can only ever make the
             # kernel more permissive.
             return None
+
+    # -- Grasp-phase declaration (real pick-and-place design §2.1) ------------
+
+    def set_grasp_declaration(self, declaration: GraspDeclaration | None) -> None:
+        """Install, replace, or retract the active grasp-phase declaration.
+
+        The grasp mirror of :meth:`set_place_declaration`: ``target_id`` resolves
+        by the same ``sim:<body>`` convention to a MuJoCo body whose subtree is
+        measured, and an unresolvable target is an explicit refusal rather than
+        a silent no-op. A new declaration simply replaces the old one; nothing
+        else in this tracker is reset by it (handover is the kernel's).
+
+        Args:
+            declaration: The declaration to install. ``None``, or one that is
+                already retracted, clears the grasp state.
+
+        Raises:
+            ROSConfigError: The declared ``target_id`` names no body in this
+                simulation. The declaration is refused (no region can arm).
+        """
+        import mujoco  # noqa: PLC0415  # reason: optional sim dependency
+
+        self._grasp_declaration = None
+        self._grasp_target_body_id = None
+        self._grasp_target_body_name = ""
+        self._grasp_region_local = None
+        if declaration is None or not declaration.active:
+            return
+        body_name = declaration.target_id.removeprefix("sim:")
+        body_id = int(mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, body_name))
+        if body_id < 0:
+            raise ROSConfigError(
+                f"Grasp declaration target {declaration.target_id!r} names no MuJoCo body; refused."
+            )
+        self._grasp_declaration = declaration
+        self._grasp_target_body_id = body_id
+        self._grasp_target_body_name = body_name
+
+    def grasp_declaration(
+        self,
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+        *,
+        stamp_ns: int,
+    ) -> GraspDeclaration | None:
+        """The live grasp declaration, with its region measured in the robot base frame.
+
+        Same contract as :meth:`place_declaration`: the region is always this
+        producer's own measurement (an incoming one is replaced or dropped), and
+        every path that cannot measure — dead declaration, no collision geometry,
+        unresolvable base frame, or a box past ``GraspDeclaration``'s own caps —
+        yields ``region=None``, which exempts nothing.
+
+        Args:
+            data: Live ``mujoco.MjData``.
+            stamp_ns: Consumer's current time, same clock as the declaration's.
+
+        Returns:
+            The live declaration (region attached when measurable), or ``None``
+            when no grasp declaration is in force at ``stamp_ns``.
+        """
+        declaration = self._grasp_declaration
+        if declaration is None or not declaration.is_live(now_ns=stamp_ns):
+            return None
+        region = self._grasp_region(data, stamp_ns=stamp_ns)
+        try:
+            # Re-validated, not model_copy'd: the grasp caps are far tighter than
+            # PlaceRegion's, and a model_copy would skip them.
+            return GraspDeclaration.model_validate(
+                {**declaration.model_dump(exclude={"region"}), "region": region}
+            )
+        except ValueError:
+            return declaration.model_copy(update={"region": None})
+
+    def _grasp_region(
+        self,
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+        *,
+        stamp_ns: int,
+    ) -> PlaceRegion | None:
+        """Pose the declared grasp target's measured box in the base frame, box only."""
+        if self._grasp_target_body_id is None:
+            return None
+        if self._grasp_region_local is None:
+            self._grasp_region_local = subtree_region_box(
+                self._model,
+                data,
+                root_body_id=self._grasp_target_body_id,
+            )
+            if self._grasp_region_local is None:
+                return None
+        return self._region_in_base(
+            data,
+            body_id=self._grasp_target_body_id,
+            body_name=self._grasp_target_body_name,
+            region_local=self._grasp_region_local,
+            geometry_local=(),
+            stamp_ns=stamp_ns,
+        )
 
     def _place_target_geometry(
         self,

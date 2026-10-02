@@ -126,6 +126,10 @@ def test_a_hal_without_the_attachment_api_still_heartbeats_an_empty_fresh_set(
                 assert bridge._attachment_pub is not None
                 assert bridge._attachment_timer is not None
                 assert bridge._attachment_sub is None
+                # Nothing here can measure a declared target, so no declaration is
+                # subscribed or relayed (the envelope carries none).
+                assert bridge._place_declaration_sub is None
+                assert bridge._grasp_declaration_sub is None
 
                 deadline = time.monotonic() + 2.0
                 while not received and time.monotonic() < deadline:
@@ -137,6 +141,7 @@ def test_a_hal_without_the_attachment_api_still_heartbeats_an_empty_fresh_set(
                     "an unstamped snapshot is exactly what the kernel fails closed on"
                 )
                 assert msg.place_declaration_valid is False
+                assert msg.grasp_declaration_valid is False
             finally:
                 bridge.teardown()
                 hal.disconnect()
