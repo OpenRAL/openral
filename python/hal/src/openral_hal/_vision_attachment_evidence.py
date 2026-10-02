@@ -457,18 +457,31 @@ class VisionAttachmentEvidenceProducer:
     Args:
         description: The robot manifest, read for the gripper's parent link and
             the finger links that are allowed to touch the payload.
+        gripper_joint: One gripper-role joint this producer serves: its
+            ``parent_link`` is the attach link and its ``child_link`` the one
+            touch link. A bimanual robot builds one producer per hand. ``None``
+            serves every gripper joint at once, which needs them to share one
+            parent link.
         config: Gate thresholds. Every one is a calibration point — see
             ``VisionGateConfig``.
 
     Raises:
-        ROSConfigError: If the manifest declares no gripper-role joints, or its
-            gripper joints do not share exactly one parent link.
+        ROSConfigError: If the manifest declares no gripper-role joints,
+            ``gripper_joint`` names none of them, or (with ``gripper_joint``
+            unset) its gripper joints do not share exactly one parent link.
+
+    Example:
+        >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> left = VisionAttachmentEvidenceProducer(d, gripper_joint="left_gripper")
+        >>> left.attach_link, left.touch_links
+        ('openarm_left_link7', ('openarm_left_finger_pair',))
     """
 
     def __init__(
         self,
         description: RobotDescription,
         *,
+        gripper_joint: str | None = None,
         config: VisionGateConfig | None = None,
     ) -> None:
         """Resolve the attach link and touch links from the manifest."""
@@ -476,6 +489,13 @@ class VisionAttachmentEvidenceProducer:
         gripper_joints = [joint for joint in description.joints if joint.role == "gripper"]
         if not gripper_joints:
             raise ROSConfigError("Vision attachment evidence requires gripper-role joints.")
+        if gripper_joint is not None:
+            gripper_joints = [joint for joint in gripper_joints if joint.name == gripper_joint]
+            if not gripper_joints:
+                raise ROSConfigError(
+                    f"Vision attachment evidence: {gripper_joint!r} is not a gripper-role joint "
+                    f"of {description.name!r}."
+                )
         attach_links = {joint.parent_link for joint in gripper_joints}
         if len(attach_links) != 1:
             raise ROSConfigError(
@@ -489,6 +509,11 @@ class VisionAttachmentEvidenceProducer:
     def attach_link(self) -> str:
         """Robot link that owns the attached payload's pose."""
         return self._attach_link
+
+    @property
+    def touch_links(self) -> tuple[str, ...]:
+        """Finger links allowed to touch the attached payload."""
+        return tuple(self._touch_links)
 
     @property
     def config(self) -> VisionGateConfig:

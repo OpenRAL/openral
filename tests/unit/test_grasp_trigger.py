@@ -22,6 +22,7 @@ from openral_hal._grasp_trigger import (
     GripperEffortTrigger,
     assess_effort_readback,
     gripper_joint,
+    gripper_joints,
 )
 
 _ROBOT_YAML = "robots/so101_follower/robot.yaml"
@@ -249,3 +250,74 @@ def test_effort_readback_health_accepts_a_real_load_cycle(
     assert health.reason == ""
     assert health.span == pytest.approx(2.5)
     assert health.samples == len(cycle)
+
+
+# ── Bimanual: one trigger per gripper joint (real OpenArm manifest) ──────────
+
+_OPENARM_YAML = "robots/openarm/robot.yaml"
+
+
+@pytest.fixture(scope="module")
+def openarm() -> RobotDescription:
+    """The real bimanual OpenArm manifest — two ``role: gripper`` joints."""
+    return RobotDescription.from_yaml(_OPENARM_YAML)
+
+
+def test_gripper_joints_lists_both_openarm_hands(openarm: RobotDescription) -> None:
+    """Every gripper-role joint is returned, in manifest order."""
+    assert [joint.name for joint in gripper_joints(openarm)] == ["left_gripper", "right_gripper"]
+
+
+def test_gripper_joints_raises_only_on_zero(description: RobotDescription) -> None:
+    """One gripper is fine; none is a typed error."""
+    assert [joint.name for joint in gripper_joints(description)] == ["gripper"]
+    armless = description.model_copy(
+        update={"joints": [j for j in description.joints if j.role != "gripper"]}
+    )
+    with pytest.raises(ROSConfigError, match="no role='gripper' joint"):
+        gripper_joints(armless)
+
+
+def test_an_unnamed_trigger_refuses_to_guess_between_two_grippers(
+    openarm: RobotDescription,
+) -> None:
+    """Without ``joint_name`` a bimanual manifest is ambiguous, and says so."""
+    with pytest.raises(ROSConfigError, match="found 2"):
+        GripperEffortTrigger(openarm)
+
+
+def test_a_non_gripper_joint_name_is_rejected(openarm: RobotDescription) -> None:
+    """Naming an arm joint is a configuration error, not a silent arm-effort trigger."""
+    with pytest.raises(ROSConfigError, match="not a role='gripper' joint"):
+        GripperEffortTrigger(openarm, joint_name="left_joint1")
+
+
+def test_a_left_grasp_fires_only_the_left_trigger(openarm: RobotDescription) -> None:
+    """A load on the left jaw attaches the left trigger; the right one stays silent."""
+    names = [joint.name for joint in openarm.joints]
+    efforts = [0.0] * len(names)
+    efforts[names.index("left_gripper")] = 0.5 * 333.0
+    loaded = JointState(name=names, position=[0.0] * len(names), effort=efforts, stamp_ns=0)
+    config = GraspTriggerConfig(consecutive_ticks=2)
+    left = GripperEffortTrigger(openarm, joint_name="left_gripper", config=config)
+    right = GripperEffortTrigger(openarm, joint_name="right_gripper", config=config)
+    assert left.update(loaded) is None
+    assert right.update(loaded) is None
+    assert left.update(loaded) is GraspEvent.ATTACH
+    assert right.update(loaded) is None
+    assert left.attached and not right.attached
+
+
+def test_effort_readback_can_judge_one_named_gripper(openarm: RobotDescription) -> None:
+    """``assess_effort_readback`` selects the named hand on a bimanual manifest."""
+    names = [joint.name for joint in openarm.joints]
+    trace = []
+    for i, load in enumerate((0.0, 150.0, 150.0, 0.0)):
+        efforts = [0.0] * len(names)
+        efforts[names.index("right_gripper")] = load
+        trace.append(
+            JointState(name=names, position=[0.0] * len(names), effort=efforts, stamp_ns=i)
+        )
+    assert assess_effort_readback(trace, description=openarm, joint_name="right_gripper").usable
+    left = assess_effort_readback(trace, description=openarm, joint_name="left_gripper")
+    assert not left.usable

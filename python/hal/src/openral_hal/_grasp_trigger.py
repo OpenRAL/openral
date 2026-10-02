@@ -59,7 +59,7 @@ from typing import TYPE_CHECKING
 from openral_core.exceptions import ROSConfigError
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
-    from openral_core import JointState, RobotDescription
+    from openral_core import JointSpec, JointState, RobotDescription
 
 __all__ = [
     "EffortReadbackHealth",
@@ -67,6 +67,7 @@ __all__ = [
     "GraspTriggerConfig",
     "GripperEffortTrigger",
     "assess_effort_readback",
+    "gripper_joints",
 ]
 
 
@@ -161,34 +162,72 @@ class EffortReadbackHealth:
 _MIN_HEALTHY_SPAN_FRACTION = 0.05
 
 
-def gripper_joint(description: RobotDescription) -> object:
-    """Return the single ``role: "gripper"`` joint spec of a manifest.
+def gripper_joints(description: RobotDescription) -> list[JointSpec]:
+    """Return every ``role: "gripper"`` joint spec of a manifest, in manifest order.
+
+    A bimanual robot has one per hand; each one drives its own trigger.
 
     Args:
         description: The robot manifest.
 
     Returns:
+        The gripper ``JointSpec`` s.
+
+    Raises:
+        ROSConfigError: If the manifest declares no gripper-role joint.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> [joint.name for joint in gripper_joints(d)]
+        ['left_gripper', 'right_gripper']
+    """
+    joints = [joint for joint in description.joints if joint.role == "gripper"]
+    if not joints:
+        raise ROSConfigError(f"no role='gripper' joint on {description.name!r}.")
+    return joints
+
+
+def gripper_joint(description: RobotDescription, joint_name: str | None = None) -> JointSpec:
+    """Return one ``role: "gripper"`` joint spec of a manifest.
+
+    Args:
+        description: The robot manifest.
+        joint_name: Which gripper joint. ``None`` is the single-gripper
+            convenience and requires the manifest to declare exactly one.
+
+    Returns:
         The gripper ``JointSpec``.
 
     Raises:
-        ROSConfigError: If the manifest declares no gripper-role joint, or more
-            than one — this module drives a single parallel jaw, and guessing
+        ROSConfigError: If the manifest declares no gripper-role joint; if
+            ``joint_name`` is ``None`` and it declares more than one — guessing
             which of several is "the" gripper is exactly the kind of implicit
-            choice that must not be buried in a safety-adjacent trigger.
+            choice that must not be buried in a safety-adjacent trigger; or if
+            ``joint_name`` names no gripper-role joint.
     """
-    joints = [joint for joint in description.joints if joint.role == "gripper"]
-    if len(joints) != 1:
-        raise ROSConfigError(
-            f"grasp trigger needs exactly one role='gripper' joint on "
-            f"{description.name!r}, found {len(joints)}."
-        )
-    return joints[0]
+    joints = gripper_joints(description)
+    if joint_name is None:
+        if len(joints) != 1:
+            raise ROSConfigError(
+                f"grasp trigger needs exactly one role='gripper' joint on "
+                f"{description.name!r}, found {len(joints)}; name one with joint_name."
+            )
+        return joints[0]
+    for joint in joints:
+        if joint.name == joint_name:
+            return joint
+    raise ROSConfigError(
+        f"{joint_name!r} is not a role='gripper' joint of {description.name!r}; "
+        f"gripper joints are {[joint.name for joint in joints]}."
+    )
 
 
 def assess_effort_readback(
     states: Sequence[JointState],
     *,
     description: RobotDescription,
+    joint_name: str | None = None,
 ) -> EffortReadbackHealth:
     """Judge a recorded effort trace as a grasp signal — the SO-101 test hook.
 
@@ -202,12 +241,14 @@ def assess_effort_readback(
         states: Recorded snapshots, in order.
         description: The robot manifest, for the gripper joint and its
             ``effort_limit`` (the scale the span is judged against).
+        joint_name: The gripper joint to judge; ``None`` requires the manifest
+            to declare exactly one.
 
     Returns:
         The ``EffortReadbackHealth`` verdict.
 
     Raises:
-        ROSConfigError: If the manifest has no single gripper joint, or that
+        ROSConfigError: If the gripper joint cannot be resolved, or that
             joint declares no ``effort_limit`` (there is then no scale to judge
             the span against, and a fraction-based threshold is undefined).
 
@@ -221,9 +262,9 @@ def assess_effort_readback(
         >>> assess_effort_readback(flat, description=d).usable
         False
     """
-    spec = gripper_joint(description)
-    name = str(spec.name)  # type: ignore[attr-defined]  # reason: JointSpec is typed only under TYPE_CHECKING here
-    limit = spec.effort_limit  # type: ignore[attr-defined]  # reason: as above
+    spec = gripper_joint(description, joint_name)
+    name = spec.name
+    limit = spec.effort_limit
     if limit is None or limit <= 0.0:
         raise ROSConfigError(
             f"grasp trigger needs a positive effort_limit on joint {name!r} of "
@@ -286,10 +327,12 @@ class GripperEffortTrigger:
     Args:
         description: The robot manifest — supplies the gripper joint and the
             ``effort_limit`` the fractional thresholds scale against.
+        joint_name: The gripper joint to watch. ``None`` requires the manifest to
+            declare exactly one; a bimanual robot builds one trigger per hand.
         config: Thresholds and debounce. Every field is a calibration point.
 
     Raises:
-        ROSConfigError: If the manifest has no single gripper joint, that joint
+        ROSConfigError: If the gripper joint cannot be resolved, that joint
             declares no positive ``effort_limit``, or the config's hysteresis
             band is inverted / its debounce is under one tick.
 
@@ -308,6 +351,7 @@ class GripperEffortTrigger:
         self,
         description: RobotDescription,
         *,
+        joint_name: str | None = None,
         config: GraspTriggerConfig | None = None,
     ) -> None:
         """Resolve the gripper joint and turn fractional thresholds into absolutes."""
@@ -324,14 +368,14 @@ class GripperEffortTrigger:
                 f"{self._config.attach_effort_fraction}); without the gap there is no "
                 "hysteresis and a payload held at the threshold chatters."
             )
-        spec = gripper_joint(description)
-        limit = spec.effort_limit  # type: ignore[attr-defined]  # reason: JointSpec typed under TYPE_CHECKING
+        spec = gripper_joint(description, joint_name)
+        limit = spec.effort_limit
         if limit is None or limit <= 0.0:
             raise ROSConfigError(
                 f"GripperEffortTrigger needs a positive effort_limit on joint "
-                f"{spec.name!r} of {description.name!r}; the manifest declares {limit!r}."  # type: ignore[attr-defined]
+                f"{spec.name!r} of {description.name!r}; the manifest declares {limit!r}."
             )
-        self._joint_name = str(spec.name)  # type: ignore[attr-defined]
+        self._joint_name = spec.name
         self._attach_effort = self._config.attach_effort_fraction * float(limit)
         self._release_effort = self._config.release_effort_fraction * float(limit)
         self._loaded = False

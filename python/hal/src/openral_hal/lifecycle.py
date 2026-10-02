@@ -1567,6 +1567,9 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("vision_attachment_deadline_s", 0.25)
             self.declare_parameter("vision_attachment_tcp_frame", "")
             self.declare_parameter("vision_attachment_jaw_tip_frames", [""])
+            # "manifest_link=tf_frame" entries for links the published TF tree
+            # names differently (same body only — see VisionAttachmentConfig).
+            self.declare_parameter("vision_attachment_tf_frames", [""])
             self._bridge: Any = None
             self._mobile_base: Any = None
             self._vision_attachment: Any = None
@@ -1972,12 +1975,24 @@ if _ROS2_AVAILABLE:
             gp = self.get_parameter
             if not gp("vision_attachment_enabled").get_parameter_value().bool_value:
                 return
+            from openral_core.exceptions import ROSConfigError
+
             from openral_hal.vision_attachment_bridge import (
                 VisionAttachmentBridge,
                 VisionAttachmentConfig,
             )
 
             assert self._hal is not None
+            tf_frames: dict[str, str] = {}
+            for entry in gp("vision_attachment_tf_frames").get_parameter_value().string_array_value:
+                if not entry:
+                    continue
+                link, sep, frame = entry.partition("=")
+                if not (sep and link and frame):
+                    raise ROSConfigError(
+                        f"vision_attachment_tf_frames entry {entry!r} is not 'link=frame'."
+                    )
+                tf_frames[link] = frame
             self._vision_attachment = VisionAttachmentBridge(
                 self,
                 self._hal.description,
@@ -1999,6 +2014,7 @@ if _ROS2_AVAILABLE:
                         .string_array_value
                         if frame
                     ),
+                    tf_frames=tf_frames,
                 ),
             )
             self._vision_attachment.setup()

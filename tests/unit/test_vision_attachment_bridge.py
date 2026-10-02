@@ -14,6 +14,9 @@ without one:
 * ``depth_grid_from_image``, the depth decoder that
   turns a driver's ``32FC1`` / ``16UC1`` frame into the metric raster the
   producer gates on.
+* the per-gripper leg wiring ``VisionAttachmentBridge.__init__`` resolves from
+  the real SO-101 and bimanual OpenArm manifests (it creates no ROS entities, so
+  ``node=None`` is the real constructor, not a double).
 """
 
 from __future__ import annotations
@@ -22,9 +25,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from openral_core import RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_hal.vision_attachment_bridge import (
     DEFAULT_SEGMENT_SERVICE,
+    VisionAttachmentBridge,
     VisionAttachmentConfig,
     decode_mono8_mask,
     resolve_segment_outcome,
@@ -206,3 +211,88 @@ def test_depth_decode_rejects_a_truncated_payload() -> None:
     msg.data = np.zeros(4, dtype="<f4").tobytes()
     with pytest.raises(ROSConfigError, match="payload has 4 samples"):
         depth_grid_from_image(msg)
+
+
+# ── One leg per gripper (real manifests; ``__init__`` creates no ROS entities) ──
+
+
+def _openarm() -> RobotDescription:
+    return RobotDescription.from_yaml("robots/openarm/robot.yaml")
+
+
+def test_a_bimanual_bridge_builds_one_leg_per_gripper() -> None:
+    """OpenArm's two hands each get a trigger, a producer and a unique object id."""
+    bridge = VisionAttachmentBridge(
+        None, _openarm(), config=VisionAttachmentConfig(camera="head_zed")
+    )
+    assert bridge.gripper_joint_names == ("left_gripper", "right_gripper")
+    left, right = bridge._legs
+    assert left.producer.attach_link == "openarm_left_link7"
+    assert right.producer.attach_link == "openarm_right_link7"
+    assert left.object_id == "grasped_payload:left_gripper"
+    assert left.object_id != right.object_id
+    assert bridge.attachment_action_ack_ready()
+
+
+def test_the_bimanual_tcp_is_the_gripper_joint_origin_without_tf() -> None:
+    """The TCP comes from the manifest, so a link missing from TF cannot break it."""
+    description = _openarm()
+    bridge = VisionAttachmentBridge(
+        None, description, config=VisionAttachmentConfig(camera="head_zed")
+    )
+    left_joint = next(j for j in description.joints if j.name == "left_gripper")
+    left = bridge._legs[0]
+    assert left.tcp_in_link == left_joint.origin_xyz == (-0.00143, -0.018, -0.068)
+    assert left.tcp_frame == ""
+
+
+def test_a_single_tcp_frame_override_is_refused_on_two_grippers() -> None:
+    """``tcp_frame`` cannot say which hand it means, so it is a typed error."""
+    with pytest.raises(ROSConfigError, match="single-gripper"):
+        VisionAttachmentBridge(
+            None,
+            _openarm(),
+            config=VisionAttachmentConfig(camera="head_zed", tcp_frame="openarm_left_hand_tcp"),
+        )
+
+
+def test_the_single_gripper_bridge_keeps_its_tf_tcp() -> None:
+    """SO-101 still looks its TCP up as the moving jaw through tf2, as before."""
+    bridge = VisionAttachmentBridge(
+        None,
+        RobotDescription.from_yaml("robots/so101_follower/robot.yaml"),
+        config=VisionAttachmentConfig(camera="wrist"),
+    )
+    (leg,) = bridge._legs
+    assert leg.producer.attach_link == "gripper_base"
+    assert leg.tcp_frame == "moving_jaw"
+
+
+def test_tf_frames_maps_an_attach_link_to_its_published_name() -> None:
+    """OpenArm's ``link7`` is published as ``ee_base_link``; unmapped links pass through."""
+    mapped = VisionAttachmentBridge(
+        None,
+        _openarm(),
+        config=VisionAttachmentConfig(
+            camera="head_zed",
+            tf_frames={"openarm_left_link7": "openarm_left_ee_base_link"},
+        ),
+    )
+    assert mapped.tf_frame("openarm_left_link7") == "openarm_left_ee_base_link"
+    assert mapped.tf_frame("openarm_right_link7") == "openarm_right_link7"
+    plain = VisionAttachmentBridge(
+        None, _openarm(), config=VisionAttachmentConfig(camera="head_zed")
+    )
+    assert plain.tf_frame("openarm_left_link7") == "openarm_left_link7"
+
+
+def test_tf_frames_rejects_a_link_the_manifest_does_not_have() -> None:
+    """A mapping for a non-existent link is a typo, not a silent no-op."""
+    with pytest.raises(ROSConfigError, match="not links of"):
+        VisionAttachmentBridge(
+            None,
+            _openarm(),
+            config=VisionAttachmentConfig(
+                camera="head_zed", tf_frames={"openarm_left_ee_base_link": "x"}
+            ),
+        )
