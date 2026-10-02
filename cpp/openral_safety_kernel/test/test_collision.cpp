@@ -21,13 +21,19 @@
 #pragma GCC diagnostic ignored "-Wnonnull"
 #include "openral_safety_kernel/collision.hpp"
 
+#include <array>
 #include <atomic>
+#include <bitset>
 #include <cmath>
 #include <cstdlib>
+#include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <new>
+#include <random>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 #pragma GCC diagnostic pop
 
@@ -3347,6 +3353,10 @@ TEST(PlaceApproachAllowance, AMapWithNoResolutionGrantsNothing) {
   grid.resolution = kSupportRes;
   EXPECT_NEAR(osk::place_approach_allowance(grid, 8, osk::Vec3{0.0, 0.0, 0.0}), 0.0, 1e-12)
       << "past the eight-object schema cap there is no mask bit to consult";
+  EXPECT_NEAR(osk::place_approach_allowance(
+                  grid, 0, osk::Vec3{std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0}),
+              0.0, 1e-12)
+      << "a non-finite cell centre is never inside the region (shared point-in-OBB fails closed)";
 }
 
 // ── declared target's own geometry (ADR-0098, survey Path B) ────────────────
@@ -5432,4 +5442,546 @@ TEST(AttachedIngestTightGeometry, AnUnprovableRefinementIsDroppedNotObeyed) {
   ASSERT_EQ(osk::ingest_attached_objects({in}, {"base", "hand"}, 2, 4, 4, out),
             osk::AttachIngestStatus::kOk);
   EXPECT_EQ(out.primitives[0].hull_index, -1);
+}
+
+// ── grasp-target exemption (ADR-01xx draft, hazard HZ-01xx) ─────────────────
+//
+// The real OpenArm cell runs the world-voxel check at a 20 mm margin on 20 mm
+// cells, and the finger link (`openarm_left_finger_pair`, one box + 26-DOP
+// swept over the stroke) contains the grasp target during a grasp, so the
+// check stops on the target's own cells before any attachment can exist. The
+// exemption spares exactly (declared contact link, cell centred in the
+// producer-measured region) and nothing else; these tests pin that scope and
+// the monotonicity property the Safety-WG review rests on.
+//
+// Fixture: the finger box and its stage-1 DOP lifted verbatim from
+// robots/openarm/robot.yaml (`openarm_left_finger_pair` collision entry; the
+// right finger ships the same shape). A 16^3 grid of 20 mm cells is phased so
+// cell (8, 8, 8) is centred on the finger box's centre.
+
+namespace {
+
+constexpr int kGraspLeftFinger = 1;   // openarm_left_finger_pair (box + DOP)
+constexpr int kGraspRightFinger = 2;  // the other gripper, same geometry
+constexpr int kGraspArm = 3;          // an arm link (capsule)
+constexpr int kGraspCapFinger = 4;    // a capsule-lowered contact link (capsule pass)
+constexpr int kGraspN = 16;
+constexpr double kGraspRes = 0.02;
+constexpr double kGraspMargin = 0.02;  // the real cell's world-voxel margin
+const osk::Vec3 kFingerBoxCentre{0.0004, 0.0484, -0.0298};
+
+osk::LinkHull openarm_finger_dop() {
+  osk::LinkHull h;
+  const double lo[osk::kDopAxes] = {-0.02834752,  -0.070107094, -0.08005289,  -0.053612944,
+                                    -0.076496861, -0.08937858,  -0.064712966, -0.053360231,
+                                    -0.067655469, -0.073122012, -0.074557866, -0.075503127,
+                                    -0.075875619};
+  const double hi[osk::kDopAxes] = {0.02830136,  0.070067058, 0.080052877, 0.065975172, 0.089851369,
+                                    0.072273984, 0.077144915, 0.068857924, 0.06857799,  0.076024167,
+                                    0.07550378,  0.061814284, 0.091806117};
+  for (int i = 0; i < osk::kDopAxes; ++i) {
+    h.dop_lo[i] = lo[i];
+    h.dop_hi[i] = hi[i];
+  }
+  return h;
+}
+
+osk::CollisionModel grasp_cell_model() {
+  osk::CollisionModel m;
+  m.n_links = 5;
+  m.parent = {-1, 0, 0, 0, 0};
+  m.joint_kind = std::vector<osk::JointKind>(5, osk::JointKind::kFixed);
+  m.dof_index = {-1, -1, -1, -1, -1};
+  m.origin = std::vector<osk::Transform>(5, identity());
+  m.axis = std::vector<osk::Vec3>(5, osk::Vec3{0, 0, 1});
+  osk::Obb finger;
+  finger.half_extents = {0.0294, 0.0711, 0.0811};
+  finger.origin = osk::transform_from_xyz_rpy(0.0004, 0.0484, -0.0298, -2.8925, 0.0066, 3.1375);
+  m.box_link = {kGraspLeftFinger, kGraspRightFinger};
+  m.boxes = {finger, finger};
+  m.box_hull = {0, 1};
+  m.hulls = {openarm_finger_dop(), openarm_finger_dop()};
+  add_capsule(m, kGraspArm, 0.03, 0.05, translate(0.0004, 0.0484, -0.0298));
+  add_capsule(m, kGraspCapFinger, 0.01, 0.02, translate(0.0004, 0.0484, -0.0298));
+  return m;
+}
+
+// Every link parked 1 m away, outside the grid, unless the test places it.
+osk::CollisionScratch grasp_scratch_all_away() {
+  osk::CollisionScratch s;
+  s.link_world = std::vector<osk::Transform>(5, translate(1.0, 1.0, 1.0));
+  s.link_world[0] = identity();
+  return s;
+}
+
+int grasp_index(int dx, int dy, int dz) {
+  return (8 + dx) + kGraspN * ((8 + dy) + kGraspN * (8 + dz));
+}
+
+osk::Vec3 grasp_centre(int dx, int dy, int dz) {
+  return {kFingerBoxCentre.x + kGraspRes * dx, kFingerBoxCentre.y + kGraspRes * dy,
+          kFingerBoxCentre.z + kGraspRes * dz};
+}
+
+std::vector<std::uint8_t> grasp_occ(const std::vector<std::array<int, 3>>& cells) {
+  std::vector<std::uint8_t> occ(kGraspN * kGraspN * kGraspN, 0);
+  for (const auto& c : cells) {
+    occ[static_cast<std::size_t>(grasp_index(c[0], c[1], c[2]))] = 1;
+  }
+  return occ;
+}
+
+osk::VoxelGrid grasp_grid(const std::vector<std::uint8_t>& occ) {
+  osk::VoxelGrid g;
+  const double phase = 8.5 * kGraspRes;
+  g.pose.t = {kFingerBoxCentre.x - phase, kFingerBoxCentre.y - phase, kFingerBoxCentre.z - phase};
+  g.resolution = kGraspRes;
+  g.sx = kGraspN;
+  g.sy = kGraspN;
+  g.sz = kGraspN;
+  g.occupancy = occ.data();
+  return g;
+}
+
+std::bitset<osk::kMaxGraspMaskLinks> grasp_mask(std::initializer_list<int> links) {
+  std::bitset<osk::kMaxGraspMaskLinks> mask;
+  for (const int l : links) {
+    mask.set(static_cast<std::size_t>(l));
+  }
+  return mask;
+}
+
+// The producer's measured box around the target: axis-aligned, centred on the
+// finger box centre, `half` on every side.
+osk::GraspTargetRegion grasp_region(double half, std::initializer_list<int> links) {
+  osk::GraspTargetRegion region;
+  EXPECT_EQ(osk::ingest_grasp_region(
+                translate(kFingerBoxCentre.x, kFingerBoxCentre.y, kFingerBoxCentre.z),
+                osk::Vec3{half, half, half}, grasp_mask(links), region),
+            osk::GraspRegionStatus::kOk);
+  return region;
+}
+
+// Bit-identical comparison of everything a CollisionHit reports.
+void expect_same_hit(const osk::CollisionHit& a, const osk::CollisionHit& b) {
+  EXPECT_EQ(a.hit, b.hit);
+  EXPECT_EQ(a.link_a, b.link_a);
+  EXPECT_EQ(a.link_b, b.link_b);
+  EXPECT_EQ(a.min_distance, b.min_distance);
+  EXPECT_EQ(a.sweep_min_distance, b.sweep_min_distance);
+  EXPECT_EQ(a.place_allowance_active, b.place_allowance_active);
+  EXPECT_EQ(a.depth_is_box_bound, b.depth_is_box_bound);
+}
+
+}  // namespace
+
+TEST(GraspTargetExemption, TheLiftedFingerGeometryIsTheManifestsProvedOne) {
+  // The fixture is only evidence about the OpenArm if it is the geometry the
+  // kernel would load, which validate_tight_geometry re-proves here.
+  const osk::CollisionModel m = grasp_cell_model();
+  std::size_t offending = 0;
+  EXPECT_EQ(osk::validate_tight_geometry(m, offending), osk::TightGeometryStatus::kOk);
+}
+
+TEST(GraspTargetExemption, TheUndeclaredFingerStopsExactlyAsToday) {
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  const auto occ = grasp_occ({{0, 0, 0}});
+  auto grid = grasp_grid(occ);
+
+  const auto today = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(today.hit) << "the target cell sits inside the finger hull";
+  EXPECT_EQ(today.link_a, kGraspLeftFinger);
+  EXPECT_EQ(today.link_b, grasp_index(0, 0, 0));
+
+  // A live region declared for the OTHER gripper changes nothing for this one.
+  grid.grasp_region = grasp_region(0.03, {kGraspRightFinger});
+  expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), today);
+
+  // And the exemption is what removes the stop when this finger IS declared —
+  // the control that makes the line above mean something.
+  grid.grasp_region = grasp_region(0.03, {kGraspLeftFinger});
+  const auto declared = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  EXPECT_FALSE(declared.hit);
+  EXPECT_EQ(declared.sweep_min_distance, today.sweep_min_distance)
+      << "the exempt pair still reaches the sweep minimum";
+}
+
+TEST(GraspTargetExemption, ArmLinksAreUntouchedByALiveRegion) {
+  // ADR-01xx amends ADR-0097's "arm-vs-world unchanged" for the declared
+  // contact links ONLY: an arm link inside the very same region cells keeps
+  // its full margin, bit for bit.
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspArm] = identity();
+  const auto occ = grasp_occ({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}});
+  auto grid = grasp_grid(occ);
+
+  const auto before = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(before.hit);
+  ASSERT_EQ(before.link_a, kGraspArm);
+  grid.grasp_region = grasp_region(0.03, {kGraspLeftFinger, kGraspRightFinger, kGraspCapFinger});
+  ASSERT_TRUE(osk::grasp_target_exempts(grid, kGraspLeftFinger, grasp_centre(0, 0, 0)))
+      << "every occupied cell is inside the live region";
+  expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), before);
+}
+
+TEST(GraspTargetExemption, TheOtherGripperIsNotExempt) {
+  // Bimanual: the region is the LEFT gripper's; the right finger entering the
+  // same cells stops exactly as today (HZ-01xx-5).
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspRightFinger] = identity();
+  const auto occ = grasp_occ({{0, 0, 0}});
+  auto grid = grasp_grid(occ);
+
+  const auto before = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(before.hit);
+  ASSERT_EQ(before.link_a, kGraspRightFinger);
+  grid.grasp_region = grasp_region(0.03, {kGraspLeftFinger});
+  EXPECT_FALSE(osk::grasp_target_exempts(grid, kGraspRightFinger, grasp_centre(0, 0, 0)));
+  expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), before);
+}
+
+TEST(GraspTargetExemption, OutsideTheRegionTheFingerMarginIsUnchanged) {
+  // A region tight around one cell; a neighbour two cells over is outside it
+  // and inside the finger's 20 mm margin. With the region the report is that
+  // neighbour, at exactly the distance it reads with no region at all.
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  const auto near_only = grasp_occ({{2, 0, 0}});
+  const auto alone = osk::check_voxel_collision(m, s, grasp_grid(near_only), kGraspMargin);
+  ASSERT_TRUE(alone.hit) << "the neighbour is within the finger's margin on its own";
+
+  const auto occ = grasp_occ({{0, 0, 0}, {2, 0, 0}});
+  auto grid = grasp_grid(occ);
+  grid.grasp_region = grasp_region(0.015, {kGraspLeftFinger});
+  ASSERT_FALSE(osk::grasp_target_exempts(grid, kGraspLeftFinger, grasp_centre(2, 0, 0)));
+  const auto with = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(with.hit);
+  EXPECT_EQ(with.link_a, kGraspLeftFinger);
+  EXPECT_EQ(with.link_b, grasp_index(2, 0, 0));
+  EXPECT_EQ(with.min_distance, alone.min_distance);
+}
+
+TEST(GraspTargetExemption, TheSupportSurfaceUnderTheTargetStillStops) {
+  // HZ-01xx-6: the producer keeps the region's lower face above the support
+  // plane. Support cells whose centres sit half a voxel below that face are
+  // outside the region, so driving the fingers into the table still stops, and
+  // the report is the same support cell at the same distance as with no
+  // target at all.
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  std::vector<std::array<int, 3>> support;
+  for (int dx = -2; dx <= 2; ++dx) {
+    for (int dy = -2; dy <= 2; ++dy) {
+      support.push_back({dx, dy, -2});  // centre 40 mm below the region centre
+    }
+  }
+  std::vector<std::array<int, 3>> scene = support;
+  for (int dx = -1; dx <= 1; ++dx) {
+    for (int dy = -1; dy <= 1; ++dy) {
+      for (int dz = -1; dz <= 1; ++dz) {
+        scene.push_back({dx, dy, dz});  // the target, filling the region
+      }
+    }
+  }
+  const auto support_occ = grasp_occ(support);
+  const auto table_only = osk::check_voxel_collision(m, s, grasp_grid(support_occ), kGraspMargin);
+  ASSERT_TRUE(table_only.hit);
+
+  const auto occ = grasp_occ(scene);
+  auto grid = grasp_grid(occ);
+  grid.grasp_region = grasp_region(0.03, {kGraspLeftFinger});  // lower face 30 mm below centre
+  EXPECT_TRUE(osk::grasp_target_exempts(grid, kGraspLeftFinger, grasp_centre(0, 0, -1)));
+  EXPECT_FALSE(osk::grasp_target_exempts(grid, kGraspLeftFinger, grasp_centre(0, 0, -2)));
+  const auto with = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(with.hit);
+  EXPECT_EQ(with.link_b, table_only.link_b);
+  EXPECT_EQ(with.min_distance, table_only.min_distance);
+}
+
+TEST(GraspTargetExemption, AnExemptCellNeverSuppliesTheEvidence) {
+  // The attached-path contract: an exempt pair reaches sweep_min only. With a
+  // deep exempt cell and a shallower non-exempt one that trips, the report
+  // names the latter, and only the sweep minimum shows the former.
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  const auto exempt_occ = grasp_occ({{0, 0, 0}});
+  const auto tripping_occ = grasp_occ({{0, 0, 3}});
+  const double d_exempt =
+      osk::check_voxel_collision(m, s, grasp_grid(exempt_occ), kGraspMargin).min_distance;
+  const double d_trip =
+      osk::check_voxel_collision(m, s, grasp_grid(tripping_occ), kGraspMargin).min_distance;
+  ASSERT_LT(d_exempt, d_trip) << "the exempt cell is the deeper one";
+  ASSERT_LE(d_trip, kGraspMargin) << "the other cell trips on its own";
+
+  const auto occ = grasp_occ({{0, 0, 0}, {0, 0, 3}});
+  auto grid = grasp_grid(occ);
+  grid.grasp_region = grasp_region(0.015, {kGraspLeftFinger});
+  const auto hit = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(hit.hit);
+  EXPECT_EQ(hit.link_b, grasp_index(0, 0, 3));
+  EXPECT_EQ(hit.min_distance, d_trip);
+  EXPECT_EQ(hit.sweep_min_distance, d_exempt);
+}
+
+TEST(GraspTargetExemption, TheCapsulePassAppliesTheSameRule) {
+  // Both passes of check_voxel_collision carry the exemption; a capsule-lowered
+  // contact link gets exactly the box path's treatment.
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspCapFinger] = identity();
+  const auto occ = grasp_occ({{0, 0, 0}, {0, 0, 2}});
+  auto grid = grasp_grid(occ);
+  const auto today = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(today.hit);
+  ASSERT_EQ(today.link_b, grasp_index(0, 0, 0));
+
+  grid.grasp_region = grasp_region(0.015, {kGraspCapFinger});
+  const auto with = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  ASSERT_TRUE(with.hit) << "the cell outside the region still stops the capsule";
+  EXPECT_EQ(with.link_a, kGraspCapFinger);
+  EXPECT_EQ(with.link_b, grasp_index(0, 0, 2));
+  EXPECT_EQ(with.sweep_min_distance, today.sweep_min_distance);
+}
+
+TEST(GraspTargetExemption, DegenerateOversizedNonFiniteRegionsGrantNothing) {
+  osk::GraspTargetRegion region;
+  const osk::Vec3 sane{0.03, 0.03, 0.03};
+  const auto left = grasp_mask({kGraspLeftFinger});
+  const double nan_value = std::numeric_limits<double>::quiet_NaN();
+  const double inf_value = std::numeric_limits<double>::infinity();
+
+  EXPECT_EQ(osk::ingest_grasp_region(identity(), sane, grasp_mask({}), region),
+            osk::GraspRegionStatus::kNoLinks)
+      << "no allowlisted contact link declared exempts nothing";
+  EXPECT_EQ(osk::ingest_grasp_region(translate(nan_value, 0.0, 0.0), sane, left, region),
+            osk::GraspRegionStatus::kBadPose);
+  osk::Transform bad_rotation;
+  bad_rotation.r[4] = inf_value;
+  EXPECT_EQ(osk::ingest_grasp_region(bad_rotation, sane, left, region),
+            osk::GraspRegionStatus::kBadPose);
+  EXPECT_EQ(osk::ingest_grasp_region(identity(), osk::Vec3{nan_value, 0.03, 0.03}, left, region),
+            osk::GraspRegionStatus::kBadExtents);
+  EXPECT_EQ(osk::ingest_grasp_region(identity(), osk::Vec3{inf_value, 0.03, 0.03}, left, region),
+            osk::GraspRegionStatus::kBadExtents);
+  EXPECT_EQ(osk::ingest_grasp_region(identity(), osk::Vec3{0.0, 0.03, 0.03}, left, region),
+            osk::GraspRegionStatus::kDegenerate);
+  EXPECT_EQ(osk::ingest_grasp_region(identity(), osk::Vec3{0.03, -0.01, 0.03}, left, region),
+            osk::GraspRegionStatus::kDegenerate);
+  EXPECT_EQ(osk::ingest_grasp_region(identity(), osk::Vec3{0.21, 0.01, 0.01}, left, region),
+            osk::GraspRegionStatus::kOversize)
+      << "a side past the 0.20 m placeholder cap";
+  EXPECT_EQ(osk::ingest_grasp_region(identity(), osk::Vec3{0.20, 0.20, 0.20}, left, region),
+            osk::GraspRegionStatus::kOversizeVolume)
+      << "0.064 m^3 is inside the per-side cap and past the 0.03 m^3 volume cap";
+  EXPECT_FALSE(region.valid) << "every refusal leaves the region inert";
+
+  // An inert region changes nothing, bit for bit.
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  const auto occ = grasp_occ({{0, 0, 0}});
+  auto grid = grasp_grid(occ);
+  const auto today = osk::check_voxel_collision(m, s, grid, kGraspMargin);
+  grid.grasp_region = region;
+  expect_same_hit(osk::check_voxel_collision(m, s, grid, kGraspMargin), today);
+  EXPECT_FALSE(osk::grasp_target_exempts(grid, kGraspLeftFinger, grasp_centre(0, 0, 0)));
+
+  // The predicate re-checks what ingest already refused, and refuses link
+  // indices it has no mask bit for.
+  grid.grasp_region = grasp_region(0.03, {kGraspLeftFinger});
+  EXPECT_TRUE(osk::grasp_target_exempts(grid, kGraspLeftFinger, grasp_centre(0, 0, 0)));
+  EXPECT_FALSE(osk::grasp_target_exempts(grid, -1, grasp_centre(0, 0, 0)));
+  EXPECT_FALSE(osk::grasp_target_exempts(grid, static_cast<int>(osk::kMaxGraspMaskLinks),
+                                         grasp_centre(0, 0, 0)));
+  grid.grasp_region.half_extents.z = 0.0;
+  EXPECT_FALSE(osk::grasp_target_exempts(grid, kGraspLeftFinger, grasp_centre(0, 0, 0)));
+  grid.grasp_region.half_extents.z = 0.03;
+  EXPECT_FALSE(osk::grasp_target_exempts(grid, kGraspLeftFinger, osk::Vec3{nan_value, 0.0, 0.0}))
+      << "a non-finite cell centre is never inside the region";
+  grid.grasp_region.half_extents.z = nan_value;
+  EXPECT_FALSE(osk::grasp_target_exempts(grid, kGraspLeftFinger, grasp_centre(0, 0, 0)));
+
+  // The largest region the caps admit is still admitted.
+  EXPECT_EQ(osk::ingest_grasp_region(identity(), osk::Vec3{0.20, 0.20, 0.09}, left, region),
+            osk::GraspRegionStatus::kOk);
+  EXPECT_TRUE(region.valid);
+}
+
+TEST(GraspTargetExemption, EveryRefusalHasItsOwnReasonToken) {
+  const std::pair<osk::GraspRegionStatus, const char*> expected[] = {
+      {osk::GraspRegionStatus::kOk, "ok"},
+      {osk::GraspRegionStatus::kNoLinks, "no_links"},
+      {osk::GraspRegionStatus::kBadPose, "bad_pose"},
+      {osk::GraspRegionStatus::kBadExtents, "bad_extents"},
+      {osk::GraspRegionStatus::kDegenerate, "degenerate"},
+      {osk::GraspRegionStatus::kOversize, "oversize"},
+      {osk::GraspRegionStatus::kOversizeVolume, "oversize_volume"},
+  };
+  std::set<std::string> tokens;
+  for (const auto& [status, token] : expected) {
+    const char* reason = osk::grasp_region_status_reason(status);
+    ASSERT_NE(reason, nullptr);
+    EXPECT_STREQ(reason, token);
+    tokens.insert(reason);
+  }
+  EXPECT_EQ(tokens.size(), std::size(expected));
+}
+
+namespace {
+
+// The model restricted to one link's geometry, so a sweep's single reported
+// pair can enumerate that link's whole trip set.
+osk::CollisionModel only_link(const osk::CollisionModel& full, int link) {
+  osk::CollisionModel m = full;
+  m.capsule_link.clear();
+  m.capsules.clear();
+  m.box_link.clear();
+  m.boxes.clear();
+  m.box_hull.clear();
+  for (std::size_t c = 0; c < full.capsules.size(); ++c) {
+    if (full.capsule_link[c] == link) {
+      m.capsule_link.push_back(link);
+      m.capsules.push_back(full.capsules[c]);
+    }
+  }
+  for (std::size_t b = 0; b < full.boxes.size(); ++b) {
+    if (full.box_link[b] == link) {
+      m.box_link.push_back(link);
+      m.boxes.push_back(full.boxes[b]);
+      m.box_hull.push_back(full.box_hull[b]);
+    }
+  }
+  return m;
+}
+
+// Every tripping (link, cell) pair. A cell's verdict for one link does not
+// depend on the other cells (stage 1 only: no shared stage-2 budget), so
+// clearing each reported cell and re-checking enumerates the set exactly.
+std::set<std::pair<int, int>> trip_set(const osk::CollisionModel& full,
+                                       const osk::CollisionScratch& s,
+                                       const std::vector<std::uint8_t>& occ,
+                                       const osk::VoxelGrid& grid, double margin) {
+  std::set<std::pair<int, int>> trips;
+  for (int link = 1; link < static_cast<int>(full.n_links); ++link) {
+    const osk::CollisionModel m = only_link(full, link);
+    std::vector<std::uint8_t> o = occ;
+    osk::VoxelGrid g = grid;
+    g.occupancy = o.data();
+    for (std::size_t guard = 0; guard <= o.size(); ++guard) {
+      const auto hit = osk::check_voxel_collision(m, s, g, margin);
+      if (!hit.hit) {
+        break;
+      }
+      EXPECT_EQ(hit.link_a, link);
+      trips.insert({link, hit.link_b});
+      o[static_cast<std::size_t>(hit.link_b)] = 0;
+    }
+  }
+  return trips;
+}
+
+osk::Vec3 base_centre(const osk::VoxelGrid& g, int linear) {
+  const int ix = linear % g.sx;
+  const int iy = (linear / g.sx) % g.sy;
+  const int iz = linear / (g.sx * g.sy);
+  const osk::Vec3 l{(ix + 0.5) * g.resolution, (iy + 0.5) * g.resolution,
+                    (iz + 0.5) * g.resolution};
+  const double* r = g.pose.r;
+  return {g.pose.t.x + r[0] * l.x + r[1] * l.y + r[2] * l.z,
+          g.pose.t.y + r[3] * l.x + r[4] * l.y + r[5] * l.z,
+          g.pose.t.z + r[6] * l.x + r[7] * l.y + r[8] * l.z};
+}
+
+}  // namespace
+
+TEST(GraspTargetExemption, MonotonicityOverRandomisedScenes) {
+  // The property the WG review rests on (design note §2.1):
+  //   trips_with ⊆ trips_without, and
+  //   trips_without \ trips_with = {(l, c) : l in mask, c centred in region}
+  //                                 ∩ trips_without.
+  // Plus the evidence contract on the full sweep: the reported pair is always
+  // a tripping one, and the sweep minimum is unchanged by the region.
+  // Randomised over link poses, oriented grids, region pose/size, mask and
+  // margin; fixed seed, so a failure is reproducible.
+  std::mt19937 rng(20261002U);
+  std::uniform_real_distribution<double> unit(-1.0, 1.0);
+  std::uniform_real_distribution<double> half_size(0.005, 0.08);
+  std::uniform_real_distribution<double> margin_dist(0.0, 0.03);
+  std::bernoulli_distribution occupied(0.08);
+  std::bernoulli_distribution in_mask(0.5);
+  const osk::CollisionModel m = grasp_cell_model();
+  int trials_with_difference = 0;
+  for (int trial = 0; trial < 150; ++trial) {
+    osk::CollisionScratch s = grasp_scratch_all_away();
+    for (int l = 1; l <= 4; ++l) {
+      s.link_world[static_cast<std::size_t>(l)] =
+          osk::transform_from_xyz_rpy(0.05 * unit(rng), 0.05 * unit(rng), 0.05 * unit(rng),
+                                      kPi * unit(rng), kPi * unit(rng), kPi * unit(rng));
+    }
+    std::vector<std::uint8_t> occ(kGraspN * kGraspN * kGraspN, 0);
+    for (auto& cell : occ) {
+      cell = occupied(rng) ? 1 : 0;
+    }
+    osk::VoxelGrid grid = grasp_grid(occ);
+    // An oriented grid about the finger box centre: the exemption tests the
+    // BASE-frame cell centre, which is load-bearing only once pose.r is not I.
+    const osk::Transform rot = osk::transform_from_xyz_rpy(0.0, 0.0, 0.0, 0.3 * unit(rng),
+                                                           0.3 * unit(rng), kPi * unit(rng));
+    const double phase = 8.5 * kGraspRes;
+    grid.pose = rot;
+    grid.pose.t = {kFingerBoxCentre.x - (rot.r[0] + rot.r[1] + rot.r[2]) * phase,
+                   kFingerBoxCentre.y - (rot.r[3] + rot.r[4] + rot.r[5]) * phase,
+                   kFingerBoxCentre.z - (rot.r[6] + rot.r[7] + rot.r[8]) * phase};
+    std::bitset<osk::kMaxGraspMaskLinks> mask;
+    for (int l = 1; l <= 4; ++l) {
+      if (in_mask(rng)) {
+        mask.set(static_cast<std::size_t>(l));
+      }
+    }
+    mask.set(static_cast<std::size_t>(kGraspLeftFinger));
+    osk::GraspTargetRegion region;
+    ASSERT_EQ(osk::ingest_grasp_region(
+                  osk::transform_from_xyz_rpy(kFingerBoxCentre.x + 0.04 * unit(rng),
+                                              kFingerBoxCentre.y + 0.04 * unit(rng),
+                                              kFingerBoxCentre.z + 0.04 * unit(rng),
+                                              kPi * unit(rng), kPi * unit(rng), kPi * unit(rng)),
+                  osk::Vec3{half_size(rng), half_size(rng), half_size(rng)}, mask, region),
+              osk::GraspRegionStatus::kOk);
+    const double margin = margin_dist(rng);
+
+    const auto without = trip_set(m, s, occ, grid, margin);
+    const auto full_without = osk::check_voxel_collision(m, s, grid, margin);
+    osk::VoxelGrid with_grid = grid;
+    with_grid.grasp_region = region;
+    const auto with = trip_set(m, s, occ, with_grid, margin);
+    const auto full_with = osk::check_voxel_collision(m, s, with_grid, margin);
+
+    for (const auto& pair : with) {
+      EXPECT_EQ(without.count(pair), 1U) << "trial " << trial << ": a NEW trip from the region";
+    }
+    for (const auto& [link, cell] : without) {
+      const bool exempt = mask[static_cast<std::size_t>(link)] &&
+                          osk::grasp_target_exempts(with_grid, link, base_centre(grid, cell));
+      EXPECT_EQ(with.count({link, cell}), exempt ? 0U : 1U)
+          << "trial " << trial << " link " << link << " cell " << cell;
+    }
+    if (with.size() != without.size()) {
+      ++trials_with_difference;
+    }
+    EXPECT_EQ(full_with.hit, !with.empty()) << "trial " << trial;
+    if (full_with.hit) {
+      EXPECT_EQ(with.count({full_with.link_a, full_with.link_b}), 1U)
+          << "trial " << trial << ": the evidence names an exempt pair";
+    }
+    EXPECT_EQ(full_without.hit, !without.empty()) << "trial " << trial;
+    EXPECT_EQ(full_with.sweep_min_distance, full_without.sweep_min_distance) << "trial " << trial;
+  }
+  EXPECT_GT(trials_with_difference, 20) << "the property must not hold vacuously";
 }

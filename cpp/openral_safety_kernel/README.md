@@ -776,6 +776,42 @@ path skipped them whenever attach-time contact was active, because it had no
 pose-dependent way to tell the support contact apart. The skip remains only for
 the unattested legacy case.
 
+## Grasp-target exemption (ADR-01xx draft) — collision layer only, not wired
+
+**Draft for Safety-WG review; nothing arms it.** The real OpenArm cell runs the
+world-voxel check at a 20 mm margin on 20 mm cells, and the finger link
+(`openarm_<side>_finger_pair`, one hull swept over the stroke) contains the grasp
+target during a grasp, so `check_voxel_collision` stops on the target's own
+cells before any attachment can exist. The spec is
+[`real-pick-place-design.md`](../../docs/reference/real-pick-place-design.md) §2.1;
+the decision and hazard drafts (ADR-01xx, HZ-01xx) are in
+[`real-pick-place-adr-drafts.md`](../../docs/reference/real-pick-place-adr-drafts.md).
+
+What exists today is the geometry half: `VoxelGrid::grasp_region`
+(`GraspTargetRegion`: a validity flag, a robot-link mask, a base-frame oriented
+box), `ingest_grasp_region` and `grasp_target_exempts`. The region is invalid by
+default and nothing in the lifecycle node sets it yet (the `grasp_allowance_enabled`
+parameter, default off, lands with the `GraspDeclaration` wire), so the kernel
+behaves bit-for-bit as before.
+
+* **Scope.** While valid, a cell whose base-frame centre is inside the box does
+  not trip **for a link in the mask only**. Every other link takes the unchanged
+  path with no extra work; cells outside the box, self-collision, the attached
+  checks and the force gate are untouched.
+* **Evidence.** An exempt pair's distance is computed exactly as without the
+  region, reaches `sweep_min_distance`, and never supplies the reported
+  identity or distance (`…AnExemptCellNeverSuppliesTheEvidence`).
+* **Monotonicity.** Trips with the region ⊆ trips without it, and the difference
+  is exactly the (mask link, cell centred in the box) pairs — pinned over
+  randomised scenes and oriented grids (`…MonotonicityOverRandomisedScenes`).
+* **Support surface.** Cells half a voxel below the box's lower face still stop
+  the finger (`…TheSupportSurfaceUnderTheTargetStillStops`); keeping the lower
+  face above the support plane is a producer obligation (HZ-01xx-6).
+* **Bounds** (`ingest_grasp_region`): a non-empty mask, a finite pose, finite
+  positive half-extents ≤ `kMaxGraspRegionHalfExtentM` (0.20 m) and a volume ≤
+  `kMaxGraspRegionVolumeM3` (0.03 m³). Both caps are **WG placeholders**. A
+  refusal means no exemption, under its own `reason=` token.
+
 ## The contact-force gate (ADR-0100, survey Path C)
 
 Every check above discriminates on **position**. At the instant of a place the
