@@ -13,6 +13,7 @@ import math
 import os
 import re
 from collections.abc import Callable, Iterable, Mapping
+from datetime import date
 from enum import Enum, StrEnum
 from pathlib import Path
 from typing import (
@@ -811,7 +812,54 @@ def load_robot_unit(robot_yaml: str | Path, unit: str) -> RobotUnit:
             f"{path} declares robot_id={loaded.robot_id!r} unit={loaded.unit!r}; "
             f"expected robot_id={manifest_dir.name!r} unit={unit!r}"
         )
+    if loaded.fixtures:
+        problems = fixture_problems(RobotDescription.from_yaml(str(robot_yaml)), loaded)
+        if problems:
+            raise ROSConfigError(f"{path}: " + "; ".join(problems))
     return loaded
+
+
+#: Embodiment kinds whose base is bolted down. Anything else moves its base frame.
+_FIXED_BASE_KINDS = frozenset({"manipulator", "bimanual"})
+
+
+def fixture_problems(description: RobotDescription, unit: RobotUnit) -> list[str]:
+    """Every reason ``unit``'s fixtures may not be used on ``description`` (empty = go).
+
+    A ``UnitFixture`` is surveyed once, in the robot's base frame, so it means something
+    only while that frame stays put relative to the cell: the robot must be fixed-base
+    (a ``manipulator`` / ``bimanual`` embodiment, no locomotion, no ``base_joints``, no
+    ``base`` / ``wheel`` / ``leg`` joints) and each fixture's ``frame_id`` must be the
+    manifest's ``base_frame``. ``load_robot_unit`` raises on any of these.
+
+    Example:
+        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> fixture_problems(desc, load_robot_unit("robots/openarm/robot.yaml", "thor"))
+        []
+    """
+    if not unit.fixtures:
+        return []
+    problems = []
+    moving = [j.name for j in description.joints if j.role in ("base", "wheel", "leg")]
+    if (
+        description.embodiment_kind.value not in _FIXED_BASE_KINDS
+        or any(kind != "none" for kind in description.capabilities.locomotion)
+        or description.base_joints
+        or moving
+    ):
+        problems.append(
+            f"{description.name} is not fixed-base (embodiment_kind="
+            f"{description.embodiment_kind.value}, locomotion="
+            f"{description.capabilities.locomotion}, "
+            f"base joints={moving or description.base_joints}"
+            "); a surveyed fixture is only valid while the base frame stays put"
+        )
+    problems.extend(
+        f"{f.id}: frame_id {f.frame_id!r} is not the robot's base_frame {description.base_frame!r}"
+        for f in unit.fixtures
+        if f.frame_id != description.base_frame
+    )
+    return problems
 
 
 def resolve_sensor_overlays(
@@ -2994,6 +3042,13 @@ class AttachmentEvidenceKind(str, Enum):
     # ``conaffinity`` suppression can empty a pair that is demonstrably in
     # contact — so absence of a force witness is never evidence of no contact.
     SIM_CONTACT_FORCE = "sim_contact_force"
+    # Proximity to a unit-surveyed, map-verified fixture plane; NOT sensed
+    # contact (real pick-and-place design §2.3, ADR-0092 D6 amendment, drafted).
+    # A producer attests it once per place declaration, when the payload's
+    # lowest primitive is within max(1 voxel, the fixture's survey uncertainty)
+    # of a ``UnitFixture`` top plane it verified live against the voxel map and
+    # the gripper is still loaded. A consumer must never read it as a touch.
+    DECLARED_FIXTURE = "declared_fixture"
 
 
 class PlaceRegion(BaseModel):
@@ -10718,6 +10773,117 @@ class SensorOverlay(BaseModel):
     intrinsics: IntrinsicsPinhole | None = None
 
 
+class UnitFixture(BaseModel):
+    """A surveyed, cell-specific fixed fixture a fixed-base robot places on or picks from.
+
+    A shelf, or the table under the front box: furniture of ONE cell, so it lives in that
+    cell's unit overlay (``robots/<robot_id>/units/<unit>.yaml``) next to its camera mount,
+    never in the robot manifest or a deploy scene. Real pick-and-place design §2.3.
+
+    A fixture is a **declared** volume and arms nothing by itself. Before it may become a
+    ``PlaceRegion`` (or a grasp region) the producer must verify it live against the voxel
+    map — the top face occupied within one voxel, the free volume above it empty — and on
+    failure publish the declaration region-less (ADR-0097 amendment, drafted). Only then
+    does a unit-surveyed fixture count as producer-measured on a fixed base.
+
+    Fixed-base robots only, in the robot's ``base_frame``: ``fixture_problems`` refuses
+    anything else, and ``load_robot_unit`` applies it to every unit that carries fixtures.
+
+    Attributes:
+        id: The ``target_id`` a place / grasp declaration names, ``cell:<name>``.
+        frame_id: Frame ``pose`` is in; must be the robot's ``base_frame``.
+        pose: Fixture box centre pose in ``frame_id`` (its ``frame_id`` must match).
+        half_extents: Box half-extents along its own axes (m), each in
+            ``(0, PlaceRegion.MAX_HALF_EXTENT_M]``, volume at most
+            ``PlaceRegion.MAX_VOLUME_M3`` — the kernel-mirrored place caps.
+        top_plane_normal: Unit normal of the support face, in the box's own axes.
+        survey_uncertainty_m: Survey accuracy bound (m), in ``(0, 0.05]``.
+        surveyed_on: Date the survey was taken.
+        surveyed_by: Who surveyed it.
+        method: How it was measured — provenance, like the camera mount's header comment.
+        notes: Free text.
+
+    Example:
+        >>> shelf = UnitFixture(
+        ...     id="cell:shelf_top",
+        ...     frame_id="openarm_base",
+        ...     pose=Pose6D(
+        ...         xyz=(0.45, 0.0, 0.30), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="openarm_base"
+        ...     ),
+        ...     half_extents=(0.20, 0.40, 0.01),
+        ...     survey_uncertainty_m=0.01,
+        ...     surveyed_on="2026-10-02",
+        ...     surveyed_by="operator",
+        ...     method="tape measure from the pedestal edge",
+        ... )
+        >>> shelf.top_plane_normal
+        (0.0, 0.0, 1.0)
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Ceiling on ``survey_uncertainty_m``. A fixture surveyed worse than this is not a
+    #: place target: the witness tolerance grows with it.
+    MAX_SURVEY_UNCERTAINTY_M: ClassVar[float] = 0.05
+    #: Tolerances on "unit length" for the pose quaternion and ``top_plane_normal``.
+    QUAT_NORM_TOL: ClassVar[float] = 1e-3
+    NORMAL_NORM_TOL: ClassVar[float] = 1e-6
+
+    id: str
+    frame_id: str = Field(min_length=1)
+    pose: Pose6D
+    half_extents: tuple[float, float, float]
+    top_plane_normal: tuple[float, float, float] = (0.0, 0.0, 1.0)
+    survey_uncertainty_m: float = Field(gt=0.0, le=MAX_SURVEY_UNCERTAINTY_M)
+    surveyed_on: date
+    surveyed_by: str
+    method: str
+    notes: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_fixture(self) -> UnitFixture:
+        if not self.id.startswith("cell:") or len(self.id) == len("cell:"):
+            raise ValueError(f"UnitFixture id {self.id!r} must be 'cell:<name>'")
+        if self.pose.frame_id != self.frame_id:
+            raise ValueError(
+                f"UnitFixture {self.id!r} pose is in {self.pose.frame_id!r}, not its "
+                f"frame_id {self.frame_id!r}"
+            )
+        if not all(math.isfinite(v) for v in (*self.pose.xyz, *self.pose.quat_xyzw)):
+            raise ValueError(f"UnitFixture {self.id!r} pose must be finite")
+        if abs(math.hypot(*self.pose.quat_xyzw) - 1.0) > self.QUAT_NORM_TOL:
+            raise ValueError(f"UnitFixture {self.id!r} pose quaternion must be unit length")
+        for axis, value in zip("xyz", self.half_extents, strict=True):
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(
+                    f"UnitFixture {self.id!r} half-extent {axis}={value!r} must be finite "
+                    "and positive"
+                )
+            if value > PlaceRegion.MAX_HALF_EXTENT_M:
+                raise ValueError(
+                    f"UnitFixture {self.id!r} half-extent {axis}={value!r} exceeds the "
+                    f"{PlaceRegion.MAX_HALF_EXTENT_M} m place-region bound"
+                )
+        hx, hy, hz = self.half_extents
+        if 8.0 * hx * hy * hz > PlaceRegion.MAX_VOLUME_M3:
+            raise ValueError(
+                f"UnitFixture {self.id!r} volume exceeds the {PlaceRegion.MAX_VOLUME_M3} m^3 "
+                "place-region bound"
+            )
+        norm = math.hypot(*self.top_plane_normal)
+        if not math.isfinite(norm) or abs(norm - 1.0) > self.NORMAL_NORM_TOL:
+            raise ValueError(
+                f"UnitFixture {self.id!r} top_plane_normal {self.top_plane_normal!r} must be "
+                "a unit vector"
+            )
+        if not self.surveyed_by.strip() or not self.method.strip():
+            raise ValueError(
+                f"UnitFixture {self.id!r} needs surveyed_by and method: an unattributed "
+                "survey is not provenance"
+            )
+        return self
+
+
 class RobotUnit(BaseModel):
     """One physical unit / host of a robot type: ``robots/<robot_id>/units/<unit>.yaml``.
 
@@ -10729,6 +10895,8 @@ class RobotUnit(BaseModel):
         robot_id: The ``robots/<robot_id>`` directory this unit belongs to.
         unit: The unit name, equal to the file stem.
         sensors: Overlays for the robot manifest's sensors.
+        fixtures: This cell's surveyed fixed fixtures (``UnitFixture``), ids unique.
+            Fixed-base robots only; ``fixture_problems`` checks them against the manifest.
 
     Example:
         >>> RobotUnit(robot_id="so101_follower", unit="bench_laptop").sensors
@@ -10741,6 +10909,33 @@ class RobotUnit(BaseModel):
     robot_id: str
     unit: str
     sensors: list[SensorOverlay] = Field(default_factory=list)
+    fixtures: list[UnitFixture] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _unique_fixture_ids(self) -> RobotUnit:
+        ids = [f.id for f in self.fixtures]
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        if dupes:
+            raise ValueError(f"RobotUnit fixture id(s) {dupes} declared more than once")
+        return self
+
+    def fixture(self, fixture_id: str) -> UnitFixture:
+        """The fixture named ``fixture_id``.
+
+        Raises:
+            ROSConfigError: This unit surveys no such fixture.
+
+        Example:
+            >>> RobotUnit(robot_id="openarm", unit="thor").fixtures
+            []
+        """
+        for candidate in self.fixtures:
+            if candidate.id == fixture_id:
+                return candidate
+        have = ", ".join(f.id for f in self.fixtures) or "none"
+        raise ROSConfigError(
+            f"robot unit {self.unit!r} surveys no fixture {fixture_id!r} (has: {have})"
+        )
 
     @classmethod
     def from_yaml(cls, path: str) -> RobotUnit:

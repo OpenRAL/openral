@@ -98,6 +98,7 @@ from openral_core.schemas import (
     SphereShape,
     TaskSpec,
     TickResult,
+    UnitFixture,
     VisionAttachmentRuntime,
     VLASpec,
     WaitTool,
@@ -170,13 +171,6 @@ _sensor_overlay_st = st.builds(
     ros2_topic=st.none() | _topic,
     static_transform_xyz_rpy=st.none() | st.tuples(*[_safe_float] * 6),
     intrinsics=st.none() | _intrinsics_st,
-)
-
-_robot_unit_st = st.builds(
-    RobotUnit,
-    robot_id=_name,
-    unit=_name,
-    sensors=st.lists(_sensor_overlay_st, max_size=3),
 )
 
 _sensor_bundle_st = st.builds(
@@ -282,6 +276,39 @@ _pose6d_st = st.builds(
     xyz=st.tuples(_safe_float, _safe_float, _safe_float),
     quat_xyzw=st.tuples(_safe_float, _safe_float, _safe_float, _safe_float),
     frame_id=_name,
+)
+
+
+@st.composite
+def _unit_fixture(draw: st.DrawFn) -> UnitFixture:
+    frame = draw(_name)
+    half = st.floats(min_value=1e-3, max_value=1.0)
+    return UnitFixture(
+        id=f"cell:{draw(_name)}",
+        frame_id=frame,
+        pose=Pose6D(
+            xyz=draw(st.tuples(_safe_float, _safe_float, _safe_float)),
+            quat_xyzw=draw(st.sampled_from([(0.0, 0.0, 0.0, 1.0), (0.0, 0.0, 1.0, 0.0)])),
+            frame_id=frame,
+        ),
+        half_extents=draw(st.tuples(half, half, half)),
+        top_plane_normal=draw(st.sampled_from([(0.0, 0.0, 1.0), (1.0, 0.0, 0.0)])),
+        survey_uncertainty_m=draw(st.floats(min_value=1e-4, max_value=0.05)),
+        surveyed_on=draw(st.dates()),
+        surveyed_by=draw(_name),
+        method=draw(_name),
+        notes=draw(st.none() | _name),
+    )
+
+
+_unit_fixture_st = _unit_fixture()
+
+_robot_unit_st = st.builds(
+    RobotUnit,
+    robot_id=_name,
+    unit=_name,
+    sensors=st.lists(_sensor_overlay_st, max_size=3),
+    fixtures=st.lists(_unit_fixture_st, max_size=3, unique_by=lambda f: f.id),
 )
 
 _detected_object_st = st.builds(
@@ -525,6 +552,13 @@ def test_fuzz_sensor_overlay(instance: SensorOverlay) -> None:
 def test_fuzz_robot_unit(instance: RobotUnit) -> None:
     """RobotUnit round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(RobotUnit, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_unit_fixture_st)
+def test_fuzz_unit_fixture(instance: UnitFixture) -> None:
+    """UnitFixture round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(UnitFixture, instance)
 
 
 @_FUZZ_SETTINGS

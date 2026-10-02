@@ -54,3 +54,18 @@ sensors:
         width: 640
         height: 480
         fps: 30
+#
+# Surveyed fixtures (`fixtures:`, a list of `UnitFixture`): none yet. A place / grasp target
+# this cell's furniture provides (the shelf, the front box's table) goes here as
+#   - id: "cell:shelf_top"        # the target_id a place / grasp declaration names
+#     frame_id: openarm_base      # must be the manifest's base_frame (fixed-base robots only)
+#     pose: {xyz: [...], quat_xyzw: [...], frame_id: openarm_base}   # box centre
+#     half_extents: [...]         # m, each <= 1.5, volume <= 8 m^3 (the place-region caps)
+#     top_plane_normal: [0.0, 0.0, 1.0]
+#     survey_uncertainty_m: ...   # (0, 0.05]
+#     surveyed_on: YYYY-MM-DD
+#     surveyed_by: ...
+#     method: ...                 # how it was measured, as for head_zed's mount above
+# Every value must be MEASURED on this cell, never estimated. A fixture is a declared volume
+# that arms nothing by itself: the producer verifies it live against the voxel map before it
+# becomes a place region (real pick-and-place design §2.3; ADR-0097 amendment, drafted).

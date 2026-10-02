@@ -10,6 +10,7 @@
     "perception_track",
     "operator",
     "vision_segmentation",
-    "sim_contact_force"
+    "sim_contact_force",
+    "declared_fixture"
   ]
 }
