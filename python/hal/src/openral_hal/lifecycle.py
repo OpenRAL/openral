@@ -1589,6 +1589,9 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("vision_attachment_enabled", False)
             self.declare_parameter("vision_attachment_camera", "")
             self.declare_parameter("vision_attachment_depth_topic", "")
+            # Empty → the camera's conventional depth/camera_info topic. The
+            # driver's live K is the only one ever projected through.
+            self.declare_parameter("vision_attachment_camera_info_topic", "")
             self.declare_parameter("vision_attachment_service", DEFAULT_SEGMENT_SERVICE)
             # Seconds. A warmed SAM 2.1 call is ~53 ms on the reference GPU; the
             # default leaves ~4x margin while staying the same order as the
@@ -2036,6 +2039,10 @@ if _ROS2_AVAILABLE:
                     depth_topic=gp("vision_attachment_depth_topic")
                     .get_parameter_value()
                     .string_value,
+                    camera_info_topic=gp("vision_attachment_camera_info_topic")
+                    .get_parameter_value()
+                    .string_value
+                    or None,
                     service_name=gp("vision_attachment_service").get_parameter_value().string_value,
                     deadline_s=gp("vision_attachment_deadline_s")
                     .get_parameter_value()

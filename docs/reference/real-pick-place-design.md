@@ -38,8 +38,15 @@ using SAM 2.1 to see the object.
    *Partly fixed since:* the segmenter now projects in the image header's frame through the
    driver's `CameraInfo` (`camera_infos` parameter; measured K fx = fy = 1498.18,
    cx 936.11, cy 541.81 vs the manifest's nominal 960/960/540), and
-   `openral_hal.depth_cloud.intrinsics_from_camera_info` / `resample_mask_nearest` exist for the
-   attachment bridge to consume. Still open: the attachment bridge's own consumption, and the
+   `openral_hal.depth_cloud.intrinsics_from_camera_info` / `resample_mask_nearest` exist. The
+   attachment bridge now consumes them: it looks tf2 up for the depth image's `header.frame_id`
+   (`zed_left_camera_frame_optical` on Thor, via the driver's `/tf_static` chain under the
+   manifest's `openarm_base -> zed_camera_link`), sends the TCP/jaw-tip prompts already in that
+   optical frame (empty `SegmentInView.frame_id`; precondition: the segmenter's RGB is registered
+   to the depth stream), projects only through the depth `CameraInfo`
+   (`vision_attachment_camera_info_topic`), and resamples a mask onto the depth raster when only
+   the resolution differs. A missing frame, a missing/mismatched `CameraInfo` or a different crop
+   is a logged `GRIPPER_FORCE` fallback, never the manifest's nominal K. Still open: the
    world-state object lift (`ObjectsMetadata` carries no image frame).
 5. **Two more HAL bugs.** Both effort read paths zero-fill a missing effort channel
    (`ros_control_transport.py` L617-627, `openarm_real.py` L380-383), so the trigger can never
