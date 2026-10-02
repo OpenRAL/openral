@@ -248,10 +248,10 @@ _Read-only Foxglove live-scene surface, hybrid with the OTel dashboard which kee
 - `build_layout(cameras=DEFAULT_CAMERAS, *, compressed=False, follow_frame="base_link") -> dict[str, Any]` (layout.py L223) — Builds the Foxglove layout for a scene's camera slots: a hero 3D panel plus one Image panel per camera and tabbed panels for nav, joints, policy/world state, and diagnostics. Every referenced topic is on `BUCKET1_TOPIC_WHITELIST`, and no generated layout contains a write-capable panel.
 - `main(argv=None) -> int` (layout.py L406) — `python -m openral_foxglove_bringup.layout` entry point: `--cameras`, `--compressed`, `--follow-frame`, `-o/--output`, `--write-default` (overwrite the shipped `config/openral_layout.json`).
 - `occupied_voxel_centers(origin, resolution, size, occupancy, orientation_xyzw=(0,0,0,1)) -> list[tuple[float,float,float]]` (bucket2_markers.py L35) — Pure: centre coordinates of occupied voxels, placed by the grid's own rotation — without it every voxel is drawn somewhere the obstacle is not. Raises on a mismatched occupancy length or a non-unit orientation quaternion.
-- `class Bucket2MarkersNode` (bucket2_markers.py L109) — `rclpy.node.Node` subscribing `/openral/world_voxels`; re-publishes `/openral/world_voxels_cloud` (`PointCloud2`) via the pure function. Read-only viz; defers rclpy/openral_msgs imports.
-  - `spin() -> None` (bucket2_markers.py L198) — Spins the node until shutdown.
-  - `destroy() -> None` (bucket2_markers.py L204) — Releases the subscriptions and publishers. Safe to call multiple times.
-- `main() -> None` (bucket2_markers.py L209) — Console entry point (installed as `lib/openral_foxglove_bringup/bucket2_markers`); `rclpy.init` → spin → shutdown.
+- `class Bucket2MarkersNode` (bucket2_markers.py L101) — `rclpy.node.Node` subscribing `/openral/world_voxels`; re-publishes `/openral/world_voxels_cloud` (`PointCloud2`) via the pure function. Read-only viz; defers rclpy/openral_msgs imports.
+  - `spin() -> None` (bucket2_markers.py L186) — Spins the node until shutdown.
+  - `destroy() -> None` (bucket2_markers.py L192) — Releases the subscriptions and publishers. Safe to call multiple times.
+- `main() -> None` (bucket2_markers.py L197) — Console entry point (installed as `lib/openral_foxglove_bringup/bucket2_markers`); `rclpy.init` → spin → shutdown.
 - `generate_launch_description() -> LaunchDescription` (bucket2.launch.py L27) — Bucket-2 converter node launch; declares `use_sim_time` and spawns the `bucket2_markers` node.
 - `generate_launch_description() -> LaunchDescription` (foxglove.launch.py L42) — Read-only `foxglove_bridge` bring-up for the Bucket-1 topics; `topic_whitelist` is an explicit allowlist, so anything unmatched — including safety/e-stop/action/command topics — stays invisible.
 - `generate_launch_description() -> LaunchDescription` (record.launch.py L35) — Opt-in MCAP recorder for the Bucket-1 allowlist (`ros2 bag record -e`, one regex per allowlisted topic).
