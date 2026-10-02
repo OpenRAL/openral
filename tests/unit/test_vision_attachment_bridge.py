@@ -339,3 +339,36 @@ def test_the_heartbeat_evidence_needs_every_gripper_for_n_samples_in_a_row() -> 
     later = now() + 1.0
     bridge._evidence.observe(complete=True, now_s=later)
     assert not bridge._evidence.live(now_s=later), "a channel back from a gap must re-earn N"
+
+
+def test_the_segment_request_is_sent_in_the_cameras_optical_frame() -> None:
+    """Empty ``frame_id`` and the prompts carried by ``T_cam_from_link``.
+
+    The segmenter reads an empty frame as "already in my optical frame", so the
+    points must be the attach-link prompts moved through the inverse of the
+    tf2 ``link <- camera`` transform the bridge already holds.
+    """
+    pytest.importorskip("openral_msgs")
+    from openral_core.geometry import homogeneous_from_quat_xyz
+    from openral_hal.vision_attachment_bridge import build_segment_request
+
+    # A generic link <- optical transform (non-trivial rotation and offset).
+    half = np.sqrt(0.5)
+    t_link_from_cam = homogeneous_from_quat_xyz((0.1, -0.2, 0.35), (half, 0.0, half, 0.0))
+    tcp = (-0.00143, -0.018, -0.068)  # OpenArm left_gripper origin_xyz
+    tip = (0.0, 0.03, -0.1)
+    request = build_segment_request(
+        stamp_ns=1_500_000_000,
+        camera="head_zed",
+        t_link_from_cam=t_link_from_cam,
+        tcp_in_link=tcp,
+        negatives_in_link=[tip],
+    )
+    t_cam_from_link = np.linalg.inv(t_link_from_cam)
+    assert request.frame_id == ""
+    assert request.camera == "head_zed"
+    assert (request.stamp.sec, request.stamp.nanosec) == (1, 500_000_000)
+    for sent, point in ((request.tcp_point, tcp), (request.negative_points[0], tip)):
+        np.testing.assert_allclose(
+            (sent.x, sent.y, sent.z), (t_cam_from_link @ np.array([*point, 1.0]))[:3]
+        )

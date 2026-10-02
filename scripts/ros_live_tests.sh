@@ -61,6 +61,9 @@ TARGETS=(
     # The vision attachment leg heartbeats its set only while every gripper's
     # effort channel is live, and its revision survives a re-activate.
     tests/integration/test_vision_attachment_heartbeat_live.py
+    # Grasp masks back-project in the depth header's optical frame through the
+    # driver's CameraInfo, never the manifest's body frame or nominal K.
+    tests/integration/test_vision_attachment_optical_frame_live.py
     # A world-voxel stop names its cell only as an index; the grid that index
     # addresses arrives on a different topic, and until joined the record
     # can't look at the map -- how the 2026-08-22 round adjudicated two stops

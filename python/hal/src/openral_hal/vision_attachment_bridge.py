@@ -84,6 +84,7 @@ __all__ = [
     "SegmentOutcome",
     "VisionAttachmentBridge",
     "VisionAttachmentConfig",
+    "build_segment_request",
     "decode_mono8_mask",
     "resolve_segment_outcome",
 ]
@@ -128,6 +129,9 @@ class _GripperLeg:
     deadline_timer: Any = None
     pending: bool = False
 
+
+#: Mask/depth aspect-ratio agreement below which a resample is a resolution change.
+_ASPECT_TOLERANCE = 1e-3
 
 #: Heartbeat period, seconds — the simulator bridge's attachment heartbeat period.
 _HEARTBEAT_PERIOD_S = 0.2
@@ -196,11 +200,24 @@ class VisionAttachmentConfig:
     """Wiring for ``VisionAttachmentBridge``.
 
     Attributes:
-        camera: Logical camera id — a ``SensorSpec`` name in the robot manifest,
-            which is where its intrinsics and optical frame come from. Empty
-            selects the manifest's first camera-like depth sensor.
+        camera: Logical camera id — a ``SensorSpec`` name in the robot manifest.
+            Only the id and its existence come from the manifest: the optical
+            frame is the depth image's ``header.frame_id`` and the intrinsics are
+            the driver's live ``CameraInfo``, because this geometry feeds
+            collision and a manifest's nominal values may not describe the
+            stream (the OpenArm ZED: body-frame ``frame_id``, fx 960 vs a measured
+            1498.18). Empty selects the manifest's first camera with intrinsics.
         depth_topic: ``sensor_msgs/Image`` topic carrying that camera's metric
-            depth (``32FC1`` metres or ``16UC1`` millimetres).
+            depth (``32FC1`` metres or ``16UC1`` millimetres), in a REP-103
+            optical frame named by its header. The segmenter's RGB stream must
+            be **registered** to it (same optical frame and view — true for the
+            ZED ``rgb/color/rect`` / ``depth/depth_registered`` pair): the TCP is
+            sent already in this frame, and masks are resampled onto it.
+        camera_info_topic: ``sensor_msgs/CameraInfo`` for that depth stream.
+            Empty / ``None`` → ``camera_topic(camera, CameraTopicKind.DEPTH_CAMERA_INFO)``.
+            No message yet, an uncalibrated one, or one whose size differs from
+            the depth raster sends the grasp to the conservative box — never to
+            the manifest's nominal K.
         service_name: ``SegmentInView`` service to call.
         deadline_s: Upper bound on one segmentation, from request to reply.
             *Calibration point*, ``0.25`` s — a warmed call was measured at
@@ -228,8 +245,8 @@ class VisionAttachmentConfig:
             jaws"), not a recognition result.
         tf_frames: Manifest link name -> tf2 frame name, for robots whose
             published TF tree spells a link differently from the manifest. Used
-            only for tf2 lookups (attach link <- camera / TCP / jaw tips) and as
-            the ``SegmentInView`` request frame; the published attachment keeps
+            only for tf2 lookups (attach link <- camera / TCP / jaw tips); the
+            published attachment keeps
             the manifest link, because the kernel's collision model is keyed on
             manifest links. Every entry must be a **proven identity** — the
             same rigid body with the same origin — never a nearby frame. The
@@ -247,6 +264,7 @@ class VisionAttachmentConfig:
 
     camera: str = ""
     depth_topic: str = ""
+    camera_info_topic: str | None = None
     service_name: str = DEFAULT_SEGMENT_SERVICE
     deadline_s: float = 0.25
     tcp_frame: str = ""
@@ -350,6 +368,52 @@ def decode_mono8_mask(data: bytes, *, height: int, width: int) -> NDArray[np.boo
     return np.asarray(flat.reshape(height, width) != 0, dtype=bool)
 
 
+def build_segment_request(
+    *,
+    stamp_ns: int,
+    camera: str,
+    t_link_from_cam: NDArray[np.float64],
+    tcp_in_link: tuple[float, float, float],
+    negatives_in_link: Sequence[tuple[float, float, float]] = (),
+) -> Any:
+    """Build a ``SegmentInView`` request whose prompts are in the camera's optical frame.
+
+    The bridge already holds ``link <- camera`` from tf2, so it sends the TCP and
+    jaw-tip prompts in the depth stream's own optical frame, with an empty
+    ``frame_id`` — which the segmenter reads as "already in my optical frame" —
+    instead of asking it to re-resolve a link its TF tree may not carry.
+    Precondition: the segmenter's RGB is registered to the depth stream.
+
+    Args:
+        stamp_ns: The grasp instant.
+        camera: Logical camera id.
+        t_link_from_cam: ``(4, 4)`` transform mapping optical-frame points into
+            the attach link.
+        tcp_in_link: TCP in the attach link.
+        negatives_in_link: Jaw-tip negative prompts in the attach link.
+
+    Returns:
+        The ``openral_msgs.srv.SegmentInView.Request``.
+    """
+    from builtin_interfaces.msg import Time
+    from geometry_msgs.msg import Point
+    from openral_msgs.srv import SegmentInView
+
+    t_cam_from_link = np.linalg.inv(t_link_from_cam)
+
+    def _to_cam(point: tuple[float, float, float]) -> Any:
+        x, y, z = (t_cam_from_link @ np.array([*point, 1.0], dtype=np.float64))[:3]
+        return Point(x=float(x), y=float(y), z=float(z))
+
+    request = SegmentInView.Request()
+    request.stamp = Time(sec=stamp_ns // 1_000_000_000, nanosec=stamp_ns % 1_000_000_000)
+    request.camera = camera
+    request.frame_id = ""
+    request.tcp_point = _to_cam(tcp_in_link)
+    request.negative_points = [_to_cam(point) for point in negatives_in_link]
+    return request
+
+
 class VisionAttachmentBridge:
     """Drive SegmentInView from grasp events and hold the ack barrier for it.
 
@@ -401,7 +465,9 @@ class VisionAttachmentBridge:
         self._config = config or VisionAttachmentConfig()
         self._on_perception_ready = on_perception_ready
         self._legs = self._build_legs(gate_config, trigger_config)
-        self._camera, self._intrinsics = self._resolve_camera()
+        # The manifest K is never projected through: it only fills the
+        # producer's signature on the no-mask paths, which never back-project.
+        self._camera, self._no_mask_intrinsics = self._resolve_camera()
         links = {j.parent_link for j in description.joints} | {
             j.child_link for j in description.joints
         }
@@ -412,8 +478,12 @@ class VisionAttachmentBridge:
                 f"{description.name!r}."
             )
 
-        self._depth: tuple[NDArray[np.float64], int] | None = None
+        # (raster, stamp ns, header.frame_id) of the newest depth frame.
+        self._depth: tuple[NDArray[np.float64], int, str] | None = None
         self._depth_sub: Any = None
+        self._camera_info: Any = None
+        self._camera_info_sub: Any = None
+        self._logged_depth_frame = False
         self._client: Any = None
         self._attachment_pub: Any = None
         self._tf_buffer: Any = None
@@ -439,7 +509,7 @@ class VisionAttachmentBridge:
             QoSProfile,
             QoSReliabilityPolicy,
         )
-        from sensor_msgs.msg import Image
+        from sensor_msgs.msg import CameraInfo, Image
 
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self._node)
@@ -452,6 +522,9 @@ class VisionAttachmentBridge:
         )
         self._depth_sub = self._node.create_subscription(
             Image, self._depth_topic(), self._on_depth, depth_qos
+        )
+        self._camera_info_sub = self._node.create_subscription(
+            CameraInfo, self._camera_info_topic(), self._on_camera_info, depth_qos
         )
         # Same class the simulator bridge publishes on: the kernel's authoritative
         # attachment snapshot is latched description-class data.
@@ -476,7 +549,8 @@ class VisionAttachmentBridge:
         for leg in self._legs:
             self._node.get_logger().info(
                 f"vision attachment bridge: gripper={leg.joint_name!r} camera={self._camera!r} "
-                f"depth={self._depth_topic()!r} service={self._config.service_name!r} "
+                f"depth={self._depth_topic()!r} camera_info={self._camera_info_topic()!r} "
+                f"service={self._config.service_name!r} "
                 f"attach_link={leg.producer.attach_link!r} "
                 f"tcp={leg.tcp_frame or leg.tcp_in_link!r} "
                 f"deadline={self._config.deadline_s:.3f}s "
@@ -494,6 +568,9 @@ class VisionAttachmentBridge:
         if self._depth_sub is not None:
             self._node.destroy_subscription(self._depth_sub)
             self._depth_sub = None
+        if self._camera_info_sub is not None:
+            self._node.destroy_subscription(self._camera_info_sub)
+            self._camera_info_sub = None
         if self._attachment_pub is not None:
             self._node.destroy_publisher(self._attachment_pub)
             self._attachment_pub = None
@@ -601,17 +678,13 @@ class VisionAttachmentBridge:
             )
             return
 
-        from builtin_interfaces.msg import Time
-        from geometry_msgs.msg import Point
-        from openral_msgs.srv import SegmentInView
-
-        request = SegmentInView.Request()
-        request.stamp = Time(sec=stamp_ns // 1_000_000_000, nanosec=stamp_ns % 1_000_000_000)
-        request.camera = self._camera
-        request.frame_id = self.tf_frame(leg.producer.attach_link)
-        request.tcp_point = Point(x=tcp_in_link[0], y=tcp_in_link[1], z=tcp_in_link[2])
-        request.negative_points = [Point(x=x, y=y, z=z) for x, y, z in negatives]
-
+        request = build_segment_request(
+            stamp_ns=stamp_ns,
+            camera=self._camera,
+            t_link_from_cam=t_link_from_cam,
+            tcp_in_link=tcp_in_link,
+            negatives_in_link=negatives,
+        )
         future = self._client.call_async(request)
         leg.inflight = future
         future.add_done_callback(
@@ -748,12 +821,19 @@ class VisionAttachmentBridge:
         """
         depth = self._depth[0] if self._depth is not None else np.zeros((0, 0), dtype=np.float64)
         transform = t_link_from_cam if t_link_from_cam is not None else np.eye(4, dtype=np.float64)
+        intrinsics = self._no_mask_intrinsics
+        if masks:
+            aligned = self._align_to_depth(masks, depth)
+            if isinstance(aligned, str):
+                masks, scores, reason = [], [], aligned
+            else:
+                masks, intrinsics = aligned
 
         def _fit(candidates: Sequence[NDArray[np.bool_]], advisory: Sequence[float]) -> Any:
             return leg.producer.on_grasp(
                 masks=candidates,
                 depth_m=depth,
-                intrinsics=self._intrinsics,
+                intrinsics=intrinsics,
                 t_link_from_cam=transform,
                 tcp_in_link=tcp_in_link,
                 object_id=leg.object_id,
@@ -812,7 +892,20 @@ class VisionAttachmentBridge:
         if self._depth is None:
             return f"ROSPerceptionStale: no depth frame yet on {self._depth_topic()!r}"
         link = self.tf_frame(leg.producer.attach_link)
-        camera_frame = self._camera_frame()
+        # The optical frame is the one the depth raster says it is in — never
+        # guessed from the manifest, whose frame_id may name a body frame.
+        camera_frame = self._depth[2]
+        if not camera_frame:
+            return "ROSPerceptionStale: depth frame has no header.frame_id"
+        if not self._logged_depth_frame:
+            self._logged_depth_frame = True
+            manifest_frame = self._camera_frame()
+            if camera_frame != manifest_frame:
+                self._node.get_logger().info(
+                    f"vision attachment: back-projecting in the depth header's frame "
+                    f"{camera_frame!r}, not the manifest's {manifest_frame!r} for "
+                    f"camera {self._camera!r}"
+                )
         t_link_from_cam = self._lookup(link, camera_frame)
         if t_link_from_cam is None:
             return f"ROSPerceptionStale: no tf2 {link} <- {camera_frame}"
@@ -843,7 +936,56 @@ class VisionAttachmentBridge:
             self._node.get_logger().warning(f"vision attachment depth dropped: {exc}")
             return
         stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
-        self._depth = (grid, stamp_ns)
+        self._depth = (grid, stamp_ns, str(msg.header.frame_id).strip())
+
+    def _on_camera_info(self, msg: Any) -> None:
+        """Cache the newest ``CameraInfo`` for the depth stream."""
+        self._camera_info = msg
+
+    def _align_to_depth(
+        self,
+        masks: Sequence[NDArray[np.bool_]],
+        depth: NDArray[np.float64],
+    ) -> tuple[list[NDArray[np.bool_]], IntrinsicsPinhole] | str:
+        """Live intrinsics for the depth raster and the masks on its grid, or a typed reason.
+
+        The intrinsics come only from the driver's ``CameraInfo`` — this geometry
+        feeds collision, so a missing or mismatched calibration falls back to the
+        conservative box rather than to the manifest's nominal K. A mask at a
+        different resolution of the same view (aspect within 1e-3) is resampled
+        nearest-neighbour; a different crop is refused.
+        """
+        from openral_hal.depth_cloud import intrinsics_from_camera_info, resample_mask_nearest
+
+        topic = self._camera_info_topic()
+        if self._camera_info is None:
+            return f"ROSPerceptionStale: no CameraInfo yet on {topic!r}"
+        try:
+            intrinsics = intrinsics_from_camera_info(self._camera_info)
+        except ROSConfigError as exc:
+            return f"ROSConfigError: {exc}"
+        height, width = depth.shape
+        if (intrinsics.height, intrinsics.width) != (height, width):
+            return (
+                f"ROSConfigError: CameraInfo on {topic!r} is {intrinsics.width}x"
+                f"{intrinsics.height} but the depth raster is {width}x{height}"
+            )
+        aligned: list[NDArray[np.bool_]] = []
+        for mask in masks:
+            if mask.shape == depth.shape:
+                aligned.append(mask)
+                continue
+            mask_h, mask_w = mask.shape
+            if abs(mask_h * width - height * mask_w) > _ASPECT_TOLERANCE * mask_h * width:
+                return (
+                    f"ROSConfigError: mask {mask_w}x{mask_h} and depth {width}x{height} "
+                    "differ in aspect — different crops, not a registered pair"
+                )
+            try:
+                aligned.append(resample_mask_nearest(mask, (height, width)))
+            except ROSConfigError as exc:
+                return f"ROSConfigError: {exc}"
+        return aligned, intrinsics
 
     def _lookup(self, target: str, source: str) -> NDArray[np.float64] | None:
         """Latest ``target <- source`` transform as a 4x4, or ``None``."""
@@ -928,7 +1070,7 @@ class VisionAttachmentBridge:
         return specs
 
     def _resolve_camera(self) -> tuple[str, IntrinsicsPinhole]:
-        """Resolve the attach camera's id and intrinsics from the manifest."""
+        """Resolve the attach camera's id (and its existence) from the manifest."""
         specs = [spec for spec in self._sensors() if spec.intrinsics is not None]
         if self._config.camera:
             specs = [spec for spec in specs if spec.name == self._config.camera]
@@ -945,7 +1087,7 @@ class VisionAttachmentBridge:
         return str(specs[0].name), specs[0].intrinsics
 
     def _camera_frame(self) -> str:
-        """tf2 optical frame of the attach camera."""
+        """The manifest's ``frame_id`` for the attach camera — logged, never projected in."""
         for spec in self._sensors():
             if spec.name == self._camera:
                 return str(spec.frame_id)
@@ -993,3 +1135,9 @@ class VisionAttachmentBridge:
     def _depth_topic(self) -> str:
         """Configured depth topic, or the conventional per-camera default."""
         return self._config.depth_topic or camera_topic(self._camera, CameraTopicKind.DEPTH_IMAGE)
+
+    def _camera_info_topic(self) -> str:
+        """Configured depth ``CameraInfo`` topic, or the conventional per-camera default."""
+        return self._config.camera_info_topic or camera_topic(
+            self._camera, CameraTopicKind.DEPTH_CAMERA_INFO
+        )
