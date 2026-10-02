@@ -15,6 +15,7 @@ from openral_core.schemas import (
     BoxShape,
     CapsuleShape,
     DetectedObject,
+    GraspDeclaration,
     JointState,
     PlaceDeclaration,
     PlaceRegion,
@@ -265,6 +266,67 @@ def test_a_sim_stamped_declaration_survives_the_whole_delivery_seam() -> None:
         assert aggregator.snapshot().place_declaration is None
         expired = build_world_state_stamped_msg(node, aggregator.snapshot())
         assert expired.place_declaration_valid is False
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+def test_a_grasp_declaration_rides_attachment_state_to_world_state_stamped() -> None:
+    # Sibling of the place-declaration seam above, over the real IDL: a sim-stamped
+    # AttachmentState carrying a producer-measured grasp region -> node callback ->
+    # production-clock aggregator -> WorldStateStamped, then expired by the stream clock.
+    sim_arm_ns = 1_240_000_000
+    declaration = GraspDeclaration(
+        target_id="cell:restock_box",
+        contact_links=("openarm_left_finger_pair", "openarm_right_finger_pair"),
+        rskill_id="openral/pi05-openarm-restock",
+        trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
+        timeout_s=70.0,
+        stamp_ns=sim_arm_ns,
+        region=PlaceRegion(
+            frame_id="openarm_base",
+            pose=Pose6D(
+                xyz=(0.45, 0.0, 0.12), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="openarm_base"
+            ),
+            half_extents=(0.06, 0.05, 0.04),
+            evidence_ref="zed_sam2_obb:restock_box",
+            stamp_ns=sim_arm_ns,
+        ),
+    )
+    state_msg = AttachmentState()
+    state_msg.header.stamp.sec = sim_arm_ns // 1_000_000_000
+    state_msg.header.stamp.nanosec = sim_arm_ns % 1_000_000_000
+    state_msg.revision = 1
+    state_msg.grasp_declaration_valid = True
+    declaration.fill_idl(state_msg.grasp_declaration)
+    aggregator = WorldStateAggregator(RobotDescription.from_yaml("robots/openarm/robot.yaml"))
+
+    rclpy.init()
+    node = _WorldStateLifecycleNode(aggregator=aggregator)
+    try:
+        node._on_attachment_state(state_msg)
+        snapshot = aggregator.snapshot()
+        assert snapshot.grasp_declaration == declaration
+
+        msg = build_world_state_stamped_msg(node, snapshot)
+        assert msg.grasp_declaration_valid is True
+        assert msg.place_declaration_valid is False
+        assert list(msg.grasp_declaration.contact_links) == list(declaration.contact_links)
+        assert msg.grasp_declaration.region_valid is True
+        assert msg.grasp_declaration.region.frame_id == "openarm_base"
+        assert msg.grasp_declaration.region.half_extents.x == pytest.approx(0.06)
+        # And the in-process decode of the relayed message is the same declaration.
+        assert world_state_from_idl(msg).grasp_declaration == declaration
+
+        # Heartbeat 71 s later on the stream clock: past the 70 s backstop, dropped.
+        state_msg.revision = 2
+        state_msg.header.stamp.sec = (sim_arm_ns + 71_000_000_000) // 1_000_000_000
+        node._on_attachment_state(state_msg)
+        assert aggregator.snapshot().grasp_declaration is None
+        assert (
+            build_world_state_stamped_msg(node, aggregator.snapshot()).grasp_declaration_valid
+            is False
+        )
     finally:
         node.destroy_node()
         rclpy.shutdown()

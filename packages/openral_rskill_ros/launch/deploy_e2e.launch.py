@@ -1130,6 +1130,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     preload_rskill_revision = LaunchConfiguration("preload_rskill_revision").perform(context)
     preload_prompt = LaunchConfiguration("preload_prompt").perform(context)
     place_declaration_json = LaunchConfiguration("place_declaration_json").perform(context)
+    grasp_declaration_json = LaunchConfiguration("grasp_declaration_json").perform(context)
     # Record the deploy session to a rosbag2 mcap.
     dataset_out = LaunchConfiguration("dataset_out").perform(context)
     dataset_repo_id = LaunchConfiguration("dataset_repo_id").perform(context)
@@ -1873,6 +1874,8 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # direct dispatch. Empty (every scene today) = no declaration, so
                 # no place witness can arm and payload contact mid-carry stops.
                 "place_declaration_json": place_declaration_json,
+                # Grasp-phase sibling (real pick-and-place design §2.1).
+                "grasp_declaration_json": grasp_declaration_json,
                 # Attach the WorldCloudBridge → dashboard world.pointcloud when a
                 # voxel cloud exists: octomap's centers, or (mono visual SLAM)
                 # nvblox's ESDF cloud so the card shows the vision-built voxels.
@@ -3075,6 +3078,15 @@ def generate_launch_description() -> LaunchDescription:
                 "skill_runner scopes to each goal it dispatches, for a direct "
                 "dispatch with no reasoner in the loop. Empty = no "
                 "declaration; no place-phase support-contact witness can arm."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "grasp_declaration_json",
+            default_value="",
+            description=(
+                "Serialized openral_core.GraspDeclaration (real pick-and-place "
+                "design §2.1) the skill_runner scopes to each goal it "
+                "dispatches. Empty = no declaration, no grasp exemption."
             ),
         ),
         DeclareLaunchArgument(

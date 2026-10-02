@@ -1604,6 +1604,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         argv_template.append(
             f"place_declaration_json:={deploy_scene.place_declaration.model_dump_json()}"
         )
+    # The grasp-phase sibling (real pick-and-place design §2.1), same path.
+    if deploy_scene is not None and deploy_scene.grasp_declaration is not None:
+        argv_template.append(
+            f"grasp_declaration_json:={deploy_scene.grasp_declaration.model_dump_json()}"
+        )
 
     # The deploy memory bundle. ``--memory-dir`` (CLI) wins;
     # otherwise the DeployScene's own ``memory_dir`` field. Derive the per-modality

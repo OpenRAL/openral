@@ -24,3 +24,11 @@ AttachedCollisionObject[] objects
 # False means no declaration is in force, which is no witness and no allowance.
 bool place_declaration_valid
 PlaceDeclaration place_declaration
+
+# The grasp declaration in force (real pick-and-place design §2.1), as the
+# evidence producer resolved it: same envelope, same reasons as the place one —
+# dispatch names the target, only the producer can measure its region, and the
+# kernel must apply that region and the attachment set from one snapshot.
+# False means no grasp declaration is in force, i.e. no exemption.
+bool grasp_declaration_valid
+GraspDeclaration grasp_declaration

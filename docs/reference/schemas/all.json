@@ -7997,7 +7997,7 @@
         }
       },
       "additionalProperties": false,
-      "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware's perception seam is\n**not yet implemented**, so no allowance applies on real hardware today\n(the same posture real-hardware place-witness attestation is under). The\nkernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
+      "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware's perception seam is\n**not yet implemented**, so no allowance applies on real hardware today\n(the same posture real-hardware place-witness attestation is under). The\nkernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nThe same type also carries the producer-measured region of a\n``GraspDeclaration`` (real pick-and-place design \u00a72.1), under that\ndeclaration's tighter caps and with ``geometry`` always empty.\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
       "properties": {
         "frame_id": {
           "minLength": 1,
@@ -8170,7 +8170,7 @@
         },
         "PlaceRegion": {
           "additionalProperties": false,
-          "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware's perception seam is\n**not yet implemented**, so no allowance applies on real hardware today\n(the same posture real-hardware place-witness attestation is under). The\nkernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
+          "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware's perception seam is\n**not yet implemented**, so no allowance applies on real hardware today\n(the same posture real-hardware place-witness attestation is under). The\nkernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nThe same type also carries the producer-measured region of a\n``GraspDeclaration`` (real pick-and-place design \u00a72.1), under that\ndeclaration's tighter caps and with ``geometry`` always empty.\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
           "properties": {
             "frame_id": {
               "minLength": 1,
@@ -8420,6 +8420,379 @@
         "stamp_ns"
       ],
       "title": "PlaceDeclaration",
+      "type": "object",
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "GraspDeclaration": {
+      "$defs": {
+        "AttachedCollisionPrimitive": {
+          "additionalProperties": false,
+          "description": "One bounded payload primitive positioned in its object frame.\n\nAttributes:\n    shape: The convex primitive (capsule, sphere, or box).\n    pose_in_object: Pose of the primitive in the owning object's frame.\n    tight_geometry: Optional tighter convex geometry the safety kernel uses\n        *in place of* ``shape`` in the payload-vs-world-voxel check \u2014 the\n        same staged 26-DOP \u2192 exact-hull narrow phase a robot link gets from\n        ``LinkCollisionGeometry.tight_geometry``, and the same containment\n        rule: only valid on a ``BoxShape``, and only when it fits inside\n        it. ``shape`` stays the broad-phase bound and the geometry every\n        other check uses.\n\n        ``None`` is not a defect \u2014 a sphere/box/capsule sim geom lowers\n        *exactly* and has nothing to refine. It is only a mesh geom, whose\n        lowering is its local AABB, that leaves a real gap: measured across\n        the 2026-09-10 resolution A/B (424 samples, 4 scenes) a carried\n        payload's box corners stand a median 50.78 mm proud of the mesh,\n        2.3-3.9x the entire world-voxel quantisation term, and 97 % of\n        15 mm-arm stops were payload-vs-world (issue #266).\n\nExample:\n    >>> p = AttachedCollisionPrimitive(\n    ...     shape=BoxShape(half_extents_m=(0.03, 0.03, 0.09)),\n    ...     pose_in_object=Pose6D(\n    ...         xyz=(0.0, 0.0, 0.0),\n    ...         quat_xyzw=(0.0, 0.0, 0.0, 1.0),\n    ...         frame_id=\"sim:obj_main\",\n    ...     ),\n    ... )\n    >>> p.tight_geometry is None\n    True",
+          "properties": {
+            "shape": {
+              "discriminator": {
+                "mapping": {
+                  "box": "#/$defs/BoxShape",
+                  "capsule": "#/$defs/CapsuleShape",
+                  "sphere": "#/$defs/SphereShape"
+                },
+                "propertyName": "shape"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/CapsuleShape"
+                },
+                {
+                  "$ref": "#/$defs/SphereShape"
+                },
+                {
+                  "$ref": "#/$defs/BoxShape"
+                }
+              ],
+              "title": "Shape"
+            },
+            "pose_in_object": {
+              "$ref": "#/$defs/Pose6D"
+            },
+            "tight_geometry": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TightCollisionGeometry"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "shape",
+            "pose_in_object"
+          ],
+          "title": "AttachedCollisionPrimitive",
+          "type": "object"
+        },
+        "BoxShape": {
+          "additionalProperties": false,
+          "description": "Oriented box (OBB) collision primitive \u2014 a rectangular convex block.\n\nAn axis-aligned box in the primitive's local frame (placed and oriented by\nthe owning frame's ``origin_xyz_rpy`` / ``pose``), spanning\n``[-half_extents_m[k], +half_extents_m[k]]`` along each local axis ``k``.\n\nA box fits a *blocky* link (a near-cubic housing, e.g. the SO-ARM100/101\n``base``) far tighter than a capsule: a capsule's circular cross-section\nmust bulge past the block's flat faces, so it over-reports clearance at\nposes where the flat faces are what actually face a neighbour. That bulge\nis what makes the manifest capsule model false-E-stop the SO-101 at its\nhome pose (base\u2194lower_arm / base\u2194wrist reported penetrating while the true\nmesh clearance is +0.16 m / +0.24 m). See issue #84.\n\nAttributes:\n    shape: Discriminator (always ``\"box\"``).\n    half_extents_m: Half-sizes ``(hx, hy, hz)`` along the local x/y/z axes\n        in metres (the full box is ``2*hx x 2*hy x 2*hz``).\n\nExample:\n    >>> BoxShape(half_extents_m=(0.055, 0.048, 0.036)).shape\n    'box'",
+          "properties": {
+            "shape": {
+              "const": "box",
+              "default": "box",
+              "title": "Shape",
+              "type": "string"
+            },
+            "half_extents_m": {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "number"
+                },
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "number"
+                },
+                {
+                  "exclusiveMinimum": 0,
+                  "type": "number"
+                }
+              ],
+              "title": "Half Extents M",
+              "type": "array"
+            }
+          },
+          "required": [
+            "half_extents_m"
+          ],
+          "title": "BoxShape",
+          "type": "object"
+        },
+        "CapsuleShape": {
+          "additionalProperties": false,
+          "description": "Capsule collision primitive \u2014 a segment swept by a radius.\n\nThe central segment runs along the local +Z axis from ``-length_m / 2``\nto ``+length_m / 2`` (the MJCF / URDF capsule convention); it is placed\nand oriented by the owning frame (``LinkCollisionGeometry.origin_xyz_rpy``\nfor a link, ``AttachedCollisionPrimitive.pose_in_object`` for a payload).\nCapsules bound most robot links tightly, so the safety check stays\nconservative.\n\nAttributes:\n    shape: Discriminator (always ``\"capsule\"``).\n    radius_m: Capsule radius in metres.\n    length_m: Length of the central segment in metres (the cylinder\n        portion; the total span is ``length_m + 2 * radius_m``). ``0.0``\n        degenerates to a sphere.\n\nExample:\n    >>> CapsuleShape(radius_m=0.04, length_m=0.3).length_m\n    0.3",
+          "properties": {
+            "shape": {
+              "const": "capsule",
+              "default": "capsule",
+              "title": "Shape",
+              "type": "string"
+            },
+            "radius_m": {
+              "exclusiveMinimum": 0.0,
+              "title": "Radius M",
+              "type": "number"
+            },
+            "length_m": {
+              "minimum": 0.0,
+              "title": "Length M",
+              "type": "number"
+            }
+          },
+          "required": [
+            "radius_m",
+            "length_m"
+          ],
+          "title": "CapsuleShape",
+          "type": "object"
+        },
+        "PlaceRegion": {
+          "additionalProperties": false,
+          "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware's perception seam is\n**not yet implemented**, so no allowance applies on real hardware today\n(the same posture real-hardware place-witness attestation is under). The\nkernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nThe same type also carries the producer-measured region of a\n``GraspDeclaration`` (real pick-and-place design \u00a72.1), under that\ndeclaration's tighter caps and with ``geometry`` always empty.\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
+          "properties": {
+            "frame_id": {
+              "minLength": 1,
+              "title": "Frame Id",
+              "type": "string"
+            },
+            "pose": {
+              "$ref": "#/$defs/Pose6D"
+            },
+            "half_extents": {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Half Extents",
+              "type": "array"
+            },
+            "evidence_ref": {
+              "default": "",
+              "title": "Evidence Ref",
+              "type": "string"
+            },
+            "stamp_ns": {
+              "default": 0,
+              "minimum": 0,
+              "title": "Stamp Ns",
+              "type": "integer"
+            },
+            "geometry": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/AttachedCollisionPrimitive"
+              },
+              "title": "Geometry",
+              "type": "array"
+            }
+          },
+          "required": [
+            "frame_id",
+            "pose",
+            "half_extents"
+          ],
+          "title": "PlaceRegion",
+          "type": "object"
+        },
+        "Pose6D": {
+          "description": "6D pose: position + quaternion.\n\nAttributes:\n    xyz: Position (x, y, z) in meters.\n    quat_xyzw: Quaternion (x, y, z, w).\n    frame_id: tf2 reference frame.",
+          "properties": {
+            "xyz": {
+              "maxItems": 3,
+              "minItems": 3,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Xyz",
+              "type": "array"
+            },
+            "quat_xyzw": {
+              "maxItems": 4,
+              "minItems": 4,
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "title": "Quat Xyzw",
+              "type": "array"
+            },
+            "frame_id": {
+              "title": "Frame Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "xyz",
+            "quat_xyzw",
+            "frame_id"
+          ],
+          "title": "Pose6D",
+          "type": "object"
+        },
+        "SphereShape": {
+          "additionalProperties": false,
+          "description": "Sphere collision primitive \u2014 the simplest convex link/obstacle volume.\n\nAttributes:\n    shape: Discriminator (always ``\"sphere\"``).\n    radius_m: Sphere radius in metres.\n\nExample:\n    >>> SphereShape(radius_m=0.05).shape\n    'sphere'",
+          "properties": {
+            "shape": {
+              "const": "sphere",
+              "default": "sphere",
+              "title": "Shape",
+              "type": "string"
+            },
+            "radius_m": {
+              "exclusiveMinimum": 0.0,
+              "title": "Radius M",
+              "type": "number"
+            }
+          },
+          "required": [
+            "radius_m"
+          ],
+          "title": "SphereShape",
+          "type": "object"
+        },
+        "TightCollisionGeometry": {
+          "additionalProperties": false,
+          "description": "Tight convex geometry refining a link's ``BoxShape`` for the kernel's narrow phases.\n\nThe safety kernel's arm-link-vs-world-voxel check runs a **staged** narrow\nphase when a link declares this: a 26-DOP separating-axis bound on every\noccupied cell, then GJK on the link's exact convex hull for the cells the\nDOP cannot clear. Self-collision does the same for a box pair the OBBs\ncannot separate, when *both* links declare a stage-2 hull \u2014 which retired\nthe ``panda_link5``/``panda_link7`` allowed-collision exemption (issue\n#191). Both stages are strict subsets of the box they refine, so the\nbroad-phase window (sized from ``half_extents_m`` alone) does not move.\nExpressed in the box's own local frame (``LinkCollisionGeometry.origin_xyz_rpy``).\n\nContainment is checked here, again by the kernel at ``on_configure``\n(``validate_tight_geometry``), and once more against the real source mesh\nby ``tests/unit/test_collision_tight_geometry.py`` \u2014 **definitional\nrather than fitted**: the slabs are tangent halfspaces ``u\u00b7x <= max over\nthe mesh of u\u00b7x``, the hull is ``conv(vertices)`` of the mesh, no\noptimiser tolerance anywhere.\n\nGenerated by ``tools/generate_tight_geometry.py``; not hand-authored.\n\nAttributes:\n    dop_lo_m: Per-axis lower slab bound along ``DOP_AXES``, 13 entries.\n    dop_hi_m: Per-axis upper slab bound, 13 entries.\n    hull_vertices_m: Exact convex-hull vertices in the box frame, at most\n        ``MAX_TIGHT_HULL_VERTICES`` of them. **Empty means stage 1\n        only** \u2014 the DOP still tightens the check, but no exact test runs.\n        That is the representation a link whose hull is over the ceiling\n        gets, and it is a cost decision, not a safety one: the DOP is a\n        containing solid either way.\n    hull_overhang_m: How far the hull's surface reaches past the real\n        source mesh it was built from, sampled by\n        ``tools/generate_tight_geometry.py`` (issue #221). Containment\n        (``mesh \u2286 hull``) is proved elsewhere; this is the *other*\n        direction, and it is what an offline adjudicator needs to charge a\n        hull-fidelity self-collision stop an admissible gap instead of\n        leaving it unscorable. ``None`` when ``hull_vertices_m`` is empty,\n        or when the hull has no source mesh on disk to measure against \u2014\n        never defaulted to ``0``, since that would silently claim a\n        perfect fit.\n\nExample:\n    >>> t = TightCollisionGeometry(\n    ...     dop_lo_m=(-0.05,) * 13,\n    ...     dop_hi_m=(0.05,) * 13,\n    ... )\n    >>> t.hull_vertices_m\n    ()",
+          "properties": {
+            "dop_lo_m": {
+              "items": {
+                "type": "number"
+              },
+              "title": "Dop Lo M",
+              "type": "array"
+            },
+            "dop_hi_m": {
+              "items": {
+                "type": "number"
+              },
+              "title": "Dop Hi M",
+              "type": "array"
+            },
+            "hull_vertices_m": {
+              "default": [],
+              "items": {
+                "maxItems": 3,
+                "minItems": 3,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              "title": "Hull Vertices M",
+              "type": "array"
+            },
+            "hull_overhang_m": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Hull Overhang M"
+            }
+          },
+          "required": [
+            "dop_lo_m",
+            "dop_hi_m"
+          ],
+          "title": "TightCollisionGeometry",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "description": "Dispatch's typed statement that a grasp phase is active for a target.\n\nField-for-field the grasp mirror of ``PlaceDeclaration`` (real\npick-and-place design \u00a72.1; ADR draft \"Declaration-scoped grasp-target\ncontact for gripper finger links\" in\n``docs/reference/real-pick-place-adr-drafts.md``): dispatch names the\ntarget and the gripper contact links, the attachment evidence producer\nmeasures the target's oriented ``region``, and the safety kernel bounds\nthe exemption. On its own it exempts nothing \u2014 dispatch never supplies a\nregion (the rSkill runner strips one) and ``region is None`` means no\nexemption. Scoped to one goal execution; dies on retraction, goal\nend/cancel, E-stop, or ``timeout_s`` after ``stamp_ns``.\n\nThe caps ``MAX_TIMEOUT_S`` / ``MAX_HALF_EXTENT_M`` / ``MAX_VOLUME_M3`` are\n**Safety-WG placeholders** from the ADR draft, not ratified bounds; they\nsit far below ``PlaceRegion``'s own caps because a grasp region names one\ngraspable object, not a receptacle. ``region.geometry`` must be empty in\nv1.\n\nAttributes:\n    target_id: Identity of the declared grasp target, e.g.\n        ``\"cell:restock_box\"``. Required while ``active``.\n    object_id: Payload identity the grasp produces once attached\n        (``AttachedCollisionObject.object_id``); empty = discovered at\n        attach time.\n    contact_links: Gripper links the declaration names, e.g.\n        ``(\"openarm_left_finger_pair\",)``. Non-empty while ``active``. A\n        consumer intersects these with its own launch-derived allowlist.\n    rskill_id: Dispatching skill, for attributability (HZ-01xx-2).\n    trace_id: OTel trace id, for attributability (HZ-01xx-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    region: Producer-measured oriented box around the target; ``None`` =\n        no exemption. Dies with the declaration.\n\nExample:\n    >>> declaration = GraspDeclaration(\n    ...     target_id=\"cell:restock_box\",\n    ...     contact_links=(\"openarm_left_finger_pair\",),\n    ...     timeout_s=70.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=72_000_000_000)\n    False",
+      "properties": {
+        "target_id": {
+          "default": "",
+          "title": "Target Id",
+          "type": "string"
+        },
+        "object_id": {
+          "default": "",
+          "title": "Object Id",
+          "type": "string"
+        },
+        "contact_links": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Contact Links",
+          "type": "array"
+        },
+        "rskill_id": {
+          "default": "",
+          "title": "Rskill Id",
+          "type": "string"
+        },
+        "trace_id": {
+          "default": "",
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "timeout_s": {
+          "exclusiveMinimum": 0.0,
+          "title": "Timeout S",
+          "type": "number"
+        },
+        "stamp_ns": {
+          "minimum": 0,
+          "title": "Stamp Ns",
+          "type": "integer"
+        },
+        "active": {
+          "default": true,
+          "title": "Active",
+          "type": "boolean"
+        },
+        "region": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlaceRegion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "timeout_s",
+        "stamp_ns"
+      ],
+      "title": "GraspDeclaration",
       "type": "object",
       "$schema": "https://json-schema.org/draft/2020-12/schema"
     },
@@ -9681,6 +10054,72 @@
           "title": "FrameEncoding",
           "type": "string"
         },
+        "GraspDeclaration": {
+          "additionalProperties": false,
+          "description": "Dispatch's typed statement that a grasp phase is active for a target.\n\nField-for-field the grasp mirror of ``PlaceDeclaration`` (real\npick-and-place design \u00a72.1; ADR draft \"Declaration-scoped grasp-target\ncontact for gripper finger links\" in\n``docs/reference/real-pick-place-adr-drafts.md``): dispatch names the\ntarget and the gripper contact links, the attachment evidence producer\nmeasures the target's oriented ``region``, and the safety kernel bounds\nthe exemption. On its own it exempts nothing \u2014 dispatch never supplies a\nregion (the rSkill runner strips one) and ``region is None`` means no\nexemption. Scoped to one goal execution; dies on retraction, goal\nend/cancel, E-stop, or ``timeout_s`` after ``stamp_ns``.\n\nThe caps ``MAX_TIMEOUT_S`` / ``MAX_HALF_EXTENT_M`` / ``MAX_VOLUME_M3`` are\n**Safety-WG placeholders** from the ADR draft, not ratified bounds; they\nsit far below ``PlaceRegion``'s own caps because a grasp region names one\ngraspable object, not a receptacle. ``region.geometry`` must be empty in\nv1.\n\nAttributes:\n    target_id: Identity of the declared grasp target, e.g.\n        ``\"cell:restock_box\"``. Required while ``active``.\n    object_id: Payload identity the grasp produces once attached\n        (``AttachedCollisionObject.object_id``); empty = discovered at\n        attach time.\n    contact_links: Gripper links the declaration names, e.g.\n        ``(\"openarm_left_finger_pair\",)``. Non-empty while ``active``. A\n        consumer intersects these with its own launch-derived allowlist.\n    rskill_id: Dispatching skill, for attributability (HZ-01xx-2).\n    trace_id: OTel trace id, for attributability (HZ-01xx-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    region: Producer-measured oriented box around the target; ``None`` =\n        no exemption. Dies with the declaration.\n\nExample:\n    >>> declaration = GraspDeclaration(\n    ...     target_id=\"cell:restock_box\",\n    ...     contact_links=(\"openarm_left_finger_pair\",),\n    ...     timeout_s=70.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=72_000_000_000)\n    False",
+          "properties": {
+            "target_id": {
+              "default": "",
+              "title": "Target Id",
+              "type": "string"
+            },
+            "object_id": {
+              "default": "",
+              "title": "Object Id",
+              "type": "string"
+            },
+            "contact_links": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Contact Links",
+              "type": "array"
+            },
+            "rskill_id": {
+              "default": "",
+              "title": "Rskill Id",
+              "type": "string"
+            },
+            "trace_id": {
+              "default": "",
+              "title": "Trace Id",
+              "type": "string"
+            },
+            "timeout_s": {
+              "exclusiveMinimum": 0.0,
+              "title": "Timeout S",
+              "type": "number"
+            },
+            "stamp_ns": {
+              "minimum": 0,
+              "title": "Stamp Ns",
+              "type": "integer"
+            },
+            "active": {
+              "default": true,
+              "title": "Active",
+              "type": "boolean"
+            },
+            "region": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PlaceRegion"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "timeout_s",
+            "stamp_ns"
+          ],
+          "title": "GraspDeclaration",
+          "type": "object"
+        },
         "JointState": {
           "description": "Real-time joint state snapshot.\n\nAttributes:\n    name: Ordered list of joint names.\n    position: Joint positions (rad or m).\n    velocity: Joint velocities (rad/s or m/s).\n    effort: Joint efforts (Nm or N).\n    stamp_ns: ROS 2 timestamp in nanoseconds.",
           "properties": {
@@ -9832,7 +10271,7 @@
         },
         "PlaceRegion": {
           "additionalProperties": false,
-          "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware's perception seam is\n**not yet implemented**, so no allowance applies on real hardware today\n(the same posture real-hardware place-witness attestation is under). The\nkernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
+          "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware's perception seam is\n**not yet implemented**, so no allowance applies on real hardware today\n(the same posture real-hardware place-witness attestation is under). The\nkernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nThe same type also carries the producer-measured region of a\n``GraspDeclaration`` (real pick-and-place design \u00a72.1), under that\ndeclaration's tighter caps and with ``geometry`` always empty.\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
           "properties": {
             "frame_id": {
               "minLength": 1,
@@ -10206,7 +10645,7 @@
           "type": "object"
         }
       },
-      "description": "Snapshot consumed by Reasoner and Skills.\n\nAttributes:\n    stamp_ns: Snapshot timestamp in nanoseconds.\n    joint_state: Current joint state.\n    base_pose: Base link pose (mobile robots).\n    base_twist: Base link twist (vx, vy, vz, wx, wy, wz).\n    policy_state: Optional simulator-native proprioception vector for a\n        checkpoint whose state includes more than joint positions/velocities.\n        Populated through a typed HAL -> WorldState topic; never inferred.\n    ee_poses: End-effector poses keyed by EE name.\n    contact_forces: Contact forces keyed by contact name.\n    images: Sensor name \u2192 ROS 2 topic reference (not the raw image).\n    image_frames: Optional per-sensor ``SensorFrame`` snapshot for\n        no-ROS / in-process deployments. When ``None`` the\n        consumer reads frames via ``images`` topic refs as before.\n    point_clouds: Sensor name \u2192 ROS 2 topic reference.\n    tactile: Sensor name \u2192 ROS 2 topic reference.\n    detected_objects: List of detected objects.\n    battery_pct: Battery percentage in [0, 100].\n    diagnostics: Per-component diagnostic status.\n    attached_objects: Collision objects carried by robot links. These are\n        absent from world occupancy and remain collision-active as payloads.\n    attachment_revision: Monotonic producer revision for atomic snapshots.\n    attachment_stamp_ns: Timestamp of the last accepted attachment update.\n    place_declaration: The place-phase declaration in force for the carried\n        payload as the evidence producer resolved it (ADR-0097 and its\n        2026-08-14 amendment), including the producer-measured\n        ``PlaceRegion``. ``None`` means no place phase is declared,\n        which is no place witness and no approach allowance. It rides here\n        rather than on a channel of its own because the amendment extends the\n        payload already crossing the dispatch \u2192 HAL \u2192 World State boundary,\n        and because the kernel must apply the region and the attachment set\n        it is scoped to from one and the same snapshot.\n    occupancy_grid: Optional 2D occupancy grid reference for mobile-base\n        footprint checks. ``None`` until populated; an absent or stale\n        grid is treated as unavailable (fail-closed).",
+      "description": "Snapshot consumed by Reasoner and Skills.\n\nAttributes:\n    stamp_ns: Snapshot timestamp in nanoseconds.\n    joint_state: Current joint state.\n    base_pose: Base link pose (mobile robots).\n    base_twist: Base link twist (vx, vy, vz, wx, wy, wz).\n    policy_state: Optional simulator-native proprioception vector for a\n        checkpoint whose state includes more than joint positions/velocities.\n        Populated through a typed HAL -> WorldState topic; never inferred.\n    ee_poses: End-effector poses keyed by EE name.\n    contact_forces: Contact forces keyed by contact name.\n    images: Sensor name \u2192 ROS 2 topic reference (not the raw image).\n    image_frames: Optional per-sensor ``SensorFrame`` snapshot for\n        no-ROS / in-process deployments. When ``None`` the\n        consumer reads frames via ``images`` topic refs as before.\n    point_clouds: Sensor name \u2192 ROS 2 topic reference.\n    tactile: Sensor name \u2192 ROS 2 topic reference.\n    detected_objects: List of detected objects.\n    battery_pct: Battery percentage in [0, 100].\n    diagnostics: Per-component diagnostic status.\n    attached_objects: Collision objects carried by robot links. These are\n        absent from world occupancy and remain collision-active as payloads.\n    attachment_revision: Monotonic producer revision for atomic snapshots.\n    attachment_stamp_ns: Timestamp of the last accepted attachment update.\n    place_declaration: The place-phase declaration in force for the carried\n        payload as the evidence producer resolved it (ADR-0097 and its\n        2026-08-14 amendment), including the producer-measured\n        ``PlaceRegion``. ``None`` means no place phase is declared,\n        which is no place witness and no approach allowance. It rides here\n        rather than on a channel of its own because the amendment extends the\n        payload already crossing the dispatch \u2192 HAL \u2192 World State boundary,\n        and because the kernel must apply the region and the attachment set\n        it is scoped to from one and the same snapshot.\n    grasp_declaration: The grasp-phase declaration in force as the\n        evidence producer resolved it (real pick-and-place design \u00a72.1),\n        including the producer-measured target region. ``None`` means no\n        grasp phase is declared, i.e. no exemption. Carried beside\n        ``place_declaration`` for the same one-snapshot reason.\n    occupancy_grid: Optional 2D occupancy grid reference for mobile-base\n        footprint checks. ``None`` until populated; an absent or stale\n        grid is treated as unavailable (fail-closed).",
       "properties": {
         "stamp_ns": {
           "title": "Stamp Ns",
@@ -10383,6 +10822,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/PlaceDeclaration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "grasp_declaration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GraspDeclaration"
             },
             {
               "type": "null"
@@ -12010,6 +12460,72 @@
           "title": "DeployRuntime",
           "type": "object"
         },
+        "GraspDeclaration": {
+          "additionalProperties": false,
+          "description": "Dispatch's typed statement that a grasp phase is active for a target.\n\nField-for-field the grasp mirror of ``PlaceDeclaration`` (real\npick-and-place design \u00a72.1; ADR draft \"Declaration-scoped grasp-target\ncontact for gripper finger links\" in\n``docs/reference/real-pick-place-adr-drafts.md``): dispatch names the\ntarget and the gripper contact links, the attachment evidence producer\nmeasures the target's oriented ``region``, and the safety kernel bounds\nthe exemption. On its own it exempts nothing \u2014 dispatch never supplies a\nregion (the rSkill runner strips one) and ``region is None`` means no\nexemption. Scoped to one goal execution; dies on retraction, goal\nend/cancel, E-stop, or ``timeout_s`` after ``stamp_ns``.\n\nThe caps ``MAX_TIMEOUT_S`` / ``MAX_HALF_EXTENT_M`` / ``MAX_VOLUME_M3`` are\n**Safety-WG placeholders** from the ADR draft, not ratified bounds; they\nsit far below ``PlaceRegion``'s own caps because a grasp region names one\ngraspable object, not a receptacle. ``region.geometry`` must be empty in\nv1.\n\nAttributes:\n    target_id: Identity of the declared grasp target, e.g.\n        ``\"cell:restock_box\"``. Required while ``active``.\n    object_id: Payload identity the grasp produces once attached\n        (``AttachedCollisionObject.object_id``); empty = discovered at\n        attach time.\n    contact_links: Gripper links the declaration names, e.g.\n        ``(\"openarm_left_finger_pair\",)``. Non-empty while ``active``. A\n        consumer intersects these with its own launch-derived allowlist.\n    rskill_id: Dispatching skill, for attributability (HZ-01xx-2).\n    trace_id: OTel trace id, for attributability (HZ-01xx-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    region: Producer-measured oriented box around the target; ``None`` =\n        no exemption. Dies with the declaration.\n\nExample:\n    >>> declaration = GraspDeclaration(\n    ...     target_id=\"cell:restock_box\",\n    ...     contact_links=(\"openarm_left_finger_pair\",),\n    ...     timeout_s=70.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=72_000_000_000)\n    False",
+          "properties": {
+            "target_id": {
+              "default": "",
+              "title": "Target Id",
+              "type": "string"
+            },
+            "object_id": {
+              "default": "",
+              "title": "Object Id",
+              "type": "string"
+            },
+            "contact_links": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Contact Links",
+              "type": "array"
+            },
+            "rskill_id": {
+              "default": "",
+              "title": "Rskill Id",
+              "type": "string"
+            },
+            "trace_id": {
+              "default": "",
+              "title": "Trace Id",
+              "type": "string"
+            },
+            "timeout_s": {
+              "exclusiveMinimum": 0.0,
+              "title": "Timeout S",
+              "type": "number"
+            },
+            "stamp_ns": {
+              "minimum": 0,
+              "title": "Stamp Ns",
+              "type": "integer"
+            },
+            "active": {
+              "default": true,
+              "title": "Active",
+              "type": "boolean"
+            },
+            "region": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PlaceRegion"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "timeout_s",
+            "stamp_ns"
+          ],
+          "title": "GraspDeclaration",
+          "type": "object"
+        },
         "HalParameters": {
           "additionalProperties": false,
           "description": "Per-robot HAL construction defaults declared in the manifest.\n\nCarries the transport / constructor keyword arguments a robot's HAL needs\n\u2014 the SO-100's serial ``port`` + ``baud``, a ros2_control arm's\n``robot_ip`` / ``fci_ip`` \u2014 so the manifest is the single source of those\ndefaults instead of a per-robot lifecycle-node subclass. This is the\nschema seam that lets the unified, ``robot.yaml``-driven\n``ManifestHALLifecycleNode`` serve a parameterised HAL without\na bespoke ``_create_hal``.\n\n``openral_hal.build_hal`` merges ``defaults`` **underneath** any\nexplicit ``transport`` kwargs (so a ``deploy run`` override wins) and then\ndrops every key the target HAL constructor does not accept \u2014 exactly the\nfiltering it already applies to ``transport``. Empty by default, so robots\nthat need no construction kwargs (the derived ``MujocoArmHAL`` arms) are\nunaffected.\n\nAttributes:\n    defaults: HAL constructor / transport keyword defaults, e.g.\n        ``{\"port\": \"/dev/ttyACM0\", \"baud\": 1_000_000}`` for the SO-100 or\n        ``{\"robot_ip\": \"192.168.1.10\"}`` for a real UR arm.\n    can_bus_bindings: Maps a key of ``defaults`` to the **role token**\n        that identifies which physical CAN bus fills it, e.g.\n        ``{\"left_can_interface\": \"left\", \"right_can_interface\": \"right\"}``.\n        Declaring this opts the robot into having ``openral detect``\n        overwrite those defaults with the interface names actually found\n        on the host, instead of shipping one lab's names to every user.\n\n        A CAN interface name is a property of the *host*, not of the\n        robot: the same arm is ``openarm_left`` on a machine with a udev\n        rule and ``can1`` on one without. The manifest therefore declares\n        only which parameter each bus fills and how to recognise it; the\n        value is discovered. Robots with no CAN bus leave this empty and\n        are untouched.\n\n        The token is matched case-insensitively as a substring of the\n        interface name, so it works for any bus count \u2014 one entry for a\n        single-bus arm, two for a bimanual station, N for an N-limb\n        machine. Matching is never positional: alphabetical order is a\n        coincidence, and binding the left arm's trajectory to the right\n        arm's bus is exactly the failure this avoids. An entry that\n        matches no interface, or more than one, is reported as a warning\n        and leaves the manifest value untouched (CLAUDE.md \u00a71.4).\n\nExample:\n    >>> HalParameters(defaults={\"port\": \"/dev/ttyACM0\"}).defaults[\"port\"]\n    '/dev/ttyACM0'\n    >>> HalParameters(can_bus_bindings={\"left_can_interface\": \"left\"}).can_bus_bindings\n    {'left_can_interface': 'left'}",
@@ -12193,7 +12709,7 @@
         },
         "PlaceRegion": {
           "additionalProperties": false,
-          "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware's perception seam is\n**not yet implemented**, so no allowance applies on real hardware today\n(the same posture real-hardware place-witness attestation is under). The\nkernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
+          "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware's perception seam is\n**not yet implemented**, so no allowance applies on real hardware today\n(the same posture real-hardware place-witness attestation is under). The\nkernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nThe same type also carries the producer-measured region of a\n``GraspDeclaration`` (real pick-and-place design \u00a72.1), under that\ndeclaration's tighter caps and with ``geometry`` always empty.\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
           "properties": {
             "frame_id": {
               "minLength": 1,
@@ -13385,6 +13901,17 @@
             }
           ],
           "default": null
+        },
+        "grasp_declaration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GraspDeclaration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -14048,6 +14575,72 @@
           "title": "DeployRuntime",
           "type": "object"
         },
+        "GraspDeclaration": {
+          "additionalProperties": false,
+          "description": "Dispatch's typed statement that a grasp phase is active for a target.\n\nField-for-field the grasp mirror of ``PlaceDeclaration`` (real\npick-and-place design \u00a72.1; ADR draft \"Declaration-scoped grasp-target\ncontact for gripper finger links\" in\n``docs/reference/real-pick-place-adr-drafts.md``): dispatch names the\ntarget and the gripper contact links, the attachment evidence producer\nmeasures the target's oriented ``region``, and the safety kernel bounds\nthe exemption. On its own it exempts nothing \u2014 dispatch never supplies a\nregion (the rSkill runner strips one) and ``region is None`` means no\nexemption. Scoped to one goal execution; dies on retraction, goal\nend/cancel, E-stop, or ``timeout_s`` after ``stamp_ns``.\n\nThe caps ``MAX_TIMEOUT_S`` / ``MAX_HALF_EXTENT_M`` / ``MAX_VOLUME_M3`` are\n**Safety-WG placeholders** from the ADR draft, not ratified bounds; they\nsit far below ``PlaceRegion``'s own caps because a grasp region names one\ngraspable object, not a receptacle. ``region.geometry`` must be empty in\nv1.\n\nAttributes:\n    target_id: Identity of the declared grasp target, e.g.\n        ``\"cell:restock_box\"``. Required while ``active``.\n    object_id: Payload identity the grasp produces once attached\n        (``AttachedCollisionObject.object_id``); empty = discovered at\n        attach time.\n    contact_links: Gripper links the declaration names, e.g.\n        ``(\"openarm_left_finger_pair\",)``. Non-empty while ``active``. A\n        consumer intersects these with its own launch-derived allowlist.\n    rskill_id: Dispatching skill, for attributability (HZ-01xx-2).\n    trace_id: OTel trace id, for attributability (HZ-01xx-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    region: Producer-measured oriented box around the target; ``None`` =\n        no exemption. Dies with the declaration.\n\nExample:\n    >>> declaration = GraspDeclaration(\n    ...     target_id=\"cell:restock_box\",\n    ...     contact_links=(\"openarm_left_finger_pair\",),\n    ...     timeout_s=70.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=72_000_000_000)\n    False",
+          "properties": {
+            "target_id": {
+              "default": "",
+              "title": "Target Id",
+              "type": "string"
+            },
+            "object_id": {
+              "default": "",
+              "title": "Object Id",
+              "type": "string"
+            },
+            "contact_links": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Contact Links",
+              "type": "array"
+            },
+            "rskill_id": {
+              "default": "",
+              "title": "Rskill Id",
+              "type": "string"
+            },
+            "trace_id": {
+              "default": "",
+              "title": "Trace Id",
+              "type": "string"
+            },
+            "timeout_s": {
+              "exclusiveMinimum": 0.0,
+              "title": "Timeout S",
+              "type": "number"
+            },
+            "stamp_ns": {
+              "minimum": 0,
+              "title": "Stamp Ns",
+              "type": "integer"
+            },
+            "active": {
+              "default": true,
+              "title": "Active",
+              "type": "boolean"
+            },
+            "region": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PlaceRegion"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "timeout_s",
+            "stamp_ns"
+          ],
+          "title": "GraspDeclaration",
+          "type": "object"
+        },
         "HalParameters": {
           "additionalProperties": false,
           "description": "Per-robot HAL construction defaults declared in the manifest.\n\nCarries the transport / constructor keyword arguments a robot's HAL needs\n\u2014 the SO-100's serial ``port`` + ``baud``, a ros2_control arm's\n``robot_ip`` / ``fci_ip`` \u2014 so the manifest is the single source of those\ndefaults instead of a per-robot lifecycle-node subclass. This is the\nschema seam that lets the unified, ``robot.yaml``-driven\n``ManifestHALLifecycleNode`` serve a parameterised HAL without\na bespoke ``_create_hal``.\n\n``openral_hal.build_hal`` merges ``defaults`` **underneath** any\nexplicit ``transport`` kwargs (so a ``deploy run`` override wins) and then\ndrops every key the target HAL constructor does not accept \u2014 exactly the\nfiltering it already applies to ``transport``. Empty by default, so robots\nthat need no construction kwargs (the derived ``MujocoArmHAL`` arms) are\nunaffected.\n\nAttributes:\n    defaults: HAL constructor / transport keyword defaults, e.g.\n        ``{\"port\": \"/dev/ttyACM0\", \"baud\": 1_000_000}`` for the SO-100 or\n        ``{\"robot_ip\": \"192.168.1.10\"}`` for a real UR arm.\n    can_bus_bindings: Maps a key of ``defaults`` to the **role token**\n        that identifies which physical CAN bus fills it, e.g.\n        ``{\"left_can_interface\": \"left\", \"right_can_interface\": \"right\"}``.\n        Declaring this opts the robot into having ``openral detect``\n        overwrite those defaults with the interface names actually found\n        on the host, instead of shipping one lab's names to every user.\n\n        A CAN interface name is a property of the *host*, not of the\n        robot: the same arm is ``openarm_left`` on a machine with a udev\n        rule and ``can1`` on one without. The manifest therefore declares\n        only which parameter each bus fills and how to recognise it; the\n        value is discovered. Robots with no CAN bus leave this empty and\n        are untouched.\n\n        The token is matched case-insensitively as a substring of the\n        interface name, so it works for any bus count \u2014 one entry for a\n        single-bus arm, two for a bimanual station, N for an N-limb\n        machine. Matching is never positional: alphabetical order is a\n        coincidence, and binding the left arm's trajectory to the right\n        arm's bus is exactly the failure this avoids. An entry that\n        matches no interface, or more than one, is reported as a warning\n        and leaves the manifest value untouched (CLAUDE.md \u00a71.4).\n\nExample:\n    >>> HalParameters(defaults={\"port\": \"/dev/ttyACM0\"}).defaults[\"port\"]\n    '/dev/ttyACM0'\n    >>> HalParameters(can_bus_bindings={\"left_can_interface\": \"left\"}).can_bus_bindings\n    {'left_can_interface': 'left'}",
@@ -14231,7 +14824,7 @@
         },
         "PlaceRegion": {
           "additionalProperties": false,
-          "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware's perception seam is\n**not yet implemented**, so no allowance applies on real hardware today\n(the same posture real-hardware place-witness attestation is under). The\nkernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
+          "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware's perception seam is\n**not yet implemented**, so no allowance applies on real hardware today\n(the same posture real-hardware place-witness attestation is under). The\nkernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nThe same type also carries the producer-measured region of a\n``GraspDeclaration`` (real pick-and-place design \u00a72.1), under that\ndeclaration's tighter caps and with ``geometry`` always empty.\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
           "properties": {
             "frame_id": {
               "minLength": 1,
@@ -15479,6 +16072,17 @@
           ],
           "default": null
         },
+        "grasp_declaration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GraspDeclaration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "task": {
           "$ref": "#/$defs/TaskSpec"
         },
@@ -16225,6 +16829,72 @@
           "title": "DeployRuntime",
           "type": "object"
         },
+        "GraspDeclaration": {
+          "additionalProperties": false,
+          "description": "Dispatch's typed statement that a grasp phase is active for a target.\n\nField-for-field the grasp mirror of ``PlaceDeclaration`` (real\npick-and-place design \u00a72.1; ADR draft \"Declaration-scoped grasp-target\ncontact for gripper finger links\" in\n``docs/reference/real-pick-place-adr-drafts.md``): dispatch names the\ntarget and the gripper contact links, the attachment evidence producer\nmeasures the target's oriented ``region``, and the safety kernel bounds\nthe exemption. On its own it exempts nothing \u2014 dispatch never supplies a\nregion (the rSkill runner strips one) and ``region is None`` means no\nexemption. Scoped to one goal execution; dies on retraction, goal\nend/cancel, E-stop, or ``timeout_s`` after ``stamp_ns``.\n\nThe caps ``MAX_TIMEOUT_S`` / ``MAX_HALF_EXTENT_M`` / ``MAX_VOLUME_M3`` are\n**Safety-WG placeholders** from the ADR draft, not ratified bounds; they\nsit far below ``PlaceRegion``'s own caps because a grasp region names one\ngraspable object, not a receptacle. ``region.geometry`` must be empty in\nv1.\n\nAttributes:\n    target_id: Identity of the declared grasp target, e.g.\n        ``\"cell:restock_box\"``. Required while ``active``.\n    object_id: Payload identity the grasp produces once attached\n        (``AttachedCollisionObject.object_id``); empty = discovered at\n        attach time.\n    contact_links: Gripper links the declaration names, e.g.\n        ``(\"openarm_left_finger_pair\",)``. Non-empty while ``active``. A\n        consumer intersects these with its own launch-derived allowlist.\n    rskill_id: Dispatching skill, for attributability (HZ-01xx-2).\n    trace_id: OTel trace id, for attributability (HZ-01xx-2).\n    timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped\n        at ``MAX_TIMEOUT_S``.\n    stamp_ns: Dispatcher timestamp; with ``active`` this is the whole\n        liveness key.\n    active: ``False`` retracts the declaration.\n    region: Producer-measured oriented box around the target; ``None`` =\n        no exemption. Dies with the declaration.\n\nExample:\n    >>> declaration = GraspDeclaration(\n    ...     target_id=\"cell:restock_box\",\n    ...     contact_links=(\"openarm_left_finger_pair\",),\n    ...     timeout_s=70.0,\n    ...     stamp_ns=1_000_000_000,\n    ... )\n    >>> declaration.is_live(now_ns=31_000_000_000)\n    True\n    >>> declaration.is_live(now_ns=72_000_000_000)\n    False",
+          "properties": {
+            "target_id": {
+              "default": "",
+              "title": "Target Id",
+              "type": "string"
+            },
+            "object_id": {
+              "default": "",
+              "title": "Object Id",
+              "type": "string"
+            },
+            "contact_links": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "title": "Contact Links",
+              "type": "array"
+            },
+            "rskill_id": {
+              "default": "",
+              "title": "Rskill Id",
+              "type": "string"
+            },
+            "trace_id": {
+              "default": "",
+              "title": "Trace Id",
+              "type": "string"
+            },
+            "timeout_s": {
+              "exclusiveMinimum": 0.0,
+              "title": "Timeout S",
+              "type": "number"
+            },
+            "stamp_ns": {
+              "minimum": 0,
+              "title": "Stamp Ns",
+              "type": "integer"
+            },
+            "active": {
+              "default": true,
+              "title": "Active",
+              "type": "boolean"
+            },
+            "region": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/PlaceRegion"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            }
+          },
+          "required": [
+            "timeout_s",
+            "stamp_ns"
+          ],
+          "title": "GraspDeclaration",
+          "type": "object"
+        },
         "HalParameters": {
           "additionalProperties": false,
           "description": "Per-robot HAL construction defaults declared in the manifest.\n\nCarries the transport / constructor keyword arguments a robot's HAL needs\n\u2014 the SO-100's serial ``port`` + ``baud``, a ros2_control arm's\n``robot_ip`` / ``fci_ip`` \u2014 so the manifest is the single source of those\ndefaults instead of a per-robot lifecycle-node subclass. This is the\nschema seam that lets the unified, ``robot.yaml``-driven\n``ManifestHALLifecycleNode`` serve a parameterised HAL without\na bespoke ``_create_hal``.\n\n``openral_hal.build_hal`` merges ``defaults`` **underneath** any\nexplicit ``transport`` kwargs (so a ``deploy run`` override wins) and then\ndrops every key the target HAL constructor does not accept \u2014 exactly the\nfiltering it already applies to ``transport``. Empty by default, so robots\nthat need no construction kwargs (the derived ``MujocoArmHAL`` arms) are\nunaffected.\n\nAttributes:\n    defaults: HAL constructor / transport keyword defaults, e.g.\n        ``{\"port\": \"/dev/ttyACM0\", \"baud\": 1_000_000}`` for the SO-100 or\n        ``{\"robot_ip\": \"192.168.1.10\"}`` for a real UR arm.\n    can_bus_bindings: Maps a key of ``defaults`` to the **role token**\n        that identifies which physical CAN bus fills it, e.g.\n        ``{\"left_can_interface\": \"left\", \"right_can_interface\": \"right\"}``.\n        Declaring this opts the robot into having ``openral detect``\n        overwrite those defaults with the interface names actually found\n        on the host, instead of shipping one lab's names to every user.\n\n        A CAN interface name is a property of the *host*, not of the\n        robot: the same arm is ``openarm_left`` on a machine with a udev\n        rule and ``can1`` on one without. The manifest therefore declares\n        only which parameter each bus fills and how to recognise it; the\n        value is discovered. Robots with no CAN bus leave this empty and\n        are untouched.\n\n        The token is matched case-insensitively as a substring of the\n        interface name, so it works for any bus count \u2014 one entry for a\n        single-bus arm, two for a bimanual station, N for an N-limb\n        machine. Matching is never positional: alphabetical order is a\n        coincidence, and binding the left arm's trajectory to the right\n        arm's bus is exactly the failure this avoids. An entry that\n        matches no interface, or more than one, is reported as a warning\n        and leaves the manifest value untouched (CLAUDE.md \u00a71.4).\n\nExample:\n    >>> HalParameters(defaults={\"port\": \"/dev/ttyACM0\"}).defaults[\"port\"]\n    '/dev/ttyACM0'\n    >>> HalParameters(can_bus_bindings={\"left_can_interface\": \"left\"}).can_bus_bindings\n    {'left_can_interface': 'left'}",
@@ -16408,7 +17078,7 @@
         },
         "PlaceRegion": {
           "additionalProperties": false,
-          "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware's perception seam is\n**not yet implemented**, so no allowance applies on real hardware today\n(the same posture real-hardware place-witness attestation is under). The\nkernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
+          "description": "The bounded region of a declared place target (ADR-0097 amendment).\n\nThe volume inside which the declared payload's world-collision margin is\nreduced by ``min(1.5 x voxel, 40 mm)`` (ADR-0097's Second Amendment,\n2026-08-15 \u2014 37.5 mm at sim's 25 mm cells, 40 mm rather than 75 mm at a\nreal 50 mm grid since the absolute ceiling still binds) so it can\nphysically reach the support contact the place witness is *earned by*.\nRound-6 validation: without it the flagship counter->cabinet insertion\ncannot complete even with a correct declaration \u2014 passing through an\nenclosed target's opening means passing within margin distance of\nvoxel-quantised walls, and at 25 mm cells that quantisation closes the\nopening's predicted clearance 22-30 mm before the payload arrives. A\nwitness earned by touching can never arm if the payload is stopped\nbefore it can touch.\n\n**Producer-supplied, producer-specific.** Sim computes it from the\ndeclared body's MuJoCo model subtree; real hardware's perception seam is\n**not yet implemented**, so no allowance applies on real hardware today\n(the same posture real-hardware place-witness attestation is under). The\nkernel is producer-agnostic: it consumes this box identically whoever\nmeasured it, and never derives one itself.\n\nThe box is **oriented**, not axis-aligned \u2014 the axis-aligned hull of a\nrotated receptacle is strictly larger, i.e. more permissive. Absent\n(``PlaceDeclaration.region is None``) means no allowance at all \u2014 the\npre-amendment margins, unchanged. A degenerate or over-large region is\nrejected here and again in the kernel, both times toward \"no allowance\".\n\nThe same type also carries the producer-measured region of a\n``GraspDeclaration`` (real pick-and-place design \u00a72.1), under that\ndeclaration's tighter caps and with ``geometry`` always empty.\n\nAttributes:\n    frame_id: Frame ``pose`` is expressed in. Must be the robot base\n        frame \u2014 the frame ``OccupancyVoxels`` is published in. The kernel\n        refuses a region whose frame does not match the occupancy grid's,\n        because a region measured in one frame and applied in another is a\n        relaxation aimed at the wrong volume.\n    pose: Region box centre pose in ``frame_id``.\n    half_extents: Box half-extents along its own axes (m), each in\n        ``(0, MAX_HALF_EXTENT_M]``.\n    evidence_ref: What the producer measured the box from, for\n        attributability (HZ-0097-2/4). Free text, never parsed.\n    stamp_ns: Producer timestamp.\n    geometry: The declared target's own collision primitives, each posed in\n        ``frame_id`` (ADR-0098, survey Path B). Empty \u2014 the default, and\n        what every producer that cannot measure geometry publishes \u2014 leaves\n        the region behaving exactly as it did before ADR-0098. Supplying it\n        lets the kernel adjudicate a cell against the modelled surface\n        instead of against the 25 mm cube that quantised it, bounded so that\n        it can never be more permissive than the box alone: the kernel uses\n        the modelled distance only while it is within the blanket allowance\n        that cell would have been granted anyway.\n\nExample:\n    >>> region = PlaceRegion(\n    ...     frame_id=\"base_link\",\n    ...     pose=Pose6D(\n    ...         xyz=(0.6, 0.1, 1.1), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=\"base_link\"\n    ...     ),\n    ...     half_extents=(0.20, 0.18, 0.12),\n    ...     evidence_ref=\"mujoco_body_subtree:cab_1_left_group_main\",\n    ... )\n    >>> round(region.volume_m3(), 5)\n    0.03456",
           "properties": {
             "frame_id": {
               "minLength": 1,
@@ -17648,6 +18318,17 @@
           "anyOf": [
             {
               "$ref": "#/$defs/PlaceDeclaration"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "grasp_declaration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GraspDeclaration"
             },
             {
               "type": "null"

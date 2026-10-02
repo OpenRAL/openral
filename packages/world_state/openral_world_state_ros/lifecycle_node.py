@@ -677,6 +677,7 @@ if _ROS2_AVAILABLE:
                     revision=int(msg.revision),  # type: ignore[attr-defined]
                     stamp_ns=stamp_ns,
                     place_declaration=_place_declaration_from_idl(msg),
+                    grasp_declaration=_grasp_declaration_from_idl(msg),
                 )
             except (ValueError, TypeError) as exc:
                 self.get_logger().error(f"attachment state rejected: {exc}")
@@ -1016,6 +1017,7 @@ def world_state_from_idl(msg: object) -> object:
         attachment_revision=int(msg.attachment_revision),  # type: ignore[attr-defined]
         attachment_stamp_ns=int(msg.attachment_stamp_ns),  # type: ignore[attr-defined]
         place_declaration=_place_declaration_from_idl(msg),
+        grasp_declaration=_grasp_declaration_from_idl(msg),
     )
 
 
@@ -1057,6 +1059,20 @@ def _place_declaration_from_idl(msg: object) -> object | None:
     if not bool(getattr(msg, "place_declaration_valid", False)):
         return None
     declaration = PlaceDeclaration.from_idl(msg.place_declaration)  # type: ignore[attr-defined]
+    return declaration if declaration.active else None
+
+
+def _grasp_declaration_from_idl(msg: object) -> object | None:
+    """Decode the grasp declaration riding an ``AttachmentState``, if any.
+
+    Sibling of ``_place_declaration_from_idl``: ``None`` for an absent or
+    retracted declaration, i.e. no grasp exemption.
+    """
+    from openral_core.schemas import GraspDeclaration
+
+    if not bool(getattr(msg, "grasp_declaration_valid", False)):
+        return None
+    declaration = GraspDeclaration.from_idl(msg.grasp_declaration)  # type: ignore[attr-defined]
     return declaration if declaration.active else None
 
 
@@ -1113,6 +1129,7 @@ def build_world_state_stamped_msg(node: object, world_state: object) -> object:
     _fill_detected_objects(msg, world_state)
     _fill_attached_objects(msg, world_state)
     _fill_place_declaration(msg, world_state)
+    _fill_grasp_declaration(msg, world_state)
 
     return msg
 
@@ -1270,6 +1287,18 @@ def _fill_place_declaration(msg: object, world_state: object) -> None:
             msg.place_declaration,  # type: ignore[attr-defined]
             primitive_factory=RosAttachedCollisionPrimitive,
         )
+
+
+def _fill_grasp_declaration(msg: object, world_state: object) -> None:
+    """Relay the live grasp declaration (and its region) to the safety kernel.
+
+    Sibling of ``_fill_place_declaration``: an absent declaration publishes
+    ``grasp_declaration_valid=False``, never a stale leftover.
+    """
+    declaration = getattr(world_state, "grasp_declaration", None)
+    msg.grasp_declaration_valid = declaration is not None  # type: ignore[attr-defined]
+    if declaration is not None:
+        declaration.fill_idl(msg.grasp_declaration)  # type: ignore[attr-defined]
 
 
 def _pose6d_to_ros_pose(pose: object, *, pose_cls: type, quat_cls: type) -> object:
