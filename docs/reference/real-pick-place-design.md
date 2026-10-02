@@ -1,7 +1,9 @@
 # Pick and place on the real OpenArm cell with the world-voxel check on
 
-Status: **investigation and proposal**, 2026-10-02. Branch `feat/real-pick-place-attachment`.
-Nothing here is implemented. Facts cite code at `fe3c8944`; proposals are marked.
+Status: **proposal, groundwork landed**, 2026-10-02. Branch `feat/real-pick-place-attachment`
+(draft PR #332). Steps 0-4 of §3 are implemented and committed off by default; §2 (the kernel
+exemption, the target producer, place) is not. Facts cite code at `fe3c8944` unless marked
+*since*; proposals are marked.
 
 Goal: on the real OpenArm cell (Thor: ZED-M head camera, RGB-only wrist Arducams,
 `openral deploy run` with the safety kernel's world-voxel check at the real 20 mm margin on
@@ -29,8 +31,11 @@ using SAM 2.1 to see the object.
    `DROP_ATTACHED_OVERFLOW`/`_UNAVAILABLE`. Nothing launches the segmenter; `DeployRuntime` has no
    field for it; `_attached_collision_enabled(hal_mode)` is sim-only (`deploy_e2e.launch.py`
    L452-454).
-   *Since wired, off by default (§3 row 4):* `DeployRuntime.vision_attachment` launches the
-   segmenter and couples the leg to the kernel's attached check.
+   *Since (§3 rows 1-2, 4):* the bridge builds one trigger/producer leg per `role: gripper`
+   joint (`object_id` suffixed by the joint), heartbeats its set at 5 Hz only while every leg has
+   live effort evidence, seeds its revision from the node clock, and the real-mode sim bridge no
+   longer heartbeats "nothing attached". `DeployRuntime.vision_attachment` (off by default)
+   launches the segmenter and couples the leg to the kernel's attached check.
 4. **Three latent geometry bugs on the head camera.** `head_zed.frame_id` is `zed_camera_link`
    (ZED *body* frame) while the segmenter, the object lift and the attachment bridge all treat
    `SensorSpec.frame_id` as an optical frame; the manifest's ZED intrinsics are nominal; the
@@ -55,6 +60,11 @@ using SAM 2.1 to see the object.
    notice the channel is gone. The attach link (`openarm_*_link7`) and finger frames do not exist
    in the vendored URDF's TF tree (it describes a different assembly, `robot.yaml` L650-660); the
    vendor bringup's `robot_description` is what the real cell publishes and is unverified.
+   *Since (§3 rows 0-1):* a missing effort channel reads as `effort == []` and is counted by the
+   trigger; the TCP comes from the gripper joint's origin, not TF; and
+   `VisionAttachmentConfig.tf_frames` maps a manifest link to its TF frame as a proven identity
+   (`openarm_*_link7` is the MJCF/URDF body `openarm_*_ee_base_link`, the one the vendor
+   `openarm_ros2` description publishes).
 6. **Place has no real producer for any of its inputs.** Region (sim: MuJoCo subtree), support
    witness (sim: `mj_geomDistance`), release (sim: contact loss + 10 mm rigid-follow tolerance),
    and nothing subscribes `/openral/place_declaration` on real. Three real-only hazards sim never
@@ -197,9 +207,18 @@ decide; 7 and 8 need the attended cell for calibration.
 
 - `/joint_states` effort presence and raw gripper values; close-on-nothing vs close-on-foam
   percentiles → are the 0.30/0.10 × 333 thresholds meaningful at all.
-- `header.frame_id` of `/zed/zed_node/depth/depth_registered` and the RGB; `camera_info` K and
-  size at the cell's resolution; `tf2_echo openarm_left_link7 zed_left_camera_optical_frame`.
-- SAM 2.1 latency and VRAM on Thor beside π0.5 (53 ms warm on an RTX 4070 Laptop; Thor unmeasured).
+- *Measured 2026-10-02, no motion:* depth and RGB images both carry
+  `header.frame_id = zed_left_camera_frame_optical` at 1920x1080; `camera_info` K = fx = fy =
+  1498.18, cx = 936.11, cy = 541.81 (the manifest's nominal fx = 960 is 56 % short);
+  `/tf_static` carries `zed_camera_link -> zed_camera_center -> zed_left_camera_frame ->
+  zed_left_camera_frame_optical` from the driver. The vendor `openarm_ros2` description names the
+  hand link `openarm_*_ee_base_link`; the manifest's `openarm_*_link7` is the same body
+  (`tf_frames` in the Thor scene). Still to read with the real bringup up: `/joint_states`
+  effort presence and `tf2_echo openarm_left_ee_base_link zed_left_camera_frame_optical`.
+- *Measured 2026-10-02:* SAM 2.1 hiera-small, bf16, `transformers` 5.5.4 on Thor, one live
+  1920x1080 ZED left frame, point prompt: warm median 53 ms, p95 57 ms, cold 635 ms, peak
+  279 MiB allocated — the same as the RTX 4070 Laptop figures, with π0.5 not loaded. The
+  attach barrier (~100 ms) holds it; measure again beside the running policy.
 - The restock box dimensions (for the caps) and finger-shelf clearance during a real place.
 
 Sources: four read-only investigations of this branch (kernel allowance, pre-grasp perception,
