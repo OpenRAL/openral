@@ -1545,11 +1545,16 @@ class SimAttachmentEvidenceTracker:
         # measures the target subtree's box (never its geometry — v1 is box-only)
         # and the kernel bounds the exemption. No hysteresis lives here: the
         # region simply dies with the declaration, and handover to the attached
-        # payload is the kernel's.
+        # payload is the kernel's. The region is the PRE-grasp target volume: on
+        # the attach of the declared object it freezes at that instant's
+        # measurement, so the kernel's "payload origin left the region" handover
+        # can fire once the payload is carried out of it.
         self._grasp_declaration: GraspDeclaration | None = None
         self._grasp_target_body_id: int | None = None
         self._grasp_target_body_name: str = ""
         self._grasp_region_local: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None
+        self._grasp_frozen = False
+        self._grasp_frozen_region: PlaceRegion | None = None
 
         gripper_joints = [joint for joint in description.joints if joint.role == "gripper"]
         if not gripper_joints:
@@ -1745,6 +1750,7 @@ class SimAttachmentEvidenceTracker:
                     stamp_ns=stamp_ns,
                 ),
             )
+            self._freeze_grasp_region(data, object_id=f"sim:{body_name}", stamp_ns=stamp_ns)
             self._attached_root = root
             self._attached_translation = translation.copy()
             self._attached_rotation = rotation.copy()
@@ -1991,8 +1997,9 @@ class SimAttachmentEvidenceTracker:
         The grasp mirror of :meth:`set_place_declaration`: ``target_id`` resolves
         by the same ``sim:<body>`` convention to a MuJoCo body whose subtree is
         measured, and an unresolvable target is an explicit refusal rather than
-        a silent no-op. A new declaration simply replaces the old one; nothing
-        else in this tracker is reset by it (handover is the kernel's).
+        a silent no-op. A new declaration simply replaces the old one and clears
+        any region frozen at a previous attach; nothing else in this tracker is
+        reset by it (handover is the kernel's).
 
         Args:
             declaration: The declaration to install. ``None``, or one that is
@@ -2008,6 +2015,8 @@ class SimAttachmentEvidenceTracker:
         self._grasp_target_body_id = None
         self._grasp_target_body_name = ""
         self._grasp_region_local = None
+        self._grasp_frozen = False
+        self._grasp_frozen_region = None
         if declaration is None or not declaration.active:
             return
         body_name = declaration.target_id.removeprefix("sim:")
@@ -2034,6 +2043,14 @@ class SimAttachmentEvidenceTracker:
         unresolvable base frame, or a box past ``GraspDeclaration``'s own caps —
         yields ``region=None``, which exempts nothing.
 
+        Until the declared object attaches the box is re-measured at the target's
+        live pose; from the attach edge on it is the region frozen at that edge
+        (its ``stamp_ns`` the measurement's), because the region is the
+        pre-grasp target volume the kernel hands over from — a region riding the
+        carried payload would never let the payload leave it. A release keeps it
+        frozen too: the kernel has retired the exemption, and only a new
+        declaration re-arms (and re-measures).
+
         Args:
             data: Live ``mujoco.MjData``.
             stamp_ns: Consumer's current time, same clock as the declaration's.
@@ -2045,7 +2062,11 @@ class SimAttachmentEvidenceTracker:
         declaration = self._grasp_declaration
         if declaration is None or not declaration.is_live(now_ns=stamp_ns):
             return None
-        region = self._grasp_region(data, stamp_ns=stamp_ns)
+        region = (
+            self._grasp_frozen_region
+            if self._grasp_frozen
+            else self._grasp_region(data, stamp_ns=stamp_ns)
+        )
         try:
             # Re-validated, not model_copy'd: the grasp caps are far tighter than
             # PlaceRegion's, and a model_copy would skip them.
@@ -2054,6 +2075,33 @@ class SimAttachmentEvidenceTracker:
             )
         except ValueError:
             return declaration.model_copy(update={"region": None})
+
+    def _freeze_grasp_region(
+        self,
+        data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
+        *,
+        object_id: str,
+        stamp_ns: int,
+    ) -> None:
+        """On the attach edge of the declared object, freeze the grasp region there.
+
+        Called before the attachment is recorded, so the measurement is the
+        target's last pre-attach pose. ``object_id`` empty on the declaration
+        means any attached object is the declared one.
+        """
+        declaration = self._grasp_declaration
+        if (
+            declaration is None
+            or self._grasp_frozen
+            or declaration.object_id not in ("", object_id)
+        ):
+            return
+        self._grasp_frozen_region = self._grasp_region(data, stamp_ns=stamp_ns)
+        self._grasp_frozen = True
+        centre = None if self._grasp_frozen_region is None else self._grasp_frozen_region.pose.xyz
+        _LOGGER.info(
+            f"sim grasp region frozen at attach target={declaration.target_id} centre={centre}"
+        )
 
     def _grasp_region(
         self,
