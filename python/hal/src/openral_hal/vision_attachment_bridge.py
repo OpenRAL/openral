@@ -41,10 +41,21 @@ Three properties of that wait are non-negotiable:
 * **It is visible.** Every fallback logs its typed reason and every
   attachment logs the gate report (CLAUDE.md §1.4). Nothing here
   degrades silently.
+
+The kernel's attached-payload check fails closed on a snapshot it has never
+heard (``attachment_stamp_ns == 0``) or one older than its deadline, so the
+set is republished on a 0.2 s heartbeat — the same period as the simulator
+bridge's. That heartbeat is a claim about the jaws, so it is only made while
+the claim has evidence behind it: every gripper's effort channel must have
+reported within ``VisionAttachmentConfig.evidence_timeout_s``, for at least
+``GraspTriggerConfig.consecutive_ticks`` samples in a row, with no grasp
+being resolved. A dead effort channel therefore ages into a kernel drop, never
+into a stale "nothing attached".
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -118,6 +129,59 @@ class _GripperLeg:
     pending: bool = False
 
 
+#: Heartbeat period, seconds — the simulator bridge's attachment heartbeat period.
+_HEARTBEAT_PERIOD_S = 0.2
+
+
+class _EffortEvidence:
+    """Is every gripper's effort channel alive right now? — the heartbeat's gate.
+
+    Pure bookkeeping on a caller-supplied monotonic clock. A sample counts only
+    when *every* leg read an effort value from it; one missing value, or a gap
+    longer than the timeout, restarts the count, because a heartbeat claims
+    something about every hand at once and a channel that just came back has
+    not yet shown it is steady.
+
+    Args:
+        required_samples: Consecutive complete samples before evidence is live.
+        timeout_s: How old the newest complete sample may be.
+
+    Example:
+        >>> evidence = _EffortEvidence(required_samples=2, timeout_s=0.5)
+        >>> evidence.observe(complete=True, now_s=0.0)
+        >>> evidence.live(now_s=0.0)
+        False
+        >>> evidence.observe(complete=True, now_s=0.1)
+        >>> evidence.live(now_s=0.5), evidence.live(now_s=0.7)
+        (True, False)
+    """
+
+    def __init__(self, *, required_samples: int, timeout_s: float) -> None:
+        """Start with no evidence."""
+        self._required = required_samples
+        self._timeout_s = timeout_s
+        self._streak = 0
+        self._last_s: float | None = None
+
+    def observe(self, *, complete: bool, now_s: float) -> None:
+        """Fold one joint-state sample in."""
+        stale = self._last_s is not None and now_s - self._last_s > self._timeout_s
+        if not complete or stale:
+            self._streak = 0
+        if not complete:
+            return
+        self._streak += 1
+        self._last_s = now_s
+
+    def live(self, *, now_s: float) -> bool:
+        """Whether enough fresh, complete samples back a claim about the jaws."""
+        return (
+            self._streak >= self._required
+            and self._last_s is not None
+            and now_s - self._last_s <= self._timeout_s
+        )
+
+
 #: What one grasp needs from TF and the manifest before it can prompt:
 #: ``(t_link_from_cam, tcp_in_link, negative_points_in_link)``.
 _PromptContext = tuple[
@@ -173,6 +237,12 @@ class VisionAttachmentConfig:
             joint7 drives, which the MJCF and the vendor URDF the real cell
             publishes both call ``openarm_<side>_ee_base_link`` (origin at
             joint7). Empty = look every link up by its manifest name.
+        evidence_timeout_s: How old the newest joint-state sample carrying an
+            effort value for every gripper may be before the attachment
+            heartbeat stops. *Calibration point*, ``0.5`` s — several HAL read
+            ticks at any rate the cell runs, and well inside the kernel's
+            attached-collision deadline, so a dead effort channel surfaces as a
+            kernel drop rather than as a stale "nothing attached".
     """
 
     camera: str = ""
@@ -183,6 +253,7 @@ class VisionAttachmentConfig:
     jaw_tip_frames: tuple[str, ...] = ()
     object_id: str = "grasped_payload"
     tf_frames: Mapping[str, str] = field(default_factory=dict)
+    evidence_timeout_s: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -347,6 +418,12 @@ class VisionAttachmentBridge:
         self._attachment_pub: Any = None
         self._tf_buffer: Any = None
         self._tf_listener: Any = None
+        self._heartbeat_timer: Any = None
+        self._heartbeat_open: bool | None = None
+        self._evidence = _EffortEvidence(
+            required_samples=(trigger_config or GraspTriggerConfig()).consecutive_ticks,
+            timeout_s=self._config.evidence_timeout_s,
+        )
         self._revision = 0
 
     # ── wiring ───────────────────────────────────────────────────────────────
@@ -387,6 +464,15 @@ class VisionAttachmentBridge:
             AttachmentState, "/openral/attachment_state", state_qos
         )
         self._client = self._node.create_client(SegmentInView, self._config.service_name)
+        # The bridge is rebuilt on every HAL activate, and the aggregator rejects
+        # a revision that moves backwards, so a counter restarting at 0 would
+        # wedge the second activation. Seed from the node clock instead: host
+        # wall time on a real cell, monotonic within a launch under sim time;
+        # +1 per event after that. Nothing persists the last revision across
+        # processes — the upgrade path, if wall time ever proves unfit, is to
+        # read the latched topic's last revision before the first publish.
+        self._revision = int(self._node.get_clock().now().nanoseconds)
+        self._heartbeat_timer = self._node.create_timer(_HEARTBEAT_PERIOD_S, self._heartbeat)
         for leg in self._legs:
             self._node.get_logger().info(
                 f"vision attachment bridge: gripper={leg.joint_name!r} camera={self._camera!r} "
@@ -401,6 +487,10 @@ class VisionAttachmentBridge:
         """Destroy every ROS entity; idempotent, and never leaves the barrier shut."""
         for leg in self._legs:
             self._cancel_deadline(leg)
+        if self._heartbeat_timer is not None:
+            self._heartbeat_timer.cancel()
+            self._node.destroy_timer(self._heartbeat_timer)
+            self._heartbeat_timer = None
         if self._depth_sub is not None:
             self._node.destroy_subscription(self._depth_sub)
             self._depth_sub = None
@@ -451,11 +541,17 @@ class VisionAttachmentBridge:
     def observe_joint_state(self, state: JointState) -> None:
         """Fold one HAL read into every leg's grasp trigger and act on transitions.
 
+        Also the heartbeat's liveness evidence: a sample counts only when every
+        leg read an effort value from it.
+
         Args:
             state: The tick's joint state, straight from the HAL.
         """
+        complete = True
         for leg in self._legs:
+            missing_before = leg.trigger.missing_effort_ticks
             event = leg.trigger.update(state)
+            complete = complete and leg.trigger.missing_effort_ticks == missing_before
             if event is None:
                 continue
             if event is GraspEvent.DETACH:
@@ -470,6 +566,7 @@ class VisionAttachmentBridge:
                 "ack for segmentation"
             )
             self._begin_segmentation(leg, stamp_ns=int(state.stamp_ns))
+        self._evidence.observe(complete=complete, now_s=time.monotonic())
 
     @property
     def missing_effort_ticks(self) -> int:
@@ -767,6 +864,44 @@ class VisionAttachmentBridge:
         """Publish every leg's current attachment as one snapshot at a fresh revision."""
         if self._attachment_pub is None:
             return
+        self._revision += 1
+        self._publish_snapshot()
+
+    def _heartbeat(self) -> None:
+        """Republish the current set at the current revision, while evidence backs it.
+
+        Fail-closed: no live effort evidence, a grasp still being resolved, or a
+        trigger that believes the jaws are loaded with no attachment yet each
+        stop the heartbeat, so the kernel's snapshot ages into a drop instead of
+        a stale claim. Each open/close transition is logged once.
+        """
+        if self._attachment_pub is None:
+            return
+        if not self._evidence.live(now_s=time.monotonic()):
+            reason = "no live effort evidence from every gripper"
+        elif any(leg.pending for leg in self._legs):
+            reason = "a grasp is being resolved"
+        elif any(leg.trigger.attached != (leg.attachment is not None) for leg in self._legs):
+            reason = "a trigger and its attachment disagree"
+        else:
+            reason = ""
+        is_open = not reason
+        if is_open != self._heartbeat_open:
+            self._heartbeat_open = is_open
+            if is_open:
+                self._node.get_logger().info(
+                    "vision attachment heartbeat: publishing — effort evidence is live"
+                )
+            else:
+                self._node.get_logger().warning(
+                    f"vision attachment heartbeat: withheld — {reason}; the kernel's "
+                    "attachment snapshot will age out"
+                )
+        if is_open:
+            self._publish_snapshot()
+
+    def _publish_snapshot(self) -> None:
+        """Publish the union of the legs' attachments at the current revision, stamped now."""
         objects = [leg.attachment for leg in self._legs if leg.attachment is not None]
         from openral_msgs.msg import (
             AttachedCollisionObject,
@@ -774,7 +909,6 @@ class VisionAttachmentBridge:
             AttachmentState,
         )
 
-        self._revision += 1
         msg = AttachmentState()
         msg.header.stamp = self._node.get_clock().now().to_msg()
         msg.revision = self._revision

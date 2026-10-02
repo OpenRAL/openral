@@ -58,6 +58,9 @@ TARGETS=(
     # unchanged payload must release the deferred action_applied tick; when it
     # did not, a SUCCESSFUL place aborted its own goal 8 s later.
     tests/integration/test_hal_attachment_barrier_live.py
+    # The vision attachment leg heartbeats its set only while every gripper's
+    # effort channel is live, and its revision survives a re-activate.
+    tests/integration/test_vision_attachment_heartbeat_live.py
     # A world-voxel stop names its cell only as an index; the grid that index
     # addresses arrives on a different topic, and until joined the record
     # can't look at the map -- how the 2026-08-22 round adjudicated two stops

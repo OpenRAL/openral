@@ -1594,6 +1594,10 @@ if _ROS2_AVAILABLE:
             # default leaves ~4x margin while staying the same order as the
             # ~100 ms barrier it rides inside. A CPU-only host must raise it.
             self.declare_parameter("vision_attachment_deadline_s", 0.25)
+            # Seconds. The attachment heartbeat stops once the newest sample with
+            # an effort value for every gripper is older than this, so a dead
+            # effort channel becomes a kernel drop, not a stale "nothing attached".
+            self.declare_parameter("vision_attachment_evidence_timeout_s", 0.5)
             self.declare_parameter("vision_attachment_tcp_frame", "")
             self.declare_parameter("vision_attachment_jaw_tip_frames", [""])
             # "manifest_link=tf_frame" entries for links the published TF tree
@@ -2045,6 +2049,9 @@ if _ROS2_AVAILABLE:
                         if frame
                     ),
                     tf_frames=tf_frames,
+                    evidence_timeout_s=gp("vision_attachment_evidence_timeout_s")
+                    .get_parameter_value()
+                    .double_value,
                 ),
             )
             self._vision_attachment.setup()
