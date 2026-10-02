@@ -17,11 +17,14 @@ over to the carried payload and keeps it while the payload is inside the measure
 and a later approach of the same finger to a different obstacle (a post outside the region)
 is still refused.
 
-**The moving region.** The sim producer re-measures the target's box at the body's *live*
-pose on every envelope, so after the grasp the region rides along with the carried block.
-The kernel latches the region at the handover edge and ignores later moves of the same
-declaration (``safety.grasp_region_moved_after_handover ... ignored``), so lifting the
-payload out of the latched box still retires the exemption and the post stop discloses
+**The region after the grasp, two layers.** The first cut of the sim producer re-measured
+the target's box at the body's *live* pose on every envelope, so after the grasp the region
+rode along with the carried block and the handover never retired (this test found it). Both
+layers now hold it still: the sim producer freezes the region at the attach transition (the
+pre-grasp target volume), and the kernel latches the region at the handover edge regardless
+and would ignore a later move (``safety.grasp_region_moved_after_handover ... ignored``;
+exercised by the kernel's own gtest, not here, because a correct producer never moves it).
+So lifting the payload out of the box retires the exemption and the post stop discloses
 ``grasp_exemption_active=0``.
 
 What is real (CLAUDE.md §1.11): ``safety_kernel_node`` (colcon binary, lifecycle-driven,
@@ -674,12 +677,14 @@ def test_declared_grasp_target_is_reachable_and_undeclared_stops() -> None:
                         if "safety.collision" in line and "a=right_finger" in line
                     ]
                     assert stop, kernel_log()
-                    # The producer's region followed the carried block (lifted_region);
-                    # the kernel compares against the box it latched at handover, so the
-                    # lift retires the exemption anyway.
+                    # The producer froze its region at attach, so the lifted envelope still
+                    # carries the pre-grasp box; the kernel latched the same box at handover.
+                    # Either layer alone retires the exemption on the lift.
                     assert exited, (lifted_region, _BLOCK_C, kernel_log())
                     assert f"safety.grasp_region_latched target={_TARGET}" in kernel_log()
-                    assert kernel_log().count("safety.grasp_region_moved_after_handover") == 1, (
+                    # A correct producer never moves the region after handover, so the
+                    # kernel's "moved ... ignored" branch must stay silent here.
+                    assert kernel_log().count("safety.grasp_region_moved_after_handover") == 0, (
                         kernel_log()
                     )
                     assert "grasp_exemption_active=0" in stop[-1], stop
