@@ -858,6 +858,23 @@ _Real-hardware attachment evidence from a segmenter mask plus wrist depth — th
 
 **Not covered** (see the module docstring): articulated objects, support contact, transparent/thin objects, self-occlusion, mass/CoM/inertia, deformables, multi-object grasps, and the attach trigger itself.
 
+### `python/hal/src/openral_hal/_grasp_target.py`
+
+_Pre-grasp target geometry (design note `docs/reference/real-pick-place-design.md` §2.2): seed from the voxel map, SAM prompt projection, a measured region from mask + depth, a map cross-check and a re-prompt tracking gate. Pure numpy, no ROS; the producer node that wires it is a follow-up. Every threshold is a calibration point; the caps are the Safety-WG placeholders._
+
+- `class TargetRefusal(StrEnum)` (L81) — `TOO_FEW_CELLS`, `AMBIGUOUS` (runner-up cluster ≥ `ambiguity_ratio` of the largest — HZ-01xx-2), `TOO_FEW_POINTS`, `NO_HEIGHT_ABOVE_SUPPORT`, `HALF_EXTENT_CAP`, `VOLUME_CAP`.
+- `class VoxelLattice(frame_id, origin, orientation_xyzw, resolution, size, occupancy)` (L93) — The `OccupancyVoxels` fields, same convention as `bucket2_markers.occupied_voxel_centers` (re-derived, cross-checked in `tests/unit/test_grasp_target.py`). Raises `ROSConfigError` on a length mismatch, non-positive resolution or non-unit orientation.
+  - `rotation() -> NDArray` (L137) — lattice axes → `frame_id`.
+  - `occupied_centers() -> NDArray` (L141) — `(N, 3)` occupied cell centres in `frame_id`, vectorised.
+- `class TargetSeed` (L151) — `point | None`, `refusal | None`, `cluster_sizes` (descending).
+- `class TargetRegionFit` (L166) — `region: PlaceRegion | None`, `refusal | None`, `point_count`, `depth_valid_fraction`, `half_extents`.
+- `occupied_centers_in_box(grid, box: PlaceRegion) -> NDArray` (L199) — Occupied centres inside an oriented box (the scene's search box); refuses a frame mismatch with `ROSConfigError`.
+- `target_seed_from_voxels(grid, centers, *, support_z, min_cells, ambiguity_ratio=0.5) -> TargetSeed` (L254) — Drops cells within one voxel of the support plane, labels 26-connected components on the lattice, returns the largest cluster's top-centre; refuses too few cells or two comparable clusters.
+- `project_point(point_base, t_cam_from_base, intrinsics) -> tuple[float, float] | None` (L308) — Base-frame point → REP-103 optical pixel `(u, v)` (pixel-centre convention of `backproject_masked_depth`); `None` behind the camera or outside the image. SAM 2.1's positive point prompt.
+- `target_region_from_mask(mask, depth_m, intrinsics, t_base_from_cam, *, support_z, resolution, frame_id, evidence_ref, stamp_ns=0, erode_px=2, extrinsic_error_m=0.01, trim_percentile=1.0, min_points=200, min_depth_m=0.1, max_depth_m=3.0, max_half_extent_m=0.20, max_volume_m3=0.03) -> TargetRegionFit` (L360) — Erode → `backproject_masked_depth` → base frame → percentile-trimmed, gravity-aligned (yaw-only, 2-D PCA footprint) box; lower face fixed at `support_z + resolution` (never below — HZ-01xx-6), sides and top padded by `√3·resolution/2 + extrinsic_error_m`; refuses on the caps.
+- `region_covers_occupied(grid, region, *, min_fraction=0.5) -> tuple[int, bool]` (L491) — Occupied cells with centres in the region vs. `min_fraction` of the region's footprint cell count; a region the map does not see is refused.
+- `track_region(previous, current, *, max_centroid_shift_m, extents_tol_m) -> bool` (L538) — The 2-5 Hz re-prompt gate: same frame, centroid shift and (sorted-horizontal) half-extent change within tolerance.
+
 ### `python/hal/src/openral_hal/_grasp_trigger.py`
 
 _When to ask perception "what is in the jaws?" — a debounced state machine over the gripper joint's effort channel in the typed `JointState` the HAL already reads every tick. Pure: no ROS, no numpy, no clock. `_vision_attachment_evidence.py` is *told* a grasp happened; this is what tells it._

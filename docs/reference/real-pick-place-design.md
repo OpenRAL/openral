@@ -123,6 +123,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   2-3 px) → masked ZED depth → base-frame cloud → robust PCA OBB (reuse `_pca_basis` /
   `clustered_obb_primitives`), extruded down to the support plane, padded by ≥ √3·10 mm plus
   extrinsic error. Cross-check: the OBB must contain enough occupied cells or it is refused.
+  *Pure-geometry core landed:* `openral_hal._grasp_target` (seed, prompt projection, region, map
+  cross-check, tracking gate; tests in `tests/unit/test_grasp_target.py`); the ROS wiring waits for
+  `GraspDeclaration`.
 - **Representation:** an oriented box in `openarm_base` (reuse `PlaceRegion`): ~150 B, grid-instance
   independent, exact point-in-OBB already in the kernel.
 - **Tracking:** re-prompt from geometry at 2-5 Hz (project the previous centroid, re-fit, gate on

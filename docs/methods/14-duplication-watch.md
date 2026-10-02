@@ -34,6 +34,8 @@ Each of these is the same logic on two sides of a boundary that must not be cros
 
 - **The quantisation budget, twice — left duplicated, pinned by test.** `tools/validation_matrix.py::quantization_budget_m` (canonical half body-diagonal) and `tools/stop_ee_speed.py::QUANTISATION_GAIN_M` (their 25/15 mm difference) are two standalone scripts with no shared module. The 8.66 mm figure is what the programme note §5 in `docs/reference/collision-validation-evidence.md` weighs the resolution trade against. `test_the_quantisation_gain_matches_the_matrix_budget_it_is_derived_from` pins it.
 
+- **`OccupancyVoxels` lattice decode — deliberate cross-layer mirror, update in lockstep.** `packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py::occupied_voxel_centers` (viewer) and `python/hal/src/openral_hal/_grasp_target.py::VoxelLattice.occupied_centers` (pre-grasp target producer). The HAL cannot import a ROS viewer package; `tests/unit/test_grasp_target.py::test_lattice_centres_agree_with_bucket2_markers_on_a_rotated_lattice` loads the viewer's by path and pins both to the same centres on a rotated lattice. Drift draws or measures every cell in the wrong place whenever the map is not base-aligned.
+
 ### Deliberately not consolidated
 
 Repeated bodies that consolidation would make worse: different contracts, illegal imports, or a green that would confirm itself.
