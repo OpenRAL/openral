@@ -67,6 +67,9 @@ TARGETS=(
     # Grasp masks back-project in the depth header's optical frame through the
     # driver's CameraInfo, never the manifest's body frame or nominal K.
     tests/integration/test_vision_attachment_optical_frame_live.py
+    # A released payload stays a checked attached record, frozen in the base frame, until
+    # the jaws are clear; the real kernel accepts the retreat only while it is published.
+    tests/integration/test_vision_attachment_release_window_live.py
     # The pre-grasp target leg measures the declared target's region from the
     # search box, the voxel map and a SegmentInView mask; freezes it under a TTL
     # on a lost view, refuses two candidates, dies with the declaration.

@@ -84,15 +84,23 @@ from openral_hal._vision_attachment_evidence import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
-    from openral_core import IntrinsicsPinhole, JointState, RobotDescription
+    from openral_core import (
+        AttachedCollisionObject,
+        IntrinsicsPinhole,
+        JointState,
+        RobotDescription,
+    )
 
 __all__ = [
     "DEFAULT_SEGMENT_SERVICE",
+    "ReleaseWindow",
     "SegmentOutcome",
     "VisionAttachmentBridge",
     "VisionAttachmentConfig",
+    "box_gap_lower_bound_m",
     "build_segment_request",
     "decode_mono8_mask",
+    "freeze_released_attachment",
     "resolve_segment_outcome",
 ]
 
@@ -125,6 +133,8 @@ class _GripperLeg:
         pending: Whether this leg is holding the ack barrier.
         jaw_link: The gripper joint's child link — what a ``GraspDeclaration``
             names in ``contact_links``.
+        release: The payload this leg released and still publishes, frozen in
+            the base frame, until its jaws are clear (``ReleaseWindow``).
     """
 
     joint_name: str
@@ -138,6 +148,7 @@ class _GripperLeg:
     deadline_timer: Any = None
     pending: bool = False
     jaw_link: str = ""
+    release: ReleaseWindow | None = None
 
 
 #: Mask/depth aspect-ratio agreement below which a resample is a resolution change.
@@ -194,6 +205,334 @@ class _EffortEvidence:
             and self._last_s is not None
             and now_s - self._last_s <= self._timeout_s
         )
+
+
+#: An oriented box in the base frame: ``(centre (3,), rotation (3, 3), half extents (3,))``.
+_Box = tuple["NDArray[np.float64]", "NDArray[np.float64]", "NDArray[np.float64]"]
+#: A primitive in its owning frame: ``(frame <- primitive (4, 4), bounding half extents (3,))``.
+_FramedBox = tuple["NDArray[np.float64]", "NDArray[np.float64]"]
+
+
+def _bounding_half_extents(shape: Any) -> NDArray[np.float64]:
+    """Half extents of a box containing a primitive, in the primitive's frame.
+
+    A box is itself, a sphere its cube, a capsule (segment along local +Z) its
+    ``(r, r, L/2 + r)`` box. Containment makes every distance measured on the
+    result a lower bound on the distance to the primitive — the conservative side
+    for a test that may only *end* a window once things are proven apart.
+    """
+    from openral_core import BoxShape, CapsuleShape, SphereShape
+
+    if isinstance(shape, BoxShape):
+        return np.asarray(shape.half_extents_m, dtype=np.float64)
+    if isinstance(shape, SphereShape):
+        return np.full(3, float(shape.radius_m), dtype=np.float64)
+    if isinstance(shape, CapsuleShape):
+        r = float(shape.radius_m)
+        return np.array([r, r, float(shape.length_m) / 2.0 + r], dtype=np.float64)
+    raise ROSConfigError(f"release window: cannot bound collision primitive {shape!r}.")
+
+
+def _xyz_rpy_matrix(xyz: Sequence[float], rpy: Sequence[float]) -> NDArray[np.float64]:
+    """``(4, 4)`` from a translation and fixed-axis roll-pitch-yaw (``R = Rz Ry Rx``, URDF)."""
+    cr, sr = np.cos(rpy[0]), np.sin(rpy[0])
+    cp, sp = np.cos(rpy[1]), np.sin(rpy[1])
+    cy, sy = np.cos(rpy[2]), np.sin(rpy[2])
+    t = np.eye(4, dtype=np.float64)
+    t[:3, :3] = [
+        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+        [-sp, cp * sr, cp * cr],
+    ]
+    t[:3, 3] = xyz
+    return t
+
+
+def _joint_motion(joint: Any, q: float) -> NDArray[np.float64]:
+    """Child-in-parent motion of one joint at position ``q`` (applied after its origin)."""
+    from openral_core.schemas import JointType
+
+    axis = np.asarray(joint.axis_xyz, dtype=np.float64)
+    axis = axis / np.linalg.norm(axis)
+    t = np.eye(4, dtype=np.float64)
+    if joint.joint_type in (JointType.REVOLUTE, JointType.CONTINUOUS):
+        k = np.array([[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]])
+        t[:3, :3] = np.eye(3) + np.sin(q) * k + (1.0 - np.cos(q)) * (k @ k)
+    elif joint.joint_type is JointType.PRISMATIC:
+        t[:3, 3] = q * axis
+    else:
+        raise ROSConfigError(
+            f"release window: jaw joint {joint.name!r} is {joint.joint_type.value}; only "
+            "revolute, continuous and prismatic jaws are posed."
+        )
+    return t
+
+
+#: Below this a cross-product axis is degenerate (parallel edges).
+_PARALLEL_EPS = 1e-9
+
+
+def box_gap_lower_bound_m(a: _Box, b: _Box) -> float:
+    """Separating-axis lower bound on the distance between two oriented boxes.
+
+    The gap between the boxes' projections onto any unit axis never exceeds their
+    distance (projection is 1-Lipschitz), so the largest gap over the 15 SAT
+    axes is a sound lower bound — exact along a face normal, conservative across
+    an edge-edge pair. ``<= 0`` when the boxes overlap on every axis tried.
+
+    Args:
+        a: ``(centre, rotation, half_extents)`` of the first box.
+        b: The second box, same frame.
+
+    Returns:
+        A lower bound on the surface distance, metres.
+
+    Example:
+        >>> import numpy as np
+        >>> unit = (np.zeros(3), np.eye(3), np.full(3, 0.5))
+        >>> moved = (np.array([1.05, 0.0, 0.0]), np.eye(3), np.full(3, 0.5))
+        >>> round(box_gap_lower_bound_m(unit, moved), 6)
+        0.05
+    """
+    (ca, ra, ha), (cb, rb, hb) = a, b
+    axes = [ra[:, i] for i in range(3)] + [rb[:, i] for i in range(3)]
+    axes += [
+        np.asarray(np.cross(ra[:, i], rb[:, j]), dtype=np.float64)
+        for i in range(3)
+        for j in range(3)
+    ]
+    offset = cb - ca
+    gap = -np.inf
+    for axis in axes:
+        norm = float(np.linalg.norm(axis))
+        if norm < _PARALLEL_EPS:  # parallel edges: their face normals already cover the pair
+            continue
+        n = axis / norm
+        reach = float(np.sum(ha * np.abs(ra.T @ n)) + np.sum(hb * np.abs(rb.T @ n)))
+        gap = max(gap, abs(float(offset @ n)) - reach)
+    return float(gap)
+
+
+def freeze_released_attachment(
+    held: AttachedCollisionObject,
+    *,
+    base_link: str,
+    t_base_from_link: NDArray[np.float64],
+) -> AttachedCollisionObject:
+    """Re-express a released payload as a record fixed in the base frame.
+
+    The kernel places an attached object at ``link_world[attach_link] ·
+    pose_in_link`` for every configuration a candidate predicts, so a record
+    left on the hand would ride the retreating hand through the whole chunk while
+    the real object stays put. Attached to the collision model's root link (the
+    manifest's ``base_frame``: identity FK, no primitives of its own) it stays
+    where it was released in every predicted configuration, and the attach-link
+    skip exempts nothing.
+
+    ``touch_links`` become the held record's attach link plus its touch links —
+    exactly the links the held record already exempted (the hand and the jaws
+    are in contact with the payload at release); every other link, and the
+    world, is still checked against it.
+
+    Args:
+        held: The attachment the gripper held until DETACH.
+        base_link: The collision model's root link (``RobotDescription.base_frame``).
+        t_base_from_link: ``(4, 4)`` pose of ``held.attach_link`` in ``base_link``
+            at the DETACH stamp.
+
+    Returns:
+        The frozen record: same object, geometry, evidence and support/force
+        attestations; base-frame pose; ``evidence_ref`` suffixed
+        ``|frozen_release``.
+    """
+    from openral_core import AttachedCollisionObject as _Attached
+    from openral_core.geometry import homogeneous_from_quat_xyz, rotation_to_quat_wxyz
+
+    pose = t_base_from_link @ homogeneous_from_quat_xyz(
+        held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
+    )
+    w, x, y, z = rotation_to_quat_wxyz(pose[:3, :3])
+    touch = [held.attach_link, *(link for link in held.touch_links if link != held.attach_link)]
+    return _Attached.model_validate(
+        {
+            **held.model_dump(),
+            "attach_link": base_link,
+            "touch_links": touch,
+            "pose_in_link": {
+                "xyz": tuple(float(v) for v in pose[:3, 3]),
+                "quat_xyzw": (x, y, z, w),
+                "frame_id": base_link,
+            },
+            "evidence_ref": f"{held.evidence_ref or held.object_id}|frozen_release",
+        }
+    )
+
+
+@dataclass(frozen=True)
+class ReleaseWindow:
+    """One gripper's released payload, frozen in the base frame until the jaws are clear.
+
+    Opened on that gripper's DETACH (design note §2.3 "Release"): effort DETACH
+    fires when the jaws *open*, before the fingers move, so dropping the payload
+    then lets the occupancy map re-mark it inside the fingers' world margin and
+    the first retreat chunk stops on it. Instead the payload stays a published,
+    fully checked attached record (``freeze_released_attachment``) — which also
+    keeps the octomap bridge clearing its cells — until the hand and jaws it
+    exempts are proven ``release_clear_m`` away, ``release_timeout_s`` passes, or
+    the gripper grasps again.
+
+    Attributes:
+        record: The frozen record, attached to the base link.
+        opened_s: Monotonic seconds at DETACH.
+        hand_link: The held record's attach link (the hand), posed through tf2.
+        hand_boxes: The hand's collision primitives, bounded, in the hand frame.
+        jaws: ``(joint, origin, boxes)`` per jaw link the record exempts: the
+            jaw joint (hinged on the hand), its origin in the hand frame, and the
+            jaw's bounded primitives in the jaw frame.
+    """
+
+    record: AttachedCollisionObject
+    opened_s: float
+    hand_link: str
+    hand_boxes: tuple[_FramedBox, ...]
+    jaws: tuple[tuple[Any, NDArray[np.float64], tuple[_FramedBox, ...]], ...]
+
+    @classmethod
+    def open(
+        cls,
+        description: RobotDescription,
+        held: AttachedCollisionObject,
+        *,
+        base_link: str,
+        t_base_from_link: NDArray[np.float64],
+        now_s: float,
+    ) -> ReleaseWindow:
+        """Freeze ``held`` and collect the geometry the separation test needs.
+
+        Args:
+            description: The robot manifest (collision geometry, jaw joints).
+            held: The attachment held until DETACH.
+            base_link: The collision model's root link.
+            t_base_from_link: The hand's pose in ``base_link`` at DETACH.
+            now_s: Monotonic seconds at DETACH.
+
+        Returns:
+            The open window.
+        """
+
+        def boxes(link: str) -> tuple[_FramedBox, ...]:
+            return tuple(
+                (
+                    _xyz_rpy_matrix(geom.origin_xyz_rpy[:3], geom.origin_xyz_rpy[3:]),
+                    _bounding_half_extents(geom.shape),
+                )
+                for geom in description.collision_geometry
+                if geom.link_name == link
+            )
+
+        jaws = tuple(
+            (joint, _xyz_rpy_matrix(joint.origin_xyz, joint.origin_rpy), boxes(joint.child_link))
+            for joint in description.joints
+            if joint.parent_link == held.attach_link and joint.child_link in held.touch_links
+        )
+        return cls(
+            record=freeze_released_attachment(
+                held, base_link=base_link, t_base_from_link=t_base_from_link
+            ),
+            opened_s=now_s,
+            hand_link=held.attach_link,
+            hand_boxes=boxes(held.attach_link),
+            jaws=jaws,
+        )
+
+    def clearance_m(
+        self,
+        t_base_from_hand: NDArray[np.float64],
+        positions: Mapping[str, float],
+    ) -> float | None:
+        """Lower bound on the gap between the frozen payload and every link it exempts.
+
+        Args:
+            t_base_from_hand: The hand's pose in the base frame now.
+            positions: Latest joint positions by joint name (the jaws' angles).
+
+        Returns:
+            The smallest box-gap lower bound over (exempted link primitive,
+            payload primitive) pairs, or ``None`` when a jaw position is unknown
+            — unknown is never "clear".
+        """
+        from openral_core.geometry import homogeneous_from_quat_xyz
+
+        placed: list[tuple[NDArray[np.float64], tuple[_FramedBox, ...]]] = [
+            (t_base_from_hand, self.hand_boxes)
+        ]
+        for joint, origin, jaw_boxes in self.jaws:
+            if joint.name not in positions:
+                return None
+            motion = _joint_motion(joint, positions[joint.name])
+            placed.append((t_base_from_hand @ origin @ motion, jaw_boxes))
+        t_base_object = homogeneous_from_quat_xyz(
+            self.record.pose_in_link.xyz, self.record.pose_in_link.quat_xyzw
+        )
+        payload: list[_Box] = []
+        for primitive in self.record.primitives:
+            t = t_base_object @ homogeneous_from_quat_xyz(
+                primitive.pose_in_object.xyz, primitive.pose_in_object.quat_xyzw
+            )
+            payload.append((t[:3, 3], t[:3, :3], _bounding_half_extents(primitive.shape)))
+        gap = np.inf
+        for t_link, link_boxes in placed:
+            for t_prim, half in link_boxes:
+                t = t_link @ t_prim
+                link_box = (t[:3, 3], t[:3, :3], half)
+                for box in payload:
+                    gap = min(gap, box_gap_lower_bound_m(link_box, box))
+        return float(gap)
+
+    def close_reason(
+        self, *, now_s: float, clearance_m: float | None, clear_m: float, timeout_s: float
+    ) -> str:
+        """Why the window ends now — ``"timeout"`` or ``"separation"`` — or ``""`` to keep it.
+
+        Args:
+            now_s: Monotonic seconds now.
+            clearance_m: ``clearance_m(...)`` now; ``None`` when unknown.
+            clear_m: ``VisionAttachmentConfig.release_clear_m``.
+            timeout_s: ``VisionAttachmentConfig.release_timeout_s``.
+
+        Returns:
+            The close reason, or ``""``.
+        """
+        if now_s - self.opened_s >= timeout_s:
+            return "timeout"
+        if clearance_m is not None and clearance_m > clear_m:
+            return "separation"
+        return ""
+
+
+def _tree_links(description: RobotDescription) -> tuple[set[str], set[str]]:
+    """``(parents, children)`` of every joint and fixed attachment in the manifest."""
+    parents = {j.parent_link for j in description.joints}
+    parents |= {f.parent_link for f in description.fixed_attachments}
+    children = {j.child_link for j in description.joints}
+    children |= {f.child_link for f in description.fixed_attachments}
+    return parents, children
+
+
+def _release_base_link(description: RobotDescription) -> str:
+    """The manifest's ``base_frame``, proven to be the root of the kinematic tree.
+
+    The kernel's collision model is rooted there at the identity frame, so a
+    record attached to it stays put in every predicted configuration.
+    """
+    base = description.base_frame
+    parents, children = _tree_links(description)
+    if base in children or base not in parents:
+        raise ROSConfigError(
+            f"vision attachment: base_frame {base!r} of {description.name!r} is not the root "
+            "of its kinematic tree, so a released payload cannot be frozen on it."
+        )
+    return base
 
 
 #: What one grasp needs from TF and the manifest before it can prompt:
@@ -283,6 +622,20 @@ class VisionAttachmentConfig:
             support plane may have. *Calibration point.*
         grasp_target_min_cover: Fraction of the region's footprint cell count
             that must be occupied in the map. *Calibration point.*
+        release_clear_m: How far every link a released payload's frozen record
+            exempts (the hand and its jaws) must be from it before the record is
+            dropped (``ReleaseWindow``). ``0.04`` m = the real cell's world-voxel
+            margin (``REAL_WORLD_VOXEL_MARGIN_M``, 20 mm) plus one 20 mm voxel:
+            once the record goes, the octomap re-marks the payload's cells, and a
+            cell is a cube the kernel measures against at that margin. A lower
+            bound is measured (bounding boxes, separating axes), so the window can
+            only stay open longer than the true gap needs. *Calibration point.*
+        release_timeout_s: Hard bound on a release window: the frozen record is
+            dropped this long after DETACH even if the jaws were never proven
+            clear — the kernel then sees the re-marked payload and stops a
+            retreat still inside its margin (fail-closed). The bridge sees no goal
+            end, so this is the window's bound when the hand does not retreat.
+            *Calibration point*, ``3.0`` s.
     """
 
     camera: str = ""
@@ -300,6 +653,8 @@ class VisionAttachmentConfig:
     grasp_target_freeze_s: float = 2.0
     grasp_target_min_cells: int = 8
     grasp_target_min_cover: float = 0.5
+    release_clear_m: float = 0.04
+    release_timeout_s: float = 3.0
 
 
 @dataclass(frozen=True)
@@ -496,9 +851,13 @@ class VisionAttachmentBridge:
         # The manifest K is never projected through: it only fills the
         # producer's signature on the no-mask paths, which never back-project.
         self._camera, self._no_mask_intrinsics = self._resolve_camera()
-        links = {j.parent_link for j in description.joints} | {
-            j.child_link for j in description.joints
-        }
+        if self._config.release_clear_m <= 0.0 or self._config.release_timeout_s <= 0.0:
+            raise ROSConfigError(
+                "vision attachment: release_clear_m and release_timeout_s must be positive, got "
+                f"{self._config.release_clear_m} and {self._config.release_timeout_s}."
+            )
+        self._base_link = _release_base_link(description)
+        links = set().union(*_tree_links(description))
         unknown = sorted(set(self._config.tf_frames) - links)
         if unknown:
             raise ROSConfigError(
@@ -523,6 +882,8 @@ class VisionAttachmentBridge:
             timeout_s=self._config.evidence_timeout_s,
         )
         self._revision = 0
+        # Latest joint positions by name: the jaws' angles for the release test.
+        self._positions: dict[str, float] = {}
         self._grasp_target: GraspTargetLeg | None = (
             GraspTargetLeg(node, self, self._config) if self._config.grasp_target_enabled else None
         )
@@ -659,6 +1020,7 @@ class VisionAttachmentBridge:
         Args:
             state: The tick's joint state, straight from the HAL.
         """
+        self._positions.update(zip(state.name, (float(q) for q in state.position), strict=False))
         complete = True
         for leg in self._legs:
             missing_before = leg.trigger.missing_effort_ticks
@@ -667,12 +1029,12 @@ class VisionAttachmentBridge:
             if event is None:
                 continue
             if event is GraspEvent.DETACH:
-                self._node.get_logger().info(
-                    f"grasp trigger {leg.joint_name}: DETACH — dropping its attachment"
-                )
+                self._open_release(leg)
                 leg.attachment = None
                 self._publish_attachment()
                 continue
+            if leg.release is not None:
+                self._close_release(leg, "attach")
             self._node.get_logger().info(
                 f"grasp trigger {leg.joint_name}: {event.value.upper()} — holding the action "
                 "ack for segmentation"
@@ -1046,6 +1408,69 @@ class VisionAttachmentBridge:
         self._revision += 1
         self._publish_snapshot()
 
+    # ── release window ───────────────────────────────────────────────────────
+
+    def _open_release(self, leg: _GripperLeg) -> None:
+        """Freeze the payload a DETACH released, or say why it is dropped at once."""
+        held = leg.attachment
+        if held is None:
+            self._node.get_logger().info(
+                f"grasp trigger {leg.joint_name}: DETACH — nothing was attached"
+            )
+            return
+        t_base_from_link = self._lookup(
+            self.tf_frame(self._base_link), self.tf_frame(held.attach_link)
+        )
+        if t_base_from_link is None:
+            # Without the hand's pose there is nothing honest to freeze; dropping
+            # is the pre-window behaviour — the re-marked payload stops the retreat.
+            self._node.get_logger().warning(
+                f"release window not opened for {leg.joint_name}: no tf2 "
+                f"{self.tf_frame(self._base_link)} <- {self.tf_frame(held.attach_link)}; "
+                "dropping its attachment"
+            )
+            return
+        leg.release = ReleaseWindow.open(
+            self._description,
+            held,
+            base_link=self._base_link,
+            t_base_from_link=t_base_from_link,
+            now_s=time.monotonic(),
+        )
+        self._node.get_logger().info(
+            f"release window opened for {leg.joint_name}: {held.object_id!r} frozen in "
+            f"{self._base_link!r} at {leg.release.record.pose_in_link.xyz}; exempt links "
+            f"{leg.release.record.touch_links} until clear by {self._config.release_clear_m} m "
+            f"or {self._config.release_timeout_s} s"
+        )
+
+    def _close_release(self, leg: _GripperLeg, reason: str) -> None:
+        """Drop a leg's frozen record (the caller publishes), logging why once."""
+        self._node.get_logger().info(f"release window closed for {leg.joint_name}: reason={reason}")
+        leg.release = None
+
+    def _poll_releases(self) -> None:
+        """Close every window whose jaws are clear or whose time is up; publish if any did."""
+        now_s = time.monotonic()
+        closed = False
+        for leg in self._legs:
+            window = leg.release
+            if window is None:
+                continue
+            t_hand = self._lookup(self.tf_frame(self._base_link), self.tf_frame(window.hand_link))
+            clearance = None if t_hand is None else window.clearance_m(t_hand, self._positions)
+            reason = window.close_reason(
+                now_s=now_s,
+                clearance_m=clearance,
+                clear_m=self._config.release_clear_m,
+                timeout_s=self._config.release_timeout_s,
+            )
+            if reason:
+                self._close_release(leg, reason)
+                closed = True
+        if closed:
+            self._publish_attachment()
+
     def _heartbeat(self) -> None:
         """Republish the current set at the current revision, while evidence backs it.
 
@@ -1056,6 +1481,7 @@ class VisionAttachmentBridge:
         """
         if self._attachment_pub is None:
             return
+        self._poll_releases()
         if not self._evidence.live(now_s=time.monotonic()):
             reason = "no live effort evidence from every gripper"
         elif any(leg.pending for leg in self._legs):
@@ -1081,7 +1507,12 @@ class VisionAttachmentBridge:
 
     def _publish_snapshot(self) -> None:
         """Publish the union of the legs' attachments at the current revision, stamped now."""
-        objects = [leg.attachment for leg in self._legs if leg.attachment is not None]
+        objects: list[AttachedCollisionObject] = []
+        for leg in self._legs:
+            if leg.attachment is not None:
+                objects.append(leg.attachment)
+            elif leg.release is not None:
+                objects.append(leg.release.record)
         from openral_msgs.msg import (
             AttachedCollisionObject,
             AttachedCollisionPrimitive,

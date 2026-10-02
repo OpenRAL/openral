@@ -58,6 +58,18 @@ expecting a clean pass:
    leg without the kernel check would hide the payload from every check. Do not enable it in
    this runbook.
 
+   **Release (frozen window, the leg's default behaviour).** Effort DETACH fires when the jaws
+   *open*, with the fingers still around the object. The leg does not drop the payload then:
+   it keeps publishing it as an attached record frozen in `openarm_base` at its DETACH pose
+   (`touch_links` = the hand and its finger pair, exactly what the held record exempted;
+   every other link and the world are still checked against it), so the octomap bridge keeps
+   clearing its cells while the fingers back out. The record goes once the hand and fingers
+   are `release_clear_m` (0.04 m = the 20 mm world margin + one 20 mm voxel) clear of it, a
+   new ATTACH on that gripper, or `release_timeout_s` (3.0 s) — after which a hand still
+   inside the margin of the re-marked object is stopped, fail-closed. Look for
+   `release window opened` / `release window closed reason=separation|timeout|attach` in the
+   HAL log. Both bounds are uncalibrated (hazard log).
+
    **Grasp-target exemption (off by default).** `runtime.grasp_allowance_enabled` (default
    `false`) forwards `grasp_allowance_enabled:=true` to the kernel; the launch always passes
    `grasp_contact_links` = the manifest's `role: gripper` child links
