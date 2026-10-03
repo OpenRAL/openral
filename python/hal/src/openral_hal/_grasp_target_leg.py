@@ -62,8 +62,12 @@ The region dies with the declaration: dispatch retraction (goal end, cancel,
 E-stop — the runner retracts on all of them) and ``timeout_s`` expiry clear it.
 On an ATTACH of a leg whose jaw link the *armed* declaration names (the
 approach-armed hand, or a named ``search_box`` declaration), re-measurement stops
-and the region is kept for the kernel's handover rule (§2.1). Handover is per
-hand: an ATTACH on a hand with nothing armed hands nothing over.
+and the region is kept for the kernel's handover rule (§2.1) — but only for an
+ATTACH on what was measured (``GraspTargetLeg.on_attach``): the payload built from
+the region itself, or a segmented payload lying in the region (+1 voxel) with the
+jaw at it. Any other ATTACH (jaws closed on a neighbour) ends the arming as
+``attach_off_target``: handed over with no region. Handover is per hand: an ATTACH
+on a hand with nothing armed hands nothing over.
 
 **Approach-armed target** (``approach_m`` set, default off; design §2.2
 "Approach-armed target"). The policy, not the reasoner, decides what to pick, so
@@ -77,8 +81,10 @@ grown by ``approach_m`` (``approach_box``); a hand holding nothing is
 cells above its lowest occupied layer (``approach_cell_count``: the table under
 the hand is not a target). Exactly one
 approaching hand arms a one-hand declaration (``target_id="approach:<first
-link>"``, ``contact_links`` = that hand, the box as its ``search_box``, every
-other field the goal's); two at once arm none. The box then follows the TCP and
+link>:<n>"``, ``n`` counting the goal's armings — the kernel retires each pick's
+``(target_id, stamp_ns)`` at its detach, so every arming needs its own identity;
+``contact_links`` = that hand, the box as its ``search_box``, every other field —
+``stamp_ns`` included — the goal's); two at once arm none. The box then follows the TCP and
 runs the measurement above unchanged; the hand leaving the approach distance
 retracts the region at once (``approach_ended``) — but not while one of its legs
 holds, releases or is segmenting a payload: its grasp is being resolved, and the
@@ -88,16 +94,22 @@ is discarded (``GraspTargetTracker.generation``), its refusal or region dropped,
 and a handed-over target takes no ``accept`` / ``refuse``. After any retraction a hand
 re-arms only once it moved more than one voxel or a freeze window elapsed. Once
 the handed-over hand's legs hold nothing (polled each tick), the pick is
-complete: the region is dropped and the hand may re-arm for a second pick. A
+complete: the region is dropped and the hand may re-arm for a second pick — not
+on the payload it just released: until its approach box clears that payload's last
+pose (the release window's frozen record) by a voxel, the hand does not arm, and a
+release no tick saw blocks it for the rest of the goal (HZ-01xx-11). A
 named ``search_box`` wins: no approach detection runs for it, and it stays
-handed over after its pick.
+handed over after its pick. The tracker is serialized by one lock: the bridge's
+ATTACH runs on the HAL's proprio thread, the leg's ticks and replies on the executor.
 """
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any
+from functools import update_wrapper
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
@@ -120,7 +132,7 @@ from openral_hal._grasp_target import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
-    from openral_core import IntrinsicsPinhole
+    from openral_core import AttachedCollisionObject, IntrinsicsPinhole
 
     from openral_hal.vision_attachment_bridge import VisionAttachmentBridge, VisionAttachmentConfig
 
@@ -157,12 +169,35 @@ _MAX_SUPPORT_SEARCH_BELOW_M = 0.5
 _MAX_FREEZE_GRID_AGES = 2.0
 
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _locked(
+    method: Callable[Concatenate[GraspTargetTracker, _P], _R],
+) -> Callable[Concatenate[GraspTargetTracker, _P], _R]:
+    """Run a tracker method under the tracker's lock."""
+
+    def locked(self: GraspTargetTracker, /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    update_wrapper(locked, method)  # keeps the docstring (doctests, docs)
+    return locked
+
+
 class GraspTargetTracker:
     """The leg's state machine — declaration, accepted region, freeze TTL. Pure.
 
     No ROS, no clock: every method takes the caller's ``now_ns`` (the node's ROS
     clock, the same domain as the runner's ``stamp_ns``). ``log`` receives one
     line per state transition, never one per tick.
+
+    Thread-safe: every method runs under one lock. The leg's executor callbacks
+    (tick, reply, deadline) and the bridge's grasp trigger — which runs on the HAL's
+    proprio publisher thread (``observe_joint_state`` → ``on_attach``) — mutate it
+    concurrently, and each check-then-act (``accept`` after the handover check,
+    ``on_attach`` reading the arming and handing it over) must be atomic.
 
     Args:
         freeze_s: How long past its ``stamp_ns`` an accepted region survives
@@ -189,6 +224,13 @@ class GraspTargetTracker:
         """Start with no declaration."""
         self._freeze_ns = int(freeze_s * 1e9)
         self._log = log
+        # ponytail: one re-entrant lock for the whole tracker; every call is O(1)
+        # bookkeeping, so contention is negligible next to the 2-5 Hz measurement.
+        self._lock = threading.RLock()
+        # Approach armings minted under the live declaration: each gets its own
+        # ``target_id`` so the kernel's per-(target_id, stamp_ns) retirement of one
+        # pick never refuses the next.
+        self._armings = 0
         self._declaration: GraspDeclaration | None = None
         # The one-hand declaration armed from the robot's own approach, or ``None``.
         self._approach: GraspDeclaration | None = None
@@ -210,7 +252,13 @@ class GraspTargetTracker:
     @property
     def target(self) -> GraspDeclaration | None:
         """What is measured and published: the approach-armed declaration, else dispatch's."""
-        return self._approach if self._approach is not None else self._declaration
+        with self._lock:
+            return self._approach if self._approach is not None else self._declaration
+
+    def measured(self) -> tuple[GraspDeclaration | None, int]:
+        """``(target, generation)`` read together, for tagging one measurement request."""
+        with self._lock:
+            return self.target, self._generation
 
     @property
     def region(self) -> PlaceRegion | None:
@@ -249,6 +297,7 @@ class GraspTargetTracker:
             else f"grasp target region refused — {kind}: {detail}",
         )
 
+    @_locked
     def on_declaration(self, declaration: GraspDeclaration) -> None:
         """Fold in dispatch's copy; retraction or a new declaration clears the region."""
         current = self._declaration
@@ -266,6 +315,7 @@ class GraspTargetTracker:
         self._approach = None
         self._handed_over = None
         self._backoff.clear()
+        self._armings = 0
         self._declaration = declaration.model_copy(update={"region": None})
         self._transition(
             f"declared:{declaration.target_id}:{declaration.stamp_ns}",
@@ -281,8 +331,10 @@ class GraspTargetTracker:
         self._region = None
         self._handed_over = None
         self._backoff.clear()
+        self._armings = 0
         self._transition(f"cleared:{why}", f"grasp target cleared — {why}")
 
+    @_locked
     def wants_approach(self, *, now_ns: int) -> bool:
         """Whether approach detection should run: a live declaration with no search box."""
         declaration = self._declaration
@@ -293,6 +345,7 @@ class GraspTargetTracker:
             and declaration.is_live(now_ns=now_ns)
         )
 
+    @_locked
     def on_approach(
         self,
         near: Sequence[tuple[tuple[str, ...], PlaceRegion]],
@@ -366,9 +419,14 @@ class GraspTargetTracker:
                 return  # same place, same map: the refusal would repeat
             del self._backoff[links]
         self._generation += 1
+        self._armings += 1
         self._approach = goal.model_copy(
             update={
-                "target_id": f"{APPROACH_TARGET_PREFIX}{links[0]}",
+                # Its own identity per arming: the kernel retires a declaration's
+                # (target_id, stamp_ns) at the pick's detach, and the goal's stamp_ns is
+                # kept (the kernel's timeout_s backstop runs from it), so a reused id
+                # would refuse every later pick of the goal as ``retired``.
+                "target_id": f"{APPROACH_TARGET_PREFIX}{links[0]}:{self._armings}",
                 "contact_links": links,
                 "search_box": box,
                 "region": None,
@@ -389,7 +447,8 @@ class GraspTargetTracker:
         declaration = self._declaration
         return declaration if declaration is not None and declaration.search_box else None
 
-    def on_attach(self, contact_link: str) -> None:
+    @_locked
+    def on_attach(self, contact_link: str, *, confirm: Callable[[PlaceRegion], bool]) -> None:
         """A leg attached; if the armed declaration names its jaw link, stop re-measuring.
 
         Scoped to the hand: only an ATTACH on a link of the *armed* declaration (the
@@ -397,6 +456,17 @@ class GraspTargetTracker:
         goal-scope declaration names every hand before any approach arms, so an
         ATTACH there — a false positive, or a grasp of something never measured —
         neither hands over nor stops the other hand's approach detection.
+
+        Args:
+            contact_link: The attaching leg's jaw link.
+            confirm: Called, under the lock, with the region held now; ``True`` only
+                when the attached payload is that region's target (the leg's
+                ``GraspTargetLeg.on_attach``: the payload *is* the region, or the
+                segmented payload lies in it with the jaw at it). ``False`` ends the
+                arming as ``attach_off_target``: the hand is handed over with **no**
+                region — the region is dropped, never handed to the kernel for a
+                payload it was not measured for, and re-measurement stops (the hand
+                holds something else). No region held: handed over as ``absent``.
         """
         if self._handed_over is not None:
             return
@@ -411,12 +481,23 @@ class GraspTargetTracker:
             return
         self._handed_over = armed.contact_links
         self._generation += 1  # a measurement in flight was asked before the grasp
+        region = self._region
+        if region is not None and not confirm(region):
+            self._region = None
+            self._transition(
+                "attach_off_target",
+                f"grasp target {armed.target_id!r}: ATTACH on {contact_link!r} is not on the "
+                f"measured region (centre {tuple(round(v, 3) for v in region.pose.xyz)}) — "
+                "attach_off_target: region dropped, nothing handed over",
+            )
+            return
         self._transition(
             "handed_over",
             f"grasp target {armed.target_id!r}: ATTACH on {contact_link!r} — region "
             f"{'kept' if self._region is not None else 'absent'}, no further re-measurement",
         )
 
+    @_locked
     def on_detach(self, contact_link: str, *, now_ns: int) -> None:
         """The handed-over hand holds nothing any more: end an approach-armed pick.
 
@@ -443,6 +524,7 @@ class GraspTargetTracker:
         )
         self._handed_over = None
 
+    @_locked
     def wants_measurement(self, *, now_ns: int) -> bool:
         """Whether a measurement tick should run: live, searchable, not handed over."""
         declaration = self.target
@@ -453,13 +535,18 @@ class GraspTargetTracker:
             and declaration.is_live(now_ns=now_ns)
         )
 
-    def accept(self, region: PlaceRegion) -> None:
+    @_locked
+    def accept(self, region: PlaceRegion, *, generation: int | None = None) -> None:
         """Hold a region that passed every gate; a declaration-cap violation refuses it.
 
-        Ignored once handed over: the region the ATTACH took is frozen.
+        Ignored once handed over (the region the ATTACH took is frozen) and, given
+        ``generation`` (the request's), when the target changed since — checked
+        atomically with the hold.
         """
         declaration = self.target
         if declaration is None or self._handed_over is not None:
+            return
+        if generation is not None and generation != self._generation:
             return
         try:
             GraspDeclaration.model_validate(declaration.model_dump() | {"region": region})
@@ -475,13 +562,19 @@ class GraspTargetTracker:
             f"evidence={region.evidence_ref!r}",
         )
 
-    def refuse(self, kind: str, detail: str, *, retract: bool, now_ns: int) -> None:
+    @_locked
+    def refuse(
+        self, kind: str, detail: str, *, retract: bool, now_ns: int, generation: int | None = None
+    ) -> None:
         """One failed measurement: retract now, or freeze the held region under its TTL.
 
         Ignored once handed over: no measurement runs for a hand that grasped, so a
-        refusal is a stale one and must not retract the handed-over arming.
+        refusal is a stale one and must not retract the handed-over arming. Ignored
+        too, given ``generation``, when the target changed since it was asked.
         """
         if self._handed_over is not None:
+            return
+        if generation is not None and generation != self._generation:
             return
         if retract or self._region is None:
             self._retract(kind, detail, now_ns=now_ns)
@@ -505,6 +598,7 @@ class GraspTargetTracker:
                 now_ns=now_ns,
             )
 
+    @_locked
     def envelope(self, *, now_ns: int) -> GraspDeclaration | None:
         """The declaration to put on the attachment envelope now, or ``None``.
 
@@ -843,6 +937,13 @@ class GraspTargetLeg:
         # (future, tracker generation it was asked under) of the request in flight.
         self._inflight: tuple[Any, int] | None = None
         self._deadline_timer: Any = None
+        # The handed-over hand's frozen release record (base frame), seen while open.
+        self._released: AttachedCollisionObject | None = None
+        # Per hand whose approach-armed pick completed: (goal (target_id, stamp_ns),
+        # the released payload's frozen record, or ``None`` when no tick saw it).
+        self._spent: dict[
+            tuple[str, ...], tuple[tuple[str, int], AttachedCollisionObject | None]
+        ] = {}
 
     def setup(self) -> None:
         """Subscribe the declaration and the voxel grid; start the measurement timer."""
@@ -972,18 +1073,26 @@ class GraspTargetLeg:
         if self._inflight is not None:
             return
         self._release_detached(now_ns)
+        # A refusal applies to what was measured when it was raised: an arming or
+        # handover on another thread meanwhile makes it stale (``refuse(generation=)``).
+        generation = self.tracker.generation
         try:
             try:
                 if self._approach_m is not None and self.tracker.wants_approach(now_ns=now_ns):
                     self._detect_approach(self._approach_m, now_ns)
                 if not self.tracker.wants_measurement(now_ns=now_ns):
                     return
-                self._request(now_ns)
+                target, generation = self.tracker.measured()
+                self._request(now_ns, target, generation)
             except ROSConfigError as exc:  # an input shape the geometry refuses
                 raise _contradicted("rejected_inputs", str(exc)) from exc
         except _Refusal as refusal:
             self.tracker.refuse(
-                refusal.kind, refusal.detail, retract=refusal.retract, now_ns=now_ns
+                refusal.kind,
+                refusal.detail,
+                retract=refusal.retract,
+                now_ns=now_ns,
+                generation=generation,
             )
 
     def _holding(self, links: Sequence[str]) -> bool:
@@ -995,10 +1104,129 @@ class GraspTargetLeg:
         )
 
     def _release_detached(self, now_ns: int) -> None:
-        """A handed-over hand whose legs hold nothing any more has completed its pick."""
+        """A handed-over hand whose legs hold nothing any more has completed its pick.
+
+        Its release window's frozen record — the payload's last pose — is kept as the
+        hand's spent payload (``_spent``, checked by ``_detect_approach``).
+        """
         handed = self.tracker.handed_over
-        if handed is not None and not self._holding(handed):
-            self.tracker.on_detach(handed[0], now_ns=now_ns)
+        if handed is None:
+            self._released = None
+            return
+        for leg in self._bridge._legs:
+            if leg.jaw_link in handed and leg.release is not None:
+                self._released = leg.release.record
+        if self._holding(handed):
+            return
+        goal = self.tracker.declaration
+        self.tracker.on_detach(handed[0], now_ns=now_ns)
+        if self.tracker.handed_over is None and goal is not None:
+            self._spent[handed] = ((goal.target_id, goal.stamp_ns), self._released)
+        self._released = None
+
+    def _near_spent(self, hand: tuple[str, ...], box: PlaceRegion, grid: VoxelLattice) -> bool:
+        """Whether ``hand`` must not arm yet: it is still by the payload it just released.
+
+        After a pick completes (``_release_detached``) the hand's next arming must not
+        take in the cells of the payload it put down (HZ-01xx-11: the hand lingering
+        by its just-placed object would arm on it). The guard holds until the hand's
+        approach box clears that payload's last pose (its frozen release record, each
+        primitive bounded by a sphere) by more than one voxel — the hand moved more
+        than the approach distance away — and then ends for good. The release window
+        is always closed by then (the pick completes only when it is), so it is no
+        exit. A release no tick saw (its window opened and closed between two ticks,
+        or never opened: no tf2) is unknown: the hand does not re-arm for the rest of
+        the goal; a tf2 gap to the record's frame keeps the guard.
+        """
+        spent = self._spent.get(hand)
+        if spent is None:
+            return False
+        goal = self.tracker.declaration
+        (target_id, stamp_ns), record = spent
+        if goal is None or (goal.target_id, goal.stamp_ns) != (target_id, stamp_ns):
+            del self._spent[hand]  # a new goal: dispatch declared afresh
+            return False
+        if record is None:
+            return True
+        from openral_core.geometry import homogeneous_from_quat_xyz
+
+        from openral_hal.vision_attachment_bridge import _bounding_half_extents
+
+        t_grid_from_record = self._bridge._lookup(
+            grid.frame_id, self._bridge.tf_frame(record.attach_link)
+        )
+        if t_grid_from_record is None:
+            return True
+        t_object = t_grid_from_record @ homogeneous_from_quat_xyz(
+            record.pose_in_link.xyz, record.pose_in_link.quat_xyzw
+        )
+        reach = np.asarray(box.half_extents) + grid.resolution
+        for primitive in record.primitives:
+            t = t_object @ homogeneous_from_quat_xyz(
+                primitive.pose_in_object.xyz, primitive.pose_in_object.quat_xyzw
+            )
+            radius = float(np.linalg.norm(_bounding_half_extents(primitive.shape)))
+            if bool(np.all(np.abs(t[:3, 3] - np.asarray(box.pose.xyz)) <= reach + radius)):
+                return True
+        del self._spent[hand]
+        return False
+
+    def on_attach(
+        self, jaw_link: str, payload: AttachedCollisionObject, *, region: PlaceRegion | None
+    ) -> None:
+        """Hand the armed region over to the ATTACH of ``jaw_link`` only if it is its target.
+
+        The bridge's one entry for an ATTACH that resolved (design §2.2):
+
+        * ``region`` set — the payload *is* that measured region (``_region_payload``
+          confirmed the jaw at it); handed over only while the tracker still holds
+          exactly that region (a re-fit accepted on another thread since is not it).
+        * ``region`` ``None`` — the grasp was segmented (``_finish``), possibly because
+          the jaw was *not* at the region: a neighbouring object. Handed over only when
+          the jaw is within ``occluder_margin_m`` of the held region (the region payload's
+          own test, so a region first accepted mid-close passes it too) **and** every
+          primitive centre of the segmented payload lies in the held region grown by one
+          voxel. Otherwise the arming ends as ``attach_off_target`` (no handover).
+
+        Args:
+            jaw_link: The attaching leg's jaw link.
+            payload: The attachment the bridge latched.
+            region: The region the payload was built from, or ``None`` when segmented.
+        """
+        if region is not None:
+            self.tracker.on_attach(jaw_link, confirm=lambda held: held == region)
+            return
+        self.tracker.on_attach(
+            jaw_link, confirm=lambda held: self._payload_on(held, jaw_link, payload)
+        )
+
+    def _payload_on(
+        self, region: PlaceRegion, jaw_link: str, payload: AttachedCollisionObject
+    ) -> bool:
+        """Whether a segmented payload is the region's target (``on_attach``)."""
+        from openral_core.geometry import homogeneous_from_quat_xyz
+
+        bridge = self._bridge
+        hand = bridge.jaw_point(jaw_link, region.frame_id)
+        if hand is None or not _hand_near([hand], region, reach_m=self._occluder_margin_m):
+            return False
+        t_region_from_link = bridge._lookup(region.frame_id, bridge.tf_frame(payload.attach_link))
+        if t_region_from_link is None or not payload.primitives:
+            return False
+        t_object = t_region_from_link @ homogeneous_from_quat_xyz(
+            payload.pose_in_link.xyz, payload.pose_in_link.quat_xyzw
+        )
+        centres = [
+            (t_object @ homogeneous_from_quat_xyz(q.pose_in_object.xyz, q.pose_in_object.quat_xyzw))
+            for q in payload.primitives
+        ]
+        # One voxel of tolerance (none before any grid: the stricter side).
+        voxel = self._grid[0].resolution if self._grid is not None else 0.0
+        grown = region.model_copy(
+            update={"half_extents": tuple(h + voxel for h in region.half_extents)}
+        )
+        points = np.asarray([t[:3, 3] for t in centres], dtype=np.float64)
+        return bool(_in_region(points, grown).all())
 
     def _detect_approach(self, approach_m: float, now_ns: int) -> None:
         """Which hands are within ``approach_m`` of occupied cells now → the tracker.
@@ -1008,6 +1236,7 @@ class GraspTargetLeg:
         """
         grid, _ = self._fresh_grid(now_ns)
         near: list[tuple[tuple[str, ...], PlaceRegion]] = []
+        spent: list[tuple[tuple[str, ...], PlaceRegion]] = []
         holding = [hand for hand in self._hands_of_robot if self._holding(hand)]
         for hand in self._hands_of_robot:
             if hand in holding:
@@ -1017,8 +1246,16 @@ class GraspTargetLeg:
             if len(points) != len(hand):
                 continue  # an unlocated hand is not approaching (and ends a held approach)
             box = approach_box(points, approach_m=approach_m, frame_id=grid.frame_id)
+            if self._near_spent(hand, box, grid):
+                if approach_cell_count(grid, box) >= self._config.grasp_target_min_cells:
+                    spent.append((hand, box))
+                continue
             if approach_cell_count(grid, box) >= self._config.grasp_target_min_cells:
                 near.append((hand, box))
+        if spent and near:
+            # A hand by its just-released payload never arms, but still counts toward
+            # "two hands at once" (it would have, before the guard): none arms.
+            near += spent
         self.tracker.on_approach(near, now_ns=now_ns, move_m=grid.resolution, holding=holding)
 
     def _seed(
@@ -1084,12 +1321,16 @@ class GraspTargetLeg:
             )
         return seed.point, support_z
 
-    def _request(self, now_ns: int) -> None:
-        """Seed, project, and send one bounded ``SegmentInView`` request — or refuse."""
+    def _request(self, now_ns: int, declaration: GraspDeclaration | None, generation: int) -> None:
+        """Seed, project, and send one bounded ``SegmentInView`` request — or refuse.
+
+        ``declaration`` and ``generation`` are ``GraspTargetTracker.measured()``, read
+        together: the reply is accepted only under that generation.
+        """
         from openral_hal.vision_attachment_bridge import build_segment_request
 
-        declaration = self.tracker.target
-        assert declaration is not None and declaration.search_box is not None
+        if declaration is None or declaration.search_box is None:
+            return  # disarmed on another thread since ``wants_measurement``
         box = declaration.search_box
         grid, _ = self._fresh_grid(now_ns)
         if box.frame_id != grid.frame_id:
@@ -1140,7 +1381,7 @@ class GraspTargetLeg:
             t_base_from_cam,
             support_z,
             declaration,
-            self.tracker.generation,
+            generation,
         )
         future = client.call_async(request)
         self._inflight = (future, snapshot[6])
@@ -1171,6 +1412,7 @@ class GraspTargetLeg:
             f"SegmentInView did not answer within {self._config.deadline_s:.3f} s",
             retract=False,
             now_ns=self._now_ns(),
+            generation=generation,
         )
 
     def _cancel_deadline(self) -> None:
@@ -1194,12 +1436,17 @@ class GraspTargetLeg:
                 raise _contradicted("rejected_inputs", str(exc)) from exc
         except _Refusal as refusal:
             self.tracker.refuse(
-                refusal.kind, refusal.detail, retract=refusal.retract, now_ns=now_ns
+                refusal.kind,
+                refusal.detail,
+                retract=refusal.retract,
+                now_ns=now_ns,
+                generation=snapshot[6],
             )
             return
-        if self._stale(snapshot[6]):
-            return  # a handover on another executor thread while ``_measure`` ran
-        self.tracker.accept(region)
+        # An ATTACH on the HAL's proprio thread (``observe_joint_state`` → ``on_attach``)
+        # can hand over or re-arm while ``_measure`` runs; ``accept`` drops the region
+        # atomically when the generation moved (the check above was only for the log).
+        self.tracker.accept(region, generation=snapshot[6])
 
     def _measure(self, future: Any, snapshot: _Snapshot, now_ns: int) -> PlaceRegion:
         """Reply → region → map cover → tracking gate, or a typed refusal."""

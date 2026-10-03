@@ -484,7 +484,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
 
 def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
     """Approach-armed target: the runner's goal-scope declaration names no target and no
-    search box; the left hand's TCP 5 cm above the box arms ``approach:<left finger>``
+    search box; the left hand's TCP 5 cm above the box arms ``approach:<left finger>:1``
     (left contact link only) and the region measured there contains the box and not the
     neighbour 20 cm away; the right hand, far from everything, arms nothing; lifting the
     hand retracts the region; moving it over the neighbour measures the neighbour; the goal
@@ -663,7 +663,7 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
             f"no region; log: {[line for line in logs if 'grasp target' in line]}"
         )
         declared = latest().grasp_declaration
-        assert declared.target_id == "approach:openarm_left_finger_pair"
+        assert declared.target_id == "approach:openarm_left_finger_pair:1"
         assert list(declared.contact_links) == ["openarm_left_finger_pair"]
         assert declared.rskill_id == "openral/itest-approach"
         assert declared.stamp_ns == stamp_ns
@@ -702,6 +702,8 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
         assert _wait_until(lambda: region_around(neighbour), timeout_s=20.0), (
             f"no neighbour region: {[line for line in logs if 'grasp target' in line]}"
         )
+        # Its own identity: the kernel retires each arming's (target_id, stamp_ns).
+        assert latest().grasp_declaration.target_id == "approach:openarm_left_finger_pair:2"
 
         # ── 4. The goal ends: gone from the next heartbeat. ──
         publish(goal.model_copy(update={"active": False}))
