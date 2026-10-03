@@ -130,6 +130,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
         GraspDeclaration,
         IntrinsicsPinhole,
         JointState,
+        PlaceRegion,
         RobotDescription,
     )
 
@@ -179,8 +180,8 @@ class _GripperLeg:
             older one is stale and dropped.
         region_spent: ``(target_id, region stamp_ns)`` of the measured region this leg
             already took as its payload; an ATTACH offered that same region again
-            segments instead, while a region re-measured later in the goal (a second
-            approach-armed pick: same target id, new measurement) may be taken.
+            segments instead, while a region re-measured later (a second approach-armed
+            pick arms under its own target id and measures afresh) may be taken.
         pending: Whether this leg is holding the ack barrier.
         jaw_link: The gripper joint's child link — what a ``GraspDeclaration``
             names in ``contact_links``.
@@ -1462,15 +1463,16 @@ class VisionAttachmentBridge:
         Only an ATTACH may take the region: on a REGRASP the jaws have re-seated the
         payload away from where the pre-grasp region measured it, so it is segmented.
         """
-        held = self._region_payload(leg, stamp_ns=stamp_ns) if event is GraspEvent.ATTACH else None
-        if held is not None:
+        taken = self._region_payload(leg, stamp_ns=stamp_ns) if event is GraspEvent.ATTACH else None
+        if taken is not None:
+            held, region = taken
             leg.attachment = held
             self._node.get_logger().info(
                 f"vision attachment {leg.joint_name}: {held.object_id!r} from the grasp-target "
                 f"region ({held.evidence_ref}); no segmentation"
             )
             if self._grasp_target is not None:
-                self._grasp_target.tracker.on_attach(leg.jaw_link)
+                self._grasp_target.on_attach(leg.jaw_link, held, region=region)
             self._publish_attachment()
             if leg.pending:  # a superseded request was still holding the barrier
                 self._release_barrier(leg)
@@ -1700,7 +1702,9 @@ class VisionAttachmentBridge:
         )
         leg.attachment = attachment
         if self._grasp_target is not None and attachment is not None:
-            self._grasp_target.tracker.on_attach(leg.jaw_link)
+            # Segmented: handed over only if the payload is on the armed region (it may
+            # be a neighbour — ``_region_payload`` refused the region for this grasp).
+            self._grasp_target.on_attach(leg.jaw_link, attachment, region=None)
         self._publish_attachment()
         self._release_barrier(leg)
 
@@ -1720,17 +1724,21 @@ class VisionAttachmentBridge:
 
     # ── inputs ───────────────────────────────────────────────────────────────
 
-    def _region_payload(self, leg: _GripperLeg, *, stamp_ns: int) -> AttachedCollisionObject | None:
+    def _region_payload(
+        self, leg: _GripperLeg, *, stamp_ns: int
+    ) -> tuple[AttachedCollisionObject, PlaceRegion] | None:
         """The latched grasp-target region as this leg's payload, when it is confirmed.
 
         Confirmation is geometric: the declaration names this leg's jaw link and the
         leg's TCP (``jaw_point``) lies within ``grasp_target_occluder_margin_m`` of the
         region. The region is a pre-grasp measurement, so a leg takes each measured
-        region once (``region_spent``, keyed by the region's own ``stamp_ns``): a later
-        ATTACH offered the same region — the object set down and picked up again
-        before any re-measurement — is segmented, while a region re-measured for a
-        second pick in the same goal is a new payload. ``None`` — logged when a
-        declaration was live — sends the grasp to ``SegmentInView`` instead.
+        region once (``region_spent``, keyed by ``target_id`` — one per approach
+        arming — and the region's own ``stamp_ns``): a later ATTACH offered the same
+        region — the object set down and picked up again before any re-measurement —
+        is segmented, while a region re-measured for a second pick in the same goal is
+        a new payload. Returns the payload and the region it was built from (what
+        ``GraspTargetLeg.on_attach`` hands over); ``None`` — logged when a declaration
+        was live — sends the grasp to ``SegmentInView`` instead.
         """
         if self._grasp_target is None:
             return None
@@ -1742,8 +1750,8 @@ class VisionAttachmentBridge:
         region = declaration.region if declaration is not None else None
         if declaration is None or region is None or leg.jaw_link not in declaration.contact_links:
             return None
-        # The region's own measurement stamp, not the declaration's: an approach-armed
-        # goal keeps one ``(target_id, stamp_ns)`` across picks, each re-measured.
+        # The region's own measurement stamp, not the declaration's: one arming may
+        # re-measure its region before the grasp, and each measurement is one payload.
         key = (declaration.target_id, int(region.stamp_ns))
         if leg.region_spent == key:
             self._node.get_logger().info(
@@ -1770,13 +1778,14 @@ class VisionAttachmentBridge:
             )
             return None
         leg.region_spent = key
-        return region_attachment(
+        held = region_attachment(
             declaration,
             attach_link=leg.producer.attach_link,
             touch_links=leg.producer.touch_links,
             t_link_from_region=t_link_from_region,
             stamp_ns=stamp_ns,
         )
+        return held, region
 
     def _gather_context(self, leg: _GripperLeg) -> _PromptContext | str:
         """Collect depth, transforms and prompt geometry, or name what is missing.

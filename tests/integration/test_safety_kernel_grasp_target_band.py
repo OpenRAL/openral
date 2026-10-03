@@ -243,6 +243,10 @@ class _Cell:
     occupied: frozenset[int] = _TARGET | _PLANE
     grid_dz: float = 0.0
     declaration: GraspDeclaration | None = None
+    #: What the attachment producer holds (``openral_core.AttachedCollisionObject``) and
+    #: its revision; a change of the set is a new revision, as the bridge publishes it.
+    attached: list[Any] = field(default_factory=list)
+    revision: int = 1
 
     def spin(self, seconds: float) -> None:
         end = time.time() + seconds
@@ -255,9 +259,12 @@ class _Cell:
         declaration: GraspDeclaration | None,
         *,
         grid_dz: float = 0.0,
+        attached: list[Any] | None = None,
     ) -> None:
         """Swap what the 5 Hz grid and 10 Hz world-state heartbeats publish, and settle."""
         self.occupied, self.grid_dz, self.declaration = occupied, grid_dz, declaration
+        if attached is not None and attached != self.attached:
+            self.attached, self.revision = attached, self.revision + 1
         self.spin(0.6)
 
     def send(self, trace: str, *, expect_accept: bool) -> None:
@@ -323,6 +330,8 @@ def _live_cell(
         OccupancyVoxels,
         WorldStateStamped,
     )
+    from openral_msgs.msg import AttachedCollisionObject as AttachedCollisionObjectMsg
+    from openral_msgs.msg import AttachedCollisionPrimitive as AttachedCollisionPrimitiveMsg
     from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.qos import QoSProfile, ReliabilityPolicy
@@ -416,8 +425,12 @@ def _live_cell(
                     state.header.frame_id = _FRAME
                     state.header.stamp = helper.get_clock().now().to_msg()
                     state.stamp_ns = now_ns
-                    state.attachment_revision = 1
+                    state.attachment_revision = cell.revision
                     state.attachment_stamp_ns = now_ns
+                    for held in cell.attached:
+                        item = AttachedCollisionObjectMsg()
+                        held.fill_idl(item, primitive_factory=AttachedCollisionPrimitiveMsg)
+                        state.attached_objects.append(item)
                     state.grasp_declaration_valid = cell.declaration is not None
                     if cell.declaration is not None:
                         msg = GraspDeclarationMsg()
@@ -589,7 +602,7 @@ def test_grasp_exemption_band_on_the_real_openarm_model(
 #: 0.04-0.06; the region ends at x = 0.03): outside the measured region, but 13 mm from the
 #: left finger pair's hull, whose lower part spans x <= 0.027 at q = 0 (same FK as above).
 _NEIGHBOUR = frozenset(_index(5, j, k) for j in (3, 4) for k in (2, 3))
-_APPROACH_TARGET = f"approach:{_LEFT_FINGER}"
+_APPROACH_TARGET = f"approach:{_LEFT_FINGER}:1"  # the goal's first arming
 
 
 def _approach_declaration() -> GraspDeclaration:
@@ -680,3 +693,132 @@ def test_an_approach_armed_declaration_exempts_one_hand_and_nothing_beside_the_t
             f"safety.grasp_region_rejected reason=links_span_hands target={_TARGET_ID}"
             in cell.log()
         )
+
+
+def _t_base_from_link_at_q0(link: str) -> Any:
+    """``openarm_base <- link`` at the pinned all-zero configuration: the manifest's chain.
+
+    Joint origins composed parent before child; at ``q = 0`` every joint's motion is the
+    identity, so the chain is its origins (the kernel's own FK at ``_Q``).
+    """
+    import numpy as np
+    from openral_hal.vision_attachment_bridge import _xyz_rpy_matrix
+
+    description = _description()
+    up = {j.child_link: (j.parent_link, j.origin_xyz, j.origin_rpy) for j in description.joints}
+    up |= {
+        f.child_link: (f.parent_link, f.origin_xyz, f.origin_rpy)
+        for f in description.fixed_attachments
+    }
+    t = np.eye(4)
+    while link != _FRAME:
+        parent, xyz, rpy = up[link]
+        t = _xyz_rpy_matrix(xyz, rpy) @ t
+        link = parent
+    return t
+
+
+def test_a_second_approach_armed_pick_in_one_goal_re_arms_on_the_real_kernel(
+    reset_kernel_estop: Callable[..., None],
+) -> None:
+    """Two picks by the same hand in one goal, the producer's real tracker and the real
+    bridge record, against the real kernel.
+
+    ====================================================  =====================================
+    row                                                   verdict
+    ====================================================  =====================================
+    arming 1 (``approach:<left>:1``), measured region     ACCEPTED, finger in the target
+    ATTACH: the region payload on the left gripper        handover latched, ACCEPTED
+    DETACH: nothing attached                              ``grasp_region_dropped reason=detached``
+    arming 2 (``approach:<left>:2``), re-measured, same   ACCEPTED — the kernel retired arming 1's
+    goal stamp                                            (target_id, stamp_ns), not this one
+    ====================================================  =====================================
+
+    With one ``target_id`` per goal the second arming carried arming 1's retired identity and
+    every later pick of the goal was refused at the kernel (``retired``).
+    """
+    import numpy as np
+    from openral_hal._grasp_target_leg import GraspTargetTracker, approach_box
+    from openral_hal.vision_attachment_bridge import (
+        VisionAttachmentBridge,
+        VisionAttachmentConfig,
+        region_attachment,
+    )
+
+    gripper = next(
+        g
+        for g in VisionAttachmentBridge(
+            None, _description(), config=VisionAttachmentConfig(camera="head_zed")
+        )._legs
+        if g.jaw_link == _LEFT_FINGER
+    )
+    t_link_from_base = np.linalg.inv(_t_base_from_link_at_q0(gripper.producer.attach_link))
+    now = time.time_ns()
+    goal = GraspDeclaration(
+        target_id="approach",
+        contact_links=(_LEFT_FINGER, _RIGHT_FINGER),
+        rskill_id=_RSKILL_ID,
+        trace_id=f"grasp-band-{uuid.uuid4().hex[:8]}",
+        timeout_s=_TIMEOUT_S,
+        stamp_ns=now,
+    )
+    tracker = GraspTargetTracker(freeze_s=2.0, log=lambda _line: None)
+    tracker.on_declaration(goal)
+
+    def arm(tcp_dy: float) -> GraspDeclaration:
+        """The left TCP over the target arms; its region is measured now."""
+        tcp = (_REGION_CENTRE[0], _REGION_CENTRE[1] + tcp_dy, _REGION_CENTRE[2] + 0.05)
+        tracker.on_approach(
+            [((_LEFT_FINGER,), approach_box([tcp], approach_m=0.10, frame_id=_FRAME))],
+            now_ns=time.time_ns(),
+            move_m=_RES,
+        )
+        tracker.accept(_region(_REGION_CENTRE, _REGION_HALF))
+        declaration = tracker.envelope(now_ns=time.time_ns())
+        assert declaration is not None and declaration.region is not None
+        return declaration
+
+    first_id, second_id = f"approach:{_LEFT_FINGER}:1", f"approach:{_LEFT_FINGER}:2"
+    with _live_cell(grasp_allowance_enabled=True, reset_kernel_estop=reset_kernel_estop) as (
+        cell,
+        _,
+    ):
+        # ── Arming 1: the finger reaches the measured target ────────────────────────────
+        first = arm(0.0)
+        assert first.target_id == first_id
+        cell.world(_TARGET | _PLANE, first, attached=[])
+        cell.send("pick-1", expect_accept=True)
+        assert "pick-1" in cell.safe, cell.log()
+
+        # ── ATTACH: the bridge's region payload; the producer hands the arming over ─────
+        payload = region_attachment(
+            first,
+            attach_link=gripper.producer.attach_link,
+            touch_links=gripper.producer.touch_links,
+            t_link_from_region=t_link_from_base,
+            stamp_ns=time.time_ns(),
+        )
+        tracker.on_attach(_LEFT_FINGER, confirm=lambda region: region == first.region)
+        assert tracker.handed_over == (_LEFT_FINGER,)
+        held = tracker.envelope(now_ns=time.time_ns())
+        assert held is not None and held.region == first.region
+        cell.world(_TARGET | _PLANE, held, attached=[payload])
+        cell.send("pick-1-held", expect_accept=True)
+        assert "pick-1-held" in cell.safe, cell.log()
+        assert f"safety.grasp_region_handover target={first_id}" in cell.log()
+
+        # ── DETACH: the kernel retires arming 1; the producer completes the pick ────────
+        cell.world(_TARGET | _PLANE, held, attached=[])
+        assert f"safety.grasp_region_dropped reason=detached target={first_id}" in cell.log()
+        tracker.on_detach(_LEFT_FINGER, now_ns=time.time_ns())
+        assert tracker.handed_over is None
+
+        # ── Arming 2, same goal: its own identity, so the kernel arms it ────────────────
+        second = arm(2.0 * _RES)  # the hand moved on by two voxels: past the backoff
+        assert second.target_id == second_id and second.stamp_ns == goal.stamp_ns
+        cell.world(_TARGET | _PLANE, second)
+        cell.send("pick-2", expect_accept=True)
+        assert "pick-2" in cell.safe, (
+            "the second pick's region was refused (its identity retired with the first)"
+        )
+        assert f"safety.grasp_region_armed target={second_id} links=1" in cell.log()
