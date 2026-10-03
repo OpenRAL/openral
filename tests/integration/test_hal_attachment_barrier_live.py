@@ -360,6 +360,10 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
             Parameter("vision_attachment_depth_topic", value=depth_topic),
             Parameter("vision_attachment_service", value=segment_service),
             Parameter("vision_attachment_deadline_s", value=_VISION_DEADLINE_S),
+            # Required with the leg on: the launch passes the kernel's voxel deadline
+            # and margin + resolution; these are the real-cell derivations.
+            Parameter("vision_attachment_grid_max_age_s", value=1.0),
+            Parameter("vision_attachment_release_clear_m", value=0.04),
         ]
     )
     peer = Node("test_attachment_barrier_vision_peer")
@@ -540,5 +544,47 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
         spin.join(timeout=5.0)
         unanswered.destroy_node()
         peer.destroy_node()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+@pytest.mark.parametrize(
+    "unset", ["vision_attachment_grid_max_age_s", "vision_attachment_release_clear_m"]
+)
+def test_the_vision_leg_refuses_to_activate_without_the_kernels_bounds(unset: str) -> None:
+    """``grid_max_age_s`` / ``release_clear_m`` belong to the kernel this deploy runs, so the
+    generic HAL node has no fallback for them: with the leg on, an unset one (0.0) is a
+    ``ROSConfigError`` naming it at activate, never a cell's values used silently."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("mujoco")
+    pytest.importorskip("openral_msgs")
+
+    from openral_core.exceptions import ROSConfigError
+    from openral_hal.lifecycle import ManifestHALLifecycleNode
+    from rclpy.parameter import Parameter
+
+    bounds = {"vision_attachment_grid_max_age_s": 1.0, "vision_attachment_release_clear_m": 0.04}
+    bounds.pop(unset)
+    rclpy.init()
+    node: Any = ManifestHALLifecycleNode("test_vision_leg_requires_kernel_bounds")
+    node.set_parameters(
+        [
+            Parameter("robot_yaml", value=str(_ROBOT_YAML)),
+            Parameter("hal_mode", value="sim"),
+            Parameter("sim_env_yaml", value=str(_SCENE_YAML)),
+            Parameter("viewer_enabled", value=False),
+            Parameter("vision_attachment_enabled", value=True),
+            Parameter("vision_attachment_camera", value=_VISION_CAMERA),
+            *(Parameter(name, value=value) for name, value in bounds.items()),
+        ]
+    )
+    try:
+        assert str(node.trigger_configure()).endswith("SUCCESS"), "configure failed"
+        with pytest.raises(ROSConfigError, match=unset):
+            node._setup_vision_attachment()
+        assert node._vision_attachment is None
+    finally:
+        with suppress(Exception):
+            node.trigger_cleanup()
         node.destroy_node()
         rclpy.shutdown()
