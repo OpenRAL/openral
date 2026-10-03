@@ -151,6 +151,39 @@ def test_the_zed_override_keeps_positional_tracking_off(_scene: _Scene) -> None:
     assert params["depth"]["depth_stabilization"] == 0
 
 
+_ZED_SCENES = sorted(
+    path
+    for path in (_ROOT / "scenes" / "deploy").glob("*.yaml")
+    if any(
+        d.get("package") == "zed_wrapper"
+        for d in (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("drivers") or []
+    )
+)
+
+
+def test_committed_zed_scenes_exist() -> None:
+    """The parametrisation below is not vacuous."""
+    assert len(_ZED_SCENES) >= 3, _ZED_SCENES
+
+
+@pytest.mark.parametrize("scene_path", _ZED_SCENES, ids=lambda p: p.stem)
+def test_every_zed_driver_keeps_its_camera_tfs_static(scene_path: pathlib.Path) -> None:
+    """``enable_ipc`` off, or octomap_server stalls for seconds at a time.
+
+    With intra-process comms on (the wrapper's default) zed_wrapper publishes
+    ``zed_camera_center -> zed_left_camera_frame`` as a DYNAMIC /tf stamped per
+    grab. octomap_server's tf2 MessageFilter then inserts any cloud that beat its
+    TF on the TF listener's own thread, which stops ingesting /tf meanwhile; the
+    5-deep queue fills and the map stalls. Thor, 2026-10-04: max /octomap_binary
+    gap 1.7-3.0 s and kernel ``voxel_stale`` with IPC on; 0.40-0.67 s, no drops,
+    with it off.
+    """
+    doc = yaml.safe_load(scene_path.read_text(encoding="utf-8"))
+    for driver in doc["drivers"]:
+        if driver["package"] == "zed_wrapper":
+            assert driver["args"].get("enable_ipc") == "false", scene_path.name
+
+
 def test_drivers_are_included_on_the_real_path_only() -> None:
     """Sim renders cameras; it never needs a vendor driver."""
     text = _LAUNCH.read_text(encoding="utf-8")

@@ -172,6 +172,10 @@ drivers:
       # order-dependent and octomap silently drops every cloud.
       publish_tf: "false"
       publish_map_tf: "false"
+      # With IPC on (the wrapper's default) the camera's own frames go on /tf as
+      # DYNAMIC transforms, and octomap_server stalls for seconds waiting on them
+      # (docs/tutorials/deploy/openarm-real-world-voxel-check.md, step 1).
+      enable_ipc: "false"
       # Scene-relative. Pins HD720 (the ZED-M shares a USB hub with other
       # cameras and reboots in a loop at HD1080), turns positional tracking
       # off and depth stabilization to 0 (the SDK force-enables tracking
