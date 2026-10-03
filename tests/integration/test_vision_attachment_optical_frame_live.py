@@ -166,7 +166,7 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
     )
     from openral_msgs.srv import SegmentInView
     from rcl_interfaces.msg import Log
-    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.executors import SingleThreadedExecutor
     from rclpy.node import Node
     from rclpy.qos import (
         QoSDurabilityPolicy,
@@ -224,7 +224,10 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
     segmenter.create_service(SegmentInView, _SERVICE, segment)
     logs: list[str] = []
     peer.create_subscription(Log, "/rosout", lambda msg: logs.append(str(msg.msg)), 100)
-    executor = MultiThreadedExecutor()
+    # The HAL node spins single-threaded (`rclpy.spin`); a MultiThreadedExecutor
+    # skips the busy node's camera_info while a 1080p depth callback holds its one
+    # callback group, and starves it outright when depth is always ready.
+    executor = SingleThreadedExecutor()
     for each in (node, peer, segmenter):
         executor.add_node(each)
 
