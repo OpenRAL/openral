@@ -296,8 +296,9 @@ if _ROS2_AVAILABLE:
             # is ACCEPTED, so a multi-minute cold load of a large policy inside
             # a goal is E-stopped, correctly. Loading before any goal exists is
             # the only path that keeps the watchdog as strict as it is. The
-            # revision and prompt must be exactly what later goals send: the
-            # resident key is (id, revision, prompt). Set from
+            # revision must be exactly what later goals send: the policy is
+            # resident per (id, revision). The prompt is only the warm-up
+            # prompt; each goal's own prompt is passed per step. Set from
             # ``DeployRuntime.preload_*`` via the deploy launch.
             self.declare_parameter("preload_rskill_id", "")
             self.declare_parameter("preload_rskill_revision", "")
@@ -375,10 +376,11 @@ if _ROS2_AVAILABLE:
             # aborted goal's failure_reason can quote the overrun.
             self._last_deadline_elapsed_s: float | None = None
             # Single GPU-resident skill. The runner keeps exactly one
-            # resolved skill loaded, keyed by (rskill_id, revision, prompt).
-            # Dispatching a different key evicts (``shutdown()`` → frees VRAM)
-            # the resident skill before loading the next; re-dispatching the
-            # same key reuses it (no reload, no double-load).
+            # resolved skill loaded. A different (rskill_id, revision) evicts
+            # (``shutdown()`` → frees VRAM) the resident skill before loading
+            # the next; the same one reuses it (no reload, no double-load) and
+            # a policy skill takes the new goal's prompt per step. See
+            # ``_acquire_skill`` for what else keys a non-policy skill.
             self._resident_skill: Any = None
             self._resident_key: tuple[str, ...] = ()
             self._chunks_published: int = 0
@@ -876,26 +878,44 @@ if _ROS2_AVAILABLE:
             prompt_metadata_json: str,
             goal_params_json: str,
         ) -> rSkillBase:
-            """Return the GPU-resident skill for this dispatch key.
+            """Return the GPU-resident skill for this dispatch.
 
-            Keyed by ``(rskill_id, revision, prompt, prompt_metadata_json,
-            goal_params_json)`` — every input the resolver bakes into the skill
-            it builds (a wrapped-ROS skill lowers its goal from the params at
-            construction, so reusing it across params replays the old goal).
-            A differing key evicts
-            the resident skill (``shutdown()`` → frees VRAM) before loading the
-            next; an exact match reuses it (no reload, no double-load); a miss
-            resolves + caches. Resolve failures propagate to the caller's abort
-            path unchanged.
+            The weights are keyed by ``(rskill_id, revision)`` — the only
+            dispatch inputs that change what is loaded (dtype, quantization and
+            device come from that revision's manifest). A policy skill that
+            exposes ``set_goal_prompt`` (the VLA shim) reads its prompt per
+            step, so a goal with a new prompt retargets the resident policy
+            instead of reloading it: a subtask policy switching between its
+            trained prompts would otherwise pay the full cold load (~11 s on
+            Thor, minutes on an Orin) per subtask, inside the deadman window.
+            Any other skill bakes ``prompt`` / ``prompt_metadata_json`` /
+            ``goal_params_json`` in when it is built (a wrapped-ROS skill
+            lowers its goal from them), so for it those stay in the key.
+
+            A differing key evicts the resident skill (``shutdown()`` → frees
+            VRAM) before loading the next; a match reuses it; a miss resolves
+            + caches. Resolve failures propagate to the caller's abort path
+            unchanged.
             """
             from openral_core.schemas import RSkillState
 
             req_key = (rskill_id, revision, prompt, prompt_metadata_json, goal_params_json)
+            resident = cast("rSkillBase | None", self._resident_skill)
+            set_goal_prompt = getattr(resident, "set_goal_prompt", None)
+            if (
+                resident is not None
+                and callable(set_goal_prompt)
+                and self._resident_key[:2] == req_key[:2]
+                and resident.info.state is RSkillState.ACTIVE
+            ):
+                # Same weights; only the per-goal inputs moved. Retarget and
+                # start a fresh episode on the loaded policy.
+                set_goal_prompt(prompt)
+                self._resident_key = req_key
+                return resident
             if self._resident_skill is not None and self._resident_key != req_key:
-                # Loud on purpose: a preloaded skill is only reused when
-                # rskill_id, revision AND prompt match exactly, and the cost
-                # of a mismatch is the full cold load — inside the goal's
-                # watchdog window this time.
+                # Loud on purpose: the cost of a mismatch is the full cold
+                # load — inside the goal's watchdog window this time.
                 self.get_logger().warning(
                     f"rskill_runner.resident_key_mismatch: resident={self._resident_key!r} "
                     f"requested={req_key!r} — evicting and reloading"
@@ -3066,6 +3086,26 @@ def _collect_image_handles(
     return handles
 
 
+def _effective_goal_prompt(manifest: RSkillManifest, prompt: str) -> str:
+    """The prompt a policy is conditioned on: the goal's, else the checkpoint's own.
+
+    Single-task finetunes are conditioned on one exact phrase (upstream typos
+    included) and degrade on a paraphrase; before ``default_prompt`` existed the
+    only source was ``ExecuteRskill.prompt``, so a hand-dispatched goal with no
+    prompt fed the policy "" and an operator retyping it from the README could
+    silently mis-condition it. Generalist checkpoints leave the field unset and
+    keep the old behaviour (empty prompt stays empty).
+    """
+    if not prompt and manifest.default_prompt:
+        log.info(
+            "rskill_runner.default_prompt_applied",
+            rskill=manifest.name,
+            prompt=manifest.default_prompt,
+        )
+        return manifest.default_prompt
+    return prompt
+
+
 def _build_runtime_skill_from_manifest(
     *,
     yaml_path: Path,
@@ -3097,20 +3137,7 @@ def _build_runtime_skill_from_manifest(
     )
 
     manifest = RSkillManifest.from_yaml(str(yaml_path))
-    # An empty goal prompt falls back to the checkpoint's own training string.
-    # Single-task finetunes are conditioned on one exact phrase (upstream typos
-    # included) and degrade on a paraphrase; before `default_prompt` existed the
-    # only source was `ExecuteRskill.prompt`, so a hand-dispatched goal with no
-    # prompt fed the policy "" and an operator retyping it from the README could
-    # silently mis-condition it. Generalist checkpoints leave the field unset
-    # and keep the old behaviour (empty prompt stays empty).
-    if not prompt and manifest.default_prompt:
-        log.info(
-            "rskill_runner.default_prompt_applied",
-            rskill=manifest.name,
-            prompt=manifest.default_prompt,
-        )
-        prompt = manifest.default_prompt
+    prompt = _effective_goal_prompt(manifest, prompt)
     # Defensive guard: this helper builds a VLA policy adapter shim;
     # wrapped-ROS rSkills (kind: ros_action / ros_service) must NOT come
     # through here because they have no model weights to bind. The
@@ -3668,6 +3695,21 @@ def _make_policy_adapter_skill(
             """Reset the adapter's per-episode state (action queue, RNG)."""
             if hasattr(self._adapter, "reset"):
                 self._adapter.reset()  # type: ignore[attr-defined]
+
+        def set_goal_prompt(self, prompt: str) -> None:
+            """Point the loaded policy at a new goal's prompt; start a fresh episode.
+
+            The runner keeps this skill resident per ``(rskill_id, revision)``
+            and calls this when a goal reuses it. The prompt is read per step
+            (``adapter.step(obs, prompt)``), so no reload is needed. The adapter
+            is reset so the previous goal's buffered chunk (and any prefetch
+            it launched, inferred from the old prompt) is dropped: the first
+            chunk of this goal is inferred from this goal's prompt.
+            """
+            self._prompt = _effective_goal_prompt(cast("RSkillManifest", manifest), prompt)
+            log.info("rskill_runner.goal_prompt_set", skill=self.name, prompt=self._prompt)
+            if hasattr(self._adapter, "reset"):
+                self._adapter.reset()
 
         def _deactivate_impl(self) -> None:
             """No-op — the adapter stays loaded for the next activate."""

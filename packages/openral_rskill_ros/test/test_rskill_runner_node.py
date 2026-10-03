@@ -456,6 +456,120 @@ def test_changed_goal_params_rebuild_a_skill_that_bakes_them_in() -> None:
         assert len(built) == 2, "changed goal params must rebuild the skill"
 
 
+def _prompted_resolver(built: list[Any], seen: list[str]) -> Any:
+    """Resolver for a policy-like skill that reads its prompt per step.
+
+    Like the VLA shim it exposes ``set_goal_prompt``, so the runner may keep it
+    resident across goal prompts. Every step appends the prompt it was
+    conditioned on to ``seen``.
+    """
+    from openral_core.schemas import Action, ControlMode
+    from openral_rskill.base import rSkillBase
+
+    class _PromptedSkill(rSkillBase):
+        def __init__(self, name: str, prompt: str) -> None:
+            super().__init__(
+                name=name, version="0.1.0", role="s1", embodiment_tags=["so100_follower"]
+            )
+            self._prompt = prompt
+
+        def set_goal_prompt(self, prompt: str) -> None:
+            self._prompt = prompt
+
+        def _configure_impl(self) -> None:
+            pass
+
+        def _activate_impl(self) -> None:
+            pass
+
+        def _deactivate_impl(self) -> None:
+            pass
+
+        def _shutdown_impl(self) -> None:
+            pass
+
+        def _step_impl(self, _world_state: Any) -> Action:
+            seen.append(self._prompt)
+            return Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]],
+            )
+
+    def _resolver(*_args: Any, **kwargs: Any) -> Any:
+        skill = _PromptedSkill(kwargs["rskill_id"], kwargs["prompt"])
+        skill.configure()
+        skill.activate()
+        built.append(skill)
+        return skill
+
+    return _resolver
+
+
+def test_policy_stays_resident_across_goal_prompts() -> None:
+    """Two goals with different prompts on one rSkill: one load, each goal its own prompt.
+
+    A subtask policy switches prompts every goal; keyed on the prompt, each
+    switch evicted and reloaded the whole model inside the deadman window.
+    """
+    built: list[Any] = []
+    seen: list[str] = []
+    resolver = _prompted_resolver(built, seen)
+    with _compose_harness(resolver=resolver) as (executor, runtime, _s, _o):
+        node = runtime.skill_runner_node
+        _run_goal(executor, node, "openral/skill-a", prompt="restock box x1 into lower slot 2")
+        n_first = len(seen)
+        _run_goal(executor, node, "openral/skill-a", prompt="restock box x2 into upper slot 1")
+        assert len(built) == 1, "a prompt change must not reload the policy"
+        assert n_first > 0 and len(seen) > n_first, "both goals must step the policy"
+        assert set(seen[:n_first]) == {"restock box x1 into lower slot 2"}
+        assert set(seen[n_first:]) == {"restock box x2 into upper slot 1"}
+
+
+def test_revision_change_reloads_a_resident_policy() -> None:
+    """A different revision is different weights: evict and load, prompt or not."""
+    from openral_rskill.base import RSkillState
+
+    built: list[Any] = []
+    with _compose_harness(resolver=_prompted_resolver(built, [])) as (executor, runtime, _s, _o):
+        node = runtime.skill_runner_node
+        _run_goal(executor, node, "openral/skill-a", revision="r1")
+        _run_goal(executor, node, "openral/skill-a", revision="r2")
+        assert len(built) == 2, "a revision change must reload"
+        assert built[0].state is RSkillState.FINALIZED, "old revision was not evicted"
+
+
+def test_prompt_change_rebuilds_a_skill_that_bakes_the_prompt_in() -> None:
+    """A skill without ``set_goal_prompt`` keeps the prompt in its key (wrapped-ROS skills)."""
+    built: list[Any] = []
+    with _compose_harness(resolver=_tracking_resolver(built)) as (executor, runtime, _s, _o):
+        node = runtime.skill_runner_node
+        _run_goal(executor, node, "openral/skill-a", prompt="one")
+        _run_goal(executor, node, "openral/skill-a", prompt="two")
+        assert len(built) == 2, "a skill that cannot retarget must be rebuilt"
+
+
+def test_preload_prompt_is_only_a_warm_up_prompt() -> None:
+    """A goal whose prompt differs from ``preload_prompt`` reuses the preloaded policy."""
+    built: list[Any] = []
+    seen: list[str] = []
+    params = {"preload_rskill_id": "openral/skill-a", "preload_prompt": "warm up"}
+    with _compose_harness(resolver=_prompted_resolver(built, seen), runner_parameters=params) as (
+        executor,
+        runtime,
+        _s,
+        _o,
+    ):
+        node = runtime.skill_runner_node
+        deadline = time.monotonic() + 5.0
+        while node._preload_in_flight.is_set() and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        assert len(built) == 1, "preload did not load the policy"
+        _run_goal(executor, node, "openral/skill-a", prompt="restock box x1 into lower slot 2")
+        assert len(built) == 1, "a goal prompt differing from preload_prompt must not reload"
+        assert set(seen) == {"restock box x1 into lower slot 2"}
+
+
 @pytest.fixture
 def captured_spans() -> Iterator[InMemorySpanExporter]:
     """Install an in-memory OTel tracer + exporter and return the exporter."""

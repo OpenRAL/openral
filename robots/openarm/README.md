@@ -172,10 +172,11 @@ the moment a goal is accepted, and even the fast bf16 load (meta-device
 build, weights streamed onto the GPU, one warm-up forward) takes ~33 s on
 the Orin under the live graph (measured 2026-09-23) — before it, ~350 s idle
 and ~1230 s live. A cold load inside a goal is E-stopped, correctly. The
-preload prompt must equal the goal's prompt character for character: the
-resident key is `(id, revision, prompt)` and a mismatch evicts the warm
-skill and pays the cold load inside the watchdog window. `preload_done`
-names the time.
+policy stays resident per `(id, revision)`: `preload_prompt` only warms the
+inference path, and each goal's own prompt is passed to the loaded policy
+per step, so a subtask policy switching between its trained prompts does
+not reload. A different id or revision evicts the warm skill and pays the
+cold load inside the watchdog window. `preload_done` names the time.
 
 **Not yet usable end to end (2026-09-23).** A dispatched goal executes its
 first 35-step chunk on the real arms, then the deadman watchdog E-stops

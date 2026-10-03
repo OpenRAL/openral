@@ -3305,9 +3305,10 @@ def generate_launch_description() -> LaunchDescription:
             "preload_prompt",
             default_value="",
             description=(
-                "Exact prompt the preloaded skill is bound to; the resident "
-                "key is (rskill_id, revision, prompt), so a later goal must "
-                "send the same string or the skill is evicted and reloaded."
+                "Prompt the preload warms the policy with. The skill stays "
+                "resident per (rskill_id, revision); each goal's own prompt "
+                "is passed to it per step, so a different goal prompt does "
+                "not reload it."
             ),
         ),
         DeclareLaunchArgument(

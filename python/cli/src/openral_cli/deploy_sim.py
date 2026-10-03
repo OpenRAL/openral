@@ -166,8 +166,9 @@ class LaunchInvocation:
     """``DeployRuntime.preload_rskill_revision`` forwarded as
     ``preload_rskill_revision:=…`` with the preload id. Empty = unpinned."""
     preload_prompt: str
-    """``DeployRuntime.preload_prompt`` forwarded as ``preload_prompt:=…``; must
-    be the exact prompt later goals send (resident key = id, revision, prompt)."""
+    """``DeployRuntime.preload_prompt`` forwarded as ``preload_prompt:=…``; the
+    warm-up prompt only (the policy is resident per id + revision and takes
+    each goal's prompt per step)."""
     enable_slam: bool
     """Opt-in. Set by ``openral deploy sim --enable-slam``;
     forwarded into the launch as ``enable_slam:=true``."""
