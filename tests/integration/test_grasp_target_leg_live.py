@@ -86,8 +86,12 @@ def _box_centres(t_base_opt: np.ndarray) -> list[np.ndarray]:
     return [np.array([x, 0.0, _SUPPORT_Z + _BOX_HALF[2]])]
 
 
-def _voxels(centres: list[np.ndarray], stamp: Any) -> Any:
-    """A base-aligned 20 mm lattice: the table layer under the search box + solid boxes."""
+def _voxels(centres: list[np.ndarray], stamp: Any, source: Any = None) -> Any:
+    """A base-aligned 20 mm lattice: the table layer under the search box + solid boxes.
+
+    ``source`` is the grid's ``source_stamp`` (the world data's capture time; default
+    ``stamp``) — a stalled octomap keeps ``stamp`` fresh and ``source`` frozen.
+    """
     from openral_msgs.msg import OccupancyVoxels
 
     origin = np.array([0.0, -0.30, _SUPPORT_Z - _RES])  # layer k=0 is the table surface
@@ -101,6 +105,7 @@ def _voxels(centres: list[np.ndarray], stamp: Any) -> Any:
     msg = OccupancyVoxels()
     msg.header.frame_id = _BASE
     msg.header.stamp = stamp
+    msg.source_stamp = stamp if source is None else source
     msg.origin.x, msg.origin.y, msg.origin.z = (float(v) for v in origin)
     msg.orientation.w = 1.0
     msg.resolution = _RES
@@ -278,7 +283,13 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         ),
     )
     bridge.setup()
-    state: dict[str, Any] = {"scene": "one", "grid": True, "mask_skew_s": 0.0, "close": False}
+    state: dict[str, Any] = {
+        "scene": "one",
+        "grid": True,
+        "mask_skew_s": 0.0,
+        "close": False,
+        "source": None,
+    }
     close_both = Action(
         control_mode=ControlMode.JOINT_POSITION,
         horizon=1,
@@ -306,7 +317,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         depth_pub.publish(_depth_msg(raster, stamp))
         info_pub.publish(info)
         if state["grid"]:
-            voxel_pub.publish(_voxels(centres, stamp))
+            voxel_pub.publish(_voxels(centres, stamp, state["source"]))
 
     node.create_timer(0.05, feed)
     peer.create_timer(0.2, sensors)
@@ -372,6 +383,26 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
             lambda: any("retracted — freeze_ttl" in line for line in logs), timeout_s=3.0
         ), f"no TTL reason logged: {[line for line in logs if 'grasp target' in line]}"
         assert any("grid_stale" in line for line in logs), "the lost-view reason was not logged"
+
+        # ── 2b. The octomap stalls: the grid keeps arriving with a fresh header but
+        #        its source_stamp frozen. The region is stamped no later than that
+        #        world data, so it ages out under the freeze, never refreshed.
+        state["grid"] = True
+        declaration_pub.publish(_declaration(now_ns(), one))
+        assert _wait_until(region_live, timeout_s=20.0)
+        state["source"] = node.get_clock().now().to_msg()
+        stalled_ns = state["source"].sec * 1_000_000_000 + state["source"].nanosec
+        assert _wait_until(lambda: not region_live(), timeout_s=10.0), (
+            f"a stalled octomap kept the region alive: "
+            f"{[line for line in logs if 'grasp target' in line]}"
+        )
+        gone = latest()
+        gone_ns = gone.header.stamp.sec * 1_000_000_000 + gone.header.stamp.nanosec
+        assert gone_ns - stalled_ns <= (_FREEZE_S + 1.0) * 1e9, "held past the stalled data"
+        assert _wait_until(
+            lambda: any("grid_source_stale" in line for line in logs), timeout_s=3.0
+        ), f"no stalled-source reason: {[line for line in logs if 'grasp target' in line]}"
+        state["source"] = None
 
         # ── 3. Two equal boxes: ambiguous, no region ever. ───────────────────
         # The detection box centres on one of them (the leg anchors the target on
@@ -654,6 +685,17 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
             timeout_s=5.0,
         ), f"not retracted: {[line for line in logs if 'grasp target' in line]}"
         assert any("retracted — approach_ended" in line for line in logs)
+
+        # ── 2b. The right hand low over the empty table: the table is not a target.
+        #        Its surface layer is not counted, so nothing arms, refuses, re-arms.
+        tcp["right"] = np.array([one[0], -0.25, _SUPPORT_Z + 0.05])
+        mark = len(logs)
+        time.sleep(1.5)
+        assert latest().grasp_declaration.target_id == "approach"
+        assert not any("grasp target" in line for line in logs[mark:]), (
+            f"the empty table armed a hand: {logs[mark:]}"
+        )
+        tcp["right"] = np.array([0.30, -0.25, 0.20])
 
         # ── 3. The hand goes to the neighbour instead: the policy picked it. ──
         tcp["left"] = neighbour + np.array([0.0, 0.0, _BOX_HALF[2] + 0.05])
