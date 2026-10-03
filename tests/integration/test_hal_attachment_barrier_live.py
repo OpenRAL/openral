@@ -491,6 +491,17 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose(tmp_path: Path
             "bridge short-circuits and never holds the barrier"
         )
 
+        # The producer looks both hops up at segmentation time; a lookup that misses
+        # resolves the grasp at once (no barrier to hold), so wait for tf2 to hold them.
+        from rclpy.time import Time
+
+        for hop in hops:
+            assert _wait_until(
+                lambda hop=hop: vision._tf_buffer.can_transform(
+                    hop.header.frame_id, hop.child_frame_id, Time()
+                )
+            ), f"tf2 never held {hop.header.frame_id} <- {hop.child_frame_id}"
+
         # ── 3. Load the jaws: the real trigger closes the vision barrier. ─────
         # Commanded closed, the jaw settles 0.4 short of it: a position stall.
         vision.observe_command(
@@ -500,9 +511,11 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose(tmp_path: Path
                 joint_targets=[[0.0] * len(description.joints)],
             )
         )
-        # 30 Hz samples stamped ahead of the HAL's own wall-clock joint states, which
-        # the node feeds the same trigger: those arrive older and are dropped as repeats.
-        start_ns = time.time_ns()
+        # 30 Hz samples stamped a minute ahead of the HAL's own wall-clock joint states,
+        # which the node feeds the same trigger at 1 Hz: every live sample for the rest of
+        # the test is older than the burst and dropped as a repeat, so none can land
+        # inside the settle window however slowly this loop runs.
+        start_ns = time.time_ns() + 60 * 1_000_000_000
         for tick in range(12):
             vision.observe_joint_state(
                 JointState(
