@@ -70,7 +70,10 @@ With ``VisionAttachmentConfig.grasp_target_enabled`` (default off) the bridge
 also owns the pre-grasp target producer leg (``_grasp_target_leg``): it
 measures the live ``GraspDeclaration``'s region and every publication — event
 or heartbeat — carries that declaration on the envelope, so the kernel reads
-the region and the attachment set from one snapshot.
+the region and the attachment set from one snapshot. With ``grasp_target_approach_m`` set
+(default off) a declaration that names no search box — no target — is measured
+around whichever one hand's TCP approaches occupied cells, so the policy, not
+the reasoner, picks the object (``_grasp_target_leg`` "Approach-armed target").
 
 With ``VisionAttachmentConfig.place_fixture_enabled`` (default off) it also owns
 the real place producer leg (``_place_fixture_leg``): the live
@@ -739,6 +742,12 @@ class VisionAttachmentConfig:
             leg's TCP, ``jaw_point``) makes a shrunken re-fit an occlusion by the
             robot's own hand, at most 0.10 m.
             *Calibration point.*
+        grasp_target_approach_m: Approach-armed target (``_grasp_target_leg``):
+            while a live declaration has no ``search_box``, a hand whose TCP comes
+            within this distance of occupied cells arms a one-hand declaration
+            measured around its jaws, so no one has to name the target (the policy
+            picks it). ``None`` = off (default). At most
+            ``GraspDeclaration.MAX_HALF_EXTENT_M``. *Calibration point.*
         release_clear_m: How far every link a released payload's frozen record
             exempts (the hand and its jaws) must be from it before the record is
             dropped (``ReleaseWindow``). The deploy sets it to the kernel's
@@ -807,6 +816,7 @@ class VisionAttachmentConfig:
     grasp_target_support_search_below_m: float = 0.15
     grasp_target_support_probe_margin_m: float = 0.05
     grasp_target_occluder_margin_m: float = 0.05
+    grasp_target_approach_m: float | None = None
     release_clear_m: float = 0.04
     release_timeout_s: float = 3.0
     grid_max_age_s: float = 1.0
@@ -1101,6 +1111,7 @@ class VisionAttachmentBridge:
                 support_search_below_m=self._config.grasp_target_support_search_below_m,
                 support_probe_margin_m=self._config.grasp_target_support_probe_margin_m,
                 occluder_margin_m=self._config.grasp_target_occluder_margin_m,
+                approach_m=self._config.grasp_target_approach_m,
             )
             if self._config.grasp_target_enabled
             else None

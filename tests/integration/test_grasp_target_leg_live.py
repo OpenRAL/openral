@@ -449,3 +449,226 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         for each in (segmenter, peer, node):
             each.destroy_node()
         rclpy.shutdown()
+
+
+def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
+    """Approach-armed target: the runner's goal-scope declaration names no target and no
+    search box; the left hand's TCP 5 cm above the box arms ``approach:<left finger>``
+    (left contact link only) and the region measured there contains the box and not the
+    neighbour 20 cm away; the right hand, far from everything, arms nothing; lifting the
+    hand retracts the region; moving it over the neighbour measures the neighbour; the goal
+    ending retracts it all. Same real stack as the test above, plus the hands' tf."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+
+    from openral_core import GraspDeclaration, JointState, PlaceRegion, RobotDescription
+    from openral_hal.vision_attachment_bridge import (
+        VisionAttachmentBridge,
+        VisionAttachmentConfig,
+    )
+    from openral_msgs.msg import AttachmentState, OccupancyVoxels
+    from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
+    from openral_msgs.srv import SegmentInView
+    from rcl_interfaces.msg import Log
+    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.node import Node
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    from sensor_msgs.msg import CameraInfo, Image
+    from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
+
+    description = RobotDescription.from_yaml(str(_ROBOT_YAML))
+    origin = {
+        j.child_link: np.array(j.origin_xyz) for j in description.joints if j.role == "gripper"
+    }
+    t_base_body = _thor_mount()
+    t_body_opt = _homogeneous(_rot_rpy(-math.pi / 2, 0.0, -math.pi / 2), (0.0, 0.0, 0.0))
+    t_base_opt = t_base_body @ t_body_opt
+    (one,) = _box_centres(t_base_opt)
+    neighbour = one + np.array([0.0, 0.20, 0.0])
+    boxes = [one, neighbour]
+    raster = _depth(t_base_opt, boxes)
+
+    rclpy.init()
+    node = Node("test_grasp_approach_hal")
+    peer = Node("test_grasp_approach_peer")
+    segmenter = Node("test_grasp_approach_segmenter")
+    service = _SERVICE + "_approach"
+
+    def segment(request: Any, response: Any) -> Any:
+        point = np.array([request.tcp_point.x, request.tcp_point.y, request.tcp_point.z])
+        fx, fy, cx, cy = _THOR_K
+        u, v = fx * point[0] / point[2] + cx, fy * point[1] / point[2] + cy
+        rows, cols = np.mgrid[0 : _FULL[0], 0 : _FULL[1]]
+        disc = (rows + 0.5 - v) ** 2 + (cols + 0.5 - u) ** 2 <= _MASK_RADIUS_PX**2
+        mask = Image()
+        mask.height, mask.width = _FULL
+        mask.encoding = "mono8"
+        mask.step = _FULL[1]
+        mask.data = (disc.astype(np.uint8) * 255).tobytes()
+        mask.header.stamp = request.stamp
+        response.ok = True
+        response.camera = request.camera
+        response.masks = [mask]
+        response.mask_scores_advisory = [0.9]
+        return response
+
+    segmenter.create_service(SegmentInView, service, segment)
+    logs: list[str] = []
+    peer.create_subscription(Log, "/rosout", lambda msg: logs.append(str(msg.msg)), 200)
+    envelopes: list[Any] = []
+    peer.create_subscription(AttachmentState, "/openral/attachment_state", envelopes.append, 50)
+    latched = QoSProfile(
+        reliability=QoSReliabilityPolicy.RELIABLE,
+        durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        depth=1,
+    )
+    declaration_pub = peer.create_publisher(
+        GraspDeclarationMsg, "/openral/grasp_declaration", latched
+    )
+    voxel_pub = peer.create_publisher(
+        OccupancyVoxels,
+        "/openral/world_voxels",
+        QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=1),
+    )
+    depth_topic, info_topic = "/test_grasp_approach/depth", "/test_grasp_approach/camera_info"
+    sensor_qos = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=1)
+    depth_pub = peer.create_publisher(Image, depth_topic, sensor_qos)
+    info_pub = peer.create_publisher(CameraInfo, info_topic, sensor_qos)
+    StaticTransformBroadcaster(peer).sendTransform(
+        [
+            _tf_msg(_BASE, "zed_camera_link", t_base_body),
+            _tf_msg("zed_camera_link", _OPTICAL, t_body_opt),
+        ]
+    )
+    hands_tf = TransformBroadcaster(peer)
+    # Where each hand's TCP is (base frame); the ee frame = TCP - the jaw joint's origin.
+    tcp = {
+        "left": one + np.array([0.0, 0.0, _BOX_HALF[2] + 0.05]),
+        "right": np.array([0.30, -0.25, 0.20]),  # high above the empty table edge
+    }
+
+    bridge = VisionAttachmentBridge(
+        node,
+        description,
+        config=VisionAttachmentConfig(
+            camera="head_zed",
+            depth_topic=depth_topic,
+            camera_info_topic=info_topic,
+            service_name=service,
+            deadline_s=2.0,
+            grasp_target_enabled=True,
+            grasp_target_freeze_s=_FREEZE_S,
+            grasp_target_approach_m=0.10,
+            tf_frames={
+                "openarm_left_link7": "openarm_left_ee_base_link",
+                "openarm_right_link7": "openarm_right_ee_base_link",
+            },
+        ),
+    )
+    bridge.setup()
+    info = _camera_info(_FULL, _THOR_K)
+
+    def feed() -> None:
+        bridge.observe_joint_state(
+            JointState(
+                name=["left_gripper", "right_gripper"],
+                position=[0.0, 0.0],
+                effort=[0.01, 0.01],
+                stamp_ns=time.monotonic_ns(),
+            )
+        )
+
+    def sensors() -> None:
+        stamp = node.get_clock().now().to_msg()
+        depth_pub.publish(_depth_msg(raster, stamp))
+        info_pub.publish(info)
+        voxel_pub.publish(_voxels(boxes, stamp))
+        frames = []
+        for side, point in tcp.items():
+            t = np.eye(4)
+            t[:3, 3] = point - origin[f"openarm_{side}_finger_pair"]
+            msg = _tf_msg(_BASE, f"openarm_{side}_ee_base_link", t)
+            msg.header.stamp = stamp
+            frames.append(msg)
+        hands_tf.sendTransform(frames)
+
+    node.create_timer(0.05, feed)
+    peer.create_timer(0.1, sensors)
+    executor = MultiThreadedExecutor()
+    for each in (node, peer, segmenter):
+        executor.add_node(each)
+    spin = threading.Thread(target=executor.spin, daemon=True)
+    spin.start()
+
+    def latest() -> Any:
+        return envelopes[-1] if envelopes else None
+
+    def region_around(centre: np.ndarray) -> bool:
+        msg = latest()
+        if msg is None or not (msg.grasp_declaration_valid and msg.grasp_declaration.region_valid):
+            return False
+        region = PlaceRegion.from_idl(msg.grasp_declaration.region)
+        return bool(np.all(np.abs(np.asarray(region.pose.xyz)[:2] - centre[:2]) < _RES))
+
+    stamp_ns = int(node.get_clock().now().nanoseconds)
+    goal = GraspDeclaration(
+        target_id="approach",
+        contact_links=("openarm_left_finger_pair", "openarm_right_finger_pair"),
+        rskill_id="openral/itest-approach",
+        trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
+        timeout_s=60.0,
+        stamp_ns=stamp_ns,
+    )
+
+    def publish(declaration: GraspDeclaration) -> None:
+        msg = GraspDeclarationMsg()
+        declaration.fill_idl(msg)
+        declaration_pub.publish(msg)
+
+    try:
+        # ── 1. The left hand over the box: armed for the left hand, the box measured. ──
+        publish(goal)
+        assert _wait_until(lambda: region_around(one), timeout_s=20.0), (
+            f"no region; log: {[line for line in logs if 'grasp target' in line]}"
+        )
+        declared = latest().grasp_declaration
+        assert declared.target_id == "approach:openarm_left_finger_pair"
+        assert list(declared.contact_links) == ["openarm_left_finger_pair"]
+        assert declared.rskill_id == "openral/itest-approach"
+        assert declared.stamp_ns == stamp_ns
+        region = PlaceRegion.from_idl(declared.region)
+        assert region.pose.xyz[1] + region.half_extents[1] < neighbour[1] - _BOX_HALF[1], (
+            "the region reaches the neighbour"
+        )
+        bottom = region.pose.xyz[2] - region.half_extents[2]
+        assert _SUPPORT_Z < bottom <= _SUPPORT_Z + _RES + 1e-6, f"lower face at {bottom:.3f}"
+        assert not any("openarm_right_finger_pair" in line and "armed" in line for line in logs)
+
+        # ── 2. The hand lifts clear: retracted at once, back to the goal-scope one. ──
+        tcp["left"] = tcp["left"] + np.array([0.0, 0.0, 0.30])
+        assert _wait_until(
+            lambda: (
+                latest().grasp_declaration.target_id == "approach"
+                and not latest().grasp_declaration.region_valid
+            ),
+            timeout_s=5.0,
+        ), f"not retracted: {[line for line in logs if 'grasp target' in line]}"
+        assert any("retracted — approach_ended" in line for line in logs)
+
+        # ── 3. The hand goes to the neighbour instead: the policy picked it. ──
+        tcp["left"] = neighbour + np.array([0.0, 0.0, _BOX_HALF[2] + 0.05])
+        assert _wait_until(lambda: region_around(neighbour), timeout_s=20.0), (
+            f"no neighbour region: {[line for line in logs if 'grasp target' in line]}"
+        )
+
+        # ── 4. The goal ends: gone from the next heartbeat. ──
+        publish(goal.model_copy(update={"active": False}))
+        assert _wait_until(lambda: not latest().grasp_declaration_valid, timeout_s=1.0)
+    finally:
+        with suppress(Exception):
+            bridge.teardown()
+        executor.shutdown()
+        spin.join(timeout=5.0)
+        for each in (segmenter, peer, node):
+            each.destroy_node()
+        rclpy.shutdown()

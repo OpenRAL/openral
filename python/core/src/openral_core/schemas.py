@@ -862,6 +862,38 @@ def fixture_problems(description: RobotDescription, unit: RobotUnit) -> list[str
     return problems
 
 
+def gripper_hands(description: RobotDescription) -> tuple[tuple[str, ...], ...]:
+    """The robot's hands: its ``role: gripper`` joints' ``child_link``s, grouped per hand.
+
+    A hand is the set of gripper joints that hang off one arm: joints sharing a
+    ``parent_link``, plus any gripper joint whose parent is another gripper joint's
+    child (a chained finger). An SO-101's one jaw joint is one hand; an OpenArm's two
+    finger-pair joints are two hands (one per arm); an R1 Pro's four finger joints are
+    two hands of two fingers. The reasoner's grasp grounding makes a declaration name
+    one hand; the HAL's approach-armed grasp target arms for one hand at a time.
+
+    Example:
+        >>> gripper_hands(RobotDescription.from_yaml("robots/openarm/robot.yaml"))
+        (('openarm_left_finger_pair',), ('openarm_right_finger_pair',))
+        >>> gripper_hands(RobotDescription.from_yaml("robots/r1pro/robot.yaml"))[0]
+        ('left_gripper_finger_link1', 'left_gripper_finger_link2')
+    """
+    grippers = [j for j in description.joints if j.role == "gripper"]
+    parent_of = {j.child_link: j.parent_link for j in grippers}
+
+    def mount(link: str) -> str:
+        seen: set[str] = set()
+        while link in parent_of and link not in seen:  # climb a chained finger to its arm
+            seen.add(link)
+            link = parent_of[link]
+        return link
+
+    hands: dict[str, list[str]] = {}
+    for j in grippers:
+        hands.setdefault(mount(j.parent_link), []).append(j.child_link)
+    return tuple(tuple(links) for links in hands.values())
+
+
 def resolve_sensor_overlays(
     robot_yaml: str | Path, scene_unit: str | None, *, required: bool
 ) -> list[SensorOverlay]:
@@ -9949,6 +9981,13 @@ class VisionAttachmentRuntime(BaseModel):
             ``vision_attachment_grasp_target_enabled``): it measures the region the kernel's
             grasp-target exemption arms with, so ``deploy run`` refuses
             ``DeployRuntime.grasp_allowance_enabled`` without it. Default off.
+        grasp_target_approach_m: Approach-armed grasp target (HAL param
+            ``vision_attachment_grasp_target_approach_m``; needs ``grasp_target_enabled``):
+            with no named target, a hand whose TCP comes within this many metres of
+            occupied voxels arms a one-hand declaration measured around its jaws, and
+            the rSkill runner arms a goal-scope declaration for every goal so the
+            policy, not the reasoner, picks what to grasp. ``None`` = off (default).
+            Calibration point; at most ``GraspDeclaration.MAX_HALF_EXTENT_M``.
         place_fixture_enabled: Run the real place producer (HAL param
             ``vision_attachment_place_fixture_enabled``), verifying the robot unit's
             fixtures against the voxel map. Default off.
@@ -9977,6 +10016,9 @@ class VisionAttachmentRuntime(BaseModel):
     evidence_timeout_s: float = Field(default=0.5, gt=0)
     tf_frames: dict[str, str] = Field(default_factory=dict)
     grasp_target_enabled: bool = False
+    grasp_target_approach_m: float | None = Field(
+        default=None, gt=0, le=GraspDeclaration.MAX_HALF_EXTENT_M
+    )
     place_fixture_enabled: bool = False
     release_timeout_s: float = Field(default=3.0, gt=0)
 
@@ -10001,6 +10043,11 @@ class VisionAttachmentRuntime(BaseModel):
                     "only through the driver's own topics and CameraInfo, never the manifest's "
                     "nominal intrinsics"
                 )
+        if self.grasp_target_approach_m is not None and not self.grasp_target_enabled:
+            raise ValueError(
+                "vision_attachment.grasp_target_approach_m needs grasp_target_enabled: the "
+                "approach-armed target is measured by the grasp-target producer"
+            )
         return self
 
 
@@ -12077,9 +12124,12 @@ class ExecuteRskillTool(_ReasonerToolBase):
         progress_tolerance: Override the reward model's ``plateau_tolerance``
             when a task misbehaves (e.g. a noisy critic). ``None`` → use the
             model default.
-        grasp_target: The object this goal grasps (``GraspTargetRef``); the
-            reasoner grounds it to a ``GraspDeclaration`` search box at
-            dispatch, or refuses the goal. ``None`` = no grasp declaration.
+        grasp_target: Optional pin on the object this goal grasps
+            (``GraspTargetRef``); the reasoner grounds it to a
+            ``GraspDeclaration`` search box at dispatch, or refuses the goal.
+            ``None`` (the normal case: the policy picks the object) = no named
+            target; with the HAL's approach-armed grasp target on, the runner's
+            goal-scope declaration is measured where the gripper approaches.
         place_target: Where this goal places (``PlaceTargetRef``); grounded to a
             ``PlaceDeclaration`` on a unit fixture. ``None`` = no place
             declaration.
@@ -12095,8 +12145,9 @@ class ExecuteRskillTool(_ReasonerToolBase):
     grasp_target: GraspTargetRef | None = Field(
         default=None,
         description=(
-            "Set when the skill grasps an object: name it by label (recall it first when "
-            "memory has it). Perception grounds it; naming it arms nothing by itself."
+            "Optional: the skill's policy picks what it grasps. Set only to pin one "
+            "object: name it by label (recall it first when memory has it). Perception "
+            "grounds it; naming it arms nothing by itself."
         ),
     )
     place_target: PlaceTargetRef | None = Field(

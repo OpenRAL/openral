@@ -2030,6 +2030,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 "place_declaration_json": place_declaration_json,
                 # Grasp-phase sibling (real pick-and-place design §2.1).
                 "grasp_declaration_json": grasp_declaration_json,
+                # Approach-armed grasp target (§2.2): a goal-scope declaration per
+                # goal, only when the exemption is on AND the HAL's grasp-target
+                # leg measures around an approaching hand.
+                "grasp_approach_enabled": grasp_allowance_enabled
+                and float(hal_file_params.get("vision_attachment_grasp_target_approach_m") or 0.0)
+                > 0.0,
                 # Attach the WorldCloudBridge → dashboard world.pointcloud when a
                 # voxel cloud exists: octomap's centers, or (mono visual SLAM)
                 # nvblox's ESDF cloud so the card shows the vision-built voxels.
