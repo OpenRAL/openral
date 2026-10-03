@@ -240,7 +240,9 @@ def test_seed_is_the_box_top_centre() -> None:
     bx, by = _box_centre_xy()
     grid = _scene_lattice([(bx, by, 0.05, 0.035, 0.4)])
     centres = occupied_centers_in_box(grid, _search_box())
-    seed = target_seed_from_voxels(grid, centres, support_z=_SUPPORT_Z, min_cells=20)
+    seed = target_seed_from_voxels(
+        grid, centres, near_xy=(bx, by), support_z=_SUPPORT_Z, min_cells=20
+    )
     assert seed.refusal is None and seed.point is not None
     assert len(seed.cluster_sizes) == 1  # the table layer is support, not a cluster
     x, y, z = seed.point
@@ -274,7 +276,11 @@ def test_support_below_the_search_box_bottom_is_measured_not_assumed() -> None:
     assert measured is not None
     assert abs(measured - _SUPPORT_Z) <= _RES / 2 + 1e-9  # the table top, to the lattice
     seed = target_seed_from_voxels(
-        grid, occupied_centers_in_box(grid, _search_box()), support_z=measured, min_cells=20
+        grid,
+        occupied_centers_in_box(grid, _search_box()),
+        near_xy=(bx, by),
+        support_z=measured,
+        min_cells=20,
     )
     assert seed.refusal is None and seed.cluster_sizes[0] < 200  # the box alone, no table
     fit, _ = _fit_on(_mask_in_zed(_ERASER_MASK, factor=4), measured)
@@ -411,12 +417,35 @@ def test_a_target_on_a_shelf_board_edge_stands_on_the_board_not_the_bench() -> N
     assert support == pytest.approx(11 * _RES)  # the board's top face
 
 
+def test_a_taller_neighbour_never_makes_the_targets_top_its_support() -> None:
+    """HZ-01xx-2: a flat box (the target, search box centred on it) beside a taller bottle.
+    Anchored on whatever stood above each layer, the scan took the bottle as "the target"
+    at the box's top layer, found the box's top face ringing the bottle, called it the
+    support and seeded on the bottle. Anchored on the box at every layer, the support is
+    the table, and the bigger bottle standing beside the target makes the seed ambiguous."""
+    box_i, box_j = range(6, 11), range(8, 13)
+    bottle_i, bottle_j = range(12, 15), range(9, 12)
+    table = _seen_table(5, box_i, box_j, shadow=2)
+    table -= _slab(range(12, 20), bottle_j, 5)  # under the bottle and its long shadow
+    cells = table | _shell(box_i, box_j, range(6, 8)) | _shell(bottle_i, bottle_j, range(6, 16))
+    grid = _cells_lattice(cells)
+    column = _column_of(grid, range(4, 17), range(6, 15))
+    near = _centre_xy(box_i, box_j)
+    support = support_top_from_voxels(grid, column, near_xy=near, min_cells=8)
+    assert support is not None and support == pytest.approx(6 * _RES)  # the table, not its top
+    seed = target_seed_from_voxels(grid, column, near_xy=near, support_z=support, min_cells=8)
+    assert seed.point is None and seed.refusal is TargetRefusal.AMBIGUOUS
+    assert seed.cluster_sizes[0] < seed.cluster_sizes[1]  # the anchored box comes first
+
+
 def test_seed_refuses_two_equal_objects() -> None:
     """HZ-01xx-2: two comparable candidates in the search box — no guessing."""
     bx, by = _box_centre_xy()
     grid = _scene_lattice([(bx, by - 0.12, 0.04, 0.04, 0.0), (bx, by + 0.12, 0.04, 0.04, 0.0)])
     centres = occupied_centers_in_box(grid, _search_box())
-    seed = target_seed_from_voxels(grid, centres, support_z=_SUPPORT_Z, min_cells=20)
+    seed = target_seed_from_voxels(
+        grid, centres, near_xy=(bx, by), support_z=_SUPPORT_Z, min_cells=20
+    )
     assert seed.point is None
     assert seed.refusal is TargetRefusal.AMBIGUOUS
     assert len(seed.cluster_sizes) == 2
@@ -426,7 +455,9 @@ def test_seed_refuses_too_few_cells() -> None:
     bx, by = _box_centre_xy()
     grid = _scene_lattice([(bx, by, 0.015, 0.015, 0.0)])
     centres = occupied_centers_in_box(grid, _search_box())
-    seed = target_seed_from_voxels(grid, centres, support_z=_SUPPORT_Z, min_cells=20)
+    seed = target_seed_from_voxels(
+        grid, centres, near_xy=(bx, by), support_z=_SUPPORT_Z, min_cells=20
+    )
     assert seed.refusal is TargetRefusal.TOO_FEW_CELLS
 
 

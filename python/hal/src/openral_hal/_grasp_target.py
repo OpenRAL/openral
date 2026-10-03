@@ -14,10 +14,11 @@ Flow, one call per step so every step is replayable from its inputs alone:
    column under the search box top-down, the first layer whose top-surface cells
    ring the footprint of the target standing above it, its top face. The search
    box's own bottom (a lifted detection bbox) can sit below the real table top,
-   so it is never taken as the support (HZ-01xx-6).
-   ``target_seed_from_voxels`` clusters the cells above that plane,
-   take the largest cluster's top-centre. Refuses on too few cells or on two
-   comparably-sized clusters (HZ-01xx-2, wrong object: guessing between two
+   so it is never taken as the support (HZ-01xx-6). Both steps anchor the target
+   on one cell — the top of the occupied column nearest the search box centre.
+   ``target_seed_from_voxels`` clusters the cells above that plane and takes the
+   anchored cluster's top-centre. Refuses on too few cells or on another
+   comparably-sized cluster (HZ-01xx-2, wrong object: guessing between two
    candidates is exactly the mis-declaration the hazard row names).
 3. ``project_point`` — that seed into the camera image as SAM 2.1's positive
    point prompt.
@@ -163,7 +164,8 @@ class TargetSeed:
     Attributes:
         point: Top-centre of the selected cluster in the lattice frame, or ``None``.
         refusal: Why no seed was produced; ``None`` when ``point`` is set.
-        cluster_sizes: Cell counts of every cluster found, descending (for the trace).
+        cluster_sizes: Cell counts of every cluster found, the anchored target's
+            first, the rest descending (for the trace).
         bottom_z: Bottom face of the selected cluster's lowest cell, or ``None``.
     """
 
@@ -260,21 +262,27 @@ def support_top_from_voxels(
     """Measure the surface the target stands on: the top face of that layer.
 
     Scanned **top-down** over the lattice z-layers of ``centers`` (a column under
-    the search box). For each candidate layer ``k``, the target is the connected
-    component of the cells *above* ``k`` that holds the cell horizontally nearest
-    ``near_xy``; ``k`` is the support when it holds at least ``min_cells``
-    **top-surface** cells (no occupied cell directly above) in the ring around
-    that component's footprint — farther than one cell from it (the target's own
-    side faces) and at most ``probe_margin_m`` from it. A surface extends
-    laterally beyond what stands on it; the target's own layers do not, so a
-    dense target top is never taken for the support, and the probe scales with
-    the target's footprint instead of a fixed square. The ring skips the band
-    right at the footprint only by one cell, so a head camera's occlusion shadow
-    behind the target merely thins it.
+    the search box). The target is anchored once, on the highest cell of the
+    occupied column horizontally nearest ``near_xy``; for each candidate layer
+    ``k`` below that anchor, the target is the connected component of the cells
+    *above* ``k`` that holds the anchor — the same object at every layer, so a
+    taller neighbour in the column can never turn the target's own top face into
+    its "support" (HZ-01xx-2: the seed would land on the neighbour). ``k`` is the
+    support when it holds at least ``min_cells`` **top-surface** cells (no
+    occupied cell directly above) in the ring around that component's footprint —
+    farther than one cell from it (the target's own side faces) and at most
+    ``probe_margin_m`` from it. A surface extends laterally beyond what stands on
+    it; the target's own layers do not, so a dense target top is never taken for
+    the support, and the probe scales with the target's footprint instead of a
+    fixed square. The ring skips the band right at the footprint only by one
+    cell, so a head camera's occlusion shadow behind the target merely thins it.
 
     Ceiling: a target whose lower part flares more than one cell past its upper
     footprint (a pyramid, a handle) can stop the scan inside the target; the
     region then stands higher than the support — less exemption, never more.
+    And a search box centred on bare support (between two objects, or the table
+    seen through a hollow target) anchors on the support itself: no layer below
+    it qualifies and there is no support — a refusal, never a guess.
 
     Args:
         grid: The lattice ``centers`` came from; must be z-up (yaw-only).
@@ -317,13 +325,9 @@ def support_top_from_voxels(
     local = (centers - np.asarray(grid.origin)) @ grid.rotation()
     ijk = np.floor(local / grid.resolution).astype(np.int64)
     occupied = {(int(i), int(j), int(k)) for i, j, k in ijk.tolist()}
-    dist2 = np.sum((centers[:, :2] - np.asarray(near_xy)) ** 2, axis=1)
+    start = tuple(int(v) for v in ijk[_anchor(centers, ijk, near_xy)])
     reach = math.ceil(probe_margin_m / grid.resolution - 1e-9)
-    for k in sorted({c[2] for c in occupied}, reverse=True):
-        above = ijk[:, 2] > k
-        if not above.any():
-            continue
-        start = tuple(int(v) for v in ijk[np.flatnonzero(above)[np.argmin(dist2[above])]])
+    for k in sorted({c[2] for c in occupied if c[2] < start[2]}, reverse=True):
         footprint = {(i, j) for i, j, _ in _component_from(occupied, start, min_k=k + 1)}
         inner = _dilate(footprint, 1)
         ring = _dilate(footprint, reach) - inner
@@ -335,6 +339,18 @@ def support_top_from_voxels(
         if surface >= min_cells:
             return float(grid.origin[2] + (k + 1) * grid.resolution)
     return None
+
+
+def _anchor(
+    centers: NDArray[np.float64], ijk: NDArray[np.int64], near_xy: tuple[float, float]
+) -> int:
+    """Row of the target's anchor: the highest cell of the column nearest ``near_xy``.
+
+    Cells of one lattice column share their centre's xy exactly on a z-up lattice,
+    so the distance ties within a column and the highest ``k`` breaks them.
+    """
+    dist2 = np.sum((centers[:, :2] - np.asarray(near_xy)) ** 2, axis=1)
+    return int(np.lexsort((-ijk[:, 2], dist2))[0])
 
 
 def _dilate(cells: set[tuple[int, int]], r: int) -> set[tuple[int, int]]:
@@ -387,6 +403,7 @@ def target_seed_from_voxels(
     grid: VoxelLattice,
     centers: NDArray[np.float64],
     *,
+    near_xy: tuple[float, float],
     support_z: float,
     min_cells: int,
     ambiguity_ratio: float = 0.5,
@@ -395,19 +412,23 @@ def target_seed_from_voxels(
 
     Cells whose centre is within one voxel of the support plane are the support
     itself and are dropped; the rest are labelled into 26-connected components on
-    the lattice. The largest component is the target unless the runner-up holds at
-    least ``ambiguity_ratio`` of its cells — then there is no single object to name
-    and the seed is refused (HZ-01xx-2).
+    the lattice. The target is the component holding the anchor — the highest cell
+    of the occupied column nearest ``near_xy``, the same anchor
+    ``support_top_from_voxels`` measures under — never merely the largest: a
+    taller neighbour is not the object the search box centres on. When any other
+    component holds at least ``ambiguity_ratio`` of the target's cells there is no
+    single object to name and the seed is refused (HZ-01xx-2).
 
     Args:
         grid: The lattice ``centers`` came from (its pose turns centres back into
             integer cells for the connectivity labelling).
         centers: ``(N, 3)`` occupied centres in ``grid.frame_id``, e.g. from
             ``occupied_centers_in_box``.
+        near_xy: Where the target is expected (the search box centre).
         support_z: Height of the support plane in ``grid.frame_id`` (z up).
         min_cells: Fewest cells the selected cluster may have. *Calibration point.*
-        ambiguity_ratio: Runner-up / largest size at or above which the choice is
-            ambiguous. *Calibration point.*
+        ambiguity_ratio: Other cluster / target size at or above which the choice
+            is ambiguous. *Calibration point.*
 
     Returns:
         A ``TargetSeed``; ``point`` is ``(x_mean, y_mean, z_top)`` where ``z_top`` is
@@ -418,18 +439,22 @@ def target_seed_from_voxels(
         >>> occ = np.zeros(27, dtype=np.uint8)
         >>> occ[[4, 13, 22]] = 1  # the column at i=1, j=1, k=0..2
         >>> g = VoxelLattice("base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (3, 3, 3), occ)
-        >>> s = target_seed_from_voxels(g, g.occupied_centers(), support_z=0.0, min_cells=2)
+        >>> c = g.occupied_centers()
+        >>> s = target_seed_from_voxels(g, c, near_xy=(0.15, 0.15), support_z=0.0, min_cells=2)
         >>> [round(v, 3) for v in s.point], s.cluster_sizes
         ([0.15, 0.15, 0.3], (2,))
     """
     above = centers[centers[:, 2] > support_z + grid.resolution]
     local = (above - np.asarray(grid.origin)) @ grid.rotation()
     ijk = np.floor(local / grid.resolution).astype(np.int64)
-    comps = sorted(_components(ijk), key=len, reverse=True)
+    if len(above) == 0:
+        return TargetSeed(None, TargetRefusal.TOO_FEW_CELLS, ())
+    anchor = _anchor(above, ijk, near_xy)
+    comps = sorted(_components(ijk), key=lambda c: (anchor not in c, -len(c)))
     sizes = tuple(len(c) for c in comps)
-    if not comps or sizes[0] < min_cells:
+    if sizes[0] < min_cells:
         return TargetSeed(None, TargetRefusal.TOO_FEW_CELLS, sizes)
-    if len(sizes) > 1 and sizes[1] >= ambiguity_ratio * sizes[0]:
+    if any(size >= ambiguity_ratio * sizes[0] for size in sizes[1:]):
         return TargetSeed(None, TargetRefusal.AMBIGUOUS, sizes)
     cluster = above[comps[0]]
     x, y = cluster[:, :2].mean(axis=0)
