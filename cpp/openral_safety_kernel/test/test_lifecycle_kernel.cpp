@@ -3798,6 +3798,9 @@ struct GraspBeat {
   bool carrying{false};
   double payload_x{0.05};  ///< payload origin along link0's x (the region spans 0.03..0.07)
   double region_x{0.05};   ///< producer-measured region centre along x
+  std::string attach_link{"link0"};          ///< the carried payload's attach link
+  std::string object_label{"cell:cube"};     ///< the carried payload's object_id
+  std::string declared_object{"cell:cube"};  ///< the declaration's object_id
 };
 
 // The producer-measured grasp declaration on the world-state envelope, stamped
@@ -3808,8 +3811,8 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
   msg.attachment_revision = b.revision;
   if (b.carrying) {
     openral_msgs::msg::AttachedCollisionObject obj;
-    obj.object_id = "cell:cube";
-    obj.attach_link = "link0";
+    obj.object_id = b.object_label;
+    obj.attach_link = b.attach_link;
     obj.pose_in_link.position.x = b.payload_x;
     obj.pose_in_link.orientation.w = 1.0;
     openral_msgs::msg::AttachedCollisionPrimitive prim;
@@ -3822,7 +3825,7 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
   msg.grasp_declaration_valid = true;
   auto& d = msg.grasp_declaration;
   d.target_id = "cell:cube";
-  d.object_id = "cell:cube";
+  d.object_id = b.declared_object;
   d.contact_links = b.contact_links;
   d.rskill_id = "pick_cube";
   d.trace_id = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
@@ -4245,6 +4248,101 @@ TEST_F(LifecycleKernelTest, AGraspBackstopPastTheCapIsRefused) {
   EXPECT_TRUE(rig.node->fault_latched());
   EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=timeout_out_of_range"), 1U)
       << logs.joined();
+}
+
+// The grasp rig on a bimanual-shaped tree: a fixed root `base`, the swept
+// finger `link0` (j0) as before, and a second gripper link `other` on the root.
+// Both grippers are allowlisted; the declaration names `link0` only.
+std::vector<rclcpp::Parameter> bimanual_grasp_params() {
+  auto params = grasp_params(true, {"link0", "other"});
+  const auto set = [&params](const std::string& name, const rclcpp::ParameterValue& value) {
+    for (auto& p : params) {
+      if (p.get_name() == name) {
+        p = rclcpp::Parameter(name, value);
+        return;
+      }
+    }
+    params.emplace_back(name, value);
+  };
+  set("collision_n_links", rclcpp::ParameterValue(std::int64_t{3}));
+  set("collision_parent", rclcpp::ParameterValue(std::vector<std::int64_t>{-1, 0, 0}));
+  set("collision_joint_kind", rclcpp::ParameterValue(std::vector<std::int64_t>{0, 1, 0}));
+  set("collision_dof_index", rclcpp::ParameterValue(std::vector<std::int64_t>{-1, 0, -1}));
+  set("collision_origin_xyzrpy", rclcpp::ParameterValue(std::vector<double>(18, 0.0)));
+  set("collision_axis", rclcpp::ParameterValue(std::vector<double>{0, 0, 1, 0, 0, 1, 0, 0, 1}));
+  set("collision_capsule_link", rclcpp::ParameterValue(std::vector<std::int64_t>{1}));
+  set("collision_link_names",
+      rclcpp::ParameterValue(std::vector<std::string>{"base", "link0", "other"}));
+  return params;
+}
+
+TEST_F(LifecycleKernelTest, AGraspHandoverBindsOnlyToAPayloadOnTheDeclaringGripper) {
+  // Review finding: the handover took the first carried object whose id
+  // matched, wherever it was attached. Bimanual, the OTHER hand's payload (or
+  // a released payload frozen on the base link) could stand in for the
+  // handover, and its leaving the region retired — or its staying kept — the
+  // exemption of a gripper that never grasped anything.
+  for (const char* elsewhere : {"other", "base"}) {
+    LogCapture logs;
+    GraspRig rig(std::string("kernel_grasp_bind_") + elsewhere, bimanual_grasp_params());
+    rig.start();
+    GraspBeat b;
+    b.declaration_stamp_ns = rig.now_ns();
+    b.carrying = true;
+    b.revision = 1;
+    b.attach_link = elsewhere;
+    rig.warm(&b, 0.0, 300);
+    ASSERT_TRUE(rig.offer(&b, 0.0)) << elsewhere << ": " << logs.joined();
+    EXPECT_EQ(logs.count("safety.grasp_region_handover"), 0U)
+        << elsewhere << " is not on the declaring gripper's chain: " << logs.joined();
+    // That payload leaving the region is not this grasp's handover exit.
+    b.payload_x = 0.10;
+    rig.warm(&b, 0.0, 100);
+    EXPECT_TRUE(rig.offer(&b, 0.0)) << elsewhere << ": " << logs.joined();
+    EXPECT_EQ(logs.count("safety.grasp_region_dropped"), 0U) << elsewhere << ": " << logs.joined();
+  }
+  // The control: the same payload on the declaring gripper IS the handover.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_bind_own", bimanual_grasp_params());
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_handover target=cell:cube object=cell:cube"), 1U)
+      << logs.joined();
+  b.payload_x = 0.10;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_exit"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AnUndeclaredObjectAttachedOnTheDeclaringGripperRetiresTheExemption) {
+  // Review finding: a declared object_id that names nothing attached meant the
+  // handover never happened, so the exemption lived on to timeout_s after the
+  // gripper had grasped something else. Fail closed: retire it, for good.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_wrong_object");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  b.carrying = true;
+  b.revision = 1;
+  b.object_label = "cell:not_the_cube";
+  rig.warm(&b, 0.0, 100);
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_object_mismatch"), 1U)
+      << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+  // The heartbeat of the retired declaration re-arms nothing, attached or not.
+  b.carrying = false;
+  b.revision = 2;
+  rig.warm(&b, kGraspClearQ, 300);
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 1U) << logs.joined();
 }
 
 TEST_F(LifecycleKernelTest, AnExemptFingerInsideItsTargetStillLeavesTheChunkScaled) {

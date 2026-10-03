@@ -108,7 +108,10 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   link, grid-frame change, rejected attachment set. Feature parameter default **off**.
 - Handover: on the attachment edge that adds the declared object the exemption stays alive only
   while the payload origin (FK of the measured configuration) is inside the region, then retires
-  permanently; a detach retires it. The region is latched at handover: later snapshots of the
+  permanently; a detach retires it. Only a payload attached on the declaring gripper's own chain
+  (a declared contact link or a non-root ancestor) counts — never the other hand's payload or a
+  release record frozen on the base — and an undeclared object attached there retires the
+  declaration (`handover_object_mismatch`). The region is latched at handover: later snapshots of the
   same declaration cannot move it, so a producer re-measuring the carried payload cannot extend
   the exemption. From then on the existing path applies (bridge clears the payload cells; kernel
   checks it as attached geometry).
