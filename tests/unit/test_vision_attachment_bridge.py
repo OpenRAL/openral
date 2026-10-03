@@ -354,44 +354,46 @@ def _openarm_slot_group(left_jaw: float, right_jaw: float, *, tick: int = 1) -> 
     return list(group)
 
 
-def test_a_real_openarm_slot_group_commands_both_jaws_as_the_hal_composes_it() -> None:
-    """ADR-0102: the jaws are GRIPPER_POSITION slots; folded once the tick is whole.
+def test_the_real_hals_applied_slot_group_commands_both_jaws() -> None:
+    """ADR-0102: the jaws are GRIPPER_POSITION slots; the trigger folds the HAL's composition.
 
-    The targets are the very values ``compose_slot_group`` hands the OpenArm
-    controllers, so the trigger's "short of the command" is measured against what the
-    jaw was actually told.
+    The OpenArm HAL composes the four slots into one full-dof command and publishes it;
+    ``last_applied_action`` is that command, and it is what the lifecycle node hands
+    ``observe_command`` — so "short of the command" is measured against what the jaw was
+    actually told, not against a second staging of the slots.
     """
-    from openral_hal._slot_group import compose_slot_group
+    from openral_hal.openarm_real import OpenArmRealHAL
 
     description = _openarm()
     bridge = VisionAttachmentBridge(
         None, description, config=VisionAttachmentConfig(camera="head_zed")
     )
     left, right = bridge._legs
+    published: list[tuple[str, dict[str, object]]] = []
+    hal = OpenArmRealHAL(
+        publish_fn=lambda topic, msg: published.append((topic, msg)), require_can_links=False
+    )
+    hal.connect()
     group = _openarm_slot_group(0.0, -0.75)
     assert [a.control_mode for a in group].count(ControlMode.GRIPPER_POSITION) == 2
     for action in group[:-1]:
-        bridge.observe_command(action)
-        assert left.trigger.last_command is None, "an incomplete tick commanded nothing yet"
-    bridge.observe_command(group[-1])
-    names = [j.name for j in description.joints]
-    hal_row = compose_slot_group(group, names)
-    assert left.trigger.last_command == pytest.approx(hal_row[names.index("left_gripper")])
-    assert right.trigger.last_command == pytest.approx(hal_row[names.index("right_gripper")])
+        hal.send_action(action)
+    assert hal.last_applied_action is None, "an incomplete tick applied nothing"
+    hal.send_action(group[-1])
+    assert published, "the composed tick reached the controllers"
+    bridge.observe_command(hal.last_applied_action)
     assert (left.trigger.last_command, right.trigger.last_command) == pytest.approx((0.0, -0.75))
+    hal.disconnect()
 
 
-def test_an_incomplete_slot_group_never_commands_a_jaw() -> None:
-    """A tick the kernel cut short never reached the robot, so its gripper slot is not a command."""
+def test_a_slot_handed_to_the_bridge_commands_no_jaw() -> None:
+    """The bridge does not stage slots: only the HAL's applied command is folded in."""
     bridge = VisionAttachmentBridge(
         None, _openarm(), config=VisionAttachmentConfig(camera="head_zed")
     )
-    left, _ = bridge._legs
-    for action in _openarm_slot_group(0.0, 0.0, tick=1)[:3]:  # right gripper slot rejected
+    for action in _openarm_slot_group(0.0, 0.0, tick=1):
         bridge.observe_command(action)
-    for action in _openarm_slot_group(0.7, -0.7, tick=2):
-        bridge.observe_command(action)
-    assert left.trigger.last_command == pytest.approx(0.7), "tick 1's close was never applied"
+    assert all(leg.trigger.last_command is None for leg in bridge._legs)
 
 
 def test_a_right_arm_slot_reads_the_right_jaw_column_not_the_left_pad() -> None:

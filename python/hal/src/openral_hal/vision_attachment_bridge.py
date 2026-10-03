@@ -58,13 +58,11 @@ dead position channel therefore ages into a kernel drop, never into a stale
 
 The grasp trigger is ``_grasp_trigger.PositionStallTrigger``: the jaw settling
 short of a close command. It needs the command, so the HAL node feeds every
-applied action through ``observe_command`` (the safety-approved target, the
-chunk's last row — what the transport sends the trajectory controller). An
-ADR-0102 slot group is folded in only once every slot of its tick has arrived, and
-composed exactly as the HAL composes it (``compose_slot_group``): a
-``GRIPPER_POSITION`` slot's ``gripper`` value lands on the joint its ``ee_name``
-names, a zero-padded ``JOINT_POSITION`` slot is read at each owned joint's manifest
-index.
+applied command through ``observe_command`` (the safety-approved target, the
+chunk's last row — what the transport sends the trajectory controller). For an
+ADR-0102 slot group that is the HAL's own composed full-dof action
+(``last_applied_action``), handed over only once the HAL committed the tick: the
+bridge never re-stages slots, so it cannot diverge from what the HAL applied.
 
 Every grasp event supersedes whatever request its leg still has in flight: the
 leg's generation advances, the old deadline timer is cancelled and the old future
@@ -120,7 +118,6 @@ from openral_hal._grasp_trigger import (
     gripper_joints,
 )
 from openral_hal._place_target_leg import PlaceTargetLeg
-from openral_hal._slot_group import compose_slot_group
 from openral_hal._vision_attachment_evidence import (
     VisionAttachmentEvidenceProducer,
     VisionGateConfig,
@@ -1149,10 +1146,8 @@ class VisionAttachmentBridge:
             timeout_s=self._config.evidence_timeout_s,
         )
         self._joint_order = [joint.name for joint in description.joints]
-        # ADR-0102: the slots of the tick being assembled, keyed (session, tick).
-        self._slot_key: tuple[int, int] | None = None
-        self._slots: list[Action] = []
         self._warned_row_shape = False
+        self._warned_slot = False
         self._revision = 0
         # Latest joint positions by name: the jaws' angles for the release test.
         self._positions: dict[str, float] = {}
@@ -1353,39 +1348,36 @@ class VisionAttachmentBridge:
             self._place_target.on_joint_state()
 
     def observe_command(self, action: Action) -> None:
-        """Fold an applied action's gripper targets into every leg's trigger.
+        """Fold the command the HAL applied into every leg's trigger.
 
         The commanded target is the chunk's **last** row — what the ros2_control
-        transport hands the trajectory controller as the goal.
+        transport hands the trajectory controller as the goal. Pass what the HAL
+        *applied*: for an ADR-0102 slot group, the HAL's composed full-dof action
+        (``last_applied_action``) once it committed the tick — never the individual
+        slots, which this bridge does not stage (a slot, ``tick_group_size > 1``, is
+        ignored and logged once).
 
-        * An ADR-0102 slot (``tick_group_size > 1``) is staged until every slot of
-          its ``(runner_session_id, tick_index)`` has arrived — the HAL commits a
-          tick only whole, and a group whose sibling the kernel rejected never
-          reaches the robot — then composed with ``compose_slot_group``, the very
-          function the HAL composes the controller targets with: a
-          ``GRIPPER_POSITION`` slot's last ``gripper`` value on the joint its
-          ``ee_name`` names, a zero-padded ``JOINT_POSITION`` slot read at each of
-          its ``joint_names``' manifest index. A group it cannot compose commanded
-          nothing (the HAL refused it too) and is logged.
-        * An ungrouped ``JOINT_POSITION`` action: a full-dof row is padded and read
-          at each owned joint's manifest index (every joint when it names none); a
-          row as long as its ``joint_names`` is compact and read positionally; any
-          other length is logged once and ignored (``_row_targets``).
-
-        Any other action leaves every leg's last command as it is.
+        A ``JOINT_POSITION`` action: a full-dof row is padded and read at each owned
+        joint's manifest index (every joint when it names none); a row as long as its
+        ``joint_names`` is compact and read positionally; any other length is logged
+        once and ignored (``_row_targets``). Any other action leaves every leg's last
+        command as it is.
 
         Args:
-            action: The action the HAL just applied (safety-approved).
+            action: The command the HAL just applied (safety-approved).
         """
         if int(action.tick_group_size) > 1:
-            targets = self._stage_slot(action)
-            if targets is None:
-                return
-        elif action.control_mode is ControlMode.JOINT_POSITION and action.joint_targets:
-            targets = self._row_targets(action.joint_targets[-1], action.joint_names)
-            if targets is None:
-                return
-        else:
+            if not self._warned_slot and self._node is not None:
+                self._warned_slot = True
+                self._node.get_logger().warning(
+                    "grasp trigger: observe_command was handed a slot of a group, not the "
+                    "HAL's applied command; not folded in (logged once)"
+                )
+            return
+        if action.control_mode is not ControlMode.JOINT_POSITION or not action.joint_targets:
+            return
+        targets = self._row_targets(action.joint_targets[-1], action.joint_names)
+        if targets is None:
             return
         for leg in self._legs:
             target = targets.get(leg.joint_name)
@@ -1398,7 +1390,7 @@ class VisionAttachmentBridge:
         """An ungrouped JOINT_POSITION row by joint name; ``None`` when unplaceable.
 
         A full-dof row is padded (ADR-0102): each owned joint is read at its manifest
-        index, as ``compose_slot_group`` reads it — also when ``joint_names`` lists every
+        index, as the HAL's slot composition reads it — also when ``joint_names`` lists every
         joint, the padded reading being the contract. A row as long as ``joint_names``
         is compact: ``joint_names[i]`` owns ``row[i]``. Any other length says nothing
         placeable and is logged (once).
@@ -1418,26 +1410,6 @@ class VisionAttachmentBridge:
                 f"({len(names or [])}); not folded in as a jaw command (logged once)"
             )
         return None
-
-    def _stage_slot(self, action: Action) -> dict[str, float] | None:
-        """Stage one slot; the composed tick's targets by joint once it is whole."""
-        key = (int(action.runner_session_id), int(action.tick_index))
-        if key != self._slot_key:
-            # A new tick abandons an incomplete one: the HAL never committed it.
-            self._slot_key, self._slots = key, []
-        self._slots.append(action)
-        if len(self._slots) < int(action.tick_group_size):
-            return None
-        group, self._slot_key, self._slots = self._slots, None, []
-        try:
-            row = compose_slot_group(group, self._joint_order)
-        except ROSConfigError as exc:
-            if self._node is not None:
-                self._node.get_logger().warning(
-                    f"grasp trigger: slot group of tick {key[1]} not folded in — {exc}"
-                )
-            return None
-        return dict(zip(self._joint_order, row, strict=True))
 
     @property
     def missing_position_ticks(self) -> int:

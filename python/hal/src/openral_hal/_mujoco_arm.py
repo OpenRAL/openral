@@ -267,6 +267,7 @@ class MujocoArmHAL(HALBase):
         # none a whole-robot command. They are staged here and applied as ONE
         # step once the tick is complete, for every twin in this hierarchy.
         self._slot_group = SlotGroupStager()
+        self._last_applied_action: Action | None = None
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -581,6 +582,17 @@ class MujocoArmHAL(HALBase):
         )
 
     @property
+    def last_applied_action(self) -> Action | None:
+        """The command the robot was last actually given, as applied (``None`` = none yet).
+
+        For a slot group this is the composed full-dof ``JOINT_POSITION`` action, not any
+        one slot; set only once the apply succeeded, in step with ``last_committed_tick``.
+        The lifecycle node folds it into the grasp trigger, which must measure "short of
+        the command" against what the jaw was really told.
+        """
+        return self._last_applied_action
+
+    @property
     def last_committed_tick(self) -> int:
         """Inference tick of the last slot group applied to MuJoCo (0 = none).
 
@@ -651,6 +663,7 @@ class MujocoArmHAL(HALBase):
             self._slot_group.commit(group)
         else:
             self._slot_group.commit_tick(action)
+        self._last_applied_action = action
 
         log.debug(
             "hal.send_action",
