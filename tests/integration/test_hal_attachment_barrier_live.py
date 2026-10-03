@@ -711,6 +711,11 @@ def test_a_sim_attached_slot_group_reaches_the_trigger_and_an_unknown_one_clears
         (leg,) = vision._legs
         assert leg.trigger._config == PositionStallConfig.for_rate(10.0), "10 Hz windows"
         assert type(node._hal).__name__ == "SimAttachedHAL"
+        # The twin's joint states pause for the idle stepper's hold between VLA chunks;
+        # the jaw evidence must outlive it or the heartbeat drops on every pause.
+        assert vision._config.evidence_timeout_s == pytest.approx(
+            node._bridge.idle_hold_s + 4.0 / 10.0
+        )
 
         leg.trigger.command(0.0)  # the start-pose ramp closed the jaw
         for chunk in _so101_slot_chunks(description, 0.6, tick=1, named=True):

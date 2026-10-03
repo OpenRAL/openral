@@ -2724,6 +2724,15 @@ class SimSensorBridge:
         self._cinecam_setup_el: float = 0.0
         self._cinecam_setup_dist: float = 1.0
 
+    @property
+    def idle_hold_s(self) -> float:
+        """The idle stepper's quiet window, in seconds.
+
+        The longest gap between joint states the twin produces while an active
+        skill pauses between actions.
+        """
+        return self._idle_hold_ns / 1e9
+
     def setup(self) -> None:
         """Activate every stream the manifest + HAL support. Idempotent-safe per activate."""
         self._setup_cameras()
