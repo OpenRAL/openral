@@ -4,7 +4,8 @@ Status: **implemented on the branch, default-off, pending Safety-WG review**, 20
 Branch `feat/real-pick-place-attachment` (draft PR #332). Every step of §3 except 5 (the attended
 position-stall measurement) and 9 (enabling the Thor scene) is implemented and committed off; the
 kernel exemption, the release window and the place witness are each proven against the real
-`safety_kernel_node` (the tests named in §3). The §4 items are still decisions, not code.
+`safety_kernel_node` (the tests named in §3). Place needs no surveyed cell geometry and no named
+target: the producer measures the surface under the carried payload (§2.3). The §4 items are still decisions, not code.
 Facts in §1 cite code at `fe3c8944` unless marked *since*; §2 is now the design as built.
 
 Goal: on the real OpenArm cell (Thor: ZED-M head camera, RGB-only wrist Arducams,
@@ -167,9 +168,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
 
 - **Prompt (built): the reasoner names, perception grounds, the producer measures.** What to
   pick is task knowledge, so it lives in the reasoner, not in a scene. `ExecuteRskillTool` carries
-  `grasp_target: GraspTargetRef{label, object_id?, contact_links}` and
-  `place_target: PlaceTargetRef{fixture_id | place_node_id}`; the system prompt lists the robot
-  unit's fixtures as the place choices. At dispatch the reasoner (`openral_reasoner.grounding`,
+  `grasp_target: GraspTargetRef{label, object_id?, contact_links}` and an optional
+  `place_target: PlaceTargetRef{label, object_id? | place_node_id?}` (normally unset: where to
+  place is the policy's job, §2.3). At dispatch the reasoner (`openral_reasoner.grounding`,
   called from `ReasonerNode._dispatch_execute_rskill`) grounds them from perception it already
   holds: `object_id` → the recalled spatial-memory node's 3D box; else the ONE live detection on
   `/openral/world_state_slow` carrying the label — the world-state lift's (`VoxelFrustumLifter`)
@@ -178,9 +179,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   bottom is the lowest occupied centre in the detection's frustum, which can sit above or below
   the true support, so the pad keeps the support layer inside the box) and gravity-aligned in
   `openarm_base`,
-  becomes `GraspDeclaration.search_box`; the fixture id becomes `PlaceDeclaration.target_id`. No
-  match, more than one match without `object_id`, a box outside the base frame, an unknown
-  fixture, no `contact_links` on a robot with more than one hand (the bimanual OpenArm:
+  becomes `GraspDeclaration.search_box`; a named place surface grounds the same way into
+  `PlaceDeclaration.search_box` (a hint, `target_id = surface:<label or node id>`). No
+  match, more than one match without `object_id`, a box outside the base frame, no `contact_links` on a robot with more than one hand (the bimanual OpenArm:
   defaulting to every gripper would exempt the idle hand too), or `contact_links` that are not
   gripper child links of ONE hand (a hand = the `role: gripper` joints hanging off one arm, so
   R1 Pro's two finger joints per arm are one hand) refuses the dispatch (no goal sent) and tells the LLM to disambiguate. Both
@@ -192,8 +193,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   `search_box`) remains for an attended run; the committed cell scene carries none.
   *Limits:* `locate_in_view`'s one-shot 2D answer is not lifted, so the label must be one the
   continuous detector publishes; the lift must run in the base frame (`object_lift_map_frame`)
-  on a fixed-base cell without a `map` frame; a recalled free-space place (`place_node_id`) is
-  refused until a free-space place producer exists.
+  on a fixed-base cell without a `map` frame.
 - **Measurement:** the support plane is *measured*, never read off the search box (whose
   bottom is a lifted detection bbox min-z and can sit below the real table top, HZ-01xx-6): in a
   column under the box (reaching 0.15 m below its bottom), scanned top-down, the first layer
@@ -305,14 +305,56 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
 ### 2.3 Place
 
 - Reuse `PlaceDeclaration`/`PlaceRegion` on the wire; **no kernel change for the payload path.**
-- Region source: a unit-surveyed shelf fixture (`robots/openarm/units/<unit>.yaml`, cell-specific
-  like the ZED mount, fixed-base robots only) that the producer **verifies live against the voxel
-  map** before it arms (face occupied within ±1 voxel, free volume above it empty); on failure the
-  declaration goes out region-less (margins unchanged = fail-closed). ADR-0097 amendment: a
-  unit-surveyed + map-verified fixture counts as producer-measured on a fixed base.
-- Witness substitute: a proximity-based attestation (`DECLARED_FIXTURE` evidence kind, labelled as
-  not sensed contact), once per declaration, when the payload's lowest primitive is within
-  max(1 voxel, survey uncertainty) of the verified plane and the gripper is still loaded.
+- **No predefined knowledge.** "Pick up the boxes and put them on the shelf" must work on a
+  cell nobody surveyed: no furniture in the unit overlay, no tape-measured planes, no fixture
+  ids in the prompt. Where to set the payload down is the **policy's** job (learned); whether
+  the spot under the payload is a surface is the **map's**. So the place producer
+  (`openral_hal._place_target_leg`, owned by `VisionAttachmentBridge`, HAL param
+  `vision_attachment_place_target_enabled`, scene `runtime.vision_attachment.place_target_enabled`,
+  default **off**) needs no declaration from the reasoner:
+  - *Column.* While a payload is held and loaded, at `place_target_rate_hz` (2 Hz) on the newest
+    `/openral/world_voxels` (older than `grid_max_age_s` = unusable): the column under the
+    payload's measured footprint (its primitives' AABB in the lattice axes) grown by one voxel +
+    the extrinsic accuracy bound (`place_target_extrinsic_error_m`, default
+    `MAX_PLANAR_ERR_M` = 15 mm) on every side, from the payload's bottom down
+    `place_target_search_depth_m` (0.20 m). Cells within one voxel of any published payload are
+    ignored (the octomap bridge clears exactly those).
+  - *Surface.* The first occupied layer down the column is what the payload would land on. It is a
+    support only if **every** footprint cell of that layer is occupied (else `partial_support`: an
+    edge, clutter, a hole) and the layers above it are free up to the payload's measured height +
+    one voxel + the extrinsic bound (else `no_headroom` — a shelf gap too low for the payload);
+    nothing within the depth is `no_surface`. The region is that patch as a **one-voxel slab** —
+    the support cells only — in the grid frame, no `geometry`, under `PlaceRegion`'s caps.
+  - *Latch and freeze.* The patch is latched with the payload's identity and re-verified (never
+    re-chosen) while the payload's centre stays over it: new occupancy in its free volume retracts it
+    at once; support cells missing (the payload and hand occlude the board from the head camera,
+    payload clearing removes the cells under it) or a stale/missing grid is a lost view that holds
+    the latched region for at most `place_target_freeze_s` (default **and ceiling** 2 ×
+    `grid_max_age_s` — the kernel's `place_region_max_age_s`) from the grid stamp it was last
+    verified on; the region's `stamp_ns` is that grid stamp, so the published region is never older
+    than the kernel accepts. The payload moving off the patch re-measures; a different payload
+    drops the latch. Consequence: a set-down has to complete within the freeze after the board
+    leaves view.
+  - *Declaration.* The kernel applies a region only inside a `PlaceDeclaration`. With no dispatch
+    declaration the leg publishes its own on the attachment envelope — `target_id =
+    surface:under:<object_id>`, `object_id` = that payload (the kernel scopes the region to it),
+    stamped at the latch — alive only while the patch is held. A dispatch declaration (the optional
+    `place_target`, or a direct-dispatch scene) supplies its own fields instead, and its
+    `search_box` narrows the place: a patch whose centre lies outside it is refused
+    (`outside_hint`). Dispatch still never supplies a region (the runner strips it).
+  - *Witness substitute.* A proximity attestation (`MAP_SUPPORT_PROXIMITY` evidence kind, labelled
+    as **not sensed contact and not a proven support**), once per declaration, when the payload's
+    lowest primitive is within max(1 voxel, extrinsic bound) of the latched plane, its centre is
+    over the patch and the gripper is still loaded (`leg.trigger.attached`); `support_id` = the
+    declaration's `target_id`, `max_penetration_m = min(extrinsic bound, 10 mm)`. It dies with the
+    region — contradicting evidence, the freeze TTL, a dispatch retraction or a payload change — so
+    no part of the place allowance outlives the region age the kernel accepts
+    (`place_region_max_age_s`, 2 × the voxel deadline; the kernel independently drops an older
+    region as `region_stale`). Set-down and release therefore have to finish within the freeze.
+  - Tests: `tests/unit/test_place_target_leg.py` (table, shelf boards, headroom, edge, clutter,
+    occlusion freeze bounded by the kernel's region age, hint, release), live
+    `tests/integration/test_place_target_leg_live.py` and
+    `tests/integration/test_place_target_release_live.py` against the real `safety_kernel_node`.
 - Release: keep the trigger's DETACH (position stall: the jaw opened past its hold) as "jaws
   opened", but keep the object as an attached record
   (frozen at the DETACH-stamp FK pose, still checked against arm and world) until every finger
@@ -343,16 +385,16 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   A place witness armed while held carries onto the frozen record (same object and stamp, so
   the kernel's latch key does not change) until the window closes, keeping the support patch
   exempt in the kernel and partitioned by the octomap bridge — proven against the real kernel
-  by `tests/integration/test_place_fixture_release_live.py`.
+  by `tests/integration/test_place_target_release_live.py`.
 - Open: fingers vs shelf at the 20 mm link margin. Either accept and measure finger-shelf
-  clearance in the attended runs first, or extend the map-verified region's allowance to the
+  clearance in the attended runs first, or extend the measured region's allowance to the
   finger link for cells inside the region and below the plane + 1 voxel — the same exemption class
   as §2.1, WG.
 
 ### 2.4 Shared declaration
 
-Extend `PlaceDeclaration` additively or add a `TaskDeclaration`: `grasp_target` (id + source
-fixture), `place_target` (id + fixture), `object_id`, `rskill_id`, `trace_id`, `stamp_ns`,
+Extend `PlaceDeclaration` additively or add a `TaskDeclaration`: `grasp_target` (id + search
+box), `place_target` (optional hint), `object_id`, `rskill_id`, `trace_id`, `stamp_ns`,
 `timeout_s`, `active`, monotonic `revision`. One runner arm/retract lifecycle, one producer (the
 single `/openral/attachment_state` authority), per-arm gripper legs, one heartbeat. A grasp
 exemption never applies to the place target and vice versa: scope each by its own `target_id`
@@ -372,7 +414,7 @@ Everything is off by default until the last step; nothing before it can actuate.
 | 5 | `test(hil)`: attended OpenArm position-stall measurement (gripper-only motion, user at the E-stop): close on nothing / foam / the restock box / a thin card, per side | HIL | effort is settled — the driver hard-codes it to 0 (§1.6); this calibrates `closure_calibration` (rest offset, stall gap, settle tolerance) and measures the thin-object false negative |
 | 6 | `feat(kernel)`: `GraspDeclaration` across IDL/core/world-state/runner/HAL/launch/kernel + conservativeness tests | all | **ADR + hazard log; split (>800 lines)**. *Wire landed* (IDL, `openral_core.GraspDeclaration`, World State relay, runner arm/retract on `/openral/grasp_declaration`, CLI/launch `grasp_declaration_json`, committed target in `scenes/deploy/openarm_real_world_voxels.yaml`); the sim producer landed (`SimAttachmentEvidenceTracker.set_grasp_declaration` / `grasp_declaration`: the target subtree's box, base frame, no geometry, on every `AttachmentState` envelope), the launch flag `DeployRuntime.grasp_allowance_enabled` (default off) with the always-passed manifest-derived `grasp_contact_links`, and the kernel consumer landed (`ingest_grasp_declaration`, default off; per-candidate scoping, handover retirement against the region latched at handover, proven on the twin control pair `tests/sim/test_gripper_twin_hal_mujoco_grasp_pair.py`); the real producer pending |
 | 7 | `feat(perception)`: pre-grasp target producer (search box → SAM 2.1 → OBB → region), tracking, handover | HAL/perception | develop on the twin pass (real ZED, twin HAL). *Producer leg implemented, default off* (`_grasp_target_leg`); the OpenArm scene's committed declaration carries no `search_box` yet, and the thresholds are uncalibrated. *Approach-armed target implemented, default off* (`grasp_target_approach_m`; §2.2): no named target needed, one hand at a time, kernel refuses two-hand declarations |
-| 8 | `feat(hal)`: place on real — unit fixture + map verification + proximity witness + frozen release | HAL, bridge | **ADR-0097/0092 amendments**. *Schema landed*: `openral_core.UnitFixture` on `RobotUnit.fixtures` (checked by `fixture_problems` in `load_robot_unit`) and `AttachmentEvidenceKind.DECLARED_FIXTURE`; no unit carries a fixture yet and no producer reads one Frozen release window implemented* in the vision leg (§2.3 "Release"); fixture, map verification and witness pending . *Producer leg implemented, default off* (`_place_fixture_leg`, `vision_attachment_place_fixture_enabled`): resolves the declaration's `target_id` to a unit fixture, verifies its top face and the free volume above it against the live voxel map (unverified → region-less, reason logged), ships the fixture box as the region (no geometry), and attests the `DECLARED_FIXTURE` proximity witness once per declaration; the frozen release and the finger allowance are not part of it, and the thresholds are uncalibrated |
+| 8 | `feat(hal)`: place on real — surface measured under the carried payload + proximity witness + frozen release | HAL, bridge | **ADR-0097/0092 amendments**. *Frozen release window implemented* in the vision leg (§2.3 "Release"). *Producer leg implemented, default off* (`_place_target_leg`, `vision_attachment_place_target_enabled`): no surveyed fixture and no named target — it measures the support patch directly under the held payload in the live voxel map, latches it (re-verified, frozen under the kernel's region age bound on a lost view), declares it itself as `surface:under:<object_id>` when dispatch named nothing (an optional reasoner-grounded `PlaceDeclaration.search_box` only narrows it), and attests the `MAP_SUPPORT_PROXIMITY` witness. `UnitFixture` / `RobotUnit.fixtures` / `DECLARED_FIXTURE` were removed (never released, no committed unit carried one). The finger allowance is not part of it, and the thresholds are uncalibrated |
 | 9 | `feat(scenes)`: enable on the Thor scene with measured thresholds | scenes | only after 5's verdict |
 
 Steps 0-3 are plain bug fixes on code that exists and can start now. Step 4 is where safety
@@ -408,9 +450,10 @@ decide; 7 and 8 need the attended cell for calibration.
    `GRIPPER_CLOSURE` box (collision-conservative, but a phantom box can clear map cells); detach
    is trigger-only (vision is never asked to keep a payload the jaws released) — whether a
    refused confirmation should instead withhold the attachment is a WG decision.
-4. ADR-0097 amendment (unit-surveyed + map-verified fixture = measured region on fixed bases);
-   ADR-0092 D6 amendment (proximity witness); the ADR-0098 joint-play offset if adopted;
-   the frozen-release window; finger allowance inside the place region.
+4. ADR-0097 amendment (the producer may declare, region and all, the surface it measured under
+   the carried payload — no dispatch naming); ADR-0092 D6 amendment (proximity to a map-measured
+   plane); hazard "a measured surface is not a support"; the ADR-0098 joint-play offset if
+   adopted; the frozen-release window; finger allowance inside the place region.
 5. Bimanual attachment (two attach links) — shared by both halves.
 
 ## 5. Measure before deciding (attended, cell)

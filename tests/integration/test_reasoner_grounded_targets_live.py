@@ -1,19 +1,20 @@
 """Live: a reasoner-named grasp/place target reaches the ExecuteRskill goal, grounded.
 
 The reasoner names, perception grounds, the producer measures (real pick-and-place design
-§2.2). Real ``ReasonerNode`` (OpenArm manifest via ``robot_yaml``), real
-``/openral/world_state_slow`` carrying a lifted box (the wire now keeps the lift's
+§2.2-2.3). Real ``ReasonerNode`` (OpenArm manifest via ``robot_yaml``), real
+``/openral/world_state_slow`` carrying lifted boxes (the wire keeps the lift's
 ``bbox_3d``), real ``ExecuteRskill`` ActionServer recording the goal it receives:
 
-* a named ``box`` + ``cell:shelf_top`` reach the goal as a seed-only ``GraspDeclaration``
-  (``search_box_valid``, no region) and a region-less ``PlaceDeclaration``;
+* a named ``box`` + an optional ``shelf`` surface reach the goal as a seed-only
+  ``GraspDeclaration`` (``search_box_valid``, no region) and a region-less
+  ``PlaceDeclaration`` whose ``search_box`` is the padded shelf box — nothing surveyed;
+* with no place target (the normal case: the policy picks the spot, the producer measures
+  the surface under the payload) the goal carries no place declaration at all;
 * two boxes and no ``object_id`` refuse the dispatch — no goal is sent;
 * no ``contact_links`` on the bimanual OpenArm refuses too — defaulting would exempt both hands.
 
 The only double is the LLM (``FakeToolUseClient``, never consulted: the tool call is fed
-to the dispatch directly). The unit is the test fixture overlay, set on the node because
-``load_robot_unit`` only reads ``robots/<id>/units/`` and no real OpenArm unit surveys a
-fixture yet.
+to the dispatch directly).
 
 Gated on ``OPENRAL_TEST_ROS_LIVE=1`` (``just test-ros-live -k grounded_targets``).
 """
@@ -56,11 +57,27 @@ def _box(y: float) -> Any:
     )
 
 
+def _shelf() -> Any:
+    from openral_core import DetectedObject, Pose6D
+
+    return DetectedObject(
+        label="shelf",
+        confidence=0.8,
+        pose=Pose6D(
+            xyz=(0.45, 0.25, 0.10), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="openarm_base"
+        ),
+        bbox_3d=(0.30, 0.10, 0.0, 0.60, 0.40, 0.20),
+    )
+
+
 _LEFT = ("openarm_left_finger_pair",)
 
 
 def _run(
-    objects: list[Any], contact_links: tuple[str, ...] = _LEFT, voxel_m: float | None = 0.02
+    objects: list[Any],
+    contact_links: tuple[str, ...] = _LEFT,
+    voxel_m: float | None = 0.02,
+    place: bool = True,
 ) -> tuple[list[Any], Any]:
     """Publish ``objects`` as the lifted world state, dispatch one named-target call."""
     rclpy = pytest.importorskip("rclpy")
@@ -70,7 +87,6 @@ def _run(
         GraspTargetRef,
         JointState,
         PlaceTargetRef,
-        RobotUnit,
         WaitTool,
         WorldState,
     )
@@ -102,9 +118,6 @@ def _run(
         reasoner.trigger_configure()
         reasoner.trigger_activate()
         assert reasoner._robot_description is not None
-        reasoner._robot_unit = RobotUnit.from_yaml(
-            str(_REPO / "tests/unit/fixtures/robot_units/openarm_shelf_cell.yaml")
-        )
 
         peer = rclpy.create_node("openral_test_grounded_targets_peer")
 
@@ -152,7 +165,7 @@ def _run(
                 prompt="put the box on the shelf",
                 patience_s=30.0,
                 grasp_target=GraspTargetRef(label="box", contact_links=list(contact_links)),
-                place_target=PlaceTargetRef(fixture_id="cell:shelf_top"),
+                place_target=PlaceTargetRef(label="shelf") if place else None,
             ),
             traceparent=None,
         )
@@ -172,7 +185,7 @@ def _run(
 
 
 def test_named_targets_reach_the_goal_as_seed_only_declarations() -> None:
-    received, _ = _run([_box(-0.15)])
+    received, _ = _run([_box(-0.15), _shelf()])
     assert len(received) == 1
     goal = received[0]
     assert goal.grasp_declaration_valid
@@ -187,8 +200,28 @@ def test_named_targets_reach_the_goal_as_seed_only_declarations() -> None:
     assert grasp.search_box.half_extents.y == pytest.approx(0.065, abs=1e-6)
     assert grasp.timeout_s == pytest.approx(40.0)
     assert goal.place_declaration_valid
-    assert goal.place_declaration.target_id == "cell:shelf_top"
-    assert not goal.place_declaration.region_valid
+    place = goal.place_declaration
+    assert place.target_id == "surface:shelf"
+    assert not place.region_valid, "dispatch never supplies a region"
+    assert place.search_box_valid
+    assert place.search_box.frame_id == "openarm_base"
+    assert place.search_box.pose.position.y == pytest.approx(0.25, abs=1e-6)
+    assert place.search_box.half_extents.y == pytest.approx(0.15 + 0.035, abs=1e-6)
+
+
+def test_no_place_target_sends_no_place_declaration() -> None:
+    """Where to place is the policy's: the producer measures under the payload itself."""
+    received, _ = _run([_box(-0.15)], place=False)
+    assert len(received) == 1
+    assert received[0].grasp_declaration_valid
+    assert not received[0].place_declaration_valid
+
+
+def test_a_named_surface_perception_does_not_see_sends_no_goal() -> None:
+    received, last = _run([_box(-0.15)])
+    assert received == []
+    assert last is not None and last.outcome == "failed"
+    assert "place_target 'shelf'" in last.summary
 
 
 def test_an_ambiguous_named_target_sends_no_goal() -> None:

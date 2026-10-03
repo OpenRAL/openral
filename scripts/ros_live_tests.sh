@@ -74,11 +74,12 @@ TARGETS=(
     # search box, the voxel map and a SegmentInView mask; freezes it under a TTL
     # on a lost view, refuses two candidates, dies with the declaration.
     tests/integration/test_grasp_target_leg_live.py
-    # The real place producer leg verifies the declared unit fixture against the
-    # voxel map, ships it as the region, attests the declared_fixture proximity
-    # witness, and retracts both on a stale grid; through a real aggregator into
-    # a real safety kernel (needs the colcon kernel + openral_msgs overlay).
-    tests/integration/test_place_fixture_leg_live.py
+    # The real place producer leg measures the surface under the carried payload
+    # in the voxel map (no fixture, no named target), declares it with a slab
+    # region, attests the map_support_proximity witness, and retracts within the
+    # freeze TTL on a silent grid; through a real aggregator into a real safety
+    # kernel (needs the colcon kernel + openral_msgs overlay).
+    tests/integration/test_place_target_leg_live.py
     # The sim producer measures a dispatched grasp declaration's target box and
     # rides it on every attachment envelope, revision unchanged, until retracted.
     tests/integration/test_sim_bridge_grasp_declaration_live.py

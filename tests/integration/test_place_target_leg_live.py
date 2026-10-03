@@ -1,38 +1,38 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Live-ROS: the real place producer leg verifies a unit fixture against the map.
+"""Live-ROS: the real place producer leg measures the surface under the carried payload.
 
-Real pick-and-place design §2.3 (drafted ADR-0097 / ADR-0092 D6 amendments). Real rclpy,
-a real ``VisionAttachmentBridge`` on the bimanual OpenArm manifest with
-``place_fixture_enabled`` and the test unit's surveyed ``cell:shelf_top``
-(``tests/unit/fixtures/robot_units/openarm_shelf_cell.yaml`` through the real
-``load_robot_unit``), real tf2 (the Thor cell's measured ZED mount and the left hand),
-real ``openral_msgs`` on the wire: a ``PlaceDeclaration`` on
-``/openral/place_declaration``, an ``OccupancyVoxels`` grid on ``/openral/world_voxels``,
-and a position stall on the left gripper so the bridge attaches its fallback box (no depth frame:
-the conservative jaw-span box). Every ``/openral/attachment_state`` goes through a real
-``WorldStateAggregator`` and the World State node's own ``build_world_state_stamped_msg``
-into a real ``safety_kernel_node`` (the real cell's parameters, attached check on).
+Real pick-and-place design §2.3 (drafted ADR-0097 / ADR-0092 D6 amendments). Nothing is
+surveyed and nobody names a place target: real rclpy, a real ``VisionAttachmentBridge``
+on the bimanual OpenArm manifest with ``place_target_enabled``, real tf2 (the Thor cell's
+measured ZED mount and the left hand), real ``openral_msgs`` on the wire: an
+``OccupancyVoxels`` grid with a table top on ``/openral/world_voxels`` and a position
+stall on the left gripper so the bridge attaches its fallback box (no depth frame: the
+conservative jaw-span box). No ``/openral/place_declaration`` is ever published. Every
+``/openral/attachment_state`` goes through a real ``WorldStateAggregator`` and the World
+State node's own ``build_world_state_stamped_msg`` into a real ``safety_kernel_node``
+(the real cell's parameters, attached check on).
 
-Asserts: the declaration rides region-less while the grid has no face (and the kernel's
-``place_region`` diagnostic stays ``-``); with the face mapped the envelope carries the
-fixture box as the region with the specified ``evidence_ref`` and the kernel arms it
-(``live:cell:shelf_top:geom=0``); the hand lowered until the box rests on the face →
-the object carries the ``declared_fixture`` support witness the kernel accepts; the grid
-going silent retracts the region (``grid_stale``) and the witness; the aggregator never
-raises.
+Asserts: the payload held beyond the search depth arms nothing (no declaration on the
+envelope, the kernel's ``place_region`` diagnostic ``-``); lowered to within it, the leg
+declares the surface it measured under the payload itself (``surface:under:<object>``,
+scoped to that payload) with a one-voxel slab on the measured plane as the region and the
+kernel arms it; lowered until the box rests on the table → the object carries the
+``map_support_proximity`` witness the kernel accepts; the grid going silent retracts the
+region and the witness within the freeze TTL and the declaration with them; the region's
+age never passes the producer's bound, and the kernel (set here to half of it) drops the
+aging region on its own as ``region_stale``; the aggregator never raises.
 
 Gated on ``OPENRAL_TEST_ROS_LIVE=1``. Locally::
 
     source /opt/ros/jazzy/setup.bash && source install/setup.bash
     PYTHONPATH=$PWD/packages/world_state:$PYTHONPATH OPENRAL_TEST_ROS_LIVE=1 \\
-        pytest tests/integration/test_place_fixture_leg_live.py
+        pytest tests/integration/test_place_target_leg_live.py
 """
 
 from __future__ import annotations
 
 import os
 import pathlib
-import shutil
 import tempfile
 import threading
 import time
@@ -52,11 +52,10 @@ pytestmark = pytest.mark.skipif(
 
 _REPO = pathlib.Path(__file__).resolve().parents[2]
 _ROBOT_YAML = _REPO / "robots" / "openarm" / "robot.yaml"
-_SHELF_UNIT = _REPO / "tests" / "unit" / "fixtures" / "robot_units" / "openarm_shelf_cell.yaml"
 _BASE = "openarm_base"
 _LINK7 = "openarm_left_link7"
 _RES = 0.02
-_FACE_Z = 0.31  # cell:shelf_top's top face in openarm_base
+_FACE_Z = 0.31  # the table top's measured face in openarm_base
 _ORIGIN = (0.20, -0.46, 0.21)  # cell centres at z = 0.22 + k * 0.02: k=4 is the shelf layer
 _SIZE = (26, 46, 12)
 
@@ -71,7 +70,7 @@ def _wait_until(predicate: Any, *, timeout_s: float = 5.0) -> bool:
 
 
 def _grid(stamp: Any, *, face: bool) -> Any:
-    """The shelf's one cell layer (centres 1 cm under the face) when ``face``, else empty."""
+    """The table's one cell layer (centres 1 cm under the face) when ``face``, else empty."""
     from openral_msgs.msg import OccupancyVoxels
 
     sx, sy, sz = _SIZE
@@ -95,24 +94,7 @@ def _grid(stamp: Any, *, face: bool) -> Any:
     return msg
 
 
-def _declaration_msg(stamp_ns: int) -> Any:
-    from openral_core import PlaceDeclaration
-    from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
-
-    msg = PlaceDeclarationMsg()
-    PlaceDeclaration(
-        target_id="cell:shelf_top",
-        rskill_id="openral/itest-place-fixture",
-        trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
-        timeout_s=120.0,
-        stamp_ns=stamp_ns,
-    ).fill_idl(msg)
-    return msg
-
-
-def test_place_fixture_leg_verifies_attests_and_retracts(
-    tmp_path: pathlib.Path,
-) -> None:
+def test_place_target_leg_measures_declares_attests_and_retracts() -> None:
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
     world_state_ros = pytest.importorskip("openral_world_state_ros.lifecycle_node")
@@ -127,14 +109,12 @@ def test_place_fixture_leg_verifies_attests_and_retracts(
         PlaceDeclaration,
         PlaceRegion,
         RobotDescription,
-        load_robot_unit,
     )
     from openral_hal.vision_attachment_bridge import (
         VisionAttachmentBridge,
         VisionAttachmentConfig,
     )
     from openral_msgs.msg import AttachmentState, OccupancyVoxels, WorldStateStamped
-    from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
     from openral_world_state import WorldStateAggregator
     from rcl_interfaces.msg import Log
     from rclpy.executors import MultiThreadedExecutor
@@ -153,18 +133,16 @@ def test_place_fixture_leg_verifies_attests_and_retracts(
     )
 
     description = RobotDescription.from_yaml(str(_ROBOT_YAML))
-    robot_dir = tmp_path / "openarm"
-    (robot_dir / "units").mkdir(parents=True)
-    shutil.copy(_ROBOT_YAML, robot_dir / "robot.yaml")
-    shutil.copy(_SHELF_UNIT, robot_dir / "units" / "shelf_cell.yaml")
-    unit = load_robot_unit(robot_dir / "robot.yaml", "shelf_cell")
     span = 0.05  # VisionGateConfig.jaw_span_m: the fallback box's half-extent
 
-    kernel_name = f"safety_kernel_place_fixture_{uuid.uuid4().hex[:8]}"
+    kernel_name = f"safety_kernel_place_target_{uuid.uuid4().hex[:8]}"
     params = {
         **_kernel_params(grasp_allowance_enabled=False),
         "attached_collision_enabled": True,
         "world_voxel_max_cells": int(np.prod(_SIZE)),
+        # Half the producer's 2 s freeze, so the kernel's OWN stale-region drop is seen
+        # (the deploy sets both to 2 x the voxel deadline; the kernel is the backstop).
+        "place_region_max_age_s": 1.0,
     }
     with tempfile.TemporaryDirectory() as td:
         log_path = pathlib.Path(td) / "kernel.log"
@@ -178,8 +156,8 @@ def test_place_fixture_leg_verifies_attests_and_retracts(
         try:
             time.sleep(1.5)
             rclpy.init()
-            node = Node("test_place_fixture_hal")
-            peer = Node("test_place_fixture_peer")
+            node = Node("test_place_target_hal")
+            peer = Node("test_place_target_peer")
             assert activate_kernel_node(kernel_name, peer), "kernel activation failed"
 
             logs: list[str] = []
@@ -233,9 +211,6 @@ def test_place_fixture_leg_verifies_attests_and_retracts(
             peer.create_subscription(
                 AttachmentState, "/openral/attachment_state", on_state, latched
             )
-            declaration_pub = peer.create_publisher(
-                PlaceDeclarationMsg, "/openral/place_declaration", latched
-            )
             voxel_pub = peer.create_publisher(
                 OccupancyVoxels, "/openral/world_voxels", reliable_kl1
             )
@@ -244,12 +219,12 @@ def test_place_fixture_leg_verifies_attests_and_retracts(
             )
             hand_broadcaster = TransformBroadcaster(peer)
             grid_stamps: list[int] = []
-            # The fallback box's bottom starts well above the free volume (face + 0.10 m).
+            # The fallback box's bottom starts beyond the search depth (0.20 m) of the face.
             state: dict[str, Any] = {
                 "grid": True,
-                "face": False,
+                "face": True,
                 "loaded": False,
-                "bottom": 0.50,
+                "bottom": _FACE_Z + 0.30,
                 "box_in_link": np.zeros(3),  # the attachment's pose_in_link, once attached
             }
 
@@ -270,11 +245,9 @@ def test_place_fixture_leg_verifies_attests_and_retracts(
                 description,
                 config=VisionAttachmentConfig(
                     camera="head_zed",
-                    depth_topic="/test_place_fixture/depth",  # never published
-                    service_name="/openral/perception/segment_in_view_place_fixture_itest",
-                    place_fixture_enabled=True,
-                    unit_fixtures=unit.fixtures,
-                    robot_unit=unit.unit,
+                    depth_topic="/test_place_target/depth",  # never published
+                    service_name="/openral/perception/segment_in_view_place_target_itest",
+                    place_target_enabled=True,
                 ),
             )
 
@@ -326,55 +299,46 @@ def test_place_fixture_leg_verifies_attests_and_retracts(
                 )
 
             def place_lines() -> list[str]:
-                return [line for line in logs if "place_fixture" in line]
+                return [line for line in logs if "place_target" in line]
 
             try:
-                # ── 1. No face in the map: the declaration rides region-less. ─────
-                declaration_pub.publish(_declaration_msg(int(node.get_clock().now().nanoseconds)))
+                # ── 1. Held high above the table: nothing is declared. ──────────
                 state["loaded"] = True  # ATTACH → the fallback box (no depth frame)
                 assert _wait_until(
-                    lambda: (
-                        latest() is not None
-                        and latest().place_declaration_valid
-                        and len(latest().objects) == 1
-                    ),
-                    timeout_s=10.0,
-                ), f"no declaration + payload on the envelope; {place_lines()}"
+                    lambda: latest() is not None and len(latest().objects) == 1, timeout_s=10.0
+                ), f"no payload on the envelope; {place_lines()}"
                 assert _wait_until(
-                    lambda: any("reason=face_missing" in line for line in place_lines()),
+                    lambda: any("reason=no_surface" in line for line in place_lines()),
                     timeout_s=5.0,
                 ), place_lines()
-                assert not region_valid()
-                assert latest().place_declaration.target_id == "cell:shelf_top"
+                assert not latest().place_declaration_valid, "nothing measured, nothing declared"
                 assert _wait_until(lambda: diagnostics.get("place_region") == "-", timeout_s=5.0)
 
-                # ── 2. The face mapped: the fixture box is the region; the kernel arms it.
-                state["face"] = True
+                # ── 2. Lowered over the table: the leg declares what it measured. ─
+                payload = AttachedCollisionObject.from_idl(latest().objects[0])
+                state["box_in_link"] = np.asarray(payload.pose_in_link.xyz)
+                state["bottom"] = _FACE_Z + 0.10
                 assert _wait_until(region_valid, timeout_s=5.0), place_lines()
                 declared = latest().place_declaration
+                target = f"surface:under:{payload.object_id}"
+                assert declared.target_id == target
+                assert declared.object_id == payload.object_id, "scoped to the carried payload"
                 region = PlaceRegion.from_idl(declared.region)
-                fixture = unit.fixture("cell:shelf_top")
                 assert region.frame_id == _BASE
-                assert region.pose.xyz == pytest.approx(fixture.pose.xyz)
-                assert region.half_extents == pytest.approx(fixture.half_extents)
                 assert region.geometry == ()
+                assert region.half_extents[2] == pytest.approx(_RES / 2)
+                assert region.pose.xyz[2] == pytest.approx(_FACE_Z - _RES / 2)
+                assert region.pose.xyz[0] == pytest.approx(0.45, abs=_RES)
+                assert region.pose.xyz[1] == pytest.approx(0.0, abs=_RES)
                 assert region.stamp_ns in grid_stamps, "region stamp is not a grid stamp"
-                assert region.evidence_ref == (
-                    f"unit_fixture:shelf_cell/cell:shelf_top@2026-10-02;"
-                    f"map_verified@{region.stamp_ns}"
-                )
-                assert declared.rskill_id == "openral/itest-place-fixture"
+                assert "map_measured_support:plane_z=0.310" in region.evidence_ref
                 assert latest().objects[0].support_contact_valid is False
                 assert _wait_until(
-                    lambda: diagnostics.get("place_region") == "live:cell:shelf_top:geom=0",
+                    lambda: diagnostics.get("place_region") == f"live:{target}:geom=0",
                     timeout_s=5.0,
                 ), diagnostics
 
-                # ── 3. The box rests on the face: the declared_fixture witness. ───
-                # Read the box's offset in link7 off the wire (no depth frame: the bridge
-                # puts it wherever its fallback does), then lower the hand onto the face.
-                payload = AttachedCollisionObject.from_idl(latest().objects[0])
-                state["box_in_link"] = np.asarray(payload.pose_in_link.xyz)
+                # ── 3. The box rests on the table: the map-support witness. ───────
                 state["bottom"] = _FACE_Z + 0.004
                 assert _wait_until(
                     lambda: latest().objects and latest().objects[0].support_contact_valid,
@@ -382,8 +346,8 @@ def test_place_fixture_leg_verifies_attests_and_retracts(
                 ), place_lines()
                 witness = AttachedCollisionObject.from_idl(latest().objects[0]).support_contact
                 assert witness is not None
-                assert witness.support_id == "cell:shelf_top"
-                assert witness.evidence_kind is AttachmentEvidenceKind.DECLARED_FIXTURE
+                assert witness.support_id == target
+                assert witness.evidence_kind is AttachmentEvidenceKind.MAP_SUPPORT_PROXIMITY
                 assert "not sensed contact" in (witness.evidence_ref or "")
                 assert witness.max_penetration_m == pytest.approx(0.01)
                 assert 0.0 < witness.patch_radius_m <= 0.5
@@ -391,23 +355,37 @@ def test_place_fixture_leg_verifies_attests_and_retracts(
                 assert any("not sensed contact" in line for line in place_lines())
                 assert _wait_until(
                     lambda: (
-                        "safety.support_witness_armed object=grasped_payload:left_gripper "
-                        "support=cell:shelf_top" in log_path.read_text(errors="replace")
+                        f"safety.support_witness_armed object={payload.object_id} "
+                        f"support={target}" in log_path.read_text(errors="replace")
                     ),
                     timeout_s=5.0,
                 ), "the kernel did not accept the witness"
-                assert region_valid(), f"the resting payload failed its own check: {place_lines()}"
 
-                # ── 4. The grid stops: region and witness retracted. ──────────────
+                # ── 4. The grid stops: region, witness and declaration retracted. ─
                 state["grid"] = False
-                assert _wait_until(lambda: not region_valid(), timeout_s=3.0), (
-                    "region outlived the grid"
+                bound_ns = int(2 * VisionAttachmentConfig().grid_max_age_s * 1e9)
+
+                def aged_within_bound() -> bool:
+                    msg = latest()
+                    if msg.place_declaration_valid and msg.place_declaration.region_valid:
+                        now = int(peer.get_clock().now().nanoseconds)
+                        assert now - int(msg.place_declaration.region.stamp_ns) <= bound_ns + int(
+                            2e8
+                        ), "a published region outlived the kernel's age bound"
+                        return False
+                    return True
+
+                assert _wait_until(aged_within_bound, timeout_s=5.0), "region outlived the grid"
+                assert any("reason=freeze_ttl" in line for line in place_lines()), place_lines()
+                assert "reason=region_stale" in log_path.read_text(errors="replace"), (
+                    "the kernel never dropped the aging region on its own bound"
                 )
-                assert latest().place_declaration_valid, "the declaration itself stays"
-                assert any("reason=grid_stale" in line for line in place_lines())
+                assert _wait_until(lambda: not latest().place_declaration_valid, timeout_s=2.0), (
+                    "the self-declaration outlived its region"
+                )
                 assert _wait_until(
                     lambda: not latest().objects[0].support_contact_valid, timeout_s=2.0
-                ), "witness outlived the verification"
+                ), "witness outlived the region"
                 assert _wait_until(lambda: diagnostics.get("place_region") == "-", timeout_s=5.0), (
                     diagnostics
                 )

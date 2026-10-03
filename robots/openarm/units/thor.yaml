@@ -54,34 +54,3 @@ sensors:
         width: 640
         height: 480
         fps: 30
-#
-# Surveyed fixtures (`fixtures:`, a list of `UnitFixture`): none yet. A place / grasp target
-# this cell's furniture provides (the shelf, the front box's table) goes here as
-#   - id: "cell:shelf_top"        # the target_id a place / grasp declaration names
-#     frame_id: openarm_base      # must be the manifest's base_frame (fixed-base robots only)
-#     pose: {xyz: [...], quat_xyzw: [...], frame_id: openarm_base}   # box centre
-#     half_extents: [...]         # m, each <= 1.5, volume <= 8 m^3 (the place-region caps)
-#     top_plane_normal: [0.0, 0.0, 1.0]
-#     survey_uncertainty_m: ...   # (0, 0.05]
-#     surveyed_on: YYYY-MM-DD
-#     surveyed_by: ...
-#     method: ...                 # how it was measured, as for head_zed's mount above
-# Every value must be MEASURED on this cell, never estimated. A fixture is a declared volume
-# that arms nothing by itself: the producer verifies it live against the voxel map before it
-# becomes a place region (real pick-and-place design §2.3; ADR-0097 amendment, drafted).
-
-# Candidate place FIXTURE, read off the live voxel map on Thor (2026-10-03, arms at rest): the
-# bench top spans x 0.13-0.73, y -0.53-0.51 with its face at z = -0.32 (0.378 m above the floor,
-# which is 0.698 m below openarm_base). NOT a survey: confirm the face height and extents with a
-# tape measure, fill in surveyed_by/method, and only then uncomment. The producer still verifies
-# the face live against the map before it arms anything (design note §2.3).
-#   fixtures:
-#     - id: cell:bench_top
-#       frame_id: openarm_base
-#       pose: {frame_id: openarm_base, xyz: [0.43, -0.01, -0.435], quat_xyzw: [0.0, 0.0, 0.0, 1.0]}
-#       half_extents: [0.30, 0.52, 0.115]      # top face at z = -0.32
-#       top_plane_normal: [0.0, 0.0, 1.0]
-#       survey_uncertainty_m: 0.02
-#       surveyed_on: 2026-10-03
-#       surveyed_by: "<name>"
-#       method: "map-derived candidate; tape measure confirmation pending"

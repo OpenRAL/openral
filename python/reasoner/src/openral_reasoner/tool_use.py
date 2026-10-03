@@ -29,7 +29,7 @@ import base64
 import hashlib
 import json
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import structlog
@@ -49,7 +49,6 @@ from openral_core import (
     ReasonerModel,
     ReasonerToolCall,
     RobotCapabilities,
-    UnitFixture,
 )
 from openral_core.exceptions import (
     ROSConfigError,
@@ -302,9 +301,11 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "picks, so leave grasp_target unset unless you must pin one object. To pin "
     "one, name it by its perception label, and when memory has it, "
     "recall_object first and pass the instance's node_id as object_id "
-    "(required when several objects share the label). When it places onto a "
-    "fixture, set place_target to one "
-    "of the fixture ids listed under THIS ROBOT. Perception grounds what you "
+    "(required when several objects share the label). Where to set an object "
+    "down is the skill's job too: the surface under the carried payload is "
+    "measured from the map, so place_target is optional — set it only to "
+    "restrict the place to one labelled surface (a shelf, a table). Perception "
+    "grounds what you "
     "name; a target that grounds to nothing or to several objects refuses the "
     "dispatch. Naming a target arms nothing by itself: the safety kernel only "
     "trusts the region its producer measures. "
@@ -332,7 +333,6 @@ def render_robot_context_prompt(
     capabilities: RobotCapabilities | None,
     *,
     base_prompt: str = DEFAULT_SYSTEM_PROMPT,
-    fixtures: Sequence[UnitFixture] = (),
 ) -> str:
     """Append a ``## THIS ROBOT`` body-awareness block to the system prompt.
 
@@ -355,8 +355,6 @@ def render_robot_context_prompt(
             no robot manifest has been loaded.
         base_prompt: The system prompt to extend. Defaults to
             ``DEFAULT_SYSTEM_PROMPT``.
-        fixtures: The robot unit's surveyed fixtures (``RobotUnit.fixtures``),
-            listed one per line as the ``place_target.fixture_id`` choices.
 
     Returns:
         ``base_prompt`` with a trailing ``## THIS ROBOT`` section, or
@@ -434,10 +432,6 @@ def render_robot_context_prompt(
         modes = ", ".join(m.value for m in capabilities.supported_control_modes)
         lines.append(f"control_modes: {modes}")
 
-    if fixtures:
-        lines.append("fixtures (the place_target.fixture_id choices):")
-        lines.extend(f"- {f.id}: {f.notes or f.method}" for f in fixtures)
-
     return base_prompt.rstrip() + "\n\n" + "\n".join(lines) + "\n"
 
 
@@ -453,7 +447,6 @@ def resolve_reasoner_system_prompt(
     capabilities: RobotCapabilities | None,
     *,
     env: Mapping[str, str] | None = None,
-    fixtures: Sequence[UnitFixture] = (),
 ) -> str:
     """Compose the reasoner system prompt from the env override + robot block.
 
@@ -472,8 +465,6 @@ def resolve_reasoner_system_prompt(
             block is appended).
         env: Environment mapping to read; defaults to ``os.environ``.
             Injectable so tests don't mutate the process environment.
-        fixtures: The robot unit's fixtures, forwarded to
-            ``render_robot_context_prompt``.
 
     Returns:
         The fully-composed system prompt string.
@@ -495,7 +486,7 @@ def resolve_reasoner_system_prompt(
     environ = os.environ if env is None else env
     override = environ.get(SYSTEM_PROMPT_ENV_VAR, "").strip()
     base_prompt = override or DEFAULT_SYSTEM_PROMPT
-    return render_robot_context_prompt(capabilities, base_prompt=base_prompt, fixtures=fixtures)
+    return render_robot_context_prompt(capabilities, base_prompt=base_prompt)
 
 
 @runtime_checkable

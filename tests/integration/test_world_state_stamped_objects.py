@@ -231,6 +231,13 @@ def test_a_sim_stamped_declaration_survives_the_whole_delivery_seam() -> None:
             evidence_ref="mujoco_body_subtree:cab_1_left_group_main",
             stamp_ns=sim_arm_ns,
         ),
+        # The reasoner's optional hint naming the surface: relayed untouched.
+        search_box=PlaceRegion(
+            frame_id="base_link",
+            pose=Pose6D(xyz=(0.62, 0.0, 1.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="base_link"),
+            half_extents=(0.3, 0.3, 0.2),
+            evidence_ref="reasoner_seed:detection 'cabinet'",
+        ),
     )
     attachments = [_attached("baguette_seed1", BoxShape(half_extents_m=(0.12, 0.025, 0.025)))]
     state_msg = AttachmentState()
@@ -264,6 +271,8 @@ def test_a_sim_stamped_declaration_survives_the_whole_delivery_seam() -> None:
         assert msg.place_declaration.region.frame_id == "base_link"
         assert msg.place_declaration.region.half_extents.x == pytest.approx(0.18)
         assert msg.place_declaration.region.half_extents.z == pytest.approx(0.45)
+        assert msg.place_declaration.search_box_valid is True
+        assert msg.place_declaration.search_box.half_extents.x == pytest.approx(0.3)
 
         # And the backstop still bites, driven by the stream's clock: a
         # heartbeat 61 s of simulator time later carries the same declaration

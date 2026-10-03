@@ -333,6 +333,7 @@ def test_a_dispatch_supplied_region_never_leaves_this_node() -> None:
             timeout_s=30.0,
             stamp_ns=0,
             region=claimed,
+            search_box=claimed,
         ).fill_idl(request.place_declaration)
         assert request.place_declaration.region_valid, "the goal must really carry a region"
         runtime.skill_runner_node._arm_place_declaration(
@@ -344,6 +345,8 @@ def test_a_dispatch_supplied_region_never_leaves_this_node() -> None:
     assert active, "no declaration was armed"
     assert active[-1].target_id == _TARGET, "the target itself must survive"
     assert not active[-1].region_valid, "a dispatch-supplied region reached the kernel's path"
+    assert active[-1].search_box_valid, "the search box is only a hint; it must pass"
+    assert active[-1].search_box.evidence_ref == "dispatch_claim:not_a_measurement"
 
 
 def test_an_exception_escaping_the_executor_still_retracts() -> None:

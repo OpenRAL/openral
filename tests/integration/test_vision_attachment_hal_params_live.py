@@ -44,7 +44,7 @@ def test_scene_vision_params_are_declared_by_the_hal(
         enabled=True,
         evidence_timeout_s=0.75,
         grasp_target_enabled=True,
-        place_fixture_enabled=True,
+        place_target_enabled=True,
     )
     scene = tmp_path / "vision_leg.yaml"
     scene.write_text(yaml.safe_dump(data), encoding="utf-8")

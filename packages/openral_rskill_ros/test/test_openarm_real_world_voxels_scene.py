@@ -366,7 +366,7 @@ def test_the_vision_leg_on_real_turns_the_kernel_attached_check_on(
         "vision_attachment_evidence_timeout_s": 0.5,
         "vision_attachment_grasp_target_enabled": False,
         "vision_attachment_grasp_target_approach_m": 0.0,
-        "vision_attachment_place_fixture_enabled": False,
+        "vision_attachment_place_target_enabled": False,
         "vision_attachment_release_timeout_s": 3.0,
         "vision_attachment_tf_frames": [
             "openarm_left_link7=openarm_left_ee_base_link",

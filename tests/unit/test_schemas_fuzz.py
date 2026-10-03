@@ -57,6 +57,7 @@ from openral_core.schemas import (
     LinkCollisionGeometry,
     OccupancyGridRef,
     PhysicsBackend,
+    PlaceDeclaration,
     PlaceRegion,
     PlaceTargetRef,
     Pose6D,
@@ -102,7 +103,6 @@ from openral_core.schemas import (
     SphereShape,
     TaskSpec,
     TickResult,
-    UnitFixture,
     VisionAttachmentRuntime,
     VLASpec,
     WaitTool,
@@ -292,36 +292,11 @@ _pose6d_st = st.builds(
 )
 
 
-@st.composite
-def _unit_fixture(draw: st.DrawFn) -> UnitFixture:
-    frame = draw(_name)
-    half = st.floats(min_value=1e-3, max_value=1.0)
-    return UnitFixture(
-        id=f"cell:{draw(_name)}",
-        frame_id=frame,
-        pose=Pose6D(
-            xyz=draw(st.tuples(_safe_float, _safe_float, _safe_float)),
-            quat_xyzw=draw(st.sampled_from([(0.0, 0.0, 0.0, 1.0), (0.0, 0.0, 1.0, 0.0)])),
-            frame_id=frame,
-        ),
-        half_extents=draw(st.tuples(half, half, half)),
-        top_plane_normal=draw(st.sampled_from([(0.0, 0.0, 1.0), (1.0, 0.0, 0.0)])),
-        survey_uncertainty_m=draw(st.floats(min_value=1e-4, max_value=0.05)),
-        surveyed_on=draw(st.dates()),
-        surveyed_by=draw(_name),
-        method=draw(_name),
-        notes=draw(st.none() | _name),
-    )
-
-
-_unit_fixture_st = _unit_fixture()
-
 _robot_unit_st = st.builds(
     RobotUnit,
     robot_id=_name,
     unit=_name,
     sensors=st.lists(_sensor_overlay_st, max_size=3),
-    fixtures=st.lists(_unit_fixture_st, max_size=3, unique_by=lambda f: f.id),
 )
 
 _detected_object_st = st.builds(
@@ -356,6 +331,19 @@ _grasp_declaration_st = st.builds(
     region=st.none() | _grasp_region_st,
 )
 
+_place_declaration_st = st.builds(
+    PlaceDeclaration,
+    target_id=_name,
+    object_id=st.text(max_size=16),
+    rskill_id=st.text(max_size=16),
+    trace_id=st.text(max_size=16),
+    timeout_s=st.floats(min_value=1e-3, max_value=PlaceDeclaration.MAX_TIMEOUT_S),
+    stamp_ns=_ns,
+    active=st.booleans(),
+    region=st.none() | _grasp_region_st,
+    search_box=st.none() | _grasp_region_st,
+)
+
 _grasp_target_ref_st = st.builds(
     GraspTargetRef,
     label=_name,
@@ -363,8 +351,8 @@ _grasp_target_ref_st = st.builds(
     contact_links=st.lists(_name, max_size=3),
 )
 _place_target_ref_st = st.one_of(
-    st.builds(PlaceTargetRef, fixture_id=_name.map(lambda n: f"cell:{n}")),
-    st.builds(PlaceTargetRef, place_node_id=_name),
+    st.builds(PlaceTargetRef, label=_name, object_id=st.none() | _name),
+    st.builds(PlaceTargetRef, label=_name, place_node_id=_name),
 )
 _execute_rskill_tool_st = st.builds(
     ExecuteRskillTool,
@@ -483,7 +471,7 @@ _vision_attachment_st = st.builds(
     evidence_timeout_s=st.floats(min_value=0.01, max_value=5.0),
     tf_frames=st.dictionaries(_name, _name, max_size=3),
     grasp_target_enabled=st.booleans(),
-    place_fixture_enabled=st.booleans(),
+    place_target_enabled=st.booleans(),
     release_timeout_s=st.floats(min_value=0.01, max_value=30.0),
 )
 _deploy_runtime_st = st.builds(
@@ -584,13 +572,6 @@ def test_fuzz_sensor_overlay(instance: SensorOverlay) -> None:
 def test_fuzz_robot_unit(instance: RobotUnit) -> None:
     """RobotUnit round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(RobotUnit, instance)
-
-
-@_FUZZ_SETTINGS
-@given(_unit_fixture_st)
-def test_fuzz_unit_fixture(instance: UnitFixture) -> None:
-    """UnitFixture round-trips through JSON and validates against its schema."""
-    _round_trip_and_validate(UnitFixture, instance)
 
 
 @_FUZZ_SETTINGS
@@ -703,6 +684,13 @@ def test_fuzz_place_target_ref(instance: PlaceTargetRef) -> None:
 def test_fuzz_execute_rskill_tool_with_targets(instance: ExecuteRskillTool) -> None:
     """ExecuteRskillTool with named targets round-trips and validates against its schema."""
     _round_trip_and_validate(ExecuteRskillTool, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_place_declaration_st)
+def test_fuzz_place_declaration(instance: PlaceDeclaration) -> None:
+    """PlaceDeclaration (with an optional search box) round-trips and validates."""
+    _round_trip_and_validate(PlaceDeclaration, instance)
 
 
 @_FUZZ_SETTINGS
