@@ -54,6 +54,27 @@ The reasoner's own cascade re-prompts (`spatial_memory` / `detector` /
 `scene_vlm` / `reward_monitor` / `memory` / `mission` frame_ids) never rebuild
 the mission and never reset the search budgets or retry-cap streak.
 
+**Grasp / place targets — the reasoner names, perception grounds, the producer
+measures** (real pick-and-place design §2.2). `ExecuteRskillTool` carries two
+optional fields:
+
+| Field | Type | Grounded at dispatch into |
+|---|---|---|
+| `grasp_target` | `GraspTargetRef{label, object_id?, contact_links=[]}` | a `GraspDeclaration` on the goal: `target_id="obj:<label or node_id>"`, `contact_links` (empty = the manifest's `role: gripper` `child_link`s), `timeout_s` = patience + 10 s (capped), `search_box` = the 3D box of the recalled memory node (`object_id`) or of the ONE live lifted detection on `/openral/world_state_slow` carrying the label, padded by `grasp_target_voxel_m` + `grasp_target_extrinsic_error_m` sideways and upward (never downward: its bottom face is the producer's support plane) and gravity-aligned in the base frame. **Never a `region`.** |
+| `place_target` | `PlaceTargetRef{fixture_id \| place_node_id}` | a region-less `PlaceDeclaration(target_id=fixture_id)`; `fixture_id` must be a fixture of the robot unit (`$OPENRAL_ROBOT_UNIT`, else the `robot_unit` param), whose fixtures the system prompt lists. `place_node_id` is refused for now. |
+
+A target that grounds to nothing, to more than one instance with no
+`object_id`, to a box outside the robot base frame, or to an unknown fixture
+refuses the dispatch: no goal is sent, the refusal is logged and recorded as a
+`failed` execution telling the LLM to disambiguate (recall the object and pass
+its `node_id`, look for it, or name a listed fixture). Naming a target arms
+nothing: the runner strips any region, the HAL producers measure, and the
+kernel trusts only the measured region — its trust boundary is unchanged.
+Limits: the label path reads the continuous lift (`locate_in_view`'s one-shot
+2D answer is not lifted), and the lift must run in the robot base frame
+(`object_lift_map_frame`) for the seed to be usable; a map-frame box is refused,
+not transformed.
+
 **Crash-safe ladder resume:** set the `ladder_state_path` ROS parameter to a
 writable JSON path and the mission ledger + every replanning-ladder bound
 (attempts, subdivision offers, decompose nudges, per-task locate budget) is

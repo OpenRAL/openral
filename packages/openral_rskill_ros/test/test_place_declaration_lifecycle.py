@@ -168,8 +168,18 @@ def _scene_declaration_json(*, timeout_s: float = 60.0, object_id: str = "") -> 
     ).model_dump_json()
 
 
-def _run_goal(executor: Any, node: Any, *, deadline_s: float = 0.4, cancel: bool = False) -> None:
-    """Dispatch one real ExecuteRskill goal and let it resolve (or cancel it)."""
+def _run_goal(
+    executor: Any,
+    node: Any,
+    *,
+    deadline_s: float = 0.4,
+    cancel: bool = False,
+    fill_goal: Any = None,
+) -> None:
+    """Dispatch one real ExecuteRskill goal and let it resolve (or cancel it).
+
+    ``fill_goal(goal)``, when given, adds goal-carried fields (e.g. a declaration).
+    """
     from openral_msgs.action import ExecuteRskill
     from rclpy.action import ActionClient
 
@@ -182,6 +192,8 @@ def _run_goal(executor: Any, node: Any, *, deadline_s: float = 0.4, cancel: bool
     goal.prompt = "put the baguette in the cabinet"
     goal.prompt_metadata_json = ""
     goal.deadline_s = deadline_s
+    if fill_goal is not None:
+        fill_goal(goal)
     send_future = client.send_goal_async(goal)
     deadline = time.monotonic() + 3.0
     while not send_future.done() and time.monotonic() < deadline:

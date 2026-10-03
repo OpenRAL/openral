@@ -1,6 +1,80 @@
 {
+  "$defs": {
+    "GraspTargetRef": {
+      "additionalProperties": false,
+      "description": "The object an ``ExecuteRskillTool`` goal grasps, as the reasoner names it.\n\nThe reasoner **names**; perception **grounds**; the producer **measures**\n(real pick-and-place design \u00a72.2). At dispatch the reasoner resolves this\nreference to a seed box in the robot base frame \u2014 a recalled spatial-memory\nnode's 3D box when ``object_id`` is set, else the one live lifted detection\nwhose label matches \u2014 and sends it as ``GraspDeclaration.search_box``. A\nreference that grounds to nothing, or to more than one instance with no\n``object_id``, is refused and the goal is not sent. Naming arms nothing:\nthe kernel only ever trusts the region the producer measured inside the\nseed.\n\nAttributes:\n    label: Open-vocabulary object label, e.g. ``\"box\"``; matched\n        case-insensitively against the live lifted detections' labels.\n    object_id: A spatial-memory ``node_id`` from ``recall_object`` when the\n        reasoner already knows the instance; ``None`` = ground by ``label``.\n    contact_links: Gripper links the grasp declaration names; empty = every\n        ``role: gripper`` joint's ``child_link`` in the robot manifest.\n\nExample:\n    >>> GraspTargetRef(label=\"box\").contact_links\n    []",
+      "properties": {
+        "label": {
+          "description": "Open-vocabulary label of the ONE object to grasp, as perception labels it (e.g. 'box'). Recall it first when memory has it, and pass its node_id.",
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "object_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "node_id from a recall_object match naming the exact instance; required when more than one object carries the label.",
+          "title": "Object Id"
+        },
+        "contact_links": {
+          "description": "Gripper links to grasp with; leave empty for the robot's gripper links.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Contact Links",
+          "type": "array"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "title": "GraspTargetRef",
+      "type": "object"
+    },
+    "PlaceTargetRef": {
+      "additionalProperties": false,
+      "description": "Where an ``ExecuteRskillTool`` goal places, as the reasoner names it.\n\n``fixture_id`` names one of the robot unit's surveyed fixtures\n(``RobotUnit.fixtures``, listed in the reasoner's system prompt); the\nreasoner sends it as ``PlaceDeclaration.target_id`` and the place producer\nverifies the fixture live against the voxel map before anything arms.\n``place_node_id`` (a recalled place) is accepted by the schema but refused\nat dispatch for now: a free-space place has no producer yet.\n\nAttributes:\n    fixture_id: A ``cell:<name>`` fixture id of the robot unit.\n    place_node_id: A spatial-memory place node id; refused at dispatch today.\n\nExample:\n    >>> PlaceTargetRef(fixture_id=\"cell:shelf_top\").place_node_id is None\n    True",
+      "properties": {
+        "fixture_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Fixture id ('cell:<name>') from the listed unit fixtures to place on.",
+          "title": "Fixture Id"
+        },
+        "place_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Recalled place node id; not supported yet, name a fixture instead.",
+          "title": "Place Node Id"
+        }
+      },
+      "title": "PlaceTargetRef",
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
-  "description": "Tool variant \u2014 invoke an installed, capability-matched rSkill.\n\nDispatch: action goal on ``/openral/execute_rskill`` (the\n``openral_msgs/action/ExecuteRskill`` action server in F1's\n``rskill_runner_node``). The chunk path that follows is\n``Skill \u2192 /openral/candidate_action \u2192 safety_node \u2192\n/openral/safe_action \u2192 HAL``.\n\nAttributes:\n    tool: Discriminator (always ``\"execute_rskill\"``).\n    rskill_id: ``RSkillManifest.name`` of an installed, capable skill.\n        Validated against the local registry by the reasoner at\n        palette-build time; an unknown id raises\n        ``ROSReasonerInvalidPlan``.\n    prompt: Natural-language prompt forwarded to the skill's\n        ``ExecuteRskill`` goal alongside the rskill_id. For VLA\n        skills this is the policy's task-conditioning signal\n        (SmolVLA writes it into ``observation[\"task\"]``); for\n        wrapped-ROS skills it's carried for trace / log context\n        but the actual goal is built from ``goal_params_json``\n        merged over the manifest's ``default_goal_json``.\n    goal_params_json: Serialised JSON object carrying\n        per-skill typed parameters the LLM produces against the\n        skill's ``RSkillManifest.goal_params_schema``. Empty\n        string disables the merge (today's behaviour). Wrapped-ROS\n        skills (``kind: ros_action`` / ``ros_service``) deep-merge\n        it over ``ros_integration.default_goal_json`` at\n        configure-time; VLA skills accept the field and ignore it\n        (their prompt is already the structured signal).\n    deadline_s: Hard deadline in seconds for the action server to\n        complete the goal. ``0`` means \"use the skill manifest's\n        default latency budget\".\n    patience_s: Task-adaptive execution ceiling override (short for a\n        quick grab, long for a precise insertion). ``None`` \u2192 use the\n        reward model's ``default_patience_s``.\n    progress_tolerance: Override the reward model's ``plateau_tolerance``\n        when a task misbehaves (e.g. a noisy critic). ``None`` \u2192 use the\n        model default.",
+  "description": "Tool variant \u2014 invoke an installed, capability-matched rSkill.\n\nDispatch: action goal on ``/openral/execute_rskill`` (the\n``openral_msgs/action/ExecuteRskill`` action server in F1's\n``rskill_runner_node``). The chunk path that follows is\n``Skill \u2192 /openral/candidate_action \u2192 safety_node \u2192\n/openral/safe_action \u2192 HAL``.\n\nAttributes:\n    tool: Discriminator (always ``\"execute_rskill\"``).\n    rskill_id: ``RSkillManifest.name`` of an installed, capable skill.\n        Validated against the local registry by the reasoner at\n        palette-build time; an unknown id raises\n        ``ROSReasonerInvalidPlan``.\n    prompt: Natural-language prompt forwarded to the skill's\n        ``ExecuteRskill`` goal alongside the rskill_id. For VLA\n        skills this is the policy's task-conditioning signal\n        (SmolVLA writes it into ``observation[\"task\"]``); for\n        wrapped-ROS skills it's carried for trace / log context\n        but the actual goal is built from ``goal_params_json``\n        merged over the manifest's ``default_goal_json``.\n    goal_params_json: Serialised JSON object carrying\n        per-skill typed parameters the LLM produces against the\n        skill's ``RSkillManifest.goal_params_schema``. Empty\n        string disables the merge (today's behaviour). Wrapped-ROS\n        skills (``kind: ros_action`` / ``ros_service``) deep-merge\n        it over ``ros_integration.default_goal_json`` at\n        configure-time; VLA skills accept the field and ignore it\n        (their prompt is already the structured signal).\n    deadline_s: Hard deadline in seconds for the action server to\n        complete the goal. ``0`` means \"use the skill manifest's\n        default latency budget\".\n    patience_s: Task-adaptive execution ceiling override (short for a\n        quick grab, long for a precise insertion). ``None`` \u2192 use the\n        reward model's ``default_patience_s``.\n    progress_tolerance: Override the reward model's ``plateau_tolerance``\n        when a task misbehaves (e.g. a noisy critic). ``None`` \u2192 use the\n        model default.\n    grasp_target: The object this goal grasps (``GraspTargetRef``); the\n        reasoner grounds it to a ``GraspDeclaration`` search box at\n        dispatch, or refuses the goal. ``None`` = no grasp declaration.\n    place_target: Where this goal places (``PlaceTargetRef``); grounded to a\n        ``PlaceDeclaration`` on a unit fixture. ``None`` = no place\n        declaration.",
   "properties": {
     "rationale": {
       "default": "",
@@ -59,6 +133,30 @@
       ],
       "default": null,
       "title": "Progress Tolerance"
+    },
+    "grasp_target": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GraspTargetRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Set when the skill grasps an object: name it by label (recall it first when memory has it). Perception grounds it; naming it arms nothing by itself."
+    },
+    "place_target": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlaceTargetRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Set when the skill places onto a fixture: name one of the listed unit fixtures. The producer verifies it against the live map; naming it arms nothing by itself."
     }
   },
   "required": [

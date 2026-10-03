@@ -978,6 +978,12 @@ def world_state_from_idl(msg: object) -> object:
         else None
     )
 
+    labels = list(msg.detected_object_labels)  # type: ignore[attr-defined]
+    # Older publishers send empty bbox arrays; only index-aligned ones are read.
+    valid = list(msg.detected_object_bbox_valid)  # type: ignore[attr-defined]
+    lo = list(msg.detected_object_bbox_min)  # type: ignore[attr-defined]
+    hi = list(msg.detected_object_bbox_max)  # type: ignore[attr-defined]
+    has_boxes = len(valid) == len(lo) == len(hi) == len(labels)
     detected_objects = [
         DetectedObject(
             label=label,
@@ -987,14 +993,21 @@ def world_state_from_idl(msg: object) -> object:
                 quat_xyzw=(0.0, 0.0, 0.0, 1.0),
                 frame_id=msg.detected_object_frame or "map",  # type: ignore[attr-defined]
             ),
+            bbox_3d=(
+                (lo[i].x, lo[i].y, lo[i].z, hi[i].x, hi[i].y, hi[i].z)
+                if has_boxes and valid[i]
+                else None
+            ),
             track_id=(int(tid) if int(tid) >= 0 else None),
         )
-        for label, conf, pos, tid in zip(
-            msg.detected_object_labels,  # type: ignore[attr-defined]
-            msg.detected_object_confidences,  # type: ignore[attr-defined]
-            msg.detected_object_positions,  # type: ignore[attr-defined]
-            msg.detected_object_track_ids,  # type: ignore[attr-defined]
-            strict=False,
+        for i, (label, conf, pos, tid) in enumerate(
+            zip(
+                labels,
+                msg.detected_object_confidences,  # type: ignore[attr-defined]
+                msg.detected_object_positions,  # type: ignore[attr-defined]
+                msg.detected_object_track_ids,  # type: ignore[attr-defined]
+                strict=False,
+            )
         )
     ]
     attached_objects = [
@@ -1246,6 +1259,14 @@ def _fill_detected_objects(msg: object, world_state: object) -> None:
     msg.detected_object_frame = (  # type: ignore[attr-defined]
         objects[0].pose.frame_id if objects else ""
     )
+    boxes = [o.bbox_3d or (0.0,) * 6 for o in objects]
+    msg.detected_object_bbox_valid = [o.bbox_3d is not None for o in objects]  # type: ignore[attr-defined]
+    msg.detected_object_bbox_min = [  # type: ignore[attr-defined]
+        Point(x=float(b[0]), y=float(b[1]), z=float(b[2])) for b in boxes
+    ]
+    msg.detected_object_bbox_max = [  # type: ignore[attr-defined]
+        Point(x=float(b[3]), y=float(b[4]), z=float(b[5])) for b in boxes
+    ]
 
 
 def _fill_attached_objects(msg: object, world_state: object) -> None:

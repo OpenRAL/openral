@@ -3475,11 +3475,13 @@ class GraspDeclaration(BaseModel):
         region: Producer-measured oriented box around the target; ``None`` =
             no exemption. Dies with the declaration.
         search_box: Optional box (in the voxel grid's base frame) the target
-            producer searches the occupancy map in for a seed. It only *seeds*
-            perception and never arms anything: the exemption is always the
-            measured ``region``. Unlike ``region`` a scene may supply it, and
-            dispatch passes it through unchanged. ``None`` = no search, so the
-            producer never measures a region.
+            producer searches the occupancy map in for a seed; its bottom face is
+            the support plane. It only *seeds* perception and never arms anything:
+            the exemption is always the measured ``region``. The reasoner grounds
+            it from a named ``GraspTargetRef`` (the generic path); unlike
+            ``region`` a direct-dispatch scene may also supply it; dispatch passes
+            it through unchanged. ``None`` = no search, so the producer never
+            measures a region.
 
     Example:
         >>> declaration = GraspDeclaration(
@@ -10362,7 +10364,13 @@ class DeployScene(BaseModel):
     E-stop) unless the goal carries its own. ``None`` means no declaration and
     no exemption. Same rule as the place one: a scene names a target, never a
     **region** — ``grasp_declaration.region`` is rejected by
-    ``_reject_scene_supplied_place_region``."""
+    ``_reject_scene_supplied_place_region``.
+
+    **Direct-dispatch path only** (reasoner off, attended): what to pick is task
+    knowledge, so a committed cell scene carries none. The generic path is
+    reasoner-grounded — the LLM names an ``ExecuteRskillTool.grasp_target``, the
+    reasoner grounds its ``search_box`` from perception, and the goal carries the
+    declaration (design §2.2)."""
 
     @model_validator(mode="before")
     @classmethod
@@ -11834,6 +11842,91 @@ class _ReasonerToolBase(BaseModel):
     """
 
 
+class GraspTargetRef(BaseModel):
+    """The object an ``ExecuteRskillTool`` goal grasps, as the reasoner names it.
+
+    The reasoner **names**; perception **grounds**; the producer **measures**
+    (real pick-and-place design §2.2). At dispatch the reasoner resolves this
+    reference to a seed box in the robot base frame — a recalled spatial-memory
+    node's 3D box when ``object_id`` is set, else the one live lifted detection
+    whose label matches — and sends it as ``GraspDeclaration.search_box``. A
+    reference that grounds to nothing, or to more than one instance with no
+    ``object_id``, is refused and the goal is not sent. Naming arms nothing:
+    the kernel only ever trusts the region the producer measured inside the
+    seed.
+
+    Attributes:
+        label: Open-vocabulary object label, e.g. ``"box"``; matched
+            case-insensitively against the live lifted detections' labels.
+        object_id: A spatial-memory ``node_id`` from ``recall_object`` when the
+            reasoner already knows the instance; ``None`` = ground by ``label``.
+        contact_links: Gripper links the grasp declaration names; empty = every
+            ``role: gripper`` joint's ``child_link`` in the robot manifest.
+
+    Example:
+        >>> GraspTargetRef(label="box").contact_links
+        []
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    label: str = Field(
+        min_length=1,
+        description=(
+            "Open-vocabulary label of the ONE object to grasp, as perception labels it "
+            "(e.g. 'box'). Recall it first when memory has it, and pass its node_id."
+        ),
+    )
+    object_id: str | None = Field(
+        default=None,
+        description=(
+            "node_id from a recall_object match naming the exact instance; required when "
+            "more than one object carries the label."
+        ),
+    )
+    contact_links: list[str] = Field(
+        default_factory=list,
+        description="Gripper links to grasp with; leave empty for the robot's gripper links.",
+    )
+
+
+class PlaceTargetRef(BaseModel):
+    """Where an ``ExecuteRskillTool`` goal places, as the reasoner names it.
+
+    ``fixture_id`` names one of the robot unit's surveyed fixtures
+    (``RobotUnit.fixtures``, listed in the reasoner's system prompt); the
+    reasoner sends it as ``PlaceDeclaration.target_id`` and the place producer
+    verifies the fixture live against the voxel map before anything arms.
+    ``place_node_id`` (a recalled place) is accepted by the schema but refused
+    at dispatch for now: a free-space place has no producer yet.
+
+    Attributes:
+        fixture_id: A ``cell:<name>`` fixture id of the robot unit.
+        place_node_id: A spatial-memory place node id; refused at dispatch today.
+
+    Example:
+        >>> PlaceTargetRef(fixture_id="cell:shelf_top").place_node_id is None
+        True
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    fixture_id: str | None = Field(
+        default=None,
+        description="Fixture id ('cell:<name>') from the listed unit fixtures to place on.",
+    )
+    place_node_id: str | None = Field(
+        default=None,
+        description="Recalled place node id; not supported yet, name a fixture instead.",
+    )
+
+    @model_validator(mode="after")
+    def _exactly_one(self) -> PlaceTargetRef:
+        if (self.fixture_id is None) == (self.place_node_id is None):
+            raise ValueError("PlaceTargetRef needs exactly one of fixture_id or place_node_id.")
+        return self
+
+
 class ExecuteRskillTool(_ReasonerToolBase):
     """Tool variant — invoke an installed, capability-matched rSkill.
 
@@ -11873,6 +11966,12 @@ class ExecuteRskillTool(_ReasonerToolBase):
         progress_tolerance: Override the reward model's ``plateau_tolerance``
             when a task misbehaves (e.g. a noisy critic). ``None`` → use the
             model default.
+        grasp_target: The object this goal grasps (``GraspTargetRef``); the
+            reasoner grounds it to a ``GraspDeclaration`` search box at
+            dispatch, or refuses the goal. ``None`` = no grasp declaration.
+        place_target: Where this goal places (``PlaceTargetRef``); grounded to a
+            ``PlaceDeclaration`` on a unit fixture. ``None`` = no place
+            declaration.
     """
 
     tool: Literal["execute_rskill"] = "execute_rskill"
@@ -11882,6 +11981,20 @@ class ExecuteRskillTool(_ReasonerToolBase):
     deadline_s: float = Field(default=0.0, ge=0.0)
     patience_s: float | None = Field(default=None, gt=0.0)
     progress_tolerance: float | None = Field(default=None, ge=0.0)
+    grasp_target: GraspTargetRef | None = Field(
+        default=None,
+        description=(
+            "Set when the skill grasps an object: name it by label (recall it first when "
+            "memory has it). Perception grounds it; naming it arms nothing by itself."
+        ),
+    )
+    place_target: PlaceTargetRef | None = Field(
+        default=None,
+        description=(
+            "Set when the skill places onto a fixture: name one of the listed unit fixtures. "
+            "The producer verifies it against the live map; naming it arms nothing by itself."
+        ),
+    )
 
 
 class ReloadGstPipelineTool(_ReasonerToolBase):

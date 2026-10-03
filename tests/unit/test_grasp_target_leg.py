@@ -20,7 +20,7 @@ from openral_hal._grasp_target_leg import GraspTargetTracker, support_z_of
 from openral_hal.vision_attachment_bridge import VisionAttachmentBridge, VisionAttachmentConfig
 
 _REPO = Path(__file__).resolve().parents[2]
-_SCENE = _REPO / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
+_SCENE = _REPO / "tests" / "unit" / "fixtures" / "scenes" / "openarm_direct_dispatch_grasp.yaml"
 _ROBOT = _REPO / "robots" / "openarm" / "robot.yaml"
 _S = 1_000_000_000
 _FREEZE_S = 2.0

@@ -120,6 +120,14 @@ def test_round_trip_back_to_worldstate() -> None:
     assert o.pose.xyz == (1.0, 2.0, 3.0)
     assert o.track_id == 7
     assert o.pose.frame_id == "map"
+    # The lift's 3D box survives the wire (the reasoner seeds grasp targets from it).
+    assert o.bbox_3d == (0.0, 0.0, 0.0, 1.0, 1.0, 1.0)
+
+
+def test_an_object_without_a_box_round_trips_without_one() -> None:
+    unboxed = _obj().model_copy(update={"bbox_3d": None, "label": "plate"})
+    back = world_state_from_idl(build_world_state_stamped_msg(None, _ws([_obj(), unboxed])))
+    assert [o.bbox_3d for o in back.detected_objects] == [(0.0, 0.0, 0.0, 1.0, 1.0, 1.0), None]
 
 
 def test_multiple_attached_objects_round_trip() -> None:

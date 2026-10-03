@@ -1,0 +1,35 @@
+{
+  "additionalProperties": false,
+  "description": "Where an ``ExecuteRskillTool`` goal places, as the reasoner names it.\n\n``fixture_id`` names one of the robot unit's surveyed fixtures\n(``RobotUnit.fixtures``, listed in the reasoner's system prompt); the\nreasoner sends it as ``PlaceDeclaration.target_id`` and the place producer\nverifies the fixture live against the voxel map before anything arms.\n``place_node_id`` (a recalled place) is accepted by the schema but refused\nat dispatch for now: a free-space place has no producer yet.\n\nAttributes:\n    fixture_id: A ``cell:<name>`` fixture id of the robot unit.\n    place_node_id: A spatial-memory place node id; refused at dispatch today.\n\nExample:\n    >>> PlaceTargetRef(fixture_id=\"cell:shelf_top\").place_node_id is None\n    True",
+  "properties": {
+    "fixture_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Fixture id ('cell:<name>') from the listed unit fixtures to place on.",
+      "title": "Fixture Id"
+    },
+    "place_node_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Recalled place node id; not supported yet, name a fixture instead.",
+      "title": "Place Node Id"
+    }
+  },
+  "title": "PlaceTargetRef",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

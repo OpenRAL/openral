@@ -125,3 +125,14 @@ def test_both_legs_together_still_grants_it_correctly() -> None:
     """A continuous detector plus a locator: the locator is what makes this True, not the sum."""
     entities = _compose(enable_object_detector=True, locator_manifest=str(_LOCATOR_MANIFEST))
     assert _reasoner_param(entities, "detector_available") is True
+
+
+def test_the_reasoner_gets_the_scene_robot_unit_param() -> None:
+    """The unit whose fixtures are the LLM's place_target choices; "" without a scene unit."""
+    entities = _compose(enable_object_detector=False, locator_manifest="")
+    value = _reasoner_param(entities, "robot_unit")
+    assert isinstance(value, tuple)
+    # launch wraps the string as a YAML-encoded TextSubstitution ("''" for empty).
+    import yaml
+
+    assert yaml.safe_load("".join(s.text for s in value)) == ""
