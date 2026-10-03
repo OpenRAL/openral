@@ -152,6 +152,12 @@ Lifecycle: cameras, tf2, subscriptions and the service live for the
 configured→cleanup span; the model is built **and warmed** on `on_activate`
 (the first forward pass is ~742 ms against ~53 ms warmed, and only the warmed
 figure fits inside the HAL's ~100 ms barrier) and released on `on_deactivate`.
+Activate also burns the service handler's own lazy imports: `openral_hal`'s
+package `__init__` loads every HAL, and on Thor (2026-10-03) that import alone
+made the first real call 1019 ms against the HAL's 0.25 s segmentation deadline
+while the model was already warm. With it burned at activate the first call is
+~0.10-0.15 s end to end at 1920x1080 with three prompt points; the activate log
+line reports the total warm-up time.
 
 ### The diagnostic mask topic
 

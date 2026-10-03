@@ -91,6 +91,7 @@ changes nothing.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -404,12 +405,25 @@ def _node_class() -> type:
         def on_activate(self, state: LifecycleState) -> TransitionCallbackReturn:
             """Build the segmenter backend and burn the cold forward pass."""
             if self._segmenter is None:
+                started = time.perf_counter()
                 self._segmenter = self._build_segmenter()
                 # Not optional: the first call is ~742 ms vs ~53 ms warmed, and
                 # only the warmed figure fits inside the HAL's deferred-ack
                 # barrier. Paying it here moves the cost off the first grasp.
                 self._segmenter.warm_up()
-                self.get_logger().info("segmenter warmed (first forward pass burned at activate)")
+                # The service handler's own lazy imports are part of the cold
+                # first call too: `openral_hal`'s package __init__ pulls in every
+                # HAL, measured 839 ms on Thor (2026-10-03) — that alone made the
+                # first real call 1019 ms against the HAL's 0.25 s deadline while
+                # the model was already warm (81 ms at 1920x1080, three prompt
+                # points). Burn them here as well.
+                import openral_core.geometry  # noqa: F401
+                import openral_hal.depth_cloud  # noqa: F401
+
+                self.get_logger().info(
+                    "segmenter warmed (forward pass + service-path imports burned at "
+                    f"activate) in {time.perf_counter() - started:.2f}s"
+                )
             return super().on_activate(state)
 
         def on_deactivate(self, state: LifecycleState) -> TransitionCallbackReturn:
