@@ -342,30 +342,35 @@ Run these tests in order:
    distance. This is **not** an attached-payload-vs-voxels check: that check is off on real
    hardware.
 
-   The committed scene names no grasp target: what to pick is task knowledge. With the
-   reasoner on it names the target and perception grounds the search box
-   ([design §2.2](../../reference/real-pick-place-design.md)). With the reasoner off, as
-   here, copy the scene into the gitignored `scenes/deploy/local/` (create it), add a
-   direct-dispatch block, and launch it with `tools/openarm_world_voxel_run.sh --scene <copy>`.
-   Example for Thor (candidate numbers read off the live voxel map, 2026-10-03, arms at rest, `openarm_base`
-   frame, 20 mm cells): the bench top is one cluster whose face sits at z = -0.32; four
-   item-sized clusters stand on it at x 0.35-0.45 (y -0.29, -0.15, +0.09, +0.23). A search
-   box must cover ONE item or the producer refuses it as AMBIGUOUS; this one covers the item
-   at y = -0.15 (25 cells), with its bottom face on the bench top. Measure before you use it:
-   the box only seeds perception, but the fixture face below it arms the place allowance
-   once it is surveyed and verified.
+   The committed scenes name no grasp target and no coordinates: what to pick is task
+   knowledge, and it arrives as language. Launch the autonomous posture,
+   `scenes/deploy/openarm_real_autonomous.yaml` (this scene plus the reasoner, the
+   open-vocabulary detector and spatial-memory ingest), and name a label:
 
-   ```yaml
-   grasp_declaration:
-     target_id: cell:restock_item
-     contact_links: [openarm_left_finger_pair]
-     timeout_s: 70.0
-     stamp_ns: 0
-     search_box:
-       frame_id: openarm_base
-       pose: {xyz: [0.37, -0.15, -0.24], quat_xyzw: [0.0, 0.0, 0.0, 1.0], frame_id: openarm_base}
-       half_extents: [0.06, 0.08, 0.08]   # bottom face z = -0.32 = the bench top
+   ```bash
+   export OPENRAL_REASONER_MODEL=<a model from openral_core.REASONER_MODELS>
+   tools/openarm_world_voxel_run.sh --autonomous
+   # second terminal, presence confirmed for this goal:
+   openral prompt "pick up the boxes"
    ```
+
+   The detector lifts every box it sees; the reasoner's `WORLD_STATE` lists each instance
+   (`scene_objects[...]`) and its spatial-memory id (`memory_objects[...]: box
+   id=obj_box_1@(...)`), so it decomposes the goal into one subtask per box and names each
+   one by `grasp_target.object_id`; perception grounds the search box
+   ([design §2.2](../../reference/real-pick-place-design.md)). Grounding refuses a bare
+   label that several detections carry. The only OpenArm VLA today is task-specific (the
+   restock policy): a general "pick up X" needs a language-conditioned pick/place policy
+   installed for the OpenArm, and until one is, expect the reasoner to hand off.
+
+   Direct dispatch (debug only, reasoner off): copy the committed scene into the gitignored
+   `scenes/deploy/local/` (create it), add a `grasp_declaration` block (the only difference
+   the wrapper accepts) whose `search_box` you measured on the live voxel map of this cell,
+   today, around exactly ONE item (a box covering two is refused as AMBIGUOUS), and launch it
+   with `tools/openarm_world_voxel_run.sh --scene <copy>` (add `--autonomous` for a copy of
+   the autonomous scene). Never reuse another cell's or another day's numbers: the box only
+   seeds perception, but the fixture face below it arms the place allowance once it is
+   surveyed and verified.
 4. **Camera unplug.** During a dispatch, unplug the ZED. Expect `/openral/world_voxels` to
    stop about 1 s after `/octomap_binary`, and the kernel to drop the next chunks with
    `DROP_VOXEL_UNAVAILABLE` within ~2.0 s of the last cloud (a drop, not a latch). Motion or
@@ -397,6 +402,9 @@ For the write-up, record:
 
 - `scenes/deploy/openarm_real_world_voxels.yaml`: the real-cell scene. The check is on, and
   it holds the ZED driver include. It declares no `head_zed` entry.
+- `scenes/deploy/openarm_real_autonomous.yaml`: the same cell with the reasoner, the
+  open-vocabulary detector and spatial-memory ingest on (`--autonomous`); the vision
+  attachment leg stays off.
 - `robots/openarm/robot.yaml`: `head_zed`'s nominal `static_transform_xyz_rpy` (sim twins
   only; a real world-voxel deploy never runs on it).
 - `robots/openarm/units/<unit>.yaml`: each cell's camera bindings and its calibrated ZED
