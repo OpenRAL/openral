@@ -197,7 +197,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   shrink with no contact link near is `unoccluded_refit`, and a re-fit the map does not cover is
   `map_disagrees`, both retracting at once, as does one reaching outside the held region)
   for `grasp_target_freeze_s` (default twice `grid_max_age_s`, the deploy's kernel voxel deadline —
-  2 s on the real cell) from its depth stamp; a grid older than `grid_max_age_s` is not used. A mask whose capture stamp is more than
+  2 s on the real cell; refused above four times it, as are a support search deeper than 0.5 m
+  and an occluder margin over 0.10 m) from its depth stamp; a grid older than `grid_max_age_s` is not used. A mask whose capture stamp is more than
   `mask_depth_max_skew_s` (0.1 s) from the depth frame it would be back-projected through is
   refused (`mask_depth_skew`, a lost view here; a `GRIPPER_FORCE` fallback in the attachment path). Tests: `tests/unit/test_grasp_target_leg.py`,
   live `tests/integration/test_grasp_target_leg_live.py`. The occlusion freeze is bounded by the TTL and

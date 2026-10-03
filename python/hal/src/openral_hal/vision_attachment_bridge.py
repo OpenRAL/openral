@@ -627,20 +627,22 @@ class VisionAttachmentConfig:
         grasp_target_freeze_s: How long past its ``stamp_ns`` the last accepted
             region survives while the view is lost (the gripper occluding the
             target). ``None`` (default) = ``2 * grid_max_age_s``: at most twice
-            the deploy's kernel voxel deadline. *Calibration point.*
+            the deploy's kernel voxel deadline. Refused above ``4 *
+            grid_max_age_s``, past which the map the region was vouched against
+            is long superseded. *Calibration point.*
         grasp_target_min_cells: Fewest occupied cells the seed cluster above the
             support plane may have. *Calibration point.*
         grasp_target_min_cover: Fraction of the region's footprint cell count
             that must be occupied in the map. *Calibration point.*
         grasp_target_support_search_below_m: How far below the search box the
-            target leg looks for the surface the target stands on.
+            target leg looks for the surface the target stands on, at most 0.5 m.
             *Calibration point.*
         grasp_target_support_probe_margin_m: Outer reach, from the target's
             footprint, of the ring that must be occupied for a layer to count as
             its support. *Calibration point.*
         grasp_target_occluder_margin_m: Distance (beyond one voxel) from the
             held region within which a declared contact link's tf origin makes a
-            shrunken re-fit an occlusion by the robot's own hand.
+            shrunken re-fit an occlusion by the robot's own hand, at most 0.10 m.
             *Calibration point.*
         release_clear_m: How far every link a released payload's frozen record
             exempts (the hand and its jaws) must be from it before the record is
