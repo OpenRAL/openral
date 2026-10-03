@@ -4712,13 +4712,16 @@ TEST_F(LifecycleKernelTest, AHandedOverDeclarationThatLosesItsRegionRetires) {
   EXPECT_TRUE(rig.node->fault_latched());
 }
 
-TEST_F(LifecycleKernelTest, AnotherHandsDetachDoesNotRetireAPreHandoverDeclaration) {
-  // Review finding: the detach edge (an empty attachment set at a new revision)
-  // retired whatever grasp declaration was armed. Bimanual, the OTHER hand's
-  // release retired hand A's live pre-handover arming — and the producer keeps
-  // that identity for every re-arm, so A's pick was dead for the goal. Before
-  // its handover a declaration exempts no payload, so an unrelated detach only
-  // drops it; a detach on the declaring chain (after the handover) still retires.
+TEST_F(LifecycleKernelTest, AnotherHandsDetachRetiresAPreHandoverDeclaration) {
+  // Review finding (on 21c74585): dropping, not retiring, a pre-handover
+  // declaration at a detach "elsewhere" was less conservative. "Elsewhere" was
+  // judged from the last snapshot seen — with KeepLast(1) a missed ATTACH made the
+  // declaring hand's own release look like another hand's — and the drop re-armed
+  // the identical pre-detach region in the same callback, exempting newly
+  // un-cleared payload cells up to the age bound. A detach retires whatever is
+  // armed, before or after the handover; the old identity stays refused even with
+  // a fresh region, and only a fresh identity (the producer re-measures after the
+  // detach) arms.
   LogCapture logs;
   GraspRig rig("kernel_grasp_other_detach", bimanual_grasp_params());
   rig.start();
@@ -4733,23 +4736,25 @@ TEST_F(LifecycleKernelTest, AnotherHandsDetachDoesNotRetireAPreHandoverDeclarati
   // The other hand lets go: the attachment set empties at a new revision.
   b.second_attach_link.clear();
   b.revision = 2;
-  b.region_stamp_ns = rig.now_ns();
-  rig.warm(&b, 0.0, 200);
-  EXPECT_EQ(logs.count("reason=detached target=approach:link0:1"), 0U) << logs.joined();
-  EXPECT_TRUE(rig.offer(&b, 0.0)) << "the other hand's release killed link0's pick\n"
-                                  << logs.joined();
-  // The control: link0's own pick, handed over and released, retires.
-  b.carrying = true;
-  b.revision = 3;
-  rig.warm(&b, 0.0, 100);
-  ASSERT_EQ(logs.count("safety.grasp_region_handover target=approach:link0:1"), 1U)
-      << logs.joined();
-  b.carrying = false;
-  b.revision = 4;
-  rig.warm(&b, kGraspClearQ, 100);
+  rig.warm(&b, kGraspClearQ, 200);
   EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=detached target=approach:link0:1"), 1U)
       << logs.joined();
-  EXPECT_FALSE(rig.offer(&b, 0.0)) << "a released pick's identity re-armed";
+  // The old identity, even with a region measured after the detach, never re-arms.
+  b.region_stamp_ns = rig.now_ns();
+  rig.warm(&b, kGraspClearQ, 200);
+  EXPECT_EQ(logs.count("safety.grasp_region_armed target=approach:link0:1"), 1U)
+      << "a retired identity re-armed: " << logs.joined();
+  // The producer's liveness: a fresh identity, re-measured after the detach, arms.
+  b.target_id = "approach:link0:2";
+  b.region_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 200);
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_armed target=approach:link0:2"), 1U) << logs.joined();
+  // ... and the retired one re-sent afterwards is refused.
+  b.target_id = "approach:link0:1";
+  rig.warm(&b, kGraspClearQ, 200);
+  EXPECT_EQ(logs.count("safety.grasp_region_armed target=approach:link0:1"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "a retired identity exempted the finger";
   EXPECT_TRUE(rig.node->fault_latched());
 }
 
