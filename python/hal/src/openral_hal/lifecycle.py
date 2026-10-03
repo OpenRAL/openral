@@ -1690,12 +1690,22 @@ if _ROS2_AVAILABLE:
             # owned by the vision attachment bridge. OFF by default: it measures
             # the region a grasp-target exemption would be armed with.
             self.declare_parameter("vision_attachment_grasp_target_enabled", False)
-            self.declare_parameter("vision_attachment_grasp_target_rate_hz", 3.0)
-            # Seconds the last accepted region survives a lost view; 0 = derive it
-            # as 2x vision_attachment_grid_max_age_s (the kernel voxel deadline).
-            self.declare_parameter("vision_attachment_grasp_target_freeze_s", 0.0)
-            self.declare_parameter("vision_attachment_grasp_target_min_cells", 8)
-            self.declare_parameter("vision_attachment_grasp_target_min_cover", 0.5)
+            # freeze_s: seconds the last accepted region survives a lost view; 0 =
+            # derive it as 2x vision_attachment_grid_max_age_s (the kernel voxel
+            # deadline). The support search depth, support ring reach and own-hand
+            # occluder reach are calibration points (VisionAttachmentConfig).
+            self.declare_parameters(
+                "",
+                [
+                    ("vision_attachment_grasp_target_rate_hz", 3.0),
+                    ("vision_attachment_grasp_target_freeze_s", 0.0),
+                    ("vision_attachment_grasp_target_min_cells", 8),
+                    ("vision_attachment_grasp_target_min_cover", 0.5),
+                    ("vision_attachment_grasp_target_support_search_below_m", 0.15),
+                    ("vision_attachment_grasp_target_support_probe_margin_m", 0.05),
+                    ("vision_attachment_grasp_target_occluder_margin_m", 0.05),
+                ],
+            )
             # Real place producer leg (real pick-and-place design §2.3). OFF by
             # default: drafted, unapproved ADR-0097 / ADR-0092 D6 amendments. Needs
             # the robot unit whose surveyed fixtures it verifies against the map:
@@ -2220,6 +2230,21 @@ if _ROS2_AVAILABLE:
                     .get_parameter_value()
                     .integer_value,
                     grasp_target_min_cover=gp("vision_attachment_grasp_target_min_cover")
+                    .get_parameter_value()
+                    .double_value,
+                    grasp_target_support_search_below_m=gp(
+                        "vision_attachment_grasp_target_support_search_below_m"
+                    )
+                    .get_parameter_value()
+                    .double_value,
+                    grasp_target_support_probe_margin_m=gp(
+                        "vision_attachment_grasp_target_support_probe_margin_m"
+                    )
+                    .get_parameter_value()
+                    .double_value,
+                    grasp_target_occluder_margin_m=gp(
+                        "vision_attachment_grasp_target_occluder_margin_m"
+                    )
                     .get_parameter_value()
                     .double_value,
                     place_fixture_enabled=place_fixture_enabled,

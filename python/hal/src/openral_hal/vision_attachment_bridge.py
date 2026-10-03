@@ -632,14 +632,25 @@ class VisionAttachmentConfig:
             support plane may have. *Calibration point.*
         grasp_target_min_cover: Fraction of the region's footprint cell count
             that must be occupied in the map. *Calibration point.*
+        grasp_target_support_search_below_m: How far below the search box the
+            target leg looks for the surface the target stands on.
+            *Calibration point.*
+        grasp_target_support_probe_margin_m: Outer reach, from the target's
+            footprint, of the ring that must be occupied for a layer to count as
+            its support. *Calibration point.*
+        grasp_target_occluder_margin_m: Distance (beyond one voxel) from the
+            held region within which a declared contact link's tf origin makes a
+            shrunken re-fit an occlusion by the robot's own hand.
+            *Calibration point.*
         release_clear_m: How far every link a released payload's frozen record
             exempts (the hand and its jaws) must be from it before the record is
             dropped (``ReleaseWindow``). The deploy sets it to the kernel's
             world-voxel margin plus one voxel resolution: once the record goes,
             the octomap re-marks the payload's cells, and a cell is a cube the
-            kernel measures against at that margin. ``0.04`` m is only the
-            fallback — the real OpenArm cell's values
-            (``REAL_WORLD_VOXEL_MARGIN_M`` 20 mm + one 20 mm voxel). A lower
+            kernel measures against at that margin. The ``0.04`` m default only
+            serves code that builds the bridge directly (tests);
+            ``ManifestHALLifecycleNode`` refuses to start the leg unless the
+            deploy passes the value. A lower
             bound is measured (bounding boxes, separating axes), so the window can
             only stay open longer than the true gap needs. *Calibration point.*
         release_timeout_s: Hard bound on a release window: the frozen record is
@@ -651,9 +662,10 @@ class VisionAttachmentConfig:
         grid_max_age_s: Oldest ``/openral/world_voxels`` grid the grasp-target
             and place-fixture legs may use, seconds. The deploy sets it to the
             safety kernel's ``world_voxel_deadline_s``: a grid the kernel itself
-            would refuse as stale cannot vouch for a region. ``1.0`` s is only
-            the fallback — the real OpenArm cell's deadline
-            (``scenes/deploy/openarm_real_world_voxels.yaml``).
+            would refuse as stale cannot vouch for a region. The ``1.0`` s default
+            only serves code that builds the bridge directly (tests);
+            ``ManifestHALLifecycleNode`` refuses to start the leg unless the
+            deploy passes the value.
         mask_depth_max_skew_s: Largest accepted ``|mask stamp - depth stamp|``:
             a ``SegmentInView`` mask (stamped with the RGB frame the segmenter
             captured) is only back-projected through a depth frame from the
@@ -695,6 +707,9 @@ class VisionAttachmentConfig:
     grasp_target_freeze_s: float | None = None
     grasp_target_min_cells: int = 8
     grasp_target_min_cover: float = 0.5
+    grasp_target_support_search_below_m: float = 0.15
+    grasp_target_support_probe_margin_m: float = 0.05
+    grasp_target_occluder_margin_m: float = 0.05
     release_clear_m: float = 0.04
     release_timeout_s: float = 3.0
     grid_max_age_s: float = 1.0
@@ -989,7 +1004,16 @@ class VisionAttachmentBridge:
         # Latest joint positions by name: the jaws' angles for the release test.
         self._positions: dict[str, float] = {}
         self._grasp_target: GraspTargetLeg | None = (
-            GraspTargetLeg(node, self, self._config) if self._config.grasp_target_enabled else None
+            GraspTargetLeg(
+                node,
+                self,
+                self._config,
+                support_search_below_m=self._config.grasp_target_support_search_below_m,
+                support_probe_margin_m=self._config.grasp_target_support_probe_margin_m,
+                occluder_margin_m=self._config.grasp_target_occluder_margin_m,
+            )
+            if self._config.grasp_target_enabled
+            else None
         )
         self._place_fixture: PlaceFixtureLeg | None = (
             PlaceFixtureLeg(node, self, self._config)
