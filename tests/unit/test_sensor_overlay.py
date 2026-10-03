@@ -16,11 +16,8 @@ import yaml
 from openral_core import (
     ROBOT_UNIT_ENV,
     DeployScene,
-    GripperClosureCalibration,
-    JointOverlay,
     RobotDescription,
     SensorOverlay,
-    apply_joint_overlays,
     apply_sensor_overlays,
     load_robot_unit,
     publishing_sensors,
@@ -156,50 +153,3 @@ def test_a_unit_file_must_belong_to_its_robot(tmp_path: Path) -> None:
         load_robot_unit(robot_dir / "robot.yaml", "bench_laptop")
     with pytest.raises(ROSConfigError, match="available: bench_laptop"):
         load_robot_unit(robot_dir / "robot.yaml", "second_host")
-
-
-_UNIT_CAL = GripperClosureCalibration(
-    closed_position=0.0, closed_rest_offset=0.0123, stall_gap=0.08, settle_tolerance=0.001
-)
-
-
-def test_a_joint_overlay_replaces_one_grippers_calibration() -> None:
-    joints = RobotDescription.from_yaml(str(_OPENARM)).joints
-    out = {
-        j.name: j
-        for j in apply_joint_overlays(
-            joints, [JointOverlay(name="left_gripper", closure_calibration=_UNIT_CAL)]
-        )
-    }
-    assert out["left_gripper"].closure_calibration == _UNIT_CAL
-    nominal = {j.name: j for j in joints}
-    assert out["right_gripper"] == nominal["right_gripper"]
-    # Everything but the overlaid field stays the manifest's.
-    assert out["left_gripper"].model_dump(exclude={"closure_calibration"}) == nominal[
-        "left_gripper"
-    ].model_dump(exclude={"closure_calibration"})
-    # An overlay that sets nothing changes nothing.
-    assert apply_joint_overlays(joints, [JointOverlay(name="left_gripper")]) == list(joints)
-
-
-def test_a_joint_overlay_must_name_a_manifest_gripper_once() -> None:
-    joints = RobotDescription.from_yaml(str(_OPENARM)).joints
-    with pytest.raises(ROSConfigError, match="name no robot-manifest joint"):
-        apply_joint_overlays(joints, [JointOverlay(name="left_jaw", closure_calibration=_UNIT_CAL)])
-    with pytest.raises(ROSConfigError, match="twice"):
-        apply_joint_overlays(
-            joints, [JointOverlay(name="left_gripper"), JointOverlay(name="left_gripper")]
-        )
-    with pytest.raises(ROSConfigError, match="not role: gripper"):
-        apply_joint_overlays(
-            joints, [JointOverlay(name="left_joint1", closure_calibration=_UNIT_CAL)]
-        )
-    # Only per-unit fields: a joint's identity and limits are the robot type's.
-    with pytest.raises(ValidationError):
-        JointOverlay.model_validate({"name": "left_gripper", "position_limits": [0.0, 1.0]})
-
-
-def test_the_shipped_openarm_units_keep_the_nominal_gripper_calibration() -> None:
-    """No unit has measured its grippers yet: the overrides are commented templates only."""
-    for unit in ("thor", "orin"):
-        assert load_robot_unit(_OPENARM, unit).joints == []

@@ -51,7 +51,6 @@ from openral_core.schemas import (
     HalEntrypoints,
     Hand,
     IntrinsicsPinhole,
-    JointOverlay,
     JointSpec,
     JointState,
     JointType,
@@ -201,10 +200,6 @@ _joint_spec_st = st.builds(
     closure_calibration=st.none() | _closure_calibration_st,
 )
 
-_joint_overlay_st = st.builds(
-    JointOverlay, name=_name, closure_calibration=st.none() | _closure_calibration_st
-)
-
 _end_effector_st = st.builds(
     EndEffectorSpec,
     name=_name,
@@ -302,7 +297,6 @@ _robot_unit_st = st.builds(
     robot_id=_name,
     unit=_name,
     sensors=st.lists(_sensor_overlay_st, max_size=3),
-    joints=st.lists(_joint_overlay_st, max_size=2),
 )
 
 _detected_object_st = st.builds(
@@ -571,13 +565,6 @@ def test_fuzz_sensor_spec(instance: SensorSpec) -> None:
 def test_fuzz_sensor_overlay(instance: SensorOverlay) -> None:
     """SensorOverlay round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(SensorOverlay, instance)
-
-
-@_FUZZ_SETTINGS
-@given(_joint_overlay_st)
-def test_fuzz_joint_overlay(instance: JointOverlay) -> None:
-    """JointOverlay round-trips through JSON and validates against its schema."""
-    _round_trip_and_validate(JointOverlay, instance)
 
 
 @_FUZZ_SETTINGS

@@ -58,7 +58,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import os
 import sys
 import threading
 from collections.abc import Callable, Iterator
@@ -1628,10 +1627,6 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("robot_yaml", "")
             self.declare_parameter("hal_mode", "sim")
             self.declare_parameter("sim_env_yaml", "")
-            # The robots/<id>/units/<unit>.yaml this cell runs (the launch passes the unit it
-            # resolved; else $OPENRAL_ROBOT_UNIT; else none): its joint overlays (per-gripper
-            # closure_calibration) replace the manifest's nominal values in the HAL.
-            self.declare_parameter("robot_unit", "")
             # Real-HW transport overrides: `openral deploy run`
             # forwards the robot manifest's hal transport overrides (serial `port` /
             # `robot_ip` / `fci_ip`) + hal.params (calibration `id`) via the
@@ -1791,12 +1786,7 @@ if _ROS2_AVAILABLE:
             self._reset_to_pose_srv: Any = None
 
         def _create_hal(self) -> HAL:
-            from openral_core import (
-                ROBOT_UNIT_ENV,
-                RobotDescription,
-                apply_joint_overlays,
-                load_robot_unit,
-            )
+            from openral_core import RobotDescription
             from openral_core.exceptions import ROSConfigError
 
             from openral_hal import build_hal
@@ -1812,20 +1802,8 @@ if _ROS2_AVAILABLE:
                 self.get_parameter("sim_env_yaml").get_parameter_value().string_value or None
             )
             description = RobotDescription.from_yaml(robot_yaml)
-            unit = self.get_parameter(
-                "robot_unit"
-            ).get_parameter_value().string_value or os.environ.get(ROBOT_UNIT_ENV)
-            if unit:
-                description = description.model_copy(
-                    update={
-                        "joints": apply_joint_overlays(
-                            description.joints, load_robot_unit(robot_yaml, unit).joints
-                        )
-                    }
-                )
             self.get_logger().info(
                 f"{hal_mode} mode: building HAL for robot={description.name} from {robot_yaml}"
-                + (f" unit={unit}" if unit else "")
                 + (f" scene={sim_env_yaml}" if sim_env_yaml else "")
             )
             # Declarative MJCF scene composition (issue #191 Phase 3b).

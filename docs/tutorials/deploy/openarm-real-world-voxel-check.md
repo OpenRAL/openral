@@ -52,10 +52,10 @@ expecting a clean pass:
    attachment-evidence bridge, fed by the ZED's RGB, depth and their `camera_info` topics —
    but commits it **off**: its grasp trigger is the gripper *position* stalling short of a close
    command (the OpenArm driver reports effort as a constant 0.0). Its calibration
-   (`closure_calibration`: rest offset, stall gap, settle tolerance) is the robot type's
-   nominal in `robots/openarm/robot.yaml`, from teleop data of an unrecorded unit, not yet
-   measured attended on this cell; a cell that measures its own grippers declares them in its
-   unit overlay (`joints:` in `robots/openarm/units/<unit>.yaml`, which the HAL applies).
+   (`closure_calibration`: rest offset, stall gap, settle tolerance) is a set of robot-type
+   constants of the gripper mechanism in `robots/openarm/robot.yaml`, derived from teleop
+   data; not per cell, so no unit overrides it and there is no calibration session. Verify it
+   once by commanding an empty close on the rig and reading where the jaw rests.
    Turning it on for real is pending Safety-WG review and a hazard-log entry. Enabled,
    `deploy run` always turns the kernel's attached-payload check on with it
    (`attached_collision_enabled`, 1000 ms deadline), never the leg alone: the bridge's payload
@@ -414,8 +414,8 @@ For the write-up, record:
 - `robots/openarm/robot.yaml`: `head_zed`'s nominal `static_transform_xyz_rpy` (sim twins
   only; a real world-voxel deploy never runs on it).
 - `robots/openarm/units/<unit>.yaml`: each cell's camera bindings and its calibrated ZED
-  pose, measured by the operator (step 2), and, once measured, its own grippers'
-  `closure_calibration` (a commented template until then). No furniture is surveyed: place surfaces are
+  pose, measured by the operator (step 2). The grippers' `closure_calibration` is a
+  robot-type constant in `robot.yaml`, not per unit. No furniture is surveyed: place surfaces are
   measured live from the voxel map under the carried payload
   ([real pick-and-place design](../../reference/real-pick-place-design.md) §2.3).
 - `python/core/src/openral_core/depth_extrinsic.py`: the accuracy the pose needs and the
