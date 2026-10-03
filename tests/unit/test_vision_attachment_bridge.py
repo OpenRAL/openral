@@ -700,3 +700,108 @@ def test_the_segment_request_is_sent_in_the_cameras_optical_frame() -> None:
         np.testing.assert_allclose(
             (sent.x, sent.y, sent.z), (t_cam_from_link @ np.array([*point, 1.0]))[:3]
         )
+
+
+def _so101_slot_group(jaw: float, *, tick: int, named: bool = True) -> list[Action]:
+    """One SO-101 tick as the runner dispatches it: a padded arm slot + a gripper slot."""
+    description = _so101_calibrated()
+    arm = [j.name for j in description.joints if j.role != "gripper"]
+    gripper = next(j.name for j in description.joints if j.role == "gripper")
+    row = [0.1] * len(arm)  # the sim packer's arm-only width; names place it either way
+    return [
+        Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            horizon=1,
+            joint_targets=[row],
+            joint_names=arm if named else None,
+            tick_index=tick,
+            tick_group_size=2,
+            runner_session_id=0xA11CE,
+        ),
+        Action(
+            control_mode=ControlMode.GRIPPER_POSITION,
+            horizon=1,
+            gripper=[jaw],
+            ee_name=gripper,
+            tick_index=tick,
+            tick_group_size=2,
+            runner_session_id=0xA11CE,
+        ),
+    ]
+
+
+def test_the_sim_attached_hals_applied_slot_group_commands_the_jaw() -> None:
+    """``SimAttachedHAL`` exposes ``last_applied_action`` too, so its groups reach the trigger.
+
+    It had none: the lifecycle node logged once and kept the trigger's last command — the
+    start-pose ramp's close — while the policy opened the jaw through slot groups, so an
+    open, stationary jaw read as a stall. The composed group is the command, and a group
+    that is not one joint-position command reads as unknown (``None``).
+    """
+    from openral_hal.sim_attached import SimAttachedHAL
+
+    from tests.unit.fakes.fake_sim_env import FakeSimEnv
+
+    description = _so101_calibrated()
+    bridge = VisionAttachmentBridge(
+        None, description, config=VisionAttachmentConfig(camera="wrist")
+    )
+    (leg,) = bridge._legs
+    hal = SimAttachedHAL(FakeSimEnv(action_dim=len(description.joints)), description)
+    hal.connect()
+    arm = [j.name for j in description.joints if j.role != "gripper"]
+    ramp = Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_targets=[[0.0] * len(arm)],
+        joint_names=arm,
+    )
+    hal.send_action(ramp)
+    assert hal.last_applied_action is ramp, "an ungrouped action is applied as sent"
+    leg.trigger.command(0.0)  # the start-pose ramp closed the jaw
+    first, last = _so101_slot_group(0.6, tick=1)
+    hal.send_action(first)
+    assert hal.last_applied_action is ramp, "a staged slot applied nothing"
+    hal.send_action(last)
+    assert hal.last_committed_tick == 1
+    applied = hal.last_applied_action
+    assert applied is not None and applied.tick_group_size <= 1
+    bridge.observe_command(applied)
+    assert leg.trigger.last_command == pytest.approx(0.6), "the group opened the jaw"
+    for slot in _so101_slot_group(0.0, tick=2, named=False):
+        hal.send_action(slot)
+    assert hal.last_committed_tick == 2, "the sim applied it"
+    assert hal.last_applied_action is None, "an unplaceable group's command is unknown"
+    bridge.clear_command()
+    assert leg.trigger.last_command is None
+
+
+def test_the_bridge_derives_its_trigger_windows_from_the_manifest_rate() -> None:
+    """No config passed: the trigger and heartbeat windows follow ``control_rate_hz``."""
+    description = _openarm()
+    expected = PositionStallConfig.for_rate(description.control_rate_hz or 0.0)
+    bridge = VisionAttachmentBridge(
+        None, description, config=VisionAttachmentConfig(camera="head_zed")
+    )
+    assert bridge._evidence._config == expected
+    assert all(leg.trigger._config == expected for leg in bridge._legs)
+    slow = description.model_copy(
+        update={"action_spec": description.action_spec.model_copy(update={"control_freq_hz": 10.0})}
+    )
+    slow_bridge = VisionAttachmentBridge(
+        None, slow, config=VisionAttachmentConfig(camera="head_zed")
+    )
+    assert slow_bridge._evidence._config.max_gap_s == pytest.approx(0.4)
+
+
+def test_heartbeat_evidence_goes_live_on_a_jittered_10_hz_stream() -> None:
+    """At 10 Hz the 30 Hz-tuned gap withheld the heartbeat forever; the derived one does not."""
+    now = time.monotonic()
+    stamps = [k * 100_000_000 + (13_000_000 if k % 2 else -9_000_000) for k in range(1, 8)]
+    fixed = _JawEvidence(PositionStallConfig(), timeout_s=10.0)
+    derived = _JawEvidence(PositionStallConfig.for_rate(10.0), timeout_s=10.0)
+    for stamp in stamps:
+        fixed.observe(complete=True, stamp_ns=stamp, now_s=now)
+        derived.observe(complete=True, stamp_ns=stamp, now_s=now)
+    assert not fixed.live(now_s=now)
+    assert derived.live(now_s=now)

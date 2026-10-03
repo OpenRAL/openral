@@ -323,11 +323,13 @@ class SlotGroupStager:
     keeps the watermark, ``reset`` (disconnect) clears it. ``last_committed_tick`` is what the HAL
     lifecycle node acknowledges on ``/openral/action_applied``. Ungrouped ticked actions
     go through ``admit`` / ``commit_tick`` so they share the same watermark.
+    ``last_applied_action`` is the command each commit applied (the composed one for a
+    group), which the lifecycle node feeds the grasp trigger.
 
     Example:
         >>> stager = SlotGroupStager()
-        >>> stager.pending, stager.last_committed_tick
-        (0, 0)
+        >>> stager.pending, stager.last_committed_tick, stager.last_applied_action
+        (0, 0, None)
     """
 
     def __init__(self) -> None:
@@ -335,6 +337,7 @@ class SlotGroupStager:
         self._actions: list[Action] = []
         self._key: tuple[int, int] | None = None
         self._watermark = TickWatermark()
+        self._applied: Action | None = None
 
     @property
     def pending(self) -> int:
@@ -351,15 +354,26 @@ class SlotGroupStager:
         """``runner_session_id`` of the last group the HAL applied (``0`` = none/legacy)."""
         return self._watermark.session
 
-    def commit(self, group: list[Action]) -> None:
-        """Record that a group ``stage`` released was applied to the robot.
+    @property
+    def last_applied_action(self) -> Action | None:
+        """The command the last commit applied (``None`` = none since ``reset``).
+
+        For a group, the composed action the HAL actually sent — never one slot; for an
+        ungrouped action (``commit_tick``), the action itself. Moves in step with
+        ``last_committed_tick``, so a reader that matched the tick reads its command.
+        """
+        return self._applied
+
+    def commit(self, group: list[Action], *, applied: Action) -> None:
+        """Record that a group ``stage`` released was applied to the robot as ``applied``.
 
         Call only after the apply succeeded: the lifecycle node acknowledges
         ``last_committed_tick``, so committing a group that failed would ack a
-        tick the robot never received.
+        tick the robot never received. ``applied`` is the composed command sent.
         """
         first = group[0]
         self._watermark.commit(int(first.tick_index), session=int(first.runner_session_id))
+        self._applied = applied
 
     def admit(self, action: Action) -> None:
         """Check an UNGROUPED ticked action against the watermark before it is applied.
@@ -380,10 +394,14 @@ class SlotGroupStager:
             self._watermark.check(tick, session=int(action.runner_session_id))
 
     def commit_tick(self, action: Action) -> None:
-        """Record that an ungrouped ticked ``action`` was applied (see ``admit``)."""
+        """Record that an ungrouped ``action`` was applied (see ``admit``).
+
+        The watermark moves only for a ticked action; ``last_applied_action`` always.
+        """
         tick = int(action.tick_index)
         if tick > 0:
             self._watermark.commit(tick, session=int(action.runner_session_id))
+        self._applied = action
 
     def discard(self) -> None:
         """Drop the half-staged tick but keep the committed watermark (estop).
@@ -397,10 +415,12 @@ class SlotGroupStager:
     def reset(self) -> None:
         """Drop the staged tick AND the watermark (disconnect: numbering restarts).
 
-        Retired runner sessions stay refused (``TickWatermark.reset``).
+        Retired runner sessions stay refused (``TickWatermark.reset``). The last applied
+        command is forgotten: after a reconnect nothing has been commanded yet.
         """
         self.discard()
         self._watermark.reset()
+        self._applied = None
 
     def stage(self, action: Action) -> list[Action] | None:
         """Add one slot; return the whole group once complete, else ``None``.

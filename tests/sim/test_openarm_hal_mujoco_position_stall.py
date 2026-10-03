@@ -5,8 +5,9 @@ The real OpenArm gripper reports no effort (vendor ``openarm_ros2`` hard-codes i
 so the HAL's grasp trigger is ``PositionStallTrigger``: a jaw commanded closed that settles
 short of the command. This drives the real ``OpenArmMujocoHAL`` on the vendored v2 MJCF —
 the MJCF's own finger position actuator (kp 30, force range +-7) and finger meshes — at the
-real 30 Hz action rate, reads ``read_state`` exactly as the lifecycle node does, and feeds
-the trigger with the manifest's ``closure_calibration`` (``robots/openarm/robot.yaml``):
+real 30 Hz action rate and at 10 Hz, reads ``read_state`` exactly as the lifecycle node does,
+and feeds the trigger with the manifest's ``closure_calibration`` (``robots/openarm/robot.yaml``)
+and the windows the node derives for that rate (``PositionStallConfig.for_rate``):
 
 * **object** — a free 5 cm box in the left jaws: the jaw stalls ~0.25 rad short of a 0.0
   command (inside the 0.18-0.29 rad band measured on the real gripper) and settles to
@@ -52,7 +53,7 @@ except Exception as exc:
     _MJCF_ERROR = str(exc)
 
 from openral_core import Action, ControlMode, RobotDescription
-from openral_hal._grasp_trigger import GraspEvent, PositionStallTrigger
+from openral_hal._grasp_trigger import GraspEvent, PositionStallConfig, PositionStallTrigger
 
 pytestmark = [
     pytest.mark.sim,
@@ -62,7 +63,10 @@ pytestmark = [
 
 _ROBOT_YAML = "robots/openarm/robot.yaml"
 _LEFT_GRIPPER = 7  # public 16-DoF slot
-_STEPS_PER_TICK = 17  # 0.002 s MJCF timestep x 17 ~= one 30 Hz action period
+_TIMESTEP_S = 0.002  # the vendored MJCF's timestep
+#: Action/joint-state rates the twin is driven at: the OpenArm's own 30 Hz, and a
+#: 10 Hz feed whose period equalled the old fixed 0.1 s max_gap_s.
+_RATES_HZ = (30.0, 10.0)
 _OPEN = 0.7
 # Between the left finger pads with the arm at its zero pose (MJCF FK, base frame).
 _BETWEEN_JAWS = (-0.0008, 0.1535, -0.59)
@@ -99,18 +103,20 @@ def _command(hal: object, left: float) -> None:
 
 
 def _run(
-    hal: object, trigger: PositionStallTrigger, left: float, ticks: int
+    hal: object, trigger: PositionStallTrigger, left: float, seconds: float
 ) -> tuple[list[GraspEvent], list[float]]:
-    """Command ``left`` for ``ticks`` 30 Hz ticks; feed every read to the trigger.
+    """Command ``left`` for ``seconds`` of ticks; feed every read to the trigger.
 
-    Each read is re-stamped with the twin's simulated time: the HAL stamps wall time,
-    and this loop steps 1/30 s of physics per tick far faster than real time, so wall
-    stamps would compress the trigger's seconds-based windows (and read as repeats).
+    One tick per action period (the HAL's ``settle_steps``). Each read is re-stamped
+    with the twin's simulated time: the HAL stamps wall time, and this loop steps a
+    period of physics per tick far faster than real time, so wall stamps would compress
+    the trigger's seconds-based windows (and read as repeats).
     """
     trigger.command(left)
     events: list[GraspEvent] = []
     trace: list[float] = []
-    for _ in range(ticks):
+    period_s = hal._settle_steps * _TIMESTEP_S  # type: ignore[attr-defined]
+    for _ in range(round(seconds / period_s)):
         _command(hal, left)
         state = hal.read_state()  # type: ignore[attr-defined]
         sim_ns = round(float(hal._data.time) * 1e9)  # type: ignore[attr-defined]
@@ -122,12 +128,20 @@ def _run(
     return events, trace
 
 
-def _hal(mjcf: str | None, *, gravity: bool) -> object:
+def _hal(mjcf: str | None, *, gravity: bool, rate_hz: float) -> object:
     from openral_hal import OpenArmMujocoHAL
 
-    hal = OpenArmMujocoHAL(mjcf_path=mjcf, gravity_enabled=gravity, settle_steps=_STEPS_PER_TICK)
+    steps = round(1.0 / (rate_hz * _TIMESTEP_S))  # 17 at 30 Hz, 50 at 10 Hz
+    hal = OpenArmMujocoHAL(mjcf_path=mjcf, gravity_enabled=gravity, settle_steps=steps)
     hal.connect()
     return hal
+
+
+def _trigger(openarm: RobotDescription, rate_hz: float) -> PositionStallTrigger:
+    """The left trigger with the windows the HAL node derives for ``rate_hz`` joint states."""
+    return PositionStallTrigger(
+        openarm, joint_name="left_gripper", config=PositionStallConfig.for_rate(rate_hz)
+    )
 
 
 def _place_payload(hal: object) -> None:
@@ -145,32 +159,34 @@ def openarm() -> RobotDescription:
     return RobotDescription.from_yaml(_ROBOT_YAML)
 
 
+@pytest.mark.parametrize("rate_hz", _RATES_HZ)
 def test_closing_on_a_held_object_stalls_attaches_and_releases(
-    openarm: RobotDescription, payload_mjcf: str
+    openarm: RobotDescription, payload_mjcf: str, rate_hz: float
 ) -> None:
-    hal = _hal(payload_mjcf, gravity=False)
+    hal = _hal(payload_mjcf, gravity=False, rate_hz=rate_hz)
     try:
-        trigger = PositionStallTrigger(openarm, joint_name="left_gripper")
-        events, _ = _run(hal, trigger, _OPEN, 45)
+        trigger = _trigger(openarm, rate_hz)
+        events, _ = _run(hal, trigger, _OPEN, 1.5)
         assert events == []
         _place_payload(hal)
-        events, trace = _run(hal, trigger, 0.0, 90)
-        stall = trace[-10:]
+        events, trace = _run(hal, trigger, 0.0, 3.0)
+        stall = trace[-5:]
         assert 0.18 <= sum(stall) / len(stall) <= 0.29, f"stalled at {stall[-1]:.3f} rad"
         assert max(stall) - min(stall) <= 0.001, "the twin's stalled jaw is not flat"
         assert events == [GraspEvent.ATTACH]
-        events, _ = _run(hal, trigger, _OPEN, 30)
+        events, _ = _run(hal, trigger, _OPEN, 1.0)
         assert events == [GraspEvent.DETACH]
     finally:
         hal.disconnect()  # type: ignore[attr-defined]
 
 
-def test_closing_on_nothing_never_attaches(openarm: RobotDescription) -> None:
-    hal = _hal(None, gravity=False)
+@pytest.mark.parametrize("rate_hz", _RATES_HZ)
+def test_closing_on_nothing_never_attaches(openarm: RobotDescription, rate_hz: float) -> None:
+    hal = _hal(None, gravity=False, rate_hz=rate_hz)
     try:
-        trigger = PositionStallTrigger(openarm, joint_name="left_gripper")
-        _run(hal, trigger, _OPEN, 45)
-        events, trace = _run(hal, trigger, 0.0, 60)
+        trigger = _trigger(openarm, rate_hz)
+        _run(hal, trigger, _OPEN, 1.5)
+        events, trace = _run(hal, trigger, 0.0, 2.0)
         assert trace[-1] <= 0.02, f"an empty close rests at {trace[-1]:.4f} rad"
         assert events == []
         assert not trigger.attached
@@ -178,15 +194,16 @@ def test_closing_on_nothing_never_attaches(openarm: RobotDescription) -> None:
         hal.disconnect()  # type: ignore[attr-defined]
 
 
+@pytest.mark.parametrize("rate_hz", _RATES_HZ)
 def test_a_payload_that_falls_away_reads_as_an_empty_close(
-    openarm: RobotDescription, payload_mjcf: str
+    openarm: RobotDescription, payload_mjcf: str, rate_hz: float
 ) -> None:
-    hal = _hal(payload_mjcf, gravity=True)
+    hal = _hal(payload_mjcf, gravity=True, rate_hz=rate_hz)
     try:
-        trigger = PositionStallTrigger(openarm, joint_name="left_gripper")
-        _run(hal, trigger, _OPEN, 45)
+        trigger = _trigger(openarm, rate_hz)
+        _run(hal, trigger, _OPEN, 1.5)
         _place_payload(hal)
-        events, trace = _run(hal, trigger, 0.0, 60)
+        events, trace = _run(hal, trigger, 0.0, 2.0)
         assert trace[-1] <= 0.02
         assert events == []
     finally:

@@ -420,3 +420,101 @@ def test_the_event_sequence_is_attach_then_detach_over_a_full_cycle(
     trigger.command(_OPEN)
     events += _run(trigger, openarm, itertools.chain(_close(0.22, _OPEN), _flat(_OPEN, 10)))
     assert events == [GraspEvent.ATTACH, GraspEvent.DETACH]
+
+
+def _jittered_stall(rate_hz: float, *, samples: int, seed: int = 7) -> list[int]:
+    """Stamps of ``samples`` reads at ``rate_hz`` with +-30 % period jitter (a busy executor)."""
+    import random
+
+    rng = random.Random(seed)
+    period_ns = 1e9 / rate_hz
+    stamps, t = [], 1_000_000_000.0
+    for _ in range(samples):
+        t += period_ns * rng.uniform(0.7, 1.3)
+        stamps.append(round(t))
+    return stamps
+
+
+@pytest.mark.parametrize("rate_hz", [10.0, 30.0, 500.0])
+def test_a_rate_derived_config_attaches_a_jittered_stall_at_any_rate(
+    openarm: RobotDescription, rate_hz: float
+) -> None:
+    """``for_rate``: a stalled jaw read at 10, 30 or 500 Hz with jitter attaches exactly once.
+
+    At 10 Hz the fixed 0.1 s ``max_gap_s`` was one period, so every jittered read was a
+    gap, the windows restarted forever and the trigger (and heartbeat) never confirmed.
+    """
+    config = PositionStallConfig.for_rate(rate_hz)
+    trigger = PositionStallTrigger(openarm, joint_name="left_gripper", config=config)
+    trigger.command(0.0)
+    stamps = _jittered_stall(rate_hz, samples=int(rate_hz) + 10)
+    events = [trigger.update(_state(openarm, stamp_ns=t, left_gripper=0.2)) for t in stamps]
+    assert events.count(GraspEvent.ATTACH) == 1, events
+    attached = stamps[events.index(GraspEvent.ATTACH)] - stamps[0]
+    assert attached >= config.settle_s * 1e9, "never sooner than the settle window"
+    assert events.index(GraspEvent.ATTACH) >= config.settle_samples + 1, "nor on fewer samples"
+
+
+def test_the_fixed_default_gap_never_attaches_a_10_hz_stream(openarm: RobotDescription) -> None:
+    """The bug ``for_rate`` fixes, pinned: 30 Hz-tuned windows on a jittered 10 Hz stream."""
+    trigger = PositionStallTrigger(openarm, joint_name="left_gripper")
+    trigger.command(0.0)
+    for t in _jittered_stall(10.0, samples=40):
+        assert trigger.update(_state(openarm, stamp_ns=t, left_gripper=0.2)) is None
+
+
+@pytest.mark.parametrize("rate_hz", [10.0, 30.0, 500.0])
+def test_a_rate_derived_gap_still_restarts_after_four_missed_periods(
+    openarm: RobotDescription, rate_hz: float
+) -> None:
+    """Six flat reads, then a silence longer than ``GAP_PERIODS`` periods: both windows restart."""
+    config = PositionStallConfig.for_rate(rate_hz)
+    trigger = PositionStallTrigger(openarm, joint_name="left_gripper", config=config)
+    trigger.command(0.0)
+    period_ns = round(1e9 / rate_hz)
+    stamps = [k * period_ns for k in range(config.settle_samples + 1)]
+    resume = stamps[-1] + round(config.max_gap_s * 1e9) + 1
+    stamps += [resume + k * period_ns for k in range(200)]
+    events = [trigger.update(_state(openarm, stamp_ns=t, left_gripper=0.2)) for t in stamps]
+    assert events.count(GraspEvent.ATTACH) == 1
+    restart = config.settle_samples + 1
+    assert stamps[events.index(GraspEvent.ATTACH)] - stamps[restart] >= config.settle_s * 1e9
+
+
+def test_for_rate_derives_only_the_gap_and_takes_an_override() -> None:
+    from openral_hal._grasp_trigger import GAP_PERIODS
+
+    default = PositionStallConfig()
+    for rate_hz in (1.0, 10.0, 30.0, 500.0):
+        config = PositionStallConfig.for_rate(rate_hz)
+        assert config.max_gap_s == pytest.approx(max(default.max_gap_s, GAP_PERIODS / rate_hz))
+        assert (config.consecutive_s, config.settle_s) == (default.consecutive_s, default.settle_s)
+        assert (config.consecutive_samples, config.settle_samples) == (3, 5)
+    assert PositionStallConfig.for_rate(30.0, max_gap_s=0.25).max_gap_s == 0.25
+    for bad in (0.0, -10.0, float("nan"), float("inf")):
+        with pytest.raises(ROSConfigError, match="rate_hz"):
+            PositionStallConfig.for_rate(bad)
+    with pytest.raises(ROSConfigError, match="PositionStallConfig"):
+        PositionStallConfig.for_rate(30.0, max_gap_s=1e-5)
+
+
+def test_a_cleared_command_cannot_attach_an_open_stationary_jaw(
+    openarm: RobotDescription,
+) -> None:
+    """A stale close command plus an open, flat jaw is a phantom stall; a cleared one is not.
+
+    The start-pose ramp commanded the jaw closed; the policy then opened it through a
+    command the trigger could not read. Measured against the stale close, the jaw sitting
+    open reads 0.7 rad "short" and ATTACHes; with the command cleared, nothing fires.
+    """
+    stale = _left(openarm)
+    stale.command(0.0)
+    assert GraspEvent.ATTACH in _run(stale, openarm, _flat(_OPEN, 10)), "the hazard is real"
+    cleared = _left(openarm)
+    cleared.command(0.0)
+    cleared.clear_command()
+    assert cleared.last_command is None
+    assert _run(cleared, openarm, _flat(_OPEN, 30)) == []
+    assert cleared.uncommanded_ticks == 30
+    cleared.command(0.0)  # a readable command arms it again
+    assert GraspEvent.ATTACH in _run(cleared, openarm, _flat(0.2, 10))
