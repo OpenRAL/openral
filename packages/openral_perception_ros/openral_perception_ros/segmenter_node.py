@@ -478,7 +478,10 @@ def _node_class() -> type:
                 try:
                     bgr, w, h = image_to_bgr_bytes(msg)
                 except ImageConvertError as exc:
-                    self.get_logger().debug(f"cache_frame({cid}): convert failed: {exc}")
+                    self.get_logger().warning(
+                        f"camera {cid!r}: dropping {msg.encoding!r} frame: {exc}",
+                        throttle_duration_sec=5.0,
+                    )
                     return
                 header = msg.header
                 self._frames[cid] = (bgr, w, h, str(header.frame_id), header.stamp)

@@ -23,8 +23,9 @@ the on-robot path uses. It reuses the exact same `ObjectsDetector` and
 
 `ros_image_detector_node` (`RosImageObjectDetectorNode`,
 `openral_ros_image_detector`). Best-effort producer: an Image it can't
-convert (unsupported encoding / padded rows) or a detector error is
-logged at debug and skipped — it never crashes the graph.
+convert (unsupported encoding, a `step` shorter than a row) is logged at
+WARNING (throttled, naming camera and encoding) and skipped, as is a
+detector error — it never crashes the graph.
 
 The detection image comes from a high-resolution RGB camera (e.g.
 `agentview_left`), but detections are attributed to `sensor_id` (default
@@ -54,7 +55,7 @@ so the geometry is consistent (per the object-lift design).
 
 | Direction | Topic | QoS | Message |
 | --- | --- | --- | --- |
-| Sub | `image_topic` (configurable) | BEST_EFFORT / VOLATILE / KEEP_LAST=1 | `sensor_msgs/Image` (`rgb8`/`bgr8`) |
+| Sub | `image_topic` (configurable) | BEST_EFFORT / VOLATILE / KEEP_LAST=1 | `sensor_msgs/Image` (`bgr8`/`rgb8`/`bgra8`/`rgba8`/`mono8`; padded rows OK) |
 | Sub | each `camera_infos` topic | BEST_EFFORT / VOLATILE / KEEP_LAST=1 | `sensor_msgs/CameraInfo` |
 | Pub | `/openral/perception/objects` (configurable) | BEST_EFFORT / VOLATILE / KEEP_LAST=5 | `openral_msgs/PromptStamped` (`metadata_json` = `ObjectsMetadata`; `header.frame_id` = `sensor_id`) |
 
@@ -96,7 +97,7 @@ can evict it before a co-resident VLA.
 | Path | Role |
 | --- | --- |
 | `openral_perception_ros/ros_image_detector_node.py` | The node + its `main()` entry point. ROS imports are deferred into `main()` so the module stays import-safe on hosts without a sourced ROS env. |
-| `openral_perception_ros/image_convert.py` | `image_to_bgr_bytes(msg)` — `sensor_msgs/Image` → contiguous BGR bytes (no `cv_bridge`); raises `ImageConvertError` on an unsupported encoding or padded rows. |
+| `openral_perception_ros/image_convert.py` | `image_to_bgr_bytes(msg)` — the one `sensor_msgs/Image` → contiguous BGR bytes converter every node here uses (no `cv_bridge`). Accepts `bgr8`/`8UC3`, `rgb8`, `bgra8`/`rgba8` (alpha dropped; the ZED wrapper's default layout), `mono8`/`8UC1`; honours `step`, so pitch-padded rows work. Raises `ImageConvertError` on anything else; every caller logs that at WARNING (throttled), never DEBUG-only. |
 | `openral_perception_ros/depth_convert.py` | `depth_array_to_image_msg` / `image_msg_to_depth_array` (`32FC1` metres ↔ ndarray, NaN-preserving) + `camera_info_from_intrinsics` (pinhole `CameraInfo`). Pure message-boundary helpers, no torch. Unit-tested in `tests/unit/test_depth_convert.py`. |
 | `openral_perception_ros/depth_provider_node.py` | `depth_provider_node` (`openral_depth_provider`): subscribes a mono RGB stream, calls the DA3 metric-depth sidecar (`tools/da3_depth_sidecar.py`, default `depth-anything/DA3-SMALL` — measured 0.27 GB / ~27 Hz on an 8 GB Ada) over ZMQ, and republishes a `32FC1` depth Image + `CameraInfo` for **nvblox** (`openral_slam_bringup/nvblox.launch.py`). Gives lidar-less robots a Nav2 cost map via cuVSLAM pose + nvblox. Best-effort; a sidecar hiccup skips the frame, never crashes the graph. Live bring-up is operator-run (sidecar venv + GPU). |
 | `openral_perception_ros/segmenter_node.py` | `segmenter_node` (`SegmenterNode`, `openral_segmenter`): a managed lifecycle node serving `/openral/perception/segment_in_view` (`openral_msgs/srv/SegmentInView`) from an in-process SAM 2.1 hiera-small (`kind: segmenter` rSkill). See [Segmenter node](#segmenter-node) below. |
@@ -222,22 +223,26 @@ removes a published payload whatever the kernel flag.
 - `tests/integration/test_segment_in_view_service.py` — live-ROS
   (`OPENRAL_TEST_ROS_LIVE=1`) round trip against the **real** node, the real
   rSkill manifest, the real SO-101 manifest, a real static TF and a real
-  in-tree wrist frame: plural `mono8` masks at the source resolution, area
+  in-tree wrist frame (published as pitch-padded `bgra8`, the ZED's layout):
+  plural `mono8` masks at the source resolution, area
   ascending, parallel advisory scores, the image's capture stamp echoed, plus the
   three typed failure branches (un-published camera, un-projectable prompt,
   deactivated node). A second test covers the diagnostic mask topic: off by
   default means *no publisher on the graph*, and on means real SAM 2.1 masks
   reach the dashboard's real `PerceptionOverlaySubscriber` and a real
-  `/api/state` snapshot. Listed in `scripts/ros_live_tests.sh`.
+  `/api/state` snapshot. A third, model-free test configures the real node
+  and checks a 1920x1080 padded `bgra8` frame lands in the cache as tight BGR
+  while an unsupported encoding is not cached, so the conversion path runs
+  even without `transformers` or a GPU. Listed in `scripts/ros_live_tests.sh`.
 - `tests/unit/test_perception_camera_topics.py` — the shared camera-id → topic
   resolution, including the `[""]`-for-unset rclpy quirk.
 - `tests/unit/test_segmenter_projection_geometry.py` — which K and optical frame
   a prompt is projected through, against the real OpenArm `head_zed` and the
   ZED K measured on the Thor cell, plus the real node's `camera_infos`
   configure path (no model).
-- `tests/unit/test_image_convert.py` — `rgb8`/`bgr8` → BGR byte
-  conversion, channel order, and the rejection paths (bad encoding,
-  padded stride).
+- `tests/unit/test_image_convert.py` — every accepted encoding → BGR
+  bytes, incl. 1920x1080 ZED `bgra8`/`rgba8` frames with padded rows, and
+  the rejection paths (unknown encoding, short `step`, truncated payload).
 - `tests/unit/test_depth_convert.py` — metric-depth ↔ `32FC1`
   Image round-trip (metres preserved, NaN preserved), the `CameraInfo`
   pinhole matrices, and the rejection paths (non-2D, wrong encoding,
