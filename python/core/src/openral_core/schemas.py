@@ -11884,7 +11884,8 @@ class GraspTargetRef(BaseModel):
             of ``role: gripper`` joints of ONE hand (the gripper joints hanging off one
             arm); empty = the hand of a single-hand robot. A robot with several hands
             refuses an empty list (the grounding would otherwise exempt every hand), and
-            links of two hands or a non-gripper link are refused.
+            links of two hands, a non-gripper link, or only part of a hand's links (that
+            would exempt one finger and the kernel would stop the grasp) are refused.
 
     Example:
         >>> GraspTargetRef(label="box").contact_links
@@ -11910,8 +11911,8 @@ class GraspTargetRef(BaseModel):
     contact_links: list[str] = Field(
         default_factory=list,
         description=(
-            "Gripper finger link(s) of the ONE hand that grasps. Leave empty only on a "
-            "single-hand robot; with several hands, name that hand's links."
+            "ALL gripper finger link(s) of the ONE hand that grasps. Leave empty only on a "
+            "single-hand robot; with several hands, name every link of that hand."
         ),
     )
 

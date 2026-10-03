@@ -144,8 +144,9 @@ def ground_grasp_target(
         base_frame: The robot base frame (the voxel grid's frame).
         default_contact_links: The robot's hands (``gripper_hands``), each its gripper
             child links (a bare ``str`` is a one-link hand). Named ``ref.contact_links``
-            must all belong to ONE hand; empty ones default to the hand of a single-hand
-            robot — with several, defaulting would exempt every hand.
+            must be ALL the links of ONE hand (any order) — part of a hand would exempt
+            one finger only and the kernel would stop the grasp; empty ones default to the
+            hand of a single-hand robot — with several, defaulting would exempt every hand.
         patience_s: The goal's patience ceiling; the backstop is this plus
             ``DECLARATION_TIMEOUT_MARGIN_S``, capped at the declaration's ceiling.
         pad_m: Padding added to each half-extent, > 0.
@@ -154,7 +155,7 @@ def ground_grasp_target(
         ROSReasonerInvalidPlan: Nothing grounds, several instances match with no
             ``object_id``, the box is missing / in another frame, no contact link is
             known, none is named on a robot with more than one hand, or the named
-            links are not gripper child links of one hand.
+            links are not gripper child links of one hand, or are only part of one.
 
     Example:
         >>> from openral_core import DetectedObject, Pose6D
@@ -225,6 +226,13 @@ def ground_grasp_target(
                 f"grasp_target contact_links {list(links)} are not gripper child links of "
                 f"one hand; name links of exactly one hand (hands: {listing})."
             )
+        # A partial hand would exempt one finger only and the kernel would stop the grasp.
+        if set(links) != set(owners[0]):
+            raise ROSReasonerInvalidPlan(
+                f"grasp_target contact_links {list(links)} name part of a hand; name all of "
+                f"its links: [{', '.join(owners[0])}]."
+            )
+        links = owners[0]
     elif len(hands) > 1:
         raise ROSReasonerInvalidPlan(
             f"grasp_target names no contact_links and this robot has {len(hands)} hands; "
