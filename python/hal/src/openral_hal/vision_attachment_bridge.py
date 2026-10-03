@@ -48,8 +48,10 @@ set is republished on a 0.2 s heartbeat — the same period as the simulator
 bridge's. That heartbeat is a claim about the jaws, so it is only made while
 the claim has evidence behind it: every gripper's jaw *position* channel must
 have reported a finite value within ``VisionAttachmentConfig.evidence_timeout_s``,
-in an unbroken run of new samples (repeated stamps do not count) spanning at least
-``PositionStallConfig.consecutive_s`` seconds of sample time, with no
+in an unbroken run of new samples (repeated stamps do not count, a gap over
+``PositionStallConfig.max_gap_s`` breaks the run) spanning at least
+``PositionStallConfig.consecutive_s`` seconds of sample time and at least
+``consecutive_samples`` samples, with no
 grasp being resolved and every trigger agreeing with its leg's attachment. A
 dead position channel therefore ages into a kernel drop, never into a stale
 "nothing attached".
@@ -225,8 +227,10 @@ class _JawEvidence:
     when *every* leg read a finite jaw position from it; one missing value, or a gap
     longer than the timeout, restarts the run, because a heartbeat claims
     something about every hand at once and a channel that just came back has
-    not yet shown it is steady. The run is measured in sample time
-    (``consecutive_s``), and a sample whose stamp repeats the last one
+    not yet shown it is steady. The run is measured exactly as the trigger measures
+    its debounce: at least ``consecutive_s`` of sample time AND at least
+    ``consecutive_samples`` samples, restarted by a sample-time gap over ``max_gap_s``
+    (``PositionStallConfig.is_gap``). A sample whose stamp repeats the last one
     (``PositionStallConfig.is_repeat``) is no evidence at all — a cached joint
     state re-read neither extends the run nor refreshes liveness.
 
@@ -236,7 +240,8 @@ class _JawEvidence:
         timeout_s: How old (monotonic) the newest complete sample may be.
 
     Example:
-        >>> evidence = _JawEvidence(PositionStallConfig(consecutive_s=0.05), timeout_s=0.5)
+        >>> config = PositionStallConfig(consecutive_s=0.05, consecutive_samples=2)
+        >>> evidence = _JawEvidence(config, timeout_s=0.5)
         >>> evidence.observe(complete=True, stamp_ns=0, now_s=0.0)
         >>> evidence.observe(complete=True, stamp_ns=10, now_s=0.05)  # a repeat
         >>> evidence.live(now_s=0.05)
@@ -251,6 +256,7 @@ class _JawEvidence:
         self._config = config
         self._timeout_s = timeout_s
         self._since_ns: int | None = None
+        self._samples = 0
         self._last_ns: int | None = None
         self._last_s: float | None = None
 
@@ -258,14 +264,16 @@ class _JawEvidence:
         """Fold one joint-state sample in."""
         if self._config.is_repeat(stamp_ns, self._last_ns):
             return
+        gap = self._config.is_gap(stamp_ns, self._last_ns)
         self._last_ns = stamp_ns
         stale = self._last_s is not None and now_s - self._last_s > self._timeout_s
-        if not complete or stale:
+        if not complete or stale or gap:
             self._since_ns = None
         if not complete:
             return
         if self._since_ns is None:
-            self._since_ns = stamp_ns
+            self._since_ns, self._samples = stamp_ns, 0
+        self._samples += 1
         self._last_s = now_s
 
     def live(self, *, now_s: float) -> bool:
@@ -274,6 +282,7 @@ class _JawEvidence:
             self._since_ns is not None
             and self._last_ns is not None
             and self._last_ns - self._since_ns >= self._config.consecutive_s * 1e9
+            and self._samples >= self._config.consecutive_samples
             and self._last_s is not None
             and now_s - self._last_s <= self._timeout_s
         )

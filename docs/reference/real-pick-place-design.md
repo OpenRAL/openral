@@ -104,7 +104,13 @@ using SAM 2.1 to see the object.
    closing jaw settled; a sample whose `stamp_ns` is within `min_sample_interval_s` (0.5 ms) of
    the last is a repeated cached read and is dropped by the trigger and by the heartbeat's
    evidence alike (a stamp that moves *backwards* is dropped the same way, so a wall-clock step
-   back stalls the trigger and ages the heartbeat out — fail-closed). On the real OpenArm the
+   back stalls the trigger and ages the heartbeat out — fail-closed). *Since
+   (2026-10-03, `fix/r5-trigger`):* time alone is not enough — every window also needs a
+   minimum sample count (`consecutive_samples=3`, `settle_samples=5`, the old tick counts), and
+   an accepted sample more than `max_gap_s` (0.1 s, 3 periods at 30 Hz) after the last restarts
+   the settle history, the debounce and the heartbeat's evidence run: a late-tick stream used to
+   confirm ATTACH on 4 samples, and a sparse stream catching a chattering jaw at the same phase
+   on 3. On the real OpenArm the
    jaw commands are ADR-0102 `GRIPPER_POSITION` slots: `observe_command` stages a slot group
    until its tick is whole and composes it with the HAL's own `compose_slot_group`, so the
    trigger's reference is exactly the target the gripper controller was sent; padded

@@ -253,6 +253,10 @@ def test_a_closed_position_off_the_range_end_is_refused(openarm: RobotDescriptio
         PositionStallConfig(settle_s=0.0),
         PositionStallConfig(settle_s=float("nan")),
         PositionStallConfig(min_sample_interval_s=float("inf")),
+        PositionStallConfig(consecutive_samples=0),
+        PositionStallConfig(settle_samples=1),
+        PositionStallConfig(max_gap_s=0.0),
+        PositionStallConfig(max_gap_s=float("inf")),
     ],
 )
 def test_a_degenerate_debounce_is_refused(
@@ -330,6 +334,51 @@ def test_a_repeated_cached_sample_is_not_a_new_settled_sample(
     ]
     assert [e for e in events if e] == [GraspEvent.ATTACH]
     assert events[-1] is GraspEvent.ATTACH, "after 5 settle + 2 debounce periods, not sooner"
+
+
+def test_late_ticks_do_not_attach_on_fewer_samples_than_the_windows_were_tuned_for(
+    openarm: RobotDescription,
+) -> None:
+    """Ticks 70 ms apart (under ``max_gap_s``) span the time windows on 3 samples.
+
+    Time-only windows attached on the 4th sample (0.21 s: 3 settle + 2 debounce, the
+    first debounce sample shared). Requiring 5 settle samples AND 3 agreeing ones holds
+    it to the 7th, the same sample count a 30 Hz stream needs.
+    """
+    trigger = PositionStallTrigger(openarm, joint_name="left_gripper")
+    trigger.command(0.0)
+    events = [
+        trigger.update(_state(openarm, stamp_ns=k * 70_000_000, left_gripper=0.2))
+        for k in range(10)
+    ]
+    assert events.index(GraspEvent.ATTACH) == 6, events
+    assert events.count(GraspEvent.ATTACH) == 1
+
+
+def test_a_chattering_jaw_sampled_in_phase_never_attaches(openarm: RobotDescription) -> None:
+    """A jaw chattering at 5 Hz between 0.2 and 0.0, sampled every 0.2 s, reads flat at 0.2.
+
+    Each sample follows the last by more than ``max_gap_s``, so no window ever spans two
+    of them: what the jaw did in between is unknown, and it is never called settled.
+    """
+    trigger = PositionStallTrigger(openarm, joint_name="left_gripper")
+    trigger.command(0.0)
+    events = [
+        trigger.update(_state(openarm, stamp_ns=k * 200_000_000, left_gripper=0.2))
+        for k in range(40)
+    ]
+    assert events == [None] * 40
+    assert not trigger.attached
+
+
+def test_a_gap_restarts_the_settle_and_debounce_windows(openarm: RobotDescription) -> None:
+    """Six flat 30 Hz samples (one short of ATTACH), a 0.2 s gap, then the full 7 again."""
+    trigger = PositionStallTrigger(openarm, joint_name="left_gripper")
+    trigger.command(0.0)
+    stamps = [k * _PERIOD_NS for k in range(6)]
+    stamps += [stamps[-1] + 200_000_000 + k * _PERIOD_NS for k in range(7)]
+    events = [trigger.update(_state(openarm, stamp_ns=t, left_gripper=0.2)) for t in stamps]
+    assert events.index(GraspEvent.ATTACH) == 12, "the gap must restart both windows"
 
 
 def test_a_non_finite_command_is_ignored(openarm: RobotDescription) -> None:

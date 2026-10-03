@@ -35,10 +35,12 @@ from openral_core import (
     RobotDescription,
 )
 from openral_core.exceptions import ROSConfigError
+from openral_hal._grasp_trigger import PositionStallConfig
 from openral_hal.vision_attachment_bridge import (
     DEFAULT_SEGMENT_SERVICE,
     VisionAttachmentBridge,
     VisionAttachmentConfig,
+    _JawEvidence,
     decode_mono8_mask,
     mask_depth_skew_reason,
     resolve_segment_outcome,
@@ -644,6 +646,25 @@ def test_a_repeated_cached_joint_state_is_no_heartbeat_evidence() -> None:
     bridge._evidence.observe(complete=True, stamp_ns=_at(3) + 2_000, now_s=last_s + 0.4)
     assert not bridge._evidence.live(now_s=last_s + 0.6), "a re-read refreshed liveness"
     assert all(leg.trigger.repeated_samples == 29 for leg in bridge._legs)
+
+
+def test_heartbeat_evidence_counts_samples_and_restarts_across_a_gap() -> None:
+    """Aligned with the trigger: ``consecutive_s`` AND ``consecutive_samples``, gap resets.
+
+    Two samples 70 ms apart span ``consecutive_s`` (0.06 s) but are one short of the 3
+    samples; samples 0.2 s apart (over ``max_gap_s``) never accumulate a run.
+    """
+    evidence = _JawEvidence(PositionStallConfig(), timeout_s=10.0)
+    now = time.monotonic()
+    for k in range(2):
+        evidence.observe(complete=True, stamp_ns=k * 70_000_000, now_s=now)
+    assert not evidence.live(now_s=now), "two late samples are under the sample count"
+    evidence.observe(complete=True, stamp_ns=2 * 70_000_000, now_s=now)
+    assert evidence.live(now_s=now)
+    sparse = _JawEvidence(PositionStallConfig(), timeout_s=10.0)
+    for k in range(20):
+        sparse.observe(complete=True, stamp_ns=k * 200_000_000, now_s=now)
+    assert not sparse.live(now_s=now), "a sample-time gap must restart the run"
 
 
 def test_the_segment_request_is_sent_in_the_cameras_optical_frame() -> None:
