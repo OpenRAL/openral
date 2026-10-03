@@ -42,8 +42,9 @@ classes, each logged once per transition with its typed reason:
   a missed deadline,
   too few depth points, stale or missing inputs, and a map-covered re-fit that
   fails the tracking gate but lies inside the held region grown by one voxel
-  **while a declared contact link's tf origin is within one voxel +
-  ``occluder_margin_m`` of it** (``occluded_refit``: the robot's own hand
+  **while a declared contact link's hand point (the bridge's TCP for the leg
+  whose jaw link it is, ``VisionAttachmentBridge.jaw_point``) is within one voxel
+  + ``occluder_margin_m`` of it** (``occluded_refit``: the robot's own hand
   occluding part of the target shrinks and shifts the fit; it never replaces
   the held region). The same shrink with no contact link near is
   ``unoccluded_refit``, a contradiction (a person's hand, the target knocked
@@ -99,7 +100,7 @@ _RATE_BAND_HZ = (2.0, 5.0)
 _GRAVITY_TOL = 1e-6
 
 # Upper bounds that keep the gates meaningful (CLAUDE.md §1.2: chosen, not measured).
-#: A contact link's tf origin this far from the held region is not plausibly the hand
+#: A contact link's hand point this far from the held region is not plausibly the hand
 #: occluding it; a larger margin lets any nearby arm pose excuse a shrunken re-fit.
 _MAX_OCCLUDER_MARGIN_M = 0.10
 #: Deeper than this, the column reaches whole furniture levels below the target (a
@@ -435,10 +436,11 @@ class GraspTargetLeg:
             ring in which the support layer must hold top-surface cells, metres
             (``support_top_from_voxels``). *Calibration point.*
         occluder_margin_m: How far (beyond one voxel) from the held region a
-            declared contact link's tf origin may be for a shrunk re-fit to count
-            as the robot's own hand occluding the target (``_gate_refit``).
-            *Calibration point* — it covers the link origin's offset from the
-            finger surface; at most 0.10 m, beyond which any nearby arm pose
+            declared contact link's hand point (its leg's TCP,
+            ``VisionAttachmentBridge.jaw_point``) may be for a shrunk re-fit to
+            count as the robot's own hand occluding the target (``_gate_refit``).
+            *Calibration point* — it covers the TCP's offset from the finger
+            surface; at most 0.10 m, beyond which any nearby arm pose
             would excuse a shrunken re-fit.
 
     Raises:
@@ -859,18 +861,16 @@ class GraspTargetLeg:
             if fit.refusal is TargetRefusal.TOO_FEW_POINTS:
                 raise _lost(fit.refusal.value, detail)
             raise _contradicted(fit.refusal.value, detail)
-        bridge = self._bridge
-        hands = []
-        for link in declaration.contact_links:
-            t_base_from_link = bridge._lookup(grid.frame_id, bridge.tf_frame(link))
-            if t_base_from_link is not None:
-                x, y, z = (float(v) for v in t_base_from_link[:3, 3])
-                hands.append((x, y, z))
         return _gate_refit(
             grid,
             fit.region,
             self.tracker.region,
             min_cover=self._config.grasp_target_min_cover,
-            hands=hands,
+            hands=self._hands(declaration, grid.frame_id),
             occluder_margin_m=self._occluder_margin_m,
         )
+
+    def _hands(self, declaration: GraspDeclaration, frame: str) -> list[tuple[float, float, float]]:
+        """The located hand points of the declared contact links, in ``frame``."""
+        located = (self._bridge.jaw_point(link, frame) for link in declaration.contact_links)
+        return [point for point in located if point is not None]
