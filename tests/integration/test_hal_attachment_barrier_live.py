@@ -624,7 +624,9 @@ def test_the_vision_leg_refuses_to_activate_without_the_kernels_bounds(unset: st
         rclpy.shutdown()
 
 
-def _so101_slot_chunks(description: Any, jaw: float, *, tick: int, named: bool) -> list[Any]:
+def _so101_slot_chunks(
+    description: Any, jaw: float, *, tick: int, named: bool, jaw_named: bool = True
+) -> list[Any]:
     """One SO-101 tick (arm + gripper slot) encoded as ``ROSPublishingHAL`` encodes it."""
     from openral_core import CONTROL_MODE_TO_UINT8, Action, ControlMode
     from openral_msgs.msg import ActionChunk
@@ -645,7 +647,7 @@ def _so101_slot_chunks(description: Any, jaw: float, *, tick: int, named: bool) 
             control_mode=ControlMode.GRIPPER_POSITION,
             horizon=1,
             gripper=[jaw],
-            ee_name=gripper,
+            ee_name=gripper if jaw_named else None,
             tick_index=tick,
             tick_group_size=2,
         ),
@@ -716,6 +718,7 @@ def test_a_sim_attached_slot_group_reaches_the_trigger_and_an_unknown_one_clears
         assert vision._config.evidence_timeout_s == pytest.approx(
             node._bridge.idle_hold_s + 4.0 / 10.0
         )
+        assert vision._config.evidence_run_spans_gaps, "a re-inference pause resets the run"
 
         leg.trigger.command(0.0)  # the start-pose ramp closed the jaw
         for chunk in _so101_slot_chunks(description, 0.6, tick=1, named=True):
@@ -729,6 +732,14 @@ def test_a_sim_attached_slot_group_reaches_the_trigger_and_an_unknown_one_clears
         for chunk in _so101_slot_chunks(description, 0.6, tick=2, named=False):
             node._on_safe_action(chunk)
         assert node._hal.last_committed_tick == 2, "the sim applied the group"
+        assert leg.trigger.last_command == pytest.approx(0.6), (
+            "an unplaceable arm slot hid the jaw target the group set"
+        )
+
+        leg.trigger.command(0.0)
+        for chunk in _so101_slot_chunks(description, 0.6, tick=3, named=False, jaw_named=False):
+            node._on_safe_action(chunk)
+        assert node._hal.last_committed_tick == 3, "the sim applied the group"
         assert node._hal.last_applied_action is None
         assert leg.trigger.last_command is None, "an unknown command must not stay a close"
     finally:

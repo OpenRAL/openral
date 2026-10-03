@@ -81,6 +81,7 @@ __all__ = [
     "make_lifecycle_main",
     "make_lifecycle_main_from_manifest",
     "sim_attachment_heartbeat",
+    "twin_jaw_evidence_timeout_s",
 ]
 
 
@@ -151,6 +152,59 @@ def sim_attachment_heartbeat(*, hal_mode: str, vision_attachment_enabled: bool) 
         False
     """
     return hal_mode == "sim" and not vision_attachment_enabled
+
+
+def twin_jaw_evidence_timeout_s(
+    *,
+    hal_mode: str,
+    hal_idle_steps: bool,
+    idle_hold_s: object,
+    configured_s: float,
+    rate_hz: float,
+) -> float | None:
+    """The vision leg's jaw-evidence timeout on the idle-stepping sim twin; ``None`` elsewhere.
+
+    The MuJoCo twin stamps joint states only when an action or an idle step captures
+    them, and the idle stepper holds off for ``idle_hold_s`` while a skill pauses
+    between VLA chunks — a shorter timeout withholds the attachment heartbeat on
+    every re-inference pause. So on the twin the timeout is raised to span that hold
+    (never lowered) and the evidence run spans gaps shorter than it. Anywhere else —
+    ``hal_mode`` ``"real"`` (whose node also carries a ``SimSensorBridge``), or a sim
+    HAL with no ``idle_step`` — returns ``None``: the configured timeout stands and
+    a sample gap resets the run, so a dead jaw channel ages out inside the kernel's
+    attached deadline.
+
+    Args:
+        hal_mode: The node's ``hal_mode`` parameter.
+        hal_idle_steps: Whether the HAL exposes a callable ``idle_step``.
+        idle_hold_s: The sensor bridge's ``idle_hold_s`` (anything not a float: no twin).
+        configured_s: ``vision_attachment_evidence_timeout_s``.
+        rate_hz: The joint-state rate the node reads at.
+
+    Returns:
+        The twin's timeout, or ``None`` when the configured one must stand.
+
+    Example:
+        >>> twin_jaw_evidence_timeout_s(
+        ...     hal_mode="real",
+        ...     hal_idle_steps=True,
+        ...     idle_hold_s=2.0,
+        ...     configured_s=0.5,
+        ...     rate_hz=40.0,
+        ... ) is None
+        True
+        >>> twin_jaw_evidence_timeout_s(
+        ...     hal_mode="sim",
+        ...     hal_idle_steps=True,
+        ...     idle_hold_s=2.0,
+        ...     configured_s=0.5,
+        ...     rate_hz=40.0,
+        ... )
+        2.1
+    """
+    if hal_mode != "sim" or not hal_idle_steps or not isinstance(idle_hold_s, float):
+        return None
+    return max(configured_s, idle_hold_s + 4.0 / rate_hz)
 
 
 def decode_action_chunk(msg: object) -> object | None:
@@ -2192,25 +2246,25 @@ if _ROS2_AVAILABLE:
                 f"grasp trigger windows for {rate_hz:.1f} Hz joint states: "
                 f"max_gap_s={trigger_config.max_gap_s:.3f}"
             )
-            # Twin only: the MuJoCo HAL stamps joint states when an action or an idle
-            # step captures them, and the idle stepper holds off for idle_hold while a
-            # skill pauses between VLA chunks — a jaw-evidence timeout shorter than
-            # that withholds the heartbeat on every re-inference pause. Real hardware
-            # streams joint states continuously and keeps the configured timeout.
-            evidence_timeout_s = (
+            hal_mode = gp("hal_mode").get_parameter_value().string_value or "sim"
+            configured_timeout_s = (
                 gp("vision_attachment_evidence_timeout_s").get_parameter_value().double_value
             )
-            from openral_hal.sim_sensor_bridge import SimSensorBridge
-
-            if isinstance(self._bridge, SimSensorBridge):
-                twin_floor_s = self._bridge.idle_hold_s + 4.0 / rate_hz
-                if evidence_timeout_s < twin_floor_s:
-                    self.get_logger().info(
-                        f"vision attachment (sim twin): jaw evidence timeout raised "
-                        f"{evidence_timeout_s:.2f} -> {twin_floor_s:.2f} s to span the "
-                        f"idle stepper's {self._bridge.idle_hold_s:.2f} s hold"
-                    )
-                    evidence_timeout_s = twin_floor_s
+            twin_timeout_s = twin_jaw_evidence_timeout_s(
+                hal_mode=hal_mode,
+                hal_idle_steps=callable(getattr(self._hal, "idle_step", None)),
+                idle_hold_s=getattr(self._bridge, "idle_hold_s", None),
+                configured_s=configured_timeout_s,
+                rate_hz=rate_hz,
+            )
+            twin_idle_stepping = twin_timeout_s is not None
+            evidence_timeout_s = configured_timeout_s if twin_timeout_s is None else twin_timeout_s
+            if evidence_timeout_s != configured_timeout_s:
+                self.get_logger().info(
+                    f"vision attachment (sim twin): jaw evidence timeout raised "
+                    f"{configured_timeout_s:.2f} -> {evidence_timeout_s:.2f} s to span the "
+                    "idle stepper's hold; evidence runs span gaps shorter than it"
+                )
             self._vision_attachment = VisionAttachmentBridge(
                 self,
                 self._hal.description,
@@ -2239,6 +2293,7 @@ if _ROS2_AVAILABLE:
                     ),
                     tf_frames=tf_frames,
                     evidence_timeout_s=evidence_timeout_s,
+                    evidence_run_spans_gaps=twin_idle_stepping,
                     mask_depth_max_skew_s=gp("vision_attachment_mask_depth_max_skew_s")
                     .get_parameter_value()
                     .double_value,

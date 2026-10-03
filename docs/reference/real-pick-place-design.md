@@ -123,6 +123,18 @@ using SAM 2.1 to see the object.
    (generation-tagged; a late reply for an older event is dropped, a DETACH in flight resolves
    to no attachment), and the pre-grasp region is the payload only on a leg's first ATTACH of a
    declaration — a REGRASP, or a re-pick under the same declaration, segments.
+   *Since (2026-10-03, `fix/r7-twin`):* the twin-only stretch of the jaw-evidence timeout over
+   the idle stepper's hold (`twin_jaw_evidence_timeout_s`) is gated on `hal_mode == "sim"` and a
+   HAL with a callable `idle_step` — it used to key on the node carrying a `SimSensorBridge`,
+   which every mode builds, so the real OpenArm's 0.5 s timeout became ~2.1 s, past the kernel's
+   500 ms attached deadline (a dead jaw channel kept a fresh heartbeat). On the same gate only,
+   the evidence run spans sample gaps shorter than that timeout
+   (`VisionAttachmentConfig.evidence_run_spans_gaps`), so a re-inference pause no longer
+   withholds the heartbeat as motion resumes; real hardware still restarts the run on any gap
+   over `max_gap_s`. A twin slot group that does not compose into one joint command (a base
+   twist, uncommanded joints) now records its gripper targets as a compact row
+   (`sim_attached.gripper_targets_action`) instead of `None`, which had cleared the jaw command
+   every tick on a mobile manipulator.
 6. **Place has no real producer for any of its inputs.** Region (sim: MuJoCo subtree), support
    witness (sim: `mj_geomDistance`), release (sim: contact loss + 10 mm rigid-follow tolerance),
    and nothing subscribes `/openral/place_declaration` on real. Three real-only hazards sim never

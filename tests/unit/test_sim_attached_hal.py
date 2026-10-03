@@ -1321,3 +1321,74 @@ def test_task_success_final_re_reads_the_predicate_at_disconnect(
     hal.disconnect()
     final = cap.named("sim.task_success_final")[0]
     assert final["success"] is True
+
+
+class _GroupStepEnv(FakeSimEnv):
+    """A backend that steps a whole slot group at once (``step_action_group``)."""
+
+    def step_action_group(self, actions: list[Action]) -> object:
+        return self.step(np.zeros(self.action_dim, dtype=np.float32))
+
+
+def _panda_mobile_group(jaw: float, *, tick: int) -> list[Action]:
+    """One mobile-manipulator tick: a base twist, a padded arm slot and a gripper slot."""
+    arm = [f"panda_joint{i}" for i in range(1, 8)]
+    common = {"tick_index": tick, "tick_group_size": 3, "runner_session_id": 0xB0B}
+    return [
+        Action(
+            control_mode=ControlMode.BODY_TWIST,
+            body_twist=[(0.1, 0.0, 0.0, 0.0, 0.0, 0.05)],
+            **common,
+        ),
+        Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            joint_targets=[[0.0] * 3 + [0.2] * 7 + [0.0]],
+            joint_names=arm,
+            **common,
+        ),
+        Action(
+            control_mode=ControlMode.GRIPPER_POSITION,
+            gripper=[jaw],
+            ee_name="panda_gripper",
+            **common,
+        ),
+    ]
+
+
+def test_a_mobile_manipulator_group_records_its_jaw_target() -> None:
+    """A base-twist group does not compose into one joint command, yet the jaw was told.
+
+    Recording ``None`` there cleared the grasp trigger's command every tick on a mobile
+    manipulator twin: the vision leg could never see a stall. The jaw target is recorded
+    as a compact row the bridge reads positionally; a group with no readable gripper
+    target is still unknown.
+    """
+    description = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+    hal = SimAttachedHAL(_GroupStepEnv(action_dim=12), description)
+    hal.connect()
+    for slot in _panda_mobile_group(0.03, tick=1):
+        hal.send_action(slot)
+    assert hal.last_committed_tick == 1
+    applied = hal.last_applied_action
+    assert applied is not None
+    assert applied.control_mode is ControlMode.JOINT_POSITION
+    assert applied.joint_names == ["panda_gripper"]
+    assert applied.joint_targets == [[pytest.approx(0.03)]]
+    assert hal.base_twist[0] == pytest.approx(0.1), "the twist slot still drove the base"
+
+    blind = [a for a in _panda_mobile_group(0.0, tick=2) if a.ee_name is None]
+    blind = [a.model_copy(update={"tick_group_size": 2}) for a in blind]
+    for slot in blind:
+        hal.send_action(slot)
+    assert hal.last_committed_tick == 2
+    assert hal.last_applied_action is None, "no gripper target: the command is unknown"
+
+
+def test_overlapping_gripper_targets_are_unknown() -> None:
+    """Two slots writing one jaw: which value the jaw got is unknown, so ``None``."""
+    description = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+    twist, arm, grip = _panda_mobile_group(0.03, tick=1)
+    overlap = arm.model_copy(update={"joint_names": [*arm.joint_names, "panda_gripper"]})
+    assert sim_attached.gripper_targets_action([twist, overlap, grip], description) is None
+    alone = sim_attached.gripper_targets_action([twist, overlap], description)
+    assert alone is not None and alone.joint_targets == [[0.0]]

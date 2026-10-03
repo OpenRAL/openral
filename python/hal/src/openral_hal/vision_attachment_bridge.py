@@ -236,6 +236,9 @@ class _JawEvidence:
         config: The trigger windows: ``consecutive_s`` of unbroken complete samples
             before evidence is live, and the repeated-stamp rule.
         timeout_s: How old (monotonic) the newest complete sample may be.
+        spans_gaps: Sim twin only (``VisionAttachmentConfig.evidence_run_spans_gaps``):
+            a sample-time gap restarts the run only past ``timeout_s``, not past
+            ``max_gap_s`` — the twin's joint states pause for every re-inference.
 
     Example:
         >>> config = PositionStallConfig(consecutive_s=0.05, consecutive_samples=2)
@@ -249,10 +252,13 @@ class _JawEvidence:
         (True, False)
     """
 
-    def __init__(self, config: PositionStallConfig, *, timeout_s: float) -> None:
+    def __init__(
+        self, config: PositionStallConfig, *, timeout_s: float, spans_gaps: bool = False
+    ) -> None:
         """Start with no evidence."""
         self._config = config
         self._timeout_s = timeout_s
+        self._spans_gaps = spans_gaps
         self._since_ns: int | None = None
         self._samples = 0
         self._last_ns: int | None = None
@@ -262,7 +268,11 @@ class _JawEvidence:
         """Fold one joint-state sample in."""
         if self._config.is_repeat(stamp_ns, self._last_ns):
             return
-        gap = self._config.is_gap(stamp_ns, self._last_ns)
+        gap = (
+            self._last_ns is not None and stamp_ns - self._last_ns > self._timeout_s * 1e9
+            if self._spans_gaps
+            else self._config.is_gap(stamp_ns, self._last_ns)
+        )
         self._last_ns = stamp_ns
         stale = self._last_s is not None and now_s - self._last_s > self._timeout_s
         if not complete or stale or gap:
@@ -759,6 +769,13 @@ class VisionAttachmentConfig:
             ticks at any rate the cell runs, and well inside the kernel's
             attached-collision deadline, so a dead position channel surfaces as a
             kernel drop rather than as a stale "nothing attached".
+        evidence_run_spans_gaps: Sim twin only — set by the HAL node exactly when
+            ``twin_jaw_evidence_timeout_s`` applies (``hal_mode`` ``"sim"`` with an
+            idle-stepping HAL). A joint-state sample gap shorter than
+            ``evidence_timeout_s`` then does not restart the evidence run, so a
+            re-inference pause does not withhold the heartbeat for a fresh debounce
+            as the arm resumes. Default ``False``: real hardware streams continuously
+            and any gap over ``max_gap_s`` restarts the run.
         grasp_target_enabled: Run the pre-grasp target producer leg
             (``_grasp_target_leg``): measure the live ``GraspDeclaration``'s
             region from its ``search_box``, the voxel map and ``SegmentInView``,
@@ -855,6 +872,7 @@ class VisionAttachmentConfig:
     object_id: str = "grasped_payload"
     tf_frames: Mapping[str, str] = field(default_factory=dict)
     evidence_timeout_s: float = 0.5
+    evidence_run_spans_gaps: bool = False
     grasp_target_enabled: bool = False
     grasp_target_rate_hz: float = 3.0
     grasp_target_freeze_s: float | None = None
@@ -1153,6 +1171,7 @@ class VisionAttachmentBridge:
         self._evidence = _JawEvidence(
             trigger_config,
             timeout_s=self._config.evidence_timeout_s,
+            spans_gaps=self._config.evidence_run_spans_gaps,
         )
         self._joint_order = [joint.name for joint in description.joints]
         self._warned_row_shape = False
@@ -1364,7 +1383,9 @@ class VisionAttachmentBridge:
         *applied*: for an ADR-0102 slot group, the HAL's composed full-dof action
         (``last_applied_action``) once it committed the tick — never the individual
         slots, which this bridge does not stage (a slot, ``tick_group_size > 1``, is
-        ignored and logged once).
+        ignored and logged once). A sim group that does not compose (a base-twist slot)
+        hands over only its gripper targets as a compact row
+        (``sim_attached.gripper_targets_action``), read positionally like any compact row.
 
         A ``JOINT_POSITION`` action: a full-dof row is padded and read at each owned
         joint's manifest index (every joint when it names none); a row as long as its
