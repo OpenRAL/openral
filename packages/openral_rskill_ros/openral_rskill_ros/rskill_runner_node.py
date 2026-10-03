@@ -324,6 +324,14 @@ if _ROS2_AVAILABLE:
             # launch turns it on with the HAL's
             # `vision_attachment_grasp_target_approach_m`.
             self.declare_parameter("grasp_approach_enabled", False)
+            # The place mirror (real pick-and-place design §2.3): with no place
+            # declaration from the goal or the scene, arm a goal-scope one —
+            # `target_id="surface"`, no object, no search box — so the HAL's
+            # place-target leg may attach the surface it measures under the
+            # carried payload. The leg never declares on its own: no goal, no
+            # place allowance. Default off; the deploy launch turns it on with
+            # the HAL's `vision_attachment_place_target_enabled`.
+            self.declare_parameter("place_approach_enabled", False)
             self._description: RobotDescription | None = robot_description
             self._aggregator: WorldStateAggregator | None = aggregator
             self._skill_resolver: SkillResolver | None = skill_resolver
@@ -2045,9 +2053,32 @@ if _ROS2_AVAILABLE:
             if bool(getattr(request, "place_declaration_valid", False)):
                 return PlaceDeclaration.from_idl(request.place_declaration)
             raw = self.get_parameter("place_declaration_json").get_parameter_value().string_value
-            if not raw:
-                return None
-            return PlaceDeclaration.model_validate_json(raw)
+            if raw:
+                return PlaceDeclaration.model_validate_json(raw)
+            if self.get_parameter("place_approach_enabled").get_parameter_value().bool_value:
+                return self._goal_scope_place_declaration(
+                    float(getattr(request, "deadline_s", 0.0))
+                )
+            return None
+
+        def _goal_scope_place_declaration(self, deadline_s: float) -> Any:
+            """The goal-scope place declaration (``place_approach_enabled``).
+
+            Names no target surface, no object and no search box: the HAL's
+            place-target leg measures the surface under whichever payload is
+            carried and scopes the region to it. The backstop is the goal
+            deadline (the ceiling when unset), capped at
+            ``PlaceDeclaration.MAX_TIMEOUT_S``; the runner retracts it at goal
+            end anyway. Mirror of ``_goal_scope_grasp_declaration``.
+            """
+            from openral_core import PlaceDeclaration
+
+            ceiling = PlaceDeclaration.MAX_TIMEOUT_S
+            return PlaceDeclaration(
+                target_id="surface",
+                timeout_s=min(deadline_s, ceiling) if deadline_s > 0.0 else ceiling,
+                stamp_ns=0,
+            )
 
         def _arm_place_declaration(self, request: Any, *, rskill_id: str, trace_id: str) -> None:
             """Publish this goal's place declaration, stamped and attributable.
