@@ -350,32 +350,47 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   release window's frozen record (`GraspTargetLeg.on_detach`), the tracker drops that hand's
   region at once while keeping the handover so nothing re-measures or re-latches it
   (`on_release`), and once the hand's legs hold nothing — no attachment, no release window, no
-  pending segmentation; re-checked on the DETACH and when the window closes
-  (`on_release_closed`; a close is keyed on the window it judged, so the HAL's poll racing a
-  re-ATTACH is a no-op and never completes the live regrasp) — the pick is complete (`on_pick_complete`): the counter advances and
+  pending segmentation, no trigger reading the jaws loaded; re-checked on the DETACH and when
+  the window closes (`on_release_closed`; a close is keyed on the window it judged, so the HAL's
+  poll racing a re-ATTACH is a no-op, and a poll that wins the lock instead finds the re-latched
+  trigger and completes nothing — either ordering leaves the live regrasp handed over) — the
+  pick is complete (`on_pick_complete`): the counter advances and
   the hand may re-arm behind the same backoff as a refusal. **Not on what it just released
-  (HZ-0115-11):** until the hand's approach box clears the released payload's frozen pose
-  by more than one voxel — the separating-axis lower bound between the approach box and each
-  primitive's oriented bounding box, so an elongated payload is not inflated to a sphere — the
+  (HZ-0115-11):** until the column the hand's next measurement would search (its approach
+  box reaching `support_search_below_m` below it, `search_column`) clears the released
+  payload's frozen pose by more than one voxel — the separating-axis lower bound between that
+  column and each primitive's oriented bounding box, so an elongated payload is not inflated
+  to a sphere — the
   hand does not arm, and is not a candidate at all: it does not count toward "two hands at
   once", so a hand guarded for the goal never blocks the other hand (one hand per declaration
   is the kernel's own rule, HZ-0115-12); a release that left no record (no tf2 at the DETACH) keeps it
   from arming for the rest of the goal. **The kernel bounds it, not the producer:** it retires
   each pick's identity at its release — when the payload attached on the declaring chain
   disappears (`reason=released`; the other hand may still hold, and the released payload may
-  sit frozen on the base through its window), when the whole attachment set empties
-  after its handover (`detached`; before the handover the empty set is another hand's release
-  or a frozen record clearing, which only drops the declaration, `detached_elsewhere`, for
-  the same snapshot to re-ingest it), or when a handed-over declaration loses its region or is
-  retracted (`no_region`, `retracted`) — and keeps
+  sit frozen on the base through its window), when the whole attachment set empties at a new
+  revision (`detached` — before the handover too, whichever hand let go: the kernel never
+  guesses "elsewhere" from the last snapshot it saw), or when a handed-over declaration loses
+  its region or is retracted (`no_region`, `retracted`) — and keeps
   every retired identity, up to 16 per activation (oldest evicted, logged once; an evicted one
-  stays bounded by its goal's `timeout_s`), so no pick's identity re-arms (HZ-0115-3). A
+  stays bounded by its goal's `timeout_s`), so no pick's identity re-arms (HZ-0115-3).
+  **Liveness is the producer's, which owns the attachment set:** every publish at a new
+  revision whose set lost or replaced an object (a DETACH, a release window closing, a
+  re-ATTACH) or is empty first calls `GraspTargetLeg.on_attachment_changed`, before that
+  snapshot's envelope is filled. An arming not handed over (the other hand's) drops its region
+  at once and advances to a fresh identity, and from then on no region is accepted unless its
+  `stamp_ns` — the older of its depth frame and its grid's `source_stamp` — is later than the
+  change: the other hand re-arms only from a measurement of the post-detach scene, and the
+  region it measured before is never re-used (live kernel row:
+  `test_another_hands_release_retires_a_pre_handover_arming_and_the_producer_re_arms`). The
+  hand that let go follows the pick-complete path above. A
   pre-handover retraction (`approach_ended`, a refusal) re-arms behind the backoff under the
   same identity, so an arming the kernel already retired for a fault (`grid_frame_changed`,
   `attachment_rejected`; the producer cannot see either) stays refused — until the hand
-  approaches afresh: an arming that ended by leaving the approach distance, with the hand still
-  away once a freeze window had passed, re-arms under a fresh identity (ADR draft judgement
-  call 4: wiggling or coming straight back keeps the retired one). A named
+  approaches afresh: an arming that ended by leaving the approach distance, with the hand then
+  seen away on every sample for a continuous freeze window — located, its approach box off the
+  column over its last target — re-arms under a fresh identity (ADR draft judgement call 4:
+  wiggling, coming straight back, a tf2 gap or a `min_cells` dip over the target keeps the
+  retired one, and an unlocated or holding sample restarts the window). A named
   `search_box` declaration stays handed over after its pick: a new target needs a new
   declaration from dispatch. A dispatch/reasoner declaration with a
   `search_box` wins (no approach runs); one naming a hand but no box narrows the approach to

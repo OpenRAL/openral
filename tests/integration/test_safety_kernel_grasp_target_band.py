@@ -847,3 +847,120 @@ def test_two_approach_armed_picks_in_one_goal_on_the_real_kernel(
         assert evidence["link_a"] == _LEFT_FINGER
         assert cell.stop_lines()[-1][2] == 0, "a retired identity re-armed"
         reset()
+
+
+def test_another_hands_release_retires_a_pre_handover_arming_and_the_producer_re_arms(
+    reset_kernel_estop: Callable[..., None],
+) -> None:
+    """HZ-0115-3, kernel and producer together: the kernel retires an armed declaration at
+    any detach edge (the attachment set emptying at a new revision), before its handover too,
+    and never re-arms that identity; the producer, which owns the set, keeps the pick live by
+    re-arming the other hand under a fresh identity from a measurement taken after the detach.
+
+    ====================================================  =====================================
+    row                                                   verdict
+    ====================================================  =====================================
+    right hand holds; left armed (``approach:<left>:1``)  ACCEPTED, finger in the target
+    right hand releases (no release window: the set       ``grasp_region_dropped reason=detached
+    empties); the producer refreshes before publishing    target=approach:<left>:1``; the snapshot
+                                                          names ``approach:<left>:2``, no region
+    left's region measured before the detach, offered     never accepted: REFUSED, nothing exempt
+    again to the producer
+    re-measured after the detach (``approach:<left>:2``)  ACCEPTED, finger in the target
+    ``approach:<left>:1`` again with a fresh region       REFUSED — retired, nothing exempt
+    ====================================================  =====================================
+    """
+    import numpy as np
+    from openral_hal._grasp_target_leg import GraspTargetTracker, approach_box
+    from openral_hal.vision_attachment_bridge import (
+        VisionAttachmentBridge,
+        VisionAttachmentConfig,
+        region_attachment,
+    )
+
+    legs = VisionAttachmentBridge(
+        None, _description(), config=VisionAttachmentConfig(camera="head_zed")
+    )._legs
+    right = next(g for g in legs if g.jaw_link == _RIGHT_FINGER)
+    goal = GraspDeclaration(
+        target_id="approach",
+        contact_links=(_LEFT_FINGER, _RIGHT_FINGER),
+        rskill_id=_RSKILL_ID,
+        trace_id=f"grasp-band-{uuid.uuid4().hex[:8]}",
+        timeout_s=_TIMEOUT_S,
+        stamp_ns=time.time_ns(),
+    )
+    tracker = GraspTargetTracker(freeze_s=2.0, log=lambda _line: None, first_pick=1)
+    tracker.on_declaration(goal)
+    first_id, second_id = f"approach:{_LEFT_FINGER}:1", f"approach:{_LEFT_FINGER}:2"
+    right_held = region_attachment(
+        _declaration(_region((0.0, -0.18, -0.61), _REGION_HALF)),
+        attach_link=right.producer.attach_link,
+        touch_links=right.producer.touch_links,
+        t_link_from_region=np.linalg.inv(_t_base_from_link_at_q0(right.producer.attach_link)),
+        stamp_ns=time.time_ns(),
+    )
+
+    def envelope() -> GraspDeclaration:
+        declaration = tracker.envelope(now_ns=time.time_ns())
+        assert declaration is not None
+        return declaration
+
+    with _live_cell(grasp_allowance_enabled=True, reset_kernel_estop=reset_kernel_estop) as (
+        cell,
+        reset,
+    ):
+        # ── The right hand holds; the left hand approaches and is measured ──────────────
+        tcp = (_REGION_CENTRE[0], _REGION_CENTRE[1], _REGION_CENTRE[2] + 0.05)
+        tracker.on_approach(
+            [((_LEFT_FINGER,), approach_box([tcp], approach_m=0.10, frame_id=_FRAME))],
+            now_ns=time.time_ns(),
+            move_m=_RES,
+        )
+        before = _region(_REGION_CENTRE, _REGION_HALF)
+        tracker.accept(before)
+        armed = envelope()
+        assert armed.target_id == first_id and armed.region == before
+        cell.world(_TARGET | _PLANE, armed, attached=[right_held])
+        cell.send("armed", expect_accept=True)
+        assert "armed" in cell.safe, cell.log()
+        assert tracker.handed_over is None, "pre-handover"
+
+        # ── The right hand releases: the bridge's publish refreshes the arming first ────
+        tracker.on_attachment_changed(now_ns=time.time_ns())
+        refreshed = envelope()
+        assert refreshed.target_id == second_id and refreshed.region is None
+        cell.world(_TARGET | _PLANE, refreshed, attached=[])
+        assert f"safety.grasp_region_dropped reason=detached target={first_id}" in cell.log()
+
+        # ── The region measured before the detach is never re-used ──────────────────────
+        tracker.accept(before)
+        stale = envelope()
+        assert stale.target_id == second_id and stale.region is None, "pre-detach region reused"
+        cell.world(_TARGET | _PLANE, stale, attached=[])
+        cell.send("pre-detach-region", expect_accept=False)
+        evidence = cell.refused("pre-detach-region")
+        assert evidence["link_a"] == _LEFT_FINGER
+        assert cell.stop_lines()[-1][2] == 0, "nothing may be exempt before the re-measure"
+        reset()
+
+        # ── Re-measured after the detach, under the fresh identity: exempt ──────────────
+        after = _region(_REGION_CENTRE, _REGION_HALF)
+        tracker.accept(after)
+        second = envelope()
+        assert second.target_id == second_id and second.region == after
+        assert second.stamp_ns == goal.stamp_ns, "the goal's stamp"
+        cell.world(_TARGET | _PLANE, second, attached=[])
+        cell.send("re-armed", expect_accept=True)
+        assert "re-armed" in cell.safe, cell.log()
+        assert f"safety.grasp_region_armed target={second_id} links=1" in cell.log()
+
+        # ── The retired identity, with a fresh region: refused ──────────────────────────
+        old = armed.model_copy(update={"region": _region(_REGION_CENTRE, _REGION_HALF)})
+        cell.world(_TARGET | _PLANE, old, attached=[])
+        cell.send("retired", expect_accept=False)
+        evidence = cell.refused("retired")
+        assert evidence["link_a"] == _LEFT_FINGER
+        assert cell.stop_lines()[-1][2] == 0, "a retired identity re-armed"
+        assert cell.log().count(f"safety.grasp_region_armed target={first_id} links=1") == 1
+        reset()

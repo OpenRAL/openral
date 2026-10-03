@@ -729,8 +729,9 @@ class PlaceTargetTracker:
 def _published(leg: _GripperLeg) -> AttachedCollisionObject | None:
     """What one leg publishes: its held payload, else its frozen release record."""
     held: AttachedCollisionObject | None = leg.attachment
-    if held is None and leg.release is not None:
-        held = leg.release.record
+    window = leg.release  # read once: the executor's poll may close it meanwhile
+    if held is None and window is not None:
+        held = window.record
     return held
 
 
@@ -748,10 +749,11 @@ def _witness_candidates(
     """
     candidates: list[tuple[AttachedCollisionObject, NDArray[np.float64] | None, bool]] = []
     for leg in legs:
-        if leg.attachment is not None:
-            candidates.append((leg.attachment, pose(leg.attachment), bool(leg.trigger.attached)))
-        elif leg.release is not None:
-            candidates.append((leg.release.record, None, True))
+        held, window = leg.attachment, leg.release  # each read once (proprio vs executor)
+        if held is not None:
+            candidates.append((held, pose(held), bool(leg.trigger.attached)))
+        elif window is not None:
+            candidates.append((window.record, None, True))
     return candidates
 
 

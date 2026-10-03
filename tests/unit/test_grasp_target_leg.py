@@ -1334,15 +1334,174 @@ def test_a_stale_release_close_never_completes_a_live_regrasp() -> None:
         assert leg.tracker.handed_over == _LEFT, "the stale close completed the live regrasp"
 
 
+def test_a_poll_close_winning_the_lock_never_completes_a_live_regrasp() -> None:
+    """The other ordering of the race above: the re-ATTACH's trigger has flipped (on the
+    proprio thread, before either thread acts), but the executor's poll takes the window
+    first. Its close is the leg's (the window is still the leg's), so it runs — and must not
+    complete the pick: the loaded trigger counts as holding (``_holding``). The re-ATTACH's
+    own close of the same window is then the no-op."""
+    from openral_core import Action, ControlMode, JointState
+
+    with _live_leg("test_grasp_target_poll_wins_release_close") as live:
+        leg, bridge = live.leg, live.bridge
+        now_ns = leg._now_ns()
+        left = live.gripper("openarm_left_finger_pair")
+        live.place("left", (0.45, 0.0, 0.18))
+        live.place("right", (0.45, -0.30, 0.40))
+        leg._grid = (_held_block_lattice(), now_ns, time.monotonic())
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+        leg._detect_approach(0.10, now_ns)
+        live.place("left", (0.45, 0.0, 0.10))
+        leg.tracker.accept(_measured(now_ns))
+        t = _grip(bridge, 0.2, t0_ns=1)  # ATTACH: handed over
+        t = _grip(bridge, 0.0, t0_ns=t)  # DETACH: the release window opens
+        judged = left.release
+        assert judged is not None and leg.tracker.handed_over == _LEFT
+        assert not left.trigger.attached
+        # Proprio: the re-ATTACH's trigger update (the bridge has not acted on it yet).
+        close = Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            horizon=1,
+            joint_names=["left_gripper"],
+            joint_targets=[[0.0]],
+        )
+        event = None
+        for _ in range(40):
+            t += 20_000_000
+            bridge.observe_command(close)  # folds the command into the triggers only
+            update = left.trigger.update(
+                JointState(
+                    name=["left_gripper", "right_gripper"],
+                    position=[0.2, 0.0],
+                    effort=[0.0, 0.0],
+                    stamp_ns=t,
+                )
+            )
+            event = event or update
+        assert event is not None and left.trigger.attached, "the trigger re-latched"
+        assert left.release is judged and left.attachment is None and not left.pending
+        # Executor: the poll's close wins the lock — the window is still the leg's.
+        assert bridge._close_release(left, "timeout", judged)
+        assert leg.tracker.handed_over == _LEFT, "a poll close completed the live regrasp"
+        # Proprio: the re-ATTACH's close of the window it saw is now a no-op.
+        assert not bridge._close_release(left, "attach", judged)
+        assert leg.tracker.handed_over == _LEFT
+
+
+def _attachment_publisher(live: _LiveLeg) -> None:
+    """The bridge's real ``/openral/attachment_state`` publisher (``setup`` creates it)."""
+    from openral_msgs.msg import AttachmentState
+
+    live.bridge._attachment_pub = live.node.create_publisher(
+        AttachmentState, "/openral/attachment_state", 10
+    )
+
+
+def test_an_attachment_change_refreshes_the_other_hands_pre_handover_arming() -> None:
+    """HZ-0115-3, producer side. The kernel retires an armed grasp declaration whenever the
+    attachment set empties at a new revision — before its handover too, whichever hand let
+    go — and never re-arms that identity. The bridge owns the set, so at every publish that
+    loses or replaces an object (or is empty) the other hand's pre-handover arming drops its
+    region at once and takes a fresh identity, BEFORE the envelope of that very snapshot is
+    filled; and a region measured at or before the change is never accepted again."""
+    pytest.importorskip("openral_msgs")
+    from openral_msgs.msg import AttachmentState
+
+    with _live_leg("test_grasp_target_attachment_change") as live:
+        leg, bridge = live.leg, live.bridge
+        _attachment_publisher(live)
+        now_ns = leg._now_ns()
+        left = live.gripper("openarm_left_finger_pair")
+        right = live.gripper("openarm_right_finger_pair")
+        live.place("left", (0.45, 0.0, 0.18))
+        live.place("right", (0.45, -0.30, 0.40))
+        leg._grid = (_held_block_lattice(), now_ns, time.monotonic())
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+        # The right hand holds something it grasped unarmed (ATTACH -> ``_finish``).
+        right.attachment = _released_record().model_copy(
+            update={"object_id": "cell:other", "attach_link": right.producer.attach_link}
+        )
+        bridge._publish_attachment()
+        leg._detect_approach(0.10, now_ns)
+        armed = leg.tracker.target
+        assert armed is not None and armed.contact_links == _LEFT
+        before = _measured(leg._now_ns())
+        leg.tracker.accept(before)
+        assert leg.tracker.region == before
+        # An addition (another ATTACH) is not a change: nothing is refreshed.
+        bridge._publish_attachment()
+        assert leg.tracker.target is armed and leg.tracker.region == before
+
+        # The right hand lets go (its DETACH; no tf2 here, so no window): the set empties.
+        generation = leg.tracker.generation
+        right.attachment = None
+        # The envelope the detach snapshot itself carries: what the bridge publishes.
+        filled: list[Any] = []
+        sub = live.node.create_subscription(
+            AttachmentState, "/openral/attachment_state", filled.append, 10
+        )
+        bridge._publish_attachment()
+        rclpy = pytest.importorskip("rclpy")
+        deadline = time.monotonic() + 5.0
+        while not filled and time.monotonic() < deadline:
+            rclpy.spin_once(live.node, timeout_sec=0.05)
+        live.node.destroy_subscription(sub)
+        fresh = leg.tracker.target
+        assert fresh is not None and fresh.contact_links == _LEFT
+        n = int(armed.target_id.rsplit(":", 1)[1])
+        assert fresh.target_id == f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}:{n + 1}"
+        assert fresh.stamp_ns == armed.stamp_ns, "the goal's stamp"
+        assert leg.tracker.region is None, "the pre-detach region was kept"
+        assert leg.tracker.generation != generation, "a measurement in flight survived"
+        (snapshot,) = filled
+        assert snapshot.grasp_declaration.target_id == fresh.target_id, (
+            "the detach snapshot carried the retired identity"
+        )
+        assert not snapshot.grasp_declaration.region_valid
+        # The region measured before the detach is never re-used ...
+        leg.tracker.accept(before)
+        assert leg.tracker.region is None, "a pre-detach measurement was accepted"
+        # ... a measurement after it is.
+        after = _measured(leg._now_ns() + 1)
+        leg.tracker.accept(after)
+        assert leg.tracker.region == after and leg.tracker.target is fresh
+        assert left.attachment is None
+
+
+def test_an_attachment_change_leaves_a_handed_over_pick_to_its_own_path() -> None:
+    tracker, _ = _approach_tracker()
+    here = approach_box([(0.45, 0.0, 0.18)], approach_m=0.1, frame_id="openarm_base")
+    picked = _pick(tracker, here, now_ns=11 * _S)
+    tracker.on_attachment_changed(now_ns=12 * _S)
+    assert tracker.target is picked and tracker.region == _measured(11 * _S)
+    assert tracker.handed_over == _LEFT
+    # With nothing armed, only the change time is kept: a later arming needs a newer region.
+    tracker.on_release(_LEFT, None)
+    assert tracker.on_pick_complete(_LEFT, now_ns=12 * _S)
+    elsewhere = approach_box([(0.30, 0.20, 0.10)], approach_m=0.1, frame_id="openarm_base")
+    _approach(tracker, [(_LEFT, elsewhere)], now_ns=13 * _S)
+    tracker.accept(_measured(12 * _S))
+    assert tracker.region is None
+    tracker.accept(_measured(12 * _S + 1))
+    assert tracker.region == _measured(12 * _S + 1)
+
+
 def test_the_released_payload_guard_is_the_oriented_box_not_its_bounding_sphere() -> None:
     """HZ-0115-11 with an elongated payload (a 30 cm bar lying along x): its bounding sphere
-    (radius ~15 cm) kept the hand guarded 14 cm straight above it. The guard is the
-    separating-axis lower bound between the approach box and the payload's oriented box:
-    one voxel of clearance ends it, and within one voxel it holds."""
+    (radius ~15 cm) kept the hand guarded 15 cm to the side of it. The guard is the
+    separating-axis lower bound between the payload's oriented box and the column the next
+    measurement would search (``search_column``: the approach box reaching
+    ``support_search_below_m`` = 15 cm below it, where ``_seed`` looks): one voxel of
+    clearance ends it, within one voxel it holds.
+
+    Review finding: the gap was tested against the approach box alone, so a hand 25 cm over
+    the bar (approach box bottom 15 cm over it) was "clear" although the column it would
+    search next reaches down to the bar and would seed on it."""
     from openral_core import BoxShape
 
     with _live_leg("test_grasp_target_elongated_guard") as live:
         leg = live.leg
+        assert leg._search_below_m == pytest.approx(0.15)
         grid = _held_block_lattice()
         record = _released_record()
         bar = record.model_copy(
@@ -1360,13 +1519,27 @@ def test_the_released_payload_guard_is_the_oriented_box_not_its_bounding_sphere(
         _pick(leg.tracker, here, now_ns=11 * _S)
         leg.tracker.on_release(_LEFT, bar)
         assert leg.tracker.on_pick_complete(_LEFT, now_ns=12 * _S)
-        # 1 cm over the bar's top face: within a voxel, guarded.
-        touching = approach_box([(0.45, 0.0, 0.12)], approach_m=0.1, frame_id="openarm_base")
-        assert leg._near_spent(_LEFT, touching, grid)
-        # 14 cm over it: the sphere said "near" (0.25 <= 0.1 + 0.02 + 0.15); the box clears.
-        above = approach_box([(0.45, 0.0, 0.25)], approach_m=0.1, frame_id="openarm_base")
-        assert not leg._near_spent(_LEFT, above, grid)
+
+        def box(x: float, y: float, z: float) -> PlaceRegion:
+            return approach_box([(x, y, z)], approach_m=0.1, frame_id="openarm_base")
+
+        # 1 cm over the bar's top face: guarded.
+        assert leg._near_spent(_LEFT, box(0.45, 0.0, 0.12), grid)
+        # The hand 25 cm over the bar: its approach box clears it by 14 cm, but the search
+        # column reaches 15 cm lower, onto the bar. Still guarded.
+        assert leg._near_spent(_LEFT, box(0.45, 0.0, 0.25), grid)
+        assert leg.tracker.spent(_LEFT)[0]
+        # 15 cm to the side at the same height: the sphere said "near" (0.15 <= 0.1 + 0.02
+        # + 0.15); the oriented box clears by 4 cm.
+        assert not leg._near_spent(_LEFT, box(0.45, 0.15, 0.18), grid)
         assert leg.tracker.spent(_LEFT) == (False, None), "clear of the bar: guard over"
+        # Straight above, the column bottom 4 cm over the bar's top also clears.
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=20 * _S))
+        _pick(leg.tracker, here, now_ns=21 * _S)
+        leg.tracker.on_release(_LEFT, bar)
+        assert leg.tracker.on_pick_complete(_LEFT, now_ns=22 * _S)
+        assert leg._near_spent(_LEFT, box(0.45, 0.0, 0.25), grid)
+        assert not leg._near_spent(_LEFT, box(0.45, 0.0, 0.30), grid)
 
 
 def test_a_guarded_hand_does_not_block_the_other_hands_approach() -> None:
@@ -1396,50 +1569,94 @@ def test_a_hand_that_left_and_stayed_away_re_arms_under_a_fresh_identity() -> No
     """Liveness after a kernel fault retirement (grid re-frame, rejected attachment model):
     the producer cannot see it, and a re-arm keeps the pick's identity, so the kernel would
     refuse the pick for the rest of the goal. Only a hand that left the approach distance
-    and was still away once a freeze window had passed re-arms under a fresh identity;
-    wiggling, a refusal in place, or coming straight back keeps the (maybe retired) one."""
+    and was then seen away — located, its approach box off its last target's column — on
+    every sample for a continuous freeze window re-arms under a fresh identity. Wiggling, a
+    refusal in place, coming straight back, a tf2 gap (unlocated) or a ``min_cells`` dip with
+    the hand still over the target is not away, and any of them restarts the window."""
     tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append, first_pick=7)
     tracker.on_declaration(_goal_scope())
     here = approach_box([(0.45, 0.0, 0.18)], approach_m=0.1, frame_id="openarm_base")
     there = approach_box([(0.30, 0.20, 0.10)], approach_m=0.1, frame_id="openarm_base")
+    far = approach_box([(0.45, 0.40, 0.40)], approach_m=0.1, frame_id="openarm_base")
     freeze_ns = int(_FREEZE_S * _S)
+
+    def tick(
+        now_ns: int, *, near: PlaceRegion | None = None, at: PlaceRegion | None = None
+    ) -> None:
+        """One leg tick: ``near`` = approaching there; ``at`` = located there (else unlocated)."""
+        box = near if near is not None else at
+        tracker.on_approach(
+            [] if near is None else [(_LEFT, near)],
+            now_ns=now_ns,
+            move_m=_CELL,
+            located={} if box is None else {_LEFT: box},
+        )
 
     def identity() -> str:
         target = tracker.target
         assert target is not None and target.contact_links == _LEFT
         return target.target_id
 
+    def leave(now_ns: int) -> None:
+        tick(now_ns, at=far)
+        assert tracker.target == _goal_scope(), "approach_ended"
+
+    armed_at = [here]
+
+    def back(now_ns: int) -> None:
+        """Approach again — elsewhere (more than a voxel off), so no backoff holds it."""
+        box = there if armed_at[-1] is here else here
+        tick(now_ns, near=box)
+        armed_at.append(box)
+
     first = f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}:7"
-    _approach(tracker, [(_LEFT, here)], now_ns=11 * _S)
+    tick(11 * _S, near=here)
     assert identity() == first
     # A refusal in place, re-armed after the backoff without leaving: the same identity.
     tracker.refuse("no_support", "nothing under it", retract=True, now_ns=11 * _S)
-    _approach(tracker, [(_LEFT, here)], now_ns=11 * _S + freeze_ns + 1)
+    tick(11 * _S + freeze_ns + 1, near=here)
     assert identity() == first
-    # Leaving and coming straight back elsewhere: the same identity.
-    _approach(tracker, [], now_ns=20 * _S)
-    assert tracker.target == _goal_scope()
-    _approach(tracker, [(_LEFT, there)], now_ns=20 * _S + 1)
+    # Leaving and coming straight back: the same identity.
+    leave(20 * _S)
+    back(20 * _S + 1)
     assert identity() == first
-    # Leaving, then approaching again where it left only after the window: never seen
-    # away once the window had passed, so the same identity.
-    _approach(tracker, [], now_ns=30 * _S)
-    _approach(tracker, [(_LEFT, there)], now_ns=30 * _S + freeze_ns + 1)
-    assert identity() == first
-    # Leaving, and still away once the window passed: a fresh identity.
-    _approach(tracker, [], now_ns=40 * _S)
-    _approach(tracker, [], now_ns=40 * _S + freeze_ns // 2)
-    _approach(tracker, [(_LEFT, here)], now_ns=40 * _S + freeze_ns // 2 + 1)
+    # Away, but back inside the window: the same identity.
+    leave(30 * _S)
+    tick(30 * _S + freeze_ns // 2, at=far)
+    back(30 * _S + freeze_ns // 2 + 1)
     assert identity() == first, "back inside the window: not yet away long enough"
-    _approach(tracker, [], now_ns=50 * _S)
-    _approach(tracker, [], now_ns=50 * _S + freeze_ns + 1)
-    _approach(tracker, [(_LEFT, here)], now_ns=50 * _S + freeze_ns + 2)
+    # Unlocated (a tf2 gap) for longer than the window: never seen away.
+    leave(40 * _S)
+    for step in range(1, 4):
+        tick(40 * _S + step * freeze_ns)
+    back(40 * _S + 4 * freeze_ns)
+    assert identity() == first, "a tf2 gap counted as away"
+    # A min_cells dip: located, its box still over the target's column, not in ``near``.
+    target_box = armed_at[-1]
+    tick(50 * _S, at=far)  # approach_ended
+    for step in range(1, 4):
+        tick(50 * _S + step * freeze_ns, at=target_box)
+    back(50 * _S + 4 * freeze_ns)
+    assert identity() == first, "a min_cells dip over the target counted as away"
+    # Away, a tf2 gap mid-window restarts it: not yet a fresh identity.
+    leave(60 * _S)
+    tick(60 * _S + freeze_ns // 2)  # unlocated
+    tick(60 * _S + freeze_ns // 2 + 1, at=far)
+    tick(60 * _S + freeze_ns + 1, at=far)
+    back(60 * _S + freeze_ns + 2)
+    assert identity() == first, "the window was not restarted by the unlocated sample"
+    # Away on every sample for a whole window: a fresh identity.
+    leave(70 * _S)
+    tick(70 * _S + freeze_ns // 2, at=far)  # the first sample after leaving: since then
+    tick(70 * _S + freeze_ns, at=far)
+    tick(70 * _S + freeze_ns // 2 + freeze_ns, at=far)  # a whole window, continuously
+    back(70 * _S + freeze_ns // 2 + freeze_ns + 1)
     assert identity() == f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}:8"
     # A new goal forgets who was away.
-    _approach(tracker, [], now_ns=60 * _S)
-    _approach(tracker, [], now_ns=60 * _S + freeze_ns + 1)
-    tracker.on_declaration(_goal_scope(stamp_ns=70 * _S))
-    _approach(tracker, [(_LEFT, here)], now_ns=71 * _S)
+    leave(80 * _S)
+    tick(80 * _S + freeze_ns + 1, at=far)
+    tracker.on_declaration(_goal_scope(stamp_ns=90 * _S))
+    tick(91 * _S, near=here)
     assert identity() == f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}:8"
 
 
