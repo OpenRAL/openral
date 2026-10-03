@@ -70,7 +70,6 @@ from openral_hal.mobile_base_bridge import describes_mobile_base
 if TYPE_CHECKING:
     from openral_core import RobotDescription
 
-    from openral_hal._grasp_trigger import GraspTriggerConfig
     from openral_hal.protocol import HAL
 
 __all__ = [
@@ -151,74 +150,6 @@ def sim_attachment_heartbeat(*, hal_mode: str, vision_attachment_enabled: bool) 
         False
     """
     return hal_mode == "sim" and not vision_attachment_enabled
-
-
-def vision_attachment_trigger_config(
-    description: RobotDescription, *, attach_effort: float, release_effort: float
-) -> dict[str, GraspTriggerConfig] | None:
-    """Per-gripper grasp trigger configs for absolute ``vision_attachment_*_effort`` params.
-
-    The trigger scales fractions of its gripper joint's manifest ``effort_limit``; the
-    scene (``VisionAttachmentRuntime.attach_effort`` / ``release_effort``) names absolute
-    efforts. ``0.0`` = unset, that threshold keeps the trigger's default fraction. Each
-    gripper joint gets its own fraction from its own ``effort_limit``, so the same absolute
-    effort holds on hands with different limits.
-
-    Returns:
-        Gripper joint name -> config; ``None`` when neither effort is set (the trigger's
-        defaults).
-
-    Raises:
-        ROSConfigError: An effort is set and a gripper joint declares no positive
-            ``effort_limit``; an effort exceeds some gripper joint's own
-            ``effort_limit`` (fraction outside ``(0, 1]``, that hand could never
-            ATTACH); or (from the trigger) release >= attach on some hand.
-
-    Example:
-        >>> from openral_core import RobotDescription
-        >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
-        >>> vision_attachment_trigger_config(d, attach_effort=0.0, release_effort=0.0) is None
-        True
-        >>> c = vision_attachment_trigger_config(d, attach_effort=66.6, release_effort=0.0)
-        >>> left = c["left_gripper"]
-        >>> round(left.attach_effort_fraction, 3), left.release_effort_fraction
-        (0.2, 0.1)
-    """
-    if attach_effort <= 0.0 and release_effort <= 0.0:
-        return None
-    from openral_core.exceptions import ROSConfigError
-
-    from openral_hal._grasp_trigger import GraspTriggerConfig, gripper_joints
-
-    default = GraspTriggerConfig()
-    configs: dict[str, GraspTriggerConfig] = {}
-    for joint in gripper_joints(description):
-        limit = joint.effort_limit
-        if limit is None or limit <= 0.0:
-            raise ROSConfigError(
-                f"vision_attachment_attach_effort/_release_effort need a positive effort_limit "
-                f"on gripper joint {joint.name!r} of {description.name!r}; it declares {limit!r}."
-            )
-        attach = attach_effort / limit if attach_effort > 0.0 else default.attach_effort_fraction
-        release = (
-            release_effort / limit if release_effort > 0.0 else default.release_effort_fraction
-        )
-        # An effort above this joint's own limit can never be read back, so that
-        # hand would never ATTACH -- refuse instead of arming a dead trigger.
-        for param, effort, fraction in (
-            ("attach", attach_effort, attach),
-            ("release", release_effort, release),
-        ):
-            if not 0.0 < fraction <= 1.0:
-                raise ROSConfigError(
-                    f"vision_attachment_{param}_effort={effort!r} is {fraction:.3g}x the "
-                    f"effort_limit {limit!r} of gripper joint {joint.name!r} of "
-                    f"{description.name!r}; the fraction must be in (0, 1]."
-                )
-        configs[joint.name] = GraspTriggerConfig(
-            attach_effort_fraction=attach, release_effort_fraction=release
-        )
-    return configs
 
 
 def decode_action_chunk(msg: object) -> object | None:
@@ -1212,6 +1143,11 @@ if _ROS2_AVAILABLE:
                 return
             if not self._send_action_traced(action, source="safe_action"):
                 return
+            # The position-stall grasp trigger needs the jaw's commanded target:
+            # this is the safety-approved action the HAL just applied.
+            vision = getattr(self, "_vision_attachment", None)
+            if vision is not None:
+                vision.observe_command(action)
             self._publish_action_applied_if_complete(action)
 
         def _publish_action_applied_if_complete(self, action: Any) -> None:  # noqa: ANN401  # reason: typed Action is imported only on the ROS path
@@ -1652,7 +1588,9 @@ if _ROS2_AVAILABLE:
             # authorities on one attachment topic is not a thing to arrive at by
             # accident. Needs an active `openral_perception_ros/segmenter_node`
             # serving SegmentInView; without one every grasp degrades (visibly)
-            # to the conservative GRIPPER_FORCE box.
+            # to the conservative GRIPPER_CLOSURE box. The grasp trigger is the
+            # jaw position stalling short of its command (manifest
+            # closure_calibration); no effort channel is read.
             from openral_hal.vision_attachment_bridge import DEFAULT_SEGMENT_SERVICE
 
             self.declare_parameter("vision_attachment_enabled", False)
@@ -1667,9 +1605,9 @@ if _ROS2_AVAILABLE:
             # ~100 ms barrier it rides inside. A CPU-only host must raise it.
             self.declare_parameter("vision_attachment_deadline_s", 0.25)
             # evidence_timeout_s: seconds; the attachment heartbeat stops once the
-            # newest sample with an effort value for every gripper is older than
-            # this, so a dead effort channel becomes a kernel drop, not a stale
-            # "nothing attached".
+            # newest sample with a finite jaw position for every gripper is older
+            # than this, so a dead position channel becomes a kernel drop, not a
+            # stale "nothing attached".
             # mask_depth_max_skew_s: seconds, the largest |mask capture stamp -
             # depth stamp| a SegmentInView mask is back-projected across (same-grab
             # pairs are 0; 0.1 admits one frame of cache lag at >= 10 Hz).
@@ -1679,9 +1617,7 @@ if _ROS2_AVAILABLE:
             # one voxel resolution. Both are 0.0 = unset, and REQUIRED with the leg
             # on: they belong to the kernel this deploy runs, so no cell's values are
             # a safe fallback (refused at activate). release_timeout_s bounds the
-            # release window. attach_effort / release_effort: absolute gripper
-            # efforts for the grasp trigger (runtime.vision_attachment.*); 0.0 = the
-            # effort-limit fraction. See VisionAttachmentConfig.
+            # release window. See VisionAttachmentConfig.
             self.declare_parameters(
                 "",
                 [
@@ -1690,8 +1626,6 @@ if _ROS2_AVAILABLE:
                     ("vision_attachment_grid_max_age_s", 0.0),
                     ("vision_attachment_release_clear_m", 0.0),
                     ("vision_attachment_release_timeout_s", 3.0),
-                    ("vision_attachment_attach_effort", 0.0),
-                    ("vision_attachment_release_effort", 0.0),
                 ],
             )
             self.declare_parameter("vision_attachment_tcp_frame", "")
@@ -2127,7 +2061,7 @@ if _ROS2_AVAILABLE:
 
             Opt-in (``vision_attachment_enabled``) because it becomes a second
             authority on ``/openral/attachment_state``. A manifest that cannot
-            support it (no gripper joints, no effort limit, no camera
+            support it (no gripper joints, an uncalibrated gripper, no camera
             intrinsics) is a loud configuration error at activate, not a
             silently-disabled safety input.
             """
@@ -2274,15 +2208,6 @@ if _ROS2_AVAILABLE:
                     .double_value,
                     unit_fixtures=unit_fixtures,
                     robot_unit=robot_unit,
-                ),
-                trigger_config=vision_attachment_trigger_config(
-                    self._hal.description,
-                    attach_effort=gp("vision_attachment_attach_effort")
-                    .get_parameter_value()
-                    .double_value,
-                    release_effort=gp("vision_attachment_release_effort")
-                    .get_parameter_value()
-                    .double_value,
                 ),
             )
             self._vision_attachment.setup()

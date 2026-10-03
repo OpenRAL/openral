@@ -15,7 +15,7 @@ box's GTX 1060 is sm_61 with no CUDA kernels for it, so ``device:=cpu``. Measure
 load/warm, ~3.7 s per call here vs ~53 ms warmed on an RTX 4070 — why the HAL side has a
 bounded deadline and conservative fallback.
 
-Three failure branches covered too (each is what the HAL turns into a GRIPPER_FORCE
+Three failure branches covered too (each is what the HAL turns into a GRIPPER_CLOSURE
 attachment rather than a stall): un-published camera, a prompt that doesn't project into the
 frame, and a deactivated node.
 

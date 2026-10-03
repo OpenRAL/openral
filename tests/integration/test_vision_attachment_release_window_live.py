@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Live-ROS: a released payload stays a checked, frozen attached record until the jaws are clear.
 
-Design note ``docs/reference/real-pick-place-design.md`` §1.6 / §2.3 "Release". Gripper-effort
-DETACH fires when the jaws *open*, while the fingers still surround the released object. The
-vision leg used to publish the empty set at once; the octomap bridge then stopped clearing the
-object's cells, re-marked them within ~0.2 s, and the fingers — still inside the 20 mm world
-margin of those cells — were stopped on the first retreat chunk (``KIND_COLLISION`` on
+Design note ``docs/reference/real-pick-place-design.md`` §1.6 / §2.3 "Release". The trigger's
+DETACH fires when the jaws *open* past their hold, while the fingers still surround the released
+object. The vision leg used to publish the empty set at once; the octomap bridge then stopped
+clearing the object's cells, re-marked them within ~0.2 s, and the fingers — still inside the
+20 mm world margin of those cells — were stopped on the first retreat chunk (``KIND_COLLISION`` on
 ``*_finger_pair``).
 
 Two tests, both real components (CLAUDE.md §1.11):
@@ -115,7 +115,13 @@ def test_a_released_payload_stays_frozen_until_the_jaws_are_clear() -> None:
     pytest.importorskip("openral_msgs")
 
     from geometry_msgs.msg import TransformStamped
-    from openral_core import AttachedCollisionObject, JointState, RobotDescription
+    from openral_core import (
+        Action,
+        AttachedCollisionObject,
+        ControlMode,
+        JointState,
+        RobotDescription,
+    )
     from openral_core.geometry import homogeneous_from_quat_xyz, rotation_to_quat_wxyz
     from openral_hal.vision_attachment_bridge import (
         VisionAttachmentBridge,
@@ -136,7 +142,6 @@ def test_a_released_payload_stays_frozen_until_the_jaws_are_clear() -> None:
     from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
     description = RobotDescription.from_yaml(str(_ROBOT_YAML))
-    left = next(j for j in description.joints if j.name == "left_gripper")
     camera = next(spec for spec in description.sensors if spec.name == _CAMERA)
     depth_topic = camera_topic(_CAMERA, CameraTopicKind.DEPTH_IMAGE)
     config = VisionAttachmentConfig(
@@ -164,7 +169,9 @@ def test_a_released_payload_stays_frozen_until_the_jaws_are_clear() -> None:
     aggregator_errors: list[str] = []
     # (receipt monotonic s, revision, decoded objects)
     received: list[tuple[float, int, list[AttachedCollisionObject]]] = []
-    feed: dict[str, Any] = {"on": False, "left": 0.01, "bridge": None}
+    # ``loaded``: commanded closed, the left jaw stalls 0.2 rad short (position stall);
+    # otherwise commanded open, the jaw at 0.5 rad. Effort is the real driver's zeros.
+    feed: dict[str, Any] = {"on": False, "loaded": False, "bridge": None}
 
     def on_state(msg: Any) -> None:
         stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
@@ -192,11 +199,19 @@ def test_a_released_payload_stays_frozen_until_the_jaws_are_clear() -> None:
         bridge = feed["bridge"]
         if not feed["on"] or bridge is None:
             return
+        bridge.observe_command(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_names=["left_gripper", "right_gripper"],
+                joint_targets=[[0.0 if feed["loaded"] else 0.7, 0.0]],
+            )
+        )
         bridge.observe_joint_state(
             JointState(
                 name=["left_gripper", "right_gripper"],
-                position=[0.0, 0.0],
-                effort=[feed["left"], 0.01],
+                position=[0.2 if feed["loaded"] else 0.5, -0.0116],
+                effort=[0.0, 0.0],
                 stamp_ns=time.time_ns(),
             )
         )
@@ -250,7 +265,7 @@ def test_a_released_payload_stays_frozen_until_the_jaws_are_clear() -> None:
         feed["bridge"] = bridge
         bridge.setup()
         feed["on"] = True
-        assert _wait_until(lambda: bool(received)), "no heartbeat once effort was live"
+        assert _wait_until(lambda: bool(received)), "no heartbeat once jaw positions were live"
 
         depth_pub = peer.create_publisher(
             Image,
@@ -279,7 +294,7 @@ def test_a_released_payload_stays_frozen_until_the_jaws_are_clear() -> None:
 
         def grasp() -> tuple[float, int, list[AttachedCollisionObject]]:
             start = len(received)
-            feed["left"] = 0.9 * float(left.effort_limit)
+            feed["loaded"] = True
             assert _wait_until(lambda: held_on(_HAND, start) is not None), "no fallback box"
             row = held_on(_HAND, start)
             assert row is not None
@@ -287,7 +302,7 @@ def test_a_released_payload_stays_frozen_until_the_jaws_are_clear() -> None:
 
         def release() -> tuple[float, int, list[AttachedCollisionObject]]:
             start = len(received)
-            feed["left"] = 0.01
+            feed["loaded"] = False
             assert _wait_until(lambda: held_on(_BASE, start) is not None), (
                 "DETACH dropped the payload instead of freezing it"
             )

@@ -364,8 +364,6 @@ def test_the_vision_leg_on_real_turns_the_kernel_attached_check_on(
         "vision_attachment_camera_info_topic": "/zed/zed_node/depth/camera_info",
         "vision_attachment_deadline_s": 0.25,
         "vision_attachment_evidence_timeout_s": 0.5,
-        "vision_attachment_attach_effort": 0.0,
-        "vision_attachment_release_effort": 0.0,
         "vision_attachment_grasp_target_enabled": False,
         "vision_attachment_place_fixture_enabled": False,
         "vision_attachment_release_timeout_s": 3.0,

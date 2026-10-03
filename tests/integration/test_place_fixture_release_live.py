@@ -112,7 +112,9 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
 
     from geometry_msgs.msg import TransformStamped
     from openral_core import (
+        Action,
         AttachedCollisionObject,
+        ControlMode,
         JointState,
         PlaceDeclaration,
         RobotDescription,
@@ -155,7 +157,6 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
     shutil.copy(_ROBOT_YAML, robot_dir / "robot.yaml")
     shutil.copy(_SHELF_UNIT, robot_dir / "units" / "shelf_cell.yaml")
     unit = load_robot_unit(robot_dir / "robot.yaml", "shelf_cell")
-    gripper = next(j for j in description.joints if j.name == "left_gripper")
     joint_names = [j.name for j in description.joints]
 
     kernel_name = f"safety_kernel_place_release_{uuid.uuid4().hex[:8]}"
@@ -271,12 +272,22 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
             )
 
             def feed() -> None:
-                effort = 0.9 * float(gripper.effort_limit) if state["loaded"] else 0.01
+                # Loaded: commanded closed, the left jaw stalls 0.2 rad short (position
+                # stall). Released: commanded open, the jaw opens past its hold.
+                left = 0.0 if state["loaded"] else 0.7
+                bridge.observe_command(
+                    Action(
+                        control_mode=ControlMode.JOINT_POSITION,
+                        horizon=1,
+                        joint_names=["left_gripper", "right_gripper"],
+                        joint_targets=[[left, 0.0]],
+                    )
+                )
                 bridge.observe_joint_state(
                     JointState(
                         name=["left_gripper", "right_gripper"],
-                        position=[0.0, 0.0],
-                        effort=[effort, 0.01],
+                        position=[0.2 if state["loaded"] else 0.5, -0.0116],
+                        effort=[0.0, 0.0],  # the real driver's hard-coded zeros
                         stamp_ns=time.monotonic_ns(),
                     )
                 )

@@ -280,7 +280,31 @@ def test_place_witness_revision_releases_the_deferred_action_tick() -> None:
         rclpy.shutdown()
 
 
-def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
+def _calibrated_so101(tmp_path: Path) -> Path:
+    """The real SO-101 manifest plus an ILLUSTRATIVE gripper ``closure_calibration``.
+
+    SO-101 has no measured closure calibration, so the vision leg (rightly) refuses it.
+    This test is about barrier composition, not the SO-101's jaw, so it loads a copy with
+    labelled, unmeasured numbers; the URDF ref is made absolute so the copy resolves it.
+    """
+    import yaml
+
+    data = yaml.safe_load(_ROBOT_YAML.read_text(encoding="utf-8"))
+    data["assets"]["urdf"]["ref"] = "file:" + str(_ROBOT_YAML.parent / "so101_follower.urdf")
+    for joint in data["joints"]:
+        if joint.get("role") == "gripper":
+            joint["closure_calibration"] = {
+                "closed_position": 0.0,
+                "closed_rest_offset": 0.0,
+                "stall_gap": 0.1,
+                "settle_tolerance": 0.01,
+            }
+    path = tmp_path / "so101_calibrated.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
+def test_a_vision_holder_and_an_attestation_only_revision_compose(tmp_path: Path) -> None:
     """Both barrier holders wired: the tick clears only when BOTH have settled.
 
     Landing the vision attachment leg put two holders on one barrier, pulling opposite ways:
@@ -332,7 +356,8 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
     from std_msgs.msg import UInt64
     from tf2_ros import StaticTransformBroadcaster
 
-    description = RobotDescription.from_yaml(str(_ROBOT_YAML))
+    robot_yaml = _calibrated_so101(tmp_path)
+    description = RobotDescription.from_yaml(str(robot_yaml))
     # Read off the manifest, never invented: the vision producer attaches to the
     # gripper joint's PARENT link and defaults its TCP to the moving jaw.
     gripper = next(joint for joint in description.joints if joint.role == "gripper")
@@ -347,12 +372,12 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
     node: Any = ManifestHALLifecycleNode("test_attachment_barrier_vision_live")
     node.set_parameters(
         [
-            Parameter("robot_yaml", value=str(_ROBOT_YAML)),
+            Parameter("robot_yaml", value=str(robot_yaml)),
             Parameter("hal_mode", value="sim"),
             Parameter("sim_env_yaml", value=str(_SCENE_YAML)),
             # 1 Hz: the node feeds every joint-state read into the grasp
-            # trigger, and an interleaved zero-effort tick would reset the
-            # debounce mid-burst below.
+            # trigger, and an interleaved sim jaw reading would break the
+            # settle window mid-burst below.
             Parameter("publish_rate_hz", value=1.0),
             Parameter("viewer_enabled", value=False),
             Parameter("vision_attachment_enabled", value=True),
@@ -467,20 +492,26 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
         )
 
         # ── 3. Load the jaws: the real trigger closes the vision barrier. ─────
-        held = float(gripper.effort_limit) * 0.9
-        for tick in range(6):
+        # Commanded closed, the jaw settles 0.4 short of it: a position stall.
+        vision.observe_command(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[[0.0] * len(description.joints)],
+            )
+        )
+        for tick in range(12):
             vision.observe_joint_state(
                 JointState(
                     name=[str(gripper.name)],
                     position=[0.4],
-                    effort=[held],
                     stamp_ns=1_000 + tick,
                 )
             )
             if not vision.attachment_action_ack_ready():
                 break
         assert not vision.attachment_action_ack_ready(), (
-            "the gripper-effort trigger never fired; without a held vision "
+            "the position-stall trigger never fired; without a held vision "
             "barrier there is nothing to compose here"
         )
         assert not node._attachment_perception_ready()

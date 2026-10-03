@@ -28,7 +28,7 @@ depth-validity fraction; the mask score is only recorded, as
 
 **On gate failure the attachment is not skipped**: ``on_grasp`` always
 returns an ``AttachedCollisionObject`` — a rejected mask degrades to a
-conservative jaw-span box stamped ``AttachmentEvidenceKind.GRIPPER_FORCE``
+conservative jaw-span box stamped ``AttachmentEvidenceKind.GRIPPER_CLOSURE``
 at low confidence, strictly safer than an invisible payload.
 
 Honest limitations — what this does NOT fix:
@@ -51,8 +51,8 @@ Honest limitations — what this does NOT fix:
 * **Deformable objects and multi-object grasps.** A single positive
   point means a single rigid object. Not addressed.
 * **The attach trigger itself.** This module is *told* a grasp happened;
-  it does not decide it. Whether SO-101's feetech effort readback is
-  trustworthy enough to be that trigger is unverified.
+  it does not decide it (``_grasp_trigger.PositionStallTrigger``: the jaw
+  settling short of a close command — position only, no effort channel).
 
 Every threshold on ``VisionGateConfig`` is a **calibration point, not a
 measured constant** (see that class's docstring): the design work
@@ -641,7 +641,7 @@ class VisionAttachmentEvidenceProducer:
 
         **Always returns an attachment.** A rejected grasp yields the
         conservative jaw-span box stamped
-        ``AttachmentEvidenceKind.GRIPPER_FORCE`` at low confidence — never
+        ``AttachmentEvidenceKind.GRIPPER_CLOSURE`` at low confidence — never
         ``None``, never a silent skip; the report names every failed gate
         so the fallback is visible in the trace (CLAUDE.md §1.4).
 
@@ -798,7 +798,7 @@ class VisionAttachmentEvidenceProducer:
                 frame_id=self._attach_link,
             ),
             confidence=_FALLBACK_CONFIDENCE,
-            evidence_kind=AttachmentEvidenceKind.GRIPPER_FORCE,
+            evidence_kind=AttachmentEvidenceKind.GRIPPER_CLOSURE,
             evidence_ref=f"vision_gate_rejected:{object_id}@{stamp_ns}",
             stamp_ns=stamp_ns,
         )

@@ -363,7 +363,7 @@ def test_all_candidates_rejected_reports_the_closest_to_acceptable() -> None:
     assert report.candidate_count == 2
     assert 0 <= report.candidate_index < 2
     assert report.rejections
-    assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_FORCE
+    assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
 
 
 def test_no_candidates_at_all_still_falls_back_conservatively() -> None:
@@ -381,7 +381,7 @@ def test_no_candidates_at_all_still_falls_back_conservatively() -> None:
     assert report.rejections == ("no_candidates",)
     assert report.candidate_count == 0
     assert report.candidate_index == -1
-    assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_FORCE
+    assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
     assert len(attachment.primitives) == 1
 
 
@@ -455,7 +455,7 @@ def test_tablecloth_mask_is_rejected_on_geometry_despite_its_top_score() -> None
     assert max(report.extents_m) > 0.4
 
     # Fail-closed, not fail-silent: a conservative box still reaches the kernel.
-    assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_FORCE
+    assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
     assert len(attachment.primitives) == 1
     assert attachment.primitives[0].shape.half_extents_m == (0.05, 0.05, 0.05)
     assert attachment.pose_in_link.xyz == _TCP_IN_LINK
@@ -483,7 +483,7 @@ def test_insufficient_depth_falls_back_conservatively() -> None:
     assert not report.accepted
     assert "depth_validity" in report.rejections
     assert report.depth_valid_fraction < 0.30
-    assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_FORCE
+    assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
 
 
 def test_empty_mask_falls_back_conservatively() -> None:
@@ -501,7 +501,7 @@ def test_empty_mask_falls_back_conservatively() -> None:
     # Named for what it was: nothing was masked, not "the depth sensor failed".
     assert report.rejections == ("empty_mask",)
     assert report.point_count == 0
-    assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_FORCE
+    assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
     assert len(attachment.primitives) == 1
 
 
@@ -528,7 +528,7 @@ def test_volume_backstop_fires_on_a_thick_over_large_payload() -> None:
     )
     assert report.rejections == ("payload_volume",)
     assert report.volume_m3 > 0.004
-    assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_FORCE
+    assert attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
 
 
 def test_a_per_joint_producer_serves_one_openarm_hand() -> None:

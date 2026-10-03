@@ -178,7 +178,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
 
-    from openral_core import JointState, PlaceRegion, RobotDescription
+    from openral_core import Action, ControlMode, JointState, PlaceRegion, RobotDescription
     from openral_core.geometry import homogeneous_from_quat_xyz
     from openral_hal.vision_attachment_bridge import (
         VisionAttachmentBridge,
@@ -278,16 +278,24 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         ),
     )
     bridge.setup()
-    state: dict[str, Any] = {"scene": "one", "grid": True, "mask_skew_s": 0.0}
+    state: dict[str, Any] = {"scene": "one", "grid": True, "mask_skew_s": 0.0, "close": False}
+    close_both = Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_names=["left_gripper", "right_gripper"],
+        joint_targets=[[0.0, 0.0]],
+    )
     info = _camera_info(_FULL, _THOR_K)
 
     def feed() -> None:
-        """Effort evidence for the heartbeat (no grasp), plus the sensor streams."""
+        """Jaw-position evidence for the heartbeat; with ``close``, a left-hand stall."""
+        if state["close"]:
+            bridge.observe_command(close_both)
         bridge.observe_joint_state(
             JointState(
                 name=["left_gripper", "right_gripper"],
-                position=[0.0, 0.0],
-                effort=[0.01, 0.01],
+                position=[0.2 if state["close"] else 0.5, -0.0116],
+                effort=[0.0, 0.0],
                 stamp_ns=time.monotonic_ns(),
             )
         )
@@ -396,6 +404,43 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         ), f"no skew refusal: {[line for line in logs if 'grasp target' in line]}"
         time.sleep(1.0)
         assert not any(msg.grasp_declaration.region_valid for msg in envelopes[mark:])
+
+        # ── 6. Handover: the left hand at the region stalls closed — the latched
+        #       region IS the payload, named as the declaration, no segmentation.
+        state["mask_skew_s"] = 0.0
+        declaration_pub.publish(_declaration(now_ns(), one))
+        assert _wait_until(region_live, timeout_s=20.0)
+        region = PlaceRegion.from_idl(latest().grasp_declaration.region)
+        left = next(j for j in description.joints if j.name == "left_gripper")
+        # link7 placed so the left TCP (the gripper joint origin) sits at the region centre.
+        t_base_link7 = _homogeneous(
+            np.eye(3), np.asarray(region.pose.xyz) - np.asarray(left.origin_xyz)
+        )
+        StaticTransformBroadcaster(peer).sendTransform(
+            [_tf_msg(_BASE, left.parent_link, t_base_link7)]
+        )
+        assert _wait_until(lambda: bridge.jaw_point(left.child_link, _BASE) is not None)
+        segments_before = len(prompts)
+        state["close"] = True
+        assert _wait_until(lambda: bool(latest().objects), timeout_s=5.0), (
+            f"no attachment; log: {[line for line in logs if 'vision attachment' in line]}"
+        )
+        (held,) = latest().objects
+        assert held.evidence_kind == "grasp_target_region"
+        assert held.object_id == "cell:restock_box", "the declaration names it (no object_id)"
+        assert held.attach_link == left.parent_link
+        np.testing.assert_allclose(
+            [
+                held.pose_in_link.position.x,
+                held.pose_in_link.position.y,
+                held.pose_in_link.position.z,
+            ],
+            left.origin_xyz,
+            atol=1e-6,
+        )
+        assert any("from the grasp-target region" in line for line in logs)
+        time.sleep(0.5)
+        assert len(prompts) <= segments_before + 2, "the attach re-segmented the target"
     finally:
         with suppress(Exception):
             bridge.teardown()

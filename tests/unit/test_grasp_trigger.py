@@ -1,323 +1,289 @@
-"""Gripper-effort grasp trigger: debounce, hysteresis, regrasp, effort-channel health.
+"""Position-stall grasp trigger: stall, empty close, slip, release, re-seat, noise.
 
-State snapshots are real ``openral_core.JointState`` over the real
-``robots/so101_follower/robot.yaml`` manifest — joint names, ``role: "gripper"``
-resolution and ``effort_limit`` all come from the shipped robot (CLAUDE.md §1.11).
+Snapshots are real ``openral_core.JointState`` over the real bimanual
+``robots/openarm/robot.yaml`` manifest — joint names, ``role: "gripper"`` resolution
+and every threshold (``closure_calibration``) come from the shipped robot
+(CLAUDE.md §1.11).
 
-Effort *values* are chosen by these tests to pin trigger behaviour at, above and
-below its own thresholds. Whether an SO-101's Feetech servos actually report
-those numbers is hardware validation, not covered here — see
-``assess_effort_readback``, exercised by the
-last test in this file.
+The position traces are **shaped on real data** rather than recorded: 30 fps OpenArm
+teleop (``qualiadev/openarm-canonical-and-fabians-vr``) shows a jaw commanded to 0.0
+stalling 0.18-0.29 rad short on an object and staying flat to ~1e-3 rad, reaching
+<= 0.02 rad on nothing, and a free-motion steady-state error of 0.006-0.025 rad. The
+traces below reproduce those numbers with the real encoder's LSB (3.815e-4 rad) of
+stationary noise; replaying a recorded episode is the attended measurement in design
+§5, not a unit test.
 """
 
 from __future__ import annotations
 
+import itertools
+from collections.abc import Iterable
+
 import pytest
-from openral_core import JointState, RobotDescription
+from openral_core import GripperClosureCalibration, JointState, RobotDescription
 from openral_core.exceptions import ROSConfigError
 from openral_hal._grasp_trigger import (
     GraspEvent,
-    GraspTriggerConfig,
-    GripperEffortTrigger,
-    assess_effort_readback,
+    PositionStallConfig,
+    PositionStallTrigger,
     gripper_joint,
     gripper_joints,
 )
 
-_ROBOT_YAML = "robots/so101_follower/robot.yaml"
-
-
-@pytest.fixture(scope="module")
-def description() -> RobotDescription:
-    """The real SO-101 follower manifest."""
-    return RobotDescription.from_yaml(_ROBOT_YAML)
-
-
-def _state(
-    description: RobotDescription,
-    *,
-    effort: float,
-    position: float = 0.2,
-    stamp_ns: int = 0,
-    with_effort: bool = True,
-) -> JointState:
-    """A full-arm snapshot with the gripper carrying ``effort`` / ``position``."""
-    names = [joint.name for joint in description.joints]
-    positions = [0.0] * len(names)
-    efforts = [0.0] * len(names)
-    index = names.index("gripper")
-    positions[index] = position
-    efforts[index] = effort
-    return JointState(
-        name=names,
-        position=positions,
-        effort=efforts if with_effort else [],
-        stamp_ns=stamp_ns,
-    )
-
-
-def test_gripper_joint_resolves_the_single_manifest_gripper(
-    description: RobotDescription,
-) -> None:
-    """The SO-101's one role='gripper' joint is found, with its effort limit."""
-    spec = gripper_joint(description)
-    assert spec.name == "gripper"
-    assert spec.effort_limit == pytest.approx(3.35)
-
-
-def test_thresholds_scale_off_the_manifest_effort_limit(
-    description: RobotDescription,
-) -> None:
-    """Fractional config becomes absolute thresholds from the robot's own limit."""
-    trigger = GripperEffortTrigger(description)
-    attach, release = trigger.thresholds_n
-    assert attach == pytest.approx(0.30 * 3.35)
-    assert release == pytest.approx(0.10 * 3.35)
-    assert release < attach, "the hysteresis band must be non-empty"
-
-
-def test_attach_needs_n_consecutive_ticks(description: RobotDescription) -> None:
-    """A loaded gripper fires ATTACH only once the debounce is satisfied."""
-    trigger = GripperEffortTrigger(description, config=GraspTriggerConfig(consecutive_ticks=3))
-    loaded = _state(description, effort=2.0)
-    assert trigger.update(loaded) is None
-    assert trigger.update(loaded) is None
-    assert trigger.update(loaded) is GraspEvent.ATTACH
-    assert trigger.attached is True
-
-
-def test_a_transient_effort_spike_never_attaches(description: RobotDescription) -> None:
-    """One tick over the threshold between quiet ticks is rejected as a spike.
-
-    Closing the jaws accelerates the servo and spikes effort readback whether
-    or not anything is between them; a one-tick attach would hand the
-    collision checker a payload for a grasp that never happened.
-    """
-    trigger = GripperEffortTrigger(description, config=GraspTriggerConfig(consecutive_ticks=3))
-    for effort in (0.0, 3.0, 0.0, 3.0, 0.0):
-        assert trigger.update(_state(description, effort=effort)) is None
-    assert trigger.attached is False
-
-
-def test_hysteresis_holds_the_attachment_between_the_thresholds(
-    description: RobotDescription,
-) -> None:
-    """Effort in the band (release, attach) neither detaches nor re-attaches."""
-    config = GraspTriggerConfig(consecutive_ticks=2)
-    trigger = GripperEffortTrigger(description, config=config)
-    loaded = _state(description, effort=2.0)
-    trigger.update(loaded)
-    assert trigger.update(loaded) is GraspEvent.ATTACH
-
-    # 0.5 N.m sits between release (0.335) and attach (1.005).
-    band = _state(description, effort=0.5)
-    for _ in range(6):
-        assert trigger.update(band) is None
-    assert trigger.attached is True
-
-
-def test_detach_needs_the_release_threshold_and_the_debounce(
-    description: RobotDescription,
-) -> None:
-    """Dropping under the release threshold for N ticks detaches, and only then."""
-    trigger = GripperEffortTrigger(description, config=GraspTriggerConfig(consecutive_ticks=2))
-    loaded = _state(description, effort=2.0)
-    trigger.update(loaded)
-    assert trigger.update(loaded) is GraspEvent.ATTACH
-
-    empty = _state(description, effort=0.0)
-    assert trigger.update(empty) is None
-    assert trigger.update(empty) is GraspEvent.DETACH
-    assert trigger.attached is False
-
-
-def test_regrasp_fires_when_the_jaw_moves_while_still_loaded(
-    description: RobotDescription,
-) -> None:
-    """A re-seated payload invalidates the fitted geometry, so it re-segments."""
-    config = GraspTriggerConfig(consecutive_ticks=2, regrasp_position_delta=0.15)
-    trigger = GripperEffortTrigger(description, config=config)
-    held = _state(description, effort=2.0, position=0.20)
-    trigger.update(held)
-    assert trigger.update(held) is GraspEvent.ATTACH
-
-    # Still loaded, but the jaw has closed 0.25 of its normalised span.
-    moved = _state(description, effort=2.0, position=0.45)
-    assert trigger.update(moved) is None
-    assert trigger.update(moved) is GraspEvent.REGRASP
-    assert trigger.attached is True, "a regrasp stays attached; it does not detach first"
-
-    # The regrasp re-baselines: holding at the NEW position is not another regrasp.
-    for _ in range(4):
-        assert trigger.update(moved) is None
-
-
-def test_a_jaw_that_holds_still_never_regrasps(description: RobotDescription) -> None:
-    """Sub-threshold jaw drift under load is not a re-seat."""
-    config = GraspTriggerConfig(consecutive_ticks=2, regrasp_position_delta=0.15)
-    trigger = GripperEffortTrigger(description, config=config)
-    held = _state(description, effort=2.0, position=0.20)
-    trigger.update(held)
-    assert trigger.update(held) is GraspEvent.ATTACH
-    for _ in range(6):
-        assert trigger.update(_state(description, effort=2.0, position=0.28)) is None
-
-
-def test_a_driver_with_no_effort_channel_is_counted_not_swallowed(
-    description: RobotDescription,
-) -> None:
-    """No effort value means no attach — and a visible counter saying why."""
-    trigger = GripperEffortTrigger(description, config=GraspTriggerConfig(consecutive_ticks=2))
-    for _ in range(5):
-        assert trigger.update(_state(description, effort=0.0, with_effort=False)) is None
-    assert trigger.attached is False
-    assert trigger.missing_effort_ticks == 5
-
-
-def test_sign_convention_does_not_matter(description: RobotDescription) -> None:
-    """A driver that reports the closing load as negative still attaches."""
-    trigger = GripperEffortTrigger(description, config=GraspTriggerConfig(consecutive_ticks=2))
-    loaded = _state(description, effort=-2.0)
-    trigger.update(loaded)
-    assert trigger.update(loaded) is GraspEvent.ATTACH
-
-
-def test_inverted_hysteresis_is_rejected(description: RobotDescription) -> None:
-    """A config with no hysteresis band is a configuration error, not a default."""
-    with pytest.raises(ROSConfigError, match="hysteresis"):
-        GripperEffortTrigger(
-            description,
-            config=GraspTriggerConfig(attach_effort_fraction=0.10, release_effort_fraction=0.10),
-        )
-
-
-def test_zero_debounce_is_rejected(description: RobotDescription) -> None:
-    """consecutive_ticks < 1 would make every effort spike an attachment."""
-    with pytest.raises(ROSConfigError, match="consecutive_ticks"):
-        GripperEffortTrigger(description, config=GraspTriggerConfig(consecutive_ticks=0))
-
-
-def test_effort_readback_health_rejects_a_flat_channel(
-    description: RobotDescription,
-) -> None:
-    """The SO-101 falsification hook fails an all-zero effort trace.
-
-    This is the shape of the *real* unverified question: if a recorded
-    open → close-on-object → open sequence comes back flat, the servos are not
-    reporting load and this trigger cannot be the attach signal.
-    """
-    flat = [_state(description, effort=0.0, stamp_ns=i) for i in range(20)]
-    health = assess_effort_readback(flat, description=description)
-    assert health.usable is False
-    assert health.nonzero_samples == 0
-    assert "identically zero" in health.reason
-    assert health.present_samples == 20
-
-
-def test_effort_readback_health_rejects_an_absent_channel(
-    description: RobotDescription,
-) -> None:
-    """A driver publishing an empty effort list scores zero present samples."""
-    absent = [_state(description, effort=0.0, with_effort=False, stamp_ns=i) for i in range(5)]
-    health = assess_effort_readback(absent, description=description)
-    assert health.usable is False
-    assert health.present_samples == 0
-    assert "empty effort channel" in health.reason
-
-
-def test_effort_readback_health_rejects_a_channel_that_barely_moves(
-    description: RobotDescription,
-) -> None:
-    """Quantisation noise is not a load signal: the span gate catches it."""
-    noisy = [
-        _state(description, effort=0.01 * (i % 3), stamp_ns=i)  # span 0.02 vs limit 3.35
-        for i in range(30)
-    ]
-    health = assess_effort_readback(noisy, description=description)
-    assert health.usable is False
-    assert "effort span" in health.reason
-
-
-def test_effort_readback_health_accepts_a_real_load_cycle(
-    description: RobotDescription,
-) -> None:
-    """An open → close-on-object → open trace with real load passes."""
-    cycle = [0.0, 0.0, 0.4, 1.6, 2.4, 2.5, 2.4, 1.1, 0.2, 0.0]
-    states = [_state(description, effort=e, stamp_ns=i) for i, e in enumerate(cycle)]
-    health = assess_effort_readback(states, description=description)
-    assert health.usable is True
-    assert health.reason == ""
-    assert health.span == pytest.approx(2.5)
-    assert health.samples == len(cycle)
-
-
-# ── Bimanual: one trigger per gripper joint (real OpenArm manifest) ──────────
-
-_OPENARM_YAML = "robots/openarm/robot.yaml"
+_OPENARM = "robots/openarm/robot.yaml"
+_LSB = 3.815e-4  # DM4310 position LSB, rad
+_OPEN = 0.70  # a commanded-open left jaw, rad
 
 
 @pytest.fixture(scope="module")
 def openarm() -> RobotDescription:
-    """The real bimanual OpenArm manifest — two ``role: gripper`` joints."""
-    return RobotDescription.from_yaml(_OPENARM_YAML)
+    """The real bimanual OpenArm v2 manifest."""
+    return RobotDescription.from_yaml(_OPENARM)
+
+
+def _state(openarm: RobotDescription, **jaws: float) -> JointState:
+    """A full 16-joint snapshot; ``jaws`` sets gripper positions, effort all zeros (real)."""
+    names = [joint.name for joint in openarm.joints]
+    position = [jaws.get(name, 0.0) for name in names]
+    return JointState(name=names, position=position, effort=[0.0] * len(names), stamp_ns=0)
+
+
+def _close(start: float, stop: float, *, step: float = 0.08) -> list[float]:
+    """A jaw driven from ``start`` toward ``stop`` at ``step`` rad per 30 Hz tick."""
+    out, q = [], start
+    while abs(q - stop) > step:
+        q += step if stop > q else -step
+        out.append(q)
+    return out
+
+
+def _flat(at: float, ticks: int) -> list[float]:
+    """Stationary jaw with +-1 LSB encoder noise."""
+    return [at + _LSB * ((i % 3) - 1) for i in range(ticks)]
+
+
+def _run(
+    trigger: PositionStallTrigger, openarm: RobotDescription, trace: Iterable[float]
+) -> list[GraspEvent]:
+    events = []
+    for q in trace:
+        event = trigger.update(_state(openarm, **{trigger.joint_name: q}))
+        if event is not None:
+            events.append(event)
+    return events
+
+
+def _left(openarm: RobotDescription) -> PositionStallTrigger:
+    trigger = PositionStallTrigger(openarm, joint_name="left_gripper")
+    trigger.command(_OPEN)
+    return trigger
+
+
+def test_the_manifest_calibration_is_what_the_trigger_uses(openarm: RobotDescription) -> None:
+    left = PositionStallTrigger(openarm, joint_name="left_gripper")
+    right = PositionStallTrigger(openarm, joint_name="right_gripper")
+    assert left.thresholds == (0.0, 0.0086, 0.08, 0.001)
+    assert right.thresholds == (0.0, 0.0116, 0.08, 0.001)
+
+
+@pytest.mark.parametrize("stall_at", [0.18, 0.29])
+def test_closing_on_an_object_attaches_once_settled(
+    openarm: RobotDescription, stall_at: float
+) -> None:
+    """The real stall band: 0.18-0.29 rad short of a 0.0 command, flat to ~1e-3."""
+    trigger = _left(openarm)
+    assert _run(trigger, openarm, _flat(_OPEN, 10)) == []
+    trigger.command(0.0)
+    assert _run(trigger, openarm, _close(_OPEN, stall_at)) == [], "moving is not stalled"
+    events = _run(trigger, openarm, _flat(stall_at, 12))
+    assert events == [GraspEvent.ATTACH]
+    assert trigger.attached
+
+
+def test_attach_waits_for_settle_and_debounce(openarm: RobotDescription) -> None:
+    trigger = _left(openarm)
+    trigger.command(0.0)
+    flat = _flat(0.2, 12)
+    # settle_ticks=5 samples, then 3 agreeing ticks: the 7th flat sample attaches.
+    assert _run(trigger, openarm, flat[:6]) == []
+    assert _run(trigger, openarm, flat[6:7]) == [GraspEvent.ATTACH]
+
+
+def test_closing_on_nothing_never_attaches(openarm: RobotDescription) -> None:
+    """The jaw reaches its rest offset (<= 0.02 rad) — that is an empty close."""
+    trigger = _left(openarm)
+    trigger.command(0.0)
+    assert _run(trigger, openarm, [*_close(_OPEN, 0.02), *_flat(0.02, 30)]) == []
+    assert _run(trigger, openarm, _flat(0.0086, 30)) == []
+    assert not trigger.attached
+
+
+def test_free_motion_tracking_error_never_attaches(openarm: RobotDescription) -> None:
+    """Steady-state error 0.006-0.025 rad around a partly-closed command is not a stall."""
+    trigger = _left(openarm)
+    trigger.command(0.05)  # inside the close band
+    assert _run(trigger, openarm, _flat(0.05 + 0.025, 30)) == []
+
+
+def test_a_jaw_held_open_is_not_a_grasp(openarm: RobotDescription) -> None:
+    """Far from the command but commanded OPEN: no close command, no grasp."""
+    trigger = _left(openarm)
+    trigger.command(0.5)
+    assert _run(trigger, openarm, _flat(0.3, 30)) == []
+
+
+def test_noise_on_a_held_jaw_never_chatters(openarm: RobotDescription) -> None:
+    trigger = _left(openarm)
+    trigger.command(0.0)
+    events = _run(trigger, openarm, _flat(0.2, 200))
+    assert events == [GraspEvent.ATTACH], "one attach, then nothing across 200 noisy ticks"
+
+
+def test_a_slip_detaches_while_still_commanded_closed(openarm: RobotDescription) -> None:
+    trigger = _left(openarm)
+    trigger.command(0.0)
+    _run(trigger, openarm, _flat(0.2, 10))
+    assert trigger.attached
+    events = _run(trigger, openarm, [*_close(0.2, 0.01), *_flat(0.01, 5)])
+    assert events == [GraspEvent.DETACH]
+    assert not trigger.attached
+
+
+def test_release_detaches_only_once_the_jaw_opens_past_the_hold(
+    openarm: RobotDescription,
+) -> None:
+    trigger = _left(openarm)
+    trigger.command(0.0)
+    _run(trigger, openarm, _flat(0.2, 10))
+    trigger.command(_OPEN)
+    # Commanded open but the jaw has not moved yet: still held (conservative).
+    assert _run(trigger, openarm, _flat(0.2, 10)) == []
+    assert trigger.attached
+    assert _run(trigger, openarm, _close(0.2, _OPEN)) == [GraspEvent.DETACH]
+
+
+def test_a_reseat_while_stalled_is_a_regrasp(openarm: RobotDescription) -> None:
+    trigger = _left(openarm)
+    trigger.command(0.0)
+    _run(trigger, openarm, _flat(0.29, 10))
+    events = _run(trigger, openarm, [0.25, 0.22, *_flat(0.20, 10)])
+    assert events == [GraspEvent.REGRASP]
+    assert trigger.attached
+
+
+def test_no_command_means_no_attach_and_is_counted(openarm: RobotDescription) -> None:
+    trigger = PositionStallTrigger(openarm, joint_name="left_gripper")
+    assert _run(trigger, openarm, _flat(0.2, 20)) == []
+    assert trigger.uncommanded_ticks == 20
+    assert trigger.last_command is None
+
+
+def test_a_dead_position_channel_is_counted_and_breaks_settle(
+    openarm: RobotDescription,
+) -> None:
+    trigger = _left(openarm)
+    trigger.command(0.0)
+    names = [joint.name for joint in openarm.joints if joint.name != "left_gripper"]
+    gap = JointState(name=names, position=[0.0] * len(names), stamp_ns=0)
+    for q in _flat(0.2, 6):
+        trigger.update(_state(openarm, left_gripper=q))
+        assert trigger.update(gap) is None
+    assert trigger.missing_position_ticks == 6
+    assert not trigger.attached, "interleaved gaps never accumulate a settle window"
+    assert trigger.update(_state(openarm, left_gripper=float("nan"))) is None
+    assert trigger.missing_position_ticks == 7
+
+
+def test_the_right_hand_mirrors_through_its_closed_end(openarm: RobotDescription) -> None:
+    """Right jaw range is [-0.7854, 0]: an object stalls at -0.2, nothing at -0.0116."""
+    trigger = PositionStallTrigger(openarm, joint_name="right_gripper")
+    trigger.command(-_OPEN)
+    trigger.command(0.0)
+    assert _run(trigger, openarm, _flat(-0.0116, 30)) == []
+    assert _run(trigger, openarm, _flat(-0.2, 10)) == [GraspEvent.ATTACH]
+
+
+def test_a_left_grasp_fires_only_the_left_trigger(openarm: RobotDescription) -> None:
+    left = _left(openarm)
+    right = PositionStallTrigger(openarm, joint_name="right_gripper")
+    left.command(0.0)
+    right.command(0.0)
+    fired = []
+    for q in _flat(0.2, 10):
+        state = _state(openarm, left_gripper=q, right_gripper=-0.0116)
+        fired.extend(e for e in (left.update(state), right.update(state)) if e)
+    assert fired == [GraspEvent.ATTACH]
+    assert left.attached and not right.attached
+
+
+def test_an_uncalibrated_gripper_refuses_to_arm() -> None:
+    so101 = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    with pytest.raises(ROSConfigError, match="closure_calibration"):
+        PositionStallTrigger(so101)
+
+
+def test_a_closed_position_off_the_range_end_is_refused(openarm: RobotDescription) -> None:
+    bad = GripperClosureCalibration(
+        closed_position=0.3, closed_rest_offset=0.0, stall_gap=0.08, settle_tolerance=0.001
+    )
+    joints = [
+        j.model_copy(update={"closure_calibration": bad}) if j.name == "left_gripper" else j
+        for j in openarm.joints
+    ]
+    with pytest.raises(ROSConfigError, match="not an end"):
+        PositionStallTrigger(
+            openarm.model_copy(update={"joints": joints}), joint_name="left_gripper"
+        )
+
+
+@pytest.mark.parametrize(("ticks", "settle"), [(0, 5), (3, 1)])
+def test_a_degenerate_debounce_is_refused(
+    openarm: RobotDescription, ticks: int, settle: int
+) -> None:
+    with pytest.raises(ROSConfigError, match="PositionStallConfig"):
+        PositionStallTrigger(
+            openarm,
+            joint_name="left_gripper",
+            config=PositionStallConfig(consecutive_ticks=ticks, settle_ticks=settle),
+        )
+
+
+def test_a_non_finite_command_is_ignored(openarm: RobotDescription) -> None:
+    trigger = _left(openarm)
+    trigger.command(float("nan"))
+    assert trigger.last_command == _OPEN
 
 
 def test_gripper_joints_lists_both_openarm_hands(openarm: RobotDescription) -> None:
-    """Every gripper-role joint is returned, in manifest order."""
-    assert [joint.name for joint in gripper_joints(openarm)] == ["left_gripper", "right_gripper"]
-
-
-def test_gripper_joints_raises_only_on_zero(description: RobotDescription) -> None:
-    """One gripper is fine; none is a typed error."""
-    assert [joint.name for joint in gripper_joints(description)] == ["gripper"]
-    armless = description.model_copy(
-        update={"joints": [j for j in description.joints if j.role != "gripper"]}
-    )
-    with pytest.raises(ROSConfigError, match="no role='gripper' joint"):
-        gripper_joints(armless)
+    assert [j.name for j in gripper_joints(openarm)] == ["left_gripper", "right_gripper"]
 
 
 def test_an_unnamed_trigger_refuses_to_guess_between_two_grippers(
     openarm: RobotDescription,
 ) -> None:
-    """Without ``joint_name`` a bimanual manifest is ambiguous, and says so."""
-    with pytest.raises(ROSConfigError, match="found 2"):
-        GripperEffortTrigger(openarm)
+    with pytest.raises(ROSConfigError, match="exactly one"):
+        gripper_joint(openarm)
 
 
 def test_a_non_gripper_joint_name_is_rejected(openarm: RobotDescription) -> None:
-    """Naming an arm joint is a configuration error, not a silent arm-effort trigger."""
-    with pytest.raises(ROSConfigError, match="not a role='gripper' joint"):
-        GripperEffortTrigger(openarm, joint_name="left_joint1")
+    with pytest.raises(ROSConfigError, match="not a role='gripper'"):
+        gripper_joint(openarm, "left_joint1")
 
 
-def test_a_left_grasp_fires_only_the_left_trigger(openarm: RobotDescription) -> None:
-    """A load on the left jaw attaches the left trigger; the right one stays silent."""
-    names = [joint.name for joint in openarm.joints]
-    efforts = [0.0] * len(names)
-    efforts[names.index("left_gripper")] = 0.5 * 333.0
-    loaded = JointState(name=names, position=[0.0] * len(names), effort=efforts, stamp_ns=0)
-    config = GraspTriggerConfig(consecutive_ticks=2)
-    left = GripperEffortTrigger(openarm, joint_name="left_gripper", config=config)
-    right = GripperEffortTrigger(openarm, joint_name="right_gripper", config=config)
-    assert left.update(loaded) is None
-    assert right.update(loaded) is None
-    assert left.update(loaded) is GraspEvent.ATTACH
-    assert right.update(loaded) is None
-    assert left.attached and not right.attached
+def test_gripper_joints_raises_only_on_zero(openarm: RobotDescription) -> None:
+    joints = [j.model_copy(update={"role": "arm"}) for j in openarm.joints]
+    with pytest.raises(ROSConfigError, match="no role='gripper'"):
+        gripper_joints(openarm.model_copy(update={"joints": joints}))
 
 
-def test_effort_readback_can_judge_one_named_gripper(openarm: RobotDescription) -> None:
-    """``assess_effort_readback`` selects the named hand on a bimanual manifest."""
-    names = [joint.name for joint in openarm.joints]
-    trace = []
-    for i, load in enumerate((0.0, 150.0, 150.0, 0.0)):
-        efforts = [0.0] * len(names)
-        efforts[names.index("right_gripper")] = load
-        trace.append(
-            JointState(name=names, position=[0.0] * len(names), effort=efforts, stamp_ns=i)
-        )
-    assert assess_effort_readback(trace, description=openarm, joint_name="right_gripper").usable
-    left = assess_effort_readback(trace, description=openarm, joint_name="left_gripper")
-    assert not left.usable
+def test_the_event_sequence_is_attach_then_detach_over_a_full_cycle(
+    openarm: RobotDescription,
+) -> None:
+    """open -> close on object -> hold -> open: exactly ATTACH, DETACH."""
+    trigger = _left(openarm)
+    events = _run(trigger, openarm, _flat(_OPEN, 10))
+    trigger.command(0.0)
+    events += _run(trigger, openarm, itertools.chain(_close(_OPEN, 0.22), _flat(0.22, 30)))
+    trigger.command(_OPEN)
+    events += _run(trigger, openarm, itertools.chain(_close(0.22, _OPEN), _flat(_OPEN, 10)))
+    assert events == [GraspEvent.ATTACH, GraspEvent.DETACH]

@@ -2943,9 +2943,7 @@ def test_deploy_vision_attachment_block_maps_to_hal_params_and_launch_args(
     monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
     scene_src = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
     data = yaml.safe_load(scene_src.read_text(encoding="utf-8"))
-    data["runtime"]["vision_attachment"].update(
-        enabled=True, attach_effort=12.5, device="cpu", evidence_timeout_s=0.75
-    )
+    data["runtime"]["vision_attachment"].update(enabled=True, device="cpu", evidence_timeout_s=0.75)
     scene = tmp_path / "vision_leg.yaml"
     scene.write_text(yaml.safe_dump(data), encoding="utf-8")
 
@@ -2966,8 +2964,6 @@ def test_deploy_vision_attachment_block_maps_to_hal_params_and_launch_args(
         "vision_attachment_camera_info_topic": "/zed/zed_node/depth/camera_info",
         "vision_attachment_deadline_s": 0.4,  # --hal wins over the scene's 0.25
         "vision_attachment_evidence_timeout_s": 0.75,
-        "vision_attachment_attach_effort": 12.5,
-        "vision_attachment_release_effort": 0.0,
         "vision_attachment_grasp_target_enabled": False,
         "vision_attachment_place_fixture_enabled": False,
         "vision_attachment_release_timeout_s": 3.0,
