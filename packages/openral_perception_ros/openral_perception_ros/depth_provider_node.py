@@ -123,7 +123,9 @@ def main(args: Any = None) -> None:
             try:
                 bgr, w, h = image_to_bgr_bytes(msg)
             except ImageConvertError as exc:
-                self.get_logger().warning(f"skip frame: {exc}")
+                self.get_logger().warning(
+                    f"dropping {msg.encoding!r} frame: {exc}", throttle_duration_sec=5.0
+                )
                 return
             rgb = np.frombuffer(bgr, dtype=np.uint8).reshape(h, w, 3)[..., ::-1]
             buf = io.BytesIO()
