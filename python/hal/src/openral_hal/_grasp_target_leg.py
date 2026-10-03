@@ -27,13 +27,17 @@ region onto every attachment publication. At ``grasp_target_rate_hz``:
 classes, each logged once per transition with its typed reason:
 
 * *Contradicting evidence* — no measured support under the target, two
-  comparable clusters (``AMBIGUOUS``), a fit over
-  the caps or with no height above the support, a region the map does not
-  cover, a re-fit that moved or resized past one voxel, a frame or calibration
-  mismatch: the region is **retracted at once**.
+  comparable clusters (``AMBIGUOUS``), a fit over the caps or with no height
+  above the support, a re-fit the map does not cover or that moved or resized
+  past one voxel *and* reaches outside the held region grown by one voxel, a
+  frame or calibration mismatch: the region is **retracted at once**.
 * *Lost view* — no seed cells, the seed off-image, no mask, a missed deadline,
-  too few depth points, stale or missing inputs: the gripper closing in on the
-  target occludes it from the head camera exactly then, so the last accepted
+  too few depth points, stale or missing inputs, and a re-fit that fails the
+  map or tracking gate but lies inside the held region grown by one voxel
+  (``occluded_refit``: the approaching hand occluding part of the target
+  shrinks and shifts the fit; it never replaces the held region). The
+  gripper closing in on the target occludes it from the head camera exactly
+  then, so the last accepted
   region is **frozen** for at most ``grasp_target_freeze_s`` from its own
   ``stamp_ns`` (the depth frame it was measured on), then retracted. Follow-up:
   an FK-based "is the hand what occludes it" test instead of a bare TTL.
@@ -62,6 +66,7 @@ from openral_hal._grasp_target import (
     occupied_centers_in_box,
     project_point,
     region_covers_occupied,
+    region_within,
     support_cells_under,
     support_top_from_voxels,
     target_region_from_mask,
@@ -332,6 +337,41 @@ def _lost(kind: str, detail: str) -> _Refusal:
 
 def _contradicted(kind: str, detail: str) -> _Refusal:
     return _Refusal(kind, detail, retract=True)
+
+
+def _gate_refit(
+    grid: VoxelLattice,
+    region: PlaceRegion,
+    previous: PlaceRegion | None,
+    *,
+    min_cover: float,
+) -> PlaceRegion:
+    """Map cover + tracking gate on a fresh fit, or the typed refusal (lost vs contradicted)."""
+    count, covered = region_covers_occupied(grid, region, min_fraction=min_cover)
+    tracked = previous is None or track_region(
+        previous,
+        region,
+        max_centroid_shift_m=grid.resolution,
+        extents_tol_m=grid.resolution,
+    )
+    if covered and tracked:
+        return region
+    moved = (
+        ""
+        if previous is None
+        else f"re-fit centre {tuple(round(v, 3) for v in region.pose.xyz)} half_extents "
+        f"{tuple(round(v, 3) for v in region.half_extents)} vs held centre "
+        f"{tuple(round(v, 3) for v in previous.pose.xyz)} half_extents "
+        f"{tuple(round(v, 3) for v in previous.half_extents)}"
+    )
+    if previous is not None and region_within(region, previous, tol_m=grid.resolution):
+        # Shrunk/shifted inside the held region: the closing hand occluding
+        # part of the target, not a contradiction — the held region stays
+        # under its freeze TTL and is not replaced by the partial fit.
+        raise _lost("occluded_refit", f"{moved}, inside the held region")
+    if not covered:
+        raise _contradicted("map_disagrees", f"only {count} occupied cells inside the region")
+    raise _contradicted("target_moved", f"{moved}: reaches outside the held region")
 
 
 #: What a request was made against: (depth, depth stamp ns, intrinsics,
@@ -701,22 +741,6 @@ class GraspTargetLeg:
             if fit.refusal is TargetRefusal.TOO_FEW_POINTS:
                 raise _lost(fit.refusal.value, detail)
             raise _contradicted(fit.refusal.value, detail)
-        region = fit.region
-        count, covered = region_covers_occupied(
-            grid, region, min_fraction=self._config.grasp_target_min_cover
+        return _gate_refit(
+            grid, fit.region, self.tracker.region, min_cover=self._config.grasp_target_min_cover
         )
-        if not covered:
-            raise _contradicted("map_disagrees", f"only {count} occupied cells inside the region")
-        previous = self.tracker.region
-        if previous is not None and not track_region(
-            previous,
-            region,
-            max_centroid_shift_m=grid.resolution,
-            extents_tol_m=grid.resolution,
-        ):
-            raise _contradicted(
-                "target_moved",
-                f"re-fit centre {tuple(round(v, 3) for v in region.pose.xyz)} vs "
-                f"{tuple(round(v, 3) for v in previous.pose.xyz)} beyond one voxel",
-            )
-        return region
