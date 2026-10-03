@@ -164,7 +164,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   *Pure-geometry core landed:* `openral_hal._grasp_target` (seed, prompt projection, region, map
   cross-check, tracking gate; tests in `tests/unit/test_grasp_target.py`). *ROS wiring landed,
   default off:* `openral_hal._grasp_target_leg`, owned by `VisionAttachmentBridge`
-  (`vision_attachment_grasp_target_enabled`): the search box is `GraspDeclaration.search_box`
+  (`vision_attachment_grasp_target_enabled`, scene `runtime.vision_attachment.grasp_target_enabled`;
+  `deploy run` refuses `grasp_allowance_enabled` without it): the search box is `GraspDeclaration.search_box`
   (optional, grounded by the reasoner or supplied by a direct-dispatch scene, passed through by
   the runner; a search hint only — the support layer is measured from the voxel map, never read
   off the box's bottom face),

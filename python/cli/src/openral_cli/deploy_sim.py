@@ -463,6 +463,8 @@ def _vision_attachment_hal_params(leg: VisionAttachmentRuntime) -> dict[str, obj
         "vision_attachment_evidence_timeout_s": leg.evidence_timeout_s,
         "vision_attachment_attach_effort": leg.attach_effort or 0.0,
         "vision_attachment_release_effort": leg.release_effort or 0.0,
+        "vision_attachment_grasp_target_enabled": leg.grasp_target_enabled,
+        "vision_attachment_place_fixture_enabled": leg.place_fixture_enabled,
     }
     # An empty YAML list has no ROS parameter type; the node's default is [""] = none.
     if leg.tf_frames:
@@ -1411,6 +1413,24 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # setdefault: an explicit ``--hal vision_attachment_*=`` still wins.
         for _va_key, _va_value in _vision_attachment_hal_params(vision_leg).items():
             hal_params.setdefault(_va_key, _va_value)
+        if vision_leg.place_fixture_enabled and robot_unit:
+            # The place producer verifies this unit's fixtures; the scene's `robot_unit` is
+            # not in the HAL's environment, so name it (the HAL falls back to the env var).
+            hal_params.setdefault("vision_attachment_robot_unit", robot_unit)
+    # On real hardware the vision bridge's target leg is the only grasp-region producer (in
+    # sim the HAL's MuJoCo evidence tracker measures it), so the exemption without it would
+    # arm with nothing measuring the region.
+    if (
+        hal_mode == "real"
+        and rt is not None
+        and rt.grasp_allowance_enabled
+        and not (vision_enabled and vision_leg is not None and vision_leg.grasp_target_enabled)
+    ):
+        raise ROSConfigError(
+            "runtime.grasp_allowance_enabled on deploy run needs runtime.vision_attachment."
+            "enabled and runtime.vision_attachment.grasp_target_enabled: the kernel would arm "
+            "the grasp-target exemption with no producer measuring its region."
+        )
     if hal_mode == "sim" and config is not None and not hal.bare_twin_sim:
         # A registered scene with no own composition: scene-attach
         # (SimAttachedHAL around the scene's SimRollout). Real never attaches.

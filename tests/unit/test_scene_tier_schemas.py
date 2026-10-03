@@ -206,6 +206,9 @@ def test_real_openarm_scene_commits_the_vision_leg_off_with_driver_topics():
     leg = scene.runtime.vision_attachment
     assert leg is not None
     assert leg.enabled is False
+    # Both producers default off too: nothing measures a region the kernel could arm with.
+    assert leg.grasp_target_enabled is False
+    assert leg.place_fixture_enabled is False
     assert leg.camera == "head_zed"
     assert leg.rgb_camera_info_topic == "/zed/zed_node/rgb/color/rect/camera_info"
     assert leg.depth_camera_info_topic == "/zed/zed_node/depth/camera_info"

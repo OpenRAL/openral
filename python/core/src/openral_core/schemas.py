@@ -9888,6 +9888,13 @@ class VisionAttachmentRuntime(BaseModel):
         release_effort: Absolute gripper effort that reads as a release; ``None`` = fraction.
         tf_frames: ``{manifest link: TF frame}`` renames where the live TF tree's frame names
             differ from the manifest's links.
+        grasp_target_enabled: Run the pre-grasp target producer on the bridge (HAL param
+            ``vision_attachment_grasp_target_enabled``): it measures the region the kernel's
+            grasp-target exemption arms with, so ``deploy run`` refuses
+            ``DeployRuntime.grasp_allowance_enabled`` without it. Default off.
+        place_fixture_enabled: Run the real place producer (HAL param
+            ``vision_attachment_place_fixture_enabled``), verifying the robot unit's
+            fixtures against the voxel map. Default off.
 
     Example:
         >>> VisionAttachmentRuntime(camera="head_zed").enabled
@@ -9909,6 +9916,8 @@ class VisionAttachmentRuntime(BaseModel):
     attach_effort: float | None = Field(default=None, gt=0)
     release_effort: float | None = Field(default=None, gt=0)
     tf_frames: dict[str, str] = Field(default_factory=dict)
+    grasp_target_enabled: bool = False
+    place_fixture_enabled: bool = False
 
     @model_validator(mode="after")
     def _require_driver_topics(self) -> Self:
@@ -10166,7 +10175,10 @@ class DeployRuntime(BaseModel):
     ``role: gripper`` joints' ``child_link``s, so a declaration can never name a link the
     robot does not grip with. Default off, and off is the graph exactly as without it;
     turning it on is pending Safety-WG review (real pick-and-place design §2.1/§3,
-    ``docs/reference/real-pick-place-adr-drafts.md``). Backward-compatible addition."""
+    ``docs/reference/real-pick-place-adr-drafts.md``). Backward-compatible addition.
+    ``openral deploy run`` refuses it on unless ``vision_attachment.enabled`` and
+    ``vision_attachment.grasp_target_enabled`` are on too: the kernel would arm with no
+    producer measuring the region (``deploy sim``'s MuJoCo evidence tracker measures it)."""
 
     @property
     def voxel_freshness_s(self) -> tuple[float, float]:
