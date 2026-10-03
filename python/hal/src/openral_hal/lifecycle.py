@@ -1462,7 +1462,28 @@ if _ROS2_AVAILABLE:
             try:
                 self._invoke_hal_estop()
             finally:
+                self._discard_staged_slots("estop")
                 self._emit_estop_telemetry()
+
+        def _discard_staged_slots(self, boundary: str) -> None:
+            """Drop the HAL's half-staged ADR-0102 slot group at a stop boundary.
+
+            Done here, for every HAL that stages groups (``discard_staged_slots``),
+            not only in the opted-in ``estop()``: a latch-only HAL (the MuJoCo
+            twin) never receives ``estop()``, so a tick cut short by a kernel
+            stop survived ``openral estop reset`` and the next goal's first slot
+            reported it as an incomplete group (Thor twin pass, 2026-10-03).
+            Slots are dropped while latched, so anything staged at either edge
+            is from before the stop.
+            """
+            discard = getattr(self._hal, "discard_staged_slots", None)
+            if discard is None:
+                return
+            dropped = int(discard())
+            if dropped:
+                self.get_logger().info(
+                    f"openral_hal.slot_group_discarded boundary={boundary} slots={dropped}"
+                )
 
         def _invoke_hal_estop(self) -> None:
             """Call the vendor stop path for HALs that opt into it."""
@@ -1563,7 +1584,12 @@ if _ROS2_AVAILABLE:
             way back. The kernel's cooldown gate has already passed by the
             time this fires (the dashboard publishes it only after estop_reset
             returns success).
+
+            A half-staged slot group is dropped first, latched or not: a stop
+            whose ``/openral/estop`` this node missed must not leave one behind
+            either.
             """
+            self._discard_staged_slots("estop_cleared")
             if not self._estopped:
                 return
 
