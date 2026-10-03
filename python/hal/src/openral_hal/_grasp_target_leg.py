@@ -14,8 +14,9 @@ region onto every attachment publication. At ``grasp_target_rate_hz``:
    ``support_search_below_m`` below its bottom, which is a lifted detection
    bbox and can sit above or below the real table top), the highest layer whose
    top-surface cells ring the footprint of the target standing on it
-   (``support_top_from_voxels``, HZ-01xx-6); then the occupied cells inside the
-   search box → one cluster above that plane → its top-centre;
+   (``support_top_from_voxels``, HZ-01xx-6); then the occupied cells of that
+   column → one cluster above that plane, whose lowest cell must sit within one
+   voxel (+ one of tolerance) of it (else ``not_on_support``) → its top-centre;
 2. that seed, which must project into the depth camera through the driver's
    ``CameraInfo`` and tf2 ``optical <- base``, is sent to ``SegmentInView`` as
    the single positive point (no negatives), under the leg's own deadline;
@@ -26,7 +27,8 @@ region onto every attachment publication. At ``grasp_target_rate_hz``:
 **Every failure is an outcome, never a guess** (HZ-01xx-2/-3/-4/-6). Two
 classes, each logged once per transition with its typed reason:
 
-* *Contradicting evidence* — no measured support under the target, two
+* *Contradicting evidence* — no measured support under the target, a target
+  not standing on the measured support (``not_on_support``), two
   comparable clusters (``AMBIGUOUS``), a fit over the caps or with no height
   above the support, a re-fit the map does not cover or that moved or resized
   past one voxel *and* reaches outside the held region grown by one voxel, a
@@ -582,8 +584,10 @@ class GraspTargetLeg:
                 f"{self._search_below_m:.2f} m below it) holds >= {min_cells} surface cells "
                 f"within {self._probe_margin_m:.2f} m around the target's footprint",
             )
+        # Seeded from the whole column, so a lifted box bottom cannot hide the
+        # target's lower cells from the contact check below.
         seed = target_seed_from_voxels(
-            grid, occupied_centers_in_box(grid, box), support_z=support_z, min_cells=min_cells
+            grid, column_centers, support_z=support_z, min_cells=min_cells
         )
         if seed.point is None:
             assert seed.refusal is not None
@@ -591,6 +595,18 @@ class GraspTargetLeg:
             if seed.refusal is TargetRefusal.AMBIGUOUS:
                 raise _contradicted(seed.refusal.value, detail)
             raise _lost(seed.refusal.value, detail)
+        # The target must stand on the measured support: its lowest kept cell sits
+        # one voxel up (the seed drops the layer touching the plane), plus one voxel
+        # of tolerance. A lower surface — a bench under the shelf board the target
+        # is on — would stand the region on nothing and exempt the gap (HZ-01xx-6).
+        assert seed.bottom_z is not None
+        if seed.bottom_z - support_z > 2.0 * grid.resolution + 1e-9:
+            raise _contradicted(
+                "not_on_support",
+                f"target's lowest cell at z={seed.bottom_z:.3f} is "
+                f"{seed.bottom_z - support_z:.3f} m above the measured support z={support_z:.3f} "
+                f"(> {2.0 * grid.resolution:.3f} m)",
+            )
         return seed.point, support_z
 
     def _request(self, now_ns: int) -> None:

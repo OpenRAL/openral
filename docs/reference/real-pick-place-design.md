@@ -159,7 +159,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   whose top-surface cells ring the footprint of the target standing above it (between one cell
   and 0.05 m out — a surface extends past what stands on it, the target's own dense top does
   not), whose top face is the support — no such layer is a typed `no_support` refusal and no
-  region. Then occupied voxels inside the
+  region; the target's lowest cell must sit within one voxel (+ one of tolerance) of it, else
+  `not_on_support` (a bench below the shelf board the target stands on) and no region. Then occupied voxels inside the
   search box → cluster above the measured support plane →
   cluster top-centre projected into the ZED left image as SAM 2.1's positive point → mask (eroded
   2-3 px) → masked ZED depth → base-frame cloud → robust PCA OBB (reuse `_pca_basis` /
