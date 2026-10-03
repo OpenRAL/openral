@@ -442,7 +442,13 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
     once (`no_declaration`) and nothing re-arms until a new declaration, however long the payload
     stays held over the surface; a new declaration drops a latched patch (`redeclared`), so it is
     re-measured under the new hint. Dispatch still never supplies a region (the runner strips
-    it).
+    it). A place location is never required, but a supplied hint is binding: a `place_target`
+    the reasoner cannot ground (unknown label, several matches and no node id, an unknown
+    memory node, no detector or no memory at all, a box outside the base frame) refuses the
+    goal with `ROSReasonerInvalidPlan` — no goal is sent, and the refusal tells the LLM to omit
+    the hint — and a direct-dispatch declaration that does not validate refuses the goal at the
+    runner (aborted, no skill tick). Neither ever falls back to "place on whatever surface is
+    measured".
   - *Witness substitute.* A proximity attestation (`MAP_SUPPORT_PROXIMITY` evidence kind, labelled
     as **not sensed contact and not a proven support**), once per declaration, when the payload's
     lowest primitive is within max(1 voxel, extrinsic bound) of the latched plane, its centre is
