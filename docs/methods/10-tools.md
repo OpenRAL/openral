@@ -384,7 +384,7 @@ Measures the wire cost of the dense `uint8[]` payload as publish→receive laten
 
 ### `tools/openarm_world_voxel_run.sh`
 
-_The only sanctioned launcher for `scenes/deploy/openarm_real_world_voxels.yaml`. Refuses unless `OPENRAL_OPENARM_ALLOW_MOTION=1` and `OPENRAL_OPENARM_ATTENDED=1`, `OPENRAL_ROBOT_UNIT` naming the cell, sourced ROS 2, `openral` on PATH, `openral deploy run` resolving this checkout's `robots/openarm/robot.yaml`, that unit's overlay declaring head_zed's mount (`openral_core.depth_extrinsic.depth_extrinsic_problems`, the same gate `deploy run` applies, refused here before the operator confirms), an interactive terminal and the typed confirmation `ESTOP IN HAND`; only observability flags pass through to `openral deploy run`._
+_The only sanctioned launcher for `scenes/deploy/openarm_real_world_voxels.yaml` and, with `--autonomous`, `scenes/deploy/openarm_real_autonomous.yaml` (reasoner + open-vocab detector + spatial memory on; also refuses without `OPENRAL_REASONER_MODEL`); a `--scene` copy under `scenes/deploy/local/` must equal the selected committed scene bar `grasp_declaration`. Refuses unless `OPENRAL_OPENARM_ALLOW_MOTION=1` and `OPENRAL_OPENARM_ATTENDED=1`, `OPENRAL_ROBOT_UNIT` naming the cell, sourced ROS 2, `openral` on PATH, `openral deploy run` resolving this checkout's `robots/openarm/robot.yaml`, that unit's overlay declaring head_zed's mount (`openral_core.depth_extrinsic.depth_extrinsic_problems`, the same gate `deploy run` applies, refused here before the operator confirms), an interactive terminal and the typed confirmation `ESTOP IN HAND`; only observability flags pass through to `openral deploy run`._
 ### `tools/stop_ee_speed.py`
 
 - `REPO_ROOT: Path` (L49) — Repo root, derived from `__file__`.

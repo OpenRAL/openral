@@ -17,6 +17,7 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ROBOT = _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
 _SCENE = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
+_AUTONOMOUS = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_autonomous.yaml"
 
 _NO_GATES = {
     k: v
@@ -143,8 +144,8 @@ def _local_scene(name: str, doc: dict[str, object]) -> Path:
     return path
 
 
-def _committed_scene() -> dict[str, object]:
-    doc = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
+def _committed_scene(path: Path = _SCENE) -> dict[str, object]:
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert isinstance(doc, dict)
     return doc
 
@@ -232,3 +233,60 @@ def test_a_local_scene_with_a_grasp_declaration_reaches_the_last_gate() -> None:
         path.unlink()
     assert proc.returncode == 2, proc.stderr
     assert "not an interactive terminal" in proc.stderr, proc.stderr
+
+
+def test_autonomous_refuses_without_a_reasoner_model() -> None:
+    """--autonomous selects the committed autonomous scene, whose reasoner needs a planner."""
+    env = {k: v for k, v in _gated("thor").items() if k != "OPENRAL_REASONER_MODEL"}
+    proc = _run_script(env, "--autonomous")
+    assert proc.returncode == 2, proc.stderr
+    assert "OPENRAL_REASONER_MODEL is not set" in proc.stderr
+
+
+def test_autonomous_reaches_the_last_gate() -> None:
+    """The committed autonomous scene passes every check up to the interactive terminal."""
+    _skip_unless_ros_and_openral()
+    proc = _run_script(
+        {**_gated("thor"), "OPENRAL_REASONER_MODEL": "claude-opus-4-8"}, "--autonomous"
+    )
+    assert proc.returncode == 2, proc.stderr
+    assert "not an interactive terminal" in proc.stderr, proc.stderr
+
+
+@pytest.mark.parametrize("flags", [["--autonomous"], []])
+def test_a_local_copy_is_judged_against_the_selected_committed_scene(flags: list[str]) -> None:
+    """A copy of the autonomous scene passes only with --autonomous; without it, it is judged
+    against the voxel scene and its reasoner/detector/memory legs are refused by key path."""
+    _skip_unless_ros_and_openral()
+    path = _local_scene("auto", _committed_scene(_AUTONOMOUS))
+    env = {**_gated("thor"), "OPENRAL_REASONER_MODEL": "claude-opus-4-8"}
+    try:
+        proc = _run_script(env, "--scene", str(path), *flags)
+    finally:
+        path.unlink()
+    assert proc.returncode == 2, proc.stderr
+    if flags:
+        assert "not an interactive terminal" in proc.stderr, proc.stderr
+    else:
+        assert "at runtime.enable_reasoner" in proc.stderr, proc.stderr
+
+
+def test_the_autonomous_scene_differs_from_the_voxel_scene_only_in_its_autonomous_legs() -> None:
+    """Same cell posture (drivers, octomap, self-filter, envelope, vision leg off) — only the
+    reasoner, the pinned open-vocab detector and spatial-memory ingest are added."""
+    voxel, auto = _committed_scene(), _committed_scene(_AUTONOMOUS)
+    v_rt, a_rt = voxel.pop("runtime"), auto.pop("runtime")
+    assert isinstance(v_rt, dict) and isinstance(a_rt, dict)
+    assert auto.pop("scene") == {"id": "openarm_real_autonomous"}
+    voxel.pop("scene")
+    assert auto == voxel
+    added = {
+        "enable_reasoner": True,
+        "enable_object_detector": True,
+        "object_detector_manifest": "../../rskills/omdet-turbo-indoor/rskill.yaml",
+        "spatial_memory_ingest": True,
+    }
+    assert {k: v for k, v in a_rt.items() if v_rt.get(k) != v} == added
+    assert set(v_rt) <= set(a_rt)
+    assert a_rt["vision_attachment"]["enabled"] is False
+    assert "preload_rskill_id" not in a_rt and "grasp_declaration" not in auto
