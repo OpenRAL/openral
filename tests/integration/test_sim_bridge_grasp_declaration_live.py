@@ -58,7 +58,7 @@ def test_the_bridge_measures_a_grasp_declaration_onto_every_envelope() -> None:
     from openral_core import GraspDeclaration
     from openral_hal.sim_attached import SimAttachedHAL
     from openral_hal.sim_sensor_bridge import SimSensorBridge
-    from openral_msgs.msg import AttachmentState
+    from openral_msgs.msg import AttachmentState, OccupancyVoxels
     from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
     from rclpy.node import Node
     from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
@@ -88,6 +88,15 @@ def test_the_bridge_measures_a_grasp_declaration_onto_every_envelope() -> None:
             declare = node.create_publisher(
                 GraspDeclarationMsg, "/openral/grasp_declaration", latched
             )
+            grids = node.create_publisher(
+                OccupancyVoxels,
+                "/openral/world_voxels",
+                QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.VOLATILE,
+                    depth=1,
+                ),
+            )
             hal.connect()
             bridge = SimSensorBridge(node, hal, description, viewer_enabled=False)
             try:
@@ -109,15 +118,44 @@ def test_the_bridge_measures_a_grasp_declaration_onto_every_envelope() -> None:
                 assert msg.region_valid is False
                 declare.publish(msg)
 
-                def measured() -> list[AttachmentState]:
+                def declared() -> list[AttachmentState]:
                     return [m for m in received if m.grasp_declaration_valid]
 
-                # The heartbeat runs at 5 Hz: wait for three measured envelopes.
+                def measured() -> list[AttachmentState]:
+                    return [m for m in declared() if m.grasp_declaration.region_valid]
+
+                # No grid yet: the region's one-voxel lift off the support needs the
+                # lattice's cell edge, so the declaration rides region-less (fail closed).
+                # The heartbeat runs at 5 Hz: wait for three envelopes.
+                assert _spin_until(rclpy, node, lambda: len(declared()) >= 3), (
+                    "no grasp declaration rode /openral/attachment_state"
+                )
+                assert measured() == [], "no grid seen: the region must be withheld"
+
+                # A grid arrives; a fresh declaration re-measures (the rig's cup attached
+                # under the first one, which froze its region-less state).
+                grid = OccupancyVoxels()
+                grid.header.frame_id = "base_link"
+                grid.orientation.w = 1.0
+                grid.resolution = 0.02
+                grid.size_x = grid.size_y = grid.size_z = 1
+                grid.occupancy = [0]
+                assert _spin_until(
+                    rclpy,
+                    node,
+                    lambda: grids.publish(grid) or bridge._last_voxel_grid is not None,
+                ), "the bridge never saw the grid"
+                declaration = declaration.model_copy(
+                    update={"stamp_ns": int(node.get_clock().now().nanoseconds)}
+                )
+                msg = GraspDeclarationMsg()
+                declaration.fill_idl(msg)
+                declare.publish(msg)
                 assert _spin_until(rclpy, node, lambda: len(measured()) >= 3), (
                     "no measured grasp declaration rode /openral/attachment_state"
                 )
                 envelopes = measured()
-                assert {m.revision for m in envelopes} == {received[0].revision}, (
+                assert {m.revision for m in declared()} == {received[0].revision}, (
                     "the envelope field must not churn the attachment revision"
                 )
                 for envelope in envelopes:
@@ -129,6 +167,8 @@ def test_the_bridge_measures_a_grasp_declaration_onto_every_envelope() -> None:
                     assert wire.region.frame_id == "base_link"
                     assert list(wire.region.geometry) == []
                     assert wire.region.half_extents.x == pytest.approx(0.0401, abs=1e-6)
+                    # Lower face lifted one 20 mm voxel off the support.
+                    assert wire.region.half_extents.z == pytest.approx(0.0301, abs=1e-6)
                     decoded = GraspDeclaration.from_idl(wire)
                     assert decoded.region is not None
                     assert decoded.model_dump(exclude={"region"}) == declaration.model_dump(
