@@ -231,7 +231,11 @@ openral deploy sim --config scenes/deploy/openarm_real_world_voxels.yaml \
     --hal viewer_enabled=false --foxglove
 ```
 
-`MUJOCO_GL=egl` is needed over ssh. The kernel runs with `world_voxel_enabled: true`, but on
+`MUJOCO_GL=egl` is needed over ssh. Source the OpenArm vendor workspace (the one holding
+`openarm_description`) in this terminal as well: the robot model in Foxglove is the manifest
+URDF on `/robot_description`, and its `package://openarm_description/...` meshes are served by
+the bridge, which can only resolve packages on its own `AMENT_PREFIX_PATH`. Without it the 3D
+panel lists `Failed to retrieve asset` for every link and draws no robot. The kernel runs with `world_voxel_enabled: true`, but on
 the **sim** tuning: 0 m margin, 15 mm cells and sim octomap thresholds. The real values are
 20 mm margin, 20 mm cells, occupancy threshold 0.6 and clamping max 0.97, and apply only
 under `deploy run`. The reasoner is off and nothing dispatches, so the kernel evaluates no
@@ -247,7 +251,12 @@ Check and record:
   `frame_id: openarm_base`.
 - **One parent.** `ros2 run tf2_tools view_frames` shows `zed_camera_link` with exactly one
   parent, `openarm_base`. A second parent means `publish_tf` was left on.
-- **Overlay.** In Foxglove, check that the voxels sit on the table, the shelf and the real
+- **Overlay.** Import the layout `deploy sim` prints
+  (`[deploy_e2e] foxglove: … import the scene-matched layout from /tmp/openral_layout_openarm_v2.json`)
+  — re-import it if you saved an older one; layouts saved before the URDF layer have no robot.
+  The hero 3D panel (and the *World voxels* tab) follows `openarm_base` and draws the robot
+  model from `/robot_description` beside `/octomap_point_cloud_centers` and
+  `/openral/world_voxels_cloud`. Check that the voxels sit on the table, the shelf and the real
   arms. The robot model shown is the twin at zero, so park the real arms at zero to compare.
   Note any voxels on the arm links (self-occupancy, gap 1) and any free-floating speckle
   near the arm envelope, each of which is a future false stop.
