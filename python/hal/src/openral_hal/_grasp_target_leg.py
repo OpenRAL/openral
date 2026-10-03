@@ -95,18 +95,25 @@ region dropped, and a handed-over target takes no ``accept`` / ``refuse``. After
 retraction before any handover a hand re-arms only once it moved more than one
 voxel or a freeze window elapsed, under the same identity — so one the kernel
 retired for a fault stays refused — except a hand that left the approach distance
-and was still away from it once a freeze window had passed: it approaches afresh,
-under a fresh identity (liveness after a kernel fault retirement the producer cannot
-see — a grid re-frame, a rejected attachment model). **Multi-pick per goal**: once a hand is handed
+and was then seen away from it (located, its box off the column over its last target)
+on every sample for a continuous freeze window: it approaches afresh, under a fresh
+identity (liveness after a kernel fault retirement the producer cannot see — a grid
+re-frame, a rejected attachment model). The kernel also retires an armed declaration at
+every detach edge (the attachment set emptying at a new revision), before its handover
+too and whichever hand let go; the bridge, which owns the set, calls
+``GraspTargetLeg.on_attachment_changed`` before every publish whose set lost or
+replaced an object or is empty, so the other hand's pre-handover arming drops its region,
+takes a fresh identity in that very snapshot, and accepts only a region measured after
+the change. **Multi-pick per goal**: once a hand is handed
 over nothing re-arms until that pick completes. The bridge's DETACH on the hand
 (``on_detach``, with the release window's frozen record) drops its region at once
 while keeping the handover, so nothing re-latches it; once the hand's legs hold
-nothing (no attachment, release window or pending segmentation — re-checked on the
-DETACH and on the window's close, never polled) the pick is complete: the counter
+nothing (no attachment, release window, pending segmentation or loaded trigger —
+re-checked on the DETACH and on the window's close, never polled) the pick is complete: the counter
 advances and the hand may re-arm under a fresh identity behind the same backoff —
-but not on the payload it just released: until its approach box clears that
-payload's frozen pose by a voxel it does not arm, and a pick whose release left no
-record blocks it for the rest of the goal (HZ-0115-11). The kernel retires every
+but not on the payload it just released: until the column its next measurement would
+search clears that payload's frozen pose by a voxel it does not arm, and a pick whose
+release left no record blocks it for the rest of the goal (HZ-0115-11). The kernel retires every
 pick's identity at its release and never re-arms one it retired (HZ-0115-3). A
 named ``search_box`` wins: no approach detection runs for it, and it stays handed
 over after its pick. The tracker is
@@ -118,7 +125,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from functools import update_wrapper
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
 
@@ -264,9 +271,15 @@ class GraspTargetTracker:
         # Per hand: (approach box centre, now_ns, the hand left the approach distance)
         # of its last refused/ended arming.
         self._backoff: dict[tuple[str, ...], tuple[tuple[float, float, float], int, bool]] = {}
-        # Hands that left the approach distance and were still away from it once their
-        # backoff elapsed: their next arming takes a fresh identity (``on_approach``).
+        # Per hand that left the approach distance: since when every sample saw it
+        # located and away from its last target's column (``_track_away``).
+        self._away_since: dict[tuple[str, ...], int] = {}
+        # Hands away continuously for a freeze window: their next arming takes a fresh
+        # identity (``on_approach``).
         self._away: set[tuple[str, ...]] = set()
+        # When the attachment set last lost or replaced an object (or published empty):
+        # no region measured at or before it is accepted (``on_attachment_changed``).
+        self._changed_ns = 0
         self._status = ""
         # Bumped whenever what a measurement in flight was asked for stops being what is
         # measured (new/cleared declaration, arming, retraction, handover).
@@ -316,6 +329,7 @@ class GraspTargetTracker:
         # but not before the hand moves or a backoff elapses (``on_approach``).
         held = self._approach
         if held is not None and held.search_box is not None:
+            self._away_since.pop(held.contact_links, None)  # each leaving starts its own window
             self._backoff[held.contact_links] = (
                 held.search_box.pose.xyz,
                 now_ns,
@@ -348,6 +362,7 @@ class GraspTargetTracker:
         self._handed_over = None
         self._backoff.clear()
         self._away.clear()
+        self._away_since.clear()
         self._spent.clear()
         self._declaration = declaration.model_copy(update={"region": None})
         self._transition(
@@ -365,6 +380,7 @@ class GraspTargetTracker:
         self._handed_over = None
         self._backoff.clear()
         self._away.clear()
+        self._away_since.clear()
         self._spent.clear()
         self._transition(f"cleared:{why}", f"grasp target cleared — {why}")
 
@@ -388,6 +404,7 @@ class GraspTargetTracker:
         move_m: float,
         holding: Sequence[tuple[str, ...]] = (),
         generation: int | None = None,
+        located: Mapping[tuple[str, ...], PlaceRegion] | None = None,
     ) -> None:
         """Arm, follow or end the approach-armed target from this tick's approaching hands.
 
@@ -407,6 +424,9 @@ class GraspTargetTracker:
             generation: The tracker generation ``near`` was computed under; ``None``
                 skips the check. A pick completing on another thread since (its
                 released payload is now guarded, ``spent``) makes ``near`` stale.
+            located: The approach box of every hand located this tick and holding
+                nothing (``near`` or not); ``None`` = none. Only these samples can
+                show a hand away (``_track_away``).
 
         Only hands whose links the declaration names count (a named declaration
         narrows the choice). The held hand absent from ``near`` retracts at once
@@ -416,11 +436,13 @@ class GraspTargetTracker:
         freeze window (``freeze_s``) elapsed: the same map at the same pose gives
         the same verdict, so re-arming every tick only floods the log and the
         segmenter. It keeps the pick's identity — unless its arming ended by
-        leaving the approach distance (``approach_ended``) and it was still away
-        (absent from ``near``) on a call after a freeze window had passed: then it
-        arms under a fresh one. The kernel's fault retirements (``grid_frame_changed``,
+        leaving the approach distance (``approach_ended``) and every sample for a
+        continuous freeze window since showed it located with its approach box off
+        its last target's column (``_track_away``): then it arms under a fresh one.
+        An unlocated sample (a tf2 gap), a holding one, or one back over the column
+        restarts that window. The kernel's fault retirements (``grid_frame_changed``,
         ``attachment_rejected``) are invisible here; this is the one way out of them,
-        and wiggling or coming straight back is not it.
+        and wiggling, a tf2 gap or coming straight back is not it.
         """
         goal = self._declaration
         if goal is None or goal.search_box is not None or self._handed_over is not None:
@@ -429,7 +451,7 @@ class GraspTargetTracker:
             return
         named = set(goal.contact_links)
         near = [(links, box) for links, box in near if set(links) <= named]
-        self._mark_away({links for links, _ in near}, now_ns=now_ns)
+        self._track_away(located or {}, now_ns=now_ns)
         held = self._approach
         if held is not None:
             # Mid-grasp (``holding``) the arming stays as it is: what is near the TCP
@@ -464,7 +486,10 @@ class GraspTargetTracker:
             if moved <= move_m and now_ns - since_ns <= self._freeze_ns:
                 return  # same place, same map: the refusal would repeat
             del self._backoff[links]
-        if links in self._away:
+        fresh = links in self._away
+        self._away.discard(links)
+        self._away_since.pop(links, None)
+        if fresh:
             # Liveness after a fault the kernel retired (HZ-0115-3): the producer
             # cannot see a retirement, and a re-arm keeps the pick's identity, so a
             # grid re-frame or a rejected attachment model would refuse this pick for
@@ -472,7 +497,6 @@ class GraspTargetTracker:
             # still away from it once a freeze window had passed approaches afresh: a
             # new identity, measured from scratch. Wiggling in place or coming
             # straight back keeps the retired one.
-            self._away.discard(links)
             self._pick += 1
         self._generation += 1
         self._approach = goal.model_copy(
@@ -498,10 +522,24 @@ class GraspTargetTracker:
             f"rskill={goal.rskill_id!r} trace={goal.trace_id!r}",
         )
 
-    def _mark_away(self, approaching: set[tuple[str, ...]], *, now_ns: int) -> None:
-        """Note every hand that left the approach distance and is still away past its backoff."""
-        for links, (_, since_ns, left) in self._backoff.items():
-            if left and links not in approaching and now_ns - since_ns > self._freeze_ns:
+    def _track_away(self, located: Mapping[tuple[str, ...], PlaceRegion], *, now_ns: int) -> None:
+        """Latch every hand continuously away from its last target for a freeze window.
+
+        Away is a positive observation: the hand located, holding nothing, its approach
+        box no longer containing the column over its last arming's search-box centre.
+        Anything else — unlocated, holding, or over the column again — restarts the
+        window; absence from ``near`` alone (a ``min_cells`` dip) is not away.
+        """
+        for links, (where, _, left) in self._backoff.items():
+            if not left:
+                continue
+            box = located.get(links)
+            column = None if box is None else (where[0], where[1], box.pose.xyz[2])
+            if box is None or bool(_in_region(np.asarray([column], dtype=np.float64), box)[0]):
+                self._away_since.pop(links, None)
+                continue
+            since_ns = self._away_since.setdefault(links, now_ns)
+            if now_ns - since_ns >= self._freeze_ns:
                 self._away.add(links)
 
     def _armed(self) -> GraspDeclaration | None:
@@ -599,6 +637,40 @@ class GraspTargetTracker:
         )
 
     @_locked
+    def on_attachment_changed(self, *, now_ns: int) -> None:
+        """The attachment set lost or replaced an object, or was published empty.
+
+        The kernel retires an armed grasp declaration whenever the set empties at a new
+        revision — before or after its handover, whichever hand let go (HZ-0115-3) —
+        and never re-arms a retired identity. The producer sees every such change (it
+        owns the set), so it keeps the pick live here: an arming not handed over drops
+        its region at once and, approach-armed, advances to a fresh identity; and no
+        region measured at or before ``now_ns`` (its ``stamp_ns``: the older of its
+        depth frame and its grid's ``source_stamp``) is accepted afterwards, for any
+        arming. A handed-over arming follows its own pick-complete path. A named
+        ``search_box`` declaration keeps dispatch's identity: the kernel refuses it
+        once retired (fail closed), and dispatch must redeclare.
+        """
+        self._changed_ns = max(self._changed_ns, now_ns)
+        if self._handed_over is not None:
+            return
+        self._generation += 1  # a measurement in flight saw the old scene
+        self._region = None
+        held = self._approach
+        if held is None:
+            return
+        self._pick += 1
+        self._approach = held.model_copy(
+            update={"target_id": f"{APPROACH_TARGET_PREFIX}{held.contact_links[0]}:{self._pick}"}
+        )
+        self._transition(
+            f"refreshed:{self._approach.target_id}",
+            f"grasp target {held.target_id!r}: the attachment set changed before its handover "
+            f"— region dropped, re-armed as {self._approach.target_id!r} for a measurement "
+            "taken after the change",
+        )
+
+    @_locked
     def on_pick_complete(self, hand: tuple[str, ...], *, now_ns: int) -> bool:
         """The handed-over hand holds nothing any more: end its approach-armed pick.
 
@@ -662,6 +734,16 @@ class GraspTargetTracker:
         if declaration is None or self._handed_over is not None:
             return
         if generation is not None and generation != self._generation:
+            return
+        if region.stamp_ns <= self._changed_ns:
+            # Measured on a depth frame or grid from before the attachment set changed:
+            # not the scene the kernel now holds (HZ-0115-3). Dropped; the next tick
+            # re-measures on newer inputs.
+            self._transition(
+                "measured_before_change",
+                f"grasp target region for {declaration.target_id!r} dropped — measured at "
+                f"{region.stamp_ns}, not after the attachment set changed at {self._changed_ns}",
+            )
             return
         try:
             GraspDeclaration.model_validate(declaration.model_dump() | {"region": region})
@@ -1203,9 +1285,18 @@ class GraspTargetLeg:
             )
 
     def _holding(self, links: Sequence[str]) -> bool:
-        """Whether a gripper leg of these links holds, releases or is segmenting a payload."""
+        """Whether a gripper leg of these links holds, releases or is segmenting a payload.
+
+        A trigger that reads the jaws loaded counts too (``trigger.attached``): it flips
+        on the proprio thread before either the re-ATTACH or the executor's release poll
+        acts, so a poll closing the window first cannot complete a pick under a live
+        regrasp (``on_release_closed`` -> ``on_pick_complete``).
+        """
         return any(
-            leg.attachment is not None or leg.release is not None or leg.pending
+            leg.attachment is not None
+            or leg.release is not None
+            or leg.pending
+            or leg.trigger.attached
             for leg in self._bridge._legs
             if leg.jaw_link in links
         )
@@ -1228,6 +1319,14 @@ class GraspTargetLeg:
             return
         self.tracker.on_release(hand, record)
         self._complete_if_empty(hand)
+
+    def on_attachment_changed(self) -> None:
+        """The bridge is about to publish a set that lost or replaced an object, or is empty.
+
+        Called before the envelope is filled, so that snapshot already carries the
+        refreshed identity and no pre-change region (``GraspTargetTracker.on_attachment_changed``).
+        """
+        self.tracker.on_attachment_changed(now_ns=self._now_ns())
 
     def on_release_closed(self, jaw_link: str) -> None:
         """The bridge closed ``jaw_link``'s release window (clear or timed out)."""
@@ -1296,11 +1395,14 @@ class GraspTargetLeg:
 
         After a pick completes, the hand's next arming must not take in the cells of
         the payload it put down (HZ-0115-11: a hand lingering by its just-placed
-        object would arm on it). The guard holds until the hand's approach box clears
-        that payload's last pose (the DETACH's frozen release record, each primitive
-        bounded by its oriented box, ``bounding_half_extents``) by more than one voxel
-        — the separating-axis lower bound on the gap (``box_gap_lower_bound_m``), so an
-        elongated payload is not inflated to its bounding sphere — then ends for good.
+        object would arm on it). The guard holds until the column the hand's next
+        measurement would search (``search_column`` of its approach box, reaching
+        ``support_search_below_m`` below it — where ``_seed`` looks for the target and
+        its support) clears that payload's last pose (the DETACH's frozen release
+        record, each primitive bounded by its oriented box, ``bounding_half_extents``)
+        by more than one voxel — the separating-axis lower bound on the gap
+        (``box_gap_lower_bound_m``), so an elongated payload is not inflated to its
+        bounding sphere — then ends for good.
         A pick with
         no record (no tf2 at the DETACH) keeps the hand from arming for the rest of
         the goal; a tf2 gap to the record's frame keeps the guard.
@@ -1321,13 +1423,14 @@ class GraspTargetLeg:
         )
         if t_grid_from_link is None:
             return True
-        t_box = homogeneous_from_quat_xyz(box.pose.xyz, box.pose.quat_xyzw)
-        approach = (t_box[:3, 3], t_box[:3, :3], np.asarray(box.half_extents, dtype=np.float64))
+        column = search_column(box, below_m=self._search_below_m)
+        t_box = homogeneous_from_quat_xyz(column.pose.xyz, column.pose.quat_xyzw)
+        searched = (t_box[:3, 3], t_box[:3, :3], np.asarray(column.half_extents, dtype=np.float64))
         for t, primitive in zip(
             primitive_poses(record, t_grid_from_link), record.primitives, strict=True
         ):
             payload = (t[:3, 3], t[:3, :3], bounding_half_extents(primitive.shape))
-            if box_gap_lower_bound_m(approach, payload) <= grid.resolution:
+            if box_gap_lower_bound_m(searched, payload) <= grid.resolution:
                 return True
         self.tracker.clear_spent(hand, record)
         return False
@@ -1349,15 +1452,17 @@ class GraspTargetLeg:
         """
         grid, _ = self._fresh_grid(now_ns)
         near: list[tuple[tuple[str, ...], PlaceRegion]] = []
+        located: dict[tuple[str, ...], PlaceRegion] = {}
         holding = [hand for hand in self._hands_of_robot if self._holding(hand)]
         for hand in self._hands_of_robot:
             if hand in holding:
                 continue
-            located = [self._bridge.jaw_point(link, grid.frame_id) for link in hand]
-            points = [point for point in located if point is not None]
+            tcps = [self._bridge.jaw_point(link, grid.frame_id) for link in hand]
+            points = [point for point in tcps if point is not None]
             if len(points) != len(hand):
                 continue  # an unlocated hand is not approaching (and ends a held approach)
             box = approach_box(points, approach_m=approach_m, frame_id=grid.frame_id)
+            located[hand] = box
             # The guard is checked before the cell count: a hand lifted clear of the
             # payload it released ends it, wherever it goes next.
             if self._near_spent(hand, box, grid):
@@ -1365,7 +1470,12 @@ class GraspTargetLeg:
             if approach_cell_count(grid, box) >= self._config.grasp_target_min_cells:
                 near.append((hand, box))
         self.tracker.on_approach(
-            near, now_ns=now_ns, move_m=grid.resolution, holding=holding, generation=generation
+            near,
+            now_ns=now_ns,
+            move_m=grid.resolution,
+            holding=holding,
+            generation=generation,
+            located=located,
         )
 
     def _seed(

@@ -1196,6 +1196,9 @@ class VisionAttachmentBridge:
         self._warned_row_shape = False
         self._warned_slot = False
         self._revision = 0
+        # (object_id, stamp_ns, attach_link) of the last set published at a new revision.
+        self._published_keys: frozenset[tuple[str, int, str]] = frozenset()
+        self._publish_lock = threading.Lock()
         # Serializes closing a leg's release window: the executor's ``_poll_releases``
         # and the proprio thread's re-ATTACH both close it (``_close_release``).
         self._release_lock = threading.Lock()
@@ -1385,8 +1388,10 @@ class VisionAttachmentBridge:
                 if leg.pending:
                     self._release_barrier(leg)
                 if self._grasp_target is not None and held is not None:
-                    # The pick-complete path: the frozen record (None without tf2).
-                    record = leg.release.record if leg.release is not None else None
+                    # The pick-complete path: the frozen record (None without tf2). Read
+                    # once: the executor's poll may close the window meanwhile.
+                    window = leg.release
+                    record = window.record if window is not None else None
                     self._grasp_target.on_detach(leg.jaw_link, record)
                 continue
             window = leg.release
@@ -1991,11 +1996,28 @@ class VisionAttachmentBridge:
         return homogeneous_from_quat_xyz((t.x, t.y, t.z), (q.x, q.y, q.z, q.w))
 
     def _publish_attachment(self) -> None:
-        """Publish every leg's current attachment as one snapshot at a fresh revision."""
+        """Publish every leg's current attachment as one snapshot at a fresh revision.
+
+        A set that lost or replaced an object — a DETACH, a release window closing, a
+        re-ATTACH — or that is empty is the kernel's detach edge for an armed grasp
+        declaration (it retires on an empty set at a new revision, HZ-0115-3). The
+        grasp leg hears of it first (``GraspTargetLeg.on_attachment_changed``), so the
+        envelope this very snapshot carries already drops the pre-change region and
+        names the fresh identity.
+        """
         if self._attachment_pub is None:
             return
-        self._revision += 1
-        self._publish_snapshot()
+        # The proprio thread (DETACH, ATTACH) and the executor (release poll, segmentation
+        # reply) both publish; the change test must see the sets in publish order.
+        with self._publish_lock:
+            self._revision += 1
+            objects = self._attached_objects()
+            keys = frozenset((obj.object_id, obj.stamp_ns, obj.attach_link) for obj in objects)
+            changed = not keys or not keys >= self._published_keys
+            self._published_keys = keys
+            if changed and self._grasp_target is not None:
+                self._grasp_target.on_attachment_changed()
+            self._publish_snapshot(objects)
 
     # ── release window ───────────────────────────────────────────────────────
 
@@ -2019,17 +2041,19 @@ class VisionAttachmentBridge:
                 "dropping its attachment"
             )
             return
-        leg.release = ReleaseWindow.open(
+        window = ReleaseWindow.open(
             self._description,
             held,
             base_link=self._base_link,
             t_base_from_link=t_base_from_link,
             now_s=time.monotonic(),
         )
+        with self._release_lock:
+            leg.release = window
         self._node.get_logger().info(
             f"release window opened for {leg.joint_name}: {held.object_id!r} frozen in "
-            f"{self._base_link!r} at {leg.release.record.pose_in_link.xyz}; exempt links "
-            f"{leg.release.record.touch_links} until clear by {self._config.release_clear_m} m "
+            f"{self._base_link!r} at {window.record.pose_in_link.xyz}; exempt links "
+            f"{window.record.touch_links} until clear by {self._config.release_clear_m} m "
             f"or {self._config.release_timeout_s} s"
         )
 
@@ -2108,14 +2132,21 @@ class VisionAttachmentBridge:
         if is_open:
             self._publish_snapshot()
 
-    def _publish_snapshot(self) -> None:
-        """Publish the union of the legs' attachments at the current revision, stamped now."""
+    def _attached_objects(self) -> list[AttachedCollisionObject]:
+        """Every leg's held payload, else its frozen release record (each read once)."""
         objects: list[AttachedCollisionObject] = []
         for leg in self._legs:
-            if leg.attachment is not None:
-                objects.append(leg.attachment)
-            elif leg.release is not None:
-                objects.append(leg.release.record)
+            held, window = leg.attachment, leg.release
+            if held is not None:
+                objects.append(held)
+            elif window is not None:
+                objects.append(window.record)
+        return objects
+
+    def _publish_snapshot(self, objects: list[AttachedCollisionObject] | None = None) -> None:
+        """Publish ``objects`` (default: the legs' current set) at the current revision."""
+        if objects is None:
+            objects = self._attached_objects()
         from openral_msgs.msg import (
             AttachedCollisionObject,
             AttachedCollisionPrimitive,
