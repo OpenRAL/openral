@@ -366,7 +366,16 @@ def test_execute_skill_goal_publishes_chunks_through_safety_passthrough() -> Non
 # ── Single-resident-skill VRAM eviction ─────────────────────────────────────
 
 
-def _run_goal(executor: Any, node: Any, rskill_id: str, deadline_s: float = 0.4) -> None:
+def _run_goal(
+    executor: Any,
+    node: Any,
+    rskill_id: str,
+    deadline_s: float = 0.4,
+    *,
+    prompt: str = "drive",
+    revision: str = "",
+    goal_params_json: str = "",
+) -> None:
     """Send one ExecuteRskill goal for ``rskill_id`` and spin until it resolves."""
     from openral_msgs.action import ExecuteRskill
     from rclpy.action import ActionClient
@@ -376,9 +385,10 @@ def _run_goal(executor: Any, node: Any, rskill_id: str, deadline_s: float = 0.4)
     assert client.wait_for_server(timeout_sec=2.0), "ExecuteRskill action server not ready"
     goal = ExecuteRskill.Goal()
     goal.rskill_id = rskill_id
-    goal.revision = ""
-    goal.prompt = "drive"
+    goal.revision = revision
+    goal.prompt = prompt
     goal.prompt_metadata_json = ""
+    goal.goal_params_json = goal_params_json
     goal.deadline_s = deadline_s
     send_future = client.send_goal_async(goal)
     deadline = time.monotonic() + 3.0
@@ -429,6 +439,21 @@ def test_redispatching_same_rskill_id_reuses_resident_skill() -> None:
         _run_goal(executor, runtime.skill_runner_node, "openral/skill-a")
         _run_goal(executor, runtime.skill_runner_node, "openral/skill-a")
         assert len(built) == 1, "same id should resolve once and be reused"
+
+
+def test_changed_goal_params_rebuild_a_skill_that_bakes_them_in() -> None:
+    """A skill built from the goal's params is rebuilt when they change, never replayed.
+
+    A wrapped-ROS skill lowers ``goal_params_json`` into its action goal at
+    construction. Keyed without the params, a second dispatch of the same id
+    with new params reused the first skill and re-sent the first goal.
+    """
+    built: list[Any] = []
+    with _compose_harness(resolver=_tracking_resolver(built)) as (executor, runtime, _s, _o):
+        node = runtime.skill_runner_node
+        _run_goal(executor, node, "openral/skill-a", goal_params_json='{"x": 1}')
+        _run_goal(executor, node, "openral/skill-a", goal_params_json='{"x": 2}')
+        assert len(built) == 2, "changed goal params must rebuild the skill"
 
 
 @pytest.fixture

@@ -380,7 +380,7 @@ if _ROS2_AVAILABLE:
             # the resident skill before loading the next; re-dispatching the
             # same key reuses it (no reload, no double-load).
             self._resident_skill: Any = None
-            self._resident_key: tuple[str, str, str] = ("", "", "")
+            self._resident_key: tuple[str, ...] = ()
             self._chunks_published: int = 0
             self._estop_latched: bool = False
             self._cancel_requested: bool = False
@@ -878,7 +878,11 @@ if _ROS2_AVAILABLE:
         ) -> rSkillBase:
             """Return the GPU-resident skill for this dispatch key.
 
-            Keyed by ``(rskill_id, revision, prompt)``: a differing key evicts
+            Keyed by ``(rskill_id, revision, prompt, prompt_metadata_json,
+            goal_params_json)`` — every input the resolver bakes into the skill
+            it builds (a wrapped-ROS skill lowers its goal from the params at
+            construction, so reusing it across params replays the old goal).
+            A differing key evicts
             the resident skill (``shutdown()`` → frees VRAM) before loading the
             next; an exact match reuses it (no reload, no double-load); a miss
             resolves + caches. Resolve failures propagate to the caller's abort
@@ -886,7 +890,7 @@ if _ROS2_AVAILABLE:
             """
             from openral_core.schemas import RSkillState
 
-            req_key = (rskill_id, revision, prompt)
+            req_key = (rskill_id, revision, prompt, prompt_metadata_json, goal_params_json)
             if self._resident_skill is not None and self._resident_key != req_key:
                 # Loud on purpose: a preloaded skill is only reused when
                 # rskill_id, revision AND prompt match exactly, and the cost
@@ -934,7 +938,7 @@ if _ROS2_AVAILABLE:
             """
             skill = self._resident_skill
             self._resident_skill = None
-            self._resident_key = ("", "", "")
+            self._resident_key = ()
             if skill is None:
                 return
             shutdown = getattr(skill, "shutdown", None)
