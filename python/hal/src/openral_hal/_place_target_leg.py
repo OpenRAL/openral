@@ -6,17 +6,18 @@ The real sibling of the simulator's place producer (``_sim_attachment_evidence``
 Real pick-and-place design ``docs/reference/real-pick-place-design.md`` §2.3.
 
 **Where to place is the policy's job.** Nothing about the cell is surveyed, and no
-one has to name a place target: while a payload is held, this leg looks straight down
-under it in the live voxel map and **measures** the surface it would come to rest on.
-When one is measured it arms the place allowance for that payload by itself. The
+one has to name a place target: while a goal is running and a payload is held, this leg
+looks straight down under it in the live voxel map and **measures** the surface it would
+come to rest on, and attaches that region to the goal's place declaration. The
 semantics are **drafted, not approved** (ADR-0097 amendment: a region the producer
 measured under the carried payload needs no dispatch-named target; ADR-0092 D6
 amendment: a proximity witness to a map-measured plane; hazard "a measured surface is
 not a support"). Default off (``VisionAttachmentConfig.place_target_enabled``), and
 every failure fails closed — no region, the kernel's normal margins.
 
-1. **Column.** At ``place_target_rate_hz``, against the newest
-   ``/openral/world_voxels`` (older than ``grid_max_age_s`` = unusable): the held,
+1. **Column.** At ``place_target_rate_hz``, only under a live dispatch declaration,
+   against the newest ``/openral/world_voxels`` (received, or its ``source_stamp`` data,
+   older than ``grid_max_age_s`` = unusable; an unset ``source_stamp`` too): the held,
    loaded payload's measured primitives give its footprint (axis-aligned in the
    lattice axes) and height. The search column is that footprint grown by one voxel +
    ``place_target_extrinsic_error_m`` on every side, from the payload's bottom down
@@ -35,17 +36,21 @@ every failure fails closed — no region, the kernel's normal margins.
    clearing removes the cells under it) or a missing / stale grid is a **lost view**,
    and the latched region is held for at most ``place_target_freeze_s`` (default and
    ceiling twice ``grid_max_age_s`` — the kernel's ``place_region_max_age_s``) past
-   the grid stamp it was last verified on (``freeze_ttl``). The region's ``stamp_ns``
-   is that grid stamp, re-stamped on every successful re-verification, so the published
+   the grid data it was last verified on (``freeze_ttl``). The region's ``stamp_ns``
+   is that grid's ``source_stamp`` (the world data's capture time, the kernel's own voxel
+   data-age clock — never ``header.stamp``, which a bridge republishing a stalled octree
+   keeps fresh), re-stamped on every successful re-verification, so the published
    region is never older than the kernel accepts. The payload moving off the patch
    re-measures; a different payload drops the latch.
-4. **Declaration.** The kernel only applies a region carried in a ``PlaceDeclaration``.
-   A live dispatch declaration (``/openral/place_declaration``, optional — the reasoner
-   may still name a surface) supplies its own fields, and its ``search_box``, when set,
-   is a hint: a patch whose centre lies outside it is refused (``outside_hint``).
-   Without one, the leg declares the measured surface itself:
-   ``target_id = surface:under:<object_id>``, scoped to that payload, stamped at the
-   latch, alive only while that payload is published.
+4. **Declaration.** The kernel only applies a region carried in a ``PlaceDeclaration``,
+   and the producer never declares on its own: the region rides dispatch's live
+   ``/openral/place_declaration`` — the runner's goal-scope one (``place_approach_enabled``,
+   ``target_id = surface``, the mirror of the grasp side's approach declaration) or a
+   reasoner/scene-named surface — scoped to the measured payload when it names no object.
+   No goal, no allowance. Its ``search_box``, when set, is a hint: a patch whose centre
+   lies outside it is refused (``outside_hint``). A retraction (goal end, cancel, E-stop)
+   or expiry drops the patch and the witness at once and nothing re-arms until a new
+   declaration; a new declaration drops them too and re-measures under it.
 5. **Witness substitute**, once per declaration (the simulator's hysteresis): a latched
    region, the payload still attached on a leg whose trigger reads loaded, its lowest
    primitive point within ``max(1 voxel, extrinsic_error_m)`` of the latched plane and
@@ -145,6 +150,8 @@ class PlaceRefusal(StrEnum):
     FREE_VOLUME_OCCUPIED = "free_volume_occupied"
     SUPPORT_OCCLUDED = "support_occluded"
     FREEZE_TTL = "freeze_ttl"
+    NO_DECLARATION = "no_declaration"
+    REDECLARED = "redeclared"
 
 
 #: Refusals that only mean "the view is lost": a latched region survives them under
@@ -512,8 +519,6 @@ class PlaceTargetTracker:
         self._resolution = 0.0
         # (object_id, stamp_ns) of the payload the patch was measured under.
         self._payload_key: tuple[str, int] | None = None
-        # The producer's own declaration stamp for that payload (no dispatch one).
-        self._self_stamp_ns = 0
         self._status = ""
         # (declaration stamp, object_id, object stamp) attested under, and the witness.
         self._attested: tuple[int, str, int] | None = None
@@ -555,15 +560,19 @@ class PlaceTargetTracker:
         self._transition(f"refused:{reason}", f"{verb} reason={reason} — {detail}; no place region")
 
     def on_declaration(self, declaration: PlaceDeclaration) -> None:
-        """Fold in dispatch's optional copy; retraction or a new one drops the witness."""
+        """Fold in dispatch's goal-scope declaration.
+
+        A retraction (goal end, cancel, E-stop) ends the place allowance: the latched
+        patch and the witness go with it, and nothing re-arms until a new declaration.
+        A new declaration drops them too, so a patch latched under the previous one
+        (and its hint) is re-measured under this one.
+        """
         current = self._declaration
         if not declaration.active:
             if current is not None:
                 self._declaration = None
-                self._witness = None
-                self._transition(
-                    f"retracted:{current.stamp_ns}",
-                    f"place_target dispatch retracted {current.target_id!r}",
+                self._retract(
+                    PlaceRefusal.NO_DECLARATION, f"dispatch retracted {current.target_id!r}"
                 )
             return
         if current is not None and (current.target_id, current.stamp_ns) == (
@@ -571,6 +580,11 @@ class PlaceTargetTracker:
             declaration.stamp_ns,
         ):
             return  # the latched copy again
+        if self._patch is not None:
+            self._retract(
+                PlaceRefusal.REDECLARED,
+                f"new declaration {declaration.target_id!r}: re-measure under it",
+            )
         # Dispatch's region, if any, is never relayed: only this producer's own.
         self._declaration = declaration.model_copy(update={"region": None})
         self._witness = None
@@ -581,12 +595,8 @@ class PlaceTargetTracker:
             "surface is measured under the payload",
         )
 
-    def latch(
-        self, patch: PlacePatch, *, payload_key: tuple[str, int], resolution: float, now_ns: int
-    ) -> None:
-        """Hold a freshly measured patch (its region stamped with its grid)."""
-        if payload_key != self._payload_key:
-            self._self_stamp_ns = now_ns
+    def latch(self, patch: PlacePatch, *, payload_key: tuple[str, int], resolution: float) -> None:
+        """Hold a freshly measured patch (its region stamped with its grid's data)."""
         self._patch = patch
         self._payload_key = payload_key
         self._resolution = resolution
@@ -629,14 +639,13 @@ class PlaceTargetTracker:
             )
 
     def live(self, *, now_ns: int) -> PlaceDeclaration | None:
-        """Dispatch's live declaration, clearing an expired one."""
+        """Dispatch's live declaration; an expired one ends the allowance like a retraction."""
         declaration = self._declaration
         if declaration is not None and not declaration.is_live(now_ns=now_ns):
             self._declaration = None
-            self._witness = None
-            self._transition(
-                f"expired:{declaration.stamp_ns}",
-                f"place_target dispatch declaration {declaration.target_id!r} expired",
+            self._retract(
+                PlaceRefusal.NO_DECLARATION,
+                f"dispatch declaration {declaration.target_id!r} expired",
             )
             return None
         return declaration
@@ -644,28 +653,19 @@ class PlaceTargetTracker:
     def envelope(self, *, now_ns: int) -> PlaceDeclaration | None:
         """The declaration for the envelope now, or ``None``.
 
-        Dispatch's live declaration (plus the held region) when there is one; else,
-        while a patch is latched, the producer's own declaration of the surface
-        measured under that payload. An over-age latched region is retracted here
-        too, so a stalled measurement loop cannot keep one alive.
+        Only dispatch's live goal-scope declaration — the producer never declares on
+        its own, so no place allowance exists outside a running goal. While a patch is
+        latched it carries the region, scoped to the payload it was measured under when
+        dispatch names none. An over-age latched region is retracted here too, so a
+        stalled measurement loop cannot keep one alive.
         """
         declaration = self.live(now_ns=now_ns)
         self._expire_frozen(now_ns)
         patch, key = self._patch, self._payload_key
-        if declaration is not None:
-            return declaration.model_copy(update={"region": patch.region if patch else None})
-        if patch is None or key is None:
-            return None
-        return PlaceDeclaration(
-            target_id=f"surface:under:{key[0]}",
-            object_id=key[0],
-            rskill_id="",
-            trace_id="",
-            # ponytail: one stamp per payload, bounded by the schema ceiling; the region's
-            # own age bound (2 x grid_max_age_s) is what keeps the allowance fresh.
-            timeout_s=PlaceDeclaration.MAX_TIMEOUT_S,
-            stamp_ns=self._self_stamp_ns,
-            region=patch.region,
+        if declaration is None or patch is None or key is None:
+            return declaration
+        return declaration.model_copy(
+            update={"region": patch.region, "object_id": declaration.object_id or key[0]}
         )
 
     def attest(
@@ -785,7 +785,8 @@ def place_tick(
     Args:
         tracker: The leg's state.
         grid: The fresh lattice.
-        grid_stamp_ns: Its header stamp (the region's ``stamp_ns``).
+        grid_stamp_ns: Its ``source_stamp`` — the world data's capture time, which is the
+            region's ``stamp_ns`` and its freeze clock.
         carried: The held, loaded payload the surface is measured under (posed in the
             grid frame), or ``None``.
         published: Every published payload (held or frozen-released) posed in the grid
@@ -794,6 +795,13 @@ def place_tick(
         search_depth_m: See ``measure_under_payload``.
         now_ns: The node clock.
     """
+    if tracker.live(now_ns=now_ns) is None:
+        tracker.refuse(
+            PlaceRefusal.NO_DECLARATION,
+            "no live dispatch place declaration (no goal in progress)",
+            now_ns=now_ns,
+        )
+        return
     exclude = [p for posed in published.values() for p in posed]
     patch, held = tracker.patch, tracker.payload_key
     if patch is not None and held is not None:
@@ -839,7 +847,6 @@ def place_tick(
         replace(result, region=result.region.model_copy(update={"stamp_ns": grid_stamp_ns})),
         payload_key=(obj.object_id, obj.stamp_ns),
         resolution=grid.resolution,
-        now_ns=now_ns,
     )
 
 
@@ -997,7 +1004,11 @@ class PlaceTargetLeg:
         self.tracker.on_declaration(declaration)
 
     def _on_voxels(self, msg: Any) -> None:
-        stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+        # The world data's capture time, not ``header.stamp`` (production time, which a
+        # bridge republishing an unchanged octree keeps fresh) — the kernel's own
+        # voxel data-age clock. Unset (0) reads as stale in ``_tick``.
+        src = msg.source_stamp
+        stamp_ns = int(src.sec) * 1_000_000_000 + int(src.nanosec)
         try:
             self._grid = (lattice_from_msg(msg), stamp_ns, time.monotonic())
         except ROSConfigError as exc:
@@ -1023,9 +1034,14 @@ class PlaceTargetLeg:
             return
         grid, grid_stamp_ns, received = self._grid
         age_s = time.monotonic() - received
-        if age_s > self._config.grid_max_age_s:
+        data_age_s = (now_ns - grid_stamp_ns) / 1e9
+        max_age_s = self._config.grid_max_age_s
+        if grid_stamp_ns <= 0 or age_s > max_age_s or not 0.0 <= data_age_s <= max_age_s:
             self.tracker.refuse(
-                PlaceRefusal.GRID_STALE, f"newest voxel grid is {age_s:.2f} s old", now_ns=now_ns
+                PlaceRefusal.GRID_STALE,
+                f"newest voxel grid received {age_s:.2f} s ago, its data (source_stamp) "
+                f"{data_age_s:.2f} s old (unset or future = stale)",
+                now_ns=now_ns,
             )
             return
         declared = self.tracker.declaration

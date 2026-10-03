@@ -135,24 +135,28 @@ named place target. Where to set the payload down is the policy's job; the produ
 whether the spot under the carried payload is a surface (`openral_hal._place_target_leg`,
 default off).
 
-1. **ADR-0097 amendment — producer-originated place declaration.** ADR-0097 makes dispatch's
-   declaration the only source of "arrived at the declared destination". Amend: on real hardware
-   the place-target producer may itself declare the surface it **measured directly under the
-   carried payload** in the live voxel map (`surface:under:<object_id>`, scoped to that payload),
-   region attached — the first occupied layer below the payload, within a bounded search depth
+1. **ADR-0097 amendment — producer-measured place region under a goal-scope declaration.**
+   ADR-0097 makes dispatch's declaration the only source of "arrived at the declared
+   destination", and it stays so: the producer never declares on its own. Amend: on real hardware
+   dispatch may declare a goal-scope place phase naming no surface (the runner's
+   `place_approach_enabled`: `target_id = surface`, no object, stamped at goal start, the goal
+   deadline as backstop, retracted on every goal exit), and the place-target producer attaches to
+   it the surface it **measured directly under the carried payload** in the live voxel map
+   (scoped to that payload) as the region — the first occupied layer below the payload, within a bounded search depth
    [0.20 m], covering the payload's footprint grown by one voxel + the extrinsic bound with no
    hole, with headroom for the payload's measured height above it; the region is that one-voxel
    slab of support cells only. It lives only while the patch is held: re-verified on every grid,
    retracted at once on new occupancy above it, frozen at most [2 × the voxel deadline] (the
-   kernel's `place_region_max_age_s`) on a lost view, dropped with the payload. A dispatch
-   declaration, when present, supplies the fields and its optional `search_box` only narrows
-   where the patch may be. Dispatch still never supplies a region; the kernel is unchanged. A
+   kernel's `place_region_max_age_s`, aged on the voxel data's `source_stamp`) on a lost view,
+   dropped with the payload, and with the goal (retraction or expiry; nothing re-arms until a new
+   declaration). A named dispatch declaration wins over the goal-scope one, and its optional
+   `search_box` only narrows where the patch may be (re-checked on every new declaration). Dispatch still never supplies a region; the kernel is unchanged. A
    map-measured region needs no separate "producer-measured" amendment — it is one.
 2. **ADR-0092 D6 amendment:** a proximity-based `MAP_SUPPORT_PROXIMITY` witness (payload's lowest
    primitive within max(1 voxel, extrinsic accuracy bound) of a plane the producer measured in the
    voxel map, its centre over the measured patch, gripper still loaded) is not sensed contact and
    is labelled so; it dies with the region (freeze TTL = the kernel's region age bound,
-   contradiction, retraction, payload change), so it never outlives a measurement the kernel
+   contradiction, goal retraction or expiry, payload change), so it never outlives a measurement the kernel
    would accept. Review Entry 012's co-planar
    headroom at 20 mm cells (41 mm exempt height).
 3. **ADR-0098 offset for joint play** (ship the measured slab lowered by the extrinsic bound + FK
@@ -172,6 +176,6 @@ default off).
 | ID | Hazard | Cause | Mitigations |
 |---|---|---|---|
 | HZ-01xx-13 | The payload is set down on something that cannot bear it (a box lid, a person's forearm, a cantilevered board edge, a soft bag) | The producer measures occupancy, not load-bearing: any flat, fully occupied patch under the payload qualifies, and the policy chooses where to go | The whole footprint (+ one voxel + extrinsic bound) must be occupied on one layer — edges, holes and clutter refuse (`partial_support`); headroom for the payload's measured height is required; the region is a one-voxel slab of the support cells only (it buys the payload a reduced margin against those cells and nothing else); the witness is labelled proximity, not contact and not a proven support; an optional reasoner-named surface narrows it (`outside_hint`); attended operation + hardware E-stop; default off. Residual risk for the WG. |
-| HZ-01xx-14 | The place allowance arms over a surface the payload is only passing over | Self-declaration needs no dispatch intent: any held payload within the search depth of a flat patch arms it | Bounded search depth [0.20 m]; the allowance is the slab only (the reduced margin of ADR-0097's second amendment, never a removal); retracted when the payload moves off the patch; region age ≤ the kernel's bound; the witness needs the payload's bottom within max(1 voxel, extrinsic bound) of the plane. |
-| HZ-01xx-15 | The latched patch outlives the surface (something moved onto it, or it moved) | Latch-and-freeze while the payload and hand occlude the board | Re-verified on every grid: new occupancy in its free volume retracts at once; a lost view freezes at most 2 × the voxel deadline (also the kernel's region age bound, which drops anything older); the region's stamp is the last verifying grid's. Consequence: a set-down must finish within the freeze after the board leaves view. |
+| HZ-01xx-14 | The place allowance arms over a surface the payload is only passing over | The goal-scope declaration names no surface: during a goal, any held payload within the search depth of a flat patch arms it | Only inside a running goal (the runner's goal-scope declaration; retraction/expiry ends it at once and nothing re-arms until a new goal); bounded search depth [0.20 m]; the allowance is the slab only (the reduced margin of ADR-0097's second amendment, never a removal); retracted when the payload moves off the patch; region age ≤ the kernel's bound; the witness needs the payload's bottom within max(1 voxel, extrinsic bound) of the plane. |
+| HZ-01xx-15 | The latched patch outlives the surface (something moved onto it, or it moved) | Latch-and-freeze while the payload and hand occlude the board; a stalled octomap republishing an unchanged grid with a fresh header | Re-verified on every grid: new occupancy in its free volume retracts at once; a lost view freezes at most 2 × the voxel deadline (also the kernel's region age bound, which drops anything older); the region's stamp is the last verifying grid's `source_stamp` (the data's capture time, never the republished header), and a grid whose data is older than the deadline is a lost view. Consequence: a set-down must finish within the freeze after the board leaves view. |
 | HZ-01xx-16 | The patch is mis-sized | The footprint comes from the attachment's measured primitives (a mis-segmented or fallback box) | The jaw-span fallback is conservative (larger); the patch is grown by one voxel + the extrinsic bound; an undersized payload box is the attachment hazard's (§3 of the prerequisite entry), not relaxed here. |

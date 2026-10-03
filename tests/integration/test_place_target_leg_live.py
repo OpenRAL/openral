@@ -7,20 +7,25 @@ on the bimanual OpenArm manifest with ``place_target_enabled``, real tf2 (the Th
 measured ZED mount and the left hand), real ``openral_msgs`` on the wire: an
 ``OccupancyVoxels`` grid with a table top on ``/openral/world_voxels`` and a position
 stall on the left gripper so the bridge attaches its fallback box (no depth frame: the
-conservative jaw-span box). No ``/openral/place_declaration`` is ever published. Every
+conservative jaw-span box). The only ``/openral/place_declaration`` is the runner's
+goal-scope one (``place_approach_enabled``: ``target_id = surface``, no object, no box, no
+region — exactly ``rskill_runner_node._goal_scope_place_declaration``'s). Every
 ``/openral/attachment_state`` goes through a real ``WorldStateAggregator`` and the World
 State node's own ``build_world_state_stamped_msg`` into a real ``safety_kernel_node``
 (the real cell's parameters, attached check on).
 
-Asserts: the payload held beyond the search depth arms nothing (no declaration on the
-envelope, the kernel's ``place_region`` diagnostic ``-``); lowered to within it, the leg
-declares the surface it measured under the payload itself (``surface:under:<object>``,
-scoped to that payload) with a one-voxel slab on the measured plane as the region and the
-kernel arms it; lowered until the box rests on the table → the object carries the
-``map_support_proximity`` witness the kernel accepts; the grid going silent retracts the
-region and the witness within the freeze TTL and the declaration with them; the region's
-age never passes the producer's bound, and the kernel (set here to half of it) drops the
-aging region on its own as ``region_stale``; the aggregator never raises.
+Asserts: with no goal, the payload held over the table arms nothing (no declaration on
+the envelope, the kernel's ``place_region`` diagnostic ``-``); under the goal, held beyond
+the search depth it still arms nothing; lowered to within it, the leg attaches the
+surface it measured under the payload to the goal's declaration (scoped to that payload)
+as a one-voxel slab on the measured plane and the kernel arms it; lowered until the box
+rests on the table → the object carries the ``map_support_proximity`` witness the kernel
+accepts; the goal's retraction ends the region and the witness at once and nothing
+re-arms while the payload stays held over the table; a new goal re-measures and re-arms
+both; a stalled octomap (grids still arriving with a fresh ``header.stamp`` but the same
+old ``source_stamp``) ages the region and the witness out on the data's age — never past
+the producer's bound, and the kernel (set here to half of it) drops the aging region on
+its own as ``region_stale``; the aggregator never raises.
 
 Gated on ``OPENRAL_TEST_ROS_LIVE=1``. Locally::
 
@@ -69,7 +74,7 @@ def _wait_until(predicate: Any, *, timeout_s: float = 5.0) -> bool:
     return False
 
 
-def _grid(stamp: Any, *, face: bool) -> Any:
+def _grid(stamp: Any, *, face: bool, source: Any = None) -> Any:
     """The table's one cell layer (centres 1 cm under the face) when ``face``, else empty."""
     from openral_msgs.msg import OccupancyVoxels
 
@@ -85,7 +90,7 @@ def _grid(stamp: Any, *, face: bool) -> Any:
     msg = OccupancyVoxels()
     msg.header.frame_id = _BASE
     msg.header.stamp = stamp
-    msg.source_stamp = stamp
+    msg.source_stamp = stamp if source is None else source
     msg.origin.x, msg.origin.y, msg.origin.z = _ORIGIN
     msg.orientation.w = 1.0
     msg.resolution = _RES
@@ -94,7 +99,7 @@ def _grid(stamp: Any, *, face: bool) -> Any:
     return msg
 
 
-def test_place_target_leg_measures_declares_attests_and_retracts() -> None:
+def test_place_target_leg_measures_attests_ages_out_and_retracts_under_the_goal() -> None:
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
     world_state_ros = pytest.importorskip("openral_world_state_ros.lifecycle_node")
@@ -115,6 +120,7 @@ def test_place_target_leg_measures_declares_attests_and_retracts() -> None:
         VisionAttachmentConfig,
     )
     from openral_msgs.msg import AttachmentState, OccupancyVoxels, WorldStateStamped
+    from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
     from openral_world_state import WorldStateAggregator
     from rcl_interfaces.msg import Log
     from rclpy.executors import MultiThreadedExecutor
@@ -226,6 +232,7 @@ def test_place_target_leg_measures_declares_attests_and_retracts() -> None:
                 "loaded": False,
                 "bottom": _FACE_Z + 0.30,
                 "box_in_link": np.zeros(3),  # the attachment's pose_in_link, once attached
+                "source": None,  # a frozen source_stamp (stalled octree), else fresh
             }
 
             def publish_hand() -> None:
@@ -274,8 +281,31 @@ def test_place_target_leg_measures_declares_attests_and_retracts() -> None:
             def publish_grid() -> None:
                 if state["grid"]:
                     stamp = peer.get_clock().now()
-                    grid_stamps.append(int(stamp.nanoseconds))
-                    voxel_pub.publish(_grid(stamp.to_msg(), face=state["face"]))
+                    source = state["source"]  # a stalled octree: the data stamp is frozen
+                    if source is None:
+                        grid_stamps.append(int(stamp.nanoseconds))
+                    voxel_pub.publish(_grid(stamp.to_msg(), face=state["face"], source=source))
+
+            declaration_pub = peer.create_publisher(
+                PlaceDeclarationMsg, "/openral/place_declaration", latched
+            )
+            goal = PlaceDeclaration(  # rskill_runner_node._goal_scope_place_declaration
+                target_id="surface",
+                rskill_id="openral/itest-place",
+                trace_id="itest",
+                timeout_s=60.0,
+                stamp_ns=0,
+            )
+
+            goal_stamp = [0]
+
+            def declare(*, active: bool) -> None:
+                """Arm (stamped now, as at goal start) or retract the goal's declaration."""
+                if active:
+                    goal_stamp[0] = int(peer.get_clock().now().nanoseconds)
+                msg = PlaceDeclarationMsg()
+                goal.model_copy(update={"stamp_ns": goal_stamp[0], "active": active}).fill_idl(msg)
+                declaration_pub.publish(msg)
 
             bridge.setup()
             node.create_timer(1.0 / 30.0, feed)
@@ -302,26 +332,38 @@ def test_place_target_leg_measures_declares_attests_and_retracts() -> None:
                 return [line for line in logs if "place_target" in line]
 
             try:
-                # ── 1. Held high above the table: nothing is declared. ──────────
+                # ── 0. No goal: over the table, nothing arms. ───────────────────
                 state["loaded"] = True  # ATTACH → the fallback box (no depth frame)
                 assert _wait_until(
                     lambda: latest() is not None and len(latest().objects) == 1, timeout_s=10.0
                 ), f"no payload on the envelope; {place_lines()}"
+                payload = AttachedCollisionObject.from_idl(latest().objects[0])
+                state["box_in_link"] = np.asarray(payload.pose_in_link.xyz)
+                state["bottom"] = _FACE_Z + 0.10
+                assert _wait_until(
+                    lambda: any("reason=no_declaration" in line for line in place_lines()),
+                    timeout_s=5.0,
+                ), place_lines()
+                time.sleep(1.0)  # two measurement periods over a measurable table
+                assert not latest().place_declaration_valid, "no goal, no allowance"
+
+                # ── 1. Goal declared, held high above the table: no region. ──────
+                state["bottom"] = _FACE_Z + 0.30
+                declare(active=True)
                 assert _wait_until(
                     lambda: any("reason=no_surface" in line for line in place_lines()),
                     timeout_s=5.0,
                 ), place_lines()
-                assert not latest().place_declaration_valid, "nothing measured, nothing declared"
+                assert latest().place_declaration_valid and not region_valid()
                 assert _wait_until(lambda: diagnostics.get("place_region") == "-", timeout_s=5.0)
 
-                # ── 2. Lowered over the table: the leg declares what it measured. ─
-                payload = AttachedCollisionObject.from_idl(latest().objects[0])
-                state["box_in_link"] = np.asarray(payload.pose_in_link.xyz)
+                # ── 2. Lowered over the table: the region rides the goal's declaration.
                 state["bottom"] = _FACE_Z + 0.10
                 assert _wait_until(region_valid, timeout_s=5.0), place_lines()
                 declared = latest().place_declaration
-                target = f"surface:under:{payload.object_id}"
-                assert declared.target_id == target
+                target = "surface"
+                assert declared.target_id == target, "the goal's own target"
+                assert declared.stamp_ns == goal_stamp[0], "the goal's own stamp"
                 assert declared.object_id == payload.object_id, "scoped to the carried payload"
                 region = PlaceRegion.from_idl(declared.region)
                 assert region.frame_id == _BASE
@@ -330,7 +372,7 @@ def test_place_target_leg_measures_declares_attests_and_retracts() -> None:
                 assert region.pose.xyz[2] == pytest.approx(_FACE_Z - _RES / 2)
                 assert region.pose.xyz[0] == pytest.approx(0.45, abs=_RES)
                 assert region.pose.xyz[1] == pytest.approx(0.0, abs=_RES)
-                assert region.stamp_ns in grid_stamps, "region stamp is not a grid stamp"
+                assert region.stamp_ns in grid_stamps, "region stamp is not a grid data stamp"
                 assert "map_measured_support:plane_z=0.310" in region.evidence_ref
                 assert latest().objects[0].support_contact_valid is False
                 assert _wait_until(
@@ -361,8 +403,44 @@ def test_place_target_leg_measures_declares_attests_and_retracts() -> None:
                     timeout_s=5.0,
                 ), "the kernel did not accept the witness"
 
-                # ── 4. The grid stops: region, witness and declaration retracted. ─
-                state["grid"] = False
+                # ── 4. The goal ends (retraction): region and witness die at once, and
+                # nothing re-arms while the payload stays held on the table. ───────
+                declare(active=False)
+                assert _wait_until(
+                    lambda: (
+                        not latest().place_declaration_valid
+                        and not latest().objects[0].support_contact_valid
+                    ),
+                    timeout_s=2.0,
+                ), place_lines()
+                state["bottom"] = _FACE_Z + 0.10  # measurable again, over the same table
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline:
+                    msg = latest()
+                    assert not msg.place_declaration_valid, "the retraction re-armed"
+                    assert not msg.objects[0].support_contact_valid, "the witness re-armed"
+                    time.sleep(0.05)
+                assert _wait_until(lambda: diagnostics.get("place_region") == "-", timeout_s=5.0), (
+                    diagnostics
+                )
+                # ── 5. A new goal: re-measured, re-armed, and a new witness. ─────
+                declare(active=True)
+                assert _wait_until(region_valid, timeout_s=5.0), place_lines()
+                assert latest().place_declaration.stamp_ns == goal_stamp[0]
+                state["bottom"] = _FACE_Z + 0.004
+                assert _wait_until(
+                    lambda: latest().objects and latest().objects[0].support_contact_valid,
+                    timeout_s=5.0,
+                ), place_lines()
+
+                # ── 6. The octree stalls: grids keep arriving with a fresh header but
+                # the same old source_stamp. The payload is lifted back over the patch
+                # first, so every support cell is in view and only the data's age (never
+                # the republished header) can retire the region. ─────────────────────
+                state["bottom"] = _FACE_Z + 0.10
+                time.sleep(1.2)  # two measurement ticks re-verify the patch in view
+                assert region_valid(), place_lines()
+                state["source"] = peer.get_clock().now().to_msg()
                 bound_ns = int(2 * VisionAttachmentConfig().grid_max_age_s * 1e9)
 
                 def aged_within_bound() -> bool:
@@ -375,20 +453,22 @@ def test_place_target_leg_measures_declares_attests_and_retracts() -> None:
                         return False
                     return True
 
-                assert _wait_until(aged_within_bound, timeout_s=5.0), "region outlived the grid"
+                assert _wait_until(aged_within_bound, timeout_s=5.0), (
+                    "region outlived the stalled data"
+                )
+                assert any("grid_stale:" in line for line in place_lines()), place_lines()
                 assert any("reason=freeze_ttl" in line for line in place_lines()), place_lines()
                 assert "reason=region_stale" in log_path.read_text(errors="replace"), (
                     "the kernel never dropped the aging region on its own bound"
                 )
-                assert _wait_until(lambda: not latest().place_declaration_valid, timeout_s=2.0), (
-                    "the self-declaration outlived its region"
-                )
+                assert latest().place_declaration_valid, "the goal's declaration stays"
                 assert _wait_until(
                     lambda: not latest().objects[0].support_contact_valid, timeout_s=2.0
                 ), "witness outlived the region"
                 assert _wait_until(lambda: diagnostics.get("place_region") == "-", timeout_s=5.0), (
                     diagnostics
                 )
+
                 assert aggregator_errors == []
             finally:
                 with suppress(Exception):
