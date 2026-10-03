@@ -214,22 +214,6 @@ def _support_along(
     return float(shape.radius_m + 0.5 * shape.length_m * abs(float(rot[:, 2] @ n)))
 
 
-def _posed_primitives(
-    obj: AttachedCollisionObject, t_base_link: NDArray[np.float64]
-) -> list[tuple[AttachedCollisionPrimitive, NDArray[np.float64]]]:
-    """Each primitive with its 4x4 pose in the frame ``t_base_link`` maps into."""
-    p = obj.pose_in_link
-    t_base_obj = t_base_link @ homogeneous_from_quat_xyz(p.xyz, p.quat_xyzw)
-    return [
-        (
-            prim,
-            t_base_obj
-            @ homogeneous_from_quat_xyz(prim.pose_in_object.xyz, prim.pose_in_object.quat_xyzw),
-        )
-        for prim in obj.primitives
-    ]
-
-
 def _inside_any(points: NDArray[np.float64], posed: Posed, *, pad: float) -> NDArray[np.bool_]:
     """Points inside any primitive's local AABB grown by ``pad`` (a conservative hull)."""
     hit = np.zeros(len(points), dtype=bool)
@@ -442,8 +426,10 @@ def payload_witness(
     Returns:
         ``(witness, detail)``; ``witness`` is ``None`` when the payload is not there.
     """
+    from openral_hal.vision_attachment_bridge import primitive_poses  # circular at import
+
     n = np.array([0.0, 0.0, 1.0])
-    posed = _posed_primitives(obj, t_base_link)
+    posed = list(zip(obj.primitives, primitive_poses(obj, t_base_link), strict=True))
     lowest = min(
         float(t[2, 3] - patch.plane_z) - _support_along(prim, t[:3, :3], n) for prim, t in posed
     )
@@ -1025,6 +1011,8 @@ class PlaceTargetLeg:
     # ── measurement ──────────────────────────────────────────────────────────
 
     def _tick(self) -> None:
+        from openral_hal.vision_attachment_bridge import primitive_poses  # circular at import
+
         now_ns = self._now_ns()
         self.tracker.live(now_ns=now_ns)
         if self._grid is None:
@@ -1053,7 +1041,11 @@ class PlaceTargetLeg:
                 continue
             t = self._pose(obj, grid.frame_id)
             # An unposed payload is excluded from nothing (fail-closed) and measures nothing.
-            posed = _posed_primitives(obj, t) if t is not None else []
+            posed = (
+                list(zip(obj.primitives, primitive_poses(obj, t), strict=True))
+                if t is not None
+                else []
+            )
             published[(obj.object_id, obj.stamp_ns)] = posed
             if (
                 carried is None
