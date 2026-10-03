@@ -331,6 +331,30 @@ Run these tests in order:
    own payload once it closes on the object in view. Record the link, the cell and the
    distance. This is **not** an attached-payload-vs-voxels check: that check is off on real
    hardware.
+
+   The committed scene names no grasp target: what to pick is task knowledge. With the
+   reasoner on it names the target and perception grounds the search box
+   ([design §2.2](../../reference/real-pick-place-design.md)). With the reasoner off, as
+   here, copy the scene to a local file and add a direct-dispatch block. Example for Thor
+   (candidate numbers read off the live voxel map, 2026-10-03, arms at rest, `openarm_base`
+   frame, 20 mm cells): the bench top is one cluster whose face sits at z = -0.32; four
+   item-sized clusters stand on it at x 0.35-0.45 (y -0.29, -0.15, +0.09, +0.23). A search
+   box must cover ONE item or the producer refuses it as AMBIGUOUS; this one covers the item
+   at y = -0.15 (25 cells), with its bottom face on the bench top. Measure before you use it:
+   the box only seeds perception, but the fixture face below it arms the place allowance
+   once it is surveyed and verified.
+
+   ```yaml
+   grasp_declaration:
+     target_id: cell:restock_item
+     contact_links: [openarm_left_finger_pair]
+     timeout_s: 70.0
+     stamp_ns: 0
+     search_box:
+       frame_id: openarm_base
+       pose: {xyz: [0.37, -0.15, -0.24], quat_xyzw: [0.0, 0.0, 0.0, 1.0], frame_id: openarm_base}
+       half_extents: [0.06, 0.08, 0.08]   # bottom face z = -0.32 = the bench top
+   ```
 4. **Camera unplug.** During a dispatch, unplug the ZED. Expect `/openral/world_voxels` to
    stop about 1 s after `/octomap_binary`, and the kernel to drop the next chunks with
    `DROP_VOXEL_UNAVAILABLE` within ~2.0 s of the last cloud (a drop, not a latch). Motion or

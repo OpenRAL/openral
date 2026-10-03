@@ -60,13 +60,19 @@ string[] frame_ids
 
 # Detected objects (object lift) — parallel arrays keyed by index.
 # Positions are pose.xyz in `detected_object_frame` (e.g. "map"); track ids are
-# -1 when unset. 3D bbox is intentionally omitted from the wire (center + frame
-# is what consumers need; bbox_3d stays in the in-process WorldState).
+# -1 when unset. The lift's axis-aligned 3D box (`DetectedObject.bbox_3d`) rides
+# the bbox arrays: min/max corners in the same frame, `bbox_valid[i]` false when
+# object i has none. The reasoner seeds a named grasp target's search box from it
+# (real pick-and-place design §2.2). Empty bbox arrays (an older publisher) = no
+# boxes.
 string[]              detected_object_labels
 float32[]             detected_object_confidences
 geometry_msgs/Point[] detected_object_positions
 int32[]               detected_object_track_ids
 string                detected_object_frame
+bool[]                detected_object_bbox_valid
+geometry_msgs/Point[] detected_object_bbox_min
+geometry_msgs/Point[] detected_object_bbox_max
 
 # Objects carried by robot links. Each object is removed from world occupancy
 # only while the equivalent attached geometry is present here.

@@ -4,11 +4,13 @@ Field-for-field mirror of ``PlaceDeclaration``: dispatch names the target and
 the gripper contact links, a producer measures the region, the kernel bounds it
 (that consumer lands separately and defaults off). These tests pin the schema
 bounds, the liveness rule on both clock domains, the scene-may-not-supply-a-
-region rule against the real OpenArm cell scene, and the aggregator's atomic
-storage beside the attachment set.
+region rule against an OpenArm direct-dispatch scene, and the aggregator's atomic
+storage beside the attachment set. The committed cell scene carries no grasp
+declaration (the reasoner names targets; design §2.2), so the scene rules run on
+``tests/unit/fixtures/scenes/openarm_direct_dispatch_grasp.yaml``.
 
-Real fixtures throughout (``scenes/deploy/``, ``robots/openarm/``) — CLAUDE.md
-§1.11.
+Real fixtures throughout (``tests/unit/fixtures/scenes/``, ``robots/openarm/``) —
+CLAUDE.md §1.11.
 """
 
 from __future__ import annotations
@@ -32,7 +34,10 @@ from openral_world_state import WorldStateAggregator
 from pydantic import ValidationError
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_OPENARM_SCENE = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
+_OPENARM_SCENE = (
+    _REPO_ROOT / "tests" / "unit" / "fixtures" / "scenes" / "openarm_direct_dispatch_grasp.yaml"
+)
+_CELL_SCENE = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
 _OPENARM_ROBOT = _REPO_ROOT / "robots" / "openarm" / "robot.yaml"
 _FINGERS = ("openarm_left_finger_pair", "openarm_right_finger_pair")
 # Simulator time, the domain the runner stamps in under `use_sim_time`.
@@ -143,7 +148,12 @@ def _scene_dict() -> dict[str, Any]:
     return copy.deepcopy(loaded)
 
 
-def test_the_openarm_cell_scene_declares_its_grasp_target() -> None:
+def test_the_committed_cell_scene_carries_no_task_knowledge() -> None:
+    """What to pick is named by the reasoner and grounded by perception, never the scene."""
+    assert DeployScene.from_yaml(str(_CELL_SCENE)).grasp_declaration is None
+
+
+def test_a_direct_dispatch_scene_declares_its_grasp_target() -> None:
     scene = DeployScene.from_yaml(str(_OPENARM_SCENE))
     declaration = scene.grasp_declaration
     assert declaration is not None

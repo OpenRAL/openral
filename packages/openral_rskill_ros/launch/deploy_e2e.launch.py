@@ -1699,6 +1699,9 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # Tell the reasoner which deploy path it is on so its
         # action-mode palette gate matches the HAL this launch brings up.
         "hal_mode": hal_mode,
+        # The scene's robot unit; its surveyed fixtures are the LLM's place_target choices
+        # ($OPENRAL_ROBOT_UNIT, inherited by the reasoner process, still wins).
+        "robot_unit": scene_unit or "",
     }
     if lifecycle_peer_node_ids:
         reasoner_params["lifecycle_peer_node_ids"] = lifecycle_peer_node_ids

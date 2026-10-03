@@ -41,8 +41,10 @@ from openral_core.schemas import (
     DeviceInfo,
     EmbodimentKind,
     EndEffectorSpec,
+    ExecuteRskillTool,
     FrameEncoding,
     GraspDeclaration,
+    GraspTargetRef,
     GripperConvention,
     HalConfig,
     HalEntrypoints,
@@ -55,6 +57,7 @@ from openral_core.schemas import (
     OccupancyGridRef,
     PhysicsBackend,
     PlaceRegion,
+    PlaceTargetRef,
     Pose6D,
     QuantizationBackend,
     QuantizationConfig,
@@ -341,6 +344,24 @@ _grasp_declaration_st = st.builds(
     stamp_ns=_ns,
     active=st.booleans(),
     region=st.none() | _grasp_region_st,
+)
+
+_grasp_target_ref_st = st.builds(
+    GraspTargetRef,
+    label=_name,
+    object_id=st.none() | _name,
+    contact_links=st.lists(_name, max_size=3),
+)
+_place_target_ref_st = st.one_of(
+    st.builds(PlaceTargetRef, fixture_id=_name.map(lambda n: f"cell:{n}")),
+    st.builds(PlaceTargetRef, place_node_id=_name),
+)
+_execute_rskill_tool_st = st.builds(
+    ExecuteRskillTool,
+    rskill_id=_name,
+    prompt=st.text(max_size=16),
+    grasp_target=st.none() | _grasp_target_ref_st,
+    place_target=st.none() | _place_target_ref_st,
 )
 
 _world_state_st = st.builds(
@@ -650,6 +671,27 @@ def test_fuzz_detected_object(instance: DetectedObject) -> None:
 def test_fuzz_world_state(instance: WorldState) -> None:
     """WorldState round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(WorldState, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_grasp_target_ref_st)
+def test_fuzz_grasp_target_ref(instance: GraspTargetRef) -> None:
+    """GraspTargetRef round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(GraspTargetRef, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_place_target_ref_st)
+def test_fuzz_place_target_ref(instance: PlaceTargetRef) -> None:
+    """PlaceTargetRef round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(PlaceTargetRef, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_execute_rskill_tool_st)
+def test_fuzz_execute_rskill_tool_with_targets(instance: ExecuteRskillTool) -> None:
+    """ExecuteRskillTool with named targets round-trips and validates against its schema."""
+    _round_trip_and_validate(ExecuteRskillTool, instance)
 
 
 @_FUZZ_SETTINGS

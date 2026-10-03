@@ -153,9 +153,9 @@ _TALL_REGION_HALF = (0.03, 0.05, 0.04)
 #: Order = the manifest's actuated joints (left 1-7, left_gripper, right 1-7, right_gripper).
 _Q = [0.0] * 16
 
-_TARGET_ID = "cell:restock_box"  # the committed openarm_real_world_voxels scene's target
+_TARGET_ID = "cell:restock_box"  # tests/unit/fixtures/scenes/openarm_direct_dispatch_grasp.yaml
 _RSKILL_ID = "openral/grasp-target-band"
-_TIMEOUT_S = 70.0  # the committed scene's grasp_declaration.timeout_s
+_TIMEOUT_S = 70.0  # that fixture scene's grasp_declaration.timeout_s
 
 _STOP_LINE = re.compile(
     r"safety\.collision kind=world a=(\S+) b=(\S+) .*"

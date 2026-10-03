@@ -237,3 +237,49 @@ def test_a_malformed_scene_declaration_is_refused_not_guessed() -> None:
         _run_goal(executor, runtime.skill_runner_node)
         _spin_for(executor, 0.3)
     assert seen == []
+
+
+def test_a_reasoner_grounded_goal_declaration_reaches_the_wire_with_its_search_box() -> None:
+    """The reasoner path: no scene block, the goal carries what the reasoner grounded.
+
+    The declaration is the real grounding output for one lifted detection; the runner
+    arms it with the seed box intact and no region, then retracts it at goal end.
+    """
+    from openral_core import DetectedObject, GraspTargetRef, Pose6D
+    from openral_reasoner.grounding import ground_grasp_target
+
+    box = DetectedObject(
+        label="box",
+        confidence=0.9,
+        pose=Pose6D(
+            xyz=(0.40, -0.15, -0.10), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="openarm_base"
+        ),
+        bbox_3d=(0.37, -0.18, -0.13, 0.43, -0.12, -0.07),
+    )
+    grounded = ground_grasp_target(
+        GraspTargetRef(label="box"),
+        live_objects=[box],
+        scene_graph=None,
+        base_frame="openarm_base",
+        default_contact_links=_FINGERS,
+        patience_s=0.4,
+        pad_m=0.035,
+    )
+
+    def _fill(goal: Any) -> None:
+        goal.grasp_declaration_valid = True
+        grounded.fill_idl(goal.grasp_declaration)
+
+    with _harness("") as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node, fill_goal=_fill)
+        _spin_for(executor, 0.3)
+
+    active = [msg for msg in seen if msg.active]
+    assert len(active) == 1
+    assert active[0].target_id == "obj:box"
+    assert active[0].rskill_id == "openral/test-place-declaration-skill"
+    assert not active[0].region_valid, "only the producer measures a region"
+    assert active[0].search_box_valid
+    assert active[0].search_box.frame_id == "openarm_base"
+    assert active[0].search_box.half_extents.x == pytest.approx(0.03 + 0.035)
+    assert not seen[-1].active, "the goal ended without retracting its grasp declaration"

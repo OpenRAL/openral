@@ -144,32 +144,7 @@ runtime:
       openarm_left_link7: openarm_left_ee_base_link
       openarm_right_link7: openarm_right_ee_base_link
 
-# Grasp-phase declaration for direct dispatch (docs/reference/real-pick-place-design.md
-# §2.1). Wire only: it names the target and the finger links the exemption would be scoped
-# to. No region, ever — a scene cannot measure the target (refused by DeployScene); the
-# producer that will measure it, and the kernel consumer (feature parameter, default off),
-# land separately. Until both do, this exempts nothing: the runner arms and retracts it
-# per goal and nothing on the real graph reads it.
-grasp_declaration:
-  target_id: "cell:restock_box"
-  object_id: ""
-  contact_links:
-    - openarm_left_finger_pair
-    - openarm_right_finger_pair
-  timeout_s: 70.0
-  stamp_ns: 0
-
-# Candidate pre-grasp SEARCH BOX, read off the live voxel map on Thor (2026-10-03, arms at rest,
-# `openarm_base` frame, 20 mm cells): the bench top is one cluster whose face sits at
-# z = -0.32; four item-sized clusters stand on it at x 0.35-0.45 (y -0.29, -0.15, +0.09, +0.23).
-# A search box must cover ONE item or the producer refuses as AMBIGUOUS; this one covers the
-# item at y = -0.15 (25 cells). Measure before enabling: the box is a seed only, but the
-# fixture face below it (units/thor.yaml) arms the place allowance once verified.
-#   grasp_declaration:
-#     target_id: cell:restock_item
-#     contact_links: [openarm_left_finger_pair]
-#     timeout_s: 70.0
-#     search_box:
-#       frame_id: openarm_base
-#       pose: {xyz: [0.37, -0.15, -0.24], rpy: [0.0, 0.0, 0.0]}   # bottom face = bench top
-#       half_extents: [0.06, 0.08, 0.08]
+# No grasp_declaration here on purpose: what to pick is task knowledge, not cell posture.
+# With the reasoner on, it names the target and perception grounds the search box
+# (docs/reference/real-pick-place-design.md §2.2). For an attended direct dispatch, copy
+# this scene and add the block (runbook step 4 has the Thor example).

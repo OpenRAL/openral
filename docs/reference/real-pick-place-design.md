@@ -118,11 +118,31 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
 
 ### 2.2 Target perception before the grasp
 
-- **Prompt:** the scene names the target (`pick_declaration{target_id, search_box}`, mirroring
-  `place_declaration`); the search box only *seeds* perception. The exemption region is always the
-  measured one — a scene may never supply it (HZ-0097-2/4 precedent, `schemas.py` L10024-10043).
-  An open-vocabulary detector (OmDet locator, Apache-2.0, already deployable) can confirm or fill
-  the seed later; policy attention and LLM-named regions are rejected as safety inputs.
+- **Prompt (built): the reasoner names, perception grounds, the producer measures.** What to
+  pick is task knowledge, so it lives in the reasoner, not in a scene. `ExecuteRskillTool` carries
+  `grasp_target: GraspTargetRef{label, object_id?, contact_links}` and
+  `place_target: PlaceTargetRef{fixture_id | place_node_id}`; the system prompt lists the robot
+  unit's fixtures as the place choices. At dispatch the reasoner (`openral_reasoner.grounding`,
+  called from `ReasonerNode._dispatch_execute_rskill`) grounds them from perception it already
+  holds: `object_id` → the recalled spatial-memory node's 3D box; else the ONE live detection on
+  `/openral/world_state_slow` carrying the label — the world-state lift's (`VoxelFrustumLifter`)
+  axis-aligned box, which `WorldStateStamped` now carries (`detected_object_bbox_*`). That box,
+  padded by one voxel + the extrinsic accuracy bound sideways and upward (never downward: the
+  producer reads its bottom face as the support plane, HZ-01xx-6) and gravity-aligned in
+  `openarm_base`,
+  becomes `GraspDeclaration.search_box`; the fixture id becomes `PlaceDeclaration.target_id`. No
+  match, more than one match without `object_id`, a box outside the base frame, or an unknown
+  fixture refuses the dispatch (no goal sent) and tells the LLM to disambiguate. Both
+  declarations ride the `ExecuteRskill` goal; the runner stamps them and strips any region, and
+  the producers below measure. The search box only *seeds* perception: the exemption region is
+  always the measured one, never named (HZ-0097-2/4 precedent), so the kernel's trust boundary
+  is unchanged — policy attention and LLM-named *regions* stay rejected as safety inputs.
+  *Direct dispatch (reasoner off):* `DeployScene.grasp_declaration` (with an optional
+  `search_box`) remains for an attended run; the committed cell scene carries none.
+  *Limits:* `locate_in_view`'s one-shot 2D answer is not lifted, so the label must be one the
+  continuous detector publishes; the lift must run in the base frame (`object_lift_map_frame`)
+  on a fixed-base cell without a `map` frame; a recalled free-space place (`place_node_id`) is
+  refused until a free-space place producer exists.
 - **Measurement:** occupied voxels inside the search box → cluster above the support plane →
   cluster top-centre projected into the ZED left image as SAM 2.1's positive point → mask (eroded
   2-3 px) → masked ZED depth → base-frame cloud → robust PCA OBB (reuse `_pca_basis` /
@@ -132,7 +152,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   cross-check, tracking gate; tests in `tests/unit/test_grasp_target.py`). *ROS wiring landed,
   default off:* `openral_hal._grasp_target_leg`, owned by `VisionAttachmentBridge`
   (`vision_attachment_grasp_target_enabled`): the search box is `GraspDeclaration.search_box`
-  (optional, scene-supplied, passed through by the runner; the support plane is its bottom face),
+  (optional, grounded by the reasoner or supplied by a direct-dispatch scene, passed through by
+  the runner; the support plane is its bottom face),
   re-measured at `grasp_target_rate_hz` (3 Hz), the region filled onto every attachment
   publication; contradicting evidence retracts at once, a lost view freezes the last accepted region
   for `grasp_target_freeze_s` (2 s) from its depth stamp. Tests: `tests/unit/test_grasp_target_leg.py`,
