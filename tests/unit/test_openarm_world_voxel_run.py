@@ -144,25 +144,52 @@ def _committed_scene() -> dict[str, object]:
     return doc
 
 
+def _merge(doc: dict[str, object], patch: dict[str, object]) -> None:
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(doc.get(key), dict):
+            _merge(doc[key], value)  # type: ignore[arg-type]
+        else:
+            doc[key] = value
+
+
 @pytest.mark.parametrize(
     ("patch", "reason"),
     [
         ({"robot_id": "so101"}, "robot_id is 'so101'"),
         ({"runtime": {"enable_octomap_kernel_check": False}}, "is not true"),
         ({"robot_unit": "orin"}, "robot_unit 'orin' is not OPENRAL_ROBOT_UNIT 'thor'"),
+        ({"runtime": {"enable_octomap": False}}, "at runtime.enable_octomap"),
+        (
+            {"runtime": {"robot_self_filter_padding_m": 0.10}},
+            "at runtime.robot_self_filter_padding_m",
+        ),
+        ({"runtime": {"grasp_allowance_enabled": True}}, "at runtime.grasp_allowance_enabled"),
+        (
+            {"extra_allowed_collision_pairs": [["openarm_left_link7", "openarm_right_link7"]]},
+            "at extra_allowed_collision_pairs",
+        ),
+        (
+            {
+                "safety": {
+                    "workspace_box_min_xyz": [-5.0, -5.0, -5.0],
+                    "workspace_box_max_xyz": [5.0, 5.0, 5.0],
+                }
+            },
+            "at safety",
+        ),
+        ({"drivers": []}, "at drivers"),
+        ({"hal": {"defaults": {"viewer_enabled": False}}}, "at hal"),
+        ({"scene": {"id": "openarm_other"}}, "at scene.id"),
     ],
 )
 def test_the_run_script_refuses_a_local_scene_that_weakens_the_graph(
     patch: dict[str, object], reason: str
 ) -> None:
-    """A copied scene runs the same gates and must stay OpenArm, kernel check on, same unit."""
+    """A copied scene must parse to the committed scene bar grasp_declaration; anything else
+    it changes (octomap, self-filter padding, allowances, envelope, drivers, HAL) is refused."""
     _skip_unless_ros_and_openral()
     doc = _committed_scene()
-    for key, value in patch.items():
-        if isinstance(value, dict):
-            doc[key] = {**doc[key], **value}  # type: ignore[dict-item]
-        else:
-            doc[key] = value
+    _merge(doc, patch)
     path = _local_scene("weak", doc)
     try:
         proc = _run_script(_gated("thor"), "--scene", str(path))
