@@ -22,9 +22,6 @@
     "far": 5000
    },
    "topics": {
-    "/robot_description": {
-     "visible": true
-    },
     "/map": {
      "visible": true
     },
@@ -49,7 +46,23 @@
      "visible": true
     }
    },
-   "layers": {}
+   "layers": {
+    "openral-urdf": {
+     "visible": true,
+     "frameLocked": true,
+     "label": "Robot (URDF)",
+     "instanceId": "openral-urdf",
+     "layerId": "foxglove.Urdf",
+     "sourceType": "topic",
+     "url": "",
+     "filePath": "",
+     "parameter": "",
+     "topic": "/robot_description",
+     "framePrefix": "",
+     "displayMode": "auto",
+     "fallbackColor": "#ffffff"
+    }
+   }
   },
   "Image!cam_0": {
    "imageMode": {
@@ -127,7 +140,23 @@
      "pointSize": 0.04
     }
    },
-   "layers": {}
+   "layers": {
+    "openral-urdf": {
+     "visible": true,
+     "frameLocked": true,
+     "label": "Robot (URDF)",
+     "instanceId": "openral-urdf",
+     "layerId": "foxglove.Urdf",
+     "sourceType": "topic",
+     "url": "",
+     "filePath": "",
+     "parameter": "",
+     "topic": "/robot_description",
+     "framePrefix": "",
+     "displayMode": "auto",
+     "fallbackColor": "#ffffff"
+    }
+   }
   },
   "Plot!joints": {
    "paths": [
