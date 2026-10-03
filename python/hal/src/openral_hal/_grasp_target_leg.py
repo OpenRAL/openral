@@ -104,9 +104,12 @@ too and whichever hand let go; the bridge, which owns the set, calls
 ``GraspTargetLeg.on_attachment_changed`` before every publish whose set lost or
 replaced an object or is empty, so the other hand's pre-handover arming drops its region,
 takes a fresh identity in that very snapshot, and accepts only a region measured after
-the change — unless that hand is mid-grasp and the set stays non-empty (no kernel
-retirement there; refreshing would fail the grasp). **Multi-pick per goal**: once a hand is handed
-over nothing re-arms until that pick completes. The bridge's DETACH on the hand
+the change — except that a hand mid-grasp (an ATTACH being resolved: a segmentation in
+flight, or jaws loaded with nothing latched) keeps its identity when the set stays
+non-empty (no kernel retirement there; refreshing would fail the grasp), though it still
+drops its region: that ATTACH is handed over with no region (fail closed).
+**Multi-pick per goal**: once a hand is handed over nothing re-arms until that pick
+completes. The bridge's DETACH on the hand
 (``on_detach``, with the release window's frozen record) drops its region at once
 while keeping the handover, so nothing re-latches it; once the hand's legs hold
 nothing (no attachment, release window, pending segmentation or loaded trigger —
@@ -120,13 +123,19 @@ pick's identity at its release and never re-arms one it retired (HZ-0115-3). A
 named ``search_box`` wins: no approach detection runs for it, and it stays handed
 over after its pick.
 
-Threading: every entry point here (tick, reply, deadline, declaration) and every bridge
-hook runs under the vision bridge's one re-entrant lock (``VisionAttachmentBridge``
+Threading: every entry point here (tick, reply, deadline, declaration, teardown) and every
+bridge hook runs under the vision bridge's one re-entrant lock (``VisionAttachmentBridge``
 "Threading") — the bridge's ATTACH runs on the HAL's proprio thread, the leg's timers
-and replies on the executor. The tracker's own lock nests strictly inside it. The slow
-work runs outside: the whole-grid voxel scan at grid receipt (``_on_voxels``, cached on
-the lattice), and the reply's mask decode, back-projection and gates (``_measure``),
-whose region is committed only under the generation it was asked under.
+and replies on the executor. The tracker's own lock nests strictly inside it. Every read
+or write of leg, tracker or bridge state (the request in flight and its deadline timer,
+tf2, the depth and grid caches) happens under it; only pure work on a snapshot runs
+outside — the tick's support/seed scan of the grid column (``_seed``) and the reply's mask
+decode, back-projection and gates (``_measure``) — and is committed under the lock only
+while the tracker generation is the one snapshotted (and, for a request, while the leg is
+not torn down: ``teardown`` sets a flag under the lock that ``_tick`` and ``_on_deadline``
+check, so no timer outlives it). The voxel grid is the bridge's (``_on_voxels``: one
+subscription and decode shared with the place leg); its whole-grid occupied-cell scan runs
+on first use and is cached on the lattice.
 """
 
 from __future__ import annotations
@@ -703,26 +712,30 @@ class GraspTargetTracker:
         Args:
             now_ns: The change instant (the node clock).
             emptied: Whether the set is now empty — the kernel's retirement edge.
-            holding: Links of every hand whose legs hold, release or are segmenting a
-                payload. An arming whose hand is among them is mid-grasp and is kept
-                as it is across a change that leaves the set non-empty (the kernel
-                does not retire there; refreshing would fail the grasp). On an
-                emptying change it is refreshed regardless: the kernel retires it, so
-                that grasp hands nothing over (fail closed).
+            holding: Links of every hand with an ATTACH being resolved — a
+                segmentation in flight, or jaws read loaded with nothing latched yet
+                (``GraspTargetLeg._resolving``) — not a carried payload or a release
+                window. An arming whose hand is among them is mid-grasp: across a
+                change that leaves the set non-empty it keeps its identity (the kernel
+                does not retire there; refreshing would fail the grasp) but still
+                drops its region, measured before the change — the ATTACH resolving it
+                is handed over with no region (fail closed). On an emptying change it
+                is refreshed regardless: the kernel retires it, so that grasp hands
+                nothing over (fail closed).
         """
         self._changed_ns = max(self._changed_ns, now_ns)
         if self._handed_over is not None:
             return
         armed = self._armed()
+        self._generation += 1  # a measurement in flight saw the old scene
+        self._region = None
         if not emptied and armed is not None and set(armed.contact_links) & set(holding):
             self._transition(
                 f"kept_mid_grasp:{armed.target_id}",
                 f"grasp target {armed.target_id!r}: the attachment set changed (not emptied) "
-                "while its hand is mid-grasp — arming kept",
+                "while its hand is mid-grasp — identity kept, region dropped",
             )
             return
-        self._generation += 1  # a measurement in flight saw the old scene
-        self._region = None
         held = self._approach
         if held is None:
             if self._minted:
@@ -1197,23 +1210,30 @@ class GraspTargetLeg:
             freeze_s=freeze_s,
             log=lambda line: node.get_logger().info(line),
         )
-        # (lattice, source_stamp ns, monotonic receive time) of the newest grid.
-        self._grid: tuple[VoxelLattice, int, float] | None = None
         self._subs: list[Any] = []
         self._timer: Any = None
         # (future, tracker generation it was asked under) of the request in flight.
         self._inflight: tuple[Any, int] | None = None
         self._deadline_timer: Any = None
+        # Set by ``teardown`` (under the bridge lock): no request or deadline after it.
+        self._torn_down = False
 
     @property
     def _lock(self) -> AbstractContextManager[Any]:
         """The owning bridge's lock: one serialization domain for the bridge and its legs."""
         return self._bridge._lock
 
+    @property
+    def _grid(self) -> tuple[VoxelLattice, int, float] | None:
+        """The bridge's newest grid (``VisionAttachmentBridge._on_voxels``).
+
+        Shared with the place leg: (lattice, ``source_stamp`` ns, monotonic receive time).
+        """
+        return self._bridge._grid
+
     def setup(self) -> None:
-        """Subscribe the declaration and the voxel grid; start the measurement timer."""
+        """Subscribe the declaration; start the measurement timer (the bridge owns the grid)."""
         from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
-        from openral_msgs.msg import OccupancyVoxels
         from rclpy.qos import (
             QoSDurabilityPolicy,
             QoSHistoryPolicy,
@@ -1227,23 +1247,14 @@ class GraspTargetLeg:
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
         )
-        # The safety kernel's own profile for this topic.
-        voxel_qos = QoSProfile(
-            history=QoSHistoryPolicy.KEEP_LAST,
-            depth=1,
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.VOLATILE,
-        )
         declaration_sub = self._node.create_subscription(
             GraspDeclarationMsg,
             "/openral/grasp_declaration",
             self._on_declaration,
             declaration_qos,
         )
-        voxel_sub = self._node.create_subscription(
-            OccupancyVoxels, "/openral/world_voxels", self._on_voxels, voxel_qos
-        )
-        self._subs = [declaration_sub, voxel_sub]
+        self._subs = [declaration_sub]
+        self._torn_down = False
         self._timer = self._node.create_timer(1.0 / self._config.grasp_target_rate_hz, self._tick)
         self._node.get_logger().info(
             f"grasp target leg: rate={self._config.grasp_target_rate_hz:.1f}Hz "
@@ -1257,8 +1268,10 @@ class GraspTargetLeg:
             f"deadline={self._config.deadline_s:.3f}s"
         )
 
+    @_locked
     def teardown(self) -> None:
-        """Destroy every ROS entity; idempotent."""
+        """Destroy every ROS entity; idempotent. No request or deadline timer outlives it."""
+        self._torn_down = True
         self._cancel_deadline()
         self._inflight = None
         if self._timer is not None:
@@ -1293,22 +1306,14 @@ class GraspTargetLeg:
             return
         self.tracker.on_declaration(declaration)
 
-    def _on_voxels(self, msg: Any) -> None:
-        # ``source_stamp``, not ``header.stamp``: the octomap bridge restamps the header
-        # on every republish of a stalled octree; only this says how old the world is.
-        source = msg.source_stamp
-        source_ns = int(source.sec) * 1_000_000_000 + int(source.nanosec)
-        try:
-            lattice = lattice_from_msg(msg)
-        except ROSConfigError as exc:
-            self._grid = None
-            self._node.get_logger().warning(f"grasp target: voxel grid dropped — {exc}")
-            return
-        lattice.occupied_centers()  # the whole-grid scan, here: outside the bridge lock
-        self._grid = (lattice, source_ns, time.monotonic())
-
     def _fresh_grid(self, now_ns: int) -> tuple[VoxelLattice, int]:
-        """The newest grid and its ``source_stamp`` (ns), or a lost-view refusal.
+        """The bridge's newest grid, checked by ``_checked_grid``."""
+        return self._checked_grid(now_ns, self._grid)
+
+    def _checked_grid(
+        self, now_ns: int, entry: tuple[VoxelLattice, int, float] | None
+    ) -> tuple[VoxelLattice, int]:
+        """A grid snapshot ``entry`` and its ``source_stamp`` (ns), or a lost-view refusal.
 
         Two ages: receipt (the kernel's voxel deadline, ``grid_max_age_s``) and the
         world data behind it (``source_stamp``). A grid whose data is older than the
@@ -1316,9 +1321,9 @@ class GraspTargetLeg:
         no later than that data); an unset ``source_stamp`` is unknown age — stale,
         as the kernel treats it.
         """
-        if self._grid is None:
+        if entry is None:
             raise _lost("no_grid", "no /openral/world_voxels grid yet")
-        lattice, source_ns, received = self._grid
+        lattice, source_ns, received = entry
         age = time.monotonic() - received
         if age > self._config.grid_max_age_s:
             raise _lost("grid_stale", f"newest voxel grid is {age:.2f} s old")
@@ -1338,37 +1343,81 @@ class GraspTargetLeg:
     # ── measurement ──────────────────────────────────────────────────────────
 
     def _tick(self) -> None:
-        """One measurement tick: bookkeeping under the bridge lock, the request outside it.
+        """One measurement tick: snapshot under the bridge lock, scan outside, commit under it.
 
-        Approach detection and the arming's state run under the lock; the request (seed,
-        projection, ``SegmentInView``) runs outside it, against the target snapshot.
+        Approach detection, the arming's state and the grid snapshot run under the lock
+        (``_begin_tick``); the support/seed scan of the snapshot's column (pure) runs
+        outside it; the request is committed under the lock (``_commit_request``).
         """
         now_ns = self._now_ns()
-        with self._lock:
-            # A refusal applies to what was measured when it was raised: an arming or
-            # handover meanwhile makes it stale (``refuse(generation=)``).
-            generation = self.tracker.generation
-            if self._inflight is not None:
-                self.tracker.presence_unknown()  # no sample this tick
-                return
-            try:
-                try:
-                    if self._approach_m is not None and self.tracker.wants_approach(now_ns=now_ns):
-                        self._detect_approach(self._approach_m, now_ns, generation)
-                    else:
-                        self.tracker.presence_unknown()
-                    if not self.tracker.wants_measurement(now_ns=now_ns):
-                        return
-                    target, generation = self.tracker.measured()
-                except ROSConfigError as exc:  # an input shape the geometry refuses
-                    raise _contradicted("rejected_inputs", str(exc)) from exc
-            except _Refusal as refusal:
-                self.tracker.presence_unknown()  # e.g. no fresh grid: no sample
-                self._refuse(refusal, now_ns=now_ns, generation=generation)
-                return
+        begun = self._begin_tick(now_ns)
+        if begun is None:
+            return
+        target, generation, grid = begun
+        assert target.search_box is not None  # checked by ``_begin_tick``
         try:
             try:
-                self._request(now_ns, target, generation)
+                seed_point, support_z = self._seed(grid, target.search_box)
+            except ROSConfigError as exc:
+                raise _contradicted("rejected_inputs", str(exc)) from exc
+        except _Refusal as refusal:
+            self._refuse(refusal, now_ns=now_ns, generation=generation)
+            return
+        self._commit_request(now_ns, target, generation, grid, seed_point, support_z)
+
+    @_locked
+    def _begin_tick(self, now_ns: int) -> tuple[GraspDeclaration, int, VoxelLattice] | None:
+        """The tick's bookkeeping; ``(target, generation, grid)`` to measure, or ``None``."""
+        if self._torn_down:
+            return None
+        # A refusal applies to what was measured when it was raised: an arming or
+        # handover meanwhile makes it stale (``refuse(generation=)``).
+        generation = self.tracker.generation
+        if self._inflight is not None:
+            self.tracker.presence_unknown()  # no sample this tick
+            return None
+        try:
+            try:
+                if self._approach_m is not None and self.tracker.wants_approach(now_ns=now_ns):
+                    self._detect_approach(self._approach_m, now_ns, generation)
+                else:
+                    self.tracker.presence_unknown()
+                if not self.tracker.wants_measurement(now_ns=now_ns):
+                    return None
+                target, generation = self.tracker.measured()
+                if target is None or target.search_box is None:
+                    return None
+                box = target.search_box
+                grid, _ = self._fresh_grid(now_ns)
+                if box.frame_id != grid.frame_id:
+                    raise _contradicted(
+                        "frame_mismatch",
+                        f"search box in {box.frame_id!r}, grid in {grid.frame_id!r}",
+                    )
+            except ROSConfigError as exc:  # an input shape the geometry refuses
+                raise _contradicted("rejected_inputs", str(exc)) from exc
+        except _Refusal as refusal:
+            self.tracker.presence_unknown()  # e.g. no fresh grid: no sample
+            self._refuse(refusal, now_ns=now_ns, generation=generation)
+            return None
+        return target, generation, grid
+
+    @_locked
+    def _commit_request(
+        self,
+        now_ns: int,
+        target: GraspDeclaration,
+        generation: int,
+        grid: VoxelLattice,
+        seed_point: tuple[float, float, float],
+        support_z: float,
+    ) -> None:
+        """Send the tick's request, unless torn down or the target changed during the scan."""
+        if self._torn_down or self._inflight is not None or generation != self.tracker.generation:
+            return
+        try:
+            try:
+                self._request(now_ns, target, generation, grid, seed_point, support_z)
             except ROSConfigError as exc:
                 raise _contradicted("rejected_inputs", str(exc)) from exc
         except _Refusal as refusal:
@@ -1424,10 +1473,24 @@ class GraspTargetLeg:
 
         Called before the envelope is filled, so that snapshot already carries the
         refreshed identity and no pre-change region (``GraspTargetTracker.on_attachment_changed``,
-        which keeps a mid-grasp hand's arming across a change that leaves the set non-empty).
+        which keeps a mid-grasp hand's identity — never its region — across a change that
+        leaves the set non-empty).
         """
-        holding = [link for hand in self._hands_of_robot if self._holding(hand) for link in hand]
+        holding = [link for hand in self._hands_of_robot if self._resolving(hand) for link in hand]
         self.tracker.on_attachment_changed(now_ns=self._now_ns(), emptied=emptied, holding=holding)
+
+    def _resolving(self, links: Sequence[str]) -> bool:
+        """Whether a leg of these links has an ATTACH being resolved, nothing latched yet.
+
+        A segmentation in flight (``pending``) or jaws read loaded (``trigger.attached``)
+        with no attachment: the mid-grasp sense of ``on_attachment_changed``. A carried
+        payload or a release window is not mid-grasp. Called under the bridge lock.
+        """
+        return any(
+            leg.attachment is None and (leg.pending or leg.trigger.attached)
+            for leg in self._bridge._legs
+            if leg.jaw_link in links
+        )
 
     def on_hand_settled(self, jaw_link: str) -> None:
         """``jaw_link``'s leg settled: complete the pick if its hand holds nothing.
@@ -1651,23 +1714,22 @@ class GraspTargetLeg:
             )
         return seed.point, support_z
 
-    def _request(self, now_ns: int, declaration: GraspDeclaration | None, generation: int) -> None:
-        """Seed, project, and send one bounded ``SegmentInView`` request — or refuse.
+    def _request(
+        self,
+        now_ns: int,
+        declaration: GraspDeclaration,
+        generation: int,
+        grid: VoxelLattice,
+        seed_point: tuple[float, float, float],
+        support_z: float,
+    ) -> None:
+        """Project the seed and send one bounded ``SegmentInView`` request — or refuse.
 
         ``declaration`` and ``generation`` are ``GraspTargetTracker.measured()``, read
-        together: the reply is accepted only under that generation.
+        together: the reply is accepted only under that generation. Runs under the bridge
+        lock (it reads the bridge's depth and tf2, and records the request in flight).
         """
         from openral_hal.vision_attachment_bridge import build_segment_request
-
-        if declaration is None or declaration.search_box is None:
-            return  # disarmed on another thread since ``wants_measurement``
-        box = declaration.search_box
-        grid, _ = self._fresh_grid(now_ns)
-        if box.frame_id != grid.frame_id:
-            raise _contradicted(
-                "frame_mismatch", f"search box in {box.frame_id!r}, grid in {grid.frame_id!r}"
-            )
-        seed_point, support_z = self._seed(grid, box)
 
         bridge = self._bridge
         depth_entry = bridge._depth
@@ -1730,6 +1792,8 @@ class GraspTargetLeg:
 
     @_locked
     def _on_deadline(self) -> None:
+        if self._torn_down:
+            return
         self._cancel_deadline()
         inflight, self._inflight = self._inflight, None
         if inflight is None:
@@ -1753,18 +1817,23 @@ class GraspTargetLeg:
             self._deadline_timer = None
 
     def _on_reply(self, future: Any, snapshot: _Snapshot) -> None:
+        now_ns = self._now_ns()
         with self._lock:
             if self._inflight is None or future is not self._inflight[0]:
-                return  # resolved by the deadline already
+                return  # resolved by the deadline already (or torn down)
             self._cancel_deadline()
             self._inflight = None
             if self._stale(snapshot[6]):
                 return  # neither its refusal nor its region applies any more
-        now_ns = self._now_ns()
+            # The bridge state ``_measure`` needs, read here: the grid and the declared
+            # contact links' hand points (tf2) in its frame, and the held region.
+            grid = self._grid
+            hands = self._hands(snapshot[5], grid[0].frame_id) if grid is not None else []
+            previous = self.tracker.region
         try:
             try:
                 # Outside the lock: mask decode, back-projection and gates on the snapshot.
-                region = self._measure(future, snapshot, now_ns)
+                region = self._measure(future, snapshot, now_ns, grid, hands, previous)
             except ROSConfigError as exc:  # an input shape the geometry refuses
                 raise _contradicted("rejected_inputs", str(exc)) from exc
         except _Refusal as refusal:
@@ -1775,8 +1844,20 @@ class GraspTargetLeg:
             # ``_measure`` ran: ``accept`` drops the region when the generation moved.
             self.tracker.accept(region, generation=snapshot[6])
 
-    def _measure(self, future: Any, snapshot: _Snapshot, now_ns: int) -> PlaceRegion:
-        """Reply → region → map cover → tracking gate, or a typed refusal."""
+    def _measure(
+        self,
+        future: Any,
+        snapshot: _Snapshot,
+        now_ns: int,
+        grid_entry: tuple[VoxelLattice, int, float] | None,
+        hands: Sequence[tuple[float, float, float]],
+        previous: PlaceRegion | None,
+    ) -> PlaceRegion:
+        """Reply → region → map cover → tracking gate, or a typed refusal.
+
+        Pure on its arguments (snapshots taken under the bridge lock by ``_on_reply``),
+        but for ``_align_to_depth``'s read of the cached ``CameraInfo``.
+        """
         from openral_hal.vision_attachment_bridge import (
             decode_mono8_mask,
             mask_depth_skew_reason,
@@ -1817,7 +1898,7 @@ class GraspTargetLeg:
         if isinstance(aligned, str):
             raise _contradicted("mask_misaligned", aligned)
         masks, intrinsics = aligned
-        grid, source_ns = self._fresh_grid(now_ns)
+        grid, source_ns = self._checked_grid(now_ns, grid_entry)
         # Stamped no later than the map it is vouched against: a stalled octomap ages
         # the region out (freeze TTL here, grasp_region_max_age_s in the kernel).
         stamp_ns = min(depth_stamp_ns, source_ns)
@@ -1850,9 +1931,9 @@ class GraspTargetLeg:
         return _gate_refit(
             grid,
             fit.region,
-            self.tracker.region,
+            previous,
             min_cover=self._config.grasp_target_min_cover,
-            hands=self._hands(declaration, grid.frame_id),
+            hands=hands,
             occluder_margin_m=self._occluder_margin_m,
         )
 

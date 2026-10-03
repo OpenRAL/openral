@@ -862,3 +862,52 @@ def test_the_twins_evidence_run_spans_a_reinference_pause_and_real_hardwares_doe
     assert not real.live(now_s=1.6), "real hardware must restart the run on a gap"
     twin.observe(complete=True, stamp_ns=_at(3) + 3_700_000_000, now_s=3.7)
     assert not twin.live(now_s=3.7), "a gap past the timeout must restart the run"
+
+
+def test_a_malformed_mask_reply_falls_back_and_releases_the_barrier() -> None:
+    """Review finding: ``decode_mono8_mask`` raising ``ROSConfigError`` on a reply whose mask
+    bytes do not match its shape escaped ``_on_reply`` after the deadline timer was cancelled
+    and the request cleared — killing the executor's spin with the barrier shut. It must
+    resolve exactly as the deadline path does: the conservative GRIPPER_CLOSURE box, the
+    barrier released."""
+    pytest.importorskip("openral_msgs")
+    rclpy = pytest.importorskip("rclpy")
+    from openral_core import AttachmentEvidenceKind
+    from openral_msgs.srv import SegmentInView
+    from rclpy.task import Future
+    from sensor_msgs.msg import Image as ImageMsg
+
+    rclpy.init()
+    try:
+        node = rclpy.create_node("test_vision_attachment_malformed_mask")
+        try:
+            ready: list[bool] = []
+            bridge = VisionAttachmentBridge(
+                node, _so101_calibrated(), on_perception_ready=lambda: ready.append(True)
+            )
+            (leg,) = bridge._legs
+            leg.pending = True  # ``_begin_segmentation`` closed the barrier
+            future = Future()
+            leg.inflight = future
+            response = SegmentInView.Response()
+            response.ok = True
+            mask = ImageMsg(height=4, width=4, encoding="mono8")
+            mask.data = bytes(3)  # 3 bytes for a 4x4 mask: malformed
+            response.masks = [mask]
+            future.set_result(response)
+            bridge._on_reply(
+                leg,
+                future,
+                generation=leg.generation,
+                stamp_ns=1_000_000_000,
+                t_link_from_cam=np.eye(4),
+                tcp_in_link=(0.0, 0.0, 0.0),
+            )
+            assert not leg.pending and ready == [True], "the barrier stayed shut"
+            assert bridge.attachment_action_ack_ready()
+            assert leg.attachment is not None
+            assert leg.attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()

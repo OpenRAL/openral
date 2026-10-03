@@ -107,8 +107,11 @@ it). Lock order is bridge lock -> ``GraspTargetTracker``'s own lock, never the r
 (nothing run under the tracker lock takes the bridge lock). Slow pure work runs outside
 it on a snapshot and is committed under it only if the leg's ``generation`` (the
 tracker's, for the grasp leg) is unchanged: mask decode and depth back-projection of a
-``SegmentInView`` reply (``_finish``, ``GraspTargetLeg._measure``) and the whole-grid voxel
-scan (done once at grid receipt). tf2 lookups at the latest time pass no timeout — a
+``SegmentInView`` reply (``_finish``, ``GraspTargetLeg._measure``) and the grasp leg's
+support/seed column scan (``GraspTargetLeg._seed``). The bridge owns the one
+``/openral/world_voxels`` subscription (``_on_voxels``): each grid is decoded once and
+shared by both legs, its whole-grid occupied-cell scan deferred to first use and cached on
+the lattice. tf2 lookups at the latest time pass no timeout — a
 non-blocking buffer read — and run under the lock. On real hardware every caller is the
 executor's one thread, so the lock is uncontended and behaviour is unchanged.
 """
@@ -128,7 +131,7 @@ from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
 
-from openral_hal._grasp_target_leg import GraspTargetLeg, _hand_near, _locked
+from openral_hal._grasp_target_leg import GraspTargetLeg, _hand_near, _locked, lattice_from_msg
 from openral_hal._grasp_trigger import (
     GraspEvent,
     PositionStallConfig,
@@ -151,6 +154,8 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
         PlaceRegion,
         RobotDescription,
     )
+
+    from openral_hal._grasp_target import VoxelLattice
 
 __all__ = [
     "DEFAULT_SEGMENT_SERVICE",
@@ -1205,6 +1210,11 @@ class VisionAttachmentBridge:
 
         # (raster, stamp ns, header.frame_id) of the newest depth frame.
         self._depth: tuple[NDArray[np.float64], int, str] | None = None
+        # (lattice, source_stamp ns, monotonic receive time) of the newest
+        # ``/openral/world_voxels`` grid: ONE subscription and decode shared by both
+        # producer legs; its occupied centres are computed lazily, once, on first use.
+        self._grid: tuple[VoxelLattice, int, float] | None = None
+        self._voxel_sub: Any = None
         self._depth_sub: Any = None
         self._camera_info: Any = None
         self._camera_info_sub: Any = None
@@ -1298,6 +1308,18 @@ class VisionAttachmentBridge:
         # read the latched topic's last revision before the first publish.
         self._revision = int(self._node.get_clock().now().nanoseconds)
         self._heartbeat_timer = self._node.create_timer(_HEARTBEAT_PERIOD_S, self._heartbeat)
+        if self._grasp_target is not None or self._place_target is not None:
+            from openral_msgs.msg import OccupancyVoxels
+
+            voxel_qos = QoSProfile(  # the safety kernel's own profile for this topic
+                history=QoSHistoryPolicy.KEEP_LAST,
+                depth=1,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.VOLATILE,
+            )
+            self._voxel_sub = self._node.create_subscription(
+                OccupancyVoxels, "/openral/world_voxels", self._on_voxels, voxel_qos
+            )
         if self._grasp_target is not None:
             self._grasp_target.setup()
         if self._place_target is not None:
@@ -1329,6 +1351,9 @@ class VisionAttachmentBridge:
         if self._depth_sub is not None:
             self._node.destroy_subscription(self._depth_sub)
             self._depth_sub = None
+        if self._voxel_sub is not None:
+            self._node.destroy_subscription(self._voxel_sub)
+            self._voxel_sub = None
         if self._camera_info_sub is not None:
             self._node.destroy_subscription(self._camera_info_sub)
             self._camera_info_sub = None
@@ -1675,38 +1700,48 @@ class VisionAttachmentBridge:
                 tcp_in_link=tcp_in_link,
             )
             return
-        outcome = resolve_segment_outcome(
-            timed_out=False,
-            ok=bool(response.ok),
-            failure_reason=str(response.failure_reason),
-            mask_count=len(response.masks),
-        )
-        reason = outcome.reason
-        use_masks = outcome.use_masks
-        depth_entry = self._depth
-        if use_masks and depth_entry is not None:
-            # The depth _finish back-projects through is the cached one, now.
-            skew = mask_depth_skew_reason(
-                mask_stamps_ns(response.masks),
-                depth_entry[1],
-                max_skew_s=self._config.mask_depth_max_skew_s,
+        try:
+            outcome = resolve_segment_outcome(
+                timed_out=False,
+                ok=bool(response.ok),
+                failure_reason=str(response.failure_reason),
+                mask_count=len(response.masks),
             )
-            if skew:
-                use_masks, reason = False, skew
-        masks = (
-            [
-                decode_mono8_mask(bytes(image.data), height=image.height, width=image.width)
-                for image in response.masks
-            ]
-            if use_masks
-            else []
-        )
+            reason = outcome.reason
+            use_masks = outcome.use_masks
+            depth_entry = self._depth
+            if use_masks and depth_entry is not None:
+                # The depth _finish back-projects through is the cached one, now.
+                skew = mask_depth_skew_reason(
+                    mask_stamps_ns(response.masks),
+                    depth_entry[1],
+                    max_skew_s=self._config.mask_depth_max_skew_s,
+                )
+                if skew:
+                    use_masks, reason = False, skew
+            masks = (
+                [
+                    decode_mono8_mask(bytes(image.data), height=image.height, width=image.width)
+                    for image in response.masks
+                ]
+                if use_masks
+                else []
+            )
+            scores = [float(s) for s in response.mask_scores_advisory] if use_masks else []
+        except (ROSConfigError, ValueError, TypeError, AttributeError) as exc:
+            # A malformed reply (mask bytes vs shape, a non-numeric score, a missing
+            # field) is a perception failure, not a crash: escaping here would kill the
+            # executor's spin with the barrier shut. Resolve as the deadline path does.
+            masks, scores = [], []
+            reason = (
+                f"ROSPerceptionStale: malformed SegmentInView reply ({type(exc).__name__}: {exc})"
+            )
         self._finish(
             leg,
             generation=generation,
             stamp_ns=stamp_ns,
             masks=masks,
-            scores=[float(s) for s in response.mask_scores_advisory] if use_masks else [],
+            scores=scores,
             reason=reason,
             t_link_from_cam=t_link_from_cam,
             tcp_in_link=tcp_in_link,
@@ -1984,6 +2019,25 @@ class VisionAttachmentBridge:
             return None
         x, y, z = (float(v) for v in t_frame_from_link[:3, :3] @ tcp + t_frame_from_link[:3, 3])
         return x, y, z
+
+    def _on_voxels(self, msg: Any) -> None:
+        """Decode the newest voxel grid once for both producer legs; scan nothing yet.
+
+        ``source_stamp``, not ``header.stamp``: the octomap bridge restamps the header on
+        every republish of a stalled octree; only this says how old the world is (unset,
+        0, reads as stale in each leg). The whole-grid occupied-cell scan is deferred to
+        the first leg that needs it (``VoxelLattice.occupied_centers`` caches it), so a
+        grid nothing is armed for costs one decode.
+        """
+        source = msg.source_stamp
+        source_ns = int(source.sec) * 1_000_000_000 + int(source.nanosec)
+        try:
+            lattice = lattice_from_msg(msg)
+        except ROSConfigError as exc:
+            self._grid = None
+            self._node.get_logger().warning(f"vision attachment: voxel grid dropped — {exc}")
+            return
+        self._grid = (lattice, source_ns, time.monotonic())
 
     def _on_depth(self, msg: Any) -> None:
         """Cache the newest metric-depth raster for the attach camera."""
