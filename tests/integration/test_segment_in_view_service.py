@@ -35,6 +35,7 @@ Gated on ``OPENRAL_TEST_ROS_LIVE=1``, listed in ``scripts/ros_live_tests.sh``. C
 from __future__ import annotations
 
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -182,8 +183,13 @@ def test_segment_in_view_returns_plural_masks_for_a_real_wrist_grasp() -> None:
         spinner.start()
 
         assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
-        # Loads AND warms SAM 2.1 — the cold pass is burned here by contract.
+        # Loads AND warms SAM 2.1 — the cold pass is burned here by contract,
+        # including the service handler's own lazy imports (openral_hal's
+        # __init__ alone cost 839 ms of a 1019 ms first call on Thor).
         assert node.trigger_activate() == TransitionCallbackReturn.SUCCESS
+        assert "openral_hal.depth_cloud" in sys.modules, (
+            "activate must burn the handler's openral_hal import, not the first grasp"
+        )
 
         frame = Image()
         frame.header.frame_id = _CAMERA_FRAME
@@ -223,7 +229,19 @@ def test_segment_in_view_returns_plural_masks_for_a_real_wrist_grasp() -> None:
         # the static TF above this lands mid-lower-frame, on the held eraser.
         request.tcp_point = Point(x=0.0, y=0.05, z=0.06)
         request.negative_points = []
+        started = time.monotonic()
         response = _call(request)
+        first_call_s = time.monotonic() - started
+        if _DEVICE != "cpu":
+            # On a GPU host the FIRST call after activate must fit the HAL's
+            # segmentation deadline, or the first real grasp always falls back.
+            from openral_hal.vision_attachment_bridge import VisionAttachmentConfig
+
+            deadline_s = VisionAttachmentConfig.deadline_s  # the dataclass default
+            assert first_call_s < deadline_s, (
+                f"first SegmentInView after activate took {first_call_s:.3f}s "
+                f"> the HAL's {deadline_s}s deadline"
+            )
 
         assert response.ok is True, response.failure_reason
         assert response.failure_reason == ""
