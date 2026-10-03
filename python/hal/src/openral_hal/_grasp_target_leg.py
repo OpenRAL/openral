@@ -11,7 +11,7 @@ region onto every attachment publication. At ``grasp_target_rate_hz``:
 
 1. the support plane is **measured**, never taken from the search box: in a
    column of ``/openral/world_voxels`` under the box (reaching
-   ``_SUPPORT_SEARCH_BELOW_M`` below its bottom, which is a lifted detection
+   ``support_search_below_m`` below its bottom, which is a lifted detection
    bbox and can sit above or below the real table top), the highest layer whose
    top-surface cells ring the footprint of the target standing on it
    (``support_top_from_voxels``, HZ-01xx-6); then the occupied cells inside the
@@ -85,16 +85,6 @@ __all__ = ["GraspTargetLeg", "GraspTargetTracker", "lattice_from_msg", "search_c
 
 #: The design's re-prompt band, Hz (§2.2).
 _RATE_BAND_HZ = (2.0, 5.0)
-
-#: How far below the search box's bottom face the support may lie, metres. The
-#: box is a lifted detection bbox whose min-z need not touch the table.
-#: *Calibration point.*
-_SUPPORT_SEARCH_BELOW_M = 0.15
-
-#: Outer reach, from the target's footprint, of the ring in which the support
-#: layer must hold top-surface cells, metres (``support_top_from_voxels``).
-#: *Calibration point.*
-_SUPPORT_PROBE_MARGIN_M = 0.05
 
 #: Tilt tolerance for the search box: its z axis must be the base frame's.
 _GRAVITY_TOL = 1e-6
@@ -388,14 +378,27 @@ class GraspTargetLeg:
         node: The HAL lifecycle node.
         bridge: The owning bridge.
         config: The bridge's config (the ``grasp_target_*`` fields).
+        support_search_below_m: How far below the search box's bottom face the
+            support may lie, metres — the box is a lifted detection bbox whose
+            min-z need not touch the table. *Calibration point.*
+        support_probe_margin_m: Outer reach, from the target's footprint, of the
+            ring in which the support layer must hold top-surface cells, metres
+            (``support_top_from_voxels``). *Calibration point.*
 
     Raises:
         ROSConfigError: On a rate outside 2-5 Hz or a non-positive freeze, cell
-            count or cover fraction (``grid_max_age_s`` is checked by the bridge).
+            count, cover fraction, search depth or probe margin
+            (``grid_max_age_s`` is checked by the bridge).
     """
 
     def __init__(
-        self, node: Any, bridge: VisionAttachmentBridge, config: VisionAttachmentConfig
+        self,
+        node: Any,
+        bridge: VisionAttachmentBridge,
+        config: VisionAttachmentConfig,
+        *,
+        support_search_below_m: float = 0.15,
+        support_probe_margin_m: float = 0.05,
     ) -> None:
         """Validate the config; create no ROS entities yet."""
         if not _RATE_BAND_HZ[0] <= config.grasp_target_rate_hz <= _RATE_BAND_HZ[1]:
@@ -418,6 +421,13 @@ class GraspTargetLeg:
                 "grasp_target_freeze_s and grasp_target_min_cells must be > 0 and "
                 "grasp_target_min_cover in (0, 1]."
             )
+        if not (support_search_below_m > 0.0 and support_probe_margin_m > 0.0):
+            raise ROSConfigError(
+                "support_search_below_m and support_probe_margin_m must be > 0, got "
+                f"{support_search_below_m!r} and {support_probe_margin_m!r}."
+            )
+        self._search_below_m = support_search_below_m
+        self._probe_margin_m = support_probe_margin_m
         self._node = node
         self._bridge = bridge
         self._config = config
@@ -473,6 +483,8 @@ class GraspTargetLeg:
             f"freeze={self._freeze_s:.2f}s grid_max_age={self._config.grid_max_age_s:.2f}s "
             f"min_cells={self._config.grasp_target_min_cells} "
             f"min_cover={self._config.grasp_target_min_cover:.2f} "
+            f"support_search_below={self._search_below_m:.2f}m "
+            f"support_probe_margin={self._probe_margin_m:.2f}m "
             f"deadline={self._config.deadline_s:.3f}s"
         )
 
@@ -551,7 +563,7 @@ class GraspTargetLeg:
     ) -> tuple[tuple[float, float, float], float]:
         """Measure the support under the box, then seed the one target above it — or refuse."""
         try:
-            column = search_column(box, below_m=_SUPPORT_SEARCH_BELOW_M)
+            column = search_column(box, below_m=self._search_below_m)
         except ROSConfigError as exc:
             raise _contradicted("search_box_tilted", str(exc)) from exc
         min_cells = self._config.grasp_target_min_cells
@@ -561,14 +573,14 @@ class GraspTargetLeg:
             column_centers,
             near_xy=(box.pose.xyz[0], box.pose.xyz[1]),
             min_cells=min_cells,
-            probe_margin_m=_SUPPORT_PROBE_MARGIN_M,
+            probe_margin_m=self._probe_margin_m,
         )
         if support_z is None:
             raise _contradicted(
                 "no_support",
                 f"no layer in the column under the search box (down to "
-                f"{_SUPPORT_SEARCH_BELOW_M:.2f} m below it) holds >= {min_cells} surface cells "
-                f"within {_SUPPORT_PROBE_MARGIN_M:.2f} m around the target's footprint",
+                f"{self._search_below_m:.2f} m below it) holds >= {min_cells} surface cells "
+                f"within {self._probe_margin_m:.2f} m around the target's footprint",
             )
         seed = target_seed_from_voxels(
             grid, occupied_centers_in_box(grid, box), support_z=support_z, min_cells=min_cells

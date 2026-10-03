@@ -575,3 +575,21 @@ def test_lattice_centres_agree_with_bucket2_markers_on_a_rotated_lattice() -> No
 def test_lattice_rejects_an_unset_orientation() -> None:
     with pytest.raises(ROSConfigError, match="unit quaternion"):
         VoxelLattice(_FRAME, (0, 0, 0), (0, 0, 0, 0), _RES, (1, 1, 1), np.ones(1, np.uint8))
+
+
+def test_a_25_by_30_cm_target_finds_the_table_around_it() -> None:
+    """The fixed 0.10 m probe square lay wholly under such a target, where the head camera
+    sees no table; the ring around the footprint reaches the visible table past it."""
+    bx, by = _box_centre_xy()
+    grid = _scene_lattice([(bx, by, 0.125, 0.15, 0.0)])
+    centres = grid.occupied_centers()
+    hidden = grid.occupancy.copy()
+    under = np.all(np.abs(centres[:, :2] - (bx, by)) <= (0.125, 0.15), axis=1)
+    hidden[np.flatnonzero(hidden)[under & (centres[:, 2] <= _SUPPORT_Z)]] = 0
+    grid = VoxelLattice(
+        grid.frame_id, grid.origin, grid.orientation_xyzw, grid.resolution, grid.size, hidden
+    )
+    column = occupied_centers_in_box(grid, _column(_SUPPORT_Z - 0.20))
+    support = support_top_from_voxels(grid, column, near_xy=(bx, by), min_cells=8)
+    assert support is not None
+    assert abs(support - _SUPPORT_Z) <= _RES / 2 + 1e-9
