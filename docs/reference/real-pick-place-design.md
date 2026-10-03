@@ -165,7 +165,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   whose top-surface cells ring the footprint of the target standing above it (the target
   anchored at every layer on the top of the occupied column nearest the box centre, so a taller
   neighbour never makes the target's own top its support; between one cell
-  and 0.05 m out, which must be at least two cells — a grid too coarse for it is a
+  and 0.05 m out, counted on the column grown by that margin + one cell since the ring lies
+  outside a tightly padded box; the margin must be at least two cells — a grid too coarse for it is a
   `probe_margin_under_two_cells` lost view, never silently widened — a surface extends past what stands on it, the target's own dense top does
   not), whose top face is the support — no such layer is a typed `no_support` refusal and no
   region; the target's lowest cell must sit within one voxel (+ one of tolerance) of it, else
