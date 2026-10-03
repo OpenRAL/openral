@@ -58,6 +58,22 @@ The region dies with the declaration: dispatch retraction (goal end, cancel,
 E-stop — the runner retracts on all of them) and ``timeout_s`` expiry clear it.
 On an ATTACH of a leg whose jaw link the declaration names, re-measurement stops
 and the region is kept for the kernel's handover rule (§2.1).
+
+**Approach-armed target** (``approach_m`` set, default off; design §2.2
+"Approach-armed target"). The policy, not the reasoner, decides what to pick, so
+a live declaration need not name a target: one with no ``search_box`` (the
+runner's goal-scope declaration, or a named one without a box) is measured
+where the robot's own hand goes. Each tick, for every hand of the robot
+(``openral_core.gripper_hands``) whose links the declaration names, the hand's
+TCP points (``VisionAttachmentBridge.jaw_point``) span a gravity-aligned box
+grown by ``approach_m`` (``approach_box``); a hand is *approaching* when that
+box holds at least ``grasp_target_min_cells`` occupied cells. Exactly one
+approaching hand arms a one-hand declaration (``target_id="approach:<first
+link>"``, ``contact_links`` = that hand, the box as its ``search_box``, every
+other field the goal's); two at once arm none. The box then follows the TCP and
+runs the measurement above unchanged; the hand leaving the approach distance
+retracts the region at once (``approach_ended``). A named ``search_box`` wins:
+no approach detection runs for it.
 """
 
 from __future__ import annotations
@@ -68,7 +84,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
-from openral_core import GraspDeclaration, PlaceRegion
+from openral_core import GraspDeclaration, PlaceRegion, Pose6D, gripper_hands
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
 
@@ -91,7 +107,17 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
 
     from openral_hal.vision_attachment_bridge import VisionAttachmentBridge, VisionAttachmentConfig
 
-__all__ = ["GraspTargetLeg", "GraspTargetTracker", "lattice_from_msg", "search_column"]
+__all__ = [
+    "APPROACH_TARGET_PREFIX",
+    "GraspTargetLeg",
+    "GraspTargetTracker",
+    "approach_box",
+    "lattice_from_msg",
+    "search_column",
+]
+
+#: ``target_id`` prefix of an approach-armed declaration; the hand's first link follows.
+APPROACH_TARGET_PREFIX = "approach:"
 
 #: The design's re-prompt band, Hz (§2.2).
 _RATE_BAND_HZ = (2.0, 5.0)
@@ -144,6 +170,8 @@ class GraspTargetTracker:
         self._freeze_ns = int(freeze_s * 1e9)
         self._log = log
         self._declaration: GraspDeclaration | None = None
+        # The one-hand declaration armed from the robot's own approach, or ``None``.
+        self._approach: GraspDeclaration | None = None
         self._region: PlaceRegion | None = None
         self._handed_over = False
         self._status = ""
@@ -152,6 +180,11 @@ class GraspTargetTracker:
     def declaration(self) -> GraspDeclaration | None:
         """Dispatch's live declaration (region-less), or ``None``."""
         return self._declaration
+
+    @property
+    def target(self) -> GraspDeclaration | None:
+        """What is measured and published: the approach-armed declaration, else dispatch's."""
+        return self._approach if self._approach is not None else self._declaration
 
     @property
     def region(self) -> PlaceRegion | None:
@@ -166,6 +199,8 @@ class GraspTargetTracker:
     def _retract(self, kind: str, detail: str) -> None:
         had = self._region is not None
         self._region = None
+        # An approach-armed target exists only for its region; it re-arms from scratch.
+        self._approach = None
         self._transition(
             f"retracted:{kind}",
             f"grasp target region retracted — {kind}: {detail}"
@@ -186,6 +221,7 @@ class GraspTargetTracker:
         ):
             return  # the latched copy again
         self._region = None
+        self._approach = None
         self._handed_over = False
         self._declaration = declaration.model_copy(update={"region": None})
         self._transition(
@@ -197,13 +233,78 @@ class GraspTargetTracker:
 
     def _clear(self, why: str) -> None:
         self._declaration = None
+        self._approach = None
         self._region = None
         self._handed_over = False
         self._transition(f"cleared:{why}", f"grasp target cleared — {why}")
 
+    def wants_approach(self, *, now_ns: int) -> bool:
+        """Whether approach detection should run: a live declaration with no search box."""
+        declaration = self._declaration
+        return (
+            declaration is not None
+            and declaration.search_box is None
+            and not self._handed_over
+            and declaration.is_live(now_ns=now_ns)
+        )
+
+    def on_approach(self, near: Sequence[tuple[tuple[str, ...], PlaceRegion]]) -> None:
+        """Arm, follow or end the approach-armed target from this tick's approaching hands.
+
+        Args:
+            near: ``(hand links, approach box)`` for every hand whose TCP is within
+                the approach distance of occupied cells this tick.
+
+        Only hands whose links the declaration names count (a named declaration
+        narrows the choice). The held hand absent from ``near`` retracts at once
+        (``approach_ended``); otherwise its search box follows the TCP. With none
+        held, exactly one approaching hand arms; two at once arm none.
+        """
+        goal = self._declaration
+        if goal is None or goal.search_box is not None or self._handed_over:
+            return
+        named = set(goal.contact_links)
+        near = [(links, box) for links, box in near if set(links) <= named]
+        held = self._approach
+        if held is not None:
+            box = next((b for links, b in near if links == held.contact_links), None)
+            if box is None:
+                self._retract(
+                    "approach_ended",
+                    f"{held.target_id!r}: the hand's TCP left the approach distance",
+                )
+                return
+            self._approach = held.model_copy(update={"search_box": box})
+            return
+        if len(near) > 1:
+            self._transition(
+                "approach_ambiguous",
+                f"grasp target: {len(near)} hands approaching at once "
+                f"{[list(links) for links, _ in near]}; arming none (one hand at a time)",
+            )
+            return
+        if not near:
+            return
+        links, box = near[0]
+        self._approach = goal.model_copy(
+            update={
+                "target_id": f"{APPROACH_TARGET_PREFIX}{links[0]}",
+                "contact_links": links,
+                "search_box": box,
+                "region": None,
+            }
+        )
+        self._transition(
+            f"approach:{links[0]}",
+            f"grasp target armed from the approach of {list(links)}: search box centre "
+            f"{tuple(round(v, 3) for v in box.pose.xyz)} half_extents "
+            f"{tuple(round(v, 3) for v in box.half_extents)} "
+            f"rskill={goal.rskill_id!r} trace={goal.trace_id!r}",
+        )
+
     def on_attach(self, contact_link: str) -> None:
         """A leg attached; if the declaration names its jaw link, stop re-measuring."""
-        declaration = self._declaration
+        declaration = self.target
         if declaration is None or contact_link not in declaration.contact_links:
             return
         self._handed_over = True
@@ -215,7 +316,7 @@ class GraspTargetTracker:
 
     def wants_measurement(self, *, now_ns: int) -> bool:
         """Whether a measurement tick should run: live, searchable, not handed over."""
-        declaration = self._declaration
+        declaration = self.target
         return (
             declaration is not None
             and declaration.search_box is not None
@@ -225,7 +326,7 @@ class GraspTargetTracker:
 
     def accept(self, region: PlaceRegion) -> None:
         """Hold a region that passed every gate; a declaration-cap violation refuses it."""
-        declaration = self._declaration
+        declaration = self.target
         if declaration is None:
             return
         try:
@@ -268,9 +369,11 @@ class GraspTargetTracker:
     def envelope(self, *, now_ns: int) -> GraspDeclaration | None:
         """The declaration to put on the attachment envelope now, or ``None``.
 
-        Dispatch's fields verbatim plus the held region; expiry clears it and an
-        over-age region is retracted here too, so a stalled measurement loop
-        cannot keep one alive.
+        Dispatch's fields verbatim plus the held region — or, while an
+        approach-armed target is held, that one-hand declaration (the goal's
+        attribution, its own ``target_id`` / ``contact_links`` / search box);
+        expiry clears it and an over-age region is retracted here too, so a
+        stalled measurement loop cannot keep one alive.
         """
         declaration = self._declaration
         if declaration is None:
@@ -279,7 +382,9 @@ class GraspTargetTracker:
             self._clear(f"{declaration.target_id!r} expired (timeout_s={declaration.timeout_s})")
             return None
         self._expire_frozen(now_ns)
-        return declaration.model_copy(update={"region": self._region})
+        target = self.target
+        assert target is not None
+        return target.model_copy(update={"region": self._region})
 
 
 def lattice_from_msg(msg: Any) -> VoxelLattice:
@@ -328,6 +433,38 @@ def search_column(search_box: PlaceRegion, *, below_m: float) -> PlaceRegion:
             "pose": search_box.pose.model_copy(update={"xyz": (x, y, z - below_m / 2.0)}),
             "half_extents": (hx, hy, hz + below_m / 2.0),
         }
+    )
+
+
+def approach_box(
+    points: Sequence[tuple[float, float, float]], *, approach_m: float, frame_id: str
+) -> PlaceRegion:
+    """The gravity-aligned box a hand approaches in: its TCP points grown by ``approach_m``.
+
+    Each half-extent is capped at ``GraspDeclaration.MAX_HALF_EXTENT_M``: the box is
+    both the approach test (occupied cells inside it) and the approach-armed
+    target's search box, which seeds no more than one graspable object.
+
+    Raises:
+        ROSConfigError: On no points.
+
+    Example:
+        >>> box = approach_box([(0.4, 0.1, 0.2), (0.4, 0.14, 0.2)], approach_m=0.1, frame_id="b")
+        >>> box.pose.xyz, box.half_extents
+        ((0.4, 0.12, 0.2), (0.1, 0.12, 0.1))
+    """
+    if not points:
+        raise ROSConfigError("approach_box needs at least one TCP point.")
+    lo = np.min(np.asarray(points, dtype=np.float64), axis=0)
+    hi = np.max(np.asarray(points, dtype=np.float64), axis=0)
+    cap = GraspDeclaration.MAX_HALF_EXTENT_M
+    centre = tuple(round(float(v), 9) for v in (lo + hi) / 2.0)
+    half = tuple(round(min(float(v) + approach_m, cap), 9) for v in (hi - lo) / 2.0)
+    return PlaceRegion(
+        frame_id=frame_id,
+        pose=Pose6D(xyz=centre, quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=frame_id),
+        half_extents=half,
+        evidence_ref="approach:tcp",
     )
 
 
@@ -435,6 +572,10 @@ class GraspTargetLeg:
         support_probe_margin_m: Outer reach, from the target's footprint, of the
             ring in which the support layer must hold top-surface cells, metres
             (``support_top_from_voxels``). *Calibration point.*
+        approach_m: Arm an approach-armed target (module docstring) when a hand's
+            TCP comes within this distance of occupied cells, metres; ``None`` (the
+            default) = off, only a declared ``search_box`` is ever measured. In
+            ``(0, GraspDeclaration.MAX_HALF_EXTENT_M]``. *Calibration point.*
         occluder_margin_m: How far (beyond one voxel) from the held region a
             declared contact link's hand point (its leg's TCP,
             ``VisionAttachmentBridge.jaw_point``) may be for a shrunk re-fit to
@@ -447,7 +588,9 @@ class GraspTargetLeg:
         ROSConfigError: On a rate outside 2-5 Hz; a non-positive cell count, cover
             fraction or probe margin; a freeze outside ``(0, 4 * grid_max_age_s]``,
             a search depth outside ``(0, 0.5]`` m or an occluder margin outside
-            ``[0, 0.10]`` m (``grid_max_age_s`` itself is checked by the bridge).
+            ``[0, 0.10]`` m, or an approach distance outside
+            ``(0, GraspDeclaration.MAX_HALF_EXTENT_M]`` (``grid_max_age_s`` itself is
+            checked by the bridge).
     """
 
     def __init__(
@@ -459,8 +602,17 @@ class GraspTargetLeg:
         support_search_below_m: float = 0.15,
         support_probe_margin_m: float = 0.05,
         occluder_margin_m: float = 0.05,
+        approach_m: float | None = None,
     ) -> None:
         """Validate the config; create no ROS entities yet."""
+        if approach_m is not None and not 0.0 < approach_m <= GraspDeclaration.MAX_HALF_EXTENT_M:
+            raise ROSConfigError(
+                f"grasp target approach_m must be in (0, {GraspDeclaration.MAX_HALF_EXTENT_M}] "
+                f"m, got {approach_m!r}."
+            )
+        self._approach_m = approach_m
+        # The robot's hands, for the approach-armed target (one hand arms at a time).
+        self._hands_of_robot = gripper_hands(bridge._description)
         if not _RATE_BAND_HZ[0] <= config.grasp_target_rate_hz <= _RATE_BAND_HZ[1]:
             raise ROSConfigError(
                 f"grasp_target_rate_hz={config.grasp_target_rate_hz} is outside the design's "
@@ -555,6 +707,7 @@ class GraspTargetLeg:
             f"support_search_below={self._search_below_m:.2f}m "
             f"support_probe_margin={self._probe_margin_m:.2f}m "
             f"occluder_margin={self._occluder_margin_m:.2f}m "
+            f"approach={'off' if self._approach_m is None else f'{self._approach_m:.2f}m'} "
             f"deadline={self._config.deadline_s:.3f}s"
         )
 
@@ -616,10 +769,14 @@ class GraspTargetLeg:
 
     def _tick(self) -> None:
         now_ns = self._now_ns()
-        if self._inflight is not None or not self.tracker.wants_measurement(now_ns=now_ns):
+        if self._inflight is not None:
             return
         try:
             try:
+                if self._approach_m is not None and self.tracker.wants_approach(now_ns=now_ns):
+                    self._detect_approach(self._approach_m)
+                if not self.tracker.wants_measurement(now_ns=now_ns):
+                    return
                 self._request(now_ns)
             except ROSConfigError as exc:  # an input shape the geometry refuses
                 raise _contradicted("rejected_inputs", str(exc)) from exc
@@ -627,6 +784,20 @@ class GraspTargetLeg:
             self.tracker.refuse(
                 refusal.kind, refusal.detail, retract=refusal.retract, now_ns=now_ns
             )
+
+    def _detect_approach(self, approach_m: float) -> None:
+        """Which hands are within ``approach_m`` of occupied cells now → the tracker."""
+        grid = self._fresh_grid()
+        near: list[tuple[tuple[str, ...], PlaceRegion]] = []
+        for hand in self._hands_of_robot:
+            located = [self._bridge.jaw_point(link, grid.frame_id) for link in hand]
+            points = [point for point in located if point is not None]
+            if len(points) != len(hand):
+                continue  # an unlocated hand is not approaching (and ends a held approach)
+            box = approach_box(points, approach_m=approach_m, frame_id=grid.frame_id)
+            if len(occupied_centers_in_box(grid, box)) >= self._config.grasp_target_min_cells:
+                near.append((hand, box))
+        self.tracker.on_approach(near)
 
     def _seed(
         self, grid: VoxelLattice, box: PlaceRegion
@@ -695,7 +866,7 @@ class GraspTargetLeg:
         """Seed, project, and send one bounded ``SegmentInView`` request — or refuse."""
         from openral_hal.vision_attachment_bridge import build_segment_request
 
-        declaration = self.tracker.declaration
+        declaration = self.tracker.target
         assert declaration is not None and declaration.search_box is not None
         box = declaration.search_box
         grid = self._fresh_grid()
@@ -788,7 +959,7 @@ class GraspTargetLeg:
                 refusal.kind, refusal.detail, retract=refusal.retract, now_ns=now_ns
             )
             return
-        if snapshot[5] is not self.tracker.declaration:
+        if snapshot[5] is not self.tracker.target:
             return  # the declaration changed or died while the request was in flight
         self.tracker.accept(region)
 

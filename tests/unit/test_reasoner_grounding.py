@@ -362,3 +362,15 @@ def test_the_unit_fixtures_are_listed_in_the_system_prompt() -> None:
     assert "- cell:shelf_top: " in prompt
     assert "grasp_target" in prompt  # the base brief explains how to name targets
     assert "fixture_id choices" not in resolve_reasoner_system_prompt(_OPENARM.capabilities, env={})
+
+
+def test_the_llm_is_never_told_it_must_name_a_grasp_target() -> None:
+    """The policy picks what to grasp (approach-armed target, HAL); naming one only pins it."""
+    from openral_core import ExecuteRskillTool
+    from openral_reasoner.tool_use import DEFAULT_SYSTEM_PROMPT
+
+    assert "grasp_target is OPTIONAL" in DEFAULT_SYSTEM_PROMPT
+    assert "When a skill grasps an object, set grasp_target" not in DEFAULT_SYSTEM_PROMPT
+    field = ExecuteRskillTool.model_fields["grasp_target"]
+    assert field.default is None and (field.description or "").startswith("Optional")
+    assert ExecuteRskillTool(rskill_id="openral/pi05-openarm-restock").grasp_target is None

@@ -365,6 +365,7 @@ def test_the_vision_leg_on_real_turns_the_kernel_attached_check_on(
         "vision_attachment_deadline_s": 0.25,
         "vision_attachment_evidence_timeout_s": 0.5,
         "vision_attachment_grasp_target_enabled": False,
+        "vision_attachment_grasp_target_approach_m": 0.0,
         "vision_attachment_place_fixture_enabled": False,
         "vision_attachment_release_timeout_s": 3.0,
         "vision_attachment_tf_frames": [
@@ -644,3 +645,32 @@ def test_the_real_detector_reads_the_zed_driver_camera_info() -> None:
     assert params["primary_camera"] == "top"
     assert params["image_topic"] == "/openral/cameras/top/image"
     assert params["camera_infos"] == ("top=/zed/zed_node/rgb/color/rect/camera_info",)
+
+
+@pytest.mark.usefixtures("calibrated_openarm")
+@pytest.mark.parametrize(
+    ("allowance", "approach_m", "expected"),
+    [(True, 0.10, True), (True, None, False), (False, None, False)],
+)
+def test_the_runner_arms_goal_scope_declarations_only_with_an_approach_armed_producer(
+    tmp_path: Path, allowance: bool, approach_m: float | None, expected: bool
+) -> None:
+    """``grasp_approach_enabled`` (the runner's goal-scope declaration, no named target) is
+    on only when the kernel exemption is on AND the HAL's grasp-target leg measures around
+    an approaching hand (``vision_attachment.grasp_target_approach_m``); otherwise every
+    goal runs exactly as before."""
+    import yaml
+    from launch_ros.utilities import evaluate_parameters
+
+    scene = _scene_with_grasp_allowance(tmp_path, enabled=allowance)
+    if approach_m is not None:
+        data = yaml.safe_load(scene.read_text(encoding="utf-8"))
+        data["runtime"]["vision_attachment"]["grasp_target_approach_m"] = approach_m
+        scene.write_text(yaml.safe_dump(data), encoding="utf-8")
+    args = _launch_args("real", scene)
+    args.pop("deploy_config")  # drivers: needs zed_wrapper on the ament path (rig only)
+    ctx, entities = _compose(args)
+    (params,) = evaluate_parameters(
+        ctx, _node(entities, "openral_rskill_ros", "runtime_node")._Node__parameters
+    )
+    assert params["grasp_approach_enabled"] is expected

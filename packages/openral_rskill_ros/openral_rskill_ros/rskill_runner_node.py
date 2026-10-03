@@ -315,6 +315,15 @@ if _ROS2_AVAILABLE:
             # design §2.1) — the scene's `grasp_declaration`, serialised, same
             # precedence as the place one (the goal's own wins). Empty = none.
             self.declare_parameter("grasp_declaration_json", "")
+            # Approach-armed grasp target (real pick-and-place design §2.2): with
+            # no declaration from the goal or the scene, arm a goal-scope one —
+            # no target, no search box, every gripper hand's contact links — so
+            # the HAL's grasp-target leg can measure whatever ONE hand approaches
+            # (the policy picks the object). On its own it exempts nothing: the
+            # kernel needs a producer-measured region. Default off; the deploy
+            # launch turns it on with the HAL's
+            # `vision_attachment_grasp_target_approach_m`.
+            self.declare_parameter("grasp_approach_enabled", False)
             self._description: RobotDescription | None = robot_description
             self._aggregator: WorldStateAggregator | None = aggregator
             self._skill_resolver: SkillResolver | None = skill_resolver
@@ -2129,9 +2138,39 @@ if _ROS2_AVAILABLE:
             if bool(getattr(request, "grasp_declaration_valid", False)):
                 return GraspDeclaration.from_idl(request.grasp_declaration)
             raw = self.get_parameter("grasp_declaration_json").get_parameter_value().string_value
-            if not raw:
+            if raw:
+                return GraspDeclaration.model_validate_json(raw)
+            if self.get_parameter("grasp_approach_enabled").get_parameter_value().bool_value:
+                return self._goal_scope_grasp_declaration(
+                    float(getattr(request, "deadline_s", 0.0))
+                )
+            return None
+
+        def _goal_scope_grasp_declaration(self, deadline_s: float) -> Any:
+            """The approach-armed goal-scope declaration, or ``None`` with no gripper.
+
+            Names no target and no search box: the HAL's grasp-target leg narrows
+            it to the ONE hand that approaches occupied cells and measures there.
+            Every hand's contact links (``openral_core.gripper_hands``), so the
+            leg may choose; the kernel accepts one hand per region-carrying
+            declaration only. The backstop is the goal deadline (the ceiling
+            when unset), capped at ``GraspDeclaration.MAX_TIMEOUT_S``; the runner
+            retracts it at goal end anyway.
+            """
+            from openral_core import GraspDeclaration, gripper_hands
+
+            if self._description is None:
                 return None
-            return GraspDeclaration.model_validate_json(raw)
+            links = tuple(link for hand in gripper_hands(self._description) for link in hand)
+            if not links:
+                return None
+            ceiling = GraspDeclaration.MAX_TIMEOUT_S
+            return GraspDeclaration(
+                target_id="approach",
+                contact_links=links,
+                timeout_s=min(deadline_s, ceiling) if deadline_s > 0.0 else ceiling,
+                stamp_ns=0,
+            )
 
         def _arm_grasp_declaration(self, request: Any, *, rskill_id: str, trace_id: str) -> None:
             """Publish this goal's grasp declaration, stamped and attributable.

@@ -1651,6 +1651,8 @@ if _ROS2_AVAILABLE:
                     ("vision_attachment_grasp_target_support_search_below_m", 0.15),
                     ("vision_attachment_grasp_target_support_probe_margin_m", 0.05),
                     ("vision_attachment_grasp_target_occluder_margin_m", 0.05),
+                    # Approach-armed target distance, metres; 0 = off (the default).
+                    ("vision_attachment_grasp_target_approach_m", 0.0),
                 ],
             )
             # Real place producer leg (real pick-and-place design §2.3). OFF by
@@ -2194,6 +2196,10 @@ if _ROS2_AVAILABLE:
                     )
                     .get_parameter_value()
                     .double_value,
+                    grasp_target_approach_m=gp("vision_attachment_grasp_target_approach_m")
+                    .get_parameter_value()
+                    .double_value
+                    or None,
                     place_fixture_enabled=place_fixture_enabled,
                     place_fixture_rate_hz=gp("vision_attachment_place_fixture_rate_hz")
                     .get_parameter_value()

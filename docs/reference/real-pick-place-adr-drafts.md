@@ -64,6 +64,18 @@ bridge's "an occupied cell is an obstacle" invariant) were considered and reject
   the latched box, the stream deadline and `timeout_s`; requiring a fresh measurement would
   retire a valid handover with the fingers closed on the target. The latched box itself must
   have been fresh at the handover edge.
+- **No named target required (approach-armed).** The policy decides what to grasp. With the
+  HAL's `grasp_target_approach_m` set (default off), the runner arms a region-less goal-scope
+  declaration naming every hand and no target; the producer narrows it to the ONE hand whose
+  TCP comes within the approach distance of occupied voxels (`target_id="approach:<link>"`,
+  that hand's links only), searches a box around its jaws, and measures exactly as for a named
+  target (measured support, `not_on_support`, ambiguity refusal, SAM point prompt, map cover,
+  tracking, freeze TTL); the hand leaving retracts it at once. The reasoner's named
+  `grasp_target` stays an optional hint that wins (search box) or narrows (hand). Arming is
+  proximity-only — the exemption is needed while the open jaws straddle the target, before
+  any close command — and the kernel now enforces one hand per declaration
+  (`reason=links_span_hands`). It still never trusts a region it did not get from the
+  producer's measured envelope; it never required the dispatch relay.
 - Feature parameter `grasp_allowance_enabled` defaults off.
 - **This amends ADR-0097's "arm-vs-world unchanged" invariant for the declared contact links
   only.**
@@ -101,6 +113,8 @@ event is a position stall (HZ-01xx-8/9 below), not a sensed contact force.
 | HZ-01xx-9 | Stall **false negative**: a held object never attaches | An object thinner than `stall_gap` in jaw angle (card, cable) stops the jaw too close to its command; a command the controller does not actually track (interpolation, clamping) shifts the gap | Per-side calibration (`JointSpec.closure_calibration`) measured attended (design note §5); the carried object stays in the voxel map, so the world check still sees it — the failure is a stop, not a silent collision; thin objects are out of scope until measured. |
 | HZ-01xx-10 | The commanded target the trigger compares against is stale | No action applied since bringup / e-stop; a slot that never names the gripper | The trigger cannot attach without a command (`uncommanded_ticks` counted); only JOINT_POSITION rows naming the gripper joint update it; detach is trigger-driven and needs no command beyond the last one. |
 | HZ-01xx-7 | The exemption silences the graded velocity band for the whole chunk | An exempt finger inside its target reads a negative distance; the sweep keeps one minimum, and the band discards a negative slack as "tripped", so every non-exempt pair's slowdown is lost with it | The band clamps an untripped check's slack to `max(slack, 0)`, so any exempt pair (grasp target, support witness, embedded residue) reads as slack 0 — the band's slowest rate, never full speed; lifecycle tests pin the scaled chunk with the exempt finger inside its target and with a payload resting on its witnessed support. |
+| HZ-01xx-8 | The exemption arms on an unintended object near the hand (no target is named) | Approach-armed target: the hand passes within the approach distance of a neighbour, or lingers by the wrong object, and the producer measures that one | Arms only around the approaching hand's TCP (box ≤ `MAX_HALF_EXTENT_M`, anchored on the column nearest the TCP), only for that hand's links, only with ONE hand approaching; the object must be measured standing on a measured support (`not_on_support`) and unambiguous (`ambiguous` refuses a comparable second cluster); region caps; the hand leaving retracts at once (`approach_ended`); kernel region-age bound (2 × voxel deadline) and goal-scoped retraction; the exemption covers only that object's cells for the finger links — arm links, the support and every cell beside the region still stop (live kernel row: a neighbour one column beside the target stops the exempt finger); attended operation + hardware E-stop. Residual: while the hand stays by the neighbour, its fingers may touch it without a stop (as HZ-01xx-1). Proximity-only arming (no closing-intent gate) is a WG call: the exemption is needed before the close. |
+| HZ-01xx-9 | One exemption covers two hands | A producer bug declares both hands' links on one region (the goal-scope declaration names every hand) | Producer arms one hand at a time and refuses two approaching at once; the kernel refuses any region-carrying declaration whose contact links do not share one mount (`grasp_links_one_hand`, `reason=links_span_hands`, gtests + live row). |
 
 Cite alongside: the existing self-filter shell hazard (2 cm padding around the swept finger hull
 already blinds the map near the jaws).

@@ -917,8 +917,8 @@ class ContextRenderer:
             if repeated:
                 lines.append(
                     f"repeated_labels: {', '.join(repeated)} — a bare label is ambiguous; "
-                    "name each instance's memory_objects id as grasp_target.object_id "
-                    "(recall_object it when it is not listed) and handle one per skill."
+                    "to pin one as grasp_target, name the instance's memory_objects id as "
+                    "grasp_target.object_id (recall_object it when it is not listed)."
                 )
         memory = self._render_memory_objects()
         if memory:

@@ -26,9 +26,9 @@ from openral_core import (
     PlaceRegion,
     PlaceTargetRef,
     Pose6D,
-    RobotDescription,
     RobotUnit,
     SceneGraph,
+    gripper_hands,
 )
 from openral_core.exceptions import ROSReasonerInvalidPlan
 
@@ -42,38 +42,6 @@ __all__ = [
 #: Seconds a declaration outlives its goal's own patience ceiling before the
 #: backstop expires it; the runner retracts it at goal end anyway.
 DECLARATION_TIMEOUT_MARGIN_S = 10.0
-
-
-def gripper_hands(description: RobotDescription) -> tuple[tuple[str, ...], ...]:
-    """The robot's hands: its ``role: gripper`` joints' ``child_link``s, grouped per hand.
-
-    A hand is the set of gripper joints that hang off one arm: joints sharing a
-    ``parent_link``, plus any gripper joint whose parent is another gripper joint's
-    child (a chained finger). An SO-101's one jaw joint is one hand; an OpenArm's two
-    finger-pair joints are two hands (one per arm); an R1 Pro's four finger joints are
-    two hands of two fingers. ``ground_grasp_target`` defaults to the one hand of a
-    single-hand robot and makes the reasoner name one hand on a robot with several.
-
-    Example:
-        >>> gripper_hands(RobotDescription.from_yaml("robots/openarm/robot.yaml"))
-        (('openarm_left_finger_pair',), ('openarm_right_finger_pair',))
-        >>> gripper_hands(RobotDescription.from_yaml("robots/r1pro/robot.yaml"))[0]
-        ('left_gripper_finger_link1', 'left_gripper_finger_link2')
-    """
-    grippers = [j for j in description.joints if j.role == "gripper"]
-    parent_of = {j.child_link: j.parent_link for j in grippers}
-
-    def mount(link: str) -> str:
-        seen: set[str] = set()
-        while link in parent_of and link not in seen:  # climb a chained finger to its arm
-            seen.add(link)
-            link = parent_of[link]
-        return link
-
-    hands: dict[str, list[str]] = {}
-    for j in grippers:
-        hands.setdefault(mount(j.parent_link), []).append(j.child_link)
-    return tuple(tuple(links) for links in hands.values())
 
 
 def _box(

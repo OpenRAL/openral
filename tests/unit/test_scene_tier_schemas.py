@@ -218,6 +218,14 @@ def test_real_openarm_scene_commits_the_vision_leg_off_with_driver_topics():
     }
     # The same block turned on validates: every driver topic is present.
     assert type(leg).model_validate({**leg.model_dump(), "enabled": True}).enabled
+    # The approach-armed grasp target is off too, and needs its producer to be on at all.
+    assert leg.grasp_target_approach_m is None
+    with pytest.raises(ValueError, match="grasp_target_enabled"):
+        type(leg).model_validate({**leg.model_dump(), "grasp_target_approach_m": 0.10})
+    on = {**leg.model_dump(), "grasp_target_enabled": True, "grasp_target_approach_m": 0.10}
+    assert type(leg).model_validate(on).grasp_target_approach_m == 0.10
+    with pytest.raises(ValueError, match="less than or equal"):
+        type(leg).model_validate({**on, "grasp_target_approach_m": 0.25})  # over the cap
 
 
 @pytest.mark.parametrize(

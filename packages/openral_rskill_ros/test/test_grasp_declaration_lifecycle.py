@@ -61,7 +61,7 @@ def _measured_region() -> Any:
 
 @contextmanager
 def _harness(
-    grasp_declaration_json: str, *, skill_resolver: Any = None
+    grasp_declaration_json: str, *, skill_resolver: Any = None, approach: bool = False
 ) -> Iterator[tuple[Any, Any, list[Any]]]:
     """The place harness with the grasp parameter and topic instead."""
     import rclpy
@@ -78,6 +78,7 @@ def _harness(
         [
             rclpy.parameter.Parameter("grasp_declaration_json", value=grasp_declaration_json),
             rclpy.parameter.Parameter("joint_state_staleness_limit_s", value=0.5),
+            rclpy.parameter.Parameter("grasp_approach_enabled", value=approach),
         ]
     )
     executor = rclpy.executors.MultiThreadedExecutor(num_threads=4)
@@ -155,6 +156,31 @@ def test_a_goal_arms_then_retracts_the_scene_declaration() -> None:
     assert active[0].rskill_id == "openral/test-place-declaration-skill"
     assert active[0].stamp_ns > 0
     assert not active[0].region_valid
+
+
+def test_approach_mode_arms_a_goal_scope_declaration_naming_no_target() -> None:
+    """No goal or scene declaration, approach on: every hand, no target, no box, retracted."""
+    with _harness("", approach=True) as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node, deadline_s=3.0)
+        _spin_for(executor, 0.3)
+
+    active = [msg for msg in seen if msg.active]
+    assert len(active) == 1
+    assert active[0].target_id == "approach"
+    # compose_so100_runtime's SO-100 manifest: its one jaw is its one hand.
+    assert tuple(active[0].contact_links) == ("gripper_finger",)
+    assert not active[0].search_box_valid and not active[0].region_valid
+    assert active[0].rskill_id == "openral/test-place-declaration-skill"
+    assert active[0].stamp_ns > 0
+    assert active[0].timeout_s == pytest.approx(3.0), "the backstop is the goal deadline"
+    assert not seen[-1].active, "the goal ended without retracting its goal-scope declaration"
+
+
+def test_a_scene_declaration_wins_over_approach_mode() -> None:
+    with _harness(_scene_json(), approach=True) as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node)
+        _spin_for(executor, 0.3)
+    assert [msg.target_id for msg in seen if msg.active] == [_TARGET]
 
 
 def test_cancelling_a_goal_retracts_its_declaration() -> None:

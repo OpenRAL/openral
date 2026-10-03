@@ -240,6 +240,47 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   refused (`mask_depth_skew`, a lost view here; a `GRIPPER_CLOSURE` fallback in the attachment path). Tests: `tests/unit/test_grasp_target_leg.py`,
   live `tests/integration/test_grasp_target_leg_live.py`. The occlusion freeze is bounded by the TTL and
   requires the declared contact link near the held region (its TCP point, not a swept-hull test).
+- **Approach-armed target (built, default off): the policy picks, the hand's approach arms.**
+  The VLA policy decides which object it grasps; nothing may require the reasoner to name it
+  (`ExecuteRskillTool.grasp_target` is optional and the system prompt says so: naming one only
+  *pins* the target). With `vision_attachment.grasp_target_approach_m` set (HAL param
+  `vision_attachment_grasp_target_approach_m`, needs `grasp_target_enabled`; 0.10 m is the
+  calibration starting point, capped at `GraspDeclaration.MAX_HALF_EXTENT_M`), the rSkill
+  runner arms a **goal-scope declaration** for every goal that brings none of its own
+  (`grasp_approach_enabled`, set by `deploy_e2e` only when `grasp_allowance_enabled` is on too):
+  `target_id="approach"`, every hand's contact links, no search box, the goal's
+  `rskill_id`/`trace_id`/stamp, `timeout_s` = the goal deadline (≤ 120 s), retracted on every
+  runner exit like any declaration. It exempts nothing on its own. The HAL's grasp-target leg
+  narrows it: each tick, for every hand (`openral_core.gripper_hands`) the declaration names, the
+  hand's TCP points (`VisionAttachmentBridge.jaw_point`, which locates the OpenArm's
+  manifest-only `finger_pair` through the attach link) span a gravity-aligned box grown by the
+  approach distance (`approach_box`); a hand whose box holds ≥ `grasp_target_min_cells` occupied
+  cells is *approaching*. **Exactly one** approaching hand arms a one-hand declaration
+  (`target_id="approach:<first link>"`, `contact_links` = that hand only, the box as its
+  `search_box`, everything else the goal's); two at once arm none. The box follows the TCP and
+  feeds the measurement above **unchanged** (measured support, anchored seed at the column
+  nearest the TCP, `not_on_support`, `ambiguous`, SAM point prompt, mask fit, map cover,
+  tracking, freeze TTL); the hand leaving the approach distance retracts the region at once
+  (`approach_ended`), and it re-arms only from scratch. A dispatch/reasoner declaration with a
+  `search_box` wins (no approach runs); one naming a hand but no box narrows the approach to
+  that hand. The kernel reads it from the envelope like any producer-measured declaration —
+  it never required the dispatch relay — and now also refuses a region-carrying declaration
+  whose links span two hands (`reason=links_span_hands`). *Arming rule chosen: TCP proximity
+  alone, not "proximity AND the gripper command closing".* The exemption is needed **before**
+  the close command: the open jaws straddle the target inside the 20 mm margin while the
+  policy is still approaching (the finger hull contains the target, §1), so an intent gate
+  would stop every grasp short of the close and never arm; "proximity OR closing" would arm
+  on a close in free air. The conservatism comes instead from where the box is (around the
+  TCP only), what fills it (a measured, unambiguous object standing on a measured support),
+  one hand, the region caps, the short region-age bound (kernel `grasp_region_max_age_s`,
+  2 × the voxel deadline) and attended operation. Residual (HZ-01xx-8): the hand passing
+  within the approach distance of a neighbour arms on the neighbour for as long as it stays
+  there; the exemption then covers that neighbour's cells for that hand's links only.
+  Tests: `tests/unit/test_grasp_target_leg.py` (approach rows), live
+  `tests/integration/test_grasp_target_leg_live.py::test_an_approaching_hand_arms_the_target_with_no_named_target`,
+  the real kernel in
+  `tests/integration/test_safety_kernel_grasp_target_band.py::test_an_approach_armed_declaration_exempts_one_hand_and_nothing_beside_the_target`,
+  the runner in `packages/openral_rskill_ros/test/test_grasp_declaration_lifecycle.py`.
 - **Representation:** an oriented box in `openarm_base` (reuse `PlaceRegion`): ~150 B, grid-instance
   independent, exact point-in-OBB already in the kernel.
 - **Tracking:** re-prompt from geometry at 2-5 Hz (project the previous centroid, re-fit, gate on
@@ -330,7 +371,7 @@ Everything is off by default until the last step; nothing before it can actuate.
 | 4 | `feat(deploy)`: `DeployRuntime.vision_attachment`, segmenter lifecycle node in the launch, **vision leg on real always turns the kernel attached check on** (1000 ms deadline) | CLI, launch | **Safety-WG + hazard log**. *Implemented, committed off* (`enabled: false` in `scenes/deploy/openarm_real_world_voxels.yaml`) pending WG review and the hazard-log entry |
 | 5 | `test(hil)`: attended OpenArm position-stall measurement (gripper-only motion, user at the E-stop): close on nothing / foam / the restock box / a thin card, per side | HIL | effort is settled — the driver hard-codes it to 0 (§1.6); this calibrates `closure_calibration` (rest offset, stall gap, settle tolerance) and measures the thin-object false negative |
 | 6 | `feat(kernel)`: `GraspDeclaration` across IDL/core/world-state/runner/HAL/launch/kernel + conservativeness tests | all | **ADR + hazard log; split (>800 lines)**. *Wire landed* (IDL, `openral_core.GraspDeclaration`, World State relay, runner arm/retract on `/openral/grasp_declaration`, CLI/launch `grasp_declaration_json`, committed target in `scenes/deploy/openarm_real_world_voxels.yaml`); the sim producer landed (`SimAttachmentEvidenceTracker.set_grasp_declaration` / `grasp_declaration`: the target subtree's box, base frame, no geometry, on every `AttachmentState` envelope), the launch flag `DeployRuntime.grasp_allowance_enabled` (default off) with the always-passed manifest-derived `grasp_contact_links`, and the kernel consumer landed (`ingest_grasp_declaration`, default off; per-candidate scoping, handover retirement against the region latched at handover, proven on the twin control pair `tests/sim/test_gripper_twin_hal_mujoco_grasp_pair.py`); the real producer pending |
-| 7 | `feat(perception)`: pre-grasp target producer (search box → SAM 2.1 → OBB → region), tracking, handover | HAL/perception | develop on the twin pass (real ZED, twin HAL). *Producer leg implemented, default off* (`_grasp_target_leg`); the OpenArm scene's committed declaration carries no `search_box` yet, and the thresholds are uncalibrated |
+| 7 | `feat(perception)`: pre-grasp target producer (search box → SAM 2.1 → OBB → region), tracking, handover | HAL/perception | develop on the twin pass (real ZED, twin HAL). *Producer leg implemented, default off* (`_grasp_target_leg`); the OpenArm scene's committed declaration carries no `search_box` yet, and the thresholds are uncalibrated. *Approach-armed target implemented, default off* (`grasp_target_approach_m`; §2.2): no named target needed, one hand at a time, kernel refuses two-hand declarations |
 | 8 | `feat(hal)`: place on real — unit fixture + map verification + proximity witness + frozen release | HAL, bridge | **ADR-0097/0092 amendments**. *Schema landed*: `openral_core.UnitFixture` on `RobotUnit.fixtures` (checked by `fixture_problems` in `load_robot_unit`) and `AttachmentEvidenceKind.DECLARED_FIXTURE`; no unit carries a fixture yet and no producer reads one Frozen release window implemented* in the vision leg (§2.3 "Release"); fixture, map verification and witness pending . *Producer leg implemented, default off* (`_place_fixture_leg`, `vision_attachment_place_fixture_enabled`): resolves the declaration's `target_id` to a unit fixture, verifies its top face and the free volume above it against the live voxel map (unverified → region-less, reason logged), ships the fixture box as the region (no geometry), and attests the `DECLARED_FIXTURE` proximity witness once per declaration; the frozen release and the finger allowance are not part of it, and the thresholds are uncalibrated |
 | 9 | `feat(scenes)`: enable on the Thor scene with measured thresholds | scenes | only after 5's verdict |
 
@@ -342,9 +383,14 @@ decide; 7 and 8 need the attended cell for calibration.
 
 1. ADR: declaration-scoped grasp-target exemption for gripper finger links (amends ADR-0097's
    "arm-vs-world unchanged" for those links only); caps; measure-once vs re-measured region;
-   handover retirement rule; whether `link7` is a contact link; the producer's prompt source.
+   handover retirement rule; whether `link7` is a contact link; the producer's prompt source;
+   the approach-armed target (§2.2): arming without a named target, the approach distance,
+   proximity-only arming vs a closing-intent gate, one hand at a time (and refusing two
+   approaching hands at once), and whether a goal may re-arm after an attach.
 2. Hazard HZ-01xx: exemption misapplied (non-target body inside the region; wrong object; stale
-   declaration; target moved while frozen; leak to other links/arms; fingers into the support).
+   declaration; target moved while frozen; leak to other links/arms; fingers into the support;
+   the exemption arming on an unintended object near the hand, HZ-01xx-8; a producer declaring
+   two hands, HZ-01xx-9).
 3. Turning `attached_collision_enabled` on for real, with the deadline, and trusting vision
    geometry for map clearing (undersized box clears a real obstacle; phantom fallback box on a
    closed-on-nothing gripper; dead jaw-position channel → kernel drop window).

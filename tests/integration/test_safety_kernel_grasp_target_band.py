@@ -583,3 +583,96 @@ def test_grasp_exemption_band_on_the_real_openarm_model(
             "the support surface under the target still stops the finger"
         )
         assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
+
+
+#: A neighbour standing on the plane one empty column beside the target (x = 0.05, cube
+#: 0.04-0.06; the region ends at x = 0.03): outside the measured region, but 13 mm from the
+#: left finger pair's hull, whose lower part spans x <= 0.027 at q = 0 (same FK as above).
+_NEIGHBOUR = frozenset(_index(5, j, k) for j in (3, 4) for k in (2, 3))
+_APPROACH_TARGET = f"approach:{_LEFT_FINGER}"
+
+
+def _approach_declaration() -> GraspDeclaration:
+    """What the HAL's grasp-target leg publishes with NO named target.
+
+    The runner's goal-scope declaration (both hands, no target, no search box) narrowed by
+    the producer's own tracker to the hand whose TCP approached occupied cells — the real
+    ``GraspTargetTracker.on_approach`` / ``accept`` / ``envelope`` path, the left finger
+    pair's TCP over the target — then the region measured now (a fresh stamp: the tracker
+    retracts a region past its freeze TTL, and with it the approach).
+    """
+    from openral_hal._grasp_target_leg import GraspTargetTracker, approach_box
+
+    now = time.time_ns()
+    goal = GraspDeclaration(
+        target_id="approach",
+        contact_links=(_LEFT_FINGER, _RIGHT_FINGER),
+        rskill_id=_RSKILL_ID,
+        trace_id=f"grasp-band-{uuid.uuid4().hex[:8]}",
+        timeout_s=_TIMEOUT_S,
+        stamp_ns=now,
+    )
+    tracker = GraspTargetTracker(freeze_s=2.0, log=lambda _line: None)
+    tracker.on_declaration(goal)
+    tcp = (_REGION_CENTRE[0], _REGION_CENTRE[1], _REGION_CENTRE[2] + 0.05)
+    tracker.on_approach([((_LEFT_FINGER,), approach_box([tcp], approach_m=0.10, frame_id=_FRAME))])
+    tracker.accept(_region(_REGION_CENTRE, _REGION_HALF))
+    declaration = tracker.envelope(now_ns=now)
+    assert declaration is not None and declaration.region is not None
+    assert declaration.target_id == _APPROACH_TARGET
+    assert declaration.contact_links == (_LEFT_FINGER,)
+    return declaration
+
+
+def test_an_approach_armed_declaration_exempts_one_hand_and_nothing_beside_the_target(
+    reset_kernel_estop: Callable[..., None],
+) -> None:
+    """No dispatch declaration names the target: the producer's approach-armed one-hand
+    declaration rides the envelope like any other, and the kernel bounds it the same way.
+
+    ====================================================  =====================================
+    row                                                   verdict
+    ====================================================  =====================================
+    approach-armed (left hand), target only               ACCEPTED, armed ``approach:<left>``
+    approach-armed, a neighbour beside the target         REFUSED, left finger on the neighbour,
+    (outside the measured region, in the finger margin)   ``grasp_exemption_active=1``
+    a region-carrying declaration naming BOTH hands       REFUSED, ``reason=links_span_hands``
+    ====================================================  =====================================
+    """
+    with _live_cell(grasp_allowance_enabled=True, reset_kernel_estop=reset_kernel_estop) as (
+        cell,
+        reset,
+    ):
+        # ── Approach-armed, left hand: the finger reaches the target ─────────────────────
+        cell.world(_TARGET | _PLANE, _approach_declaration())
+        cell.send("approach-armed", expect_accept=True)
+        assert "approach-armed" in cell.safe, "the approach-armed region must exempt the target"
+        assert f"safety.grasp_region_armed target={_APPROACH_TARGET} links=1" in cell.log()
+
+        # ── A neighbour beside the target, outside the region: still a stop ──────────────
+        cell.world(_TARGET | _PLANE | _NEIGHBOUR, _approach_declaration())
+        cell.send("approach-neighbour", expect_accept=False)
+        evidence = cell.refused("approach-neighbour")
+        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _NEIGHBOUR}, (
+            "the neighbour is not the approached target and stops the exempt finger"
+        )
+        assert cell.stop_lines()[-1][2:] == (1, _APPROACH_TARGET)
+        reset()
+
+        # ── Both hands on one region: refused at ingest, nothing exempt ───────────────────
+        cell.world(
+            _TARGET | _PLANE,
+            _declaration(
+                _region(_REGION_CENTRE, _REGION_HALF),
+                contact_links=(_LEFT_FINGER, _RIGHT_FINGER),
+            ),
+        )
+        cell.send("two-hands", expect_accept=False)
+        evidence = cell.refused("two-hands")
+        assert evidence["link_a"] == _LEFT_FINGER
+        assert cell.stop_lines()[-1][2:] == (0, ""), "a two-hand declaration exempts nothing"
+        assert (
+            f"safety.grasp_region_rejected reason=links_span_hands target={_TARGET_ID}"
+            in cell.log()
+        )

@@ -2965,6 +2965,7 @@ def test_deploy_vision_attachment_block_maps_to_hal_params_and_launch_args(
         "vision_attachment_deadline_s": 0.4,  # --hal wins over the scene's 0.25
         "vision_attachment_evidence_timeout_s": 0.75,
         "vision_attachment_grasp_target_enabled": False,
+        "vision_attachment_grasp_target_approach_m": 0.0,
         "vision_attachment_place_fixture_enabled": False,
         "vision_attachment_release_timeout_s": 3.0,
         "vision_attachment_tf_frames": [

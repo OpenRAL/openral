@@ -19,10 +19,12 @@ from openral_core import DeployScene, GraspDeclaration, PlaceRegion, Pose6D, Rob
 from openral_core.exceptions import ROSConfigError
 from openral_hal._grasp_target import VoxelLattice, occupied_centers_in_box
 from openral_hal._grasp_target_leg import (
+    APPROACH_TARGET_PREFIX,
     GraspTargetLeg,
     GraspTargetTracker,
     _gate_refit,
     _Refusal,
+    approach_box,
     search_column,
 )
 from openral_hal.vision_attachment_bridge import VisionAttachmentBridge, VisionAttachmentConfig
@@ -526,6 +528,239 @@ def test_the_hand_is_located_through_the_attach_link_not_the_manifest_only_jaw_l
         held = _measured(11 * _S)
         refusal = _gate(_refit(0.425, (0.015, 0.04, 0.03)), held, hands=tuple(hands))
         assert (refusal.kind, refusal.retract) == ("occluded_refit", False)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+# ── Approach-armed target (no named target: the policy picks, the hand's approach arms) ──
+
+_LEFT = ("openarm_left_finger_pair",)
+_RIGHT = ("openarm_right_finger_pair",)
+
+
+def _goal_scope(stamp_ns: int = 10 * _S) -> GraspDeclaration:
+    """The runner's goal-scope declaration: no target named, no search box, every hand."""
+    return GraspDeclaration(
+        target_id="approach",
+        contact_links=_LEFT + _RIGHT,
+        rskill_id="openral/pi05-openarm-restock",
+        trace_id="4bf92f3577b34da6a3ce929d0e0e4736",
+        timeout_s=60.0,
+        stamp_ns=stamp_ns,
+    )
+
+
+def _approach_tracker() -> tuple[GraspTargetTracker, list[str]]:
+    lines: list[str] = []
+    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=lines.append)
+    tracker.on_declaration(_goal_scope())
+    return tracker, lines
+
+
+def _near(*hands: tuple[str, ...]) -> list[tuple[tuple[str, ...], PlaceRegion]]:
+    return [
+        (hand, approach_box([_HAND_NEAR], approach_m=0.1, frame_id="openarm_base"))
+        for hand in hands
+    ]
+
+
+def test_the_approach_box_spans_the_hands_tcps_grown_and_capped() -> None:
+    box = approach_box([(0.4, 0.0, 0.2), (0.4, 0.1, 0.2)], approach_m=0.1, frame_id="b")
+    assert box.pose.xyz == pytest.approx((0.4, 0.05, 0.2))
+    assert box.half_extents == pytest.approx((0.1, 0.15, 0.1))
+    assert box.pose.quat_xyzw == (0.0, 0.0, 0.0, 1.0), "gravity-aligned: a support column"
+    wide = approach_box([(0.0, 0.0, 0.0), (0.0, 0.5, 0.0)], approach_m=0.2, frame_id="b")
+    assert max(wide.half_extents) == GraspDeclaration.MAX_HALF_EXTENT_M
+    with pytest.raises(ROSConfigError):
+        approach_box([], approach_m=0.1, frame_id="b")
+
+
+def test_a_goal_scope_declaration_waits_for_an_approach_and_measures_nothing() -> None:
+    tracker, _ = _approach_tracker()
+    assert tracker.wants_approach(now_ns=11 * _S)
+    assert not tracker.wants_measurement(now_ns=11 * _S), "no box until a hand approaches"
+    tracker.on_approach([])
+    envelope = tracker.envelope(now_ns=11 * _S)
+    assert envelope == _goal_scope(), "region-less, so the kernel exempts nothing"
+
+
+def test_one_approaching_hand_arms_a_one_hand_declaration_with_the_goals_attribution() -> None:
+    tracker, lines = _approach_tracker()
+    tracker.on_approach(_near(_LEFT))
+    target = tracker.target
+    assert target is not None
+    assert target.target_id == f"{APPROACH_TARGET_PREFIX}openarm_left_finger_pair"
+    assert target.contact_links == _LEFT, "the exemption is for the approaching hand only"
+    assert (target.rskill_id, target.trace_id, target.stamp_ns, target.timeout_s) == (
+        "openral/pi05-openarm-restock",
+        "4bf92f3577b34da6a3ce929d0e0e4736",
+        10 * _S,
+        60.0,
+    )
+    assert target.search_box == _near(_LEFT)[0][1]
+    assert tracker.wants_measurement(now_ns=11 * _S)
+    tracker.accept(_measured(11 * _S))
+    envelope = tracker.envelope(now_ns=11 * _S)
+    assert envelope is not None and envelope.region == _measured(11 * _S)
+    assert envelope.contact_links == _LEFT
+    assert sum("armed from the approach" in line for line in lines) == 1
+
+
+def test_two_hands_approaching_at_once_arm_neither() -> None:
+    tracker, lines = _approach_tracker()
+    tracker.on_approach(_near(_LEFT, _RIGHT))
+    assert tracker.target == _goal_scope()
+    assert not tracker.wants_measurement(now_ns=11 * _S)
+    assert any("2 hands approaching at once" in line for line in lines)
+
+
+def test_the_hand_leaving_the_approach_distance_retracts_at_once() -> None:
+    tracker, lines = _approach_tracker()
+    tracker.on_approach(_near(_LEFT))
+    tracker.accept(_measured(11 * _S))
+    tracker.on_approach(_near(_RIGHT))  # the left hand moved off; the other hand is not it
+    envelope = tracker.envelope(now_ns=11 * _S)
+    assert envelope == _goal_scope(), "back to the region-less goal declaration"
+    assert any("retracted — approach_ended" in line for line in lines)
+    # It re-arms only from a fresh approach, from scratch (no region carried over).
+    tracker.on_approach(_near(_RIGHT))
+    target = tracker.target
+    assert target is not None and target.contact_links == _RIGHT and tracker.region is None
+
+
+def test_the_held_hand_keeps_its_arming_while_the_other_hand_also_approaches() -> None:
+    tracker, _ = _approach_tracker()
+    tracker.on_approach(_near(_LEFT))
+    tracker.accept(_measured(11 * _S))
+    tracker.on_approach(_near(_LEFT, _RIGHT))
+    target = tracker.target
+    assert target is not None and target.contact_links == _LEFT
+    assert tracker.region is not None
+
+
+def test_the_approach_target_dies_with_the_goal() -> None:
+    tracker, _ = _approach_tracker()
+    tracker.on_approach(_near(_LEFT))
+    tracker.accept(_measured(11 * _S))
+    tracker.on_declaration(_goal_scope().model_copy(update={"active": False}))
+    assert tracker.envelope(now_ns=11 * _S) is None
+    assert tracker.target is None and tracker.region is None
+    # A new goal starts with no approach held.
+    tracker.on_declaration(_goal_scope(stamp_ns=20 * _S))
+    assert tracker.target == _goal_scope(stamp_ns=20 * _S)
+
+
+def test_the_approach_target_dies_with_the_goal_timeout() -> None:
+    tracker, _ = _approach_tracker()
+    tracker.on_approach(_near(_LEFT))
+    tracker.accept(_measured(11 * _S))
+    assert tracker.envelope(now_ns=71 * _S) is None  # stamp 10 s + timeout 60 s
+
+
+def test_a_named_search_box_wins_and_no_approach_runs() -> None:
+    tracker, _ = _tracker()
+    assert not tracker.wants_approach(now_ns=11 * _S)
+    tracker.on_approach(_near(_LEFT))
+    assert tracker.target == _dispatched()
+
+
+def test_a_named_hand_without_a_box_narrows_the_approach_to_that_hand() -> None:
+    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append)
+    tracker.on_declaration(_goal_scope().model_copy(update={"contact_links": _RIGHT}))
+    tracker.on_approach(_near(_LEFT))
+    assert not tracker.wants_measurement(now_ns=11 * _S), "the undeclared hand never arms"
+    tracker.on_approach(_near(_LEFT, _RIGHT))
+    target = tracker.target
+    assert target is not None and target.contact_links == _RIGHT
+
+
+def test_after_the_approach_hand_attaches_the_region_is_kept_for_the_handover() -> None:
+    tracker, _ = _approach_tracker()
+    tracker.on_approach(_near(_LEFT))
+    tracker.accept(_measured(11 * _S))
+    tracker.on_attach("openarm_right_finger_pair")  # the other hand: not this target
+    assert tracker.wants_measurement(now_ns=11 * _S)
+    tracker.on_attach("openarm_left_finger_pair")
+    tracker.on_approach([])  # the closed hand reads anything now; the handover rules
+    envelope = tracker.envelope(now_ns=11 * _S)
+    assert envelope is not None and envelope.region is not None
+    assert envelope.contact_links == _LEFT
+
+
+def test_the_approach_distance_is_validated_and_off_by_default() -> None:
+    robot = RobotDescription.from_yaml(str(_ROBOT))
+    config = VisionAttachmentConfig(camera="head_zed", grasp_target_enabled=True)
+    bridge = VisionAttachmentBridge(None, robot, config=config)
+    assert bridge._grasp_target is not None and bridge._grasp_target._approach_m is None
+    on = VisionAttachmentBridge(
+        None,
+        robot,
+        config=VisionAttachmentConfig(
+            camera="head_zed", grasp_target_enabled=True, grasp_target_approach_m=0.10
+        ),
+    )
+    assert on._grasp_target is not None and on._grasp_target._approach_m == 0.10
+    assert on._grasp_target._hands_of_robot == (_LEFT, _RIGHT)
+    for bad in (0.0, -0.1, GraspDeclaration.MAX_HALF_EXTENT_M + 0.01):
+        with pytest.raises(ROSConfigError, match="approach_m"):
+            GraspTargetLeg(None, bridge, config, approach_m=bad)
+
+
+def test_the_leg_arms_the_hand_whose_tcp_is_near_occupied_cells_and_not_the_far_one() -> None:
+    """Real bridge, real tf2 buffer, real lattice: the left TCP 5 cm above a block arms the
+    left hand; the right TCP 30 cm off arms nothing; the left moving away retracts."""
+    tf2_ros = pytest.importorskip("tf2_ros")
+    rclpy = pytest.importorskip("rclpy")
+    import time
+
+    from geometry_msgs.msg import TransformStamped
+
+    robot = RobotDescription.from_yaml(str(_ROBOT))
+    config = VisionAttachmentConfig(
+        camera="head_zed",
+        grasp_target_enabled=True,
+        grasp_target_approach_m=0.10,
+        tf_frames={
+            "openarm_left_link7": "openarm_left_ee_base_link",
+            "openarm_right_link7": "openarm_right_ee_base_link",
+        },
+    )
+    origin = {j.child_link: j.origin_xyz for j in robot.joints if j.role == "gripper"}
+    rclpy.init()
+    node = rclpy.create_node("test_grasp_target_approach")
+    try:
+        bridge = VisionAttachmentBridge(node, robot, config=config)
+        buffer = tf2_ros.Buffer()
+
+        def place(side: str, tcp: tuple[float, float, float]) -> None:
+            ee = TransformStamped()
+            ee.header.frame_id = "openarm_base"
+            ee.child_frame_id = f"openarm_{side}_ee_base_link"
+            offset = origin[f"openarm_{side}_finger_pair"]
+            x, y, z = (t - o for t, o in zip(tcp, offset, strict=True))
+            ee.transform.translation.x, ee.transform.translation.y = x, y
+            ee.transform.translation.z = z
+            ee.transform.rotation.w = 1.0
+            buffer.set_transform_static(ee, "test")
+
+        place("left", (0.45, 0.0, 0.18))  # the block's top face is z = 0.13
+        place("right", (0.45, -0.30, 0.18))
+        bridge._tf_buffer = buffer
+        leg = bridge._grasp_target
+        assert leg is not None
+        leg._grid = (_held_block_lattice(), time.monotonic())
+        leg.tracker.on_declaration(_goal_scope())
+
+        leg._detect_approach(0.10)
+        target = leg.tracker.target
+        assert target is not None and target.contact_links == _LEFT
+        assert target.search_box is not None
+        assert target.search_box.pose.xyz == pytest.approx((0.45, 0.0, 0.18))
+
+        place("left", (0.45, 0.0, 0.40))  # lifted 27 cm clear of the block
+        leg._detect_approach(0.10)
+        assert leg.tracker.target == _goal_scope(), "the approach ended with the hand away"
     finally:
         node.destroy_node()
         rclpy.shutdown()
