@@ -137,7 +137,7 @@ TEST(NoAlloc, ValidatorViolationPathIsAlsoAllocationFree) {
 }
 
 TEST(NoAlloc, VoxelCheckWithALiveGraspRegionIsAllocationFree) {
-  // ADR-01xx: the grasp-target exemption sits inside the world-voxel cell
+  // ADR-0115: the grasp-target exemption sits inside the world-voxel cell
   // loop, so the check with a live region must stay allocation-free. Model,
   // grid and region are built OUTSIDE the counted window.
   osk::CollisionModel m;

@@ -3723,7 +3723,7 @@ TEST_F(LifecycleKernelTest, UncappedVoxelLimitsAreIgnoredWhileTheWorldCheckIsOff
             CR::SUCCESS);
 }
 
-// ── Grasp-target exemption (ADR-01xx draft, hazard HZ-01xx) ─────────────────
+// ── Grasp-target exemption (ADR-0115 draft, hazard HZ-0115) ─────────────────
 //
 // One "finger" capsule on link0, offset 50 mm along x, swept about z by j0. At
 // j0 = 0 it sits inside the single occupied 25 mm cell centred on (0.05, 0, 0):
@@ -4581,7 +4581,7 @@ TEST_F(LifecycleKernelTest, AnUndeclaredObjectAttachedOnTheDeclaringGripperRetir
       << logs.joined();
 }
 
-// ── Multi-pick per goal (design note §2.2, HZ-01xx-3) ────────────────────────
+// ── Multi-pick per goal (design note §2.2, HZ-0115-3) ────────────────────────
 // The producer arms one identity per pick, `approach:<link>:<n>`, all under the
 // goal's stamp_ns. Each pick's declaration retires at its release; a later pick
 // arms under a fresh identity; no retired identity ever arms again.

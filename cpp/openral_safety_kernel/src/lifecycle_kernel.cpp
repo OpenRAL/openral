@@ -369,7 +369,7 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<std::int64_t>("attached_max_objects", 8);
   this->declare_parameter<std::int64_t>("attached_max_primitives", 16);
   this->declare_parameter<std::int64_t>("attached_max_touch_links", 32);
-  // Grasp-target exemption (ADR-01xx draft, hazard HZ-01xx; Safety-WG review
+  // Grasp-target exemption (ADR-0115 draft, hazard HZ-0115; Safety-WG review
   // pending). Default OFF: nothing is exempt and the world-voxel check is
   // unchanged. When on, `grasp_contact_links` is the launch-derived allowlist
   // (the manifest's `role: gripper` joints' child links); a declaration may
@@ -458,7 +458,7 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     envelope_loaded_ = false;
     return CallbackReturn::FAILURE;
   }
-  // Grasp-target exemption allowlist (ADR-01xx draft). Resolved against the
+  // Grasp-target exemption allowlist (ADR-0115 draft). Resolved against the
   // loaded collision link names; a name the model does not know is a
   // misconfiguration of a safety surface and refuses configure rather than
   // silently exempting nothing (or, worse, the wrong index).
@@ -486,7 +486,7 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
       grasp_allowlist_.set(index);
     }
     RCLCPP_WARN(this->get_logger(),
-                "safety.grasp_allowance enabled (ADR-01xx draft, Safety-WG review pending): "
+                "safety.grasp_allowance enabled (ADR-0115 draft, Safety-WG review pending): "
                 "%zu allowlisted contact link(s); a live grasp declaration exempts them from "
                 "the world-voxel check inside its measured region",
                 grasp_allowlist_.count());
@@ -1118,7 +1118,7 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // the declaration's own backstop is what stops an allowance outliving the
       // goal that justified it if the producer stalls (HZ-0097-3/4).
       voxel_grid_.place_region = place_declaration_live() ? place_region_ : PlaceApproachRegion{};
-      // ADR-01xx draft: the grasp exemption, re-evaluated per candidate for the
+      // ADR-0115 draft: the grasp exemption, re-evaluated per candidate for the
       // same reason. During the handover (the declared object is attached) it
       // lives only while that payload's origin — FK of the MEASURED
       // configuration, never a predicted one — is inside the region; once it
@@ -1635,7 +1635,7 @@ void SafetyKernelLifecycleNode::publish_diagnostics() {
     place_region_state = place_region_refusal_reason_ + ":" + place_region_refusal_target_;
   }
   add_kv("place_region", place_region_state);
-  // Standing grasp-declaration state (ADR-01xx draft), for the same reason.
+  // Standing grasp-declaration state (ADR-0115 draft), for the same reason.
   std::string grasp_region_state{"-"};
   if (!grasp_allowance_enabled_) {
     grasp_region_state = "off";
@@ -2722,7 +2722,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
     return;
   }
   const auto& declaration = msg.grasp_declaration;
-  // Attributability first (HZ-01xx-2): recorded before any arming decision, so
+  // Attributability first (HZ-0115-2): recorded before any arming decision, so
   // a declaration that never armed is still reconstructible from the trace.
   grasp_declaration_target_ = declaration.target_id;
   grasp_declaration_stamp_ns_ = declaration.stamp_ns;
@@ -2730,7 +2730,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   // Has this declaration (target, stamp) latched at a handover? Then its pick is
   // under way: the box is frozen (below), and the declaration losing its region
   // or being retracted ends the pick — it retires rather than merely dropping,
-  // so the same identity can never re-arm against a later attachment (HZ-01xx-3).
+  // so the same identity can never re-arm against a later attachment (HZ-0115-3).
   const bool latched_declaration = grasp_latched_ &&
                                    grasp_latched_target_ == declaration.target_id &&
                                    grasp_latched_stamp_ns_ == declaration.stamp_ns;
@@ -2745,7 +2745,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
                               declaration.stamp_ns)) {
     // The heartbeat of a declaration the kernel already retired — this pick's
     // or any earlier pick's of the goal: it does not re-arm. Only a new
-    // declaration can (HZ-01xx-3).
+    // declaration can (HZ-0115-3).
     announce_dropped("retired");
     return;
   }
@@ -2811,7 +2811,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   // launch-derived allowlist; the exempt mask is exactly that subset. One name
   // off the allowlist refuses the whole declaration rather than trimming it: a
   // producer naming a link the deployment never allowed is not one to trust
-  // with the rest (HZ-01xx-5).
+  // with the rest (HZ-0115-5).
   if (declaration.contact_links.empty()) {
     reject("no_contact_links");
     return;
@@ -2829,7 +2829,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   }
   // One hand per declaration. The producer may infer the target from the
   // robot's own approach instead of a named one, and it arms one hand at a
-  // time; the kernel holds it to that rather than trusting it (HZ-01xx-12).
+  // time; the kernel holds it to that rather than trusting it (HZ-0115-12).
   if (!grasp_links_one_hand(collision_model_.parent, grasp_allowlist_, mask)) {
     reject("links_span_hands");
     return;
@@ -2871,7 +2871,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
     // declaring chain any more: the gripper released its payload. The pick is
     // over even when the attachment set is not empty — the other hand still
     // holds, or the released payload is frozen on the base through its release
-    // window — so the declaration retires now (HZ-01xx-3), not at timeout_s.
+    // window — so the declaration retires now (HZ-0115-3), not at timeout_s.
     retire_grasp_declaration("released");
     return;
   }
@@ -2879,7 +2879,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
     // The declaring gripper attached something the declaration does not name.
     // Whatever it grasped, it is not the scene the region was measured for, and
     // without a handover the exemption would live on to timeout_s. Fail closed:
-    // retire it for good (HZ-01xx-3: only a new declaration re-arms). A
+    // retire it for good (HZ-0115-3: only a new declaration re-arms). A
     // producer contradicting the attachment stream is a rejection, not a
     // routine disarm, so it is WARNed with what was declared vs attached. Once
     // per declaration: its later heartbeats take the `retired` path above.

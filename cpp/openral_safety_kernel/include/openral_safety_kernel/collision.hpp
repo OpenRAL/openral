@@ -367,7 +367,7 @@ enum class PlaceRegionStatus : std::uint8_t {
 /// exemption; the lifecycle refuses such an allowlist entry at configure.
 inline constexpr std::size_t kMaxGraspMaskLinks = 256;
 
-/// Sanity bound on one side of a declared grasp-target region (ADR-01xx
+/// Sanity bound on one side of a declared grasp-target region (ADR-0115
 /// draft, "Bounds (WG)"). **A Safety-WG placeholder, not a calibrated
 /// number** — see docs/reference/real-pick-place-adr-drafts.md. A grasp
 /// region names ONE graspable object, so it is two orders smaller than the
@@ -383,11 +383,11 @@ inline constexpr double kMaxGraspRegionVolumeM3 = 0.03;
 /// Ceiling on a grasp declaration's `timeout_s` backstop (s). **A Safety-WG
 /// placeholder** mirroring `openral_core.GraspDeclaration.MAX_TIMEOUT_S`; the
 /// lifecycle refuses a declaration past it (or non-positive / non-finite)
-/// rather than trusting the schema ran. HZ-01xx-3.
+/// rather than trusting the schema ran. HZ-0115-3.
 inline constexpr double kMaxGraspDeclarationTimeoutS = 120.0;
 
-/// Producer-measured region of a live grasp declaration (ADR-01xx draft,
-/// hazard HZ-01xx), lowered into the kernel's frame convention: an oriented
+/// Producer-measured region of a live grasp declaration (ADR-0115 draft,
+/// hazard HZ-0115), lowered into the kernel's frame convention: an oriented
 /// box in the robot base frame, like `PlaceApproachRegion`.
 ///
 /// While valid, an occupied cell whose CENTRE lies inside the box does not
@@ -404,7 +404,7 @@ inline constexpr double kMaxGraspDeclarationTimeoutS = 120.0;
 ///
 /// valid == false (no declaration, feature off, retracted, expired, or a
 /// failed `ingest_grasp_region`) means no exemption anywhere — identical to
-/// the pre-ADR-01xx check, bit for bit.
+/// the pre-ADR-0115 check, bit for bit.
 struct GraspTargetRegion {
   bool valid{false};                            ///< a live, validated region is in force
   std::bitset<kMaxGraspMaskLinks> link_mask{};  ///< bit l: robot link l may contact the target
@@ -427,7 +427,7 @@ struct GraspTargetRegion {
 inline constexpr std::size_t kGraspRetiredCapacity = 16;
 
 /// The grasp-declaration identities (target, stamp) the kernel retired —
-/// HZ-01xx-3: "a retired declaration never re-arms" for every pick of a goal,
+/// HZ-0115-3: "a retired declaration never re-arms" for every pick of a goal,
 /// not only the last one. A fixed ring: no allocation, so the candidate path
 /// (`handover_exit`) can retire. The target is held as its `std::hash`: a
 /// collision can only refuse a fresh identity as retired (fail closed), never
@@ -1074,7 +1074,7 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
 /// implementation. Default 0.0 is the shipped window byte-for-byte; extra
 /// cells are scanned only when a deployment arms the band.
 ///
-/// ONE exemption, narrowly scoped (ADR-01xx draft, hazard HZ-01xx; default
+/// ONE exemption, narrowly scoped (ADR-0115 draft, hazard HZ-0115; default
 /// off — grid.grasp_region is invalid unless the lifecycle armed it): while
 /// grid.grasp_region is valid, a cell whose base-frame centre lies inside the
 /// region box does not trip for a link whose bit is set in its link_mask

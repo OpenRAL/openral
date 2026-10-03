@@ -1330,7 +1330,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           voxel.t = voxel_center_local(grid, ix, iy, iz);
           const double d =
               box_capsule_distance(voxel, voxel_half, cap, r, model.capsules[c].half_length);
-          // ADR-01xx: a declared contact link vs a cell centred in the grasp
+          // ADR-0115: a declared contact link vs a cell centred in the grasp
           // region never trips and never supplies the reported evidence.
           const bool exempt =
               grasp_link && grasp_target_exempts(grid, li, apply(grid.pose, voxel.t));
@@ -1382,7 +1382,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
             continue;
           }
           const Vec3 center = voxel_center_local(grid, ix, iy, iz);
-          // ADR-01xx, as in the capsule pass. Decided BEFORE the narrow phase:
+          // ADR-0115, as in the capsule pass. Decided BEFORE the narrow phase:
           // an exempt pair cannot trip whatever its exact distance, so it must
           // not spend the stage-2 budget the non-exempt pairs of this call
           // share — a finger buried in its target puts dozens of in-region

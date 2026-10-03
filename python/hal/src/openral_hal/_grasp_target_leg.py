@@ -14,7 +14,7 @@ region onto every attachment publication. At ``grasp_target_rate_hz``:
    ``support_search_below_m`` below its bottom, which is a lifted detection
    bbox and can sit above or below the real table top), the highest layer whose
    top-surface cells ring the footprint of the target standing on it
-   (``support_top_from_voxels``, HZ-01xx-6); then the occupied cells of that
+   (``support_top_from_voxels``, HZ-0115-6); then the occupied cells of that
    column → one cluster above that plane, whose lowest cell must sit within one
    voxel (+ one of tolerance) of it (else ``not_on_support``) → its top-centre;
 2. that seed, which must project into the depth camera through the driver's
@@ -26,7 +26,7 @@ region onto every attachment publication. At ``grasp_target_rate_hz``:
    → ``region_covers_occupied`` against the latest map → ``track_region``
    against the previous accepted region.
 
-**Every failure is an outcome, never a guess** (HZ-01xx-2/-3/-4/-6). Two
+**Every failure is an outcome, never a guess** (HZ-0115-2/-3/-4/-6). Two
 classes, each logged once per transition with its typed reason:
 
 * *Contradicting evidence* — no measured support under the target, a target
@@ -103,8 +103,8 @@ DETACH and on the window's close, never polled) the pick is complete: the counte
 advances and the hand may re-arm under a fresh identity behind the same backoff —
 but not on the payload it just released: until its approach box clears that
 payload's frozen pose by a voxel it does not arm, and a pick whose release left no
-record blocks it for the rest of the goal (HZ-01xx-11). The kernel retires every
-pick's identity at its release and never re-arms one it retired (HZ-01xx-3). A
+record blocks it for the rest of the goal (HZ-0115-11). The kernel retires every
+pick's identity at its release and never re-arms one it retired (HZ-0115-3). A
 named ``search_box`` wins: no approach detection runs for it, and it stays handed
 over after its pick. The tracker is
 serialized by one lock: the bridge's ATTACH runs on the HAL's proprio thread, the
@@ -542,12 +542,12 @@ class GraspTargetTracker:
     def on_release(self, hand: tuple[str, ...], record: AttachedCollisionObject | None) -> None:
         """A DETACH on the handed-over hand: drop its region now, keep the handover.
 
-        The kernel retires the pick's declaration at the release (HZ-01xx-3), and
+        The kernel retires the pick's declaration at the release (HZ-0115-3), and
         the region is never offered again: it is dropped at once, while the handover
         record stays so nothing re-measures or re-latches it — the hand may still be
         in its release window. ``record`` (the released payload frozen in the base
         frame, ``None`` when none was taken) is what ``spent`` guards the hand's
-        next arming against (HZ-01xx-11). A named ``search_box`` declaration and a
+        next arming against (HZ-0115-11). A named ``search_box`` declaration and a
         hand not handed over are untouched.
         """
         goal = self._declaration
@@ -721,7 +721,7 @@ def search_column(search_box: PlaceRegion, *, below_m: float) -> PlaceRegion:
 
     Raises:
         ROSConfigError: If the box is tilted — its footprint then names no
-            vertical column to find a horizontal support in (HZ-01xx-6).
+            vertical column to find a horizontal support in (HZ-0115-6).
 
     Example:
         >>> from openral_core import PlaceRegion, Pose6D
@@ -1259,7 +1259,7 @@ class GraspTargetLeg:
         """Whether ``hand`` must not arm yet: it is still by the payload it just released.
 
         After a pick completes, the hand's next arming must not take in the cells of
-        the payload it put down (HZ-01xx-11: a hand lingering by its just-placed
+        the payload it put down (HZ-0115-11: a hand lingering by its just-placed
         object would arm on it). The guard holds until the hand's approach box clears
         that payload's last pose (the DETACH's frozen release record, each primitive
         bounded by a sphere) by more than one voxel, then ends for good. A pick with
@@ -1375,7 +1375,7 @@ class GraspTargetLeg:
         # The target must stand on the measured support: its lowest kept cell sits
         # one voxel up (the seed drops the layer touching the plane), plus one voxel
         # of tolerance. A lower surface — a bench under the shelf board the target
-        # is on — would stand the region on nothing and exempt the gap (HZ-01xx-6).
+        # is on — would stand the region on nothing and exempt the gap (HZ-0115-6).
         assert seed.bottom_z is not None
         if seed.bottom_z - support_z > 2.0 * grid.resolution + 1e-9:
             raise _contradicted(

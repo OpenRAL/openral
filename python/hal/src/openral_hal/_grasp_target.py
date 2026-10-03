@@ -14,17 +14,17 @@ Flow, one call per step so every step is replayable from its inputs alone:
    column under the search box top-down, the first layer whose top-surface cells
    ring the footprint of the target standing above it, its top face. The search
    box's own bottom (a lifted detection bbox) can sit below the real table top,
-   so it is never taken as the support (HZ-01xx-6). Both steps anchor the target
+   so it is never taken as the support (HZ-0115-6). Both steps anchor the target
    on one cell — the top of the occupied column nearest the search box centre.
    ``target_seed_from_voxels`` clusters the cells above that plane and takes the
    anchored cluster's top-centre. Refuses on too few cells or on another
-   comparably-sized cluster (HZ-01xx-2, wrong object: guessing between two
+   comparably-sized cluster (HZ-0115-2, wrong object: guessing between two
    candidates is exactly the mis-declaration the hazard row names).
 3. ``project_point`` — that seed into the camera image as SAM 2.1's positive
    point prompt.
 4. ``target_region_from_mask`` — eroded mask → masked depth → base-frame cloud
    → gravity-aligned oriented box whose lower face sits **one voxel above the
-   support plane, never below it** (HZ-01xx-6: a region reaching into the
+   support plane, never below it** (HZ-0115-6: a region reaching into the
    support surface would exempt the very cells that stop the fingers from
    being driven into the table).
 5. ``region_covers_occupied`` — the fitted region must contain occupied cells
@@ -269,7 +269,7 @@ def support_top_from_voxels(
     ``k`` below that anchor, the target is the connected component of the cells
     *above* ``k`` that holds the anchor — the same object at every layer, so a
     taller neighbour in the column can never turn the target's own top face into
-    its "support" (HZ-01xx-2: the seed would land on the neighbour). ``k`` is the
+    its "support" (HZ-0115-2: the seed would land on the neighbour). ``k`` is the
     support when it holds at least ``min_cells`` **top-surface** cells (no
     occupied cell directly above) in the ring around that component's footprint —
     farther than one cell from it (the target's own side faces) and at most
@@ -429,7 +429,7 @@ def target_seed_from_voxels(
     ``support_top_from_voxels`` measures under — never merely the largest: a
     taller neighbour is not the object the search box centres on. When any other
     component holds at least ``ambiguity_ratio`` of the target's cells there is no
-    single object to name and the seed is refused (HZ-01xx-2).
+    single object to name and the seed is refused (HZ-0115-2).
 
     Args:
         grid: The lattice ``centers`` came from (its pose turns centres back into
@@ -555,7 +555,7 @@ def target_region_from_mask(
     the visible surface, and its bottom face then cannot be extruded to the support
     plane without either growing past it or stopping short of it.
 
-    **The lower face never goes below ``support_z + resolution`` (HZ-01xx-6).** The
+    **The lower face never goes below ``support_z + resolution`` (HZ-0115-6).** The
     cells holding the support surface have centres up to half a voxel above the
     plane; one full voxel keeps every one of them outside the region, so the kernel
     still stops the fingers at the table under the target. Padding is applied to the
@@ -566,7 +566,7 @@ def target_region_from_mask(
     voxel seed check sees a stack as one cluster: a target on a same-footprint
     box, or on a riser hidden under it, clusters with what it stands on, whose
     bottom is on the support, while the region's lower face is pinned to the
-    support and would exempt the lower object's cells (HZ-01xx-6). The mask names
+    support and would exempt the lower object's cells (HZ-0115-6). The mask names
     the target alone; a view that sees only its top face (straight down, or its
     lower part occluded) is refused too — less exemption, never more.
 

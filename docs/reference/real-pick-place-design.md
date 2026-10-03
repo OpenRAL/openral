@@ -232,7 +232,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   continuous detector publishes; the lift must run in the base frame (`object_lift_map_frame`)
   on a fixed-base cell without a `map` frame.
 - **Measurement:** the support plane is *measured*, never read off the search box (whose
-  bottom is a lifted detection bbox min-z and can sit below the real table top, HZ-01xx-6): in a
+  bottom is a lifted detection bbox min-z and can sit below the real table top, HZ-0115-6): in a
   column under the box (reaching 0.15 m below its bottom), scanned top-down, the first layer
   whose top-surface cells ring the footprint of the target standing above it (the target
   anchored at every layer on the top of the occupied column nearest the box centre, so a taller
@@ -353,7 +353,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   pending segmentation; re-checked on the DETACH and when the window closes
   (`on_release_closed`) — the pick is complete (`on_pick_complete`): the counter advances and
   the hand may re-arm behind the same backoff as a refusal. **Not on what it just released
-  (HZ-01xx-11):** until the hand's approach box clears the released payload's frozen pose
+  (HZ-0115-11):** until the hand's approach box clears the released payload's frozen pose
   (each primitive bounded by a sphere) by one voxel, the hand does not arm (it still counts
   toward "two hands at once"); a release that left no record (no tf2 at the DETACH) keeps it
   from arming for the rest of the goal. **The kernel bounds it, not the producer:** it retires
@@ -362,7 +362,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   sit frozen on the base through its window), when the whole attachment set empties
   (`detached`), or when a handed-over declaration loses its region or is retracted — and keeps
   every retired identity, up to 16 per activation (oldest evicted, logged once; an evicted one
-  stays bounded by its goal's `timeout_s`), so no pick's identity re-arms (HZ-01xx-3). A
+  stays bounded by its goal's `timeout_s`), so no pick's identity re-arms (HZ-0115-3). A
   pre-handover retraction (`approach_ended`, a refusal) re-arms behind the backoff under the
   same identity, so an arming the kernel already retired for a fault stays refused. A named
   `search_box` declaration stays handed over after its pick: a new target needs a new
@@ -378,7 +378,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   on a close in free air. The conservatism comes instead from where the box is (around the
   TCP only), what fills it (a measured, unambiguous object standing on a measured support),
   one hand, the region caps, the short region-age bound (kernel `grasp_region_max_age_s`,
-  2 × the voxel deadline) and attended operation. Residual (HZ-01xx-11): the hand passing
+  2 × the voxel deadline) and attended operation. Residual (HZ-0115-11): the hand passing
   within the approach distance of a neighbour arms on the neighbour for as long as it stays
   there; the exemption then covers that neighbour's cells for that hand's links only.
   Tests: `tests/unit/test_grasp_target_leg.py` (approach rows), live
@@ -559,10 +559,10 @@ decide; 7 and 8 need the attended cell for calibration.
    the approach-armed target (§2.2): arming without a named target, the approach distance,
    proximity-only arming vs a closing-intent gate, one hand at a time (and refusing two
    approaching hands at once), and whether a goal may re-arm after an attach.
-2. Hazard HZ-01xx: exemption misapplied (non-target body inside the region; wrong object; stale
+2. Hazard HZ-0115: exemption misapplied (non-target body inside the region; wrong object; stale
    declaration; target moved while frozen; leak to other links/arms; fingers into the support;
-   the exemption arming on an unintended object near the hand, HZ-01xx-11; a producer declaring
-   two hands, HZ-01xx-12).
+   the exemption arming on an unintended object near the hand, HZ-0115-11; a producer declaring
+   two hands, HZ-0115-12).
 3. Turning `attached_collision_enabled` on for real, with the deadline, and trusting vision
    geometry for map clearing (undersized box clears a real obstacle; phantom fallback box on a
    closed-on-nothing gripper; dead jaw-position channel → kernel drop window).

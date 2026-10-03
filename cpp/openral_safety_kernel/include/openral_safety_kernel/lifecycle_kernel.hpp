@@ -187,7 +187,7 @@ private:
   // every other freshness check here (`this->now()`).
   bool region_measurement_fresh(std::int64_t stamp_ns, double max_age_s) const noexcept;
 
-  // Grasp-phase declaration (ADR-01xx draft, hazard HZ-01xx) — resolve the
+  // Grasp-phase declaration (ADR-0115 draft, hazard HZ-0115) — resolve the
   // producer-measured grasp declaration riding the world state into the
   // contact-link-scoped region `check_voxel_collision` exempts. Only called
   // with `grasp_allowance_enabled`. Every refusal yields NO region, i.e. the
@@ -342,7 +342,7 @@ private:
   /// state stays readable on the 1 Hz `/diagnostics` `place_region` key.
   std::string place_region_refusal_reason_;
   std::string place_region_refusal_target_;
-  /// Grasp-phase declaration state (ADR-01xx draft). Off unless
+  /// Grasp-phase declaration state (ADR-0115 draft). Off unless
   /// `grasp_allowance_enabled`; `grasp_allowlist_` is the launch-derived set of
   /// contact links (`grasp_contact_links`, resolved at configure — an unknown
   /// name fails configure). `grasp_region_` is the validated region whose mask
