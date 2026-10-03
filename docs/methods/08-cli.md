@@ -236,18 +236,18 @@ _BEHAVIOR Challenge WebSocket policy server backing `openral behavior serve` (`b
 ### `python/cli/src/openral_cli/check.py`
 _`openral check`: static, host-independent validation of the declarative robot/skill/scene set. Imports only `openral_core` (no hardware probe); complements the host-specific `openral rskill check`. Manifest JSON-Schema emission lives in `tools/schema_export.py` (CI-gated), not here._
 
-- `class CheckFinding(BaseModel)` — One problem: `rule` (`robot_parse`/`rskill_parse`/`scene_parse`/`asset_ref`/`scene_robot_id`/`scene_sensor_geometry`/`robot_unit`/`scene_robot_unit`/`embodiment_reach`/`frames`), `severity` (`error`/`warning`), `target`, `message`. (L84)
-- `class GraphCheckReport(BaseModel)` — Typed `openral check --json` payload: `generated_at`, `n_robots`/`n_rskills`/`n_scenes`, `findings`; `.errors` / `.warnings` / `.ok` properties. (L95)
-  - `errors() -> list[CheckFinding]` — Findings that fail the check. (L108)
-  - `warnings() -> list[CheckFinding]` — Advisory findings (fail only under `--strict`). (L113)
-  - `ok() -> bool` — True when there are no error-severity findings. (L118)
-- `check_description_graph(repo_root, *, resolve_remote_assets=False) -> GraphCheckReport` — Parses every robot/rskill/scene manifest, resolves `file:`/`ros2://` asset refs, and checks that scene `robot_id`s resolve, no scene sensor reuses a robot-manifest sensor's name (`check_scene_sensor_overrides`), every `robots/<id>/units/*.yaml` and scene `robot_unit` resolves and applies (`load_robot_unit`, `apply_sensor_overlays`), rSkill embodiment tags reach an in-repo robot, and sensor `parent_frame`s are declared — reusing `RobotDescription.from_yaml`/`resolve_asset` rather than parallel validation logic. (L330)
-- `check_command(--repo-root, --strict, --resolve-remote-assets, --json)` — The `openral check` leaf command; exit 1 on any error (and on warnings under `--strict`). Registered in `main.py` via `app.command("check")`. (L399)
-- `_REMOTE_ASSET_PREFIXES: tuple[str, ...]` — Asset-ref prefixes (`rd:`/`gym_aloha:`/`openarm:`/`menagerie:`) that download a package or need a sim-only dep; skipped unless `resolve_remote_assets`. (L72)
-- `_SCENE_TIERS: dict[str, type[DeployScene]]` — Scene subdirectory name (`deploy`/`sim`/`benchmark`) → its schema class. (L74)
-- `_LOAD_ERRORS: tuple[type[Exception], ...]` — Exceptions a manifest `from_yaml`/`model_validate` may raise for a bad file, caught to produce a `CheckFinding` instead of crashing the whole check. (L81)
-- `_URDF_LINK_RE: re.Pattern[str]` — Matches a URDF `<link name="...">` tag, used to enumerate link names for the `frames` rule. (L152)
-- `_SEVERITY_STYLE: dict[str, str]` — `CheckFinding.severity` → Rich console style (`error` → red, `warning` → yellow). (L367)
+- `class CheckFinding(BaseModel)` — One problem: `rule` (`robot_parse`/`rskill_parse`/`scene_parse`/`asset_ref`/`scene_robot_id`/`scene_sensor_geometry`/`robot_unit`/`scene_robot_unit`/`embodiment_reach`/`frames`), `severity` (`error`/`warning`), `target`, `message`. (L85)
+- `class GraphCheckReport(BaseModel)` — Typed `openral check --json` payload: `generated_at`, `n_robots`/`n_rskills`/`n_scenes`, `findings`; `.errors` / `.warnings` / `.ok` properties. (L96)
+  - `errors() -> list[CheckFinding]` — Findings that fail the check. (L109)
+  - `warnings() -> list[CheckFinding]` — Advisory findings (fail only under `--strict`). (L114)
+  - `ok() -> bool` — True when there are no error-severity findings. (L119)
+- `check_description_graph(repo_root, *, resolve_remote_assets=False) -> GraphCheckReport` — Parses every robot/rskill/scene manifest, resolves `file:`/`ros2://` asset refs, and checks that scene `robot_id`s resolve, no scene sensor reuses a robot-manifest sensor's name (`check_scene_sensor_overrides`), every `robots/<id>/units/*.yaml` and scene `robot_unit` resolves and applies (`load_robot_unit`, `apply_sensor_overlays`), rSkill embodiment tags reach an in-repo robot, and sensor `parent_frame`s are declared — reusing `RobotDescription.from_yaml`/`resolve_asset` rather than parallel validation logic. (L332)
+- `check_command(--repo-root, --strict, --resolve-remote-assets, --json)` — The `openral check` leaf command; exit 1 on any error (and on warnings under `--strict`). Registered in `main.py` via `app.command("check")`. (L401)
+- `_REMOTE_ASSET_PREFIXES: tuple[str, ...]` — Asset-ref prefixes (`rd:`/`gym_aloha:`/`openarm:`/`menagerie:`) that download a package or need a sim-only dep; skipped unless `resolve_remote_assets`. (L73)
+- `_SCENE_TIERS: dict[str, type[DeployScene]]` — Scene subdirectory name (`deploy`/`sim`/`benchmark`) → its schema class. (L75)
+- `_LOAD_ERRORS: tuple[type[Exception], ...]` — Exceptions a manifest `from_yaml`/`model_validate` may raise for a bad file, caught to produce a `CheckFinding` instead of crashing the whole check. (L82)
+- `_URDF_LINK_RE: re.Pattern[str]` — Matches a URDF `<link name="...">` tag, used to enumerate link names for the `frames` rule. (L153)
+- `_SEVERITY_STYLE: dict[str, str]` — `CheckFinding.severity` → Rich console style (`error` → red, `warning` → yellow). (L369)
 
 ### `python/cli/src/openral_cli/install.py`
 _`openral install <group>` — post-install escape hatch for the Tier-0 curl-bash installer; each command wraps `_install_group` for one `uv sync --group` extras group (sim physics, LIBERO, MetaWorld, ManiSkill3, SimplerEnv, RoboCasa, RLDX sidecar) or the sudo+apt ROS 2 bootstrap._
