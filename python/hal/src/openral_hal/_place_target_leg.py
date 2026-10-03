@@ -821,6 +821,12 @@ def place_tick(
         evidence_ref=f"{obj.object_id}@{grid_stamp_ns};",
     )
     hint = tracker.declaration.search_box if tracker.declaration is not None else None
+    if not isinstance(result, tuple) and hint is not None and hint.frame_id != grid.frame_id:
+        # A hint in another frame cannot be tested against this grid; never guess.
+        result = (
+            PlaceRefusal.OUTSIDE_HINT,
+            f"the named surface is in frame {hint.frame_id!r}, the voxel grid in {grid.frame_id!r}",
+        )
     if not isinstance(result, tuple) and hint is not None:
         t = homogeneous_from_quat_xyz(hint.pose.xyz, hint.pose.quat_xyzw)
         local = (np.asarray(result.region.pose.xyz) - t[:3, 3]) @ t[:3, :3]

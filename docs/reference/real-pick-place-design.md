@@ -127,7 +127,7 @@ using SAM 2.1 to see the object.
    the idle stepper's hold (`twin_jaw_evidence_timeout_s`) is gated on `hal_mode == "sim"` and a
    HAL with a callable `idle_step` — it used to key on the node carrying a `SimSensorBridge`,
    which every mode builds, so the real OpenArm's 0.5 s timeout became ~2.1 s, past the kernel's
-   500 ms attached deadline (a dead jaw channel kept a fresh heartbeat). On the same gate only,
+   1000 ms real attached deadline (`_attached_collision_deadline_ms`) (a dead jaw channel kept a fresh heartbeat). On the same gate only,
    the evidence run spans sample gaps shorter than that timeout
    (`VisionAttachmentConfig.evidence_run_spans_gaps`), so a re-inference pause no longer
    withholds the heartbeat as motion resumes; real hardware still restarts the run on any gap

@@ -395,6 +395,20 @@ def test_a_dispatch_declaration_is_an_optional_hint() -> None:
     assert envelope is not None and envelope.region is None
     assert elsewhere.patch is None
 
+    # A hint in another frame cannot be tested against the grid: refused, never guessed.
+    foreign = _tracker([], goal=False)
+    other = declaration(0.0)
+    assert other.search_box is not None
+    foreign.on_declaration(
+        other.model_copy(
+            update={"search_box": other.search_box.model_copy(update={"frame_id": "map"})}
+        )
+    )
+    _tick(foreign, _lattice(_table), bottom_z=_TABLE_TOP + 0.10, now_ns=_STAMP)
+    envelope = foreign.envelope(now_ns=_STAMP)
+    assert envelope is not None and envelope.region is None
+    assert foreign.patch is None
+
 
 def test_the_freeze_may_not_exceed_the_kernels_region_age_bound() -> None:
     bridge = cast("VisionAttachmentBridge", object())

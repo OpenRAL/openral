@@ -1003,11 +1003,11 @@ _The real place producer (design note `docs/reference/real-pick-place-design.md`
   - **(property)** `patch -> PlacePatch | None` (L522) — the latched patch.
   - **(property)** `payload_key -> tuple[str, int] | None` (L527) — the payload the patch was measured under.
 - `place_tick(tracker, grid, grid_stamp_ns, *, carried, published, extrinsic_error_m, search_depth_m, now_ns) -> None` (L758) — One pure measurement tick (`grid_stamp_ns` = the grid's `source_stamp`): nothing without a live declaration (`no_declaration`); re-verify the latched patch while its payload is over it (or released onto it), else measure under the carried payload, applying the dispatch hint.
-- `class PlaceTargetLeg(node, bridge, config)` (L842) — ROS wiring; reuses the bridge's tf2 buffer, legs and publisher. `ROSConfigError` on a non-positive rate / freeze / depth / extrinsic bound, or a freeze past `2 * grid_max_age_s`.
-  - `setup() -> None` (L899) — Subscriptions + the measurement timer.
-  - `teardown() -> None` (L942) — Idempotent.
-  - `fill(msg, *, now_ns) -> None` (L954) — Sets `place_declaration_valid` / `place_declaration` on one `AttachmentState`.
-  - `decorate(objects) -> list[AttachedCollisionObject]` (L961) — `PlaceTargetTracker.decorate`.
-  - `on_joint_state() -> None` (L965) — Witness re-evaluation (throttled to 20 Hz); republishes on a change.
+- `class PlaceTargetLeg(node, bridge, config)` (L848) — ROS wiring; reuses the bridge's tf2 buffer, legs and publisher. `ROSConfigError` on a non-positive rate / freeze / depth / extrinsic bound, or a freeze past `2 * grid_max_age_s`.
+  - `setup() -> None` (L905) — Subscriptions + the measurement timer.
+  - `teardown() -> None` (L948) — Idempotent.
+  - `fill(msg, *, now_ns) -> None` (L960) — Sets `place_declaration_valid` / `place_declaration` on one `AttachmentState`.
+  - `decorate(objects) -> list[AttachedCollisionObject]` (L967) — `PlaceTargetTracker.decorate`.
+  - `on_joint_state() -> None` (L971) — Witness re-evaluation (throttled to 20 Hz); republishes on a change.
 
 **Node wiring** (`ManifestHALLifecycleNode`): `vision_attachment_*` params (`enabled` defaults to False; `vision_attachment_tf_frames` takes `"link=frame"` strings; no trigger thresholds are params — they are the manifest's `closure_calibration`; `_on_safe_action` feeds the HAL's applied command to `observe_command` (`_fold_applied_command`, which clears it via `clear_command` when a committed group's command is unknown); the trigger windows are `PositionStallConfig.for_rate` of the node's resolved joint-state rate (`publish_rate_hz`, else the manifest's `control_rate_hz`), with `vision_attachment_trigger_max_gap_s` (default `0.0` = derived) as an explicit gap override; `vision_attachment_grasp_target_support_search_below_m` / `_support_probe_margin_m` / `_occluder_margin_m` (defaults 0.15 / 0.05 / 0.05 m) reach `GraspTargetLeg` through the matching `VisionAttachmentConfig` fields; `vision_attachment_grid_max_age_s` / `_release_clear_m` default `0.0` = unset and are REQUIRED with the leg on — the kernel's voxel deadline and margin + resolution, passed by `deploy_e2e.launch.py`; unset is a `ROSConfigError` naming the param at activate, no cell's values as fallback); built in `_setup_vision_attachment` on activate, torn down on deactivate/cleanup. `_attachment_barrier_holders()` / `_attachment_perception_ready()` require every present holder (sim bridge + vision bridge) to clear before a tick is acknowledged.
