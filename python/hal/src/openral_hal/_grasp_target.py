@@ -95,6 +95,7 @@ class TargetRefusal(StrEnum):
     AMBIGUOUS = "ambiguous"
     TOO_FEW_POINTS = "too_few_points"
     NO_HEIGHT_ABOVE_SUPPORT = "no_height_above_support"
+    NOT_ON_SUPPORT = "not_on_support"
     HALF_EXTENT_CAP = "half_extent_cap"
     VOLUME_CAP = "volume_cap"
 
@@ -560,6 +561,15 @@ def target_region_from_mask(
     still stops the fingers at the table under the target. Padding is applied to the
     four sides and the top only.
 
+    **The masked cloud must reach down to the support** — its lowest point (after
+    the trim) within two voxels of ``support_z``, else ``NOT_ON_SUPPORT``. The
+    voxel seed check sees a stack as one cluster: a target on a same-footprint
+    box, or on a riser hidden under it, clusters with what it stands on, whose
+    bottom is on the support, while the region's lower face is pinned to the
+    support and would exempt the lower object's cells (HZ-01xx-6). The mask names
+    the target alone; a view that sees only its top face (straight down, or its
+    lower part occluded) is refused too — less exemption, never more.
+
     Padding is ``√3·resolution/2 + extrinsic_error_m`` — a cell whose centre is
     outside a box can still overlap it by half a cell diagonal, plus the camera
     mount's error. The cloud is trimmed to the ``[trim, 100 - trim]`` percentile
@@ -600,19 +610,19 @@ def target_region_from_mask(
         >>> m[24:40, 24:40] = True
         >>> t = np.diag([1.0, -1.0, -1.0, 1.0])  # camera 1 m up looking straight down
         >>> t[2, 3] = 1.0
-        >>> fit = target_region_from_mask(
+        >>> fit = target_region_from_mask(  # a 3 cm tile: straight down sees only its top
         ...     m,
         ...     np.full((64, 64), 0.9),
         ...     k,
         ...     t,
-        ...     support_z=0.0,
+        ...     support_z=0.07,
         ...     resolution=0.02,
         ...     frame_id="base",
         ...     evidence_ref="doc",
         ...     min_points=10,
         ... )
         >>> fit.refusal is None, round(fit.region.pose.xyz[2] - fit.region.half_extents[2], 3)
-        (True, 0.02)
+        (True, 0.09)
     """
     eroded = _erode(mask, erode_px)
     pts_cam, valid = backproject_masked_depth(
@@ -631,7 +641,9 @@ def target_region_from_mask(
     rot2 = np.array(((c, -s), (s, c)))
     uv = (xy - xy_mean) @ rot2
     lo_uv, hi_uv = np.percentile(uv, (trim_percentile, 100.0 - trim_percentile), axis=0)
-    top = float(np.percentile(pts[:, 2], 100.0 - trim_percentile))
+    low, top = (
+        float(v) for v in np.percentile(pts[:, 2], (trim_percentile, 100.0 - trim_percentile))
+    )
 
     pad = math.sqrt(3.0) * resolution / 2.0 + extrinsic_error_m
     bottom = support_z + resolution
@@ -644,6 +656,8 @@ def target_region_from_mask(
         return TargetRegionFit(None, TargetRefusal.HALF_EXTENT_CAP, n, valid, half)
     if 8.0 * half[0] * half[1] * half[2] > max_volume_m3:
         return TargetRegionFit(None, TargetRefusal.VOLUME_CAP, n, valid, half)
+    if low > support_z + 2.0 * resolution + 1e-9:
+        return TargetRegionFit(None, TargetRefusal.NOT_ON_SUPPORT, n, valid, half)
 
     centre_xy = xy_mean + rot2 @ ((lo_uv + hi_uv) / 2.0)
     centre = (float(centre_xy[0]), float(centre_xy[1]), (z_hi + bottom) / 2.0)

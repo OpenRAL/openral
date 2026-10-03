@@ -190,6 +190,51 @@ def _slab_depth(top_z: float) -> NDArray[np.float64]:
     return np.where(depth > 0.0, depth, 0.0)
 
 
+def _prism_view(
+    top: NDArray[np.bool_], top_z: float, bottom_z: float
+) -> tuple[NDArray[np.bool_], NDArray[np.float64]]:
+    """The solid under a masked top face as the ZED sees it: SAM masks the whole visible
+    object — the real top-face mask plus the prism's near sides down to ``bottom_z`` —
+    ray-marched through the real mount in 0.5 mm steps; depth 0 off the object."""
+    t = _t_base_from_optical()
+    slab = _slab_depth(top_z)
+    rows, cols = np.nonzero(top)
+    z = slab[rows, cols]
+    cam = np.stack(
+        (((cols + 0.5) - _ZED_K.cx) * z / _ZED_K.fx, ((rows + 0.5) - _ZED_K.cy) * z / _ZED_K.fy, z),
+        axis=1,
+    )
+    cell = 0.002  # the footprint raster; the top face samples it at < 1 mm
+    ij = np.floor((cam @ t[:3, :3].T + t[:3, 3])[:, :2] / cell).astype(int)
+    lo = ij.min(axis=0) - 2
+    foot = np.zeros(tuple(ij.max(axis=0) - lo + 3), dtype=bool)
+    foot[ij[:, 0] - lo[0], ij[:, 1] - lo[1]] = True
+    # The image window holding the prism: its footprint box projected at both heights.
+    box = [(lo + np.array((a, b))) * cell for a in (0, foot.shape[0]) for b in (0, foot.shape[1])]
+    corners = np.array([(*xy, h, 1.0) for xy in box for h in (top_z, bottom_z)])
+    opt = (np.linalg.inv(t) @ corners.T)[:3]
+    us, vs = _ZED_K.fx * opt[0] / opt[2] + _ZED_K.cx, _ZED_K.fy * opt[1] / opt[2] + _ZED_K.cy
+    v, u = np.mgrid[
+        max(0, int(vs.min())) : min(_ZED_K.height, int(vs.max()) + 1),
+        max(0, int(us.min())) : min(_ZED_K.width, int(us.max()) + 1),
+    ]
+    rays = np.stack(((u + 0.5 - _ZED_K.cx) / _ZED_K.fx, (v + 0.5 - _ZED_K.cy) / _ZED_K.fy))
+    d = np.tensordot(t[:3, :2], rays, axes=1) + t[:3, 2:3, None]  # base dir per optical z
+    t_top, t_bot = (top_z - t[2, 3]) / d[2], (bottom_z - t[2, 3]) / d[2]
+    hit = np.zeros(u.shape)
+    for s in np.linspace(0.0, 1.0, int((top_z - bottom_z) / 0.0005) + 1):
+        tt = t_top + s * (t_bot - t_top)
+        fi = np.floor((t[0, 3] + tt * d[0]) / cell).astype(int) - lo[0]
+        fj = np.floor((t[1, 3] + tt * d[1]) / cell).astype(int) - lo[1]
+        ok = (fi >= 0) & (fi < foot.shape[0]) & (fj >= 0) & (fj < foot.shape[1]) & (hit == 0)
+        ok[ok] = foot[fi[ok], fj[ok]]
+        hit[ok] = tt[ok]
+    depth = np.zeros((_ZED_K.height, _ZED_K.width))
+    depth[v, u] = hit
+    depth[top] = slab[top]
+    return top | (depth > 0.0), depth
+
+
 def _footprint_lattice(mask: NDArray[np.bool_], depth: NDArray[np.float64]) -> VoxelLattice:
     """Rasterise the same slab into the lattice: every cell under the masked top face, from
     the support plane to the top — what octomap holds for a solid object."""
@@ -218,11 +263,12 @@ def _fit(mask: NDArray[np.bool_]) -> tuple[TargetRegionFit, NDArray[np.float64]]
 
 
 def _fit_on(
-    mask: NDArray[np.bool_], support_z: float
+    mask: NDArray[np.bool_], support_z: float, *, bottom_z: float = _SUPPORT_Z
 ) -> tuple[TargetRegionFit, NDArray[np.float64]]:
-    depth = _slab_depth(_TOP_Z)
+    """Fit the box under the real top-face ``mask`` standing on ``bottom_z``."""
+    seen, depth = _prism_view(mask, _TOP_Z, bottom_z)
     return target_region_from_mask(
-        mask,
+        seen,
         depth,
         _ZED_K,
         _t_base_from_optical(),
@@ -438,6 +484,31 @@ def test_a_taller_neighbour_never_makes_the_targets_top_its_support() -> None:
     assert seed.cluster_sizes[0] < seed.cluster_sizes[1]  # the anchored box comes first
 
 
+@pytest.mark.parametrize("under", ["same_footprint_box", "narrower_riser"])
+def test_a_target_standing_on_another_object_is_refused_not_on_support(under: str) -> None:
+    """HZ-01xx-6. Voxels: a 6 cm item on a 6 cm box of its footprint, or on a riser hidden
+    under it, clusters with what it stands on — one object whose bottom is on the table, so
+    the seed's contact check passes. Mask: SAM names the item alone, whose cloud ends 6 cm
+    above the table; a region pinned to the table would exempt the lower object's cells."""
+    item_i, item_j = range(8, 13), range(8, 13)
+    below = (item_i, item_j) if under == "same_footprint_box" else (range(9, 12), range(9, 12))
+    cells = _seen_table(5, item_i, item_j, shadow=3) | _shell(*below, range(6, 9))
+    grid = _cells_lattice(cells | _shell(item_i, item_j, range(9, 12)))
+    column = _column_of(grid, range(4, 17), range(4, 17))
+    near = _centre_xy(item_i, item_j)
+    support = support_top_from_voxels(grid, column, near_xy=near, min_cells=8)
+    assert support is not None and support == pytest.approx(6 * _RES)
+    seed = target_seed_from_voxels(grid, column, near_xy=near, support_z=support, min_cells=8)
+    assert seed.point is not None and seed.bottom_z is not None
+    assert seed.bottom_z - support <= 2.0 * _RES + 1e-9, "the voxel check is fooled"
+
+    mask = _mask_in_zed(_ERASER_MASK, factor=4)
+    fit, _ = _fit_on(mask, _SUPPORT_Z, bottom_z=_SUPPORT_Z + 0.06)
+    assert (fit.region, fit.refusal) == (None, TargetRefusal.NOT_ON_SUPPORT)
+    on_table, _ = _fit_on(mask, _SUPPORT_Z)  # the same item standing on the table
+    assert on_table.region is not None
+
+
 def test_seed_refuses_two_equal_objects() -> None:
     """HZ-01xx-2: two comparable candidates in the search box — no guessing."""
     bx, by = _box_centre_xy()
@@ -511,7 +582,16 @@ def test_region_from_real_mask_sits_above_support_within_caps_and_matches_the_ma
 def test_whole_view_mask_is_refused_by_the_caps() -> None:
     """The committed mis-aimed SAM mask (59.85 % of its frame, at score 0.977) spread over the
     ZED view describes a tabletop, not one graspable object."""
-    fit, _ = _fit(_mask_in_zed(_TABLECLOTH_MASK, factor=3))
+    fit = target_region_from_mask(
+        _mask_in_zed(_TABLECLOTH_MASK, factor=3),
+        _slab_depth(_TOP_Z),
+        _ZED_K,
+        _t_base_from_optical(),
+        support_z=_SUPPORT_Z,
+        resolution=_RES,
+        frame_id=_FRAME,
+        evidence_ref="head_zed:sam2.1:test",
+    )
     assert fit.region is None
     assert fit.refusal is TargetRefusal.HALF_EXTENT_CAP
     assert max(fit.half_extents) > 0.20
