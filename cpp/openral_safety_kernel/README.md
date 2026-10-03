@@ -870,14 +870,17 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   updates on every snapshot. A rejected attachment set or a grid-frame change also
   retires it, before or after the handover (genuine faults; a pre-handover one stays
   retired — the producer re-arms only under a fresh identity, after its hand left
-  the approach distance and stayed away for a freeze window:
+  the approach distance and was seen away for a freeze window:
   `…AFaultRetiredPreHandoverIdentityStaysRefused`). A detach (the attachment set
-  emptying at a new revision) retires it **after the handover** — its payload on the
-  declaring chain was released. Before the handover nothing of this pick is
-  attached, so the detach is another hand's release or a frozen record clearing:
-  the declaration is only dropped (`grasp_region_dropped reason=detached_elsewhere`)
-  and the same snapshot re-ingests it through every gate
-  (`…AnotherHandsDetachDoesNotRetireAPreHandoverDeclaration`). A retired declaration's
+  emptying at a new revision) retires it too, **before or after the handover** and
+  whichever hand let go (`…AGraspDetachRetiresTheExemption`,
+  `…AnotherHandsDetachRetiresAPreHandoverDeclaration`). The kernel does not try to
+  tell "another hand's" detach apart: with KeepLast(1) a missed ATTACH snapshot would
+  make the declaring hand's own release look like another's, and keeping the
+  pre-detach region would exempt cells nothing re-checked. Liveness is the
+  producer's: it owns the attachment set, and on every change it publishes it
+  re-arms the other hand under a fresh identity from a measurement taken after the
+  detach (`GraspTargetLeg.on_attachment_changed`). A retired declaration's
   heartbeat never re-arms it; only a new declaration (new target or stamp) can.
 * **Multi-pick per goal.** The approach-armed producer arms each pick of a goal
   under its own identity (`approach:<link>:<n>`, the goal's stamp), so retirement
