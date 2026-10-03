@@ -68,6 +68,7 @@ from openral_cli.check import check_command
 from openral_cli.collision import collision_app
 from openral_cli.dataset import dataset_app
 from openral_cli.deploy_sim import deploy_sim_command
+from openral_cli.estop import estop_app
 from openral_cli.install import install_app
 from openral_cli.prompt import prompt_command
 
@@ -3813,6 +3814,10 @@ app.command(
         "Publish a one-shot operator prompt to the prompt-router. Requires a sourced ROS 2 install."
     ),
 )(prompt_command)
+
+# `openral estop reset` clears the kernel latch, then (only on success) every
+# HAL/runner latch via /openral/estop_cleared — the dashboard's reset sequence.
+app.add_typer(estop_app, name="estop")
 
 
 # ── openral dashboard — live debugging UI over the OTel stream (issue #44) ──────

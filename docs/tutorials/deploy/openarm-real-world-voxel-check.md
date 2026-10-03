@@ -339,8 +339,13 @@ EOF
 ```
 
 A cell on or next to the stopping link itself is self-occupancy (gap 1), not an obstacle.
-After each stop, clear the cell, confirm presence, then reset with
-`ros2 service call /openral/estop_reset std_srvs/srv/Trigger`.
+After each stop, clear the cell, confirm presence, then reset with `openral estop reset`.
+It calls the kernel's `/openral/estop_reset` first and, only if the kernel accepts, broadcasts
+`/openral/estop_cleared`, the same sequence as the dashboard's reset button. Do not call
+`ros2 service call /openral/estop_reset ...` on its own: that clears only the kernel, so the
+runner and HAL stay latched and the runner rejects every later goal (it logs
+`rskill_runner.goal_rejected: e-stop latched`). Exit code 1 means the kernel refused, usually
+because the cooldown has not passed yet, and nothing was cleared. Wait a moment and run it again.
 
 Run these tests in order:
 

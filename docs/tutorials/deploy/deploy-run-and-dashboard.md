@@ -541,6 +541,19 @@ does not.
 **From the dashboard**, using the prompt box on the live pane, which posts to
 the same path as the CLI.
 
+**After an e-stop**, clear it from the CLI with:
+
+```bash
+openral estop reset
+```
+
+This mirrors the dashboard's reset button. It calls the safety kernel's
+`/openral/estop_reset` first, then broadcasts `/openral/estop_cleared` only if the kernel
+accepted, which un-latches the HAL and the rSkill runner. A bare
+`ros2 service call /openral/estop_reset ...` clears the kernel alone, and the runner keeps
+rejecting goals. Exit code 1 means the kernel refused the reset (often its cooldown), and
+nothing was broadcast.
+
 ### Optional reward monitor
 
 `deploy run` can bring up the same reward/progress monitor as `deploy sim`:
