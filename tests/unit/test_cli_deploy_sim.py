@@ -3057,6 +3057,42 @@ def test_deploy_refuses_grasp_allowance_without_its_producer(
     assert "grasp_allowance_enabled:=true" in _invoke_cell(scene).argv_template
 
 
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"vision_attachment_grasp_target_enabled": False},
+        {"vision_attachment_enabled": False},
+    ],
+)
+def test_deploy_run_refuses_a_hal_override_that_turns_the_producer_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, override: dict[str, object]
+) -> None:
+    """The scene enables the target leg, but ``--hal`` turns it off on the HAL: the refusal
+    judges the effective HAL params, so the override cannot arm an unmeasured exemption."""
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    scene = _openarm_cell_scene(
+        tmp_path,
+        runtime={"grasp_allowance_enabled": True},
+        leg={"enabled": True, "grasp_target_enabled": True},
+    )
+
+    def invoke(overrides: dict[str, object] | None) -> LaunchInvocation:
+        return resolve_launch_invocation(
+            config=scene,
+            robot_override="openarm",
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides=overrides,
+            enable_dashboard=False,
+            hal_mode="real",
+        )
+
+    with pytest.raises(ROSConfigError, match="--hal"):
+        invoke(override)
+    hal = invoke(None).hal_params
+    assert hal["vision_attachment_grasp_target_enabled"] is True
+
+
 def test_deploy_vision_attachment_off_forwards_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     """The committed scene keeps the leg off: no HAL param, no launch arg."""
     monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
