@@ -26,6 +26,7 @@ from openral_core import (
     GraspTargetRef,
     ObjectDetection2D,
     PlaceTargetRef,
+    Pose6D,
     RobotDescription,
     RobotUnit,
     SceneGraph,
@@ -124,10 +125,10 @@ def _contains(decl: GraspDeclaration, bbox: tuple[float, ...]) -> bool:
 
 def test_a_single_lifted_detection_grounds_a_seed_only_declaration() -> None:
     live = _lift({"a": ("box", (0.40, -0.15, -0.10))})
-    decl = _ground(GraspTargetRef(label="Box"), live)
+    decl = _ground(GraspTargetRef(label="Box", contact_links=["openarm_left_finger_pair"]), live)
     assert decl.region is None  # only the producer measures
     assert decl.target_id == "obj:box"
-    assert decl.contact_links == ("openarm_left_finger_pair", "openarm_right_finger_pair")
+    assert decl.contact_links == ("openarm_left_finger_pair",)
     assert decl.timeout_s == 70.0
     box = decl.search_box
     assert box is not None
@@ -167,7 +168,13 @@ def test_a_recalled_node_id_disambiguates() -> None:
     memory.ingest_detected_objects(live, now_ns=1)
     graph = memory.to_scene_graph()
     right = next(n for n in graph.nodes if n.pose.xyz[1] > 0.0)
-    decl = _ground(GraspTargetRef(label="box", object_id=right.node_id), live, graph)
+    decl = _ground(
+        GraspTargetRef(
+            label="box", object_id=right.node_id, contact_links=["openarm_right_finger_pair"]
+        ),
+        live,
+        graph,
+    )
     assert decl.target_id == f"obj:{right.node_id}"
     assert decl.region is None
     assert right.bbox_3d is not None
@@ -194,6 +201,36 @@ def test_the_reasoner_supplied_contact_links_win() -> None:
     live = _lift({"a": ("box", (0.40, -0.15, -0.10))})
     decl = _ground(GraspTargetRef(label="box", contact_links=["openarm_left_finger_pair"]), live)
     assert decl.contact_links == ("openarm_left_finger_pair",)
+
+
+def test_an_unnamed_gripper_on_a_bimanual_robot_refuses() -> None:
+    """Defaulting to every gripper would name both OpenArm hands for one grasp."""
+    live = _lift({"a": ("box", (0.40, -0.15, -0.10))})
+    with pytest.raises(ROSReasonerInvalidPlan, match=r"2 grippers.*openarm_left_finger_pair"):
+        _ground(GraspTargetRef(label="box"), live)
+
+
+def test_a_single_gripper_robot_keeps_the_default_contact_link() -> None:
+    so101 = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "so101_follower" / "robot.yaml"))
+    (link,) = gripper_contact_links(so101)
+    box = DetectedObject(
+        label="eraser",
+        confidence=0.9,
+        pose=Pose6D(
+            xyz=(0.2, 0.0, 0.02), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=so101.base_frame
+        ),
+        bbox_3d=(0.18, -0.02, 0.0, 0.22, 0.02, 0.04),
+    )
+    decl = ground_grasp_target(
+        GraspTargetRef(label="eraser"),
+        live_objects=[box],
+        scene_graph=None,
+        base_frame=so101.base_frame,
+        default_contact_links=(link,),
+        patience_s=60.0,
+        pad_m=_PAD,
+    )
+    assert decl.contact_links == (link,)
 
 
 def test_a_fixture_place_target_grounds_to_its_place_declaration() -> None:

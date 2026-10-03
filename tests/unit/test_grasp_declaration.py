@@ -158,7 +158,7 @@ def test_a_direct_dispatch_scene_declares_its_grasp_target() -> None:
     declaration = scene.grasp_declaration
     assert declaration is not None
     assert declaration.target_id == "cell:restock_box"
-    assert declaration.contact_links == _FINGERS
+    assert declaration.contact_links == ("openarm_left_finger_pair",)  # one hand grasps
     assert declaration.timeout_s == 70.0
     assert declaration.region is None
     # Every named contact link is a real link of the robot this scene drives.
