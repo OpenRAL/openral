@@ -77,7 +77,7 @@ from openral_core import (
     detect_gpu_vram_gb,
     is_collective_target,
 )
-from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M, REAL_WORLD_VOXEL_MARGIN_M
+from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError, ROSReasonerInvalidPlan
 from openral_observability import log_lifecycle_errors
 from openral_reasoner.active_search import SearchBudget, SearchProgress
@@ -791,11 +791,13 @@ class ReasonerNode(LifecycleNode):
         # Grasp/place targets named by the LLM (real pick-and-place design §2.2): the robot
         # unit whose surveyed fixtures are the place_target choices ($OPENRAL_ROBOT_UNIT wins,
         # as everywhere else), and the seed-box padding a grounded grasp target gets — one
-        # real octomap cell plus the depth extrinsic's planar accuracy bound. Calibration
-        # knobs: the producer re-measures inside the seed, so a looser pad only widens its
-        # search, never the exemption.
+        # octomap cell plus the depth extrinsic's planar accuracy bound. The cell is the
+        # deploy's octree resolution, which deploy_e2e passes (`_octomap_resolution`); the
+        # standalone default is the real map's 20 mm cell. Calibration knobs: the producer
+        # re-measures inside the seed, so a looser pad only widens its search, never the
+        # exemption.
         self.declare_parameter("robot_unit", "")
-        self.declare_parameter("grasp_target_voxel_m", REAL_WORLD_VOXEL_MARGIN_M)
+        self.declare_parameter("grasp_target_voxel_m", 0.02)
         self.declare_parameter("grasp_target_extrinsic_error_m", MAX_PLANAR_ERR_M)
         self._robot_description: RobotDescription | None = None
         self._robot_unit: RobotUnit | None = None
