@@ -154,5 +154,6 @@ runtime:
 # No grasp_declaration here on purpose: what to pick is task knowledge, not cell posture.
 # With the reasoner on, it names the target and perception grounds the search box
 # (docs/reference/real-pick-place-design.md §2.2). For an attended direct dispatch, copy
-# this scene under scenes/deploy/, add the block, and launch the copy with
-# `tools/openarm_world_voxel_run.sh --scene <copy>` (runbook step 4 has the Thor example).
+# this scene into the gitignored scenes/deploy/local/, add the block (the only difference the
+# wrapper accepts), and launch the copy with `tools/openarm_world_voxel_run.sh --scene <copy>`
+# (runbook step 4 has the Thor example).
