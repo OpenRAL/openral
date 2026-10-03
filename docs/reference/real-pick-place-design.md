@@ -170,7 +170,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   (a re-fit that shrinks or shifts *inside* the held region grown by one voxel — the approaching
   hand occluding part of the target — is a lost view, `occluded_refit`, not a `target_moved`
   contradiction; one reaching outside it still retracts)
-  for `grasp_target_freeze_s` (2 s) from its depth stamp. Tests: `tests/unit/test_grasp_target_leg.py`,
+  for `grasp_target_freeze_s` (2 s) from its depth stamp. A mask whose capture stamp is more than
+  `mask_depth_max_skew_s` (0.1 s) from the depth frame it would be back-projected through is
+  refused (`mask_depth_skew`, a lost view here; a `GRIPPER_FORCE` fallback in the attachment path). Tests: `tests/unit/test_grasp_target_leg.py`,
   live `tests/integration/test_grasp_target_leg_live.py`. The occlusion freeze is a bare TTL; an
   FK-based "is the hand what occludes it" test is a follow-up.
 - **Representation:** an oriented box in `openarm_base` (reuse `PlaceRegion`): ~150 B, grid-instance

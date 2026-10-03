@@ -202,6 +202,8 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
     peer = Node("test_vision_optical_peer")
     segmenter = Node("test_vision_optical_segmenter")
     requests: list[Any] = []
+    # Seconds the mask's capture stamp sits from the (unstamped, t = 0) depth frames.
+    mask_skew_s = {"value": 0.0}
 
     def segment(request: Any, response: Any) -> Any:
         """Mask a disc around the TCP pixel, at the RGB (full) resolution."""
@@ -215,6 +217,8 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
         mask.encoding = "mono8"
         mask.step = _FULL[1]
         mask.data = (disc.astype(np.uint8) * 255).tobytes()
+        skew_ns = round(mask_skew_s["value"] * 1e9)
+        mask.header.stamp.sec, mask.header.stamp.nanosec = divmod(skew_ns, 1_000_000_000)
         response.ok = True
         response.camera = request.camera
         response.masks = [mask]
@@ -356,6 +360,19 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
         )
         drift = float(np.linalg.norm(np.asarray(halved.pose_in_link.xyz) - centre_full))
         assert drift <= 0.020, f"half-res centroid {drift * 1000:.1f} mm from full-res"
+
+        # ── 4. A mask captured 0.5 s from the depth frame: never back-projected. ──
+        mask_skew_s["value"] = 0.5
+        _, skewed = grasp("skewed", depth_shape=_FULL, k=_THOR_K, publish_info=True)
+        assert skewed.evidence_kind is AttachmentEvidenceKind.GRIPPER_FORCE
+        assert _wait_until(
+            lambda: any(
+                "fell back to GRIPPER_FORCE: ROSPerceptionStale: SegmentInView mask captured "
+                "0.500 s from the depth frame" in line
+                for line in logs
+            ),
+            timeout_s=3.0,
+        ), "the mask/depth skew fallback did not log its typed reason"
     finally:
         for bridge in bridges:
             with suppress(Exception):

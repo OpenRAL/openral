@@ -109,6 +109,8 @@ __all__ = [
     "build_segment_request",
     "decode_mono8_mask",
     "freeze_released_attachment",
+    "mask_depth_skew_reason",
+    "mask_stamps_ns",
     "resolve_segment_outcome",
 ]
 
@@ -644,6 +646,16 @@ class VisionAttachmentConfig:
             retreat still inside its margin (fail-closed). The bridge sees no goal
             end, so this is the window's bound when the hand does not retreat.
             *Calibration point*, ``3.0`` s.
+        mask_depth_max_skew_s: Largest accepted ``|mask stamp - depth stamp|``:
+            a ``SegmentInView`` mask (stamped with the RGB frame the segmenter
+            captured) is only back-projected through a depth frame from the
+            same instant. The ZED driver publishes RGB and depth of one grab
+            with one stamp, so a same-grab pair has zero skew; ``0.1`` s admits
+            the two latest caches being one frame apart at >= 10 Hz and refuses
+            pairs several frames apart, across which the hand and the payload
+            have moved. A refusal is a ``GRIPPER_FORCE`` fallback in the
+            attachment path and a lost view in the grasp-target leg.
+            *Calibration point.*
         place_fixture_enabled: Run the real place producer leg
             (``_place_fixture_leg``): resolve the live ``PlaceDeclaration``'s
             target to a unit fixture, verify it against the voxel map, publish it
@@ -677,6 +689,7 @@ class VisionAttachmentConfig:
     grasp_target_min_cover: float = 0.5
     release_clear_m: float = 0.04
     release_timeout_s: float = 3.0
+    mask_depth_max_skew_s: float = 0.1
     place_fixture_enabled: bool = False
     place_fixture_rate_hz: float = 2.0
     place_fixture_min_face_cover: float = 0.5
@@ -779,6 +792,46 @@ def decode_mono8_mask(data: bytes, *, height: int, width: int) -> NDArray[np.boo
     return np.asarray(flat.reshape(height, width) != 0, dtype=bool)
 
 
+def mask_depth_skew_reason(
+    mask_stamps_ns: Sequence[int], depth_stamp_ns: int, *, max_skew_s: float
+) -> str:
+    """Refuse masks whose capture stamp is too far from the depth frame they meet.
+
+    The segmenter masks the RGB frame it captured and stamps each mask with that
+    frame's stamp; the HAL back-projects the mask through the depth frame *it*
+    holds. Nothing else pairs the two, so a mask from one instant laid on depth
+    from another describes pixels of a scene that has since moved (the hand,
+    the payload) — evidence of nothing.
+
+    Args:
+        mask_stamps_ns: Each mask's ``header.stamp``, ns.
+        depth_stamp_ns: The depth frame's ``header.stamp``, ns.
+        max_skew_s: Largest accepted ``|mask - depth|``, seconds.
+
+    Returns:
+        A typed reason (``ROSPerceptionStale: ...``) when any mask is too far
+        off, else ``""``.
+
+    Example:
+        >>> mask_depth_skew_reason([1_000_000_000], 1_050_000_000, max_skew_s=0.1)
+        ''
+        >>> mask_depth_skew_reason([1_000_000_000], 1_200_000_000, max_skew_s=0.1)[:19]
+        'ROSPerceptionStale:'
+    """
+    worst = max((abs(m - depth_stamp_ns) for m in mask_stamps_ns), default=0)
+    if worst <= max_skew_s * 1e9:
+        return ""
+    return (
+        f"ROSPerceptionStale: SegmentInView mask captured {worst / 1e9:.3f} s from the "
+        f"depth frame it would be back-projected through (> {max_skew_s:.3f} s)"
+    )
+
+
+def mask_stamps_ns(masks: Sequence[Any]) -> list[int]:
+    """``header.stamp`` of each ``sensor_msgs/Image`` mask, in ns."""
+    return [int(m.header.stamp.sec) * 1_000_000_000 + int(m.header.stamp.nanosec) for m in masks]
+
+
 def build_segment_request(
     *,
     stamp_ns: int,
@@ -879,6 +932,11 @@ class VisionAttachmentBridge:
         # The manifest K is never projected through: it only fills the
         # producer's signature on the no-mask paths, which never back-project.
         self._camera, self._no_mask_intrinsics = self._resolve_camera()
+        if not self._config.mask_depth_max_skew_s > 0.0:
+            raise ROSConfigError(
+                "vision attachment: mask_depth_max_skew_s must be positive, got "
+                f"{self._config.mask_depth_max_skew_s}."
+            )
         if self._config.release_clear_m <= 0.0 or self._config.release_timeout_s <= 0.0:
             raise ROSConfigError(
                 "vision attachment: release_clear_m and release_timeout_s must be positive, got "
@@ -1190,20 +1248,31 @@ class VisionAttachmentBridge:
             failure_reason=str(response.failure_reason),
             mask_count=len(response.masks),
         )
+        reason = outcome.reason
+        use_masks = outcome.use_masks
+        if use_masks and self._depth is not None:
+            # The depth _finish back-projects through is the cached one, now.
+            skew = mask_depth_skew_reason(
+                mask_stamps_ns(response.masks),
+                self._depth[1],
+                max_skew_s=self._config.mask_depth_max_skew_s,
+            )
+            if skew:
+                use_masks, reason = False, skew
         masks = (
             [
                 decode_mono8_mask(bytes(image.data), height=image.height, width=image.width)
                 for image in response.masks
             ]
-            if outcome.use_masks
+            if use_masks
             else []
         )
         self._finish(
             leg,
             stamp_ns=stamp_ns,
             masks=masks,
-            scores=[float(s) for s in response.mask_scores_advisory] if outcome.use_masks else [],
-            reason=outcome.reason,
+            scores=[float(s) for s in response.mask_scores_advisory] if use_masks else [],
+            reason=reason,
             t_link_from_cam=t_link_from_cam,
             tcp_in_link=tcp_in_link,
         )

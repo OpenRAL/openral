@@ -31,7 +31,9 @@ classes, each logged once per transition with its typed reason:
   above the support, a re-fit the map does not cover or that moved or resized
   past one voxel *and* reaches outside the held region grown by one voxel, a
   frame or calibration mismatch: the region is **retracted at once**.
-* *Lost view* — no seed cells, the seed off-image, no mask, a missed deadline,
+* *Lost view* — no seed cells, the seed off-image, no mask, a mask captured
+  more than ``mask_depth_max_skew_s`` from the depth frame (``mask_depth_skew``),
+  a missed deadline,
   too few depth points, stale or missing inputs, and a re-fit that fails the
   map or tracking gate but lies inside the held region grown by one voxel
   (``occluded_refit``: the approaching hand occluding part of the target
@@ -685,6 +687,8 @@ class GraspTargetLeg:
         """Reply → region → map cover → tracking gate, or a typed refusal."""
         from openral_hal.vision_attachment_bridge import (
             decode_mono8_mask,
+            mask_depth_skew_reason,
+            mask_stamps_ns,
             resolve_segment_outcome,
         )
 
@@ -703,6 +707,13 @@ class GraspTargetLeg:
         )
         if not outcome.use_masks:
             raise _lost("no_mask", outcome.reason)
+        skew = mask_depth_skew_reason(
+            mask_stamps_ns(response.masks),
+            depth_stamp_ns,
+            max_skew_s=self._config.mask_depth_max_skew_s,
+        )
+        if skew:
+            raise _lost("mask_depth_skew", skew)
         try:
             masks = [
                 decode_mono8_mask(bytes(image.data), height=image.height, width=image.width)
