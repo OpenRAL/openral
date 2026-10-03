@@ -11536,6 +11536,28 @@ class ObjectsMetadata(_PerceptionEventBase):
             ``bbox_xyxy`` of each detection is in this pixel space (the
             cross-frame lift scales it to the sensor's intrinsics resolution).
         frame_height: Pixel height of that frame.
+        camera_frame_id: tf2 frame the source image's pixels live in (the camera's
+            optical frame), from the driver's ``CameraInfo`` header. Set together with
+            ``camera_intrinsics``; ``None`` (no ``CameraInfo`` reached the detector)
+            means a consumer falls back to the ``SensorSpec`` named by ``sensor_id``,
+            whose frame and intrinsics may be a sim stand-in on real hardware.
+        camera_intrinsics: The driver's live pinhole ``K`` for that frame, at the
+            ``CameraInfo``'s own resolution (the lift rescales the box to it).
+
+    Example:
+        >>> md = ObjectsMetadata(
+        ...     sensor_id="top",
+        ...     detections=[],
+        ...     model_id="rtdetr",
+        ...     frame_width=1920,
+        ...     frame_height=1080,
+        ...     camera_frame_id="zed_left_camera_frame_optical",
+        ...     camera_intrinsics=IntrinsicsPinhole(
+        ...         width=1920, height=1080, fx=1498.18, fy=1498.18, cx=936.11, cy=541.81
+        ...     ),
+        ... )
+        >>> md.camera_frame_id
+        'zed_left_camera_frame_optical'
     """
 
     kind: Literal["objects"] = "objects"
@@ -11543,6 +11565,15 @@ class ObjectsMetadata(_PerceptionEventBase):
     model_id: str
     frame_width: int = Field(gt=0)
     frame_height: int = Field(gt=0)
+    camera_frame_id: str | None = Field(default=None, min_length=1)
+    camera_intrinsics: IntrinsicsPinhole | None = None
+
+    @model_validator(mode="after")
+    def _frame_and_k_travel_together(self) -> Self:
+        # A K without its frame (or the reverse) would be projected in the wrong frame.
+        if (self.camera_frame_id is None) != (self.camera_intrinsics is None):
+            raise ValueError("camera_frame_id and camera_intrinsics are set together or not at all")
+        return self
 
 
 class OcrMetadata(_PerceptionEventBase):

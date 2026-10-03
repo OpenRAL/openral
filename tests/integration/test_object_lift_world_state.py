@@ -12,7 +12,7 @@ transforms). A 5x5x5 voxel cube at (0,0,2) in base_link projects to pixel ≈(50
 2. best_effort_no_voxels — lift enabled, no voxel grid published → detected_objects stays
    empty (best-effort proof).
 3. eviction — happy-path object remembered (topic-driven, so the detection camera enters
-   ``_seen_sensor_ids``); producer goes silent (real detector publishes nothing when it
+   ``_seen_cameras``); producer goes silent (real detector publishes nothing when it
    detects nothing) and a memory tick alone evicts the track, since the camera FOV (rebuilt
    from the camera pose every tick) still covers the object yet it was not re-detected.
 
@@ -373,7 +373,7 @@ def test_object_lift_eviction() -> None:
 
     No synthetic empty-detection message (the real detector never sends one): (1) establish
     the object topic-driven (publish voxels + one detection, routing through the real
-    ``_on_objects`` callback, which records ``head_rgb`` in ``_seen_sensor_ids``); (2) go
+    ``_on_objects`` callback, which records ``head_rgb`` in ``_seen_cameras``); (2) go
     silent — no further detections; (3) tick the real ``_on_memory_tick`` directly
     (deterministic, no ROS timing race) — the in-FOV predicate rebuilds from ``head_rgb``'s
     current pose alone (identity TF → object at z≈2 projects to ≈(50,50), inside the 100x100
@@ -392,7 +392,7 @@ def test_object_lift_eviction() -> None:
         )
         assert ok, "Object did not appear within 4 s — cannot test eviction."
         # The detection camera is now remembered for FOV-based eviction.
-        assert "head_rgb" in node._seen_sensor_ids
+        assert "head_rgb" in node._seen_cameras
 
         # --- Phase 2: silent detector — no new detection message at all ---
         # Fire the memory tick directly. No `_on_objects` call, no empty message.
