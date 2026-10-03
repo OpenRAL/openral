@@ -3889,14 +3889,36 @@ public:
         });
   }
 
+  // Drain the node's spans before it goes away: `on_cleanup` is where
+  // `shutdown_tracing()` flushes the BatchSpanProcessor. Dropping an active
+  // node leaves that processor racing process teardown, a segfault after the
+  // last test reports OK (same guard as the ADR-0098 tests above).
+  ~GraspRig() {
+    if (active_) {
+      exec_.remove_node(node->get_node_base_interface());
+      exec_.remove_node(helper_);
+      rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+      node->on_deactivate(active);
+    }
+    if (configured_) {
+      rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+      node->on_cleanup(inactive);
+    }
+  }
+  GraspRig(const GraspRig&) = delete;
+  GraspRig& operator=(const GraspRig&) = delete;
+
   bool configure() {
     rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
-    return node->on_configure(unconf) == osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS;
+    configured_ =
+        node->on_configure(unconf) == osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS;
+    return configured_;
   }
   void start() {
     ASSERT_TRUE(configure());
     rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
     ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+    active_ = true;
     exec_.add_node(node->get_node_base_interface());
     exec_.add_node(helper_);
   }
@@ -3969,6 +3991,8 @@ private:
   rclcpp::Subscription<openral_msgs::msg::ActionChunk>::SharedPtr safe_sub_;
   rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diag_sub_;
   rclcpp::executors::SingleThreadedExecutor exec_;
+  bool configured_ = false;
+  bool active_ = false;
 };
 
 }  // namespace
