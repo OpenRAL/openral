@@ -275,8 +275,18 @@ def test_an_unnamed_hand_on_r1pro_refuses_listing_both_hands() -> None:
 def test_naming_fingers_of_one_hand_grounds() -> None:
     decl = _ground_r1(GraspTargetRef(label="cup", contact_links=list(_R1_LEFT)))
     assert decl.contact_links == _R1_LEFT
-    one = _ground_r1(GraspTargetRef(label="cup", contact_links=[_R1_RIGHT[1]]))
-    assert one.contact_links == (_R1_RIGHT[1],)
+    # Order-free: the declaration carries the hand in manifest order.
+    swapped = _ground_r1(GraspTargetRef(label="cup", contact_links=list(reversed(_R1_RIGHT))))
+    assert swapped.contact_links == _R1_RIGHT
+
+
+def test_naming_part_of_a_hand_refuses_listing_the_whole_hand() -> None:
+    """One finger of a two-finger hand would exempt that finger only: the grasp would stop."""
+    with pytest.raises(
+        ROSReasonerInvalidPlan,
+        match=r"part of a hand.*\[right_gripper_finger_link1, right_gripper_finger_link2\]",
+    ):
+        _ground_r1(GraspTargetRef(label="cup", contact_links=[_R1_RIGHT[1]]))
 
 
 def test_naming_fingers_of_two_hands_refuses() -> None:
