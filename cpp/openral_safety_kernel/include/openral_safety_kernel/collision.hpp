@@ -1277,6 +1277,21 @@ GraspRegionStatus ingest_grasp_region(const Transform& pose, const Vec3& half_ex
                                       const std::bitset<kMaxGraspMaskLinks>& link_mask,
                                       GraspTargetRegion& out) noexcept;
 
+/// Do the declared contact links `mask` all belong to ONE hand?
+///
+/// A link's hand is its mount: its first ancestor (by `parent`) that is not
+/// itself in `allowlist` — so a chained finger climbs to the hand it hangs off,
+/// and two fingers sharing a hand link share a mount (the grouping of
+/// `openral_core.gripper_hands`). True iff `mask` is non-empty, every set bit
+/// indexes a link of `parent`, and all of them share one mount. Fails closed on
+/// a malformed (cyclic) parent chain. The grasp-target exemption arms for one
+/// hand at a time: with the target inferred from the robot's own approach rather
+/// than named, a declaration spanning two hands is refused at ingest
+/// (`reason=links_span_hands`). Not on the hot path; allocation-free.
+bool grasp_links_one_hand(const std::vector<int>& parent,
+                          const std::bitset<kMaxGraspMaskLinks>& allowlist,
+                          const std::bitset<kMaxGraspMaskLinks>& mask) noexcept;
+
 /// Stable snake_case token naming `status`, for the `reason=` key of the
 /// kernel's grasp-region log lines. Never null; unknown values read `unknown`.
 const char* grasp_region_status_reason(GraspRegionStatus status) noexcept;

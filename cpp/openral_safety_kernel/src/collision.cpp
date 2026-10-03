@@ -2248,6 +2248,40 @@ GraspRegionStatus ingest_grasp_region(const Transform& pose, const Vec3& half_ex
   return GraspRegionStatus::kOk;
 }
 
+bool grasp_links_one_hand(const std::vector<int>& parent,
+                          const std::bitset<kMaxGraspMaskLinks>& allowlist,
+                          const std::bitset<kMaxGraspMaskLinks>& mask) noexcept {
+  const std::size_t n = std::min(parent.size(), kMaxGraspMaskLinks);
+  if (mask.none()) {
+    return false;
+  }
+  bool seen = false;
+  int hand = -1;
+  for (std::size_t c = 0; c < kMaxGraspMaskLinks; ++c) {
+    if (!mask[c]) {
+      continue;
+    }
+    if (c >= n) {
+      return false;  // a mask bit naming no link of the model
+    }
+    int mount = parent[c];
+    std::size_t steps = 0;
+    while (mount >= 0 && static_cast<std::size_t>(mount) < n &&
+           allowlist[static_cast<std::size_t>(mount)]) {
+      if (++steps > n) {
+        return false;  // a cyclic parent chain: fail closed
+      }
+      mount = parent[static_cast<std::size_t>(mount)];
+    }
+    if (seen && mount != hand) {
+      return false;
+    }
+    seen = true;
+    hand = mount;
+  }
+  return seen;
+}
+
 const char* grasp_region_status_reason(GraspRegionStatus status) noexcept {
   switch (status) {
   case GraspRegionStatus::kOk:
