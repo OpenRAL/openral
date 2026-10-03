@@ -827,7 +827,16 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   decision; the region must be valid, in the grid's frame, with empty `geometry`,
   a backstop in (0, `kMaxGraspDeclarationTimeoutS` = 120 s] (WG placeholder),
   and every `contact_links` entry must be allowlisted (one that is not refuses the
-  whole declaration). The exempt mask is exactly those links.
+  whole declaration). The exempt mask is exactly those links, and they must all be
+  **one hand** (`grasp_links_one_hand`: every link's mount — its first ancestor that
+  is not itself allowlisted, so a chained finger climbs to its hand — is the same;
+  the grouping of `openral_core.gripper_hands`). A declaration spanning two hands is
+  refused, `reason=links_span_hands` (`GraspTargetOneHand.*`; live row in
+  `tests/integration/test_safety_kernel_grasp_target_band.py`). The HAL may now
+  infer the target from one hand's own approach instead of a named one (design
+  §2.2 "Approach-armed target"); the kernel holds the producer to one hand rather
+  than trusting it. Origin of the declaration is not checked and never was: the
+  kernel reads only the envelope copy, whose region the producer measured.
 * **Per candidate** (`grasp_declaration_live`): dead on retraction, `timeout_s`
   lapsed, a future stamp, a pre-handover region older than
   `grasp_region_max_age_s`, or a world-state stream older than

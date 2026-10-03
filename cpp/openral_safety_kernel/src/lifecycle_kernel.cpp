@@ -2809,6 +2809,13 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
     }
     mask.set(index);
   }
+  // One hand per declaration. The producer may infer the target from the
+  // robot's own approach instead of a named one, and it arms one hand at a
+  // time; the kernel holds it to that rather than trusting it (HZ-01xx-9).
+  if (!grasp_links_one_hand(collision_model_.parent, grasp_allowlist_, mask)) {
+    reject("links_span_hands");
+    return;
+  }
   const Transform pose = transform_from_translation_quat(
       region.pose.position.x, region.pose.position.y, region.pose.position.z,
       region.pose.orientation.x, region.pose.orientation.y, region.pose.orientation.z,

@@ -6154,3 +6154,41 @@ TEST(GraspTargetExemption, MonotonicityOverRandomisedScenes) {
   EXPECT_GT(trials_with_difference, 20) << "the property must not hold vacuously";
   EXPECT_GT(trials_stage2_moved, 0) << "the hull model must actually exercise stage 2";
 }
+
+// ── One hand per grasp declaration (approach-armed grasp target) ─────────────
+//
+// The HAL may now arm the grasp-target exemption from the robot's own approach,
+// with no named target. The kernel bounds that to ONE hand: every declared
+// contact link must hang off the same mount — its first ancestor that is not
+// itself an allowlisted gripper link (a chained finger climbs to its hand). Same
+// grouping as `openral_core.gripper_hands`.
+
+TEST(GraspTargetOneHand, OneArmsFingersAreOneHandTheOtherArmsAreNot) {
+  // OpenArm-shaped: root 0; left link7 = 1 → left finger 2; right link7 = 3 → right finger 4.
+  const std::vector<int> parent = {-1, 0, 1, 0, 3};
+  const auto allow = grasp_mask({2, 4});
+  EXPECT_TRUE(osk::grasp_links_one_hand(parent, allow, grasp_mask({2})));
+  EXPECT_TRUE(osk::grasp_links_one_hand(parent, allow, grasp_mask({4})));
+  EXPECT_FALSE(osk::grasp_links_one_hand(parent, allow, grasp_mask({2, 4})))
+      << "a declaration spanning both arms' fingers is two hands";
+}
+
+TEST(GraspTargetOneHand, FingersSharingAHandOrChainedAreOneHand) {
+  // R1 Pro-shaped: hand 1 carries fingers 2 and 3; a chained finger 4 hangs off 3.
+  const std::vector<int> parent = {-1, 0, 1, 1, 3};
+  const auto allow = grasp_mask({2, 3, 4});
+  EXPECT_TRUE(osk::grasp_links_one_hand(parent, allow, grasp_mask({2, 3})));
+  EXPECT_TRUE(osk::grasp_links_one_hand(parent, allow, grasp_mask({2, 3, 4})))
+      << "a chained finger climbs to its hand";
+}
+
+TEST(GraspTargetOneHand, EmptyOrOutOfModelMasksAreRefused) {
+  const std::vector<int> parent = {-1, 0, 1};
+  const auto allow = grasp_mask({2});
+  EXPECT_FALSE(osk::grasp_links_one_hand(parent, allow, grasp_mask({})));
+  EXPECT_FALSE(osk::grasp_links_one_hand(parent, allow, grasp_mask({7})))
+      << "a mask bit past the collision model names no link";
+  // A malformed parent cycle among allowlisted links terminates and refuses.
+  const std::vector<int> cyclic = {-1, 2, 1};
+  EXPECT_FALSE(osk::grasp_links_one_hand(cyclic, grasp_mask({1, 2}), grasp_mask({1})));
+}
