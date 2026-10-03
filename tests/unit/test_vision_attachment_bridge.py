@@ -36,6 +36,7 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSConfigError
 from openral_hal._grasp_trigger import PositionStallConfig
+from openral_hal.lifecycle import twin_jaw_evidence_timeout_s
 from openral_hal.vision_attachment_bridge import (
     DEFAULT_SEGMENT_SERVICE,
     VisionAttachmentBridge,
@@ -735,8 +736,9 @@ def test_the_sim_attached_hals_applied_slot_group_commands_the_jaw() -> None:
 
     It had none: the lifecycle node logged once and kept the trigger's last command — the
     start-pose ramp's close — while the policy opened the jaw through slot groups, so an
-    open, stationary jaw read as a stall. The composed group is the command, and a group
-    that is not one joint-position command reads as unknown (``None``).
+    open, stationary jaw read as a stall. The composed group is the command; a group that
+    does not compose still reports its jaw target (``gripper_targets_action``), and only a
+    group with no placeable jaw target reads as unknown (``None``).
     """
     from openral_hal.sim_attached import SimAttachedHAL
 
@@ -771,7 +773,15 @@ def test_the_sim_attached_hals_applied_slot_group_commands_the_jaw() -> None:
     for slot in _so101_slot_group(0.0, tick=2, named=False):
         hal.send_action(slot)
     assert hal.last_committed_tick == 2, "the sim applied it"
-    assert hal.last_applied_action is None, "an unplaceable group's command is unknown"
+    partial = hal.last_applied_action
+    assert partial is not None, "the unplaceable arm slot does not hide the jaw's target"
+    bridge.observe_command(partial)
+    assert leg.trigger.last_command == pytest.approx(0.0), "the group closed the jaw"
+    blind = [slot.model_copy(update={"ee_name": None}) for slot in _so101_slot_group(0.6, tick=3)]
+    for slot in blind:
+        hal.send_action(slot)
+    assert hal.last_committed_tick == 3
+    assert hal.last_applied_action is None, "no jaw target anyone can place: unknown"
     bridge.clear_command()
     assert leg.trigger.last_command is None
 
@@ -805,3 +815,49 @@ def test_heartbeat_evidence_goes_live_on_a_jittered_10_hz_stream() -> None:
         derived.observe(complete=True, stamp_ns=stamp, now_s=now)
     assert not fixed.live(now_s=now)
     assert derived.live(now_s=now)
+
+
+def test_the_jaw_evidence_timeout_stretches_only_on_the_idle_stepping_sim_twin() -> None:
+    """``hal_mode:=real`` keeps the configured timeout, whatever else the node carries.
+
+    The real OpenArm node also builds a ``SimSensorBridge`` (it has an ``idle_hold_s``);
+    stretching on that alone turned a 0.5 s jaw-evidence timeout into ~2.1 s, past the
+    kernel's 500 ms attached deadline, so a dead jaw channel kept a fresh heartbeat.
+    """
+    twin = {"idle_hold_s": 2.0, "configured_s": 0.5, "rate_hz": 40.0}
+    assert twin_jaw_evidence_timeout_s(hal_mode="real", hal_idle_steps=True, **twin) is None
+    assert twin_jaw_evidence_timeout_s(hal_mode="real", hal_idle_steps=False, **twin) is None
+    assert twin_jaw_evidence_timeout_s(hal_mode="sim", hal_idle_steps=False, **twin) is None
+    assert (
+        twin_jaw_evidence_timeout_s(
+            hal_mode="sim", hal_idle_steps=True, idle_hold_s=None, configured_s=0.5, rate_hz=40.0
+        )
+        is None
+    ), "no idle stepper behind the bridge: no stretch"
+    assert twin_jaw_evidence_timeout_s(
+        hal_mode="sim", hal_idle_steps=True, **twin
+    ) == pytest.approx(2.1)
+    assert twin_jaw_evidence_timeout_s(
+        hal_mode="sim", hal_idle_steps=True, idle_hold_s=2.0, configured_s=3.0, rate_hz=40.0
+    ) == pytest.approx(3.0), "never lowered"
+
+
+def test_the_twins_evidence_run_spans_a_reinference_pause_and_real_hardwares_does_not() -> None:
+    """A 1.5 s pause inside the twin's 2.1 s timeout keeps the run; real resets on it.
+
+    On the twin the first sample after the pause otherwise restarted the run, withholding
+    evidence for ``consecutive_samples`` periods right as the arm moves again. A gap past
+    the timeout still restarts the twin's run.
+    """
+    config = PositionStallConfig.for_rate(30.0)
+    twin = _JawEvidence(config, timeout_s=2.1, spans_gaps=True)
+    real = _JawEvidence(config, timeout_s=2.1)
+    for evidence in (twin, real):
+        for tick in range(4):
+            evidence.observe(complete=True, stamp_ns=_at(tick), now_s=tick / 30.0)
+        assert evidence.live(now_s=0.1)
+        evidence.observe(complete=True, stamp_ns=_at(3) + 1_500_000_000, now_s=1.6)
+    assert twin.live(now_s=1.6), "a pause inside the timeout broke the twin's run"
+    assert not real.live(now_s=1.6), "real hardware must restart the run on a gap"
+    twin.observe(complete=True, stamp_ns=_at(3) + 3_700_000_000, now_s=3.7)
+    assert not twin.live(now_s=3.7), "a gap past the timeout must restart the run"
