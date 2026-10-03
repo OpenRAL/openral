@@ -441,9 +441,10 @@ def _vision_attachment_hal_params(leg: VisionAttachmentRuntime) -> dict[str, obj
     """Map an enabled ``DeployRuntime.vision_attachment`` block to the HAL's ROS params.
 
     The HAL node's ``vision_attachment_*`` parameters (``openral_hal.lifecycle``) configure
-    its attachment-evidence bridge. Every value is forwarded by name as declared; a name the
-    HAL at this revision does not declare is ignored by rclpy, so the scene can carry a knob
-    one PR ahead of the node. The bridge back-projects the DEPTH stream, so its
+    its attachment-evidence bridge. Every value is forwarded by name as declared; rclpy
+    silently drops a name the HAL does not declare, so every name here must be one
+    (``tests/integration/test_vision_attachment_hal_params_live.py`` pins it). The bridge
+    back-projects the DEPTH stream, so its
     ``camera_info`` is the depth one; the RGB pair goes to the segmenter (launch args).
     ``None`` efforts map to ``0.0``, the HAL's "use the effort-limit fraction".
 
