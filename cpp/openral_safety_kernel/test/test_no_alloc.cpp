@@ -9,9 +9,12 @@
 // CLAUDE.md §5.2 — "no allocations inside hot loops". This test makes
 // that guarantee enforceable in CI.
 
+#include "openral_safety_kernel/collision.hpp"
 #include "openral_safety_kernel/validator.hpp"
 
 #include <atomic>
+#include <bitset>
+#include <cstdint>
 #include <cstdlib>
 #include <new>
 #include <vector>
@@ -130,5 +133,76 @@ TEST(NoAlloc, ValidatorViolationPathIsAlsoAllocationFree) {
     ASSERT_FALSE(rc);
   }
   g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
+}
+
+TEST(NoAlloc, VoxelCheckWithALiveGraspRegionIsAllocationFree) {
+  // ADR-0115: the grasp-target exemption sits inside the world-voxel cell
+  // loop, so the check with a live region must stay allocation-free. Model,
+  // grid and region are built OUTSIDE the counted window.
+  osk::CollisionModel m;
+  m.n_links = 3;
+  m.parent = {-1, 0, 0};
+  m.joint_kind = {osk::JointKind::kFixed, osk::JointKind::kFixed, osk::JointKind::kFixed};
+  m.dof_index = {-1, -1, -1};
+  m.origin = {osk::Transform{}, osk::Transform{}, osk::Transform{}};
+  m.axis = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+  osk::Obb finger;  // openarm_left_finger_pair's box, robots/openarm/robot.yaml
+  finger.half_extents = {0.0294, 0.0711, 0.0811};
+  finger.origin = osk::transform_from_xyz_rpy(0.0004, 0.0484, -0.0298, -2.8925, 0.0066, 3.1375);
+  m.box_link = {1};
+  m.boxes = {finger};
+  m.capsule_link = {2};
+  m.capsules = {osk::Capsule{0.01, 0.02, osk::Transform{}}};
+  osk::CollisionScratch s;
+  s.link_world = {osk::Transform{}, osk::Transform{}, osk::Transform{}};
+
+  constexpr int kN = 16;
+  std::vector<std::uint8_t> occ(kN * kN * kN, 0);
+  for (std::size_t i = 0; i < occ.size(); i += 7) {
+    occ[i] = 1;
+  }
+  osk::VoxelGrid grid;
+  grid.pose.t = {-0.16, -0.16, -0.16};
+  grid.resolution = 0.02;
+  grid.sx = kN;
+  grid.sy = kN;
+  grid.sz = kN;
+  grid.occupancy = occ.data();
+  std::bitset<osk::kMaxGraspMaskLinks> mask;
+  mask.set(1);
+  mask.set(2);
+  osk::Transform region_pose;
+  region_pose.t = {0.0, 0.03, -0.02};
+  ASSERT_EQ(
+      osk::ingest_grasp_region(region_pose, osk::Vec3{0.04, 0.04, 0.04}, mask, grid.grasp_region),
+      osk::GraspRegionStatus::kOk);
+
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  double sink = 0.0;
+  for (int i = 0; i < 10000; ++i) {
+    const auto hit = osk::check_voxel_collision(m, s, grid, 0.02);
+    sink += hit.sweep_min_distance;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U)
+      << "the voxel check allocated with a live grasp region; CLAUDE.md §2 forbids this.";
+  EXPECT_LT(sink, 0.0) << "the loop really exercised penetrating cells";
+}
+
+TEST(NoAlloc, RetiringAndCheckingGraspIdentitiesIsAllocationFree) {
+  // The kernel retires a grasp declaration on the candidate path
+  // (`handover_exit`): the retired set must not allocate, overflow included.
+  openral_safety_kernel::RetiredGraspSet retired;
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  bool seen = false;
+  for (std::size_t n = 0; n < 1000; ++n) {
+    retired.insert(n, 42);
+    seen = retired.contains(n / 2, 42) || seen;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_TRUE(seen);
   EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
 }

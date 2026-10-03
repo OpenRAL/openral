@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <future>
 #include <limits>
 #include <memory>
@@ -28,6 +29,7 @@
 #include <rcutils/logging.h>
 #include <sensor_msgs/msg/joint_state.hpp>
 
+#include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <lifecycle_msgs/msg/state.hpp>
 #include <openral_msgs/msg/action_chunk.hpp>
 #include <openral_msgs/msg/attached_collision_object.hpp>
@@ -3719,4 +3721,1292 @@ TEST_F(LifecycleKernelTest, UncappedVoxelLimitsAreIgnoredWhileTheWorldCheckIsOff
                                                      {"world_voxel_deadline_ms", 30000.0},
                                                      {"world_voxel_data_age_budget_ms", 0.0}}),
             CR::SUCCESS);
+}
+
+// ── Grasp-target exemption (ADR-0115 draft, hazard HZ-0115) ─────────────────
+//
+// One "finger" capsule on link0, offset 50 mm along x, swept about z by j0. At
+// j0 = 0 it sits inside the single occupied 25 mm cell centred on (0.05, 0, 0):
+// the grasp target. Without a live exemption that chunk stops and latches; with
+// one it passes. At j0 = pi/2 the capsule is 50 mm clear of the cell, so a
+// chunk there passes whatever the exemption does. Attached checking is OFF
+// unless a test says otherwise, which is exactly the configuration where a
+// stale world state must mean "no exemption" and never a drop.
+
+namespace {
+
+constexpr double kGraspClearQ = 1.5707963267948966;
+
+std::vector<rclcpp::Parameter> grasp_params(bool enabled = true,
+                                            std::vector<std::string> allowlist = {"link0"}) {
+  return {
+      {"n_dof", std::int64_t{1}},
+      {"joint_position_min", std::vector<double>{-3.14}},
+      {"joint_position_max", std::vector<double>{3.14}},
+      {"joint_velocity_max", std::vector<double>{3.15}},
+      {"joint_torque_max", std::vector<double>{5.0}},
+      {"self_collision_enabled", false},
+      {"world_voxel_enabled", true},
+      {"world_voxel_margin_m", 0.0},
+      {"world_voxel_deadline_ms", 2000.0},
+      {"world_voxel_max_cells", std::int64_t{64}},
+      {"attached_collision_enabled", false},
+      {"attached_collision_deadline_ms", 200.0},
+      {"attached_max_objects", std::int64_t{1}},
+      {"attached_max_primitives", std::int64_t{1}},
+      {"attached_max_touch_links", std::int64_t{1}},
+      {"collision_n_links", std::int64_t{1}},
+      {"collision_parent", std::vector<std::int64_t>{-1}},
+      {"collision_joint_kind", std::vector<std::int64_t>{1}},  // revolute
+      {"collision_dof_index", std::vector<std::int64_t>{0}},
+      {"collision_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0}},
+      {"collision_axis", std::vector<double>{0, 0, 1}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0}},
+      {"collision_capsule_radius", std::vector<double>{0.01}},
+      {"collision_capsule_half_length", std::vector<double>{0.0}},
+      {"collision_capsule_origin_xyzrpy", std::vector<double>{0.05, 0, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{}},
+      {"collision_link_names", std::vector<std::string>{"link0"}},
+      {"collision_joint_names", std::vector<std::string>{"j0"}},
+      {"collision_state_deadline_ms", 5000.0},
+      {"grasp_allowance_enabled", enabled},
+      {"grasp_contact_links", allowlist},
+  };
+}
+
+openral_msgs::msg::OccupancyVoxels grasp_target_voxels() {
+  openral_msgs::msg::OccupancyVoxels vox;
+  vox.orientation.w = 1.0;
+  vox.header.frame_id = "base_link";
+  vox.resolution = 0.025;
+  vox.size_x = 1;
+  vox.size_y = 1;
+  vox.size_z = 1;
+  vox.origin.x = 0.0375;
+  vox.origin.y = -0.0125;
+  vox.origin.z = -0.0125;
+  vox.occupancy.assign(1, 1);
+  return vox;
+}
+
+struct GraspBeat {
+  std::int64_t declaration_stamp_ns{0};
+  double timeout_s{60.0};
+  bool active{true};
+  std::string region_frame{"base_link"};
+  std::vector<std::string> contact_links{"link0"};
+  std::uint64_t revision{0};
+  bool carrying{false};
+  double payload_x{0.05};  ///< payload origin along link0's x (the region spans 0.03..0.07)
+  double region_x{0.05};   ///< producer-measured region centre along x
+  std::string attach_link{"link0"};          ///< the carried payload's attach link
+  std::string object_label{"cell:cube"};     ///< the carried payload's object_id
+  std::string declared_object{"cell:cube"};  ///< the declaration's object_id
+  std::int64_t region_stamp_ns{0};     ///< the region's measurement stamp; 0 = declaration_stamp_ns
+  std::string target_id{"cell:cube"};  ///< the declaration's identity (with its stamp)
+  /// A second payload, `cell:other` at the region centre, attached on this link
+  /// ("" = none): the other hand still holding, or a released payload frozen on the base.
+  std::string second_attach_link{};
+};
+
+// The producer-measured grasp declaration on the world-state envelope, stamped
+// fresh (the stream) at `stream_ns`.
+openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const GraspBeat& b) {
+  openral_msgs::msg::WorldStateStamped msg;
+  msg.attachment_stamp_ns = stream_ns;
+  msg.attachment_revision = b.revision;
+  if (b.carrying) {
+    openral_msgs::msg::AttachedCollisionObject obj;
+    obj.object_id = b.object_label;
+    obj.attach_link = b.attach_link;
+    obj.pose_in_link.position.x = b.payload_x;
+    obj.pose_in_link.orientation.w = 1.0;
+    openral_msgs::msg::AttachedCollisionPrimitive prim;
+    prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+    prim.shape_dimensions = {0.01, 0.01, 0.01};
+    prim.pose_in_object.orientation.w = 1.0;
+    obj.primitives.push_back(prim);
+    msg.attached_objects.push_back(obj);
+  }
+  if (!b.second_attach_link.empty()) {
+    openral_msgs::msg::AttachedCollisionObject obj;
+    obj.object_id = "cell:other";
+    obj.attach_link = b.second_attach_link;
+    obj.pose_in_link.position.x = 0.05;
+    obj.pose_in_link.orientation.w = 1.0;
+    openral_msgs::msg::AttachedCollisionPrimitive prim;
+    prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+    prim.shape_dimensions = {0.01, 0.01, 0.01};
+    prim.pose_in_object.orientation.w = 1.0;
+    obj.primitives.push_back(prim);
+    msg.attached_objects.push_back(obj);
+  }
+  msg.grasp_declaration_valid = true;
+  auto& d = msg.grasp_declaration;
+  d.target_id = b.target_id;
+  d.object_id = b.declared_object;
+  d.contact_links = b.contact_links;
+  d.rskill_id = "pick_cube";
+  d.trace_id = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+  d.timeout_s = b.timeout_s;
+  d.stamp_ns = b.declaration_stamp_ns;
+  d.active = b.active;
+  d.region_valid = true;
+  d.region.frame_id = b.region_frame;
+  d.region.pose.position.x = b.region_x;
+  d.region.pose.orientation.w = 1.0;
+  d.region.half_extents.x = 0.02;
+  d.region.half_extents.y = 0.02;
+  d.region.half_extents.z = 0.02;
+  d.region.evidence_ref = "sam2:cube@frame42";
+  d.region.stamp_ns = b.region_stamp_ns != 0 ? b.region_stamp_ns : b.declaration_stamp_ns;
+  return msg;
+}
+
+openral_msgs::msg::ActionChunk grasp_chunk(double q) {
+  openral_msgs::msg::ActionChunk chunk;
+  chunk.control_mode = 0;  // JOINT_POSITION
+  chunk.horizon = 1;
+  chunk.n_dof = 1;
+  chunk.flat = {q};
+  chunk.rskill_id = "pick_cube";
+  return chunk;
+}
+
+// A configured, active kernel plus the publishers a run needs. Real node, real
+// IDL, one in-process executor (discovery off, see the fixture).
+class GraspRig {
+public:
+  explicit GraspRig(const std::string& name, std::vector<rclcpp::Parameter> params = grasp_params())
+      : helper_(std::make_shared<rclcpp::Node>(name + "_helper")) {
+    rclcpp::NodeOptions opts;
+    opts.parameter_overrides(std::move(params));
+    node = std::make_shared<osk::SafetyKernelLifecycleNode>(name, opts);
+    rclcpp::QoS chunk_qos(rclcpp::KeepLast(1));
+    chunk_qos.reliable();
+    cand_pub_ = helper_->create_publisher<openral_msgs::msg::ActionChunk>(
+        "/openral/candidate_action", chunk_qos);
+    rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+    js_qos.best_effort();
+    js_pub_ = helper_->create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+    rclcpp::QoS reliable(rclcpp::KeepLast(1));
+    reliable.reliable();
+    voxel_pub_ = helper_->create_publisher<openral_msgs::msg::OccupancyVoxels>(
+        "/openral/world_voxels", reliable);
+    ws_pub_ = helper_->create_publisher<openral_msgs::msg::WorldStateStamped>(
+        "/openral/world_state_fast", reliable);
+    safe_sub_ = helper_->create_subscription<openral_msgs::msg::ActionChunk>(
+        "/openral/safe_action", chunk_qos,
+        [this](const openral_msgs::msg::ActionChunk::SharedPtr msg) {
+          last_flat = msg->flat;
+          ++passed;
+        });
+    diag_sub_ = helper_->create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
+        "/diagnostics", rclcpp::QoS(10),
+        [this](const diagnostic_msgs::msg::DiagnosticArray::SharedPtr msg) {
+          for (const auto& st : msg->status) {
+            for (const auto& kv : st.values) {
+              if (kv.key == "grasp_region") {
+                grasp_diag = kv.value;
+              }
+            }
+          }
+        });
+  }
+
+  // Drain the node's spans before it goes away: `on_cleanup` is where
+  // `shutdown_tracing()` flushes the BatchSpanProcessor. Dropping an active
+  // node leaves that processor racing process teardown, a segfault after the
+  // last test reports OK (same guard as the ADR-0098 tests above).
+  ~GraspRig() {
+    if (active_) {
+      exec_.remove_node(node->get_node_base_interface());
+      exec_.remove_node(helper_);
+      rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+      node->on_deactivate(active);
+    }
+    if (configured_) {
+      rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+      node->on_cleanup(inactive);
+    }
+  }
+  GraspRig(const GraspRig&) = delete;
+  GraspRig& operator=(const GraspRig&) = delete;
+
+  bool configure() {
+    rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+    configured_ =
+        node->on_configure(unconf) == osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS;
+    return configured_;
+  }
+  void start() {
+    ASSERT_TRUE(configure());
+    rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+    ASSERT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+    active_ = true;
+    exec_.add_node(node->get_node_base_interface());
+    exec_.add_node(helper_);
+  }
+
+  std::int64_t now_ns() { return node->now().nanoseconds(); }
+
+  // One beat: grid + measured state, and the world state when `beat` is set.
+  void beat(const GraspBeat* b, double q) {
+    auto vox = voxels;
+    vox.source_stamp = helper_->now();
+    voxel_pub_->publish(vox);
+    sensor_msgs::msg::JointState js;
+    js.name = {"j0"};
+    js.position = {q};
+    js_pub_->publish(js);
+    exec_.spin_some(std::chrono::milliseconds(5));
+    if (state_fn) {
+      ws_pub_->publish(state_fn(now_ns()));
+      exec_.spin_some(std::chrono::milliseconds(5));
+    } else if (b != nullptr) {
+      ws_pub_->publish(grasp_state(now_ns(), *b));
+      exec_.spin_some(std::chrono::milliseconds(5));
+    }
+  }
+
+  // Beat for `ms` without offering anything.
+  void warm(const GraspBeat* b, double q, int ms) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < end) {
+      beat(b, q);
+    }
+  }
+
+  // Offer the chunk at `q`, one at a time, each awaited to its verdict, until
+  // one passes or the node latches. Returns true on a pass. Awaiting each
+  // verdict keeps a late approval of an earlier chunk from being counted here.
+  bool offer(const GraspBeat* b, double q, int ms = 1500) {
+    return offer_chunk(b, q, grasp_chunk(q), ms);
+  }
+  // As `offer`, with the measured state at `q` and an arbitrary candidate.
+  bool offer_chunk(const GraspBeat* b, double q, const openral_msgs::msg::ActionChunk& chunk,
+                   int ms = 1500) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < end && !node->fault_latched()) {
+      beat(b, q);
+      const int passed_before = passed.load();
+      const std::uint64_t dropped_before = node->chunks_dropped();
+      cand_pub_->publish(chunk);
+      const auto verdict_end = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+      while (passed.load() == passed_before && node->chunks_dropped() == dropped_before &&
+             std::chrono::steady_clock::now() < verdict_end) {
+        exec_.spin_some(std::chrono::milliseconds(5));
+      }
+      if (passed.load() > passed_before) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void spin_for(int ms) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < end) {
+      exec_.spin_some(std::chrono::milliseconds(10));
+    }
+  }
+
+  std::shared_ptr<osk::SafetyKernelLifecycleNode> node;
+  std::atomic<int> passed{0};
+  std::vector<double> last_flat;  ///< the last chunk republished on /openral/safe_action
+  std::string grasp_diag;
+  openral_msgs::msg::OccupancyVoxels voxels = grasp_target_voxels();  ///< published every beat
+  /// When set, the world state published every beat (stream stamp in, message
+  /// out) in place of the `GraspBeat` one — the place-region tests drive the
+  /// same rig with the declared-carry fixture.
+  std::function<openral_msgs::msg::WorldStateStamped(std::int64_t)> state_fn;
+
+private:
+  std::shared_ptr<rclcpp::Node> helper_;
+  rclcpp::Publisher<openral_msgs::msg::ActionChunk>::SharedPtr cand_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr js_pub_;
+  rclcpp::Publisher<openral_msgs::msg::OccupancyVoxels>::SharedPtr voxel_pub_;
+  rclcpp::Publisher<openral_msgs::msg::WorldStateStamped>::SharedPtr ws_pub_;
+  rclcpp::Subscription<openral_msgs::msg::ActionChunk>::SharedPtr safe_sub_;
+  rclcpp::Subscription<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diag_sub_;
+  rclcpp::executors::SingleThreadedExecutor exec_;
+  bool configured_ = false;
+  bool active_ = false;
+};
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, GraspAllowlistNamingAnUnknownLinkFailsConfigure) {
+  GraspRig unknown("kernel_grasp_unknown", grasp_params(true, {"link0", "openarm_left_finger"}));
+  EXPECT_FALSE(unknown.configure()) << "an allowlist entry the model does not know";
+  GraspRig empty("kernel_grasp_empty", grasp_params(true, {}));
+  EXPECT_FALSE(empty.configure()) << "enabled with nothing allowlisted is a misconfiguration";
+  GraspRig off("kernel_grasp_off_unknown", grasp_params(false, {"not_a_link"}));
+  EXPECT_TRUE(off.configure()) << "with the feature off the allowlist is not read at all";
+}
+
+TEST_F(LifecycleKernelTest, GraspAllowanceIsOffByDefaultAndADeclarationExemptsNothing) {
+  auto params = grasp_params();
+  params.erase(std::remove_if(params.begin(), params.end(),
+                              [](const rclcpp::Parameter& p) {
+                                return p.get_name() == "grasp_allowance_enabled" ||
+                                       p.get_name() == "grasp_contact_links";
+                              }),
+               params.end());
+  GraspRig rig("kernel_grasp_default_off", params);
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 200);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched()) << "the finger on the target stops exactly as today";
+}
+
+TEST_F(LifecycleKernelTest, GraspBackstopExpiresTheExemptionPerCandidate) {
+  // Mirrors the place backstop test: the stream stays fresh on every beat while
+  // the declaration keeps its original stamp; the same chunk that passed under
+  // the exemption stops once timeout_s lapses.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_expiry");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.timeout_s = 1.2;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << "a live, measured declaration exempts the declared finger; "
+                                  << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_armed target=cell:cube"), 1U);
+  rig.warm(&b, 0.0, 1300);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched()) << "the lapsed backstop withdraws the exemption";
+  EXPECT_EQ(logs.count("grasp_exemption_active=0"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, GraspRetractionDropsTheExemption) {
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_retract");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0));
+  b.active = false;
+  rig.warm(&b, kGraspClearQ, 100);
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=retracted"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, AGraspDeclarationStampedInTheFutureIsDead) {
+  GraspRig rig("kernel_grasp_future");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns() + std::int64_t{30'000'000'000};
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched()) << "a clock that jumped is not evidence of anything";
+}
+
+TEST_F(LifecycleKernelTest, AGraspRegionInAnotherFrameIsRefused) {
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_frame");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.region_frame = "map";
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=frame_mismatch"), 1U)
+      << "refused once, on the transition, not on every heartbeat: " << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AGraspDeclarationNamingANonAllowlistedLinkIsRefused) {
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_link");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.contact_links = {"link0", "openarm_right_finger_pair"};
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "one name off the allowlist refuses the whole declaration";
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=link_not_allowed"), 1U)
+      << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AStaleGraspStreamGrantsNoExemptionAndDropsNothing) {
+  // Attached checking off: a stale world state is not a reason to refuse a
+  // chunk (nothing checked depends on it), and it is not a reason to keep an
+  // exemption either.
+  GraspRig rig("kernel_grasp_stale");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0));
+  rig.warm(nullptr, kGraspClearQ, 400);  // > the 200 ms stream deadline
+  const std::uint64_t dropped = rig.node->chunks_dropped();
+  EXPECT_TRUE(rig.offer(nullptr, kGraspClearQ)) << "a clear chunk is not dropped on staleness";
+  EXPECT_EQ(rig.node->chunks_dropped(), dropped);
+  EXPECT_FALSE(rig.offer(nullptr, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched()) << "but the stale stream's exemption is gone";
+}
+
+TEST_F(LifecycleKernelTest, GraspHandoverSurvivesTheAttachInsideAndRetiresOnExit) {
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_handover");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0));
+  // The attach edge adds the declared object; its origin is the region centre.
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_EQ(logs.count("safety.grasp_region_handover target=cell:cube"), 1U) << logs.joined();
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << "inside the region the exemption survives the attach";
+  // The payload origin leaves the region (lift): retired on the next candidate.
+  b.payload_x = 0.10;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_exit"), 1U) << logs.joined();
+  // Permanently: the payload back inside on the same declaration re-arms nothing.
+  b.payload_x = 0.05;
+  rig.warm(&b, 0.0, 300);
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AGraspRegionThatFollowsTheCarriedPayloadStillRetiresOnExit) {
+  // The twin's producer re-measures the target at the carried body's live pose,
+  // so after the attach its region moves with the payload. The kernel latched
+  // the box at the handover edge: the payload leaving THAT box retires the
+  // declaration, whatever the moving region says.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_follow");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0));
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_EQ(logs.count("safety.grasp_region_latched target=cell:cube at handover"), 1U)
+      << logs.joined();
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << "inside the latched region the exemption survives";
+  // Lift: the payload origin leaves the latched box, and the producer's region
+  // follows it, so the payload is still inside the region on the wire.
+  b.payload_x = 0.10;
+  b.region_x = 0.10;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_exit"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("grasp_exemption_active=0"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("grasp_exemption_active=1"), 0U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_moved_after_handover target=cell:cube"), 1U)
+      << "announced once, not on every heartbeat: " << logs.joined();
+  EXPECT_EQ(logs.max_severity("safety.grasp_region_moved_after_handover"),
+            static_cast<int>(RCUTILS_LOG_SEVERITY_WARN));
+}
+
+TEST_F(LifecycleKernelTest, AGraspRegionMovedBeforeTheAttachIsStillUpdated) {
+  // Only the post-handover region is latched: before the grasp the producer's
+  // re-measurement replaces the box, so a box moved off the cell exempts nothing.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_premove");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.region_x = 0.06;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << "the cell centre 0.05 is inside 0.04..0.08";
+  b.region_x = 0.10;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "the moved box no longer covers the cell";
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.grasp_region_latched"), 0U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_moved_after_handover"), 0U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AGraspDetachRetiresTheExemption) {
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_detach");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0));
+  b.carrying = false;
+  b.revision = 2;
+  rig.warm(&b, kGraspClearQ, 100);
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=detached"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, TheGraspRegionStateIsOnTheDiagnosticsHeartbeat) {
+  GraspRig rig("kernel_grasp_diag");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+  while (rig.grasp_diag.rfind("live:", 0) != 0 && std::chrono::steady_clock::now() < end) {
+    rig.beat(&b, 0.0);
+  }
+  EXPECT_EQ(rig.grasp_diag, "live:cell:cube:links=1");
+}
+
+TEST_F(LifecycleKernelTest, AGraspBackstopPastTheCapIsRefused) {
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_timeout_cap");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.timeout_s = osk::kMaxGraspDeclarationTimeoutS + 1.0;
+  rig.warm(&b, 0.0, 300);
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "the kernel bounds the backstop itself";
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=timeout_out_of_range"), 1U)
+      << logs.joined();
+}
+
+// ── Region measurement age (kernel-region-age) ───────────────────────────────
+// A producer region is a MEASUREMENT of the voxel map, not a surveyed fixture:
+// its own `stamp_ns` must be young, independently of the declaration's
+// `timeout_s` backstop (up to 120 s). These pin `*_region_max_age_s`.
+
+std::vector<rclcpp::Parameter> with_param(std::vector<rclcpp::Parameter> params,
+                                          const std::string& name,
+                                          const rclcpp::ParameterValue& value) {
+  for (auto& p : params) {
+    if (p.get_name() == name) {
+      p = rclcpp::Parameter(name, value);
+      return params;
+    }
+  }
+  params.emplace_back(name, value);
+  return params;
+}
+
+std::vector<rclcpp::Parameter> grasp_age_params(double max_age_s) {
+  return with_param(grasp_params(), "grasp_region_max_age_s", rclcpp::ParameterValue(max_age_s));
+}
+
+TEST_F(LifecycleKernelTest, AFreshGraspRegionExemptsAndStopsOnceItAgesPastTheBound) {
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_age_fresh", grasp_age_params(0.5));
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();  // the region is measured at the same instant
+  rig.warm(&b, 0.0, 100);
+  ASSERT_TRUE(rig.offer(&b, 0.0, 300))
+      << "a region measured just now exempts the finger; " << logs.joined();
+  // The declaration stays live (60 s backstop) and the stream stays fresh, but
+  // nobody re-measures the region: past 0.5 s it is no longer evidence.
+  rig.warm(&b, 0.0, 600);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched()) << "an unrefreshed region exempts nothing";
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=region_stale"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=region_stale"), 1U)
+      << "logged once, on the transition, not per heartbeat: " << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AGraspRegionMeasuredTooLongAgoExemptsNothing) {
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_age_stale", grasp_age_params(0.5));
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();  // a brand-new, live declaration...
+  b.region_stamp_ns = rig.now_ns() - std::int64_t{2'000'000'000};  // ...over an old measurement
+  rig.warm(&b, 0.0, 200);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 0U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=region_stale"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AGraspRegionMeasuredInTheFutureExemptsNothing) {
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_age_future", grasp_age_params(0.5));
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.region_stamp_ns = rig.now_ns() + std::int64_t{30'000'000'000};
+  rig.warm(&b, 0.0, 200);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched()) << "a measurement from the future is not evidence";
+  EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=region_stale"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, TheAgeBoundDoesNotRetireALatchedHandover) {
+  // After the handover the box is latched (d1f378dc) and producer updates are
+  // ignored; the fingers occlude the target, so the producer cannot re-measure
+  // it anyway. The exemption is bounded by the payload origin staying in the
+  // latched box (measured FK, per candidate), the stream deadline and
+  // timeout_s — not by the region's measurement age.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_age_handover", grasp_age_params(0.5));
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 100);
+  ASSERT_TRUE(rig.offer(&b, 0.0, 300)) << logs.joined();
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 100);
+  ASSERT_EQ(logs.count("safety.grasp_region_latched target=cell:cube"), 1U) << logs.joined();
+  rig.warm(&b, 0.0, 700);  // the region's stamp is now well past 0.5 s
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << "a valid handover survives its region's age: "
+                                  << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("region_stale"), 0U) << logs.joined();
+  // The handover rule itself is untouched: leaving the box still retires.
+  b.payload_x = 0.10;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_exit"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AStaleRegionAtTheAttachEdgeLatchesNoHandover) {
+  // The age bound applies up to and including the handover edge: the box that
+  // gets latched must itself be a fresh measurement.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_age_edge", grasp_age_params(0.5));
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.region_stamp_ns = rig.now_ns() - std::int64_t{2'000'000'000};
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 200);
+  EXPECT_EQ(logs.count("safety.grasp_region_latched"), 0U) << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, RegionAgeBoundsAreValidatedAtConfigure) {
+  for (const double bad :
+       {-1.0, std::numeric_limits<double>::quiet_NaN(), osk::kMaxRegionMeasurementAgeS + 0.1}) {
+    GraspRig rig("kernel_grasp_age_bad", grasp_age_params(bad));
+    EXPECT_FALSE(rig.configure()) << "grasp_region_max_age_s=" << bad;
+  }
+  {
+    GraspRig off("kernel_grasp_age_off", with_param(grasp_params(false), "grasp_region_max_age_s",
+                                                    rclcpp::ParameterValue(-1.0)));
+    EXPECT_TRUE(off.configure()) << "with the grasp allowance off the bound is not read";
+  }
+  {
+    GraspRig cap("kernel_grasp_age_cap", grasp_age_params(osk::kMaxRegionMeasurementAgeS));
+    EXPECT_TRUE(cap.configure());
+  }
+  {
+    // 0 (the default) derives 2 x world_voxel_deadline_ms, and says so.
+    LogCapture logs;
+    GraspRig derived(
+        "kernel_grasp_age_derived",
+        with_param(grasp_params(), "world_voxel_deadline_ms", rclcpp::ParameterValue(750.0)));
+    ASSERT_TRUE(derived.configure());
+    EXPECT_EQ(logs.count("safety.region_max_age grasp_s=1.5 place_s=1.5"), 1U) << logs.joined();
+  }
+  for (const double bad : {-1.0, osk::kMaxRegionMeasurementAgeS + 0.1}) {
+    GraspRig rig("kernel_place_age_bad",
+                 with_param(place_declaration_params(), "place_region_max_age_s",
+                            rclcpp::ParameterValue(bad)));
+    EXPECT_FALSE(rig.configure()) << "place_region_max_age_s=" << bad;
+  }
+  {
+    GraspRig off("kernel_place_age_off",
+                 with_param(with_param(place_declaration_params(), "place_region_max_age_s",
+                                       rclcpp::ParameterValue(-1.0)),
+                            "attached_collision_enabled", rclcpp::ParameterValue(false)));
+    EXPECT_TRUE(off.configure()) << "with attached checking off the place bound is not read";
+  }
+}
+
+// The place allowance under the same bound, on the declared-carry fixture.
+// Fresh: the backstop test's phase 1 passes. The region's stamp is pinned via
+// the declaration's (the fixture stamps both alike), with a 60 s backstop, so
+// only the measurement age can withdraw the allowance.
+TEST_F(LifecycleKernelTest, APlaceRegionAgeingPastItsBoundStopsTheAllowance) {
+  LogCapture logs;
+  GraspRig rig("kernel_place_age", with_param(place_declaration_params(), "place_region_max_age_s",
+                                              rclcpp::ParameterValue(0.5)));
+  rig.voxels = declared_target_voxels();
+  const std::int64_t measured_ns = rig.now_ns();
+  rig.state_fn = [measured_ns](std::int64_t stream_ns) {
+    return declared_carry_state(stream_ns, measured_ns, /*timeout_s=*/60.0);
+  };
+  rig.start();
+  rig.warm(nullptr, 0.0, 100);
+  ASSERT_TRUE(rig.offer_chunk(nullptr, 0.0, declared_carry_chunk(), 300))
+      << "a region measured just now grants the approach allowance; " << logs.joined();
+  rig.warm(nullptr, 0.0, 600);
+  EXPECT_FALSE(rig.offer_chunk(nullptr, 0.0, declared_carry_chunk()));
+  EXPECT_TRUE(rig.node->fault_latched()) << "an unrefreshed place region exempts nothing";
+  EXPECT_EQ(logs.count("safety.place_region_dropped reason=region_stale"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.place_region_rejected reason=region_stale"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, APlaceRegionMeasuredInTheFutureGrantsNoAllowance) {
+  LogCapture logs;
+  GraspRig rig("kernel_place_age_future",
+               with_param(place_declaration_params(), "place_region_max_age_s",
+                          rclcpp::ParameterValue(0.5)));
+  rig.voxels = declared_target_voxels();
+  rig.state_fn = [](std::int64_t stream_ns) {
+    auto msg = declared_carry_state(stream_ns, stream_ns, /*timeout_s=*/60.0);
+    msg.place_declaration.region.stamp_ns = stream_ns + std::int64_t{30'000'000'000};
+    return msg;
+  };
+  rig.start();
+  rig.warm(nullptr, 0.0, 200);
+  EXPECT_FALSE(rig.offer_chunk(nullptr, 0.0, declared_carry_chunk()));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.place_region_armed"), 0U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.place_region_rejected reason=region_stale"), 1U) << logs.joined();
+}
+
+// The grasp rig on a bimanual-shaped tree: a fixed root `base`, the swept
+// finger `link0` (j0) as before, and a second gripper link `other` on the root.
+// Both grippers are allowlisted; the declaration names `link0` only.
+std::vector<rclcpp::Parameter> bimanual_grasp_params() {
+  auto params = grasp_params(true, {"link0", "other"});
+  const auto set = [&params](const std::string& name, const rclcpp::ParameterValue& value) {
+    for (auto& p : params) {
+      if (p.get_name() == name) {
+        p = rclcpp::Parameter(name, value);
+        return;
+      }
+    }
+    params.emplace_back(name, value);
+  };
+  set("collision_n_links", rclcpp::ParameterValue(std::int64_t{3}));
+  set("collision_parent", rclcpp::ParameterValue(std::vector<std::int64_t>{-1, 0, 0}));
+  set("collision_joint_kind", rclcpp::ParameterValue(std::vector<std::int64_t>{0, 1, 0}));
+  set("collision_dof_index", rclcpp::ParameterValue(std::vector<std::int64_t>{-1, 0, -1}));
+  set("collision_origin_xyzrpy", rclcpp::ParameterValue(std::vector<double>(18, 0.0)));
+  set("collision_axis", rclcpp::ParameterValue(std::vector<double>{0, 0, 1, 0, 0, 1, 0, 0, 1}));
+  set("collision_capsule_link", rclcpp::ParameterValue(std::vector<std::int64_t>{1}));
+  set("collision_link_names",
+      rclcpp::ParameterValue(std::vector<std::string>{"base", "link0", "other"}));
+  // Room for one payload per hand.
+  set("attached_max_objects", rclcpp::ParameterValue(std::int64_t{2}));
+  set("attached_max_primitives", rclcpp::ParameterValue(std::int64_t{2}));
+  return params;
+}
+
+TEST_F(LifecycleKernelTest, AGraspHandoverBindsOnlyToAPayloadOnTheDeclaringGripper) {
+  // Review finding: the handover took the first carried object whose id
+  // matched, wherever it was attached. Bimanual, the OTHER hand's payload (or
+  // a released payload frozen on the base link) could stand in for the
+  // handover, and its leaving the region retired — or its staying kept — the
+  // exemption of a gripper that never grasped anything.
+  for (const char* elsewhere : {"other", "base"}) {
+    LogCapture logs;
+    GraspRig rig(std::string("kernel_grasp_bind_") + elsewhere, bimanual_grasp_params());
+    rig.start();
+    GraspBeat b;
+    b.declaration_stamp_ns = rig.now_ns();
+    b.carrying = true;
+    b.revision = 1;
+    b.attach_link = elsewhere;
+    rig.warm(&b, 0.0, 300);
+    ASSERT_TRUE(rig.offer(&b, 0.0)) << elsewhere << ": " << logs.joined();
+    EXPECT_EQ(logs.count("safety.grasp_region_handover"), 0U)
+        << elsewhere << " is not on the declaring gripper's chain: " << logs.joined();
+    // That payload leaving the region is not this grasp's handover exit.
+    b.payload_x = 0.10;
+    rig.warm(&b, 0.0, 100);
+    EXPECT_TRUE(rig.offer(&b, 0.0)) << elsewhere << ": " << logs.joined();
+    EXPECT_EQ(logs.count("safety.grasp_region_dropped"), 0U) << elsewhere << ": " << logs.joined();
+  }
+  // The control: the same payload on the declaring gripper IS the handover.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_bind_own", bimanual_grasp_params());
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_handover target=cell:cube object=cell:cube"), 1U)
+      << logs.joined();
+  b.payload_x = 0.10;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_exit"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AnUndeclaredObjectAttachedOnTheDeclaringGripperRetiresTheExemption) {
+  // Review finding: a declared object_id that names nothing attached meant the
+  // handover never happened, so the exemption lived on to timeout_s after the
+  // gripper had grasped something else. Fail closed: retire it, for good.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_wrong_object");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  b.carrying = true;
+  b.revision = 1;
+  b.object_label = "cell:not_the_cube";
+  rig.warm(&b, 0.0, 100);
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_object_mismatch"), 1U)
+      << logs.joined();
+  // A producer naming one object while the gripper holds another is a
+  // rejection, not a routine disarm: WARN, attributable, once per declaration.
+  const std::string rejected =
+      "safety.grasp_region_rejected reason=handover_object_mismatch target=cell:cube "
+      "object=cell:cube attached=cell:not_the_cube rskill=pick_cube "
+      "trace=00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+  EXPECT_EQ(logs.count(rejected), 1U) << logs.joined();
+  EXPECT_EQ(logs.max_severity(rejected), static_cast<int>(RCUTILS_LOG_SEVERITY_WARN));
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+  // The heartbeat of the retired declaration re-arms nothing, attached or not.
+  b.carrying = false;
+  b.revision = 2;
+  rig.warm(&b, kGraspClearQ, 300);
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=handover_object_mismatch"), 1U)
+      << "the retired declaration's heartbeats must not repeat the rejection:\n"
+      << logs.joined();
+}
+
+// ── Multi-pick per goal (design note §2.2, HZ-0115-3) ────────────────────────
+// The producer arms one identity per pick, `approach:<link>:<n>`, all under the
+// goal's stamp_ns. Each pick's declaration retires at its release; a later pick
+// arms under a fresh identity; no retired identity ever arms again.
+
+namespace {
+
+// One full pick under `target`: armed and exempt, attached (handover), released.
+// The release leaves nothing on the declaring chain.
+void pick_and_release(GraspRig& rig, GraspBeat& b, const std::string& target) {
+  b.target_id = target;
+  b.carrying = false;
+  rig.warm(&b, 0.0, 200);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << target << " did not arm";
+  b.carrying = true;
+  ++b.revision;
+  rig.warm(&b, 0.0, 100);
+  b.carrying = false;
+  ++b.revision;
+  rig.warm(&b, kGraspClearQ, 100);
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, ASecondPickInTheGoalArmsUnderItsOwnIdentity) {
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_second_pick");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  pick_and_release(rig, b, "approach:link0:1");
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=detached target=approach:link0:1"), 1U)
+      << logs.joined();
+  // Same goal stamp, fresh identity: the second pick is exempt.
+  b.target_id = "approach:link0:2";
+  rig.warm(&b, 0.0, 200);
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_armed target=approach:link0:2"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, EveryRetiredPickIdentityStaysRefusedEvenFromARestartedProducer) {
+  // A re-activated HAL whose counter restarted would re-send an identity the
+  // kernel already retired: none re-arms, whatever arrives in between.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_retired_set");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  for (int n = 1; n <= 4; ++n) {
+    pick_and_release(rig, b, "approach:link0:" + std::to_string(n));
+  }
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 4U) << logs.joined();
+  for (int n = 1; n <= 4; ++n) {
+    b.target_id = "approach:link0:" + std::to_string(n);
+    rig.warm(&b, kGraspClearQ, 100);
+  }
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 4U)
+      << "a retired pick identity re-armed: " << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "a retired identity exempted the finger";
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, AReleaseOnTheDeclaringChainRetiresWhileTheOtherHandHolds) {
+  // Bimanual: the declaring hand (link0) lets go while the other hand still
+  // holds its payload — or the released payload stays frozen on the base link
+  // through the release window. The attachment set is not empty either way,
+  // yet the pick is over: the declaration retires at the release.
+  for (const char* remaining : {"other", "base"}) {
+    LogCapture logs;
+    GraspRig rig(std::string("kernel_grasp_release_") + remaining, bimanual_grasp_params());
+    rig.start();
+    GraspBeat b;
+    b.declaration_stamp_ns = rig.now_ns();
+    b.target_id = "approach:link0:1";
+    if (std::string(remaining) == "other") {
+      b.second_attach_link = "other";
+    }
+    rig.warm(&b, 0.0, 200);
+    ASSERT_TRUE(rig.offer(&b, 0.0)) << remaining << ": " << logs.joined();
+    b.carrying = true;
+    b.revision = 1;
+    rig.warm(&b, 0.0, 100);
+    ASSERT_EQ(logs.count("safety.grasp_region_handover target=approach:link0:1"), 1U)
+        << remaining << ": " << logs.joined();
+    b.carrying = false;
+    b.second_attach_link = remaining;  // the other hand's payload, or the frozen record
+    b.revision = 2;
+    rig.warm(&b, 0.0, 100);
+    EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=released target=approach:link0:1"), 1U)
+        << remaining << ": " << logs.joined();
+    EXPECT_FALSE(rig.offer(&b, 0.0)) << remaining << ": the released pick still exempted";
+    EXPECT_TRUE(rig.node->fault_latched());
+  }
+}
+
+TEST_F(LifecycleKernelTest, AHandedOverDeclarationThatLosesItsRegionRetires) {
+  // The producer drops a pick's region at its DETACH. Before the handover a
+  // region-less declaration only exempts nothing; after it, the pick is over:
+  // the identity retires, so a region re-sent under it later never re-arms.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_region_lost");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.target_id = "approach:link0:1";
+  rig.warm(&b, 0.0, 200);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 100);
+  ASSERT_EQ(logs.count("safety.grasp_region_handover target=approach:link0:1"), 1U)
+      << logs.joined();
+  // The region-less snapshot (the payload still held, as at a DETACH's next beat).
+  rig.state_fn = [&b](std::int64_t stream_ns) {
+    auto msg = grasp_state(stream_ns, b);
+    msg.grasp_declaration.region_valid = false;
+    return msg;
+  };
+  rig.warm(&b, 0.0, 100);
+  rig.state_fn = nullptr;
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=no_region target=approach:link0:1"), 1U)
+      << logs.joined();
+  // The region back under the same identity, the payload still in the box: refused.
+  b.region_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 200);
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "a handed-over identity re-armed after losing its region";
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, AnotherHandsDetachRetiresAPreHandoverDeclaration) {
+  // Review finding (on 21c74585): dropping, not retiring, a pre-handover
+  // declaration at a detach "elsewhere" was less conservative. "Elsewhere" was
+  // judged from the last snapshot seen — with KeepLast(1) a missed ATTACH made the
+  // declaring hand's own release look like another hand's — and the drop re-armed
+  // the identical pre-detach region in the same callback, exempting newly
+  // un-cleared payload cells up to the age bound. A detach retires whatever is
+  // armed, before or after the handover; the old identity stays refused even with
+  // a fresh region, and only a fresh identity (the producer re-measures after the
+  // detach) arms.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_other_detach", bimanual_grasp_params());
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.target_id = "approach:link0:1";
+  b.second_attach_link = "other";  // the other hand holds; link0 approaches
+  b.revision = 1;
+  rig.warm(&b, 0.0, 200);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  ASSERT_EQ(logs.count("safety.grasp_region_handover"), 0U) << logs.joined();
+  // The other hand lets go: the attachment set empties at a new revision.
+  b.second_attach_link.clear();
+  b.revision = 2;
+  rig.warm(&b, kGraspClearQ, 200);
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=detached target=approach:link0:1"), 1U)
+      << logs.joined();
+  // The old identity, even with a region measured after the detach, never re-arms.
+  b.region_stamp_ns = rig.now_ns();
+  rig.warm(&b, kGraspClearQ, 200);
+  EXPECT_EQ(logs.count("safety.grasp_region_armed target=approach:link0:1"), 1U)
+      << "a retired identity re-armed: " << logs.joined();
+  // The producer's liveness: a fresh identity, re-measured after the detach, arms.
+  b.target_id = "approach:link0:2";
+  b.region_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 200);
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_armed target=approach:link0:2"), 1U) << logs.joined();
+  // ... and the retired one re-sent afterwards is refused.
+  b.target_id = "approach:link0:1";
+  rig.warm(&b, kGraspClearQ, 200);
+  EXPECT_EQ(logs.count("safety.grasp_region_armed target=approach:link0:1"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "a retired identity exempted the finger";
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, AFaultRetiredPreHandoverIdentityStaysRefused) {
+  // A grid re-frame and a rejected attachment model are genuine faults: the
+  // pre-handover declaration retires and its identity never re-arms, even with
+  // a fresh region in the new frame. Liveness is the producer's job (it mints a
+  // fresh identity only after the hand left the approach distance and backed off).
+  for (const char* fault : {"grid_frame_changed", "attachment_rejected"}) {
+    LogCapture logs;
+    GraspRig rig(std::string("kernel_grasp_fault_") + fault);
+    rig.start();
+    GraspBeat b;
+    b.declaration_stamp_ns = rig.now_ns();
+    b.target_id = "approach:link0:1";
+    rig.warm(&b, 0.0, 200);
+    ASSERT_TRUE(rig.offer(&b, 0.0)) << fault << ": " << logs.joined();
+    if (std::string(fault) == "grid_frame_changed") {
+      rig.voxels.header.frame_id = "base_link_reframed";
+      b.region_frame = "base_link_reframed";
+    } else {
+      rig.state_fn = [&b](std::int64_t stream_ns) {
+        auto msg = grasp_state(stream_ns, b);
+        msg.attachment_stamp_ns = 0;  // an unstamped attachment model: rejected
+        return msg;
+      };
+      rig.warm(&b, kGraspClearQ, 100);
+      rig.state_fn = nullptr;
+    }
+    b.region_stamp_ns = rig.now_ns();
+    rig.warm(&b, kGraspClearQ, 200);
+    EXPECT_EQ(logs.count(std::string("safety.grasp_region_dropped reason=") + fault +
+                         " target=approach:link0:1"),
+              1U)
+        << fault << ": " << logs.joined();
+    EXPECT_EQ(logs.count("safety.grasp_region_armed"), 1U) << fault << ": " << logs.joined();
+    EXPECT_FALSE(rig.offer(&b, 0.0)) << fault << ": the retired identity re-armed";
+    EXPECT_TRUE(rig.node->fault_latched());
+  }
+}
+
+TEST_F(LifecycleKernelTest, AHandedOverDeclarationRetractedByTheProducerRetires) {
+  // A latched (handed-over) declaration that goes inactive ends its pick: it
+  // retires, and the same identity re-sent active afterwards — the payload still
+  // in the box — never re-arms. The control: before any handover, a retraction
+  // only drops, and the same identity re-arms.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_retracted_latched");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.target_id = "approach:link0:1";
+  rig.warm(&b, 0.0, 200);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  b.active = false;
+  rig.warm(&b, kGraspClearQ, 100);
+  b.active = true;
+  b.region_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 200);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << "a pre-handover retraction must only drop\n" << logs.joined();
+  ASSERT_EQ(logs.count("safety.grasp_region_armed target=approach:link0:1"), 2U) << logs.joined();
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 100);
+  ASSERT_EQ(logs.count("safety.grasp_region_latched target=approach:link0:1"), 1U) << logs.joined();
+  b.active = false;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=retracted target=approach:link0:1"), 2U)
+      << logs.joined();
+  b.active = true;
+  b.region_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 200);
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 2U)
+      << "the retracted handover re-armed: " << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "a retracted handover's identity exempted the finger";
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, AnExemptFingerInsideItsTargetStillLeavesTheChunkScaled) {
+  // Review finding: the exempt finger IS inside the target, so its pair reads a
+  // negative distance. Fed raw into the sweep minimum it made the chunk's slack
+  // negative, which the velocity band discards as "tripped" — the chunk went out
+  // at full rate even with a non-exempt cell (the one above the target, outside
+  // the region) 2.5 mm from the same finger. The band now clamps an untripped
+  // check's slack to 0 (`note_slack`), so the exempt contact reads as the
+  // band's slowest rate.
+  auto params = grasp_params();
+  params.emplace_back("collision_scale_proximity_m", 0.1);
+  params.emplace_back("collision_scale_k", 20.0);
+  params.emplace_back("collision_scale_min", 0.1);
+  params.emplace_back("collision_seed_dt_s", 0.0);  // reactive: the measured pose only
+  GraspRig rig("kernel_grasp_band", params);
+  // Two stacked cells: the target (centre z = 0, inside the region) and one
+  // above it (centre z = 0.025, outside the region's 0.02 half-extent), whose
+  // lower face is 2.5 mm above the r = 10 mm finger sphere.
+  rig.voxels.size_z = 2;
+  rig.voxels.occupancy.assign(2, 1);
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer_chunk(&b, 0.0, velocity_chunk(1.0)))
+      << "the exempt finger in its target and a cell 2.5 mm clear of the margin: accepted";
+  EXPECT_FALSE(rig.node->fault_latched());
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_LT(rig.last_flat[0], 1.0) << "the band must still slow the chunk";
+  EXPECT_NEAR(rig.last_flat[0], std::exp(20.0 * (0.0 - 0.1)), 1e-9)
+      << "the exempt pair reads as slack 0 — never a negative slack the band throws away";
+  EXPECT_GE(rig.node->chunks_scaled(), 1U);
+}
+
+namespace {
+
+// A payload resting on a witnessed support, next to a cell it is NOT allowed to
+// touch. Geometry, all on the x axis (25 mm lattice from x = 0.2625):
+//   payload   20 mm half-extent box on link0 at x = 0.30 → faces at 0.28 / 0.32
+//   support   cell 0, x in [0.2625, 0.2875]: 7.5 mm into the payload's -x face
+//             (the lattice's own inflation of a resting contact), exempted by
+//             the witness — so the sweep minimum reads -0.0075
+//   neighbour cell 4, x in [0.3625, 0.3875]: 42.5 mm off the +x face, i.e.
+//             12.5 mm of slack at the 30 mm attached margin, inside a 0.1 m band
+// The robot's own r = 10 mm sphere at the origin is 0.25 m from every cell, so
+// the only thing that can slow the chunk is the neighbour's slack.
+ScaleOutcome run_witnessed_support_chunk(const std::string& node_name, bool support_cell) {
+  auto params = place_declaration_params();
+  params.emplace_back("collision_scale_proximity_m", 0.1);
+  params.emplace_back("collision_scale_k", 20.0);
+  params.emplace_back("collision_scale_min", 0.1);
+  params.emplace_back("collision_seed_dt_s", 0.0);  // reactive: the measured pose only
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(params);
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>(node_name, opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  EXPECT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  EXPECT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper(node_name + "_helper");
+  rclcpp::QoS reliable(rclcpp::KeepLast(1));
+  reliable.reliable();
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", reliable);
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", reliable);
+  auto ws_pub = helper.create_publisher<openral_msgs::msg::WorldStateStamped>(
+      "/openral/world_state_fast", reliable);
+  ScaleOutcome out;
+  auto safe_sub = helper.create_subscription<openral_msgs::msg::ActionChunk>(
+      "/openral/safe_action", reliable,
+      [&out](const openral_msgs::msg::ActionChunk::SharedPtr msg) {
+        if (!out.published) {
+          out.published = true;
+          out.flat = msg->flat;
+        }
+      });
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  openral_msgs::msg::OccupancyVoxels vox;
+  vox.orientation.w = 1.0;
+  vox.header.frame_id = "base_link";
+  vox.resolution = 0.025;
+  vox.size_x = 5;
+  vox.size_y = 1;
+  vox.size_z = 1;
+  vox.origin.x = 0.2625;
+  vox.origin.y = -0.0125;
+  vox.origin.z = -0.0125;
+  vox.occupancy = {static_cast<std::uint8_t>(support_cell ? 1 : 0), 0, 0, 0, 1};
+
+  openral_msgs::msg::WorldStateStamped ws;
+  ws.attachment_revision = 1;
+  openral_msgs::msg::AttachedCollisionObject obj;
+  obj.object_id = "sim:obj_main";
+  obj.attach_link = "link0";
+  obj.pose_in_link.position.x = 0.30;
+  obj.pose_in_link.orientation.w = 1.0;
+  openral_msgs::msg::AttachedCollisionPrimitive prim;
+  prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+  prim.shape_dimensions = {0.02, 0.02, 0.02};
+  prim.pose_in_object.orientation.w = 1.0;
+  obj.primitives.push_back(prim);
+  obj.support_contact_valid = true;
+  obj.support_contact.support_id = "sim:counter_main";
+  obj.support_contact.contact_point_in_object.x = -0.02;  // the payload's -x face
+  obj.support_contact.contact_normal_in_object.x = 1.0;   // support → payload
+  obj.support_contact.patch_radius_m = 0.02;
+  obj.support_contact.max_penetration_m = 0.002;
+  obj.support_contact.evidence_kind = "sim_geom_distance";
+  ws.attached_objects.push_back(obj);
+
+  sensor_msgs::msg::JointState js;
+  js.name = {"j0"};
+  js.position = {0.0};
+  const auto pump = [&]() {
+    js_pub->publish(js);
+    vox.source_stamp = helper.now();
+    voxel_pub->publish(vox);
+    ws.attachment_stamp_ns = node->now().nanoseconds();
+    ws.attached_objects[0].support_contact.stamp_ns = 1;  // one attestation, held
+    ws_pub->publish(ws);
+    exec.spin_some(std::chrono::milliseconds(10));
+  };
+  const auto warm = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < warm) {
+    pump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+  while (!out.published && std::chrono::steady_clock::now() < deadline) {
+    pump();
+    cand_pub->publish(velocity_chunk(1.0));
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  out.latched = node->fault_latched();
+  out.scaled = node->chunks_scaled();
+  exec.remove_node(node->get_node_base_interface());
+  rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+  node->on_deactivate(active);
+  node->on_cleanup(inactive);
+  return out;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, APayloadOnItsWitnessedSupportStillLeavesTheChunkScaled) {
+  // Review finding: ANY exempted pair (the support witness, the embedded
+  // attach-time residue, the grasp target) reads a negative distance, and the
+  // velocity band discarded a negative slack as "tripped" — so a payload resting
+  // on its attested support threw away every other pair's graded slowdown, and
+  // the chunk went out at full rate 12.5 mm from a cell it must not touch.
+  const double expected = std::exp(20.0 * (0.0125 - 0.1));
+
+  // The control: the neighbour alone sets the scale.
+  const auto alone = run_witnessed_support_chunk("kernel_witness_band_alone", false);
+  ASSERT_TRUE(alone.published);
+  ASSERT_FALSE(alone.latched);
+  ASSERT_EQ(alone.flat.size(), 1U);
+  ASSERT_NEAR(alone.flat[0], expected, 1e-6) << "the neighbour's 12.5 mm of slack";
+
+  // On its support: the witness clears the contact, and the band still slows
+  // the chunk — at least as much as the neighbour alone does.
+  const auto resting = run_witnessed_support_chunk("kernel_witness_band_resting", true);
+  ASSERT_TRUE(resting.published) << "the witnessed contact must not stop the chunk";
+  EXPECT_FALSE(resting.latched);
+  ASSERT_EQ(resting.flat.size(), 1U);
+  EXPECT_LE(resting.flat[0], expected + 1e-12) << "an exempt pair must never speed the chunk up";
+  EXPECT_NEAR(resting.flat[0], std::exp(20.0 * (0.0 - 0.1)), 1e-9)
+      << "the exempt contact reads as slack 0: the band's slowest rate";
+  EXPECT_GE(resting.scaled, 1U);
 }

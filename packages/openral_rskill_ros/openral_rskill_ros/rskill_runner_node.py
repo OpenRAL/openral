@@ -245,7 +245,7 @@ if _ROS2_AVAILABLE:
                 local-only resolver to avoid HF Hub access.
         """
 
-        def __init__(
+        def __init__(  # noqa: PLR0915  # reason: linear parameter declarations + per-goal state
             self,
             *,
             node_name: str = "openral_skill_runner",
@@ -311,6 +311,27 @@ if _ROS2_AVAILABLE:
             # and the scene is the only place the place target is known.
             # Empty = no declaration, i.e. no place witness can ever arm.
             self.declare_parameter("place_declaration_json", "")
+            # Grasp-phase declaration for DIRECT dispatch (real pick-and-place
+            # design §2.1) — the scene's `grasp_declaration`, serialised, same
+            # precedence as the place one (the goal's own wins). Empty = none.
+            self.declare_parameter("grasp_declaration_json", "")
+            # Approach-armed grasp target (real pick-and-place design §2.2): with
+            # no declaration from the goal or the scene, arm a goal-scope one —
+            # no target, no search box, every gripper hand's contact links — so
+            # the HAL's grasp-target leg can measure whatever ONE hand approaches
+            # (the policy picks the object). On its own it exempts nothing: the
+            # kernel needs a producer-measured region. Default off; the deploy
+            # launch turns it on with the HAL's
+            # `vision_attachment_grasp_target_approach_m`.
+            self.declare_parameter("grasp_approach_enabled", False)
+            # The place mirror (real pick-and-place design §2.3): with no place
+            # declaration from the goal or the scene, arm a goal-scope one —
+            # `target_id="surface"`, no object, no search box — so the HAL's
+            # place-target leg may attach the surface it measures under the
+            # carried payload. The leg never declares on its own: no goal, no
+            # place allowance. Default off; the deploy launch turns it on with
+            # the HAL's `vision_attachment_place_target_enabled`.
+            self.declare_parameter("place_approach_enabled", False)
             self._description: RobotDescription | None = robot_description
             self._aggregator: WorldStateAggregator | None = aggregator
             self._skill_resolver: SkillResolver | None = skill_resolver
@@ -348,6 +369,8 @@ if _ROS2_AVAILABLE:
             # ``None``. Held so the terminal transitions can retract exactly
             # what they armed rather than guessing.
             self._active_place_declaration: Any = None
+            # The grasp-phase declaration currently on the wire, or ``None``.
+            self._active_grasp_declaration: Any = None
             # True elapsed time when the execution budget last lapsed, so an
             # aborted goal's failure_reason can quote the overrun.
             self._last_deadline_elapsed_s: float | None = None
@@ -571,6 +594,21 @@ if _ROS2_AVAILABLE:
             self._place_declaration_pub = self.create_publisher(
                 _PlaceDeclarationMsg,
                 "/openral/place_declaration",
+                QoSProfile(
+                    reliability=QoSReliabilityPolicy.RELIABLE,
+                    durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                    depth=1,
+                ),
+            )
+
+            # Grasp-phase declaration (real pick-and-place design §2.1): same
+            # goal scoping and the same QoS as the place declaration above.
+            from openral_msgs.msg import GraspDeclaration as _GraspDeclarationMsg
+
+            self._grasp_declaration_msg_cls: Any = _GraspDeclarationMsg
+            self._grasp_declaration_pub = self.create_publisher(
+                _GraspDeclarationMsg,
+                "/openral/grasp_declaration",
                 QoSProfile(
                     reliability=QoSReliabilityPolicy.RELIABLE,
                     durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
@@ -975,6 +1013,7 @@ if _ROS2_AVAILABLE:
                     # exemption for whatever runs next. Idempotent, so the
                     # normal path's retraction is not doubled.
                     self._retract_place_declaration()
+                    self._retract_grasp_declaration()
 
         def _execute_locked(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0911, PLR0915  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
             """Run a single ExecuteRskill goal end-to-end (synchronously)."""
@@ -1012,13 +1051,14 @@ if _ROS2_AVAILABLE:
 
                 result.trace_id = propagation.current_traceparent() or ""
 
-                # ADR-0097 — arm this goal's place declaration once the trace
-                # exists, so the declaration carries the id an incident review
-                # would look it up by. Every terminal path below runs through
-                # `_reset_active_goal`, which retracts it.
-                self._arm_place_declaration(req, rskill_id=rskill_id, trace_id=result.trace_id)
-
                 try:
+                    # ADR-0097 — arm this goal's place declaration once the trace
+                    # exists, so the declaration carries the id an incident review
+                    # would look it up by. Every terminal path below runs through
+                    # `_reset_active_goal`, which retracts it. A supplied declaration
+                    # that does not validate refuses the goal (ROSConfigError, below).
+                    self._arm_place_declaration(req, rskill_id=rskill_id, trace_id=result.trace_id)
+                    self._arm_grasp_declaration(req, rskill_id=rskill_id, trace_id=result.trace_id)
                     # Single GPU-resident skill: evict-on-switch,
                     # reuse-on-match, else resolve + cache (see _acquire_skill).
                     skill = self._acquire_skill(
@@ -2013,9 +2053,34 @@ if _ROS2_AVAILABLE:
             if bool(getattr(request, "place_declaration_valid", False)):
                 return PlaceDeclaration.from_idl(request.place_declaration)
             raw = self.get_parameter("place_declaration_json").get_parameter_value().string_value
-            if not raw:
-                return None
-            return PlaceDeclaration.model_validate_json(raw)
+            if raw:
+                return PlaceDeclaration.model_validate_json(raw)
+            if self.get_parameter("place_approach_enabled").get_parameter_value().bool_value:
+                return self._goal_scope_place_declaration(
+                    float(getattr(request, "deadline_s", 0.0))
+                )
+            return None
+
+        def _goal_scope_place_declaration(self, deadline_s: float) -> Any:
+            """The goal-scope place declaration (``place_approach_enabled``).
+
+            Names no target surface, no object and no search box: the HAL's
+            place-target leg measures the surface under whichever payload is
+            carried and scopes the region to it. The backstop is the goal
+            deadline (120 s when unset), capped at 120 s — the grasp side's
+            ``GraspDeclaration.MAX_TIMEOUT_S``, not ``PlaceDeclaration``'s looser
+            600 s schema ceiling: a goal-scope declaration names nothing, so it
+            gets the tighter bound. The runner retracts it at goal end anyway.
+            Mirror of ``_goal_scope_grasp_declaration``.
+            """
+            from openral_core import GraspDeclaration, PlaceDeclaration
+
+            ceiling = GraspDeclaration.MAX_TIMEOUT_S
+            return PlaceDeclaration(
+                target_id="surface",
+                timeout_s=min(deadline_s, ceiling) if deadline_s > 0.0 else ceiling,
+                stamp_ns=0,
+            )
 
         def _arm_place_declaration(self, request: Any, *, rskill_id: str, trace_id: str) -> None:
             """Publish this goal's place declaration, stamped and attributable.
@@ -2033,8 +2098,14 @@ if _ROS2_AVAILABLE:
             costs nothing: the evidence producer attaches the measured region downstream, on the
             attachment publication the kernel reads.
 
-            A malformed declaration is refused and logged; the goal still runs with no
-            declaration — fail-closed (the kernel keeps stopping on place contact).
+            A supplied declaration (the goal's, or ``place_declaration_json``) that does not
+            validate refuses the goal: a dispatcher that named a place hint never silently
+            gets "place anywhere" (nor a run that can only stop on place contact). No
+            declaration supplied is not a refusal — ``place_approach_enabled`` measures the
+            surface under the payload.
+
+            Raises:
+                ROSConfigError: The supplied declaration does not validate.
             """
             from openral_core.exceptions import ROSConfigError
 
@@ -2042,7 +2113,11 @@ if _ROS2_AVAILABLE:
                 declaration = self._resolve_place_declaration(request)
             except (ValueError, TypeError, ROSConfigError) as exc:
                 self.get_logger().error(f"rskill_runner.place_declaration_rejected: {exc!s}")
-                return
+                raise ROSConfigError(
+                    f"the supplied place declaration does not validate, so the goal is "
+                    f"refused: {exc!s}. Supply none to place on the surface measured under "
+                    "the carried payload."
+                ) from exc
             if declaration is None:
                 return
             declaration = declaration.model_copy(
@@ -2052,6 +2127,7 @@ if _ROS2_AVAILABLE:
                     "stamp_ns": int(self.get_clock().now().nanoseconds),
                     "active": True,
                     # Dispatch never publishes a region; the producer measures it.
+                    # `search_box` (a hint naming the surface) passes through unchanged.
                     "region": None,
                 }
             )
@@ -2095,11 +2171,114 @@ if _ROS2_AVAILABLE:
                 return
             self._active_place_declaration = declaration if declaration.active else None
 
+        def _resolve_grasp_declaration(self, request: Any) -> Any:
+            """The grasp declaration in force for this goal, or ``None``.
+
+            Same precedence as ``_resolve_place_declaration``: the goal's own
+            typed declaration over the ``grasp_declaration_json`` parameter.
+            """
+            from openral_core import GraspDeclaration
+
+            if bool(getattr(request, "grasp_declaration_valid", False)):
+                return GraspDeclaration.from_idl(request.grasp_declaration)
+            raw = self.get_parameter("grasp_declaration_json").get_parameter_value().string_value
+            if raw:
+                return GraspDeclaration.model_validate_json(raw)
+            if self.get_parameter("grasp_approach_enabled").get_parameter_value().bool_value:
+                return self._goal_scope_grasp_declaration(
+                    float(getattr(request, "deadline_s", 0.0))
+                )
+            return None
+
+        def _goal_scope_grasp_declaration(self, deadline_s: float) -> Any:
+            """The approach-armed goal-scope declaration, or ``None`` with no gripper.
+
+            Names no target and no search box: the HAL's grasp-target leg narrows
+            it to the ONE hand that approaches occupied cells and measures there.
+            Every hand's contact links (``openral_core.gripper_hands``), so the
+            leg may choose; the kernel accepts one hand per region-carrying
+            declaration only. The backstop is the goal deadline (the ceiling
+            when unset), capped at ``GraspDeclaration.MAX_TIMEOUT_S``; the runner
+            retracts it at goal end anyway.
+            """
+            from openral_core import GraspDeclaration, gripper_hands
+
+            if self._description is None:
+                return None
+            links = tuple(link for hand in gripper_hands(self._description) for link in hand)
+            if not links:
+                return None
+            ceiling = GraspDeclaration.MAX_TIMEOUT_S
+            return GraspDeclaration(
+                target_id="approach",
+                contact_links=links,
+                timeout_s=min(deadline_s, ceiling) if deadline_s > 0.0 else ceiling,
+                stamp_ns=0,
+            )
+
+        def _arm_grasp_declaration(self, request: Any, *, rskill_id: str, trace_id: str) -> None:
+            """Publish this goal's grasp declaration, stamped and attributable.
+
+            Clone of ``_arm_place_declaration``: ``rskill_id`` / ``trace_id`` /
+            ``stamp_ns`` are overwritten from the live dispatch, and any
+            ``region`` is dropped — dispatch names a target, only the evidence
+            producer measures it (HZ-0115-2). A malformed declaration is refused
+            and logged; the goal runs with no declaration, i.e. no exemption.
+            """
+            from openral_core.exceptions import ROSConfigError
+
+            try:
+                declaration = self._resolve_grasp_declaration(request)
+            except (ValueError, TypeError, ROSConfigError) as exc:
+                self.get_logger().error(f"rskill_runner.grasp_declaration_rejected: {exc!s}")
+                return
+            if declaration is None:
+                return
+            declaration = declaration.model_copy(
+                update={
+                    "rskill_id": rskill_id,
+                    "trace_id": trace_id,
+                    "stamp_ns": int(self.get_clock().now().nanoseconds),
+                    "active": True,
+                    # Dispatch never publishes a region; the producer measures it.
+                    # `search_box` passes through unchanged: it only seeds perception.
+                    "region": None,
+                }
+            )
+            self._publish_grasp_declaration(declaration)
+            self.get_logger().info(
+                f"rskill_runner.grasp_declaration_armed target={declaration.target_id} "
+                f"links={','.join(declaration.contact_links)} rskill={rskill_id} "
+                f"trace={trace_id or '<unset>'} timeout_s={declaration.timeout_s:.1f}"
+            )
+
+        def _retract_grasp_declaration(self) -> None:
+            """Retract the grasp declaration in force, if any. Idempotent."""
+            declaration = self._active_grasp_declaration
+            if declaration is None:
+                return
+            self._publish_grasp_declaration(declaration.model_copy(update={"active": False}))
+            self.get_logger().info(
+                f"rskill_runner.grasp_declaration_retracted target={declaration.target_id}"
+            )
+
+        def _publish_grasp_declaration(self, declaration: Any) -> None:
+            """Put one grasp declaration on the wire and remember what is in force."""
+            msg = self._grasp_declaration_msg_cls()
+            declaration.fill_idl(msg)
+            try:
+                self._grasp_declaration_pub.publish(msg)
+            except Exception as exc:  # reason: transport failure is advisory here
+                self.get_logger().error(f"rskill_runner.grasp_declaration_publish_failed: {exc!s}")
+                return
+            self._active_grasp_declaration = declaration if declaration.active else None
+
         def _reset_active_goal(self) -> None:
             """Clear the per-goal state under the lock."""
             # The declaration is scoped to this goal and dies with it — success,
             # failure, abort, or cancel, all of which land here (HZ-0097-3).
             self._retract_place_declaration()
+            self._retract_grasp_declaration()
             with self._goal_lock:
                 self._active_goal = None
                 self._active_skill = None
@@ -2226,6 +2405,7 @@ if _ROS2_AVAILABLE:
             # own teardown (HZ-0097-3): a latched stop is exactly when a
             # lingering exemption would be least defensible.
             self._retract_place_declaration()
+            self._retract_grasp_declaration()
 
         def _on_estop_cleared(self, _msg: object) -> None:
             """Clear the runner latch on /openral/estop_cleared so a new goal runs.

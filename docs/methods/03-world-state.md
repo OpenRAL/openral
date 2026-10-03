@@ -24,24 +24,24 @@ _Layout adapter registry that assembles per-checkpoint state vectors from manife
 ### `python/world_state/src/openral_world_state/aggregator.py`
 _WorldStateAggregator — tf2-aware, injectable snapshot producer._
 
-- const `DEFAULT_RATE_HZ: float = 30.0` — Advertised default snapshot rate. (L89)
-- const `DEFAULT_STALENESS_S: float = 0.5` — General component staleness window, covering every heterogeneous-rate component with margin over the slowest expected stream; a freshness indicator, not a safety gate. (L96)
-- const `DEFAULT_POLICY_STATE_STALENESS_S: float = 5.0` — Staleness window for `policy_state`, which is step-locked not rate-locked; wide enough for a heavy sidecar sim while still flagging a wedged one faster than its 120 s ZMQ timeout. (L103)
-- `class WorldStateAggregator` — Aggregates sensor data and produces `WorldState` snapshots. (L106)
-  - `__init__(description, *, staleness_limit_s=DEFAULT_STALENESS_S, image_staleness_limit_s=None, policy_state_staleness_limit_s=DEFAULT_POLICY_STATE_STALENESS_S, clock_fn=None)` — Camera and policy-state streams get independent staleness windows: `image_staleness_limit_s` defaults to the general window but deploy sim passes 5.0 s for slow rendered frames vs 0.5 s for real deploys; `policy_state` defaults to 5.0 s since it's step-locked. (L166)
-  - `update_joint_state(state) -> None` — Record a fresh joint reading. (L274)
-  - `update_policy_state(values) -> None` — Store a defensive copy of simulator-native checkpoint proprioception for `WorldState.policy_state`. (L297)
-  - `update_image_frame(sensor_name, frame: SensorFrame) -> None` — Record an inline pixel payload for a named sensor (unlike `update_image`, which stores only the topic ref). (L308)
-  - `update_image(sensor_name, topic, stamp_ns) -> None` — Record image arrival. (L285)
-  - `update_ee_pose(ee_name, pose) -> None` — Record EE pose from tf2. (L342)
-  - `update_base_pose(pose, twist=None) -> None` — Record base pose (and optional twist). (L356)
-  - `update_battery(pct) -> None` — Record battery %. (L373)
-  - `update_attached_objects(objects: list[AttachedCollisionObject], *, revision=0, stamp_ns=None, place_declaration: PlaceDeclaration | None = None) -> None` — Atomically replaces the complete attached-payload set; duplicate ids or backwards revisions raise `ValueError`. `place_declaration` is replaced in the same atomic step as its payload, and liveness is judged against the stream's own `stamp_ns`, never `clock_fn`, so a sim-clock declaration is never wrongly judged stale by the wall clock. (L397)
-  - `set_error(component, status='error') -> None` — Latch a forced diagnostic. (L459)
-  - `clear_error(component) -> None` — Remove a forced diagnostic. (L475)
-  - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock), emitting OTel span/metrics for staleness and latched errors. `staleness_latched` fires only for a component that has had data before — a never-received one counts as stale but doesn't latch, so bringup stays quiet before the HAL's first publish. (L486)
-  - `update_detected_objects(objects: list[DetectedObject]) -> None` — Replace the remembered detected-object set (thread-safe); the next `snapshot()` reflects it. Called by the world-state lifecycle node's memory tick. (L382)
-  - `_emit_snapshot_telemetry(span, diag, ages_ms) -> None` — Internal: lift the snapshot diagnostics onto the OTel span + meter instruments. (L622)
+- const `DEFAULT_RATE_HZ: float = 30.0` — Advertised default snapshot rate. (L90)
+- const `DEFAULT_STALENESS_S: float = 0.5` — General component staleness window, covering every heterogeneous-rate component with margin over the slowest expected stream; a freshness indicator, not a safety gate. (L97)
+- const `DEFAULT_POLICY_STATE_STALENESS_S: float = 5.0` — Staleness window for `policy_state`, which is step-locked not rate-locked; wide enough for a heavy sidecar sim while still flagging a wedged one faster than its 120 s ZMQ timeout. (L104)
+- `class WorldStateAggregator` — Aggregates sensor data and produces `WorldState` snapshots. (L107)
+  - `__init__(description, *, staleness_limit_s=DEFAULT_STALENESS_S, image_staleness_limit_s=None, policy_state_staleness_limit_s=DEFAULT_POLICY_STATE_STALENESS_S, clock_fn=None)` — Camera and policy-state streams get independent staleness windows: `image_staleness_limit_s` defaults to the general window but deploy sim passes 5.0 s for slow rendered frames vs 0.5 s for real deploys; `policy_state` defaults to 5.0 s since it's step-locked. (L167)
+  - `update_joint_state(state) -> None` — Record a fresh joint reading. (L279)
+  - `update_policy_state(values) -> None` — Store a defensive copy of simulator-native checkpoint proprioception for `WorldState.policy_state`. (L302)
+  - `update_image_frame(sensor_name, frame: SensorFrame) -> None` — Record an inline pixel payload for a named sensor (unlike `update_image`, which stores only the topic ref). (L313)
+  - `update_image(sensor_name, topic, stamp_ns) -> None` — Record image arrival. (L290)
+  - `update_ee_pose(ee_name, pose) -> None` — Record EE pose from tf2. (L347)
+  - `update_base_pose(pose, twist=None) -> None` — Record base pose (and optional twist). (L361)
+  - `update_battery(pct) -> None` — Record battery %. (L378)
+  - `update_attached_objects(objects: list[AttachedCollisionObject], *, revision=0, stamp_ns=None, place_declaration: PlaceDeclaration | None = None, grasp_declaration: GraspDeclaration | None = None) -> None` — Atomically replaces the complete attached-payload set; duplicate ids or backwards revisions raise `ValueError`. `place_declaration` is replaced in the same atomic step as its payload, and liveness is judged against the stream's own `stamp_ns`, never `clock_fn`, so a sim-clock declaration is never wrongly judged stale by the wall clock. `grasp_declaration` is stored under the same atomic step and the same liveness gate; a set that carries none clears it. (L402)
+  - `set_error(component, status='error') -> None` — Latch a forced diagnostic. (L482)
+  - `clear_error(component) -> None` — Remove a forced diagnostic. (L498)
+  - `snapshot() -> WorldState` — Produce a typed snapshot (hot path, acquires lock), emitting OTel span/metrics for staleness and latched errors. `staleness_latched` fires only for a component that has had data before — a never-received one counts as stale but doesn't latch, so bringup stays quiet before the HAL's first publish. (L509)
+  - `update_detected_objects(objects: list[DetectedObject]) -> None` — Replace the remembered detected-object set (thread-safe); the next `snapshot()` reflects it. Called by the world-state lifecycle node's memory tick. (L387)
+  - `_emit_snapshot_telemetry(span, diag, ages_ms) -> None` — Internal: lift the snapshot diagnostics onto the OTel span + meter instruments. (L646)
 
 ### `python/world_state/src/openral_world_state/spatial_memory.py`
 _SpatialMemory — persistent object-centric scene-graph memory (advisory; never a safety input)._
@@ -154,6 +154,9 @@ _C++ (Layer 2). The attached payload's own occupancy leaves the published `Occup
 - `class AttachSweepLedger` — The bridge's only memory: the open attach-transition window per live object (identity, the position it is anchored at, whether it has shut). Not a latch on cells — nothing about which cells were cleared is remembered, and no cell is held out of a later grid.
   - `sweep(present, window_m) -> vector<uint8_t>` — Which of `present` are still inside their attach-transition window, answering and recording in one call. A key seen for the first time opens its window; the window latches closed once the payload has moved more than `window_m` from its anchor, and an absent object is forgotten (so detach restarts the window).
   - `size() -> size_t` — How many windows the last swept grid carried.
+- `using AttachLinkTfFrames = std::unordered_map<std::string, std::string>` — Manifest attach link → the TF frame it is looked up as.
+- `parse_attach_link_tf_frames(entries, out, error) -> bool` — Parse the bridge's `attach_link_tf_frames` param (`"link=frame"`, the HAL's `vision_attachment_tf_frames` strings; empty entries skipped). A malformed entry or a link mapped to two frames returns `false` with `error` set and `out` EMPTY, so every link falls back to its own name and a renamed hand's payload stays in the map (fail closed).
+- `tf_frame_for(frames, attach_link) -> const std::string&` — The frame `clear_attached_payload` asks tf2 for: the mapping, else `attach_link` itself.
 - `attach_transition_padding(steady_padding_m, attach_sweep_padding_m) -> double` — The clearing padding one object gets on one grid: steady padding plus the attach-sweep padding while its window is open, so widened sweep is never tighter than an ordinary frame. Non-finite or negative inputs contribute 0 — a parameter can never narrow the clearing below what the payload's volume explains.
 
 ### `packages/openral_octomap_bridge/include/openral_octomap_bridge/octree_freshness.hpp`

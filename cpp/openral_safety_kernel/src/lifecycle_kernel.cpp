@@ -10,9 +10,11 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <string>
 
 #include <opentelemetry/common/attribute_value.h>
 #include <opentelemetry/context/runtime_context.h>
@@ -28,6 +30,11 @@
 namespace openral_safety_kernel {
 
 namespace {
+
+// Largest per-component difference (m for translation and half-extents, unit
+// rotation-matrix entries) between a re-measured grasp region and the one
+// latched at handover that still counts as the same box: float noise only.
+constexpr double kGraspRegionLatchNoise = 1e-6;
 
 rclcpp::QoS chunk_qos() {
   // openral slot dispatcher publishes N chunks/tick on /openral/candidate_action
@@ -362,6 +369,22 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<std::int64_t>("attached_max_objects", 8);
   this->declare_parameter<std::int64_t>("attached_max_primitives", 16);
   this->declare_parameter<std::int64_t>("attached_max_touch_links", 32);
+  // Grasp-target exemption (ADR-0115 draft, hazard HZ-0115; Safety-WG review
+  // pending). Default OFF: nothing is exempt and the world-voxel check is
+  // unchanged. When on, `grasp_contact_links` is the launch-derived allowlist
+  // (the manifest's `role: gripper` joints' child links); a declaration may
+  // exempt only links on it, and an unknown name fails configure.
+  this->declare_parameter<bool>("grasp_allowance_enabled", false);
+  this->declare_parameter<std::vector<std::string>>("grasp_contact_links",
+                                                    std::vector<std::string>{});
+  // How old a producer-measured region (`region.stamp_ns`) may be and still
+  // exempt anything — grasp target and place target respectively. Regions are
+  // perceived from the voxel map, so the declaration's own `timeout_s` (up to
+  // 120 s) is no bound on the measurement. 0 = derive 2 x world_voxel_deadline;
+  // configure refuses a resolved value outside (0, kMaxRegionMeasurementAgeS]
+  // while the matching allowance is enabled.
+  this->declare_parameter<double>("grasp_region_max_age_s", 0.0);
+  this->declare_parameter<double>("place_region_max_age_s", 0.0);
 
   // Measured joint-state seed for non-position collision checks.
   // `collision_joint_names` is the actuated joint order (length n_dof) the
@@ -434,6 +457,68 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
     RCLCPP_ERROR(this->get_logger(), "self-collision model load failed: %s", coll_err.c_str());
     envelope_loaded_ = false;
     return CallbackReturn::FAILURE;
+  }
+  // Grasp-target exemption allowlist (ADR-0115 draft). Resolved against the
+  // loaded collision link names; a name the model does not know is a
+  // misconfiguration of a safety surface and refuses configure rather than
+  // silently exempting nothing (or, worse, the wrong index).
+  grasp_allowance_enabled_ = this->get_parameter("grasp_allowance_enabled").as_bool();
+  grasp_allowlist_.reset();
+  if (grasp_allowance_enabled_) {
+    const auto names = this->get_parameter("grasp_contact_links").as_string_array();
+    if (names.empty()) {
+      RCLCPP_ERROR(this->get_logger(),
+                   "grasp_allowance_enabled with an empty grasp_contact_links allowlist");
+      envelope_loaded_ = false;
+      return CallbackReturn::FAILURE;
+    }
+    for (const auto& name : names) {
+      const auto it = std::find(collision_link_names_.begin(), collision_link_names_.end(), name);
+      const auto index = static_cast<std::size_t>(it - collision_link_names_.begin());
+      if (it == collision_link_names_.end() || index >= kMaxGraspMaskLinks) {
+        RCLCPP_ERROR(this->get_logger(),
+                     "grasp_contact_links names '%s', which is not a collision link of this "
+                     "model (or is past the %zu-link mask)",
+                     name.c_str(), kMaxGraspMaskLinks);
+        envelope_loaded_ = false;
+        return CallbackReturn::FAILURE;
+      }
+      grasp_allowlist_.set(index);
+    }
+    RCLCPP_WARN(this->get_logger(),
+                "safety.grasp_allowance enabled (ADR-0115 draft, Safety-WG review pending): "
+                "%zu allowlisted contact link(s); a live grasp declaration exempts them from "
+                "the world-voxel check inside its measured region",
+                grasp_allowlist_.count());
+  }
+  // Region measurement age bounds (kernel-region-age). Resolved after the
+  // collision model so `attached_collision_enabled_` (the place allowance's
+  // switch) and the voxel deadline are both known. Refused, never clamped.
+  {
+    const double derived_s = 2.0 * world_voxel_deadline_s_;
+    const auto resolve = [derived_s](double v) { return v == 0.0 ? derived_s : v; };
+    grasp_region_max_age_s_ = resolve(this->get_parameter("grasp_region_max_age_s").as_double());
+    place_region_max_age_s_ = resolve(this->get_parameter("place_region_max_age_s").as_double());
+    const auto in_range = [](double v) {
+      return std::isfinite(v) && v > 0.0 && v <= kMaxRegionMeasurementAgeS;
+    };
+    const auto refused = [&](bool enabled, double value, const char* name) {
+      if (!enabled || in_range(value)) {
+        return false;
+      }
+      RCLCPP_ERROR(this->get_logger(),
+                   "%s resolves to %g s, outside (0, %g]: a region measured that long ago "
+                   "would still exempt links from the world-voxel check",
+                   name, value, kMaxRegionMeasurementAgeS);
+      return true;
+    };
+    if (refused(grasp_allowance_enabled_, grasp_region_max_age_s_, "grasp_region_max_age_s") ||
+        refused(attached_collision_enabled_, place_region_max_age_s_, "place_region_max_age_s")) {
+      envelope_loaded_ = false;
+      return CallbackReturn::FAILURE;
+    }
+    RCLCPP_INFO(this->get_logger(), "safety.region_max_age grasp_s=%g place_s=%g",
+                grasp_region_max_age_s_, place_region_max_age_s_);
   }
   if (self_collision_enabled_) {
     RCLCPP_INFO(this->get_logger(), "self-collision check enabled: %zu links, margin=%g m",
@@ -577,15 +662,19 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
         "/openral/world_voxels", voxel_qos,
         std::bind(&SafetyKernelLifecycleNode::on_world_voxels, this, std::placeholders::_1));
   }
-  if (attached_collision_enabled_) {
+  if (attached_collision_enabled_ || grasp_allowance_enabled_) {
     // WorldStateStamped is published RELIABLE+VOLATILE+KL=1 at 30 Hz; the kernel
-    // only consumes the bounded attached_objects array (grasped payloads).
+    // consumes the bounded attached_objects array (grasped payloads) and the
+    // declarations riding beside it. The grasp exemption needs it even with
+    // attached checking off: its region and handover payload live there.
     rclcpp::QoS world_state_qos(rclcpp::KeepLast(1));
     world_state_qos.reliable();
     world_state_qos.durability_volatile();
     world_state_sub_ = this->create_subscription<openral_msgs::msg::WorldStateStamped>(
         "/openral/world_state_fast", world_state_qos,
         std::bind(&SafetyKernelLifecycleNode::on_world_state, this, std::placeholders::_1));
+  }
+  if (attached_collision_enabled_) {
     rclcpp::QoS attachment_ack_qos(rclcpp::KeepLast(1));
     attachment_ack_qos.reliable();
     attachment_ack_qos.transient_local();
@@ -667,6 +756,22 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   chunks_scaled_ = 0;
   last_logged_scale_ = 1.0;
   last_drop_reason_.clear();
+  grasp_allowance_enabled_ = false;
+  grasp_allowlist_.reset();
+  grasp_region_ = GraspTargetRegion{};
+  voxel_grid_.grasp_region = GraspTargetRegion{};
+  grasp_declaration_stamp_ns_ = 0;
+  grasp_declaration_timeout_s_ = 0.0;
+  grasp_declaration_target_.clear();
+  grasp_retired_.clear();
+  grasp_retired_overflow_logged_ = false;
+  grasp_region_refusal_reason_.clear();
+  grasp_region_refusal_target_.clear();
+  grasp_latched_region_ = GraspTargetRegion{};
+  grasp_latched_target_.clear();
+  grasp_latched_stamp_ns_ = 0;
+  grasp_latched_ = false;
+  grasp_latched_moved_warned_ = false;
   // Drop the remembered status so the next activation's publish is never
   // suppressed by the transition gate (HZ-0096-1 mitigation 1).
   status_msg_ = openral_msgs::msg::SafetyStatus{};
@@ -946,12 +1051,15 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         RCLCPP_ERROR(this->get_logger(),
                      "safety.collision kind=%s a=%s b=%s step=%d min_distance_m=%g "
                      "sweep_min_distance_m=%g mode=%u rskill_id=%s place_allowance_active=%d "
-                     "place_target=%s depth_is_box_bound=%d",
+                     "place_target=%s depth_is_box_bound=%d grasp_exemption_active=%d "
+                     "grasp_target=%s",
                      kind, a.c_str(), b.c_str(), step, hit.min_distance, hit.sweep_min_distance,
                      static_cast<unsigned>(view.control_mode), msg->rskill_id.c_str(),
                      static_cast<int>(hit.place_allowance_active),
                      hit.place_allowance_active ? place_declaration_target_.c_str() : "",
-                     static_cast<int>(hit.depth_is_box_bound));
+                     static_cast<int>(hit.depth_is_box_bound),
+                     static_cast<int>(voxel_grid_.grasp_region.valid),
+                     voxel_grid_.grasp_region.valid ? grasp_declaration_target_.c_str() : "");
         span->SetAttribute("safety.severity", "violation");
         span->SetAttribute("safety.drop_reason", "collision");
         span->SetAttribute("safety.collision_mode", static_cast<int64_t>(view.control_mode));
@@ -1010,6 +1118,33 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // the declaration's own backstop is what stops an allowance outliving the
       // goal that justified it if the producer stalls (HZ-0097-3/4).
       voxel_grid_.place_region = place_declaration_live() ? place_region_ : PlaceApproachRegion{};
+      // ADR-0115 draft: the grasp exemption, re-evaluated per candidate for the
+      // same reason. During the handover (the declared object is attached) it
+      // lives only while that payload's origin — FK of the MEASURED
+      // configuration, never a predicted one — is inside the region; once it
+      // leaves, the declaration retires for good. No fresh measured state means
+      // no exemption for this candidate (not a retirement).
+      bool grasp_live = grasp_allowance_enabled_ && grasp_declaration_live();
+      if (grasp_live && grasp_region_.handover) {
+        if (!measured_state_fresh() || grasp_region_.object_index >= attached_model_.n_objects) {
+          grasp_live = false;
+        } else {
+          fk_config(q_meas_.data());
+          const AttachedObject& obj = attached_model_.objects[grasp_region_.object_index];
+          const Transform& link =
+              collision_scratch_.link_world[static_cast<std::size_t>(obj.attach_link)];
+          const Vec3& p = obj.pose_in_link.t;
+          const Vec3 origin{link.t.x + link.r[0] * p.x + link.r[1] * p.y + link.r[2] * p.z,
+                            link.t.y + link.r[3] * p.x + link.r[4] * p.y + link.r[5] * p.z,
+                            link.t.z + link.r[6] * p.x + link.r[7] * p.y + link.r[8] * p.z};
+          if (!grasp_region_contains(grasp_region_, origin)) {
+            retire_grasp_declaration("handover_exit");
+            grasp_live = false;
+          }
+        }
+      }
+      voxel_grid_.grasp_region = grasp_live ? grasp_region_ : GraspTargetRegion{};
+      span->SetAttribute("safety.grasp_exemption_active", grasp_live);
       // FK `q` then run the enabled checks at `margin + extra_margin` (extra>0 for
       // predictive steps, inflating with look-ahead depth). report + return true
       // on the first hit. `q` is a position row, the measured seed, or a
@@ -1017,9 +1152,19 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // Fold one check's sweep-wide minimum into the chunk's smallest slack
       // (#188). `m` is the margin THAT check was gated against, including the
       // predictive look-ahead inflation, so the comparison is like-for-like.
+      //
+      // A check that did not trip can still read a negative sweep minimum: an
+      // EXEMPTED pair (live support witness, embedded attach-time residue, the
+      // grasp target) sits inside the margin by construction and reaches the
+      // sweep minimum at its true depth. The sweep keeps ONE minimum, so
+      // discarding that negative would discard every non-exempt pair's graded
+      // slack with it and send the chunk out at full rate beside a cell it must
+      // not touch. Clamped to 0, an exempt contact reads as the band's slowest
+      // rate: the most conservative reading short of a stop. A check that DID
+      // trip reports and returns, so its clamped slack never scales anything.
       const auto note_slack = [&](const CollisionHit& h, double m) {
-        const double slack = h.sweep_min_distance - m;
-        if (slack >= 0.0 && slack < collision_min_slack_m) {
+        const double slack = std::max(h.sweep_min_distance - m, 0.0);
+        if (slack < collision_min_slack_m) {
           collision_min_slack_m = slack;
         }
       };
@@ -1490,6 +1635,19 @@ void SafetyKernelLifecycleNode::publish_diagnostics() {
     place_region_state = place_region_refusal_reason_ + ":" + place_region_refusal_target_;
   }
   add_kv("place_region", place_region_state);
+  // Standing grasp-declaration state (ADR-0115 draft), for the same reason.
+  std::string grasp_region_state{"-"};
+  if (!grasp_allowance_enabled_) {
+    grasp_region_state = "off";
+  } else if (grasp_region_.valid) {
+    grasp_region_state = (grasp_declaration_live() ? "live:" : "expired:") +
+                         grasp_declaration_target_ +
+                         ":links=" + std::to_string(grasp_region_.link_mask.count()) +
+                         (grasp_region_.handover ? ":handover" : "");
+  } else if (!grasp_region_refusal_reason_.empty()) {
+    grasp_region_state = grasp_region_refusal_reason_ + ":" + grasp_region_refusal_target_;
+  }
+  add_kv("grasp_region", grasp_region_state);
   arr.status.push_back(status);
   diagnostics_pub_->publish(arr);
   // ADR-0096 / HZ-0096-1 mitigation 2 — refresh the latched status at the
@@ -1742,6 +1900,20 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   voxel_grid_.support_witness_live = 0;
   voxel_grid_.place_region = PlaceApproachRegion{};
   place_region_ = PlaceApproachRegion{};
+  voxel_grid_.grasp_region = GraspTargetRegion{};
+  grasp_region_ = GraspTargetRegion{};
+  grasp_declaration_stamp_ns_ = 0;
+  grasp_declaration_timeout_s_ = 0.0;
+  grasp_declaration_target_.clear();
+  grasp_retired_.clear();
+  grasp_retired_overflow_logged_ = false;
+  grasp_region_refusal_reason_.clear();
+  grasp_region_refusal_target_.clear();
+  grasp_latched_region_ = GraspTargetRegion{};
+  grasp_latched_target_.clear();
+  grasp_latched_stamp_ns_ = 0;
+  grasp_latched_ = false;
+  grasp_latched_moved_warned_ = false;
   place_declaration_stamp_ns_ = 0;
   place_declaration_timeout_s_ = 0.0;
   place_declaration_target_.clear();
@@ -2022,6 +2194,9 @@ void SafetyKernelLifecycleNode::on_world_voxels(
     }
     voxel_frame_id_ = msg->header.frame_id;
     place_region_ = PlaceApproachRegion{};
+    if (grasp_region_.valid) {
+      retire_grasp_declaration("grid_frame_changed");
+    }
   }
   voxel_received_ = true;
   voxel_stamp_ = this->now();
@@ -2058,6 +2233,9 @@ void SafetyKernelLifecycleNode::on_world_state(
     // A message we do not trust for the payload model is not one to trust for
     // the region scoped to that payload either.
     place_region_ = PlaceApproachRegion{};
+    if (grasp_region_.valid) {
+      retire_grasp_declaration("attachment_rejected");
+    }
   };
 
   const auto& wire = msg->attached_objects;
@@ -2181,6 +2359,9 @@ void SafetyKernelLifecycleNode::on_world_state(
     // A rejected payload model takes the region scoped to it: the object mask
     // the region was resolved against no longer describes anything.
     place_region_ = PlaceApproachRegion{};
+    if (grasp_region_.valid) {
+      retire_grasp_declaration("attachment_rejected");
+    }
     return;
   }
   // Labels parallel the accepted objects (object_id for evidence).
@@ -2240,6 +2421,19 @@ void SafetyKernelLifecycleNode::on_world_state(
       attached_model_.force_gate = PlaceForceGate{};
       place_region_refusal_reason_.clear();
       place_region_refusal_target_.clear();
+      // A detach while a grasp region is armed retires it, before or after its
+      // handover: either the grasped payload was released (the handover is over)
+      // or something else let go — another hand, a frozen release record — and
+      // the scene the region was measured in is gone. Retirement is decided on
+      // the revision edge alone, never on which hand the kernel last saw holding
+      // (with KeepLast(1) a missed ATTACH snapshot would make the declaring
+      // hand's own release look like another's), and a retired identity never
+      // re-arms. Liveness is the producer's: it sees every DETACH, drops its
+      // other hand's pre-handover region and re-arms under a fresh identity from
+      // a measurement taken after the detach.
+      if (grasp_region_.valid) {
+        retire_grasp_declaration("detached");
+      }
     } else {
       attached_contact_snapshot_pending_ = true;
       attached_contact_active_ = false;
@@ -2248,6 +2442,9 @@ void SafetyKernelLifecycleNode::on_world_state(
   // The place declaration rides the same snapshot as the payload it is scoped
   // to, so it is resolved here, against the objects that were just accepted.
   ingest_place_declaration(*msg);
+  if (grasp_allowance_enabled_) {
+    ingest_grasp_declaration(*msg);
+  }
   attached_overflow_ = false;
   attached_received_ = true;
   attached_stamp_ = producer_stamp;
@@ -2271,6 +2468,7 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
   place_declaration_stamp_ns_ = 0;
   place_declaration_timeout_s_ = 0.0;
   place_declaration_target_.clear();
+  place_region_stamp_ns_ = 0;
 
   const auto announce_dropped = [&](const char* reason) {
     // A declaration that is gone is not a declaration being refused: the next
@@ -2350,6 +2548,24 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
     return;
   }
   const auto& region = declaration.region;
+  if (!region_measurement_fresh(region.stamp_ns, place_region_max_age_s_)) {
+    // A measurement older than the bound (or from the future) is not evidence
+    // of where the receptacle is now: no allowance, the undeclared margins.
+    if (was_valid) {
+      RCLCPP_INFO(this->get_logger(), "safety.place_region_dropped reason=region_stale target=%s",
+                  previous_target.c_str());
+    }
+    if (refusal_is_new("region_stale", declaration.target_id)) {
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.place_region_rejected reason=region_stale target=%s age_s=%g "
+                  "max_age_s=%g rskill=%s trace=%s evidence=%s",
+                  declaration.target_id.c_str(),
+                  static_cast<double>(this->now().nanoseconds() - region.stamp_ns) * 1e-9,
+                  place_region_max_age_s_, declaration.rskill_id.c_str(),
+                  declaration.trace_id.c_str(), region.evidence_ref.c_str());
+    }
+    return;
+  }
   if (voxel_frame_id_.empty() || region.frame_id != voxel_frame_id_) {
     if (refusal_is_new("frame_mismatch", declaration.target_id)) {
       RCLCPP_WARN(
@@ -2429,6 +2645,7 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
   }
   place_region_refusal_reason_.clear();
   place_region_refusal_target_.clear();
+  place_region_stamp_ns_ = region.stamp_ns;
   // Announce on the arming transition, and again whenever the target's geometry
   // count changes: a region that gains or loses the declared body's primitives
   // is adjudicating against something materially different, and a producer whose
@@ -2457,7 +2674,334 @@ bool SafetyKernelLifecycleNode::place_declaration_live() const noexcept {
   // attachment freshness deadline.
   const std::int64_t elapsed_ns = this->now().nanoseconds() - place_declaration_stamp_ns_;
   return elapsed_ns >= 0 &&
-         elapsed_ns <= static_cast<std::int64_t>(place_declaration_timeout_s_ * 1e9);
+         elapsed_ns <= static_cast<std::int64_t>(place_declaration_timeout_s_ * 1e9) &&
+         // The measurement ages between world-state messages too.
+         region_measurement_fresh(place_region_stamp_ns_, place_region_max_age_s_);
+}
+
+bool SafetyKernelLifecycleNode::region_measurement_fresh(std::int64_t stamp_ns,
+                                                         double max_age_s) const noexcept {
+  if (!(max_age_s > 0.0)) {
+    return false;
+  }
+  const std::int64_t age_ns = this->now().nanoseconds() - stamp_ns;
+  return age_ns >= 0 && age_ns <= static_cast<std::int64_t>(max_age_s * 1e9);
+}
+
+void SafetyKernelLifecycleNode::retire_grasp_declaration(const char* reason) {
+  if (grasp_region_.valid) {
+    RCLCPP_INFO(this->get_logger(), "safety.grasp_region_dropped reason=%s target=%s", reason,
+                grasp_declaration_target_.c_str());
+  }
+  grasp_region_ = GraspTargetRegion{};
+  voxel_grid_.grasp_region = GraspTargetRegion{};
+  const bool evicted = grasp_retired_.insert(std::hash<std::string>{}(grasp_declaration_target_),
+                                             grasp_declaration_stamp_ns_);
+  if (evicted && !grasp_retired_overflow_logged_) {
+    grasp_retired_overflow_logged_ = true;
+    RCLCPP_WARN(this->get_logger(),
+                "safety.grasp_retired_overflow capacity=%zu target=%s: the oldest retired "
+                "identity was evicted (still bounded by its goal's timeout_s)",
+                kGraspRetiredCapacity, grasp_declaration_target_.c_str());
+  }
+}
+
+void SafetyKernelLifecycleNode::ingest_grasp_declaration(
+    const openral_msgs::msg::WorldStateStamped& msg) {
+  const bool was_valid = grasp_region_.valid;
+  const bool was_handover = grasp_region_.handover;
+  const std::string previous_target = grasp_declaration_target_;
+  grasp_region_ = GraspTargetRegion{};
+  grasp_declaration_stamp_ns_ = 0;
+  grasp_declaration_timeout_s_ = 0.0;
+  grasp_declaration_target_.clear();
+
+  const auto announce_dropped = [&](const char* reason) {
+    grasp_region_refusal_reason_.clear();
+    grasp_region_refusal_target_.clear();
+    if (was_valid) {
+      RCLCPP_INFO(this->get_logger(), "safety.grasp_region_dropped reason=%s target=%s", reason,
+                  previous_target.c_str());
+    }
+  };
+  if (!msg.grasp_declaration_valid) {
+    announce_dropped("no_declaration");
+    return;
+  }
+  const auto& declaration = msg.grasp_declaration;
+  // Attributability first (HZ-0115-2): recorded before any arming decision, so
+  // a declaration that never armed is still reconstructible from the trace.
+  grasp_declaration_target_ = declaration.target_id;
+  grasp_declaration_stamp_ns_ = declaration.stamp_ns;
+  grasp_declaration_timeout_s_ = declaration.timeout_s;
+  // Has this declaration (target, stamp) latched at a handover? Then its pick is
+  // under way: the box is frozen (below), and the declaration losing its region
+  // or being retracted ends the pick — it retires rather than merely dropping,
+  // so the same identity can never re-arm against a later attachment (HZ-0115-3).
+  const bool latched_declaration = grasp_latched_ &&
+                                   grasp_latched_target_ == declaration.target_id &&
+                                   grasp_latched_stamp_ns_ == declaration.stamp_ns;
+  if (!declaration.active) {
+    announce_dropped("retracted");
+    if (latched_declaration) {
+      retire_grasp_declaration("retracted");
+    }
+    return;
+  }
+  if (grasp_retired_.contains(std::hash<std::string>{}(declaration.target_id),
+                              declaration.stamp_ns)) {
+    // The heartbeat of a declaration the kernel already retired — this pick's
+    // or any earlier pick's of the goal: it does not re-arm. Only a new
+    // declaration can (HZ-0115-3).
+    announce_dropped("retired");
+    return;
+  }
+  if (!declaration.region_valid) {
+    // Dispatch's own publication, and the state before the producer measures:
+    // a declaration with no region exempts nothing. After its handover, the
+    // producer dropping the region (its DETACH) ends the pick.
+    announce_dropped("no_region");
+    if (latched_declaration) {
+      retire_grasp_declaration("no_region");
+    }
+    return;
+  }
+  const auto& region = declaration.region;
+  const auto reject = [&](const char* reason) {
+    if (was_valid) {
+      RCLCPP_INFO(this->get_logger(), "safety.grasp_region_dropped reason=%s target=%s", reason,
+                  previous_target.c_str());
+    }
+    if (grasp_region_refusal_reason_ == reason &&
+        grasp_region_refusal_target_ == declaration.target_id) {
+      return;
+    }
+    grasp_region_refusal_reason_ = reason;
+    grasp_region_refusal_target_ = declaration.target_id;
+    RCLCPP_WARN(this->get_logger(),
+                "safety.grasp_region_rejected reason=%s target=%s links=%zu half_m=%g,%g,%g "
+                "region_frame=%s grid_frame=%s rskill=%s trace=%s evidence=%s",
+                reason, declaration.target_id.c_str(), declaration.contact_links.size(),
+                region.half_extents.x, region.half_extents.y, region.half_extents.z,
+                region.frame_id.c_str(), voxel_frame_id_.c_str(), declaration.rskill_id.c_str(),
+                declaration.trace_id.c_str(), region.evidence_ref.c_str());
+  };
+  if (declaration.target_id.empty()) {
+    reject("no_target");
+    return;
+  }
+  if (!std::isfinite(declaration.timeout_s) || declaration.timeout_s <= 0.0 ||
+      declaration.timeout_s > kMaxGraspDeclarationTimeoutS) {
+    reject("timeout_out_of_range");
+    return;
+  }
+  if (voxel_frame_id_.empty() || region.frame_id != voxel_frame_id_) {
+    reject("frame_mismatch");
+    return;
+  }
+  if (!region.geometry.empty()) {
+    reject("geometry_not_supported");  // v1: a grasp region is a box only
+    return;
+  }
+  // Measurement age. Exempt once this declaration has latched at its handover
+  // edge: the box is frozen there (producer updates are ignored), the fingers
+  // occlude the target so nothing can re-measure it, and the exemption is
+  // bounded instead by the carried payload's measured origin staying in the
+  // latched box, the stream deadline and timeout_s. Requiring a fresh
+  // re-measurement would retire a valid handover with the fingers closed on
+  // the target. Up to and including the handover edge the box must be fresh.
+  if (!latched_declaration && !region_measurement_fresh(region.stamp_ns, grasp_region_max_age_s_)) {
+    reject("region_stale");
+    return;
+  }
+  // The declaration's contact links must be a non-empty subset of the
+  // launch-derived allowlist; the exempt mask is exactly that subset. One name
+  // off the allowlist refuses the whole declaration rather than trimming it: a
+  // producer naming a link the deployment never allowed is not one to trust
+  // with the rest (HZ-0115-5).
+  if (declaration.contact_links.empty()) {
+    reject("no_contact_links");
+    return;
+  }
+  std::bitset<kMaxGraspMaskLinks> mask;
+  for (const auto& name : declaration.contact_links) {
+    const auto it = std::find(collision_link_names_.begin(), collision_link_names_.end(), name);
+    const auto index = static_cast<std::size_t>(it - collision_link_names_.begin());
+    if (it == collision_link_names_.end() || index >= kMaxGraspMaskLinks ||
+        !grasp_allowlist_[index]) {
+      reject("link_not_allowed");
+      return;
+    }
+    mask.set(index);
+  }
+  // One hand per declaration. The producer may infer the target from the
+  // robot's own approach instead of a named one, and it arms one hand at a
+  // time; the kernel holds it to that rather than trusting it (HZ-0115-12).
+  if (!grasp_links_one_hand(collision_model_.parent, grasp_allowlist_, mask)) {
+    reject("links_span_hands");
+    return;
+  }
+  const Transform pose = transform_from_translation_quat(
+      region.pose.position.x, region.pose.position.y, region.pose.position.z,
+      region.pose.orientation.x, region.pose.orientation.y, region.pose.orientation.z,
+      region.pose.orientation.w);
+  const Vec3 half{region.half_extents.x, region.half_extents.y, region.half_extents.z};
+  const GraspRegionStatus status = ingest_grasp_region(pose, half, mask, grasp_region_);
+  if (status != GraspRegionStatus::kOk) {
+    reject(grasp_region_status_reason(status));
+    return;
+  }
+  // Handover: the declared object (or, for an empty object_id, the first one
+  // carried on the declaring gripper) is attached. From here the per-candidate
+  // rule applies — the exemption lives only while that payload's origin stays
+  // in the region. Only an attachment on the declaring gripper's own chain can
+  // be the handover: its attach link is a declared contact link or an ancestor
+  // of one, and never the collision root (a released payload frozen in the
+  // base frame, `freeze_released_attachment`, is attached there, and the root
+  // is an ancestor of every link). Bimanual: the other hand's payload is on
+  // neither chain, so it can neither stand in for the handover nor keep it.
+  const std::string* attached_on_gripper = nullptr;
+  const std::size_t objects = attached_model_.n_objects;
+  for (std::size_t i = 0; i < objects && i < attached_labels_.size(); ++i) {
+    if (!attachment_on_grasp_chain(attached_model_.objects[i].attach_link, mask)) {
+      continue;
+    }
+    attached_on_gripper = &attached_labels_[i];
+    if (declaration.object_id.empty() || attached_labels_[i] == declaration.object_id) {
+      grasp_region_.handover = true;
+      grasp_region_.object_index = i;
+      break;
+    }
+  }
+  if (latched_declaration && !grasp_region_.handover) {
+    // This declaration's handover latched, and nothing is attached on the
+    // declaring chain any more: the gripper released its payload. The pick is
+    // over even when the attachment set is not empty — the other hand still
+    // holds, or the released payload is frozen on the base through its release
+    // window — so the declaration retires now (HZ-0115-3), not at timeout_s.
+    retire_grasp_declaration("released");
+    return;
+  }
+  if (attached_on_gripper != nullptr && !grasp_region_.handover) {
+    // The declaring gripper attached something the declaration does not name.
+    // Whatever it grasped, it is not the scene the region was measured for, and
+    // without a handover the exemption would live on to timeout_s. Fail closed:
+    // retire it for good (HZ-0115-3: only a new declaration re-arms). A
+    // producer contradicting the attachment stream is a rejection, not a
+    // routine disarm, so it is WARNed with what was declared vs attached. Once
+    // per declaration: its later heartbeats take the `retired` path above.
+    RCLCPP_WARN(this->get_logger(),
+                "safety.grasp_region_rejected reason=handover_object_mismatch target=%s "
+                "object=%s attached=%s rskill=%s trace=%s",
+                declaration.target_id.c_str(), declaration.object_id.c_str(),
+                attached_on_gripper->c_str(), declaration.rskill_id.c_str(),
+                declaration.trace_id.c_str());
+    retire_grasp_declaration("handover_object_mismatch");
+    return;
+  }
+  // Latch at the handover edge: the first snapshot that sees the declared object
+  // attached freezes the box for this (target, stamp). Later snapshots of the
+  // same declaration keep the latched box whatever region they carry — the
+  // producer cannot extend the exemption by moving the box with the payload.
+  // Before any handover the region still updates on every snapshot.
+  if (grasp_latched_ && grasp_latched_target_ == declaration.target_id &&
+      grasp_latched_stamp_ns_ == declaration.stamp_ns) {
+    double moved = 0.0;
+    for (std::size_t k = 0; k < 9; ++k) {
+      moved = std::max(moved, std::abs(grasp_region_.pose.r[k] - grasp_latched_region_.pose.r[k]));
+    }
+    const Vec3& t = grasp_region_.pose.t;
+    const Vec3& lt = grasp_latched_region_.pose.t;
+    const Vec3& h = grasp_region_.half_extents;
+    const Vec3& lh = grasp_latched_region_.half_extents;
+    moved = std::max({moved, std::abs(t.x - lt.x), std::abs(t.y - lt.y), std::abs(t.z - lt.z),
+                      std::abs(h.x - lh.x), std::abs(h.y - lh.y), std::abs(h.z - lh.z)});
+    if (moved > kGraspRegionLatchNoise && !grasp_latched_moved_warned_) {
+      grasp_latched_moved_warned_ = true;
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.grasp_region_moved_after_handover target=%s max_delta=%g ignored",
+                  declaration.target_id.c_str(), moved);
+    }
+    grasp_region_.pose = grasp_latched_region_.pose;
+    grasp_region_.half_extents = grasp_latched_region_.half_extents;
+  } else if (grasp_region_.handover) {
+    grasp_latched_ = true;
+    grasp_latched_target_ = declaration.target_id;
+    grasp_latched_stamp_ns_ = declaration.stamp_ns;
+    grasp_latched_region_ = grasp_region_;
+    grasp_latched_moved_warned_ = false;
+    RCLCPP_INFO(this->get_logger(), "safety.grasp_region_latched target=%s at handover",
+                declaration.target_id.c_str());
+  }
+  grasp_region_refusal_reason_.clear();
+  grasp_region_refusal_target_.clear();
+  grasp_region_stamp_ns_ = region.stamp_ns;
+  if (!was_valid || previous_target != declaration.target_id) {
+    RCLCPP_INFO(this->get_logger(),
+                "safety.grasp_region_armed target=%s links=%zu half_m=%g,%g,%g rskill=%s trace=%s "
+                "evidence=%s",
+                declaration.target_id.c_str(), mask.count(), half.x, half.y, half.z,
+                declaration.rskill_id.c_str(), declaration.trace_id.c_str(),
+                region.evidence_ref.c_str());
+  }
+  if (grasp_region_.handover && !was_handover) {
+    RCLCPP_INFO(this->get_logger(), "safety.grasp_region_handover target=%s object=%s",
+                declaration.target_id.c_str(),
+                attached_labels_[grasp_region_.object_index].c_str());
+  }
+}
+
+bool SafetyKernelLifecycleNode::attachment_on_grasp_chain(
+    int attach_link, const std::bitset<kMaxGraspMaskLinks>& mask) const noexcept {
+  const auto& parent = collision_model_.parent;
+  if (attach_link < 0 || static_cast<std::size_t>(attach_link) >= parent.size()) {
+    return false;
+  }
+  const auto a = static_cast<std::size_t>(attach_link);
+  if (a < kMaxGraspMaskLinks && mask[a]) {
+    return true;  // attached to a declared contact link itself
+  }
+  if (parent[a] < 0) {
+    return false;  // the root: every link's ancestor, and where released payloads are frozen
+  }
+  // Is `attach_link` an ancestor of a declared contact link? Parents index
+  // below their children, so each walk ends at the root in < n_links steps.
+  for (std::size_t c = 0; c < kMaxGraspMaskLinks && c < parent.size(); ++c) {
+    if (!mask[c]) {
+      continue;
+    }
+    for (int l = parent[c]; l >= 0; l = parent[static_cast<std::size_t>(l)]) {
+      if (l == attach_link) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool SafetyKernelLifecycleNode::grasp_declaration_live() const noexcept {
+  if (!grasp_region_.valid || grasp_declaration_timeout_s_ <= 0.0) {
+    return false;
+  }
+  const std::int64_t now_ns = this->now().nanoseconds();
+  // Backstop and future stamps, exactly as for the place declaration.
+  const std::int64_t elapsed_ns = now_ns - grasp_declaration_stamp_ns_;
+  if (elapsed_ns < 0 ||
+      elapsed_ns > static_cast<std::int64_t>(grasp_declaration_timeout_s_ * 1e9)) {
+    return false;
+  }
+  // The stream that carries the region must itself be fresh. Stale means no
+  // exemption — never a drop by itself; with attached checking on, the
+  // attachment gate has already refused the chunk before this is read.
+  const double age_s = (this->now() - attached_stamp_).seconds();
+  if (!(attached_received_ && !attached_overflow_ && age_s >= 0.0 &&
+        age_s <= attached_collision_deadline_s_)) {
+    return false;
+  }
+  // The region's own measurement, ageing between messages; not applied once
+  // the handover has latched the box (see ingest_grasp_declaration).
+  return grasp_region_.handover ||
+         region_measurement_fresh(grasp_region_stamp_ns_, grasp_region_max_age_s_);
 }
 
 }  // namespace openral_safety_kernel

@@ -581,6 +581,128 @@ def test_camera_info_from_intrinsics_builds_pinhole() -> None:
     assert list(info.r) == [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
 
 
+# ── real-camera image geometry: live CameraInfo K, RGB mask → depth raster ─
+
+# The ZED Mini's K as its driver published it on the OpenArm Thor cell
+# (2026-10-02, /zed/zed_node/rgb/color/rect/camera_info and .../depth/camera_info,
+# both 1920x1080, frame zed_left_camera_frame_optical). The manifest's head_zed
+# declares the nominal fx = fy = 960, cx = 960, cy = 540.
+_ZED_THOR_K = (1498.18, 1498.18, 936.11, 541.81)
+_ZED_OPTICAL = "zed_left_camera_frame_optical"
+
+
+def _openarm_head_zed() -> SensorSpec:
+    from openral_core import RobotDescription
+
+    desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+    return next(s for s in desc.sensors if s.name == "head_zed")
+
+
+def test_intrinsics_from_camera_info_inverts_the_builder_on_the_real_head_zed() -> None:
+    pytest.importorskip("sensor_msgs")
+    from openral_hal.depth_cloud import camera_info_from_intrinsics, intrinsics_from_camera_info
+
+    nominal = _openarm_head_zed().intrinsics
+    assert nominal is not None
+    info = camera_info_from_intrinsics(
+        width=nominal.width,
+        height=nominal.height,
+        fx=nominal.fx,
+        fy=nominal.fy,
+        cx=nominal.cx,
+        cy=nominal.cy,
+        frame_id=_ZED_OPTICAL,
+    )
+    back = intrinsics_from_camera_info(info)
+    assert (back.width, back.height, back.fx, back.fy, back.cx, back.cy) == (
+        nominal.width,
+        nominal.height,
+        nominal.fx,
+        nominal.fy,
+        nominal.cx,
+        nominal.cy,
+    )
+
+
+def test_intrinsics_from_camera_info_reads_the_measured_zed_k() -> None:
+    sensor_msgs = pytest.importorskip("sensor_msgs.msg")
+    from openral_hal.depth_cloud import intrinsics_from_camera_info
+
+    fx, fy, cx, cy = _ZED_THOR_K
+    info = sensor_msgs.CameraInfo()
+    info.header.frame_id = _ZED_OPTICAL
+    info.width, info.height = 1920, 1080
+    info.k = [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0]
+    k = intrinsics_from_camera_info(info)
+    assert (k.width, k.height, k.fx, k.fy, k.cx, k.cy) == (1920, 1080, fx, fy, cx, cy)
+    # The point of reading it live: the nominal focal length is 36 % short.
+    nominal = _openarm_head_zed().intrinsics
+    assert nominal is not None
+    assert abs(k.fx - nominal.fx) / k.fx > 0.35
+
+
+def test_intrinsics_from_camera_info_refuses_an_uncalibrated_message() -> None:
+    sensor_msgs = pytest.importorskip("sensor_msgs.msg")
+    from openral_core.exceptions import ROSConfigError
+    from openral_hal.depth_cloud import intrinsics_from_camera_info
+
+    info = sensor_msgs.CameraInfo()  # the all-zero default a driver sends before calibrating
+    info.width, info.height = 1920, 1080
+    with pytest.raises(ROSConfigError, match="uncalibrated"):
+        intrinsics_from_camera_info(info)
+
+
+def test_resampled_real_sam_mask_back_projects_to_the_same_centroid() -> None:
+    """RGB at native resolution, depth at half: the resampled mask lands on the same object.
+
+    The mask is real SAM 2.1 output (``tests/unit/fixtures/sam2_masks.SOURCE.txt``);
+    depth is the analytic plane it masked, at wrist range, as in
+    ``test_vision_attachment_evidence``.
+    """
+    from openral_core import RobotDescription, scale_intrinsics_to
+    from openral_hal._vision_attachment_evidence import backproject_masked_depth
+    from openral_hal.depth_cloud import resample_mask_nearest
+    from PIL import Image
+
+    mask = np.asarray(
+        Image.open("tests/unit/fixtures/sam2_wrist_eraser_mask.png").convert("1"), dtype=bool
+    )
+    height, width = mask.shape
+    wrist = next(
+        s.intrinsics
+        for s in RobotDescription.from_yaml("robots/so101_follower/robot.yaml").sensors
+        if s.name == "wrist"
+    )
+    assert wrist is not None
+
+    def centroid(m: np.ndarray, h: int, w: int) -> np.ndarray:
+        pts, frac = backproject_masked_depth(
+            m,
+            np.full((h, w), 0.15),
+            scale_intrinsics_to(wrist, w, h),
+            min_depth_m=0.05,
+            max_depth_m=1.0,
+        )
+        assert frac == 1.0
+        assert len(pts) > 0
+        return pts.mean(axis=0)
+
+    half = resample_mask_nearest(mask, (height // 2, width // 2))
+    assert half.shape == (height // 2, width // 2)
+    full_c = centroid(mask, height, width)
+    half_c = centroid(half, height // 2, width // 2)
+    # Within one world voxel (20 mm) — in fact far tighter.
+    assert float(np.linalg.norm(full_c - half_c)) < 0.020
+
+
+def test_resample_mask_nearest_refuses_an_aspect_mismatch() -> None:
+    from openral_core.exceptions import ROSConfigError
+    from openral_hal.depth_cloud import resample_mask_nearest
+
+    with pytest.raises(ROSConfigError, match="aspect mismatch"):
+        resample_mask_nearest(np.zeros((1080, 1920), dtype=bool), (480, 640))
+
+
 # ── full deploy-sim chain: SensorSpec → synth → PointCloud2 ───────────────
 
 _CHAIN_MJCF = """

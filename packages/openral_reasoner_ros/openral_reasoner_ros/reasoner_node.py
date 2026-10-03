@@ -75,6 +75,7 @@ from openral_core import (
     detect_gpu_vram_gb,
     is_collective_target,
 )
+from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError, ROSGPUMemoryError, ROSReasonerInvalidPlan
 from openral_observability import log_lifecycle_errors
 from openral_reasoner.active_search import SearchBudget, SearchProgress
@@ -114,6 +115,11 @@ from openral_reasoner.context import (
     render_robot_self_model,
 )
 from openral_reasoner.core import PreparedTick, ReasonerCore, ReasonerTickResult
+from openral_reasoner.grounding import (
+    gripper_hands,
+    ground_grasp_target,
+    ground_place_target,
+)
 from openral_reasoner.memory import MemoryEntry, MemoryStore
 from openral_reasoner.mission import (
     DEFAULT_MAX_SUBDIVIDE_DEPTH,
@@ -780,6 +786,21 @@ class ReasonerNode(LifecycleNode):
         # ``supported_control_modes``. The deploy launch sets this
         # explicitly to match the HAL it brings up (a later task).
         self.declare_parameter("hal_mode", "sim")
+        # Grasp/place targets named by the LLM (real pick-and-place design §2.2/§2.3): the
+        # seed-box padding a grounded grasp object or place surface gets — one octomap cell
+        # plus the depth extrinsic's planar accuracy bound. The cell is the
+        # deploy's octree resolution, which deploy_e2e passes (`_octomap_resolution`); there is
+        # no standalone default (0.0 = unset), so a node launched without it on a manifest with
+        # a gripper fails configure instead of padding by some other cell's size. Calibration
+        # knobs: the
+        # producer re-measures inside the seed, so a looser pad only widens its search, never
+        # the exemption.
+        self.declare_parameter("grasp_target_voxel_m", 0.0)
+        self.declare_parameter("grasp_target_extrinsic_error_m", MAX_PLANAR_ERR_M)
+        self._robot_description: RobotDescription | None = None
+        # (dispatch generation, grasp declaration, place declaration) grounded for the goal
+        # about to be sent; read once by ``_send_execute_rskill_goal``.
+        self._grounded_declarations: tuple[int, Any, Any] | None = None
         # locate_in_view: on-demand live-detector query — when true, offer the read-only
         # ``locate_in_view`` tool (ask a live VLM detector if an object is in the current frame, via
         # the ``/openral/perception/locate_in_view`` service). The deploy launch sets this when it
@@ -1059,6 +1080,12 @@ class ReasonerNode(LifecycleNode):
             )
             return TransitionCallbackReturn.FAILURE
 
+        # Load the grasp/place grounding context first: a deploy that can ground a grasp
+        # target but lacks the voxel resolution fails here, once, before any resource is
+        # opened -- not per tool call, where it would burn the LLM's replanning ladder.
+        # Its ROSConfigError reaches ``log_lifecycle_errors``: logged, configure FAILURE.
+        self._load_grounding_context()
+
         try:
             client = self._injected_client or build_tool_use_client_from_env()
         except ROSConfigError as exc:
@@ -1305,6 +1332,104 @@ class ReasonerNode(LifecycleNode):
             f"({len(self._palette.execute_rskill_ids)} skills in palette)",
         )
         return TransitionCallbackReturn.SUCCESS
+
+    def _load_grounding_context(self) -> None:
+        """Load the robot manifest that grasp/place target grounding reads.
+
+        Failure is non-fatal and logged: an ``ExecuteRskillTool`` that names a target is
+        then refused at dispatch.
+
+        Raises:
+            ROSConfigError: The manifest loaded and declares a gripper, so the LLM can name
+                a ``grasp_target`` (every ``ExecuteRskillTool`` offers it), but
+                ``grasp_target_voxel_m`` is unset -- grounding would refuse every call.
+        """
+        robot_yaml = self.get_parameter("robot_yaml").get_parameter_value().string_value
+        if not robot_yaml:
+            return
+        try:
+            self._robot_description = RobotDescription.from_yaml(robot_yaml)
+        except (OSError, ValueError, ROSConfigError) as exc:
+            self.get_logger().warning(f"grasp/place target grounding unavailable: {exc!s}")
+            return
+        voxel_m = self.get_parameter("grasp_target_voxel_m").get_parameter_value().double_value
+        if voxel_m <= 0.0 and gripper_hands(self._robot_description):
+            raise ROSConfigError(
+                f"robot {self._robot_description.name!r} has a gripper, so the reasoner can "
+                "ground grasp targets, but grasp_target_voxel_m is unset; pass the deploy's "
+                "octree resolution (deploy_e2e does)."
+            )
+
+    def _ground_targets(self, call: ExecuteRskillTool) -> tuple[Any, Any]:
+        """Ground the call's named grasp/place targets into goal declarations.
+
+        The reasoner names, perception grounds, the producer measures (real pick-and-place
+        design §2.2/§2.3): each seed box comes from the recalled memory node (``object_id`` /
+        ``place_node_id``) or the one live lifted detection on ``/openral/world_state_slow``
+        (``WorldState.detected_objects``) carrying the label. Neither declaration carries a
+        ``region``; nothing about the cell is predeclared.
+
+        Raises:
+            ROSReasonerInvalidPlan: A named target does not ground (see
+                ``openral_reasoner.grounding``).
+        """
+        grasp: Any = None
+        place: Any = None
+        if call.grasp_target is None and call.place_target is None:
+            return grasp, place
+        if self._robot_description is None:
+            raise ROSReasonerInvalidPlan(
+                "grasp_target / place_target need the robot manifest (robot_yaml), which is "
+                "not loaded."
+            )
+        patience_s = self._effective_patience_s(call)
+        live: list[Any] = []
+        if self._world_state_msg is not None:
+            from openral_world_state_ros.lifecycle_node import world_state_from_idl
+
+            try:
+                live = list(world_state_from_idl(self._world_state_msg).detected_objects)
+            except (ValueError, TypeError) as exc:
+                raise ROSReasonerInvalidPlan(
+                    f"the latest world state does not decode: {exc!s}"
+                ) from exc
+        voxel_m = self.get_parameter("grasp_target_voxel_m").get_parameter_value().double_value
+        if voxel_m <= 0.0:
+            # on_configure refuses a gripper manifest without it; a gripperless one may
+            # still name a place surface, which needs the cell too.
+            raise ROSReasonerInvalidPlan(
+                "target grounding needs grasp_target_voxel_m (the deploy's octree resolution)."
+            )
+        pad_m = (
+            voxel_m
+            + self.get_parameter("grasp_target_extrinsic_error_m")
+            .get_parameter_value()
+            .double_value
+        )
+        scene_graph = (
+            self._spatial_memory.to_scene_graph() if self._spatial_memory is not None else None
+        )
+        base_frame = self._robot_description.base_frame
+        if call.grasp_target is not None:
+            grasp = ground_grasp_target(
+                call.grasp_target,
+                live_objects=live,
+                scene_graph=scene_graph,
+                base_frame=base_frame,
+                default_contact_links=gripper_hands(self._robot_description),
+                patience_s=patience_s,
+                pad_m=pad_m,
+            )
+        if call.place_target is not None:
+            place = ground_place_target(
+                call.place_target,
+                live_objects=live,
+                scene_graph=scene_graph,
+                base_frame=base_frame,
+                patience_s=patience_s,
+                pad_m=pad_m,
+            )
+        return grasp, place
 
     def _submit_client_warmup(self, client: object) -> None:
         """Kick a managed LLM sidecar's boot onto the LLM pool, if it has one.
@@ -2698,6 +2823,10 @@ class ReasonerNode(LifecycleNode):
         # map is worth maintaining even before the tool-use client is built).
         self._ingest_detected_objects(world_state)
         self._emit_scene_objects_span()
+        # Per-instance memory ids in the context, so a repeated label is nameable.
+        self._renderer.set_spatial_memory(
+            self._spatial_memory.to_scene_graph() if self._spatial_memory is not None else None
+        )
         if self._core is None:
             return False
         prep = self._core.prepare_tick(
@@ -4297,6 +4426,27 @@ class ReasonerNode(LifecycleNode):
                 )
             )
             return
+        # Target grounding: the LLM named a grasp/place target; ground it now, before any
+        # latch or eviction, and refuse the dispatch (goal NOT sent) when it does not ground.
+        try:
+            grasp_declaration, place_declaration = self._ground_targets(call)
+        except ROSReasonerInvalidPlan as exc:
+            self.get_logger().warning(
+                f"dispatch: refusing execute_rskill {call.rskill_id!r} — {exc!s}",
+            )
+            self._renderer.append_execution(
+                ExecutionEventRecord(
+                    rskill_id=call.rskill_id,
+                    outcome="failed",
+                    summary=f"refused: {exc!s}",
+                    reflection=(
+                        "the named target did not ground — disambiguate (recall_object and "
+                        "pass object_id), or look for it."
+                    ),
+                    stamp_ns=self.get_clock().now().nanoseconds,
+                )
+            )
+            return
         assert self._execute_rskill_client is not None
         # Non-blocking single probe: ActionClient.wait_for_server
         # spins the executor; passing a short timeout keeps the tick
@@ -4353,6 +4503,7 @@ class ReasonerNode(LifecycleNode):
         self._dispatch_generation += 1
         generation = self._dispatch_generation
         self._active_dispatch_generation = generation
+        self._grounded_declarations = (generation, grasp_declaration, place_declaration)
         self._renderer.set_inflight_skill(
             call.rskill_id,
             stamp_ns=self.get_clock().now().nanoseconds,
@@ -4435,6 +4586,21 @@ class ReasonerNode(LifecycleNode):
         # it is the runner's backstop, not the usual stop (the reward-watcher is).
         patience_s = self._effective_patience_s(call)
         goal.deadline_s = patience_s
+        # The grounded grasp/place declarations (no region: the runner strips one anyway and
+        # only the producer measures). The runner stamps and attributes them at goal start.
+        grounded = self._grounded_declarations
+        self._grounded_declarations = None
+        targets = ""
+        if grounded is not None and grounded[0] == generation:
+            _, grasp, place = grounded
+            if grasp is not None:
+                goal.grasp_declaration_valid = True
+                grasp.fill_idl(goal.grasp_declaration)
+                targets += f" grasp={grasp.target_id}"
+            if place is not None:
+                goal.place_declaration_valid = True
+                place.fill_idl(goal.place_declaration)
+                targets += f" place={place.target_id}"
         sent_at = time.monotonic()
         send_future = self._execute_rskill_client.send_goal_async(
             goal,
@@ -4454,7 +4620,8 @@ class ReasonerNode(LifecycleNode):
         )
         self.get_logger().info(
             f"dispatch: execute_rskill rskill_id={call.rskill_id!r} prompt={goal.prompt!r} "
-            f"patience_s={patience_s:.0f} (backstop; reward-watcher is the usual stop)",
+            f"patience_s={patience_s:.0f} (backstop; reward-watcher is the usual stop)"
+            f"{targets}",
         )
 
     def _free_vram_peers_then_send(

@@ -65,6 +65,7 @@ def test_hal_constant_mirrors_robot_yaml(manifest_path: str, hal_constant_attr: 
             j.velocity_limit,
             j.effort_limit,
             j.sim_joint_name,
+            j.closure_calibration,
         )
         for j in yaml_desc.joints
     ]
@@ -76,6 +77,7 @@ def test_hal_constant_mirrors_robot_yaml(manifest_path: str, hal_constant_attr: 
             j.velocity_limit,
             j.effort_limit,
             j.sim_joint_name,
+            j.closure_calibration,
         )
         for j in hal_desc.joints
     ]

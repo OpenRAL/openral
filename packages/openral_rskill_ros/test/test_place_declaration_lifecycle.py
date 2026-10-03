@@ -75,7 +75,9 @@ def _constant_skill_resolver() -> Any:
 
 
 @contextmanager
-def _harness(place_declaration_json: str) -> Iterator[tuple[Any, Any, list[Any]]]:
+def _harness(
+    place_declaration_json: str, *, approach: bool = False
+) -> Iterator[tuple[Any, Any, list[Any]]]:
     """Compose the real runtime with a scene-committed declaration installed."""
     import rclpy
     from openral_msgs.msg import ActionChunk
@@ -93,6 +95,7 @@ def _harness(place_declaration_json: str) -> Iterator[tuple[Any, Any, list[Any]]
         [
             rclpy.parameter.Parameter("place_declaration_json", value=place_declaration_json),
             rclpy.parameter.Parameter("joint_state_staleness_limit_s", value=0.5),
+            rclpy.parameter.Parameter("place_approach_enabled", value=approach),
         ]
     )
 
@@ -168,8 +171,19 @@ def _scene_declaration_json(*, timeout_s: float = 60.0, object_id: str = "") -> 
     ).model_dump_json()
 
 
-def _run_goal(executor: Any, node: Any, *, deadline_s: float = 0.4, cancel: bool = False) -> None:
-    """Dispatch one real ExecuteRskill goal and let it resolve (or cancel it)."""
+def _run_goal(
+    executor: Any,
+    node: Any,
+    *,
+    deadline_s: float = 0.4,
+    cancel: bool = False,
+    fill_goal: Any = None,
+) -> Any:
+    """Dispatch one real ExecuteRskill goal and let it resolve (or cancel it).
+
+    ``fill_goal(goal)``, when given, adds goal-carried fields (e.g. a declaration).
+    Returns the goal's ``get_result`` response (``.status``, ``.result``).
+    """
     from openral_msgs.action import ExecuteRskill
     from rclpy.action import ActionClient
 
@@ -182,6 +196,8 @@ def _run_goal(executor: Any, node: Any, *, deadline_s: float = 0.4, cancel: bool
     goal.prompt = "put the baguette in the cabinet"
     goal.prompt_metadata_json = ""
     goal.deadline_s = deadline_s
+    if fill_goal is not None:
+        fill_goal(goal)
     send_future = client.send_goal_async(goal)
     deadline = time.monotonic() + 3.0
     while not send_future.done() and time.monotonic() < deadline:
@@ -196,6 +212,50 @@ def _run_goal(executor: Any, node: Any, *, deadline_s: float = 0.4, cancel: bool
     while not result_future.done() and time.monotonic() < deadline:
         executor.spin_once(timeout_sec=0.02)
     assert result_future.done(), "goal result timed out"
+    return result_future.result()
+
+
+def test_approach_mode_arms_a_goal_scope_place_declaration_naming_nothing() -> None:
+    """No goal or scene declaration, place approach on: ``surface``, no object, no box,
+    stamped at goal start, the goal deadline as backstop, retracted at goal end."""
+    with _harness("", approach=True) as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node, deadline_s=3.0)
+        _spin_for(executor, 0.3)
+
+    active = [msg for msg in seen if msg.active]
+    assert len(active) == 1
+    assert active[0].target_id == "surface"
+    assert active[0].object_id == ""
+    assert not active[0].search_box_valid and not active[0].region_valid
+    assert active[0].rskill_id == "openral/test-place-declaration-skill"
+    assert active[0].stamp_ns > 0
+    assert active[0].timeout_s == pytest.approx(3.0), "the backstop is the goal deadline"
+    assert not seen[-1].active, "the goal ended without retracting its goal-scope declaration"
+
+
+def test_approach_mode_goal_scope_declaration_dies_on_cancel_and_estop() -> None:
+    from std_msgs.msg import Empty
+
+    with _harness("", approach=True) as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node, deadline_s=5.0, cancel=True)
+        _spin_for(executor, 0.3)
+        assert [m.active for m in seen] == [True, False], "cancel retracts"
+        seen.clear()
+        runtime.skill_runner_node._arm_place_declaration(
+            _GoalRequestStub(), rskill_id="openral/x", trace_id="t"
+        )
+        _spin_for(executor, 0.2)
+        assert [m.target_id for m in seen if m.active] == ["surface"]
+        runtime.skill_runner_node._on_estop(Empty())
+        _spin_for(executor, 0.3)
+    assert not seen[-1].active, "the E-stop left the goal-scope declaration live"
+
+
+def test_a_scene_declaration_wins_over_place_approach_mode() -> None:
+    with _harness(_scene_declaration_json(), approach=True) as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node)
+        _spin_for(executor, 0.3)
+    assert [msg.target_id for msg in seen if msg.active] == [_TARGET]
 
 
 def test_no_declaration_configured_puts_nothing_on_the_wire() -> None:
@@ -321,6 +381,7 @@ def test_a_dispatch_supplied_region_never_leaves_this_node() -> None:
             timeout_s=30.0,
             stamp_ns=0,
             region=claimed,
+            search_box=claimed,
         ).fill_idl(request.place_declaration)
         assert request.place_declaration.region_valid, "the goal must really carry a region"
         runtime.skill_runner_node._arm_place_declaration(
@@ -332,6 +393,8 @@ def test_a_dispatch_supplied_region_never_leaves_this_node() -> None:
     assert active, "no declaration was armed"
     assert active[-1].target_id == _TARGET, "the target itself must survive"
     assert not active[-1].region_valid, "a dispatch-supplied region reached the kernel's path"
+    assert active[-1].search_box_valid, "the search box is only a hint; it must pass"
+    assert active[-1].search_box.evidence_ref == "dispatch_claim:not_a_measurement"
 
 
 def test_an_exception_escaping_the_executor_still_retracts() -> None:
@@ -421,14 +484,32 @@ def test_an_exception_escaping_the_executor_still_retracts() -> None:
     assert not seen[-1].active, "a goal that died mid-executor left its declaration live"
 
 
-def test_a_malformed_scene_declaration_is_refused_not_guessed() -> None:
-    """Fail closed: an unparseable declaration arms nothing and the goal runs
-    without one, which is the pre-ADR-0097 behaviour."""
-    with _harness('{"target_id": "sim:x", "timeout_s": -1.0, "stamp_ns": 0}') as (
-        executor,
-        runtime,
-        seen,
-    ):
-        _run_goal(executor, runtime.skill_runner_node)
+@pytest.mark.parametrize("approach", [False, True])
+def test_a_malformed_scene_declaration_refuses_the_goal_not_guessed(approach: bool) -> None:
+    """Option A: a supplied place hint that does not validate refuses the goal up front.
+    It arms nothing, never falls back to the goal-scope "measure under the payload"
+    declaration (even with ``place_approach_enabled``), and the skill never runs."""
+    from action_msgs.msg import GoalStatus
+
+    with _harness(
+        '{"target_id": "sim:x", "timeout_s": -1.0, "stamp_ns": 0}', approach=approach
+    ) as (executor, runtime, seen):
+        response = _run_goal(executor, runtime.skill_runner_node)
         _spin_for(executor, 0.3)
+        chunks = runtime.skill_runner_node._chunks_published
     assert seen == []
+    assert response.status == GoalStatus.STATUS_ABORTED
+    assert not response.result.success
+    assert "place declaration does not validate" in response.result.failure_reason
+    assert chunks == 0, "the skill ran despite the refused place hint"
+
+
+@pytest.mark.parametrize(("deadline_s", "expected_s"), [(0.0, 120.0), (500.0, 120.0), (30.0, 30.0)])
+def test_the_goal_scope_place_backstop_never_exceeds_120_s(
+    deadline_s: float, expected_s: float
+) -> None:
+    """``min(goal deadline, 120 s)``, 120 s unset — the grasp side's bound, not the
+    schema's 600 s ceiling (design note: ``timeout_s`` = the goal deadline, ≤ 120 s)."""
+    with _harness("", approach=True) as (_, runtime, _seen):
+        declaration = runtime.skill_runner_node._goal_scope_place_declaration(deadline_s)
+    assert declaration.timeout_s == pytest.approx(expected_s)

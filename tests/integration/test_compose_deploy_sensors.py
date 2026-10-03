@@ -164,3 +164,34 @@ def test_the_scene_unit_overlay_reaches_every_composed_consumer(
         if runtime is not None:
             _destroy(runtime)
         rclpy.try_shutdown()
+
+
+@pytest.mark.parametrize(
+    ("robot_id", "expected_frame"),
+    [("openarm", "openarm_base"), ("panda_mobile", "map")],
+)
+def test_the_object_lift_maps_in_the_frame_the_deploy_maps_in(
+    robot_id: str, expected_frame: str
+) -> None:
+    """A fixed-base arm lifts detections in its own base frame; a mobile base keeps SLAM's map.
+
+    The lift's default is ``map``, which the OpenArm cell never has (no odometry, no SLAM),
+    so every lifted box was dropped there and a reasoner-named grasp target could never be
+    grounded (real pick-and-place design §2.2). Same rule as the launch's ``_octomap_frames``.
+    """
+    import rclpy  # type: ignore[import-untyped]
+    from openral_core import RobotDescription
+    from openral_rskill_ros.compose import compose_runtime
+
+    robot_yaml = _REPO / "robots" / robot_id / "robot.yaml"
+    description = RobotDescription.from_yaml(str(robot_yaml))
+    if not rclpy.ok():
+        rclpy.init()
+    runtime = compose_runtime(robot_yaml)
+    try:
+        frame = runtime.world_state_node.get_parameter("object_lift_map_frame").value
+    finally:
+        _destroy(runtime)
+    assert frame == expected_frame
+    if expected_frame != "map":
+        assert frame == description.base_frame

@@ -66,6 +66,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <tf2/LinearMath/Transform.h>
@@ -315,6 +316,28 @@ private:
 
   std::vector<Window> windows_;
 };
+
+/// Manifest attach link -> the TF frame it is looked up as.
+using AttachLinkTfFrames = std::unordered_map<std::string, std::string>;
+
+/// Parse the `attach_link_tf_frames` parameter: `"link=frame"` entries, the
+/// same strings the HAL takes as `vision_attachment_tf_frames` (one scene
+/// block, `DeployRuntime.vision_attachment.tf_frames`, feeds both).
+///
+/// `AttachedCollisionObject.attach_link` carries the MANIFEST link name,
+/// because the kernel's collision model uses manifest names; a real cell's TF
+/// tree may name the same body differently (OpenArm: `openarm_left_link7` is
+/// the vendor's `openarm_left_ee_base_link`). Empty entries are skipped (the
+/// ROS default `[""]` means none). A malformed entry (no `=`, an empty side) or
+/// one link mapped to two different frames returns `false`, sets `error` and
+/// leaves `out` EMPTY: the caller then looks every link up by its own name,
+/// which on such a cell fails and clears nothing — the payload stays an
+/// obstacle, never a cell cleared through a misread map.
+bool parse_attach_link_tf_frames(const std::vector<std::string>& entries, AttachLinkTfFrames& out,
+                                 std::string& error);
+
+/// The TF frame `attach_link` is looked up as: its mapping, else itself.
+const std::string& tf_frame_for(const AttachLinkTfFrames& frames, const std::string& attach_link);
 
 /// The clearing padding one object's cells get on ONE published grid.
 ///

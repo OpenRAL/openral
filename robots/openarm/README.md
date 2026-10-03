@@ -72,6 +72,7 @@ pinned to a known-good v2 SHA. The helper goes away once
 | v2 fetch helper | `openral_hal._openarm_v2_assets.ensure_openarm_v2_mjcf` |
 | Real-HW HAL | `openral_hal.openarm_real.OpenArmRealHAL` |
 | Real-HW bench scene | `scenes/deploy/openarm_bench.yaml` (`openral deploy run`) |
+| Real-HW world-voxel scenes | `scenes/deploy/openarm_real_world_voxels.yaml` (direct dispatch) and `scenes/deploy/openarm_real_autonomous.yaml` (reasoner + open-vocab detector + spatial memory, language goals like "pick up the boxes"; needs a language-conditioned pick/place policy, none exists for the OpenArm yet) — launch only via `tools/openarm_world_voxel_run.sh [--autonomous]` ([runbook](../../docs/tutorials/deploy/openarm-real-world-voxel-check.md)) |
 | Real-HW bringup | `ros2 launch openral_hal_openarm real_bringup.launch.py` |
 | Full-graph HIL gate | `tests/hil/test_openarm_deploy.py` (`just hil-openarm-deploy`) |
 | Upstream URDF | [enactic/openarm](https://github.com/enactic/openarm) |

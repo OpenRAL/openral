@@ -29,6 +29,8 @@ from openral_core import (
     ObjectsMetadata,
     PerceptionEventMetadata,
     RobotDescription,
+    SceneGraph,
+    SpatialNodeKind,
     WorldState,
 )
 from pydantic import TypeAdapter
@@ -458,6 +460,10 @@ class ContextRenderer:
         # of re-locating it every tick. Fed via `note_located`.
         self._located: dict[str, ObjectDetection2D] = {}
         self._located_sensor: str | None = None
+        # The spatial-memory snapshot, set via `set_spatial_memory`; its OBJECT
+        # nodes render as the `memory_objects[<frame>]` line so the LLM can name
+        # one instance of a repeated label by `node_id` (grasp_target.object_id).
+        self._spatial_memory: SceneGraph | None = None
         # Latest reward-model assessment (both heads). Set
         # via `set_reward_state`; rendered as the `## REWARD` section. None omits
         # it. Kept as a single latest snapshot (not a buffer): the reward is a
@@ -504,6 +510,37 @@ class ContextRenderer:
         the updated memory next tick. Static config — does not bump ``seq``.
         """
         self._memory_block = memory_block
+
+    def set_spatial_memory(self, graph: SceneGraph | None) -> None:
+        """Set (or clear) the spatial-memory snapshot behind ``memory_objects``.
+
+        Re-set every heartbeat after detector ingest. Static config — does not
+        bump ``seq``: ingest jitters poses every snapshot, and waking the LLM on
+        that would defeat the heartbeat-idle gate.
+
+        Example:
+            >>> from openral_core import Pose6D, SceneGraph, SpatialNode, SpatialNodeKind
+            >>> r = ContextRenderer()
+            >>> r.set_spatial_memory(
+            ...     SceneGraph(
+            ...         nodes=[
+            ...             SpatialNode(
+            ...                 node_id="box_2",
+            ...                 kind=SpatialNodeKind.OBJECT,
+            ...                 label="box",
+            ...                 pose=Pose6D(
+            ...                     xyz=(0.4, 0.1, 0.0), quat_xyzw=(0, 0, 0, 1), frame_id="map"
+            ...                 ),
+            ...                 first_seen_ns=1,
+            ...                 last_seen_ns=1,
+            ...             )
+            ...         ]
+            ...     )
+            ... )
+            >>> "box id=box_2@(+0.40,+0.10,+0.00)" in r.render(world_state=None)
+            True
+        """
+        self._spatial_memory = graph
 
     # ── mission (sequential task queue) ───────────────────────
 
@@ -828,8 +865,9 @@ class ContextRenderer:
         if world_state is None:
             # The camera-space in_view enumeration is depth-free and may
             # arrive before the first WorldState snapshot — surface it regardless.
-            in_view = self._render_in_view()
-            return f"(no snapshot yet)\n{in_view}" if in_view else "(no snapshot yet)"
+            parts = (self._render_memory_objects(), self._render_in_view())
+            extra = "\n".join(x for x in parts if x)
+            return f"(no snapshot yet)\n{extra}" if extra else "(no snapshot yet)"
         lines: list[str] = [f"stamp_ns: {world_state.stamp_ns}"]
         if world_state.joint_state is not None:
             js = world_state.joint_state
@@ -855,25 +893,60 @@ class ContextRenderer:
             )
             lines.append(f"diagnostics: {diag}")
         if world_state.detected_objects:
-            # #14 — surface the lifted scene objects (label +
-            # frame-centre) so the LLM can map a goal noun onto a detected label
-            # with its own semantics (e.g. a "baguette" goal onto the detected
-            # "bread") instead of only learning a name is "not in memory". The
-            # open-vocab detector emits overlapping boxes, so dedupe by label
-            # (first-seen pose) and render in sorted order for a stable context.
-            first_seen: dict[str, tuple[float, float, float]] = {}
-            for obj in world_state.detected_objects:
-                first_seen.setdefault(obj.label, obj.pose.xyz)
-            frame = world_state.detected_objects[0].pose.frame_id
-            items = ", ".join(
-                f"{label}@({xyz[0]:+.2f},{xyz[1]:+.2f},{xyz[2]:+.2f})"
-                for label, xyz in sorted(first_seen.items())
+            # #14 — surface the lifted scene objects so the LLM can map a goal
+            # noun onto a detected label with its own semantics (a "baguette"
+            # goal onto the detected "bread"). One entry PER INSTANCE (label +
+            # centre + size + track) — never deduped by label: two boxes must
+            # read as two so the LLM loops over them, and grounding refuses a
+            # bare label that matches several live detections.
+            lines += _render_instances(
+                "scene_objects",
+                [
+                    (
+                        o.pose.frame_id,
+                        o.label,
+                        o.pose.xyz,
+                        o.bbox_3d,
+                        "" if o.track_id is None else f" track={o.track_id}",
+                    )
+                    for o in world_state.detected_objects
+                ],
             )
-            lines.append(f"scene_objects[{frame}]: {items}")
+            labels = [o.label.strip().casefold() for o in world_state.detected_objects]
+            repeated = sorted({label for label in labels if labels.count(label) > 1})
+            if repeated:
+                lines.append(
+                    f"repeated_labels: {', '.join(repeated)} — a bare label is ambiguous; "
+                    "to pin one as grasp_target, name the instance's memory_objects id as "
+                    "grasp_target.object_id (recall_object it when it is not listed)."
+                )
+        memory = self._render_memory_objects()
+        if memory:
+            lines.append(memory)
         in_view = self._render_in_view()
         if in_view:
             lines.append(in_view)
         return "\n".join(lines)
+
+    def _render_memory_objects(self) -> str:
+        """Render spatial-memory OBJECT nodes as ``memory_objects[<frame>]``, or ``""``.
+
+        ``<label> id=<node_id>@(x,y,z) size=(dx,dy,dz)`` per node — the id is
+        what ``grasp_target.object_id`` takes to pick one instance of a label.
+        """
+        graph = self._spatial_memory
+        if graph is None:
+            return ""
+        return "\n".join(
+            _render_instances(
+                "memory_objects",
+                [
+                    (n.pose.frame_id, f"{n.label or '?'} id={n.node_id}", n.pose.xyz, n.bbox_3d, "")
+                    for n in graph.nodes
+                    if n.kind is SpatialNodeKind.OBJECT
+                ],
+            )
+        )
 
     def _render_in_view(self) -> str:
         """Render the camera-space ``in_view`` enumeration, or ``""``.
@@ -1072,6 +1145,36 @@ _PROMPT_EXCLUDED_FIELDS = frozenset({"joint_positions_rad"})
 #: because for ``SuppressedSummaryEvidence`` the parallel arrays *are* the
 #: roll-up.
 _PROMPT_FIELD_BUDGET = 48
+
+
+def _render_instances(
+    key: str,
+    items: list[
+        tuple[
+            str,
+            str,
+            tuple[float, float, float],
+            tuple[float, float, float, float, float, float] | None,
+            str,
+        ]
+    ],
+) -> list[str]:
+    """One ``<key>[<frame>]: name@(x,y,z) size=(dx,dy,dz)…`` line per frame.
+
+    ``items`` are ``(frame, name, xyz, bbox_3d, suffix)``; entries sort by
+    ``(name, xyz)`` and frames sort by name, so the context is deterministic.
+    """
+    by_frame: dict[str, list[str]] = {}
+    for frame, name, xyz, bbox, suffix in sorted(items, key=lambda t: (t[0], t[1], t[2])):
+        size = (
+            ""
+            if bbox is None
+            else f" size=({bbox[3] - bbox[0]:.2f},{bbox[4] - bbox[1]:.2f},{bbox[5] - bbox[2]:.2f})"
+        )
+        by_frame.setdefault(frame, []).append(
+            f"{name}@({xyz[0]:+.2f},{xyz[1]:+.2f},{xyz[2]:+.2f}){size}{suffix}"
+        )
+    return [f"{key}[{frame}]: {', '.join(entries)}" for frame, entries in by_frame.items()]
 
 
 def _summarise_evidence_json(payload: str) -> str:

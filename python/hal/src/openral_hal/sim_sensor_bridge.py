@@ -2628,6 +2628,7 @@ class SimSensorBridge:
         self._attachment_voxel_sub: Any = None
         self._attachment_pub: Any = None
         self._place_declaration_sub: Any = None
+        self._grasp_declaration_sub: Any = None
         # E-stop ground truth (diagnostics only — never gates anything).
         # ``/openral/estop`` triggers the snapshot; the candidate-chunk ring
         # and the last collision evidence let an offline tool reconstruct a
@@ -2723,6 +2724,15 @@ class SimSensorBridge:
         self._cinecam_setup_el: float = 0.0
         self._cinecam_setup_dist: float = 1.0
 
+    @property
+    def idle_hold_s(self) -> float:
+        """The idle stepper's quiet window, in seconds.
+
+        The longest gap between joint states the twin produces while an active
+        skill pauses between actions.
+        """
+        return self._idle_hold_ns / 1e9
+
     def setup(self) -> None:
         """Activate every stream the manifest + HAL support. Idempotent-safe per activate."""
         self._setup_cameras()
@@ -2734,7 +2744,7 @@ class SimSensorBridge:
         self._setup_estop_ground_truth()
         self._setup_depth()
 
-    def teardown(self) -> None:  # noqa: PLR0915  # reason: one symmetric resource cleanup
+    def teardown(self) -> None:  # noqa: PLR0912, PLR0915  # reason: one symmetric resource cleanup
         """Cancel timers, destroy publishers, and close the viewer (idempotent)."""
         for t in (
             self._image_timer,
@@ -2764,6 +2774,9 @@ class SimSensorBridge:
         if self._place_declaration_sub is not None:
             self._node.destroy_subscription(self._place_declaration_sub)
             self._place_declaration_sub = None
+        if self._grasp_declaration_sub is not None:
+            self._node.destroy_subscription(self._grasp_declaration_sub)
+            self._grasp_declaration_sub = None
         self._teardown_estop_ground_truth()
         if self._attachment_pub is not None:
             self._node.destroy_publisher(self._attachment_pub)
@@ -3441,11 +3454,13 @@ class SimSensorBridge:
         subscriptions and the MuJoCo evidence tracker that drive real
         attach/release transitions — needs the API.
 
-        ``attachment_heartbeat=False`` (the HAL node sets it when its vision
-        attachment leg is on) opens nothing here for a HAL without the API:
-        that leg publishes revisions on the same latched topic, and a
-        revision-0 heartbeat beside it would move the aggregator's revision
-        backwards on every timer tick.
+        ``attachment_heartbeat=False`` opens nothing here for a HAL without the
+        API. The HAL node sets it (``lifecycle.sim_attachment_heartbeat``) when
+        its vision attachment leg is on — that leg publishes revisions on the
+        same latched topic, and a revision-0 heartbeat beside it would move the
+        aggregator's revision backwards on every timer tick — and under
+        ``hal_mode:=real``, where "nothing attached" is a claim no evidence
+        backs.
         """
         update = getattr(self._hal, "update_attached_objects", None)
         read = getattr(self._hal, "read_attached_objects", None)
@@ -3479,6 +3494,12 @@ class SimSensorBridge:
         update = getattr(self._hal, "update_attached_objects", None)
         read = getattr(self._hal, "read_attached_objects", None)
         if not callable(update) or not callable(read):
+            # Nothing here can measure a declared target, so place/grasp
+            # declarations are not subscribed and never relayed: the envelope
+            # carries none and the kernel exempts nothing.
+            self._node.get_logger().info(
+                "place/grasp declarations not measured: HAL has no attachment API"
+            )
             return
         self._attachment_sub = self._node.create_subscription(
             AttachmentState,
@@ -3527,6 +3548,7 @@ class SimSensorBridge:
                         "automatic sim attachment evidence armed at the post-step boundary"
                     )
                     self._setup_place_declaration()
+                    self._setup_grasp_declaration()
                 else:
                     self._node.get_logger().warning(
                         "automatic sim attachment evidence has no post-step observer"
@@ -3600,6 +3622,64 @@ class SimSensorBridge:
         else:
             self._node.get_logger().info(
                 f"place declaration retracted target={declaration.target_id}"
+            )
+
+    def _setup_grasp_declaration(self) -> None:
+        """Subscribe dispatch's grasp-phase declarations (real pick-and-place design §2.1).
+
+        The grasp mirror of :meth:`_setup_place_declaration`, same QoS for the
+        same reasons. Like the place one it exists only where the attachment
+        evidence tracker does: a twin without the attachment API measures
+        nothing, so it relays nothing and the kernel exempts nothing.
+        """
+        from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
+        from rclpy.qos import (
+            QoSDurabilityPolicy,
+            QoSProfile,
+            QoSReliabilityPolicy,
+        )
+
+        self._grasp_declaration_sub = self._node.create_subscription(
+            GraspDeclarationMsg,
+            "/openral/grasp_declaration",
+            self._on_grasp_declaration,
+            QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+                depth=1,
+            ),
+        )
+
+    def _on_grasp_declaration(self, msg: object) -> None:
+        """Hand one grasp declaration to the region producer, or refuse it (logged)."""
+        if self._attachment_tracker is None:
+            return
+        from openral_core import GraspDeclaration
+        from openral_core.exceptions import ROSConfigError
+
+        try:
+            declaration = GraspDeclaration.from_idl(msg)
+        except (ValueError, TypeError) as exc:
+            self._node.get_logger().error(f"grasp declaration rejected: {exc}")
+            return
+        try:
+            self._attachment_tracker.set_grasp_declaration(
+                declaration if declaration.active else None
+            )
+        except ROSConfigError as exc:
+            self._node.get_logger().error(str(exc))
+            return
+        if declaration.active:
+            self._node.get_logger().info(
+                f"grasp declaration armed target={declaration.target_id} "
+                f"links={','.join(declaration.contact_links)} "
+                f"rskill={declaration.rskill_id or '<unset>'} "
+                f"trace={declaration.trace_id or '<unset>'} "
+                f"timeout_s={declaration.timeout_s:.1f}"
+            )
+        else:
+            self._node.get_logger().info(
+                f"grasp declaration retracted target={declaration.target_id}"
             )
 
     def _on_attachment_state(self, msg: object) -> None:
@@ -3766,6 +3846,7 @@ class SimSensorBridge:
             obj.fill_idl(item, primitive_factory=AttachedCollisionPrimitive)
             msg.objects.append(item)
         self._fill_place_declaration(msg)
+        self._fill_grasp_declaration(msg)
         self._attachment_pub.publish(msg)
 
     def _fill_place_declaration(self, msg: Any) -> None:
@@ -3809,6 +3890,35 @@ class SimSensorBridge:
             msg.place_declaration,
             primitive_factory=AttachedCollisionPrimitive,
         )
+
+    def _fill_grasp_declaration(self, msg: Any) -> None:
+        """Attach the live grasp declaration with its measured region.
+
+        Refreshed on every publication on the envelope, for the reasons
+        :meth:`_fill_place_declaration` gives: the region is posed in the moving
+        base frame, and an envelope field cannot churn the staged revision.
+        """
+        msg.grasp_declaration_valid = False
+        if self._attachment_tracker is None:
+            return
+        handles = getattr(self._hal, "mujoco_handles", lambda: None)()
+        if handles is None:
+            return
+        _model, data = handles
+        # The region's lower face sits one cell above the support (the real
+        # producer's rule), so it needs the lattice's cell edge: no grid yet means
+        # the tracker publishes the declaration region-less (exempts nothing).
+        resolution = None if self._last_voxel_grid is None else self._last_voxel_grid["resolution"]
+        if isinstance(resolution, float):
+            self._attachment_tracker.set_voxel_resolution(resolution)
+        declaration = self._attachment_tracker.grasp_declaration(
+            data,
+            stamp_ns=int(self._node.get_clock().now().nanoseconds),
+        )
+        if declaration is None:
+            return
+        msg.grasp_declaration_valid = True
+        declaration.fill_idl(msg.grasp_declaration)
 
     def _setup_depth(self) -> None:
         """Create a PointCloud2 publisher + timer per depth SensorSpec.

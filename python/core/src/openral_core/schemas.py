@@ -814,6 +814,38 @@ def load_robot_unit(robot_yaml: str | Path, unit: str) -> RobotUnit:
     return loaded
 
 
+def gripper_hands(description: RobotDescription) -> tuple[tuple[str, ...], ...]:
+    """The robot's hands: its ``role: gripper`` joints' ``child_link``s, grouped per hand.
+
+    A hand is the set of gripper joints that hang off one arm: joints sharing a
+    ``parent_link``, plus any gripper joint whose parent is another gripper joint's
+    child (a chained finger). An SO-101's one jaw joint is one hand; an OpenArm's two
+    finger-pair joints are two hands (one per arm); an R1 Pro's four finger joints are
+    two hands of two fingers. The reasoner's grasp grounding makes a declaration name
+    one hand; the HAL's approach-armed grasp target arms for one hand at a time.
+
+    Example:
+        >>> gripper_hands(RobotDescription.from_yaml("robots/openarm/robot.yaml"))
+        (('openarm_left_finger_pair',), ('openarm_right_finger_pair',))
+        >>> gripper_hands(RobotDescription.from_yaml("robots/r1pro/robot.yaml"))[0]
+        ('left_gripper_finger_link1', 'left_gripper_finger_link2')
+    """
+    grippers = [j for j in description.joints if j.role == "gripper"]
+    parent_of = {j.child_link: j.parent_link for j in grippers}
+
+    def mount(link: str) -> str:
+        seen: set[str] = set()
+        while link in parent_of and link not in seen:  # climb a chained finger to its arm
+            seen.add(link)
+            link = parent_of[link]
+        return link
+
+    hands: dict[str, list[str]] = {}
+    for j in grippers:
+        hands.setdefault(mount(j.parent_link), []).append(j.child_link)
+    return tuple(tuple(links) for links in hands.values())
+
+
 def resolve_sensor_overlays(
     robot_yaml: str | Path, scene_unit: str | None, *, required: bool
 ) -> list[SensorOverlay]:
@@ -920,6 +952,46 @@ def deploy_cloud_topic(
 # ─── Joints / Actuation ────────────────────────────────────────────────────────
 
 
+class GripperClosureCalibration(BaseModel):
+    """How a ``role: gripper`` joint's *position* reads "closed on an object".
+
+    The position-stall grasp trigger (``openral_hal._grasp_trigger``) needs no effort
+    channel: a jaw commanded toward closed that settles short of the command by more than
+    its empty-close error is stalled on something. These are the numbers that turn that into
+    thresholds, in the joint's own position units: robot-type constants of the gripper
+    mechanism, declared in the robot manifest and derived from teleop data; not per cell
+    (CLAUDE.md §1.2: cited measurements, never a library default).
+
+    Attributes:
+        closed_position: The commanded position of a fully closed jaw. Must be an end of the
+            joint's ``position_limits``: "closer to closed" is read as the distance to it.
+        closed_rest_offset: How far from ``closed_position`` the jaw rests when it closes on
+            nothing (mechanical stop, servo deadband). Measured from teleop data.
+        stall_gap: How much further from closed than the command (beyond
+            ``closed_rest_offset``) a settled jaw must sit to read as stalled on an object.
+            Also the band a command must be within of ``closed_position`` to count as a close
+            command, and (halved) the hysteresis for slip / release / re-seat.
+        settle_tolerance: Largest position span over the trigger's settle window for the jaw
+            to count as stationary. A few position-encoder LSBs.
+
+    Example:
+        >>> GripperClosureCalibration(
+        ...     closed_position=0.0,
+        ...     closed_rest_offset=0.0086,
+        ...     stall_gap=0.08,
+        ...     settle_tolerance=0.001,
+        ... ).stall_gap
+        0.08
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    closed_position: float
+    closed_rest_offset: float = Field(default=0.0, ge=0.0)
+    stall_gap: float = Field(gt=0.0)
+    settle_tolerance: float = Field(gt=0.0)
+
+
 class JointSpec(BaseModel):
     """URDF-derived joint specification.
 
@@ -969,6 +1041,10 @@ class JointSpec(BaseModel):
             containing ``"gripper"``, e.g. ``"gripper_pose"``). Default
             ``"unknown"`` keeps legacy manifests loadable; the fleet
             annotates incrementally as this rolls out.
+        closure_calibration: Position-stall grasp-trigger calibration for a
+            ``role: "gripper"`` joint (``GripperClosureCalibration``). ``None``
+            = uncalibrated: the HAL's vision attachment leg refuses to arm a
+            trigger on that joint rather than guess thresholds.
         origin_xyz: Fixed translation (metres) of this joint's frame in
             its ``parent_link`` frame — the URDF ``<joint><origin xyz>``.
             With ``origin_rpy`` and ``axis_xyz`` it gives the
@@ -1000,6 +1076,7 @@ class JointSpec(BaseModel):
     ) = None
     sim_joint_name: str | None = None
     role: JointRole = "unknown"
+    closure_calibration: GripperClosureCalibration | None = None
 
 
 class EndEffectorSpec(BaseModel):
@@ -2980,6 +3057,8 @@ class AttachmentEvidenceKind(str, Enum):
 
     SIM_CONTACT = "sim_contact"
     SIM_GEOM_DISTANCE = "sim_geom_distance"
+    # A torque/force-sensing gripper read a grasp load. Kept for such grippers and for
+    # records written before ``GRIPPER_CLOSURE`` existed; no in-tree producer stamps it.
     GRIPPER_FORCE = "gripper_force"
     PERCEPTION_TRACK = "perception_track"
     OPERATOR = "operator"
@@ -2994,6 +3073,22 @@ class AttachmentEvidenceKind(str, Enum):
     # ``conaffinity`` suppression can empty a pair that is demonstrably in
     # contact — so absence of a force witness is never evidence of no contact.
     SIM_CONTACT_FORCE = "sim_contact_force"
+    # Proximity to a support plane the producer MEASURED in the voxel map; NOT
+    # sensed contact (real pick-and-place design §2.3, ADR-0092 D6 amendment,
+    # drafted). A producer attests it once per place declaration, when the
+    # payload's lowest primitive is within max(1 voxel, the extrinsic accuracy
+    # bound) of the plane it latched from the live map, the payload's centre is
+    # over the measured patch, and the gripper is still loaded. A consumer must
+    # never read it as a touch, nor the measured surface as a proven support.
+    MAP_SUPPORT_PROXIMITY = "map_support_proximity"
+    # A position-only gripper closed and stalled short of its command (the position-stall
+    # trigger, no effort channel) and vision could not confirm the shape: the conservative
+    # jaw-span box. Says only "something keeps the jaws apart", never what or how heavy.
+    GRIPPER_CLOSURE = "gripper_closure"
+    # The grasp-target leg's pre-grasp measured region (head-view segmentation + voxel map,
+    # ``PlaceRegion``) reused as the payload at ATTACH, gated by the jaw lying at the region
+    # (real pick-and-place design §2.2 "Handover"). Pre-grasp geometry, not a grasp-time view.
+    GRASP_TARGET_REGION = "grasp_target_region"
 
 
 class PlaceRegion(BaseModel):
@@ -3013,10 +3108,10 @@ class PlaceRegion(BaseModel):
     before it can touch.
 
     **Producer-supplied, producer-specific.** Sim computes it from the
-    declared body's MuJoCo model subtree; real hardware's perception seam is
-    **not yet implemented**, so no allowance applies on real hardware today
-    (the same posture real-hardware place-witness attestation is under). The
-    kernel is producer-agnostic: it consumes this box identically whoever
+    declared body's MuJoCo model subtree; real hardware measures the support
+    slab directly under the carried payload from the live voxel map
+    (``openral_hal._place_target_leg``, default off, drafted ADR amendments
+    pending). The kernel is producer-agnostic: it consumes this box identically whoever
     measured it, and never derives one itself.
 
     The box is **oriented**, not axis-aligned — the axis-aligned hull of a
@@ -3024,6 +3119,10 @@ class PlaceRegion(BaseModel):
     (``PlaceDeclaration.region is None``) means no allowance at all — the
     pre-amendment margins, unchanged. A degenerate or over-large region is
     rejected here and again in the kernel, both times toward "no allowance".
+
+    The same type also carries the producer-measured region of a
+    ``GraspDeclaration`` (real pick-and-place design §2.1), under that
+    declaration's tighter caps and with ``geometry`` always empty.
 
     Attributes:
         frame_id: Frame ``pose`` is expressed in. Must be the robot base
@@ -3207,6 +3306,13 @@ class PlaceDeclaration(BaseModel):
     retraction, goal end/cancel, E-stop, or ``timeout_s`` after
     ``stamp_ns``, whichever fires first (HZ-0097-3).
 
+    Drafted amendment (ADR-0097, default off): the real place producer
+    (``openral_hal._place_target_leg``) measures the surface directly under the
+    carried payload and attaches it as the region of dispatch's goal-scope
+    declaration (``target_id="surface"``, the runner's ``place_approach_enabled``);
+    it never declares on its own, and the region dies with the declaration, the
+    payload and the region's age bound.
+
     Attributes:
         target_id: Identity of the declared place target, e.g.
             ``"sim:cab_1_left_group_main"``; an attested ``support_id`` must
@@ -3227,6 +3333,15 @@ class PlaceDeclaration(BaseModel):
         region: Producer-measured bounded region of the target (ADR-0097's
             2026-08-14 amendment); ``None`` = no approach allowance
             (pre-amendment margins). Dies with the declaration.
+        search_box: Optional gravity-aligned box (in the voxel grid's base
+            frame) naming the surface a place may use: a hint only. The real
+            place producer measures the support directly under the carried
+            payload with or without it; when set, it refuses a measured patch
+            whose centre lies outside the box. The reasoner grounds it from an
+            optional ``PlaceTargetRef`` (a lifted detection or a recalled memory
+            node, padded); dispatch passes it through unchanged. It never arms
+            anything — the allowance is always the producer-measured ``region``.
+            ``geometry`` must be empty.
 
     Example:
         >>> declaration = PlaceDeclaration(
@@ -3272,6 +3387,7 @@ class PlaceDeclaration(BaseModel):
     active: bool = True
     region: PlaceRegion | None = None
     contact_force_threshold_n: float = 0.0
+    search_box: PlaceRegion | None = None
 
     @model_validator(mode="after")
     def _validate_declaration(self) -> PlaceDeclaration:
@@ -3282,6 +3398,11 @@ class PlaceDeclaration(BaseModel):
             )
         if self.active and not self.target_id:
             raise ValueError("An active PlaceDeclaration must name a target_id.")
+        if self.search_box is not None and self.search_box.geometry:
+            raise ValueError(
+                "PlaceDeclaration.search_box.geometry must be empty; a search box is only "
+                "the box the place producer measures the support surface in."
+            )
         if not math.isfinite(self.contact_force_threshold_n):
             raise ValueError(
                 "PlaceDeclaration.contact_force_threshold_n must be finite; "
@@ -3345,6 +3466,11 @@ class PlaceDeclaration(BaseModel):
                 if bool(getattr(msg, "region_valid", False))
                 else None
             ),
+            search_box=(
+                PlaceRegion.from_idl(msg.search_box)  # type: ignore[attr-defined]
+                if bool(getattr(msg, "search_box_valid", False))
+                else None
+            ),
         )
 
     def fill_idl(
@@ -3375,6 +3501,198 @@ class PlaceDeclaration(BaseModel):
                 msg.region,  # type: ignore[attr-defined]
                 primitive_factory=primitive_factory,
             )
+        # Never carries geometry (validated), so no primitive factory is needed.
+        msg.search_box_valid = self.search_box is not None  # type: ignore[attr-defined]
+        if self.search_box is not None:
+            self.search_box.fill_idl(msg.search_box)  # type: ignore[attr-defined]
+
+
+class GraspDeclaration(BaseModel):
+    """Dispatch's typed statement that a grasp phase is active for a target.
+
+    Field-for-field the grasp mirror of ``PlaceDeclaration`` (real
+    pick-and-place design §2.1; ADR draft "Declaration-scoped grasp-target
+    contact for gripper finger links" in
+    ``docs/reference/real-pick-place-adr-drafts.md``): dispatch names the
+    target and the gripper contact links, the attachment evidence producer
+    measures the target's oriented ``region``, and the safety kernel bounds
+    the exemption. On its own it exempts nothing — dispatch never supplies a
+    region (the rSkill runner strips one) and ``region is None`` means no
+    exemption. Scoped to one goal execution; dies on retraction, goal
+    end/cancel, E-stop, or ``timeout_s`` after ``stamp_ns``.
+
+    The caps ``MAX_TIMEOUT_S`` / ``MAX_HALF_EXTENT_M`` / ``MAX_VOLUME_M3`` are
+    **Safety-WG placeholders** from the ADR draft, not ratified bounds; they
+    sit far below ``PlaceRegion``'s own caps because a grasp region names one
+    graspable object, not a receptacle. ``region.geometry`` must be empty in
+    v1.
+
+    Attributes:
+        target_id: Identity of the declared grasp target, e.g.
+            ``"cell:restock_box"``. Required while ``active``.
+        object_id: Payload identity the grasp produces once attached
+            (``AttachedCollisionObject.object_id``); empty = discovered at
+            attach time.
+        contact_links: Gripper links the declaration names, e.g.
+            ``("openarm_left_finger_pair",)``. Non-empty while ``active``. A
+            consumer intersects these with its own launch-derived allowlist.
+        rskill_id: Dispatching skill, for attributability (HZ-0115-2).
+        trace_id: OTel trace id, for attributability (HZ-0115-2).
+        timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped
+            at ``MAX_TIMEOUT_S``.
+        stamp_ns: Dispatcher timestamp; with ``active`` this is the whole
+            liveness key.
+        active: ``False`` retracts the declaration.
+        region: Producer-measured oriented box around the target; ``None`` =
+            no exemption. Dies with the declaration.
+        search_box: Optional box (in the voxel grid's base frame) the target
+            producer searches the occupancy map in for a seed: a search hint only,
+            with no support semantics — the producer measures the support layer
+            from the voxel map itself (the box is padded so that layer lies inside
+            it). It only *seeds* perception and never arms anything:
+            the exemption is always the measured ``region``. The reasoner grounds
+            it from a named ``GraspTargetRef`` (the generic path); unlike
+            ``region`` a direct-dispatch scene may also supply it; dispatch passes
+            it through unchanged. ``None`` = no search, so the producer never
+            measures a region.
+
+    Example:
+        >>> declaration = GraspDeclaration(
+        ...     target_id="cell:restock_box",
+        ...     contact_links=("openarm_left_finger_pair",),
+        ...     timeout_s=70.0,
+        ...     stamp_ns=1_000_000_000,
+        ... )
+        >>> declaration.is_live(now_ns=31_000_000_000)
+        True
+        >>> declaration.is_live(now_ns=72_000_000_000)
+        False
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Ceiling on ``timeout_s`` (Safety-WG placeholder): a grasp is one phase
+    #: of a goal, not the goal.
+    MAX_TIMEOUT_S: ClassVar[float] = 120.0
+    #: Ceiling on one region half-extent (Safety-WG placeholder).
+    MAX_HALF_EXTENT_M: ClassVar[float] = 0.20
+    #: Ceiling on the region volume (Safety-WG placeholder).
+    MAX_VOLUME_M3: ClassVar[float] = 0.03
+
+    target_id: str = ""
+    object_id: str = ""
+    contact_links: tuple[str, ...] = ()
+    rskill_id: str = ""
+    trace_id: str = ""
+    timeout_s: float = Field(gt=0.0)
+    stamp_ns: int = Field(ge=0)
+    active: bool = True
+    region: PlaceRegion | None = None
+    search_box: PlaceRegion | None = None
+
+    @model_validator(mode="after")
+    def _validate_declaration(self) -> GraspDeclaration:
+        if self.timeout_s > self.MAX_TIMEOUT_S:
+            raise ValueError(
+                f"GraspDeclaration.timeout_s {self.timeout_s!r} exceeds the "
+                f"{self.MAX_TIMEOUT_S} s backstop ceiling."
+            )
+        if self.active and not self.target_id:
+            raise ValueError("An active GraspDeclaration must name a target_id.")
+        if self.active and not self.contact_links:
+            raise ValueError("An active GraspDeclaration must name its gripper contact_links.")
+        if any(not link for link in self.contact_links):
+            raise ValueError("GraspDeclaration.contact_links may not contain an empty name.")
+        if self.search_box is not None and self.search_box.geometry:
+            raise ValueError(
+                "GraspDeclaration.search_box.geometry must be empty; a search box is only "
+                "the oriented box the target producer looks for a seed in."
+            )
+        if self.region is not None:
+            if self.region.geometry:
+                raise ValueError(
+                    "GraspDeclaration.region.geometry must be empty in v1; a grasp region is "
+                    "the measured oriented box only."
+                )
+            for axis, value in zip("xyz", self.region.half_extents, strict=True):
+                if value > self.MAX_HALF_EXTENT_M:
+                    raise ValueError(
+                        f"GraspDeclaration region half-extent {axis}={value!r} exceeds the "
+                        f"{self.MAX_HALF_EXTENT_M} m bound; a grasp region names one object."
+                    )
+            if self.region.volume_m3() > self.MAX_VOLUME_M3:
+                raise ValueError(
+                    f"GraspDeclaration region volume {self.region.volume_m3()!r} m^3 exceeds "
+                    f"the {self.MAX_VOLUME_M3} m^3 bound."
+                )
+        return self
+
+    def is_live(self, *, now_ns: int) -> bool:
+        """Is this declaration still in force at ``now_ns``?
+
+        Same rule and same clock-domain contract as
+        ``PlaceDeclaration.is_live``: ``now_ns`` must be a reading of the
+        publishing graph's ROS clock (simulator time under ``use_sim_time``),
+        or the newest stamp on the stream that carried the declaration — never
+        ``time.time_ns``. Retracted, expired and future-stamped declarations
+        are all dead; a dead declaration exempts nothing.
+
+        Args:
+            now_ns: Consumer's current time, same clock as ``stamp_ns``.
+
+        Returns:
+            ``True`` only while the declaration is active and inside its
+            backstop window.
+        """
+        if not self.active:
+            return False
+        elapsed_ns = now_ns - self.stamp_ns
+        return 0 <= elapsed_ns <= int(self.timeout_s * 1e9)
+
+    @classmethod
+    def from_idl(cls, msg: object) -> Self:
+        """Decode the duck-typed OpenRAL ROS IDL message without importing ROS."""
+        return cls(
+            target_id=str(msg.target_id),  # type: ignore[attr-defined]
+            object_id=str(msg.object_id),  # type: ignore[attr-defined]
+            contact_links=tuple(str(link) for link in msg.contact_links),  # type: ignore[attr-defined]
+            rskill_id=str(msg.rskill_id),  # type: ignore[attr-defined]
+            trace_id=str(msg.trace_id),  # type: ignore[attr-defined]
+            timeout_s=float(msg.timeout_s),  # type: ignore[attr-defined]
+            stamp_ns=int(msg.stamp_ns),  # type: ignore[attr-defined]
+            active=bool(msg.active),  # type: ignore[attr-defined]
+            region=(
+                PlaceRegion.from_idl(msg.region)  # type: ignore[attr-defined]
+                if bool(getattr(msg, "region_valid", False))
+                else None
+            ),
+            search_box=(
+                PlaceRegion.from_idl(msg.search_box)  # type: ignore[attr-defined]
+                if bool(getattr(msg, "search_box_valid", False))
+                else None
+            ),
+        )
+
+    def fill_idl(self, msg: object) -> None:
+        """Populate a duck-typed ``openral_msgs/GraspDeclaration`` without importing ROS.
+
+        A grasp region never carries geometry (v1), so no primitive factory is
+        needed.
+        """
+        msg.target_id = self.target_id  # type: ignore[attr-defined]
+        msg.object_id = self.object_id  # type: ignore[attr-defined]
+        msg.contact_links = list(self.contact_links)  # type: ignore[attr-defined]
+        msg.rskill_id = self.rskill_id  # type: ignore[attr-defined]
+        msg.trace_id = self.trace_id  # type: ignore[attr-defined]
+        msg.timeout_s = float(self.timeout_s)  # type: ignore[attr-defined]
+        msg.stamp_ns = int(self.stamp_ns)  # type: ignore[attr-defined]
+        msg.active = bool(self.active)  # type: ignore[attr-defined]
+        msg.region_valid = self.region is not None  # type: ignore[attr-defined]
+        if self.region is not None:
+            self.region.fill_idl(msg.region)  # type: ignore[attr-defined]
+        msg.search_box_valid = self.search_box is not None  # type: ignore[attr-defined]
+        if self.search_box is not None:
+            self.search_box.fill_idl(msg.search_box)  # type: ignore[attr-defined]
 
 
 class SupportContactWitness(BaseModel):
@@ -4140,6 +4458,11 @@ class WorldState(BaseModel):
             payload already crossing the dispatch → HAL → World State boundary,
             and because the kernel must apply the region and the attachment set
             it is scoped to from one and the same snapshot.
+        grasp_declaration: The grasp-phase declaration in force as the
+            evidence producer resolved it (real pick-and-place design §2.1),
+            including the producer-measured target region. ``None`` means no
+            grasp phase is declared, i.e. no exemption. Carried beside
+            ``place_declaration`` for the same one-snapshot reason.
         occupancy_grid: Optional 2D occupancy grid reference for mobile-base
             footprint checks. ``None`` until populated; an absent or stale
             grid is treated as unavailable (fail-closed).
@@ -4163,6 +4486,7 @@ class WorldState(BaseModel):
     attachment_revision: int = Field(default=0, ge=0)
     attachment_stamp_ns: int = Field(default=0, ge=0)
     place_declaration: PlaceDeclaration | None = None
+    grasp_declaration: GraspDeclaration | None = None
     occupancy_grid: OccupancyGridRef | None = None
 
 
@@ -9604,6 +9928,116 @@ class LaunchInclude(BaseModel):
     args: dict[str, str] = Field(default_factory=dict)
 
 
+class VisionAttachmentRuntime(BaseModel):
+    """The real-hardware vision attachment leg of a deploy (``DeployRuntime.vision_attachment``).
+
+    When ``enabled``, ``openral deploy`` launches the SAM 2.1 segmenter lifecycle node
+    (``openral_perception_ros`` ``segmenter_node``) and turns on the HAL's vision
+    attachment-evidence bridge (the ``vision_attachment_*`` HAL parameters), which publishes
+    the grasped payload on ``/openral/attachment_state``.
+
+    **Coupling rule:** on real hardware the leg ALWAYS turns the safety kernel's attached-payload
+    check on with it (``attached_collision_enabled``, 1000 ms deadline), never the leg alone. The
+    octomap bridge clears a published payload from the map and the robot self-filter removes it
+    from the cloud regardless of the kernel flag, so a leg without the kernel check would make
+    the payload invisible to every collision check.
+
+    Default off. Turning it on for a real cell is a Safety-WG decision (hazard log): the
+    grasp trigger is the gripper's *position* stalling short of a close command (the OpenArm
+    gripper reports no effort), its thresholds the manifest's robot-type constants
+    (``JointSpec.closure_calibration``) derived from teleop data, not per cell.
+
+    Attributes:
+        enabled: Bring the leg up. Requires all four topics below.
+        camera: Manifest sensor name the segmenter and the bridge use (e.g. ``head_zed``).
+        rgb_topic: The camera driver's RGB ``Image`` topic the segmenter caches.
+        rgb_camera_info_topic: The driver's ``CameraInfo`` for that RGB stream.
+        depth_topic: The driver's metric depth ``Image`` the bridge back-projects.
+        depth_camera_info_topic: The driver's ``CameraInfo`` for the depth stream.
+        segmenter_manifest: ``kind: segmenter`` rSkill manifest (repo- or scene-relative).
+        device: Segmenter torch device (``auto`` / ``cuda`` / ``cpu``).
+        deadline_s: How long the bridge waits for one segmenter reply.
+        evidence_timeout_s: How old the newest joint-state sample carrying a jaw position for
+            every gripper may be before the attachment heartbeat stops (HAL param
+            ``vision_attachment_evidence_timeout_s``).
+        tf_frames: ``{manifest link: TF frame}`` renames where the live TF tree's frame names
+            differ from the manifest's links.
+        grasp_target_enabled: Run the pre-grasp target producer on the bridge (HAL param
+            ``vision_attachment_grasp_target_enabled``): it measures the region the kernel's
+            grasp-target exemption arms with, so ``deploy run`` refuses
+            ``DeployRuntime.grasp_allowance_enabled`` without it. Default off.
+        grasp_target_approach_m: Approach-armed grasp target (HAL param
+            ``vision_attachment_grasp_target_approach_m``; needs ``grasp_target_enabled``):
+            with no named target, a hand whose TCP comes within this many metres of
+            occupied voxels arms a one-hand declaration measured around its jaws, and
+            the rSkill runner arms a goal-scope declaration for every goal so the
+            policy, not the reasoner, picks what to grasp. ``None`` = off (default).
+            Calibration point; at most ``GraspDeclaration.MAX_HALF_EXTENT_M``.
+        place_target_enabled: Run the real place producer (HAL param
+            ``vision_attachment_place_target_enabled``): while a payload is held it
+            measures the support surface directly under it from the voxel map, arms a
+            place region for it and attests the map-support proximity witness. No place
+            target needs naming. Default off.
+        release_timeout_s: How long the bridge's release window waits for the payload to
+            clear the jaws (HAL param ``vision_attachment_release_timeout_s``). Calibration
+            point. The window's grid age and clearance are not scene knobs: the deploy
+            launch derives them from the kernel's voxel deadline, world margin and octree
+            resolution.
+
+    Example:
+        >>> VisionAttachmentRuntime(camera="head_zed").enabled
+        False
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    camera: str = Field(min_length=1)
+    rgb_topic: str | None = None
+    rgb_camera_info_topic: str | None = None
+    depth_topic: str | None = None
+    depth_camera_info_topic: str | None = None
+    segmenter_manifest: str = "rskills/rskill-sam2_1-any-grasped_object_mask-bf16/rskill.yaml"
+    device: str = "auto"
+    deadline_s: float = Field(default=0.25, gt=0)
+    evidence_timeout_s: float = Field(default=0.5, gt=0)
+    tf_frames: dict[str, str] = Field(default_factory=dict)
+    grasp_target_enabled: bool = False
+    grasp_target_approach_m: float | None = Field(
+        default=None, gt=0, le=GraspDeclaration.MAX_HALF_EXTENT_M
+    )
+    place_target_enabled: bool = False
+    release_timeout_s: float = Field(default=3.0, gt=0)
+
+    @model_validator(mode="after")
+    def _require_driver_topics(self) -> Self:
+        # Every topic comes from the driver: on real hardware the manifest's nominal
+        # intrinsics must never be projected (Thor 2026-10-02: driver fx 1498 vs nominal 960).
+        if self.enabled:
+            missing = [
+                name
+                for name in (
+                    "rgb_topic",
+                    "rgb_camera_info_topic",
+                    "depth_topic",
+                    "depth_camera_info_topic",
+                )
+                if not getattr(self, name)
+            ]
+            if missing:
+                raise ValueError(
+                    f"vision_attachment.enabled requires {', '.join(missing)}: the leg projects "
+                    "only through the driver's own topics and CameraInfo, never the manifest's "
+                    "nominal intrinsics"
+                )
+        if self.grasp_target_approach_m is not None and not self.grasp_target_enabled:
+            raise ValueError(
+                "vision_attachment.grasp_target_approach_m needs grasp_target_enabled: the "
+                "approach-armed target is measured by the grasp-target producer"
+            )
+        return self
+
+
 class DeployRuntime(BaseModel):
     """Committed deploy-posture toggles for a workcell scene.
 
@@ -9823,6 +10257,23 @@ class DeployRuntime(BaseModel):
     deploys, or a dev venv via ``$OPENRAL_DA3_DEPTH_SIDECAR_VENV``). First
     autostart provisions the sidecar venv, which can take minutes; the depth
     provider retries until it answers."""
+    vision_attachment: VisionAttachmentRuntime | None = None
+    """The vision attachment leg (segmenter + the HAL's attachment-evidence bridge).
+    ``None`` or ``enabled: false`` = not launched, and the graph is exactly as without
+    it. Enabled on ``deploy run``, it always turns the kernel's attached check on too
+    (see ``VisionAttachmentRuntime``). Backward-compatible addition."""
+    grasp_allowance_enabled: bool = False
+    """Turn on the safety kernel's grasp-target exemption (its ``grasp_allowance_enabled``):
+    while a live ``GraspDeclaration`` carries a producer-measured region, world-voxel cells
+    centred in that box do not trip the declared gripper contact links. The launch always
+    passes the kernel its allowlist, ``grasp_contact_links`` = the manifest's
+    ``role: gripper`` joints' ``child_link``s, so a declaration can never name a link the
+    robot does not grip with. Default off, and off is the graph exactly as without it;
+    turning it on is pending Safety-WG review (real pick-and-place design §2.1/§3,
+    ``docs/reference/real-pick-place-adr-drafts.md``). Backward-compatible addition.
+    ``openral deploy run`` refuses it on unless ``vision_attachment.enabled`` and
+    ``vision_attachment.grasp_target_enabled`` are on too: the kernel would arm with no
+    producer measuring the region (``deploy sim``'s MuJoCo evidence tracker measures it)."""
 
     @property
     def voxel_freshness_s(self) -> tuple[float, float]:
@@ -10010,6 +10461,23 @@ class DeployScene(BaseModel):
     resolves the target measures it (in sim, from the declared body's MuJoCo
     subtree), so ``place_declaration.region`` is rejected here rather than
     carried to the kernel — see ``_reject_scene_supplied_place_region``."""
+    grasp_declaration: GraspDeclaration | None = None
+    """Committed grasp-phase declaration for **direct** dispatch (real
+    pick-and-place design §2.1), the grasp mirror of ``place_declaration``.
+
+    Names the grasp target and the gripper ``contact_links``; ``openral deploy
+    sim`` / ``deploy run`` inject it into the rSkill runner, which scopes it to
+    each goal it dispatches (armed on start, retracted on end / cancel /
+    E-stop) unless the goal carries its own. ``None`` means no declaration and
+    no exemption. Same rule as the place one: a scene names a target, never a
+    **region** — ``grasp_declaration.region`` is rejected by
+    ``_reject_scene_supplied_place_region``.
+
+    **Direct-dispatch path only** (reasoner off, attended): what to pick is task
+    knowledge, so a committed cell scene carries none. The generic path is
+    reasoner-grounded — the LLM names an ``ExecuteRskillTool.grasp_target``, the
+    reasoner grounds its ``search_box`` from perception, and the goal carries the
+    declaration (design §2.2)."""
 
     @model_validator(mode="before")
     @classmethod
@@ -10032,7 +10500,23 @@ class DeployScene(BaseModel):
         around a volume nobody observed (hazard log HZ-0097-2/4). Rejecting it
         leaves exactly the pre-amendment margins, which is the fail-closed
         direction.
+
+        The same rule, for the same reason, applies to
+        ``grasp_declaration.region``: only the producer that measured the
+        grasp target may supply it (HZ-0115-2).
+
+        ``grasp_declaration.search_box`` is **not** refused, deliberately: it
+        tells the target producer where in the occupancy map to look for a
+        seed and arms nothing. The exemption is only ever the region the
+        producer measured from the camera and cross-checked against the map
+        inside that box (real pick-and-place design §2.2).
         """
+        if self.grasp_declaration is not None and self.grasp_declaration.region is not None:
+            raise ValueError(
+                "grasp_declaration.region is producer-supplied (real pick-and-place design "
+                "§2.1): a scene file cannot measure the grasp target. Declare the target and "
+                "contact_links only — the evidence producer attaches the measured region."
+            )
         if self.place_declaration is not None and self.place_declaration.region is not None:
             raise ValueError(
                 "place_declaration.region is producer-supplied (ADR-0097's 2026-08-14 "
@@ -10451,6 +10935,7 @@ SensorOverlay.model_rebuild()
 # embeds a `PlaceRegion`, so it is rebuilt with it.
 PlaceRegion.model_rebuild()
 PlaceDeclaration.model_rebuild()
+GraspDeclaration.model_rebuild()
 
 
 class HalConfig(BaseModel):
@@ -10998,6 +11483,28 @@ class ObjectsMetadata(_PerceptionEventBase):
             ``bbox_xyxy`` of each detection is in this pixel space (the
             cross-frame lift scales it to the sensor's intrinsics resolution).
         frame_height: Pixel height of that frame.
+        camera_frame_id: tf2 frame the source image's pixels live in (the camera's
+            optical frame), from the driver's ``CameraInfo`` header. Set together with
+            ``camera_intrinsics``; ``None`` (no ``CameraInfo`` reached the detector)
+            means a consumer falls back to the ``SensorSpec`` named by ``sensor_id``,
+            whose frame and intrinsics may be a sim stand-in on real hardware.
+        camera_intrinsics: The driver's live pinhole ``K`` for that frame, at the
+            ``CameraInfo``'s own resolution (the lift rescales the box to it).
+
+    Example:
+        >>> md = ObjectsMetadata(
+        ...     sensor_id="top",
+        ...     detections=[],
+        ...     model_id="rtdetr",
+        ...     frame_width=1920,
+        ...     frame_height=1080,
+        ...     camera_frame_id="zed_left_camera_frame_optical",
+        ...     camera_intrinsics=IntrinsicsPinhole(
+        ...         width=1920, height=1080, fx=1498.18, fy=1498.18, cx=936.11, cy=541.81
+        ...     ),
+        ... )
+        >>> md.camera_frame_id
+        'zed_left_camera_frame_optical'
     """
 
     kind: Literal["objects"] = "objects"
@@ -11005,6 +11512,15 @@ class ObjectsMetadata(_PerceptionEventBase):
     model_id: str
     frame_width: int = Field(gt=0)
     frame_height: int = Field(gt=0)
+    camera_frame_id: str | None = Field(default=None, min_length=1)
+    camera_intrinsics: IntrinsicsPinhole | None = None
+
+    @model_validator(mode="after")
+    def _frame_and_k_travel_together(self) -> Self:
+        # A K without its frame (or the reverse) would be projected in the wrong frame.
+        if (self.camera_frame_id is None) != (self.camera_intrinsics is None):
+            raise ValueError("camera_frame_id and camera_intrinsics are set together or not at all")
+        return self
 
 
 class OcrMetadata(_PerceptionEventBase):
@@ -11324,6 +11840,118 @@ class _ReasonerToolBase(BaseModel):
     """
 
 
+class GraspTargetRef(BaseModel):
+    """The object an ``ExecuteRskillTool`` goal grasps, as the reasoner names it.
+
+    The reasoner **names**; perception **grounds**; the producer **measures**
+    (real pick-and-place design §2.2). At dispatch the reasoner resolves this
+    reference to a seed box in the robot base frame — a recalled spatial-memory
+    node's 3D box when ``object_id`` is set, else the one live lifted detection
+    whose label matches — and sends it as ``GraspDeclaration.search_box``. A
+    reference that grounds to nothing, or to more than one instance with no
+    ``object_id``, is refused and the goal is not sent. Naming arms nothing:
+    the kernel only ever trusts the region the producer measured inside the
+    seed.
+
+    Attributes:
+        label: Open-vocabulary object label, e.g. ``"box"``; matched
+            case-insensitively against the live lifted detections' labels.
+        object_id: A spatial-memory ``node_id`` from ``recall_object`` when the
+            reasoner already knows the instance; ``None`` = ground by ``label``.
+        contact_links: Gripper links the grasp declaration names, all ``child_link``s
+            of ``role: gripper`` joints of ONE hand (the gripper joints hanging off one
+            arm); empty = the hand of a single-hand robot. A robot with several hands
+            refuses an empty list (the grounding would otherwise exempt every hand), and
+            links of two hands, a non-gripper link, or only part of a hand's links (that
+            would exempt one finger and the kernel would stop the grasp) are refused.
+
+    Example:
+        >>> GraspTargetRef(label="box").contact_links
+        []
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    label: str = Field(
+        min_length=1,
+        description=(
+            "Open-vocabulary label of the ONE object to grasp, as perception labels it "
+            "(e.g. 'box'). Recall it first when memory has it, and pass its node_id."
+        ),
+    )
+    object_id: str | None = Field(
+        default=None,
+        description=(
+            "node_id from a recall_object match naming the exact instance; required when "
+            "more than one object carries the label."
+        ),
+    )
+    contact_links: list[str] = Field(
+        default_factory=list,
+        description=(
+            "ALL gripper finger link(s) of the ONE hand that grasps. Leave empty only on a "
+            "single-hand robot; with several hands, name every link of that hand."
+        ),
+    )
+
+
+class PlaceTargetRef(BaseModel):
+    """An OPTIONAL hint naming the surface an ``ExecuteRskillTool`` goal places onto.
+
+    Where to set the payload down is the policy's job, and the real place producer
+    measures the support directly under the carried payload without being told
+    (real pick-and-place design §2.3), so a goal never needs this. Set, it restricts
+    the place to one labelled surface ("shelf", "table"): perception **grounds** it at
+    dispatch to a padded, gravity-aligned box in the robot base frame — a recalled
+    spatial-memory node's 3D box when ``object_id`` / ``place_node_id`` is set, else
+    the one live lifted detection whose label matches — sent as
+    ``PlaceDeclaration.search_box``, and the producer refuses a patch measured outside
+    it. Nothing about the cell is surveyed or predeclared. A reference that grounds to
+    nothing, or to more than one instance with no node id, is refused and the goal is
+    not sent. Naming arms nothing: the kernel only ever trusts the measured region.
+
+    Attributes:
+        label: Open-vocabulary label of the surface, e.g. ``"shelf"``; matched
+            case-insensitively against the live lifted detections' labels.
+        object_id: A spatial-memory ``node_id`` from ``recall_object`` naming the
+            surface's instance; ``None`` = ground by ``label`` (or ``place_node_id``).
+        place_node_id: A spatial-memory place node id, for a remembered place that
+            carries a 3D box; ``None`` = ground by ``label`` (or ``object_id``). At
+            most one of ``object_id`` / ``place_node_id``.
+
+    Example:
+        >>> PlaceTargetRef(label="shelf").object_id is None
+        True
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    label: str = Field(
+        min_length=1,
+        description=(
+            "Open-vocabulary label of the ONE surface to place onto, as perception labels "
+            "it (e.g. 'shelf', 'table'). Recall it first when memory has it."
+        ),
+    )
+    object_id: str | None = Field(
+        default=None,
+        description=(
+            "node_id from a recall_object match naming the exact surface instance; required "
+            "when more than one detection carries the label."
+        ),
+    )
+    place_node_id: str | None = Field(
+        default=None,
+        description="node_id of a remembered place with a 3D box; alternative to object_id.",
+    )
+
+    @model_validator(mode="after")
+    def _at_most_one_node(self) -> PlaceTargetRef:
+        if self.object_id is not None and self.place_node_id is not None:
+            raise ValueError("PlaceTargetRef takes at most one of object_id or place_node_id.")
+        return self
+
+
 class ExecuteRskillTool(_ReasonerToolBase):
     """Tool variant — invoke an installed, capability-matched rSkill.
 
@@ -11363,6 +11991,17 @@ class ExecuteRskillTool(_ReasonerToolBase):
         progress_tolerance: Override the reward model's ``plateau_tolerance``
             when a task misbehaves (e.g. a noisy critic). ``None`` → use the
             model default.
+        grasp_target: Optional pin on the object this goal grasps
+            (``GraspTargetRef``); the reasoner grounds it to a
+            ``GraspDeclaration`` search box at dispatch, or refuses the goal.
+            ``None`` (the normal case: the policy picks the object) = no named
+            target; with the HAL's approach-armed grasp target on, the runner's
+            goal-scope declaration is measured where the gripper approaches.
+        place_target: Optional hint naming the surface this goal places onto
+            (``PlaceTargetRef``); the reasoner grounds it to a ``PlaceDeclaration``
+            search box at dispatch, or refuses the goal. ``None`` (the normal case)
+            = no dispatch place declaration; the real producer still measures the
+            surface under the carried payload.
     """
 
     tool: Literal["execute_rskill"] = "execute_rskill"
@@ -11372,6 +12011,24 @@ class ExecuteRskillTool(_ReasonerToolBase):
     deadline_s: float = Field(default=0.0, ge=0.0)
     patience_s: float | None = Field(default=None, gt=0.0)
     progress_tolerance: float | None = Field(default=None, ge=0.0)
+    grasp_target: GraspTargetRef | None = Field(
+        default=None,
+        description=(
+            "Optional: the skill's policy picks what it grasps. Set only to pin one "
+            "object: name it by label (recall it first when memory has it). Perception "
+            "grounds it; naming it arms nothing by itself."
+        ),
+    )
+    place_target: PlaceTargetRef | None = Field(
+        default=None,
+        description=(
+            "Optional: the surface under the carried object is measured from the map "
+            "anyway. Set only to restrict the place to one labelled surface (recall it first "
+            "when memory has it); naming it arms nothing by itself, and a hint perception "
+            "cannot ground REFUSES the goal rather than placing anywhere, so omit it unless "
+            "you can name a surface perception sees."
+        ),
+    )
 
 
 class ReloadGstPipelineTool(_ReasonerToolBase):

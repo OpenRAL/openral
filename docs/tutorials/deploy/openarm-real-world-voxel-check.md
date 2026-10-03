@@ -40,12 +40,60 @@ expecting a clean pass:
    (`safety.collision kind=world a=openarm_left_finger_pair`). Record the filter's
    `self-filter:` log line (share of points removed, ms per cloud, drops).
 2. **A grasped object stops the gripper holding it.** Real hardware runs with
-   attached-payload checking **off** (`_attached_collision_enabled("real")` returns `False`
-   in `deploy_e2e.launch.py`). Nothing on the real graph publishes
-   `/openral/attachment_state`: the HAL's vision attachment leg exists but is opt-in and not
-   wired into the deploy launch. So the bridge never clears the object's cells, and the
+   attached-payload checking **off** while the scene's `runtime.vision_attachment.enabled`
+   is false (`_attached_collision_enabled("real", False)` returns `False` in
+   `deploy_e2e.launch.py`), and then nothing on the real graph publishes
+   `/openral/attachment_state`. So the bridge never clears the object's cells, and the
    gripper stops against its own payload. The sim contract, where the payload leaves world
    occupancy and is checked as attached geometry, does **not** hold here.
+
+   **Vision attachment leg (off by default).** `runtime.vision_attachment` in this scene
+   wires the leg — the SAM 2.1 segmenter lifecycle node (`openral_segmenter`) plus the HAL's
+   attachment-evidence bridge, fed by the ZED's RGB, depth and their `camera_info` topics —
+   but commits it **off**: its grasp trigger is the gripper *position* stalling short of a close
+   command (the OpenArm driver reports effort as a constant 0.0). Its calibration
+   (`closure_calibration`: rest offset, stall gap, settle tolerance) is a set of robot-type
+   constants of the gripper mechanism in `robots/openarm/robot.yaml`, derived from teleop
+   data; not per cell, so no unit overrides it and there is no calibration session. Verify it
+   once by commanding an empty close on the rig and reading where the jaw rests.
+   Turning it on for real is pending Safety-WG review and a hazard-log entry. Enabled,
+   `deploy run` always turns the kernel's attached-payload check on with it
+   (`attached_collision_enabled`, 1000 ms deadline), never the leg alone: the bridge's payload
+   clearing and the self-filter act on any published attachment whatever the kernel flag, so a
+   leg without the kernel check would hide the payload from every check. Do not enable it in
+   this runbook.
+
+   **Release (frozen window, the leg's default behaviour).** The trigger's DETACH fires when the
+   jaws *open* past their hold, with the fingers still around the object. The leg does not drop the payload then:
+   it keeps publishing it as an attached record frozen in `openarm_base` at its DETACH pose
+   (`touch_links` = the hand and its finger pair, exactly what the held record exempted;
+   every other link and the world are still checked against it), so the octomap bridge keeps
+   clearing its cells while the fingers back out. The record goes once the hand and fingers
+   are `release_clear_m` (0.04 m = the 20 mm world margin + one 20 mm voxel) clear of it, a
+   new ATTACH on that gripper, or `release_timeout_s` (3.0 s) — after which a hand still
+   inside the margin of the re-marked object is stopped, fail-closed. Look for
+   `release window opened` / `release window closed reason=separation|timeout|attach` in the
+   HAL log. Both bounds are uncalibrated (hazard log).
+
+   **Grasp-target exemption (off by default).** `runtime.grasp_allowance_enabled` (default
+   `false`) forwards `grasp_allowance_enabled:=true` to the kernel; the launch always passes
+   `grasp_contact_links` = the manifest's `role: gripper` child links
+   (`openarm_left_finger_pair`, `openarm_right_finger_pair`). With it on, the exemption still
+   applies only inside a producer-measured `GraspDeclaration` region, which nothing on the
+   real graph measures yet. Do not enable it in this runbook.
+
+   **Place producer leg (off by default).** The HAL parameter
+   `vision_attachment_place_target_enabled` (default `false`; scene
+   `runtime.vision_attachment.place_target_enabled`) runs the real place producer inside the
+   vision attachment bridge. Nothing is surveyed and no place target is named: while a payload
+   is held it measures the surface directly under it in the live voxel map (the whole
+   footprint occupied on one layer, headroom for the payload above it, within
+   `vision_attachment_place_target_search_depth_m`), declares that patch as a place region
+   for that payload, and a payload resting on it gets a `map_support_proximity` support
+   witness — proximity to a map-measured plane, not sensed contact, not a proven support. It
+   rests on drafted, unapproved ADR-0097 / ADR-0092 D6 amendments and its thresholds are
+   uncalibrated. Do not enable it in this runbook.
+
 Camera loss **fails closed** (it used to fail open; fixed with hazard-log Entry 033):
 `openral_octomap_bridge` stops publishing `/openral/world_voxels` once its last octree is
 older than `max_octree_age_s` (default 1.0 s, equal to the kernel's `world_voxel_deadline_ms`;
@@ -199,7 +247,7 @@ Check and record:
   `frame_id: openarm_base`.
 - **One parent.** `ros2 run tf2_tools view_frames` shows `zed_camera_link` with exactly one
   parent, `openarm_base`. A second parent means `publish_tf` was left on.
-- **Overlay.** In Foxglove, check that the voxels sit on the table, the fixtures and the real
+- **Overlay.** In Foxglove, check that the voxels sit on the table, the shelf and the real
   arms. The robot model shown is the twin at zero, so park the real arms at zero to compare.
   Note any voxels on the arm links (self-occupancy, gap 1) and any free-floating speckle
   near the arm envelope, each of which is a future false stop.
@@ -234,6 +282,16 @@ kernel with `world_voxel_enabled: true`, `world_voxel_margin_m: 0.02` and
 `world_voxel_deadline_ms: 1000`. The cloud reaches octomap by topic
 (`runtime.octomap_cloud_topic`), not through the sensor leg; `head_zed`'s manifest
 `deploy_binding` only feeds its depth image to the world state.
+
+To run a local copy of the scene instead (test 3's grasp target), pass
+`--scene scenes/deploy/local/<copy>.yaml`. The copy gets the same gates, and the script also
+refuses it unless it lies under `scenes/deploy/local/` (gitignored, so operator copies never
+dirty the tree or join the tracked scene registry), validates as a `DeployScene`, and, once parsed, is
+identical to the committed scene except for the top-level `grasp_declaration` block. Any
+other difference (octomap off, a wider `robot_self_filter_padding_m`, an allowance or extra
+collision pair, a safety envelope, other drivers or HAL parameters, even a renamed
+`scene.id`) is refused, naming each differing key path. Never launch a copy with a bare
+`openral deploy run`: it skips every gate above.
 
 In a second terminal, record the evidence for every test below:
 
@@ -289,6 +347,36 @@ Run these tests in order:
    own payload once it closes on the object in view. Record the link, the cell and the
    distance. This is **not** an attached-payload-vs-voxels check: that check is off on real
    hardware.
+
+   The committed scenes name no grasp target and no coordinates: what to pick is task
+   knowledge, and it arrives as language. Launch the autonomous posture,
+   `scenes/deploy/openarm_real_autonomous.yaml` (this scene plus the reasoner, the
+   open-vocabulary detector and spatial-memory ingest), and name a label:
+
+   ```bash
+   export OPENRAL_REASONER_MODEL=<a model from openral_core.REASONER_MODELS>
+   tools/openarm_world_voxel_run.sh --autonomous
+   # second terminal, presence confirmed for this goal:
+   openral prompt "pick up the boxes"
+   ```
+
+   The detector lifts every box it sees; the reasoner's `WORLD_STATE` lists each instance
+   (`scene_objects[...]`) and its spatial-memory id (`memory_objects[...]: box
+   id=obj_box_1@(...)`), so it decomposes the goal into one subtask per box and names each
+   one by `grasp_target.object_id`; perception grounds the search box
+   ([design §2.2](../../reference/real-pick-place-design.md)). Grounding refuses a bare
+   label that several detections carry. The only OpenArm VLA today is task-specific (the
+   restock policy): a general "pick up X" needs a language-conditioned pick/place policy
+   installed for the OpenArm, and until one is, expect the reasoner to hand off.
+
+   Direct dispatch (debug only, reasoner off): copy the committed scene into the gitignored
+   `scenes/deploy/local/` (create it), add a `grasp_declaration` block (the only difference
+   the wrapper accepts) whose `search_box` you measured on the live voxel map of this cell,
+   today, around exactly ONE item (a box covering two is refused as AMBIGUOUS), and launch it
+   with `tools/openarm_world_voxel_run.sh --scene <copy>` (add `--autonomous` for a copy of
+   the autonomous scene). Never reuse another cell's or another day's numbers: the box only
+   seeds perception; nothing about the cell is surveyed (the place surface is measured live
+   under the carried payload).
 4. **Camera unplug.** During a dispatch, unplug the ZED. Expect `/openral/world_voxels` to
    stop about 1 s after `/octomap_binary`, and the kernel to drop the next chunks with
    `DROP_VOXEL_UNAVAILABLE` within ~2.0 s of the last cloud (a drop, not a latch). Motion or
@@ -320,10 +408,16 @@ For the write-up, record:
 
 - `scenes/deploy/openarm_real_world_voxels.yaml`: the real-cell scene. The check is on, and
   it holds the ZED driver include. It declares no `head_zed` entry.
+- `scenes/deploy/openarm_real_autonomous.yaml`: the same cell with the reasoner, the
+  open-vocabulary detector and spatial-memory ingest on (`--autonomous`); the vision
+  attachment leg stays off.
 - `robots/openarm/robot.yaml`: `head_zed`'s nominal `static_transform_xyz_rpy` (sim twins
   only; a real world-voxel deploy never runs on it).
 - `robots/openarm/units/<unit>.yaml`: each cell's camera bindings and its calibrated ZED
-  pose, measured by the operator (step 2).
+  pose, measured by the operator (step 2). The grippers' `closure_calibration` is a
+  robot-type constant in `robot.yaml`, not per unit. No furniture is surveyed: place surfaces are
+  measured live from the voxel map under the carried payload
+  ([real pick-and-place design](../../reference/real-pick-place-design.md) §2.3).
 - `python/core/src/openral_core/depth_extrinsic.py`: the accuracy the pose needs and the
   gate `deploy run` applies.
 - `tools/openarm_world_voxel_run.sh`: the guarded launcher for step 4.

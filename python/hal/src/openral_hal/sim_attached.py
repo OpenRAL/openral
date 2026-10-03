@@ -52,7 +52,11 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, JointState
 
-from openral_hal._slot_group import TickWatermark
+from openral_hal._slot_group import (
+    TickWatermark,
+    compose_slot_group_action,
+    slot_group_targets,
+)
 
 # Module logger — falls through to stderr via the rclpy logging bridge in a
 # ROS node, else plain stdlib logging.
@@ -103,9 +107,72 @@ __all__ = [
     "SIM_EXECUTABLE_CONTROL_MODES",
     "ActionPacker",
     "SimAttachedHAL",
+    "gripper_targets_action",
     "normalized_joint_index",
     "pack_action_for_env",
 ]
+
+
+def gripper_targets_action(group: list[Action], description: RobotDescription) -> Action | None:
+    """What one committed slot group set for every gripper joint, as a compact action.
+
+    The gripper-subset form of ``compose_slot_group_action`` for a group that does not
+    compose into one whole joint-position command (a BODY_TWIST or Cartesian slot,
+    arm joints left uncommanded): ``slot_group_targets`` places the group with the
+    composer's own strictness, and the ``role: "gripper"`` joints are read out as a
+    one-row ``JOINT_POSITION`` action (``joint_names`` = every gripper, manifest
+    order) — the compact row ``VisionAttachmentBridge.observe_command`` reads
+    positionally. Never a command to apply: the record of what the jaws were told.
+
+    All or nothing: a partial record would leave the uncovered jaw's previous command
+    standing in the grasp trigger (a phantom attach on the twin), so any gripper the
+    group left uncommanded, or any slot the composer cannot read, gives ``None``,
+    which clears every jaw's command.
+
+    Args:
+        group: Every slot action of the committed tick.
+        description: The robot manifest (gripper roles and joint order).
+
+    Returns:
+        Every gripper's target, or ``None`` when the manifest has no gripper, the
+        group left one uncommanded, or ``slot_group_targets`` refused the group
+        (an unreadable or overlapping slot: which value the jaw got is unknown).
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
+        >>> twist = Action(control_mode=ControlMode.BODY_TWIST, body_twist=[[0.1] + [0.0] * 5])
+        >>> grip = Action(
+        ...     control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.02], ee_name="panda_gripper"
+        ... )
+        >>> applied = gripper_targets_action([twist, grip], d)
+        >>> applied.joint_names, applied.joint_targets
+        (['panda_gripper'], [[0.02]])
+        >>> gripper_targets_action([twist], d) is None
+        True
+    """
+    names = [joint.name for joint in description.joints]
+    try:
+        targets = slot_group_targets(group, names)
+    except ROSConfigError:
+        return None
+    jaws: dict[str, float] = {}
+    for joint, target in zip(description.joints, targets, strict=True):
+        if joint.role == "gripper":
+            if target is None:
+                return None
+            jaws[joint.name] = target
+    if not jaws:
+        return None
+    return Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_targets=[list(jaws.values())],
+        joint_names=list(jaws),
+        stamp_ns=group[0].stamp_ns,
+        confidence=group[0].confidence,
+    )
+
 
 _ROBOSUITE_GROUP_PREFIX = re.compile(r"^[a-z]+[0-9]+_")  # robot0_ / gripper0_ / mobilebase0_
 
@@ -457,6 +524,8 @@ class SimAttachedHAL:
         self._pending_action_key: tuple[int, int] | None = None
         self._pending_actions: list[Action] = []
         self._watermark = TickWatermark()
+        # What the last applied command was (``last_applied_action``).
+        self._last_applied_action: Action | None = None
         # Wall-clock stamp of the oldest pending slot so a skill that dies
         # mid-tick cannot block ``idle_step`` forever.
         self._pending_since_ns: int = 0
@@ -535,6 +604,7 @@ class SimAttachedHAL:
         self._pending_action_key = None
         self._pending_actions.clear()
         self._watermark.reset()
+        self._last_applied_action = None
         self._joint_index = None  # rebuilt on next read_state (model identity stable per env)
         # A reset re-randomises the scene, so the previous episode's success
         # verdict no longer describes anything live. Re-seed the witness from
@@ -798,6 +868,7 @@ class SimAttachedHAL:
                 self._apply_body_twist_to_qpos(row)
             else:
                 self._apply_body_twist_via_env_step(row)
+            self._last_applied_action = action
             return
         # A non-BODY_TWIST action means the base is no longer being
         # velocity-commanded — clear the latched twist so /odom doesn't
@@ -845,6 +916,7 @@ class SimAttachedHAL:
                 flush=True,
             )
         self._step_and_cache(env_action, source="send_action")
+        self._last_applied_action = action
 
     def _stage_action_group(
         self,
@@ -917,7 +989,7 @@ class SimAttachedHAL:
         self._pending_action_key = None
         if group_step is None:
             self._step_packed_action_group(actions)
-            self._watermark.commit(tick, session=session)
+            self._commit_group(actions, tick, session)
             return
         try:
             step_result = group_step(actions)
@@ -951,7 +1023,26 @@ class SimAttachedHAL:
         else:
             self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self._cache_step_result(step_result)
+        self._commit_group(actions, tick, session)
+
+    def _commit_group(self, actions: list[Action], tick: int, session: int) -> None:
+        """Move the watermark and record the group's command as one full-dof action.
+
+        The command is ``compose_slot_group_action`` over the manifest joints, as the real
+        HAL composes it. A group that is not one whole joint-position command (a
+        BODY_TWIST or Cartesian slot, joints it leaves uncommanded) records what it set
+        for the gripper joints instead (``gripper_targets_action``), so the grasp trigger
+        still reads the jaw command on a mobile manipulator; ``None`` — command unknown,
+        every jaw's command in the trigger is cleared — unless every gripper was commanded
+        readably (never a partial record that leaves one jaw's stale command standing).
+        """
         self._watermark.commit(tick, session=session)
+        try:
+            self._last_applied_action = compose_slot_group_action(
+                actions, [joint.name for joint in self.description.joints]
+            )
+        except ROSConfigError:
+            self._last_applied_action = gripper_targets_action(actions, self.description)
 
     def _step_packed_action_group(self, actions: list[Action]) -> None:
         """Pack every safe slot, then execute exactly one simulator step."""
@@ -1659,6 +1750,18 @@ class SimAttachedHAL:
         ``mujoco_handles()`` works.
         """
         return self._mujoco_handles()
+
+    @property
+    def last_applied_action(self) -> Action | None:
+        """The command the simulator was last stepped with (``None`` = none, or unreadable).
+
+        For a slot group, the composed full-dof ``JOINT_POSITION`` action, set in step with
+        ``last_committed_tick`` — or, when the group is not one joint-position command,
+        its gripper targets as a compact action (``gripper_targets_action``; ``None``
+        when it set none); for an ungrouped action, the action itself. The lifecycle node
+        folds it into the grasp trigger.
+        """
+        return self._last_applied_action
 
     @property
     def last_committed_tick(self) -> int:

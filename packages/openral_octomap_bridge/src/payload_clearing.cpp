@@ -346,4 +346,34 @@ double attach_transition_padding(double steady_padding_m, double attach_sweep_pa
          extra;
 }
 
+bool parse_attach_link_tf_frames(const std::vector<std::string>& entries, AttachLinkTfFrames& out,
+                                 std::string& error) {
+  out.clear();
+  AttachLinkTfFrames parsed;
+  for (const auto& entry : entries) {
+    if (entry.empty()) {
+      continue;
+    }
+    const auto eq = entry.find('=');
+    if (eq == std::string::npos || eq == 0 || eq + 1 == entry.size()) {
+      error = "entry '" + entry + "' is not 'link=frame'";
+      return false;
+    }
+    const std::string link = entry.substr(0, eq);
+    const std::string frame = entry.substr(eq + 1);
+    const auto [it, inserted] = parsed.emplace(link, frame);
+    if (!inserted && it->second != frame) {
+      error = "link '" + link + "' is mapped to both '" + it->second + "' and '" + frame + "'";
+      return false;
+    }
+  }
+  out = std::move(parsed);
+  return true;
+}
+
+const std::string& tf_frame_for(const AttachLinkTfFrames& frames, const std::string& attach_link) {
+  const auto it = frames.find(attach_link);
+  return it == frames.end() ? attach_link : it->second;
+}
+
 }  // namespace openral_octomap_bridge

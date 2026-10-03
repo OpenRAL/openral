@@ -13,6 +13,14 @@
 # fail-closed rules and hysteresis the pick witness is under. Measured contact
 # without a declaration exempts nothing (unchanged pre-ADR-0097 behaviour).
 #
+# Drafted exception (ADR-0097 amendment, Safety-WG pending, default off): on real
+# hardware the place-target producer measures the surface directly under the
+# carried payload in the voxel map and, when dispatch declared nothing, publishes
+# its own declaration of that surface (`surface:under:<object_id>`, scoped to that
+# payload, region attached) on the attachment envelope — the policy decides where
+# to place, the map decides whether that spot is a surface. It dies with the
+# payload and with the region's age bound.
+#
 # Scoped to one goal execution. MUST be retracted (active=false) on goal
 # end/cancel and E-stop; every consumer MUST also expire it on timeout_s so a
 # dispatcher dying mid-goal cannot leave an exemption armed.
@@ -70,3 +78,15 @@ PlaceRegion region
 # an order of magnitude (SARA-shield 0.49 J for a constrained-blunt hand vs
 # PACS HANDOVER's 0.014 J), so the dispatching skill supplies it per place.
 float64 contact_force_threshold_n
+
+# Optional gravity-aligned hint box, in the voxel grid's base frame, naming the
+# surface a place may use (real pick-and-place design §2.3). The real place
+# producer measures the support directly under the carried payload with or
+# without it; when set, it refuses a patch measured outside the box. It arms
+# nothing — the allowance is always the producer-measured `region` above. The
+# reasoner grounds it from an optional named surface (a lifted detection or a
+# recalled memory node, padded); dispatch passes it through unchanged. Additive
+# and backward compatible: search_box_valid false = no hint.
+# `search_box.geometry[]` MUST be empty.
+bool search_box_valid
+PlaceRegion search_box
