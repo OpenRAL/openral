@@ -27,6 +27,7 @@ than an inline branch:
 
 from __future__ import annotations
 
+import structlog
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode
 
@@ -39,6 +40,8 @@ __all__ = [
     "refuse_stale_tick",
     "slot_group_targets",
 ]
+
+log = structlog.get_logger(__name__)
 
 GRIPPER_MODES = (ControlMode.GRIPPER_POSITION, ControlMode.GRIPPER_BINARY)
 # Modes that address no joint by name: ``slot_group_targets`` skips them.
@@ -376,9 +379,12 @@ class SlotGroupStager:
     a replayed group can never re-command the robot; a new runner session is
     adopted when its first group commits, and the superseded session is
     refused from then on. The tick in flight is keyed by
-    ``(runner_session_id, tick_index)``. ``discard`` (E-stop)
-    keeps the watermark, ``reset`` (disconnect) clears it. ``last_committed_tick`` is what the HAL
-    lifecycle node acknowledges on ``/openral/action_applied``. Ungrouped ticked actions
+    ``(runner_session_id, tick_index)``; a partial tick of an older runner
+    session is dropped (logged, not raised) when a new session's first slot
+    lands. ``discard`` (E-stop latch and clear, via the HAL's
+    ``discard_staged_slots``) keeps the watermark, ``reset`` (disconnect) clears
+    it. ``last_committed_tick`` is what the HAL lifecycle node acknowledges on
+    ``/openral/action_applied``. Ungrouped ticked actions
     go through ``admit`` / ``commit_tick`` so they share the same watermark.
     ``last_applied_action`` is the command each commit applied (the composed one for a
     group), which the lifecycle node feeds the grasp trigger.
@@ -460,14 +466,19 @@ class SlotGroupStager:
             self._watermark.commit(tick, session=int(action.runner_session_id))
         self._applied = action
 
-    def discard(self) -> None:
+    def discard(self) -> int:
         """Drop the half-staged tick but keep the committed watermark (estop).
 
         A stop is not a renumbering — the runner's ticks keep increasing — so
         a pre-stop tick replayed after the stop must still be refused.
+
+        Returns:
+            How many staged slots were dropped (``0`` = nothing was in flight).
         """
+        dropped = len(self._actions)
         self._actions.clear()
         self._key = None
+        return dropped
 
     def reset(self) -> None:
         """Drop the staged tick AND the watermark (disconnect: numbering restarts).
@@ -512,6 +523,20 @@ class SlotGroupStager:
         session = int(action.runner_session_id)
         self._watermark.check(tick, session=session)
         key = (session, tick)
+        if self._key is not None and session and self._key[0] and session != self._key[0]:
+            # A different runner session is a new runner (a goal on a restarted
+            # runner): the partial tick belongs to a run that is over, nobody is
+            # waiting for it, and it is not this tick's loss. Drop it without the
+            # incomplete-group error, but say so (CLAUDE.md §1.4).
+            log.info(
+                "hal.slot_group.stale_partial_dropped",
+                reason="runner_session_changed",
+                stale_session=self._key[0],
+                stale_tick=self._key[1],
+                slots=len(self._actions),
+                new_session=session,
+            )
+            self.discard()
         if self._key is not None and key != self._key:
             dropped = [a.control_mode.value for a in self._actions]
             staged, expected = len(self._actions), self._key[1]

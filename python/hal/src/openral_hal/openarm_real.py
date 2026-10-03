@@ -520,6 +520,20 @@ class OpenArmRealHAL(RosControlHAL):
         """``runner_session_id`` of ``last_committed_tick`` (0 = none/legacy)."""
         return self._slot_group.last_committed_session
 
+    def discard_staged_slots(self) -> int:
+        """Drop a half-staged slot group, keeping the committed watermark.
+
+        Called by the HAL lifecycle node on every ``/openral/estop`` latch and
+        ``/openral/estop_cleared`` — for any HAL, opted into the hardware estop
+        or not — so a tick cut short by a stop never outlives it into the next
+        goal. ``SlotGroupStager.discard`` semantics: a pre-stop tick replayed
+        afterwards is still refused as stale.
+
+        Returns:
+            How many staged slots were dropped.
+        """
+        return self._slot_group.discard()
+
     def estop(self) -> None:
         """Trigger an emergency stop, dropping any half-staged slot group.
 
