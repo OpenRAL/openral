@@ -256,9 +256,18 @@ def compose_runtime(
     world_state_node = _WorldStateLifecycleNode(aggregator=aggregator)
     # Override the world_state node's default ``robot_name`` parameter
     # so its /diagnostics ``hardware_id`` matches the composed runtime.
-    world_state_node.set_parameters(
-        [rclpy.parameter.Parameter("robot_name", value=description.name)],
-    )
+    overrides = [rclpy.parameter.Parameter("robot_name", value=description.name)]
+    # The object lift expresses its 3-D boxes in the frame the deploy maps in. The node's
+    # default is SLAM's ``map``, which a fixed-base arm never has (no odometry, no SLAM),
+    # so every lifted box would be dropped and a reasoner-named grasp target could never
+    # be grounded (real pick-and-place design §2.2). Same rule as the launch's
+    # ``_octomap_frames``: a robot with no locomotion maps in its own base frame.
+    locomotion = getattr(description.capabilities, "locomotion", None) or ["none"]
+    if all(kind == "none" for kind in locomotion):
+        overrides.append(
+            rclpy.parameter.Parameter("object_lift_map_frame", value=description.base_frame)
+        )
+    world_state_node.set_parameters(overrides)
     # Resolver wiring: explicit ``skill_resolver`` wins (tests pass a
     # local-only resolver to dodge HF Hub); otherwise build the
     # production resolver via ``skill_resolver_factory`` after the
