@@ -179,11 +179,14 @@ def test_the_object_lift_maps_in_the_frame_the_deploy_maps_in(
     so every lifted box was dropped there and a reasoner-named grasp target could never be
     grounded (real pick-and-place design §2.2). Same rule as the launch's ``_octomap_frames``.
     """
+    import rclpy  # type: ignore[import-untyped]
     from openral_core import RobotDescription
     from openral_rskill_ros.compose import compose_runtime
 
     robot_yaml = _REPO / "robots" / robot_id / "robot.yaml"
     description = RobotDescription.from_yaml(str(robot_yaml))
+    if not rclpy.ok():
+        rclpy.init()
     runtime = compose_runtime(robot_yaml)
     try:
         frame = runtime.world_state_node.get_parameter("object_lift_map_frame").value
