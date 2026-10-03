@@ -2906,7 +2906,7 @@ def test_scene_preload_pair_is_forwarded_only_when_the_scene_sets_it() -> None:
 def test_scene_preload_revision_is_forwarded_with_the_preload_id(tmp_path: Path) -> None:
     """``DeployRuntime.preload_rskill_revision`` → ``preload_rskill_revision:=`` (SO-101 bench).
 
-    The resident key is (id, revision, prompt): a goal pinning a revision the
+    The policy is resident per (id, revision): a goal pinning a revision the
     preload did not use evicts the warm skill, so a scene must be able to pin it.
     """
     text = (_REPO_ROOT / "scenes" / "deploy" / "so101_bench.yaml").read_text(encoding="utf-8")
