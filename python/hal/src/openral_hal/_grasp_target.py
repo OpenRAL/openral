@@ -10,11 +10,11 @@ Flow, one call per step so every step is replayable from its inputs alone:
 1. ``occupied_centers_in_box`` — occupied cells of the published voxel lattice
    whose centre lies in the scene's search box (the box only *seeds*
    perception; it never becomes the exemption region).
-2. ``support_top_from_voxels`` — the support plane is **measured**: the densest
-   occupied layer in a column under the search box, its top face. The search
+2. ``support_top_from_voxels`` — the support plane is **measured**: scanning a
+   column under the search box top-down, the first layer whose top-surface cells
+   ring the footprint of the target standing above it, its top face. The search
    box's own bottom (a lifted detection bbox) can sit below the real table top,
-   so it is never taken as the support (HZ-01xx-6); ``support_cells_under``
-   then requires that layer to be occupied directly under the seed.
+   so it is never taken as the support (HZ-01xx-6).
    ``target_seed_from_voxels`` clusters the cells above that plane,
    take the largest cluster's top-centre. Refuses on too few cells or on two
    comparably-sized clusters (HZ-01xx-2, wrong object: guessing between two
@@ -66,7 +66,6 @@ __all__ = [
     "project_point",
     "region_covers_occupied",
     "region_within",
-    "support_cells_under",
     "support_top_from_voxels",
     "target_region_from_mask",
     "target_seed_from_voxels",
@@ -165,11 +164,13 @@ class TargetSeed:
         point: Top-centre of the selected cluster in the lattice frame, or ``None``.
         refusal: Why no seed was produced; ``None`` when ``point`` is set.
         cluster_sizes: Cell counts of every cluster found, descending (for the trace).
+        bottom_z: Bottom face of the selected cluster's lowest cell, or ``None``.
     """
 
     point: tuple[float, float, float] | None
     refusal: TargetRefusal | None
     cluster_sizes: tuple[int, ...]
+    bottom_z: float | None = None
 
 
 @dataclass(frozen=True)
@@ -252,89 +253,105 @@ def support_top_from_voxels(
     grid: VoxelLattice,
     centers: NDArray[np.float64],
     *,
+    near_xy: tuple[float, float],
     min_cells: int,
-    dense_fraction: float = 0.5,
+    probe_margin_m: float = 0.05,
 ) -> float | None:
-    """Measure the support surface: the top face of the densest occupied layer.
+    """Measure the surface the target stands on: the top face of that layer.
 
-    A table seen from above is one wide horizontal layer of occupied cells; a
-    target on it holds far fewer cells per layer. Among the lattice z-layers of
-    ``centers`` (a column under the search box), the support is the **highest**
-    layer holding at least ``dense_fraction`` of the densest layer's count (a
-    thick table top is several near-equal layers; its top one is the surface).
+    Scanned **top-down** over the lattice z-layers of ``centers`` (a column under
+    the search box). For each candidate layer ``k``, the target is the connected
+    component of the cells *above* ``k`` that holds the cell horizontally nearest
+    ``near_xy``; ``k`` is the support when it holds at least ``min_cells``
+    **top-surface** cells (no occupied cell directly above) in the ring around
+    that component's footprint — farther than one cell from it (the target's own
+    side faces) and at most ``probe_margin_m`` from it. A surface extends
+    laterally beyond what stands on it; the target's own layers do not, so a
+    dense target top is never taken for the support, and the probe scales with
+    the target's footprint instead of a fixed square. The ring skips the band
+    right at the footprint only by one cell, so a head camera's occlusion shadow
+    behind the target merely thins it.
+
+    Ceiling: a target whose lower part flares more than one cell past its upper
+    footprint (a pyramid, a handle) can stop the scan inside the target; the
+    region then stands higher than the support — less exemption, never more.
 
     Args:
         grid: The lattice ``centers`` came from; must be z-up (yaw-only).
         centers: ``(N, 3)`` occupied centres in ``grid.frame_id``.
-        min_cells: Fewest cells the densest layer must hold to be a support at
-            all. *Calibration point.*
-        dense_fraction: Fraction of the densest layer's count a higher layer
-            needs to count as the same support. *Calibration point.*
+        near_xy: Where the target is expected (the search box centre), in
+            ``grid.frame_id``.
+        min_cells: Fewest ring cells a layer needs to be the support.
+            *Calibration point.*
+        probe_margin_m: Outer reach of the ring from the target footprint, metres.
+            *Calibration point.*
 
     Returns:
         The support's top face z in ``grid.frame_id``, or ``None`` when no layer
-        holds ``min_cells`` — there is no measured support to stand a region on.
+        qualifies — there is no measured support to stand a region on.
 
     Raises:
         ROSConfigError: On a tilted lattice (its cells form no horizontal layers).
 
     Example:
         >>> import numpy as np
-        >>> occ = np.zeros(27, dtype=np.uint8)
-        >>> occ[9:18] = 1  # the whole k=1 layer: a table top
-        >>> occ[22] = 1  # one cell on it
-        >>> g = VoxelLattice("base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (3, 3, 3), occ)
-        >>> round(support_top_from_voxels(g, g.occupied_centers(), min_cells=4), 6)
+        >>> occ = np.zeros(5 * 5 * 3, dtype=np.uint8)
+        >>> occ[25:50] = 1  # the whole k=1 layer: a table top
+        >>> occ[50 + 12] = 1  # one cell on it, at i=j=2
+        >>> g = VoxelLattice("base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (5, 5, 3), occ)
+        >>> c, xy = g.occupied_centers(), (0.25, 0.25)
+        >>> round(support_top_from_voxels(g, c, near_xy=xy, min_cells=4, probe_margin_m=0.2), 6)
         0.2
-        >>> support_top_from_voxels(g, g.occupied_centers(), min_cells=10) is None
+        >>> support_top_from_voxels(g, c, near_xy=xy, min_cells=17, probe_margin_m=0.2) is None
         True
     """
-    layers, counts = np.unique(_layer_index(grid, centers[:, 2]), return_counts=True)
-    if len(counts) == 0 or counts.max() < min_cells:
+    if len(centers) == 0:
         return None
-    top = int(layers[counts >= dense_fraction * counts.max()].max())
-    return float(grid.origin[2] + (top + 1) * grid.resolution)
+    _layer_index(grid, centers[:, 2])  # z-up check
+    local = (centers - np.asarray(grid.origin)) @ grid.rotation()
+    ijk = np.floor(local / grid.resolution).astype(np.int64)
+    occupied = {(int(i), int(j), int(k)) for i, j, k in ijk.tolist()}
+    dist2 = np.sum((centers[:, :2] - np.asarray(near_xy)) ** 2, axis=1)
+    reach = max(2, math.ceil(probe_margin_m / grid.resolution - 1e-9))
+    for k in sorted({c[2] for c in occupied}, reverse=True):
+        above = ijk[:, 2] > k
+        if not above.any():
+            continue
+        start = tuple(int(v) for v in ijk[np.flatnonzero(above)[np.argmin(dist2[above])]])
+        footprint = {(i, j) for i, j, _ in _component_from(occupied, start, min_k=k + 1)}
+        inner = _dilate(footprint, 1)
+        ring = _dilate(footprint, reach) - inner
+        surface = sum(
+            1
+            for i, j, kk in occupied
+            if kk == k and (i, j) in ring and (i, j, k + 1) not in occupied
+        )
+        if surface >= min_cells:
+            return float(grid.origin[2] + (k + 1) * grid.resolution)
+    return None
 
 
-def support_cells_under(
-    grid: VoxelLattice,
-    support_top_z: float,
-    xy: tuple[float, float],
-    *,
-    half_m: float,
-) -> int:
-    """Occupied cells of the support layer in the square of half-size ``half_m`` at ``xy``.
+def _dilate(cells: set[tuple[int, int]], r: int) -> set[tuple[int, int]]:
+    """Chebyshev dilation of a 2-D cell set by ``r`` cells."""
+    steps = range(-r, r + 1)
+    return {(i + di, j + dj) for i, j in cells for di in steps for dj in steps}
 
-    The column measurement can find a table that is not under the target at all
-    (a target over a gap, past the table edge, on a different surface); this
-    counts the measured layer's cells directly under it. The square is wider
-    than the target because the cells right beneath it are occluded from a
-    head camera and so never occupied in the map.
 
-    Args:
-        grid: The published lattice; must be z-up (yaw-only).
-        support_top_z: ``support_top_from_voxels``'s result.
-        xy: The target's horizontal centre in ``grid.frame_id``.
-        half_m: Half-size of the square, metres. *Calibration point.*
-
-    Returns:
-        The count; the caller compares it to its ``min_cells``.
-
-    Raises:
-        ROSConfigError: On a tilted lattice.
-
-    Example:
-        >>> import numpy as np
-        >>> occ = np.zeros(27, dtype=np.uint8)
-        >>> occ[9:18] = 1  # the whole k=1 layer
-        >>> g = VoxelLattice("base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (3, 3, 3), occ)
-        >>> support_cells_under(g, 0.2, (0.2, 0.2), half_m=0.06)
-        4
-    """
-    centers = grid.occupied_centers()
-    top = _layer_index(grid, np.asarray([support_top_z - 0.5 * grid.resolution]))[0]
-    near = np.all(np.abs(centers[:, :2] - np.asarray(xy)) <= half_m, axis=1)
-    return int((near & (_layer_index(grid, centers[:, 2]) == top)).sum())
+def _component_from(
+    occupied: set[tuple[int, int, int]], start: tuple[int, ...], *, min_k: int
+) -> list[tuple[int, int, int]]:
+    """The 26-connected component of ``start`` among the occupied cells with ``k >= min_k``."""
+    first = (start[0], start[1], start[2])
+    seen = {first}
+    queue = deque([first])
+    while queue:
+        ci, cj, ck = queue.popleft()
+        for di, dj, dk in _NEIGHBOURS_26:
+            n = (ci + di, cj + dj, ck + dk)
+            if n[2] >= min_k and n in occupied and n not in seen:
+                seen.add(n)
+                queue.append(n)
+    return list(seen)
 
 
 def _components(ijk: NDArray[np.int64]) -> list[NDArray[np.int64]]:
@@ -388,7 +405,7 @@ def target_seed_from_voxels(
 
     Returns:
         A ``TargetSeed``; ``point`` is ``(x_mean, y_mean, z_top)`` where ``z_top`` is
-        the top face of the highest cell.
+        the top face of the highest cell, ``bottom_z`` the bottom face of the lowest.
 
     Example:
         >>> import numpy as np
@@ -411,7 +428,8 @@ def target_seed_from_voxels(
     cluster = above[comps[0]]
     x, y = cluster[:, :2].mean(axis=0)
     z_top = float(cluster[:, 2].max()) + 0.5 * grid.resolution
-    return TargetSeed((float(x), float(y), z_top), None, sizes)
+    bottom = float(cluster[:, 2].min()) - 0.5 * grid.resolution
+    return TargetSeed((float(x), float(y), z_top), None, sizes, bottom)
 
 
 def project_point(

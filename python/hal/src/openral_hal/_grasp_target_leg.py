@@ -9,13 +9,13 @@ Dispatch names the target on ``/openral/grasp_declaration`` (no region, an
 optional ``search_box``); this leg measures where the target is and fills the
 region onto every attachment publication. At ``grasp_target_rate_hz``:
 
-1. the support plane is **measured**, never taken from the search box: the
-   densest occupied layer of ``/openral/world_voxels`` in a column under the
-   box (reaching ``_SUPPORT_SEARCH_BELOW_M`` below its bottom, which is a lifted
-   detection bbox and can sit above or below the real table top), and that
-   layer must also be occupied directly under the target (HZ-01xx-6); then the
-   occupied cells inside the search box → one cluster above that plane → its
-   top-centre;
+1. the support plane is **measured**, never taken from the search box: in a
+   column of ``/openral/world_voxels`` under the box (reaching
+   ``_SUPPORT_SEARCH_BELOW_M`` below its bottom, which is a lifted detection
+   bbox and can sit above or below the real table top), the highest layer whose
+   top-surface cells ring the footprint of the target standing on it
+   (``support_top_from_voxels``, HZ-01xx-6); then the occupied cells inside the
+   search box → one cluster above that plane → its top-centre;
 2. that seed, which must project into the depth camera through the driver's
    ``CameraInfo`` and tf2 ``optical <- base``, is sent to ``SegmentInView`` as
    the single positive point (no negatives), under the leg's own deadline;
@@ -70,7 +70,6 @@ from openral_hal._grasp_target import (
     project_point,
     region_covers_occupied,
     region_within,
-    support_cells_under,
     support_top_from_voxels,
     target_region_from_mask,
     target_seed_from_voxels,
@@ -92,10 +91,10 @@ _RATE_BAND_HZ = (2.0, 5.0)
 #: *Calibration point.*
 _SUPPORT_SEARCH_BELOW_M = 0.15
 
-#: Half-size of the square under the target in which the measured support layer
-#: must be occupied, metres — wider than a graspable target, because the cells
-#: right beneath it are occluded from the head camera. *Calibration point.*
-_SUPPORT_PROBE_HALF_M = 0.10
+#: Outer reach, from the target's footprint, of the ring in which the support
+#: layer must hold top-surface cells, metres (``support_top_from_voxels``).
+#: *Calibration point.*
+_SUPPORT_PROBE_MARGIN_M = 0.05
 
 #: Tilt tolerance for the search box: its z axis must be the base frame's.
 _GRAVITY_TOL = 1e-6
@@ -556,14 +555,20 @@ class GraspTargetLeg:
         except ROSConfigError as exc:
             raise _contradicted("search_box_tilted", str(exc)) from exc
         min_cells = self._config.grasp_target_min_cells
+        column_centers = occupied_centers_in_box(grid, column)
         support_z = support_top_from_voxels(
-            grid, occupied_centers_in_box(grid, column), min_cells=min_cells
+            grid,
+            column_centers,
+            near_xy=(box.pose.xyz[0], box.pose.xyz[1]),
+            min_cells=min_cells,
+            probe_margin_m=_SUPPORT_PROBE_MARGIN_M,
         )
         if support_z is None:
             raise _contradicted(
                 "no_support",
-                f"no occupied layer of >= {min_cells} cells in the column under the search "
-                f"box (down to {_SUPPORT_SEARCH_BELOW_M:.2f} m below it)",
+                f"no layer in the column under the search box (down to "
+                f"{_SUPPORT_SEARCH_BELOW_M:.2f} m below it) holds >= {min_cells} surface cells "
+                f"within {_SUPPORT_PROBE_MARGIN_M:.2f} m around the target's footprint",
             )
         seed = target_seed_from_voxels(
             grid, occupied_centers_in_box(grid, box), support_z=support_z, min_cells=min_cells
@@ -574,15 +579,6 @@ class GraspTargetLeg:
             if seed.refusal is TargetRefusal.AMBIGUOUS:
                 raise _contradicted(seed.refusal.value, detail)
             raise _lost(seed.refusal.value, detail)
-        under = support_cells_under(
-            grid, support_z, (seed.point[0], seed.point[1]), half_m=_SUPPORT_PROBE_HALF_M
-        )
-        if under < min_cells:
-            raise _contradicted(
-                "no_support",
-                f"support layer at z={support_z:.3f} holds {under} < {min_cells} cells within "
-                f"{_SUPPORT_PROBE_HALF_M:.2f} m of the target",
-            )
         return seed.point, support_z
 
     def _request(self, now_ns: int) -> None:
