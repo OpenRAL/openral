@@ -127,15 +127,10 @@ def test_both_legs_together_still_grants_it_correctly() -> None:
     assert _reasoner_param(entities, "detector_available") is True
 
 
-def test_the_reasoner_gets_the_scene_robot_unit_param() -> None:
-    """The unit whose fixtures are the LLM's place_target choices; "" without a scene unit."""
-    entities = _compose(enable_object_detector=False, locator_manifest="")
-    value = _reasoner_param(entities, "robot_unit")
-    assert isinstance(value, tuple)
-    # launch wraps the string as a YAML-encoded TextSubstitution ("''" for empty).
-    import yaml
-
-    assert yaml.safe_load("".join(s.text for s in value)) == ""
+def test_the_reasoner_no_longer_gets_a_robot_unit_param() -> None:
+    """Place targets are measured, not surveyed: the reasoner lists no unit fixtures."""
+    with pytest.raises(pytest.fail.Exception, match="no 'robot_unit' parameter"):
+        _reasoner_param(_compose(enable_object_detector=False, locator_manifest=""), "robot_unit")
 
 
 def test_the_reasoner_pads_grasp_targets_by_the_deploys_octree_cell() -> None:
