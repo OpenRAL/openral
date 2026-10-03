@@ -820,7 +820,11 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   declared `object_id` (or, when empty, the first payload on that chain) is the
   handover; a payload on the chain that the declaration does not name retires
   the declaration at once, `reason=handover_object_mismatch`, rather than
-  leaving it alive to `timeout_s`
+  leaving it alive to `timeout_s`. That is a producer contradicting the
+  attachment stream, so beside the INFO `grasp_region_dropped` it emits one
+  WARN `safety.grasp_region_rejected reason=handover_object_mismatch` per
+  declaration, naming the declared `object`, the `attached` label, `target`,
+  `rskill` and `trace`
   (`…AnUndeclaredObjectAttachedOnTheDeclaringGripperRetiresTheExemption`).
 * **Handover.** Once the declared object is attached, the exemption lives only
   while that payload's origin (FK of the measured configuration) is inside the

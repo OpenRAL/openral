@@ -4336,6 +4336,14 @@ TEST_F(LifecycleKernelTest, AnUndeclaredObjectAttachedOnTheDeclaringGripperRetir
   rig.warm(&b, 0.0, 100);
   EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_object_mismatch"), 1U)
       << logs.joined();
+  // A producer naming one object while the gripper holds another is a
+  // rejection, not a routine disarm: WARN, attributable, once per declaration.
+  const std::string rejected =
+      "safety.grasp_region_rejected reason=handover_object_mismatch target=cell:cube "
+      "object=cell:cube attached=cell:not_the_cube rskill=pick_cube "
+      "trace=00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+  EXPECT_EQ(logs.count(rejected), 1U) << logs.joined();
+  EXPECT_EQ(logs.max_severity(rejected), static_cast<int>(RCUTILS_LOG_SEVERITY_WARN));
   EXPECT_FALSE(rig.offer(&b, 0.0));
   EXPECT_TRUE(rig.node->fault_latched());
   // The heartbeat of the retired declaration re-arms nothing, attached or not.
@@ -4343,6 +4351,9 @@ TEST_F(LifecycleKernelTest, AnUndeclaredObjectAttachedOnTheDeclaringGripperRetir
   b.revision = 2;
   rig.warm(&b, kGraspClearQ, 300);
   EXPECT_EQ(logs.count("safety.grasp_region_armed"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=handover_object_mismatch"), 1U)
+      << "the retired declaration's heartbeats must not repeat the rejection:\n"
+      << logs.joined();
 }
 
 TEST_F(LifecycleKernelTest, AnExemptFingerInsideItsTargetStillLeavesTheChunkScaled) {

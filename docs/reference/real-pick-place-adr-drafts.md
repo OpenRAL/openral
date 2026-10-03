@@ -45,7 +45,8 @@ bridge's "an occupied cell is an obstacle" invariant) were considered and reject
   region, non-empty `geometry`, detach, or the payload origin (FK of the measured configuration)
   leaving the region after attach (handover to ADR-0092 attached geometry + bridge payload
   clearing), or an attach on the declaring gripper of an object the declaration does not name
-  (`handover_object_mismatch`).
+  (`handover_object_mismatch` — a rejection, WARNed once per declaration as
+  `grasp_region_rejected` with the declared object, attached label, target, rskill and trace).
 - The handover binds only to a payload attached on the declaring gripper's own chain — a declared
   contact link or a non-root ancestor of one. The other hand's payload and a released payload
   frozen on the collision root (the base) can neither be the handover nor retire it.
