@@ -1051,14 +1051,14 @@ if _ROS2_AVAILABLE:
 
                 result.trace_id = propagation.current_traceparent() or ""
 
-                # ADR-0097 — arm this goal's place declaration once the trace
-                # exists, so the declaration carries the id an incident review
-                # would look it up by. Every terminal path below runs through
-                # `_reset_active_goal`, which retracts it.
-                self._arm_place_declaration(req, rskill_id=rskill_id, trace_id=result.trace_id)
-                self._arm_grasp_declaration(req, rskill_id=rskill_id, trace_id=result.trace_id)
-
                 try:
+                    # ADR-0097 — arm this goal's place declaration once the trace
+                    # exists, so the declaration carries the id an incident review
+                    # would look it up by. Every terminal path below runs through
+                    # `_reset_active_goal`, which retracts it. A supplied declaration
+                    # that does not validate refuses the goal (ROSConfigError, below).
+                    self._arm_place_declaration(req, rskill_id=rskill_id, trace_id=result.trace_id)
+                    self._arm_grasp_declaration(req, rskill_id=rskill_id, trace_id=result.trace_id)
                     # Single GPU-resident skill: evict-on-switch,
                     # reuse-on-match, else resolve + cache (see _acquire_skill).
                     skill = self._acquire_skill(
@@ -2098,8 +2098,14 @@ if _ROS2_AVAILABLE:
             costs nothing: the evidence producer attaches the measured region downstream, on the
             attachment publication the kernel reads.
 
-            A malformed declaration is refused and logged; the goal still runs with no
-            declaration — fail-closed (the kernel keeps stopping on place contact).
+            A supplied declaration (the goal's, or ``place_declaration_json``) that does not
+            validate refuses the goal: a dispatcher that named a place hint never silently
+            gets "place anywhere" (nor a run that can only stop on place contact). No
+            declaration supplied is not a refusal — ``place_approach_enabled`` measures the
+            surface under the payload.
+
+            Raises:
+                ROSConfigError: The supplied declaration does not validate.
             """
             from openral_core.exceptions import ROSConfigError
 
@@ -2107,7 +2113,11 @@ if _ROS2_AVAILABLE:
                 declaration = self._resolve_place_declaration(request)
             except (ValueError, TypeError, ROSConfigError) as exc:
                 self.get_logger().error(f"rskill_runner.place_declaration_rejected: {exc!s}")
-                return
+                raise ROSConfigError(
+                    f"the supplied place declaration does not validate, so the goal is "
+                    f"refused: {exc!s}. Supply none to place on the surface measured under "
+                    "the carried payload."
+                ) from exc
             if declaration is None:
                 return
             declaration = declaration.model_copy(

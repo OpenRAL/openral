@@ -178,10 +178,11 @@ def _run_goal(
     deadline_s: float = 0.4,
     cancel: bool = False,
     fill_goal: Any = None,
-) -> None:
+) -> Any:
     """Dispatch one real ExecuteRskill goal and let it resolve (or cancel it).
 
     ``fill_goal(goal)``, when given, adds goal-carried fields (e.g. a declaration).
+    Returns the goal's ``get_result`` response (``.status``, ``.result``).
     """
     from openral_msgs.action import ExecuteRskill
     from rclpy.action import ActionClient
@@ -211,6 +212,7 @@ def _run_goal(
     while not result_future.done() and time.monotonic() < deadline:
         executor.spin_once(timeout_sec=0.02)
     assert result_future.done(), "goal result timed out"
+    return result_future.result()
 
 
 def test_approach_mode_arms_a_goal_scope_place_declaration_naming_nothing() -> None:
@@ -482,17 +484,24 @@ def test_an_exception_escaping_the_executor_still_retracts() -> None:
     assert not seen[-1].active, "a goal that died mid-executor left its declaration live"
 
 
-def test_a_malformed_scene_declaration_is_refused_not_guessed() -> None:
-    """Fail closed: an unparseable declaration arms nothing and the goal runs
-    without one, which is the pre-ADR-0097 behaviour."""
-    with _harness('{"target_id": "sim:x", "timeout_s": -1.0, "stamp_ns": 0}') as (
-        executor,
-        runtime,
-        seen,
-    ):
-        _run_goal(executor, runtime.skill_runner_node)
+@pytest.mark.parametrize("approach", [False, True])
+def test_a_malformed_scene_declaration_refuses_the_goal_not_guessed(approach: bool) -> None:
+    """Option A: a supplied place hint that does not validate refuses the goal up front.
+    It arms nothing, never falls back to the goal-scope "measure under the payload"
+    declaration (even with ``place_approach_enabled``), and the skill never runs."""
+    from action_msgs.msg import GoalStatus
+
+    with _harness(
+        '{"target_id": "sim:x", "timeout_s": -1.0, "stamp_ns": 0}', approach=approach
+    ) as (executor, runtime, seen):
+        response = _run_goal(executor, runtime.skill_runner_node)
         _spin_for(executor, 0.3)
+        chunks = runtime.skill_runner_node._chunks_published
     assert seen == []
+    assert response.status == GoalStatus.STATUS_ABORTED
+    assert not response.result.success
+    assert "place declaration does not validate" in response.result.failure_reason
+    assert chunks == 0, "the skill ran despite the refused place hint"
 
 
 @pytest.mark.parametrize(("deadline_s", "expected_s"), [(0.0, 120.0), (500.0, 120.0), (30.0, 30.0)])
