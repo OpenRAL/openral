@@ -500,12 +500,15 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose(tmp_path: Path
                 joint_targets=[[0.0] * len(description.joints)],
             )
         )
+        # 30 Hz samples stamped ahead of the HAL's own wall-clock joint states, which
+        # the node feeds the same trigger: those arrive older and are dropped as repeats.
+        start_ns = time.time_ns()
         for tick in range(12):
             vision.observe_joint_state(
                 JointState(
                     name=[str(gripper.name)],
                     position=[0.4],
-                    stamp_ns=1_000 + tick,
+                    stamp_ns=start_ns + (tick + 1) * 33_333_333,
                 )
             )
             if not vision.attachment_action_ack_ready():

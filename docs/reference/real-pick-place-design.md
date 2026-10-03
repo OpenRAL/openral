@@ -98,6 +98,21 @@ using SAM 2.1 to see the object.
    the stall: `tests/sim/test_openarm_hal_mujoco_position_stall.py` (a free 5 cm box stalls the
    MuJoCo jaw at ~0.25 rad, settled to ~1e-4 rad → ATTACH; a box *fixed* to the world chatters
    ±0.02 rad against the finger meshes and never settles — a twin artefact).
+   *Since (2026-10-03, `fix/r4-bridge`):* the debounce and settle windows are seconds of
+   sample time (`PositionStallConfig.consecutive_s=0.06`, `settle_s=0.13` — the spans the old
+   3- and 5-tick counts covered at 30 Hz), so a 500 Hz joint-state stream cannot call a slowly
+   closing jaw settled; a sample whose `stamp_ns` is within `min_sample_interval_s` (0.5 ms) of
+   the last is a repeated cached read and is dropped by the trigger and by the heartbeat's
+   evidence alike (a stamp that moves *backwards* is dropped the same way, so a wall-clock step
+   back stalls the trigger and ages the heartbeat out — fail-closed). On the real OpenArm the
+   jaw commands are ADR-0102 `GRIPPER_POSITION` slots: `observe_command` stages a slot group
+   until its tick is whole and composes it with the HAL's own `compose_slot_group`, so the
+   trigger's reference is exactly the target the gripper controller was sent; padded
+   `JOINT_POSITION` rows are read at manifest indices (a right slot never reads the left jaw's
+   zero pad). Every grasp event supersedes the leg's in-flight `SegmentInView` request
+   (generation-tagged; a late reply for an older event is dropped, a DETACH in flight resolves
+   to no attachment), and the pre-grasp region is the payload only on a leg's first ATTACH of a
+   declaration — a REGRASP, or a re-pick under the same declaration, segments.
 6. **Place has no real producer for any of its inputs.** Region (sim: MuJoCo subtree), support
    witness (sim: `mj_geomDistance`), release (sim: contact loss + 10 mm rigid-follow tolerance),
    and nothing subscribes `/openral/place_declaration` on real. Three real-only hazards sim never

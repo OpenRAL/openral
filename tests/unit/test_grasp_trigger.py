@@ -33,6 +33,9 @@ from openral_hal._grasp_trigger import (
 _OPENARM = "robots/openarm/robot.yaml"
 _LSB = 3.815e-4  # DM4310 position LSB, rad
 _OPEN = 0.70  # a commanded-open left jaw, rad
+_PERIOD_NS = 33_333_333  # the OpenArm's 30 Hz action rate
+#: Sample clock: every snapshot is a new sample one 30 Hz period after the last.
+_TICKS = itertools.count(1)
 
 
 @pytest.fixture(scope="module")
@@ -41,11 +44,15 @@ def openarm() -> RobotDescription:
     return RobotDescription.from_yaml(_OPENARM)
 
 
-def _state(openarm: RobotDescription, **jaws: float) -> JointState:
-    """A full 16-joint snapshot; ``jaws`` sets gripper positions, effort all zeros (real)."""
+def _state(openarm: RobotDescription, *, stamp_ns: int | None = None, **jaws: float) -> JointState:
+    """A full 16-joint snapshot; ``jaws`` sets gripper positions, effort all zeros (real).
+
+    Stamped one 30 Hz period after the previous snapshot unless ``stamp_ns`` is given.
+    """
     names = [joint.name for joint in openarm.joints]
     position = [jaws.get(name, 0.0) for name in names]
-    return JointState(name=names, position=position, effort=[0.0] * len(names), stamp_ns=0)
+    stamp = next(_TICKS) * _PERIOD_NS if stamp_ns is None else stamp_ns
+    return JointState(name=names, position=position, effort=[0.0] * len(names), stamp_ns=stamp)
 
 
 def _close(start: float, stop: float, *, step: float = 0.08) -> list[float]:
@@ -104,7 +111,8 @@ def test_attach_waits_for_settle_and_debounce(openarm: RobotDescription) -> None
     trigger = _left(openarm)
     trigger.command(0.0)
     flat = _flat(0.2, 12)
-    # settle_ticks=5 samples, then 3 agreeing ticks: the 7th flat sample attaches.
+    # settle_s=0.13 is 5 samples at 30 Hz, then consecutive_s=0.06 is 3 agreeing samples:
+    # the 7th flat sample attaches.
     assert _run(trigger, openarm, flat[:6]) == []
     assert _run(trigger, openarm, flat[6:7]) == [GraspEvent.ATTACH]
 
@@ -184,9 +192,11 @@ def test_a_dead_position_channel_is_counted_and_breaks_settle(
     trigger = _left(openarm)
     trigger.command(0.0)
     names = [joint.name for joint in openarm.joints if joint.name != "left_gripper"]
-    gap = JointState(name=names, position=[0.0] * len(names), stamp_ns=0)
     for q in _flat(0.2, 6):
         trigger.update(_state(openarm, left_gripper=q))
+        gap = JointState(
+            name=names, position=[0.0] * len(names), stamp_ns=next(_TICKS) * _PERIOD_NS
+        )
         assert trigger.update(gap) is None
     assert trigger.missing_position_ticks == 6
     assert not trigger.attached, "interleaved gaps never accumulate a settle window"
@@ -236,16 +246,90 @@ def test_a_closed_position_off_the_range_end_is_refused(openarm: RobotDescriptio
         )
 
 
-@pytest.mark.parametrize(("ticks", "settle"), [(0, 5), (3, 1)])
+@pytest.mark.parametrize(
+    "config",
+    [
+        PositionStallConfig(consecutive_s=-0.1),
+        PositionStallConfig(settle_s=0.0),
+        PositionStallConfig(settle_s=float("nan")),
+        PositionStallConfig(min_sample_interval_s=float("inf")),
+    ],
+)
 def test_a_degenerate_debounce_is_refused(
-    openarm: RobotDescription, ticks: int, settle: int
+    openarm: RobotDescription, config: PositionStallConfig
 ) -> None:
     with pytest.raises(ROSConfigError, match="PositionStallConfig"):
-        PositionStallTrigger(
-            openarm,
-            joint_name="left_gripper",
-            config=PositionStallConfig(consecutive_ticks=ticks, settle_ticks=settle),
-        )
+        PositionStallTrigger(openarm, joint_name="left_gripper", config=config)
+
+
+def _slow_close_then_stall(rate_hz: float) -> list[tuple[int, float]]:
+    """``(stamp_ns, q)``: open, a slow 0.05 rad/s close from 0.40 to 0.20, then a stall.
+
+    At 500 Hz the jaw moves 4e-4 rad in five samples — under the 1e-3 settle
+    tolerance — so a five-tick window called it stalled while it was still closing.
+    """
+    period = 1.0 / rate_hz
+    trace, t = [], 0.0
+    for _ in range(int(0.3 * rate_hz)):  # held open before the close command lands
+        trace.append((t, 0.40))
+        t += period
+    q = 0.40
+    while q > 0.20:
+        trace.append((t, q))
+        q -= 0.05 * period
+        t += period
+    for _ in range(int(0.5 * rate_hz)):
+        trace.append((t, 0.20))
+        t += period
+    return [(round(ts * 1e9), qq) for ts, qq in trace]
+
+
+@pytest.mark.parametrize("rate_hz", [30.0, 500.0])
+def test_a_slow_closing_jaw_attaches_only_once_stalled(
+    openarm: RobotDescription, rate_hz: float
+) -> None:
+    """The windows are seconds: no ATTACH while closing, one once flat, at any rate."""
+    trigger = PositionStallTrigger(openarm, joint_name="left_gripper")
+    trigger.command(0.40)
+    trace = _slow_close_then_stall(rate_hz)
+    open_until = int(0.3 * rate_hz)
+    for stamp, q in trace[:open_until]:
+        assert trigger.update(_state(openarm, stamp_ns=stamp, left_gripper=q)) is None
+    trigger.command(0.0)
+    stall_starts = next(i for i, (_, q) in enumerate(trace) if q == 0.20)
+    attached_at = None
+    for i, (stamp, q) in enumerate(trace[open_until:], start=open_until):
+        event = trigger.update(_state(openarm, stamp_ns=stamp, left_gripper=q))
+        if event is not None:
+            assert event is GraspEvent.ATTACH
+            assert attached_at is None
+            attached_at = i
+    assert attached_at is not None, "the stall is a grasp"
+    assert attached_at >= stall_starts, f"spurious ATTACH {stall_starts - attached_at} ticks early"
+    assert trace[attached_at][0] - trace[stall_starts][0] >= 0.13e9, "settled over settle_s"
+
+
+def test_a_repeated_cached_sample_is_not_a_new_settled_sample(
+    openarm: RobotDescription,
+) -> None:
+    """A cached state read 50 times (its stamp jittering by microseconds) settles nothing."""
+    trigger = PositionStallTrigger(openarm, joint_name="left_gripper")
+    trigger.command(0.0)
+    stamp = 1_000_000_000
+    assert trigger.update(_state(openarm, stamp_ns=stamp, left_gripper=0.2)) is None
+    for i in range(50):
+        jitter = (i % 5 - 2) * 1_000  # +-2 us: wall-minus-age reconstruction noise
+        state = _state(openarm, stamp_ns=stamp + jitter, left_gripper=0.2)
+        assert trigger.update(state) is None
+    assert trigger.repeated_samples == 50
+    assert not trigger.attached
+    # Real 30 Hz samples still attach on the usual schedule once they arrive.
+    events = [
+        trigger.update(_state(openarm, stamp_ns=stamp + k * _PERIOD_NS, left_gripper=0.2))
+        for k in range(1, 7)
+    ]
+    assert [e for e in events if e] == [GraspEvent.ATTACH]
+    assert events[-1] is GraspEvent.ATTACH, "after 5 settle + 2 debounce periods, not sooner"
 
 
 def test_a_non_finite_command_is_ignored(openarm: RobotDescription) -> None:

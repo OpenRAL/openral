@@ -25,10 +25,18 @@ and stays flat to ~1e-3 rad; closed on nothing it reaches within ~0.02 rad;
 free-motion steady-state error is 0.006-0.025 rad. So:
 
 * **ATTACH** — the command is near closed, the jaw is settled (its position
-  span over ``PositionStallConfig.settle_ticks`` is within the joint's
+  span over the last ``PositionStallConfig.settle_s`` seconds is within the joint's
   ``settle_tolerance``), and it sits further from closed than the command by
   more than ``closed_rest_offset + stall_gap``; agreed for
-  ``consecutive_ticks`` ticks.
+  ``consecutive_s`` seconds.
+
+Every window is in **seconds of sample time** (``JointState.stamp_ns``), never in
+ticks: a tick count tuned at the 30 Hz action rate is 15x shorter on a 500 Hz joint
+state stream, where a slowly closing jaw moves less than ``settle_tolerance`` in five
+samples and would read as stalled. A sample whose stamp is not later than the last one
+by more than ``min_sample_interval_s`` is a repeat — a cached joint state read twice —
+and is dropped (counted in ``repeated_samples``), so it can neither settle the jaw nor
+extend a debounce.
 * **DETACH** — while still commanded closed, the gap collapses (the object
   slipped out, the jaw closed onto nothing); or the command opened and the jaw
   opened past the position it held at attach. Both use half the stall gap as
@@ -70,10 +78,6 @@ __all__ = [
 ]
 
 
-#: A span needs two samples; one sample is always "settled".
-_MIN_SETTLE_TICKS = 2
-
-
 class GraspEvent(str, Enum):
     """A transition the vision attachment producer must react to.
 
@@ -99,18 +103,52 @@ class PositionStallConfig:
     """Robot-independent debounce for ``PositionStallTrigger``.
 
     The physical thresholds are the gripper joint's ``closure_calibration`` in the
-    manifest; only tick counts live here. Calibration points, not benchmarks.
+    manifest; only time windows live here, in seconds of sample time so they mean
+    the same at any joint-state rate. Calibration points, not benchmarks: the
+    defaults are the windows the original 30 Hz tick counts spanned (3 and 5
+    samples).
 
     Attributes:
-        consecutive_ticks: How many consecutive samples must agree before a transition
-            is emitted. ``3`` — ~100 ms at the OpenArm's 30 Hz action rate, the order
-            of the deferred-ack barrier this feeds.
-        settle_ticks: Samples the jaw's position span is measured over to call it
-            stationary. ``5``.
+        consecutive_s: How long samples must keep agreeing — from the first agreeing
+            sample's stamp to the confirming one's — before a transition is emitted.
+            ``0.06`` (3 samples at 30 Hz). ``0`` confirms on the first sample.
+        settle_s: The window the jaw's position span is measured over to call it
+            stationary; the samples kept must cover all of it. ``0.13`` (5 samples at
+            30 Hz).
+        min_sample_interval_s: A sample stamped no later than the previous accepted
+            one plus this is a repeat and is dropped. ``5e-4``: under the 1 ms period
+            of a 1 kHz joint-state stream, above the microseconds of jitter a re-read
+            cached sample's reconstructed stamp carries.
     """
 
-    consecutive_ticks: int = 3
-    settle_ticks: int = 5
+    consecutive_s: float = 0.06
+    settle_s: float = 0.13
+    min_sample_interval_s: float = 5e-4
+
+    def validate(self) -> None:
+        """Refuse a degenerate window.
+
+        Raises:
+            ROSConfigError: A non-finite window, a negative one, or a zero ``settle_s``
+                (a span needs two samples apart in time).
+        """
+        windows = (self.consecutive_s, self.settle_s, self.min_sample_interval_s)
+        if not all(math.isfinite(w) and w >= 0.0 for w in windows) or self.settle_s <= 0.0:
+            raise ROSConfigError(
+                "PositionStallConfig needs finite consecutive_s >= 0, settle_s > 0 and "
+                f"min_sample_interval_s >= 0, got {windows}."
+            )
+
+    def is_repeat(self, stamp_ns: int, last_ns: int | None) -> bool:
+        """Whether a sample stamped ``stamp_ns`` repeats (or predates) the last accepted one.
+
+        Example:
+            >>> PositionStallConfig().is_repeat(1_000_100, 1_000_000)
+            True
+            >>> PositionStallConfig().is_repeat(2_000_000, 1_000_000)
+            False
+        """
+        return last_ns is not None and stamp_ns - last_ns <= self.min_sample_interval_s * 1e9
 
 
 def gripper_joints(description: RobotDescription) -> list[JointSpec]:
@@ -189,8 +227,9 @@ class PositionStallTrigger:
 
     Nothing is silently ignored (CLAUDE.md §1.4): a tick with no finite position for the
     joint counts in ``missing_position_ticks`` (the bridge's heartbeat liveness reads it),
-    and a tick before any command has been seen counts in ``uncommanded_ticks`` — without a
-    command there is no "short of it", so the trigger cannot attach.
+    a tick before any command has been seen counts in ``uncommanded_ticks`` — without a
+    command there is no "short of it", so the trigger cannot attach — and a sample whose
+    stamp repeats the last one counts in ``repeated_samples``.
 
     Args:
         description: The robot manifest — supplies the gripper joint and its
@@ -202,16 +241,18 @@ class PositionStallTrigger:
     Raises:
         ROSConfigError: If the gripper joint cannot be resolved; it declares no
             ``closure_calibration``, or one whose ``closed_position`` is not an end of
-            its ``position_limits``; it has no position sensor; or the debounce is under
-            one tick.
+            its ``position_limits``; it has no position sensor; or a window is degenerate.
 
     Example:
         >>> from openral_core import JointState, RobotDescription
         >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
         >>> t = PositionStallTrigger(d, joint_name="left_gripper")
         >>> t.command(0.0)  # close
-        >>> held = JointState(name=["left_gripper"], position=[0.2], stamp_ns=0)
-        >>> [t.update(held) for _ in range(7)][-1]
+        >>> ticks = [  # 30 Hz samples of a jaw stalled 0.2 rad short
+        ...     JointState(name=["left_gripper"], position=[0.2], stamp_ns=i * 33_333_333)
+        ...     for i in range(7)
+        ... ]
+        >>> [t.update(held) for held in ticks][-1]
         <GraspEvent.ATTACH: 'attach'>
     """
 
@@ -224,11 +265,9 @@ class PositionStallTrigger:
     ) -> None:
         """Resolve the gripper joint and its calibration; refuse an uncalibrated one."""
         self._config = config or PositionStallConfig()
-        if self._config.consecutive_ticks < 1 or self._config.settle_ticks < _MIN_SETTLE_TICKS:
-            raise ROSConfigError(
-                "PositionStallConfig needs consecutive_ticks >= 1 and settle_ticks >= 2, got "
-                f"{self._config.consecutive_ticks} and {self._config.settle_ticks}."
-            )
+        self._config.validate()
+        self._consecutive_ns = self._config.consecutive_s * 1e9
+        self._settle_ns = self._config.settle_s * 1e9
         spec = gripper_joint(description, joint_name)
         calibration = spec.closure_calibration
         if calibration is None:
@@ -256,14 +295,17 @@ class PositionStallTrigger:
         self._rest = calibration.closed_rest_offset
         self._gap = calibration.stall_gap
         self._settle = calibration.settle_tolerance
-        self._history: deque[float] = deque(maxlen=self._config.settle_ticks)
+        # (stamp_ns, position), oldest first, pruned to just cover ``settle_s``.
+        self._history: deque[tuple[int, float]] = deque()
+        self._last_stamp_ns: int | None = None
         self._command: float | None = None
         self._loaded = False
         self._hold: float | None = None
-        self._streak = 0
+        self._streak_since_ns: int | None = None
         self._streak_kind: GraspEvent | None = None
         self.missing_position_ticks = 0
         self.uncommanded_ticks = 0
+        self.repeated_samples = 0
 
     @property
     def joint_name(self) -> str:
@@ -303,6 +345,12 @@ class PositionStallTrigger:
         Returns:
             The confirmed ``GraspEvent``, or ``None`` when this tick confirms nothing.
         """
+        stamp_ns = int(state.stamp_ns)
+        if self._config.is_repeat(stamp_ns, self._last_stamp_ns):
+            # A cached sample read again says nothing new about the jaw.
+            self.repeated_samples += 1
+            return None
+        self._last_stamp_ns = stamp_ns
         position = self._position_of(state)
         if position is None:
             # A dead position channel can never trigger and must not look settled.
@@ -310,23 +358,27 @@ class PositionStallTrigger:
             self._history.clear()
             self._reset_streak()
             return None
-        self._history.append(position)
+        self._history.append((stamp_ns, position))
+        while len(self._history) > 1 and self._history[1][0] <= stamp_ns - self._settle_ns:
+            self._history.popleft()
         if self._command is None:
             self.uncommanded_ticks += 1
-        candidate = self._classify(position)
+        candidate = self._classify(position, stamp_ns)
         if candidate is None or candidate is not self._streak_kind:
             self._streak_kind = candidate
-            self._streak = 1 if candidate is not None else 0
-        else:
-            self._streak += 1
-        if candidate is None or self._streak < self._config.consecutive_ticks:
+            self._streak_since_ns = stamp_ns if candidate is not None else None
+        if (
+            candidate is None
+            or self._streak_since_ns is None
+            or stamp_ns - self._streak_since_ns < self._consecutive_ns
+        ):
             return None
         self._loaded = candidate is not GraspEvent.DETACH
         self._hold = position if self._loaded else None
         self._reset_streak()
         return candidate
 
-    def _classify(self, position: float) -> GraspEvent | None:
+    def _classify(self, position: float, stamp_ns: int) -> GraspEvent | None:
         """Which transition this single sample argues for, before debouncing."""
         if self._command is None:
             return None
@@ -334,9 +386,10 @@ class PositionStallTrigger:
         command_from_closed = abs(self._command - self._closed)
         closing = command_from_closed <= self._gap
         short_of_command = from_closed - command_from_closed
+        positions = [q for _, q in self._history]
         settled = (
-            len(self._history) == self._history.maxlen
-            and max(self._history) - min(self._history) <= self._settle
+            self._history[0][0] <= stamp_ns - self._settle_ns
+            and max(positions) - min(positions) <= self._settle
         )
         stalled = closing and settled and short_of_command > self._rest + self._gap
         if not self._loaded:
@@ -352,7 +405,7 @@ class PositionStallTrigger:
         return None
 
     def _reset_streak(self) -> None:
-        self._streak = 0
+        self._streak_since_ns = None
         self._streak_kind = None
 
     def _position_of(self, state: JointState) -> float | None:
