@@ -1859,6 +1859,30 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         if vision_attachment_enabled
         else []
     )
+    # Whatever the source (derived above, or a params-file value that wins over it), the
+    # vision leg may never trust a grid the kernel would refuse as stale, nor drop a released
+    # payload's record nearer than the kernel's margin plus one cell.
+    if vision_attachment_enabled or hal_file_params.get("vision_attachment_enabled") is True:
+        effective = {**(hal_derived_params[0] if hal_derived_params else {}), **hal_file_params}
+        clear_floor_m = _world_voxel_margin_m(hal_mode) + _octomap_resolution(hal_mode)
+        grid_max_age_s = effective.get("vision_attachment_grid_max_age_s")
+        release_clear_m = effective.get("vision_attachment_release_clear_m")
+        if isinstance(grid_max_age_s, int | float) and grid_max_age_s > world_voxel_deadline_s:
+            from openral_core.exceptions import ROSConfigError
+
+            raise ROSConfigError(
+                f"vision_attachment_grid_max_age_s={grid_max_age_s} exceeds the kernel's "
+                f"world_voxel_deadline_s={world_voxel_deadline_s}: the vision leg would vouch "
+                "for a region from a grid the kernel itself refuses as stale."
+            )
+        if isinstance(release_clear_m, int | float) and release_clear_m < clear_floor_m - 1e-9:
+            from openral_core.exceptions import ROSConfigError
+
+            raise ROSConfigError(
+                f"vision_attachment_release_clear_m={release_clear_m} is below the kernel's "
+                f"world_voxel_margin_m + octomap resolution ({clear_floor_m}): a released "
+                "payload's record would drop while the kernel still measures it inside its margin."
+            )
     hal = LifecycleNode(
         package=hal_package,
         executable=hal_executable,

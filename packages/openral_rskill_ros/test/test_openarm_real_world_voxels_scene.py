@@ -561,3 +561,35 @@ def test_the_launch_refuses_grasp_allowance_on_real_without_the_vision_leg(
                 _compose(args)
         else:
             assert _kernel_params(args)["grasp_allowance_enabled"] is True
+
+
+@pytest.mark.usefixtures("calibrated_openarm")
+@pytest.mark.parametrize(
+    ("override", "verdict"),
+    [
+        ({"vision_attachment_grid_max_age_s": 1.5}, "world_voxel_deadline_s"),
+        ({"vision_attachment_release_clear_m": 0.03}, "world_voxel_margin_m"),
+        ({"vision_attachment_grid_max_age_s": 0.5, "vision_attachment_release_clear_m": 0.06}, ""),
+    ],
+)
+def test_the_launch_refuses_vision_bounds_past_the_kernels_voxel_path(
+    tmp_path: Path, override: dict[str, float], verdict: str
+) -> None:
+    """A params-file value wins over the launch's derived bound, so it is checked whatever its
+    source: a grid older than the kernel's voxel deadline, or a release clearance under the
+    kernel's margin plus one cell, fails the launch. Stricter values compose."""
+    import yaml
+    from openral_core.exceptions import ROSConfigError
+
+    args = _launch_args("real", _scene_with_vision_leg(tmp_path, enabled=True))
+    args.pop("deploy_config")  # drivers: needs zed_wrapper on the ament path (rig only)
+    hal_file = Path(args["hal_params_file"])
+    params = yaml.safe_load(hal_file.read_text(encoding="utf-8"))["/**"]["ros__parameters"]
+    params.update(override)
+    hal_file.write_text(yaml.safe_dump({"/**": {"ros__parameters": params}}), encoding="utf-8")
+
+    if verdict:
+        with pytest.raises(ROSConfigError, match=verdict):
+            _compose(args)
+    else:
+        _compose(args)
