@@ -1570,6 +1570,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             "grasp-target exemption with no producer measuring its region."
         )
     kernel_params["grasp_allowance_enabled"] = grasp_allowance_enabled
+    # How old a producer-measured grasp/place region may be and still exempt anything. The
+    # regions are measured off the voxel map, so the bound is derived from that map's own
+    # freshness deadline: twice it (the kernel's own default, passed explicitly so the
+    # launch record shows the value in force). The kernel refuses above 2 x its voxel cap.
+    kernel_params["grasp_region_max_age_s"] = 2.0 * world_voxel_deadline_s
+    kernel_params["place_region_max_age_s"] = 2.0 * world_voxel_deadline_s
     if grasp_contact_links:
         kernel_params["grasp_contact_links"] = grasp_contact_links
     if enable_octomap and has_collision_capsules and enable_octomap_kernel_check:

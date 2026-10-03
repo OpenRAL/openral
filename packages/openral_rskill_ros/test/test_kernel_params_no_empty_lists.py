@@ -297,3 +297,17 @@ def test_a_robot_without_a_gripper_omits_the_grasp_links_and_refuses_the_allowan
     ctx.launch_configurations["grasp_allowance_enabled"] = "true"  # type: ignore[attr-defined]
     with pytest.raises(ROSConfigError, match="no role: gripper joint"):
         module.compose_runtime_graph(ctx)  # type: ignore[attr-defined]
+
+
+def test_region_age_bounds_are_derived_from_the_voxel_deadline() -> None:
+    """Both producer-region age bounds reach the kernel as 2 x ``world_voxel_deadline_s``.
+
+    A region perceived from the voxel map is never trusted for longer than twice the age of
+    the grid it was measured from; the kernel refuses a bound above 2 x its own voxel cap.
+    """
+    params = _safety_kernel_params("openarm")
+    module = _import_launch_module(_LAUNCH_FILE)
+    deadline_s, _ = module._rig_from_launch_args({}).voxel_freshness_s  # type: ignore[attr-defined]
+    assert params["grasp_region_max_age_s"] == pytest.approx(2.0 * deadline_s)
+    assert params["place_region_max_age_s"] == pytest.approx(2.0 * deadline_s)
+    assert 0.0 < params["grasp_region_max_age_s"] <= 4.0
