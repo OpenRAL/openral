@@ -773,10 +773,11 @@ def test_the_sim_attached_hals_applied_slot_group_commands_the_jaw() -> None:
     for slot in _so101_slot_group(0.0, tick=2, named=False):
         hal.send_action(slot)
     assert hal.last_committed_tick == 2, "the sim applied it"
-    partial = hal.last_applied_action
-    assert partial is not None, "the unplaceable arm slot does not hide the jaw's target"
-    bridge.observe_command(partial)
-    assert leg.trigger.last_command == pytest.approx(0.0), "the group closed the jaw"
+    # An arm slot with no joint_names may have written the jaw: nothing readable
+    # can vouch for the jaw's target, so the record is None and the command clears.
+    assert hal.last_applied_action is None, "an unreadable writer hides every jaw target"
+    bridge.clear_command()
+    assert leg.trigger.last_command is None, "an unknown command must not stay a close"
     blind = [slot.model_copy(update={"ee_name": None}) for slot in _so101_slot_group(0.6, tick=3)]
     for slot in blind:
         hal.send_action(slot)
