@@ -305,6 +305,10 @@ def test_the_freeze_ttl_derives_from_the_deploys_grid_age_unless_set() -> None:
     assert leg(grid_max_age_s=0.4, grasp_target_freeze_s=0.5)._freeze_s == pytest.approx(0.5)
     with pytest.raises(ROSConfigError, match="grid_max_age_s"):
         leg(grid_max_age_s=0.0)
+    # A freeze past four kernel voxel deadlines holds a region the map has long moved past.
+    assert leg(grid_max_age_s=0.4, grasp_target_freeze_s=1.6)._freeze_s == pytest.approx(1.6)
+    with pytest.raises(ROSConfigError, match="grasp_target_freeze_s"):
+        leg(grid_max_age_s=0.4, grasp_target_freeze_s=1.7)
 
 
 def test_the_bridge_owns_the_leg_only_when_enabled_and_validates_its_rate() -> None:
@@ -342,6 +346,13 @@ def test_the_support_tunables_are_constructor_args_with_documented_defaults() ->
         GraspTargetLeg(None, bridge, config, support_search_below_m=-0.1)
     with pytest.raises(ROSConfigError, match="occluder_margin_m"):
         GraspTargetLeg(None, bridge, config, occluder_margin_m=-0.01)
+    # Upper bounds that keep the gates meaningful.
+    assert GraspTargetLeg(None, bridge, config, occluder_margin_m=0.10)._occluder_margin_m == 0.10
+    with pytest.raises(ROSConfigError, match="occluder_margin_m"):
+        GraspTargetLeg(None, bridge, config, occluder_margin_m=0.11)
+    assert GraspTargetLeg(None, bridge, config, support_search_below_m=0.5)._search_below_m == 0.5
+    with pytest.raises(ROSConfigError, match="support_search_below_m"):
+        GraspTargetLeg(None, bridge, config, support_search_below_m=0.6)
 
 
 # ── The target must stand on the measured support ────────────────────────────────

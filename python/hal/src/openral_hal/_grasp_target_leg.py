@@ -97,6 +97,17 @@ _RATE_BAND_HZ = (2.0, 5.0)
 #: Tilt tolerance for the search box: its z axis must be the base frame's.
 _GRAVITY_TOL = 1e-6
 
+# Upper bounds that keep the gates meaningful (CLAUDE.md §1.2: chosen, not measured).
+#: A contact link's tf origin this far from the held region is not plausibly the hand
+#: occluding it; a larger margin lets any nearby arm pose excuse a shrunken re-fit.
+_MAX_OCCLUDER_MARGIN_M = 0.10
+#: Deeper than this, the column reaches whole furniture levels below the target (a
+#: bench under a shelf) and the scan's "first ringed layer" stops meaning "under it".
+_MAX_SUPPORT_SEARCH_BELOW_M = 0.5
+#: The freeze holds a region with no fresh evidence; past a few kernel voxel deadlines
+#: the map the region was vouched against is long superseded.
+_MAX_FREEZE_GRID_AGES = 4.0
+
 
 class GraspTargetTracker:
     """The leg's state machine — declaration, accepted region, freeze TTL. Pure.
@@ -416,7 +427,8 @@ class GraspTargetLeg:
         config: The bridge's config (the ``grasp_target_*`` fields).
         support_search_below_m: How far below the search box's bottom face the
             support may lie, metres — the box is a lifted detection bbox whose
-            min-z need not touch the table. *Calibration point.*
+            min-z need not touch the table; at most 0.5 m, beyond which the column
+            reaches whole furniture levels below the target. *Calibration point.*
         support_probe_margin_m: Outer reach, from the target's footprint, of the
             ring in which the support layer must hold top-surface cells, metres
             (``support_top_from_voxels``). *Calibration point.*
@@ -424,12 +436,14 @@ class GraspTargetLeg:
             declared contact link's tf origin may be for a shrunk re-fit to count
             as the robot's own hand occluding the target (``_gate_refit``).
             *Calibration point* — it covers the link origin's offset from the
-            finger surface.
+            finger surface; at most 0.10 m, beyond which any nearby arm pose
+            would excuse a shrunken re-fit.
 
     Raises:
-        ROSConfigError: On a rate outside 2-5 Hz or a non-positive freeze, cell
-            count, cover fraction, search depth or probe margin
-            (``grid_max_age_s`` is checked by the bridge).
+        ROSConfigError: On a rate outside 2-5 Hz; a non-positive cell count, cover
+            fraction or probe margin; a freeze outside ``(0, 4 * grid_max_age_s]``,
+            a search depth outside ``(0, 0.5]`` m or an occluder margin outside
+            ``[0, 0.10]`` m (``grid_max_age_s`` itself is checked by the bridge).
     """
 
     def __init__(
@@ -455,22 +469,25 @@ class GraspTargetLeg:
             else 2.0 * config.grid_max_age_s
         )
         if not (
-            freeze_s > 0.0
+            0.0 < freeze_s <= _MAX_FREEZE_GRID_AGES * config.grid_max_age_s
             and config.grasp_target_min_cells > 0
             and 0.0 < config.grasp_target_min_cover <= 1.0
         ):
             raise ROSConfigError(
-                "grasp_target_freeze_s and grasp_target_min_cells must be > 0 and "
+                f"grasp_target_freeze_s must be in (0, {_MAX_FREEZE_GRID_AGES:g} * "
+                f"grid_max_age_s], got {freeze_s!r} with grid_max_age_s="
+                f"{config.grid_max_age_s!r}; grasp_target_min_cells must be > 0 and "
                 "grasp_target_min_cover in (0, 1]."
             )
         if not (
-            support_search_below_m > 0.0
+            0.0 < support_search_below_m <= _MAX_SUPPORT_SEARCH_BELOW_M
             and support_probe_margin_m > 0.0
-            and occluder_margin_m >= 0.0
+            and 0.0 <= occluder_margin_m <= _MAX_OCCLUDER_MARGIN_M
         ):
             raise ROSConfigError(
-                "support_search_below_m and support_probe_margin_m must be > 0 and "
-                f"occluder_margin_m >= 0, got {support_search_below_m!r}, "
+                f"support_search_below_m must be in (0, {_MAX_SUPPORT_SEARCH_BELOW_M}], "
+                f"support_probe_margin_m > 0 and occluder_margin_m in "
+                f"[0, {_MAX_OCCLUDER_MARGIN_M}], got {support_search_below_m!r}, "
                 f"{support_probe_margin_m!r} and {occluder_margin_m!r}."
             )
         self._occluder_margin_m = occluder_margin_m
