@@ -10210,11 +10210,11 @@ class DeployRuntime(BaseModel):
     ``None`` = the unpinned default revision. Ignored without
     ``preload_rskill_id``."""
     preload_prompt: str | None = None
-    """Exact prompt the preloaded skill is bound to. The runner's resident
-    key is ``(rskill_id, revision, prompt)``, so a goal whose prompt differs
-    by one character evicts the preloaded skill and pays the cold load inside
-    its own watchdog window. For a single-instruction finetune this is the
-    training string, verbatim."""
+    """Prompt the preload warms the policy with. The runner keeps a policy
+    resident per ``(rskill_id, revision)`` and passes each goal's own prompt
+    to it per step, so a goal with a different prompt reuses the preloaded
+    policy. For a single-instruction finetune use the training string,
+    verbatim."""
     slam_visual_impl: Literal["isaac_ros", "pycuvslam"] | None = None
     """Which cuVSLAM implementation the visual SLAM backend composes when
     ``slam_backend`` resolves to ``"visual"`` (``capabilities.has_vision_slam``,
