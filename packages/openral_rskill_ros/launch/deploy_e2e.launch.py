@@ -471,6 +471,29 @@ def _attached_collision_deadline_ms(hal_mode: str) -> float:
     return 5000.0 if hal_mode == "sim" else 1000.0
 
 
+def _hal_file_params(path: str, node_name: str) -> dict[str, object]:
+    """The ROS params ``hal_params_file`` gives the HAL node (``/**``, then its own name).
+
+    The launch's safety couplings judge the HAL's EFFECTIVE params, whatever wrote the file
+    (``openral deploy``, a ``--hal`` override, or a hand-written file on a bare
+    ``ros2 launch``). A missing or unreadable file reads as ``{}``: launch_ros refuses it
+    when the HAL starts, and every check below treats an absent key as "off".
+    """
+    import yaml
+
+    try:
+        data = yaml.safe_load(pathlib.Path(path).read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+    params: dict[str, object] = {}
+    if isinstance(data, dict):
+        for key in ("/**", node_name, f"/{node_name}"):
+            entry = data.get(key)
+            if isinstance(entry, dict) and isinstance(entry.get("ros__parameters"), dict):
+                params.update(entry["ros__parameters"])
+    return params
+
+
 def _autostart_lifecycle(node: LifecycleNode, node_name: str) -> list:
     """Event handlers that drive ``node`` UNCONFIGURED → INACTIVE → ACTIVE once.
 
@@ -1524,6 +1547,27 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         raise ROSConfigError(
             f"grasp_allowance_enabled is on but robot {description.name!r} declares no "
             "role: gripper joint, so there is no contact link the exemption could apply to."
+        )
+    hal_file_params = _hal_file_params(hal_params_file, hal_node_name)
+    # On real the HAL's vision target leg is the only grasp-region producer (in sim the HAL's
+    # MuJoCo evidence tracker is), so the exemption must not arm without it — checked here as
+    # well as in `openral deploy run`, so a bare `ros2 launch` cannot skip it.
+    if (
+        grasp_allowance_enabled
+        and hal_mode != "sim"
+        and not (
+            vision_attachment_enabled
+            and hal_file_params.get("vision_attachment_enabled") is True
+            and hal_file_params.get("vision_attachment_grasp_target_enabled") is True
+        )
+    ):
+        from openral_core.exceptions import ROSConfigError
+
+        raise ROSConfigError(
+            "grasp_allowance_enabled on the real path needs enable_vision_attachment:=true and "
+            "the HAL's vision_attachment_enabled and vision_attachment_grasp_target_enabled "
+            f"true in hal_params_file ({hal_params_file}): the kernel would arm the "
+            "grasp-target exemption with no producer measuring its region."
         )
     kernel_params["grasp_allowance_enabled"] = grasp_allowance_enabled
     if grasp_contact_links:

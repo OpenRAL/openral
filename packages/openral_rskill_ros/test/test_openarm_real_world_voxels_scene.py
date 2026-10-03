@@ -75,8 +75,20 @@ def _launch_args(hal_mode: str, scene: Path = _SCENE) -> dict[str, str]:
         enable_dashboard=False,
     )
     args = dict(tok.split(":=", 1) for tok in invocation.argv_template if ":=" in tok)
-    args["hal_params_file"] = "/tmp/openral-test-hal-params.yaml"
+    args["hal_params_file"] = _write_hal_params(invocation.hal_params)
     return args
+
+
+def _write_hal_params(hal_params: dict[str, object]) -> str:
+    """The HAL params file exactly as ``deploy`` writes it: the launch reads it back for
+    its HAL couplings (vision leg bounds, grasp-target producer)."""
+    import tempfile
+
+    import yaml
+
+    path = Path(tempfile.gettempdir()) / f"openral-test-hal-params-{os.getpid()}.yaml"
+    path.write_text(yaml.safe_dump({"/**": {"ros__parameters": hal_params}}), encoding="utf-8")
+    return str(path)
 
 
 def _compose(args: dict[str, str]) -> list[Any]:
@@ -279,7 +291,7 @@ def _real_graph(scene: Path) -> tuple[dict[str, object], dict[str, Any], Any, li
         enable_dashboard=False,
     )
     args = dict(tok.split(":=", 1) for tok in invocation.argv_template if ":=" in tok)
-    args["hal_params_file"] = "/tmp/openral-test-hal-params.yaml"
+    args["hal_params_file"] = _write_hal_params(invocation.hal_params)
     del args["deploy_config"]  # drivers: needs zed_wrapper on the ament path (rig only)
     ctx, entities = _compose(args)
     (kernel_params,) = evaluate_parameters(
@@ -497,3 +509,55 @@ def test_grasp_allowance_off_still_passes_the_links_and_changes_nothing_else(
     assert kernel_off["grasp_allowance_enabled"] is False
     assert tuple(kernel_off["grasp_contact_links"]) == _OPENARM_FINGER_LINKS
     assert kernel_off == _kernel_params(args_absent)
+
+
+@pytest.mark.usefixtures("calibrated_openarm")
+@pytest.mark.parametrize(
+    "hal_override",
+    [
+        {"vision_attachment_grasp_target_enabled": False},
+        {"vision_attachment_enabled": False},
+        {"vision_attachment_enabled": None, "vision_attachment_grasp_target_enabled": None},
+    ],
+)
+def test_the_launch_refuses_grasp_allowance_when_the_hal_runs_no_target_leg(
+    tmp_path: Path, hal_override: dict[str, object]
+) -> None:
+    """A bare ``ros2 launch ... grasp_allowance_enabled:=true`` on real is judged on the HAL's
+    effective params file, not on what ``deploy run`` checked: a file whose HAL runs no
+    grasp-target leg (turned off, or never set) is refused before anything starts."""
+    import yaml
+    from openral_core.exceptions import ROSConfigError
+
+    args = _launch_args("real", _scene_with_grasp_allowance(tmp_path, enabled=True))
+    args.pop("deploy_config")  # drivers: needs zed_wrapper on the ament path (rig only)
+    hal_file = Path(args["hal_params_file"])
+    params = yaml.safe_load(hal_file.read_text(encoding="utf-8"))["/**"]["ros__parameters"]
+    for key, value in hal_override.items():
+        if value is None:
+            params.pop(key, None)
+        else:
+            params[key] = value
+    hal_file.write_text(yaml.safe_dump({"/**": {"ros__parameters": params}}), encoding="utf-8")
+
+    with pytest.raises(ROSConfigError, match="grasp_target_enabled"):
+        _compose(args)
+
+
+@pytest.mark.usefixtures("calibrated_openarm")
+def test_the_launch_refuses_grasp_allowance_on_real_without_the_vision_leg(
+    tmp_path: Path,
+) -> None:
+    """The flag alone on a bare real launch (no ``enable_vision_attachment:=true``) is refused;
+    the twin keeps it, its MuJoCo evidence tracker being the producer."""
+    from openral_core.exceptions import ROSConfigError
+
+    for hal_mode in ("real", "sim"):
+        args = _launch_args(hal_mode, _scene_with_vision_leg(tmp_path, enabled=False))
+        args.pop("deploy_config", None)
+        args["grasp_allowance_enabled"] = "true"
+        if hal_mode == "real":
+            with pytest.raises(ROSConfigError, match="grasp_target_enabled"):
+                _compose(args)
+        else:
+            assert _kernel_params(args)["grasp_allowance_enabled"] is True

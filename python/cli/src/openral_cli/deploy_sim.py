@@ -1420,17 +1420,25 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             hal_params.setdefault("vision_attachment_robot_unit", robot_unit)
     # On real hardware the vision bridge's target leg is the only grasp-region producer (in
     # sim the HAL's MuJoCo evidence tracker measures it), so the exemption without it would
-    # arm with nothing measuring the region.
+    # arm with nothing measuring the region. Judged on the EFFECTIVE HAL params (scene plus
+    # `--hal`), so `--hal vision_attachment_grasp_target_enabled=false` cannot defeat it; the
+    # scene leg must also be on, since it is what brings the segmenter up.
     if (
         hal_mode == "real"
         and rt is not None
         and rt.grasp_allowance_enabled
-        and not (vision_enabled and vision_leg is not None and vision_leg.grasp_target_enabled)
+        and not (
+            vision_enabled
+            and hal_params.get("vision_attachment_enabled") is True
+            and hal_params.get("vision_attachment_grasp_target_enabled") is True
+        )
     ):
         raise ROSConfigError(
             "runtime.grasp_allowance_enabled on deploy run needs runtime.vision_attachment."
-            "enabled and runtime.vision_attachment.grasp_target_enabled: the kernel would arm "
-            "the grasp-target exemption with no producer measuring its region."
+            "enabled and runtime.vision_attachment.grasp_target_enabled, with no --hal "
+            "override turning vision_attachment_enabled / vision_attachment_grasp_target_enabled "
+            "off: the kernel would arm the grasp-target exemption with no producer measuring "
+            "its region."
         )
     if hal_mode == "sim" and config is not None and not hal.bare_twin_sim:
         # A registered scene with no own composition: scene-attach
