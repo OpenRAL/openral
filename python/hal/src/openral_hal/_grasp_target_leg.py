@@ -74,6 +74,7 @@ from openral_core.geometry import homogeneous_from_quat_xyz
 from openral_hal._grasp_target import (
     TargetRefusal,
     VoxelLattice,
+    _in_region,
     occupied_centers_in_box,
     project_point,
     region_covers_occupied,
@@ -351,9 +352,10 @@ def _hand_near(
     """Whether any hand point lies inside ``region`` grown by ``reach_m`` on every face."""
     if not hands:
         return False
-    t = homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)
-    local = (np.asarray(hands, dtype=np.float64) - t[:3, 3]) @ t[:3, :3]
-    return bool(np.any(np.all(np.abs(local) <= np.asarray(region.half_extents) + reach_m, axis=1)))
+    grown = region.model_copy(
+        update={"half_extents": tuple(h + reach_m for h in region.half_extents)}
+    )
+    return bool(_in_region(np.asarray(hands, dtype=np.float64), grown).any())
 
 
 def _gate_refit(
