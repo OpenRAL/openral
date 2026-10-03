@@ -135,13 +135,18 @@ def test_a_single_lifted_detection_grounds_a_seed_only_declaration() -> None:
     assert box.pose.quat_xyzw == (0.0, 0.0, 0.0, 1.0)  # gravity-aligned in the base frame
     assert live[0].bbox_3d is not None
     assert _contains(decl, live[0].bbox_3d)
-    # Padded by exactly the configured margin sideways and upward...
+    # Padded by exactly the configured margin on every side, downward included: the box is
+    # a search hint, and the lifted bottom (the lowest occupied centre in the frustum) may
+    # sit above OR below the true support, so the support layer must be inside the box for
+    # the producer to measure it. The lowest object cell (z = -0.12 here) is one cell above
+    # the support layer it stands on; one voxel of downward pad reaches it.
     lo, hi = live[0].bbox_3d[:3], live[0].bbox_3d[3:]
-    for i in range(2):
+    for i in range(3):
         assert box.half_extents[i] == pytest.approx((hi[i] - lo[i]) / 2.0 + _PAD)
-    assert box.pose.xyz[2] + box.half_extents[2] == pytest.approx(hi[2] + _PAD)
-    # ...never downward: the bottom face is the producer's support plane (HZ-01xx-6).
-    assert box.pose.xyz[2] - box.half_extents[2] == pytest.approx(lo[2])
+    bottom = box.pose.xyz[2] - box.half_extents[2]
+    assert bottom == pytest.approx(lo[2] - _PAD)
+    assert bottom <= lo[2] - _VOXEL  # the support layer's cell centre is inside
+    assert bottom >= lo[2] - 2 * _VOXEL  # bounded: one voxel + extrinsic error, no more
 
 
 def test_two_instances_of_the_label_refuse_without_an_object_id() -> None:

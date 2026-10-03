@@ -63,12 +63,15 @@ def _box(
     base_frame: str,
     pad_m: float,
 ) -> PlaceRegion:
-    """Gravity-aligned seed box: ``bbox`` padded by ``pad_m`` sideways and upward only.
+    """Gravity-aligned search box: ``bbox`` padded by ``pad_m`` on every side.
 
-    Never padded downward: the producer reads the seed's bottom face as the support
-    plane and keeps the measured region above it (HZ-01xx-6), so a bottom below the
-    object would let the region reach into the surface it stands on. The bottom stays
-    at the lifted box's lowest cell centre, which errs upward (safe) either way.
+    A search hint only, with no support semantics: the producer measures the support
+    layer under the target from the voxel map itself. The lifted box's bottom is the
+    lowest occupied cell centre inside the detection's frustum, which can sit above the
+    true support (the object's bottom cell) or below it (table cells caught by a loose
+    pixel box), so nothing here may read it as a plane. The downward pad (one voxel +
+    the extrinsic error, like the others) keeps the support layer inside the box, so
+    the producer can find it there; it is bounded so the box does not reach far below.
     """
     if bbox is None:
         raise ROSReasonerInvalidPlan(f"{what} has no 3D box; it cannot seed a grasp search.")
@@ -78,19 +81,18 @@ def _box(
             f"{what} is in frame {frame_id!r}, not the robot base frame {base_frame!r}; "
             "the grasp search box must be in the voxel grid's base frame."
         )
-    lo, hi = bbox[:3], bbox[3:]
-    top = hi[2] + pad_m
+    x0, y0, z0, x1, y1, z1 = bbox
     return PlaceRegion(
         frame_id=base_frame,
         pose=Pose6D(
-            xyz=((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + top) / 2.0),
+            xyz=((x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0),
             quat_xyzw=(0.0, 0.0, 0.0, 1.0),
             frame_id=base_frame,
         ),
         half_extents=(
-            (hi[0] - lo[0]) / 2.0 + pad_m,
-            (hi[1] - lo[1]) / 2.0 + pad_m,
-            (top - lo[2]) / 2.0,
+            (x1 - x0) / 2.0 + pad_m,
+            (y1 - y0) / 2.0 + pad_m,
+            (z1 - z0) / 2.0 + pad_m,
         ),
         evidence_ref=f"reasoner_seed:{what}",
     )
@@ -110,9 +112,9 @@ def ground_grasp_target(
 
     ``ref.object_id`` set → that spatial-memory node's 3D box; else the single
     live lifted detection whose label equals ``ref.label`` (case-insensitive).
-    The box, padded by ``pad_m`` (one voxel + extrinsic error) sideways and upward
-    — never downward, its bottom face is the producer's support plane — and kept
-    gravity-aligned, becomes ``search_box``; ``region`` stays ``None``.
+    The box, padded by ``pad_m`` (one voxel + extrinsic error) on every side and kept
+    gravity-aligned, becomes ``search_box`` — a search hint for the producer, which
+    measures the support layer itself; ``region`` stays ``None``.
 
     Args:
         ref: The reasoner's named target.
