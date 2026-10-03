@@ -25,12 +25,16 @@
 #   Launch ONLY through `tools/openarm_world_voxel_run.sh`, which refuses
 #   unless 1 and 3 hold. `openral deploy run` itself checks neither.
 #
-# Known gaps on current master, each of which the runbook's attended step is
-# expected to show rather than disprove:
-#   * No depth self-filter exists for a real camera (the sim HAL's is
-#     MuJoCo-only), so any arm link the ZED sees becomes occupancy around that
-#     link and the kernel stops it (KIND_COLLISION, a `voxel_<n>` evidence
-#     cell on the stopping link itself).
+# Self returns: on the real path `deploy run` inserts openral_octomap_bridge's
+# robot_self_filter ahead of octomap (deploy_e2e.launch.py), removing the arms'
+# own returns padded by robot_self_filter_padding_m below. That padding is
+# measured at rest only; arm returns that escape it while MOVING become
+# occupancy on the link itself and the kernel stops it (KIND_COLLISION, a
+# `voxel_<n>` evidence cell on the stopping link) — the runbook's attended
+# step is where that tail gets measured.
+#
+# Known gap, which the runbook's attended step is expected to show rather
+# than disprove:
 #   * Real hardware runs with attached-payload checking OFF while
 #     `runtime.vision_attachment.enabled` is false (below; the committed
 #     posture), and then nothing on the real graph publishes
@@ -45,8 +49,9 @@
 # by hand, then `openral deploy sim --config <this file> --hal
 # viewer_enabled=false` — `drivers:` is ignored on the sim path.
 #
-# Verified offline only (resolve + launch composition + validate); never run
-# on hardware as of this commit. The ZED leg was proven on qorin1, not Thor.
+# Verified: resolve + launch composition + validate offline, and a twin pass
+# on Thor (2026-10-02) with the real ZED-M feeding the graph, motors unpowered.
+# NOT verified: the real arms have never run this scene.
 
 robot_id: "openarm"
 
@@ -103,7 +108,7 @@ runtime:
   # is the motion budget: the filter pairs each cloud with the nearest 30 Hz joint state
   # (<= ~17 ms off), i.e. ~8.5 mm at 0.5 m/s at the gripper. Do not tighten below 1.5 cm
   # until the tail is measured with the arms MOVING (attended real bringup). Wider costs real
-  # obstacles: the restock box sits 2-4 cm from the hanging grippers.
+  # obstacles: objects near the hanging grippers sit only a few cm from them.
   robot_self_filter_padding_m: 0.02
   # The point of this scene. Reaches the kernel as world_voxel_enabled: true
   # with the real-hardware margin (deploy_e2e.launch.py::_world_voxel_margin_m
@@ -139,7 +144,9 @@ runtime:
     depth_camera_info_topic: /zed/zed_node/depth/camera_info
     # The attach links are not frames of the real cell's TF tree (the vendored
     # URDF describes a different assembly); renamed to the vendor bringup's
-    # frames. Unverified on the cell (design doc §1.5).
+    # frames. The identity holds in the models (link7 is the MJCF / vendor-URDF
+    # body ee_base_link, design doc §1.5); that the real cell's TF tree
+    # publishes these frames is UNVERIFIED.
     tf_frames:
       openarm_left_link7: openarm_left_ee_base_link
       openarm_right_link7: openarm_right_ee_base_link
