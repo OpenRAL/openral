@@ -881,6 +881,23 @@ def test_a_pick_with_no_release_record_keeps_the_hand_guarded() -> None:
     assert tracker.spent(_LEFT) == (True, None), "only the guarded record ends the guard"
 
 
+def test_the_end_of_the_released_payload_guard_is_logged_once() -> None:
+    """The guard ending is the hand's way back to arming: visible, once, and only for
+    the record actually guarded."""
+    tracker, lines = _approach_tracker()
+    here = approach_box([(0.45, 0.0, 0.18)], approach_m=0.1, frame_id="openarm_base")
+    _pick(tracker, here, now_ns=11 * _S)
+    record = _released_record()
+    tracker.on_release(_LEFT, record)
+    assert tracker.on_pick_complete(_LEFT, now_ns=12 * _S)
+    tracker.clear_spent(_LEFT, _released_record())
+    assert not any("cleared the payload" in line for line in lines), "not the guarded record"
+    tracker.clear_spent(_LEFT, record)
+    tracker.clear_spent(_LEFT, record)
+    assert tracker.spent(_LEFT) == (False, None)
+    assert sum("cleared the payload it released" in line for line in lines) == 1, lines
+
+
 def test_an_approach_computed_before_a_pick_completed_is_stale() -> None:
     """The leg's tick reads the generation first; a pick completing on the HAL's thread
     before its ``on_approach`` lands makes that verdict stale (it could not see the guard)."""

@@ -790,9 +790,10 @@ class GraspTargetTracker:
 
     @_locked
     def clear_spent(self, hand: tuple[str, ...], record: AttachedCollisionObject | None) -> None:
-        """End ``hand``'s guard — only if ``record`` is still the one guarded."""
+        """End ``hand``'s guard — only if ``record`` is still the one guarded. Logged once."""
         if hand in self._spent and self._spent[hand] is record:
             del self._spent[hand]
+            self._log(f"grasp target: {list(hand)} cleared the payload it released; may arm again")
 
     @_locked
     def wants_measurement(self, *, now_ns: int) -> bool:
