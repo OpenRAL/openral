@@ -525,6 +525,30 @@ decide; 7 and 8 need the attended cell for calibration.
    plane); hazard "a measured surface is not a support"; the ADR-0098 joint-play offset if
    adopted; the frozen-release window; finger allowance inside the place region.
 5. Bimanual attachment (two attach links) — shared by both halves.
+8. A **frozen jaw position inside a live `/joint_states` stream** is indistinguishable from a
+   stalled jaw, and no guard is added for it (2026-10-03, `fix/r5-trigger`, investigated
+   read-only on Thor). Vendor path: `openarm_simple_hardware.cpp` (`openarm_ros2` 4e837e1)
+   `read()` calls `refresh_all()` + `recv_all()` and copies `Motor::get_position()` into the
+   state interface, returning `OK` unconditionally; in `openarm_can` (b001148)
+   `recv_all()` drains whatever frames arrived within its select timeout, and
+   `DMCANDevice::callback` → `Motor::update_state` is the only writer of `state_q_`. A motor
+   that does not answer simply keeps its last `state_q_` while the other joints update — there
+   is no per-motor stamp, counter or error flag, and the gripper's velocity and effort are
+   hard-coded `0`. `joint_state_broadcaster` republishes the frozen value with a fresh header
+   stamp every cycle, and `RosControlHAL.read_state` stamps the newest arrival, so the
+   trigger's repeat filter and `_JawEvidence` both see new samples of a perfectly flat jaw: a
+   frozen jaw commanded closed from > `rest + stall_gap` away attaches on nothing, and the
+   heartbeat keeps claiming live evidence. A "require ≥ 1 LSB flicker over a window" guard was
+   considered and **rejected on evidence**: in the 89 s stationary real-cell bag
+   (`/tmp/qua1985_staging_real/openarm-real/qua1985-rig-check-real/2026-09-22/…/bag`, 66 176
+   `/joint_states` at 1.35 ms), every channel quantises at one LSB (3.815e-4 rad) and several
+   live, healthy channels never flicker at all — `left_joint3`, `left_joint4`, `right_joint4`
+   bit-identical for all 89 s, `left_finger_joint1` for 72 s — while others flicker every few
+   ms. Flatness is therefore normal for a stationary DM motor and a flicker requirement would
+   refuse real stalls (or, tuned loose, guard nothing). Options for the WG: a vendor-side
+   per-motor reply counter / last-reply stamp exported as a state interface (the only sound
+   signal; not verified whether the DM reply frame carries a usable status field), or
+   accepting the hazard with the vision AND at ATTACH as the mitigation.
 
 ## 5. Measure before deciding (attended, cell)
 
