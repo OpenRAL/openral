@@ -904,7 +904,9 @@ class VisionAttachmentBridge:
             simulator bridge is given.
         config: Wiring and the segmentation deadline.
         gate_config: Geometric gate thresholds handed to the producer.
-        trigger_config: Effort thresholds and debounce for the grasp trigger.
+        trigger_config: Effort thresholds and debounce for the grasp trigger: one config
+            for every gripper, or one per gripper joint name (each hand's fractions scaled
+            to its own ``effort_limit``; every gripper joint must be named).
 
     Raises:
         ROSConfigError: If the manifest cannot support the producer or the
@@ -930,7 +932,7 @@ class VisionAttachmentBridge:
         on_perception_ready: Any = None,
         config: VisionAttachmentConfig | None = None,
         gate_config: VisionGateConfig | None = None,
-        trigger_config: GraspTriggerConfig | None = None,
+        trigger_config: GraspTriggerConfig | Mapping[str, GraspTriggerConfig] | None = None,
     ) -> None:
         """Resolve manifest-derived wiring; create no ROS entities yet."""
         self._node = node
@@ -973,7 +975,14 @@ class VisionAttachmentBridge:
         self._heartbeat_timer: Any = None
         self._heartbeat_open: bool | None = None
         self._evidence = _EffortEvidence(
-            required_samples=(trigger_config or GraspTriggerConfig()).consecutive_ticks,
+            required_samples=max(
+                (c or GraspTriggerConfig()).consecutive_ticks
+                for c in (
+                    trigger_config.values()
+                    if isinstance(trigger_config, Mapping)
+                    else (trigger_config,)
+                )
+            ),
             timeout_s=self._config.evidence_timeout_s,
         )
         self._revision = 0
@@ -1687,7 +1696,7 @@ class VisionAttachmentBridge:
     def _build_legs(
         self,
         gate_config: VisionGateConfig | None,
-        trigger_config: GraspTriggerConfig | None,
+        trigger_config: GraspTriggerConfig | Mapping[str, GraspTriggerConfig] | None,
     ) -> list[_GripperLeg]:
         """One leg per gripper joint, with its TCP resolved.
 
@@ -1707,11 +1716,24 @@ class VisionAttachmentBridge:
                 f"but {self._description.name!r} has gripper joints "
                 f"{[joint.name for joint in joints]}."
             )
+        if isinstance(trigger_config, Mapping):
+            missing = sorted({joint.name for joint in joints} - set(trigger_config))
+            if missing:
+                raise ROSConfigError(
+                    f"vision attachment: per-joint trigger_config names no config for gripper "
+                    f"joints {missing} of {self._description.name!r}."
+                )
         return [
             _GripperLeg(
                 joint_name=joint.name,
                 trigger=GripperEffortTrigger(
-                    self._description, joint_name=joint.name, config=trigger_config
+                    self._description,
+                    joint_name=joint.name,
+                    config=(
+                        trigger_config[joint.name]
+                        if isinstance(trigger_config, Mapping)
+                        else trigger_config
+                    ),
                 ),
                 producer=VisionAttachmentEvidenceProducer(
                     self._description, gripper_joint=joint.name, config=gate_config
