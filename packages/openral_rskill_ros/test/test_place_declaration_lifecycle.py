@@ -75,7 +75,9 @@ def _constant_skill_resolver() -> Any:
 
 
 @contextmanager
-def _harness(place_declaration_json: str) -> Iterator[tuple[Any, Any, list[Any]]]:
+def _harness(
+    place_declaration_json: str, *, approach: bool = False
+) -> Iterator[tuple[Any, Any, list[Any]]]:
     """Compose the real runtime with a scene-committed declaration installed."""
     import rclpy
     from openral_msgs.msg import ActionChunk
@@ -93,6 +95,7 @@ def _harness(place_declaration_json: str) -> Iterator[tuple[Any, Any, list[Any]]
         [
             rclpy.parameter.Parameter("place_declaration_json", value=place_declaration_json),
             rclpy.parameter.Parameter("joint_state_staleness_limit_s", value=0.5),
+            rclpy.parameter.Parameter("place_approach_enabled", value=approach),
         ]
     )
 
@@ -208,6 +211,49 @@ def _run_goal(
     while not result_future.done() and time.monotonic() < deadline:
         executor.spin_once(timeout_sec=0.02)
     assert result_future.done(), "goal result timed out"
+
+
+def test_approach_mode_arms_a_goal_scope_place_declaration_naming_nothing() -> None:
+    """No goal or scene declaration, place approach on: ``surface``, no object, no box,
+    stamped at goal start, the goal deadline as backstop, retracted at goal end."""
+    with _harness("", approach=True) as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node, deadline_s=3.0)
+        _spin_for(executor, 0.3)
+
+    active = [msg for msg in seen if msg.active]
+    assert len(active) == 1
+    assert active[0].target_id == "surface"
+    assert active[0].object_id == ""
+    assert not active[0].search_box_valid and not active[0].region_valid
+    assert active[0].rskill_id == "openral/test-place-declaration-skill"
+    assert active[0].stamp_ns > 0
+    assert active[0].timeout_s == pytest.approx(3.0), "the backstop is the goal deadline"
+    assert not seen[-1].active, "the goal ended without retracting its goal-scope declaration"
+
+
+def test_approach_mode_goal_scope_declaration_dies_on_cancel_and_estop() -> None:
+    from std_msgs.msg import Empty
+
+    with _harness("", approach=True) as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node, deadline_s=5.0, cancel=True)
+        _spin_for(executor, 0.3)
+        assert [m.active for m in seen] == [True, False], "cancel retracts"
+        seen.clear()
+        runtime.skill_runner_node._arm_place_declaration(
+            _GoalRequestStub(), rskill_id="openral/x", trace_id="t"
+        )
+        _spin_for(executor, 0.2)
+        assert [m.target_id for m in seen if m.active] == ["surface"]
+        runtime.skill_runner_node._on_estop(Empty())
+        _spin_for(executor, 0.3)
+    assert not seen[-1].active, "the E-stop left the goal-scope declaration live"
+
+
+def test_a_scene_declaration_wins_over_place_approach_mode() -> None:
+    with _harness(_scene_declaration_json(), approach=True) as (executor, runtime, seen):
+        _run_goal(executor, runtime.skill_runner_node)
+        _spin_for(executor, 0.3)
+    assert [msg.target_id for msg in seen if msg.active] == [_TARGET]
 
 
 def test_no_declaration_configured_puts_nothing_on_the_wire() -> None:

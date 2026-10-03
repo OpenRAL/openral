@@ -689,3 +689,30 @@ def test_the_runner_arms_goal_scope_declarations_only_with_an_approach_armed_pro
         ctx, _node(entities, "openral_rskill_ros", "runtime_node")._Node__parameters
     )
     assert params["grasp_approach_enabled"] is expected
+
+
+@pytest.mark.usefixtures("calibrated_openarm")
+@pytest.mark.parametrize(
+    ("vision", "place", "expected"),
+    [(True, True, True), (True, False, False), (None, None, False)],
+)
+def test_the_runner_arms_goal_scope_place_declarations_only_with_the_place_leg(
+    tmp_path: Path, vision: bool | None, place: bool | None, expected: bool
+) -> None:
+    """``place_approach_enabled`` (the runner's goal-scope place declaration) is on only
+    when the HAL's place-target leg runs: the leg attaches its measured region to that
+    declaration and never declares on its own, so with it off no goal declares a place."""
+    import yaml
+    from launch_ros.utilities import evaluate_parameters
+
+    scene = _scene_with_vision_leg(tmp_path, enabled=vision)
+    if place is not None:
+        data = yaml.safe_load(scene.read_text(encoding="utf-8"))
+        data["runtime"]["vision_attachment"]["place_target_enabled"] = place
+        scene.write_text(yaml.safe_dump(data), encoding="utf-8")
+    hal_params, _, ctx, entities = _real_graph(scene)
+    assert hal_params.get("vision_attachment_place_target_enabled", False) is bool(place)
+    (params,) = evaluate_parameters(
+        ctx, _node(entities, "openral_rskill_ros", "runtime_node")._Node__parameters
+    )
+    assert params["place_approach_enabled"] is expected
