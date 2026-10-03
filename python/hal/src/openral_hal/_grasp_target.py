@@ -29,7 +29,9 @@ Flow, one call per step so every step is replayable from its inputs alone:
 5. ``region_covers_occupied`` — the fitted region must contain occupied cells
    the kernel itself sees, or it describes nothing the map agrees with.
 6. ``track_region`` — the 2-5 Hz re-prompt gate: a re-fit is only accepted as
-   the same target if it barely moved.
+   the same target if it barely moved. ``region_within`` tells a re-fit that
+   shrank inside the held region (the approaching hand occluding part of the
+   target) from one that reaches outside it (the target moved).
 
 Every threshold here is a **calibration point** (CLAUDE.md §1.2): the caps are
 the design note's Safety-WG placeholders (half-extent ≤ 0.20 m, volume ≤
@@ -63,6 +65,7 @@ __all__ = [
     "occupied_centers_in_box",
     "project_point",
     "region_covers_occupied",
+    "region_within",
     "support_cells_under",
     "support_top_from_voxels",
     "target_region_from_mask",
@@ -683,3 +686,40 @@ def track_region(
     b = (*sorted(current.half_extents[:2]), current.half_extents[2])
     size_ok = all(abs(p - q) <= extents_tol_m for p, q in zip(a, b, strict=True))
     return shift <= max_centroid_shift_m + 1e-9 and size_ok
+
+
+def region_within(inner: PlaceRegion, outer: PlaceRegion, *, tol_m: float) -> bool:
+    """Whether every corner of ``inner`` lies inside ``outer`` grown by ``tol_m``.
+
+    A re-fit made while the gripper occludes part of the target shrinks and
+    shifts inside the region held for it; one that reaches outside it describes
+    volume the held region never vouched for.
+
+    Args:
+        inner: The fresh fit.
+        outer: The held region.
+        tol_m: Per-face growth of ``outer``, metres (one voxel in the leg).
+
+    Returns:
+        ``True`` when ``inner`` is contained; ``False`` across frames.
+
+    Example:
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> def box(x, h):
+        ...     return PlaceRegion(
+        ...         frame_id="base",
+        ...         half_extents=(h, h, h),
+        ...         pose=Pose6D(xyz=(x, 0.0, 0.1), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ...     )
+        >>> region_within(box(0.32, 0.02), box(0.3, 0.05), tol_m=0.0)
+        True
+        >>> region_within(box(0.36, 0.02), box(0.3, 0.05), tol_m=0.02)
+        False
+    """
+    if inner.frame_id != outer.frame_id:
+        return False
+    t = homogeneous_from_quat_xyz(inner.pose.xyz, inner.pose.quat_xyzw)
+    signs = np.array([(sx, sy, sz) for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)])
+    corners = (signs * np.asarray(inner.half_extents)) @ t[:3, :3].T + t[:3, 3]
+    grown = outer.model_copy(update={"half_extents": tuple(h + tol_m for h in outer.half_extents)})
+    return bool(_in_region(corners, grown).all())

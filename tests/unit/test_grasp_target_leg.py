@@ -13,10 +13,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 from openral_core import DeployScene, GraspDeclaration, PlaceRegion, Pose6D, RobotDescription
 from openral_core.exceptions import ROSConfigError
-from openral_hal._grasp_target_leg import GraspTargetTracker, search_column
+from openral_hal._grasp_target import VoxelLattice
+from openral_hal._grasp_target_leg import (
+    GraspTargetTracker,
+    _gate_refit,
+    _Refusal,
+    search_column,
+)
 from openral_hal.vision_attachment_bridge import VisionAttachmentBridge, VisionAttachmentConfig
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -100,6 +107,67 @@ def test_a_lost_view_freezes_the_region_until_its_ttl() -> None:
     gone = tracker.envelope(now_ns=13 * _S + 1)  # stamp + 2 s, no refusal needed
     assert gone is not None and gone.region is None
     assert any("freeze_ttl" in line for line in lines)
+
+
+def _held_block_lattice() -> VoxelLattice:
+    """20 mm cells filling exactly ``_measured``'s box (x 0.41-0.49, |y| <= 0.04, z 0.05-0.13)."""
+    return VoxelLattice(
+        "openarm_base",
+        (0.41, -0.04, 0.05),
+        (0.0, 0.0, 0.0, 1.0),
+        0.02,
+        (4, 4, 4),
+        np.ones(64, dtype=np.uint8),
+    )
+
+
+def _refit(x: float, half: tuple[float, float, float], z: float = 0.09) -> PlaceRegion:
+    return _measured(12 * _S).model_copy(
+        update={
+            "pose": Pose6D(xyz=(x, 0.0, z), quat_xyzw=(0, 0, 0, 1), frame_id="openarm_base"),
+            "half_extents": half,
+        }
+    )
+
+
+def _gate(region: PlaceRegion, held: PlaceRegion) -> _Refusal:
+    with pytest.raises(_Refusal) as caught:
+        _gate_refit(_held_block_lattice(), region, held, min_cover=0.5)
+    return caught.value
+
+
+def test_a_refit_shrunk_inside_the_held_region_is_occlusion_and_freezes() -> None:
+    """The hand covers part of the target: the fit shrinks and shifts 25 mm (past the
+    one-voxel tracking gate) but stays inside the held box — a lost view, not a move."""
+    tracker, lines = _tracker()
+    held = _measured(11 * _S)
+    tracker.accept(held)
+    refusal = _gate(_refit(0.425, (0.015, 0.04, 0.03)), held)
+    assert (refusal.kind, refusal.retract) == ("occluded_refit", False)
+    tracker.refuse(refusal.kind, refusal.detail, retract=refusal.retract, now_ns=12 * _S)
+    assert tracker.region == held, "the partial fit must not replace the held region"
+    assert any("view lost — occluded_refit" in line for line in lines)
+    gone = tracker.envelope(now_ns=13 * _S + 1)  # the freeze TTL still bounds it
+    assert gone is not None and gone.region is None
+
+
+def test_a_refit_reaching_outside_the_held_region_retracts() -> None:
+    tracker, lines = _tracker()
+    held = _measured(11 * _S)
+    tracker.accept(held)
+    moved = _gate(_refit(0.50, (0.04, 0.04, 0.04)), held)  # 50 mm past the held face
+    assert (moved.kind, moved.retract) == ("target_moved", True)
+    tracker.refuse(moved.kind, moved.detail, retract=moved.retract, now_ns=12 * _S)
+    assert tracker.region is None
+    assert any("retracted — target_moved" in line for line in lines)
+    elsewhere = _gate(_refit(0.70, (0.04, 0.04, 0.04)), held)  # nothing in the map there
+    assert (elsewhere.kind, elsewhere.retract) == ("map_disagrees", True)
+
+
+def test_a_refit_within_the_tracking_gate_replaces_the_held_region() -> None:
+    held = _measured(11 * _S)
+    nudged = _refit(0.46, (0.04, 0.04, 0.04))
+    assert _gate_refit(_held_block_lattice(), nudged, held, min_cover=0.5) is nudged
 
 
 def test_a_lost_view_with_nothing_held_is_a_plain_refusal() -> None:

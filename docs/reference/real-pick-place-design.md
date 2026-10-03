@@ -167,6 +167,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   the runner; the support plane is measured from the map under it, as above),
   re-measured at `grasp_target_rate_hz` (3 Hz), the region filled onto every attachment
   publication; contradicting evidence retracts at once, a lost view freezes the last accepted region
+  (a re-fit that shrinks or shifts *inside* the held region grown by one voxel — the approaching
+  hand occluding part of the target — is a lost view, `occluded_refit`, not a `target_moved`
+  contradiction; one reaching outside it still retracts)
   for `grasp_target_freeze_s` (2 s) from its depth stamp. Tests: `tests/unit/test_grasp_target_leg.py`,
   live `tests/integration/test_grasp_target_leg_live.py`. The occlusion freeze is a bare TTL; an
   FK-based "is the hand what occludes it" test is a follow-up.
