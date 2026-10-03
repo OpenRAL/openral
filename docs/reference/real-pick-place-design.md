@@ -231,7 +231,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   HAL param `vision_attachment_release_clear_m`); `release_timeout_s` (3.0 s,
   `vision_attachment_release_timeout_s`) bounds it, since the bridge sees no goal end. On a
   deploy, `deploy_e2e.launch.py` derives `vision_attachment_release_clear_m` (the kernel's world
-  margin + one octree cell) and `vision_attachment_grid_max_age_s` (the kernel's voxel deadline)
+  margin + one octree cell) and `vision_attachment_grid_max_age_s` (the kernel's voxel deadline;
+  the HAL node has no default for either and refuses to activate the leg without them)
   from its own single sources, and refuses to launch when an override (`--hal`, a hand-written
   params file) sets a grid age above the kernel's deadline or a clearance below its margin plus
   one cell; `release_timeout_s` is the scene's

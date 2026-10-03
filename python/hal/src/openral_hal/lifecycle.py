@@ -1663,18 +1663,19 @@ if _ROS2_AVAILABLE:
             # grid_max_age_s: oldest world-voxel grid the grasp-target / place
             # legs use — the deploy passes the kernel's world_voxel_deadline_s.
             # release_clear_m: the deploy passes the kernel's world-voxel margin +
-            # one voxel resolution; release_timeout_s bounds the release window.
-            # attach_effort / release_effort: absolute gripper efforts for the grasp
-            # trigger (runtime.vision_attachment.*); 0.0 = the effort-limit fraction.
-            # The defaults are the real OpenArm cell's values, fallbacks only.
-            # See VisionAttachmentConfig.
+            # one voxel resolution. Both are 0.0 = unset, and REQUIRED with the leg
+            # on: they belong to the kernel this deploy runs, so no cell's values are
+            # a safe fallback (refused at activate). release_timeout_s bounds the
+            # release window. attach_effort / release_effort: absolute gripper
+            # efforts for the grasp trigger (runtime.vision_attachment.*); 0.0 = the
+            # effort-limit fraction. See VisionAttachmentConfig.
             self.declare_parameters(
                 "",
                 [
                     ("vision_attachment_evidence_timeout_s", 0.5),
                     ("vision_attachment_mask_depth_max_skew_s", 0.1),
-                    ("vision_attachment_grid_max_age_s", 1.0),
-                    ("vision_attachment_release_clear_m", 0.04),
+                    ("vision_attachment_grid_max_age_s", 0.0),
+                    ("vision_attachment_release_clear_m", 0.0),
                     ("vision_attachment_release_timeout_s", 3.0),
                     ("vision_attachment_attach_effort", 0.0),
                     ("vision_attachment_release_effort", 0.0),
@@ -2118,6 +2119,18 @@ if _ROS2_AVAILABLE:
             )
 
             assert self._hal is not None
+            for name, source in (
+                ("vision_attachment_grid_max_age_s", "the kernel's world_voxel_deadline_s"),
+                (
+                    "vision_attachment_release_clear_m",
+                    "the kernel's world_voxel_margin_m + one octomap resolution",
+                ),
+            ):
+                if gp(name).get_parameter_value().double_value <= 0.0:
+                    raise ROSConfigError(
+                        f"{name} is unset but the vision attachment leg is enabled: the "
+                        f"deploy must pass {source} (deploy_e2e.launch.py derives it)."
+                    )
             tf_frames: dict[str, str] = {}
             for entry in gp("vision_attachment_tf_frames").get_parameter_value().string_array_value:
                 if not entry:
