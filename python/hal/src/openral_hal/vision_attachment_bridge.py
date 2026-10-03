@@ -182,7 +182,8 @@ class _GripperLeg:
             older one is stale and dropped.
         region_spent: ``(target_id, region stamp_ns)`` of the measured region this leg
             already took as its payload; an ATTACH offered that same region again
-            segments instead.
+            segments instead, while a later pick's region (its own
+            ``approach:<link>:<n>`` identity, measured afresh) may be taken.
         pending: Whether this leg is holding the ack barrier.
         jaw_link: The gripper joint's child link — what a ``GraspDeclaration``
             names in ``contact_links``.
@@ -1366,11 +1367,16 @@ class VisionAttachmentBridge:
                     "segmentation still in flight; its reply will be dropped"
                 )
             if event is GraspEvent.DETACH:
+                held = leg.attachment
                 self._open_release(leg)
                 leg.attachment = None
                 self._publish_attachment()
                 if leg.pending:
                     self._release_barrier(leg)
+                if self._grasp_target is not None and held is not None:
+                    # The pick-complete path: the frozen record (None without tf2).
+                    record = leg.release.record if leg.release is not None else None
+                    self._grasp_target.on_detach(leg.jaw_link, record)
                 continue
             if leg.release is not None:
                 self._close_release(leg, "attach")
@@ -1763,10 +1769,11 @@ class VisionAttachmentBridge:
         Confirmation is geometric: the declaration names this leg's jaw link and the
         leg's TCP (``jaw_point``) lies within ``grasp_target_occluder_margin_m`` of the
         region. The region is a pre-grasp measurement, so a leg takes each measured
-        region once (``region_spent``, keyed by ``target_id`` and the region's own
-        ``stamp_ns``): a later ATTACH offered the same region — the object set down
-        and picked up again — is segmented (a handed-over goal re-measures nothing, so
-        nothing else is offered until dispatch declares afresh). Returns the payload
+        region once (``region_spent``, keyed by ``target_id`` — one per pick — and the
+        region's own ``stamp_ns``): a later ATTACH offered the same region — the object
+        set down and picked up again before any re-measurement — is segmented, while a
+        region measured for the goal's next pick (a fresh identity) is a new payload.
+        Returns the payload
         and the region it was built from (what ``GraspTargetLeg.on_attach`` hands
         over); ``None`` — logged when a declaration was live — sends the grasp to
         ``SegmentInView`` instead.
@@ -2018,6 +2025,9 @@ class VisionAttachmentBridge:
         """Drop a leg's frozen record (the caller publishes), logging why once."""
         self._node.get_logger().info(f"release window closed for {leg.joint_name}: reason={reason}")
         leg.release = None
+        if self._grasp_target is not None and reason != "attach":
+            # A re-ATTACH is a new grasp of the same hand, not the hand emptying.
+            self._grasp_target.on_release_closed(leg.jaw_link)
 
     def _poll_releases(self) -> None:
         """Close every window whose jaws are clear or whose time is up; publish if any did."""

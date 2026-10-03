@@ -484,15 +484,27 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
 
 def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
     """Approach-armed target: the runner's goal-scope declaration names no target and no
-    search box; the left hand's TCP 5 cm above the box arms ``approach:<left finger>``
+    search box; the left hand's TCP 5 cm above the box arms ``approach:<left finger>:<n>``
     (left contact link only) and the region measured there contains the box and not the
     neighbour 20 cm away; the right hand, far from everything, arms nothing; lifting the
-    hand retracts the region; moving it over the neighbour measures the neighbour; the goal
-    ending retracts it all. Same real stack as the test above, plus the hands' tf."""
+    hand retracts the region; moving it over the neighbour measures the neighbour. Two picks
+    in one goal: the jaws stall on the neighbour (ATTACH, its region the payload) and close
+    onto nothing (DETACH) — the region leaves the envelope at once; the release window times
+    out with the hand still there and the hand does not re-arm on the payload it released;
+    lifted and brought over the first box it arms ``:<n + 1>`` under the goal's stamp and
+    measures it. The goal ending retracts it all. Same real stack as the test above, plus the
+    hands' tf and the left jaw's trigger."""
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
 
-    from openral_core import GraspDeclaration, JointState, PlaceRegion, RobotDescription
+    from openral_core import (
+        Action,
+        ControlMode,
+        GraspDeclaration,
+        JointState,
+        PlaceRegion,
+        RobotDescription,
+    )
     from openral_hal.vision_attachment_bridge import (
         VisionAttachmentBridge,
         VisionAttachmentConfig,
@@ -590,6 +602,7 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
             grasp_target_enabled=True,
             grasp_target_freeze_s=_FREEZE_S,
             grasp_target_approach_m=0.10,
+            release_timeout_s=1.0,
             tf_frames={
                 "openarm_left_link7": "openarm_left_ee_base_link",
                 "openarm_right_link7": "openarm_right_ee_base_link",
@@ -598,12 +611,23 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
     )
     bridge.setup()
     info = _camera_info(_FULL, _THOR_K)
+    # The left jaw: open and uncommanded until ``close`` (then commanded shut, read at
+    # ``left_q``: 0.2 stalls on an object, 0.0 closes onto nothing).
+    jaw: dict[str, Any] = {"close": False, "left_q": 0.5}
+    close_left = Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_names=["left_gripper"],
+        joint_targets=[[0.0]],
+    )
 
     def feed() -> None:
+        if jaw["close"]:
+            bridge.observe_command(close_left)
         bridge.observe_joint_state(
             JointState(
                 name=["left_gripper", "right_gripper"],
-                position=[0.0, 0.0],
+                position=[jaw["left_q"], 0.0],
                 effort=[0.01, 0.01],
                 stamp_ns=time.monotonic_ns(),
             )
@@ -663,7 +687,8 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
             f"no region; log: {[line for line in logs if 'grasp target' in line]}"
         )
         declared = latest().grasp_declaration
-        assert declared.target_id == "approach:openarm_left_finger_pair"
+        first_id = declared.target_id
+        assert first_id.startswith("approach:openarm_left_finger_pair:")
         assert list(declared.contact_links) == ["openarm_left_finger_pair"]
         assert declared.rskill_id == "openral/itest-approach"
         assert declared.stamp_ns == stamp_ns
@@ -702,8 +727,52 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
         assert _wait_until(lambda: region_around(neighbour), timeout_s=20.0), (
             f"no neighbour region: {[line for line in logs if 'grasp target' in line]}"
         )
-        # Nothing was handed over, so the hand re-arms under its one per-goal identity.
-        assert latest().grasp_declaration.target_id == "approach:openarm_left_finger_pair"
+        # Nothing was handed over: the same pick, so the same identity.
+        assert latest().grasp_declaration.target_id == first_id
+
+        # ── 3b. Pick 1: the TCP into the neighbour, the jaws stall on it (ATTACH). ──
+        tcp["left"] = neighbour.copy()
+        time.sleep(0.5)
+        jaw["close"], jaw["left_q"] = True, 0.2
+        assert _wait_until(lambda: bool(latest().objects), timeout_s=5.0), (
+            f"no attachment; log: {[line for line in logs if 'attachment' in line]}"
+        )
+        assert latest().objects[0].evidence_kind == "grasp_target_region"
+        assert any("region kept" in line for line in logs), "not handed over"
+
+        # ── 3c. DETACH: the region leaves the envelope at once, the window opens. ──
+        jaw["left_q"] = 0.0
+        assert _wait_until(
+            lambda: (
+                latest().grasp_declaration.target_id == first_id
+                and not latest().grasp_declaration.region_valid
+            ),
+            timeout_s=5.0,
+        ), f"region not dropped at DETACH: {[line for line in logs if 'grasp' in line]}"
+        assert any("release window opened" in line for line in logs)
+
+        # ── 3d. The window times out, the hand still by the payload: pick complete, and
+        #        the hand does not re-arm on what it just released. ──
+        assert _wait_until(
+            lambda: latest().grasp_declaration.target_id == "approach", timeout_s=5.0
+        ), f"pick never completed: {[line for line in logs if 'grasp' in line]}"
+        assert any("holds nothing; may re-arm" in line for line in logs)
+        time.sleep(1.5)
+        assert latest().grasp_declaration.target_id == "approach", (
+            "the hand re-armed on its just-released payload"
+        )
+
+        # ── 3e. Lifted clear, then over the first box: pick 2, a fresh identity. ──
+        tcp["left"] = neighbour + np.array([0.0, 0.0, 0.40])
+        time.sleep(1.0)
+        tcp["left"] = one + np.array([0.0, 0.0, _BOX_HALF[2] + 0.05])
+        assert _wait_until(lambda: region_around(one), timeout_s=20.0), (
+            f"no pick-2 region: {[line for line in logs if 'grasp target' in line]}"
+        )
+        second = latest().grasp_declaration
+        n_first = int(first_id.rsplit(":", 1)[1])
+        assert second.target_id == f"approach:openarm_left_finger_pair:{n_first + 1}"
+        assert second.stamp_ns == stamp_ns, "the goal's stamp: its timeout backstop"
 
         # ── 4. The goal ends: gone from the next heartbeat. ──
         publish(goal.model_copy(update={"active": False}))
