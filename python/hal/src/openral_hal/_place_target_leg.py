@@ -812,6 +812,16 @@ def place_tick(
             tracker.refuse(PlaceRefusal.NO_PAYLOAD, "nothing held", now_ns=now_ns)
         return
     obj, posed = carried
+    hint = tracker.declaration.search_box if tracker.declaration is not None else None
+    if hint is not None and hint.frame_id != grid.frame_id:
+        # A hint in another frame cannot be tested against this grid; never guess,
+        # and never measure first: the refusal is the frame, not the patch.
+        tracker.refuse(
+            PlaceRefusal.FRAME_MISMATCH,
+            f"the named surface is in frame {hint.frame_id!r}, the voxel grid in {grid.frame_id!r}",
+            now_ns=now_ns,
+        )
+        return
     result = measure_under_payload(
         grid,
         posed,
@@ -820,13 +830,6 @@ def place_tick(
         exclude=exclude,
         evidence_ref=f"{obj.object_id}@{grid_stamp_ns};",
     )
-    hint = tracker.declaration.search_box if tracker.declaration is not None else None
-    if not isinstance(result, tuple) and hint is not None and hint.frame_id != grid.frame_id:
-        # A hint in another frame cannot be tested against this grid; never guess.
-        result = (
-            PlaceRefusal.OUTSIDE_HINT,
-            f"the named surface is in frame {hint.frame_id!r}, the voxel grid in {grid.frame_id!r}",
-        )
     if not isinstance(result, tuple) and hint is not None:
         t = homogeneous_from_quat_xyz(hint.pose.xyz, hint.pose.quat_xyzw)
         local = (np.asarray(result.region.pose.xyz) - t[:3, 3]) @ t[:3, :3]

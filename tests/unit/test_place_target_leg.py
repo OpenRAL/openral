@@ -395,8 +395,10 @@ def test_a_dispatch_declaration_is_an_optional_hint() -> None:
     assert envelope is not None and envelope.region is None
     assert elsewhere.patch is None
 
-    # A hint in another frame cannot be tested against the grid: refused, never guessed.
-    foreign = _tracker([], goal=False)
+    # A hint in another frame cannot be tested against the grid: refused as a frame
+    # mismatch before anything is measured, never guessed.
+    foreign_lines: list[str] = []
+    foreign = _tracker(foreign_lines, goal=False)
     other = declaration(0.0)
     assert other.search_box is not None
     foreign.on_declaration(
@@ -408,6 +410,8 @@ def test_a_dispatch_declaration_is_an_optional_hint() -> None:
     envelope = foreign.envelope(now_ns=_STAMP)
     assert envelope is not None and envelope.region is None
     assert foreign.patch is None
+    assert any("reason=frame_mismatch" in line for line in foreign_lines), foreign_lines
+    assert not any("outside_hint" in line for line in foreign_lines)
 
 
 def test_the_freeze_may_not_exceed_the_kernels_region_age_bound() -> None:
