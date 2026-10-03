@@ -8,7 +8,7 @@ a real ``VisionAttachmentBridge`` on the bimanual OpenArm manifest with
 ``load_robot_unit``), real tf2 (the Thor cell's measured ZED mount and the left hand),
 real ``openral_msgs`` on the wire: a ``PlaceDeclaration`` on
 ``/openral/place_declaration``, an ``OccupancyVoxels`` grid on ``/openral/world_voxels``,
-and effort on the left gripper so the bridge attaches its fallback box (no depth frame:
+and a position stall on the left gripper so the bridge attaches its fallback box (no depth frame:
 the conservative jaw-span box). Every ``/openral/attachment_state`` goes through a real
 ``WorldStateAggregator`` and the World State node's own ``build_world_state_stamped_msg``
 into a real ``safety_kernel_node`` (the real cell's parameters, attached check on).
@@ -119,8 +119,10 @@ def test_place_fixture_leg_verifies_attests_and_retracts(
 
     from geometry_msgs.msg import TransformStamped
     from openral_core import (
+        Action,
         AttachedCollisionObject,
         AttachmentEvidenceKind,
+        ControlMode,
         JointState,
         PlaceDeclaration,
         PlaceRegion,
@@ -156,7 +158,6 @@ def test_place_fixture_leg_verifies_attests_and_retracts(
     shutil.copy(_ROBOT_YAML, robot_dir / "robot.yaml")
     shutil.copy(_SHELF_UNIT, robot_dir / "units" / "shelf_cell.yaml")
     unit = load_robot_unit(robot_dir / "robot.yaml", "shelf_cell")
-    gripper = next(j for j in description.joints if j.name == "left_gripper")
     span = 0.05  # VisionGateConfig.jaw_span_m: the fallback box's half-extent
 
     kernel_name = f"safety_kernel_place_fixture_{uuid.uuid4().hex[:8]}"
@@ -278,12 +279,21 @@ def test_place_fixture_leg_verifies_attests_and_retracts(
             )
 
             def feed() -> None:
-                effort = 0.9 * float(gripper.effort_limit) if state["loaded"] else 0.01
+                # Loaded: commanded closed, the left jaw stalls 0.2 rad short (position
+                # stall). Released: commanded open, the jaw opens past its hold.
+                bridge.observe_command(
+                    Action(
+                        control_mode=ControlMode.JOINT_POSITION,
+                        horizon=1,
+                        joint_names=["left_gripper", "right_gripper"],
+                        joint_targets=[[0.0 if state["loaded"] else 0.7, 0.0]],
+                    )
+                )
                 bridge.observe_joint_state(
                     JointState(
                         name=["left_gripper", "right_gripper"],
-                        position=[0.0, 0.0],
-                        effort=[effort, 0.01],
+                        position=[0.2 if state["loaded"] else 0.5, -0.0116],
+                        effort=[0.0, 0.0],  # the real driver's hard-coded zeros
                         stamp_ns=time.monotonic_ns(),
                     )
                 )

@@ -2,7 +2,7 @@
 
 Status: **implemented on the branch, default-off, pending Safety-WG review**, 2026-10-03.
 Branch `feat/real-pick-place-attachment` (draft PR #332). Every step of §3 except 5 (the attended
-effort measurement) and 9 (enabling the Thor scene) is implemented and committed off; the
+position-stall measurement) and 9 (enabling the Thor scene) is implemented and committed off; the
 kernel exemption, the release window and the place witness are each proven against the real
 `safety_kernel_node` (the tests named in §3). The §4 items are still decisions, not code.
 Facts in §1 cite code at `fe3c8944` unless marked *since*; §2 is now the design as built.
@@ -35,7 +35,8 @@ using SAM 2.1 to see the object.
    L452-454).
    *Since (§3 rows 1-2, 4):* the bridge builds one trigger/producer leg per `role: gripper`
    joint (`object_id` suffixed by the joint), heartbeats its set at 5 Hz only while every leg has
-   live effort evidence, seeds its revision from the node clock, and the real-mode sim bridge no
+   live jaw-position evidence (it was effort evidence until the position-stall trigger, §1.6),
+   seeds its revision from the node clock, and the real-mode sim bridge no
    longer heartbeats "nothing attached". `DeployRuntime.vision_attachment` (off by default)
    launches the segmenter and couples the leg to the kernel's attached check.
 4. **Three latent geometry bugs on the head camera.** `head_zed.frame_id` is `zed_camera_link`
@@ -55,7 +56,7 @@ using SAM 2.1 to see the object.
    to the depth stream), projects only through the depth `CameraInfo`
    (`vision_attachment_camera_info_topic`), and resamples a mask onto the depth raster when only
    the resolution differs. A missing frame, a missing/mismatched `CameraInfo` or a different crop
-   is a logged `GRIPPER_FORCE` fallback, never the manifest's nominal K. The world-state object
+   is a logged `GRIPPER_CLOSURE` fallback, never the manifest's nominal K. The world-state object
    lift too, since: the detector stamps each `ObjectsMetadata` with its driver `CameraInfo`'s
    frame and K (`camera_frame_id` / `camera_intrinsics`, `camera_infos` parameter), and the lift
    and its eviction FOV project through them. `deploy_e2e` points the detector at the driver's
@@ -74,6 +75,28 @@ using SAM 2.1 to see the object.
    (`openarm_*_link7` is the MJCF/URDF body `openarm_*_ee_base_link`, the one the vendor
    `openarm_ros2` description publishes). The octomap bridge clears a held payload by looking
    its attach link up on TF too, so it gets the same renames (`attach_link_tf_frames`).
+6. **The real OpenArm gripper reports no effort at all.** Vendor `openarm_ros2` (4e837e1,
+   `openarm_simple_hardware.cpp` L268-279) hard-codes effort and velocity to `0.0` every tick, so
+   `joint_state_broadcaster` publishes a full list of zeros: the empty-effort guard of row 0 never
+   fires and an effort trigger silently never ATTACHes. The gripper is a DM4310 in MIT position
+   control (kp 5, kd 0.1) behind a `JointTrajectoryController` position command; the manifest
+   declares `has_torque_sensor: false`, and its `effort_limit: 333` is not physical. Real 30 fps
+   teleop (`qualiadev/openarm-canonical-and-fabians-vr`): closing on an object stalls
+   0.18-0.29 rad short of a 0.0 command and stays flat to ~1e-3 rad; closing on nothing reaches
+   <= 0.02 rad (rest offsets ~0.0086 left / 0.0116 right); free-motion steady-state error
+   0.006-0.025 rad; position LSB 3.815e-4 rad.
+   *Since (2026-10-03, `feat/position-stall-trigger`):* the trigger is
+   `_grasp_trigger.PositionStallTrigger` — the jaw settling short of its **commanded** target
+   (fed from every applied safe action, `VisionAttachmentBridge.observe_command`) by more than
+   `closed_rest_offset + stall_gap`, thresholds per joint in the manifest
+   (`JointSpec.closure_calibration`, from the numbers above), refusing an uncalibrated gripper.
+   The effort trigger, its `effort_limit` fractions and the `attach_effort` / `release_effort`
+   scene knobs are removed (no in-tree gripper declares a torque sensor). The heartbeat gates on
+   jaw-position liveness; an unconfirmed stall's jaw box is stamped `GRIPPER_CLOSURE` (the
+   `GRIPPER_FORCE` value stays for force-sensing grippers and old records). The twin reproduces
+   the stall: `tests/sim/test_openarm_hal_mujoco_position_stall.py` (a free 5 cm box stalls the
+   MuJoCo jaw at ~0.25 rad, settled to ~1e-4 rad → ATTACH; a box *fixed* to the world chatters
+   ±0.02 rad against the finger meshes and never settles — a twin artefact).
 6. **Place has no real producer for any of its inputs.** Region (sim: MuJoCo subtree), support
    witness (sim: `mj_geomDistance`), release (sim: contact loss + 10 mm rigid-follow tolerance),
    and nothing subscribes `/openral/place_declaration` on real. Three real-only hazards sim never
@@ -214,7 +237,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   2 s on the real cell; refused above four times it, as are a support search deeper than 0.5 m
   and an occluder margin over 0.10 m) from its depth stamp; a grid older than `grid_max_age_s` is not used. A mask whose capture stamp is more than
   `mask_depth_max_skew_s` (0.1 s) from the depth frame it would be back-projected through is
-  refused (`mask_depth_skew`, a lost view here; a `GRIPPER_FORCE` fallback in the attachment path). Tests: `tests/unit/test_grasp_target_leg.py`,
+  refused (`mask_depth_skew`, a lost view here; a `GRIPPER_CLOSURE` fallback in the attachment path). Tests: `tests/unit/test_grasp_target_leg.py`,
   live `tests/integration/test_grasp_target_leg_live.py`. The occlusion freeze is bounded by the TTL and
   requires the declared contact link near the held region (its TCP point, not a swept-hull test).
 - **Representation:** an oriented box in `openarm_base` (reuse `PlaceRegion`): ~150 B, grid-instance
@@ -228,6 +251,13 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   with `object_id = target_id` and a new `AttachmentEvidenceKind`; the head view is occluded
   exactly then and the wrist cams have no depth, so re-segmenting at the TCP is the worse option
   on this robot.
+  *Implemented* (`VisionAttachmentBridge._region_payload` / `region_attachment`): on a stall
+  ATTACH, when the grasp-target envelope (TTL and expiry applied) holds a region for a declaration
+  naming this leg's jaw link and the leg's TCP lies within `grasp_target_occluder_margin_m` of it,
+  the region box is the payload — `object_id` = the declaration's `object_id` (what the kernel's
+  handover matches; `target_id` when empty), `AttachmentEvidenceKind.GRASP_TARGET_REGION`, no
+  `SegmentInView` call; otherwise the attach segments as before. Live:
+  `tests/integration/test_grasp_target_leg_live.py` step 6.
 - Must be fixed first (all three are silent): `head_zed` optical frame, intrinsics from the
   driver's `camera_info`, explicit mask/depth resampling.
 
@@ -242,7 +272,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
 - Witness substitute: a proximity-based attestation (`DECLARED_FIXTURE` evidence kind, labelled as
   not sensed contact), once per declaration, when the payload's lowest primitive is within
   max(1 voxel, survey uncertainty) of the verified plane and the gripper is still loaded.
-- Release: keep gripper-effort DETACH as "jaws opened", but keep the object as an attached record
+- Release: keep the trigger's DETACH (position stall: the jaw opened past its hold) as "jaws
+  opened", but keep the object as an attached record
   (frozen at the DETACH-stamp FK pose, still checked against arm and world) until every finger
   hull is > margin + 1 voxel from it, a timeout, a new ATTACH or goal end; only then publish `[]`.
   The bridge keeps clearing the frozen primitives at zero padding until then (extends
@@ -294,10 +325,10 @@ Everything is off by default until the last step; nothing before it can actuate.
 |---|---|---|---|
 | 0 | `fix(hal)`: report an absent effort channel instead of zero-filling it | HAL | pre-existing bug (§1.5), own commit |
 | 1 | `feat(hal)`: one grasp trigger + evidence producer per gripper; TCP from the gripper joint origin, not TF | HAL | B1, B7 |
-| 2 | `fix(hal)`: 5 Hz attachment heartbeat gated on live effort evidence; time-seeded monotonic revision; real-mode `SimSensorBridge` stops claiming "nothing attached" | HAL | B2, B3 |
+| 2 | `fix(hal)`: 5 Hz attachment heartbeat gated on live jaw-position evidence (was effort, §1.6); time-seeded monotonic revision; real-mode `SimSensorBridge` stops claiming "nothing attached" | HAL | B2, B3 |
 | 3 | `fix(hal,perception)`: back-project in the depth header's optical frame; intrinsics from live `camera_info`; explicit mask resampling; `top`/`head_zed` optical `frame_id` | HAL, perception | B4, B5 |
 | 4 | `feat(deploy)`: `DeployRuntime.vision_attachment`, segmenter lifecycle node in the launch, **vision leg on real always turns the kernel attached check on** (1000 ms deadline) | CLI, launch | **Safety-WG + hazard log**. *Implemented, committed off* (`enabled: false` in `scenes/deploy/openarm_real_world_voxels.yaml`) pending WG review and the hazard-log entry |
-| 5 | `test(hil)`: attended OpenArm gripper-effort readback (gripper-only motion, user at the E-stop) | HIL | decides whether effort is a grasp signal at all |
+| 5 | `test(hil)`: attended OpenArm position-stall measurement (gripper-only motion, user at the E-stop): close on nothing / foam / the restock box / a thin card, per side | HIL | effort is settled — the driver hard-codes it to 0 (§1.6); this calibrates `closure_calibration` (rest offset, stall gap, settle tolerance) and measures the thin-object false negative |
 | 6 | `feat(kernel)`: `GraspDeclaration` across IDL/core/world-state/runner/HAL/launch/kernel + conservativeness tests | all | **ADR + hazard log; split (>800 lines)**. *Wire landed* (IDL, `openral_core.GraspDeclaration`, World State relay, runner arm/retract on `/openral/grasp_declaration`, CLI/launch `grasp_declaration_json`, committed target in `scenes/deploy/openarm_real_world_voxels.yaml`); the sim producer landed (`SimAttachmentEvidenceTracker.set_grasp_declaration` / `grasp_declaration`: the target subtree's box, base frame, no geometry, on every `AttachmentState` envelope), the launch flag `DeployRuntime.grasp_allowance_enabled` (default off) with the always-passed manifest-derived `grasp_contact_links`, and the kernel consumer landed (`ingest_grasp_declaration`, default off; per-candidate scoping, handover retirement against the region latched at handover, proven on the twin control pair `tests/sim/test_gripper_twin_hal_mujoco_grasp_pair.py`); the real producer pending |
 | 7 | `feat(perception)`: pre-grasp target producer (search box → SAM 2.1 → OBB → region), tracking, handover | HAL/perception | develop on the twin pass (real ZED, twin HAL). *Producer leg implemented, default off* (`_grasp_target_leg`); the OpenArm scene's committed declaration carries no `search_box` yet, and the thresholds are uncalibrated |
 | 8 | `feat(hal)`: place on real — unit fixture + map verification + proximity witness + frozen release | HAL, bridge | **ADR-0097/0092 amendments**. *Schema landed*: `openral_core.UnitFixture` on `RobotUnit.fixtures` (checked by `fixture_problems` in `load_robot_unit`) and `AttachmentEvidenceKind.DECLARED_FIXTURE`; no unit carries a fixture yet and no producer reads one Frozen release window implemented* in the vision leg (§2.3 "Release"); fixture, map verification and witness pending . *Producer leg implemented, default off* (`_place_fixture_leg`, `vision_attachment_place_fixture_enabled`): resolves the declaration's `target_id` to a unit fixture, verifies its top face and the free volume above it against the live voxel map (unverified → region-less, reason logged), ships the fixture box as the region (no geometry), and attests the `DECLARED_FIXTURE` proximity witness once per declaration; the frozen release and the finger allowance are not part of it, and the thresholds are uncalibrated |
@@ -316,7 +347,21 @@ decide; 7 and 8 need the attended cell for calibration.
    declaration; target moved while frozen; leak to other links/arms; fingers into the support).
 3. Turning `attached_collision_enabled` on for real, with the deadline, and trusting vision
    geometry for map clearing (undersized box clears a real obstacle; phantom fallback box on a
-   closed-on-nothing gripper; dead effort channel → kernel drop window).
+   closed-on-nothing gripper; dead jaw-position channel → kernel drop window).
+6. Position-stall trigger hazards (`_grasp_trigger.PositionStallTrigger`): **false positive** — a
+   jaw obstructed by something other than the target (table, shelf lip, the other hand, the
+   object's edge before it is seated) stalls exactly like a grasp and attaches a jaw box (with
+   the grasp-target region payload, also hands the exemption over); **false negative** — an
+   object thinner than the stall gap in jaw angle (a card, a cable) never reads as held, so it is
+   carried invisible to the attached check and its cells stay in the map; a commanded target
+   that is not the jaw's real reference (trajectory interpolation, a controller that clamps)
+   shifts the gap. Mitigations to judge: the AND with vision at ATTACH (region containment or a
+   gated mask, else the `GRIPPER_CLOSURE` box), the release window, the calibration's per-side
+   rest offset.
+7. Vision confirmation semantics: a stall vision cannot confirm still attaches the conservative
+   `GRIPPER_CLOSURE` box (collision-conservative, but a phantom box can clear map cells); detach
+   is trigger-only (vision is never asked to keep a payload the jaws released) — whether a
+   refused confirmation should instead withhold the attachment is a WG decision.
 4. ADR-0097 amendment (unit-surveyed + map-verified fixture = measured region on fixed bases);
    ADR-0092 D6 amendment (proximity witness); the ADR-0098 joint-play offset if adopted;
    the frozen-release window; finger allowance inside the place region.
@@ -324,16 +369,18 @@ decide; 7 and 8 need the attended cell for calibration.
 
 ## 5. Measure before deciding (attended, cell)
 
-- `/joint_states` effort presence and raw gripper values; close-on-nothing vs close-on-foam
-  percentiles → are the 0.30/0.10 × 333 thresholds meaningful at all.
+- *Settled 2026-10-03 (vendor source + teleop data, §1.6):* effort is hard-coded 0 — not a
+  signal. Still to measure attended: per-side jaw position closing on nothing / foam / the restock
+  box / a thin card, the commanded target alongside, at 30 Hz → confirm `closure_calibration`
+  (rest offset, `stall_gap` 0.08, `settle_tolerance` 1e-3) and the thin-object floor.
 - *Measured 2026-10-02, no motion:* depth and RGB images both carry
   `header.frame_id = zed_left_camera_frame_optical` at 1920x1080; `camera_info` K = fx = fy =
   1498.18, cx = 936.11, cy = 541.81 (the manifest's nominal fx = 960 is 56 % short);
   `/tf_static` carries `zed_camera_link -> zed_camera_center -> zed_left_camera_frame ->
   zed_left_camera_frame_optical` from the driver. The vendor `openarm_ros2` description names the
   hand link `openarm_*_ee_base_link`; the manifest's `openarm_*_link7` is the same body
-  (`tf_frames` in the Thor scene). Still to read with the real bringup up: `/joint_states`
-  effort presence and `tf2_echo openarm_left_ee_base_link zed_left_camera_frame_optical`.
+  (`tf_frames` in the Thor scene). Still to read with the real bringup up:
+  `tf2_echo openarm_left_ee_base_link zed_left_camera_frame_optical`.
 - *Measured 2026-10-02:* SAM 2.1 hiera-small, bf16, `transformers` 5.5.4 on Thor, one live
   1920x1080 ZED left frame, point prompt: warm median 53 ms, p95 57 ms, cold 635 ms, peak
   279 MiB allocated — the same as the RTX 4070 Laptop figures, with π0.5 not loaded. The

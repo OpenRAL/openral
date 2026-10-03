@@ -45,6 +45,7 @@ from openral_core.schemas import (
     FrameEncoding,
     GraspDeclaration,
     GraspTargetRef,
+    GripperClosureCalibration,
     GripperConvention,
     HalConfig,
     HalEntrypoints,
@@ -182,12 +183,21 @@ _sensor_bundle_st = st.builds(
     sensors=st.lists(_sensor_spec_st, min_size=1, max_size=3),
 )
 
+_closure_calibration_st = st.builds(
+    GripperClosureCalibration,
+    closed_position=st.floats(min_value=-1.0, max_value=1.0),
+    closed_rest_offset=st.floats(min_value=0.0, max_value=0.1),
+    stall_gap=st.floats(min_value=1e-4, max_value=0.5),
+    settle_tolerance=st.floats(min_value=1e-5, max_value=0.05),
+)
+
 _joint_spec_st = st.builds(
     JointSpec,
     name=_name,
     joint_type=st.sampled_from(list(JointType)),
     parent_link=_name,
     child_link=_name,
+    closure_calibration=st.none() | _closure_calibration_st,
 )
 
 _end_effector_st = st.builds(
@@ -471,8 +481,6 @@ _vision_attachment_st = st.builds(
     segmenter_manifest=_name,
     deadline_s=st.floats(min_value=0.01, max_value=5.0),
     evidence_timeout_s=st.floats(min_value=0.01, max_value=5.0),
-    attach_effort=st.none() | st.floats(min_value=0.01, max_value=500.0),
-    release_effort=st.none() | st.floats(min_value=0.01, max_value=500.0),
     tf_frames=st.dictionaries(_name, _name, max_size=3),
     grasp_target_enabled=st.booleans(),
     place_fixture_enabled=st.booleans(),

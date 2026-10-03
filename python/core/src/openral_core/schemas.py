@@ -968,6 +968,45 @@ def deploy_cloud_topic(
 # ─── Joints / Actuation ────────────────────────────────────────────────────────
 
 
+class GripperClosureCalibration(BaseModel):
+    """How a ``role: gripper`` joint's *position* reads "closed on an object".
+
+    The position-stall grasp trigger (``openral_hal._grasp_trigger``) needs no effort
+    channel: a jaw commanded toward closed that settles short of the command by more than
+    its empty-close error is stalled on something. These are the robot-specific numbers that
+    turn that into thresholds, in the joint's own position units. Every one is a
+    **calibration point** measured per gripper (CLAUDE.md §1.2), never a library default.
+
+    Attributes:
+        closed_position: The commanded position of a fully closed jaw. Must be an end of the
+            joint's ``position_limits``: "closer to closed" is read as the distance to it.
+        closed_rest_offset: How far from ``closed_position`` the jaw rests when it closes on
+            nothing (mechanical stop, servo deadband). Measured, per side.
+        stall_gap: How much further from closed than the command (beyond
+            ``closed_rest_offset``) a settled jaw must sit to read as stalled on an object.
+            Also the band a command must be within of ``closed_position`` to count as a close
+            command, and (halved) the hysteresis for slip / release / re-seat.
+        settle_tolerance: Largest position span over the trigger's settle window for the jaw
+            to count as stationary. A few position-encoder LSBs.
+
+    Example:
+        >>> GripperClosureCalibration(
+        ...     closed_position=0.0,
+        ...     closed_rest_offset=0.0086,
+        ...     stall_gap=0.08,
+        ...     settle_tolerance=0.001,
+        ... ).stall_gap
+        0.08
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    closed_position: float
+    closed_rest_offset: float = Field(default=0.0, ge=0.0)
+    stall_gap: float = Field(gt=0.0)
+    settle_tolerance: float = Field(gt=0.0)
+
+
 class JointSpec(BaseModel):
     """URDF-derived joint specification.
 
@@ -1017,6 +1056,10 @@ class JointSpec(BaseModel):
             containing ``"gripper"``, e.g. ``"gripper_pose"``). Default
             ``"unknown"`` keeps legacy manifests loadable; the fleet
             annotates incrementally as this rolls out.
+        closure_calibration: Position-stall grasp-trigger calibration for a
+            ``role: "gripper"`` joint (``GripperClosureCalibration``). ``None``
+            = uncalibrated: the HAL's vision attachment leg refuses to arm a
+            trigger on that joint rather than guess thresholds.
         origin_xyz: Fixed translation (metres) of this joint's frame in
             its ``parent_link`` frame — the URDF ``<joint><origin xyz>``.
             With ``origin_rpy`` and ``axis_xyz`` it gives the
@@ -1048,6 +1091,7 @@ class JointSpec(BaseModel):
     ) = None
     sim_joint_name: str | None = None
     role: JointRole = "unknown"
+    closure_calibration: GripperClosureCalibration | None = None
 
 
 class EndEffectorSpec(BaseModel):
@@ -3028,6 +3072,8 @@ class AttachmentEvidenceKind(str, Enum):
 
     SIM_CONTACT = "sim_contact"
     SIM_GEOM_DISTANCE = "sim_geom_distance"
+    # A torque/force-sensing gripper read a grasp load. Kept for such grippers and for
+    # records written before ``GRIPPER_CLOSURE`` existed; no in-tree producer stamps it.
     GRIPPER_FORCE = "gripper_force"
     PERCEPTION_TRACK = "perception_track"
     OPERATOR = "operator"
@@ -3049,6 +3095,14 @@ class AttachmentEvidenceKind(str, Enum):
     # of a ``UnitFixture`` top plane it verified live against the voxel map and
     # the gripper is still loaded. A consumer must never read it as a touch.
     DECLARED_FIXTURE = "declared_fixture"
+    # A position-only gripper closed and stalled short of its command (the position-stall
+    # trigger, no effort channel) and vision could not confirm the shape: the conservative
+    # jaw-span box. Says only "something keeps the jaws apart", never what or how heavy.
+    GRIPPER_CLOSURE = "gripper_closure"
+    # The grasp-target leg's pre-grasp measured region (head-view segmentation + voxel map,
+    # ``PlaceRegion``) reused as the payload at ATTACH, gated by the jaw lying at the region
+    # (real pick-and-place design §2.2 "Handover"). Pre-grasp geometry, not a grasp-time view.
+    GRASP_TARGET_REGION = "grasp_target_region"
 
 
 class PlaceRegion(BaseModel):
@@ -9872,7 +9926,9 @@ class VisionAttachmentRuntime(BaseModel):
     the payload invisible to every collision check.
 
     Default off. Turning it on for a real cell is a Safety-WG decision (hazard log): the
-    gripper-effort thresholds are unmeasured on the OpenArm.
+    grasp trigger is the gripper's *position* stalling short of a close command (the OpenArm
+    gripper reports no effort), calibrated per joint in the manifest
+    (``JointSpec.closure_calibration``) from teleop data, and unmeasured attended on the cell.
 
     Attributes:
         enabled: Bring the leg up. Requires all four topics below.
@@ -9884,10 +9940,9 @@ class VisionAttachmentRuntime(BaseModel):
         segmenter_manifest: ``kind: segmenter`` rSkill manifest (repo- or scene-relative).
         device: Segmenter torch device (``auto`` / ``cuda`` / ``cpu``).
         deadline_s: How long the bridge waits for one segmenter reply.
-        evidence_timeout_s: How long the bridge waits for depth / mask evidence at an event.
-        attach_effort: Absolute gripper effort that reads as a grasp; ``None`` = the
-            trigger's fraction of the joint's effort limit.
-        release_effort: Absolute gripper effort that reads as a release; ``None`` = fraction.
+        evidence_timeout_s: How old the newest joint-state sample carrying a jaw position for
+            every gripper may be before the attachment heartbeat stops (HAL param
+            ``vision_attachment_evidence_timeout_s``).
         tf_frames: ``{manifest link: TF frame}`` renames where the live TF tree's frame names
             differ from the manifest's links.
         grasp_target_enabled: Run the pre-grasp target producer on the bridge (HAL param
@@ -9920,8 +9975,6 @@ class VisionAttachmentRuntime(BaseModel):
     device: str = "auto"
     deadline_s: float = Field(default=0.25, gt=0)
     evidence_timeout_s: float = Field(default=0.5, gt=0)
-    attach_effort: float | None = Field(default=None, gt=0)
-    release_effort: float | None = Field(default=None, gt=0)
     tf_frames: dict[str, str] = Field(default_factory=dict)
     grasp_target_enabled: bool = False
     place_fixture_enabled: bool = False

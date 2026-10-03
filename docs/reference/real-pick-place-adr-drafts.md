@@ -81,19 +81,25 @@ adjudication against the target body, as ADR-0098 does for places.
 geometry. (2) The caps. (3) Measure-once vs continuously re-measured region, given the gripper
 occludes the target at close-in. (4) Handover retirement rule and whether a failed grasp may
 re-arm within one goal. (5) Whether `link7` (the hand body) is a contact link — check the fitter
-output first. (6) The producer's prompt source (scene-named + search box recommended). (7) Whether
-ADR-0100's force gate should arm during close as additive conservatism.
+output first. (6) The producer's prompt source (scene-named + search box recommended).
+~~(7) Whether ADR-0100's force gate should arm during close as additive conservatism.~~ *Struck
+2026-10-03:* there is no force signal to gate on — the real OpenArm gripper's effort is hard-coded
+0.0 by the vendor driver (design note §1.6) and no joint declares a torque sensor. The grasp
+event is a position stall (HZ-01xx-8/9 below), not a sensed contact force.
 
 ## HZ-01xx — Grasp-target exemption misapplied
 
 | ID | Hazard | Cause | Mitigations |
 |---|---|---|---|
-| HZ-01xx-1 | Finger link contacts a non-target body (a hand, a neighbouring object) inside the declared region without a stop | Exemption is per cell, not per body | Region small (caps) and measured tight to the target; only the declared gripper's contact links exempt, arm links keep the full margin on the same cells; attended operation + hardware E-stop (mandatory on the cell); disclosure in logs/diagnostics/spans. Residual risk accepted by the WG or reduced later by ADR-0100 force gating during close. |
+| HZ-01xx-1 | Finger link contacts a non-target body (a hand, a neighbouring object) inside the declared region without a stop | Exemption is per cell, not per body | Region small (caps) and measured tight to the target; only the declared gripper's contact links exempt, arm links keep the full margin on the same cells; attended operation + hardware E-stop (mandatory on the cell); disclosure in logs/diagnostics/spans. Residual risk accepted by the WG (no force signal exists on this gripper to gate a close on, design note §1.6) or reduced later by per-finger geometry. |
 | HZ-01xx-2 | Wrong object / wrong region declared | Dispatch error or mis-segmentation | Dispatch can never supply a region; `evidence_ref`, `rskill_id`, `trace_id` logged at arm time; the producer checks the measured region against the declared target hint and the occupied cells it covers; frame mismatch refused. |
 | HZ-01xx-3 | Stale declaration outlives its goal or grasp | Dispatcher crash, producer stall, missed retraction | Goal-scoped retraction on every runner exit incl. E-stop; `timeout_s` backstop per candidate; region-age bound (`grasp_region_max_age_s`, at ingest and per candidate, pre-handover); world-state freshness; position-based handover retirement; an attach of an undeclared object on the declaring gripper retires the declaration at once (`handover_object_mismatch`) instead of leaving it alive to `timeout_s`; future stamps dead. |
 | HZ-01xx-4 | Target moved after measurement; exemption covers vacated space or a new arrival | Measure-once region | Region-age bound (implemented: `grasp_region_max_age_s` / `place_region_max_age_s`, default 2 × `world_voxel_deadline`, ≤ 4 s; a stale or future-stamped region exempts nothing, `reason=region_stale`) and re-measurement. Residual: after the handover latch the age bound no longer applies (the target is occluded and the box frozen); the payload-in-box rule, stream deadline and `timeout_s` bound that window (WG). |
 | HZ-01xx-5 | Exemption leaks to other links, arms or robots | Configuration error | Static allowlist resolved at configure (unknown link fails configure); declaration links must be a subset; intersection mask; bimanual test. The handover binds only to a payload on the declaring gripper's chain (contact link or non-root ancestor), never the other hand's payload or a release record frozen on the base, so another arm's attachment can neither extend nor end this gripper's exemption. |
 | HZ-01xx-6 | Fingers driven into the support surface under the target | Region extends into the support plane | Producer obligation that the region's lower face sits above the support plane; kernel test pins that support cells outside the region still stop. |
+| HZ-01xx-8 | Stall **false positive**: an ATTACH with nothing (or the wrong thing) between the jaws | The position-stall trigger reads any obstruction that stops a closing jaw short of its command — the table, a shelf lip, the other hand, the target's edge before it is seated — as a grasp | Vision AND at ATTACH: the grasp-target region payload only when the jaw is at the region, else a gated `SegmentInView` mask; an unconfirmed stall still attaches only the low-confidence `GRIPPER_CLOSURE` jaw box (collision-conservative; WG to judge the map-clearing cost); settle + debounce (5 + 3 ticks); the kernel's `handover_object_mismatch` retires a declaration when the wrong object attaches. |
+| HZ-01xx-9 | Stall **false negative**: a held object never attaches | An object thinner than `stall_gap` in jaw angle (card, cable) stops the jaw too close to its command; a command the controller does not actually track (interpolation, clamping) shifts the gap | Per-side calibration (`JointSpec.closure_calibration`) measured attended (design note §5); the carried object stays in the voxel map, so the world check still sees it — the failure is a stop, not a silent collision; thin objects are out of scope until measured. |
+| HZ-01xx-10 | The commanded target the trigger compares against is stale | No action applied since bringup / e-stop; a slot that never names the gripper | The trigger cannot attach without a command (`uncommanded_ticks` counted); only JOINT_POSITION rows naming the gripper joint update it; detach is trigger-driven and needs no command beyond the last one. |
 | HZ-01xx-7 | The exemption silences the graded velocity band for the whole chunk | An exempt finger inside its target reads a negative distance; the sweep keeps one minimum, and the band discards a negative slack as "tripped", so every non-exempt pair's slowdown is lost with it | The band clamps an untripped check's slack to `max(slack, 0)`, so any exempt pair (grasp target, support witness, embedded residue) reads as slack 0 — the band's slowest rate, never full speed; lifecycle tests pin the scaled chunk with the exempt finger inside its target and with a payload resting on its witnessed support. |
 
 Cite alongside: the existing self-filter shell hazard (2 cm padding around the swept finger hull
@@ -104,7 +110,7 @@ already blinds the map near the jaws).
 Turning `attached_collision_enabled` on for real (coupled to the vision leg, 1000 ms deadline)
 changes drop semantics and trusts vision-only, low-confidence geometry for map clearing.
 Hazard-log entry to cover: (a) an undersized vision box clearing a real obstacle from the voxel
-map; (b) the window from a dead effort channel to a kernel drop (heartbeat gate ×
+map; (b) the window from a dead jaw-position channel to a kernel drop (heartbeat gate ×
 `evidence_timeout_s` vs the deadline); (c) a phantom jaw-box fallback when the gripper closes on
 nothing; (d) two segmentations in flight on one segmenter (bounded by per-leg deadlines).
 

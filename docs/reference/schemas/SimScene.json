@@ -1898,7 +1898,7 @@
     },
     "VisionAttachmentRuntime": {
       "additionalProperties": false,
-      "description": "The real-hardware vision attachment leg of a deploy (``DeployRuntime.vision_attachment``).\n\nWhen ``enabled``, ``openral deploy`` launches the SAM 2.1 segmenter lifecycle node\n(``openral_perception_ros`` ``segmenter_node``) and turns on the HAL's vision\nattachment-evidence bridge (the ``vision_attachment_*`` HAL parameters), which publishes\nthe grasped payload on ``/openral/attachment_state``.\n\n**Coupling rule:** on real hardware the leg ALWAYS turns the safety kernel's attached-payload\ncheck on with it (``attached_collision_enabled``, 1000 ms deadline), never the leg alone. The\noctomap bridge clears a published payload from the map and the robot self-filter removes it\nfrom the cloud regardless of the kernel flag, so a leg without the kernel check would make\nthe payload invisible to every collision check.\n\nDefault off. Turning it on for a real cell is a Safety-WG decision (hazard log): the\ngripper-effort thresholds are unmeasured on the OpenArm.\n\nAttributes:\n    enabled: Bring the leg up. Requires all four topics below.\n    camera: Manifest sensor name the segmenter and the bridge use (e.g. ``head_zed``).\n    rgb_topic: The camera driver's RGB ``Image`` topic the segmenter caches.\n    rgb_camera_info_topic: The driver's ``CameraInfo`` for that RGB stream.\n    depth_topic: The driver's metric depth ``Image`` the bridge back-projects.\n    depth_camera_info_topic: The driver's ``CameraInfo`` for the depth stream.\n    segmenter_manifest: ``kind: segmenter`` rSkill manifest (repo- or scene-relative).\n    device: Segmenter torch device (``auto`` / ``cuda`` / ``cpu``).\n    deadline_s: How long the bridge waits for one segmenter reply.\n    evidence_timeout_s: How long the bridge waits for depth / mask evidence at an event.\n    attach_effort: Absolute gripper effort that reads as a grasp; ``None`` = the\n        trigger's fraction of the joint's effort limit.\n    release_effort: Absolute gripper effort that reads as a release; ``None`` = fraction.\n    tf_frames: ``{manifest link: TF frame}`` renames where the live TF tree's frame names\n        differ from the manifest's links.\n    grasp_target_enabled: Run the pre-grasp target producer on the bridge (HAL param\n        ``vision_attachment_grasp_target_enabled``): it measures the region the kernel's\n        grasp-target exemption arms with, so ``deploy run`` refuses\n        ``DeployRuntime.grasp_allowance_enabled`` without it. Default off.\n    place_fixture_enabled: Run the real place producer (HAL param\n        ``vision_attachment_place_fixture_enabled``), verifying the robot unit's\n        fixtures against the voxel map. Default off.\n    release_timeout_s: How long the bridge's release window waits for the payload to\n        clear the jaws (HAL param ``vision_attachment_release_timeout_s``). Calibration\n        point. The window's grid age and clearance are not scene knobs: the deploy\n        launch derives them from the kernel's voxel deadline, world margin and octree\n        resolution.\n\nExample:\n    >>> VisionAttachmentRuntime(camera=\"head_zed\").enabled\n    False",
+      "description": "The real-hardware vision attachment leg of a deploy (``DeployRuntime.vision_attachment``).\n\nWhen ``enabled``, ``openral deploy`` launches the SAM 2.1 segmenter lifecycle node\n(``openral_perception_ros`` ``segmenter_node``) and turns on the HAL's vision\nattachment-evidence bridge (the ``vision_attachment_*`` HAL parameters), which publishes\nthe grasped payload on ``/openral/attachment_state``.\n\n**Coupling rule:** on real hardware the leg ALWAYS turns the safety kernel's attached-payload\ncheck on with it (``attached_collision_enabled``, 1000 ms deadline), never the leg alone. The\noctomap bridge clears a published payload from the map and the robot self-filter removes it\nfrom the cloud regardless of the kernel flag, so a leg without the kernel check would make\nthe payload invisible to every collision check.\n\nDefault off. Turning it on for a real cell is a Safety-WG decision (hazard log): the\ngrasp trigger is the gripper's *position* stalling short of a close command (the OpenArm\ngripper reports no effort), calibrated per joint in the manifest\n(``JointSpec.closure_calibration``) from teleop data, and unmeasured attended on the cell.\n\nAttributes:\n    enabled: Bring the leg up. Requires all four topics below.\n    camera: Manifest sensor name the segmenter and the bridge use (e.g. ``head_zed``).\n    rgb_topic: The camera driver's RGB ``Image`` topic the segmenter caches.\n    rgb_camera_info_topic: The driver's ``CameraInfo`` for that RGB stream.\n    depth_topic: The driver's metric depth ``Image`` the bridge back-projects.\n    depth_camera_info_topic: The driver's ``CameraInfo`` for the depth stream.\n    segmenter_manifest: ``kind: segmenter`` rSkill manifest (repo- or scene-relative).\n    device: Segmenter torch device (``auto`` / ``cuda`` / ``cpu``).\n    deadline_s: How long the bridge waits for one segmenter reply.\n    evidence_timeout_s: How old the newest joint-state sample carrying a jaw position for\n        every gripper may be before the attachment heartbeat stops (HAL param\n        ``vision_attachment_evidence_timeout_s``).\n    tf_frames: ``{manifest link: TF frame}`` renames where the live TF tree's frame names\n        differ from the manifest's links.\n    grasp_target_enabled: Run the pre-grasp target producer on the bridge (HAL param\n        ``vision_attachment_grasp_target_enabled``): it measures the region the kernel's\n        grasp-target exemption arms with, so ``deploy run`` refuses\n        ``DeployRuntime.grasp_allowance_enabled`` without it. Default off.\n    place_fixture_enabled: Run the real place producer (HAL param\n        ``vision_attachment_place_fixture_enabled``), verifying the robot unit's\n        fixtures against the voxel map. Default off.\n    release_timeout_s: How long the bridge's release window waits for the payload to\n        clear the jaws (HAL param ``vision_attachment_release_timeout_s``). Calibration\n        point. The window's grid age and clearance are not scene knobs: the deploy\n        launch derives them from the kernel's voxel deadline, world margin and octree\n        resolution.\n\nExample:\n    >>> VisionAttachmentRuntime(camera=\"head_zed\").enabled\n    False",
       "properties": {
         "enabled": {
           "default": false,
@@ -1979,32 +1979,6 @@
           "exclusiveMinimum": 0,
           "title": "Evidence Timeout S",
           "type": "number"
-        },
-        "attach_effort": {
-          "anyOf": [
-            {
-              "exclusiveMinimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Attach Effort"
-        },
-        "release_effort": {
-          "anyOf": [
-            {
-              "exclusiveMinimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Release Effort"
         },
         "tf_frames": {
           "additionalProperties": {

@@ -16,7 +16,8 @@ without one:
   producer gates on.
 * the per-gripper leg wiring ``VisionAttachmentBridge.__init__`` resolves from
   the real SO-101 and bimanual OpenArm manifests (it creates no ROS entities, so
-  ``node=None`` is the real constructor, not a double).
+  ``node=None`` is the real constructor, not a double), the commanded-target feed
+  (``observe_command``) and the grasp-target region payload (``region_attachment``).
 """
 
 from __future__ import annotations
@@ -26,7 +27,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from openral_core import JointState, RobotDescription
+from openral_core import (
+    Action,
+    ControlMode,
+    GripperClosureCalibration,
+    JointState,
+    RobotDescription,
+)
 from openral_core.exceptions import ROSConfigError
 from openral_hal.vision_attachment_bridge import (
     DEFAULT_SEGMENT_SERVICE,
@@ -99,7 +106,7 @@ def test_ok_with_no_candidates_falls_back() -> None:
 def test_every_outcome_is_named_or_clean(timed_out: bool, ok: bool, mask_count: int) -> None:
     """No input combination yields an unexplained fallback.
 
-    The producer turns ``use_masks=False`` into the conservative GRIPPER_FORCE
+    The producer turns ``use_masks=False`` into the conservative GRIPPER_CLOSURE
     box, so an unnamed one would be an attachment nobody could explain from the
     trace (CLAUDE.md §1.4).
     """
@@ -243,68 +250,117 @@ def _openarm() -> RobotDescription:
     return RobotDescription.from_yaml("robots/openarm/robot.yaml")
 
 
-def test_absolute_efforts_scale_per_gripper_on_hands_with_different_limits() -> None:
-    """A scene's absolute attach/release effort holds on each hand even when the two gripper
-    joints declare different ``effort_limit`` s: each trigger's fraction comes from its own
-    joint's limit, so neither hand's threshold is scaled against the other's."""
-    from openral_hal.lifecycle import vision_attachment_trigger_config
-
-    openarm = _openarm()
-    joints = [
-        joint.model_copy(update={"effort_limit": 100.0}) if joint.name == "right_gripper" else joint
-        for joint in openarm.joints
-    ]
-    description = openarm.model_copy(update={"joints": joints})
-    limits = {j.name: j.effort_limit for j in description.joints if j.role == "gripper"}
-    assert limits["left_gripper"] != limits["right_gripper"]
-
-    configs = vision_attachment_trigger_config(description, attach_effort=60.0, release_effort=20.0)
-    assert configs is not None
-    bridge = VisionAttachmentBridge(
-        None,
-        description,
-        config=VisionAttachmentConfig(camera="head_zed"),
-        trigger_config=configs,
-    )
-    assert [leg.trigger.thresholds_n for leg in bridge._legs] == [
-        pytest.approx((60.0, 20.0)),
-        pytest.approx((60.0, 20.0)),
-    ]
-    assert configs["right_gripper"].attach_effort_fraction == pytest.approx(0.6)
-
-
-def test_an_effort_above_one_hands_own_limit_is_refused() -> None:
-    """150 fits the 333 left hand but exceeds the 100 right one: that hand could never ATTACH."""
-    from openral_hal.lifecycle import vision_attachment_trigger_config
-
-    openarm = _openarm()
-    joints = [
-        joint.model_copy(update={"effort_limit": 100.0}) if joint.name == "right_gripper" else joint
-        for joint in openarm.joints
-    ]
-    description = openarm.model_copy(update={"joints": joints})
-    with pytest.raises(ROSConfigError, match="right_gripper"):
-        vision_attachment_trigger_config(description, attach_effort=150.0, release_effort=0.0)
-    with pytest.raises(ROSConfigError, match="right_gripper"):
-        vision_attachment_trigger_config(description, attach_effort=0.0, release_effort=150.0)
-    # 100 is exactly the right hand's limit: fraction 1.0 is allowed.
-    configs = vision_attachment_trigger_config(
-        description, attach_effort=100.0, release_effort=20.0
-    )
-    assert configs is not None
-    assert configs["right_gripper"].attach_effort_fraction == pytest.approx(1.0)
-
-
-def test_a_per_joint_trigger_config_must_name_every_gripper() -> None:
-    from openral_hal._grasp_trigger import GraspTriggerConfig
-
-    with pytest.raises(ROSConfigError, match="right_gripper"):
+def test_an_uncalibrated_gripper_refuses_the_bridge() -> None:
+    """SO-101 declares no ``closure_calibration``: a typed error, never guessed thresholds."""
+    with pytest.raises(ROSConfigError, match="closure_calibration"):
         VisionAttachmentBridge(
             None,
-            _openarm(),
-            config=VisionAttachmentConfig(camera="head_zed"),
-            trigger_config={"left_gripper": GraspTriggerConfig()},
+            RobotDescription.from_yaml("robots/so101_follower/robot.yaml"),
+            config=VisionAttachmentConfig(camera="wrist"),
         )
+
+
+def _so101_calibrated() -> RobotDescription:
+    """SO-101 with an ILLUSTRATIVE calibration (none is measured) so its TCP wiring loads."""
+    description = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    calibration = GripperClosureCalibration(
+        closed_position=0.0, closed_rest_offset=0.0, stall_gap=0.1, settle_tolerance=0.01
+    )
+    joints = [
+        j.model_copy(update={"closure_calibration": calibration}) if j.role == "gripper" else j
+        for j in description.joints
+    ]
+    return description.model_copy(update={"joints": joints})
+
+
+def _action(rows: list[list[float]], names: list[str] | None = None) -> Action:
+    return Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=len(rows),
+        joint_targets=rows,
+        joint_names=names,
+    )
+
+
+def test_a_whole_vector_action_commands_both_jaws_from_its_last_row() -> None:
+    """Rows in manifest order; the trajectory goal (last row) is the command."""
+    description = _openarm()
+    bridge = VisionAttachmentBridge(
+        None, description, config=VisionAttachmentConfig(camera="head_zed")
+    )
+    names = [j.name for j in description.joints]
+    first, last = [0.0] * len(names), [0.0] * len(names)
+    first[names.index("left_gripper")] = 0.7
+    last[names.index("left_gripper")] = 0.05
+    last[names.index("right_gripper")] = -0.6
+    bridge.observe_command(_action([first, last]))
+    left, right = bridge._legs
+    assert left.trigger.last_command == 0.05
+    assert right.trigger.last_command == -0.6
+
+
+def test_a_slot_action_commands_only_the_jaw_it_names() -> None:
+    """ADR-0102: a zero-padded slot owns only ``joint_names``; the other hand keeps its command."""
+    description = _openarm()
+    bridge = VisionAttachmentBridge(
+        None, description, config=VisionAttachmentConfig(camera="head_zed")
+    )
+    left, right = bridge._legs
+    right.trigger.command(-0.5)
+    slot = [f"left_joint{i}" for i in range(1, 8)] + ["left_gripper"]
+    bridge.observe_command(_action([[0.1] * 7 + [0.0] + [0.0] * 8], names=slot))
+    assert left.trigger.last_command == 0.0
+    assert right.trigger.last_command == -0.5, "a zero pad is not a right-hand close command"
+
+
+def test_a_non_joint_position_action_commands_no_jaw() -> None:
+    bridge = VisionAttachmentBridge(
+        None, _openarm(), config=VisionAttachmentConfig(camera="head_zed")
+    )
+    bridge.observe_command(
+        Action(control_mode=ControlMode.JOINT_VELOCITY, horizon=1, joint_velocities=[[0.0] * 16])
+    )
+    assert all(leg.trigger.last_command is None for leg in bridge._legs)
+
+
+def test_the_region_payload_is_the_declared_object_at_the_region() -> None:
+    """Design §2.2 handover: the latched region, posed in the attach link, named for the kernel."""
+    from openral_core import AttachmentEvidenceKind, DeployScene, PlaceRegion, Pose6D
+    from openral_core.geometry import homogeneous_from_quat_xyz
+    from openral_hal.vision_attachment_bridge import region_attachment
+
+    scene = DeployScene.from_yaml(
+        "tests/unit/fixtures/scenes/openarm_direct_dispatch_grasp.yaml"
+    ).grasp_declaration
+    assert scene is not None
+    region = PlaceRegion(
+        frame_id="openarm_base",
+        pose=Pose6D(xyz=(0.45, 0.0, 0.09), quat_xyzw=(0, 0, 0, 1), frame_id="openarm_base"),
+        half_extents=(0.03, 0.04, 0.05),
+        evidence_ref="segment_in_view:test@0",
+        stamp_ns=5,
+    )
+    declaration = scene.model_copy(update={"region": region})
+    # attach link <- base: the hand 0.4 m out along x, rotated 90 deg about z.
+    half = np.sqrt(0.5)
+    t_base_from_link = homogeneous_from_quat_xyz((0.4, 0.0, 0.1), (0.0, 0.0, half, half))
+    held = region_attachment(
+        declaration,
+        attach_link="openarm_left_link7",
+        touch_links=("openarm_left_finger_pair",),
+        t_link_from_region=np.linalg.inv(t_base_from_link),
+        stamp_ns=7,
+    )
+    assert held.object_id == (declaration.object_id or declaration.target_id)
+    assert held.evidence_kind is AttachmentEvidenceKind.GRASP_TARGET_REGION
+    assert held.attach_link == "openarm_left_link7"
+    (prim,) = held.primitives
+    assert prim.shape.half_extents_m == (0.03, 0.04, 0.05)
+    back = t_base_from_link @ homogeneous_from_quat_xyz(
+        held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
+    )
+    np.testing.assert_allclose(back[:3, 3], (0.45, 0.0, 0.09), atol=1e-9)
+    np.testing.assert_allclose(back[:3, :3], np.eye(3), atol=1e-9)
 
 
 def test_a_bimanual_bridge_builds_one_leg_per_gripper() -> None:
@@ -346,9 +402,7 @@ def test_a_single_tcp_frame_override_is_refused_on_two_grippers() -> None:
 def test_the_single_gripper_bridge_keeps_its_tf_tcp() -> None:
     """SO-101 still looks its TCP up as the moving jaw through tf2, as before."""
     bridge = VisionAttachmentBridge(
-        None,
-        RobotDescription.from_yaml("robots/so101_follower/robot.yaml"),
-        config=VisionAttachmentConfig(camera="wrist"),
+        None, _so101_calibrated(), config=VisionAttachmentConfig(camera="wrist")
     )
     (leg,) = bridge._legs
     assert leg.producer.attach_link == "gripper_base"
@@ -386,17 +440,19 @@ def test_tf_frames_rejects_a_link_the_manifest_does_not_have() -> None:
 
 
 def _gripper_sample(*, left: float | None, right: float | None, stamp_ns: int) -> JointState:
-    """One OpenArm read carrying effort for whichever grippers have a value."""
-    names = [
-        name
+    """One OpenArm read carrying a jaw position for whichever grippers have a value.
+
+    Effort is the real driver's: a zero for every joint, every tick.
+    """
+    named = [
+        (name, value)
         for name, value in (("left_gripper", left), ("right_gripper", right))
         if value is not None
     ]
-    efforts = [value for value in (left, right) if value is not None]
     return JointState(
-        name=names or ["left_gripper"],
-        position=[0.0] * max(len(names), 1),
-        effort=efforts,
+        name=[name for name, _ in named] or ["left_joint1"],
+        position=[value for _, value in named] or [0.0],
+        effort=[0.0] * max(len(named), 1),
         stamp_ns=stamp_ns,
     )
 
@@ -410,7 +466,7 @@ def test_the_heartbeat_evidence_needs_every_gripper_for_n_samples_in_a_row() -> 
     bridge = VisionAttachmentBridge(
         None, _openarm(), config=VisionAttachmentConfig(camera="head_zed")
     )
-    unloaded = 0.01  # well under both release thresholds, but present
+    unloaded = 0.01  # an open-ish jaw, no command yet: present, never an event
     now = time.monotonic
     for tick in range(2):
         bridge.observe_joint_state(_gripper_sample(left=unloaded, right=unloaded, stamp_ns=tick))
@@ -422,6 +478,9 @@ def test_the_heartbeat_evidence_needs_every_gripper_for_n_samples_in_a_row() -> 
         bridge.observe_joint_state(_gripper_sample(left=unloaded, right=unloaded, stamp_ns=tick))
     assert bridge._evidence.live(now_s=now())
     assert not bridge._evidence.live(now_s=now() + 0.6), "evidence older than 0.5 s is dead"
+    bridge.observe_joint_state(_gripper_sample(left=float("nan"), right=unloaded, stamp_ns=6))
+    assert not bridge._evidence.live(now_s=now()), "a non-finite jaw position is a dead channel"
+    assert bridge.missing_position_ticks == 2
     later = now() + 1.0
     bridge._evidence.observe(complete=True, now_s=later)
     assert not bridge._evidence.live(now_s=later), "a channel back from a gap must re-earn N"

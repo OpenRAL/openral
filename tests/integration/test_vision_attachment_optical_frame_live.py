@@ -159,7 +159,13 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
 
-    from openral_core import AttachmentEvidenceKind, JointState, RobotDescription
+    from openral_core import (
+        Action,
+        AttachmentEvidenceKind,
+        ControlMode,
+        JointState,
+        RobotDescription,
+    )
     from openral_hal.vision_attachment_bridge import (
         VisionAttachmentBridge,
         VisionAttachmentConfig,
@@ -288,13 +294,21 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
         assert _wait_until(bridge._client.service_is_ready), "SegmentInView never discovered"
         # Each bridge owns a fresh tf2 listener; let it hear /tf_static first.
         assert _wait_until(lambda: bridge._lookup(attach_link, _OPTICAL) is not None)
-        held = 0.9 * float(left.effort_limit)
-        for tick in range(6):
+        # Close both jaws; the left one stalls 0.2 rad short (an object), the right
+        # rests closed on nothing. Effort is the real driver's zeros.
+        bridge.observe_command(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[[0.0] * len(description.joints)],
+            )
+        )
+        for tick in range(12):
             bridge.observe_joint_state(
                 JointState(
                     name=["left_gripper", "right_gripper"],
-                    position=[0.0, 0.0],
-                    effort=[held, 0.01],
+                    position=[0.2, -0.0116],
+                    effort=[0.0, 0.0],
                     stamp_ns=1_000 + tick,
                 )
             )
@@ -309,7 +323,7 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
     try:
         # ── 1. Full resolution, the driver's K: the payload is measured at the TCP.
         full, attached = grasp("full", depth_shape=_FULL, k=_THOR_K, publish_info=True)
-        assert attached.evidence_kind is not AttachmentEvidenceKind.GRIPPER_FORCE, (
+        assert attached.evidence_kind is not AttachmentEvidenceKind.GRIPPER_CLOSURE, (
             f"fell back; log: {[line for line in logs if 'vision attachment' in line]}"
         )
         request = requests[-1]
@@ -340,10 +354,10 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
 
         # ── 2. No CameraInfo: the conservative box, with the reason named. ────
         _, fallback = grasp("noinfo", depth_shape=_FULL, k=_THOR_K, publish_info=False)
-        assert fallback.evidence_kind is AttachmentEvidenceKind.GRIPPER_FORCE
+        assert fallback.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
         assert _wait_until(
             lambda: any(
-                "fell back to GRIPPER_FORCE" in line
+                "fell back to GRIPPER_CLOSURE" in line
                 and "ROSPerceptionStale: no CameraInfo yet on '/test_vision_optical/noinfo/" in line
                 for line in logs
             ),
@@ -355,7 +369,7 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
         _, halved = grasp(
             "half", depth_shape=(_FULL[0] // 2, _FULL[1] // 2), k=half_k, publish_info=True
         )
-        assert halved.evidence_kind is not AttachmentEvidenceKind.GRIPPER_FORCE, (
+        assert halved.evidence_kind is not AttachmentEvidenceKind.GRIPPER_CLOSURE, (
             f"fell back; log: {[line for line in logs if 'vision attachment' in line]}"
         )
         drift = float(np.linalg.norm(np.asarray(halved.pose_in_link.xyz) - centre_full))
@@ -364,10 +378,10 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
         # ── 4. A mask captured 0.5 s from the depth frame: never back-projected. ──
         mask_skew_s["value"] = 0.5
         _, skewed = grasp("skewed", depth_shape=_FULL, k=_THOR_K, publish_info=True)
-        assert skewed.evidence_kind is AttachmentEvidenceKind.GRIPPER_FORCE
+        assert skewed.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
         assert _wait_until(
             lambda: any(
-                "fell back to GRIPPER_FORCE: ROSPerceptionStale: SegmentInView mask captured "
+                "fell back to GRIPPER_CLOSURE: ROSPerceptionStale: SegmentInView mask captured "
                 "0.500 s from the depth frame" in line
                 for line in logs
             ),

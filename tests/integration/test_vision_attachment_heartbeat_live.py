@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Live-ROS: the vision attachment leg heartbeats its set, only while effort evidence is live.
+"""Live-ROS: the vision attachment leg heartbeats its set, only while jaw positions are live.
 
 The kernel's attached-payload check fails closed on an attachment snapshot it
 has never heard (``attachment_stamp_ns == 0``) or one older than its deadline.
@@ -9,10 +9,13 @@ revision restarted at 0 on every HAL activate, which the world-state aggregator
 rejects as moving backwards.
 
 The heartbeat is a claim about the jaws, so it is gated: nothing is published
-until every gripper's effort channel has reported for
-``GraspTriggerConfig.consecutive_ticks`` samples in a row, and it stops within
+until every gripper's jaw *position* channel has reported for
+``PositionStallConfig.consecutive_ticks`` samples in a row, and it stops within
 ``evidence_timeout_s`` of the channel going quiet — a dead channel becomes a
-kernel drop, never a stale "nothing attached".
+kernel drop, never a stale "nothing attached". Effort is fed as the real OpenArm
+driver publishes it — zeros, every tick — and plays no part. The ATTACH comes from the
+position-stall trigger: a close command (``observe_command``) and a left jaw that
+settles 0.2 rad short of it.
 
 Real rclpy, real ``VisionAttachmentBridge`` on the bimanual OpenArm manifest,
 real ``openral_msgs`` on the wire, real tf2 and a real depth frame. The
@@ -67,13 +70,19 @@ def _wait_until(predicate: Any, *, timeout_s: float = 5.0) -> bool:
     return False
 
 
-def test_the_vision_leg_heartbeats_only_on_live_effort_with_a_monotonic_revision() -> None:
+def test_the_vision_leg_heartbeats_only_on_live_jaw_positions_with_a_monotonic_revision() -> None:
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
 
     import numpy as np
     from geometry_msgs.msg import TransformStamped
-    from openral_core import AttachedCollisionObject, JointState, RobotDescription
+    from openral_core import (
+        Action,
+        AttachedCollisionObject,
+        ControlMode,
+        JointState,
+        RobotDescription,
+    )
     from openral_hal.vision_attachment_bridge import (
         VisionAttachmentBridge,
         VisionAttachmentConfig,
@@ -94,6 +103,10 @@ def test_the_vision_leg_heartbeats_only_on_live_effort_with_a_monotonic_revision
 
     description = RobotDescription.from_yaml(str(_ROBOT_YAML))
     left = next(j for j in description.joints if j.name == "left_gripper")
+    names = [j.name for j in description.joints]
+    close_both = Action(
+        control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[[0.0] * len(names)]
+    )
     camera = next(spec for spec in description.sensors if spec.name == _CAMERA)
     depth_topic = camera_topic(_CAMERA, CameraTopicKind.DEPTH_IMAGE)
     config = VisionAttachmentConfig(
@@ -118,7 +131,13 @@ def test_the_vision_leg_heartbeats_only_on_live_effort_with_a_monotonic_revision
     aggregator_errors: list[str] = []
     # (receipt monotonic s, samples fed so far, revision, stamp ns, object count)
     received: list[tuple[float, int, int, int, int]] = []
-    feed: dict[str, Any] = {"on": False, "left": 0.01, "count": 0, "bridge": None}
+    feed: dict[str, Any] = {
+        "on": False,
+        "left": 0.5,  # open
+        "close": False,
+        "count": 0,
+        "bridge": None,
+    }
 
     def on_state(msg: Any) -> None:
         stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
@@ -152,11 +171,13 @@ def test_the_vision_leg_heartbeats_only_on_live_effort_with_a_monotonic_revision
         if not feed["on"] or bridge is None:
             return
         feed["count"] += 1
+        if feed["close"]:
+            bridge.observe_command(close_both)
         bridge.observe_joint_state(
             JointState(
                 name=["left_gripper", "right_gripper"],
-                position=[0.0, 0.0],
-                effort=[feed["left"], 0.01],
+                position=[feed["left"], -0.0116],  # right: closed on nothing
+                effort=[0.0, 0.0],  # the real driver's hard-coded zeros
                 stamp_ns=time.time_ns(),
             )
         )
@@ -174,11 +195,11 @@ def test_the_vision_leg_heartbeats_only_on_live_effort_with_a_monotonic_revision
         feed["bridge"] = first
         first.setup()
 
-        # ── (a) No effort yet: nothing is claimed, not even an empty set. ─────
+        # ── (a) No jaw positions yet: nothing is claimed, not even an empty set.
         time.sleep(4 * _PERIOD_S)
-        assert received == [], "the heartbeat spoke before any effort evidence"
+        assert received == [], "the heartbeat spoke before any jaw-position evidence"
         feed["on"] = True
-        assert _wait_until(lambda: bool(received)), "no heartbeat once effort was live"
+        assert _wait_until(lambda: bool(received)), "no heartbeat once jaw positions were live"
         assert received[0][1] >= 3, (
             f"published after {received[0][1]} samples; the debounce needs "
             "consecutive_ticks=3 complete samples first"
@@ -194,13 +215,13 @@ def test_the_vision_leg_heartbeats_only_on_live_effort_with_a_monotonic_revision
         stamps = [stamp for _, _, _, stamp, _ in window]
         assert stamps == sorted(stamps) and len(set(stamps)) == len(stamps)
 
-        # ── (c) The effort channel goes quiet: the heartbeat stops. ──────────
+        # ── (c) The position channel goes quiet: the heartbeat stops. ────────
         feed["on"] = False
         quiet_at = time.monotonic()
         time.sleep(_EVIDENCE_TIMEOUT_S + 4 * _PERIOD_S)
         last_heard = received[-1][0]
         assert last_heard <= quiet_at + _EVIDENCE_TIMEOUT_S + _PERIOD_S + 0.1, (
-            f"still heartbeating {last_heard - quiet_at:.2f} s after effort went quiet"
+            f"still heartbeating {last_heard - quiet_at:.2f} s after positions went quiet"
         )
 
         # ── (d) ATTACH resolves to the fallback box on the attach deadline,
@@ -239,7 +260,9 @@ def test_the_vision_leg_heartbeats_only_on_live_effort_with_a_monotonic_revision
 
         empty_revision = received[-1][2]
         start = len(received)
-        feed["left"] = 0.9 * float(left.effort_limit)
+        # Close on an object: commanded 0.0, the left jaw stalls 0.2 rad short.
+        feed["left"] = 0.2
+        feed["close"] = True
         loaded_at = time.monotonic()
         feed["on"] = True
         assert _wait_until(lambda: any(count == 1 for *_, count in since(start))), (
@@ -260,7 +283,8 @@ def test_the_vision_leg_heartbeats_only_on_live_effort_with_a_monotonic_revision
 
         # ── (e) Re-activate: the next bridge's revision is greater. ──────────
         feed["on"] = False
-        feed["left"] = 0.01
+        feed["left"] = 0.5
+        feed["close"] = False
         first.teardown()
         last_revision = max(row[2] for row in received)
         start = len(received)

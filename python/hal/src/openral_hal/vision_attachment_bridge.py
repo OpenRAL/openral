@@ -35,7 +35,7 @@ Three properties of that wait are non-negotiable:
   wedged is a worse failure than a conservatively-shaped payload.
 * **It never skips.** A timeout, a service failure, a missing depth
   frame and a missing transform all end in the producer's conservative
-  jaw-span box, stamped ``AttachmentEvidenceKind.GRIPPER_FORCE`` at low
+  jaw-span box, stamped ``AttachmentEvidenceKind.GRIPPER_CLOSURE`` at low
   confidence. Something is in the jaws either way; the collision
   checker must see *some* geometry.
 * **It is visible.** Every fallback logs its typed reason and every
@@ -46,11 +46,25 @@ The kernel's attached-payload check fails closed on a snapshot it has never
 heard (``attachment_stamp_ns == 0``) or one older than its deadline, so the
 set is republished on a 0.2 s heartbeat — the same period as the simulator
 bridge's. That heartbeat is a claim about the jaws, so it is only made while
-the claim has evidence behind it: every gripper's effort channel must have
-reported within ``VisionAttachmentConfig.evidence_timeout_s``, for at least
-``GraspTriggerConfig.consecutive_ticks`` samples in a row, with no grasp
-being resolved. A dead effort channel therefore ages into a kernel drop, never
-into a stale "nothing attached".
+the claim has evidence behind it: every gripper's jaw *position* channel must
+have reported a finite value within ``VisionAttachmentConfig.evidence_timeout_s``,
+for at least ``PositionStallConfig.consecutive_ticks`` samples in a row, with no
+grasp being resolved and every trigger agreeing with its leg's attachment. A
+dead position channel therefore ages into a kernel drop, never into a stale
+"nothing attached".
+
+The grasp trigger is ``_grasp_trigger.PositionStallTrigger``: the jaw settling
+short of a close command. It needs the command, so the HAL node feeds every
+applied action through ``observe_command`` (the safety-approved target, the
+chunk's last row — what the transport sends the trajectory controller).
+Confirmation is geometric and an AND: a stall attaches with vision-measured
+geometry only when vision agrees — the grasp-target leg's latched pre-grasp
+region with the jaw at it (preferred: the hand occludes the head camera at that
+moment, design §2.2 "Handover"), else a ``SegmentInView`` mask that clears the
+producer's gates. A stall vision cannot confirm still attaches the conservative
+``GRIPPER_CLOSURE`` jaw box (fail-closed for collision). Detach is an OR in
+effect: the trigger alone detaches (vision is never asked to keep a payload
+the jaws let go of).
 
 With ``VisionAttachmentConfig.grasp_target_enabled`` (default off) the bridge
 also owns the pre-grasp target producer leg (``_grasp_target_leg``): it
@@ -74,14 +88,14 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
-from openral_core import CameraTopicKind, camera_topic
+from openral_core import CameraTopicKind, ControlMode, camera_topic
 from openral_core.exceptions import ROSConfigError
 
-from openral_hal._grasp_target_leg import GraspTargetLeg
+from openral_hal._grasp_target_leg import GraspTargetLeg, _hand_near
 from openral_hal._grasp_trigger import (
     GraspEvent,
-    GraspTriggerConfig,
-    GripperEffortTrigger,
+    PositionStallConfig,
+    PositionStallTrigger,
     gripper_joints,
 )
 from openral_hal._place_fixture_leg import PlaceFixtureLeg
@@ -92,7 +106,9 @@ from openral_hal._vision_attachment_evidence import (
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_core import (
+        Action,
         AttachedCollisionObject,
+        GraspDeclaration,
         IntrinsicsPinhole,
         JointState,
         RobotDescription,
@@ -111,6 +127,7 @@ __all__ = [
     "freeze_released_attachment",
     "mask_depth_skew_reason",
     "mask_stamps_ns",
+    "region_attachment",
     "resolve_segment_outcome",
 ]
 
@@ -128,7 +145,7 @@ class _GripperLeg:
 
     Attributes:
         joint_name: The gripper joint this leg watches.
-        trigger: Effort trigger on that joint.
+        trigger: Position-stall trigger on that joint.
         producer: Evidence producer attached to that joint's parent link.
         object_id: Attachment identity, unique across legs.
         tcp_frame: tf2 frame to look the TCP up from, or empty to use
@@ -145,10 +162,11 @@ class _GripperLeg:
             names in ``contact_links``.
         release: The payload this leg released and still publishes, frozen in
             the base frame, until its jaws are clear (``ReleaseWindow``).
+        announced_uncommanded: Whether "no commanded target yet" was logged for this leg.
     """
 
     joint_name: str
-    trigger: GripperEffortTrigger
+    trigger: PositionStallTrigger
     producer: VisionAttachmentEvidenceProducer
     object_id: str
     tcp_frame: str
@@ -159,6 +177,7 @@ class _GripperLeg:
     pending: bool = False
     jaw_link: str = ""
     release: ReleaseWindow | None = None
+    announced_uncommanded: bool = False
 
 
 #: Mask/depth aspect-ratio agreement below which a resample is a resolution change.
@@ -167,12 +186,16 @@ _ASPECT_TOLERANCE = 1e-3
 #: Heartbeat period, seconds — the simulator bridge's attachment heartbeat period.
 _HEARTBEAT_PERIOD_S = 0.2
 
+#: Confidence on a region payload: the vision producer's own accepted-mask value, since the
+#: region is a gated, map-verified head-view measurement of the same object.
+_REGION_CONFIDENCE = 0.7
 
-class _EffortEvidence:
-    """Is every gripper's effort channel alive right now? — the heartbeat's gate.
+
+class _JawEvidence:
+    """Is every gripper's jaw position channel alive right now? — the heartbeat's gate.
 
     Pure bookkeeping on a caller-supplied monotonic clock. A sample counts only
-    when *every* leg read an effort value from it; one missing value, or a gap
+    when *every* leg read a finite jaw position from it; one missing value, or a gap
     longer than the timeout, restarts the count, because a heartbeat claims
     something about every hand at once and a channel that just came back has
     not yet shown it is steady.
@@ -182,7 +205,7 @@ class _EffortEvidence:
         timeout_s: How old the newest complete sample may be.
 
     Example:
-        >>> evidence = _EffortEvidence(required_samples=2, timeout_s=0.5)
+        >>> evidence = _JawEvidence(required_samples=2, timeout_s=0.5)
         >>> evidence.observe(complete=True, now_s=0.0)
         >>> evidence.live(now_s=0.0)
         False
@@ -378,13 +401,84 @@ def freeze_released_attachment(
     )
 
 
+def region_attachment(
+    declaration: GraspDeclaration,
+    *,
+    attach_link: str,
+    touch_links: Sequence[str],
+    t_link_from_region: NDArray[np.float64],
+    stamp_ns: int,
+) -> AttachedCollisionObject:
+    """The grasp-target leg's latched pre-grasp region as the held payload (design §2.2).
+
+    At ATTACH the hand occludes the head camera, so the region measured *before* the
+    grasp (head-view mask + voxel map, gated and tracked by ``_grasp_target_leg``) is a
+    better payload than a re-segmentation. One box primitive with the region's half
+    extents, posed at the region in the attach link; ``object_id`` is the declaration's
+    ``object_id`` (what the kernel's handover matches the attachment against) or, when
+    that is empty, its ``target_id``.
+
+    Args:
+        declaration: The live declaration, carrying the accepted ``region``.
+        attach_link: The gripper's attach link (the producer's).
+        touch_links: Links allowed to touch the payload (the producer's).
+        t_link_from_region: ``(4, 4)`` pose of ``region.frame_id`` in ``attach_link``.
+        stamp_ns: The ATTACH instant.
+
+    Returns:
+        The attachment, evidence ``GRASP_TARGET_REGION``.
+
+    Raises:
+        ROSConfigError: If the declaration carries no region.
+    """
+    from openral_core import (
+        AttachedCollisionObject as _Attached,
+    )
+    from openral_core import (
+        AttachedCollisionPrimitive,
+        AttachmentEvidenceKind,
+        BoxShape,
+        Pose6D,
+    )
+    from openral_core.geometry import homogeneous_from_quat_xyz, rotation_to_quat_wxyz
+
+    region = declaration.region
+    if region is None:
+        raise ROSConfigError(f"grasp target {declaration.target_id!r} carries no region.")
+    object_id = declaration.object_id or declaration.target_id
+    pose = t_link_from_region @ homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)
+    w, x, y, z = rotation_to_quat_wxyz(pose[:3, :3])
+    return _Attached(
+        object_id=object_id,
+        attach_link=attach_link,
+        touch_links=list(touch_links),
+        primitives=[
+            AttachedCollisionPrimitive(
+                shape=BoxShape(half_extents_m=tuple(float(h) for h in region.half_extents)),
+                pose_in_object=Pose6D(
+                    xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=object_id
+                ),
+            )
+        ],
+        pose_in_link=Pose6D(
+            xyz=(float(pose[0, 3]), float(pose[1, 3]), float(pose[2, 3])),
+            quat_xyzw=(x, y, z, w),
+            frame_id=attach_link,
+        ),
+        confidence=_REGION_CONFIDENCE,
+        evidence_kind=AttachmentEvidenceKind.GRASP_TARGET_REGION,
+        evidence_ref=f"grasp_target_region:{declaration.target_id}:{region.evidence_ref}@{stamp_ns}",
+        stamp_ns=stamp_ns,
+    )
+
+
 @dataclass(frozen=True)
 class ReleaseWindow:
     """One gripper's released payload, frozen in the base frame until the jaws are clear.
 
-    Opened on that gripper's DETACH (design note §2.3 "Release"): effort DETACH
-    fires when the jaws *open*, before the fingers move, so dropping the payload
-    then lets the occupancy map re-mark it inside the fingers' world margin and
+    Opened on that gripper's DETACH (design note §2.3 "Release"): the position-stall
+    DETACH fires as the jaws *open* past their hold, before the hand retreats, so
+    dropping the payload then lets the occupancy map re-mark it inside the fingers' world margin and
     the first retreat chunk stops on it. Instead the payload stays a published,
     fully checked attached record (``freeze_released_attachment``) — which also
     keeps the octomap bridge clearing its cells — until the hand and jaws it
@@ -613,11 +707,11 @@ class VisionAttachmentConfig:
             joint7 drives, which the MJCF and the vendor URDF the real cell
             publishes both call ``openarm_<side>_ee_base_link`` (origin at
             joint7). Empty = look every link up by its manifest name.
-        evidence_timeout_s: How old the newest joint-state sample carrying an
-            effort value for every gripper may be before the attachment
+        evidence_timeout_s: How old the newest joint-state sample carrying a
+            finite jaw position for every gripper may be before the attachment
             heartbeat stops. *Calibration point*, ``0.5`` s — several HAL read
             ticks at any rate the cell runs, and well inside the kernel's
-            attached-collision deadline, so a dead effort channel surfaces as a
+            attached-collision deadline, so a dead position channel surfaces as a
             kernel drop rather than as a stale "nothing attached".
         grasp_target_enabled: Run the pre-grasp target producer leg
             (``_grasp_target_leg``): measure the live ``GraspDeclaration``'s
@@ -676,7 +770,7 @@ class VisionAttachmentConfig:
             with one stamp, so a same-grab pair has zero skew; ``0.1`` s admits
             the two latest caches being one frame apart at >= 10 Hz and refuses
             pairs several frames apart, across which the hand and the payload
-            have moved. A refusal is a ``GRIPPER_FORCE`` fallback in the
+            have moved. A refusal is a ``GRIPPER_CLOSURE`` fallback in the
             attachment path and a lost view in the grasp-target leg.
             *Calibration point.*
         place_fixture_enabled: Run the real place producer leg
@@ -908,7 +1002,7 @@ def build_segment_request(
 class VisionAttachmentBridge:
     """Drive SegmentInView from grasp events and hold the ack barrier for it.
 
-    One leg per ``role: gripper`` joint: each has its own effort trigger,
+    One leg per ``role: gripper`` joint: each has its own position-stall trigger,
     evidence producer, and in-flight request, and the barrier stays shut while
     any leg is pending. Every publish carries the union of every leg's current
     attachment, so one hand's grasp never erases the other's payload.
@@ -922,13 +1016,13 @@ class VisionAttachmentBridge:
             simulator bridge is given.
         config: Wiring and the segmentation deadline.
         gate_config: Geometric gate thresholds handed to the producer.
-        trigger_config: Effort thresholds and debounce for the grasp trigger: one config
-            for every gripper, or one per gripper joint name (each hand's fractions scaled
-            to its own ``effort_limit``; every gripper joint must be named).
+        trigger_config: Debounce for every leg's position-stall trigger; the thresholds
+            are each gripper joint's own ``closure_calibration`` in the manifest.
 
     Raises:
         ROSConfigError: If the manifest cannot support the producer or the
-            trigger (no gripper joints, no effort limit, no camera intrinsics),
+            trigger (no gripper joints, a gripper joint with no
+            ``closure_calibration``, no camera intrinsics),
             or ``tcp_frame`` / ``jaw_tip_frames`` is set on a robot with more
             than one gripper joint.
 
@@ -950,7 +1044,7 @@ class VisionAttachmentBridge:
         on_perception_ready: Any = None,
         config: VisionAttachmentConfig | None = None,
         gate_config: VisionGateConfig | None = None,
-        trigger_config: GraspTriggerConfig | Mapping[str, GraspTriggerConfig] | None = None,
+        trigger_config: PositionStallConfig | None = None,
     ) -> None:
         """Resolve manifest-derived wiring; create no ROS entities yet."""
         self._node = node
@@ -992,15 +1086,8 @@ class VisionAttachmentBridge:
         self._tf_listener: Any = None
         self._heartbeat_timer: Any = None
         self._heartbeat_open: bool | None = None
-        self._evidence = _EffortEvidence(
-            required_samples=max(
-                (c or GraspTriggerConfig()).consecutive_ticks
-                for c in (
-                    trigger_config.values()
-                    if isinstance(trigger_config, Mapping)
-                    else (trigger_config,)
-                )
-            ),
+        self._evidence = _JawEvidence(
+            required_samples=(trigger_config or PositionStallConfig()).consecutive_ticks,
             timeout_s=self._config.evidence_timeout_s,
         )
         self._revision = 0
@@ -1086,7 +1173,7 @@ class VisionAttachmentBridge:
                 f"attach_link={leg.producer.attach_link!r} "
                 f"tcp={leg.tcp_frame or leg.tcp_in_link!r} "
                 f"deadline={self._config.deadline_s:.3f}s "
-                f"effort_thresholds_n={leg.trigger.thresholds_n}"
+                f"stall_thresholds(closed,rest,gap,settle)={leg.trigger.thresholds}"
             )
 
     def teardown(self) -> None:
@@ -1155,7 +1242,7 @@ class VisionAttachmentBridge:
         """Fold one HAL read into every leg's grasp trigger and act on transitions.
 
         Also the heartbeat's liveness evidence: a sample counts only when every
-        leg read an effort value from it.
+        leg read a finite jaw position from it.
 
         Args:
             state: The tick's joint state, straight from the HAL.
@@ -1163,9 +1250,20 @@ class VisionAttachmentBridge:
         self._positions.update(zip(state.name, (float(q) for q in state.position), strict=False))
         complete = True
         for leg in self._legs:
-            missing_before = leg.trigger.missing_effort_ticks
+            missing_before = leg.trigger.missing_position_ticks
             event = leg.trigger.update(state)
-            complete = complete and leg.trigger.missing_effort_ticks == missing_before
+            if (
+                leg.trigger.last_command is None
+                and not leg.announced_uncommanded
+                and self._node is not None
+            ):
+                # Visible, once: a leg whose jaw is never commanded can never ATTACH.
+                leg.announced_uncommanded = True
+                self._node.get_logger().info(
+                    f"grasp trigger {leg.joint_name}: no commanded target yet — it cannot "
+                    "ATTACH until an applied JOINT_POSITION action names this joint"
+                )
+            complete = complete and leg.trigger.missing_position_ticks == missing_before
             if event is None:
                 continue
             if event is GraspEvent.DETACH:
@@ -1184,18 +1282,52 @@ class VisionAttachmentBridge:
         if self._place_fixture is not None:
             self._place_fixture.on_joint_state()
 
+    def observe_command(self, action: Action) -> None:
+        """Fold an applied action's gripper targets into every leg's trigger.
+
+        The commanded target is the chunk's **last** row — what the ros2_control
+        transport hands the trajectory controller as the goal. Rows map to joints
+        by ``action.joint_names`` when set (ADR-0102 slots), else by manifest joint
+        order. Only joint-position actions command a jaw angle; any other mode, or a
+        slot that does not own a gripper joint, leaves that leg's last command as is.
+
+        Args:
+            action: The action the HAL just applied (safety-approved).
+        """
+        rows = action.joint_targets
+        if action.control_mode is not ControlMode.JOINT_POSITION or not rows:
+            return
+        names = action.joint_names or [joint.name for joint in self._description.joints]
+        row = rows[-1]
+        index = {name: i for i, name in enumerate(names) if i < len(row)}
+        for leg in self._legs:
+            i = index.get(leg.joint_name)
+            if i is not None:
+                leg.trigger.command(float(row[i]))
+
     @property
-    def missing_effort_ticks(self) -> int:
-        """Ticks whose gripper carried no effort value, summed over every leg.
+    def missing_position_ticks(self) -> int:
+        """Ticks whose gripper carried no finite position, summed over every leg.
 
         A driver-health signal.
         """
-        return sum(leg.trigger.missing_effort_ticks for leg in self._legs)
+        return sum(leg.trigger.missing_position_ticks for leg in self._legs)
 
     # ── segmentation round trip ──────────────────────────────────────────────
 
     def _begin_segmentation(self, leg: _GripperLeg, *, stamp_ns: int) -> None:
-        """Close the barrier and dispatch one bounded SegmentInView request."""
+        """Attach the latched target region, or close the barrier and ask SegmentInView."""
+        held = self._region_payload(leg, stamp_ns=stamp_ns)
+        if held is not None:
+            leg.attachment = held
+            self._node.get_logger().info(
+                f"vision attachment {leg.joint_name}: {held.object_id!r} from the grasp-target "
+                f"region ({held.evidence_ref}); no segmentation"
+            )
+            if self._grasp_target is not None:
+                self._grasp_target.tracker.on_attach(leg.jaw_link)
+            self._publish_attachment()
+            return
         leg.pending = True
         context = self._gather_context(leg)
         if isinstance(context, str):  # a typed precondition failure
@@ -1402,7 +1534,7 @@ class VisionAttachmentBridge:
             attachment, report = _fit([], [])
         if reason:
             self._node.get_logger().warning(
-                f"vision attachment {leg.joint_name} fell back to GRIPPER_FORCE: {reason}"
+                f"vision attachment {leg.joint_name} fell back to GRIPPER_CLOSURE: {reason}"
             )
         self._node.get_logger().info(
             f"vision attachment {leg.joint_name}: accepted={report.accepted} "
@@ -1433,6 +1565,49 @@ class VisionAttachmentBridge:
         leg.deadline_timer = None
 
     # ── inputs ───────────────────────────────────────────────────────────────
+
+    def _region_payload(self, leg: _GripperLeg, *, stamp_ns: int) -> AttachedCollisionObject | None:
+        """The latched grasp-target region as this leg's payload, when it is confirmed.
+
+        Confirmation is geometric: the declaration names this leg's jaw link and the
+        leg's TCP (``jaw_point``) lies within ``grasp_target_occluder_margin_m`` of the
+        region. ``None`` — logged when a declaration was live — sends the grasp to
+        ``SegmentInView`` instead.
+        """
+        if self._grasp_target is None:
+            return None
+        # The envelope, not the raw held region: it applies the freeze TTL and the
+        # declaration's own expiry, so a stale region is never handed over.
+        declaration = self._grasp_target.tracker.envelope(
+            now_ns=int(self._node.get_clock().now().nanoseconds)
+        )
+        region = declaration.region if declaration is not None else None
+        if declaration is None or region is None or leg.jaw_link not in declaration.contact_links:
+            return None
+        hand = self.jaw_point(leg.jaw_link, region.frame_id)
+        link = self.tf_frame(leg.producer.attach_link)
+        t_link_from_region = self._lookup(link, region.frame_id)
+        why = ""
+        if hand is None or t_link_from_region is None:
+            why = f"no tf2 {link} <- {region.frame_id}"
+        elif not _hand_near([hand], region, reach_m=self._config.grasp_target_occluder_margin_m):
+            why = (
+                f"jaw at {tuple(round(v, 3) for v in hand)} is not within "
+                f"{self._config.grasp_target_occluder_margin_m} m of the region"
+            )
+        if why or t_link_from_region is None:
+            self._node.get_logger().warning(
+                f"vision attachment {leg.joint_name}: grasp-target region for "
+                f"{declaration.target_id!r} not used — {why}; segmenting instead"
+            )
+            return None
+        return region_attachment(
+            declaration,
+            attach_link=leg.producer.attach_link,
+            touch_links=leg.producer.touch_links,
+            t_link_from_region=t_link_from_region,
+            stamp_ns=stamp_ns,
+        )
 
     def _gather_context(self, leg: _GripperLeg) -> _PromptContext | str:
         """Collect depth, transforms and prompt geometry, or name what is missing.
@@ -1660,7 +1835,7 @@ class VisionAttachmentBridge:
     def _heartbeat(self) -> None:
         """Republish the current set at the current revision, while evidence backs it.
 
-        Fail-closed: no live effort evidence, a grasp still being resolved, or a
+        Fail-closed: no live jaw-position evidence, a grasp still being resolved, or a
         trigger that believes the jaws are loaded with no attachment yet each
         stop the heartbeat, so the kernel's snapshot ages into a drop instead of
         a stale claim. Each open/close transition is logged once.
@@ -1669,7 +1844,7 @@ class VisionAttachmentBridge:
             return
         self._poll_releases()
         if not self._evidence.live(now_s=time.monotonic()):
-            reason = "no live effort evidence from every gripper"
+            reason = "no live jaw-position evidence from every gripper"
         elif any(leg.pending for leg in self._legs):
             reason = "a grasp is being resolved"
         elif any(leg.trigger.attached != (leg.attachment is not None) for leg in self._legs):
@@ -1681,7 +1856,7 @@ class VisionAttachmentBridge:
             self._heartbeat_open = is_open
             if is_open:
                 self._node.get_logger().info(
-                    "vision attachment heartbeat: publishing — effort evidence is live"
+                    "vision attachment heartbeat: publishing — jaw-position evidence is live"
                 )
             else:
                 self._node.get_logger().warning(
@@ -1756,7 +1931,7 @@ class VisionAttachmentBridge:
     def _build_legs(
         self,
         gate_config: VisionGateConfig | None,
-        trigger_config: GraspTriggerConfig | Mapping[str, GraspTriggerConfig] | None,
+        trigger_config: PositionStallConfig | None,
     ) -> list[_GripperLeg]:
         """One leg per gripper joint, with its TCP resolved.
 
@@ -1776,24 +1951,11 @@ class VisionAttachmentBridge:
                 f"but {self._description.name!r} has gripper joints "
                 f"{[joint.name for joint in joints]}."
             )
-        if isinstance(trigger_config, Mapping):
-            missing = sorted({joint.name for joint in joints} - set(trigger_config))
-            if missing:
-                raise ROSConfigError(
-                    f"vision attachment: per-joint trigger_config names no config for gripper "
-                    f"joints {missing} of {self._description.name!r}."
-                )
         return [
             _GripperLeg(
                 joint_name=joint.name,
-                trigger=GripperEffortTrigger(
-                    self._description,
-                    joint_name=joint.name,
-                    config=(
-                        trigger_config[joint.name]
-                        if isinstance(trigger_config, Mapping)
-                        else trigger_config
-                    ),
+                trigger=PositionStallTrigger(
+                    self._description, joint_name=joint.name, config=trigger_config
                 ),
                 producer=VisionAttachmentEvidenceProducer(
                     self._description, gripper_joint=joint.name, config=gate_config

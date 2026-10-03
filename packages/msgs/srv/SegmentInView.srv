@@ -40,7 +40,7 @@
 #                           mask cleared manifest's segmenter.min_mask_area_px.
 #                           False → `masks` empty; caller MUST fall back
 #                           conservatively (jaw-span box, evidence_kind
-#                           GRIPPER_FORCE) rather than leave the payload
+#                           GRIPPER_CLOSURE) rather than leave the payload
 #                           invisible to collision checking.
 #   camera                — camera id actually queried (echoes resolved
 #                           default).

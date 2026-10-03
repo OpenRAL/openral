@@ -11,6 +11,8 @@
     "operator",
     "vision_segmentation",
     "sim_contact_force",
-    "declared_fixture"
+    "declared_fixture",
+    "gripper_closure",
+    "grasp_target_region"
   ]
 }

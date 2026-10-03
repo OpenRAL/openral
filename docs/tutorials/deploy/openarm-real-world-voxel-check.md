@@ -50,16 +50,19 @@ expecting a clean pass:
    **Vision attachment leg (off by default).** `runtime.vision_attachment` in this scene
    wires the leg — the SAM 2.1 segmenter lifecycle node (`openral_segmenter`) plus the HAL's
    attachment-evidence bridge, fed by the ZED's RGB, depth and their `camera_info` topics —
-   but commits it **off**: the gripper-effort grasp thresholds are unmeasured on the OpenArm
-   and turning it on for real is pending Safety-WG review and a hazard-log entry. Enabled,
+   but commits it **off**: its grasp trigger is the gripper *position* stalling short of a close
+   command (the OpenArm driver reports effort as a constant 0.0), calibrated per side in
+   `robots/openarm/robot.yaml` (`closure_calibration`) from teleop data but not yet measured
+   attended on this cell, and turning it on for real is pending Safety-WG review and a
+   hazard-log entry. Enabled,
    `deploy run` always turns the kernel's attached-payload check on with it
    (`attached_collision_enabled`, 1000 ms deadline), never the leg alone: the bridge's payload
    clearing and the self-filter act on any published attachment whatever the kernel flag, so a
    leg without the kernel check would hide the payload from every check. Do not enable it in
    this runbook.
 
-   **Release (frozen window, the leg's default behaviour).** Effort DETACH fires when the jaws
-   *open*, with the fingers still around the object. The leg does not drop the payload then:
+   **Release (frozen window, the leg's default behaviour).** The trigger's DETACH fires when the
+   jaws *open* past their hold, with the fingers still around the object. The leg does not drop the payload then:
    it keeps publishing it as an attached record frozen in `openarm_base` at its DETACH pose
    (`touch_links` = the hand and its finger pair, exactly what the held record exempted;
    every other link and the world are still checked against it), so the octomap bridge keeps

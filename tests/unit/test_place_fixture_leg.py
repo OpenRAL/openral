@@ -27,7 +27,7 @@ from openral_core import (
     load_robot_unit,
 )
 from openral_hal._grasp_target import VoxelLattice
-from openral_hal._grasp_trigger import GraspTriggerConfig, GripperEffortTrigger
+from openral_hal._grasp_trigger import PositionStallConfig, PositionStallTrigger
 from openral_hal._place_fixture_leg import (
     PlaceFixtureTracker,
     _posed_primitives,
@@ -302,13 +302,14 @@ def test_a_frozen_release_record_keeps_the_witness_until_the_window_closes(
     obj, t_base_link = _payload(bottom_z=_FACE_Z + 0.004)
     description = RobotDescription.from_yaml(str(_OPENARM))
     joint = next(j for j in description.joints if j.name == "left_gripper")
-    assert joint.effort_limit is not None
-    trigger = GripperEffortTrigger(
-        description, joint_name="left_gripper", config=GraspTriggerConfig(consecutive_ticks=1)
+    trigger = PositionStallTrigger(
+        description,
+        joint_name="left_gripper",
+        config=PositionStallConfig(consecutive_ticks=1, settle_ticks=2),
     )
-    trigger.update(
-        JointState(name=["left_gripper"], position=[0.0], effort=[joint.effort_limit], stamp_ns=0)
-    )
+    trigger.command(0.0)  # closed on the payload: the jaw stalls 0.2 rad short
+    for stamp in range(2):
+        trigger.update(JointState(name=["left_gripper"], position=[0.2], stamp_ns=stamp))
     assert trigger.attached
     leg = _GripperLeg(
         joint_name="left_gripper",
@@ -324,7 +325,8 @@ def test_a_frozen_release_record_keeps_the_witness_until_the_window_closes(
     witness = tracker.decorate([obj])[0].support_contact
     assert witness is not None
     # DETACH: the trigger unloads, the attachment goes, the window freezes it in base.
-    trigger.update(JointState(name=["left_gripper"], position=[0.0], effort=[0.0], stamp_ns=1))
+    trigger.command(0.7)  # released: the jaw opens past its hold
+    trigger.update(JointState(name=["left_gripper"], position=[0.5], stamp_ns=2))
     assert not trigger.attached
     leg.release = ReleaseWindow.open(
         description, obj, base_link=_BASE, t_base_from_link=t_base_link, now_s=0.0
