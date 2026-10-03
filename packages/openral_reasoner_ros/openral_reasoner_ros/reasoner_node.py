@@ -118,7 +118,7 @@ from openral_reasoner.context import (
 )
 from openral_reasoner.core import PreparedTick, ReasonerCore, ReasonerTickResult
 from openral_reasoner.grounding import (
-    gripper_contact_links,
+    gripper_hands,
     ground_grasp_target,
     ground_place_target,
 )
@@ -1410,7 +1410,7 @@ class ReasonerNode(LifecycleNode):
                     else None
                 ),
                 base_frame=self._robot_description.base_frame,
-                default_contact_links=gripper_contact_links(self._robot_description),
+                default_contact_links=gripper_hands(self._robot_description),
                 patience_s=patience_s,
                 pad_m=pad_m,
             )

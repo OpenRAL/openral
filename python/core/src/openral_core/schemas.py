@@ -11878,10 +11878,11 @@ class GraspTargetRef(BaseModel):
             case-insensitively against the live lifted detections' labels.
         object_id: A spatial-memory ``node_id`` from ``recall_object`` when the
             reasoner already knows the instance; ``None`` = ground by ``label``.
-        contact_links: Gripper links the grasp declaration names; empty = the one
-            ``role: gripper`` joint's ``child_link`` on a single-gripper robot. A robot
-            with several grippers refuses an empty list (the grounding would otherwise
-            exempt every hand).
+        contact_links: Gripper links the grasp declaration names, all ``child_link``s
+            of ``role: gripper`` joints of ONE hand (the gripper joints hanging off one
+            arm); empty = the hand of a single-hand robot. A robot with several hands
+            refuses an empty list (the grounding would otherwise exempt every hand), and
+            links of two hands or a non-gripper link are refused.
 
     Example:
         >>> GraspTargetRef(label="box").contact_links
@@ -11907,8 +11908,8 @@ class GraspTargetRef(BaseModel):
     contact_links: list[str] = Field(
         default_factory=list,
         description=(
-            "Gripper link(s) to grasp with. Leave empty only on a single-gripper robot; "
-            "with several grippers, name the one that grasps."
+            "Gripper finger link(s) of the ONE hand that grasps. Leave empty only on a "
+            "single-hand robot; with several hands, name that hand's links."
         ),
     )
 
