@@ -16,7 +16,8 @@ Asserts, on ``/openral/attachment_state``: a valid region that contains the box
 and whose lower face sits above the *measured* table top within one voxel, though
 the search box's bottom reaches below it; the grid
 going silent retracts it once the freeze TTL has run from the region's own
-stamp, with the reason logged; two equal boxes in the search box are refused as
+stamp, with the reason logged; masks captured 0.5 s off the depth frame are
+refused as ``mask_depth_skew``; two equal boxes in the search box are refused as
 ``ambiguous`` and no region is ever published; dispatch retracting the
 declaration removes it from the next heartbeat.
 
@@ -223,6 +224,11 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         mask.encoding = "mono8"
         mask.step = _FULL[1]
         mask.data = (disc.astype(np.uint8) * 255).tobytes()
+        # The real segmenter stamps a mask with its RGB frame's capture stamp; here
+        # the RGB frame is the depth frame asked about, unless a skew is injected.
+        skew_ns = round(state["mask_skew_s"] * 1e9)
+        stamp_ns = request.stamp.sec * 1_000_000_000 + request.stamp.nanosec + skew_ns
+        mask.header.stamp.sec, mask.header.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
         response.ok = True
         response.camera = request.camera
         response.masks = [mask]
@@ -272,7 +278,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         ),
     )
     bridge.setup()
-    state = {"scene": "one", "grid": True}
+    state: dict[str, Any] = {"scene": "one", "grid": True, "mask_skew_s": 0.0}
     info = _camera_info(_FULL, _THOR_K)
 
     def feed() -> None:
@@ -378,6 +384,16 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         assert _wait_until(lambda: not latest().grasp_declaration_valid, timeout_s=1.0), (
             "dispatch retraction did not reach the heartbeat"
         )
+
+        # ── 5. Masks captured 0.5 s off the depth frame: refused, no region. ─
+        state["mask_skew_s"] = 0.5
+        mark = len(envelopes)
+        declaration_pub.publish(_declaration(now_ns(), one))
+        assert _wait_until(
+            lambda: any("refused — mask_depth_skew" in line for line in logs), timeout_s=10.0
+        ), f"no skew refusal: {[line for line in logs if 'grasp target' in line]}"
+        time.sleep(1.0)
+        assert not any(msg.grasp_declaration.region_valid for msg in envelopes[mark:])
     finally:
         with suppress(Exception):
             bridge.teardown()

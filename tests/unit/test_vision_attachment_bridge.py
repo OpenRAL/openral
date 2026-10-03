@@ -33,6 +33,7 @@ from openral_hal.vision_attachment_bridge import (
     VisionAttachmentBridge,
     VisionAttachmentConfig,
     decode_mono8_mask,
+    mask_depth_skew_reason,
     resolve_segment_outcome,
 )
 from PIL import Image
@@ -133,6 +134,27 @@ def test_mono8_decode_rejects_a_size_mismatch() -> None:
     """A truncated payload is a typed error, not a reshaped guess."""
     with pytest.raises(ROSConfigError, match="mono8"):
         decode_mono8_mask(bytes([255, 0, 0]), height=2, width=2)
+
+
+def test_a_mask_is_only_paired_with_depth_from_the_same_instant() -> None:
+    """A mask captured one frame off its depth passes; one several frames off is refused."""
+    depth_ns = 5_000_000_000
+    skew = VisionAttachmentConfig().mask_depth_max_skew_s
+    assert mask_depth_skew_reason([depth_ns], depth_ns, max_skew_s=skew) == ""
+    assert mask_depth_skew_reason([depth_ns - 66_000_000], depth_ns, max_skew_s=skew) == ""
+    reason = mask_depth_skew_reason(
+        [depth_ns, depth_ns + 300_000_000], depth_ns, max_skew_s=skew
+    )  # one stale candidate refuses the reply
+    assert reason.startswith("ROSPerceptionStale:") and "0.300 s" in reason
+
+
+def test_a_non_positive_mask_depth_skew_is_refused() -> None:
+    with pytest.raises(ROSConfigError, match="mask_depth_max_skew_s"):
+        VisionAttachmentBridge(
+            None,
+            _openarm(),
+            config=VisionAttachmentConfig(camera="head_zed", mask_depth_max_skew_s=0.0),
+        )
 
 
 def test_default_config_points_at_the_perception_node_service() -> None:
