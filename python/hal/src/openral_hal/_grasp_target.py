@@ -283,15 +283,16 @@ def support_top_from_voxels(
             ``grid.frame_id``.
         min_cells: Fewest ring cells a layer needs to be the support.
             *Calibration point.*
-        probe_margin_m: Outer reach of the ring from the target footprint, metres.
-            *Calibration point.*
+        probe_margin_m: Outer reach of the ring from the target footprint, metres;
+            at least two cells, since the ring starts one cell out. *Calibration point.*
 
     Returns:
         The support's top face z in ``grid.frame_id``, or ``None`` when no layer
         qualifies — there is no measured support to stand a region on.
 
     Raises:
-        ROSConfigError: On a tilted lattice (its cells form no horizontal layers).
+        ROSConfigError: On a tilted lattice (its cells form no horizontal layers), or a
+            ``probe_margin_m`` under two cells (a ring of zero width).
 
     Example:
         >>> import numpy as np
@@ -308,11 +309,16 @@ def support_top_from_voxels(
     if len(centers) == 0:
         return None
     _layer_index(grid, centers[:, 2])  # z-up check
+    if probe_margin_m < 2.0 * grid.resolution - 1e-9:
+        raise ROSConfigError(
+            f"support probe_margin_m={probe_margin_m!r} is under two cells of the "
+            f"{grid.resolution!r} m lattice: the ring between one cell and it would be empty."
+        )
     local = (centers - np.asarray(grid.origin)) @ grid.rotation()
     ijk = np.floor(local / grid.resolution).astype(np.int64)
     occupied = {(int(i), int(j), int(k)) for i, j, k in ijk.tolist()}
     dist2 = np.sum((centers[:, :2] - np.asarray(near_xy)) ** 2, axis=1)
-    reach = max(2, math.ceil(probe_margin_m / grid.resolution - 1e-9))
+    reach = math.ceil(probe_margin_m / grid.resolution - 1e-9)
     for k in sorted({c[2] for c in occupied}, reverse=True):
         above = ijk[:, 2] > k
         if not above.any():

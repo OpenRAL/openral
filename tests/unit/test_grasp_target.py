@@ -593,3 +593,16 @@ def test_a_25_by_30_cm_target_finds_the_table_around_it() -> None:
     support = support_top_from_voxels(grid, column, near_xy=(bx, by), min_cells=8)
     assert support is not None
     assert abs(support - _SUPPORT_Z) <= _RES / 2 + 1e-9
+
+
+def test_a_probe_margin_under_two_cells_is_refused_not_widened() -> None:
+    """The ring starts one cell out; a margin under two cells used to be silently raised."""
+    item_i, item_j = range(10, 12), range(10, 12)
+    cells = _seen_table(5, item_i, item_j, shadow=2) | _shell(item_i, item_j, range(6, 8))
+    grid = _cells_lattice(cells)
+    column = _column_of(grid, range(7, 15), range(7, 15))
+    xy = _centre_xy(item_i, item_j)
+    with pytest.raises(ROSConfigError, match="under two cells"):
+        support_top_from_voxels(grid, column, near_xy=xy, min_cells=8, probe_margin_m=0.03)
+    exact = support_top_from_voxels(grid, column, near_xy=xy, min_cells=8, probe_margin_m=0.04)
+    assert exact == pytest.approx(6 * _RES)

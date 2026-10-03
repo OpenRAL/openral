@@ -613,6 +613,13 @@ class GraspTargetLeg:
             column = search_column(box, below_m=self._search_below_m)
         except ROSConfigError as exc:
             raise _contradicted("search_box_tilted", str(exc)) from exc
+        if self._probe_margin_m < 2.0 * grid.resolution - 1e-9:
+            # A config/grid mismatch, not evidence about the target: a lost view.
+            raise _lost(
+                "probe_margin_under_two_cells",
+                f"support_probe_margin_m={self._probe_margin_m:.3f} m is under two cells of "
+                f"the {grid.resolution:.3f} m grid; the support ring would be empty",
+            )
         min_cells = self._config.grasp_target_min_cells
         column_centers = occupied_centers_in_box(grid, column)
         support_z = support_top_from_voxels(

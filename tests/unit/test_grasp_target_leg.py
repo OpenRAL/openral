@@ -419,3 +419,16 @@ def test_the_bridge_hands_its_support_and_occluder_tunables_to_the_target_leg() 
         0.08,
         0.02,
     )
+
+
+def test_a_probe_margin_under_two_grid_cells_is_a_typed_lost_view() -> None:
+    """The margin is a constructor arg, the resolution arrives with the grid: a coarser
+    grid than the margin can ring is named, never silently widened."""
+    robot = RobotDescription.from_yaml(str(_ROBOT))
+    config = VisionAttachmentConfig(camera="head_zed", grasp_target_enabled=True)
+    bridge = VisionAttachmentBridge(None, robot, config=config)
+    leg = GraspTargetLeg(None, bridge, config, support_probe_margin_m=0.03)
+    grid = _shelf_lattice(range(7, 24), range(24))
+    with pytest.raises(_Refusal) as caught:
+        leg._seed(grid, _item_search_box())
+    assert (caught.value.kind, caught.value.retract) == ("probe_margin_under_two_cells", False)
