@@ -3903,7 +3903,8 @@ def deploy_list() -> None:
     """List every deploy scene under `scenes/deploy/*.yaml`.
 
     Each entry is a paste-able `--config` path for `openral deploy run` or `deploy sim`.
-    No hardware touch, no GPU.
+    Operator copies under a `local/` directory (gitignored `scenes/deploy/local/`) are
+    skipped. No hardware touch, no GPU.
     """
     from openral_rskill.loader import find_repo_root_from
 
@@ -3915,7 +3916,12 @@ def deploy_list() -> None:
     if not deploy_scenes.is_dir():
         print("<none>")
         return
-    configs = sorted(deploy_scenes.rglob("*.yaml"))
+    # scenes/deploy/local/ holds gitignored operator copies; never advertise them.
+    configs = sorted(
+        p
+        for p in deploy_scenes.rglob("*.yaml")
+        if "local" not in p.relative_to(deploy_scenes).parts
+    )
     if not configs:
         print("<none>")
         return

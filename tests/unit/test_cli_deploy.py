@@ -236,3 +236,24 @@ def test_sim_mode_forwards_deploy_config_for_boot_timeout() -> None:
     assert f"deploy_config:={config}" in result.output
     # ...and what the launch derives from it is the scene's budget, not the floor.
     assert float(hal_transition_timeout_s(str(config))) > HAL_TRANSITION_TIMEOUT_FLOOR_S
+
+
+def test_deploy_list_skips_gitignored_local_operator_copies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import openral_rskill.loader
+
+    repo = Path(__file__).resolve().parents[2]
+    deploy = tmp_path / "scenes" / "deploy"
+    (deploy / "local").mkdir(parents=True)
+    (deploy / "calibration").mkdir()
+    for rel in ("openarm_bench.yaml", "calibration/openarm.yaml", "local/openarm_bench.yaml"):
+        (deploy / rel).write_text((repo / "scenes/deploy/openarm_bench.yaml").read_text())
+    monkeypatch.setattr(openral_rskill.loader, "find_repo_root_from", lambda _p: tmp_path)
+
+    result = CliRunner().invoke(app, ["deploy", "list"])
+    assert result.exit_code == 0, result.output
+    assert result.output.split() == [
+        "scenes/deploy/calibration/openarm.yaml",
+        "scenes/deploy/openarm_bench.yaml",
+    ]
