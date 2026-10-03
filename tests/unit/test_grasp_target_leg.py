@@ -400,3 +400,22 @@ def test_a_shelf_board_edge_over_a_bench_is_not_the_targets_support() -> None:
         _leg()._seed(grid, _item_search_box())
     assert (caught.value.kind, caught.value.retract) == ("not_on_support", True)
     assert "support z=0.120" in caught.value.detail
+
+
+def test_the_bridge_hands_its_support_and_occluder_tunables_to_the_target_leg() -> None:
+    """The HAL params land in VisionAttachmentConfig; the bridge must pass them on."""
+    robot = RobotDescription.from_yaml(str(_ROBOT))
+    config = VisionAttachmentConfig(
+        camera="head_zed",
+        grasp_target_enabled=True,
+        grasp_target_support_search_below_m=0.30,
+        grasp_target_support_probe_margin_m=0.08,
+        grasp_target_occluder_margin_m=0.02,
+    )
+    leg = VisionAttachmentBridge(None, robot, config=config)._grasp_target
+    assert leg is not None
+    assert (leg._search_below_m, leg._probe_margin_m, leg._occluder_margin_m) == (
+        0.30,
+        0.08,
+        0.02,
+    )
