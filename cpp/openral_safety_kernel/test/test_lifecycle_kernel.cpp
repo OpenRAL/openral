@@ -3875,7 +3875,10 @@ public:
         "/openral/world_state_fast", reliable);
     safe_sub_ = helper_->create_subscription<openral_msgs::msg::ActionChunk>(
         "/openral/safe_action", chunk_qos,
-        [this](const openral_msgs::msg::ActionChunk::SharedPtr) { ++passed; });
+        [this](const openral_msgs::msg::ActionChunk::SharedPtr msg) {
+          last_flat = msg->flat;
+          ++passed;
+        });
     diag_sub_ = helper_->create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
         "/diagnostics", rclcpp::QoS(10),
         [this](const diagnostic_msgs::msg::DiagnosticArray::SharedPtr msg) {
@@ -3927,7 +3930,7 @@ public:
 
   // One beat: grid + measured state, and the world state when `beat` is set.
   void beat(const GraspBeat* b, double q) {
-    auto vox = grasp_target_voxels();
+    auto vox = voxels;
     vox.source_stamp = helper_->now();
     voxel_pub_->publish(vox);
     sensor_msgs::msg::JointState js;
@@ -3953,12 +3956,17 @@ public:
   // one passes or the node latches. Returns true on a pass. Awaiting each
   // verdict keeps a late approval of an earlier chunk from being counted here.
   bool offer(const GraspBeat* b, double q, int ms = 1500) {
+    return offer_chunk(b, q, grasp_chunk(q), ms);
+  }
+  // As `offer`, with the measured state at `q` and an arbitrary candidate.
+  bool offer_chunk(const GraspBeat* b, double q, const openral_msgs::msg::ActionChunk& chunk,
+                   int ms = 1500) {
     const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
     while (std::chrono::steady_clock::now() < end && !node->fault_latched()) {
       beat(b, q);
       const int passed_before = passed.load();
       const std::uint64_t dropped_before = node->chunks_dropped();
-      cand_pub_->publish(grasp_chunk(q));
+      cand_pub_->publish(chunk);
       const auto verdict_end = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
       while (passed.load() == passed_before && node->chunks_dropped() == dropped_before &&
              std::chrono::steady_clock::now() < verdict_end) {
@@ -3980,7 +3988,9 @@ public:
 
   std::shared_ptr<osk::SafetyKernelLifecycleNode> node;
   std::atomic<int> passed{0};
+  std::vector<double> last_flat;  ///< the last chunk republished on /openral/safe_action
   std::string grasp_diag;
+  openral_msgs::msg::OccupancyVoxels voxels = grasp_target_voxels();  ///< published every beat
 
 private:
   std::shared_ptr<rclcpp::Node> helper_;
@@ -4235,4 +4245,36 @@ TEST_F(LifecycleKernelTest, AGraspBackstopPastTheCapIsRefused) {
   EXPECT_TRUE(rig.node->fault_latched());
   EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=timeout_out_of_range"), 1U)
       << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AnExemptFingerInsideItsTargetStillLeavesTheChunkScaled) {
+  // Review finding: the exempt finger IS inside the target, so its pair reads a
+  // negative distance. Fed raw into the sweep minimum it made the chunk's slack
+  // negative, which the velocity band discards as "tripped" — the chunk went out
+  // at full rate even with a non-exempt cell (the one above the target, outside
+  // the region) 2.5 mm from the same finger. The exempt pair now reaches the
+  // minimum at the margin, i.e. slack 0: the band's slowest rate.
+  auto params = grasp_params();
+  params.emplace_back("collision_scale_proximity_m", 0.1);
+  params.emplace_back("collision_scale_k", 20.0);
+  params.emplace_back("collision_scale_min", 0.1);
+  params.emplace_back("collision_seed_dt_s", 0.0);  // reactive: the measured pose only
+  GraspRig rig("kernel_grasp_band", params);
+  // Two stacked cells: the target (centre z = 0, inside the region) and one
+  // above it (centre z = 0.025, outside the region's 0.02 half-extent), whose
+  // lower face is 2.5 mm above the r = 10 mm finger sphere.
+  rig.voxels.size_z = 2;
+  rig.voxels.occupancy.assign(2, 1);
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer_chunk(&b, 0.0, velocity_chunk(1.0)))
+      << "the exempt finger in its target and a cell 2.5 mm clear of the margin: accepted";
+  EXPECT_FALSE(rig.node->fault_latched());
+  ASSERT_EQ(rig.last_flat.size(), 1U);
+  EXPECT_LT(rig.last_flat[0], 1.0) << "the band must still slow the chunk";
+  EXPECT_NEAR(rig.last_flat[0], std::exp(20.0 * (0.0 - 0.1)), 1e-9)
+      << "the exempt pair reads as slack 0 — never a negative slack the band throws away";
+  EXPECT_GE(rig.node->chunks_scaled(), 1U);
 }

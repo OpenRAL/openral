@@ -833,11 +833,18 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   not trip **for a link in the mask only**. Every other link takes the unchanged
   path with no extra work; cells outside the box, self-collision, the attached
   checks and the force gate are untouched.
-* **Evidence.** An exempt pair's distance is computed exactly as without the
-  region, reaches `sweep_min_distance`, and never supplies the reported
-  identity or distance (`…AnExemptCellNeverSuppliesTheEvidence`).
-* **Monotonicity.** Trips with the region ⊆ trips without it, and the difference
-  is exactly the (mask link, cell centred in the box) pairs — pinned over
+* **Evidence.** An exempt pair never supplies the reported identity or
+  distance (`…AnExemptCellNeverSuppliesTheEvidence`). It reaches
+  `sweep_min_distance` **clamped to no less than the margin**: the exempt finger
+  is inside its target, so its raw distance is negative, and the graded
+  velocity band drops a negative slack as "tripped" — which, the sweep keeping
+  one minimum, would also drop every non-exempt pair's graded slack and send
+  the chunk out at full rate. Clamped, it reads as slack 0, the band's slowest
+  rate (`…AnExemptPairNeverDrivesTheSweepMinimumBelowTheMargin`,
+  `LifecycleKernelTest.AnExemptFingerInsideItsTargetStillLeavesTheChunkScaled`).
+* **Monotonicity.** Trips with the region ⊆ trips without it, the difference
+  is exactly the (mask link, cell centred in the box) pairs, and the sweep
+  minimum is never lowered by the region — pinned over
   randomised scenes and oriented grids (`…MonotonicityOverRandomisedScenes`).
 * **Support surface.** Cells half a voxel below the box's lower face still stop
   the finger (`…TheSupportSurfaceUnderTheTargetStillStops`); keeping the lower

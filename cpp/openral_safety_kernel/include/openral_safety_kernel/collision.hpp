@@ -395,8 +395,10 @@ inline constexpr double kMaxGraspDeclarationTimeoutS = 120.0;
 /// of the launch-derived allowlist and the declaration's `contact_links`,
 /// built by the lifecycle. Every other link, every cell outside the box,
 /// self-collision, the attached checks and the force gate are untouched. An
-/// exempt (link, cell) pair still reaches `sweep_min_distance` and never
-/// supplies the reported identity or distance.
+/// exempt (link, cell) pair reaches `sweep_min_distance` clamped to no less
+/// than the margin (so it reads as slack 0 in the velocity band and can never
+/// mask a non-exempt pair's graded slack) and never supplies the reported
+/// identity or distance.
 ///
 /// valid == false (no declaration, feature off, retracted, expired, or a
 /// failed `ingest_grasp_region`) means no exemption anywhere — identical to
@@ -1018,9 +1020,12 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
 /// off — grid.grasp_region is invalid unless the lifecycle armed it): while
 /// grid.grasp_region is valid, a cell whose base-frame centre lies inside the
 /// region box does not trip for a link whose bit is set in its link_mask
-/// (`grasp_target_exempts`). The pair's distance is computed exactly as
-/// without the region and still reaches sweep_min_distance; it never supplies
-/// link_a/link_b/min_distance. Every link outside the mask runs the unchanged
+/// (`grasp_target_exempts`). The pair still reaches sweep_min_distance, but
+/// never below `margin`: an exempt finger inside its target would otherwise
+/// drive the sweep minimum negative, and the lifecycle's velocity band drops
+/// negative slack as "tripped" — losing every non-exempt pair's graded slowdown
+/// with it. At the margin it reads as slack 0, the band's slowest rate. It never
+/// supplies link_a/link_b/min_distance. Every link outside the mask runs the unchanged
 /// path with no extra work, so its result is bit-identical with or without a
 /// region; for a mask link, cells outside the box are unchanged. Hence the
 /// tripping (link, cell) set with a region is a subset of the set without it,

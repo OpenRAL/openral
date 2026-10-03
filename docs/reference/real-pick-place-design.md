@@ -99,8 +99,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   **for the declared gripper's finger link only** (intersection of a launch-derived manifest
   allowlist — the `role: gripper` joints' `child_link`s — and the declaration's `contact_links`).
   Every other link, every cell outside the region, self-collision, attached checks and the force
-  gate are unchanged. An exempt pair reaches `sweep_min` only and never supplies the reported
-  identity (the attached-path contract). Fail-closed on: retraction, timeout, future stamp, stale
+  gate are unchanged. An exempt pair never supplies the reported identity (the attached-path
+  contract) and reaches `sweep_min` clamped to the margin, so it reads as slack 0 in the velocity
+  band rather than a negative slack that would discard the non-exempt pairs' graded slowdown. Fail-closed on: retraction, timeout, future stamp, stale
   world state, frame mismatch, oversize/degenerate region, non-empty geometry, non-allowlisted
   link, grid-frame change, rejected attachment set. Feature parameter default **off**.
 - Handover: on the attachment edge that adds the declared object the exemption stays alive only

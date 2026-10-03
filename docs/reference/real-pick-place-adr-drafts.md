@@ -26,8 +26,10 @@ bridge's "an occupied cell is an obstacle" invariant) were considered and reject
 - While it is live, cells whose centre lies in the producer-measured oriented region box are
   exempt **for the declared gripper's contact links only** — the intersection of a launch-derived
   manifest allowlist (the `role: gripper` joints' `child_link`s) and the declaration's
-  `contact_links`. An exempt (link, cell) pair reaches `sweep_min` only and never supplies the
-  reported identity.
+  `contact_links`. An exempt (link, cell) pair never trips and never supplies the reported
+  identity; it reaches `sweep_min` clamped to no less than the margin (slack 0, the velocity
+  band's slowest rate), so a finger inside its target can never drive the sweep minimum negative
+  and hide the graded slowdown every non-exempt pair still earns.
 - All other links, all cells outside the region, self-collision, attached checks and the force
   gate are unchanged. The support surface under the target is outside the region (producer
   obligation: the region's lower face sits above the support plane).
@@ -65,6 +67,7 @@ ADR-0100's force gate should arm during close as additive conservatism.
 | HZ-01xx-4 | Target moved after measurement; exemption covers vacated space or a new arrival | Measure-once region | Region-age bound and re-measurement, or a short TTL (WG). |
 | HZ-01xx-5 | Exemption leaks to other links, arms or robots | Configuration error | Static allowlist resolved at configure (unknown link fails configure); declaration links must be a subset; intersection mask; bimanual test. |
 | HZ-01xx-6 | Fingers driven into the support surface under the target | Region extends into the support plane | Producer obligation that the region's lower face sits above the support plane; kernel test pins that support cells outside the region still stop. |
+| HZ-01xx-7 | The exemption silences the graded velocity band for the whole chunk | An exempt finger inside its target reads a negative distance; the sweep keeps one minimum, and the band discards a negative slack as "tripped", so every non-exempt pair's slowdown is lost with it | An exempt pair reaches the sweep minimum clamped to the margin (slack 0: the band's slowest rate, never full speed); collision + lifecycle tests pin the scaled chunk with the exempt finger inside its target. |
 
 Cite alongside: the existing self-filter shell hazard (2 cm padding around the swept finger hull
 already blinds the map near the jaws).
