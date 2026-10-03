@@ -36,7 +36,11 @@ state stream, where a slowly closing jaw moves less than ``settle_tolerance`` in
 samples and would read as stalled. A sample whose stamp is not later than the last one
 by more than ``min_sample_interval_s`` is a repeat — a cached joint state read twice —
 and is dropped (counted in ``repeated_samples``), so it can neither settle the jaw nor
-extend a debounce.
+extend a debounce. Time alone is not enough either: a stream of late ticks spans a window
+on fewer samples than it was tuned for, so each window also needs a minimum **sample
+count** (``consecutive_samples`` / ``settle_samples``, the original 3 and 5 ticks), and a
+gap between accepted samples longer than ``max_gap_s`` restarts both — a sparse stream
+that happens to catch a chattering jaw at the same phase each time is not a settled jaw.
 * **DETACH** — while still commanded closed, the gap collapses (the object
   slipped out, the jaw closed onto nothing); or the command opened and the jaw
   opened past the position it held at attach. Both use half the stall gap as
@@ -108,6 +112,9 @@ class PositionStallConfig:
     defaults are the windows the original 30 Hz tick counts spanned (3 and 5
     samples).
 
+    Every window must hold on BOTH its duration and its sample count, and a gap longer than
+    ``max_gap_s`` between accepted samples restarts every window.
+
     Attributes:
         consecutive_s: How long samples must keep agreeing — from the first agreeing
             sample's stamp to the confirming one's — before a transition is emitted.
@@ -115,6 +122,12 @@ class PositionStallConfig:
         settle_s: The window the jaw's position span is measured over to call it
             stationary; the samples kept must cover all of it. ``0.13`` (5 samples at
             30 Hz).
+        consecutive_samples: The fewest agreeing samples (the confirming one included)
+            that confirm a transition. ``3``.
+        settle_samples: The fewest samples the settle window must hold. ``5``.
+        max_gap_s: A sample stamped more than this after the previous accepted one
+            restarts the settle history and the debounce: what the jaw did in the gap is
+            unknown. ``0.1`` (3 periods at 30 Hz).
         min_sample_interval_s: A sample stamped no later than the previous accepted
             one plus this is a repeat and is dropped. ``5e-4``: under the 1 ms period
             of a 1 kHz joint-state stream, above the microseconds of jitter a re-read
@@ -123,21 +136,44 @@ class PositionStallConfig:
 
     consecutive_s: float = 0.06
     settle_s: float = 0.13
+    consecutive_samples: int = 3
+    settle_samples: int = 5
+    max_gap_s: float = 0.1
     min_sample_interval_s: float = 5e-4
 
     def validate(self) -> None:
         """Refuse a degenerate window.
 
         Raises:
-            ROSConfigError: A non-finite window, a negative one, or a zero ``settle_s``
-                (a span needs two samples apart in time).
+            ROSConfigError: A non-finite window, a negative one, a zero ``settle_s``
+                (a span needs two samples apart in time), ``consecutive_samples < 1``,
+                ``settle_samples < 2``, or a ``max_gap_s`` not above
+                ``min_sample_interval_s``.
         """
-        windows = (self.consecutive_s, self.settle_s, self.min_sample_interval_s)
-        if not all(math.isfinite(w) and w >= 0.0 for w in windows) or self.settle_s <= 0.0:
+        windows = (self.consecutive_s, self.settle_s, self.max_gap_s, self.min_sample_interval_s)
+        if (
+            not all(math.isfinite(w) and w >= 0.0 for w in windows)
+            or self.settle_s <= 0.0
+            or self.max_gap_s <= self.min_sample_interval_s
+            or self.consecutive_samples < 1
+            or self.settle_samples < 2  # noqa: PLR2004  # reason: a span needs two samples
+        ):
             raise ROSConfigError(
-                "PositionStallConfig needs finite consecutive_s >= 0, settle_s > 0 and "
-                f"min_sample_interval_s >= 0, got {windows}."
+                "PositionStallConfig needs finite consecutive_s >= 0, settle_s > 0, "
+                "max_gap_s > min_sample_interval_s >= 0, consecutive_samples >= 1 and "
+                f"settle_samples >= 2, got {self!r}."
             )
+
+    def is_gap(self, stamp_ns: int, last_ns: int | None) -> bool:
+        """Whether ``stamp_ns`` follows the last accepted sample by more than ``max_gap_s``.
+
+        Example:
+            >>> PositionStallConfig().is_gap(200_000_000, 0)
+            True
+            >>> PositionStallConfig().is_gap(33_333_333, 0)
+            False
+        """
+        return last_ns is not None and stamp_ns - last_ns > self.max_gap_s * 1e9
 
     def is_repeat(self, stamp_ns: int, last_ns: int | None) -> bool:
         """Whether a sample stamped ``stamp_ns`` repeats (or predates) the last accepted one.
@@ -303,6 +339,7 @@ class PositionStallTrigger:
         self._hold: float | None = None
         self._streak_since_ns: int | None = None
         self._streak_kind: GraspEvent | None = None
+        self._streak_samples = 0
         self.missing_position_ticks = 0
         self.uncommanded_ticks = 0
         self.repeated_samples = 0
@@ -350,6 +387,10 @@ class PositionStallTrigger:
             # A cached sample read again says nothing new about the jaw.
             self.repeated_samples += 1
             return None
+        if self._config.is_gap(stamp_ns, self._last_stamp_ns):
+            # What the jaw did in the gap is unknown: no window spans it.
+            self._history.clear()
+            self._reset_streak()
         self._last_stamp_ns = stamp_ns
         position = self._position_of(state)
         if position is None:
@@ -359,7 +400,10 @@ class PositionStallTrigger:
             self._reset_streak()
             return None
         self._history.append((stamp_ns, position))
-        while len(self._history) > 1 and self._history[1][0] <= stamp_ns - self._settle_ns:
+        while (
+            len(self._history) > self._config.settle_samples
+            and self._history[1][0] <= stamp_ns - self._settle_ns
+        ):
             self._history.popleft()
         if self._command is None:
             self.uncommanded_ticks += 1
@@ -367,10 +411,13 @@ class PositionStallTrigger:
         if candidate is None or candidate is not self._streak_kind:
             self._streak_kind = candidate
             self._streak_since_ns = stamp_ns if candidate is not None else None
+            self._streak_samples = 0
+        self._streak_samples += candidate is not None
         if (
             candidate is None
             or self._streak_since_ns is None
             or stamp_ns - self._streak_since_ns < self._consecutive_ns
+            or self._streak_samples < self._config.consecutive_samples
         ):
             return None
         self._loaded = candidate is not GraspEvent.DETACH
@@ -388,7 +435,8 @@ class PositionStallTrigger:
         short_of_command = from_closed - command_from_closed
         positions = [q for _, q in self._history]
         settled = (
-            self._history[0][0] <= stamp_ns - self._settle_ns
+            len(positions) >= self._config.settle_samples
+            and self._history[0][0] <= stamp_ns - self._settle_ns
             and max(positions) - min(positions) <= self._settle
         )
         stalled = closing and settled and short_of_command > self._rest + self._gap
@@ -407,6 +455,7 @@ class PositionStallTrigger:
     def _reset_streak(self) -> None:
         self._streak_since_ns = None
         self._streak_kind = None
+        self._streak_samples = 0
 
     def _position_of(self, state: JointState) -> float | None:
         """Finite gripper position in this snapshot, or ``None`` when absent / non-finite."""

@@ -490,7 +490,9 @@ def test_a_frozen_release_record_keeps_the_witness_until_the_window_closes() -> 
     trigger = PositionStallTrigger(
         description,
         joint_name="left_gripper",
-        config=PositionStallConfig(consecutive_s=0.0, settle_s=0.03),
+        config=PositionStallConfig(
+            consecutive_s=0.0, settle_s=0.03, consecutive_samples=1, settle_samples=2
+        ),
     )
     trigger.command(0.0)  # closed on the payload: the jaw stalls 0.2 rad short
     for stamp in range(2):
