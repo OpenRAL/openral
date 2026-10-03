@@ -118,3 +118,20 @@ def test_fixture_ids_are_unique() -> None:
 
 def test_declared_fixture_evidence_kind_is_on_the_wire_string() -> None:
     assert AttachmentEvidenceKind("declared_fixture") is AttachmentEvidenceKind.DECLARED_FIXTURE
+
+
+def test_thor_candidate_bench_fixture_template_loads_once_uncommented(tmp_path: Path) -> None:
+    # thor.yaml ends in a commented candidate fixture; uncommenting it (stripping "#   ") must
+    # yield a loadable unit (Pose6D needs quat_xyzw; an rpy pose breaks every Thor deploy).
+    lines = (_ROOT / "robots" / "openarm" / "units" / "thor.yaml").read_text().splitlines()
+    start = lines.index("#   fixtures:")
+    block = [line.removeprefix("#   ") for line in lines[start:] if line.startswith("#   ")]
+    assert len(block) == len(lines) - start
+    robot_dir = tmp_path / "openarm"
+    (robot_dir / "units").mkdir(parents=True)
+    shutil.copy(_OPENARM, robot_dir / "robot.yaml")
+    (robot_dir / "units" / "thor.yaml").write_text(
+        "\n".join([*lines[:start], *block, ""]), encoding="utf-8"
+    )
+    bench = load_robot_unit(robot_dir / "robot.yaml", "thor").fixture("cell:bench_top")
+    assert bench.pose.quat_xyzw == (0.0, 0.0, 0.0, 1.0)
