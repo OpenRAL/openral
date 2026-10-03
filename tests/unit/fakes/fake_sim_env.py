@@ -32,12 +32,15 @@ real backends.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from openral_core import SceneSpec, TaskSpec
 
-__all__ = ["FakeSimEnv", "FakeStepResult"]
+if TYPE_CHECKING:
+    from openral_core.schemas import Action
+
+__all__ = ["FakeSimEnv", "FakeStepResult", "GroupStepFakeSimEnv"]
 
 
 @dataclass
@@ -206,3 +209,17 @@ class FakeSimEnv:
         if self.task_success_error is not None:
             raise self.task_success_error
         return self.task_success_value
+
+
+class GroupStepFakeSimEnv(FakeSimEnv):
+    """A ``FakeSimEnv`` whose backend steps a whole slot group at once.
+
+    Implements the optional ``SimRollout.step_action_group`` extension the HAL
+    prefers for a group it cannot pack into one env vector (a BODY_TWIST slot):
+    one ``step`` of zeros, so the HAL's commit path runs exactly once per group.
+    """
+
+    def step_action_group(self, actions: list[Action]) -> FakeStepResult:
+        """Step once for the whole group; the slot payloads are not packed."""
+        del actions
+        return self.step(np.zeros(self.action_dim, dtype=np.float32))

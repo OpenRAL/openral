@@ -52,7 +52,11 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, JointState
 
-from openral_hal._slot_group import GRIPPER_MODES, TickWatermark, compose_slot_group_action
+from openral_hal._slot_group import (
+    TickWatermark,
+    compose_slot_group_action,
+    slot_group_targets,
+)
 
 # Module logger — falls through to stderr via the rclpy logging bridge in a
 # ROS node, else plain stdlib logging.
@@ -110,61 +114,61 @@ __all__ = [
 
 
 def gripper_targets_action(group: list[Action], description: RobotDescription) -> Action | None:
-    """What one committed slot group set for each gripper joint, as a compact action.
+    """What one committed slot group set for every gripper joint, as a compact action.
 
-    The partial form of ``compose_slot_group_action`` for a group that does not compose
-    into one whole joint-position command (a BODY_TWIST or Cartesian slot, joints left
-    uncommanded): a one-row ``JOINT_POSITION`` action whose ``joint_names`` are the
-    ``role: "gripper"`` joints the group targeted, in manifest order, with one value
-    each — the compact row ``VisionAttachmentBridge.observe_command`` reads
-    positionally. A gripper slot is read at its ``ee_name``, a joint-position slot at
-    each gripper joint its ``joint_names`` lists (padded row, ADR-0102). Never a
-    command to apply: the record of what the jaws were told.
+    The gripper-subset form of ``compose_slot_group_action`` for a group that does not
+    compose into one whole joint-position command (a BODY_TWIST or Cartesian slot,
+    arm joints left uncommanded): ``slot_group_targets`` places the group with the
+    composer's own strictness, and the ``role: "gripper"`` joints are read out as a
+    one-row ``JOINT_POSITION`` action (``joint_names`` = every gripper, manifest
+    order) — the compact row ``VisionAttachmentBridge.observe_command`` reads
+    positionally. Never a command to apply: the record of what the jaws were told.
+
+    All or nothing: a partial record would leave the uncovered jaw's previous command
+    standing in the grasp trigger (a phantom attach on the twin), so any gripper the
+    group left uncommanded, or any slot the composer cannot read, gives ``None``,
+    which clears every jaw's command.
 
     Args:
         group: Every slot action of the committed tick.
         description: The robot manifest (gripper roles and joint order).
 
     Returns:
-        The gripper targets, or ``None`` when the group set none readably, or set one
-        twice (overlapping slots: which value the jaw got is unknown).
+        Every gripper's target, or ``None`` when the manifest has no gripper, the
+        group left one uncommanded, or ``slot_group_targets`` refused the group
+        (an unreadable or overlapping slot: which value the jaw got is unknown).
 
     Example:
         >>> from openral_core import RobotDescription
-        >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> d = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
         >>> twist = Action(control_mode=ControlMode.BODY_TWIST, body_twist=[[0.1] + [0.0] * 5])
         >>> grip = Action(
-        ...     control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.02], ee_name="right_gripper"
+        ...     control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.02], ee_name="panda_gripper"
         ... )
         >>> applied = gripper_targets_action([twist, grip], d)
         >>> applied.joint_names, applied.joint_targets
-        (['right_gripper'], [[0.02]])
+        (['panda_gripper'], [[0.02]])
         >>> gripper_targets_action([twist], d) is None
         True
     """
-    order = {joint.name: i for i, joint in enumerate(description.joints)}
-    grippers = {joint.name for joint in description.joints if joint.role == "gripper"}
-    pairs: list[tuple[str, float]] = []
-    for action in group:
-        if action.control_mode in GRIPPER_MODES:
-            if action.gripper and action.ee_name in grippers:
-                pairs.append((action.ee_name, float(action.gripper[-1])))
-        elif action.control_mode is ControlMode.JOINT_POSITION and action.joint_targets:
-            row = action.joint_targets[-1]
-            pairs.extend(
-                (name, float(row[order[name]]))
-                for name in action.joint_names or ()
-                if name in grippers and order[name] < len(row)
-            )
-    targets = dict(pairs)
-    if not targets or len(targets) != len(pairs):
+    names = [joint.name for joint in description.joints]
+    try:
+        targets = slot_group_targets(group, names)
+    except ROSConfigError:
         return None
-    names = sorted(targets, key=order.__getitem__)
+    jaws: dict[str, float] = {}
+    for joint, target in zip(description.joints, targets, strict=True):
+        if joint.role == "gripper":
+            if target is None:
+                return None
+            jaws[joint.name] = target
+    if not jaws:
+        return None
     return Action(
         control_mode=ControlMode.JOINT_POSITION,
         horizon=1,
-        joint_targets=[[targets[name] for name in names]],
-        joint_names=names,
+        joint_targets=[list(jaws.values())],
+        joint_names=list(jaws),
         stamp_ns=group[0].stamp_ns,
         confidence=group[0].confidence,
     )
@@ -1029,7 +1033,8 @@ class SimAttachedHAL:
         BODY_TWIST or Cartesian slot, joints it leaves uncommanded) records what it set
         for the gripper joints instead (``gripper_targets_action``), so the grasp trigger
         still reads the jaw command on a mobile manipulator; ``None`` — command unknown,
-        the trigger's is cleared — only when no gripper target is readable.
+        every jaw's command in the trigger is cleared — unless every gripper was commanded
+        readably (never a partial record that leaves one jaw's stale command standing).
         """
         self._watermark.commit(tick, session=session)
         try:

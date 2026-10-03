@@ -675,8 +675,9 @@ def test_a_sim_attached_slot_group_reaches_the_trigger_and_an_unknown_one_clears
     ``SimAttachedHAL`` had no ``last_applied_action``, so every slot group's jaw command was
     dropped and the trigger kept the start-pose ramp's close while the policy opened the
     jaw: an open, stationary jaw then read as a stall. Now the composed group reaches the
-    trigger, and a committed group whose command cannot be read clears it (no ATTACH
-    possible) rather than leaving the stale close in force. The trigger windows follow the
+    trigger, and a committed group whose command cannot be read — an unnamed arm slot or an
+    unnamed jaw slot — clears it (no ATTACH possible) rather than leaving the stale close in
+    force. The trigger windows follow the
     node's joint-state rate.
     """
     rclpy = pytest.importorskip("rclpy")
@@ -732,9 +733,10 @@ def test_a_sim_attached_slot_group_reaches_the_trigger_and_an_unknown_one_clears
         for chunk in _so101_slot_chunks(description, 0.6, tick=2, named=False):
             node._on_safe_action(chunk)
         assert node._hal.last_committed_tick == 2, "the sim applied the group"
-        assert leg.trigger.last_command == pytest.approx(0.6), (
-            "an unplaceable arm slot hid the jaw target the group set"
-        )
+        # An arm slot with no joint_names may have written the jaw (a padded row cannot
+        # say which joints it owns): the jaw command is unknown, so it is cleared.
+        assert node._hal.last_applied_action is None
+        assert leg.trigger.last_command is None, "an unreadable slot must not leave the close"
 
         leg.trigger.command(0.0)
         for chunk in _so101_slot_chunks(description, 0.6, tick=3, named=False, jaw_named=False):
