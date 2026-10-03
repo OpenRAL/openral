@@ -131,15 +131,28 @@ def _refit(x: float, half: tuple[float, float, float], z: float = 0.09) -> Place
     )
 
 
-def _gate(region: PlaceRegion, held: PlaceRegion) -> _Refusal:
+#: tf origins of the declared finger link: just above the held box (its top is z=0.13),
+#: and 30 cm above it — reaching for something else, or not moving at all.
+_HAND_NEAR = (0.47, 0.02, 0.18)
+_HAND_FAR = (0.45, 0.0, 0.45)
+
+
+def _gate(
+    region: PlaceRegion,
+    held: PlaceRegion,
+    *,
+    hands: tuple[tuple[float, float, float], ...] = (_HAND_NEAR,),
+    lattice: VoxelLattice | None = None,
+) -> _Refusal:
     with pytest.raises(_Refusal) as caught:
-        _gate_refit(_held_block_lattice(), region, held, min_cover=0.5)
+        _gate_refit(lattice or _held_block_lattice(), region, held, min_cover=0.5, hands=hands)
     return caught.value
 
 
-def test_a_refit_shrunk_inside_the_held_region_is_occlusion_and_freezes() -> None:
+def test_a_refit_shrunk_inside_the_held_region_with_the_hand_at_it_freezes() -> None:
     """The hand covers part of the target: the fit shrinks and shifts 25 mm (past the
-    one-voxel tracking gate) but stays inside the held box — a lost view, not a move."""
+    one-voxel tracking gate) but stays inside the held box, the map still holds the
+    target and the declared finger link is right at it — a lost view, not a move."""
     tracker, lines = _tracker()
     held = _measured(11 * _S)
     tracker.accept(held)
@@ -150,6 +163,35 @@ def test_a_refit_shrunk_inside_the_held_region_is_occlusion_and_freezes() -> Non
     assert any("view lost — occluded_refit" in line for line in lines)
     gone = tracker.envelope(now_ns=13 * _S + 1)  # the freeze TTL still bounds it
     assert gone is not None and gone.region is None
+
+
+def test_a_refit_shrunk_inside_the_held_region_with_no_hand_near_retracts() -> None:
+    """Nothing of the robot's is at the target (a person's hand, the target tipped):
+    the same shrink is unexplained and retracts at once, as does an unlocated hand."""
+    tracker, lines = _tracker()
+    held = _measured(11 * _S)
+    tracker.accept(held)
+    shrunk = _refit(0.425, (0.015, 0.04, 0.03))
+    far = _gate(shrunk, held, hands=(_HAND_FAR,))
+    assert (far.kind, far.retract) == ("unoccluded_refit", True)
+    tracker.refuse(far.kind, far.detail, retract=far.retract, now_ns=12 * _S)
+    assert tracker.region is None
+    assert any("retracted — unoccluded_refit" in line for line in lines)
+    assert _gate(shrunk, held, hands=()).kind == "unoccluded_refit"
+
+
+def test_a_refit_the_map_does_not_cover_retracts_even_with_the_hand_at_it() -> None:
+    held = _measured(11 * _S)
+    empty = VoxelLattice(
+        "openarm_base",
+        (0.41, -0.04, 0.05),
+        (0.0, 0.0, 0.0, 1.0),
+        0.02,
+        (4, 4, 4),
+        np.zeros(64, dtype=np.uint8),
+    )
+    gone = _gate(_refit(0.425, (0.015, 0.04, 0.03)), held, lattice=empty)
+    assert (gone.kind, gone.retract) == ("map_disagrees", True)
 
 
 def test_a_refit_reaching_outside_the_held_region_retracts() -> None:
@@ -289,6 +331,7 @@ def test_the_support_tunables_are_constructor_args_with_documented_defaults() ->
     bridge = VisionAttachmentBridge(None, robot, config=config)
     default = GraspTargetLeg(None, bridge, config)
     assert (default._search_below_m, default._probe_margin_m) == (0.15, 0.05)
+    assert default._occluder_margin_m == 0.05
     wide = GraspTargetLeg(
         None, bridge, config, support_search_below_m=0.30, support_probe_margin_m=0.08
     )
@@ -297,6 +340,8 @@ def test_the_support_tunables_are_constructor_args_with_documented_defaults() ->
         GraspTargetLeg(None, bridge, config, support_probe_margin_m=0.0)
     with pytest.raises(ROSConfigError, match="support_search_below_m"):
         GraspTargetLeg(None, bridge, config, support_search_below_m=-0.1)
+    with pytest.raises(ROSConfigError, match="occluder_margin_m"):
+        GraspTargetLeg(None, bridge, config, occluder_margin_m=-0.01)
 
 
 # ── The target must stand on the measured support ────────────────────────────────

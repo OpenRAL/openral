@@ -30,22 +30,26 @@ classes, each logged once per transition with its typed reason:
 * *Contradicting evidence* — no measured support under the target, a target
   not standing on the measured support (``not_on_support``), two
   comparable clusters (``AMBIGUOUS``), a fit over the caps or with no height
-  above the support, a re-fit the map does not cover or that moved or resized
-  past one voxel *and* reaches outside the held region grown by one voxel, a
+  above the support, a re-fit the map does not cover (``map_disagrees``) or
+  that moved or resized past one voxel *and* reaches outside the held region
+  grown by one voxel (``target_moved``) or has no contact link near it
+  (``unoccluded_refit``), a
   frame or calibration mismatch: the region is **retracted at once**.
 * *Lost view* — no seed cells, the seed off-image, no mask, a mask captured
   more than ``mask_depth_max_skew_s`` from the depth frame (``mask_depth_skew``),
   a missed deadline,
-  too few depth points, stale or missing inputs, and a re-fit that fails the
-  map or tracking gate but lies inside the held region grown by one voxel
-  (``occluded_refit``: the approaching hand occluding part of the target
-  shrinks and shifts the fit; it never replaces the held region). The
-  gripper closing in on the target occludes it from the head camera exactly
-  then, so the last accepted
+  too few depth points, stale or missing inputs, and a map-covered re-fit that
+  fails the tracking gate but lies inside the held region grown by one voxel
+  **while a declared contact link's tf origin is within one voxel +
+  ``occluder_margin_m`` of it** (``occluded_refit``: the robot's own hand
+  occluding part of the target shrinks and shifts the fit; it never replaces
+  the held region). The same shrink with no contact link near is
+  ``unoccluded_refit``, a contradiction (a person's hand, the target knocked
+  over). The gripper closing in on the target occludes it from the head
+  camera exactly then, so the last accepted
   region is **frozen** for at most ``grasp_target_freeze_s`` (unset: twice
   ``grid_max_age_s``, the kernel's voxel deadline) from its own
-  ``stamp_ns`` (the depth frame it was measured on), then retracted. Follow-up:
-  an FK-based "is the hand what occludes it" test instead of a bare TTL.
+  ``stamp_ns`` (the depth frame it was measured on), then retracted.
 
 The region dies with the declaration: dispatch retraction (goal end, cancel,
 E-stop — the runner retracts on all of them) and ``timeout_s`` expiry clear it.
@@ -56,7 +60,7 @@ and the region is kept for the kernel's handover rule (§2.1).
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -328,14 +332,37 @@ def _contradicted(kind: str, detail: str) -> _Refusal:
     return _Refusal(kind, detail, retract=True)
 
 
+def _hand_near(
+    hands: Sequence[tuple[float, float, float]], region: PlaceRegion, *, reach_m: float
+) -> bool:
+    """Whether any hand point lies inside ``region`` grown by ``reach_m`` on every face."""
+    if not hands:
+        return False
+    t = homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)
+    local = (np.asarray(hands, dtype=np.float64) - t[:3, 3]) @ t[:3, :3]
+    return bool(np.any(np.all(np.abs(local) <= np.asarray(region.half_extents) + reach_m, axis=1)))
+
+
 def _gate_refit(
     grid: VoxelLattice,
     region: PlaceRegion,
     previous: PlaceRegion | None,
     *,
     min_cover: float,
+    hands: Sequence[tuple[float, float, float]] = (),
+    occluder_margin_m: float = 0.05,
 ) -> PlaceRegion:
-    """Map cover + tracking gate on a fresh fit, or the typed refusal (lost vs contradicted)."""
+    """Map cover + tracking gate on a fresh fit, or the typed refusal (lost vs contradicted).
+
+    A re-fit the map does not cover is always a contradiction (the target is
+    gone). A covered re-fit that fails tracking but shrank inside the held
+    region (grown by one voxel) is the closing hand occluding part of the
+    target — a lost view that keeps the held region under its freeze TTL —
+    **only** while a declared contact link (``hands``, base-frame positions) is
+    within one voxel + ``occluder_margin_m`` of the held region; otherwise
+    nothing of the robot's explains the shrink (a person's hand, the target
+    knocked over) and it is retracted.
+    """
     count, covered = region_covers_occupied(grid, region, min_fraction=min_cover)
     tracked = previous is None or track_region(
         previous,
@@ -345,22 +372,27 @@ def _gate_refit(
     )
     if covered and tracked:
         return region
+    if not covered:
+        raise _contradicted("map_disagrees", f"only {count} occupied cells inside the region")
+    assert previous is not None  # a first fit is always "tracked"
     moved = (
-        ""
-        if previous is None
-        else f"re-fit centre {tuple(round(v, 3) for v in region.pose.xyz)} half_extents "
+        f"re-fit centre {tuple(round(v, 3) for v in region.pose.xyz)} half_extents "
         f"{tuple(round(v, 3) for v in region.half_extents)} vs held centre "
         f"{tuple(round(v, 3) for v in previous.pose.xyz)} half_extents "
         f"{tuple(round(v, 3) for v in previous.half_extents)}"
     )
-    if previous is not None and region_within(region, previous, tol_m=grid.resolution):
-        # Shrunk/shifted inside the held region: the closing hand occluding
-        # part of the target, not a contradiction — the held region stays
-        # under its freeze TTL and is not replaced by the partial fit.
-        raise _lost("occluded_refit", f"{moved}, inside the held region")
-    if not covered:
-        raise _contradicted("map_disagrees", f"only {count} occupied cells inside the region")
-    raise _contradicted("target_moved", f"{moved}: reaches outside the held region")
+    if not region_within(region, previous, tol_m=grid.resolution):
+        raise _contradicted("target_moved", f"{moved}: reaches outside the held region")
+    reach = grid.resolution + occluder_margin_m
+    if _hand_near(hands, previous, reach_m=reach):
+        # The robot's own hand occluding part of the target: the held region
+        # stays under its freeze TTL and is not replaced by the partial fit.
+        raise _lost("occluded_refit", f"{moved}, inside the held region, hand within {reach:.3f} m")
+    raise _contradicted(
+        "unoccluded_refit",
+        f"{moved}: inside the held region but no declared contact link within {reach:.3f} m "
+        f"of it ({len(hands)} located)",
+    )
 
 
 #: What a request was made against: (depth, depth stamp ns, intrinsics,
@@ -386,6 +418,11 @@ class GraspTargetLeg:
         support_probe_margin_m: Outer reach, from the target's footprint, of the
             ring in which the support layer must hold top-surface cells, metres
             (``support_top_from_voxels``). *Calibration point.*
+        occluder_margin_m: How far (beyond one voxel) from the held region a
+            declared contact link's tf origin may be for a shrunk re-fit to count
+            as the robot's own hand occluding the target (``_gate_refit``).
+            *Calibration point* — it covers the link origin's offset from the
+            finger surface.
 
     Raises:
         ROSConfigError: On a rate outside 2-5 Hz or a non-positive freeze, cell
@@ -401,6 +438,7 @@ class GraspTargetLeg:
         *,
         support_search_below_m: float = 0.15,
         support_probe_margin_m: float = 0.05,
+        occluder_margin_m: float = 0.05,
     ) -> None:
         """Validate the config; create no ROS entities yet."""
         if not _RATE_BAND_HZ[0] <= config.grasp_target_rate_hz <= _RATE_BAND_HZ[1]:
@@ -423,11 +461,17 @@ class GraspTargetLeg:
                 "grasp_target_freeze_s and grasp_target_min_cells must be > 0 and "
                 "grasp_target_min_cover in (0, 1]."
             )
-        if not (support_search_below_m > 0.0 and support_probe_margin_m > 0.0):
+        if not (
+            support_search_below_m > 0.0
+            and support_probe_margin_m > 0.0
+            and occluder_margin_m >= 0.0
+        ):
             raise ROSConfigError(
-                "support_search_below_m and support_probe_margin_m must be > 0, got "
-                f"{support_search_below_m!r} and {support_probe_margin_m!r}."
+                "support_search_below_m and support_probe_margin_m must be > 0 and "
+                f"occluder_margin_m >= 0, got {support_search_below_m!r}, "
+                f"{support_probe_margin_m!r} and {occluder_margin_m!r}."
             )
+        self._occluder_margin_m = occluder_margin_m
         self._search_below_m = support_search_below_m
         self._probe_margin_m = support_probe_margin_m
         self._node = node
@@ -487,6 +531,7 @@ class GraspTargetLeg:
             f"min_cover={self._config.grasp_target_min_cover:.2f} "
             f"support_search_below={self._search_below_m:.2f}m "
             f"support_probe_margin={self._probe_margin_m:.2f}m "
+            f"occluder_margin={self._occluder_margin_m:.2f}m "
             f"deadline={self._config.deadline_s:.3f}s"
         )
 
@@ -779,6 +824,18 @@ class GraspTargetLeg:
             if fit.refusal is TargetRefusal.TOO_FEW_POINTS:
                 raise _lost(fit.refusal.value, detail)
             raise _contradicted(fit.refusal.value, detail)
+        bridge = self._bridge
+        hands = []
+        for link in declaration.contact_links:
+            t_base_from_link = bridge._lookup(grid.frame_id, bridge.tf_frame(link))
+            if t_base_from_link is not None:
+                x, y, z = (float(v) for v in t_base_from_link[:3, 3])
+                hands.append((x, y, z))
         return _gate_refit(
-            grid, fit.region, self.tracker.region, min_cover=self._config.grasp_target_min_cover
+            grid,
+            fit.region,
+            self.tracker.region,
+            min_cover=self._config.grasp_target_min_cover,
+            hands=hands,
+            occluder_margin_m=self._occluder_margin_m,
         )
