@@ -2833,6 +2833,10 @@ class ReasonerNode(LifecycleNode):
         # map is worth maintaining even before the tool-use client is built).
         self._ingest_detected_objects(world_state)
         self._emit_scene_objects_span()
+        # Per-instance memory ids in the context, so a repeated label is nameable.
+        self._renderer.set_spatial_memory(
+            self._spatial_memory.to_scene_graph() if self._spatial_memory is not None else None
+        )
         if self._core is None:
             return False
         prep = self._core.prepare_tick(

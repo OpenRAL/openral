@@ -194,50 +194,51 @@ _The self-maintained `MEMORY.md` file model: persistent semantic memory (prefere
 ### `python/reasoner/src/openral_reasoner/context.py`
 _`ContextRenderer` builds the structured text snapshot the LLM consumes per tick (no pixels in v1)._
 
-- module constant `DEFAULT_BUFFER_SIZE: int = 8` — Rolling buffer capacity per category. (L57)
-- module constant `DEFAULT_PROMPT_PRIORITY: int = 10` (L62) — Default operator-prompt priority, matching `openral_prompt_router.DEFAULT_SOURCES`; human sources stamp 100 so they drain first.
-- module constant `_FAILURE_ADAPTER: TypeAdapter[FailureEvidence]` (L64) — cached `TypeAdapter(FailureEvidence)` used to decode a failure buffer entry's `evidence_json`.
-- module constant `_PERCEPTION_ADAPTER: TypeAdapter[PerceptionEventMetadata]` (L65) — cached `TypeAdapter(PerceptionEventMetadata)` used to decode a perception buffer entry's `metadata_json`.
-- `class FailureEventRecord` (frozen dataclass) (L69) — Failure-buffer entry; fields `source, kind, severity, evidence_json, rskill_id, trace_id, stamp_ns`.
-- `class PerceptionEventRecord` (frozen dataclass) (L86) — Perception-buffer entry; fields `kind, text, metadata_json, stamp_ns`.
-- `class PromptRecord` (frozen dataclass) (L96) — Operator-prompt-buffer entry; fields `text, metadata_json, stamp_ns, priority=DEFAULT_PROMPT_PRIORITY`. `priority` is filled by `append_prompt` from `metadata_json["priority"]` when constructed with the default sentinel.
-- `render_robot_self_model(description: RobotDescription) -> str` (L334) — Deterministic static self-model block (embodiment, dof, end-effectors, locomotion, payload, capability flags, cameras with FOV, control modes) so the LLM can judge reach/view feasibility before dispatch. Set via `ContextRenderer.set_robot_model`; rendered as `## ROBOT`.
-- `render_playbooks_block(entries: list[tuple[str, str]]) -> str` (L295) — Renders the `## PLAYBOOKS` system-prompt block from `(name—trigger, PLAYBOOK.md body)` entries; `""` when none match. Playbooks guide decisions only — every motion still goes through `execute_rskill` + the safety kernel.
+- module constant `DEFAULT_BUFFER_SIZE: int = 8` — Rolling buffer capacity per category. (L59)
+- module constant `DEFAULT_PROMPT_PRIORITY: int = 10` (L64) — Default operator-prompt priority, matching `openral_prompt_router.DEFAULT_SOURCES`; human sources stamp 100 so they drain first.
+- module constant `_FAILURE_ADAPTER: TypeAdapter[FailureEvidence]` (L66) — cached `TypeAdapter(FailureEvidence)` used to decode a failure buffer entry's `evidence_json`.
+- module constant `_PERCEPTION_ADAPTER: TypeAdapter[PerceptionEventMetadata]` (L67) — cached `TypeAdapter(PerceptionEventMetadata)` used to decode a perception buffer entry's `metadata_json`.
+- `class FailureEventRecord` (frozen dataclass) (L71) — Failure-buffer entry; fields `source, kind, severity, evidence_json, rskill_id, trace_id, stamp_ns`.
+- `class PerceptionEventRecord` (frozen dataclass) (L88) — Perception-buffer entry; fields `kind, text, metadata_json, stamp_ns`.
+- `class PromptRecord` (frozen dataclass) (L98) — Operator-prompt-buffer entry; fields `text, metadata_json, stamp_ns, priority=DEFAULT_PROMPT_PRIORITY`. `priority` is filled by `append_prompt` from `metadata_json["priority"]` when constructed with the default sentinel.
+- `render_robot_self_model(description: RobotDescription) -> str` (L336) — Deterministic static self-model block (embodiment, dof, end-effectors, locomotion, payload, capability flags, cameras with FOV, control modes) so the LLM can judge reach/view feasibility before dispatch. Set via `ContextRenderer.set_robot_model`; rendered as `## ROBOT`.
+- `render_playbooks_block(entries: list[tuple[str, str]]) -> str` (L297) — Renders the `## PLAYBOOKS` system-prompt block from `(name—trigger, PLAYBOOK.md body)` entries; `""` when none match. Playbooks guide decisions only — every motion still goes through `execute_rskill` + the safety kernel.
 - `class MemoryEntry` / `class MemoryStore` (`openral_reasoner.memory`, own section below) — The self-maintained `MEMORY.md` semantic-memory model (complementary to the geometric scene graph), advisory only. Round-trips the file; renders a capped `## MEMORY` context block; applies explicit add/update/supersede/delete edits; consolidates duplicates; searches the archive. Loaded at configure by `reasoner_node._maybe_load_memory`.
-- `class ExecutionEventRecord` (frozen dataclass) (L124) — Execution-feedback buffer entry; fields `rskill_id, outcome ("ok"|"failed"), summary, reflection (failures only), stamp_ns`.
-- `class RewardStateRecord` (frozen dataclass) (L142) — Latest two-head reward assessment surfaced to the LLM: `progress` (closeness, the gated head), `success` (done-confidence, compressed, secondary), `progress_trend`, `success_trend`, `task`, `stamp_ns`. Rendered as `## REWARD` via `set_reward_state`/`_render_reward`.
-- `reflect_on_failure(outcome_state, detail, *, timed_out: bool | None = None) -> str` (L176) — Deterministic one-line strategy hint (no LLM call) turning a raw failure into a "change approach" cue. `timed_out` comes from the typed `ExecuteRskill.Result.failure_kind` when the caller has it; `None` falls back to a deprecated substring probe over the prose.
-- `reflect_on_reward_plateau(progress_now) -> str` (L229) — Reward-plateau hint (policy ran clean but progress says not done): the move is to change tactic, not to subdivide or re-issue the same instruction.
-- `reflect_on_invalid_plan(detail) -> str` (L259) — Strategy hint feeding a decode error back so a model that emitted malformed JSON arguments fixes its call instead of re-issuing it verbatim.
-- `reflect_on_retry_cap(tool, cap) -> str` (L283) — Strategy hint when `ReasonerCore`'s per-kind retry ladder is exhausted for `tool`.
-- `class ContextRenderer` (L402) — Stateful renderer.
-  - `set_robot_model(self, robot_model) -> None` (L491) — Sets/clears the static `## ROBOT` self-model; does NOT bump `seq`.
-  - `set_memory_block(self, memory_block) -> None` (L500) — Sets/clears the `## MEMORY` block from the MEMORY.md store; does NOT bump `seq`.
-  - `set_mission(self, mission) -> None` (L510) — Sets/clears the active task queue rendered as `## MISSION`; a new goal is an event so it DOES bump `seq`.
-  - `set_in_view(self, objects) -> None` (L522) — Sets/clears the latest continuous-detector enumeration rendered as `in_view[<camera>]` in `## WORLD_STATE`; bumps `seq` only when the rendered enumeration actually changes.
-  - `set_inflight_skill(self, rskill_id, *, stamp_ns=0, state='running') -> None` (L542) — Records (or clears) the in-flight `execute_rskill` goal with its phase (`"dispatching"` until accept, then `"running"`), rendered as the leading `in_flight:` line in `## EXECUTION`; state changes bump `seq`.
-  - `inflight_skill(self) -> str | None` (L561) — `rskill_id` of the goal currently in flight, or `None`; also read by `ReasonerCore`'s heartbeat-idle gate.
-  - `inflight_state(self) -> str | None` (L566) — Phase of the in-flight goal (`"dispatching"` / `"running"`), or `None`.
-  - `note_located(self, objects) -> None` (L573) — Folds open-vocab `locate_in_view` hits into a sticky `located[<camera>]` line (latest-wins, capped) that survives the continuous detector's per-frame clobber, keeping a mislabelled goal noun grounded for decompose/dispatch; bumps `seq`.
-  - `clear_located(self) -> None` (L617) — Drops the sticky open-vocab grounding on a new operator goal; bumps `seq` when non-empty.
-  - `set_reward_state(self, reward) -> None` (L631) — Sets/clears the two-head reward assessment rendered as `## REWARD`; bumps `seq`.
-  - `mission(self) -> MissionState | None` (L660) — the active `MissionState`, or `None`; the node mutates it in place for non-waking bookkeeping (`record_attempt`/`mark_verifying`).
-  - `advance_mission(self, *, done, verdict) -> TaskState | None` (L670) — `complete_active`/`abandon_active` the active task + activate the next, bumps `seq`; `None` when the mission is finished or unset.
-  - `append_failure(self, record) -> None` (L692) — pushes a failure event onto the rolling buffer; bumps `seq`.
-  - `append_execution(self, record) -> None` (L697) — Pushes a skill execution outcome onto the rolling buffer; bumps `seq` so feedback wakes an idle heartbeat.
-  - `clear_failures(self) -> None` (L711) — drops stale failure/execution context after `/openral/estop_cleared` so the next prompt is not poisoned by a resolved e-stop.
-  - `append_perception(self, record) -> None` (L706) — pushes a perception event onto the rolling buffer; bumps `seq`.
-  - `append_prompt(self, record) -> None` (L725) — priority-ordered insert; buffer-evicts the lowest-priority oldest entry on overflow; bumps `seq`.
-  - `render(self, *, world_state) -> str` (L768) — Returns the deterministic text snapshot for one LLM tick. `## WORLD_STATE` covers joint_state/ee_poses/battery/diagnostics plus a 3D `scene_objects[<frame>]` line and a depth-free, pixel-space `in_view[<camera>]` line (so grounding still works with RGB-only / no octomap); `note_located` hits render as a sticky `located[<camera>]` line distinct from `in_view`. `## REWARD` (when set) carries both reward heads distinctly labelled so the LLM never blurs progress (persist-vs-replan) with success (done-ness).
-  - `failures(self) -> tuple[FailureEventRecord, ...]` (L971) — snapshot of the failure buffer (oldest first).
-  - `perception_events(self) -> tuple[PerceptionEventRecord, ...]` (L981) — snapshot of the perception buffer (oldest first).
-  - `executions(self) -> tuple[ExecutionEventRecord, ...]` (L976) — snapshot of the execution-feedback buffer (oldest first).
-  - `prompts(self) -> tuple[PromptRecord, ...]` (L986) — snapshot of the prompt buffer (oldest first).
-  - `seq(self) -> int` (L991) — monotonic mutation counter `ReasonerCore` uses to short-circuit a heartbeat tick when nothing has changed since the last successful tick.
-  - `drain_prompts(self, *, seen=None) -> tuple[PromptRecord, ...]` (L1005) — Pull-once, priority-desc + arrival-asc order; does NOT bump `seq`. `seen` drains only those records by identity, so a prompt that arrived mid-LLM-call and was never rendered survives for the next tick.
-- module constant `_PROMPT_EXCLUDED_FIELDS: frozenset[str]` (L1068) — evidence fields `_summarise_evidence_json` drops by role rather than length (currently `{"joint_positions_rad"}`, useless to a planner).
-- module constant `_PROMPT_FIELD_BUDGET: int = 48` (L1074) — char backstop past which `_summarise_evidence_json` drops a field and discloses it as `+<field>[<n>]`.
-- `_summarise_evidence_json(payload) -> str` — Decode the FailureEvidence union and produce a one-line, 120-char-truncated summary; a field named in `_PROMPT_EXCLUDED_FIELDS` or past the `_PROMPT_FIELD_BUDGET` backstop is dropped and disclosed as `+<field>[<n>]`. Exclusion is by role, not length, so identity fields survive truncation instead of noise fields. (L1077)
+- `class ExecutionEventRecord` (frozen dataclass) (L126) — Execution-feedback buffer entry; fields `rskill_id, outcome ("ok"|"failed"), summary, reflection (failures only), stamp_ns`.
+- `class RewardStateRecord` (frozen dataclass) (L144) — Latest two-head reward assessment surfaced to the LLM: `progress` (closeness, the gated head), `success` (done-confidence, compressed, secondary), `progress_trend`, `success_trend`, `task`, `stamp_ns`. Rendered as `## REWARD` via `set_reward_state`/`_render_reward`.
+- `reflect_on_failure(outcome_state, detail, *, timed_out: bool | None = None) -> str` (L178) — Deterministic one-line strategy hint (no LLM call) turning a raw failure into a "change approach" cue. `timed_out` comes from the typed `ExecuteRskill.Result.failure_kind` when the caller has it; `None` falls back to a deprecated substring probe over the prose.
+- `reflect_on_reward_plateau(progress_now) -> str` (L231) — Reward-plateau hint (policy ran clean but progress says not done): the move is to change tactic, not to subdivide or re-issue the same instruction.
+- `reflect_on_invalid_plan(detail) -> str` (L261) — Strategy hint feeding a decode error back so a model that emitted malformed JSON arguments fixes its call instead of re-issuing it verbatim.
+- `reflect_on_retry_cap(tool, cap) -> str` (L285) — Strategy hint when `ReasonerCore`'s per-kind retry ladder is exhausted for `tool`.
+- `class ContextRenderer` (L404) — Stateful renderer.
+  - `set_robot_model(self, robot_model) -> None` (L497) — Sets/clears the static `## ROBOT` self-model; does NOT bump `seq`.
+  - `set_memory_block(self, memory_block) -> None` (L506) — Sets/clears the `## MEMORY` block from the MEMORY.md store; does NOT bump `seq`.
+  - `set_mission(self, mission) -> None` (L547) — Sets/clears the active task queue rendered as `## MISSION`; a new goal is an event so it DOES bump `seq`.
+  - `set_spatial_memory(self, graph) -> None` (L514) — Sets/clears the spatial-memory snapshot whose OBJECT nodes render as `memory_objects[<frame>]: <label> id=<node_id>@(x,y,z) size=(…)` — the ids `grasp_target.object_id` takes; does NOT bump `seq` (ingest jitter).
+  - `set_in_view(self, objects) -> None` (L559) — Sets/clears the latest continuous-detector enumeration rendered as `in_view[<camera>]` in `## WORLD_STATE`; bumps `seq` only when the rendered enumeration actually changes.
+  - `set_inflight_skill(self, rskill_id, *, stamp_ns=0, state='running') -> None` (L579) — Records (or clears) the in-flight `execute_rskill` goal with its phase (`"dispatching"` until accept, then `"running"`), rendered as the leading `in_flight:` line in `## EXECUTION`; state changes bump `seq`.
+  - `inflight_skill(self) -> str | None` (L598) — `rskill_id` of the goal currently in flight, or `None`; also read by `ReasonerCore`'s heartbeat-idle gate.
+  - `inflight_state(self) -> str | None` (L603) — Phase of the in-flight goal (`"dispatching"` / `"running"`), or `None`.
+  - `note_located(self, objects) -> None` (L610) — Folds open-vocab `locate_in_view` hits into a sticky `located[<camera>]` line (latest-wins, capped) that survives the continuous detector's per-frame clobber, keeping a mislabelled goal noun grounded for decompose/dispatch; bumps `seq`.
+  - `clear_located(self) -> None` (L654) — Drops the sticky open-vocab grounding on a new operator goal; bumps `seq` when non-empty.
+  - `set_reward_state(self, reward) -> None` (L668) — Sets/clears the two-head reward assessment rendered as `## REWARD`; bumps `seq`.
+  - `mission(self) -> MissionState | None` (L697) — the active `MissionState`, or `None`; the node mutates it in place for non-waking bookkeeping (`record_attempt`/`mark_verifying`).
+  - `advance_mission(self, *, done, verdict) -> TaskState | None` (L707) — `complete_active`/`abandon_active` the active task + activate the next, bumps `seq`; `None` when the mission is finished or unset.
+  - `append_failure(self, record) -> None` (L729) — pushes a failure event onto the rolling buffer; bumps `seq`.
+  - `append_execution(self, record) -> None` (L734) — Pushes a skill execution outcome onto the rolling buffer; bumps `seq` so feedback wakes an idle heartbeat.
+  - `clear_failures(self) -> None` (L748) — drops stale failure/execution context after `/openral/estop_cleared` so the next prompt is not poisoned by a resolved e-stop.
+  - `append_perception(self, record) -> None` (L743) — pushes a perception event onto the rolling buffer; bumps `seq`.
+  - `append_prompt(self, record) -> None` (L762) — priority-ordered insert; buffer-evicts the lowest-priority oldest entry on overflow; bumps `seq`.
+  - `render(self, *, world_state) -> str` (L805) — Returns the deterministic text snapshot for one LLM tick. `## WORLD_STATE` covers joint_state/ee_poses/battery/diagnostics plus a 3D `scene_objects[<frame>]` line (one entry per instance — label, centre, size, track — never deduped by label; a `repeated_labels:` line flags labels a bare name cannot ground), the `memory_objects[<frame>]` node-id line, and a depth-free, pixel-space `in_view[<camera>]` line (so grounding still works with RGB-only / no octomap); `note_located` hits render as a sticky `located[<camera>]` line distinct from `in_view`. `## REWARD` (when set) carries both reward heads distinctly labelled so the LLM never blurs progress (persist-vs-replan) with success (done-ness).
+  - `failures(self) -> tuple[FailureEventRecord, ...]` (L1044) — snapshot of the failure buffer (oldest first).
+  - `perception_events(self) -> tuple[PerceptionEventRecord, ...]` (L1054) — snapshot of the perception buffer (oldest first).
+  - `executions(self) -> tuple[ExecutionEventRecord, ...]` (L1049) — snapshot of the execution-feedback buffer (oldest first).
+  - `prompts(self) -> tuple[PromptRecord, ...]` (L1059) — snapshot of the prompt buffer (oldest first).
+  - `seq(self) -> int` (L1064) — monotonic mutation counter `ReasonerCore` uses to short-circuit a heartbeat tick when nothing has changed since the last successful tick.
+  - `drain_prompts(self, *, seen=None) -> tuple[PromptRecord, ...]` (L1078) — Pull-once, priority-desc + arrival-asc order; does NOT bump `seq`. `seen` drains only those records by identity, so a prompt that arrived mid-LLM-call and was never rendered survives for the next tick.
+- module constant `_PROMPT_EXCLUDED_FIELDS: frozenset[str]` (L1141) — evidence fields `_summarise_evidence_json` drops by role rather than length (currently `{"joint_positions_rad"}`, useless to a planner).
+- module constant `_PROMPT_FIELD_BUDGET: int = 48` (L1147) — char backstop past which `_summarise_evidence_json` drops a field and discloses it as `+<field>[<n>]`.
+- `_summarise_evidence_json(payload) -> str` — Decode the FailureEvidence union and produce a one-line, 120-char-truncated summary; a field named in `_PROMPT_EXCLUDED_FIELDS` or past the `_PROMPT_FIELD_BUDGET` backstop is dropped and disclosed as `+<field>[<n>]`. Exclusion is by role, not length, so identity fields survive truncation instead of noise fields. (L1180)
 - `_extract_priority(metadata_json) -> int` — Parse a top-level `priority` field out of a PromptStamped's metadata; returns `DEFAULT_PROMPT_PRIORITY` on missing / malformed / non-int payload.
 
 ### `python/reasoner/src/openral_reasoner/core.py`
@@ -519,11 +520,11 @@ _`reasoner_node` lifecycle wrapper. Thin rclpy shell around `openral_reasoner.Re
   - `_on_lifecycle_response(call, future)` — Log the `ChangeState` result; lifecycle failures surface in the target node's own logs (no `FailureTrigger` re-emission).
   - `_publish_skill_failure(*, kind, rskill_id, evidence, traceparent, trace_id=None)` — Build + publish a `FailureTrigger` on `/openral/failure/rskill`, then mirror it onto the OTLP span path via `_emit_skill_failure_event` so the OTLP-only dashboard can tally it.
   - `_emit_skill_failure_event(*, kind, rskill_id, evidence)` — Stamp an `openral.event.skill_failure` span event carrying the failure state, on the active tick span when recording or a transient span otherwise. Drives the dashboard "skill failures" counter.
-  - `renderer(self) -> ContextRenderer` (L5268) — Direct read access for tests asserting buffer state.
-  - `dispatched_calls(self) -> tuple[Any, ...]` (L5273) — Snapshot of tool calls the reasoner has dispatched (in order).
-  - `set_palette(self, palette) -> None` (L5277) — Replace the active palette (rebuilt on `/openral/skill_registry_changed`).
+  - `renderer(self) -> ContextRenderer` (L5272) — Direct read access for tests asserting buffer state.
+  - `dispatched_calls(self) -> tuple[Any, ...]` (L5277) — Snapshot of tool calls the reasoner has dispatched (in order).
+  - `set_palette(self, palette) -> None` (L5281) — Replace the active palette (rebuilt on `/openral/skill_registry_changed`).
 - `_QOS_REGISTRY_CHANGED` (L244) — RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1 so a late-subscribing reasoner sees the most recent invalidation.
-- `main(args=None) -> int` (L5282) — Entry point for `ros2 run openral_reasoner_ros reasoner_node`.
+- `main(args=None) -> int` (L5286) — Entry point for `ros2 run openral_reasoner_ros reasoner_node`.
 
 ### `packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py`
 _Single lifecycle node that fans in operator prompts from any external source into `/openral/prompt`. CLI is the only v1 adapter; WebSocket / voice / Slack are out of scope._
