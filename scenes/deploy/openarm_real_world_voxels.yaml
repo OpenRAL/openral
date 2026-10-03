@@ -129,10 +129,10 @@ runtime:
 
   # The vision attachment leg (SAM 2.1 segmenter + the HAL's attachment-evidence
   # bridge), wired but OFF: its grasp trigger is the jaw's position stall, whose
-  # calibration (robot.yaml `closure_calibration`: closed_rest_offset, stall_gap,
-  # settle_tolerance) is still the nominal from teleop data, not yet measured attended
-  # on this cell (per unit: robots/openarm/units/<unit>.yaml `joints:`), and turning it
-  # on for real is pending Safety-WG review and a hazard-log entry
+  # thresholds (robot.yaml `closure_calibration`: closed_rest_offset, stall_gap,
+  # settle_tolerance) are robot-type constants of the gripper mechanism from teleop
+  # data — no per-cell calibration; verified once by reading an empty close on the
+  # rig — and turning it on for real is pending Safety-WG review and a hazard-log entry
   # (docs/reference/real-pick-place-design.md §3 rows 4-5, §4 items 3 and 6, §5).
   # Enabled, `deploy run` also turns the kernel's attached-payload check on
   # (1000 ms deadline) — never the leg alone. Topics are the Thor ZED-M driver's;
