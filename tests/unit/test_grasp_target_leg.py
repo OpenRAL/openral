@@ -307,10 +307,14 @@ def test_the_freeze_ttl_derives_from_the_deploys_grid_age_unless_set() -> None:
     assert leg(grid_max_age_s=0.4, grasp_target_freeze_s=0.5)._freeze_s == pytest.approx(0.5)
     with pytest.raises(ROSConfigError, match="grid_max_age_s"):
         leg(grid_max_age_s=0.0)
-    # A freeze past four kernel voxel deadlines holds a region the map has long moved past.
-    assert leg(grid_max_age_s=0.4, grasp_target_freeze_s=1.6)._freeze_s == pytest.approx(1.6)
+    # The kernel ages a grasp region out at grasp_region_max_age_s = 2 x its voxel
+    # deadline (deploy passes 2 x world_voxel_deadline_s; grid_max_age_s is that
+    # deadline): a longer freeze would publish a region the kernel already refuses.
+    assert leg(grid_max_age_s=0.4, grasp_target_freeze_s=0.8)._freeze_s == pytest.approx(0.8)
     with pytest.raises(ROSConfigError, match="grasp_target_freeze_s"):
-        leg(grid_max_age_s=0.4, grasp_target_freeze_s=1.7)
+        leg(grid_max_age_s=0.4, grasp_target_freeze_s=0.81)
+    with pytest.raises(ROSConfigError, match="grasp_target_freeze_s"):
+        leg(grid_max_age_s=0.4, grasp_target_freeze_s=1.6)  # the old 4x ceiling
 
 
 def test_the_bridge_owns_the_leg_only_when_enabled_and_validates_its_rate() -> None:
@@ -565,6 +569,18 @@ def _near(*hands: tuple[str, ...]) -> list[tuple[tuple[str, ...], PlaceRegion]]:
     ]
 
 
+_CELL = 0.02
+
+
+def _approach(
+    tracker: GraspTargetTracker,
+    near: list[tuple[tuple[str, ...], PlaceRegion]],
+    *,
+    now_ns: int = 11 * _S,
+) -> None:
+    tracker.on_approach(near, now_ns=now_ns, move_m=_CELL)
+
+
 def test_the_approach_box_spans_the_hands_tcps_grown_and_capped() -> None:
     box = approach_box([(0.4, 0.0, 0.2), (0.4, 0.1, 0.2)], approach_m=0.1, frame_id="b")
     assert box.pose.xyz == pytest.approx((0.4, 0.05, 0.2))
@@ -580,14 +596,14 @@ def test_a_goal_scope_declaration_waits_for_an_approach_and_measures_nothing() -
     tracker, _ = _approach_tracker()
     assert tracker.wants_approach(now_ns=11 * _S)
     assert not tracker.wants_measurement(now_ns=11 * _S), "no box until a hand approaches"
-    tracker.on_approach([])
+    _approach(tracker, [])
     envelope = tracker.envelope(now_ns=11 * _S)
     assert envelope == _goal_scope(), "region-less, so the kernel exempts nothing"
 
 
 def test_one_approaching_hand_arms_a_one_hand_declaration_with_the_goals_attribution() -> None:
     tracker, lines = _approach_tracker()
-    tracker.on_approach(_near(_LEFT))
+    _approach(tracker, _near(_LEFT))
     target = tracker.target
     assert target is not None
     assert target.target_id == f"{APPROACH_TARGET_PREFIX}openarm_left_finger_pair"
@@ -609,7 +625,7 @@ def test_one_approaching_hand_arms_a_one_hand_declaration_with_the_goals_attribu
 
 def test_two_hands_approaching_at_once_arm_neither() -> None:
     tracker, lines = _approach_tracker()
-    tracker.on_approach(_near(_LEFT, _RIGHT))
+    _approach(tracker, _near(_LEFT, _RIGHT))
     assert tracker.target == _goal_scope()
     assert not tracker.wants_measurement(now_ns=11 * _S)
     assert any("2 hands approaching at once" in line for line in lines)
@@ -617,23 +633,23 @@ def test_two_hands_approaching_at_once_arm_neither() -> None:
 
 def test_the_hand_leaving_the_approach_distance_retracts_at_once() -> None:
     tracker, lines = _approach_tracker()
-    tracker.on_approach(_near(_LEFT))
+    _approach(tracker, _near(_LEFT))
     tracker.accept(_measured(11 * _S))
-    tracker.on_approach(_near(_RIGHT))  # the left hand moved off; the other hand is not it
+    _approach(tracker, _near(_RIGHT))  # the left hand moved off; the other hand is not it
     envelope = tracker.envelope(now_ns=11 * _S)
     assert envelope == _goal_scope(), "back to the region-less goal declaration"
     assert any("retracted — approach_ended" in line for line in lines)
     # It re-arms only from a fresh approach, from scratch (no region carried over).
-    tracker.on_approach(_near(_RIGHT))
+    _approach(tracker, _near(_RIGHT))
     target = tracker.target
     assert target is not None and target.contact_links == _RIGHT and tracker.region is None
 
 
 def test_the_held_hand_keeps_its_arming_while_the_other_hand_also_approaches() -> None:
     tracker, _ = _approach_tracker()
-    tracker.on_approach(_near(_LEFT))
+    _approach(tracker, _near(_LEFT))
     tracker.accept(_measured(11 * _S))
-    tracker.on_approach(_near(_LEFT, _RIGHT))
+    _approach(tracker, _near(_LEFT, _RIGHT))
     target = tracker.target
     assert target is not None and target.contact_links == _LEFT
     assert tracker.region is not None
@@ -641,7 +657,7 @@ def test_the_held_hand_keeps_its_arming_while_the_other_hand_also_approaches() -
 
 def test_the_approach_target_dies_with_the_goal() -> None:
     tracker, _ = _approach_tracker()
-    tracker.on_approach(_near(_LEFT))
+    _approach(tracker, _near(_LEFT))
     tracker.accept(_measured(11 * _S))
     tracker.on_declaration(_goal_scope().model_copy(update={"active": False}))
     assert tracker.envelope(now_ns=11 * _S) is None
@@ -653,7 +669,7 @@ def test_the_approach_target_dies_with_the_goal() -> None:
 
 def test_the_approach_target_dies_with_the_goal_timeout() -> None:
     tracker, _ = _approach_tracker()
-    tracker.on_approach(_near(_LEFT))
+    _approach(tracker, _near(_LEFT))
     tracker.accept(_measured(11 * _S))
     assert tracker.envelope(now_ns=71 * _S) is None  # stamp 10 s + timeout 60 s
 
@@ -661,28 +677,28 @@ def test_the_approach_target_dies_with_the_goal_timeout() -> None:
 def test_a_named_search_box_wins_and_no_approach_runs() -> None:
     tracker, _ = _tracker()
     assert not tracker.wants_approach(now_ns=11 * _S)
-    tracker.on_approach(_near(_LEFT))
+    _approach(tracker, _near(_LEFT))
     assert tracker.target == _dispatched()
 
 
 def test_a_named_hand_without_a_box_narrows_the_approach_to_that_hand() -> None:
     tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append)
     tracker.on_declaration(_goal_scope().model_copy(update={"contact_links": _RIGHT}))
-    tracker.on_approach(_near(_LEFT))
+    _approach(tracker, _near(_LEFT))
     assert not tracker.wants_measurement(now_ns=11 * _S), "the undeclared hand never arms"
-    tracker.on_approach(_near(_LEFT, _RIGHT))
+    _approach(tracker, _near(_LEFT, _RIGHT))
     target = tracker.target
     assert target is not None and target.contact_links == _RIGHT
 
 
 def test_after_the_approach_hand_attaches_the_region_is_kept_for_the_handover() -> None:
     tracker, _ = _approach_tracker()
-    tracker.on_approach(_near(_LEFT))
+    _approach(tracker, _near(_LEFT))
     tracker.accept(_measured(11 * _S))
     tracker.on_attach("openarm_right_finger_pair")  # the other hand: not this target
     assert tracker.wants_measurement(now_ns=11 * _S)
     tracker.on_attach("openarm_left_finger_pair")
-    tracker.on_approach([])  # the closed hand reads anything now; the handover rules
+    _approach(tracker, [])  # the closed hand reads anything now; the handover rules
     envelope = tracker.envelope(now_ns=11 * _S)
     assert envelope is not None and envelope.region is not None
     assert envelope.contact_links == _LEFT
@@ -749,18 +765,187 @@ def test_the_leg_arms_the_hand_whose_tcp_is_near_occupied_cells_and_not_the_far_
         bridge._tf_buffer = buffer
         leg = bridge._grasp_target
         assert leg is not None
-        leg._grid = (_held_block_lattice(), time.monotonic())
+        now_ns = leg._now_ns()
+        leg._grid = (_held_block_lattice(), now_ns, time.monotonic())
         leg.tracker.on_declaration(_goal_scope())
 
-        leg._detect_approach(0.10)
+        leg._detect_approach(0.10, now_ns)
         target = leg.tracker.target
         assert target is not None and target.contact_links == _LEFT
         assert target.search_box is not None
         assert target.search_box.pose.xyz == pytest.approx((0.45, 0.0, 0.18))
 
         place("left", (0.45, 0.0, 0.40))  # lifted 27 cm clear of the block
-        leg._detect_approach(0.10)
+        leg._detect_approach(0.10, now_ns)
         assert leg.tracker.target == _goal_scope(), "the approach ended with the hand away"
     finally:
         node.destroy_node()
         rclpy.shutdown()
+
+
+# ── grid freshness: the world data's age, not the republish's ───────────────────
+
+
+def _offline_leg(**kwargs: float) -> GraspTargetLeg:
+    robot = RobotDescription.from_yaml(str(_ROBOT))
+    bridge = VisionAttachmentBridge(
+        None,
+        robot,
+        config=VisionAttachmentConfig(
+            camera="head_zed", grasp_target_enabled=True, grasp_target_approach_m=0.10, **kwargs
+        ),
+    )
+    assert bridge._grasp_target is not None
+    return bridge._grasp_target
+
+
+def test_a_freshly_republished_grid_of_stale_world_data_is_a_lost_view() -> None:
+    """A stalled octomap: the bridge republishes (fresh receipt), ``source_stamp`` frozen."""
+    import time
+
+    leg = _offline_leg()  # freeze 2.0 s
+    now_ns = 100 * _S
+    leg._grid = (_held_block_lattice(), now_ns - 1 * _S, time.monotonic())
+    grid, source_ns = leg._fresh_grid(now_ns)
+    assert source_ns == now_ns - 1 * _S and grid.resolution == pytest.approx(0.02)
+    leg._grid = (_held_block_lattice(), now_ns - 3 * _S, time.monotonic())
+    with pytest.raises(_Refusal) as stale:
+        leg._fresh_grid(now_ns)
+    assert stale.value.kind == "grid_source_stale" and not stale.value.retract
+    leg._grid = (_held_block_lattice(), 0, time.monotonic())
+    with pytest.raises(_Refusal) as unknown:
+        leg._fresh_grid(now_ns)
+    assert unknown.value.kind == "grid_source_unknown", "unset = unknown age = stale (kernel)"
+
+
+# ── handover is per hand ─────────────────────────────────────────────────────────
+
+
+def test_an_attach_on_an_unarmed_hand_does_not_block_the_other_hand() -> None:
+    """The goal-scope declaration names every hand; a false-positive ATTACH on the right
+    hand (nothing armed for it) neither hands over nor stops the left hand arming."""
+    tracker, lines = _approach_tracker()
+    tracker.on_attach("openarm_right_finger_pair")
+    assert tracker.handed_over is None
+    assert tracker.wants_approach(now_ns=11 * _S)
+    assert any("no armed target for its hand" in line for line in lines)
+    _approach(tracker, _near(_LEFT))
+    target = tracker.target
+    assert target is not None and target.contact_links == _LEFT
+    # ... and an ATTACH on the right while the left is armed does not hand the left over.
+    tracker.accept(_measured(11 * _S))
+    tracker.on_attach("openarm_right_finger_pair")
+    assert tracker.handed_over is None and tracker.wants_measurement(now_ns=11 * _S)
+
+
+def test_a_completed_pick_releases_the_hand_to_re_arm_for_a_second_pick() -> None:
+    tracker, lines = _approach_tracker()
+    _approach(tracker, _near(_LEFT))
+    tracker.accept(_measured(11 * _S))
+    tracker.on_attach("openarm_left_finger_pair")
+    assert tracker.handed_over == _LEFT and not tracker.wants_approach(now_ns=11 * _S)
+    tracker.on_detach("openarm_right_finger_pair", now_ns=12 * _S)  # not the handed-over hand
+    assert tracker.handed_over == _LEFT
+    tracker.on_detach("openarm_left_finger_pair", now_ns=12 * _S)
+    assert tracker.handed_over is None and tracker.region is None
+    envelope = tracker.envelope(now_ns=12 * _S)
+    assert envelope == _goal_scope(), "the placed object's region is not kept"
+    assert any("retracted — picked" in line for line in lines)
+    # Re-arms from a fresh approach elsewhere (the hand moved to the next object).
+    second = approach_box([(0.30, 0.20, 0.10)], approach_m=0.1, frame_id="openarm_base")
+    _approach(tracker, [(_LEFT, second)], now_ns=12 * _S)
+    target = tracker.target
+    assert target is not None and target.contact_links == _LEFT
+    assert target.search_box == second
+
+
+def test_a_named_declaration_stays_handed_over_after_its_pick() -> None:
+    """A named target was picked; a new target needs a new declaration from dispatch."""
+    tracker, _ = _tracker()
+    tracker.accept(_measured(11 * _S))
+    tracker.on_attach("openarm_left_finger_pair")
+    tracker.on_detach("openarm_left_finger_pair", now_ns=12 * _S)
+    assert tracker.handed_over is not None
+    assert not tracker.wants_measurement(now_ns=12 * _S)
+
+
+# ── approach: the support surface is not a target; no re-arm flood ──────────────
+
+
+def test_the_support_layer_under_the_hand_is_not_an_approach() -> None:
+    """A hand 4 cm over an empty table: the box holds a full table layer (>= min_cells)
+    but nothing above it."""
+    from openral_hal._grasp_target_leg import approach_cell_count
+
+    size = (10, 10, 6)
+    occ = np.zeros(size[::-1], dtype=np.uint8)
+    occ[0, :, :] = 1  # the table top, k = 0
+    table = VoxelLattice(
+        "openarm_base", (0.35, -0.1, 0.0), (0.0, 0.0, 0.0, 1.0), 0.02, size, occ.ravel()
+    )
+    box = approach_box([(0.45, 0.0, 0.05)], approach_m=0.08, frame_id="openarm_base")
+    assert len(occupied_centers_in_box(table, box)) >= 8, "the raw count would arm"
+    assert approach_cell_count(table, box) == 0
+    occ[1:4, 4:6, 4:6] = 1  # a 4 x 4 x 6 cm object on it
+    on_it = VoxelLattice(
+        "openarm_base", (0.35, -0.1, 0.0), (0.0, 0.0, 0.0, 1.0), 0.02, size, occ.ravel()
+    )
+    assert approach_cell_count(on_it, box) == 12, "all three of its layers count"
+
+
+def test_a_refused_arming_does_not_re_arm_in_place_until_the_hand_moves_or_backs_off() -> None:
+    tracker, lines = _approach_tracker()
+    _approach(tracker, _near(_LEFT))
+    tracker.refuse("no_support", "nothing under it", retract=True, now_ns=11 * _S)
+    assert tracker.target == _goal_scope()
+    for step in range(1, 10):  # every tick inside the backoff, the hand still
+        _approach(tracker, _near(_LEFT), now_ns=11 * _S + step * _S // 10)
+        assert tracker.target == _goal_scope()
+    assert sum("armed from the approach" in line for line in lines) == 1, "re-arm flood"
+    # Moving by under a voxel is still the same place.
+    jitter = approach_box([(0.48, 0.02, 0.18)], approach_m=0.1, frame_id="openarm_base")
+    _approach(tracker, [(_LEFT, jitter)], now_ns=12 * _S)
+    assert tracker.target == _goal_scope()
+    # Moving by more than a voxel re-arms at once.
+    moved = approach_box([(0.50, 0.02, 0.18)], approach_m=0.1, frame_id="openarm_base")
+    _approach(tracker, [(_LEFT, moved)], now_ns=12 * _S)
+    target = tracker.target
+    assert target is not None and target.search_box == moved
+    # Refused again, the hand still: after the backoff (one freeze window) it re-arms.
+    tracker.refuse("no_support", "nothing under it", retract=True, now_ns=12 * _S)
+    _approach(tracker, [(_LEFT, moved)], now_ns=12 * _S + int(_FREEZE_S * _S))
+    assert tracker.target == _goal_scope()
+    _approach(tracker, [(_LEFT, moved)], now_ns=12 * _S + int(_FREEZE_S * _S) + 1)
+    target = tracker.target
+    assert target is not None and target.contact_links == _LEFT
+
+
+def test_a_backed_off_hand_still_counts_toward_ambiguity() -> None:
+    tracker, lines = _approach_tracker()
+    _approach(tracker, _near(_LEFT))
+    tracker.refuse("no_support", "nothing under it", retract=True, now_ns=11 * _S)
+    _approach(tracker, _near(_LEFT, _RIGHT), now_ns=11 * _S + 1)
+    assert tracker.target == _goal_scope(), "the right hand is not the only one approaching"
+    assert any("2 hands approaching at once" in line for line in lines)
+
+
+def test_the_leg_releases_a_handover_only_once_the_hands_legs_hold_nothing() -> None:
+    """The bridge's own gripper legs say when the pick completed: no payload held, no
+    release window, no segmentation pending. A holding hand is never approaching."""
+    leg = _offline_leg()
+    left = next(g for g in leg._bridge._legs if g.jaw_link == "openarm_left_finger_pair")
+    leg.tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append)  # no node to log to
+    leg.tracker.on_declaration(_goal_scope())
+    _approach(leg.tracker, _near(_LEFT))
+    leg.tracker.accept(_measured(11 * _S))
+    left.attachment = object()  # what the bridge latched on the ATTACH
+    leg.tracker.on_attach(left.jaw_link)
+    leg._release_detached(12 * _S)
+    assert leg.tracker.handed_over == _LEFT, "still holding: no release"
+    assert leg._holding(_LEFT) and not leg._holding(_RIGHT)
+    left.attachment, left.pending = None, True
+    leg._release_detached(12 * _S)
+    assert leg.tracker.handed_over == _LEFT, "segmenting: not released yet"
+    left.pending = False
+    leg._release_detached(12 * _S)
+    assert leg.tracker.handed_over is None and leg.tracker.region is None

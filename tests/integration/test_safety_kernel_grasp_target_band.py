@@ -615,7 +615,11 @@ def _approach_declaration() -> GraspDeclaration:
     tracker = GraspTargetTracker(freeze_s=2.0, log=lambda _line: None)
     tracker.on_declaration(goal)
     tcp = (_REGION_CENTRE[0], _REGION_CENTRE[1], _REGION_CENTRE[2] + 0.05)
-    tracker.on_approach([((_LEFT_FINGER,), approach_box([tcp], approach_m=0.10, frame_id=_FRAME))])
+    tracker.on_approach(
+        [((_LEFT_FINGER,), approach_box([tcp], approach_m=0.10, frame_id=_FRAME))],
+        now_ns=now,
+        move_m=_RES,
+    )
     tracker.accept(_region(_REGION_CENTRE, _REGION_HALF))
     declaration = tracker.envelope(now_ns=now)
     assert declaration is not None and declaration.region is not None

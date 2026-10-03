@@ -234,8 +234,15 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   shrink with no contact link near is `unoccluded_refit`, and a re-fit the map does not cover is
   `map_disagrees`, both retracting at once, as does one reaching outside the held region)
   for `grasp_target_freeze_s` (default twice `grid_max_age_s`, the deploy's kernel voxel deadline —
-  2 s on the real cell; refused above four times it, as are a support search deeper than 0.5 m
-  and an occluder margin over 0.10 m) from its depth stamp; a grid older than `grid_max_age_s` is not used. A mask whose capture stamp is more than
+  2 s on the real cell; refused above twice it — the kernel ages a grasp region out at
+  `grasp_region_max_age_s` = 2 × its voxel deadline, so a longer freeze would publish a region the
+  kernel already refuses — as are a support search deeper than 0.5 m and an occluder margin over
+  0.10 m) from the region's stamp: the older of its depth frame and the grid's `source_stamp`.
+  A grid is not used when received more than `grid_max_age_s` ago (`grid_stale`), when it carries
+  no `source_stamp` (`grid_source_unknown`) or when its `source_stamp` — the world data's capture
+  time, not `header.stamp`, which the octomap bridge refreshes on every republish of a stalled
+  octree — is older than the freeze (`grid_source_stale`); all lost views. A stalled octomap
+  therefore ages the region out instead of vouching for it. A mask whose capture stamp is more than
   `mask_depth_max_skew_s` (0.1 s) from the depth frame it would be back-projected through is
   refused (`mask_depth_skew`, a lost view here; a `GRIPPER_CLOSURE` fallback in the attachment path). Tests: `tests/unit/test_grasp_target_leg.py`,
   live `tests/integration/test_grasp_target_leg_live.py`. The occlusion freeze is bounded by the TTL and
@@ -261,7 +268,23 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   feeds the measurement above **unchanged** (measured support, anchored seed at the column
   nearest the TCP, `not_on_support`, `ambiguous`, SAM point prompt, mask fit, map cover,
   tracking, freeze TTL); the hand leaving the approach distance retracts the region at once
-  (`approach_ended`), and it re-arms only from scratch. A dispatch/reasoner declaration with a
+  (`approach_ended`), and it re-arms only from scratch. The count ignores the box's lowest
+  occupied layer (`approach_cell_count`): a hand low over an empty table holds only the table and
+  is not approaching (ceiling: a surface two layers thick still counts its upper layer). A hand
+  whose legs hold a payload, a release window or a pending segmentation is never approaching
+  (what is near its TCP is what it carries). After any retraction of an arming, that hand
+  re-arms only once its box centre moved more than one voxel or one freeze window elapsed — the
+  same map at the same pose gives the same verdict, so re-arming every tick would only flood the
+  log and the segmenter; a backed-off hand still counts toward "two at once".
+  **Handover is per hand.** Only an ATTACH on the *armed* hand (or on a link of a named
+  `search_box` declaration) hands over and stops re-measurement. The goal-scope declaration names
+  every hand before any approach arms, so an ATTACH there — a false positive, or a grasp of
+  something never measured — hands nothing over and does not stop the other hand's approach.
+  *Second pick (chosen conservatively):* once every leg of the handed-over hand holds nothing (no
+  payload, no release window, no pending segmentation — polled each tick), an approach-armed pick
+  is complete: its region is dropped (`picked`) and the hand may re-arm within the goal from a
+  fresh approach, behind the same backoff. A named declaration stays handed over after its pick:
+  a new target needs a new declaration from dispatch. A dispatch/reasoner declaration with a
   `search_box` wins (no approach runs); one naming a hand but no box narrows the approach to
   that hand. The kernel reads it from the envelope like any producer-measured declaration —
   it never required the dispatch relay — and now also refuses a region-carrying declaration
