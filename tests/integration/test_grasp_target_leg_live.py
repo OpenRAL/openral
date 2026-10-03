@@ -382,7 +382,9 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         assert _wait_until(
             lambda: any("retracted — freeze_ttl" in line for line in logs), timeout_s=3.0
         ), f"no TTL reason logged: {[line for line in logs if 'grasp target' in line]}"
-        assert any("grid_stale" in line for line in logs), "the lost-view reason was not logged"
+        assert _wait_until(lambda: any("grid_stale" in line for line in logs), timeout_s=3.0), (
+            "the lost-view reason was not logged"
+        )
 
         # ── 2b. The octomap stalls: the grid keeps arriving with a fresh header but
         #        its source_stamp frozen. The region is stamped no later than that
@@ -469,7 +471,9 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
             left.origin_xyz,
             atol=1e-6,
         )
-        assert any("from the grasp-target region" in line for line in logs)
+        assert _wait_until(
+            lambda: any("from the grasp-target region" in line for line in logs), timeout_s=3.0
+        )
         time.sleep(0.5)
         assert len(prompts) <= segments_before + 2, "the attach re-segmented the target"
     finally:
@@ -711,7 +715,9 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
             ),
             timeout_s=5.0,
         ), f"not retracted: {[line for line in logs if 'grasp target' in line]}"
-        assert any("retracted — approach_ended" in line for line in logs)
+        assert _wait_until(
+            lambda: any("retracted — approach_ended" in line for line in logs), timeout_s=3.0
+        )
 
         # ── 2b. The right hand low over the empty table: the table is not a target.
         #        Its surface layer is not counted, so nothing arms, refuses, re-arms.
@@ -740,33 +746,52 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
             f"no attachment; log: {[line for line in logs if 'attachment' in line]}"
         )
         assert latest().objects[0].evidence_kind == "grasp_target_region"
-        assert any("region kept" in line for line in logs), "not handed over"
+        assert _wait_until(lambda: any("region kept" in line for line in logs), timeout_s=3.0), (
+            "not handed over"
+        )
 
-        # ── 3c. DETACH: the region leaves the envelope at once, the window opens. ──
+        # ── 3c. DETACH: the region leaves the envelope at once, the window opens. A
+        #        process stall longer than the window (seen under load: ~1.7 s with no
+        #        callback) closes it before any heartbeat shows it; then the next one
+        #        already shows the completed pick, never the region. ──
         jaw["left_q"] = 0.0
         assert _wait_until(
             lambda: (
-                latest().grasp_declaration.target_id == first_id
+                latest().grasp_declaration.target_id in (first_id, "approach")
                 and not latest().grasp_declaration.region_valid
             ),
             timeout_s=5.0,
         ), f"region not dropped at DETACH: {[line for line in logs if 'grasp' in line]}"
-        assert any("release window opened" in line for line in logs)
+        assert _wait_until(
+            lambda: any("released its payload — region dropped" in line for line in logs),
+            timeout_s=3.0,
+        )
+        assert _wait_until(
+            lambda: any("release window opened" in line for line in logs), timeout_s=3.0
+        )
 
         # ── 3d. The window times out, the hand still by the payload: pick complete, and
         #        the hand does not re-arm on what it just released. ──
         assert _wait_until(
             lambda: latest().grasp_declaration.target_id == "approach", timeout_s=5.0
         ), f"pick never completed: {[line for line in logs if 'grasp' in line]}"
-        assert any("holds nothing; may re-arm" in line for line in logs)
+        assert _wait_until(
+            lambda: any("holds nothing; may re-arm" in line for line in logs), timeout_s=3.0
+        )
         time.sleep(1.5)
         assert latest().grasp_declaration.target_id == "approach", (
             "the hand re-armed on its just-released payload"
         )
 
-        # ── 3e. Lifted clear, then over the first box: pick 2, a fresh identity. ──
+        # ── 3e. Lifted clear, then over the first box: pick 2, a fresh identity. The
+        #        first box is within a voxel of the released payload's (inflated) record,
+        #        so only a tick that samples the hand lifted ends the guard (HZ-0115-11):
+        #        hold the lift until one did — a stall can swallow a fixed sleep. ──
         tcp["left"] = neighbour + np.array([0.0, 0.0, 0.40])
-        time.sleep(1.0)
+        assert _wait_until(
+            lambda: any("cleared the payload it released" in line for line in logs),
+            timeout_s=10.0,
+        ), f"the lift never ended the guard: {[line for line in logs if 'grasp' in line]}"
         tcp["left"] = one + np.array([0.0, 0.0, _BOX_HALF[2] + 0.05])
         assert _wait_until(lambda: region_around(one), timeout_s=20.0), (
             f"no pick-2 region: {[line for line in logs if 'grasp target' in line]}"
