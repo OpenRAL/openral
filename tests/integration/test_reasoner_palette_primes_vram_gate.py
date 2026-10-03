@@ -60,6 +60,9 @@ def test_seeded_palette_resolves_every_vla_for_the_vram_gate() -> None:
             "-p",
             f"robot_yaml:={_ROBOT_YAML}",
             "-p",
+            # A gripper manifest needs it or configure fails (deploy_e2e passes it).
+            "grasp_target_voxel_m:=0.05",
+            "-p",
             f"rskill_search_paths:=[{_RSKILLS}]",
         ],
     )

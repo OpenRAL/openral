@@ -793,8 +793,9 @@ class ReasonerNode(LifecycleNode):
         # as everywhere else), and the seed-box padding a grounded grasp target gets — one
         # octomap cell plus the depth extrinsic's planar accuracy bound. The cell is the
         # deploy's octree resolution, which deploy_e2e passes (`_octomap_resolution`); there is
-        # no standalone default (0.0 = unset), so a node launched without it refuses to ground
-        # a grasp target instead of padding by some other cell's size. Calibration knobs: the
+        # no standalone default (0.0 = unset), so a node launched without it on a manifest with
+        # a gripper fails configure instead of padding by some other cell's size. Calibration
+        # knobs: the
         # producer re-measures inside the seed, so a looser pad only widens its search, never
         # the exemption.
         self.declare_parameter("robot_unit", "")
@@ -1084,6 +1085,12 @@ class ReasonerNode(LifecycleNode):
             )
             return TransitionCallbackReturn.FAILURE
 
+        # Load the grasp/place grounding context first: a deploy that can ground a grasp
+        # target but lacks the voxel resolution fails here, once, before any resource is
+        # opened -- not per tool call, where it would burn the LLM's replanning ladder.
+        # Its ROSConfigError reaches ``log_lifecycle_errors``: logged, configure FAILURE.
+        self._load_grounding_context()
+
         try:
             client = self._injected_client or build_tool_use_client_from_env()
         except ROSConfigError as exc:
@@ -1315,7 +1322,6 @@ class ReasonerNode(LifecycleNode):
         # so the system prompt carries a ``## THIS ROBOT`` block; ``None``
         # leaves the robot-agnostic brief unchanged. The base brief honours
         # the ``OPENRAL_REASONER_SYSTEM_PROMPT`` deployment override.
-        self._load_grounding_context()
         base_prompt = resolve_reasoner_system_prompt(
             self._robot_capabilities,
             fixtures=self._robot_unit.fixtures if self._robot_unit is not None else (),
@@ -1341,6 +1347,11 @@ class ReasonerNode(LifecycleNode):
         The unit is ``$OPENRAL_ROBOT_UNIT``, else the ``robot_unit`` parameter (the scene's
         ``robot_unit``), the precedence every other consumer uses. Failure is non-fatal and
         logged: an ``ExecuteRskillTool`` that names a target is then refused at dispatch.
+
+        Raises:
+            ROSConfigError: The manifest loaded and declares a gripper, so the LLM can name
+                a ``grasp_target`` (every ``ExecuteRskillTool`` offers it), but
+                ``grasp_target_voxel_m`` is unset -- grounding would refuse every call.
         """
         from openral_core import ROBOT_UNIT_ENV, load_robot_unit
 
@@ -1357,6 +1368,13 @@ class ReasonerNode(LifecycleNode):
         except (OSError, ValueError, ROSConfigError) as exc:
             self.get_logger().warning(f"grasp/place target grounding unavailable: {exc!s}")
             return
+        voxel_m = self.get_parameter("grasp_target_voxel_m").get_parameter_value().double_value
+        if voxel_m <= 0.0 and gripper_hands(self._robot_description):
+            raise ROSConfigError(
+                f"robot {self._robot_description.name!r} has a gripper, so the reasoner can "
+                "ground grasp targets, but grasp_target_voxel_m is unset; pass the deploy's "
+                "octree resolution (deploy_e2e does)."
+            )
         if self._robot_unit is not None:
             fixtures = ", ".join(f.id for f in self._robot_unit.fixtures) or "none"
             self.get_logger().info(
@@ -1396,12 +1414,8 @@ class ReasonerNode(LifecycleNode):
                     raise ROSReasonerInvalidPlan(
                         f"grasp_target: the latest world state does not decode: {exc!s}"
                     ) from exc
+            # > 0 here: on_configure refuses a gripper manifest without it.
             voxel_m = self.get_parameter("grasp_target_voxel_m").get_parameter_value().double_value
-            if voxel_m <= 0.0:
-                raise ROSReasonerInvalidPlan(
-                    "grasp grounding needs the deploy's voxel resolution "
-                    "(grasp_target_voxel_m), which this reasoner was not given."
-                )
             pad_m = (
                 voxel_m
                 + self.get_parameter("grasp_target_extrinsic_error_m")

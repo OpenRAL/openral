@@ -205,9 +205,42 @@ def test_a_bimanual_target_naming_no_gripper_sends_no_goal() -> None:
     assert "2 hands" in last.summary
 
 
-def test_a_reasoner_without_the_deploy_voxel_resolution_sends_no_goal() -> None:
-    """No silent cell-specific fallback: an unset grasp_target_voxel_m refuses grounding."""
-    received, last = _run([_box(-0.15)], voxel_m=None)
-    assert received == [], "a grasp target padded by a guessed voxel size must not be dispatched"
-    assert last is not None and last.outcome == "failed"
-    assert "voxel resolution" in last.summary
+def _configure_without_voxel(robot: str) -> Any:
+    """Configure a real ReasonerNode on ``robot`` with grasp_target_voxel_m left unset."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from rclpy.parameter import Parameter
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    rclpy.init()
+    try:
+        reasoner = ReasonerNode(
+            client=FakeToolUseClient(responses=[]),
+            palette=ToolPalette(execute_rskill_ids=frozenset({_SKILL})),
+            tick_hz=0.2,
+        )
+        reasoner.set_parameters(
+            [Parameter("robot_yaml", value=str(_REPO / "robots" / robot / "robot.yaml"))]
+        )
+        result = reasoner.trigger_configure()
+        reasoner.destroy_node()
+        return result
+    finally:
+        rclpy.shutdown()
+
+
+def test_a_gripper_reasoner_without_the_deploy_voxel_resolution_fails_configure() -> None:
+    """No silent cell-specific fallback, and no per-call refusal the LLM would replan on."""
+    from rclpy.lifecycle import TransitionCallbackReturn
+
+    assert _configure_without_voxel("openarm") == TransitionCallbackReturn.FAILURE
+
+
+def test_a_gripperless_reasoner_configures_without_the_voxel_resolution() -> None:
+    """ur5e declares no gripper: it can never ground a grasp target, so it needs no voxel."""
+    from rclpy.lifecycle import TransitionCallbackReturn
+
+    assert _configure_without_voxel("ur5e") == TransitionCallbackReturn.SUCCESS
