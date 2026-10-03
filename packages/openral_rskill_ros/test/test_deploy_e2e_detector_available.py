@@ -136,3 +136,16 @@ def test_the_reasoner_gets_the_scene_robot_unit_param() -> None:
     import yaml
 
     assert yaml.safe_load("".join(s.text for s in value)) == ""
+
+
+def test_the_reasoner_pads_grasp_targets_by_the_deploys_octree_cell() -> None:
+    """One cell of the map the producer searches, from the launch's own octree resolution."""
+    module = _import_launch_module()
+    entities = _compose(enable_object_detector=False, locator_manifest="")
+    value = _reasoner_param(entities, "grasp_target_voxel_m")
+    expected = module._octomap_resolution("sim")  # type: ignore[attr-defined]
+    if isinstance(value, tuple):  # launch may wrap a value as substitutions
+        import yaml
+
+        value = yaml.safe_load("".join(s.text for s in value))
+    assert value == pytest.approx(expected)
