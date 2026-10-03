@@ -4712,6 +4712,122 @@ TEST_F(LifecycleKernelTest, AHandedOverDeclarationThatLosesItsRegionRetires) {
   EXPECT_TRUE(rig.node->fault_latched());
 }
 
+TEST_F(LifecycleKernelTest, AnotherHandsDetachDoesNotRetireAPreHandoverDeclaration) {
+  // Review finding: the detach edge (an empty attachment set at a new revision)
+  // retired whatever grasp declaration was armed. Bimanual, the OTHER hand's
+  // release retired hand A's live pre-handover arming — and the producer keeps
+  // that identity for every re-arm, so A's pick was dead for the goal. Before
+  // its handover a declaration exempts no payload, so an unrelated detach only
+  // drops it; a detach on the declaring chain (after the handover) still retires.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_other_detach", bimanual_grasp_params());
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.target_id = "approach:link0:1";
+  b.second_attach_link = "other";  // the other hand holds; link0 approaches
+  b.revision = 1;
+  rig.warm(&b, 0.0, 200);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  ASSERT_EQ(logs.count("safety.grasp_region_handover"), 0U) << logs.joined();
+  // The other hand lets go: the attachment set empties at a new revision.
+  b.second_attach_link.clear();
+  b.revision = 2;
+  b.region_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 200);
+  EXPECT_EQ(logs.count("reason=detached target=approach:link0:1"), 0U) << logs.joined();
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << "the other hand's release killed link0's pick\n"
+                                  << logs.joined();
+  // The control: link0's own pick, handed over and released, retires.
+  b.carrying = true;
+  b.revision = 3;
+  rig.warm(&b, 0.0, 100);
+  ASSERT_EQ(logs.count("safety.grasp_region_handover target=approach:link0:1"), 1U)
+      << logs.joined();
+  b.carrying = false;
+  b.revision = 4;
+  rig.warm(&b, kGraspClearQ, 100);
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=detached target=approach:link0:1"), 1U)
+      << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "a released pick's identity re-armed";
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, AFaultRetiredPreHandoverIdentityStaysRefused) {
+  // A grid re-frame and a rejected attachment model are genuine faults: the
+  // pre-handover declaration retires and its identity never re-arms, even with
+  // a fresh region in the new frame. Liveness is the producer's job (it mints a
+  // fresh identity only after the hand left the approach distance and backed off).
+  for (const char* fault : {"grid_frame_changed", "attachment_rejected"}) {
+    LogCapture logs;
+    GraspRig rig(std::string("kernel_grasp_fault_") + fault);
+    rig.start();
+    GraspBeat b;
+    b.declaration_stamp_ns = rig.now_ns();
+    b.target_id = "approach:link0:1";
+    rig.warm(&b, 0.0, 200);
+    ASSERT_TRUE(rig.offer(&b, 0.0)) << fault << ": " << logs.joined();
+    if (std::string(fault) == "grid_frame_changed") {
+      rig.voxels.header.frame_id = "base_link_reframed";
+      b.region_frame = "base_link_reframed";
+    } else {
+      rig.state_fn = [&b](std::int64_t stream_ns) {
+        auto msg = grasp_state(stream_ns, b);
+        msg.attachment_stamp_ns = 0;  // an unstamped attachment model: rejected
+        return msg;
+      };
+      rig.warm(&b, kGraspClearQ, 100);
+      rig.state_fn = nullptr;
+    }
+    b.region_stamp_ns = rig.now_ns();
+    rig.warm(&b, kGraspClearQ, 200);
+    EXPECT_EQ(logs.count(std::string("safety.grasp_region_dropped reason=") + fault +
+                         " target=approach:link0:1"),
+              1U)
+        << fault << ": " << logs.joined();
+    EXPECT_EQ(logs.count("safety.grasp_region_armed"), 1U) << fault << ": " << logs.joined();
+    EXPECT_FALSE(rig.offer(&b, 0.0)) << fault << ": the retired identity re-armed";
+    EXPECT_TRUE(rig.node->fault_latched());
+  }
+}
+
+TEST_F(LifecycleKernelTest, AHandedOverDeclarationRetractedByTheProducerRetires) {
+  // A latched (handed-over) declaration that goes inactive ends its pick: it
+  // retires, and the same identity re-sent active afterwards — the payload still
+  // in the box — never re-arms. The control: before any handover, a retraction
+  // only drops, and the same identity re-arms.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_retracted_latched");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.target_id = "approach:link0:1";
+  rig.warm(&b, 0.0, 200);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  b.active = false;
+  rig.warm(&b, kGraspClearQ, 100);
+  b.active = true;
+  b.region_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 200);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << "a pre-handover retraction must only drop\n" << logs.joined();
+  ASSERT_EQ(logs.count("safety.grasp_region_armed target=approach:link0:1"), 2U) << logs.joined();
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 100);
+  ASSERT_EQ(logs.count("safety.grasp_region_latched target=approach:link0:1"), 1U) << logs.joined();
+  b.active = false;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=retracted target=approach:link0:1"), 2U)
+      << logs.joined();
+  b.active = true;
+  b.region_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 200);
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 2U)
+      << "the retracted handover re-armed: " << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "a retracted handover's identity exempted the finger";
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
 TEST_F(LifecycleKernelTest, AnExemptFingerInsideItsTargetStillLeavesTheChunkScaled) {
   // Review finding: the exempt finger IS inside the target, so its pair reads a
   // negative distance. Fed raw into the sweep minimum it made the chunk's slack

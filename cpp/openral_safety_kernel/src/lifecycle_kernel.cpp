@@ -2421,11 +2421,23 @@ void SafetyKernelLifecycleNode::on_world_state(
       attached_model_.force_gate = PlaceForceGate{};
       place_region_refusal_reason_.clear();
       place_region_refusal_target_.clear();
-      // A detach while a grasp region is armed retires it: either the grasped
-      // payload was released (the handover is over) or something else let go
-      // mid-grasp — neither is the scene the region was measured in.
-      if (grasp_region_.valid) {
+      // A detach after the handover retires the declaration: its payload, on the
+      // declaring chain, was released — the pick is over (the `released` rule's
+      // scope). Before the handover nothing was attached on the declaring chain
+      // (an attachment there is the handover or a `handover_object_mismatch`),
+      // so what let go belongs to the other hand or is a released payload's
+      // frozen record: not this pick's. Such a declaration exempts no payload;
+      // it is only dropped here, and the ingest just below re-evaluates it
+      // against this snapshot with every gate. Retiring it would kill a live
+      // pick for the goal, the producer re-arming under the same identity.
+      if (grasp_region_.valid && grasp_region_.handover) {
         retire_grasp_declaration("detached");
+      } else if (grasp_region_.valid) {
+        RCLCPP_INFO(this->get_logger(),
+                    "safety.grasp_region_dropped reason=detached_elsewhere target=%s",
+                    grasp_declaration_target_.c_str());
+        grasp_region_ = GraspTargetRegion{};
+        voxel_grid_.grasp_region = GraspTargetRegion{};
       }
     } else {
       attached_contact_snapshot_pending_ = true;

@@ -867,8 +867,17 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   `safety.grasp_region_moved_after_handover … ignored`), so a producer that
   re-measures the target at the carried payload's live pose cannot extend the
   exemption by moving the box with it. Before the handover the region still
-  updates on every snapshot. A detach, a rejected
-  attachment set or a grid-frame change also retires it. A retired declaration's
+  updates on every snapshot. A rejected attachment set or a grid-frame change also
+  retires it, before or after the handover (genuine faults; a pre-handover one stays
+  retired — the producer re-arms only under a fresh identity, after its hand left
+  the approach distance and stayed away for a freeze window:
+  `…AFaultRetiredPreHandoverIdentityStaysRefused`). A detach (the attachment set
+  emptying at a new revision) retires it **after the handover** — its payload on the
+  declaring chain was released. Before the handover nothing of this pick is
+  attached, so the detach is another hand's release or a frozen record clearing:
+  the declaration is only dropped (`grasp_region_dropped reason=detached_elsewhere`)
+  and the same snapshot re-ingests it through every gate
+  (`…AnotherHandsDetachDoesNotRetireAPreHandoverDeclaration`). A retired declaration's
   heartbeat never re-arms it; only a new declaration (new target or stamp) can.
 * **Multi-pick per goal.** The approach-armed producer arms each pick of a goal
   under its own identity (`approach:<link>:<n>`, the goal's stamp), so retirement
@@ -878,7 +887,9 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   empty — the other hand still holds, or the released payload sits frozen on the
   base link through its release window
   (`…AReleaseOnTheDeclaringChainRetiresWhileTheOtherHandHolds`) — and when it
-  loses its region or is retracted (`…AHandedOverDeclarationThatLosesItsRegionRetires`).
+  loses its region or is retracted (`…AHandedOverDeclarationThatLosesItsRegionRetires`,
+  `…AHandedOverDeclarationRetractedByTheProducerRetires`; a pre-handover retraction
+  only drops).
   Retired identities are kept in `RetiredGraspSet` (`collision.hpp`): a fixed ring
   of `kGraspRetiredCapacity` = 16 (target hash, stamp) pairs, cleared on
   activate/cleanup, with no allocation (it runs on the candidate path at
