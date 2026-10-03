@@ -832,7 +832,14 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
 * **Scope.** While valid, a cell whose base-frame centre is inside the box does
   not trip **for a link in the mask only**. Every other link takes the unchanged
   path with no extra work; cells outside the box, self-collision, the attached
-  checks and the force gate are untouched.
+  checks and the force gate are untouched. An exempt pair is decided before the
+  narrow phase and never spends the call's shared stage-2 budget
+  (`kMaxStage2PerCheck`): a finger buried in its target puts every region cell
+  inside stage 1's margin, and refining those (they cannot trip) used to exhaust
+  the budget and leave a non-exempt link on the looser fallback bound — a false
+  stop (`…ExemptCellsDoNotSpendTheStage2BudgetOfOtherLinks`). The only change a
+  region can make to a non-mask link is therefore more exact refinement, never
+  a new stop.
 * **Evidence.** An exempt pair never supplies the reported identity or
   distance (`…AnExemptCellNeverSuppliesTheEvidence`). It reaches
   `sweep_min_distance` **clamped to no less than the margin**: the exempt finger

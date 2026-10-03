@@ -1025,11 +1025,16 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
 /// drive the sweep minimum negative, and the lifecycle's velocity band drops
 /// negative slack as "tripped" — losing every non-exempt pair's graded slowdown
 /// with it. At the margin it reads as slack 0, the band's slowest rate. It never
-/// supplies link_a/link_b/min_distance. Every link outside the mask runs the unchanged
-/// path with no extra work, so its result is bit-identical with or without a
-/// region; for a mask link, cells outside the box are unchanged. Hence the
-/// tripping (link, cell) set with a region is a subset of the set without it,
-/// and the difference lies in {(mask link, cell centred in the region)}.
+/// supplies link_a/link_b/min_distance. An exempt pair never spends the call's
+/// shared stage-2 budget (`kMaxStage2PerCheck`): it cannot trip, so its stage-1
+/// bound is enough, and the budget is left to the pairs that can. Every link
+/// outside the mask runs the unchanged path; the only difference a region can
+/// make to it is MORE stage-2 budget, i.e. an exact hull distance where the
+/// budget would otherwise have run out — never a new stop. For a mask link,
+/// cells outside the box are unchanged likewise. Hence the tripping (link,
+/// cell) set with a region is a subset of the set without it, and the
+/// difference lies in {(mask link, cell centred in the region)} plus pairs the
+/// exact stage-2 distance clears.
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const VoxelGrid& grid, double margin,
                                    double band_m = 0.0) noexcept;

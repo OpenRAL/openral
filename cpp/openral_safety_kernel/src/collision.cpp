@@ -1393,7 +1393,13 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
             continue;
           }
           const Vec3 center = voxel_center_local(grid, ix, iy, iz);
-          // ADR-01xx, as in the capsule pass.
+          // ADR-01xx, as in the capsule pass. Decided BEFORE the narrow phase:
+          // an exempt pair cannot trip whatever its exact distance, so it must
+          // not spend the stage-2 budget the non-exempt pairs of this call
+          // share — a finger buried in its target puts dozens of in-region
+          // cells inside stage 1's margin, enough to exhaust the budget and
+          // leave a non-exempt link on the looser fallback bound (a false
+          // stop). Stage 1's lower bound is all its clamped slack needs.
           const bool exempt =
               grasp_link && grasp_target_exempts(grid, lb, apply(grid.pose, center));
           double d;
@@ -1408,7 +1414,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
               // Stage 2, on the cells stage 1 could not clear: the exact
               // hull-to-cell distance, or stage 1's bound again for a link that
               // ships no hull or a call that has spent its refinement budget.
-              if (tight.n_vertices > 0 && stage2_budget > 0) {
+              if (!exempt && tight.n_vertices > 0 && stage2_budget > 0) {
                 --stage2_budget;
                 d = hull_cell_distance(tight, center, half_side, seed, margin, d, witness);
               }

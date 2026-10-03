@@ -5764,6 +5764,95 @@ TEST(GraspTargetExemption, AnExemptPairNeverDrivesTheSweepMinimumBelowTheMargin)
   EXPECT_EQ(with.min_distance, kGraspMargin);
 }
 
+TEST(GraspTargetExemption, ExemptCellsDoNotSpendTheStage2BudgetOfOtherLinks) {
+  // Review finding: stage 2 (exact hull GJK) is budgeted per call across every
+  // link (kMaxStage2PerCheck). A declared finger buried in its target puts
+  // every in-region cell inside stage 1's margin; refining those exempt pairs
+  // (which cannot trip whatever they read) exhausted the budget, so a
+  // NON-exempt link later in the call fell back to the looser stage-1/shipped
+  // bound and stopped on a cell exact geometry clears.
+  //
+  // Two hull-carrying box links, grid of 20 mm cells from the origin:
+  //   link 1 (declared): half 50 mm at the centre of cell (5,5,5), with the
+  //     5x5x5 = 125 cells it contains occupied and inside a region around them;
+  //   link 2 (not declared): half 30 mm, placed so cell (15,15,15) sits off its
+  //     +x/+y edge at axis gaps (2g, g, overlap), g = 9.2 mm. Exact distance
+  //     sqrt(5)·g = 20.57 mm clears a 20 mm margin; the best stage-1 axis,
+  //     (1,1,0)/sqrt(2), only proves 3g/sqrt(2) = 19.52 mm, and the OBB SAT 2g.
+  constexpr double kRes = 0.02;
+  constexpr double kMargin = 0.02;
+  constexpr double kGap = 0.0092;
+  const osk::Vec3 half_a{0.05, 0.05, 0.05};
+  const osk::Vec3 half_b{0.03, 0.03, 0.03};
+  osk::CollisionModel m;
+  m.n_links = 3;
+  m.parent = {-1, 0, 0};
+  m.joint_kind = std::vector<osk::JointKind>(3, osk::JointKind::kFixed);
+  m.dof_index = {-1, -1, -1};
+  m.origin = std::vector<osk::Transform>(3, identity());
+  m.axis = std::vector<osk::Vec3>(3, osk::Vec3{0, 0, 1});
+  m.box_link = {1, 2};
+  m.boxes = {osk::Obb{half_a, identity()}, osk::Obb{half_b, identity()}};
+  std::vector<osk::Vec3> verts;
+  m.hulls = {axis_aligned_box_hull(half_a, verts), axis_aligned_box_hull(half_b, verts)};
+  m.hull_vertices = verts;
+  m.box_hull = {0, 1};
+  std::size_t offending = 0;
+  ASSERT_EQ(osk::validate_tight_geometry(m, offending), osk::TightGeometryStatus::kOk);
+
+  const auto centre = [](int i) { return (i + 0.5) * kRes; };
+  const osk::Vec3 cell_b{centre(15), centre(15), centre(15)};
+  osk::CollisionScratch s;
+  s.link_world = {identity(), translate(centre(5), centre(5), centre(5)),
+                  translate(cell_b.x - 0.5 * kRes - 2.0 * kGap - half_b.x,
+                            cell_b.y - 0.5 * kRes - kGap - half_b.y, cell_b.z)};
+
+  constexpr int kN = 20;
+  std::vector<std::uint8_t> occ(kN * kN * kN, 0);
+  const auto at = [](int ix, int iy, int iz) {
+    return static_cast<std::size_t>(ix + kN * (iy + kN * iz));
+  };
+  osk::VoxelGrid grid;
+  grid.resolution = kRes;
+  grid.sx = kN;
+  grid.sy = kN;
+  grid.sz = kN;
+  grid.occupancy = occ.data();
+
+  // Link 2's cell on its own: stage 2 clears it, the shipped OBB alone stops.
+  occ[at(15, 15, 15)] = 1;
+  ASSERT_FALSE(osk::check_voxel_collision(m, s, grid, kMargin).hit)
+      << "exact geometry clears the cell";
+  osk::CollisionModel shipped = m;
+  shipped.box_hull.clear();
+  shipped.hulls.clear();
+  shipped.hull_vertices.clear();
+  ASSERT_TRUE(osk::check_voxel_collision(shipped, s, grid, kMargin).hit)
+      << "without stage 2 the cell stops link 2 — so this test needs the refinement";
+
+  int target_cells = 0;
+  for (int iz = 3; iz <= 7; ++iz) {
+    for (int iy = 3; iy <= 7; ++iy) {
+      for (int ix = 3; ix <= 7; ++ix) {
+        occ[at(ix, iy, iz)] = 1;
+        ++target_cells;
+      }
+    }
+  }
+  ASSERT_GT(target_cells, osk::kMaxStage2PerCheck) << "enough exempt cells to exhaust the budget";
+  ASSERT_TRUE(osk::check_voxel_collision(m, s, grid, kMargin).hit) << "undeclared: link 1 stops";
+
+  osk::GraspTargetRegion region;
+  ASSERT_EQ(osk::ingest_grasp_region(translate(centre(5), centre(5), centre(5)),
+                                     osk::Vec3{0.055, 0.055, 0.055}, grasp_mask({1}), region),
+            osk::GraspRegionStatus::kOk);
+  grid.grasp_region = region;
+  const auto with = osk::check_voxel_collision(m, s, grid, kMargin);
+  EXPECT_FALSE(with.hit) << "link 2 still gets its refinement: no false stop on cell "
+                         << with.link_b << " for link " << with.link_a;
+  EXPECT_EQ(with.sweep_min_distance, kMargin) << "the exempt cells, clamped to the margin";
+}
+
 TEST(GraspTargetExemption, TheCapsulePassAppliesTheSameRule) {
   // Both passes of check_voxel_collision carry the exemption; a capsule-lowered
   // contact link gets exactly the box path's treatment.
