@@ -120,8 +120,12 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   decision outside the kernel, breaks the bridge's "an occupied cell is an obstacle" invariant);
   lowering the global real margin (HZ-0095-2 class; it also derives the extrinsic gate).
 - Caps are WG placeholders: half-extent ≤ 0.20 m, volume ≤ 0.03 m³, `timeout_s` ≤ 120 s, a region
-  max age. Monotonicity property to pin in gtest: `trips_with ⊆ trips_without` and the difference
-  ⊆ {(finger link, cell in region)}.
+  max age. Monotonicity property to pin in gtest: `trips_with ⊆ trips_without`; the difference is
+  {(finger link, cell in region)} plus only those non-exempt pairs the exact stage-2 distance clears
+  once exempt pairs stop spending the shared refinement budget; and the band slack of a sweep that
+  passes without the region is never raised by it (it may only slow). The region may LOWER
+  `sweep_min` — an exempt hull link reports stage 1's bound, not the refined distance — which errs
+  slower, never faster.
 
 ### 2.2 Target perception before the grasp
 

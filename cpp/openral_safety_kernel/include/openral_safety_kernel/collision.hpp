@@ -1035,7 +1035,10 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
 /// cells outside the box are unchanged likewise. Hence the tripping (link,
 /// cell) set with a region is a subset of the set without it, and the
 /// difference lies in {(mask link, cell centred in the region)} plus pairs the
-/// exact stage-2 distance clears.
+/// exact stage-2 distance clears. The region may LOWER sweep_min_distance — an
+/// exempt pair reads its own depth, and on a stage-2 hull link that is stage
+/// 1's bound, not the refined distance — but where nothing trips without it,
+/// it never raises max(sweep_min_distance - margin, 0): it may only slow.
 CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionScratch& scratch,
                                    const VoxelGrid& grid, double margin,
                                    double band_m = 0.0) noexcept;
