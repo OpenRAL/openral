@@ -60,7 +60,7 @@ optional fields:
 
 | Field | Type | Grounded at dispatch into |
 |---|---|---|
-| `grasp_target` | `GraspTargetRef{label, object_id?, contact_links=[]}` | a `GraspDeclaration` on the goal: `target_id="obj:<label or node_id>"`, `contact_links` (empty = the manifest's `role: gripper` `child_link`s), `timeout_s` = patience + 10 s (capped), `search_box` = the 3D box of the recalled memory node (`object_id`) or of the ONE live lifted detection on `/openral/world_state_slow` carrying the label, padded by `grasp_target_voxel_m` + `grasp_target_extrinsic_error_m` sideways and upward (never downward: its bottom face is the producer's support plane) and gravity-aligned in the base frame. **Never a `region`.** |
+| `grasp_target` | `GraspTargetRef{label, object_id?, contact_links=[]}` | a `GraspDeclaration` on the goal: `target_id="obj:<label or node_id>"`, `contact_links` (empty = the manifest's `role: gripper` `child_link`s), `timeout_s` = patience + 10 s (capped), `search_box` = the 3D box of the recalled memory node (`object_id`) or of the ONE live lifted detection on `/openral/world_state_slow` carrying the label, padded by `grasp_target_voxel_m` + `grasp_target_extrinsic_error_m` on every side (downward too, so the support layer the producer measures is inside it — a search hint with no support semantics) and gravity-aligned in the base frame. **Never a `region`.** |
 | `place_target` | `PlaceTargetRef{fixture_id \| place_node_id}` | a region-less `PlaceDeclaration(target_id=fixture_id)`; `fixture_id` must be a fixture of the robot unit (`$OPENRAL_ROBOT_UNIT`, else the `robot_unit` param), whose fixtures the system prompt lists. `place_node_id` is refused for now. |
 
 A target that grounds to nothing, to more than one instance with no

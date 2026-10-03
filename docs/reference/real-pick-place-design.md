@@ -133,8 +133,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   holds: `object_id` → the recalled spatial-memory node's 3D box; else the ONE live detection on
   `/openral/world_state_slow` carrying the label — the world-state lift's (`VoxelFrustumLifter`)
   axis-aligned box, which `WorldStateStamped` now carries (`detected_object_bbox_*`). That box,
-  padded by one voxel + the extrinsic accuracy bound sideways and upward (never downward) and
-  gravity-aligned in
+  padded by one voxel + the extrinsic accuracy bound on every side (downward too: the lifted
+  bottom is the lowest occupied centre in the detection's frustum, which can sit above or below
+  the true support, so the pad keeps the support layer inside the box) and gravity-aligned in
   `openarm_base`,
   becomes `GraspDeclaration.search_box`; the fixture id becomes `PlaceDeclaration.target_id`. No
   match, more than one match without `object_id`, a box outside the base frame, or an unknown
@@ -164,7 +165,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   default off:* `openral_hal._grasp_target_leg`, owned by `VisionAttachmentBridge`
   (`vision_attachment_grasp_target_enabled`): the search box is `GraspDeclaration.search_box`
   (optional, grounded by the reasoner or supplied by a direct-dispatch scene, passed through by
-  the runner; the support plane is measured from the map under it, as above),
+  the runner; a search hint only — the support layer is measured from the voxel map, never read
+  off the box's bottom face),
   re-measured at `grasp_target_rate_hz` (3 Hz), the region filled onto every attachment
   publication; contradicting evidence retracts at once, a lost view freezes the last accepted region
   (a re-fit that shrinks or shifts *inside* the held region grown by one voxel — the approaching
