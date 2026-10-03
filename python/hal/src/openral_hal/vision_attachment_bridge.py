@@ -99,6 +99,7 @@ and the payload gets a map-support proximity witness (not sensed contact) once.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -141,6 +142,7 @@ __all__ = [
     "SegmentOutcome",
     "VisionAttachmentBridge",
     "VisionAttachmentConfig",
+    "bounding_half_extents",
     "box_gap_lower_bound_m",
     "build_segment_request",
     "decode_mono8_mask",
@@ -304,13 +306,19 @@ _Box = tuple["NDArray[np.float64]", "NDArray[np.float64]", "NDArray[np.float64]"
 _FramedBox = tuple["NDArray[np.float64]", "NDArray[np.float64]"]
 
 
-def _bounding_half_extents(shape: Any) -> NDArray[np.float64]:
+def bounding_half_extents(shape: Any) -> NDArray[np.float64]:
     """Half extents of a box containing a primitive, in the primitive's frame.
 
     A box is itself, a sphere its cube, a capsule (segment along local +Z) its
     ``(r, r, L/2 + r)`` box. Containment makes every distance measured on the
     result a lower bound on the distance to the primitive — the conservative side
     for a test that may only *end* a window once things are proven apart.
+
+    Example:
+        >>> from openral_core import CapsuleShape
+        >>> half = bounding_half_extents(CapsuleShape(radius_m=0.01, length_m=0.1))
+        >>> [round(float(v), 6) for v in half]
+        [0.01, 0.01, 0.06]
     """
     from openral_core import BoxShape, CapsuleShape, SphereShape
 
@@ -599,7 +607,7 @@ class ReleaseWindow:
             return tuple(
                 (
                     _xyz_rpy_matrix(geom.origin_xyz_rpy[:3], geom.origin_xyz_rpy[3:]),
-                    _bounding_half_extents(geom.shape),
+                    bounding_half_extents(geom.shape),
                 )
                 for geom in description.collision_geometry
                 if geom.link_name == link
@@ -646,7 +654,7 @@ class ReleaseWindow:
             placed.append((t_base_from_hand @ origin @ motion, jaw_boxes))
         # The frozen record is attached to the base link: its link frame is the base.
         payload: list[_Box] = [
-            (t[:3, 3], t[:3, :3], _bounding_half_extents(primitive.shape))
+            (t[:3, 3], t[:3, :3], bounding_half_extents(primitive.shape))
             for t, primitive in zip(
                 primitive_poses(self.record, np.eye(4)), self.record.primitives, strict=True
             )
@@ -1188,6 +1196,9 @@ class VisionAttachmentBridge:
         self._warned_row_shape = False
         self._warned_slot = False
         self._revision = 0
+        # Serializes closing a leg's release window: the executor's ``_poll_releases``
+        # and the proprio thread's re-ATTACH both close it (``_close_release``).
+        self._release_lock = threading.Lock()
         # Latest joint positions by name: the jaws' angles for the release test.
         self._positions: dict[str, float] = {}
         self._grasp_target: GraspTargetLeg | None = (
@@ -1378,8 +1389,9 @@ class VisionAttachmentBridge:
                     record = leg.release.record if leg.release is not None else None
                     self._grasp_target.on_detach(leg.jaw_link, record)
                 continue
-            if leg.release is not None:
-                self._close_release(leg, "attach")
+            window = leg.release
+            if window is not None:
+                self._close_release(leg, "attach", window)
             self._node.get_logger().info(
                 f"grasp trigger {leg.joint_name}: {event.value.upper()} — holding the action "
                 "ack for segmentation"
@@ -2021,13 +2033,25 @@ class VisionAttachmentBridge:
             f"or {self._config.release_timeout_s} s"
         )
 
-    def _close_release(self, leg: _GripperLeg, reason: str) -> None:
-        """Drop a leg's frozen record (the caller publishes), logging why once."""
+    def _close_release(self, leg: _GripperLeg, reason: str, window: ReleaseWindow) -> bool:
+        """Drop ``window``, the leg's frozen record (the caller publishes), logging why once.
+
+        A no-op returning ``False`` when ``window`` is no longer the leg's: the
+        executor's poll judged a window the proprio thread has since closed for a
+        re-ATTACH (and maybe replaced at the next DETACH). Closing it then would end
+        the live regrasp's pick (``on_release_closed`` -> ``on_pick_complete``) and
+        drop its HZ-0115-11 guard. The identity check and the drop are one step under
+        ``_release_lock``.
+        """
+        with self._release_lock:
+            if leg.release is not window:
+                return False
+            leg.release = None
         self._node.get_logger().info(f"release window closed for {leg.joint_name}: reason={reason}")
-        leg.release = None
         if self._grasp_target is not None and reason != "attach":
             # A re-ATTACH is a new grasp of the same hand, not the hand emptying.
             self._grasp_target.on_release_closed(leg.jaw_link)
+        return True
 
     def _poll_releases(self) -> None:
         """Close every window whose jaws are clear or whose time is up; publish if any did."""
@@ -2045,8 +2069,7 @@ class VisionAttachmentBridge:
                 clear_m=self._config.release_clear_m,
                 timeout_s=self._config.release_timeout_s,
             )
-            if reason:
-                self._close_release(leg, reason)
+            if reason and self._close_release(leg, reason, window):
                 closed = True
         if closed:
             self._publish_attachment()
