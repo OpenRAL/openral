@@ -104,7 +104,10 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   check's slack to 0, so it reads as the band's slowest rate rather than a negative slack that
   would discard the non-exempt pairs' graded slowdown. It
   skips the stage-2 narrow phase, leaving the call's shared refinement budget to the pairs that
-  can trip. Fail-closed on: retraction, timeout, future stamp, stale
+  can trip. Fail-closed on: retraction, timeout, future stamp, a region measurement older than
+  `grasp_region_max_age_s` / `place_region_max_age_s` or stamped in the future (`region_stale`;
+  default 2 × the kernel voxel deadline, 2 s on the real cell, ≤ 4 s; checked at ingest and per
+  candidate; not applied to a grasp box latched at handover), stale
   world state, frame mismatch, oversize/degenerate region, non-empty geometry, non-allowlisted
   link, grid-frame change, rejected attachment set. Feature parameter default **off**.
 - Handover: on the attachment edge that adds the declared object the exemption stays alive only
@@ -115,13 +118,16 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   declaration (`handover_object_mismatch`, WARNed once per declaration as
   `grasp_region_rejected` with the declared object, attached label, target, rskill and trace). The region is latched at handover: later snapshots of the
   same declaration cannot move it, so a producer re-measuring the carried payload cannot extend
-  the exemption. From then on the existing path applies (bridge clears the payload cells; kernel
+  the exemption. The region-age bound stops at the latch: the fingers occlude the target, the box
+  is frozen anyway, and the payload-in-box rule, stream deadline and `timeout_s` bound the window;
+  the latched box must itself have been fresh at the handover edge. From then on the existing path applies (bridge clears the payload cells; kernel
   checks it as attached geometry).
 - Rejected: masking target cells out of the map upstream (object invisible to every consumer,
   decision outside the kernel, breaks the bridge's "an occupied cell is an obstacle" invariant);
   lowering the global real margin (HZ-0095-2 class; it also derives the extrinsic gate).
-- Caps are WG placeholders: half-extent ≤ 0.20 m, volume ≤ 0.03 m³, `timeout_s` ≤ 120 s, a region
-  max age. Monotonicity property to pin in gtest: `trips_with ⊆ trips_without`; the difference is
+- Caps are WG placeholders: half-extent ≤ 0.20 m, volume ≤ 0.03 m³, `timeout_s` ≤ 120 s, region
+  max age 2 × voxel deadline (implemented; it equals the vision leg's `grasp_target_freeze_s`
+  default, so a held region and the kernel's trust in it expire together). Monotonicity property to pin in gtest: `trips_with ⊆ trips_without`; the difference is
   {(finger link, cell in region)} plus only those non-exempt pairs the exact stage-2 distance clears
   once exempt pairs stop spending the shared refinement budget; and the band slack of a sweep that
   passes without the region is never raised by it (it may only slow). The region may LOWER

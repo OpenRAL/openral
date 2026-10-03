@@ -53,6 +53,15 @@ inline constexpr double kMaxWorldVoxelDeadlineMs = 2000.0;
 inline constexpr double kMaxWorldVoxelDataAgeBudgetMs = 3000.0;
 inline constexpr double kDefaultWorldVoxelDataAgeBudgetMs = 1500.0;
 
+/// Cap on `grasp_region_max_age_s` / `place_region_max_age_s` — how old a
+/// producer-measured region's `stamp_ns` may be and still exempt anything. A
+/// region is measured from the voxel grid, so it may never be trusted for
+/// longer than twice the oldest grid the kernel will check against
+/// (`kMaxWorldVoxelDeadlineMs`). `0` (the default) derives the bound as
+/// `2 x world_voxel_deadline_ms`; configure refuses anything outside
+/// (0, cap] once resolved while the matching allowance is enabled.
+inline constexpr double kMaxRegionMeasurementAgeS = 2.0 * kMaxWorldVoxelDeadlineMs / 1000.0;
+
 class SafetyKernelLifecycleNode : public rclcpp_lifecycle::LifecycleNode {
 public:
   explicit SafetyKernelLifecycleNode(const std::string& node_name = "openral_safety_kernel",
@@ -171,6 +180,12 @@ private:
   // dead (HZ-0097-3/4). Re-evaluated per candidate action, so an allowance
   // cannot outlive its declaration between world-state messages.
   bool place_declaration_live() const noexcept;
+
+  // Is a producer-measured region stamped `stamp_ns` young enough to exempt
+  // anything at `now`? False when older than `max_age_s`, stamped in the
+  // future, or when `max_age_s` is not positive (fails closed). Same clock as
+  // every other freshness check here (`this->now()`).
+  bool region_measurement_fresh(std::int64_t stamp_ns, double max_age_s) const noexcept;
 
   // Grasp-phase declaration (ADR-01xx draft, hazard HZ-01xx) — resolve the
   // producer-measured grasp declaration riding the world state into the
@@ -310,6 +325,12 @@ private:
   std::vector<AttachedPrimitive> place_geometry_;
   std::vector<AttachedPrimitiveInput> place_geometry_scratch_;
   std::int64_t place_declaration_stamp_ns_{0};
+  /// Measurement age bounds for the producer regions (`*_region_max_age_s`,
+  /// resolved at configure) and the ingested place region's own `stamp_ns`.
+  double place_region_max_age_s_{0.0};
+  double grasp_region_max_age_s_{0.0};
+  std::int64_t place_region_stamp_ns_{0};
+  std::int64_t grasp_region_stamp_ns_{0};
   double place_declaration_timeout_s_{0.0};
   std::string place_declaration_target_;
   /// Last announced place-region refusal, as (reason token, target). The

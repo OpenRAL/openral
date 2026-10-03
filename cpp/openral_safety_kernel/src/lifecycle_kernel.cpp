@@ -375,6 +375,14 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<bool>("grasp_allowance_enabled", false);
   this->declare_parameter<std::vector<std::string>>("grasp_contact_links",
                                                     std::vector<std::string>{});
+  // How old a producer-measured region (`region.stamp_ns`) may be and still
+  // exempt anything — grasp target and place target respectively. Regions are
+  // perceived from the voxel map, so the declaration's own `timeout_s` (up to
+  // 120 s) is no bound on the measurement. 0 = derive 2 x world_voxel_deadline;
+  // configure refuses a resolved value outside (0, kMaxRegionMeasurementAgeS]
+  // while the matching allowance is enabled.
+  this->declare_parameter<double>("grasp_region_max_age_s", 0.0);
+  this->declare_parameter<double>("place_region_max_age_s", 0.0);
 
   // Measured joint-state seed for non-position collision checks.
   // `collision_joint_names` is the actuated joint order (length n_dof) the
@@ -480,6 +488,35 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
                 "%zu allowlisted contact link(s); a live grasp declaration exempts them from "
                 "the world-voxel check inside its measured region",
                 grasp_allowlist_.count());
+  }
+  // Region measurement age bounds (kernel-region-age). Resolved after the
+  // collision model so `attached_collision_enabled_` (the place allowance's
+  // switch) and the voxel deadline are both known. Refused, never clamped.
+  {
+    const double derived_s = 2.0 * world_voxel_deadline_s_;
+    const auto resolve = [derived_s](double v) { return v == 0.0 ? derived_s : v; };
+    grasp_region_max_age_s_ = resolve(this->get_parameter("grasp_region_max_age_s").as_double());
+    place_region_max_age_s_ = resolve(this->get_parameter("place_region_max_age_s").as_double());
+    const auto in_range = [](double v) {
+      return std::isfinite(v) && v > 0.0 && v <= kMaxRegionMeasurementAgeS;
+    };
+    const auto refused = [&](bool enabled, double value, const char* name) {
+      if (!enabled || in_range(value)) {
+        return false;
+      }
+      RCLCPP_ERROR(this->get_logger(),
+                   "%s resolves to %g s, outside (0, %g]: a region measured that long ago "
+                   "would still exempt links from the world-voxel check",
+                   name, value, kMaxRegionMeasurementAgeS);
+      return true;
+    };
+    if (refused(grasp_allowance_enabled_, grasp_region_max_age_s_, "grasp_region_max_age_s") ||
+        refused(attached_collision_enabled_, place_region_max_age_s_, "place_region_max_age_s")) {
+      envelope_loaded_ = false;
+      return CallbackReturn::FAILURE;
+    }
+    RCLCPP_INFO(this->get_logger(), "safety.region_max_age grasp_s=%g place_s=%g",
+                grasp_region_max_age_s_, place_region_max_age_s_);
   }
   if (self_collision_enabled_) {
     RCLCPP_INFO(this->get_logger(), "self-collision check enabled: %zu links, margin=%g m",
@@ -2424,6 +2461,7 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
   place_declaration_stamp_ns_ = 0;
   place_declaration_timeout_s_ = 0.0;
   place_declaration_target_.clear();
+  place_region_stamp_ns_ = 0;
 
   const auto announce_dropped = [&](const char* reason) {
     // A declaration that is gone is not a declaration being refused: the next
@@ -2503,6 +2541,24 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
     return;
   }
   const auto& region = declaration.region;
+  if (!region_measurement_fresh(region.stamp_ns, place_region_max_age_s_)) {
+    // A measurement older than the bound (or from the future) is not evidence
+    // of where the receptacle is now: no allowance, the undeclared margins.
+    if (was_valid) {
+      RCLCPP_INFO(this->get_logger(), "safety.place_region_dropped reason=region_stale target=%s",
+                  previous_target.c_str());
+    }
+    if (refusal_is_new("region_stale", declaration.target_id)) {
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.place_region_rejected reason=region_stale target=%s age_s=%g "
+                  "max_age_s=%g rskill=%s trace=%s evidence=%s",
+                  declaration.target_id.c_str(),
+                  static_cast<double>(this->now().nanoseconds() - region.stamp_ns) * 1e-9,
+                  place_region_max_age_s_, declaration.rskill_id.c_str(),
+                  declaration.trace_id.c_str(), region.evidence_ref.c_str());
+    }
+    return;
+  }
   if (voxel_frame_id_.empty() || region.frame_id != voxel_frame_id_) {
     if (refusal_is_new("frame_mismatch", declaration.target_id)) {
       RCLCPP_WARN(
@@ -2582,6 +2638,7 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
   }
   place_region_refusal_reason_.clear();
   place_region_refusal_target_.clear();
+  place_region_stamp_ns_ = region.stamp_ns;
   // Announce on the arming transition, and again whenever the target's geometry
   // count changes: a region that gains or loses the declared body's primitives
   // is adjudicating against something materially different, and a producer whose
@@ -2610,7 +2667,18 @@ bool SafetyKernelLifecycleNode::place_declaration_live() const noexcept {
   // attachment freshness deadline.
   const std::int64_t elapsed_ns = this->now().nanoseconds() - place_declaration_stamp_ns_;
   return elapsed_ns >= 0 &&
-         elapsed_ns <= static_cast<std::int64_t>(place_declaration_timeout_s_ * 1e9);
+         elapsed_ns <= static_cast<std::int64_t>(place_declaration_timeout_s_ * 1e9) &&
+         // The measurement ages between world-state messages too.
+         region_measurement_fresh(place_region_stamp_ns_, place_region_max_age_s_);
+}
+
+bool SafetyKernelLifecycleNode::region_measurement_fresh(std::int64_t stamp_ns,
+                                                         double max_age_s) const noexcept {
+  if (!(max_age_s > 0.0)) {
+    return false;
+  }
+  const std::int64_t age_ns = this->now().nanoseconds() - stamp_ns;
+  return age_ns >= 0 && age_ns <= static_cast<std::int64_t>(max_age_s * 1e9);
 }
 
 void SafetyKernelLifecycleNode::retire_grasp_declaration(const char* reason) {
@@ -2705,6 +2773,20 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   }
   if (!region.geometry.empty()) {
     reject("geometry_not_supported");  // v1: a grasp region is a box only
+    return;
+  }
+  // Measurement age. Exempt once this declaration has latched at its handover
+  // edge: the box is frozen there (producer updates are ignored), the fingers
+  // occlude the target so nothing can re-measure it, and the exemption is
+  // bounded instead by the carried payload's measured origin staying in the
+  // latched box, the stream deadline and timeout_s. Requiring a fresh
+  // re-measurement would retire a valid handover with the fingers closed on
+  // the target. Up to and including the handover edge the box must be fresh.
+  const bool latched_declaration = grasp_latched_ &&
+                                   grasp_latched_target_ == declaration.target_id &&
+                                   grasp_latched_stamp_ns_ == declaration.stamp_ns;
+  if (!latched_declaration && !region_measurement_fresh(region.stamp_ns, grasp_region_max_age_s_)) {
+    reject("region_stale");
     return;
   }
   // The declaration's contact links must be a non-empty subset of the
@@ -2812,6 +2894,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   }
   grasp_region_refusal_reason_.clear();
   grasp_region_refusal_target_.clear();
+  grasp_region_stamp_ns_ = region.stamp_ns;
   if (!was_valid || previous_target != declaration.target_id) {
     RCLCPP_INFO(this->get_logger(),
                 "safety.grasp_region_armed target=%s links=%zu half_m=%g,%g,%g rskill=%s trace=%s "
@@ -2870,8 +2953,14 @@ bool SafetyKernelLifecycleNode::grasp_declaration_live() const noexcept {
   // exemption — never a drop by itself; with attached checking on, the
   // attachment gate has already refused the chunk before this is read.
   const double age_s = (this->now() - attached_stamp_).seconds();
-  return attached_received_ && !attached_overflow_ && age_s >= 0.0 &&
-         age_s <= attached_collision_deadline_s_;
+  if (!(attached_received_ && !attached_overflow_ && age_s >= 0.0 &&
+        age_s <= attached_collision_deadline_s_)) {
+    return false;
+  }
+  // The region's own measurement, ageing between messages; not applied once
+  // the handover has latched the box (see ingest_grasp_declaration).
+  return grasp_region_.handover ||
+         region_measurement_fresh(grasp_region_stamp_ns_, grasp_region_max_age_s_);
 }
 
 }  // namespace openral_safety_kernel

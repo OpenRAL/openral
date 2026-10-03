@@ -40,7 +40,9 @@ bridge's "an occupied cell is an obstacle" invariant) were considered and reject
 - All other links, all cells outside the region, self-collision, attached checks and the force
   gate are unchanged. The support surface under the target is outside the region (producer
   obligation: the region's lower face sits above the support plane).
-- The exemption dies on: retraction, `timeout_s`, future stamp, stale world state, grid-frame
+- The exemption dies on: retraction, `timeout_s`, future stamp, a region measurement
+  (`region.stamp_ns`) older than `grasp_region_max_age_s` or stamped in the future
+  (`region_stale`, until the handover latches the box — see below), stale world state, grid-frame
   change, rejected attachment set, non-allowlisted link, frame mismatch, oversize/degenerate
   region, non-empty `geometry`, detach, or the payload origin (FK of the measured configuration)
   leaving the region after attach (handover to ADR-0092 attached geometry + bridge payload
@@ -50,12 +52,25 @@ bridge's "an occupied cell is an obstacle" invariant) were considered and reject
 - The handover binds only to a payload attached on the declaring gripper's own chain — a declared
   contact link or a non-root ancestor of one. The other hand's payload and a released payload
   frozen on the collision root (the base) can neither be the handover nor retire it.
+- Region measurement age (implemented): `grasp_region_max_age_s` / `place_region_max_age_s`,
+  default `0` = 2 × `world_voxel_deadline_ms` (2 s at the 1 s schema default), capped at
+  2 × the kernel's voxel-deadline cap (4 s); configure refuses a resolved bound outside that
+  range while the matching allowance (grasp: `grasp_allowance_enabled`; place:
+  `attached_collision_enabled`) is on. `deploy_e2e` passes both as 2 × `world_voxel_deadline_s`.
+  Checked at ingest (the region is dropped, `reason=region_stale` logged once) and again per
+  candidate, against the kernel clock. **Not applied after the handover latch:** the box is
+  frozen there and producer updates are ignored, the fingers occlude the target so it cannot be
+  re-measured, and the exemption is then bounded by the payload origin (measured FK) staying in
+  the latched box, the stream deadline and `timeout_s`; requiring a fresh measurement would
+  retire a valid handover with the fingers closed on the target. The latched box itself must
+  have been fresh at the handover edge.
 - Feature parameter `grasp_allowance_enabled` defaults off.
 - **This amends ADR-0097's "arm-vs-world unchanged" invariant for the declared contact links
   only.**
 
 **Bounds (WG).** Region half-extent ≤ [0.20] m; volume ≤ [0.03] m³; `timeout_s` ≤ [120] s;
-region measurement age ≤ [X] s; `geometry` empty in v1.
+region measurement age ≤ [2 × `world_voxel_deadline`, ≤ 4] s pre-handover (implemented,
+`grasp_region_max_age_s`); `geometry` empty in v1.
 
 **Consequences.** A real grasp becomes possible once the real producers exist. New hazard
 HZ-01xx. Follow-up (not a precondition): per-finger collision geometry
@@ -75,8 +90,8 @@ ADR-0100's force gate should arm during close as additive conservatism.
 |---|---|---|---|
 | HZ-01xx-1 | Finger link contacts a non-target body (a hand, a neighbouring object) inside the declared region without a stop | Exemption is per cell, not per body | Region small (caps) and measured tight to the target; only the declared gripper's contact links exempt, arm links keep the full margin on the same cells; attended operation + hardware E-stop (mandatory on the cell); disclosure in logs/diagnostics/spans. Residual risk accepted by the WG or reduced later by ADR-0100 force gating during close. |
 | HZ-01xx-2 | Wrong object / wrong region declared | Dispatch error or mis-segmentation | Dispatch can never supply a region; `evidence_ref`, `rskill_id`, `trace_id` logged at arm time; the producer checks the measured region against the declared target hint and the occupied cells it covers; frame mismatch refused. |
-| HZ-01xx-3 | Stale declaration outlives its goal or grasp | Dispatcher crash, producer stall, missed retraction | Goal-scoped retraction on every runner exit incl. E-stop; `timeout_s` backstop per candidate; region-age bound; world-state freshness; position-based handover retirement; an attach of an undeclared object on the declaring gripper retires the declaration at once (`handover_object_mismatch`) instead of leaving it alive to `timeout_s`; future stamps dead. |
-| HZ-01xx-4 | Target moved after measurement; exemption covers vacated space or a new arrival | Measure-once region | Region-age bound and re-measurement, or a short TTL (WG). |
+| HZ-01xx-3 | Stale declaration outlives its goal or grasp | Dispatcher crash, producer stall, missed retraction | Goal-scoped retraction on every runner exit incl. E-stop; `timeout_s` backstop per candidate; region-age bound (`grasp_region_max_age_s`, at ingest and per candidate, pre-handover); world-state freshness; position-based handover retirement; an attach of an undeclared object on the declaring gripper retires the declaration at once (`handover_object_mismatch`) instead of leaving it alive to `timeout_s`; future stamps dead. |
+| HZ-01xx-4 | Target moved after measurement; exemption covers vacated space or a new arrival | Measure-once region | Region-age bound (implemented: `grasp_region_max_age_s` / `place_region_max_age_s`, default 2 × `world_voxel_deadline`, ≤ 4 s; a stale or future-stamped region exempts nothing, `reason=region_stale`) and re-measurement. Residual: after the handover latch the age bound no longer applies (the target is occluded and the box frozen); the payload-in-box rule, stream deadline and `timeout_s` bound that window (WG). |
 | HZ-01xx-5 | Exemption leaks to other links, arms or robots | Configuration error | Static allowlist resolved at configure (unknown link fails configure); declaration links must be a subset; intersection mask; bimanual test. The handover binds only to a payload on the declaring gripper's chain (contact link or non-root ancestor), never the other hand's payload or a release record frozen on the base, so another arm's attachment can neither extend nor end this gripper's exemption. |
 | HZ-01xx-6 | Fingers driven into the support surface under the target | Region extends into the support plane | Producer obligation that the region's lower face sits above the support plane; kernel test pins that support cells outside the region still stop. |
 | HZ-01xx-7 | The exemption silences the graded velocity band for the whole chunk | An exempt finger inside its target reads a negative distance; the sweep keeps one minimum, and the band discards a negative slack as "tripped", so every non-exempt pair's slowdown is lost with it | The band clamps an untripped check's slack to `max(slack, 0)`, so any exempt pair (grasp target, support witness, embedded residue) reads as slack 0 — the band's slowest rate, never full speed; lifecycle tests pin the scaled chunk with the exempt finger inside its target and with a payload resting on its witnessed support. |

@@ -724,9 +724,9 @@ Three events, and the reason is always the real one:
 | Line | Severity | When |
 | --- | --- | --- |
 | `safety.place_region_armed` | INFO | a validated region goes live (on the transition); `geometry=<n>` says how many declared-target primitives armed with it, `0` being the pre-ADR-0098 box-only case. Re-emitted when that count changes, because a region that gains or loses the declared body is adjudicating against something materially different |
-| `safety.place_region_dropped reason=…` | INFO | an armed region is disarmed — `no_declaration`, `retracted`, `no_region`, `detached`, `grid_frame_changed` |
+| `safety.place_region_dropped reason=…` | INFO | an armed region is disarmed — `no_declaration`, `retracted`, `no_region`, `detached`, `grid_frame_changed`, `region_stale` |
 | `safety.place_region_not_armed reason=no_object` | INFO | a live declaration names a payload the kernel is not carrying |
-| `safety.place_region_rejected reason=…` | WARN | a malformed region reached the kernel — `frame_mismatch`, `bad_pose`, `bad_extents`, `degenerate`, `oversize`, `oversize_volume`, `bad_geometry`, `geometry_overflow` |
+| `safety.place_region_rejected reason=…` | WARN | a malformed region reached the kernel — `region_stale` (its `stamp_ns` is older than `place_region_max_age_s` or in the future; see below), `frame_mismatch`, `bad_pose`, `bad_extents`, `degenerate`, `oversize`, `oversize_volume`, `bad_geometry`, `geometry_overflow` |
 
 Two rules keep them honest. **The reason is the branch that fired**
 (`place_region_status_reason`), not a category: `reason=bounds` used to label
@@ -800,6 +800,27 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   `role: gripper` joints' child links). Enabled with an empty allowlist, or an
   allowlist naming a link the collision model does not have, fails configure.
   Enabling it subscribes to the world state even with attached checking off.
+* **Region measurement age.** `grasp_region_max_age_s` and
+  `place_region_max_age_s` (default `0` = 2 × `world_voxel_deadline_ms`, i.e. 2 s
+  at the 1 s schema default; logged at configure as
+  `safety.region_max_age grasp_s=… place_s=…`). Regions are perceived from the
+  voxel map, so the declaration's `timeout_s` (up to 120 s) is no bound on how
+  old the *measurement* is. A region whose `stamp_ns` is older than the bound or
+  in the future (kernel clock, `this->now()`) exempts nothing: it is dropped at
+  ingest with `reason=region_stale` (WARN `…_rejected` once per transition, INFO
+  `…_dropped` if it was armed) and re-checked per candidate, so it also ages out
+  between world-state messages. Configure refuses a resolved bound outside
+  (0, `kMaxRegionMeasurementAgeS` = 4 s] while the matching allowance is on
+  (grasp: `grasp_allowance_enabled`; place: `attached_collision_enabled`).
+  `deploy_e2e` passes both as 2 × `world_voxel_deadline_s`. **Not applied once a
+  grasp declaration has latched its box at the handover edge**: producer updates
+  are ignored from then on, the fingers occlude the target so it cannot be
+  re-measured, and the exemption is bounded by the payload origin staying in the
+  latched box, the stream deadline and `timeout_s` — a fresh-measurement
+  requirement there would retire a valid handover with the fingers closed on the
+  target. The latched box itself must be fresh at the edge
+  (`…AStaleRegionAtTheAttachEdgeLatchesNoHandover`,
+  `…TheAgeBoundDoesNotRetireALatchedHandover`).
 * **Arming** (`ingest_grasp_declaration`, transition-only logs
   `safety.grasp_region_armed|dropped|rejected reason=… target=… links=… half_m=…
   rskill=… trace=… evidence=…`): target, stamp and timeout are recorded before any
@@ -808,7 +829,8 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   and every `contact_links` entry must be allowlisted (one that is not refuses the
   whole declaration). The exempt mask is exactly those links.
 * **Per candidate** (`grasp_declaration_live`): dead on retraction, `timeout_s`
-  lapsed, a future stamp, or a world-state stream older than
+  lapsed, a future stamp, a pre-handover region older than
+  `grasp_region_max_age_s`, or a world-state stream older than
   `attached_collision_deadline_ms`. Stale is "no exemption", never a drop by
   itself.
 * **Handover binding.** Only a payload attached on the declaring gripper's own
