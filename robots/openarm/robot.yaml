@@ -176,12 +176,9 @@ joints:
     # (qualiadev/openarm-canonical-and-fabians-vr): closing on an object stalls
     # 0.18-0.29 rad short of a 0.0 command and stays flat to ~1e-3 rad; closing on
     # nothing rests 0.0086 rad from closed (<= 0.02); free-motion steady-state error
-    # 0.006-0.025 rad; position LSB 3.815e-4 rad. Not yet measured attended on
-    # the cell (docs/reference/real-pick-place-design.md §5). NOMINAL for the
-    # robot type: the dataset does not record which physical unit it came from,
-    # and the rest offset is a per-gripper deadband, so a unit that measures its
-    # own overrides this whole block in robots/openarm/units/<unit>.yaml
-    # (`joints:` overlay, applied by the HAL node).
+    # 0.006-0.025 rad; position LSB 3.815e-4 rad. Robot-type constants of the
+    # gripper mechanism, not per cell: no unit overrides them
+    # (docs/reference/real-pick-place-design.md §5).
     closure_calibration:
       closed_position: 0.0
       closed_rest_offset: 0.0086
@@ -303,12 +300,9 @@ joints:
     # (qualiadev/openarm-canonical-and-fabians-vr): closing on an object stalls
     # 0.18-0.29 rad short of a 0.0 command and stays flat to ~1e-3 rad; closing on
     # nothing rests 0.0116 rad from closed (<= 0.02); free-motion steady-state error
-    # 0.006-0.025 rad; position LSB 3.815e-4 rad. Not yet measured attended on
-    # the cell (docs/reference/real-pick-place-design.md §5). NOMINAL for the
-    # robot type: the dataset does not record which physical unit it came from,
-    # and the rest offset is a per-gripper deadband, so a unit that measures its
-    # own overrides this whole block in robots/openarm/units/<unit>.yaml
-    # (`joints:` overlay, applied by the HAL node).
+    # 0.006-0.025 rad; position LSB 3.815e-4 rad. Robot-type constants of the
+    # gripper mechanism, not per cell: no unit overrides them
+    # (docs/reference/real-pick-place-design.md §5).
     closure_calibration:
       closed_position: 0.0
       closed_rest_offset: 0.0116

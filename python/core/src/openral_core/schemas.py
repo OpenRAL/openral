@@ -765,73 +765,25 @@ def apply_sensor_overlays(
         >>> apply_sensor_overlays(desc.sensors, [fix])[0].static_transform_xyz_rpy
         (0.0, 0.0, 0.5, 0.0, 0.0, 0.0)
     """
-    return _lay_overlays("sensor", list(sensors), list(overlays))
-
-
-def apply_joint_overlays(
-    joints: Iterable[JointSpec], overlays: Iterable[JointOverlay]
-) -> list[JointSpec]:
-    """Robot-manifest joints with each ``JointOverlay``'s set fields laid over them.
-
-    The per-unit counterpart of ``apply_sensor_overlays`` for joints: today only a
-    gripper's ``closure_calibration``, which is measured on one physical gripper and so
-    belongs to the unit, the manifest carrying the robot type's nominal value.
-
-    Raises:
-        ROSConfigError: An overlay names no manifest joint, names one twice, or gives a
-            ``closure_calibration`` to a joint that is not ``role: gripper``.
-
-    Example:
-        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
-        >>> cal = GripperClosureCalibration(
-        ...     closed_position=0.0, closed_rest_offset=0.01, stall_gap=0.08, settle_tolerance=0.001
-        ... )
-        >>> fix = JointOverlay(name="left_gripper", closure_calibration=cal)
-        >>> out = apply_joint_overlays(desc.joints, [fix])
-        >>> next(j for j in out if j.name == "left_gripper").closure_calibration.closed_rest_offset
-        0.01
-    """
-    out = list(joints)
-    overlays = list(overlays)
-    role = {j.name: j.role for j in out}
-    wrong = [
-        o.name
-        for o in overlays
-        if o.closure_calibration and role.get(o.name, "gripper") != "gripper"
-    ]
-    if wrong:
-        raise ROSConfigError(
-            f"joint overlay(s) {', '.join(repr(n) for n in wrong)} give a closure_calibration "
-            "to a joint that is not role: gripper"
-        )
-    return _lay_overlays("joint", out, overlays)
-
-
-_SpecT = TypeVar("_SpecT", "SensorSpec", "JointSpec")
-
-
-def _lay_overlays(
-    kind: str, specs: list[_SpecT], overlays: list[SensorOverlay] | list[JointOverlay]
-) -> list[_SpecT]:
-    """Lay each overlay's set fields over the same-named spec; re-validate the result."""
-    by_name: dict[str, BaseModel] = {}
+    by_name: dict[str, SensorOverlay] = {}
     for overlay in overlays:
         if overlay.name in by_name:
-            raise ROSConfigError(f"{kind} overlay names {overlay.name!r} twice")
+            raise ROSConfigError(f"sensor overlay names {overlay.name!r} twice")
         by_name[overlay.name] = overlay
-    unknown = sorted(set(by_name) - {s.name for s in specs})
+    out = list(sensors)
+    unknown = sorted(set(by_name) - {s.name for s in out})
     if unknown:
         raise ROSConfigError(
-            f"{kind} overlay(s) {', '.join(repr(n) for n in unknown)} name no robot-manifest "
-            f"{kind} (manifest has: {', '.join(s.name for s in specs)})"
+            f"sensor overlay(s) {', '.join(repr(n) for n in unknown)} name no robot-manifest "
+            f"sensor (manifest has: {', '.join(s.name for s in out)})"
         )
     return [
-        type(s).model_validate(
+        SensorSpec.model_validate(
             {**s.model_dump(), **by_name[s.name].model_dump(exclude={"name"}, exclude_unset=True)}
         )
         if s.name in by_name
         else s
-        for s in specs
+        for s in out
     ]
 
 
@@ -1005,18 +957,16 @@ class GripperClosureCalibration(BaseModel):
 
     The position-stall grasp trigger (``openral_hal._grasp_trigger``) needs no effort
     channel: a jaw commanded toward closed that settles short of the command by more than
-    its empty-close error is stalled on something. These are the robot-specific numbers that
-    turn that into thresholds, in the joint's own position units. Every one is a
-    **calibration point** measured per gripper (CLAUDE.md §1.2), never a library default.
+    its empty-close error is stalled on something. These are the numbers that turn that into
+    thresholds, in the joint's own position units: robot-type constants of the gripper
+    mechanism, declared in the robot manifest and derived from teleop data; not per cell
+    (CLAUDE.md §1.2: cited measurements, never a library default).
 
     Attributes:
         closed_position: The commanded position of a fully closed jaw. Must be an end of the
             joint's ``position_limits``: "closer to closed" is read as the distance to it.
         closed_rest_offset: How far from ``closed_position`` the jaw rests when it closes on
-            nothing (mechanical stop, servo deadband). Measured per gripper: a robot
-            manifest's value is the type's nominal, and a unit whose gripper measures
-            differently overrides it in ``robots/<id>/units/<unit>.yaml``
-            (``JointOverlay``).
+            nothing (mechanical stop, servo deadband). Measured from teleop data.
         stall_gap: How much further from closed than the command (beyond
             ``closed_rest_offset``) a settled jaw must sit to read as stalled on an object.
             Also the band a command must be within of ``closed_position`` to count as a close
@@ -9994,8 +9944,8 @@ class VisionAttachmentRuntime(BaseModel):
 
     Default off. Turning it on for a real cell is a Safety-WG decision (hazard log): the
     grasp trigger is the gripper's *position* stalling short of a close command (the OpenArm
-    gripper reports no effort), calibrated per joint in the manifest
-    (``JointSpec.closure_calibration``) from teleop data, and unmeasured attended on the cell.
+    gripper reports no effort), its thresholds the manifest's robot-type constants
+    (``JointSpec.closure_calibration``) derived from teleop data, not per cell.
 
     Attributes:
         enabled: Bring the leg up. Requires all four topics below.
@@ -10938,30 +10888,6 @@ class SensorOverlay(BaseModel):
     intrinsics: IntrinsicsPinhole | None = None
 
 
-class JointOverlay(BaseModel):
-    """Per-unit values for ONE joint the robot manifest declares.
-
-    A gripper's grasp-trigger calibration is measured on one physical gripper, so a unit
-    whose gripper differs from the manifest's nominal declares its own here. Every other
-    joint field is the robot type's and is refused (``extra="forbid"``). Applied by
-    ``apply_joint_overlays``; the HAL node applies its unit's overlays before building.
-
-    Attributes:
-        name: The robot-manifest joint this overlays.
-        closure_calibration: This unit's measured ``GripperClosureCalibration``
-            (``role: gripper`` joints only). Replaces the manifest's as a whole.
-
-    Example:
-        >>> JointOverlay(name="left_gripper").closure_calibration is None
-        True
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str
-    closure_calibration: GripperClosureCalibration | None = None
-
-
 class RobotUnit(BaseModel):
     """One physical unit / host of a robot type: ``robots/<robot_id>/units/<unit>.yaml``.
 
@@ -10973,7 +10899,6 @@ class RobotUnit(BaseModel):
         robot_id: The ``robots/<robot_id>`` directory this unit belongs to.
         unit: The unit name, equal to the file stem.
         sensors: Overlays for the robot manifest's sensors.
-        joints: Overlays for the robot manifest's joints (per-gripper calibration).
 
     Example:
         >>> RobotUnit(robot_id="so101_follower", unit="bench_laptop").sensors
@@ -10986,7 +10911,6 @@ class RobotUnit(BaseModel):
     robot_id: str
     unit: str
     sensors: list[SensorOverlay] = Field(default_factory=list)
-    joints: list[JointOverlay] = Field(default_factory=list)
 
     @classmethod
     def from_yaml(cls, path: str) -> RobotUnit:

@@ -15,18 +15,6 @@
 # `ls -l /dev/v4l/by-id` on this host. The ros2_image topics are zed_wrapper's, launched
 # by the OpenArm scenes' `drivers:`. Selected by $OPENRAL_ROBOT_UNIT or a scene's
 # `robot_unit`.
-#
-# Per-gripper grasp-trigger calibration. robot.yaml's closure_calibration is the type's
-# nominal (teleop data of an unrecorded unit). Once this unit's grippers are measured
-# attended (docs/reference/real-pick-place-design.md section 5), override it here; the
-# HAL node applies it. An override replaces the whole block, so give all four fields:
-# joints:
-#   - name: left_gripper
-#     closure_calibration:
-#       closed_position: 0.0
-#       closed_rest_offset: <measured on this unit>
-#       stall_gap: <measured on this unit>
-#       settle_tolerance: <measured on this unit>
 schema_version: "0.1"
 robot_id: openarm
 unit: orin

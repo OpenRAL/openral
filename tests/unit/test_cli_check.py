@@ -123,33 +123,6 @@ def test_graph_flags_a_bad_unit_overlay_and_an_unknown_scene_unit(tmp_path: Path
     assert "second_host" in bad_ref.message
 
 
-def test_graph_flags_a_joint_overlay_on_a_non_gripper_joint(tmp_path: Path) -> None:
-    # The real OpenArm manifest and its real Thor unit, with a closure calibration laid on
-    # an arm joint: the HAL would refuse it at start, so `openral check` must too.
-    robot_dir = tmp_path / "robots" / "openarm"
-    (robot_dir / "units").mkdir(parents=True)
-    src = REPO_ROOT / "robots" / "openarm"
-    (robot_dir / "robot.yaml").write_text((src / "robot.yaml").read_text(), encoding="utf-8")
-    unit = yaml.safe_load((src / "units" / "thor.yaml").read_text())
-    unit["joints"] = [
-        {
-            "name": "left_joint1",
-            "closure_calibration": {
-                "closed_position": 0.0,
-                "closed_rest_offset": 0.01,
-                "stall_gap": 0.08,
-                "settle_tolerance": 0.001,
-            },
-        }
-    ]
-    (robot_dir / "units" / "thor.yaml").write_text(yaml.safe_dump(unit), "utf-8")
-
-    report = check_description_graph(tmp_path)
-    bad = [f for f in report.errors if f.rule == "robot_unit"]
-    assert [f.target for f in bad] == ["robots/openarm/units/thor.yaml"]
-    assert "left_joint1" in bad[0].message
-
-
 def test_graph_warns_on_unreachable_embodiment(tmp_path: Path) -> None:
     # A real VLA rSkill with embodiment tags, but no robots to satisfy them.
     real = (REPO_ROOT / "rskills" / "act-libero" / "rskill.yaml").read_text()
