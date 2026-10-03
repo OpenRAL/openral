@@ -273,7 +273,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   on a close in free air. The conservatism comes instead from where the box is (around the
   TCP only), what fills it (a measured, unambiguous object standing on a measured support),
   one hand, the region caps, the short region-age bound (kernel `grasp_region_max_age_s`,
-  2 × the voxel deadline) and attended operation. Residual (HZ-01xx-8): the hand passing
+  2 × the voxel deadline) and attended operation. Residual (HZ-01xx-11): the hand passing
   within the approach distance of a neighbour arms on the neighbour for as long as it stays
   there; the exemption then covers that neighbour's cells for that hand's links only.
   Tests: `tests/unit/test_grasp_target_leg.py` (approach rows), live
@@ -389,8 +389,8 @@ decide; 7 and 8 need the attended cell for calibration.
    approaching hands at once), and whether a goal may re-arm after an attach.
 2. Hazard HZ-01xx: exemption misapplied (non-target body inside the region; wrong object; stale
    declaration; target moved while frozen; leak to other links/arms; fingers into the support;
-   the exemption arming on an unintended object near the hand, HZ-01xx-8; a producer declaring
-   two hands, HZ-01xx-9).
+   the exemption arming on an unintended object near the hand, HZ-01xx-11; a producer declaring
+   two hands, HZ-01xx-12).
 3. Turning `attached_collision_enabled` on for real, with the deadline, and trusting vision
    geometry for map clearing (undersized box clears a real obstacle; phantom fallback box on a
    closed-on-nothing gripper; dead jaw-position channel → kernel drop window).
