@@ -1,4 +1,4 @@
-"""Reasoner-named grasp/place targets, grounded by perception (real pick-and-place design §2.2).
+"""Reasoner-named grasp/place targets, grounded by perception (real pick-and-place §2.2-2.3).
 
 The reasoner names a target; ``openral_reasoner.grounding`` grounds it from what perception
 already holds — the world-state lift's 3D boxes (``VoxelFrustumLifter``, run here for real
@@ -6,8 +6,10 @@ on a voxel scene seen by the OpenArm ``head_zed`` intrinsics) and the spatial me
 (``SpatialMemory``, ingesting those same lifted boxes) — into the declarations the
 ``ExecuteRskill`` goal carries. The producer measures; nothing here may supply a region.
 
+Nothing about the cell is surveyed: a place surface ("shelf") grounds exactly like a grasp
+object, from the lifted detection or a recalled memory node, into a padded search box.
+
 Real fixtures throughout: ``robots/openarm/robot.yaml``,
-``tests/unit/fixtures/robot_units/openarm_shelf_cell.yaml``,
 ``tests/unit/fixtures/home_scene_graph.json`` (CLAUDE.md §1.11).
 """
 
@@ -25,10 +27,10 @@ from openral_core import (
     GraspDeclaration,
     GraspTargetRef,
     ObjectDetection2D,
+    PlaceDeclaration,
     PlaceTargetRef,
     Pose6D,
     RobotDescription,
-    RobotUnit,
     SceneGraph,
 )
 from openral_core.exceptions import ROSReasonerInvalidPlan
@@ -47,9 +49,6 @@ from openral_world_state import SpatialMemory, VoxelFrustumLifter
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _OPENARM = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "openarm" / "robot.yaml"))
-_UNIT = RobotUnit.from_yaml(
-    str(_REPO_ROOT / "tests" / "unit" / "fixtures" / "robot_units" / "openarm_shelf_cell.yaml")
-)
 _BASE = _OPENARM.base_frame
 _VOXEL = 0.02
 _PAD = 0.035  # one 20 mm cell + the 15 mm planar extrinsic bound (the node defaults)
@@ -62,10 +61,20 @@ _T_CAM_FROM_BASE: NDArray[np.float64] = np.array(
 
 def _cube(center: tuple[float, float, float], n: int = 3) -> NDArray[np.float64]:
     """Occupied voxel centres of an ``n``-cell cube (20 mm cells) around ``center``."""
-    offs = (np.arange(n) - (n - 1) / 2.0) * _VOXEL
+    return _block(center, (n, n, n))
+
+
+def _block(center: tuple[float, float, float], n: tuple[int, int, int]) -> NDArray[np.float64]:
+    """Occupied voxel centres of an ``n[0] x n[1] x n[2]``-cell block around ``center``."""
+    o = [(np.arange(k) - (k - 1) / 2.0) * _VOXEL for k in n]
     return np.array(
-        [(center[0] + a, center[1] + b, center[2] + c) for a in offs for b in offs for c in offs]
+        [(center[0] + a, center[1] + b, center[2] + c) for a in o[0] for b in o[1] for c in o[2]]
     )
+
+
+# A shelf board seen by the head camera: a 9 x 5-cell slab, one cell thick (a surface, not
+# a fixture — nothing about it is surveyed).
+_BOARD = (9, 5, 1)
 
 
 def _detection(label: str, voxels: NDArray[np.float64]) -> ObjectDetection2D:
@@ -83,11 +92,17 @@ def _detection(label: str, voxels: NDArray[np.float64]) -> ObjectDetection2D:
     )
 
 
-def _lift(objects: dict[str, tuple[str, tuple[float, float, float]]]) -> list[DetectedObject]:
+def _lift(
+    objects: dict[str, tuple[str, tuple[float, float, float]]],
+    shapes: dict[str, tuple[int, int, int]] | None = None,
+) -> list[DetectedObject]:
     """Run the world-state lift on a voxel scene, in the base frame (a fixed-base cell)."""
     k = next(s.intrinsics for s in _OPENARM.sensors if s.name == "head_zed")
     assert k is not None
-    voxels = {key: _cube(center) for key, (_label, center) in objects.items()}
+    shapes = shapes or {}
+    voxels = {
+        key: _block(center, shapes.get(key, (3, 3, 3))) for key, (_l, center) in objects.items()
+    }
     lifted = VoxelFrustumLifter().lift(
         detections=[_detection(label, voxels[key]) for key, (label, _c) in objects.items()],
         occupied_centers_base=np.concatenate(list(voxels.values())),
@@ -301,35 +316,108 @@ def test_naming_a_link_that_is_no_gripper_child_refuses() -> None:
         _ground_r1(GraspTargetRef(label="cup", contact_links=[_R1_LEFT[0], "torso_link1"]))
 
 
-def test_a_fixture_place_target_grounds_to_its_place_declaration() -> None:
-    decl = ground_place_target(
-        PlaceTargetRef(fixture_id="cell:shelf_top"), unit=_UNIT, patience_s=60.0
+def _ground_place(
+    ref: PlaceTargetRef, live: list[DetectedObject], graph: SceneGraph | None = None
+) -> PlaceDeclaration:
+    return ground_place_target(
+        ref,
+        live_objects=live,
+        scene_graph=graph,
+        base_frame=_BASE,
+        patience_s=60.0,
+        pad_m=_PAD,
     )
-    assert decl.target_id == "cell:shelf_top"
-    assert decl.region is None
+
+
+def _box_contains(decl: PlaceDeclaration, bbox: tuple[float, ...]) -> bool:
+    box = decl.search_box
+    assert box is not None
+    return all(
+        box.pose.xyz[i] - box.half_extents[i] <= bbox[i] + 1e-9
+        and bbox[i + 3] <= box.pose.xyz[i] + box.half_extents[i]
+        for i in range(3)
+    )
+
+
+def test_a_lifted_surface_grounds_a_search_box_only_place_declaration() -> None:
+    """The perceived place path: a labelled surface, no fixture, no region."""
+    live = _lift(
+        {"s": ("shelf", (0.45, 0.20, -0.05)), "b": ("box", (0.40, -0.20, -0.10))},
+        shapes={"s": _BOARD},
+    )
+    decl = _ground_place(PlaceTargetRef(label="Shelf"), live)
+    assert decl.target_id == "surface:shelf"
+    assert decl.region is None  # only the producer measures
     assert decl.timeout_s == 70.0
+    box = decl.search_box
+    assert box is not None
+    assert box.frame_id == _BASE
+    assert box.geometry == ()
+    assert box.pose.quat_xyzw == (0.0, 0.0, 0.0, 1.0)  # gravity-aligned in the base frame
+    shelf = next(o for o in live if o.label == "shelf")
+    assert shelf.bbox_3d is not None
+    assert _box_contains(decl, shelf.bbox_3d)
+    lo, hi = shelf.bbox_3d[:3], shelf.bbox_3d[3:]
+    for i in range(3):
+        assert box.half_extents[i] == pytest.approx((hi[i] - lo[i]) / 2.0 + _PAD)
+    # The board's own cells are inside the box, so the producer can measure its top.
+    board = _block((0.45, 0.20, -0.05), _BOARD)
+    lo_box = np.asarray(box.pose.xyz) - np.asarray(box.half_extents)
+    hi_box = np.asarray(box.pose.xyz) + np.asarray(box.half_extents)
+    assert np.all((board >= lo_box) & (board <= hi_box))
 
 
-@pytest.mark.parametrize(
-    ("ref", "unit", "match"),
-    [
-        (PlaceTargetRef(fixture_id="cell:nowhere"), _UNIT, "not a fixture of this robot unit"),
-        (PlaceTargetRef(fixture_id="cell:shelf_top"), None, "fixtures: none"),
-        (PlaceTargetRef(place_node_id="kitchen_table"), _UNIT, "not supported yet"),
-    ],
-)
-def test_a_place_target_that_is_not_a_unit_fixture_refuses(
-    ref: PlaceTargetRef, unit: RobotUnit | None, match: str
-) -> None:
-    with pytest.raises(ROSReasonerInvalidPlan, match=match):
-        ground_place_target(ref, unit=unit, patience_s=60.0)
+def test_two_surfaces_with_the_label_refuse_without_a_node_id() -> None:
+    live = _lift(
+        {"a": ("shelf", (0.45, 0.25, -0.05)), "b": ("shelf", (0.45, -0.25, -0.05))},
+        shapes={"a": _BOARD, "b": _BOARD},
+    )
+    with pytest.raises(ROSReasonerInvalidPlan, match="place_target 'shelf' is ambiguous: 2"):
+        _ground_place(PlaceTargetRef(label="shelf"), live)
 
 
-def test_place_target_ref_needs_exactly_one_target() -> None:
-    with pytest.raises(ValueError, match="exactly one"):
-        PlaceTargetRef()
-    with pytest.raises(ValueError, match="exactly one"):
-        PlaceTargetRef(fixture_id="cell:shelf_top", place_node_id="kitchen_table")
+def test_a_surface_perception_does_not_see_refuses() -> None:
+    live = _lift({"b": ("box", (0.40, -0.20, -0.10))})
+    with pytest.raises(ROSReasonerInvalidPlan, match=r"place_target 'shelf': no live 3D"):
+        _ground_place(PlaceTargetRef(label="shelf"), live)
+
+
+@pytest.mark.parametrize("field", ["object_id", "place_node_id"])
+def test_a_recalled_surface_node_disambiguates(field: str) -> None:
+    live = _lift(
+        {"a": ("shelf", (0.45, 0.25, -0.05)), "b": ("shelf", (0.45, -0.25, -0.05))},
+        shapes={"a": _BOARD, "b": _BOARD},
+    )
+    memory = SpatialMemory()
+    memory.ingest_detected_objects(live, now_ns=1)
+    graph = memory.to_scene_graph()
+    left = next(n for n in graph.nodes if n.pose.xyz[1] > 0.0)
+    decl = _ground_place(PlaceTargetRef(label="shelf", **{field: left.node_id}), live, graph)
+    assert decl.target_id == f"surface:{left.node_id}"
+    assert left.bbox_3d is not None
+    assert _box_contains(decl, left.bbox_3d)
+    right = next(o.bbox_3d for o in live if o.pose.xyz[1] < 0.0)
+    assert right is not None
+    assert not _box_contains(decl, right)
+
+
+def test_an_unknown_or_map_frame_surface_node_refuses() -> None:
+    with pytest.raises(ROSReasonerInvalidPlan, match="not in spatial memory"):
+        _ground_place(PlaceTargetRef(label="shelf", object_id="nope"), [], SceneGraph())
+    graph = SceneGraph.model_validate(
+        json.loads((_REPO_ROOT / "tests/unit/fixtures/home_scene_graph.json").read_text())
+    )
+    with pytest.raises(ROSReasonerInvalidPlan, match="not the robot base frame"):
+        _ground_place(PlaceTargetRef(label="bottle of wine", object_id="wine_bottle"), [], graph)
+
+
+def test_place_target_ref_needs_a_label_and_at_most_one_node() -> None:
+    with pytest.raises(ValueError, match="label"):
+        PlaceTargetRef()  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="at most one"):
+        PlaceTargetRef(label="shelf", object_id="a", place_node_id="b")
+    with pytest.raises(ValueError, match="extra"):
+        PlaceTargetRef(label="shelf", fixture_id="cell:shelf_top")  # type: ignore[call-arg]
 
 
 # ── LLM surface ─────────────────────────────────────────────────────────────
@@ -347,21 +435,20 @@ def test_the_targets_reach_the_llm_tool_schema_and_decode_back() -> None:
         arguments={
             "rskill_id": "openral/pick",
             "grasp_target": {"label": "box", "object_id": "box_1"},
-            "place_target": {"fixture_id": "cell:shelf_top"},
+            "place_target": {"label": "shelf"},
         },
         palette=palette,
     )
     assert isinstance(call, ExecuteRskillTool)
     assert call.grasp_target == GraspTargetRef(label="box", object_id="box_1")
-    assert call.place_target == PlaceTargetRef(fixture_id="cell:shelf_top")
+    assert call.place_target == PlaceTargetRef(label="shelf")
 
 
-def test_the_unit_fixtures_are_listed_in_the_system_prompt() -> None:
-    prompt = resolve_reasoner_system_prompt(_OPENARM.capabilities, env={}, fixtures=_UNIT.fixtures)
-    assert "place_target.fixture_id choices" in prompt
-    assert "- cell:shelf_top: " in prompt
+def test_the_system_prompt_names_surfaces_and_lists_no_cell_geometry() -> None:
+    prompt = resolve_reasoner_system_prompt(_OPENARM.capabilities, env={})
+    assert "place_target" in prompt
     assert "grasp_target" in prompt  # the base brief explains how to name targets
-    assert "fixture_id choices" not in resolve_reasoner_system_prompt(_OPENARM.capabilities, env={})
+    assert "fixture" not in prompt.lower()
 
 
 def test_the_llm_is_never_told_it_must_name_a_grasp_target() -> None:

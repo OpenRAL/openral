@@ -1,20 +1,23 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Live-ROS: a payload set down on a verified fixture keeps its witness through the release.
+"""Live-ROS: a payload set down on a measured surface keeps its witness through the release.
 
-Real pick-and-place design §2.3 "Release": the witness, if one is live, keeps the shelf
-partition correct while the frozen record is published. Real rclpy, a real
-``VisionAttachmentBridge`` on the bimanual OpenArm manifest (the test unit's surveyed
-``cell:shelf_top`` through the real ``load_robot_unit``), real tf2, every
+Real pick-and-place design §2.3 "Release": the witness, if one is live, keeps the table
+partition correct while the frozen record is published. Nothing is surveyed and nothing
+names a place target: real rclpy, a real ``VisionAttachmentBridge`` on the bimanual OpenArm
+manifest with the place-target leg measuring the table under the carried payload, real
+tf2, every
 ``/openral/attachment_state`` through a real ``WorldStateAggregator`` and the World State
 node's ``build_world_state_stamped_msg`` into a real ``safety_kernel_node`` (the real cell's
 parameters, attached check on at margin 0, as the vision leg turns it on).
 
-The payload (the bridge's fallback box) is held with its bottom 5 mm below the surveyed face,
-the grip opens (DETACH), and the frozen record stays on the face. There is no octomap bridge
+The payload (the bridge's fallback box) is held 10 cm over the table until the leg has
+measured and latched the surface under it, then lowered with its bottom 5 mm below the
+measured face, the grip opens (DETACH), and the frozen record stays on the face. There is no
+octomap bridge
 here, so the grid is published the way its payload clearing leaves it with the witness live —
 an explicit assumption: the shelf layer, plus the one co-planar cell layer under the payload
 that ``support_patch_withholds`` keeps (centres 1 cm above the face). The cells of that layer
-the payload's edge overlaps by less than half a voxel sit above the fixture box (the place
+the payload's edge overlaps by less than half a voxel sit above the measured slab (the place
 region's approach allowance does not reach them) and are not embedded residue — only the
 witness's support-contact exemption covers them. One retreat candidate at the release
 configuration, per row:
@@ -36,7 +39,7 @@ Gated on ``OPENRAL_TEST_ROS_LIVE=1`` (and a colcon-built ``openral_safety_kernel
 
     source /opt/ros/jazzy/setup.bash && source install/setup.bash
     PYTHONPATH=$PWD/packages/world_state:$PYTHONPATH OPENRAL_TEST_ROS_LIVE=1 \\
-        pytest tests/integration/test_place_fixture_release_live.py
+        pytest tests/integration/test_place_target_release_live.py
 """
 
 from __future__ import annotations
@@ -44,7 +47,6 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import shutil
 import tempfile
 import threading
 import time
@@ -55,14 +57,12 @@ from typing import Any
 import numpy as np
 import pytest
 
-from tests.integration.test_place_fixture_leg_live import (
+from tests.integration.test_place_target_leg_live import (
     _BASE,
     _FACE_Z,
     _LINK7,
     _ROBOT_YAML,
-    _SHELF_UNIT,
     _SIZE,
-    _declaration_msg,
     _grid,
     _wait_until,
 )
@@ -75,7 +75,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 _OBJECT_ID = "grasped_payload:left_gripper"
-_ARMED = f"safety.support_witness_armed object={_OBJECT_ID} support=cell:shelf_top"
+_ARMED = f"safety.support_witness_armed object={_OBJECT_ID} support=surface:under:{_OBJECT_ID}"
 _SPAN = 0.05  # VisionGateConfig.jaw_span_m: the fallback box's half-extent
 #: The payload's centre x: its +x face at 0.506, 6 mm into the i = 15 cell column.
 _PAYLOAD_X = 0.456
@@ -83,7 +83,7 @@ _PAYLOAD_X = 0.456
 #: y -0.05..0.05): cell centres x = 0.21 + 0.02 i, y = -0.45 + 0.02 j. Columns i = 10..14
 #: lie inside the payload (the kernel's embedded-residue rule exempts them on their own);
 #: column i = 15 (x 0.50..0.52) it overlaps by 6 mm — less than the half voxel that makes a
-#: cell embedded, above the fixture box the region's allowance covers, inside the witness's
+#: cell embedded, above the measured slab the region's allowance covers, inside the witness's
 #: patch and height bound. Only the witness can exempt those cells.
 _PATCH_CELLS = frozenset(
     i + _SIZE[0] * (j + _SIZE[1] * 5) for i in range(10, 16) for j in range(21, 25)
@@ -91,7 +91,7 @@ _PATCH_CELLS = frozenset(
 
 
 def _patch_grid(stamp: Any) -> Any:
-    """The shelf face plus the withheld co-planar patch under the payload."""
+    """The table face plus the withheld co-planar patch under the payload."""
     msg = _grid(stamp, face=True)
     occupancy = list(msg.occupancy)
     for idx in _PATCH_CELLS:
@@ -102,7 +102,7 @@ def _patch_grid(stamp: Any) -> Any:
 
 @pytest.mark.parametrize("place_leg", [True, False], ids=["witness", "no_witness"])
 def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
-    tmp_path: pathlib.Path, place_leg: bool
+    place_leg: bool,
 ) -> None:
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs")
@@ -118,7 +118,6 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
         JointState,
         PlaceDeclaration,
         RobotDescription,
-        load_robot_unit,
     )
     from openral_hal.vision_attachment_bridge import (
         VisionAttachmentBridge,
@@ -131,7 +130,6 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
         OccupancyVoxels,
         WorldStateStamped,
     )
-    from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
     from openral_world_state import WorldStateAggregator
     from rcl_interfaces.msg import Log
     from rclpy.executors import MultiThreadedExecutor
@@ -152,11 +150,6 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
     )
 
     description = RobotDescription.from_yaml(str(_ROBOT_YAML))
-    robot_dir = tmp_path / "openarm"
-    (robot_dir / "units").mkdir(parents=True)
-    shutil.copy(_ROBOT_YAML, robot_dir / "robot.yaml")
-    shutil.copy(_SHELF_UNIT, robot_dir / "units" / "shelf_cell.yaml")
-    unit = load_robot_unit(robot_dir / "robot.yaml", "shelf_cell")
     joint_names = [j.name for j in description.joints]
 
     kernel_name = f"safety_kernel_place_release_{uuid.uuid4().hex[:8]}"
@@ -222,9 +215,6 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
             peer.create_subscription(
                 AttachmentState, "/openral/attachment_state", on_state, latched
             )
-            declaration_pub = peer.create_publisher(
-                PlaceDeclarationMsg, "/openral/place_declaration", latched
-            )
             voxel_pub = peer.create_publisher(
                 OccupancyVoxels, "/openral/world_voxels", reliable_kl1
             )
@@ -242,7 +232,12 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
                 [_tf_msg(_BASE, "zed_camera_link", _thor_mount())]
             )
             hand_broadcaster = TransformBroadcaster(peer)
-            state: dict[str, Any] = {"loaded": False, "bottom": 0.50, "box_in_link": np.zeros(3)}
+            state: dict[str, Any] = {
+                "loaded": False,
+                "bottom": _FACE_Z + 0.10,
+                "box_in_link": np.zeros(3),
+                "clearing": False,  # the grid the way payload clearing leaves it, once set down
+            }
 
             def publish_hand() -> None:
                 """link7 posed so the fallback box's bottom sits at ``state["bottom"]``."""
@@ -263,9 +258,7 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
                     camera="head_zed",
                     depth_topic="/test_place_release/depth",  # never published
                     service_name="/openral/perception/segment_in_view_place_release_itest",
-                    place_fixture_enabled=place_leg,
-                    unit_fixtures=unit.fixtures,
-                    robot_unit=unit.unit,
+                    place_target_enabled=place_leg,
                     # Only the jaws clearing could end the window; they never do here.
                     release_timeout_s=60.0,
                 ),
@@ -301,10 +294,14 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
 
             bridge.setup()
             node.create_timer(1.0 / 30.0, feed)
-            peer.create_timer(
-                0.2,
-                lambda: voxel_pub.publish(_patch_grid(peer.get_clock().now().to_msg())),
-            )
+
+            def publish_grid() -> None:
+                stamp = peer.get_clock().now().to_msg()
+                voxel_pub.publish(
+                    _patch_grid(stamp) if state["clearing"] else _grid(stamp, face=True)
+                )
+
+            peer.create_timer(0.2, publish_grid)
             peer.create_timer(0.05, publish_hand)
             peer.create_timer(0.1, publish_joint_state)
             executor = MultiThreadedExecutor()
@@ -323,11 +320,11 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
                 return log_path.read_text(errors="replace").count(_ARMED)
 
             def place_lines() -> list[str]:
-                return [line for line in logs if "place_fixture" in line or "release" in line]
+                return [line for line in logs if "place_target" in line or "release" in line]
 
             try:
-                # ── Hold: the fallback box, lowered 5 mm into the shelf layer. ─────────
-                declaration_pub.publish(_declaration_msg(int(node.get_clock().now().nanoseconds)))
+                # ── Hold over the table until the surface under it is measured, then
+                # lower the fallback box 5 mm into the table layer. ────────────────────
                 state["loaded"] = True
                 assert _wait_until(
                     lambda: (o := latest_object()) is not None and o.attach_link == _LINK7,
@@ -336,7 +333,17 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
                 held = latest_object()
                 assert held is not None and held.object_id == _OBJECT_ID
                 state["box_in_link"] = np.asarray(held.pose_in_link.xyz)
+                if place_leg:
+                    assert _wait_until(
+                        lambda: (
+                            bool(envelopes)
+                            and envelopes[-1].place_declaration_valid
+                            and envelopes[-1].place_declaration.region_valid
+                        ),
+                        timeout_s=5.0,
+                    ), f"no surface measured under the payload; {place_lines()}"
                 state["bottom"] = _FACE_Z - 0.005
+                state["clearing"] = True
                 if place_leg:
                     assert _wait_until(
                         lambda: getattr(latest_object(), "support_contact", None) is not None,
@@ -358,7 +365,9 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
                     lambda: (o := latest_object()) is not None and o.attach_link == _BASE,
                     timeout_s=5.0,
                 ), f"DETACH did not freeze the payload; {place_lines()}"
-                time.sleep(1.0)  # > the witness re-evaluation period, several heartbeats
+                # > the witness re-evaluation period and a heartbeat, but well inside the
+                # region's 2 s freeze: the witness dies with the region (kernel age bound).
+                time.sleep(0.3)
                 frozen = latest_object()
                 assert frozen is not None and frozen.attach_link == _BASE
                 assert (frozen.object_id, frozen.stamp_ns) == (held.object_id, held.stamp_ns)
@@ -377,7 +386,7 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
                 chunk.horizon = 1
                 chunk.n_dof = len(joint_names)
                 chunk.flat = [0.0] * len(joint_names)
-                chunk.rskill_id = "openral/itest-place-fixture"
+                chunk.rskill_id = "openral/itest-place-target"
                 chunk.trace_id = trace
                 chunk_pub.publish(chunk)
                 if place_leg:

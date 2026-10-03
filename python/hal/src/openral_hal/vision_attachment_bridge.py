@@ -75,11 +75,12 @@ the region and the attachment set from one snapshot. With ``grasp_target_approac
 around whichever one hand's TCP approaches occupied cells, so the policy, not
 the reasoner, picks the object (``_grasp_target_leg`` "Approach-armed target").
 
-With ``VisionAttachmentConfig.place_fixture_enabled`` (default off) it also owns
-the real place producer leg (``_place_fixture_leg``): the live
-``PlaceDeclaration`` rides every publication, with the unit fixture it names as
-the region only while the voxel map verifies it, and the carried payload gets a
-proximity witness (not sensed contact) once per declaration.
+With ``VisionAttachmentConfig.place_target_enabled`` (default off) it also owns
+the real place producer leg (``_place_target_leg``): while a payload is held it
+measures the surface directly under it in the voxel map and, when one is measured,
+every publication carries a ``PlaceDeclaration`` with that support patch as the
+region (dispatch's optional declaration when there is one, else the leg's own),
+and the payload gets a map-support proximity witness (not sensed contact) once.
 """
 
 from __future__ import annotations
@@ -92,6 +93,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from numpy.typing import NDArray
 from openral_core import CameraTopicKind, ControlMode, camera_topic
+from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError
 
 from openral_hal._grasp_target_leg import GraspTargetLeg, _hand_near
@@ -101,7 +103,7 @@ from openral_hal._grasp_trigger import (
     PositionStallTrigger,
     gripper_joints,
 )
-from openral_hal._place_fixture_leg import PlaceFixtureLeg
+from openral_hal._place_target_leg import PlaceTargetLeg
 from openral_hal._vision_attachment_evidence import (
     VisionAttachmentEvidenceProducer,
     VisionGateConfig,
@@ -115,7 +117,6 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
         IntrinsicsPinhole,
         JointState,
         RobotDescription,
-        UnitFixture,
     )
 
 __all__ = [
@@ -766,7 +767,7 @@ class VisionAttachmentConfig:
             end, so this is the window's bound when the hand does not retreat.
             *Calibration point*, ``3.0`` s.
         grid_max_age_s: Oldest ``/openral/world_voxels`` grid the grasp-target
-            and place-fixture legs may use, seconds. The deploy sets it to the
+            and place-target legs may use, seconds. The deploy sets it to the
             safety kernel's ``world_voxel_deadline_s``: a grid the kernel itself
             would refuse as stale cannot vouch for a region. The ``1.0`` s default
             only serves code that builds the bridge directly (tests);
@@ -782,20 +783,24 @@ class VisionAttachmentConfig:
             have moved. A refusal is a ``GRIPPER_CLOSURE`` fallback in the
             attachment path and a lost view in the grasp-target leg.
             *Calibration point.*
-        place_fixture_enabled: Run the real place producer leg
-            (``_place_fixture_leg``): resolve the live ``PlaceDeclaration``'s
-            target to a unit fixture, verify it against the voxel map, publish it
-            as the region, and attest the proximity witness. Default off; it
-            rests on drafted, unapproved ADR-0097 / ADR-0092 D6 amendments.
-        place_fixture_rate_hz: Map re-verification rate.
-        place_fixture_min_face_cover: Fraction of the fixture's top-face cell
-            footprint that must be occupied within one voxel of the surveyed
-            height. *Calibration point.*
-        place_fixture_free_height_m: Height above the face up to which the
-            face's prism must be free (one voxel above the face upward).
+        place_target_enabled: Run the real place producer leg
+            (``_place_target_leg``): measure the support patch directly under the
+            carried payload from the voxel map, publish it as a place region (no
+            dispatch declaration needed), and attest the map-support proximity
+            witness. Default off; it rests on drafted, unapproved ADR-0097 /
+            ADR-0092 D6 amendments.
+        place_target_rate_hz: Measurement / re-verification rate.
+        place_target_freeze_s: How long past its last verification a latched
+            patch survives a lost view (the payload and hand occluding the board).
+            ``None`` (default) = ``2 * grid_max_age_s``, which is also its ceiling:
+            the kernel drops a place region older than that (``place_region_max_age_s``).
             *Calibration point.*
-        unit_fixtures: This cell's surveyed fixtures (``RobotUnit.fixtures``).
-        robot_unit: The unit those fixtures came from, for ``evidence_ref``.
+        place_target_search_depth_m: How far below the carried payload's bottom the
+            leg looks for the surface it would land on. *Calibration point.*
+        place_target_extrinsic_error_m: The depth extrinsic's accuracy bound: it
+            grows the patch on every side and the free height, and is the witness
+            tolerance with one voxel. Default
+            ``openral_core.depth_extrinsic.MAX_PLANAR_ERR_M``. *Calibration point.*
     """
 
     camera: str = ""
@@ -821,12 +826,11 @@ class VisionAttachmentConfig:
     release_timeout_s: float = 3.0
     grid_max_age_s: float = 1.0
     mask_depth_max_skew_s: float = 0.1
-    place_fixture_enabled: bool = False
-    place_fixture_rate_hz: float = 2.0
-    place_fixture_min_face_cover: float = 0.5
-    place_fixture_free_height_m: float = 0.10
-    unit_fixtures: Sequence[UnitFixture] = ()
-    robot_unit: str = ""
+    place_target_enabled: bool = False
+    place_target_rate_hz: float = 2.0
+    place_target_freeze_s: float | None = None
+    place_target_search_depth_m: float = 0.20
+    place_target_extrinsic_error_m: float = MAX_PLANAR_ERR_M
 
 
 @dataclass(frozen=True)
@@ -1116,10 +1120,8 @@ class VisionAttachmentBridge:
             if self._config.grasp_target_enabled
             else None
         )
-        self._place_fixture: PlaceFixtureLeg | None = (
-            PlaceFixtureLeg(node, self, self._config)
-            if self._config.place_fixture_enabled
-            else None
+        self._place_target: PlaceTargetLeg | None = (
+            PlaceTargetLeg(node, self, self._config) if self._config.place_target_enabled else None
         )
 
     # ── wiring ───────────────────────────────────────────────────────────────
@@ -1174,8 +1176,8 @@ class VisionAttachmentBridge:
         self._heartbeat_timer = self._node.create_timer(_HEARTBEAT_PERIOD_S, self._heartbeat)
         if self._grasp_target is not None:
             self._grasp_target.setup()
-        if self._place_fixture is not None:
-            self._place_fixture.setup()
+        if self._place_target is not None:
+            self._place_target.setup()
         for leg in self._legs:
             self._node.get_logger().info(
                 f"vision attachment bridge: gripper={leg.joint_name!r} camera={self._camera!r} "
@@ -1193,8 +1195,8 @@ class VisionAttachmentBridge:
             self._cancel_deadline(leg)
         if self._grasp_target is not None:
             self._grasp_target.teardown()
-        if self._place_fixture is not None:
-            self._place_fixture.teardown()
+        if self._place_target is not None:
+            self._place_target.teardown()
         if self._heartbeat_timer is not None:
             self._heartbeat_timer.cancel()
             self._node.destroy_timer(self._heartbeat_timer)
@@ -1290,8 +1292,8 @@ class VisionAttachmentBridge:
             )
             self._begin_segmentation(leg, stamp_ns=int(state.stamp_ns))
         self._evidence.observe(complete=complete, now_s=time.monotonic())
-        if self._place_fixture is not None:
-            self._place_fixture.on_joint_state()
+        if self._place_target is not None:
+            self._place_target.on_joint_state()
 
     def observe_command(self, action: Action) -> None:
         """Fold an applied action's gripper targets into every leg's trigger.
@@ -1897,9 +1899,9 @@ class VisionAttachmentBridge:
         msg.revision = self._revision
         if self._grasp_target is not None:
             self._grasp_target.fill(msg, now_ns=int(now.nanoseconds))
-        if self._place_fixture is not None:
-            self._place_fixture.fill(msg, now_ns=int(now.nanoseconds))
-            objects = self._place_fixture.decorate(objects)
+        if self._place_target is not None:
+            self._place_target.fill(msg, now_ns=int(now.nanoseconds))
+            objects = self._place_target.decorate(objects)
         for obj in objects:
             item = AttachedCollisionObject()
             obj.fill_idl(item, primitive_factory=AttachedCollisionPrimitive)

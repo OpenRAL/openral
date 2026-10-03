@@ -58,7 +58,7 @@
         "operator",
         "vision_segmentation",
         "sim_contact_force",
-        "declared_fixture",
+        "map_support_proximity",
         "gripper_closure",
         "grasp_target_region"
       ],

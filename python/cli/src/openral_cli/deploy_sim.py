@@ -462,7 +462,7 @@ def _vision_attachment_hal_params(leg: VisionAttachmentRuntime) -> dict[str, obj
         "vision_attachment_evidence_timeout_s": leg.evidence_timeout_s,
         "vision_attachment_grasp_target_enabled": leg.grasp_target_enabled,
         "vision_attachment_grasp_target_approach_m": leg.grasp_target_approach_m or 0.0,
-        "vision_attachment_place_fixture_enabled": leg.place_fixture_enabled,
+        "vision_attachment_place_target_enabled": leg.place_target_enabled,
         "vision_attachment_release_timeout_s": leg.release_timeout_s,
     }
     # An empty YAML list has no ROS parameter type; the node's default is [""] = none.
@@ -1412,10 +1412,6 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # setdefault: an explicit ``--hal vision_attachment_*=`` still wins.
         for _va_key, _va_value in _vision_attachment_hal_params(vision_leg).items():
             hal_params.setdefault(_va_key, _va_value)
-        if vision_leg.place_fixture_enabled and robot_unit:
-            # The place producer verifies this unit's fixtures; the scene's `robot_unit` is
-            # not in the HAL's environment, so name it (the HAL falls back to the env var).
-            hal_params.setdefault("vision_attachment_robot_unit", robot_unit)
     # On real hardware the vision bridge's target leg is the only grasp-region producer (in
     # sim the HAL's MuJoCo evidence tracker measures it), so the exemption without it would
     # arm with nothing measuring the region. Judged on the EFFECTIVE HAL params (scene plus

@@ -2084,6 +2084,7 @@ if _ROS2_AVAILABLE:
                     "stamp_ns": int(self.get_clock().now().nanoseconds),
                     "active": True,
                     # Dispatch never publishes a region; the producer measures it.
+                    # `search_box` (a hint naming the surface) passes through unchanged.
                     "region": None,
                 }
             )

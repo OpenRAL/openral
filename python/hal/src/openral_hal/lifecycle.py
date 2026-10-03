@@ -1591,6 +1591,8 @@ if _ROS2_AVAILABLE:
             # to the conservative GRIPPER_CLOSURE box. The grasp trigger is the
             # jaw position stalling short of its command (manifest
             # closure_calibration); no effort channel is read.
+            from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
+
             from openral_hal.vision_attachment_bridge import DEFAULT_SEGMENT_SERVICE
 
             self.declare_parameter("vision_attachment_enabled", False)
@@ -1656,14 +1658,22 @@ if _ROS2_AVAILABLE:
                 ],
             )
             # Real place producer leg (real pick-and-place design §2.3). OFF by
-            # default: drafted, unapproved ADR-0097 / ADR-0092 D6 amendments. Needs
-            # the robot unit whose surveyed fixtures it verifies against the map:
-            # `vision_attachment_robot_unit`, else $OPENRAL_ROBOT_UNIT.
-            self.declare_parameter("vision_attachment_place_fixture_enabled", False)
-            self.declare_parameter("vision_attachment_place_fixture_rate_hz", 2.0)
-            self.declare_parameter("vision_attachment_place_fixture_min_face_cover", 0.5)
-            self.declare_parameter("vision_attachment_place_fixture_free_height_m", 0.10)
-            self.declare_parameter("vision_attachment_robot_unit", "")
+            # default: drafted, unapproved ADR-0097 / ADR-0092 D6 amendments. It
+            # measures the surface directly under the carried payload from the voxel
+            # map; nothing about the cell is surveyed or named. freeze_s 0 = derive it
+            # as 2x vision_attachment_grid_max_age_s (also its ceiling); the extrinsic
+            # bound defaults to openral_core.depth_extrinsic.MAX_PLANAR_ERR_M; the
+            # search depth is how far under the payload it looks. Calibration points.
+            self.declare_parameter("vision_attachment_place_target_enabled", False)
+            self.declare_parameters(
+                "",
+                [
+                    ("vision_attachment_place_target_rate_hz", 2.0),
+                    ("vision_attachment_place_target_freeze_s", 0.0),
+                    ("vision_attachment_place_target_search_depth_m", 0.20),
+                    ("vision_attachment_place_target_extrinsic_error_m", MAX_PLANAR_ERR_M),
+                ],
+            )
             self._bridge: Any = None
             self._mobile_base: Any = None
             self._vision_attachment: Any = None
@@ -2100,30 +2110,6 @@ if _ROS2_AVAILABLE:
                         f"vision_attachment_tf_frames entry {entry!r} is not 'link=frame'."
                     )
                 tf_frames[link] = frame
-            place_fixture_enabled = (
-                gp("vision_attachment_place_fixture_enabled").get_parameter_value().bool_value
-            )
-            robot_unit = ""
-            unit_fixtures: list[Any] = []
-            if place_fixture_enabled:
-                import os
-
-                from openral_core import ROBOT_UNIT_ENV, load_robot_unit
-
-                robot_unit = gp(
-                    "vision_attachment_robot_unit"
-                ).get_parameter_value().string_value or os.environ.get(ROBOT_UNIT_ENV, "")
-                if not robot_unit:
-                    raise ROSConfigError(
-                        "vision_attachment_place_fixture_enabled needs the robot unit whose "
-                        "fixtures it verifies: set vision_attachment_robot_unit or "
-                        f"${ROBOT_UNIT_ENV}."
-                    )
-                unit_fixtures = list(
-                    load_robot_unit(
-                        gp("robot_yaml").get_parameter_value().string_value, robot_unit
-                    ).fixtures
-                )
             self._vision_attachment = VisionAttachmentBridge(
                 self,
                 self._hal.description,
@@ -2200,20 +2186,26 @@ if _ROS2_AVAILABLE:
                     .get_parameter_value()
                     .double_value
                     or None,
-                    place_fixture_enabled=place_fixture_enabled,
-                    place_fixture_rate_hz=gp("vision_attachment_place_fixture_rate_hz")
+                    place_target_enabled=gp("vision_attachment_place_target_enabled")
+                    .get_parameter_value()
+                    .bool_value,
+                    place_target_rate_hz=gp("vision_attachment_place_target_rate_hz")
                     .get_parameter_value()
                     .double_value,
-                    place_fixture_min_face_cover=gp(
-                        "vision_attachment_place_fixture_min_face_cover"
+                    place_target_freeze_s=(
+                        gp("vision_attachment_place_target_freeze_s")
+                        .get_parameter_value()
+                        .double_value
+                        or None
+                    ),
+                    place_target_search_depth_m=gp("vision_attachment_place_target_search_depth_m")
+                    .get_parameter_value()
+                    .double_value,
+                    place_target_extrinsic_error_m=gp(
+                        "vision_attachment_place_target_extrinsic_error_m"
                     )
                     .get_parameter_value()
                     .double_value,
-                    place_fixture_free_height_m=gp("vision_attachment_place_fixture_free_height_m")
-                    .get_parameter_value()
-                    .double_value,
-                    unit_fixtures=unit_fixtures,
-                    robot_unit=robot_unit,
                 ),
             )
             self._vision_attachment.setup()

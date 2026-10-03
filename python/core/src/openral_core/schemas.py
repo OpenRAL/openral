@@ -13,7 +13,6 @@ import math
 import os
 import re
 from collections.abc import Callable, Iterable, Mapping
-from datetime import date
 from enum import Enum, StrEnum
 from pathlib import Path
 from typing import (
@@ -812,54 +811,7 @@ def load_robot_unit(robot_yaml: str | Path, unit: str) -> RobotUnit:
             f"{path} declares robot_id={loaded.robot_id!r} unit={loaded.unit!r}; "
             f"expected robot_id={manifest_dir.name!r} unit={unit!r}"
         )
-    if loaded.fixtures:
-        problems = fixture_problems(RobotDescription.from_yaml(str(robot_yaml)), loaded)
-        if problems:
-            raise ROSConfigError(f"{path}: " + "; ".join(problems))
     return loaded
-
-
-#: Embodiment kinds whose base is bolted down. Anything else moves its base frame.
-_FIXED_BASE_KINDS = frozenset({"manipulator", "bimanual"})
-
-
-def fixture_problems(description: RobotDescription, unit: RobotUnit) -> list[str]:
-    """Every reason ``unit``'s fixtures may not be used on ``description`` (empty = go).
-
-    A ``UnitFixture`` is surveyed once, in the robot's base frame, so it means something
-    only while that frame stays put relative to the cell: the robot must be fixed-base
-    (a ``manipulator`` / ``bimanual`` embodiment, no locomotion, no ``base_joints``, no
-    ``base`` / ``wheel`` / ``leg`` joints) and each fixture's ``frame_id`` must be the
-    manifest's ``base_frame``. ``load_robot_unit`` raises on any of these.
-
-    Example:
-        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
-        >>> fixture_problems(desc, load_robot_unit("robots/openarm/robot.yaml", "thor"))
-        []
-    """
-    if not unit.fixtures:
-        return []
-    problems = []
-    moving = [j.name for j in description.joints if j.role in ("base", "wheel", "leg")]
-    if (
-        description.embodiment_kind.value not in _FIXED_BASE_KINDS
-        or any(kind != "none" for kind in description.capabilities.locomotion)
-        or description.base_joints
-        or moving
-    ):
-        problems.append(
-            f"{description.name} is not fixed-base (embodiment_kind="
-            f"{description.embodiment_kind.value}, locomotion="
-            f"{description.capabilities.locomotion}, "
-            f"base joints={moving or description.base_joints}"
-            "); a surveyed fixture is only valid while the base frame stays put"
-        )
-    problems.extend(
-        f"{f.id}: frame_id {f.frame_id!r} is not the robot's base_frame {description.base_frame!r}"
-        for f in unit.fixtures
-        if f.frame_id != description.base_frame
-    )
-    return problems
 
 
 def gripper_hands(description: RobotDescription) -> tuple[tuple[str, ...], ...]:
@@ -3120,13 +3072,14 @@ class AttachmentEvidenceKind(str, Enum):
     # ``conaffinity`` suppression can empty a pair that is demonstrably in
     # contact — so absence of a force witness is never evidence of no contact.
     SIM_CONTACT_FORCE = "sim_contact_force"
-    # Proximity to a unit-surveyed, map-verified fixture plane; NOT sensed
-    # contact (real pick-and-place design §2.3, ADR-0092 D6 amendment, drafted).
-    # A producer attests it once per place declaration, when the payload's
-    # lowest primitive is within max(1 voxel, the fixture's survey uncertainty)
-    # of a ``UnitFixture`` top plane it verified live against the voxel map and
-    # the gripper is still loaded. A consumer must never read it as a touch.
-    DECLARED_FIXTURE = "declared_fixture"
+    # Proximity to a support plane the producer MEASURED in the voxel map; NOT
+    # sensed contact (real pick-and-place design §2.3, ADR-0092 D6 amendment,
+    # drafted). A producer attests it once per place declaration, when the
+    # payload's lowest primitive is within max(1 voxel, the extrinsic accuracy
+    # bound) of the plane it latched from the live map, the payload's centre is
+    # over the measured patch, and the gripper is still loaded. A consumer must
+    # never read it as a touch, nor the measured surface as a proven support.
+    MAP_SUPPORT_PROXIMITY = "map_support_proximity"
     # A position-only gripper closed and stalled short of its command (the position-stall
     # trigger, no effort channel) and vision could not confirm the shape: the conservative
     # jaw-span box. Says only "something keeps the jaws apart", never what or how heavy.
@@ -3154,10 +3107,10 @@ class PlaceRegion(BaseModel):
     before it can touch.
 
     **Producer-supplied, producer-specific.** Sim computes it from the
-    declared body's MuJoCo model subtree; real hardware's perception seam is
-    **not yet implemented**, so no allowance applies on real hardware today
-    (the same posture real-hardware place-witness attestation is under). The
-    kernel is producer-agnostic: it consumes this box identically whoever
+    declared body's MuJoCo model subtree; real hardware measures the support
+    slab directly under the carried payload from the live voxel map
+    (``openral_hal._place_target_leg``, default off, drafted ADR amendments
+    pending). The kernel is producer-agnostic: it consumes this box identically whoever
     measured it, and never derives one itself.
 
     The box is **oriented**, not axis-aligned — the axis-aligned hull of a
@@ -3352,6 +3305,12 @@ class PlaceDeclaration(BaseModel):
     retraction, goal end/cancel, E-stop, or ``timeout_s`` after
     ``stamp_ns``, whichever fires first (HZ-0097-3).
 
+    Drafted exception (ADR-0097 amendment, default off): the real place producer
+    (``openral_hal._place_target_leg``) measures the surface directly under the
+    carried payload and, when dispatch declared nothing, publishes its own
+    declaration of it (``surface:under:<object_id>``, scoped to that payload) on
+    the attachment envelope; it dies with the payload and the region's age bound.
+
     Attributes:
         target_id: Identity of the declared place target, e.g.
             ``"sim:cab_1_left_group_main"``; an attested ``support_id`` must
@@ -3372,6 +3331,15 @@ class PlaceDeclaration(BaseModel):
         region: Producer-measured bounded region of the target (ADR-0097's
             2026-08-14 amendment); ``None`` = no approach allowance
             (pre-amendment margins). Dies with the declaration.
+        search_box: Optional gravity-aligned box (in the voxel grid's base
+            frame) naming the surface a place may use: a hint only. The real
+            place producer measures the support directly under the carried
+            payload with or without it; when set, it refuses a measured patch
+            whose centre lies outside the box. The reasoner grounds it from an
+            optional ``PlaceTargetRef`` (a lifted detection or a recalled memory
+            node, padded); dispatch passes it through unchanged. It never arms
+            anything — the allowance is always the producer-measured ``region``.
+            ``geometry`` must be empty.
 
     Example:
         >>> declaration = PlaceDeclaration(
@@ -3417,6 +3385,7 @@ class PlaceDeclaration(BaseModel):
     active: bool = True
     region: PlaceRegion | None = None
     contact_force_threshold_n: float = 0.0
+    search_box: PlaceRegion | None = None
 
     @model_validator(mode="after")
     def _validate_declaration(self) -> PlaceDeclaration:
@@ -3427,6 +3396,11 @@ class PlaceDeclaration(BaseModel):
             )
         if self.active and not self.target_id:
             raise ValueError("An active PlaceDeclaration must name a target_id.")
+        if self.search_box is not None and self.search_box.geometry:
+            raise ValueError(
+                "PlaceDeclaration.search_box.geometry must be empty; a search box is only "
+                "the box the place producer measures the support surface in."
+            )
         if not math.isfinite(self.contact_force_threshold_n):
             raise ValueError(
                 "PlaceDeclaration.contact_force_threshold_n must be finite; "
@@ -3490,6 +3464,11 @@ class PlaceDeclaration(BaseModel):
                 if bool(getattr(msg, "region_valid", False))
                 else None
             ),
+            search_box=(
+                PlaceRegion.from_idl(msg.search_box)  # type: ignore[attr-defined]
+                if bool(getattr(msg, "search_box_valid", False))
+                else None
+            ),
         )
 
     def fill_idl(
@@ -3520,6 +3499,10 @@ class PlaceDeclaration(BaseModel):
                 msg.region,  # type: ignore[attr-defined]
                 primitive_factory=primitive_factory,
             )
+        # Never carries geometry (validated), so no primitive factory is needed.
+        msg.search_box_valid = self.search_box is not None  # type: ignore[attr-defined]
+        if self.search_box is not None:
+            self.search_box.fill_idl(msg.search_box)  # type: ignore[attr-defined]
 
 
 class GraspDeclaration(BaseModel):
@@ -9988,9 +9971,11 @@ class VisionAttachmentRuntime(BaseModel):
             the rSkill runner arms a goal-scope declaration for every goal so the
             policy, not the reasoner, picks what to grasp. ``None`` = off (default).
             Calibration point; at most ``GraspDeclaration.MAX_HALF_EXTENT_M``.
-        place_fixture_enabled: Run the real place producer (HAL param
-            ``vision_attachment_place_fixture_enabled``), verifying the robot unit's
-            fixtures against the voxel map. Default off.
+        place_target_enabled: Run the real place producer (HAL param
+            ``vision_attachment_place_target_enabled``): while a payload is held it
+            measures the support surface directly under it from the voxel map, arms a
+            place region for it and attests the map-support proximity witness. No place
+            target needs naming. Default off.
         release_timeout_s: How long the bridge's release window waits for the payload to
             clear the jaws (HAL param ``vision_attachment_release_timeout_s``). Calibration
             point. The window's grid age and clearance are not scene knobs: the deploy
@@ -10019,7 +10004,7 @@ class VisionAttachmentRuntime(BaseModel):
     grasp_target_approach_m: float | None = Field(
         default=None, gt=0, le=GraspDeclaration.MAX_HALF_EXTENT_M
     )
-    place_fixture_enabled: bool = False
+    place_target_enabled: bool = False
     release_timeout_s: float = Field(default=3.0, gt=0)
 
     @model_validator(mode="after")
@@ -10901,117 +10886,6 @@ class SensorOverlay(BaseModel):
     intrinsics: IntrinsicsPinhole | None = None
 
 
-class UnitFixture(BaseModel):
-    """A surveyed, cell-specific fixed fixture a fixed-base robot places on or picks from.
-
-    A shelf, or the table under the front box: furniture of ONE cell, so it lives in that
-    cell's unit overlay (``robots/<robot_id>/units/<unit>.yaml``) next to its camera mount,
-    never in the robot manifest or a deploy scene. Real pick-and-place design §2.3.
-
-    A fixture is a **declared** volume and arms nothing by itself. Before it may become a
-    ``PlaceRegion`` (or a grasp region) the producer must verify it live against the voxel
-    map — the top face occupied within one voxel, the free volume above it empty — and on
-    failure publish the declaration region-less (ADR-0097 amendment, drafted). Only then
-    does a unit-surveyed fixture count as producer-measured on a fixed base.
-
-    Fixed-base robots only, in the robot's ``base_frame``: ``fixture_problems`` refuses
-    anything else, and ``load_robot_unit`` applies it to every unit that carries fixtures.
-
-    Attributes:
-        id: The ``target_id`` a place / grasp declaration names, ``cell:<name>``.
-        frame_id: Frame ``pose`` is in; must be the robot's ``base_frame``.
-        pose: Fixture box centre pose in ``frame_id`` (its ``frame_id`` must match).
-        half_extents: Box half-extents along its own axes (m), each in
-            ``(0, PlaceRegion.MAX_HALF_EXTENT_M]``, volume at most
-            ``PlaceRegion.MAX_VOLUME_M3`` — the kernel-mirrored place caps.
-        top_plane_normal: Unit normal of the support face, in the box's own axes.
-        survey_uncertainty_m: Survey accuracy bound (m), in ``(0, 0.05]``.
-        surveyed_on: Date the survey was taken.
-        surveyed_by: Who surveyed it.
-        method: How it was measured — provenance, like the camera mount's header comment.
-        notes: Free text.
-
-    Example:
-        >>> shelf = UnitFixture(
-        ...     id="cell:shelf_top",
-        ...     frame_id="openarm_base",
-        ...     pose=Pose6D(
-        ...         xyz=(0.45, 0.0, 0.30), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="openarm_base"
-        ...     ),
-        ...     half_extents=(0.20, 0.40, 0.01),
-        ...     survey_uncertainty_m=0.01,
-        ...     surveyed_on="2026-10-02",
-        ...     surveyed_by="operator",
-        ...     method="tape measure from the pedestal edge",
-        ... )
-        >>> shelf.top_plane_normal
-        (0.0, 0.0, 1.0)
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    #: Ceiling on ``survey_uncertainty_m``. A fixture surveyed worse than this is not a
-    #: place target: the witness tolerance grows with it.
-    MAX_SURVEY_UNCERTAINTY_M: ClassVar[float] = 0.05
-    #: Tolerances on "unit length" for the pose quaternion and ``top_plane_normal``.
-    QUAT_NORM_TOL: ClassVar[float] = 1e-3
-    NORMAL_NORM_TOL: ClassVar[float] = 1e-6
-
-    id: str
-    frame_id: str = Field(min_length=1)
-    pose: Pose6D
-    half_extents: tuple[float, float, float]
-    top_plane_normal: tuple[float, float, float] = (0.0, 0.0, 1.0)
-    survey_uncertainty_m: float = Field(gt=0.0, le=MAX_SURVEY_UNCERTAINTY_M)
-    surveyed_on: date
-    surveyed_by: str
-    method: str
-    notes: str | None = None
-
-    @model_validator(mode="after")
-    def _validate_fixture(self) -> UnitFixture:
-        if not self.id.startswith("cell:") or len(self.id) == len("cell:"):
-            raise ValueError(f"UnitFixture id {self.id!r} must be 'cell:<name>'")
-        if self.pose.frame_id != self.frame_id:
-            raise ValueError(
-                f"UnitFixture {self.id!r} pose is in {self.pose.frame_id!r}, not its "
-                f"frame_id {self.frame_id!r}"
-            )
-        if not all(math.isfinite(v) for v in (*self.pose.xyz, *self.pose.quat_xyzw)):
-            raise ValueError(f"UnitFixture {self.id!r} pose must be finite")
-        if abs(math.hypot(*self.pose.quat_xyzw) - 1.0) > self.QUAT_NORM_TOL:
-            raise ValueError(f"UnitFixture {self.id!r} pose quaternion must be unit length")
-        for axis, value in zip("xyz", self.half_extents, strict=True):
-            if not math.isfinite(value) or value <= 0.0:
-                raise ValueError(
-                    f"UnitFixture {self.id!r} half-extent {axis}={value!r} must be finite "
-                    "and positive"
-                )
-            if value > PlaceRegion.MAX_HALF_EXTENT_M:
-                raise ValueError(
-                    f"UnitFixture {self.id!r} half-extent {axis}={value!r} exceeds the "
-                    f"{PlaceRegion.MAX_HALF_EXTENT_M} m place-region bound"
-                )
-        hx, hy, hz = self.half_extents
-        if 8.0 * hx * hy * hz > PlaceRegion.MAX_VOLUME_M3:
-            raise ValueError(
-                f"UnitFixture {self.id!r} volume exceeds the {PlaceRegion.MAX_VOLUME_M3} m^3 "
-                "place-region bound"
-            )
-        norm = math.hypot(*self.top_plane_normal)
-        if not math.isfinite(norm) or abs(norm - 1.0) > self.NORMAL_NORM_TOL:
-            raise ValueError(
-                f"UnitFixture {self.id!r} top_plane_normal {self.top_plane_normal!r} must be "
-                "a unit vector"
-            )
-        if not self.surveyed_by.strip() or not self.method.strip():
-            raise ValueError(
-                f"UnitFixture {self.id!r} needs surveyed_by and method: an unattributed "
-                "survey is not provenance"
-            )
-        return self
-
-
 class RobotUnit(BaseModel):
     """One physical unit / host of a robot type: ``robots/<robot_id>/units/<unit>.yaml``.
 
@@ -11023,8 +10897,6 @@ class RobotUnit(BaseModel):
         robot_id: The ``robots/<robot_id>`` directory this unit belongs to.
         unit: The unit name, equal to the file stem.
         sensors: Overlays for the robot manifest's sensors.
-        fixtures: This cell's surveyed fixed fixtures (``UnitFixture``), ids unique.
-            Fixed-base robots only; ``fixture_problems`` checks them against the manifest.
 
     Example:
         >>> RobotUnit(robot_id="so101_follower", unit="bench_laptop").sensors
@@ -11037,33 +10909,6 @@ class RobotUnit(BaseModel):
     robot_id: str
     unit: str
     sensors: list[SensorOverlay] = Field(default_factory=list)
-    fixtures: list[UnitFixture] = Field(default_factory=list)
-
-    @model_validator(mode="after")
-    def _unique_fixture_ids(self) -> RobotUnit:
-        ids = [f.id for f in self.fixtures]
-        dupes = sorted({i for i in ids if ids.count(i) > 1})
-        if dupes:
-            raise ValueError(f"RobotUnit fixture id(s) {dupes} declared more than once")
-        return self
-
-    def fixture(self, fixture_id: str) -> UnitFixture:
-        """The fixture named ``fixture_id``.
-
-        Raises:
-            ROSConfigError: This unit surveys no such fixture.
-
-        Example:
-            >>> RobotUnit(robot_id="openarm", unit="thor").fixtures
-            []
-        """
-        for candidate in self.fixtures:
-            if candidate.id == fixture_id:
-                return candidate
-        have = ", ".join(f.id for f in self.fixtures) or "none"
-        raise ROSConfigError(
-            f"robot unit {self.unit!r} surveys no fixture {fixture_id!r} (has: {have})"
-        )
 
     @classmethod
     def from_yaml(cls, path: str) -> RobotUnit:
@@ -12049,39 +11894,59 @@ class GraspTargetRef(BaseModel):
 
 
 class PlaceTargetRef(BaseModel):
-    """Where an ``ExecuteRskillTool`` goal places, as the reasoner names it.
+    """An OPTIONAL hint naming the surface an ``ExecuteRskillTool`` goal places onto.
 
-    ``fixture_id`` names one of the robot unit's surveyed fixtures
-    (``RobotUnit.fixtures``, listed in the reasoner's system prompt); the
-    reasoner sends it as ``PlaceDeclaration.target_id`` and the place producer
-    verifies the fixture live against the voxel map before anything arms.
-    ``place_node_id`` (a recalled place) is accepted by the schema but refused
-    at dispatch for now: a free-space place has no producer yet.
+    Where to set the payload down is the policy's job, and the real place producer
+    measures the support directly under the carried payload without being told
+    (real pick-and-place design §2.3), so a goal never needs this. Set, it restricts
+    the place to one labelled surface ("shelf", "table"): perception **grounds** it at
+    dispatch to a padded, gravity-aligned box in the robot base frame — a recalled
+    spatial-memory node's 3D box when ``object_id`` / ``place_node_id`` is set, else
+    the one live lifted detection whose label matches — sent as
+    ``PlaceDeclaration.search_box``, and the producer refuses a patch measured outside
+    it. Nothing about the cell is surveyed or predeclared. A reference that grounds to
+    nothing, or to more than one instance with no node id, is refused and the goal is
+    not sent. Naming arms nothing: the kernel only ever trusts the measured region.
 
     Attributes:
-        fixture_id: A ``cell:<name>`` fixture id of the robot unit.
-        place_node_id: A spatial-memory place node id; refused at dispatch today.
+        label: Open-vocabulary label of the surface, e.g. ``"shelf"``; matched
+            case-insensitively against the live lifted detections' labels.
+        object_id: A spatial-memory ``node_id`` from ``recall_object`` naming the
+            surface's instance; ``None`` = ground by ``label`` (or ``place_node_id``).
+        place_node_id: A spatial-memory place node id, for a remembered place that
+            carries a 3D box; ``None`` = ground by ``label`` (or ``object_id``). At
+            most one of ``object_id`` / ``place_node_id``.
 
     Example:
-        >>> PlaceTargetRef(fixture_id="cell:shelf_top").place_node_id is None
+        >>> PlaceTargetRef(label="shelf").object_id is None
         True
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    fixture_id: str | None = Field(
+    label: str = Field(
+        min_length=1,
+        description=(
+            "Open-vocabulary label of the ONE surface to place onto, as perception labels "
+            "it (e.g. 'shelf', 'table'). Recall it first when memory has it."
+        ),
+    )
+    object_id: str | None = Field(
         default=None,
-        description="Fixture id ('cell:<name>') from the listed unit fixtures to place on.",
+        description=(
+            "node_id from a recall_object match naming the exact surface instance; required "
+            "when more than one detection carries the label."
+        ),
     )
     place_node_id: str | None = Field(
         default=None,
-        description="Recalled place node id; not supported yet, name a fixture instead.",
+        description="node_id of a remembered place with a 3D box; alternative to object_id.",
     )
 
     @model_validator(mode="after")
-    def _exactly_one(self) -> PlaceTargetRef:
-        if (self.fixture_id is None) == (self.place_node_id is None):
-            raise ValueError("PlaceTargetRef needs exactly one of fixture_id or place_node_id.")
+    def _at_most_one_node(self) -> PlaceTargetRef:
+        if self.object_id is not None and self.place_node_id is not None:
+            raise ValueError("PlaceTargetRef takes at most one of object_id or place_node_id.")
         return self
 
 
@@ -12130,9 +11995,11 @@ class ExecuteRskillTool(_ReasonerToolBase):
             ``None`` (the normal case: the policy picks the object) = no named
             target; with the HAL's approach-armed grasp target on, the runner's
             goal-scope declaration is measured where the gripper approaches.
-        place_target: Where this goal places (``PlaceTargetRef``); grounded to a
-            ``PlaceDeclaration`` on a unit fixture. ``None`` = no place
-            declaration.
+        place_target: Optional hint naming the surface this goal places onto
+            (``PlaceTargetRef``); the reasoner grounds it to a ``PlaceDeclaration``
+            search box at dispatch, or refuses the goal. ``None`` (the normal case)
+            = no dispatch place declaration; the real producer still measures the
+            surface under the carried payload.
     """
 
     tool: Literal["execute_rskill"] = "execute_rskill"
@@ -12153,8 +12020,9 @@ class ExecuteRskillTool(_ReasonerToolBase):
     place_target: PlaceTargetRef | None = Field(
         default=None,
         description=(
-            "Set when the skill places onto a fixture: name one of the listed unit fixtures. "
-            "The producer verifies it against the live map; naming it arms nothing by itself."
+            "Optional: the surface under the carried object is measured from the map "
+            "anyway. Set only to restrict the place to one labelled surface (recall it first "
+            "when memory has it); naming it arms nothing by itself."
         ),
     )
 

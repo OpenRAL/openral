@@ -81,15 +81,16 @@ expecting a clean pass:
    real graph measures yet. Do not enable it in this runbook.
 
    **Place producer leg (off by default).** The HAL parameter
-   `vision_attachment_place_fixture_enabled` (default `false`; nothing in the launch sets it)
-   runs the real place producer inside the vision attachment bridge: a `PlaceDeclaration`
-   naming a `cell:<name>` fixture of this unit's overlay (`vision_attachment_robot_unit`, else
-   `$OPENRAL_ROBOT_UNIT`) gets that fixture's box as its region only while the live voxel map
-   shows its top face and an empty volume above it, and a carried payload resting on the face
-   gets a `declared_fixture` support witness — proximity to a verified plane, not sensed
-   contact. It rests on drafted, unapproved ADR-0097 / ADR-0092 D6 amendments, and no unit
-   carries a surveyed fixture yet (`robots/openarm/units/thor.yaml`). Do not enable it in this
-   runbook.
+   `vision_attachment_place_target_enabled` (default `false`; scene
+   `runtime.vision_attachment.place_target_enabled`) runs the real place producer inside the
+   vision attachment bridge. Nothing is surveyed and no place target is named: while a payload
+   is held it measures the surface directly under it in the live voxel map (the whole
+   footprint occupied on one layer, headroom for the payload above it, within
+   `vision_attachment_place_target_search_depth_m`), declares that patch as a place region
+   for that payload, and a payload resting on it gets a `map_support_proximity` support
+   witness — proximity to a map-measured plane, not sensed contact, not a proven support. It
+   rests on drafted, unapproved ADR-0097 / ADR-0092 D6 amendments and its thresholds are
+   uncalibrated. Do not enable it in this runbook.
 
 Camera loss **fails closed** (it used to fail open; fixed with hazard-log Entry 033):
 `openral_octomap_bridge` stops publishing `/openral/world_voxels` once its last octree is
@@ -244,7 +245,7 @@ Check and record:
   `frame_id: openarm_base`.
 - **One parent.** `ros2 run tf2_tools view_frames` shows `zed_camera_link` with exactly one
   parent, `openarm_base`. A second parent means `publish_tf` was left on.
-- **Overlay.** In Foxglove, check that the voxels sit on the table, the fixtures and the real
+- **Overlay.** In Foxglove, check that the voxels sit on the table, the shelf and the real
   arms. The robot model shown is the twin at zero, so park the real arms at zero to compare.
   Note any voxels on the arm links (self-occupancy, gap 1) and any free-floating speckle
   near the arm envelope, each of which is a future false stop.
@@ -372,8 +373,8 @@ Run these tests in order:
    today, around exactly ONE item (a box covering two is refused as AMBIGUOUS), and launch it
    with `tools/openarm_world_voxel_run.sh --scene <copy>` (add `--autonomous` for a copy of
    the autonomous scene). Never reuse another cell's or another day's numbers: the box only
-   seeds perception, but the fixture face below it arms the place allowance once it is
-   surveyed and verified.
+   seeds perception; nothing about the cell is surveyed (the place surface is measured live
+   under the carried payload).
 4. **Camera unplug.** During a dispatch, unplug the ZED. Expect `/openral/world_voxels` to
    stop about 1 s after `/octomap_binary`, and the kernel to drop the next chunks with
    `DROP_VOXEL_UNAVAILABLE` within ~2.0 s of the last cloud (a drop, not a latch). Motion or
@@ -411,13 +412,9 @@ For the write-up, record:
 - `robots/openarm/robot.yaml`: `head_zed`'s nominal `static_transform_xyz_rpy` (sim twins
   only; a real world-voxel deploy never runs on it).
 - `robots/openarm/units/<unit>.yaml`: each cell's camera bindings and its calibrated ZED
-  pose, measured by the operator (step 2). It can also list the cell's surveyed fixed
-  fixtures (`fixtures:`, `openral_core.UnitFixture`: a shelf or table a place / grasp
-  declaration names as `cell:<name>`, in the robot's base frame, fixed-base robots only,
-  checked by `fixture_problems` when the unit loads). None is committed yet: a fixture is a
-  measured, declared volume that arms nothing until the producer verifies it live against
-  the voxel map ([real pick-and-place design](../../reference/real-pick-place-design.md)
-  §2.3).
+  pose, measured by the operator (step 2). No furniture is surveyed: place surfaces are
+  measured live from the voxel map under the carried payload
+  ([real pick-and-place design](../../reference/real-pick-place-design.md) §2.3).
 - `python/core/src/openral_core/depth_extrinsic.py`: the accuracy the pose needs and the
   gate `deploy run` applies.
 - `tools/openarm_world_voxel_run.sh`: the guarded launcher for step 4.

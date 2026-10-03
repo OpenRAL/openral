@@ -2966,7 +2966,7 @@ def test_deploy_vision_attachment_block_maps_to_hal_params_and_launch_args(
         "vision_attachment_evidence_timeout_s": 0.75,
         "vision_attachment_grasp_target_enabled": False,
         "vision_attachment_grasp_target_approach_m": 0.0,
-        "vision_attachment_place_fixture_enabled": False,
+        "vision_attachment_place_target_enabled": False,
         "vision_attachment_release_timeout_s": 3.0,
         "vision_attachment_tf_frames": [
             "openarm_left_link7=openarm_left_ee_base_link",
@@ -3016,7 +3016,7 @@ def _invoke_cell(scene: Path, hal_mode: str = "sim") -> LaunchInvocation:
 def test_deploy_vision_attachment_producers_reach_the_hal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Both producer legs forward as HAL params; the place leg also gets the robot unit."""
+    """Both producer legs forward as HAL params; nothing about the cell rides along."""
     monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
     scene = _openarm_cell_scene(
         tmp_path,
@@ -3024,15 +3024,15 @@ def test_deploy_vision_attachment_producers_reach_the_hal(
         leg={
             "enabled": True,
             "grasp_target_enabled": True,
-            "place_fixture_enabled": True,
+            "place_target_enabled": True,
             "release_timeout_s": 4.5,
         },
     )
     hal = _invoke_cell(scene).hal_params
     assert hal["vision_attachment_release_timeout_s"] == 4.5  # the scene's calibration
     assert hal["vision_attachment_grasp_target_enabled"] is True
-    assert hal["vision_attachment_place_fixture_enabled"] is True
-    assert hal["vision_attachment_robot_unit"] == "thor"
+    assert hal["vision_attachment_place_target_enabled"] is True
+    assert "vision_attachment_robot_unit" not in hal
 
 
 @pytest.mark.parametrize(

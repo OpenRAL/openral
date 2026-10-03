@@ -4,9 +4,9 @@ The reasoner **names** a grasp target (``GraspTargetRef``) and a place target
 (``PlaceTargetRef``); this module **grounds** them at dispatch, from perception
 the reasoner already holds, into the ``GraspDeclaration`` / ``PlaceDeclaration``
 the ``ExecuteRskill`` goal carries; the HAL's producers then **measure** (real
-pick-and-place design §2.2). Nothing here measures a region: a grasp declaration
-leaves with ``region=None`` and a ``search_box`` seed only, a place declaration
-with a fixture id only. The kernel's trust boundary is unchanged.
+pick-and-place design §2.2/§2.3). Nothing here measures a region: both declarations
+leave with ``region=None`` and a ``search_box`` seed only — the padded box of the
+named object (grasp) or surface (place). The kernel's trust boundary is unchanged.
 
 Pure and ROS-free (the reasoner node feeds it the latest lifted
 ``WorldState.detected_objects`` and its spatial-memory scene graph), so a
@@ -26,7 +26,6 @@ from openral_core import (
     PlaceRegion,
     PlaceTargetRef,
     Pose6D,
-    RobotUnit,
     SceneGraph,
     gripper_hands,
 )
@@ -63,12 +62,12 @@ def _box(
     the producer can find it there; it is bounded so the box does not reach far below.
     """
     if bbox is None:
-        raise ROSReasonerInvalidPlan(f"{what} has no 3D box; it cannot seed a grasp search.")
+        raise ROSReasonerInvalidPlan(f"{what} has no 3D box; it cannot seed a search.")
     if frame_id != base_frame:
         # ponytail: no tf2 in the reasoner; a fixed-base cell lifts in its base frame.
         raise ROSReasonerInvalidPlan(
             f"{what} is in frame {frame_id!r}, not the robot base frame {base_frame!r}; "
-            "the grasp search box must be in the voxel grid's base frame."
+            "a search box must be in the voxel grid's base frame."
         )
     x0, y0, z0, x1, y1, z1 = bbox
     return PlaceRegion(
@@ -84,6 +83,62 @@ def _box(
             (z1 - z0) / 2.0 + pad_m,
         ),
         evidence_ref=f"reasoner_seed:{what}",
+    )
+
+
+def _locate(
+    field: str,
+    label: str,
+    node_id: str | None,
+    *,
+    live_objects: Sequence[DetectedObject],
+    scene_graph: SceneGraph | None,
+    base_frame: str,
+    pad_m: float,
+) -> tuple[str, PlaceRegion]:
+    """``(target id stem, padded search box)`` for a named object or surface.
+
+    ``node_id`` set → that spatial-memory node's 3D box; else the single live lifted
+    detection whose label equals ``label`` (case-insensitive). ``field`` names the
+    tool-call field in refusals.
+
+    Raises:
+        ROSReasonerInvalidPlan: Nothing grounds, several instances match with no node
+            id, or the box is missing / in another frame.
+    """
+    if pad_m <= 0.0:
+        raise ValueError(f"pad_m must be > 0; got {pad_m!r}")
+    if node_id is not None:
+        nodes = [n for n in (scene_graph.nodes if scene_graph else []) if n.node_id == node_id]
+        if not nodes:
+            raise ROSReasonerInvalidPlan(
+                f"{field} node {node_id!r} is not in spatial memory; "
+                "recall_object first and pass a returned node_id."
+            )
+        node = nodes[0]
+        what = f"memory node {node_id!r}"
+        return node_id, _box(
+            node.bbox_3d, node.pose.frame_id, what=what, base_frame=base_frame, pad_m=pad_m
+        )
+    key = label.strip().casefold()
+    matches = [o for o in live_objects if o.label.strip().casefold() == key]
+    if not matches:
+        seen = sorted({o.label for o in live_objects}) or ["nothing"]
+        raise ROSReasonerInvalidPlan(
+            f"{field} {label!r}: no live 3D detection carries that label "
+            f"(perception sees: {', '.join(seen)}). Look for it or recall_object it first."
+        )
+    if len(matches) > 1:
+        raise ROSReasonerInvalidPlan(
+            f"{field} {label!r} is ambiguous: {len(matches)} live detections carry "
+            "that label. recall_object it and pass the instance's node_id as object_id."
+        )
+    return key, _box(
+        matches[0].bbox_3d,
+        matches[0].pose.frame_id,
+        what=f"detection {label!r}",
+        base_frame=base_frame,
+        pad_m=pad_m,
     )
 
 
@@ -147,43 +202,15 @@ def ground_grasp_target(
         >>> d.region is None, d.target_id, d.timeout_s
         (True, 'obj:box', 70.0)
     """
-    if pad_m <= 0.0:
-        raise ValueError(f"pad_m must be > 0; got {pad_m!r}")
-    if ref.object_id is not None:
-        nodes = [
-            n for n in (scene_graph.nodes if scene_graph else []) if n.node_id == ref.object_id
-        ]
-        if not nodes:
-            raise ROSReasonerInvalidPlan(
-                f"grasp_target object_id {ref.object_id!r} is not in spatial memory; "
-                "recall_object first and pass a returned node_id."
-            )
-        node = nodes[0]
-        target = ref.object_id
-        what = f"memory node {ref.object_id!r}"
-        seed = _box(node.bbox_3d, node.pose.frame_id, what=what, base_frame=base_frame, pad_m=pad_m)
-    else:
-        label = ref.label.strip().casefold()
-        matches = [o for o in live_objects if o.label.strip().casefold() == label]
-        if not matches:
-            seen = sorted({o.label for o in live_objects}) or ["nothing"]
-            raise ROSReasonerInvalidPlan(
-                f"grasp_target {ref.label!r}: no live 3D detection carries that label "
-                f"(perception sees: {', '.join(seen)}). Look for it or recall_object it first."
-            )
-        if len(matches) > 1:
-            raise ROSReasonerInvalidPlan(
-                f"grasp_target {ref.label!r} is ambiguous: {len(matches)} live detections carry "
-                "that label. recall_object it and pass the instance's node_id as object_id."
-            )
-        target = label
-        seed = _box(
-            matches[0].bbox_3d,
-            matches[0].pose.frame_id,
-            what=f"detection {ref.label!r}",
-            base_frame=base_frame,
-            pad_m=pad_m,
-        )
+    target, seed = _locate(
+        "grasp_target",
+        ref.label,
+        ref.object_id,
+        live_objects=live_objects,
+        scene_graph=scene_graph,
+        base_frame=base_frame,
+        pad_m=pad_m,
+    )
     hands = [(h,) if isinstance(h, str) else tuple(h) for h in default_contact_links]
     listing = "; ".join(f"[{', '.join(h)}]" for h in hands) or "none"
     links = tuple(ref.contact_links)
@@ -223,35 +250,70 @@ def ground_grasp_target(
 
 
 def ground_place_target(
-    ref: PlaceTargetRef, *, unit: RobotUnit | None, patience_s: float
+    ref: PlaceTargetRef,
+    *,
+    live_objects: Sequence[DetectedObject],
+    scene_graph: SceneGraph | None,
+    base_frame: str,
+    patience_s: float,
+    pad_m: float,
 ) -> PlaceDeclaration:
-    """Resolve a named place target to a region-less ``PlaceDeclaration`` on a unit fixture.
+    """Resolve a named place surface to a region-less ``PlaceDeclaration`` with a search box.
+
+    The mirror of ``ground_grasp_target``: ``ref.object_id`` / ``ref.place_node_id`` set
+    → that spatial-memory node's 3D box; else the single live lifted detection whose
+    label equals ``ref.label``. The box, padded by ``pad_m`` (one voxel + extrinsic
+    error) and gravity-aligned, becomes ``search_box`` — the volume the place producer
+    measures the support surface in. It is never a region and never a plane: no
+    surveyed or predeclared cell geometry is involved.
+
+    Args:
+        ref: The reasoner's named surface.
+        live_objects: The latest lifted ``WorldState.detected_objects``.
+        scene_graph: The spatial-memory snapshot, or ``None`` without memory.
+        base_frame: The robot base frame (the voxel grid's frame).
+        patience_s: The goal's patience ceiling; the backstop is this plus
+            ``DECLARATION_TIMEOUT_MARGIN_S``, capped at the declaration's ceiling.
+        pad_m: Padding added to each half-extent, > 0.
 
     Raises:
-        ROSReasonerInvalidPlan: A recalled place (``place_node_id``) — no free-space
-            place producer exists yet — no robot unit is loaded, or the unit surveys
-            no such fixture.
+        ROSReasonerInvalidPlan: Nothing grounds, several instances match with no node
+            id, or the box is missing / in another frame.
 
     Example:
-        >>> unit = RobotUnit.from_yaml("tests/unit/fixtures/robot_units/openarm_shelf_cell.yaml")
-        >>> ground_place_target(
-        ...     PlaceTargetRef(fixture_id="cell:shelf_top"), unit=unit, patience_s=60.0
-        ... ).target_id
-        'cell:shelf_top'
+        >>> from openral_core import DetectedObject, Pose6D
+        >>> shelf = DetectedObject(
+        ...     label="shelf",
+        ...     confidence=0.8,
+        ...     pose=Pose6D(
+        ...         xyz=(0.5, 0.3, 0.3), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="openarm_base"
+        ...     ),
+        ...     bbox_3d=(0.3, 0.1, 0.0, 0.7, 0.5, 0.6),
+        ... )
+        >>> d = ground_place_target(
+        ...     PlaceTargetRef(label="Shelf"),
+        ...     live_objects=[shelf],
+        ...     scene_graph=None,
+        ...     base_frame="openarm_base",
+        ...     patience_s=60.0,
+        ...     pad_m=0.04,
+        ... )
+        >>> d.target_id, d.region is None, [round(v, 3) for v in d.search_box.half_extents]
+        ('surface:shelf', True, [0.24, 0.24, 0.34])
     """
-    if ref.fixture_id is None:
-        raise ROSReasonerInvalidPlan(
-            f"place_target place_node_id {ref.place_node_id!r}: placing at a recalled place is "
-            "not supported yet; name one of the listed unit fixtures as fixture_id."
-        )
-    have = [f.id for f in unit.fixtures] if unit is not None else []
-    if ref.fixture_id not in have:
-        raise ROSReasonerInvalidPlan(
-            f"place_target fixture_id {ref.fixture_id!r} is not a fixture of this robot unit "
-            f"(fixtures: {', '.join(have) or 'none'})."
-        )
+    node_id = ref.object_id if ref.object_id is not None else ref.place_node_id
+    target, seed = _locate(
+        "place_target",
+        ref.label,
+        node_id,
+        live_objects=live_objects,
+        scene_graph=scene_graph,
+        base_frame=base_frame,
+        pad_m=pad_m,
+    )
     return PlaceDeclaration(
-        target_id=ref.fixture_id,
+        target_id=f"surface:{target}",
         timeout_s=min(patience_s + DECLARATION_TIMEOUT_MARGIN_S, PlaceDeclaration.MAX_TIMEOUT_S),
         stamp_ns=0,
+        search_box=seed,
     )
