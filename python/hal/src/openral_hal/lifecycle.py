@@ -489,6 +489,7 @@ if _ROS2_AVAILABLE:
             self._deferred_action_applied_tick: int = 0
             self._safe_group_tick: int | None = None
             self._safe_group_count: int = 0
+            self._warned_no_applied_action = False
             self._estop_sub: Any = None
             self._estop_reset_sub: Any = None
             # Decouple the cheap, latency-sensitive publishers (odom /
@@ -1145,11 +1146,43 @@ if _ROS2_AVAILABLE:
             if not self._send_action_traced(action, source="safe_action"):
                 return
             # The position-stall grasp trigger needs the jaw's commanded target:
-            # this is the safety-approved action the HAL just applied.
+            # the command the HAL actually applied, never a re-staged copy of it.
             vision = getattr(self, "_vision_attachment", None)
             if vision is not None:
-                vision.observe_command(action)
+                applied = self._applied_command(action)
+                if applied is not None:
+                    vision.observe_command(applied)
             self._publish_action_applied_if_complete(action)
+
+        def _applied_command(self, action: Any) -> Any:  # noqa: ANN401  # reason: typed Action is imported only on the ROS path
+            """The command the HAL applied for ``action`` (just sent OK), or ``None``.
+
+            An ungrouped action is applied as sent. An ADR-0102 slot is applied only
+            as part of its composed group, once the HAL committed that very
+            ``(runner_session_id, tick_index)`` — then the HAL's own
+            ``last_applied_action`` (the composed full-dof command) is it; a slot that
+            only staged applied nothing yet. A HAL that does not expose
+            ``last_applied_action`` cannot say what a group applied: logged once, and the
+            jaw command is left as it was (the trigger keeps its last one).
+            """
+            if int(action.tick_group_size) <= 1:
+                return action
+            if not hasattr(self._hal, "last_applied_action"):
+                if not self._warned_no_applied_action:
+                    self._warned_no_applied_action = True
+                    self.get_logger().error(
+                        f"grasp trigger: {type(self._hal).__name__} exposes no "
+                        "last_applied_action, so no slot-group jaw command reaches the "
+                        "position-stall trigger (logged once)"
+                    )
+                return None
+            committed = (
+                getattr(self._hal, "last_committed_tick", None),
+                getattr(self._hal, "last_committed_session", None),
+            )
+            if committed != (int(action.tick_index), int(action.runner_session_id)):
+                return None
+            return getattr(self._hal, "last_applied_action", None)
 
         def _publish_action_applied_if_complete(self, action: Any) -> None:  # noqa: ANN401  # reason: typed Action is imported only on the ROS path
             """Acknowledge a tick only after its HAL application completes."""

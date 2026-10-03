@@ -111,9 +111,13 @@ using SAM 2.1 to see the object.
    the settle history, the debounce and the heartbeat's evidence run: a late-tick stream used to
    confirm ATTACH on 4 samples, and a sparse stream catching a chattering jaw at the same phase
    on 3. On the real OpenArm the
-   jaw commands are ADR-0102 `GRIPPER_POSITION` slots: `observe_command` stages a slot group
-   until its tick is whole and composes it with the HAL's own `compose_slot_group`, so the
-   trigger's reference is exactly the target the gripper controller was sent; padded
+   jaw commands are ADR-0102 `GRIPPER_POSITION` slots: the HAL lifecycle node hands
+   `observe_command` the HAL's own applied command (`last_applied_action`, the composed
+   full-dof action, once the HAL committed that `(session, tick)`), so the trigger's reference
+   is exactly the target the gripper controller was sent. *Since (2026-10-03,
+   `fix/r5-trigger`):* the bridge no longer stages slots itself — its copy diverged on the HAL's
+   error path (a slot whose send raised was never observed, so the next complete tick was held
+   at 3 of 4 slots and its close command never reached the trigger); padded
    `JOINT_POSITION` rows are read at manifest indices (a right slot never reads the left jaw's
    zero pad). Every grasp event supersedes the leg's in-flight `SegmentInView` request
    (generation-tagged; a late reply for an older event is dropped, a DETACH in flight resolves
