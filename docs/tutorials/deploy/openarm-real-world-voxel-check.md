@@ -147,7 +147,7 @@ touch CAN.
 ```bash
 source /opt/ros/jazzy/setup.bash && source <zed_ws>/install/setup.bash
 ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedm camera_name:=zed \
-    publish_tf:=false publish_map_tf:=false \
+    publish_tf:=false publish_map_tf:=false enable_ipc:=false \
     param_overrides:="depth.point_cloud_freq:=30.0;depth.point_cloud_res:=REDUCED;depth.max_depth:=2.5"
 # second terminal
 ros2 topic list | grep -E 'camera_info|point_cloud'
@@ -157,10 +157,27 @@ ros2 topic hz /zed/zed_node/point_cloud/cloud_registered
 
 The `param_overrides` are the same ones the scene's `drivers:` entry passes under
 `deploy run`: a 30 Hz, REDUCED (224x128) cloud cut at 2.5 m. `deploy sim` ignores
-`drivers:`, so a hand-launched ZED needs them too. With them, and the launch's clip of the
-octomap input to the coverage ball, `octomap_server` on Thor runs at ~20 Hz with a worst
-gap of 0.2 s (2026-10-02); the stock 10 Hz COMPACT cloud with 10 m depth gave ~2 Hz and
-gaps of up to 3 s, which the kernel's 1 s voxel deadline turned into stops.
+`drivers:`, so a hand-launched ZED needs them too. The stock 10 Hz COMPACT cloud with 10 m
+depth gave ~2 Hz and gaps of up to 3 s, which the kernel's 1 s voxel deadline turned into
+stops.
+
+`enable_ipc:=false` is not optional either. With the wrapper's default intra-process mode,
+it publishes `zed_camera_center -> zed_left_camera_frame` as a **dynamic** `/tf`, stamped
+per grab, so every cloud waits on its own TF in `octomap_server`'s `tf2_ros::MessageFilter`.
+A cloud that arrives before its TF is inserted later, on the TF listener's own thread, and
+that thread stops ingesting `/tf` while it inserts. The filter's 5-deep queue fills ("Message
+Filter dropping message: frame 'zed_left_camera_frame' ... queue is full") and the map
+stalls. Thor, 2026-10-04, twin with the real ZED, motors off:
+
+| | `/octomap_binary` max gap | gaps > 1 s | "queue is full" | `/openral/world_voxels` max gap |
+|---|---|---|---|---|
+| IPC on (wrapper default), 15 mm | 1.75-3.0 s | 2 / 60 s, 14 / 120 s | 9 in 3 min | 0.9-1.6 s, kernel `voxel_stale` |
+| IPC off, 15 mm, 2 x 300 s | 0.47 s / 0.67 s | 0 | 0 | 0.70 s / 0.43 s |
+| IPC off, 20 mm (the real-path cell), 150 s | 0.40 s | 0 | 0 | 0.13 s |
+
+The remaining sub-second gaps match gaps in the ZED cloud itself (0.70 s at most). With IPC
+off the camera TFs are static, so a cloud never waits. Every consumer runs in another
+process, so IPC gains nothing here.
 
 Topic names differ between `zed_wrapper` 4.x and 5.x. Pick from the listing rather than
 assuming. The cloud topic above is the one the scene pins, and it was verified on the Orin.
