@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from openral_core import DeployScene, GraspDeclaration, PlaceRegion, Pose6D, RobotDescription
 from openral_core.exceptions import ROSConfigError
-from openral_hal._grasp_target_leg import GraspTargetTracker, support_z_of
+from openral_hal._grasp_target_leg import GraspTargetTracker, search_column
 from openral_hal.vision_attachment_bridge import VisionAttachmentBridge, VisionAttachmentConfig
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -161,8 +161,10 @@ def test_no_search_box_means_no_measurement() -> None:
     assert not tracker.wants_measurement(now_ns=11 * _S)
 
 
-def test_support_plane_is_the_search_box_bottom_and_must_be_level() -> None:
-    assert support_z_of(_box(z=0.10)) == pytest.approx(0.0)
+def test_the_support_column_reaches_below_the_box_and_must_be_level() -> None:
+    column = search_column(_box(z=0.10), below_m=0.15)
+    assert column.pose.xyz[2] - column.half_extents[2] == pytest.approx(-0.15)
+    assert column.pose.xyz[2] + column.half_extents[2] == pytest.approx(0.20)
     tilted = _box().model_copy(
         update={
             "pose": Pose6D(
@@ -171,7 +173,7 @@ def test_support_plane_is_the_search_box_bottom_and_must_be_level() -> None:
         }
     )
     with pytest.raises(ROSConfigError, match="gravity-aligned"):
-        support_z_of(tilted)
+        search_column(tilted, below_m=0.15)
 
 
 def test_the_bridge_owns_the_leg_only_when_enabled_and_validates_its_rate() -> None:

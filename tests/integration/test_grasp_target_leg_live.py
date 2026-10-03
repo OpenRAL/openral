@@ -13,7 +13,8 @@ real DDS service at a process boundary standing in for SAM 2.1 (CLAUDE.md §1.11
 the same pattern as ``test_vision_attachment_optical_frame_live.py``.
 
 Asserts, on ``/openral/attachment_state``: a valid region that contains the box
-and whose lower face sits above the support plane within one voxel; the grid
+and whose lower face sits above the *measured* table top within one voxel, though
+the search box's bottom reaches below it; the grid
 going silent retracts it once the freeze TTL has run from the region's own
 stamp, with the reason logged; two equal boxes in the search box are refused as
 ``ambiguous`` and no region is ever published; dispatch retracting the
@@ -146,11 +147,12 @@ def _declaration(stamp_ns: int, centre: np.ndarray, *, active: bool = True) -> A
     from openral_core import GraspDeclaration, PlaceRegion, Pose6D
     from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
 
-    # Bottom face on the table: the producer's support plane.
+    # A lifted detection bbox: its bottom face 3 cm *below* the table top. The
+    # producer must measure the table, not stand the region on this face.
     search_box = PlaceRegion(
         frame_id=_BASE,
         pose=Pose6D(
-            xyz=(float(centre[0]), 0.0, _SUPPORT_Z + 0.15),
+            xyz=(float(centre[0]), 0.0, _SUPPORT_Z + 0.12),
             quat_xyzw=(0.0, 0.0, 0.0, 1.0),
             frame_id=_BASE,
         ),

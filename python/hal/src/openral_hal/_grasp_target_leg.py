@@ -9,8 +9,13 @@ Dispatch names the target on ``/openral/grasp_declaration`` (no region, an
 optional ``search_box``); this leg measures where the target is and fills the
 region onto every attachment publication. At ``grasp_target_rate_hz``:
 
-1. occupied ``/openral/world_voxels`` cells inside the search box → one cluster
-   above the support plane (the search box's bottom face) → its top-centre;
+1. the support plane is **measured**, never taken from the search box: the
+   densest occupied layer of ``/openral/world_voxels`` in a column under the
+   box (reaching ``_SUPPORT_SEARCH_BELOW_M`` below its bottom, which is a lifted
+   detection bbox and can sit above or below the real table top), and that
+   layer must also be occupied directly under the target (HZ-01xx-6); then the
+   occupied cells inside the search box → one cluster above that plane → its
+   top-centre;
 2. that seed, which must project into the depth camera through the driver's
    ``CameraInfo`` and tf2 ``optical <- base``, is sent to ``SegmentInView`` as
    the single positive point (no negatives), under the leg's own deadline;
@@ -21,7 +26,8 @@ region onto every attachment publication. At ``grasp_target_rate_hz``:
 **Every failure is an outcome, never a guess** (HZ-01xx-2/-3/-4/-6). Two
 classes, each logged once per transition with its typed reason:
 
-* *Contradicting evidence* — two comparable clusters (``AMBIGUOUS``), a fit over
+* *Contradicting evidence* — no measured support under the target, two
+  comparable clusters (``AMBIGUOUS``), a fit over
   the caps or with no height above the support, a region the map does not
   cover, a re-fit that moved or resized past one voxel, a frame or calibration
   mismatch: the region is **retracted at once**.
@@ -56,6 +62,8 @@ from openral_hal._grasp_target import (
     occupied_centers_in_box,
     project_point,
     region_covers_occupied,
+    support_cells_under,
+    support_top_from_voxels,
     target_region_from_mask,
     target_seed_from_voxels,
     track_region,
@@ -66,7 +74,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
 
     from openral_hal.vision_attachment_bridge import VisionAttachmentBridge, VisionAttachmentConfig
 
-__all__ = ["GraspTargetLeg", "GraspTargetTracker", "lattice_from_msg", "support_z_of"]
+__all__ = ["GraspTargetLeg", "GraspTargetTracker", "lattice_from_msg", "search_column"]
 
 #: Oldest ``/openral/world_voxels`` grid a measurement may use, seconds. The real
 #: cell's kernel voxel deadline (``scenes/deploy/openarm_real_world_voxels.yaml``):
@@ -75,6 +83,16 @@ _GRID_MAX_AGE_S = 1.0
 
 #: The design's re-prompt band, Hz (§2.2).
 _RATE_BAND_HZ = (2.0, 5.0)
+
+#: How far below the search box's bottom face the support may lie, metres. The
+#: box is a lifted detection bbox whose min-z need not touch the table.
+#: *Calibration point.*
+_SUPPORT_SEARCH_BELOW_M = 0.15
+
+#: Half-size of the square under the target in which the measured support layer
+#: must be occupied, metres — wider than a graspable target, because the cells
+#: right beneath it are occluded from the head camera. *Calibration point.*
+_SUPPORT_PROBE_HALF_M = 0.10
 
 #: Tilt tolerance for the search box: its z axis must be the base frame's.
 _GRAVITY_TOL = 1e-6
@@ -268,12 +286,12 @@ def lattice_from_msg(msg: Any) -> VoxelLattice:
     )
 
 
-def support_z_of(search_box: PlaceRegion) -> float:
-    """The support plane: the search box's bottom face, which must be horizontal.
+def search_column(search_box: PlaceRegion, *, below_m: float) -> PlaceRegion:
+    """The column the support is measured in: the box, extended ``below_m`` downward.
 
     Raises:
-        ROSConfigError: If the box is tilted — its bottom face is then no plane
-            to put the region's lower face above (HZ-01xx-6).
+        ROSConfigError: If the box is tilted — its footprint then names no
+            vertical column to find a horizontal support in (HZ-01xx-6).
 
     Example:
         >>> from openral_core import PlaceRegion, Pose6D
@@ -282,13 +300,22 @@ def support_z_of(search_box: PlaceRegion) -> float:
         ...     half_extents=(0.2, 0.2, 0.1),
         ...     pose=Pose6D(xyz=(0.4, 0.0, 0.1), quat_xyzw=(0, 0, 0.6, 0.8), frame_id="base"),
         ... )
-        >>> round(support_z_of(box), 6)
-        0.0
+        >>> col = search_column(box, below_m=0.1)
+        >>> z, hz = col.pose.xyz[2], col.half_extents[2]
+        >>> round(z - hz, 6), round(z + hz, 6)
+        (-0.1, 0.2)
     """
     rot = homogeneous_from_quat_xyz((0.0, 0.0, 0.0), search_box.pose.quat_xyzw)[:3, :3]
     if abs(rot[2, 2] - 1.0) > _GRAVITY_TOL:
         raise ROSConfigError("grasp search_box must be gravity-aligned (yaw-only).")
-    return float(search_box.pose.xyz[2] - search_box.half_extents[2])
+    x, y, z = search_box.pose.xyz
+    hx, hy, hz = search_box.half_extents
+    return search_box.model_copy(
+        update={
+            "pose": search_box.pose.model_copy(update={"xyz": (x, y, z - below_m / 2.0)}),
+            "half_extents": (hx, hy, hz + below_m / 2.0),
+        }
+    )
 
 
 class _Refusal(Exception):  # noqa: N818 — internal control flow, never escapes this module
@@ -475,6 +502,44 @@ class GraspTargetLeg:
                 refusal.kind, refusal.detail, retract=refusal.retract, now_ns=now_ns
             )
 
+    def _seed(
+        self, grid: VoxelLattice, box: PlaceRegion
+    ) -> tuple[tuple[float, float, float], float]:
+        """Measure the support under the box, then seed the one target above it — or refuse."""
+        try:
+            column = search_column(box, below_m=_SUPPORT_SEARCH_BELOW_M)
+        except ROSConfigError as exc:
+            raise _contradicted("search_box_tilted", str(exc)) from exc
+        min_cells = self._config.grasp_target_min_cells
+        support_z = support_top_from_voxels(
+            grid, occupied_centers_in_box(grid, column), min_cells=min_cells
+        )
+        if support_z is None:
+            raise _contradicted(
+                "no_support",
+                f"no occupied layer of >= {min_cells} cells in the column under the search "
+                f"box (down to {_SUPPORT_SEARCH_BELOW_M:.2f} m below it)",
+            )
+        seed = target_seed_from_voxels(
+            grid, occupied_centers_in_box(grid, box), support_z=support_z, min_cells=min_cells
+        )
+        if seed.point is None:
+            assert seed.refusal is not None
+            detail = f"cluster sizes {list(seed.cluster_sizes)}"
+            if seed.refusal is TargetRefusal.AMBIGUOUS:
+                raise _contradicted(seed.refusal.value, detail)
+            raise _lost(seed.refusal.value, detail)
+        under = support_cells_under(
+            grid, support_z, (seed.point[0], seed.point[1]), half_m=_SUPPORT_PROBE_HALF_M
+        )
+        if under < min_cells:
+            raise _contradicted(
+                "no_support",
+                f"support layer at z={support_z:.3f} holds {under} < {min_cells} cells within "
+                f"{_SUPPORT_PROBE_HALF_M:.2f} m of the target",
+            )
+        return seed.point, support_z
+
     def _request(self, now_ns: int) -> None:
         """Seed, project, and send one bounded ``SegmentInView`` request — or refuse."""
         from openral_hal.vision_attachment_bridge import build_segment_request
@@ -487,22 +552,7 @@ class GraspTargetLeg:
             raise _contradicted(
                 "frame_mismatch", f"search box in {box.frame_id!r}, grid in {grid.frame_id!r}"
             )
-        try:
-            support_z = support_z_of(box)
-        except ROSConfigError as exc:
-            raise _contradicted("search_box_tilted", str(exc)) from exc
-        seed = target_seed_from_voxels(
-            grid,
-            occupied_centers_in_box(grid, box),
-            support_z=support_z,
-            min_cells=self._config.grasp_target_min_cells,
-        )
-        if seed.point is None:
-            assert seed.refusal is not None
-            detail = f"cluster sizes {list(seed.cluster_sizes)}"
-            if seed.refusal is TargetRefusal.AMBIGUOUS:
-                raise _contradicted(seed.refusal.value, detail)
-            raise _lost(seed.refusal.value, detail)
+        seed_point, support_z = self._seed(grid, box)
 
         bridge = self._bridge
         depth_entry = bridge._depth
@@ -527,8 +577,8 @@ class GraspTargetLeg:
         if t_base_from_cam is None:
             raise _lost("no_tf", f"no tf2 {grid.frame_id} <- {optical}")
         t_cam_from_base = np.asarray(np.linalg.inv(t_base_from_cam), dtype=np.float64)
-        if project_point(seed.point, t_cam_from_base, intrinsics) is None:
-            raise _lost("seed_off_image", f"seed {seed.point} does not project into {optical!r}")
+        if project_point(seed_point, t_cam_from_base, intrinsics) is None:
+            raise _lost("seed_off_image", f"seed {seed_point} does not project into {optical!r}")
         client = bridge._client
         if client is None or not client.service_is_ready():
             raise _lost("segmenter_unavailable", f"no server on {self._config.service_name!r}")
@@ -537,7 +587,7 @@ class GraspTargetLeg:
             stamp_ns=depth_stamp_ns,
             camera=bridge._camera,
             t_link_from_cam=t_base_from_cam,
-            tcp_in_link=seed.point,
+            tcp_in_link=seed_point,
         )
         snapshot: _Snapshot = (
             depth,
