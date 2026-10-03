@@ -12,6 +12,7 @@ cell scene, real OpenArm manifest (CLAUDE.md §1.11). The ROS wiring is covered 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -949,3 +950,223 @@ def test_the_leg_releases_a_handover_only_once_the_hands_legs_hold_nothing() -> 
     left.pending = False
     leg._release_detached(12 * _S)
     assert leg.tracker.handed_over is None and leg.tracker.region is None
+
+
+# ── handover races: segmentation pending, a measurement in flight, a second pick ──
+
+
+def test_the_armed_hand_keeps_its_arming_while_its_grasp_is_being_resolved() -> None:
+    """An ATTACH that goes to segmentation: the hand's leg is ``pending`` across a tick.
+    It is no longer "approaching" (it closed), but its arming must survive until the
+    ATTACH resolves — else the region it measured is retracted and nothing hands over."""
+    tracker, lines = _approach_tracker()
+    _approach(tracker, _near(_LEFT))
+    tracker.accept(_measured(11 * _S))
+    armed = tracker.target
+    tracker.on_approach([], now_ns=11 * _S + 1, move_m=_CELL, holding=[_LEFT])
+    assert tracker.target is armed and tracker.region == _measured(11 * _S)
+    assert not any("approach_ended" in line for line in lines)
+    tracker.on_attach("openarm_left_finger_pair")  # ``_finish`` after the segmentation
+    assert tracker.handed_over == _LEFT
+    assert not any("attach_unarmed" in line or "no armed target" in line for line in lines)
+
+
+def test_a_grasp_resolved_to_nothing_ends_the_arming_once_the_hand_leaves() -> None:
+    tracker, lines = _approach_tracker()
+    _approach(tracker, _near(_LEFT))
+    tracker.on_approach([], now_ns=11 * _S + 1, move_m=_CELL, holding=[_LEFT])
+    assert tracker.target is not None and tracker.target.contact_links == _LEFT
+    tracker.on_approach([], now_ns=11 * _S + 2, move_m=_CELL)  # no attachment; hand away
+    assert tracker.target == _goal_scope()
+    assert any("approach_ended" in line for line in lines)
+
+
+def test_a_handed_over_target_takes_no_late_accept_or_refuse() -> None:
+    tracker, _ = _approach_tracker()
+    _approach(tracker, _near(_LEFT))
+    tracker.accept(_measured(11 * _S))
+    generation = tracker.generation
+    tracker.on_attach("openarm_left_finger_pair")
+    assert tracker.generation != generation, "a request asked before the grasp is stale"
+    tracker.refuse("map_disagrees", "late reply", retract=True, now_ns=12 * _S)
+    tracker.accept(_measured(12 * _S).model_copy(update={"half_extents": (0.05, 0.05, 0.05)}))
+    assert tracker.handed_over == _LEFT and tracker.region == _measured(11 * _S)
+    # ... and the pick still completes: the hand is released for a second pick.
+    tracker.on_detach("openarm_left_finger_pair", now_ns=12 * _S)
+    assert tracker.handed_over is None and tracker.wants_approach(now_ns=12 * _S)
+
+
+def test_a_dropped_arming_after_handover_still_releases_the_hand_on_detach() -> None:
+    """Defence in depth: however the arming went, the detach never leaves the hand stuck."""
+    tracker, _ = _approach_tracker()
+    _approach(tracker, _near(_LEFT))
+    tracker.accept(_measured(11 * _S))
+    tracker.on_attach("openarm_left_finger_pair")
+    tracker._approach = None  # the state the late refusal used to leave behind
+    tracker.on_detach("openarm_left_finger_pair", now_ns=12 * _S)
+    assert tracker.handed_over is None and tracker.region is None
+    assert tracker.wants_approach(now_ns=12 * _S)
+
+
+class _LiveLeg:
+    """A real bridge on a real rclpy node and tf2 buffer, the hands placed by TCP."""
+
+    def __init__(self, name: str) -> None:
+        tf2_ros = pytest.importorskip("tf2_ros")
+        self.rclpy = pytest.importorskip("rclpy")
+        self.robot = RobotDescription.from_yaml(str(_ROBOT))
+        self.rclpy.init()
+        self.node = self.rclpy.create_node(name)
+        self.bridge = VisionAttachmentBridge(
+            self.node,
+            self.robot,
+            config=VisionAttachmentConfig(
+                camera="head_zed",
+                grasp_target_enabled=True,
+                grasp_target_approach_m=0.10,
+                tf_frames={
+                    "openarm_left_link7": "openarm_left_ee_base_link",
+                    "openarm_right_link7": "openarm_right_ee_base_link",
+                },
+            ),
+        )
+        self.buffer = tf2_ros.Buffer()
+        self.bridge._tf_buffer = self.buffer
+        leg = self.bridge._grasp_target
+        assert leg is not None
+        self.leg = leg
+        self.origin = {j.child_link: j.origin_xyz for j in self.robot.joints if j.role == "gripper"}
+
+    def place(self, side: str, tcp: tuple[float, float, float]) -> None:
+        from geometry_msgs.msg import TransformStamped
+
+        ee = TransformStamped()
+        ee.header.frame_id = "openarm_base"
+        ee.child_frame_id = f"openarm_{side}_ee_base_link"
+        offset = self.origin[f"openarm_{side}_finger_pair"]
+        x, y, z = (t - o for t, o in zip(tcp, offset, strict=True))
+        ee.transform.translation.x, ee.transform.translation.y = x, y
+        ee.transform.translation.z = z
+        ee.transform.rotation.w = 1.0
+        self.buffer.set_transform_static(ee, "test")
+
+    def gripper(self, jaw_link: str) -> Any:
+        return next(g for g in self.bridge._legs if g.jaw_link == jaw_link)
+
+    def close(self) -> None:
+        self.node.destroy_node()
+        self.rclpy.shutdown()
+
+
+def test_a_pending_segmentation_spanning_a_leg_tick_still_hands_over() -> None:
+    """The leg's own tick (``_detect_approach``) while the left leg is ``pending``: the
+    closed hand is skipped as an approach, yet its arming is kept for the ATTACH."""
+    import time
+
+    live = _LiveLeg("test_grasp_target_pending_handover")
+    try:
+        leg, now_ns = live.leg, live.leg._now_ns()
+        live.place("left", (0.45, 0.0, 0.18))
+        live.place("right", (0.45, -0.30, 0.18))
+        leg._grid = (_held_block_lattice(), now_ns, time.monotonic())
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+        leg._detect_approach(0.10, now_ns)
+        armed = leg.tracker.target
+        assert armed is not None and armed.contact_links == _LEFT
+        left = live.gripper("openarm_left_finger_pair")
+        left.pending = True  # ``_begin_segmentation``: ATTACH -> SegmentInView in flight
+        live.place("left", (0.45, 0.0, 0.40))  # even with the TCP read far away
+        leg._detect_approach(0.10, now_ns + 1)
+        assert leg.tracker.target is armed, "the pending hand's arming was retracted"
+        left.pending = False
+        left.attachment = object()  # ``_finish`` latched the segmented payload
+        leg.tracker.on_attach("openarm_left_finger_pair")
+        assert leg.tracker.handed_over == _LEFT
+    finally:
+        live.close()
+
+
+def test_a_measurement_in_flight_at_handover_is_discarded() -> None:
+    """Both late outcomes of a grasp-leg request asked before the ATTACH: its refusal
+    (reply or deadline) must not retract the handed-over arming, and the hand must
+    still be released by the detach."""
+    rclpy_task = pytest.importorskip("rclpy.task")
+
+    live = _LiveLeg("test_grasp_target_inflight_handover")
+    try:
+        leg = live.leg
+        now_ns = leg._now_ns()
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+        _approach(leg.tracker, _near(_LEFT), now_ns=now_ns)
+        region = _measured(now_ns)
+        leg.tracker.accept(region)
+        target = leg.tracker.target
+        assert target is not None
+
+        def in_flight() -> tuple[Any, Any]:
+            future = rclpy_task.Future()
+            snapshot = (
+                np.zeros((2, 2)),
+                now_ns,
+                None,
+                np.eye(4),
+                0.05,
+                target,
+                leg.tracker.generation,
+            )
+            leg._inflight = (future, snapshot[6])
+            return future, snapshot
+
+        # A reply: resolved with no response would be a lost-view refusal.
+        future, snapshot = in_flight()
+        leg.tracker.on_attach("openarm_left_finger_pair")
+        future.set_result(None)
+        leg._on_reply(future, snapshot)
+        assert leg._inflight is None
+        assert leg.tracker.handed_over == _LEFT and leg.tracker.region == region
+        assert leg.tracker.target is target
+
+        # A deadline: asked under the current generation, then a handover elsewhere.
+        leg.tracker.on_detach("openarm_left_finger_pair", now_ns=now_ns)
+        assert leg.tracker.handed_over is None
+        _approach(leg.tracker, _near(_LEFT), now_ns=now_ns + 3 * _S)  # after the backoff
+        leg.tracker.accept(_measured(now_ns + 3 * _S))
+        target = leg.tracker.target
+        in_flight()
+        leg.tracker.on_attach("openarm_left_finger_pair")
+        leg._on_deadline()
+        assert leg._inflight is None and leg.tracker.handed_over == _LEFT
+        assert leg.tracker.region == _measured(now_ns + 3 * _S)
+    finally:
+        live.close()
+
+
+def test_a_second_pick_in_the_same_goal_hands_its_re_measured_region_over() -> None:
+    """The approach-armed goal keeps one ``(target_id, stamp_ns)`` across picks; the
+    second pick's region is a new measurement and must become the payload, while the
+    first region is never handed over twice."""
+    live = _LiveLeg("test_grasp_target_second_pick")
+    try:
+        leg, bridge = live.leg, live.bridge
+        now_ns = leg._now_ns()
+        live.place("left", (0.45, 0.0, 0.10))  # inside ``_measured``'s box
+        left = live.gripper("openarm_left_finger_pair")
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+        _approach(leg.tracker, _near(_LEFT), now_ns=now_ns)
+        leg.tracker.accept(_measured(now_ns))
+        first = bridge._region_payload(left, stamp_ns=now_ns)
+        assert first is not None
+        assert bridge._region_payload(left, stamp_ns=now_ns) is None, "the same region twice"
+        leg.tracker.on_attach("openarm_left_finger_pair")
+        leg.tracker.on_detach("openarm_left_finger_pair", now_ns=now_ns)
+        # Second pick, same goal: re-armed (after the backoff) and re-measured.
+        later = leg._now_ns() + 1
+        _approach(leg.tracker, _near(_LEFT), now_ns=now_ns + 3 * _S)
+        target = leg.tracker.target
+        assert target is not None and target.target_id == f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}"
+        leg.tracker.accept(_measured(later))
+        second = bridge._region_payload(left, stamp_ns=later)
+        assert second is not None, "the second pick's re-measured region was refused"
+        assert bridge._region_payload(left, stamp_ns=later) is None
+    finally:
+        live.close()
