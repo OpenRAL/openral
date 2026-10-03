@@ -300,12 +300,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   manifest-only `finger_pair` through the attach link) span a gravity-aligned box grown by the
   approach distance (`approach_box`); a hand whose box holds ≥ `grasp_target_min_cells` occupied
   cells is *approaching*. **Exactly one** approaching hand arms a one-hand declaration
-  (`target_id="approach:<first link>:<n>"`, `n` counting the goal's armings; `contact_links` =
-  that hand only, the box as its `search_box`, everything else — `stamp_ns` included, so the
-  kernel's `timeout_s` backstop still runs from the goal — the goal's); two at once arm none.
-  *Identity per arming:* the kernel retires a declaration's `(target_id, stamp_ns)` at the
-  pick's detach and never re-arms it (HZ-01xx-3), so one id per goal made every later pick of
-  the goal `retired` at the kernel; each arming is a new declaration to the kernel. The box follows the TCP and
+  (`target_id="approach:<first link>"`; `contact_links` = that hand only, the box as its
+  `search_box`, everything else — `stamp_ns` included, so the kernel's `timeout_s` backstop
+  still runs from the goal — the goal's); two at once arm none. The box follows the TCP and
   feeds the measurement above **unchanged** (measured support, anchored seed at the column
   nearest the TCP, `not_on_support`, `ambiguous`, SAM point prompt, mask fit, map cover,
   tracking, freeze TTL); the hand leaving the approach distance retracts the region at once
@@ -328,8 +325,10 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   discarded: requests carry the tracker's `generation`, and a reply or deadline under an older
   one is dropped — its refusal never retracts the handed-over arming, its region never
   overwrites the frozen one; a handed-over tracker also ignores `accept` / `refuse` outright,
-  and `on_detach` releases an approach-armed hand even if its arming is gone.
-  *Handover only on what was measured:* the ATTACH that resolves an arming hands its region over
+  and nothing un-hands it before the goal ends.
+  *Handover only on what was measured:* the ATTACH that resolves an arming — its `confirm` test
+  evaluated before any tracker state changes, an exception in it counting as off-target —
+  hands its region over
   only when the payload is the region (`_region_payload`: the jaw at it; and the tracker still
   holds exactly that region) or a segmented payload every primitive centre of which lies in the
   region grown by one voxel with the jaw within `occluder_margin_m` of it (also the test for a
@@ -340,15 +339,17 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   is serialized by one lock: the bridge's ATTACH runs on the HAL's proprio publisher thread,
   the leg's tick/reply/deadline on the executor; `accept`/`refuse` take the request's
   generation and apply only under it, atomically.
-  *Second pick (chosen conservatively):* once every leg of the handed-over hand holds nothing (no
-  payload, no release window, no pending segmentation — polled each tick), an approach-armed pick
-  is complete: its region is dropped (`picked`) and the hand may re-arm within the goal from a
-  fresh approach, behind the same backoff — and not on the payload it just put down: until the
-  hand's approach box clears the released payload's last pose (the release window's frozen
-  record, each primitive bounded by a sphere) by more than one voxel, that hand does not arm
-  (it still counts toward "two hands at once"); a release no leg tick saw (window shorter than
-  a tick, or never opened for lack of tf2) blocks that hand until dispatch declares afresh. A named declaration stays handed over after its pick:
-  a new target needs a new declaration from dispatch. A dispatch/reasoner declaration with a
+  *One approach-armed pick per goal (chosen for safety and simplicity, 2026-10-03):* once a
+  hand is handed over the goal stays handed over until dispatch declares afresh (goal end,
+  cancel, E-stop, expiry, a new goal) — no hand re-arms for a second pick in the same goal; a
+  later grasp in that goal gets no exemption and its fingers stop at the normal margin. The
+  envelope keeps the picked declaration, whose `(target_id, stamp_ns)` the kernel retired at
+  the detach, so the kernel's "a retired declaration never re-arms" (HZ-01xx-3) is the bound,
+  not a producer-side guard. A pre-handover retraction (`approach_ended`, a refusal) re-arms
+  behind the backoff under the same `approach:<link>` identity, so an arming the kernel already
+  retired for a fault stays refused. A named declaration behaves the same: a new target needs a
+  new declaration from dispatch. *Deferred:* several picks per goal (a per-pick identity, a
+  guard against re-arming on the just-placed object) — a WG call (ADR draft judgement call 4). A dispatch/reasoner declaration with a
   `search_box` wins (no approach runs); one naming a hand but no box narrows the approach to
   that hand. The kernel reads it from the envelope like any producer-measured declaration —
   it never required the dispatch relay — and now also refuses a region-carrying declaration
@@ -366,7 +367,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   Tests: `tests/unit/test_grasp_target_leg.py` (approach rows), live
   `tests/integration/test_grasp_target_leg_live.py::test_an_approaching_hand_arms_the_target_with_no_named_target`,
   the real kernel in
-  `tests/integration/test_safety_kernel_grasp_target_band.py::test_an_approach_armed_declaration_exempts_one_hand_and_nothing_beside_the_target`,
+  `tests/integration/test_safety_kernel_grasp_target_band.py::test_an_approach_armed_declaration_exempts_one_hand_and_nothing_beside_the_target`
+  and `::test_a_second_approach_armed_pick_in_one_goal_gets_no_exemption_on_the_real_kernel`,
   the runner in `packages/openral_rskill_ros/test/test_grasp_declaration_lifecycle.py`.
 - **Representation:** an oriented box in `openarm_base` (reuse `PlaceRegion`): ~150 B, grid-instance
   independent, exact point-in-OBB already in the kernel.
@@ -386,8 +388,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   handover matches; `target_id` when empty), `AttachmentEvidenceKind.GRASP_TARGET_REGION`, no
   `SegmentInView` call; otherwise the attach segments as before. A leg takes each *measured*
   region once (`region_spent` = `(target_id, region.stamp_ns)`): an ATTACH offered the same region
-  again segments, while the region re-measured for a second approach-armed pick — its own
-  `approach:<link>:<n>` id, a new measurement — is a new payload. Live:
+  again segments (a handed-over goal re-measures nothing). Live:
   `tests/integration/test_grasp_target_leg_live.py` step 6.
 - Must be fixed first (all three are silent): `head_zed` optical frame, intrinsics from the
   driver's `camera_info`, explicit mask/depth resampling.

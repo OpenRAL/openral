@@ -109,6 +109,7 @@ from numpy.typing import NDArray
 from openral_core import CameraTopicKind, ControlMode, camera_topic
 from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError
+from openral_core.geometry import homogeneous_from_quat_xyz
 
 from openral_hal._grasp_target_leg import GraspTargetLeg, _hand_near
 from openral_hal._grasp_trigger import (
@@ -146,6 +147,7 @@ __all__ = [
     "freeze_released_attachment",
     "mask_depth_skew_reason",
     "mask_stamps_ns",
+    "primitive_poses",
     "region_attachment",
     "resolve_segment_outcome",
 ]
@@ -180,8 +182,7 @@ class _GripperLeg:
             older one is stale and dropped.
         region_spent: ``(target_id, region stamp_ns)`` of the measured region this leg
             already took as its payload; an ATTACH offered that same region again
-            segments instead, while a region re-measured later (a second approach-armed
-            pick arms under its own target id and measures afresh) may be taken.
+            segments instead.
         pending: Whether this leg is holding the ack barrier.
         jaw_link: The gripper joint's child link — what a ``GraspDeclaration``
             names in ``contact_links``.
@@ -528,6 +529,19 @@ def region_attachment(
     )
 
 
+def primitive_poses(
+    obj: AttachedCollisionObject, t_frame_from_link: NDArray[np.float64]
+) -> list[NDArray[np.float64]]:
+    """``frame <- primitive`` (4, 4) for each primitive of ``obj``, given ``frame <- link``."""
+    t_object = t_frame_from_link @ homogeneous_from_quat_xyz(
+        obj.pose_in_link.xyz, obj.pose_in_link.quat_xyzw
+    )
+    return [
+        t_object @ homogeneous_from_quat_xyz(p.pose_in_object.xyz, p.pose_in_object.quat_xyzw)
+        for p in obj.primitives
+    ]
+
+
 @dataclass(frozen=True)
 class ReleaseWindow:
     """One gripper's released payload, frozen in the base frame until the jaws are clear.
@@ -621,8 +635,6 @@ class ReleaseWindow:
             payload primitive) pairs, or ``None`` when a jaw position is unknown
             — unknown is never "clear".
         """
-        from openral_core.geometry import homogeneous_from_quat_xyz
-
         placed: list[tuple[NDArray[np.float64], tuple[_FramedBox, ...]]] = [
             (t_base_from_hand, self.hand_boxes)
         ]
@@ -631,15 +643,13 @@ class ReleaseWindow:
                 return None
             motion = _joint_motion(joint, positions[joint.name])
             placed.append((t_base_from_hand @ origin @ motion, jaw_boxes))
-        t_base_object = homogeneous_from_quat_xyz(
-            self.record.pose_in_link.xyz, self.record.pose_in_link.quat_xyzw
-        )
-        payload: list[_Box] = []
-        for primitive in self.record.primitives:
-            t = t_base_object @ homogeneous_from_quat_xyz(
-                primitive.pose_in_object.xyz, primitive.pose_in_object.quat_xyzw
+        # The frozen record is attached to the base link: its link frame is the base.
+        payload: list[_Box] = [
+            (t[:3, 3], t[:3, :3], _bounding_half_extents(primitive.shape))
+            for t, primitive in zip(
+                primitive_poses(self.record, np.eye(4)), self.record.primitives, strict=True
             )
-            payload.append((t[:3, 3], t[:3, :3], _bounding_half_extents(primitive.shape)))
+        ]
         gap = np.inf
         for t_link, link_boxes in placed:
             for t_prim, half in link_boxes:
@@ -1753,13 +1763,13 @@ class VisionAttachmentBridge:
         Confirmation is geometric: the declaration names this leg's jaw link and the
         leg's TCP (``jaw_point``) lies within ``grasp_target_occluder_margin_m`` of the
         region. The region is a pre-grasp measurement, so a leg takes each measured
-        region once (``region_spent``, keyed by ``target_id`` — one per approach
-        arming — and the region's own ``stamp_ns``): a later ATTACH offered the same
-        region — the object set down and picked up again before any re-measurement —
-        is segmented, while a region re-measured for a second pick in the same goal is
-        a new payload. Returns the payload and the region it was built from (what
-        ``GraspTargetLeg.on_attach`` hands over); ``None`` — logged when a declaration
-        was live — sends the grasp to ``SegmentInView`` instead.
+        region once (``region_spent``, keyed by ``target_id`` and the region's own
+        ``stamp_ns``): a later ATTACH offered the same region — the object set down
+        and picked up again — is segmented (a handed-over goal re-measures nothing, so
+        nothing else is offered until dispatch declares afresh). Returns the payload
+        and the region it was built from (what ``GraspTargetLeg.on_attach`` hands
+        over); ``None`` — logged when a declaration was live — sends the grasp to
+        ``SegmentInView`` instead.
         """
         if self._grasp_target is None:
             return None
@@ -1771,8 +1781,8 @@ class VisionAttachmentBridge:
         region = declaration.region if declaration is not None else None
         if declaration is None or region is None or leg.jaw_link not in declaration.contact_links:
             return None
-        # The region's own measurement stamp, not the declaration's: one arming may
-        # re-measure its region before the grasp, and each measurement is one payload.
+        # The region's own measurement stamp: one arming may re-measure its region
+        # before the grasp, and each measurement is one payload.
         key = (declaration.target_id, int(region.stamp_ns))
         if leg.region_spent == key:
             self._node.get_logger().info(
