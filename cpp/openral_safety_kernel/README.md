@@ -865,10 +865,17 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   band's slowest rate
   (`LifecycleKernelTest.AnExemptFingerInsideItsTargetStillLeavesTheChunkScaled`,
   `LifecycleKernelTest.APayloadOnItsWitnessedSupportStillLeavesTheChunkScaled`).
-* **Monotonicity.** Trips with the region ⊆ trips without it, the difference
-  is exactly the (mask link, cell centred in the box) pairs, and the sweep
-  minimum is never lowered by the region — pinned over
-  randomised scenes and oriented grids (`…MonotonicityOverRandomisedScenes`).
+* **Monotonicity.** The region never adds a stop, never removes one for a
+  non-exempt pair that exact geometry upholds, never lets an exempt pair supply
+  the evidence, and never raises the band slack of a sweep that would have
+  passed without it — it may only slow. On stage-1-only links the trips with
+  the region are exactly the trips without it minus the (mask link, cell
+  centred in the box) pairs. It does **not** leave `sweep_min_distance` alone:
+  an exempt pair reaches it at its own depth, and on a link with a stage-2
+  hull that depth is stage 1's bound (refinement skipped), which can sit below
+  the exact distance the undeclared check refines to — erring slower. Pinned
+  over randomised scenes and oriented grids, on both DOP-only and hull-vertex
+  links (`…MonotonicityOverRandomisedScenes`).
 * **Support surface.** Cells half a voxel below the box's lower face still stop
   the finger (`…TheSupportSurfaceUnderTheTargetStillStops`); keeping the lower
   face above the support plane is a producer obligation (HZ-01xx-6).

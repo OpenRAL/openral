@@ -6030,12 +6030,22 @@ osk::Vec3 base_centre(const osk::VoxelGrid& g, int linear) {
 }  // namespace
 
 TEST(GraspTargetExemption, MonotonicityOverRandomisedScenes) {
-  // The property the WG review rests on (design note §2.1):
+  // The property the WG review rests on (design note §2.1). Exact trip sets,
+  // on the stage-1-only model (the shipped finger DOP carries no vertices, so
+  // no shared stage-2 budget couples one cell's verdict to another's):
   //   trips_with ⊆ trips_without, and
   //   trips_without \ trips_with = {(l, c) : l in mask, c centred in region}
   //                                 ∩ trips_without.
-  // Plus the evidence contract on the full sweep: the reported pair is always
-  // a tripping one, and the sweep minimum is never lowered by the region.
+  // On the full sweep, for BOTH that model and one whose finger boxes carry
+  // hull vertices (so stage 2 runs, and an exempt pair skips it):
+  //   * the region never adds a stop: a hit with it implies a hit without;
+  //   * the reported pair is always a tripping, non-exempt one;
+  //   * where nothing trips without the region, the band slack it presents,
+  //     max(sweep_min - margin, 0), is never raised — it may only slow.
+  // The region does NOT promise to leave sweep_min alone: an exempt pair
+  // reaches it at its own depth, and on a hull link that depth is stage 1's
+  // bound (refinement skipped), which can sit below the exact distance the
+  // undeclared check would have refined to. That errs slower, never faster.
   // Randomised over link poses, oriented grids, region pose/size, mask and
   // margin; fixed seed, so a failure is reproducible.
   std::mt19937 rng(20261002U);
@@ -6045,7 +6055,15 @@ TEST(GraspTargetExemption, MonotonicityOverRandomisedScenes) {
   std::bernoulli_distribution occupied(0.08);
   std::bernoulli_distribution in_mask(0.5);
   const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionModel hull_m = m;
+  std::vector<osk::Vec3> verts;
+  hull_m.hulls = {axis_aligned_box_hull(m.boxes[0].half_extents, verts),
+                  axis_aligned_box_hull(m.boxes[1].half_extents, verts)};
+  hull_m.hull_vertices = verts;
+  std::size_t offending = 0;
+  ASSERT_EQ(osk::validate_tight_geometry(hull_m, offending), osk::TightGeometryStatus::kOk);
   int trials_with_difference = 0;
+  int trials_stage2_moved = 0;
   for (int trial = 0; trial < 150; ++trial) {
     osk::CollisionScratch s = grasp_scratch_all_away();
     for (int l = 1; l <= 4; ++l) {
@@ -6083,14 +6101,11 @@ TEST(GraspTargetExemption, MonotonicityOverRandomisedScenes) {
                   osk::Vec3{half_size(rng), half_size(rng), half_size(rng)}, mask, region),
               osk::GraspRegionStatus::kOk);
     const double margin = margin_dist(rng);
-
-    const auto without = trip_set(m, s, occ, grid, margin);
-    const auto full_without = osk::check_voxel_collision(m, s, grid, margin);
     osk::VoxelGrid with_grid = grid;
     with_grid.grasp_region = region;
-    const auto with = trip_set(m, s, occ, with_grid, margin);
-    const auto full_with = osk::check_voxel_collision(m, s, with_grid, margin);
 
+    const auto without = trip_set(m, s, occ, grid, margin);
+    const auto with = trip_set(m, s, occ, with_grid, margin);
     for (const auto& pair : with) {
       EXPECT_EQ(without.count(pair), 1U) << "trial " << trial << ": a NEW trip from the region";
     }
@@ -6103,21 +6118,39 @@ TEST(GraspTargetExemption, MonotonicityOverRandomisedScenes) {
     if (with.size() != without.size()) {
       ++trials_with_difference;
     }
-    EXPECT_EQ(full_with.hit, !with.empty()) << "trial " << trial;
-    if (full_with.hit) {
-      EXPECT_EQ(with.count({full_with.link_a, full_with.link_b}), 1U)
-          << "trial " << trial << ": the evidence names an exempt pair";
-    }
-    EXPECT_EQ(full_without.hit, !without.empty()) << "trial " << trial;
-    // The velocity band reads an untripped sweep as max(sweep_min - margin, 0)
-    // (`note_slack`). Where the region changes nothing about the verdict it
-    // must never raise that slack: it may only slow a chunk, never speed one.
-    if (!full_without.hit) {
-      const auto band_slack = [margin](const osk::CollisionHit& h) {
-        return std::max(h.sweep_min_distance - margin, 0.0);
-      };
-      EXPECT_LE(band_slack(full_with), band_slack(full_without)) << "trial " << trial;
+
+    const auto band_slack = [margin](const osk::CollisionHit& h) {
+      return std::max(h.sweep_min_distance - margin, 0.0);
+    };
+    for (const osk::CollisionModel* model :
+         std::array<const osk::CollisionModel*, 2>{&m, &hull_m}) {
+      const char* name = model == &m ? "dop" : "hull";
+      const auto full_without = osk::check_voxel_collision(*model, s, grid, margin);
+      const auto full_with = osk::check_voxel_collision(*model, s, with_grid, margin);
+      if (model == &m) {
+        EXPECT_EQ(full_without.hit, !without.empty()) << "trial " << trial;
+        EXPECT_EQ(full_with.hit, !with.empty()) << "trial " << trial;
+        if (full_with.hit) {
+          EXPECT_EQ(with.count({full_with.link_a, full_with.link_b}), 1U)
+              << "trial " << trial << ": the evidence names an exempt pair";
+        }
+      } else if (full_without.sweep_min_distance !=
+                 osk::check_voxel_collision(m, s, grid, margin).sweep_min_distance) {
+        ++trials_stage2_moved;
+      }
+      if (full_with.hit) {
+        EXPECT_TRUE(full_without.hit) << name << " trial " << trial << ": a NEW stop";
+        EXPECT_FALSE(mask[static_cast<std::size_t>(full_with.link_a)] &&
+                     osk::grasp_target_exempts(with_grid, full_with.link_a,
+                                               base_centre(grid, full_with.link_b)))
+            << name << " trial " << trial << ": the evidence names an exempt pair";
+      }
+      if (!full_without.hit) {
+        EXPECT_LE(band_slack(full_with), band_slack(full_without))
+            << name << " trial " << trial << ": the region sped a chunk up";
+      }
     }
   }
   EXPECT_GT(trials_with_difference, 20) << "the property must not hold vacuously";
+  EXPECT_GT(trials_stage2_moved, 0) << "the hull model must actually exercise stage 2";
 }

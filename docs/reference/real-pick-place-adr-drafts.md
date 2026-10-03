@@ -33,7 +33,10 @@ bridge's "an occupied cell is an obstacle" invariant) were considered and reject
   clamp covers the support-witness and embedded-residue exemptions on the attached path). An exempt pair never spends
   the check's shared stage-2 refinement budget (it cannot trip, so stage 1 suffices), so a finger
   buried in its target cannot starve a non-exempt link of the exact hull distance and false-stop
-  it.
+  it. Net invariant: the region never adds a stop, never removes one for a non-exempt pair that
+  exact geometry upholds, and never raises the band slack of a sweep that would have passed
+  without it — it may only slow. It may lower `sweep_min` (an exempt hull link reports stage 1's
+  bound rather than the refined distance), which errs slower.
 - All other links, all cells outside the region, self-collision, attached checks and the force
   gate are unchanged. The support surface under the target is outside the region (producer
   obligation: the region's lower face sits above the support plane).
