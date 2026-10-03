@@ -307,7 +307,9 @@ DEFAULT_SYSTEM_PROMPT: str = (
     "restrict the place to one labelled surface (a shelf, a table). Perception "
     "grounds what you "
     "name; a target that grounds to nothing or to several objects refuses the "
-    "dispatch. Naming a target arms nothing by itself: the safety kernel only "
+    "dispatch — an ungroundable place_target never falls back to placing "
+    "anywhere, so omit it unless you can name a surface perception sees. "
+    "Naming a target arms nothing by itself: the safety kernel only "
     "trusts the region its producer measures. "
     # ── When nothing fits ─────────────────────────────────────────────
     "If no skill tool is appropriate — the task is ambiguous, the "

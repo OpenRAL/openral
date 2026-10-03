@@ -16,6 +16,7 @@ Real fixtures throughout: ``robots/openarm/robot.yaml``,
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -409,6 +410,50 @@ def test_an_unknown_or_map_frame_surface_node_refuses() -> None:
     )
     with pytest.raises(ROSReasonerInvalidPlan, match="not the robot base frame"):
         _ground_place(PlaceTargetRef(label="bottle of wine", object_id="wine_bottle"), [], graph)
+
+
+@pytest.mark.parametrize(
+    ("case", "ref", "inner"),
+    [
+        ("unknown label", PlaceTargetRef(label="shelf"), r"'shelf': no live 3D"),
+        ("ambiguous label", PlaceTargetRef(label="shelf"), r"'shelf' is ambiguous: 2"),
+        ("missing node", PlaceTargetRef(label="shelf", place_node_id="nope"), "not in spatial"),
+        ("no detector", PlaceTargetRef(label="shelf"), r"perception sees: nothing"),
+        ("no memory", PlaceTargetRef(label="shelf", object_id="shelf_1"), "not in spatial"),
+    ],
+)
+def test_an_ungroundable_place_hint_refuses_the_goal_never_places_anywhere(
+    case: str, ref: PlaceTargetRef, inner: str
+) -> None:
+    """Option A: the hint is optional, but a supplied one that does not ground refuses the
+    goal, and the refusal tells the LLM to omit it rather than guess."""
+    live: list[DetectedObject] = []
+    graph: SceneGraph | None = None
+    if case == "unknown label":
+        live = _lift({"b": ("box", (0.40, -0.20, -0.10))})
+    elif case == "ambiguous label":
+        live = _lift(
+            {"a": ("shelf", (0.45, 0.25, -0.05)), "b": ("shelf", (0.45, -0.25, -0.05))},
+            shapes={"a": _BOARD, "b": _BOARD},
+        )
+    elif case == "missing node":
+        live = _lift({"s": ("shelf", (0.45, 0.20, -0.05))}, shapes={"s": _BOARD})
+        memory = SpatialMemory()
+        memory.ingest_detected_objects(live, now_ns=1)
+        graph = memory.to_scene_graph()
+    with pytest.raises(ROSReasonerInvalidPlan) as info:
+        _ground_place(ref, live, graph)
+    msg = str(info.value)
+    assert msg.startswith("the place hint could not be grounded, so the goal is refused")
+    assert re.search(inner, msg), msg
+    assert "Omit place_target" in msg and "measured under the carried payload" in msg
+
+
+def test_the_prompt_says_an_ungroundable_place_hint_refuses() -> None:
+    from openral_reasoner.tool_use import DEFAULT_SYSTEM_PROMPT
+
+    assert "place_target is optional" in DEFAULT_SYSTEM_PROMPT
+    assert "never falls back to placing anywhere" in DEFAULT_SYSTEM_PROMPT
 
 
 def test_place_target_ref_needs_a_label_and_at_most_one_node() -> None:
