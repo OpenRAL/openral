@@ -39,6 +39,7 @@ so the geometry is consistent (per the object-lift design).
 | `image_topic` | string | `""` | Camera `sensor_msgs/Image` to detect on — `openral_core.camera_topic(<name>)`, passed by `deploy_e2e`. With no `cameras` entries either, configure raises `ROSConfigError` (ADR-0108). |
 | `output_topic` | string | `/openral/perception/objects` | Perception topic to publish on. |
 | `sensor_id` | string | `front_depth` | Sensor name stamped on the metadata + `header.frame_id`. |
+| `camera_infos` | string[] | `[""]` | `"id=topic"` driver `CameraInfo` per camera. Once one arrives, every batch for that camera carries its `header.frame_id` + K (`ObjectsMetadata.camera_frame_id` / `camera_intrinsics`), which the world-state lift projects through. Without an entry the node warns at configure and the lift falls back to the manifest `SensorSpec` (logged once). `deploy_e2e` derives it (`_live_camera_info_topic`): the sim bridge's topic, or on real the driver's beside the unit overlay's `ros2_image` binding (Thor `top` → `/zed/zed_node/rgb/color/rect/camera_info`). |
 | `onnx_path` | string | — (required) | RT-DETR ONNX model path. |
 | `model_id` | string | `rtdetr-coco-r18` | Id embedded in `ObjectsMetadata`. |
 | `score_threshold` | double | `0.5` | Minimum sigmoid score. |
@@ -54,6 +55,7 @@ so the geometry is consistent (per the object-lift design).
 | Direction | Topic | QoS | Message |
 | --- | --- | --- | --- |
 | Sub | `image_topic` (configurable) | BEST_EFFORT / VOLATILE / KEEP_LAST=1 | `sensor_msgs/Image` (`rgb8`/`bgr8`) |
+| Sub | each `camera_infos` topic | BEST_EFFORT / VOLATILE / KEEP_LAST=1 | `sensor_msgs/CameraInfo` |
 | Pub | `/openral/perception/objects` (configurable) | BEST_EFFORT / VOLATILE / KEEP_LAST=5 | `openral_msgs/PromptStamped` (`metadata_json` = `ObjectsMetadata`; `header.frame_id` = `sensor_id`) |
 
 ## Launch

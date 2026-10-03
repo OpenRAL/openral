@@ -304,8 +304,11 @@ def _scene_with_vision_leg(tmp_path: Path, *, enabled: bool | None) -> Path:
     return scene
 
 
-def _real_graph(scene: Path) -> tuple[dict[str, object], dict[str, Any], Any, list[Any]]:
-    """``(hal_params, kernel_params, ctx, entities)`` for a ``deploy run`` of ``scene``."""
+def _real_graph(
+    scene: Path, overrides: dict[str, str] | None = None
+) -> tuple[dict[str, object], dict[str, Any], Any, list[Any]]:
+    """``(hal_params, kernel_params, ctx, entities)`` for a ``deploy run`` of ``scene``,
+    with ``overrides`` replacing the CLI's launch arguments."""
     from launch_ros.utilities import evaluate_parameters
     from openral_cli.deploy_sim import resolve_launch_invocation
 
@@ -322,6 +325,7 @@ def _real_graph(scene: Path) -> tuple[dict[str, object], dict[str, Any], Any, li
     args = dict(tok.split(":=", 1) for tok in invocation.argv_template if ":=" in tok)
     args["hal_params_file"] = _write_hal_params(invocation.hal_params)
     del args["deploy_config"]  # drivers: needs zed_wrapper on the ament path (rig only)
+    args.update(overrides or {})
     ctx, entities = _compose(args)
     (kernel_params,) = evaluate_parameters(
         ctx, _node(entities, "openral_safety_kernel")._Node__parameters
@@ -622,3 +626,23 @@ def test_the_launch_refuses_vision_bounds_past_the_kernels_voxel_path(
             _compose(args)
     else:
         _compose(args)
+
+
+@pytest.mark.usefixtures("calibrated_openarm")
+def test_the_real_detector_reads_the_zed_driver_camera_info() -> None:
+    """``top`` is the manifest's sim stand-in (frame ``world``, fx 640); on Thor it is the ZED's
+    rectified left image. The detector must get the DRIVER's CameraInfo beside the unit
+    binding's topic — not ``/openral/cameras/top/camera_info``, which the sensor leg rebuilds
+    from the stand-in — so the world-state lift projects through the real frame and K."""
+    from launch_ros.utilities import evaluate_parameters
+
+    # The launch argument the CLI passes once a detector backend is installed on the host
+    # (without one it turns the leg off before launching; the launch wiring is under test).
+    _, _, ctx, entities = _real_graph(_SCENE, {"enable_object_detector": "true"})
+
+    detector = _node(entities, "openral_perception_ros", "ros_image_detector_node.py")
+    (params,) = evaluate_parameters(ctx, detector._Node__parameters)
+    assert params["sensor_id"] == "top"
+    assert params["primary_camera"] == "top"
+    assert params["image_topic"] == "/openral/cameras/top/image"
+    assert params["camera_infos"] == ("top=/zed/zed_node/rgb/color/rect/camera_info",)

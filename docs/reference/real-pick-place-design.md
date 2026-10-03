@@ -55,8 +55,14 @@ using SAM 2.1 to see the object.
    to the depth stream), projects only through the depth `CameraInfo`
    (`vision_attachment_camera_info_topic`), and resamples a mask onto the depth raster when only
    the resolution differs. A missing frame, a missing/mismatched `CameraInfo` or a different crop
-   is a logged `GRIPPER_FORCE` fallback, never the manifest's nominal K. Still open: the
-   world-state object lift (`ObjectsMetadata` carries no image frame).
+   is a logged `GRIPPER_FORCE` fallback, never the manifest's nominal K. The world-state object
+   lift too, since: the detector stamps each `ObjectsMetadata` with its driver `CameraInfo`'s
+   frame and K (`camera_frame_id` / `camera_intrinsics`, `camera_infos` parameter), and the lift
+   and its eviction FOV project through them. `deploy_e2e` points the detector at the driver's
+   `CameraInfo` beside the unit overlay's `ros2_image` binding (Thor `top` →
+   `/zed/zed_node/rgb/color/rect/camera_info`, `zed_left_camera_frame_optical`, fx 1498.18),
+   never the sensor leg's manifest-built one; only a camera with no driver `CameraInfo` falls
+   back to the `SensorSpec` (the stand-in `world` / fx 640 for `top`), logged once.
 5. **Two more HAL bugs.** Both effort read paths zero-fill a missing effort channel
    (`ros_control_transport.py` L617-627, `openarm_real.py` L380-383), so the trigger can never
    notice the channel is gone. The attach link (`openarm_*_link7`) and finger frames do not exist

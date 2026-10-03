@@ -200,7 +200,10 @@ if _ROS2_AVAILABLE:
             self._depth_points_stamp_ns: int = 0
             self._depth_max_points: int = 0
             self._candidate_buffer: list[object] = []
-            self._seen_sensor_ids: set[str] = set()
+            # Detection camera -> (optical frame, K) it was last lifted through; eviction
+            # projects the same geometry every memory tick.
+            self._seen_cameras: dict[str, tuple[str, object]] = {}
+            self._manifest_fallback_logged: set[str] = set()
             self._map_frame = "map"
             self._voxel_staleness_ns = 0
 
@@ -516,7 +519,8 @@ if _ROS2_AVAILABLE:
             self._tf_buffer = None
             self._latest_voxels = None
             self._candidate_buffer = []
-            self._seen_sensor_ids = set()
+            self._seen_cameras = {}
+            self._manifest_fallback_logged = set()
             if self._pub_fast is not None:
                 self.destroy_publisher(self._pub_fast)
                 self._pub_fast = None
@@ -778,6 +782,30 @@ if _ROS2_AVAILABLE:
                         return s
             return None
 
+        def _camera_geometry(self, md: object) -> tuple[str, object] | None:
+            """The (optical frame, K) a detection batch's pixels project through.
+
+            The detector stamps the driver's ``CameraInfo`` frame + K on the batch;
+            only when it could not (no ``camera_infos`` entry, or none arrived yet) does
+            this fall back to the manifest ``SensorSpec`` — logged once per camera,
+            because on real hardware that spec may be a sim stand-in.
+            """
+            if md.camera_intrinsics is not None:  # type: ignore[attr-defined]
+                return (md.camera_frame_id, md.camera_intrinsics)  # type: ignore[attr-defined]
+            sid = md.sensor_id  # type: ignore[attr-defined]
+            spec = self._sensor_spec(sid)
+            if spec is None or spec.intrinsics is None:  # type: ignore[attr-defined]
+                self.get_logger().debug(f"no intrinsics for sensor '{sid}'")
+                return None
+            if sid not in self._manifest_fallback_logged:
+                self._manifest_fallback_logged.add(sid)
+                self.get_logger().warning(
+                    f"object lift: detections from '{sid}' carry no CameraInfo frame/K; "
+                    f"projecting through the manifest SensorSpec (frame "
+                    f"'{spec.frame_id}', fx={spec.intrinsics.fx})"  # type: ignore[attr-defined]
+                )
+            return (spec.frame_id, spec.intrinsics)  # type: ignore[attr-defined]
+
         def _on_objects(self, msg: object) -> None:  # PromptStamped
             """Decode detections, lift to 3D, buffer candidates (best-effort)."""
             from openral_core.schemas import ObjectsMetadata
@@ -796,16 +824,16 @@ if _ROS2_AVAILABLE:
             except Exception as exc:
                 self.get_logger().debug(f"bad detection metadata_json: {exc}")
                 return
-            spec = self._sensor_spec(md.sensor_id)
-            if spec is None or spec.intrinsics is None:
-                self.get_logger().debug(f"no intrinsics for sensor '{md.sensor_id}'")
+            geometry = self._camera_geometry(md)
+            if geometry is None:
                 return
+            cam_frame, intrinsics = geometry
             # Remember this detection camera so eviction can project its FOV
             # every memory tick from the camera pose alone (the real detector
             # publishes nothing when it sees nothing).
-            self._seen_sensor_ids.add(md.sensor_id)
+            self._seen_cameras[md.sensor_id] = geometry
             base_frame = self._aggregator.description.base_frame
-            t_cam_from_base = self._lookup_4x4(spec.frame_id, base_frame)
+            t_cam_from_base = self._lookup_4x4(cam_frame, base_frame)
             t_map_from_base = self._lookup_4x4(self._map_frame, base_frame)
             if t_cam_from_base is None or t_map_from_base is None:
                 return  # best-effort: missing TF => skip
@@ -836,7 +864,7 @@ if _ROS2_AVAILABLE:
             cands = self._lifter.lift(  # type: ignore[union-attr]
                 detections=md.detections,
                 occupied_centers_base=centers,
-                intrinsics=spec.intrinsics,
+                intrinsics=intrinsics,  # type: ignore[arg-type]
                 frame_size=(md.frame_width, md.frame_height),
                 t_cam_from_base=t_cam_from_base,
                 t_map_from_base=t_map_from_base,
@@ -858,18 +886,15 @@ if _ROS2_AVAILABLE:
 
             preds = []
             base_frame = self._aggregator.description.base_frame
-            for sid in self._seen_sensor_ids:
-                spec = self._sensor_spec(sid)
-                if spec is None or spec.intrinsics is None:
-                    continue
-                t_cam_from_base = self._lookup_4x4(spec.frame_id, base_frame)
+            for cam_frame, intrinsics in self._seen_cameras.values():
+                t_cam_from_base = self._lookup_4x4(cam_frame, base_frame)
                 t_map_from_base = self._lookup_4x4(self._map_frame, base_frame)
                 if t_cam_from_base is None or t_map_from_base is None:
                     continue
                 t_cam_from_map = t_cam_from_base @ np.linalg.inv(t_map_from_base)
                 preds.append(
                     build_in_fov_predicate(
-                        intrinsics=spec.intrinsics,
+                        intrinsics=intrinsics,  # type: ignore[arg-type]
                         t_cam_from_map=t_cam_from_map,
                     )
                 )

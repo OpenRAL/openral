@@ -609,6 +609,37 @@ def _primary_rgb_camera(sensors: list[SensorSpec]) -> str:
     )
 
 
+def _live_camera_info_topic(spec: SensorSpec, hal_mode: str) -> str:
+    """The ``CameraInfo`` topic carrying ``spec``'s live calibration, or ``""`` when none does.
+
+    Sim: the bridge's ``camera_topic(name, CAMERA_INFO)`` (K from the rendered camera). Real:
+    the driver's own ``CameraInfo`` beside a ``ros2_image`` binding's topic — never
+    ``/openral/cameras/<name>/camera_info``, which the sensor leg rebuilds from the manifest's
+    (possibly sim stand-in) intrinsics and frame. Any other real backend has no driver
+    calibration, so ``""``: consumers then fall back to the manifest, and log that they did.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> arm = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> thor = resolve_sensor_overlays("robots/openarm/robot.yaml", "thor", required=True)
+        >>> top = next(s for s in apply_sensor_overlays(arm.sensors, thor) if s.name == "top")
+        >>> _live_camera_info_topic(top, "real")
+        '/zed/zed_node/rgb/color/rect/camera_info'
+        >>> _live_camera_info_topic(top, "sim")
+        '/openral/cameras/top/camera_info'
+    """
+    from openral_core import SensorReaderBackend
+    from openral_sensors.ros_publisher import camera_info_topic_for
+
+    if hal_mode != "real":
+        return camera_topic(spec.name, CameraTopicKind.CAMERA_INFO)
+    binding = spec.deploy_binding
+    if binding is None or binding.backend != SensorReaderBackend.ROS2_IMAGE:
+        return ""
+    topic = binding.backend_params.get("topic")
+    return camera_info_topic_for(topic) if isinstance(topic, str) and topic else ""
+
+
 # Sim runner joint-state window: the former node default. A sim bridge's
 # /joint_states is not the rig the manifest's window was measured on, so sim
 # keeps it rather than the (possibly much tighter) real value. It is also the
@@ -2772,6 +2803,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 f"that publishes on this deploy (hal_mode={hal_mode})"
             )
         det_image_topic = camera_topic(det_camera)
+        # The lift projects through the camera's live frame + K (the detector stamps them
+        # on each batch), not the manifest SensorSpec — on a real OpenArm `top` is a sim
+        # stand-in (frame "world", fx 640) for a 1920x1080 ZED image at fx 1498.
+        det_info_topic = _live_camera_info_topic(
+            next(s for s in publishing if s.name == det_camera), hal_mode
+        )
+        det_camera_infos = [f"{det_camera}={det_info_topic}"] if det_info_topic else [""]
 
         # Shared QoS / clock note: clock domain follows the graph-wide flag
         # (see _resolve_clock_origin). The node stamps its output from the input
@@ -2836,6 +2874,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # this the frame caches under "default" and every locate misses with
         # "no frame for camera 'top'" (found=False) regardless of the query.
         det_params["primary_camera"] = det_camera
+        det_params["camera_infos"] = det_camera_infos
         # Managed lifecycle node: autostarted to ACTIVE (detector
         # loaded) like the rest of the graph, but the reasoner can DEACTIVATE it
         # via LifecycleTransitionTool to free the detector's VRAM before a
@@ -2870,6 +2909,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # Cache under the real camera name so locate_in_view(camera="top")
                 # hits — see the continuous detector's primary_camera note above.
                 "primary_camera": det_camera,
+                "camera_infos": det_camera_infos,
                 "manifest_path": spec["manifest"],
                 "onnx_path": object_detector_onnx,
                 "query": object_detector_query,

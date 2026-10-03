@@ -150,7 +150,9 @@ consumers (e.g. a reasoner reading `/openral/world_state_slow`) see the spatial 
 /openral/perception/objects (PromptStamped → ObjectsMetadata)  ─┐
 /openral/world_voxels       (OccupancyVoxels, base_link)        ─┤
 TF2: base_link→<cam_optical>, base_link→map                     ─┤──► _WorldStateLifecycleNode
-RobotDescription.sensors[sensor_id].intrinsics                  ─┘          │
+ObjectsMetadata.camera_frame_id + camera_intrinsics             ─┘          │
+  (driver CameraInfo, stamped by the detector; absent → the
+   SensorSpec named by sensor_id, logged once per camera)
                                                                         memory tick (cadence Hz)
                                                                              │
                                                            VoxelFrustumLifter + ObjectMemory
