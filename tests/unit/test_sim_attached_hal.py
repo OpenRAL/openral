@@ -51,7 +51,7 @@ from openral_hal.sim_attached import (
 )
 
 from tests.unit.conftest import _CaptureProcessor
-from tests.unit.fakes.fake_sim_env import FakeSimEnv
+from tests.unit.fakes.fake_sim_env import FakeSimEnv, GroupStepFakeSimEnv
 
 # ── pack_action_for_env ──────────────────────────────────────────────
 
@@ -1323,13 +1323,6 @@ def test_task_success_final_re_reads_the_predicate_at_disconnect(
     assert final["success"] is True
 
 
-class _GroupStepEnv(FakeSimEnv):
-    """A backend that steps a whole slot group at once (``step_action_group``)."""
-
-    def step_action_group(self, actions: list[Action]) -> object:
-        return self.step(np.zeros(self.action_dim, dtype=np.float32))
-
-
 def _panda_mobile_group(jaw: float, *, tick: int) -> list[Action]:
     """One mobile-manipulator tick: a base twist, a padded arm slot and a gripper slot."""
     arm = [f"panda_joint{i}" for i in range(1, 8)]
@@ -1364,7 +1357,7 @@ def test_a_mobile_manipulator_group_records_its_jaw_target() -> None:
     target is still unknown.
     """
     description = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
-    hal = SimAttachedHAL(_GroupStepEnv(action_dim=12), description)
+    hal = SimAttachedHAL(GroupStepFakeSimEnv(action_dim=12), description)
     hal.connect()
     for slot in _panda_mobile_group(0.03, tick=1):
         hal.send_action(slot)
@@ -1392,3 +1385,47 @@ def test_overlapping_gripper_targets_are_unknown() -> None:
     assert sim_attached.gripper_targets_action([twist, overlap, grip], description) is None
     alone = sim_attached.gripper_targets_action([twist, overlap], description)
     assert alone is not None and alone.joint_targets == [[0.0]]
+
+
+def test_a_too_short_joint_row_naming_a_gripper_is_unknown() -> None:
+    """A row too short for a gripper it names is unreadable, not "jaw uncommanded"."""
+    description = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+    twist, arm, _ = _panda_mobile_group(0.03, tick=1)
+    short = arm.model_copy(
+        update={"joint_names": [*arm.joint_names, "panda_gripper"], "joint_targets": [[0.2] * 10]}
+    )
+    assert sim_attached.gripper_targets_action([twist, short], description) is None
+
+
+_OPENARM = "robots/openarm/robot.yaml"
+
+
+def _openarm_jaw(ee_name: str | None, value: float) -> Action:
+    return Action(control_mode=ControlMode.GRIPPER_POSITION, gripper=[value], ee_name=ee_name)
+
+
+def test_bimanual_jaw_record_needs_every_gripper() -> None:
+    """Both jaws commanded: both recorded. One left out: ``None``, never a partial record.
+
+    A partial record would leave the uncovered jaw's previous command standing in the
+    grasp trigger — a phantom ATTACH on the twin. ``None`` clears both.
+    """
+    description = RobotDescription.from_yaml(_OPENARM)
+    twist = Action(control_mode=ControlMode.BODY_TWIST, body_twist=[[0.1] + [0.0] * 5])
+    left, right = _openarm_jaw("left_gripper", 0.01), _openarm_jaw("right_gripper", 0.02)
+    both = sim_attached.gripper_targets_action([twist, left, right], description)
+    assert both is not None
+    assert both.joint_names == ["left_gripper", "right_gripper"]
+    assert both.joint_targets == [[pytest.approx(0.01), pytest.approx(0.02)]]
+    assert sim_attached.gripper_targets_action([twist, left], description) is None
+
+
+def test_a_nameless_gripper_slot_is_unknown() -> None:
+    """A gripper slot with no ``ee_name`` set some jaw to something: ``None``, not skipped."""
+    description = RobotDescription.from_yaml(_OPENARM)
+    left = _openarm_jaw("left_gripper", 0.01)
+    assert (
+        sim_attached.gripper_targets_action([left, _openarm_jaw(None, 0.02)], description) is None
+    )
+    unknown = _openarm_jaw("no_such_gripper", 0.02)
+    assert sim_attached.gripper_targets_action([left, unknown], description) is None
