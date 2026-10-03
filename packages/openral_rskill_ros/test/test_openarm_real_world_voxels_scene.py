@@ -323,6 +323,7 @@ def test_the_vision_leg_on_real_turns_the_kernel_attached_check_on(
         "vision_attachment_release_effort": 0.0,
         "vision_attachment_grasp_target_enabled": False,
         "vision_attachment_place_fixture_enabled": False,
+        "vision_attachment_release_timeout_s": 3.0,
         "vision_attachment_tf_frames": [
             "openarm_left_link7=openarm_left_ee_base_link",
             "openarm_right_link7=openarm_right_ee_base_link",
@@ -341,6 +342,38 @@ def test_the_vision_leg_on_real_turns_the_kernel_attached_check_on(
         "device": "auto",
         "use_sim_time": False,
     }
+
+
+def _hal_launch_params(ctx: Any, entities: list[Any]) -> dict[str, Any]:
+    """The HAL node's in-launch parameter dicts, merged (the params file is the CLI's)."""
+    from launch_ros.utilities import evaluate_parameters
+
+    hal = _node(entities, "openral_hal_node")
+    merged: dict[str, Any] = {}
+    for entry in evaluate_parameters(ctx, hal._Node__parameters):
+        if isinstance(entry, dict):
+            merged.update(entry)
+    return merged
+
+
+@pytest.mark.usefixtures("calibrated_openarm")
+def test_the_vision_leg_bounds_derive_from_the_kernels_voxel_path(tmp_path: Path) -> None:
+    """The release window and grid-age bounds come from the kernel's own voxel deadline,
+    world margin and octree resolution, never a second copy; leg off, none are set."""
+    _, kernel, ctx, entities = _real_graph(_scene_with_vision_leg(tmp_path, enabled=True))
+    hal = _hal_launch_params(ctx, entities)
+    deadline_s = kernel["world_voxel_deadline_ms"] / 1000.0
+    assert hal["vision_attachment_grid_max_age_s"] == pytest.approx(deadline_s)
+    # 20 mm real margin + one 20 mm cell: the release window's documented 40 mm.
+    assert hal["vision_attachment_release_clear_m"] == pytest.approx(
+        kernel["world_voxel_margin_m"] + 0.02
+    )
+    assert hal["vision_attachment_release_clear_m"] == pytest.approx(0.04)
+
+    _, _, ctx_off, entities_off = _real_graph(_scene_with_vision_leg(tmp_path, enabled=False))
+    assert not any(
+        k.startswith("vision_attachment_") for k in _hal_launch_params(ctx_off, entities_off)
+    )
 
 
 @pytest.mark.usefixtures("calibrated_openarm")

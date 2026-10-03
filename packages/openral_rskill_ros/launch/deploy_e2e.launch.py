@@ -1797,6 +1797,21 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         additional_env=otel_env,
         output="screen",
     )
+    # The vision bridge reads the same voxel path the kernel checks, so its bounds derive from
+    # this launch's single sources: a grid is usable no longer than the kernel's voxel
+    # deadline, and a released payload is clear once it sits the kernel's world margin plus
+    # one octree cell away. First in the list, so an explicit `--hal` value still wins.
+    hal_derived_params: list[dict[str, float]] = (
+        [
+            {
+                "vision_attachment_grid_max_age_s": world_voxel_deadline_s,
+                "vision_attachment_release_clear_m": _world_voxel_margin_m(hal_mode)
+                + _octomap_resolution(hal_mode),
+            }
+        ]
+        if vision_attachment_enabled
+        else []
+    )
     hal = LifecycleNode(
         package=hal_package,
         executable=hal_executable,
@@ -1806,7 +1821,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # authority — it stamps /scan, odom→base_link TF and joint_states.
         # Host-wall origin is unchanged; a simulation clock origin makes those
         # stamps sim-time, coherent with the HAL's /clock publisher.
-        parameters=[hal_params_file, {"use_sim_time": use_sim_time}],
+        parameters=[*hal_derived_params, hal_params_file, {"use_sim_time": use_sim_time}],
         additional_env=otel_env,
         output="screen",
     )
