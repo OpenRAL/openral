@@ -59,7 +59,9 @@ def _box(y: float) -> Any:
 _LEFT = ("openarm_left_finger_pair",)
 
 
-def _run(objects: list[Any], contact_links: tuple[str, ...] = _LEFT) -> tuple[list[Any], Any]:
+def _run(
+    objects: list[Any], contact_links: tuple[str, ...] = _LEFT, voxel_m: float | None = 0.02
+) -> tuple[list[Any], Any]:
     """Publish ``objects`` as the lifted world state, dispatch one named-target call."""
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -93,9 +95,10 @@ def _run(objects: list[Any], contact_links: tuple[str, ...] = _LEFT) -> tuple[li
             palette=ToolPalette(execute_rskill_ids=frozenset({_SKILL})),
             tick_hz=0.2,
         )
-        reasoner.set_parameters(
-            [Parameter("robot_yaml", value=str(_REPO / "robots" / "openarm" / "robot.yaml"))]
-        )
+        params = [Parameter("robot_yaml", value=str(_REPO / "robots" / "openarm" / "robot.yaml"))]
+        if voxel_m is not None:  # what deploy_e2e passes: its octree resolution
+            params.append(Parameter("grasp_target_voxel_m", value=voxel_m))
+        reasoner.set_parameters(params)
         reasoner.trigger_configure()
         reasoner.trigger_activate()
         assert reasoner._robot_description is not None
@@ -200,3 +203,11 @@ def test_a_bimanual_target_naming_no_gripper_sends_no_goal() -> None:
     assert received == [], "an unnamed gripper on a two-gripper robot must not be dispatched"
     assert last is not None and last.outcome == "failed"
     assert "2 hands" in last.summary
+
+
+def test_a_reasoner_without_the_deploy_voxel_resolution_sends_no_goal() -> None:
+    """No silent cell-specific fallback: an unset grasp_target_voxel_m refuses grounding."""
+    received, last = _run([_box(-0.15)], voxel_m=None)
+    assert received == [], "a grasp target padded by a guessed voxel size must not be dispatched"
+    assert last is not None and last.outcome == "failed"
+    assert "voxel resolution" in last.summary

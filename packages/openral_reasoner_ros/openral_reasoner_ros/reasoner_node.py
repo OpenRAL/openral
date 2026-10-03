@@ -792,12 +792,13 @@ class ReasonerNode(LifecycleNode):
         # unit whose surveyed fixtures are the place_target choices ($OPENRAL_ROBOT_UNIT wins,
         # as everywhere else), and the seed-box padding a grounded grasp target gets — one
         # octomap cell plus the depth extrinsic's planar accuracy bound. The cell is the
-        # deploy's octree resolution, which deploy_e2e passes (`_octomap_resolution`); the
-        # standalone default is the real map's 20 mm cell. Calibration knobs: the producer
-        # re-measures inside the seed, so a looser pad only widens its search, never the
-        # exemption.
+        # deploy's octree resolution, which deploy_e2e passes (`_octomap_resolution`); there is
+        # no standalone default (0.0 = unset), so a node launched without it refuses to ground
+        # a grasp target instead of padding by some other cell's size. Calibration knobs: the
+        # producer re-measures inside the seed, so a looser pad only widens its search, never
+        # the exemption.
         self.declare_parameter("robot_unit", "")
-        self.declare_parameter("grasp_target_voxel_m", 0.02)
+        self.declare_parameter("grasp_target_voxel_m", 0.0)
         self.declare_parameter("grasp_target_extrinsic_error_m", MAX_PLANAR_ERR_M)
         self._robot_description: RobotDescription | None = None
         self._robot_unit: RobotUnit | None = None
@@ -1395,8 +1396,14 @@ class ReasonerNode(LifecycleNode):
                     raise ROSReasonerInvalidPlan(
                         f"grasp_target: the latest world state does not decode: {exc!s}"
                     ) from exc
+            voxel_m = self.get_parameter("grasp_target_voxel_m").get_parameter_value().double_value
+            if voxel_m <= 0.0:
+                raise ROSReasonerInvalidPlan(
+                    "grasp grounding needs the deploy's voxel resolution "
+                    "(grasp_target_voxel_m), which this reasoner was not given."
+                )
             pad_m = (
-                self.get_parameter("grasp_target_voxel_m").get_parameter_value().double_value
+                voxel_m
                 + self.get_parameter("grasp_target_extrinsic_error_m")
                 .get_parameter_value()
                 .double_value
