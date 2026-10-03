@@ -659,6 +659,43 @@ def test_the_place_declaration_cannot_be_moved_by_a_round(tmp_path: Path) -> Non
         validation_matrix.assert_scene_safety_unmoved(tracked, retargeted)
 
 
+@pytest.mark.parametrize(
+    ("old", "new", "key"),
+    [
+        (
+            "contact_links: [openarm_left_finger_pair]",
+            "contact_links: [openarm_right_finger_pair]",
+            "grasp_declaration",
+        ),
+        (
+            "    enabled: false\n    camera: head_zed",
+            "    enabled: true\n    camera: head_zed",
+            "runtime.vision_attachment",
+        ),
+    ],
+)
+def test_the_grasp_declaration_and_vision_attachment_cannot_be_moved_by_a_round(
+    tmp_path: Path, old: str, new: str, key: str
+) -> None:
+    """A grasp declaration grants an exemption and the vision leg arms the attached-payload
+    check, so a round may not retarget the one or flip the other."""
+    text = (REPO_ROOT / "scenes/deploy/openarm_real_world_voxels.yaml").read_text(
+        encoding="utf-8"
+    ) + (
+        "grasp_declaration:\n"
+        "  target_id: cell:bench_item\n"
+        "  contact_links: [openarm_left_finger_pair]\n"
+        "  timeout_s: 70.0\n"
+    )
+    assert text.count(old) == 1
+    tracked = tmp_path / "tracked.yaml"
+    tracked.write_text(text, encoding="utf-8")
+    moved = tmp_path / "moved.yaml"
+    moved.write_text(text.replace(old, new), encoding="utf-8")
+    with pytest.raises(validation_matrix.GuardrailError, match=key):
+        validation_matrix.assert_scene_safety_unmoved(tracked, moved)
+
+
 def test_a_refused_round_leaves_no_directory_behind() -> None:
     """Exit 3, *no partial round*: the directory is created after the guardrails."""
     round_id = "test-guardrail-refusal-leaves-nothing"

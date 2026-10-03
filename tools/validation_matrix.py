@@ -178,17 +178,21 @@ _SCENE_SAFETY_KEYS: Final[tuple[str, ...]] = (
     "extra_allowed_collision_pairs",
     "hal",
     "place_declaration",
+    "grasp_declaration",
 )
 
-# Inside `runtime:`, two keys are safety knobs rather than stack composition:
-# the octomap→kernel collision gate and the kernel's grasp-target exemption
-# (which the `allowance` pattern would also catch). `enable_reasoner`,
+# Inside `runtime:`, three keys are safety knobs rather than stack composition:
+# the octomap→kernel collision gate, the kernel's grasp-target exemption
+# (which the `allowance` pattern would also catch) and the vision attachment
+# leg (enabling it turns the kernel's attached-payload check on; its tf_frames
+# decide which link a payload rides). `enable_reasoner`,
 # `enable_slam`, `enable_nav2`, `enable_octomap`, the detector and the scene VLM
 # compose the stack and are the whole point of pinning a scene, so they stay
 # pinnable.
 _SCENE_SAFETY_RUNTIME_KEYS: Final[tuple[str, ...]] = (
     "enable_octomap_kernel_check",
     "grasp_allowance_enabled",
+    "vision_attachment",
 )
 
 # Sources whose change invalidates the built ROS overlay: the C++ kernel, the
@@ -1885,9 +1889,9 @@ def scene_safety_surface(document: Mapping[str, Any]) -> dict[str, object]:
     """The safety-relevant keys of a parsed DeployScene, flattened.
 
     The kernel envelope, the collision-pair allowlist, the HAL parameter block
-    and the place declaration are safety-relevant wholesale; inside
-    ``runtime:`` only the octomap→kernel gate and the grasp-target exemption
-    are, because SLAM/Nav2/octomap/detector/scene-VLM/reasoner enablement is
+    and the place and grasp declarations are safety-relevant wholesale; inside
+    ``runtime:`` only the octomap→kernel gate, the grasp-target exemption and
+    the vision attachment leg are, because SLAM/Nav2/octomap/detector/scene-VLM/reasoner enablement is
     stack *composition* — pinning it
     is what the harness is for. Anything else whose leaf name looks like a
     margin, tolerance, allowance, limit, watchdog or E-stop is caught by name.

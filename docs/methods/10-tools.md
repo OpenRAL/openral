@@ -89,66 +89,66 @@ _The four-scene collision-stack validation matrix as one versioned command, emit
 - `REPO_ROOT: Final[Path]` (L60) — `Path(__file__).resolve().parents[1]`.
 - `OUTPUT_ROOT: Final[Path]` (L61) — `REPO_ROOT/"outputs"/"validation-matrix"`.
 - `DEFAULT_RSKILL_ID: Final[str]` (L119) — `"OpenRAL/rskill-xr1-panda_mobile-robocasa365-nf4"`.
-- `LAUNCH_FAILED_MARKER: Final[str] = "launch_failed.txt"` (L1093) — Suffix of the runner's own launch-failure marker file, the first thing `detect_launch_failure` checks for.
-- `DISPATCH_READY_TIMEOUT_S: Final[float] = 180.0` (L2190) — Timeout bound for the goal re-dispatch loop when the graph answers but is not assembled yet (paired with `DISPATCH_RETRY_INTERVAL_S`).
+- `LAUNCH_FAILED_MARKER: Final[str] = "launch_failed.txt"` (L1097) — Suffix of the runner's own launch-failure marker file, the first thing `detect_launch_failure` checks for.
+- `DISPATCH_READY_TIMEOUT_S: Final[float] = 180.0` (L2194) — Timeout bound for the goal re-dispatch loop when the graph answers but is not assembled yet (paired with `DISPATCH_RETRY_INTERVAL_S`).
 - `@dataclass(frozen=True) class SceneSpec(key, config, prompt, deadline_s)` — One matrix row; `config` is the tracked DeployScene YAML, and the round launches a resolved copy carrying the seed and CLI-less pins. (L79)
 - `MATRIX: tuple[SceneSpec, ...]` — The four scenes: `baguette`, `sink_cup`, `fridge`, `utensil`. (L96)
 - `SYNC_GROUPS = ("robocasa", "sidecar-wire")` — Both, always: `--group robocasa` alone strips `pyzmq` and breaks the XR-1 adapter. (L123)
 - `STACK_ARGV: tuple[str, ...]` — The flag-pinnable stack: SLAM/Nav2/octomap/kernel-check on, detector + scene VLM off, headless. (L128)
 - `SCENE_RUNTIME_PIN: tuple[tuple[str, bool], ...]` — `enable_reasoner=False`: the one pinned knob with no CLI flag, spliced into the resolved scene copy since `deploy sim` defaults it to `True`. (L169)
-- `LEGACY_SCENE_DIRS: tuple[tuple[str, tuple[str, ...]], ...]` — Scene key → the directory names pre-harness rounds used, so `import-round` needs no hand-mapping. (L200)
-- `quantization_budget_m(grid_resolution_m: float) -> float` — Half the voxel's body diagonal; the largest kernel-vs-ground-truth discrepancy a correct grid can produce. (L211)
-- `collision_scale_env() -> dict[str, float]` — The graded-velocity band the round runs with, read from the `OPENRAL_COLLISION_SCALE_*` env vars `deploy_e2e.launch.py` consumes; recorded because an argv-based override check cannot see it. (L1765)
-- `parse_kernel_collision(lines) -> ValidationStopEvidence | None` — Transcribe the first `safety.collision` line verbatim. (L231)
-- `parse_json_log_line(lines, event) -> dict[str, Any] | None` — Payload of the first `<event> {...}` line (`sim.task_success_final`, `sim.estop_ground_truth_snapshot`, `sim.estop_initial_configuration`). (L289)
-- `read_monitor(path) -> list[dict[str, Any]]` — Load a monitor JSONL, skipping non-object lines. (L323)
-- `grid_resolution_from_monitor(records) -> float | None` — Cell size from the first `world_voxels` record; the budget is read from the run, never assumed. (L347)
-- `monitor_subscription_records(records) -> int` — Record count excluding the monitor's own start/stop markers, i.e. what it actually received. `0` means the monitor's DDS participant missed the run — a harness fault, not evidence the run stopped early. (L370)
-- `build_witness_timeline(records, deploy_lines) -> ValidationWitnessTimeline` — Producer side from the monitor, consumer side from the kernel's own `safety.support_witness_*` / `safety.place_region_*` lines. (L392)
-- `probe_is_collidability_filtered(snapshot) -> bool` — Whether every non-empty coverage block in the snapshot excludes non-collidable side geoms, i.e. the HAL filtered both sides of each probe to solid geoms. `False` for any snapshot recorded before that filter existed. (L494)
-- `hal_admissible_gap_m(snapshot, stop) -> float | None` — The HAL's own kernel-vs-probe budget for a stop, dispatched by stop class. `None` for a snapshot predating the budget; an over-large budget silently excuses a stop rather than failing loudly, which is the direction that hides a real defect. (L562)
+- `LEGACY_SCENE_DIRS: tuple[tuple[str, tuple[str, ...]], ...]` — Scene key → the directory names pre-harness rounds used, so `import-round` needs no hand-mapping. (L204)
+- `quantization_budget_m(grid_resolution_m: float) -> float` — Half the voxel's body diagonal; the largest kernel-vs-ground-truth discrepancy a correct grid can produce. (L215)
+- `collision_scale_env() -> dict[str, float]` — The graded-velocity band the round runs with, read from the `OPENRAL_COLLISION_SCALE_*` env vars `deploy_e2e.launch.py` consumes; recorded because an argv-based override check cannot see it. (L1769)
+- `parse_kernel_collision(lines) -> ValidationStopEvidence | None` — Transcribe the first `safety.collision` line verbatim. (L235)
+- `parse_json_log_line(lines, event) -> dict[str, Any] | None` — Payload of the first `<event> {...}` line (`sim.task_success_final`, `sim.estop_ground_truth_snapshot`, `sim.estop_initial_configuration`). (L293)
+- `read_monitor(path) -> list[dict[str, Any]]` — Load a monitor JSONL, skipping non-object lines. (L327)
+- `grid_resolution_from_monitor(records) -> float | None` — Cell size from the first `world_voxels` record; the budget is read from the run, never assumed. (L351)
+- `monitor_subscription_records(records) -> int` — Record count excluding the monitor's own start/stop markers, i.e. what it actually received. `0` means the monitor's DDS participant missed the run — a harness fault, not evidence the run stopped early. (L374)
+- `build_witness_timeline(records, deploy_lines) -> ValidationWitnessTimeline` — Producer side from the monitor, consumer side from the kernel's own `safety.support_witness_*` / `safety.place_region_*` lines. (L396)
+- `probe_is_collidability_filtered(snapshot) -> bool` — Whether every non-empty coverage block in the snapshot excludes non-collidable side geoms, i.e. the HAL filtered both sides of each probe to solid geoms. `False` for any snapshot recorded before that filter existed. (L498)
+- `hal_admissible_gap_m(snapshot, stop) -> float | None` — The HAL's own kernel-vs-probe budget for a stop, dispatched by stop class. `None` for a snapshot predating the budget; an over-large budget silently excuses a stop rather than failing loudly, which is the direction that hides a real defect. (L566)
 - `_payload_world_gap_m(budget, grid_resolution_m) -> float | None` — The payload-vs-world-voxel half of `hal_admissible_gap_m`: model overhang plus the voxel half-diagonal, re-derived when the snapshot's voxel term is zero. Returns `None` (unadjudicated) rather than a number that convicts when it can't be computed.
 - `_arm_world_gap_m(budget, grid_resolution_m) -> float | None` — The arm-link-vs-world-voxel half: corner slop of the worst link plus the voxel half-diagonal, re-derived when the snapshot's is zero so an omission can't understate the budget. Falls back to the published composition when a term is absent.
 - `_link_link_gap_m(budget, stop) -> float | None` — The link-vs-link half, extracted alongside it so the dispatcher above reads as one line per stop class.
-- `probe_is_distance_certified(snapshot) -> bool` (L523) — Whether every non-empty coverage block reports zero uncertified pairs, i.e. distances were measured with the kernel's own convex-distance code rather than MuJoCo's, which can be wrong by tens of millimetres on some pairs. `False` for any round predating this certification check.
-- `adjudicate_ground_truth(snapshot, stop, grid_resolution_m, *, monitor_records=None) -> ValidationGroundTruthAdjudication | None` — Distance-probe adjudication ladder: a pair at ≤0 m is `real-contact` only when collidability-filtered; a gap beyond budget is `false-positive` only when the budget is trusted. Every verdict is withdrawn to `unadjudicated` unless the probe is distance-certified. (L772)
-- `detect_launch_failure(run_dir, stem, deploy_lines) -> str` — Why a scene is not a run at all: a launch-failure marker, a `ros2 launch` exception, a CLI usage-error banner, no log, a Nav2 bond teardown, or a graph that never came up. Empty when the scene ran; this is what `artifacts_complete` checks. (L1240)
+- `probe_is_distance_certified(snapshot) -> bool` (L527) — Whether every non-empty coverage block reports zero uncertified pairs, i.e. distances were measured with the kernel's own convex-distance code rather than MuJoCo's, which can be wrong by tens of millimetres on some pairs. `False` for any round predating this certification check.
+- `adjudicate_ground_truth(snapshot, stop, grid_resolution_m, *, monitor_records=None) -> ValidationGroundTruthAdjudication | None` — Distance-probe adjudication ladder: a pair at ≤0 m is `real-contact` only when collidability-filtered; a gap beyond budget is `false-positive` only when the budget is trusted. Every verdict is withdrawn to `unadjudicated` unless the probe is distance-certified. (L776)
+- `detect_launch_failure(run_dir, stem, deploy_lines) -> str` — Why a scene is not a run at all: a launch-failure marker, a `ros2 launch` exception, a CLI usage-error banner, no log, a Nav2 bond teardown, or a graph that never came up. Empty when the scene ran; this is what `artifacts_complete` checks. (L1244)
 - `_nav2_bond_teardown(deploy_lines) -> str` — A Nav2 bond-heartbeat timeout tears the whole stack down silently, leaving the graph inert until its deadline — which the harness would otherwise score as a policy failure to grasp. Discriminated from a late teardown by how early the loss occurs.
 - `_lacks_stage2_hull(link) -> bool` — Whether a link is known to carry no stage-2 hull. Only an explicit `False` counts — an older snapshot without the field must read as unknown, never as "no hull". Used by `_link_link_hull_gap_m`.
-- `dispatch_not_ready_reason(goal_log) -> str` (L2194) — Why a dispatch reports the graph as not assembled yet (e.g. a disconnected TF tree or a camera that published nothing), so the goal can be retried instead of scored as a non-completion. Never matches a real E-stop, deadline or capability mismatch. `tests/unit/test_dispatch_readiness.py`.
-- `DISPATCH_RETRY_INTERVAL_S: float` (L2191) — `12.0`; how often `dispatch_not_ready_reason` triggers a re-dispatch.
-- `_NAV2_BOND_LOSS_EARLY_S: float` (L1133) — `120.0`; a bond-loss timestamp inside this window of the log's start is scored as `_nav2_bond_teardown`, not an ordinary non-completion.
+- `dispatch_not_ready_reason(goal_log) -> str` (L2198) — Why a dispatch reports the graph as not assembled yet (e.g. a disconnected TF tree or a camera that published nothing), so the goal can be retried instead of scored as a non-completion. Never matches a real E-stop, deadline or capability mismatch. `tests/unit/test_dispatch_readiness.py`.
+- `DISPATCH_RETRY_INTERVAL_S: float` (L2195) — `12.0`; how often `dispatch_not_ready_reason` triggers a re-dispatch.
+- `_NAV2_BOND_LOSS_EARLY_S: float` (L1137) — `120.0`; a bond-loss timestamp inside this window of the log's start is scored as `_nav2_bond_teardown`, not an ordinary non-completion.
 - `_lifecycle_never_came_up(deploy_lines) -> str` — A lifecycle node never completed a transition, so the graph never came up and nothing after it is a policy outcome; bucketed alongside `_nav2_bond_teardown` since both represent absence rather than a real attempt.
-- `parse_goal_log(lines) -> tuple[dict[str, Any] | None, str]` — The dispatcher's single JSON status line, or why it never wrote one (e.g. a traceback with no `status` field). (L1310)
-- `classify_outcome(*, task_success_ever, stop, ground_truth, initial_configuration, grasped, artifacts_complete) -> str` — Buckets one scene's outcome; ordering is load-bearing — success wins outright, and an initial-configuration E-stop outranks the ground-truth adjudication. (L1351)
-- `scene_verdict_from_artifacts(run_dir, *, scene, config_path, seed, prompt, rskill_id, stem) -> ValidationSceneVerdict` — Derive one scene's verdict from recorded artifacts only. (L1405)
-- `diff_rounds(current, baseline) -> ValidationRoundDiff` — Field-by-field round comparison; carries both rounds' seed as well as SHA, since a comparison counts as reproducibility only when both match — the seed decides the scene's initial configuration. (L1576)
-- `class GuardrailError(RuntimeError)` — A precondition is not met; raised, never warned. (L1635)
-- `assert_worktree_clean() -> None` — Refuse a dirty worktree: its recorded SHA would be a lie. (L1648)
-- `assert_sha(expected: str | None) -> str` — Return `HEAD`, refusing when it is not the requested checkout. (L1661)
-- `assert_overlay_fresh(install_dir: Path) -> int` — Refuse an `install/` older than any tracked `.cpp/.hpp/.h/.msg/.idl` under `cpp/` or `packages/`. (L1682)
-- `resolve_launcher() -> Path` — This checkout's `.venv/bin/openral`, by absolute path; the `~/.local/bin` wrapper execs the **parent** checkout. (L1724)
-- `assert_sidecar_wire() -> None` — Refuse when `pyzmq` is absent. (L1748)
-- `assert_no_safety_overrides(argv) -> None` — Refuse any argv token matching `_SAFETY_KNOB_PATTERNS` (normalised lowercase, `-`→`_`). (L1828)
-- `scene_safety_surface(document) -> dict[str, object]` — The safety-relevant keys of a parsed DeployScene: `safety` / `hal` / ACM / place-declaration wholesale, `runtime.enable_octomap_kernel_check` and `runtime.grasp_allowance_enabled`, plus any leaf that reads as a margin, tolerance, limit, watchdog or E-stop. Stack composition is deliberately excluded. (L1884)
-- `assert_scene_safety_unmoved(tracked, resolved) -> None` — The second control surface: refuse a materialised scene copy that adds, removes or changes any key of `scene_safety_surface` relative to the tracked scene. (L1914)
-- `gpu_status() -> tuple[str | None, list[str]]` — GPU name + resident compute processes; the host is shared. (L1952)
-- `pin_runtime_block(text, pins) -> str` — Splice `runtime:` pins into a scene YAML, changing nothing else (comments and safety commentary survive verbatim). (L1986)
-- `materialise_scene(spec, seed, run_dir) -> tuple[str, Path]` — Write the round's resolved scene copy (seed + `SCENE_RUNTIME_PIN`), re-parse it to prove the pins landed, and check it against the tracked scene. The tracked file is never touched. (L2037)
-- `wait_for_dds_transport_ready(deploy_log, proc, *, timeout_s, poll_s=0.05) -> str` — Block until the deploy log shows `dds_transport_ready:` (stale shared-memory clean done, `ros2 launch` not yet spawned), so the monitor joins the graph being launched. Returns `""` on timeout or a dead deploy. (L2122)
-- `render_notes(verdicts) -> str` — The round's Markdown summary: names scenes whose monitor received nothing (a harness fault) separately from those that stopped before seeing a voxel grid (a fact about the run), plus any with an uncertified probe or a lower-bound-only budget. (L2438)
-- `round_exit_code(verdicts) -> int` — `4` when any scene bucketed `harness-error`, else `0`: a round in which a scene never launched must not exit successfully. (L2567)
-- `parse_launch_argv(lines) -> list[str]` — The resolved `argv: … launch …` the deploy CLI echoed: the only artifact stating the stack a run actually got; head-agnostic, so a venv-wrapped `ros2` still parses. (L2659)
-- `stack_tokens(argv) -> list[str]` — The stack-defining `key:=value` tokens of that argv, per-scene tokens dropped. (L2702)
-- `robot_facts_from_launch_argv(argv) -> dict[str, str]` — `repo_root` / `robot_id` / `robot_manifest_path`, from the argv's `robot_yaml:=` token. (L2721)
-- `parse_log_start_time(lines) -> str | None` — UTC timestamp of the log's first ROS stamp; pre-harness rounds recorded no start time, their logs did. (L2750)
-- `resolve_scene_dirs(round_dir, aliases) -> dict[str, str]` — Map each matrix scene onto the directory a round kept it in; `--scene-alias` wins over `LEGACY_SCENE_DIRS`. (L2774)
-- `cmd_verdicts(round_dir, *, stem=None) -> int` (L2583) — `stem=None` reads the round's recorded `artifact_stem`.
-- `cmd_diff(round_dir, baseline_dir, out_path) -> int` (L2634) — `verdicts` subcommand body: field-by-field round comparison via `diff_rounds`.
-- `cmd_import(args) -> int` (L2804) — `import-round` subcommand body.
-- `cmd_run(args) -> int` (L2893) — `run` subcommand body.
-- `main(argv=None) -> int` — CLI entry; `run` / `verdicts` / `diff` / `import-round`. `3` on a guardrail refusal (nothing written), `4` when a scene bucketed `harness-error`. (L2973)
-- `octomap_resolution_env() -> dict[str, float]` — The world-voxel resolution the round actually runs with, read from `OPENRAL_OCTOMAP_RESOLUTION_M`; a finer grid is less conservative than the shipped default. Returns `{}` (not a value) when the override is absent, so metadata never misdescribes the run. (L1796)
+- `parse_goal_log(lines) -> tuple[dict[str, Any] | None, str]` — The dispatcher's single JSON status line, or why it never wrote one (e.g. a traceback with no `status` field). (L1314)
+- `classify_outcome(*, task_success_ever, stop, ground_truth, initial_configuration, grasped, artifacts_complete) -> str` — Buckets one scene's outcome; ordering is load-bearing — success wins outright, and an initial-configuration E-stop outranks the ground-truth adjudication. (L1355)
+- `scene_verdict_from_artifacts(run_dir, *, scene, config_path, seed, prompt, rskill_id, stem) -> ValidationSceneVerdict` — Derive one scene's verdict from recorded artifacts only. (L1409)
+- `diff_rounds(current, baseline) -> ValidationRoundDiff` — Field-by-field round comparison; carries both rounds' seed as well as SHA, since a comparison counts as reproducibility only when both match — the seed decides the scene's initial configuration. (L1580)
+- `class GuardrailError(RuntimeError)` — A precondition is not met; raised, never warned. (L1639)
+- `assert_worktree_clean() -> None` — Refuse a dirty worktree: its recorded SHA would be a lie. (L1652)
+- `assert_sha(expected: str | None) -> str` — Return `HEAD`, refusing when it is not the requested checkout. (L1665)
+- `assert_overlay_fresh(install_dir: Path) -> int` — Refuse an `install/` older than any tracked `.cpp/.hpp/.h/.msg/.idl` under `cpp/` or `packages/`. (L1686)
+- `resolve_launcher() -> Path` — This checkout's `.venv/bin/openral`, by absolute path; the `~/.local/bin` wrapper execs the **parent** checkout. (L1728)
+- `assert_sidecar_wire() -> None` — Refuse when `pyzmq` is absent. (L1752)
+- `assert_no_safety_overrides(argv) -> None` — Refuse any argv token matching `_SAFETY_KNOB_PATTERNS` (normalised lowercase, `-`→`_`). (L1832)
+- `scene_safety_surface(document) -> dict[str, object]` — The safety-relevant keys of a parsed DeployScene: `safety` / `hal` / ACM / place-declaration wholesale, `runtime.enable_octomap_kernel_check` and `runtime.grasp_allowance_enabled`, plus any leaf that reads as a margin, tolerance, limit, watchdog or E-stop. Stack composition is deliberately excluded. (L1888)
+- `assert_scene_safety_unmoved(tracked, resolved) -> None` — The second control surface: refuse a materialised scene copy that adds, removes or changes any key of `scene_safety_surface` relative to the tracked scene. (L1918)
+- `gpu_status() -> tuple[str | None, list[str]]` — GPU name + resident compute processes; the host is shared. (L1956)
+- `pin_runtime_block(text, pins) -> str` — Splice `runtime:` pins into a scene YAML, changing nothing else (comments and safety commentary survive verbatim). (L1990)
+- `materialise_scene(spec, seed, run_dir) -> tuple[str, Path]` — Write the round's resolved scene copy (seed + `SCENE_RUNTIME_PIN`), re-parse it to prove the pins landed, and check it against the tracked scene. The tracked file is never touched. (L2041)
+- `wait_for_dds_transport_ready(deploy_log, proc, *, timeout_s, poll_s=0.05) -> str` — Block until the deploy log shows `dds_transport_ready:` (stale shared-memory clean done, `ros2 launch` not yet spawned), so the monitor joins the graph being launched. Returns `""` on timeout or a dead deploy. (L2126)
+- `render_notes(verdicts) -> str` — The round's Markdown summary: names scenes whose monitor received nothing (a harness fault) separately from those that stopped before seeing a voxel grid (a fact about the run), plus any with an uncertified probe or a lower-bound-only budget. (L2442)
+- `round_exit_code(verdicts) -> int` — `4` when any scene bucketed `harness-error`, else `0`: a round in which a scene never launched must not exit successfully. (L2571)
+- `parse_launch_argv(lines) -> list[str]` — The resolved `argv: … launch …` the deploy CLI echoed: the only artifact stating the stack a run actually got; head-agnostic, so a venv-wrapped `ros2` still parses. (L2663)
+- `stack_tokens(argv) -> list[str]` — The stack-defining `key:=value` tokens of that argv, per-scene tokens dropped. (L2706)
+- `robot_facts_from_launch_argv(argv) -> dict[str, str]` — `repo_root` / `robot_id` / `robot_manifest_path`, from the argv's `robot_yaml:=` token. (L2725)
+- `parse_log_start_time(lines) -> str | None` — UTC timestamp of the log's first ROS stamp; pre-harness rounds recorded no start time, their logs did. (L2754)
+- `resolve_scene_dirs(round_dir, aliases) -> dict[str, str]` — Map each matrix scene onto the directory a round kept it in; `--scene-alias` wins over `LEGACY_SCENE_DIRS`. (L2778)
+- `cmd_verdicts(round_dir, *, stem=None) -> int` (L2587) — `stem=None` reads the round's recorded `artifact_stem`.
+- `cmd_diff(round_dir, baseline_dir, out_path) -> int` (L2638) — `verdicts` subcommand body: field-by-field round comparison via `diff_rounds`.
+- `cmd_import(args) -> int` (L2808) — `import-round` subcommand body.
+- `cmd_run(args) -> int` (L2897) — `run` subcommand body.
+- `main(argv=None) -> int` — CLI entry; `run` / `verdicts` / `diff` / `import-round`. `3` on a guardrail refusal (nothing written), `4` when a scene bucketed `harness-error`. (L2977)
+- `octomap_resolution_env() -> dict[str, float]` — The world-voxel resolution the round actually runs with, read from `OPENRAL_OCTOMAP_RESOLUTION_M`; a finer grid is less conservative than the shipped default. Returns `{}` (not a value) when the override is absent, so metadata never misdescribes the run. (L1800)
 
 ### `tools/_validation_matrix_monitor.py`
 _Private helper of `validation_matrix.py`, spawned alongside each scene's ROS graph. Records the attachment stream, kernel failure evidence, the occupied-cell set hash, the place declaration plus producer-measured region, and periodic `.npz` snapshots. Needs ROS 2 sourced._
