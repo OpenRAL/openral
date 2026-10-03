@@ -220,8 +220,11 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   the manifest's hand/finger boxes (posed by tf2 + the jaw angle) and the payload, against
   `release_clear_m` (the deploy's kernel world-voxel margin + one voxel; 0.04 m on the real cell,
   HAL param `vision_attachment_release_clear_m`); `release_timeout_s` (3.0 s,
-  `vision_attachment_release_timeout_s`) bounds it, since the bridge sees no
-  goal end. No octomap-bridge change was needed: payload clearing clears every attached object
+  `vision_attachment_release_timeout_s`) bounds it, since the bridge sees no goal end. On a
+  deploy, `deploy_e2e.launch.py` derives `vision_attachment_release_clear_m` (the kernel's world
+  margin + one octree cell) and `vision_attachment_grid_max_age_s` (the kernel's voxel deadline)
+  from its own single sources; `release_timeout_s` is the scene's
+  `runtime.vision_attachment.release_timeout_s`. No octomap-bridge change was needed: payload clearing clears every attached object
   on `/openral/world_state_fast`, and the frozen record does not move, so its
   `AttachSweepLedger` window behaves as a held payload's. Proven on the real kernel by
   `tests/integration/test_vision_attachment_release_window_live.py`.

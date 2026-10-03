@@ -2970,6 +2970,7 @@ def test_deploy_vision_attachment_block_maps_to_hal_params_and_launch_args(
         "vision_attachment_release_effort": 0.0,
         "vision_attachment_grasp_target_enabled": False,
         "vision_attachment_place_fixture_enabled": False,
+        "vision_attachment_release_timeout_s": 3.0,
         "vision_attachment_tf_frames": [
             "openarm_left_link7=openarm_left_ee_base_link",
             "openarm_right_link7=openarm_right_ee_base_link",
@@ -3023,9 +3024,15 @@ def test_deploy_vision_attachment_producers_reach_the_hal(
     scene = _openarm_cell_scene(
         tmp_path,
         runtime={"grasp_allowance_enabled": True},
-        leg={"enabled": True, "grasp_target_enabled": True, "place_fixture_enabled": True},
+        leg={
+            "enabled": True,
+            "grasp_target_enabled": True,
+            "place_fixture_enabled": True,
+            "release_timeout_s": 4.5,
+        },
     )
     hal = _invoke_cell(scene).hal_params
+    assert hal["vision_attachment_release_timeout_s"] == 4.5  # the scene's calibration
     assert hal["vision_attachment_grasp_target_enabled"] is True
     assert hal["vision_attachment_place_fixture_enabled"] is True
     assert hal["vision_attachment_robot_unit"] == "thor"

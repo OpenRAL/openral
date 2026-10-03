@@ -465,6 +465,7 @@ def _vision_attachment_hal_params(leg: VisionAttachmentRuntime) -> dict[str, obj
         "vision_attachment_release_effort": leg.release_effort or 0.0,
         "vision_attachment_grasp_target_enabled": leg.grasp_target_enabled,
         "vision_attachment_place_fixture_enabled": leg.place_fixture_enabled,
+        "vision_attachment_release_timeout_s": leg.release_timeout_s,
     }
     # An empty YAML list has no ROS parameter type; the node's default is [""] = none.
     if leg.tf_frames:

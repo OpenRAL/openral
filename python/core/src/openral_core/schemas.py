@@ -9895,6 +9895,11 @@ class VisionAttachmentRuntime(BaseModel):
         place_fixture_enabled: Run the real place producer (HAL param
             ``vision_attachment_place_fixture_enabled``), verifying the robot unit's
             fixtures against the voxel map. Default off.
+        release_timeout_s: How long the bridge's release window waits for the payload to
+            clear the jaws (HAL param ``vision_attachment_release_timeout_s``). Calibration
+            point. The window's grid age and clearance are not scene knobs: the deploy
+            launch derives them from the kernel's voxel deadline, world margin and octree
+            resolution.
 
     Example:
         >>> VisionAttachmentRuntime(camera="head_zed").enabled
@@ -9918,6 +9923,7 @@ class VisionAttachmentRuntime(BaseModel):
     tf_frames: dict[str, str] = Field(default_factory=dict)
     grasp_target_enabled: bool = False
     place_fixture_enabled: bool = False
+    release_timeout_s: float = Field(default=3.0, gt=0)
 
     @model_validator(mode="after")
     def _require_driver_topics(self) -> Self:

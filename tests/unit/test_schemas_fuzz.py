@@ -476,6 +476,7 @@ _vision_attachment_st = st.builds(
     tf_frames=st.dictionaries(_name, _name, max_size=3),
     grasp_target_enabled=st.booleans(),
     place_fixture_enabled=st.booleans(),
+    release_timeout_s=st.floats(min_value=0.01, max_value=30.0),
 )
 _deploy_runtime_st = st.builds(
     DeployRuntime,
