@@ -78,7 +78,7 @@ sensors:
 #   fixtures:
 #     - id: cell:bench_top
 #       frame_id: openarm_base
-#       pose: {frame_id: openarm_base, xyz: [0.43, -0.01, -0.435], rpy: [0.0, 0.0, 0.0]}
+#       pose: {frame_id: openarm_base, xyz: [0.43, -0.01, -0.435], quat_xyzw: [0.0, 0.0, 0.0, 1.0]}
 #       half_extents: [0.30, 0.52, 0.115]      # top face at z = -0.32
 #       top_plane_normal: [0.0, 0.0, 1.0]
 #       survey_uncertainty_m: 0.02
