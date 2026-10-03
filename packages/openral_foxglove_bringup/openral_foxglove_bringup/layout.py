@@ -83,6 +83,55 @@ def camera_image_topic(camera: str, *, compressed: bool = False) -> str:
     return camera_topic(camera) + suffix
 
 
+#: Topic the URDF layer reads the robot model from. On ``deploy sim`` it is the
+#: manifest URDF (``robot_state_publisher`` in ``deploy_e2e.launch.py``); on
+#: ``deploy run`` the vendor bringup owns it. Same robot, same link names.
+ROBOT_DESCRIPTION_TOPIC: str = "/robot_description"
+
+
+def urdf_layer(topic: str = ROBOT_DESCRIPTION_TOPIC) -> dict[str, dict[str, Any]]:
+    """3D-panel ``layers`` entry that draws the robot model from a URDF topic.
+
+    Foxglove's 3D panel never subscribes to ``/robot_description`` on its own:
+    it auto-loads the URDF only from the ``/robot_description`` *parameter*,
+    which needs the bridge's ``parameters`` capability — deliberately withheld
+    here (``READ_ONLY_CAPABILITIES``). Listing the topic under ``topics`` does
+    nothing for a ``std_msgs/String``. The model has to come from a custom URDF
+    layer (``layerId: "foxglove.Urdf"``) with ``sourceType: "topic"``; its
+    ``package://`` meshes are then fetched through the bridge's ``assets``
+    capability (``ASSET_URI_ALLOWLIST``) and posed by ``/tf``.
+
+    Args:
+        topic: ``std_msgs/String`` topic carrying the URDF XML.
+
+    Returns:
+        A one-entry ``layers`` mapping, keyed by its ``instanceId``.
+
+    Example:
+        >>> layer = urdf_layer()["openral-urdf"]
+        >>> (layer["layerId"], layer["sourceType"], layer["topic"])
+        ('foxglove.Urdf', 'topic', '/robot_description')
+    """
+    instance_id = "openral-urdf"
+    return {
+        instance_id: {
+            "visible": True,
+            "frameLocked": True,
+            "label": "Robot (URDF)",
+            "instanceId": instance_id,
+            "layerId": "foxglove.Urdf",
+            "sourceType": "topic",
+            "url": "",
+            "filePath": "",
+            "parameter": "",
+            "topic": topic,
+            "framePrefix": "",
+            "displayMode": "auto",
+            "fallbackColor": "#ffffff",
+        }
+    }
+
+
 def _scene_panel(follow_frame: str) -> dict[str, Any]:
     """3D panel config for the hero view: the robot inside its environment."""
     return {
@@ -99,9 +148,7 @@ def _scene_panel(follow_frame: str) -> dict[str, Any]:
             "far": 5000,
         },
         "topics": {
-            # The robot itself: URDF from /robot_description, posed by /tf.
-            "/robot_description": {"visible": True},
-            # The environment around it.
+            # The environment around the robot (the robot is `layers` below).
             "/map": {"visible": True},
             "/octomap_point_cloud_centers": {
                 "visible": True,
@@ -120,7 +167,8 @@ def _scene_panel(follow_frame: str) -> dict[str, Any]:
             "/odom": {"visible": True},
             "/scan": {"visible": True},
         },
-        "layers": {},
+        # The robot itself: URDF from /robot_description, posed by /tf.
+        "layers": urdf_layer(),
     }
 
 
@@ -174,7 +222,8 @@ def _bucket2_panel(follow_frame: str) -> dict[str, Any]:
                 "pointSize": 0.04,
             },
         },
-        "layers": {},
+        # The robot in the close-up too: self-occupancy reads off the overlap.
+        "layers": urdf_layer(),
     }
 
 

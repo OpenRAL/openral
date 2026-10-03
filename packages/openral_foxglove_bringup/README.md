@@ -89,7 +89,16 @@ openral deploy sim --config scenes/deploy/<scene>.yaml --foxglove --foxglove-por
 Default is `--no-foxglove`. The flag is view-only — it cannot actuate the robot.
 When a manifest robot carries an `assets.urdf`, deploy-sim already
 runs a `robot_state_publisher`, so `/tf` + `/robot_description` are on the bus
-and the 3D panel draws the robot with no extra wiring.
+and the 3D panel draws the robot — provided the layout is a generated one
+(re-import it after upgrading). Foxglove's 3D panel loads a URDF on its own
+only from the `/robot_description` *parameter*, which the bridge does not
+expose (no `parameters` capability), so the layout carries an explicit URDF
+layer (`layerId: "foxglove.Urdf"`, `sourceType: "topic"`,
+`topic: "/robot_description"`) on the hero and World-voxels panels. Its
+`package://` meshes are fetched through the bridge, so the package that owns
+them must be on the **bridge's** `AMENT_PREFIX_PATH` (for OpenArm,
+`openarm_description` — source the vendor workspace before `deploy sim` too);
+otherwise the panel shows `Failed to retrieve asset package://…` per link.
 
 ## Run stand-alone
 
@@ -128,7 +137,7 @@ stack beside it; everything else is tabbed, one click away.
 
 | Panel | Topics | Shows |
 |---|---|---|
-| 3D · scene (hero) | `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels |
+| 3D · scene (hero) | URDF layer on `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels |
 | Image ×N | `/openral/cameras/<slot>/image` | One panel per camera slot in the scene's `cameras:` list |
 
 **Scene tabs**
@@ -137,7 +146,7 @@ stack beside it; everything else is tabbed, one click away.
 |---|---|---|
 | Nav · 2D map | `/map`, `/odom`, `/scan` | Top-down 2D nav view |
 | Joints | `/joint_states.position[:]` | Every joint's position trace (`[:]` slices any DOF count) |
-| World voxels | `/openral/world_voxels_cloud` | Bucket-2 geometry close-up |
+| World voxels | `/openral/world_voxels_cloud`, URDF layer on `/robot_description` | Bucket-2 geometry close-up, robot overlaid |
 | Policy state | `/openral/policy_state`, `world_state_fast.staleness_ms[:]`, `.battery_pct` | Step-locked policy vector; staleness/battery off by default |
 
 **Telemetry tabs**
@@ -223,7 +232,7 @@ Under a real deploy-sim, set **only** `with_robot_state_publisher:=true` — the
 sim is the real `/joint_states` source; a second publisher would fight it.
 Resolve a manifest robot's URDF via `robot_descriptions` (e.g.
 `panda_description` for `franka_panda` / `panda_mobile`). `openarm` has no local
-URDF. Meshes render only when the URDF's `package://` paths resolve
+URDF in `robot_descriptions` (its manifest URDF is `robots/openarm/openarm.urdf`). Meshes render only when the URDF's `package://` paths resolve
 to an ament package on the ROS path. See `VERIFICATION.md`.
 
 ## Compress camera images
