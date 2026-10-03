@@ -95,6 +95,22 @@ measures the surface directly under it in the voxel map and, when one is measure
 every publication carries a ``PlaceDeclaration`` with that support patch as the
 region (dispatch's optional declaration when there is one, else the leg's own),
 and the payload gets a map-support proximity witness (not sensed contact) once.
+
+**Threading.** On a sim HAL ``observe_joint_state`` runs on the HAL's proprio publisher
+thread while the heartbeat, release poll, segmentation replies and both producer legs'
+timers run on the executor. The bridge is therefore serialized by ONE re-entrant lock
+(``_lock``), taken at every entry point that reads or mutates leg, tracker or attachment
+state: ``observe_joint_state`` / ``observe_command`` / ``clear_command``, the heartbeat
+(release poll and snapshot), the segmentation reply/deadline commits, every publish, and
+the producer legs' ticks, replies, deadlines and declaration callbacks (the legs alias
+it). Lock order is bridge lock -> ``GraspTargetTracker``'s own lock, never the reverse
+(nothing run under the tracker lock takes the bridge lock). Slow pure work runs outside
+it on a snapshot and is committed under it only if the leg's ``generation`` (the
+tracker's, for the grasp leg) is unchanged: mask decode and depth back-projection of a
+``SegmentInView`` reply (``_finish``, ``GraspTargetLeg._measure``) and the whole-grid voxel
+scan (done once at grid receipt). tf2 lookups at the latest time pass no timeout — a
+non-blocking buffer read — and run under the lock. On real hardware every caller is the
+executor's one thread, so the lock is uncontended and behaviour is unchanged.
 """
 
 from __future__ import annotations
@@ -112,7 +128,7 @@ from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
 
-from openral_hal._grasp_target_leg import GraspTargetLeg, _hand_near
+from openral_hal._grasp_target_leg import GraspTargetLeg, _hand_near, _locked
 from openral_hal._grasp_trigger import (
     GraspEvent,
     PositionStallConfig,
@@ -209,6 +225,18 @@ class _GripperLeg:
     jaw_link: str = ""
     release: ReleaseWindow | None = None
     announced_uncommanded: bool = False
+
+
+def _published(leg: _GripperLeg) -> AttachedCollisionObject | None:
+    """What one leg publishes: its held payload, else its frozen release record, else ``None``.
+
+    The one definition of a leg's slot in ``/openral/attachment_state``, shared by the
+    bridge's snapshot and the place leg. Call under the bridge lock.
+    """
+    if leg.attachment is not None:
+        held: AttachedCollisionObject = leg.attachment
+        return held
+    return leg.release.record if leg.release is not None else None
 
 
 #: Mask/depth aspect-ratio agreement below which a resample is a resolution change.
@@ -1198,10 +1226,9 @@ class VisionAttachmentBridge:
         self._revision = 0
         # (object_id, stamp_ns, attach_link) of the last set published at a new revision.
         self._published_keys: frozenset[tuple[str, int, str]] = frozenset()
-        self._publish_lock = threading.Lock()
-        # Serializes closing a leg's release window: the executor's ``_poll_releases``
-        # and the proprio thread's re-ATTACH both close it (``_close_release``).
-        self._release_lock = threading.Lock()
+        # The one lock serializing the bridge and its producer legs (module docstring,
+        # "Threading"); taken before any tracker lock, never after.
+        self._lock = threading.RLock()
         # Latest joint positions by name: the jaws' angles for the release test.
         self._positions: dict[str, float] = {}
         self._grasp_target: GraspTargetLeg | None = (
@@ -1286,6 +1313,7 @@ class VisionAttachmentBridge:
                 f"stall_thresholds(closed,rest,gap,settle)={leg.trigger.thresholds}"
             )
 
+    @_locked
     def teardown(self) -> None:
         """Destroy every ROS entity; idempotent, and never leaves the barrier shut."""
         for leg in self._legs:
@@ -1321,6 +1349,7 @@ class VisionAttachmentBridge:
 
     # ── barrier ──────────────────────────────────────────────────────────────
 
+    @_locked
     def attachment_action_ack_ready(self) -> bool:
         """Whether attached-payload perception has settled for this tick.
 
@@ -1347,6 +1376,7 @@ class VisionAttachmentBridge:
 
     # ── trigger ──────────────────────────────────────────────────────────────
 
+    @_locked
     def observe_joint_state(self, state: JointState) -> None:
         """Fold one HAL read into every leg's grasp trigger and act on transitions.
 
@@ -1388,15 +1418,16 @@ class VisionAttachmentBridge:
                 if leg.pending:
                     self._release_barrier(leg)
                 if self._grasp_target is not None and held is not None:
-                    # The pick-complete path: the frozen record (None without tf2). Read
-                    # once: the executor's poll may close the window meanwhile.
-                    window = leg.release
-                    record = window.record if window is not None else None
+                    # The pick-complete path: the frozen record (None without tf2).
+                    record = leg.release.record if leg.release is not None else None
                     self._grasp_target.on_detach(leg.jaw_link, record)
+                elif self._grasp_target is not None:
+                    # Nothing latched (a regrasp superseded before its reply): the hand
+                    # may still be handed over, and nothing else would complete its pick.
+                    self._grasp_target.on_hand_settled(leg.jaw_link)
                 continue
-            window = leg.release
-            if window is not None:
-                self._close_release(leg, "attach", window)
+            if leg.release is not None:
+                self._close_release(leg, "attach")
             self._node.get_logger().info(
                 f"grasp trigger {leg.joint_name}: {event.value.upper()} — holding the action "
                 "ack for segmentation"
@@ -1408,6 +1439,7 @@ class VisionAttachmentBridge:
         if self._place_target is not None:
             self._place_target.on_joint_state()
 
+    @_locked
     def observe_command(self, action: Action) -> None:
         """Fold the command the HAL applied into every leg's trigger.
 
@@ -1447,6 +1479,7 @@ class VisionAttachmentBridge:
             if target is not None:
                 leg.trigger.command(target)
 
+    @_locked
     def clear_command(self) -> None:
         """Forget every leg's commanded target: the HAL applied a command nobody can read.
 
@@ -1485,6 +1518,7 @@ class VisionAttachmentBridge:
         return None
 
     @property
+    @_locked
     def missing_position_ticks(self) -> int:
         """Ticks whose gripper carried no finite position, summed over every leg.
 
@@ -1534,12 +1568,20 @@ class VisionAttachmentBridge:
         leg.pending = True
         context = self._gather_context(leg)
         if isinstance(context, str):  # a typed precondition failure
-            self._finish(leg, stamp_ns=stamp_ns, masks=[], scores=[], reason=context)
+            self._finish(
+                leg,
+                generation=leg.generation,
+                stamp_ns=stamp_ns,
+                masks=[],
+                scores=[],
+                reason=context,
+            )
             return
         t_link_from_cam, tcp_in_link, negatives = context
         if self._client is None or not self._client.service_is_ready():
             self._finish(
                 leg,
+                generation=leg.generation,
                 stamp_ns=stamp_ns,
                 masks=[],
                 scores=[],
@@ -1593,16 +1635,22 @@ class VisionAttachmentBridge:
         t_link_from_cam: NDArray[np.float64],
         tcp_in_link: tuple[float, float, float],
     ) -> None:
-        """Resolve the attachment from a SegmentInView reply (or its exception)."""
-        if generation != leg.generation or future is not leg.inflight:
-            return  # resolved by the deadline, or superseded by a newer grasp event
-        self._cancel_deadline(leg)
-        leg.inflight = None
+        """Resolve the attachment from a SegmentInView reply (or its exception).
+
+        The in-flight check and hand-off run under the lock; decoding and the fit run
+        outside it, and ``_finish`` commits only while ``generation`` is still the leg's.
+        """
+        with self._lock:
+            if generation != leg.generation or future is not leg.inflight:
+                return  # resolved by the deadline, or superseded by a newer grasp event
+            self._cancel_deadline(leg)
+            leg.inflight = None
         try:
             response = future.result()
         except Exception as exc:  # a service exception must degrade, not propagate
             self._finish(
                 leg,
+                generation=generation,
                 stamp_ns=stamp_ns,
                 masks=[],
                 scores=[],
@@ -1618,6 +1666,7 @@ class VisionAttachmentBridge:
             # barrier held with no explanation anywhere.
             self._finish(
                 leg,
+                generation=generation,
                 stamp_ns=stamp_ns,
                 masks=[],
                 scores=[],
@@ -1634,11 +1683,12 @@ class VisionAttachmentBridge:
         )
         reason = outcome.reason
         use_masks = outcome.use_masks
-        if use_masks and self._depth is not None:
+        depth_entry = self._depth
+        if use_masks and depth_entry is not None:
             # The depth _finish back-projects through is the cached one, now.
             skew = mask_depth_skew_reason(
                 mask_stamps_ns(response.masks),
-                self._depth[1],
+                depth_entry[1],
                 max_skew_s=self._config.mask_depth_max_skew_s,
             )
             if skew:
@@ -1653,6 +1703,7 @@ class VisionAttachmentBridge:
         )
         self._finish(
             leg,
+            generation=generation,
             stamp_ns=stamp_ns,
             masks=masks,
             scores=[float(s) for s in response.mask_scores_advisory] if use_masks else [],
@@ -1661,6 +1712,7 @@ class VisionAttachmentBridge:
             tcp_in_link=tcp_in_link,
         )
 
+    @_locked
     def _on_deadline(
         self,
         leg: _GripperLeg,
@@ -1686,6 +1738,7 @@ class VisionAttachmentBridge:
         outcome = resolve_segment_outcome(timed_out=True, ok=False, failure_reason="", mask_count=0)
         self._finish(
             leg,
+            generation=generation,
             stamp_ns=stamp_ns,
             masks=[],
             scores=[],
@@ -1698,6 +1751,7 @@ class VisionAttachmentBridge:
         self,
         leg: _GripperLeg,
         *,
+        generation: int,
         stamp_ns: int,
         masks: Sequence[NDArray[np.bool_]],
         scores: Sequence[float],
@@ -1709,9 +1763,12 @@ class VisionAttachmentBridge:
 
         ``masks`` empty is not an error branch: the producer answers it with its
         conservative jaw-span box, so the collision checker always receives
-        geometry.
+        geometry. The fit (back-projection) needs no bridge state and runs outside the
+        lock; the result is committed under it only while ``generation`` is still the
+        leg's — a grasp event meanwhile superseded it, and owns the barrier now.
         """
-        depth = self._depth[0] if self._depth is not None else np.zeros((0, 0), dtype=np.float64)
+        depth_entry = self._depth
+        depth = depth_entry[0] if depth_entry is not None else np.zeros((0, 0), dtype=np.float64)
         transform = t_link_from_cam if t_link_from_cam is not None else np.eye(4, dtype=np.float64)
         intrinsics = self._no_mask_intrinsics
         if masks:
@@ -1754,17 +1811,26 @@ class VisionAttachmentBridge:
             f"depth_valid={report.depth_valid_fraction:.2f} "
             f"mask_score_advisory={report.mask_score_advisory:.3f} (advisory only)"
         )
-        leg.attachment = attachment
-        if self._grasp_target is not None and attachment is not None:
-            # Segmented: handed over only if the payload is on the armed region (it may
-            # be a neighbour — ``_region_payload`` refused the region for this grasp).
-            self._grasp_target.on_attach(leg.jaw_link, attachment, region=None)
-        self._publish_attachment()
-        self._release_barrier(leg)
+        with self._lock:
+            if generation != leg.generation:
+                self._node.get_logger().info(
+                    f"vision attachment {leg.joint_name}: a newer grasp event superseded this "
+                    "fit while it ran; dropped"
+                )
+                return
+            leg.attachment = attachment
+            if self._grasp_target is not None and attachment is not None:
+                # Segmented: handed over only if the payload is on the armed region (it
+                # may be a neighbour — ``_region_payload`` refused the region for it).
+                self._grasp_target.on_attach(leg.jaw_link, attachment, region=None)
+            self._publish_attachment()
+            self._release_barrier(leg)
 
     def _release_barrier(self, leg: _GripperLeg) -> None:
-        """Reopen this leg's hold and let the node re-check the barrier."""
+        """Reopen this leg's hold, re-check its hand's pick, let the node re-check the barrier."""
         leg.pending = False
+        if self._grasp_target is not None:
+            self._grasp_target.on_hand_settled(leg.jaw_link)
         if callable(self._on_perception_ready):
             self._on_perception_ready()
 
@@ -1995,6 +2061,7 @@ class VisionAttachmentBridge:
         t, q = tf.transform.translation, tf.transform.rotation
         return homogeneous_from_quat_xyz((t.x, t.y, t.z), (q.x, q.y, q.z, q.w))
 
+    @_locked
     def _publish_attachment(self) -> None:
         """Publish every leg's current attachment as one snapshot at a fresh revision.
 
@@ -2007,17 +2074,14 @@ class VisionAttachmentBridge:
         """
         if self._attachment_pub is None:
             return
-        # The proprio thread (DETACH, ATTACH) and the executor (release poll, segmentation
-        # reply) both publish; the change test must see the sets in publish order.
-        with self._publish_lock:
-            self._revision += 1
-            objects = self._attached_objects()
-            keys = frozenset((obj.object_id, obj.stamp_ns, obj.attach_link) for obj in objects)
-            changed = not keys or not keys >= self._published_keys
-            self._published_keys = keys
-            if changed and self._grasp_target is not None:
-                self._grasp_target.on_attachment_changed()
-            self._publish_snapshot(objects)
+        self._revision += 1
+        objects = self._attached_objects()
+        keys = frozenset((obj.object_id, obj.stamp_ns, obj.attach_link) for obj in objects)
+        changed = not keys or not keys >= self._published_keys
+        self._published_keys = keys
+        if changed and self._grasp_target is not None:
+            self._grasp_target.on_attachment_changed(emptied=not keys)
+        self._publish_snapshot(objects)
 
     # ── release window ───────────────────────────────────────────────────────
 
@@ -2048,8 +2112,7 @@ class VisionAttachmentBridge:
             t_base_from_link=t_base_from_link,
             now_s=time.monotonic(),
         )
-        with self._release_lock:
-            leg.release = window
+        leg.release = window
         self._node.get_logger().info(
             f"release window opened for {leg.joint_name}: {held.object_id!r} frozen in "
             f"{self._base_link!r} at {window.record.pose_in_link.xyz}; exempt links "
@@ -2057,26 +2120,19 @@ class VisionAttachmentBridge:
             f"or {self._config.release_timeout_s} s"
         )
 
-    def _close_release(self, leg: _GripperLeg, reason: str, window: ReleaseWindow) -> bool:
-        """Drop ``window``, the leg's frozen record (the caller publishes), logging why once.
+    def _close_release(self, leg: _GripperLeg, reason: str) -> None:
+        """Drop the leg's release window (the caller publishes), logging why once.
 
-        A no-op returning ``False`` when ``window`` is no longer the leg's: the
-        executor's poll judged a window the proprio thread has since closed for a
-        re-ATTACH (and maybe replaced at the next DETACH). Closing it then would end
-        the live regrasp's pick (``on_release_closed`` -> ``on_pick_complete``) and
-        drop its HZ-0115-11 guard. The identity check and the drop are one step under
-        ``_release_lock``.
+        Under the bridge lock, so the poll that judged the window and a re-ATTACH that
+        closes it can never interleave.
         """
-        with self._release_lock:
-            if leg.release is not window:
-                return False
-            leg.release = None
+        leg.release = None
         self._node.get_logger().info(f"release window closed for {leg.joint_name}: reason={reason}")
         if self._grasp_target is not None and reason != "attach":
             # A re-ATTACH is a new grasp of the same hand, not the hand emptying.
-            self._grasp_target.on_release_closed(leg.jaw_link)
-        return True
+            self._grasp_target.on_hand_settled(leg.jaw_link)
 
+    @_locked
     def _poll_releases(self) -> None:
         """Close every window whose jaws are clear or whose time is up; publish if any did."""
         now_s = time.monotonic()
@@ -2093,11 +2149,13 @@ class VisionAttachmentBridge:
                 clear_m=self._config.release_clear_m,
                 timeout_s=self._config.release_timeout_s,
             )
-            if reason and self._close_release(leg, reason, window):
+            if reason:
+                self._close_release(leg, reason)
                 closed = True
         if closed:
             self._publish_attachment()
 
+    @_locked
     def _heartbeat(self) -> None:
         """Republish the current set at the current revision, while evidence backs it.
 
@@ -2133,15 +2191,8 @@ class VisionAttachmentBridge:
             self._publish_snapshot()
 
     def _attached_objects(self) -> list[AttachedCollisionObject]:
-        """Every leg's held payload, else its frozen release record (each read once)."""
-        objects: list[AttachedCollisionObject] = []
-        for leg in self._legs:
-            held, window = leg.attachment, leg.release
-            if held is not None:
-                objects.append(held)
-            elif window is not None:
-                objects.append(window.record)
-        return objects
+        """Every leg's published payload (``_published``), in leg order."""
+        return [obj for obj in map(_published, self._legs) if obj is not None]
 
     def _publish_snapshot(self, objects: list[AttachedCollisionObject] | None = None) -> None:
         """Publish ``objects`` (default: the legs' current set) at the current revision."""

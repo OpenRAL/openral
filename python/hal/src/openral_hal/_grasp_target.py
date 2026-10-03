@@ -150,12 +150,22 @@ class VoxelLattice:
         return homogeneous_from_quat_xyz((0.0, 0.0, 0.0), self.orientation_xyzw)[:3, :3]
 
     def occupied_centers(self) -> NDArray[np.float64]:
-        """``(N, 3)`` centres of every occupied cell in ``frame_id``."""
-        sx, sy, _ = self.size
-        idx = np.flatnonzero(self.occupancy)
-        ijk = np.stack((idx % sx, (idx // sx) % sy, idx // (sx * sy)), axis=1)
-        local = (ijk.astype(np.float64) + 0.5) * self.resolution
-        return np.asarray(local @ self.rotation().T + np.asarray(self.origin), dtype=np.float64)
+        """``(N, 3)`` centres of every occupied cell in ``frame_id`` (read-only, cached).
+
+        The whole-grid scan runs once per lattice — the producer legs warm it where the
+        grid arrives, outside the vision bridge's lock — and every later call is free.
+        """
+        cached: NDArray[np.float64] | None = self.__dict__.get("_occupied_centers")
+        if cached is None:
+            sx, sy, _ = self.size
+            idx = np.flatnonzero(self.occupancy)
+            ijk = np.stack((idx % sx, (idx // sx) % sy, idx // (sx * sy)), axis=1)
+            local = (ijk.astype(np.float64) + 0.5) * self.resolution
+            cached = np.asarray(local @ self.rotation().T + np.asarray(self.origin), np.float64)
+            cached.setflags(write=False)
+            # Frozen: the lattice never changes, so neither do its centres.
+            self.__dict__["_occupied_centers"] = cached
+        return cached
 
 
 @dataclass(frozen=True)

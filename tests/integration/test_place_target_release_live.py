@@ -425,10 +425,12 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
                     assert str(evidence["link_b_or_object"]).startswith("voxel_"), evidence
                 assert aggregator_errors == []
             finally:
-                with suppress(Exception):
-                    bridge.teardown()
+                # Stop the executor first: a timer callback waiting on the bridge lock must
+                # not run on entities the teardown destroyed.
                 executor.shutdown()
                 spin_thread.join(timeout=5.0)
+                with suppress(Exception):
+                    bridge.teardown()
                 node.destroy_node()
                 peer.destroy_node()
                 rclpy.shutdown()

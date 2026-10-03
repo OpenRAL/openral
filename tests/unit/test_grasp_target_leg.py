@@ -1303,89 +1303,200 @@ def test_two_picks_in_one_goal_through_the_bridges_detach() -> None:
         )
 
 
-def test_a_stale_release_close_never_completes_a_live_regrasp() -> None:
-    """Review finding: the executor's ``_poll_releases`` judged a window, then the proprio
-    thread's re-ATTACH closed it before the poll's close ran. That stale close ended the
-    live regrasp's pick (``on_release_closed`` -> ``on_pick_complete``) in the gap before
-    the regrasp set ``pending``. The two threads' steps, interleaved deterministically
-    through the real methods: the close is keyed on the window it judged, so it is a
-    no-op."""
-    with _live_leg("test_grasp_target_stale_release_close") as live:
-        leg, bridge = live.leg, live.bridge
-        now_ns = leg._now_ns()
-        left = live.gripper("openarm_left_finger_pair")
-        live.place("left", (0.45, 0.0, 0.18))
-        live.place("right", (0.45, -0.30, 0.40))
-        leg._grid = (_held_block_lattice(), now_ns, time.monotonic())
-        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
-        leg._detect_approach(0.10, now_ns)
-        live.place("left", (0.45, 0.0, 0.10))
-        leg.tracker.accept(_measured(now_ns))
-        t = _grip(bridge, 0.2, t0_ns=1)  # ATTACH: handed over
-        _grip(bridge, 0.0, t0_ns=t)  # DETACH: the release window opens
-        judged = left.release
-        assert judged is not None and leg.tracker.handed_over == _LEFT
-        # Executor: ``_poll_releases`` read ``judged`` and decided "timeout". Proprio: the
-        # re-ATTACH closes the window first, and has not set ``pending`` yet.
-        assert bridge._close_release(left, "attach", judged)
-        assert left.release is None and not left.pending and left.attachment is None
-        # Executor: its close of the window it judged lands now.
-        assert not bridge._close_release(left, "timeout", judged), "a stale close ran"
-        assert leg.tracker.handed_over == _LEFT, "the stale close completed the live regrasp"
+def _blocks_on_the_bridge_lock(bridge: VisionAttachmentBridge, call: Any) -> bool:
+    """Whether ``call``, run on another thread, waits while this thread holds the bridge
+    lock — and then completes cleanly once it is released."""
+    import threading
+
+    done = threading.Event()
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            call()
+        except BaseException as exc:  # surfaced below
+            errors.append(exc)
+        finally:
+            done.set()
+
+    with bridge._lock:
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        waited = not done.wait(0.2)
+    assert done.wait(5.0), "never completed after the lock was released"
+    assert not errors, errors
+    return waited
 
 
-def test_a_poll_close_winning_the_lock_never_completes_a_live_regrasp() -> None:
-    """The other ordering of the race above: the re-ATTACH's trigger has flipped (on the
-    proprio thread, before either thread acts), but the executor's poll takes the window
-    first. Its close is the leg's (the window is still the leg's), so it runs — and must not
-    complete the pick: the loaded trigger counts as holding (``_holding``). The re-ATTACH's
-    own close of the same window is then the no-op."""
+def test_every_bridge_and_leg_entry_point_is_serialized() -> None:
+    """The lead decision after three rounds of proprio-thread vs executor races: ONE bridge
+    lock, taken at every entry point that reads or mutates leg, tracker or attachment state.
+    Each one, run on another thread while the lock is held, must wait for it — so no
+    interleaving (a heartbeat inside a half-applied change, a release poll between a
+    re-ATTACH's trigger update and its close, an executor drop between ``_region_payload``
+    and ``on_attach``) can happen."""
     from openral_core import Action, ControlMode, JointState
+    from openral_msgs.msg import GraspDeclaration as GraspDeclarationMsg
+    from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
 
-    with _live_leg("test_grasp_target_poll_wins_release_close") as live:
-        leg, bridge = live.leg, live.bridge
-        now_ns = leg._now_ns()
+    rclpy_task = pytest.importorskip("rclpy.task")
+    with _live_leg("test_bridge_entry_points_serialized", place_target_enabled=True) as live:
+        bridge, leg = live.bridge, live.leg
+        place = bridge._place_target
+        assert place is not None
+        _attachment_publisher(live)
         left = live.gripper("openarm_left_finger_pair")
-        live.place("left", (0.45, 0.0, 0.18))
-        live.place("right", (0.45, -0.30, 0.40))
-        leg._grid = (_held_block_lattice(), now_ns, time.monotonic())
-        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
-        leg._detect_approach(0.10, now_ns)
-        live.place("left", (0.45, 0.0, 0.10))
-        leg.tracker.accept(_measured(now_ns))
-        t = _grip(bridge, 0.2, t0_ns=1)  # ATTACH: handed over
-        t = _grip(bridge, 0.0, t0_ns=t)  # DETACH: the release window opens
-        judged = left.release
-        assert judged is not None and leg.tracker.handed_over == _LEFT
-        assert not left.trigger.attached
-        # Proprio: the re-ATTACH's trigger update (the bridge has not acted on it yet).
-        close = Action(
+        state = JointState(
+            name=["left_gripper", "right_gripper"],
+            position=[0.0, 0.0],
+            effort=[0.0, 0.0],
+            stamp_ns=1,
+        )
+        action = Action(
             control_mode=ControlMode.JOINT_POSITION,
             horizon=1,
             joint_names=["left_gripper"],
             joint_targets=[[0.0]],
         )
-        event = None
-        for _ in range(40):
-            t += 20_000_000
-            bridge.observe_command(close)  # folds the command into the triggers only
-            update = left.trigger.update(
-                JointState(
-                    name=["left_gripper", "right_gripper"],
-                    position=[0.2, 0.0],
-                    effort=[0.0, 0.0],
-                    stamp_ns=t,
-                )
-            )
-            event = event or update
-        assert event is not None and left.trigger.attached, "the trigger re-latched"
-        assert left.release is judged and left.attachment is None and not left.pending
-        # Executor: the poll's close wins the lock — the window is still the leg's.
-        assert bridge._close_release(left, "timeout", judged)
-        assert leg.tracker.handed_over == _LEFT, "a poll close completed the live regrasp"
-        # Proprio: the re-ATTACH's close of the window it saw is now a no-op.
-        assert not bridge._close_release(left, "attach", judged)
+        grasp_msg = GraspDeclarationMsg()
+        _goal_scope(stamp_ns=leg._now_ns()).fill_idl(grasp_msg)
+        place_msg = PlaceDeclarationMsg()
+        stray = rclpy_task.Future()  # never the one in flight: dropped after the lock
+        calls = {
+            "observe_joint_state": lambda: bridge.observe_joint_state(state),
+            "observe_command": lambda: bridge.observe_command(action),
+            "clear_command": bridge.clear_command,
+            "attachment_action_ack_ready": bridge.attachment_action_ack_ready,
+            "heartbeat": bridge._heartbeat,
+            "poll_releases": bridge._poll_releases,
+            "publish_attachment": bridge._publish_attachment,
+            "segmentation_reply": lambda: bridge._on_reply(
+                left,
+                stray,
+                generation=left.generation,
+                stamp_ns=1,
+                t_link_from_cam=np.eye(4),
+                tcp_in_link=(0.0, 0.0, 0.0),
+            ),
+            "segmentation_deadline": lambda: bridge._on_deadline(
+                left,
+                generation=left.generation,
+                stamp_ns=1,
+                t_link_from_cam=np.eye(4),
+                tcp_in_link=(0.0, 0.0, 0.0),
+            ),
+            "grasp_declaration": lambda: leg._on_declaration(grasp_msg),
+            "grasp_tick": leg._tick,
+            "grasp_reply": lambda: leg._on_reply(stray, (None,) * 7),  # type: ignore[arg-type]
+            "grasp_deadline": leg._on_deadline,
+            "place_declaration": lambda: place._on_declaration(place_msg),
+            "place_tick": place._tick,
+            "place_witness": place.on_joint_state,
+            "teardown": bridge.teardown,
+        }
+        unserialized = [
+            name for name, call in calls.items() if not _blocks_on_the_bridge_lock(bridge, call)
+        ]
+        assert not unserialized, f"entry points not under the bridge lock: {unserialized}"
+
+
+class _OrderedLock:
+    """A re-entrant lock that records any bridge-lock acquisition made by a thread holding
+    the tracker lock but not the bridge lock — the one forbidden order."""
+
+    _held = __import__("threading").local()
+
+    def __init__(self, name: str, violations: list[str]) -> None:
+        import threading
+
+        self._lock, self.name, self._violations = threading.RLock(), name, violations
+        self.nested: list[tuple[str, ...]] = []
+
+    def __enter__(self) -> None:
+        stack: list[str] = getattr(_OrderedLock._held, "stack", [])
+        _OrderedLock._held.stack = stack
+        if self.name == "bridge" and "tracker" in stack and "bridge" not in stack:
+            self._violations.append(f"bridge lock taken under the tracker lock: {stack}")
+        self.nested.append(tuple(stack))
+        self._lock.acquire()
+        stack.append(self.name)
+
+    def __exit__(self, *_exc: object) -> None:
+        _OrderedLock._held.stack.pop()
+        self._lock.release()
+
+
+def test_the_lock_order_is_bridge_then_tracker_never_the_reverse() -> None:
+    """Bridge lock -> tracker lock, never the reverse (nothing run under the tracker lock —
+    its log sink, ``on_attach``'s ``confirm`` — takes the bridge lock), across a whole pick:
+    approach, region ATTACH with its confirm, DETACH, release poll, heartbeat, ticks."""
+    import time
+
+    violations: list[str] = []
+    probe_bridge, probe_tracker = (
+        _OrderedLock("bridge", violations),
+        _OrderedLock("tracker", violations),
+    )
+    with probe_tracker, probe_bridge:  # the recorder itself catches the forbidden order
+        pass
+    assert len(violations) == 1
+    violations.clear()
+
+    with _live_leg("test_bridge_lock_order", release_timeout_s=0.05) as live:
+        leg, bridge = live.leg, live.bridge
+        bridge_lock = _OrderedLock("bridge", violations)
+        tracker_lock = _OrderedLock("tracker", violations)
+        bridge._lock = bridge_lock  # type: ignore[assignment]
+        leg.tracker._lock = tracker_lock  # type: ignore[assignment]
+        _attachment_publisher(live)
+        now_ns = leg._now_ns()
+        live.place("left", (0.45, 0.0, 0.18))
+        live.place("right", (0.45, -0.30, 0.40))
+        leg._grid = (_held_block_lattice(), now_ns, time.monotonic())
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+        leg._detect_approach(0.10, now_ns)
+        live.place("left", (0.45, 0.0, 0.10))
+        leg.tracker.accept(_measured(now_ns))
+        t = _grip(bridge, 0.2, t0_ns=1)  # region ATTACH: confirm runs under both locks
         assert leg.tracker.handed_over == _LEFT
+        _grip(bridge, 0.0, t0_ns=t)  # DETACH
+        time.sleep(0.1)
+        bridge._heartbeat()  # release poll -> window closes -> pick completes
+        leg._tick()
+        assert leg.tracker.handed_over is None
+        assert not violations, violations
+        assert ("bridge",) in tracker_lock.nested, "never exercised the nested order"
+
+
+def test_a_detach_that_finds_nothing_latched_still_completes_the_pick() -> None:
+    """Review finding: pick completion was re-checked only on a DETACH that dropped an
+    attachment (``on_detach``) and on a window close. A handed-over hand whose regrasp was
+    superseded before its reply (nothing latched, maybe still holding the barrier) then
+    DETACHes: nothing else would ever complete its pick, so the hand stayed handed over —
+    no further pick — for the rest of the goal. Every DETACH and every barrier release
+    re-checks."""
+    for pending in (False, True):
+        with _live_leg(f"test_grasp_target_empty_detach_{int(pending)}") as live:
+            leg, bridge = live.leg, live.bridge
+            now_ns = leg._now_ns()
+            left = live.gripper("openarm_left_finger_pair")
+            live.place("left", (0.45, 0.0, 0.18))
+            live.place("right", (0.45, -0.30, 0.40))
+            leg._grid = (_held_block_lattice(), now_ns, time.monotonic())
+            leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+            leg._detect_approach(0.10, now_ns)
+            live.place("left", (0.45, 0.0, 0.10))
+            leg.tracker.accept(_measured(now_ns))
+            t = _grip(bridge, 0.2, t0_ns=1)  # region ATTACH: handed over
+            first = leg.tracker.target
+            assert leg.tracker.handed_over == _LEFT and first is not None
+            # A regrasp whose reply a newer event superseded: nothing latched.
+            left.attachment = None
+            left.pending = pending
+            _grip(bridge, 0.0, t0_ns=t)  # DETACH: nothing to release, no window
+            assert left.attachment is None and left.release is None and not left.pending
+            assert leg.tracker.handed_over is None, f"pending={pending}: stayed handed over"
+            assert leg.tracker.spent(_LEFT)[0], "no release record: guarded for the goal"
 
 
 def _attachment_publisher(live: _LiveLeg) -> None:
@@ -1417,18 +1528,17 @@ def test_an_attachment_change_refreshes_the_other_hands_pre_handover_arming() ->
         live.place("right", (0.45, -0.30, 0.40))
         leg._grid = (_held_block_lattice(), now_ns, time.monotonic())
         leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
-        # The right hand holds something it grasped unarmed (ATTACH -> ``_finish``).
-        right.attachment = _released_record().model_copy(
-            update={"object_id": "cell:other", "attach_link": right.producer.attach_link}
-        )
-        bridge._publish_attachment()
         leg._detect_approach(0.10, now_ns)
         armed = leg.tracker.target
         assert armed is not None and armed.contact_links == _LEFT
         before = _measured(leg._now_ns())
         leg.tracker.accept(before)
         assert leg.tracker.region == before
-        # An addition (another ATTACH) is not a change: nothing is refreshed.
+        # A real addition — the right hand ATTACHes something it grasped unarmed — while the
+        # left hand is armed: not a change, the left arming is NOT refreshed.
+        right.attachment = _released_record().model_copy(
+            update={"object_id": "cell:other", "attach_link": right.producer.attach_link}
+        )
         bridge._publish_attachment()
         assert leg.tracker.target is armed and leg.tracker.region == before
 
@@ -1484,6 +1594,144 @@ def test_an_attachment_change_leaves_a_handed_over_pick_to_its_own_path() -> Non
     assert tracker.region is None
     tracker.accept(_measured(12 * _S + 1))
     assert tracker.region == _measured(12 * _S + 1)
+
+
+def test_a_mid_grasp_hand_keeps_its_arming_unless_the_change_empties_the_set() -> None:
+    """Review finding: a change the kernel does not retire on (the set stays non-empty) used
+    to refresh the arming of a hand that is mid-grasp — its segmentation in flight — so the
+    ATTACH found no region and the bimanual pick failed when the other hand regrasped or
+    let go. A holding/pending hand is exempt from the refresh, unless the change empties the
+    set: the kernel retires there regardless, so that grasp hands nothing over (fail
+    closed)."""
+    with _live_leg("test_grasp_target_mid_grasp_refresh") as live:
+        leg, bridge = live.leg, live.bridge
+        _attachment_publisher(live)
+        now_ns = leg._now_ns()
+        left = live.gripper("openarm_left_finger_pair")
+        right = live.gripper("openarm_right_finger_pair")
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+        _approach(leg.tracker, _near(_LEFT), now_ns=now_ns)
+        other = _released_record().model_copy(
+            update={"object_id": "cell:other", "attach_link": right.producer.attach_link}
+        )
+        right.attachment = other
+        bridge._publish_attachment()  # an addition
+        armed = leg.tracker.target
+        region = _measured(leg._now_ns())
+        leg.tracker.accept(region)
+        assert armed is not None and leg.tracker.region == region
+        left.pending = True  # the left ATTACH's SegmentInView is in flight
+        # The right hand's regrasp replaces its payload: a change, the set non-empty.
+        right.attachment = other.model_copy(update={"stamp_ns": other.stamp_ns + 1})
+        bridge._publish_attachment()
+        assert leg.tracker.target is armed and leg.tracker.region == region, (
+            "a mid-grasp arming was refreshed on a change the kernel does not retire on"
+        )
+        # The same change with the left hand NOT mid-grasp: refreshed.
+        left.pending = False
+        right.attachment = other.model_copy(update={"stamp_ns": other.stamp_ns + 2})
+        bridge._publish_attachment()
+        refreshed = leg.tracker.target
+        assert refreshed is not None and refreshed.target_id != armed.target_id
+        assert leg.tracker.region is None
+        # Mid-grasp again, and the right hand lets go: the set empties — refreshed anyway.
+        leg.tracker.accept(_measured(leg._now_ns()))
+        left.pending = True
+        right.attachment = None
+        bridge._publish_attachment()
+        fresh = leg.tracker.target
+        assert fresh is not None and fresh.target_id != refreshed.target_id
+        assert leg.tracker.region is None, "the empty edge retires it in the kernel too"
+
+
+def test_an_attachment_change_after_a_retraction_still_advances_the_identity() -> None:
+    """Review finding: the counter advanced at a change only while an arming was held. An
+    arming retracted since the kernel last saw it is still the kernel's armed identity, and
+    the change's detach edge retires it there — so a re-arm under that identity would be
+    refused for the goal. Any identity armed since the last advance advances it; nothing
+    armed since, nothing to retire, no advance."""
+    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append, first_pick=7)
+    tracker.on_declaration(_goal_scope())
+    later = 11 * _S + int(_FREEZE_S * _S) + 1  # past the refusal backoff
+
+    def identity() -> str:
+        target = tracker.target
+        assert target is not None and target.contact_links == _LEFT
+        return target.target_id
+
+    _approach(tracker, _near(_LEFT))
+    assert identity() == f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}:7"
+    tracker.refuse("no_support", "nothing under it", retract=True, now_ns=11 * _S)
+    assert tracker.target == _goal_scope()
+    tracker.on_attachment_changed(now_ns=12 * _S)  # the kernel may still hold :7
+    _approach(tracker, _near(_LEFT), now_ns=later)
+    assert identity() == f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}:8"
+    tracker.refuse("no_support", "nothing under it", retract=True, now_ns=later)
+    tracker.on_attachment_changed(now_ns=later + 1)  # :8 was armed: advance
+    tracker.on_attachment_changed(now_ns=later + 2)  # nothing armed since: no advance
+    _approach(tracker, _near(_LEFT), now_ns=2 * later)
+    assert identity() == f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}:9"
+
+
+def test_a_tick_that_cannot_sample_the_hands_restarts_the_away_window() -> None:
+    """Review finding: the away window (liveness after a kernel fault retirement) was only
+    sampled in ``on_approach``; a tick with no fresh grid, a request in flight, or a stale
+    verdict produced no sample and left the window running — unknown counted as away. Each
+    must restart it: away on every sample of a window otherwise earns a fresh identity."""
+    with _live_leg("test_grasp_target_unknown_is_not_away") as live:
+        leg = live.leg
+        tracker = leg.tracker
+        tracker.on_declaration(_goal_scope(stamp_ns=leg._now_ns()))
+        here = approach_box([(0.45, 0.0, 0.18)], approach_m=0.1, frame_id="openarm_base")
+        there = approach_box([(0.30, 0.20, 0.10)], approach_m=0.1, frame_id="openarm_base")
+        far = approach_box([(0.45, 0.40, 0.40)], approach_m=0.1, frame_id="openarm_base")
+        freeze_ns = int(_FREEZE_S * _S)
+
+        def sample(now_ns: int, *, near: PlaceRegion | None, at: PlaceRegion) -> None:
+            tracker.on_approach(
+                [] if near is None else [(_LEFT, near)],
+                now_ns=now_ns,
+                move_m=_CELL,
+                located={_LEFT: at},
+            )
+
+        def identity() -> str:
+            target = tracker.target
+            assert target is not None and target.contact_links == _LEFT
+            return target.target_id
+
+        def stale_grid() -> None:
+            leg._grid = (_held_block_lattice(), leg._now_ns(), time.monotonic() - 60.0)
+            leg._tick()
+
+        def in_flight() -> None:
+            leg._inflight = (None, tracker.generation)
+            leg._tick()
+            leg._inflight = None
+
+        unknowns: dict[str, Any] = {
+            "no grid": lambda: (setattr(leg, "_grid", None), leg._tick()),
+            "stale grid": stale_grid,
+            "request in flight": in_flight,
+            "stale verdict": lambda: tracker.on_approach(
+                [], now_ns=0, move_m=_CELL, generation=tracker.generation - 1, located={}
+            ),
+            "control (a real sample)": lambda: None,
+        }
+        sample(10 * _S, near=here, at=here)
+        first = identity()
+        for round_, (name, unknown) in enumerate(unknowns.items(), start=1):
+            t0 = round_ * 20 * _S
+            sample(t0, near=here, at=here)  # the arming follows the hand back
+            sample(t0 + 1, near=None, at=far)  # leaves: approach_ended
+            sample(t0 + freeze_ns // 2, near=None, at=far)  # away since here
+            unknown()
+            sample(t0 + freeze_ns // 2 + freeze_ns, near=None, at=far)  # a whole window
+            sample(t0 + 2 * freeze_ns, near=there, at=there)
+            if name.startswith("control"):
+                assert identity() != first, "the control round never earned a fresh one"
+            else:
+                assert identity() == first, f"{name}: an unsampled tick counted as away"
 
 
 def test_the_released_payload_guard_is_the_oriented_box_not_its_bounding_sphere() -> None:
@@ -1669,6 +1917,7 @@ def _segmented_attach(live: _LiveLeg, gripper: Any, stamp_ns: int) -> None:
     gripper.pending = True
     live.bridge._finish(
         gripper,
+        generation=gripper.generation,
         stamp_ns=stamp_ns,
         masks=[],
         scores=[],
@@ -1742,6 +1991,19 @@ def test_a_region_payload_hands_over_only_the_region_it_was_built_from() -> None
         leg.tracker.accept(_measured(now_ns + 1))  # the interleaved re-fit
         leg.on_attach(left.jaw_link, taken[0], region=taken[1])
         assert leg.tracker.handed_over == _LEFT and leg.tracker.region is None
+
+        # The region it was built from DROPPED since (an attachment change): no region to
+        # compare is not "absent" — the payload is a stale measurement, attach_off_target.
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns + 2))
+        _approach(leg.tracker, _near(_LEFT), now_ns=now_ns + 2)
+        leg.tracker.accept(_measured(now_ns + 2))
+        taken = bridge._region_payload(left, stamp_ns=now_ns + 2)
+        assert taken is not None
+        leg.tracker.on_attachment_changed(now_ns=now_ns + 3)
+        assert leg.tracker.region is None
+        leg.on_attach(left.jaw_link, taken[0], region=taken[1])
+        assert leg.tracker.handed_over == _LEFT and leg.tracker.region is None
+        assert leg.tracker._status == "attach_off_target", "handed over as 'absent'"
 
 
 # ── the tracker is serialized: the proprio thread vs the executor ──────────────────

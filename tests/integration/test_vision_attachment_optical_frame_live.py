@@ -388,11 +388,13 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
             timeout_s=3.0,
         ), "the mask/depth skew fallback did not log its typed reason"
     finally:
+        # Stop the executor first: a timer callback waiting on the bridge lock must not
+        # run on entities the teardown destroyed.
+        executor.shutdown()
+        spin.join(timeout=5.0)
         for bridge in bridges:
             with suppress(Exception):
                 bridge.teardown()
-        executor.shutdown()
-        spin.join(timeout=5.0)
         for each in (segmenter, peer, node):
             each.destroy_node()
         rclpy.shutdown()
@@ -642,12 +644,14 @@ def test_every_grasp_event_supersedes_the_segmentation_in_flight() -> None:
     finally:
         for _, gate in held:
             gate.set()
-        with suppress(Exception):
-            bridge.teardown()
+        # Stop the executors first: a timer callback waiting on the bridge lock must not
+        # run on entities the teardown destroyed.
         hal_executor.shutdown()
         segmenter_executor.shutdown()
         for spin in spins:
             spin.join(timeout=5.0)
+        with suppress(Exception):
+            bridge.teardown()
         for each in (segmenter, peer, node):
             each.destroy_node()
         rclpy.shutdown()
