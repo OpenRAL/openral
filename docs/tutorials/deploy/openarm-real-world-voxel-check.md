@@ -277,6 +277,13 @@ kernel with `world_voxel_enabled: true`, `world_voxel_margin_m: 0.02` and
 (`runtime.octomap_cloud_topic`), not through the sensor leg; `head_zed`'s manifest
 `deploy_binding` only feeds its depth image to the world state.
 
+To run a local copy of the scene instead (test 3's grasp target), pass
+`--scene scenes/deploy/<copy>.yaml`. The copy gets the same gates, and the script also refuses
+it unless it lies under `scenes/deploy/`, validates as a `DeployScene` with
+`robot_id: openarm`, keeps `runtime.enable_octomap_kernel_check: true`, and names no
+`robot_unit` other than `OPENRAL_ROBOT_UNIT`. Never launch a copy with a bare
+`openral deploy run`: it skips every gate above.
+
 In a second terminal, record the evidence for every test below:
 
 ```bash
@@ -335,7 +342,8 @@ Run these tests in order:
    The committed scene names no grasp target: what to pick is task knowledge. With the
    reasoner on it names the target and perception grounds the search box
    ([design §2.2](../../reference/real-pick-place-design.md)). With the reasoner off, as
-   here, copy the scene to a local file and add a direct-dispatch block. Example for Thor
+   here, copy the scene to an uncommitted file under `scenes/deploy/`, add a direct-dispatch
+   block, and launch it with `tools/openarm_world_voxel_run.sh --scene <copy>`. Example for Thor
    (candidate numbers read off the live voxel map, 2026-10-03, arms at rest, `openarm_base`
    frame, 20 mm cells): the bench top is one cluster whose face sits at z = -0.32; four
    item-sized clusters stand on it at x 0.35-0.45 (y -0.29, -0.15, +0.09, +0.23). A search
