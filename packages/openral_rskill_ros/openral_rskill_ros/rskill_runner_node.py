@@ -2067,13 +2067,15 @@ if _ROS2_AVAILABLE:
             Names no target surface, no object and no search box: the HAL's
             place-target leg measures the surface under whichever payload is
             carried and scopes the region to it. The backstop is the goal
-            deadline (the ceiling when unset), capped at
-            ``PlaceDeclaration.MAX_TIMEOUT_S``; the runner retracts it at goal
-            end anyway. Mirror of ``_goal_scope_grasp_declaration``.
+            deadline (120 s when unset), capped at 120 s — the grasp side's
+            ``GraspDeclaration.MAX_TIMEOUT_S``, not ``PlaceDeclaration``'s looser
+            600 s schema ceiling: a goal-scope declaration names nothing, so it
+            gets the tighter bound. The runner retracts it at goal end anyway.
+            Mirror of ``_goal_scope_grasp_declaration``.
             """
-            from openral_core import PlaceDeclaration
+            from openral_core import GraspDeclaration, PlaceDeclaration
 
-            ceiling = PlaceDeclaration.MAX_TIMEOUT_S
+            ceiling = GraspDeclaration.MAX_TIMEOUT_S
             return PlaceDeclaration(
                 target_id="surface",
                 timeout_s=min(deadline_s, ceiling) if deadline_s > 0.0 else ceiling,

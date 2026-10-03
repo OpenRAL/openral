@@ -493,3 +493,14 @@ def test_a_malformed_scene_declaration_is_refused_not_guessed() -> None:
         _run_goal(executor, runtime.skill_runner_node)
         _spin_for(executor, 0.3)
     assert seen == []
+
+
+@pytest.mark.parametrize(("deadline_s", "expected_s"), [(0.0, 120.0), (500.0, 120.0), (30.0, 30.0)])
+def test_the_goal_scope_place_backstop_never_exceeds_120_s(
+    deadline_s: float, expected_s: float
+) -> None:
+    """``min(goal deadline, 120 s)``, 120 s unset — the grasp side's bound, not the
+    schema's 600 s ceiling (design note: ``timeout_s`` = the goal deadline, ≤ 120 s)."""
+    with _harness("", approach=True) as (_, runtime, _seen):
+        declaration = runtime.skill_runner_node._goal_scope_place_declaration(deadline_s)
+    assert declaration.timeout_s == pytest.approx(expected_s)
