@@ -62,9 +62,9 @@ def test_a_new_session_is_admitted_but_adopted_only_on_commit() -> None:
     assert stager.stage(_slots(1, _B)[0]) is None  # a stray slot
     assert (stager.last_committed_tick, stager.last_committed_session) == (40, _A)
     # The old runner is still current until B commits: its next tick is fine,
-    # and it displaces B's half-staged tick instead of merging with it.
-    with pytest.raises(ROSRuntimeError, match="incomplete slot group"):
-        stager.stage(_slots(41, _A)[0])
+    # and it displaces B's half-staged tick instead of merging with it — a
+    # different session's partial is dropped, not reported as this tick's loss.
+    assert stager.stage(_slots(41, _A)[0]) is None
     group = stager.stage(_slots(41, _A)[1])
     assert group is not None
     stager.commit(group, applied=compose_slot_group_action(group, ["j1", "grip"]))
@@ -153,3 +153,32 @@ def test_the_stager_holds_the_command_each_commit_applied_until_reset() -> None:
     assert stager.last_applied_action is ramp, "an estop drop is not a new command"
     stager.reset()
     assert stager.last_applied_action is None, "after a disconnect nothing is commanded"
+
+
+def test_a_new_runner_session_drops_the_old_sessions_partial_tick_without_raising() -> None:
+    # Goal 2 on a restarted runner must start clean: the dead run's half tick is
+    # nobody's loss, so it is dropped (logged) rather than raised as incomplete.
+    stager = SlotGroupStager()
+    assert stager.stage(_slots(195, _A)[0]) is None
+    assert stager.stage(_slots(1, _B)[0]) is None
+    assert stager.pending == 1
+    group = stager.stage(_slots(1, _B)[1])
+    assert group is not None
+    assert {a.runner_session_id for a in group} == {_B}
+
+
+def test_the_same_session_changing_tick_mid_group_still_raises() -> None:
+    # A lost slot within one run is still a reported loss.
+    stager = SlotGroupStager()
+    stager.stage(_slots(7, _A)[0])
+    with pytest.raises(ROSRuntimeError, match="incomplete slot group"):
+        stager.stage(_slots(8, _A)[0])
+
+
+def test_discard_reports_what_it_dropped_and_keeps_the_watermark() -> None:
+    stager = SlotGroupStager()
+    _apply(stager, 5, _A)
+    stager.stage(_slots(6, _A)[0])
+    assert stager.discard() == 1
+    assert stager.discard() == 0
+    assert (stager.last_committed_tick, stager.last_committed_session) == (5, _A)
