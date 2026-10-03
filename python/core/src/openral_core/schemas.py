@@ -3356,11 +3356,12 @@ class PlaceDeclaration(BaseModel):
     retraction, goal end/cancel, E-stop, or ``timeout_s`` after
     ``stamp_ns``, whichever fires first (HZ-0097-3).
 
-    Drafted exception (ADR-0097 amendment, default off): the real place producer
+    Drafted amendment (ADR-0097, default off): the real place producer
     (``openral_hal._place_target_leg``) measures the surface directly under the
-    carried payload and, when dispatch declared nothing, publishes its own
-    declaration of it (``surface:under:<object_id>``, scoped to that payload) on
-    the attachment envelope; it dies with the payload and the region's age bound.
+    carried payload and attaches it as the region of dispatch's goal-scope
+    declaration (``target_id="surface"``, the runner's ``place_approach_enabled``);
+    it never declares on its own, and the region dies with the declaration, the
+    payload and the region's age bound.
 
     Attributes:
         target_id: Identity of the declared place target, e.g.
