@@ -476,3 +476,56 @@ def test_a_search_box_padded_tightly_around_the_target_still_finds_the_table() -
     point, support_z = _leg()._seed(grid, box)
     assert support_z == pytest.approx(0.12)  # the table's top face
     assert point[2] == pytest.approx(0.22)
+
+
+def test_the_hand_is_located_through_the_attach_link_not_the_manifest_only_jaw_link() -> None:
+    """The OpenArm's declared contact links (``openarm_<side>_finger_pair``) are manifest
+    links, not tf frames: looked up on tf they located no hand, so every hand occlusion
+    retracted. The hand is the bridge's TCP — the attach link through ``tf_frames``
+    (``openarm_left_link7`` -> ``openarm_left_ee_base_link``) plus the gripper joint's
+    ``origin_xyz`` — and a shrink with it at the held box is a lost view."""
+    tf2_ros = pytest.importorskip("tf2_ros")
+    rclpy = pytest.importorskip("rclpy")
+    from geometry_msgs.msg import TransformStamped
+
+    robot = RobotDescription.from_yaml(str(_ROBOT))
+    config = VisionAttachmentConfig(
+        camera="head_zed",
+        grasp_target_enabled=True,
+        tf_frames={
+            "openarm_left_link7": "openarm_left_ee_base_link",
+            "openarm_right_link7": "openarm_right_ee_base_link",
+        },
+    )
+    rclpy.init()
+    node = rclpy.create_node("test_grasp_target_jaw_point")
+    try:
+        bridge = VisionAttachmentBridge(node, robot, config=config)
+        buffer = tf2_ros.Buffer()
+        ee = TransformStamped()
+        ee.header.frame_id, ee.child_frame_id = "openarm_base", "openarm_left_ee_base_link"
+        ee.transform.translation.x, ee.transform.translation.y = 0.47, 0.02
+        ee.transform.translation.z = 0.25
+        ee.transform.rotation.w = 1.0  # the published tree: no finger_pair frame in it
+        buffer.set_transform_static(ee, "test")
+        bridge._tf_buffer = buffer
+
+        assert bridge._lookup("openarm_base", "openarm_left_finger_pair") is None
+        (origin,) = (
+            j.origin_xyz for j in robot.joints if j.child_link == "openarm_left_finger_pair"
+        )
+        hand = bridge.jaw_point("openarm_left_finger_pair", "openarm_base")
+        assert hand == pytest.approx(np.add((0.47, 0.02, 0.25), origin))
+        assert bridge.jaw_point("openarm_right_finger_pair", "openarm_base") is None  # no tf
+        assert bridge.jaw_point("openarm_left_link7", "openarm_base") is None  # not a jaw
+
+        leg = bridge._grasp_target
+        assert leg is not None
+        hands = leg._hands(_dispatched(), "openarm_base")
+        assert hands == [hand]
+        held = _measured(11 * _S)
+        refusal = _gate(_refit(0.425, (0.015, 0.04, 0.03)), held, hands=tuple(hands))
+        assert (refusal.kind, refusal.retract) == ("occluded_refit", False)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()

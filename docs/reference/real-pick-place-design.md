@@ -192,7 +192,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   re-measured at `grasp_target_rate_hz` (3 Hz), the region filled onto every attachment
   publication; contradicting evidence retracts at once, a lost view freezes the last accepted region
   (a map-covered re-fit that shrinks or shifts *inside* the held region grown by one voxel while a
-  declared contact link's tf origin is within one voxel + `occluder_margin_m` (0.05 m) of it —
+  declared contact link's hand point (the bridge's TCP for that jaw link's leg: attach link via
+  tf2 + the gripper joint's `origin_xyz`, since OpenArm's `finger_pair` is no tf frame) is within
+  one voxel + `occluder_margin_m` (0.05 m) of it —
   the robot's own hand occluding part of the target — is a lost view, `occluded_refit`; the same
   shrink with no contact link near is `unoccluded_refit`, and a re-fit the map does not cover is
   `map_disagrees`, both retracting at once, as does one reaching outside the held region)
@@ -202,7 +204,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   `mask_depth_max_skew_s` (0.1 s) from the depth frame it would be back-projected through is
   refused (`mask_depth_skew`, a lost view here; a `GRIPPER_FORCE` fallback in the attachment path). Tests: `tests/unit/test_grasp_target_leg.py`,
   live `tests/integration/test_grasp_target_leg_live.py`. The occlusion freeze is bounded by the TTL and
-  requires the declared contact link near the held region (tf origin, not a swept-hull test).
+  requires the declared contact link near the held region (its TCP point, not a swept-hull test).
 - **Representation:** an oriented box in `openarm_base` (reuse `PlaceRegion`): ~150 B, grid-instance
   independent, exact point-in-OBB already in the kernel.
 - **Tracking:** re-prompt from geometry at 2-5 Hz (project the previous centroid, re-fit, gate on

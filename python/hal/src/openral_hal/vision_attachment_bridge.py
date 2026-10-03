@@ -641,8 +641,9 @@ class VisionAttachmentConfig:
             footprint, of the ring that must be occupied for a layer to count as
             its support. *Calibration point.*
         grasp_target_occluder_margin_m: Distance (beyond one voxel) from the
-            held region within which a declared contact link's tf origin makes a
-            shrunken re-fit an occlusion by the robot's own hand, at most 0.10 m.
+            held region within which a declared contact link's hand point (its
+            leg's TCP, ``jaw_point``) makes a shrunken re-fit an occlusion by the
+            robot's own hand, at most 0.10 m.
             *Calibration point.*
         release_clear_m: How far every link a released payload's frozen record
             exempts (the hand and its jaws) must be from it before the record is
@@ -1460,22 +1461,55 @@ class VisionAttachmentBridge:
         t_link_from_cam = self._lookup(link, camera_frame)
         if t_link_from_cam is None:
             return f"ROSPerceptionStale: no tf2 {link} <- {camera_frame}"
-        tcp = leg.tcp_in_link
-        if leg.tcp_frame:
-            t_link_from_tcp = self._lookup(link, leg.tcp_frame)
-            if t_link_from_tcp is None:
-                return f"ROSPerceptionStale: no tf2 {link} <- {leg.tcp_frame}"
-            tcp = (
-                float(t_link_from_tcp[0, 3]),
-                float(t_link_from_tcp[1, 3]),
-                float(t_link_from_tcp[2, 3]),
-            )
+        tcp = self._tcp_in(leg, link)
+        if tcp is None:
+            return f"ROSPerceptionStale: no tf2 {link} <- {leg.tcp_frame}"
         negatives: list[tuple[float, float, float]] = []
         for frame in self._config.jaw_tip_frames:
             tip = self._lookup(link, frame)
             if tip is not None:
                 negatives.append((float(tip[0, 3]), float(tip[1, 3]), float(tip[2, 3])))
         return t_link_from_cam, tcp, negatives
+
+    def _tcp_in(self, leg: _GripperLeg, link: str) -> tuple[float, float, float] | None:
+        """The leg's TCP in tf2 frame ``link`` (its attach link), or ``None`` without tf."""
+        if not leg.tcp_frame:
+            return leg.tcp_in_link
+        t_link_from_tcp = self._lookup(link, leg.tcp_frame)
+        if t_link_from_tcp is None:
+            return None
+        return (
+            float(t_link_from_tcp[0, 3]),
+            float(t_link_from_tcp[1, 3]),
+            float(t_link_from_tcp[2, 3]),
+        )
+
+    def jaw_point(self, jaw_link: str, frame: str) -> tuple[float, float, float] | None:
+        """Where the hand whose jaw link is ``jaw_link`` is, in tf2 frame ``frame``.
+
+        The same TCP the attachment prompt uses: the leg's attach link through tf2
+        (``tf_frames``-mapped) composed with its TCP — never a tf lookup of the jaw
+        link itself, which may be a manifest-only link (the OpenArm's
+        ``openarm_<side>_finger_pair`` is not a tf frame).
+
+        Args:
+            jaw_link: A gripper joint's child link, as ``GraspDeclaration.contact_links``
+                names it.
+            frame: The tf2 frame to express the point in.
+
+        Returns:
+            The point, or ``None`` for a link no leg owns or a missing transform.
+        """
+        leg = next((each for each in self._legs if each.jaw_link == jaw_link), None)
+        if leg is None:
+            return None
+        link = self.tf_frame(leg.producer.attach_link)
+        t_frame_from_link = self._lookup(frame, link)
+        tcp = self._tcp_in(leg, link)
+        if t_frame_from_link is None or tcp is None:
+            return None
+        x, y, z = (float(v) for v in t_frame_from_link[:3, :3] @ tcp + t_frame_from_link[:3, 3])
+        return x, y, z
 
     def _on_depth(self, msg: Any) -> None:
         """Cache the newest metric-depth raster for the attach camera."""
