@@ -297,3 +297,61 @@ def test_the_support_tunables_are_constructor_args_with_documented_defaults() ->
         GraspTargetLeg(None, bridge, config, support_probe_margin_m=0.0)
     with pytest.raises(ROSConfigError, match="support_search_below_m"):
         GraspTargetLeg(None, bridge, config, support_search_below_m=-0.1)
+
+
+# ── The target must stand on the measured support ────────────────────────────────
+
+_CELLS = (24, 24, 20)
+_ITEM_I = _ITEM_J = range(8, 13)  # a 10x10 cm item, k=11-15, on a board at k=9-10
+
+
+def _cells(i: range, j: range, k: range) -> set[tuple[int, int, int]]:
+    return {(a, b, c) for a in i for b in j for c in k}
+
+
+def _shelf_lattice(board_i: range, board_j: range) -> VoxelLattice:
+    """A 20 mm base-aligned octomap: bench (k=5), a board (k=9-10), the item's visible
+    shell; the bench under the board and in the item's +x shadow is hidden."""
+    item = _cells(_ITEM_I, _ITEM_J, range(15, 16))
+    for k in range(11, 16):
+        item |= _cells(range(8, 9), _ITEM_J, range(k, k + 1))
+        item |= _cells(_ITEM_I, range(8, 9), range(k, k + 1))
+        item |= _cells(_ITEM_I, range(12, 13), range(k, k + 1))
+    board = _cells(board_i, board_j, range(9, 11))
+    bench = _cells(range(24), range(24), range(5, 6))
+    bench -= _cells(board_i, board_j, range(5, 6)) | _cells(range(13, 18), _ITEM_J, range(5, 6))
+    occ = np.zeros(int(np.prod(_CELLS)), dtype=np.uint8)
+    for a, b, c in item | board | bench:
+        occ[a + _CELLS[0] * (b + _CELLS[1] * c)] = 1
+    return VoxelLattice("openarm_base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.02, _CELLS, occ)
+
+
+def _item_search_box() -> PlaceRegion:
+    return PlaceRegion(
+        frame_id="openarm_base",
+        pose=Pose6D(xyz=(0.21, 0.21, 0.28), quat_xyzw=(0, 0, 0, 1), frame_id="openarm_base"),
+        half_extents=(0.12, 0.12, 0.08),
+    )
+
+
+def _leg() -> GraspTargetLeg:
+    robot = RobotDescription.from_yaml(str(_ROBOT))
+    config = VisionAttachmentConfig(camera="head_zed", grasp_target_enabled=True)
+    return GraspTargetLeg(None, VisionAttachmentBridge(None, robot, config=config), config)
+
+
+def test_a_target_on_a_visible_shelf_board_seeds_on_the_board() -> None:
+    grid = _shelf_lattice(range(7, 24), range(24))
+    point, support_z = _leg()._seed(grid, _item_search_box())
+    assert support_z == pytest.approx(0.22)  # the board's top face
+    assert point[2] == pytest.approx(0.32)
+
+
+def test_a_shelf_board_edge_over_a_bench_is_not_the_targets_support() -> None:
+    """The board is barely wider than the item and its lip hidden: no ring there, so the
+    first surface found is the bench 10 cm below — the target does not stand on it."""
+    grid = _shelf_lattice(range(7, 14), range(7, 14))
+    with pytest.raises(_Refusal) as caught:
+        _leg()._seed(grid, _item_search_box())
+    assert (caught.value.kind, caught.value.retract) == ("not_on_support", True)
+    assert "support z=0.120" in caught.value.detail
