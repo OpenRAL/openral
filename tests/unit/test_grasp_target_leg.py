@@ -281,3 +281,19 @@ def test_the_bridge_owns_the_leg_only_when_enabled_and_validates_its_rate() -> N
                 camera="head_zed", grasp_target_enabled=True, grasp_target_rate_hz=10.0
             ),
         )
+
+
+def test_the_support_tunables_are_constructor_args_with_documented_defaults() -> None:
+    robot = RobotDescription.from_yaml(str(_ROBOT))
+    config = VisionAttachmentConfig(camera="head_zed", grasp_target_enabled=True)
+    bridge = VisionAttachmentBridge(None, robot, config=config)
+    default = GraspTargetLeg(None, bridge, config)
+    assert (default._search_below_m, default._probe_margin_m) == (0.15, 0.05)
+    wide = GraspTargetLeg(
+        None, bridge, config, support_search_below_m=0.30, support_probe_margin_m=0.08
+    )
+    assert (wide._search_below_m, wide._probe_margin_m) == (0.30, 0.08)
+    with pytest.raises(ROSConfigError, match="support_probe_margin_m"):
+        GraspTargetLeg(None, bridge, config, support_probe_margin_m=0.0)
+    with pytest.raises(ROSConfigError, match="support_search_below_m"):
+        GraspTargetLeg(None, bridge, config, support_search_below_m=-0.1)
