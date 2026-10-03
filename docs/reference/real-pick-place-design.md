@@ -163,7 +163,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   bottom is a lifted detection bbox min-z and can sit below the real table top, HZ-01xx-6): in a
   column under the box (reaching 0.15 m below its bottom), scanned top-down, the first layer
   whose top-surface cells ring the footprint of the target standing above it (between one cell
-  and 0.05 m out — a surface extends past what stands on it, the target's own dense top does
+  and 0.05 m out, which must be at least two cells — a grid too coarse for it is a
+  `probe_margin_under_two_cells` lost view, never silently widened — a surface extends past what stands on it, the target's own dense top does
   not), whose top face is the support — no such layer is a typed `no_support` refusal and no
   region; the target's lowest cell must sit within one voxel (+ one of tolerance) of it, else
   `not_on_support` (a bench below the shelf board the target stands on) and no region. Then occupied voxels inside the
