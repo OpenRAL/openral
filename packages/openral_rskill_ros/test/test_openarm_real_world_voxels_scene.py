@@ -333,6 +333,21 @@ def _real_graph(
     return invocation.hal_params, kernel_params, ctx, entities
 
 
+@pytest.mark.usefixtures("calibrated_openarm")
+def test_the_hal_node_gets_the_unit_the_launch_resolved() -> None:
+    """The HAL lays the unit's joint overlays (per-gripper ``closure_calibration``) over the
+    manifest, so it must build on the same unit the sensor overlays came from."""
+    from launch_ros.utilities import evaluate_parameters
+
+    _, _, ctx, entities = _real_graph(_SCENE)
+    hal_package = ctx.launch_configurations["hal_package"]
+    merged: dict[str, object] = {}
+    for entry in evaluate_parameters(ctx, _node(entities, hal_package)._Node__parameters):
+        if isinstance(entry, dict):
+            merged.update(entry)
+    assert merged["robot_unit"] == "thor"
+
+
 def _segmenters(entities: list[Any]) -> list[Any]:
     return [
         e

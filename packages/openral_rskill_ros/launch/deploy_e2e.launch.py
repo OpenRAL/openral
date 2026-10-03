@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from openral_core import RobotDescription, SensorSpec
 from lifecycle_msgs.msg import Transition
 from openral_core import (
+    ROBOT_UNIT_ENV,
     CameraTopicKind,
     DeployRuntime,
     apply_sensor_overlays,
@@ -1927,7 +1928,16 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # authority — it stamps /scan, odom→base_link TF and joint_states.
         # Host-wall origin is unchanged; a simulation clock origin makes those
         # stamps sim-time, coherent with the HAL's /clock publisher.
-        parameters=[*hal_derived_params, hal_params_file, {"use_sim_time": use_sim_time}],
+        # The unit this launch resolved (the same selection as the sensor overlays above), so
+        # the HAL lays its joint overlays (per-gripper closure_calibration) over the manifest.
+        parameters=[
+            *hal_derived_params,
+            hal_params_file,
+            {
+                "use_sim_time": use_sim_time,
+                "robot_unit": os.environ.get(ROBOT_UNIT_ENV) or scene_unit or "",
+            },
+        ],
         additional_env=otel_env,
         output="screen",
     )
