@@ -232,7 +232,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   `vision_attachment_release_timeout_s`) bounds it, since the bridge sees no goal end. On a
   deploy, `deploy_e2e.launch.py` derives `vision_attachment_release_clear_m` (the kernel's world
   margin + one octree cell) and `vision_attachment_grid_max_age_s` (the kernel's voxel deadline)
-  from its own single sources; `release_timeout_s` is the scene's
+  from its own single sources, and refuses to launch when an override (`--hal`, a hand-written
+  params file) sets a grid age above the kernel's deadline or a clearance below its margin plus
+  one cell; `release_timeout_s` is the scene's
   `runtime.vision_attachment.release_timeout_s`. No octomap-bridge change was needed: payload clearing clears every attached object
   on `/openral/world_state_fast`, and the frozen record does not move, so its
   `AttachSweepLedger` window behaves as a held payload's. Proven on the real kernel by
