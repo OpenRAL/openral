@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <future>
 #include <limits>
 #include <memory>
@@ -3801,6 +3802,7 @@ struct GraspBeat {
   std::string attach_link{"link0"};          ///< the carried payload's attach link
   std::string object_label{"cell:cube"};     ///< the carried payload's object_id
   std::string declared_object{"cell:cube"};  ///< the declaration's object_id
+  std::int64_t region_stamp_ns{0};  ///< the region's measurement stamp; 0 = declaration_stamp_ns
 };
 
 // The producer-measured grasp declaration on the world-state envelope, stamped
@@ -3840,7 +3842,7 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
   d.region.half_extents.y = 0.02;
   d.region.half_extents.z = 0.02;
   d.region.evidence_ref = "sam2:cube@frame42";
-  d.region.stamp_ns = b.declaration_stamp_ns;
+  d.region.stamp_ns = b.region_stamp_ns != 0 ? b.region_stamp_ns : b.declaration_stamp_ns;
   return msg;
 }
 
@@ -3941,7 +3943,10 @@ public:
     js.position = {q};
     js_pub_->publish(js);
     exec_.spin_some(std::chrono::milliseconds(5));
-    if (b != nullptr) {
+    if (state_fn) {
+      ws_pub_->publish(state_fn(now_ns()));
+      exec_.spin_some(std::chrono::milliseconds(5));
+    } else if (b != nullptr) {
       ws_pub_->publish(grasp_state(now_ns(), *b));
       exec_.spin_some(std::chrono::milliseconds(5));
     }
@@ -3994,6 +3999,10 @@ public:
   std::vector<double> last_flat;  ///< the last chunk republished on /openral/safe_action
   std::string grasp_diag;
   openral_msgs::msg::OccupancyVoxels voxels = grasp_target_voxels();  ///< published every beat
+  /// When set, the world state published every beat (stream stamp in, message
+  /// out) in place of the `GraspBeat` one — the place-region tests drive the
+  /// same rig with the declared-carry fixture.
+  std::function<openral_msgs::msg::WorldStateStamped(std::int64_t)> state_fn;
 
 private:
   std::shared_ptr<rclcpp::Node> helper_;
@@ -4248,6 +4257,202 @@ TEST_F(LifecycleKernelTest, AGraspBackstopPastTheCapIsRefused) {
   EXPECT_TRUE(rig.node->fault_latched());
   EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=timeout_out_of_range"), 1U)
       << logs.joined();
+}
+
+// ── Region measurement age (kernel-region-age) ───────────────────────────────
+// A producer region is a MEASUREMENT of the voxel map, not a surveyed fixture:
+// its own `stamp_ns` must be young, independently of the declaration's
+// `timeout_s` backstop (up to 120 s). These pin `*_region_max_age_s`.
+
+std::vector<rclcpp::Parameter> with_param(std::vector<rclcpp::Parameter> params,
+                                          const std::string& name,
+                                          const rclcpp::ParameterValue& value) {
+  for (auto& p : params) {
+    if (p.get_name() == name) {
+      p = rclcpp::Parameter(name, value);
+      return params;
+    }
+  }
+  params.emplace_back(name, value);
+  return params;
+}
+
+std::vector<rclcpp::Parameter> grasp_age_params(double max_age_s) {
+  return with_param(grasp_params(), "grasp_region_max_age_s", rclcpp::ParameterValue(max_age_s));
+}
+
+TEST_F(LifecycleKernelTest, AFreshGraspRegionExemptsAndStopsOnceItAgesPastTheBound) {
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_age_fresh", grasp_age_params(0.5));
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();  // the region is measured at the same instant
+  rig.warm(&b, 0.0, 100);
+  ASSERT_TRUE(rig.offer(&b, 0.0, 300))
+      << "a region measured just now exempts the finger; " << logs.joined();
+  // The declaration stays live (60 s backstop) and the stream stays fresh, but
+  // nobody re-measures the region: past 0.5 s it is no longer evidence.
+  rig.warm(&b, 0.0, 600);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched()) << "an unrefreshed region exempts nothing";
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=region_stale"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=region_stale"), 1U)
+      << "logged once, on the transition, not per heartbeat: " << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AGraspRegionMeasuredTooLongAgoExemptsNothing) {
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_age_stale", grasp_age_params(0.5));
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();  // a brand-new, live declaration...
+  b.region_stamp_ns = rig.now_ns() - std::int64_t{2'000'000'000};  // ...over an old measurement
+  rig.warm(&b, 0.0, 200);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 0U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=region_stale"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AGraspRegionMeasuredInTheFutureExemptsNothing) {
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_age_future", grasp_age_params(0.5));
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.region_stamp_ns = rig.now_ns() + std::int64_t{30'000'000'000};
+  rig.warm(&b, 0.0, 200);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched()) << "a measurement from the future is not evidence";
+  EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=region_stale"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, TheAgeBoundDoesNotRetireALatchedHandover) {
+  // After the handover the box is latched (d1f378dc) and producer updates are
+  // ignored; the fingers occlude the target, so the producer cannot re-measure
+  // it anyway. The exemption is bounded by the payload origin staying in the
+  // latched box (measured FK, per candidate), the stream deadline and
+  // timeout_s — not by the region's measurement age.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_age_handover", grasp_age_params(0.5));
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 100);
+  ASSERT_TRUE(rig.offer(&b, 0.0, 300)) << logs.joined();
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 100);
+  ASSERT_EQ(logs.count("safety.grasp_region_latched target=cell:cube"), 1U) << logs.joined();
+  rig.warm(&b, 0.0, 700);  // the region's stamp is now well past 0.5 s
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << "a valid handover survives its region's age: "
+                                  << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("region_stale"), 0U) << logs.joined();
+  // The handover rule itself is untouched: leaving the box still retires.
+  b.payload_x = 0.10;
+  rig.warm(&b, 0.0, 100);
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=handover_exit"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, AStaleRegionAtTheAttachEdgeLatchesNoHandover) {
+  // The age bound applies up to and including the handover edge: the box that
+  // gets latched must itself be a fresh measurement.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_age_edge", grasp_age_params(0.5));
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.region_stamp_ns = rig.now_ns() - std::int64_t{2'000'000'000};
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 200);
+  EXPECT_EQ(logs.count("safety.grasp_region_latched"), 0U) << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0));
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, RegionAgeBoundsAreValidatedAtConfigure) {
+  for (const double bad :
+       {-1.0, std::numeric_limits<double>::quiet_NaN(), osk::kMaxRegionMeasurementAgeS + 0.1}) {
+    GraspRig rig("kernel_grasp_age_bad", grasp_age_params(bad));
+    EXPECT_FALSE(rig.configure()) << "grasp_region_max_age_s=" << bad;
+  }
+  {
+    GraspRig off("kernel_grasp_age_off", with_param(grasp_params(false), "grasp_region_max_age_s",
+                                                    rclcpp::ParameterValue(-1.0)));
+    EXPECT_TRUE(off.configure()) << "with the grasp allowance off the bound is not read";
+  }
+  {
+    GraspRig cap("kernel_grasp_age_cap", grasp_age_params(osk::kMaxRegionMeasurementAgeS));
+    EXPECT_TRUE(cap.configure());
+  }
+  {
+    // 0 (the default) derives 2 x world_voxel_deadline_ms, and says so.
+    LogCapture logs;
+    GraspRig derived(
+        "kernel_grasp_age_derived",
+        with_param(grasp_params(), "world_voxel_deadline_ms", rclcpp::ParameterValue(750.0)));
+    ASSERT_TRUE(derived.configure());
+    EXPECT_EQ(logs.count("safety.region_max_age grasp_s=1.5 place_s=1.5"), 1U) << logs.joined();
+  }
+  for (const double bad : {-1.0, osk::kMaxRegionMeasurementAgeS + 0.1}) {
+    GraspRig rig("kernel_place_age_bad",
+                 with_param(place_declaration_params(), "place_region_max_age_s",
+                            rclcpp::ParameterValue(bad)));
+    EXPECT_FALSE(rig.configure()) << "place_region_max_age_s=" << bad;
+  }
+  {
+    GraspRig off("kernel_place_age_off",
+                 with_param(with_param(place_declaration_params(), "place_region_max_age_s",
+                                       rclcpp::ParameterValue(-1.0)),
+                            "attached_collision_enabled", rclcpp::ParameterValue(false)));
+    EXPECT_TRUE(off.configure()) << "with attached checking off the place bound is not read";
+  }
+}
+
+// The place allowance under the same bound, on the declared-carry fixture.
+// Fresh: the backstop test's phase 1 passes. The region's stamp is pinned via
+// the declaration's (the fixture stamps both alike), with a 60 s backstop, so
+// only the measurement age can withdraw the allowance.
+TEST_F(LifecycleKernelTest, APlaceRegionAgeingPastItsBoundStopsTheAllowance) {
+  LogCapture logs;
+  GraspRig rig("kernel_place_age", with_param(place_declaration_params(), "place_region_max_age_s",
+                                              rclcpp::ParameterValue(0.5)));
+  rig.voxels = declared_target_voxels();
+  const std::int64_t measured_ns = rig.now_ns();
+  rig.state_fn = [measured_ns](std::int64_t stream_ns) {
+    return declared_carry_state(stream_ns, measured_ns, /*timeout_s=*/60.0);
+  };
+  rig.start();
+  rig.warm(nullptr, 0.0, 100);
+  ASSERT_TRUE(rig.offer_chunk(nullptr, 0.0, declared_carry_chunk(), 300))
+      << "a region measured just now grants the approach allowance; " << logs.joined();
+  rig.warm(nullptr, 0.0, 600);
+  EXPECT_FALSE(rig.offer_chunk(nullptr, 0.0, declared_carry_chunk()));
+  EXPECT_TRUE(rig.node->fault_latched()) << "an unrefreshed place region exempts nothing";
+  EXPECT_EQ(logs.count("safety.place_region_dropped reason=region_stale"), 1U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.place_region_rejected reason=region_stale"), 1U) << logs.joined();
+}
+
+TEST_F(LifecycleKernelTest, APlaceRegionMeasuredInTheFutureGrantsNoAllowance) {
+  LogCapture logs;
+  GraspRig rig("kernel_place_age_future",
+               with_param(place_declaration_params(), "place_region_max_age_s",
+                          rclcpp::ParameterValue(0.5)));
+  rig.voxels = declared_target_voxels();
+  rig.state_fn = [](std::int64_t stream_ns) {
+    auto msg = declared_carry_state(stream_ns, stream_ns, /*timeout_s=*/60.0);
+    msg.place_declaration.region.stamp_ns = stream_ns + std::int64_t{30'000'000'000};
+    return msg;
+  };
+  rig.start();
+  rig.warm(nullptr, 0.0, 200);
+  EXPECT_FALSE(rig.offer_chunk(nullptr, 0.0, declared_carry_chunk()));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.place_region_armed"), 0U) << logs.joined();
+  EXPECT_EQ(logs.count("safety.place_region_rejected reason=region_stale"), 1U) << logs.joined();
 }
 
 // The grasp rig on a bimanual-shaped tree: a fixed root `base`, the swept
