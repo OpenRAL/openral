@@ -45,7 +45,10 @@ DECLARATION_TIMEOUT_MARGIN_S = 10.0
 
 
 def gripper_contact_links(description: RobotDescription) -> tuple[str, ...]:
-    """Every ``role: gripper`` joint's ``child_link``: the default grasp contact links.
+    """Every ``role: gripper`` joint's ``child_link``: the grasp contact-link choices.
+
+    On a single-gripper robot the one link is the default when the reasoner names none;
+    on a robot with several, ``ground_grasp_target`` makes the reasoner name one.
 
     Example:
         >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
@@ -121,15 +124,17 @@ def ground_grasp_target(
         live_objects: The latest lifted ``WorldState.detected_objects``.
         scene_graph: The spatial-memory snapshot, or ``None`` without memory.
         base_frame: The robot base frame (the voxel grid's frame).
-        default_contact_links: Used when ``ref.contact_links`` is empty.
+        default_contact_links: The robot's gripper links (``gripper_contact_links``);
+            used when ``ref.contact_links`` is empty, which only a single-gripper
+            robot may leave so — with several, defaulting would exempt both hands.
         patience_s: The goal's patience ceiling; the backstop is this plus
             ``DECLARATION_TIMEOUT_MARGIN_S``, capped at the declaration's ceiling.
         pad_m: Padding added to each half-extent, > 0.
 
     Raises:
         ROSReasonerInvalidPlan: Nothing grounds, several instances match with no
-            ``object_id``, the box is missing / in another frame, or no contact
-            link is known.
+            ``object_id``, the box is missing / in another frame, no contact link is
+            known, or none is named on a robot with more than one gripper.
 
     Example:
         >>> from openral_core import DetectedObject, Pose6D
@@ -155,11 +160,6 @@ def ground_grasp_target(
     """
     if pad_m <= 0.0:
         raise ValueError(f"pad_m must be > 0; got {pad_m!r}")
-    links = tuple(ref.contact_links) or tuple(default_contact_links)
-    if not links:
-        raise ROSReasonerInvalidPlan(
-            "grasp_target names no contact_links and the robot manifest has no gripper joint."
-        )
     if ref.object_id is not None:
         nodes = [
             n for n in (scene_graph.nodes if scene_graph else []) if n.node_id == ref.object_id
@@ -194,6 +194,18 @@ def ground_grasp_target(
             what=f"detection {ref.label!r}",
             base_frame=base_frame,
             pad_m=pad_m,
+        )
+    links = tuple(ref.contact_links)
+    if not links and len(default_contact_links) > 1:
+        raise ROSReasonerInvalidPlan(
+            f"grasp_target names no contact_links and this robot has "
+            f"{len(default_contact_links)} grippers; name the one gripper that grasps as "
+            f"contact_links (one of: {', '.join(default_contact_links)})."
+        )
+    links = links or tuple(default_contact_links)
+    if not links:
+        raise ROSReasonerInvalidPlan(
+            "grasp_target names no contact_links and the robot manifest has no gripper joint."
         )
     return GraspDeclaration(
         target_id=f"obj:{target}",

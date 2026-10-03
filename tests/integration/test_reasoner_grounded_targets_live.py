@@ -7,7 +7,8 @@ The reasoner names, perception grounds, the producer measures (real pick-and-pla
 
 * a named ``box`` + ``cell:shelf_top`` reach the goal as a seed-only ``GraspDeclaration``
   (``search_box_valid``, no region) and a region-less ``PlaceDeclaration``;
-* two boxes and no ``object_id`` refuse the dispatch — no goal is sent.
+* two boxes and no ``object_id`` refuse the dispatch — no goal is sent;
+* no ``contact_links`` on the bimanual OpenArm refuses too — defaulting would exempt both hands.
 
 The only double is the LLM (``FakeToolUseClient``, never consulted: the tool call is fed
 to the dispatch directly). The unit is the test fixture overlay, set on the node because
@@ -55,7 +56,10 @@ def _box(y: float) -> Any:
     )
 
 
-def _run(objects: list[Any]) -> tuple[list[Any], Any]:
+_LEFT = ("openarm_left_finger_pair",)
+
+
+def _run(objects: list[Any], contact_links: tuple[str, ...] = _LEFT) -> tuple[list[Any], Any]:
     """Publish ``objects`` as the lifted world state, dispatch one named-target call."""
     rclpy = pytest.importorskip("rclpy")
     pytest.importorskip("openral_msgs.msg")
@@ -144,7 +148,7 @@ def _run(objects: list[Any]) -> tuple[list[Any], Any]:
                 rskill_id=_SKILL,
                 prompt="put the box on the shelf",
                 patience_s=30.0,
-                grasp_target=GraspTargetRef(label="box"),
+                grasp_target=GraspTargetRef(label="box", contact_links=list(contact_links)),
                 place_target=PlaceTargetRef(fixture_id="cell:shelf_top"),
             ),
             traceparent=None,
@@ -171,7 +175,7 @@ def test_named_targets_reach_the_goal_as_seed_only_declarations() -> None:
     assert goal.grasp_declaration_valid
     grasp = goal.grasp_declaration
     assert grasp.target_id == "obj:box"
-    assert list(grasp.contact_links) == ["openarm_left_finger_pair", "openarm_right_finger_pair"]
+    assert list(grasp.contact_links) == list(_LEFT)
     assert not grasp.region_valid, "dispatch never supplies a region"
     assert grasp.search_box_valid
     assert grasp.search_box.frame_id == "openarm_base"
@@ -189,3 +193,10 @@ def test_an_ambiguous_named_target_sends_no_goal() -> None:
     assert received == [], "an ambiguous target must not be dispatched"
     assert last is not None and last.outcome == "failed"
     assert "ambiguous" in last.summary
+
+
+def test_a_bimanual_target_naming_no_gripper_sends_no_goal() -> None:
+    received, last = _run([_box(-0.15)], contact_links=())
+    assert received == [], "an unnamed gripper on a two-gripper robot must not be dispatched"
+    assert last is not None and last.outcome == "failed"
+    assert "2 grippers" in last.summary

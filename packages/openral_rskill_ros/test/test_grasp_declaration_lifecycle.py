@@ -257,7 +257,7 @@ def test_a_reasoner_grounded_goal_declaration_reaches_the_wire_with_its_search_b
         bbox_3d=(0.37, -0.18, -0.13, 0.43, -0.12, -0.07),
     )
     grounded = ground_grasp_target(
-        GraspTargetRef(label="box"),
+        GraspTargetRef(label="box", contact_links=[_FINGERS[0]]),
         live_objects=[box],
         scene_graph=None,
         base_frame="openarm_base",

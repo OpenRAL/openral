@@ -138,8 +138,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   the true support, so the pad keeps the support layer inside the box) and gravity-aligned in
   `openarm_base`,
   becomes `GraspDeclaration.search_box`; the fixture id becomes `PlaceDeclaration.target_id`. No
-  match, more than one match without `object_id`, a box outside the base frame, or an unknown
-  fixture refuses the dispatch (no goal sent) and tells the LLM to disambiguate. Both
+  match, more than one match without `object_id`, a box outside the base frame, an unknown
+  fixture, or no `contact_links` on a robot with more than one gripper (the bimanual OpenArm:
+  defaulting to every gripper would exempt the idle hand too) refuses the dispatch (no goal sent) and tells the LLM to disambiguate. Both
   declarations ride the `ExecuteRskill` goal; the runner stamps them and strips any region, and
   the producers below measure. The search box only *seeds* perception: the exemption region is
   always the measured one, never named (HZ-0097-2/4 precedent), so the kernel's trust boundary

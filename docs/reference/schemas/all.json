@@ -5186,7 +5186,7 @@
     },
     "GraspTargetRef": {
       "additionalProperties": false,
-      "description": "The object an ``ExecuteRskillTool`` goal grasps, as the reasoner names it.\n\nThe reasoner **names**; perception **grounds**; the producer **measures**\n(real pick-and-place design \u00a72.2). At dispatch the reasoner resolves this\nreference to a seed box in the robot base frame \u2014 a recalled spatial-memory\nnode's 3D box when ``object_id`` is set, else the one live lifted detection\nwhose label matches \u2014 and sends it as ``GraspDeclaration.search_box``. A\nreference that grounds to nothing, or to more than one instance with no\n``object_id``, is refused and the goal is not sent. Naming arms nothing:\nthe kernel only ever trusts the region the producer measured inside the\nseed.\n\nAttributes:\n    label: Open-vocabulary object label, e.g. ``\"box\"``; matched\n        case-insensitively against the live lifted detections' labels.\n    object_id: A spatial-memory ``node_id`` from ``recall_object`` when the\n        reasoner already knows the instance; ``None`` = ground by ``label``.\n    contact_links: Gripper links the grasp declaration names; empty = every\n        ``role: gripper`` joint's ``child_link`` in the robot manifest.\n\nExample:\n    >>> GraspTargetRef(label=\"box\").contact_links\n    []",
+      "description": "The object an ``ExecuteRskillTool`` goal grasps, as the reasoner names it.\n\nThe reasoner **names**; perception **grounds**; the producer **measures**\n(real pick-and-place design \u00a72.2). At dispatch the reasoner resolves this\nreference to a seed box in the robot base frame \u2014 a recalled spatial-memory\nnode's 3D box when ``object_id`` is set, else the one live lifted detection\nwhose label matches \u2014 and sends it as ``GraspDeclaration.search_box``. A\nreference that grounds to nothing, or to more than one instance with no\n``object_id``, is refused and the goal is not sent. Naming arms nothing:\nthe kernel only ever trusts the region the producer measured inside the\nseed.\n\nAttributes:\n    label: Open-vocabulary object label, e.g. ``\"box\"``; matched\n        case-insensitively against the live lifted detections' labels.\n    object_id: A spatial-memory ``node_id`` from ``recall_object`` when the\n        reasoner already knows the instance; ``None`` = ground by ``label``.\n    contact_links: Gripper links the grasp declaration names; empty = the one\n        ``role: gripper`` joint's ``child_link`` on a single-gripper robot. A robot\n        with several grippers refuses an empty list (the grounding would otherwise\n        exempt every hand).\n\nExample:\n    >>> GraspTargetRef(label=\"box\").contact_links\n    []",
       "properties": {
         "label": {
           "description": "Open-vocabulary label of the ONE object to grasp, as perception labels it (e.g. 'box'). Recall it first when memory has it, and pass its node_id.",
@@ -5208,7 +5208,7 @@
           "title": "Object Id"
         },
         "contact_links": {
-          "description": "Gripper links to grasp with; leave empty for the robot's gripper links.",
+          "description": "Gripper link(s) to grasp with. Leave empty only on a single-gripper robot; with several grippers, name the one that grasps.",
           "items": {
             "type": "string"
           },
@@ -5262,7 +5262,7 @@
       "$defs": {
         "GraspTargetRef": {
           "additionalProperties": false,
-          "description": "The object an ``ExecuteRskillTool`` goal grasps, as the reasoner names it.\n\nThe reasoner **names**; perception **grounds**; the producer **measures**\n(real pick-and-place design \u00a72.2). At dispatch the reasoner resolves this\nreference to a seed box in the robot base frame \u2014 a recalled spatial-memory\nnode's 3D box when ``object_id`` is set, else the one live lifted detection\nwhose label matches \u2014 and sends it as ``GraspDeclaration.search_box``. A\nreference that grounds to nothing, or to more than one instance with no\n``object_id``, is refused and the goal is not sent. Naming arms nothing:\nthe kernel only ever trusts the region the producer measured inside the\nseed.\n\nAttributes:\n    label: Open-vocabulary object label, e.g. ``\"box\"``; matched\n        case-insensitively against the live lifted detections' labels.\n    object_id: A spatial-memory ``node_id`` from ``recall_object`` when the\n        reasoner already knows the instance; ``None`` = ground by ``label``.\n    contact_links: Gripper links the grasp declaration names; empty = every\n        ``role: gripper`` joint's ``child_link`` in the robot manifest.\n\nExample:\n    >>> GraspTargetRef(label=\"box\").contact_links\n    []",
+          "description": "The object an ``ExecuteRskillTool`` goal grasps, as the reasoner names it.\n\nThe reasoner **names**; perception **grounds**; the producer **measures**\n(real pick-and-place design \u00a72.2). At dispatch the reasoner resolves this\nreference to a seed box in the robot base frame \u2014 a recalled spatial-memory\nnode's 3D box when ``object_id`` is set, else the one live lifted detection\nwhose label matches \u2014 and sends it as ``GraspDeclaration.search_box``. A\nreference that grounds to nothing, or to more than one instance with no\n``object_id``, is refused and the goal is not sent. Naming arms nothing:\nthe kernel only ever trusts the region the producer measured inside the\nseed.\n\nAttributes:\n    label: Open-vocabulary object label, e.g. ``\"box\"``; matched\n        case-insensitively against the live lifted detections' labels.\n    object_id: A spatial-memory ``node_id`` from ``recall_object`` when the\n        reasoner already knows the instance; ``None`` = ground by ``label``.\n    contact_links: Gripper links the grasp declaration names; empty = the one\n        ``role: gripper`` joint's ``child_link`` on a single-gripper robot. A robot\n        with several grippers refuses an empty list (the grounding would otherwise\n        exempt every hand).\n\nExample:\n    >>> GraspTargetRef(label=\"box\").contact_links\n    []",
           "properties": {
             "label": {
               "description": "Open-vocabulary label of the ONE object to grasp, as perception labels it (e.g. 'box'). Recall it first when memory has it, and pass its node_id.",
@@ -5284,7 +5284,7 @@
               "title": "Object Id"
             },
             "contact_links": {
-              "description": "Gripper links to grasp with; leave empty for the robot's gripper links.",
+              "description": "Gripper link(s) to grasp with. Leave empty only on a single-gripper robot; with several grippers, name the one that grasps.",
               "items": {
                 "type": "string"
               },
