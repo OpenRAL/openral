@@ -1114,9 +1114,19 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       // Fold one check's sweep-wide minimum into the chunk's smallest slack
       // (#188). `m` is the margin THAT check was gated against, including the
       // predictive look-ahead inflation, so the comparison is like-for-like.
+      //
+      // A check that did not trip can still read a negative sweep minimum: an
+      // EXEMPTED pair (live support witness, embedded attach-time residue, the
+      // grasp target) sits inside the margin by construction and reaches the
+      // sweep minimum at its true depth. The sweep keeps ONE minimum, so
+      // discarding that negative would discard every non-exempt pair's graded
+      // slack with it and send the chunk out at full rate beside a cell it must
+      // not touch. Clamped to 0, an exempt contact reads as the band's slowest
+      // rate: the most conservative reading short of a stop. A check that DID
+      // trip reports and returns, so its clamped slack never scales anything.
       const auto note_slack = [&](const CollisionHit& h, double m) {
-        const double slack = h.sweep_min_distance - m;
-        if (slack >= 0.0 && slack < collision_min_slack_m) {
+        const double slack = std::max(h.sweep_min_distance - m, 0.0);
+        if (slack < collision_min_slack_m) {
           collision_min_slack_m = slack;
         }
       };

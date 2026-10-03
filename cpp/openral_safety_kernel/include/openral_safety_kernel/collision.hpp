@@ -395,10 +395,11 @@ inline constexpr double kMaxGraspDeclarationTimeoutS = 120.0;
 /// of the launch-derived allowlist and the declaration's `contact_links`,
 /// built by the lifecycle. Every other link, every cell outside the box,
 /// self-collision, the attached checks and the force gate are untouched. An
-/// exempt (link, cell) pair reaches `sweep_min_distance` clamped to no less
-/// than the margin (so it reads as slack 0 in the velocity band and can never
-/// mask a non-exempt pair's graded slack) and never supplies the reported
-/// identity or distance.
+/// exempt (link, cell) pair reaches `sweep_min_distance` at its own (stage-1)
+/// depth, exactly as the attached path's exempted pairs do, and never supplies
+/// the reported identity or distance. The lifecycle's velocity band clamps an
+/// untripped check's slack to 0, so the exempt contact reads as the band's
+/// slowest rate and can never mask a non-exempt pair's graded slack.
 ///
 /// valid == false (no declaration, feature off, retracted, expired, or a
 /// failed `ingest_grasp_region`) means no exemption anywhere — identical to
@@ -1020,12 +1021,12 @@ bool jacobian_dls_step(const CollisionModel& model, const CollisionScratch& scra
 /// off — grid.grasp_region is invalid unless the lifecycle armed it): while
 /// grid.grasp_region is valid, a cell whose base-frame centre lies inside the
 /// region box does not trip for a link whose bit is set in its link_mask
-/// (`grasp_target_exempts`). The pair still reaches sweep_min_distance, but
-/// never below `margin`: an exempt finger inside its target would otherwise
-/// drive the sweep minimum negative, and the lifecycle's velocity band drops
-/// negative slack as "tripped" — losing every non-exempt pair's graded slowdown
-/// with it. At the margin it reads as slack 0, the band's slowest rate. It never
-/// supplies link_a/link_b/min_distance. An exempt pair never spends the call's
+/// (`grasp_target_exempts`). The pair still reaches sweep_min_distance at its
+/// own depth (negative for a finger inside its target); the lifecycle's
+/// velocity band clamps an untripped check's slack to 0, so it reads as the
+/// band's slowest rate, never as a "tripped" negative that would discard every
+/// non-exempt pair's graded slowdown with it. It never supplies
+/// link_a/link_b/min_distance. An exempt pair never spends the call's
 /// shared stage-2 budget (`kMaxStage2PerCheck`): it cannot trip, so its stage-1
 /// bound is enough, and the budget is left to the pairs that can. Every link
 /// outside the mask runs the unchanged path; the only difference a region can

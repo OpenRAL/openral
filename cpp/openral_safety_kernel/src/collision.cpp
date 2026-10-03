@@ -1263,16 +1263,6 @@ bool grasp_mask_has(const GraspTargetRegion& region, int link) noexcept {
          region.link_mask[static_cast<std::size_t>(link)];
 }
 
-// The distance an exempt grasp pair hands the sweep minimum: never below the
-// margin. An exempt finger is IN the target, so its true distance is negative,
-// and the slowdown band (`note_slack`) discards negative slack as "tripped" —
-// which would also discard every NON-exempt pair's graded slack, since the
-// sweep keeps one minimum. Clamped, the exempt pair reads as slack 0: the
-// band's slowest rate, the most conservative reading short of a stop.
-double grasp_slack_distance(double d, double margin, bool exempt) noexcept {
-  return exempt && !(d >= margin) ? margin : d;
-}
-
 }  // namespace
 
 bool grasp_region_contains(const GraspTargetRegion& region, const Vec3& p) noexcept {
@@ -1344,8 +1334,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           // region never trips and never supplies the reported evidence.
           const bool exempt =
               grasp_link && grasp_target_exempts(grid, li, apply(grid.pose, voxel.t));
-          fold_pair(result, sweep_min, grasp_slack_distance(d, margin, exempt),
-                    !exempt && d <= margin, li, static_cast<int>(idx));
+          fold_pair(result, sweep_min, d, !exempt && d <= margin, li, static_cast<int>(idx));
         }
       }
     }
@@ -1436,8 +1425,7 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
               }
             }
           }
-          fold_pair(result, sweep_min, grasp_slack_distance(d, margin, exempt),
-                    !exempt && d <= margin, lb, static_cast<int>(idx));
+          fold_pair(result, sweep_min, d, !exempt && d <= margin, lb, static_cast<int>(idx));
         }
       }
     }
