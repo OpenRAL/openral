@@ -258,6 +258,7 @@ def support_top_from_voxels(
     near_xy: tuple[float, float],
     min_cells: int,
     probe_margin_m: float = 0.05,
+    surface_centers: NDArray[np.float64] | None = None,
 ) -> float | None:
     """Measure the surface the target stands on: the top face of that layer.
 
@@ -293,6 +294,11 @@ def support_top_from_voxels(
             *Calibration point.*
         probe_margin_m: Outer reach of the ring from the target footprint, metres;
             at least two cells, since the ring starts one cell out. *Calibration point.*
+        surface_centers: Occupied centres the ring is counted on (default
+            ``centers``). The ring lies outside the target's footprint and so
+            mostly outside a search column padded tightly around it: pass the
+            column grown by ``probe_margin_m`` plus a cell, or the whole map.
+            The target and its anchor always come from ``centers``.
 
     Returns:
         The support's top face z in ``grid.frame_id``, or ``None`` when no layer
@@ -324,21 +330,26 @@ def support_top_from_voxels(
         )
     local = (centers - np.asarray(grid.origin)) @ grid.rotation()
     ijk = np.floor(local / grid.resolution).astype(np.int64)
-    occupied = {(int(i), int(j), int(k)) for i, j, k in ijk.tolist()}
+    occupied = _cell_set(grid, centers)
+    around = occupied if surface_centers is None else _cell_set(grid, surface_centers)
     start = tuple(int(v) for v in ijk[_anchor(centers, ijk, near_xy)])
     reach = math.ceil(probe_margin_m / grid.resolution - 1e-9)
-    for k in sorted({c[2] for c in occupied if c[2] < start[2]}, reverse=True):
+    for k in sorted({c[2] for c in occupied | around if c[2] < start[2]}, reverse=True):
         footprint = {(i, j) for i, j, _ in _component_from(occupied, start, min_k=k + 1)}
         inner = _dilate(footprint, 1)
         ring = _dilate(footprint, reach) - inner
         surface = sum(
-            1
-            for i, j, kk in occupied
-            if kk == k and (i, j) in ring and (i, j, k + 1) not in occupied
+            1 for i, j, kk in around if kk == k and (i, j) in ring and (i, j, k + 1) not in around
         )
         if surface >= min_cells:
             return float(grid.origin[2] + (k + 1) * grid.resolution)
     return None
+
+
+def _cell_set(grid: VoxelLattice, centers: NDArray[np.float64]) -> set[tuple[int, int, int]]:
+    """Integer lattice cells of ``centers``."""
+    ijk = np.floor((centers - np.asarray(grid.origin)) @ grid.rotation() / grid.resolution)
+    return {(int(i), int(j), int(k)) for i, j, k in ijk.astype(np.int64).tolist()}
 
 
 def _anchor(

@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from openral_core import DeployScene, GraspDeclaration, PlaceRegion, Pose6D, RobotDescription
 from openral_core.exceptions import ROSConfigError
-from openral_hal._grasp_target import VoxelLattice
+from openral_hal._grasp_target import VoxelLattice, occupied_centers_in_box
 from openral_hal._grasp_target_leg import (
     GraspTargetLeg,
     GraspTargetTracker,
@@ -432,3 +432,36 @@ def test_a_probe_margin_under_two_grid_cells_is_a_typed_lost_view() -> None:
     with pytest.raises(_Refusal) as caught:
         leg._seed(grid, _item_search_box())
     assert (caught.value.kind, caught.value.retract) == ("probe_margin_under_two_cells", False)
+
+
+def test_a_search_box_padded_tightly_around_the_target_still_finds_the_table() -> None:
+    """An 8 cm item (x, y in 0.17-0.25 m) whose octomap shell spans the five 20 mm cells
+    0.16-0.26 m, in a detection box padded only 35 mm around the item: the support ring
+    (two to three cells out from the shell) lies wholly outside the box's footprint, so a
+    ring counted on the column alone found no support under an ordinary target."""
+    item = range(8, 13)
+    cells = _cells(range(24), range(24), range(5, 6))
+    cells -= _cells(range(8, 16), item, range(5, 6))  # under the item + its +x shadow
+    cells |= _cells(item, item, range(10, 11))  # the visible shell: top, front, both sides
+    for k in range(6, 11):
+        cells |= _cells(range(8, 9), item, range(k, k + 1))
+        cells |= _cells(item, range(8, 9), range(k, k + 1)) | _cells(
+            item, range(12, 13), range(k, k + 1)
+        )
+    occ = np.zeros(int(np.prod(_CELLS)), dtype=np.uint8)
+    for a, b, c in cells:
+        occ[a + _CELLS[0] * (b + _CELLS[1] * c)] = 1
+    grid = VoxelLattice("openarm_base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.02, _CELLS, occ)
+    pad = 0.035
+    box = PlaceRegion(
+        frame_id="openarm_base",
+        pose=Pose6D(xyz=(0.21, 0.21, 0.17), quat_xyzw=(0, 0, 0, 1), frame_id="openarm_base"),
+        half_extents=(0.04 + pad, 0.04 + pad, 0.06),
+    )
+    column = occupied_centers_in_box(grid, search_column(box, below_m=0.15))
+    assert not np.any((column[:, 2] < 0.12) & (np.abs(column[:, :2] - 0.21).max(axis=1) > 0.07)), (
+        "the scene must hold the trap: no table cell of the ring inside the column"
+    )
+    point, support_z = _leg()._seed(grid, box)
+    assert support_z == pytest.approx(0.12)  # the table's top face
+    assert point[2] == pytest.approx(0.22)

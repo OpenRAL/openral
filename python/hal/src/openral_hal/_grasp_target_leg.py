@@ -623,12 +623,18 @@ class GraspTargetLeg:
         min_cells = self._config.grasp_target_min_cells
         column_centers = occupied_centers_in_box(grid, column)
         near_xy = (box.pose.xyz[0], box.pose.xyz[1])
+        # The ring lies outside the target's footprint, mostly outside a search box
+        # padded tightly around it: count it on the column grown to hold all of it.
+        grow = self._probe_margin_m + grid.resolution
+        hx, hy, hz = column.half_extents
+        around = column.model_copy(update={"half_extents": (hx + grow, hy + grow, hz)})
         support_z = support_top_from_voxels(
             grid,
             column_centers,
             near_xy=near_xy,
             min_cells=min_cells,
             probe_margin_m=self._probe_margin_m,
+            surface_centers=occupied_centers_in_box(grid, around),
         )
         if support_z is None:
             raise _contradicted(
