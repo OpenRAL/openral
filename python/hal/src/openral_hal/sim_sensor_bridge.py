@@ -3896,6 +3896,12 @@ class SimSensorBridge:
         if handles is None:
             return
         _model, data = handles
+        # The region's lower face sits one cell above the support (the real
+        # producer's rule), so it needs the lattice's cell edge: no grid yet means
+        # the tracker publishes the declaration region-less (exempts nothing).
+        resolution = None if self._last_voxel_grid is None else self._last_voxel_grid["resolution"]
+        if isinstance(resolution, float):
+            self._attachment_tracker.set_voxel_resolution(resolution)
         declaration = self._attachment_tracker.grasp_declaration(
             data,
             stamp_ns=int(self._node.get_clock().now().nanoseconds),

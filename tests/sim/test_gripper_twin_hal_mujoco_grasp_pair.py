@@ -111,10 +111,13 @@ _MARGIN_M = 0.02  # openral_core.depth_extrinsic.REAL_WORLD_VOXEL_MARGIN_M, asse
 # Joint order = description order = ActionChunk.flat order.
 _JOINTS = ("slide_x", "slide_z", "left_finger", "right_finger")
 _PREGRASP = (0.30, 0.40, 0.0, 0.0)
-_GRASP = (0.30, 0.28, 0.0, 0.0)  # pads span z 0.15 .. 0.21 — 30 mm over the table
-_CLOSED = (0.30, 0.28, _CLOSE_Q, _CLOSE_Q)
-_NUDGE = (0.30, 0.29, _CLOSE_Q, _CLOSE_Q)  # block origin z 0.1695: still in the region
-_LIFTED = (0.30, 0.37, _CLOSE_Q, _CLOSE_Q)  # block origin z 0.2495: out of the region
+# Pads span z 0.17 .. 0.23 — 50 mm over the table. The region's lower face sits one 20 mm
+# voxel above the table (the real producer's rule), so the block's bottom cell layer
+# (z 0.12 .. 0.14) is NOT exempt and the open pads must clear it by the 20 mm margin.
+_GRASP = (0.30, 0.30, 0.0, 0.0)
+_CLOSED = (0.30, 0.30, _CLOSE_Q, _CLOSE_Q)
+_NUDGE = (0.30, 0.31, _CLOSE_Q, _CLOSE_Q)  # block origin z 0.1695: still in the region
+_LIFTED = (0.30, 0.37, _CLOSE_Q, _CLOSE_Q)  # block origin z 0.2295: out of the region
 _TOWARD_POST = (0.38, 0.37, _CLOSE_Q, _CLOSE_Q)  # right pad 50.5 mm from the post: clear
 _AT_POST = (0.42, 0.37, _CLOSE_Q, _CLOSE_Q)  # right pad 10.5 mm from the post: refused
 
@@ -613,7 +616,12 @@ def test_declared_grasp_target_is_reachable_and_undeclared_stops() -> None:
                     assert measured.region.evidence_ref == "mujoco_body_subtree:block"
                     assert measured.region.frame_id == "base_link"
                     centre = measured.region.pose.position
-                    assert (centre.x, centre.y, centre.z) == pytest.approx(_BLOCK_C, abs=1e-6)
+                    # The block's box with its lower face lifted one voxel off the table,
+                    # the real producer's rule (``_grasp_target.target_region_from_mask``).
+                    lifted = (_BLOCK_C[0], _BLOCK_C[1], _BLOCK_C[2] + _RES / 2.0)
+                    assert (centre.x, centre.y, centre.z) == pytest.approx(lifted, abs=1e-6)
+                    bottom = centre.z - measured.region.half_extents.z
+                    assert bottom == pytest.approx(_BLOCK_C[2] - _BLOCK_H[2] + _RES, abs=2e-4)
 
                     send("d-descend", _GRASP, expect_accept=True)
                     send("d-close", _CLOSED, expect_accept=True)

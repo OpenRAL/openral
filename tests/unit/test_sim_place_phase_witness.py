@@ -185,6 +185,7 @@ class _Rig:
         self.model = mujoco.MjModel.from_xml_string(_MJCF)
         self.data = mujoco.MjData(self.model)
         self.tracker = SimAttachmentEvidenceTracker(self.model, _description(), stable_ticks=1)
+        self.tracker.set_voxel_resolution(_GRID_RES_M)
         for joint in ("gripper0_left_joint", "gripper0_right_joint"):
             self.data.qpos[_qpos_address(self.model, joint)] = -0.008
         self.tick = 0
@@ -853,9 +854,14 @@ def test_publishing_a_region_cannot_silently_drop_its_geometry() -> None:
 # measures its subtree's box in the base frame, and nothing else — a grasp region
 # is box-only in v1. The cup is a sphere of radius 0.04 carried at world (0, 0,
 # 0.46); the base frame sits at (0.1, 0, 0.05), so its box centre is (-0.1, 0,
-# 0.41) in the base frame, half-extents 0.04 plus the measurement's 0.1 mm pad.
-_CUP_CENTRE_IN_BASE = (-_BASE_X, 0.0, _CARRY_Z - _BASE_Z)
-_CUP_HALF_EXTENTS = (_CUP_RADIUS_M + 0.0001,) * 3
+# 0.41) in the base frame, half-extents 0.04 plus the measurement's 0.1 mm pad —
+# then, as on real (``_grasp_target.target_region_from_mask``), the lower face is
+# lifted one voxel off the support so the support cells stay outside the region:
+# centre up by half a voxel, z half-extent down by half a voxel.
+_GRID_RES_M = 0.02
+_LIFT_Z = _GRID_RES_M / 2.0
+_CUP_CENTRE_IN_BASE = (-_BASE_X, 0.0, _CARRY_Z - _BASE_Z + _LIFT_Z)
+_CUP_HALF_EXTENTS = (_CUP_RADIUS_M + 0.0001,) * 2 + (_CUP_RADIUS_M + 0.0001 - _LIFT_Z,)
 
 
 def _grasp(
@@ -892,12 +898,12 @@ def test_a_grasp_declaration_yields_a_box_around_the_target_and_no_geometry() ->
     assert region.stamp_ns == rig.tick
     np.testing.assert_allclose(region.pose.xyz, _CUP_CENTRE_IN_BASE, atol=1e-6)
     np.testing.assert_allclose(region.half_extents, _CUP_HALF_EXTENTS, atol=1e-6)
-    # The box contains the target's geometry: the sphere's centre and radius fit.
-    centre = np.asarray(region.pose.xyz)
-    assert np.all(
-        np.abs(centre - np.asarray(_CUP_CENTRE_IN_BASE)) + _CUP_RADIUS_M
-        <= np.asarray(region.half_extents) + 1e-9
-    )
+    # The box holds the target above its support: lower face exactly one voxel above
+    # the target's lowest point, upper face at its top.
+    centre_z, half_z = region.pose.xyz[2], region.half_extents[2]
+    bottom = _CARRY_Z - _BASE_Z - _CUP_RADIUS_M - 0.0001
+    assert centre_z - half_z == pytest.approx(bottom + _GRID_RES_M, abs=1e-9)
+    assert centre_z + half_z == pytest.approx(_CARRY_Z - _BASE_Z + _CUP_RADIUS_M + 0.0001)
     # Everything dispatch said survives untouched.
     assert declaration.contact_links == ("left_finger", "right_finger")
     assert declaration.trace_id == "4bf92f3577b34da6a3ce929d0e0e4736"
@@ -911,7 +917,30 @@ def test_the_grasp_region_follows_the_target_in_the_base_frame() -> None:
     region = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
 
     assert region is not None
-    np.testing.assert_allclose(region.pose.xyz, (0.2 - _BASE_X, 0.0, 0.5 - _BASE_Z), atol=1e-6)
+    np.testing.assert_allclose(
+        region.pose.xyz, (0.2 - _BASE_X, 0.0, 0.5 - _BASE_Z + _LIFT_Z), atol=1e-6
+    )
+
+
+def test_no_voxel_resolution_means_no_grasp_region() -> None:
+    """The lift needs the lattice's cell edge: before a grid is seen, the declaration
+    rides region-less (exempts nothing), as on real."""
+    rig = _Rig()
+    rig.tracker = SimAttachmentEvidenceTracker(rig.model, _description(), stable_ticks=1)
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
+    declaration = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick)
+    assert declaration is not None
+    assert declaration.region is None
+
+
+def test_a_target_no_taller_than_a_voxel_has_no_grasp_region() -> None:
+    """The real producer's NO_HEIGHT_ABOVE_SUPPORT: a cup 80 mm tall under 100 mm cells."""
+    rig = _Rig()
+    rig.tracker.set_voxel_resolution(0.1)
+    rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
+    declaration = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick)
+    assert declaration is not None
+    assert declaration.region is None
 
 
 def test_no_grasp_declaration_means_no_grasp_region() -> None:
@@ -1013,6 +1042,7 @@ def _open_rig() -> _Rig:
     rig.model = mujoco.MjModel.from_xml_string(_MJCF)
     rig.data = mujoco.MjData(rig.model)
     rig.tracker = SimAttachmentEvidenceTracker(rig.model, _description(), stable_ticks=1)
+    rig.tracker.set_voxel_resolution(_GRID_RES_M)
     _set_jaws(rig, 0.01)
     rig.tick = 0
     assert rig.step() is None, "open jaws must not attach"
@@ -1040,7 +1070,7 @@ def test_the_grasp_region_freezes_at_attach_and_a_new_declaration_re_measures() 
     region = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
     assert region is not None
     np.testing.assert_allclose(
-        region.pose.xyz, (0.02 - _BASE_X, 0.0, _CARRY_Z - _BASE_Z), atol=1e-6
+        region.pose.xyz, (0.02 - _BASE_X, 0.0, _CARRY_Z - _BASE_Z + _LIFT_Z), atol=1e-6
     )
     _move_cup(rig, x=0.0)
 
@@ -1067,7 +1097,9 @@ def test_the_grasp_region_freezes_at_attach_and_a_new_declaration_re_measures() 
     rig.tracker.set_grasp_declaration(_grasp(stamp_ns=rig.tick))
     fresh = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
     assert fresh is not None
-    np.testing.assert_allclose(fresh.pose.xyz, (0.2 - _BASE_X, 0.0, 0.55 - _BASE_Z), atol=1e-6)
+    np.testing.assert_allclose(
+        fresh.pose.xyz, (0.2 - _BASE_X, 0.0, 0.55 - _BASE_Z + _LIFT_Z), atol=1e-6
+    )
 
 
 def test_an_attach_of_another_object_does_not_freeze_the_grasp_region() -> None:
@@ -1079,4 +1111,6 @@ def test_an_attach_of_another_object_does_not_freeze_the_grasp_region() -> None:
     rig.step()
     region = rig.tracker.grasp_declaration(rig.data, stamp_ns=rig.tick).region
     assert region is not None
-    np.testing.assert_allclose(region.pose.xyz, (0.2 - _BASE_X, 0.0, 0.55 - _BASE_Z), atol=1e-6)
+    np.testing.assert_allclose(
+        region.pose.xyz, (0.2 - _BASE_X, 0.0, 0.55 - _BASE_Z + _LIFT_Z), atol=1e-6
+    )

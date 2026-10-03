@@ -242,6 +242,57 @@ def subtree_region_box(
     return 0.5 * (lower + upper), half_extents
 
 
+def lift_region_off_support(
+    region_local: tuple[NDArray[np.float64], NDArray[np.float64]],
+    rotation_base_from_body: NDArray[np.float64],
+    *,
+    resolution: float,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]] | None:
+    """Raise a resting target's body-frame box so its lowest point is one voxel up.
+
+    The sim mirror of the real producer's HZ-01xx-6 rule
+    (``_grasp_target.target_region_from_mask``): a grasp region's lower face sits
+    at ``support_z + resolution``, so every cell holding the support surface (centres
+    up to half a voxel above the plane) stays outside the region and the kernel still
+    stops the fingers at the table under the target. In sim the support plane is the
+    box's own lowest point in the base frame (the target rests on it).
+
+    The box keeps its body-frame orientation: the face shrunk is the one on the body
+    axis closest to the base ``+z``, by ``resolution / |cos|`` of that axis' tilt, which
+    raises the lowest corner by exactly ``resolution`` (and is the real rule verbatim
+    for an upright target). Kept local rather than shared with ``_grasp_target`` because
+    the real producer fits a gravity-aligned box from a cloud, not a body-frame one.
+
+    Args:
+        region_local: ``(centre, half_extents)`` in the body frame.
+        rotation_base_from_body: ``(3, 3)`` body -> base rotation.
+        resolution: The voxel lattice's cell edge.
+
+    Returns:
+        The lifted ``(centre, half_extents)``, or ``None`` when the target is no
+        taller than one voxel (the real producer's ``NO_HEIGHT_ABOVE_SUPPORT``).
+
+    Example:
+        >>> import numpy as np
+        >>> c, h = lift_region_off_support(
+        ...     (np.zeros(3), np.array([0.02, 0.02, 0.04])), np.eye(3), resolution=0.02
+        ... )
+        >>> [round(float(v), 3) for v in (c[2] - h[2], c[2] + h[2])]
+        [-0.02, 0.04]
+    """
+    centre, half_extents = region_local
+    up = np.asarray(rotation_base_from_body, dtype=np.float64)[2, :]
+    axis = int(np.argmax(np.abs(up)))
+    lift = resolution / abs(float(up[axis]))
+    if lift >= 2.0 * float(half_extents[axis]):
+        return None
+    lifted_centre = np.array(centre, dtype=np.float64)
+    lifted_half = np.array(half_extents, dtype=np.float64)
+    lifted_centre[axis] += math.copysign(lift / 2.0, float(up[axis]))
+    lifted_half[axis] -= lift / 2.0
+    return lifted_centre, lifted_half
+
+
 def _root_motion_body(
     model: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
     body_id: int,
@@ -1555,6 +1606,9 @@ class SimAttachmentEvidenceTracker:
         self._grasp_region_local: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None
         self._grasp_frozen = False
         self._grasp_frozen_region: PlaceRegion | None = None
+        # The occupancy lattice's cell edge (``set_voxel_resolution``), for the grasp
+        # region's one-voxel lift off its support. ``None`` until a grid is seen.
+        self._voxel_resolution_m: float | None = None
 
         gripper_joints = [joint for joint in description.joints if joint.role == "gripper"]
         if not gripper_joints:
@@ -2076,6 +2130,20 @@ class SimAttachmentEvidenceTracker:
         except ValueError:
             return declaration.model_copy(update={"region": None})
 
+    def set_voxel_resolution(self, resolution_m: float) -> None:
+        """Record the occupancy lattice's cell edge (from ``/openral/world_voxels``).
+
+        The grasp region's lower face sits one cell above the target's support plane,
+        the real producer's rule; until a resolution is known no grasp region is
+        published.
+
+        Raises:
+            ROSConfigError: ``resolution_m`` is not finite and positive.
+        """
+        if not math.isfinite(resolution_m) or resolution_m <= 0.0:
+            raise ROSConfigError(f"voxel resolution must be finite and > 0, got {resolution_m!r}")
+        self._voxel_resolution_m = float(resolution_m)
+
     def _freeze_grasp_region(
         self,
         data: Any,  # noqa: ANN401  # reason: optional MuJoCo pybind type
@@ -2120,11 +2188,23 @@ class SimAttachmentEvidenceTracker:
             )
             if self._grasp_region_local is None:
                 return None
+        # The real producer's lower-face rule needs the lattice's cell edge; without
+        # a grid yet there is no region (exempts nothing), as on real.
+        if self._voxel_resolution_m is None or self._base_body_id is None:
+            return None
+        _, rotation = _relative_pose(
+            data, parent_body_id=self._base_body_id, child_body_id=self._grasp_target_body_id
+        )
+        lifted = lift_region_off_support(
+            self._grasp_region_local, rotation, resolution=self._voxel_resolution_m
+        )
+        if lifted is None:
+            return None
         return self._region_in_base(
             data,
             body_id=self._grasp_target_body_id,
             body_name=self._grasp_target_body_name,
-            region_local=self._grasp_region_local,
+            region_local=lifted,
             geometry_local=(),
             stamp_ns=stamp_ns,
         )
