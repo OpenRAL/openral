@@ -278,8 +278,9 @@ kernel with `world_voxel_enabled: true`, `world_voxel_margin_m: 0.02` and
 `deploy_binding` only feeds its depth image to the world state.
 
 To run a local copy of the scene instead (test 3's grasp target), pass
-`--scene scenes/deploy/<copy>.yaml`. The copy gets the same gates, and the script also refuses
-it unless it lies under `scenes/deploy/`, validates as a `DeployScene`, and, once parsed, is
+`--scene scenes/deploy/local/<copy>.yaml`. The copy gets the same gates, and the script also
+refuses it unless it lies under `scenes/deploy/local/` (gitignored, so operator copies never
+dirty the tree or join the tracked scene registry), validates as a `DeployScene`, and, once parsed, is
 identical to the committed scene except for the top-level `grasp_declaration` block. Any
 other difference (octomap off, a wider `robot_self_filter_padding_m`, an allowance or extra
 collision pair, a safety envelope, other drivers or HAL parameters, even a renamed
@@ -344,9 +345,9 @@ Run these tests in order:
    The committed scene names no grasp target: what to pick is task knowledge. With the
    reasoner on it names the target and perception grounds the search box
    ([design §2.2](../../reference/real-pick-place-design.md)). With the reasoner off, as
-   here, copy the scene to an uncommitted file under `scenes/deploy/`, add a direct-dispatch
-   block, and launch it with `tools/openarm_world_voxel_run.sh --scene <copy>`. Example for Thor
-   (candidate numbers read off the live voxel map, 2026-10-03, arms at rest, `openarm_base`
+   here, copy the scene into the gitignored `scenes/deploy/local/` (create it), add a
+   direct-dispatch block, and launch it with `tools/openarm_world_voxel_run.sh --scene <copy>`.
+   Example for Thor (candidate numbers read off the live voxel map, 2026-10-03, arms at rest, `openarm_base`
    frame, 20 mm cells): the bench top is one cluster whose face sits at z = -0.32; four
    item-sized clusters stand on it at x 0.35-0.45 (y -0.29, -0.15, +0.09, +0.23). A search
    box must cover ONE item or the producer refuses it as AMBIGUOUS; this one covers the item

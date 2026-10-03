@@ -167,3 +167,7 @@ install_py312/
 # by Copilot/Claude tooling — never a checked-in artefact.
 /copilot-session-*.md
 /[0-9][0-9][0-9][0-9]-*-*.txt
+
+# Operator copies of deploy scenes (tools/openarm_world_voxel_run.sh --scene): local only,
+# never part of the scene registry.
+scenes/deploy/local/

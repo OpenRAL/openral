@@ -15,8 +15,8 @@
 #      copy only refuses earlier;
 #   3. it runs in an interactive terminal and the operator types the confirmation.
 # `--scene <path>` swaps in a local copy of that scene (runbook step 4: one carrying a
-# grasp_declaration) under the same gates. It must be a .yaml under scenes/deploy/ that
-# validates as a DeployScene and, parsed, is IDENTICAL to the committed scene except for the
+# grasp_declaration) under the same gates. It must be a .yaml under scenes/deploy/local/
+# (gitignored: operator copies never enter the tracked scene registry) that validates as a DeployScene and, parsed, is IDENTICAL to the committed scene except for the
 # top-level `grasp_declaration` key: any other difference (octomap off, a wider self-filter
 # padding, other drivers or HAL, an allowance turned on, ...) is refused, naming the differing
 # key paths. Other extra arguments pass through to `openral deploy run` only from an
@@ -50,8 +50,8 @@ while (($#)); do
     --scene)
       (($# >= 2)) || refuse "--scene needs a path."
       scene="$(readlink -f -- "$2")" || refuse "--scene $2 does not resolve."
-      [[ "${scene}" == "${root}/scenes/deploy/"*.yaml && -f "${scene}" ]] ||
-        refuse "--scene must be an existing .yaml file under ${root}/scenes/deploy/."
+      [[ "${scene}" == "${root}/scenes/deploy/local/"*.yaml && -f "${scene}" ]] ||
+        refuse "--scene must be an existing .yaml file under ${root}/scenes/deploy/local/."
       shift 2
       ;;
     *)

@@ -122,18 +122,23 @@ def test_the_run_script_refuses_a_unit_that_does_not_exist() -> None:
     assert "head_zed's mount is not declared for unit no_such_cell" in proc.stderr
 
 
-def test_the_run_script_refuses_a_scene_outside_scenes_deploy(tmp_path: Path) -> None:
-    """A --scene copy must live under scenes/deploy/; checked before any gate."""
+def test_the_run_script_refuses_a_scene_outside_scenes_deploy_local(tmp_path: Path) -> None:
+    """A --scene copy must live under the gitignored scenes/deploy/local/; checked before any
+    gate. A tracked scenes/deploy/ file is refused too: copies stay out of the registry."""
     outside = tmp_path / "openarm_real_world_voxels.yaml"
     outside.write_text(_SCENE.read_text(encoding="utf-8"), encoding="utf-8")
-    for scene in (str(outside), str(_REPO_ROOT / "robots" / "openarm" / "robot.yaml")):
+    for scene in (str(outside), str(_ROBOT), str(_SCENE)):
         proc = _run_script(_NO_GATES, "--scene", scene)
         assert proc.returncode == 2
         assert "--scene must be an existing .yaml file under" in proc.stderr
+        assert "scenes/deploy/local/" in proc.stderr
 
 
 def _local_scene(name: str, doc: dict[str, object]) -> Path:
-    path = _REPO_ROOT / "scenes" / "deploy" / f"_test_{name}_{os.getpid()}.yaml"
+    """Write into the gitignored dir the wrapper accepts; callers unlink in ``finally``."""
+    local = _REPO_ROOT / "scenes" / "deploy" / "local"
+    local.mkdir(exist_ok=True)
+    path = local / f"_test_{name}_{os.getpid()}.yaml"
     path.write_text(yaml.safe_dump(doc), encoding="utf-8")
     return path
 
