@@ -183,6 +183,35 @@ def test_the_kernel_gets_world_voxel_enabled_at_the_real_margin() -> None:
     assert octo_params["frame_id"] == "openarm_base"
 
 
+_AUTONOMOUS = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_autonomous.yaml"
+
+
+@pytest.mark.usefixtures("calibrated_openarm")
+def test_the_autonomous_scene_keeps_the_voxel_check_and_adds_the_reasoner_legs() -> None:
+    """``openarm_real_autonomous.yaml`` on the real path: the same kernel voxel check, plus
+    the reasoner, the open-vocab detector and spatial-memory ingest — and no task knowledge
+    (no preloaded skill, no vision leg)."""
+    from launch_ros.utilities import evaluate_parameters
+
+    args = _launch_args("real", _AUTONOMOUS)
+    assert args["enable_octomap_kernel_check"] == "true"
+    assert args["enable_reasoner"] == "true"
+    assert args["enable_object_detector"] == "true"
+    assert args["spatial_memory_ingest"] == "true"
+    assert args.get("preload_rskill_id", "") == ""
+    assert args.get("object_detector_manifest", "").endswith("omdet-turbo-indoor/rskill.yaml")
+    assert not any("vision_attachment" in k for k in args)
+    del args["deploy_config"]  # drivers: needs zed_wrapper on the ament path (rig only)
+    ctx, entities = _compose(args)
+    (kernel_params,) = evaluate_parameters(
+        ctx, _node(entities, "openral_safety_kernel")._Node__parameters
+    )
+    assert kernel_params["world_voxel_enabled"] is True
+    assert kernel_params["world_voxel_margin_m"] == 0.02
+    _node(entities, "openral_reasoner_ros", "reasoner_node.py")
+    _node(entities, "openral_perception_ros", "ros_image_detector_node.py")
+
+
 def test_the_unit_pose_is_the_only_mount_published_for_the_zed() -> None:
     """The selected unit's head_zed pose reaches /tf_static, once, with the manifest's parent.
 

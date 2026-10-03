@@ -347,6 +347,10 @@ pose is declared for the selected unit in `robots/openarm/units/<unit>.yaml`. Op
 does not calibrate that pose: the runbook's step 2 states the frames and the accuracy
 the check needs, and the operator measures it (a hand-eye calibration, typically). The
 gate is robot-agnostic — any robot with a cloud source, not just OpenArm.
+Its autonomous sibling,
+[`scenes/deploy/openarm_real_autonomous.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/openarm_real_autonomous.yaml),
+adds the reasoner, the open-vocabulary detector and spatial-memory ingest so a goal is
+language (`openral prompt "pick up the boxes"`), behind the same launcher's `--autonomous`.
 
 That is deliberate reuse rather than a new node: `zed_wrapper` (and the RealSense
 and Orbbec drivers) already stereo-match and project on the GPU, so composing a
