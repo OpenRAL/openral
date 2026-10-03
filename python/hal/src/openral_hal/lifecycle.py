@@ -2192,6 +2192,25 @@ if _ROS2_AVAILABLE:
                 f"grasp trigger windows for {rate_hz:.1f} Hz joint states: "
                 f"max_gap_s={trigger_config.max_gap_s:.3f}"
             )
+            # Twin only: the MuJoCo HAL stamps joint states when an action or an idle
+            # step captures them, and the idle stepper holds off for idle_hold while a
+            # skill pauses between VLA chunks — a jaw-evidence timeout shorter than
+            # that withholds the heartbeat on every re-inference pause. Real hardware
+            # streams joint states continuously and keeps the configured timeout.
+            evidence_timeout_s = (
+                gp("vision_attachment_evidence_timeout_s").get_parameter_value().double_value
+            )
+            from openral_hal.sim_sensor_bridge import SimSensorBridge
+
+            if isinstance(self._bridge, SimSensorBridge):
+                twin_floor_s = self._bridge.idle_hold_s + 4.0 / rate_hz
+                if evidence_timeout_s < twin_floor_s:
+                    self.get_logger().info(
+                        f"vision attachment (sim twin): jaw evidence timeout raised "
+                        f"{evidence_timeout_s:.2f} -> {twin_floor_s:.2f} s to span the "
+                        f"idle stepper's {self._bridge.idle_hold_s:.2f} s hold"
+                    )
+                    evidence_timeout_s = twin_floor_s
             self._vision_attachment = VisionAttachmentBridge(
                 self,
                 self._hal.description,
@@ -2219,9 +2238,7 @@ if _ROS2_AVAILABLE:
                         if frame
                     ),
                     tf_frames=tf_frames,
-                    evidence_timeout_s=gp("vision_attachment_evidence_timeout_s")
-                    .get_parameter_value()
-                    .double_value,
+                    evidence_timeout_s=evidence_timeout_s,
                     mask_depth_max_skew_s=gp("vision_attachment_mask_depth_max_skew_s")
                     .get_parameter_value()
                     .double_value,
