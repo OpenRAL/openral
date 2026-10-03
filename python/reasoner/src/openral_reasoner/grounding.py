@@ -276,9 +276,16 @@ def ground_place_target(
             ``DECLARATION_TIMEOUT_MARGIN_S``, capped at the declaration's ceiling.
         pad_m: Padding added to each half-extent, > 0.
 
+    The hint is optional (the place leg measures the surface under the carried payload
+    without one), but a supplied hint that does not ground refuses the goal: it never
+    degrades to placing on whatever surface is measured.
+
     Raises:
-        ROSReasonerInvalidPlan: Nothing grounds, several instances match with no node
-            id, or the box is missing / in another frame.
+        ROSReasonerInvalidPlan: The hint does not ground — no live detection carries the
+            label (including no detector at all), several do and no node id is given, the
+            node is not in spatial memory (including no memory at all), or the box is
+            missing / in another frame. The message says the hint could not be grounded
+            and that omitting ``place_target`` lets the policy place on the measured surface.
 
     Example:
         >>> from openral_core import DetectedObject, Pose6D
@@ -302,15 +309,24 @@ def ground_place_target(
         ('surface:shelf', True, [0.24, 0.24, 0.34])
     """
     node_id = ref.object_id if ref.object_id is not None else ref.place_node_id
-    target, seed = _locate(
-        "place_target",
-        ref.label,
-        node_id,
-        live_objects=live_objects,
-        scene_graph=scene_graph,
-        base_frame=base_frame,
-        pad_m=pad_m,
-    )
+    try:
+        target, seed = _locate(
+            "place_target",
+            ref.label,
+            node_id,
+            live_objects=live_objects,
+            scene_graph=scene_graph,
+            base_frame=base_frame,
+            pad_m=pad_m,
+        )
+    except ROSReasonerInvalidPlan as exc:
+        # Option A: the hint is optional, but a supplied one that does not ground refuses
+        # the goal — never a silent fall-back to "place on any measured surface".
+        raise ROSReasonerInvalidPlan(
+            f"the place hint could not be grounded, so the goal is refused: {exc!s} "
+            "Omit place_target to let the policy place on the surface measured under "
+            "the carried payload."
+        ) from exc
     return PlaceDeclaration(
         target_id=f"surface:{target}",
         timeout_s=min(patience_s + DECLARATION_TIMEOUT_MARGIN_S, PlaceDeclaration.MAX_TIMEOUT_S),

@@ -9,7 +9,10 @@ The reasoner names, perception grounds, the producer measures (real pick-and-pla
   ``GraspDeclaration`` (``search_box_valid``, no region) and a region-less
   ``PlaceDeclaration`` whose ``search_box`` is the padded shelf box — nothing surveyed;
 * with no place target (the normal case: the policy picks the spot, the producer measures
-  the surface under the payload) the goal carries no place declaration at all;
+  the surface under the payload) the goal carries no place declaration at all, and the
+  real runner (``place_approach_enabled``) arms its goal-scope one;
+* a supplied place hint that does not ground refuses the goal — never dropped to "place
+  anywhere" — and the refusal tells the LLM to omit it;
 * two boxes and no ``object_id`` refuse the dispatch — no goal is sent;
 * no ``contact_links`` on the bimanual OpenArm refuses too — defaulting would exempt both hands.
 
@@ -218,10 +221,161 @@ def test_no_place_target_sends_no_place_declaration() -> None:
 
 
 def test_a_named_surface_perception_does_not_see_sends_no_goal() -> None:
+    """Option A: an optional place hint that does not ground refuses the goal — it is never
+    dropped to "place on whatever surface is measured"."""
     received, last = _run([_box(-0.15)])
-    assert received == []
+    assert received == [], "an ungroundable place hint must not be dispatched"
     assert last is not None and last.outcome == "failed"
+    assert "place hint could not be grounded" in last.summary
     assert "place_target 'shelf'" in last.summary
+    assert "Omit place_target" in last.summary
+
+
+def test_no_place_hint_dispatches_and_the_runner_arms_the_goal_scope_place() -> None:
+    """The normal case end to end: the reasoner sends no place declaration and the real
+    runner (``place_approach_enabled``) arms its goal-scope one — ``target_id="surface"``,
+    no object, no search box — so the place leg measures under the payload."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import (
+        Action,
+        ControlMode,
+        ExecuteRskillTool,
+        GraspTargetRef,
+        JointState,
+        WaitTool,
+        WorldState,
+    )
+    from openral_msgs.msg import ActionChunk, WorldStateStamped
+    from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
+    from openral_reasoner import ToolPalette
+    from openral_reasoner_ros import ReasonerNode
+    from openral_rskill.base import rSkillBase
+    from openral_rskill_ros.compose import compose_so100_runtime
+    from openral_world_state_ros.lifecycle_node import build_world_state_stamped_msg
+    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.lifecycle import TransitionCallbackReturn
+    from rclpy.parameter import Parameter
+    from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+    from std_msgs.msg import UInt64
+
+    from tests.integration.fakes.fake_llm import FakeToolUseClient
+
+    class _Hold(rSkillBase):
+        def __init__(self) -> None:
+            super().__init__(name=_SKILL, version="0.1.0", role="s1", embodiment_tags=["so100"])
+
+        def _configure_impl(self) -> None:
+            pass
+
+        def _activate_impl(self) -> None:
+            pass
+
+        def _deactivate_impl(self) -> None:
+            pass
+
+        def _shutdown_impl(self) -> None:
+            pass
+
+        def _step_impl(self, _world_state: Any) -> Action:
+            return Action(
+                control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[[0.0] * 6]
+            )
+
+    def _resolver(*_a: Any, **_k: Any) -> Any:
+        skill = _Hold()
+        skill.configure()
+        skill.activate()
+        return skill
+
+    rclpy.init()
+    try:
+        runtime = compose_so100_runtime(skill_resolver=_resolver)
+        runtime.skill_runner_node.set_parameters(
+            [
+                Parameter("joint_state_staleness_limit_s", value=0.5),
+                Parameter("place_approach_enabled", value=True),
+            ]
+        )
+        reasoner = ReasonerNode(
+            client=FakeToolUseClient(responses=[WaitTool() for _ in range(64)]),
+            palette=ToolPalette(execute_rskill_ids=frozenset({_SKILL})),
+            tick_hz=0.2,
+        )
+        reasoner.set_parameters(
+            [
+                Parameter("robot_yaml", value=str(_REPO / "robots" / "openarm" / "robot.yaml")),
+                Parameter("grasp_target_voxel_m", value=0.02),
+            ]
+        )
+        peer = rclpy.create_node("openral_test_goal_scope_place_peer")
+        reliable = QoSProfile(
+            depth=10,
+            reliability=QoSReliabilityPolicy.RELIABLE,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        # Stand in for the HAL at the wire: ack every tick as applied (startup liveness).
+        applied = peer.create_publisher(UInt64, "/openral/action_applied", reliable)
+        peer.create_subscription(
+            ActionChunk,
+            "/openral/candidate_action",
+            lambda m: applied.publish(UInt64(data=int(m.tick_index))),
+            reliable,
+        )
+        declared: list[Any] = []
+        peer.create_subscription(
+            PlaceDeclarationMsg,
+            "/openral/place_declaration",
+            declared.append,
+            QoSProfile(
+                depth=10,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
+        world_pub = peer.create_publisher(WorldStateStamped, "/openral/world_state_slow", reliable)
+        executor = MultiThreadedExecutor(num_threads=4)
+        for node in (runtime.world_state_node, runtime.skill_runner_node, reasoner, peer):
+            executor.add_node(node)
+        for node in (runtime.world_state_node, runtime.skill_runner_node, reasoner):
+            assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+            assert node.trigger_activate() == TransitionCallbackReturn.SUCCESS
+        world = WorldState(
+            stamp_ns=1,
+            joint_state=JointState(name=[], position=[], velocity=[], effort=[], stamp_ns=1),
+            detected_objects=[_box(-0.15)],
+        )
+
+        def _seen() -> bool:
+            world_pub.publish(build_world_state_stamped_msg(None, world))
+            return reasoner._world_state_msg is not None
+
+        assert _spin_until(executor, _seen, 5.0), "world state never reached the reasoner"
+        reasoner._dispatch_execute_rskill(
+            ExecuteRskillTool(
+                rskill_id=_SKILL,
+                prompt="put the box down",
+                patience_s=30.0,
+                grasp_target=GraspTargetRef(label="box", contact_links=list(_LEFT)),
+            ),
+            traceparent=None,
+        )
+        assert _spin_until(executor, lambda: any(m.active for m in declared), 10.0), (
+            "a goal with no place hint must still dispatch and arm the goal-scope place"
+        )
+        armed = next(m for m in declared if m.active)
+        executor.shutdown()
+        for node in (reasoner, runtime.skill_runner_node, runtime.world_state_node):
+            node.trigger_deactivate()
+        reasoner.destroy_node()
+        peer.destroy_node()
+        runtime.skill_runner_node.destroy_node()
+        runtime.world_state_node.destroy_node()
+    finally:
+        rclpy.shutdown()
+    assert armed.target_id == "surface"
+    assert armed.object_id == ""
+    assert not armed.search_box_valid and not armed.region_valid
 
 
 def test_an_ambiguous_named_target_sends_no_goal() -> None:
