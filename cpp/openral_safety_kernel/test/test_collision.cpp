@@ -6192,3 +6192,35 @@ TEST(GraspTargetOneHand, EmptyOrOutOfModelMasksAreRefused) {
   const std::vector<int> cyclic = {-1, 2, 1};
   EXPECT_FALSE(osk::grasp_links_one_hand(cyclic, grasp_mask({1, 2}), grasp_mask({1})));
 }
+
+// ── Retired grasp identities (multi-pick per goal, HZ-01xx-3) ────────────────
+
+TEST(RetiredGraspSet, EveryRetiredIdentityStaysRefusedAndANewOneIsNot) {
+  osk::RetiredGraspSet retired;
+  for (std::size_t n = 1; n <= 5; ++n) {
+    EXPECT_FALSE(retired.insert(n, 100)) << "no eviction below capacity";
+  }
+  for (std::size_t n = 1; n <= 5; ++n) {
+    EXPECT_TRUE(retired.contains(n, 100)) << "pick " << n << " re-armed after retiring";
+  }
+  EXPECT_FALSE(retired.contains(6, 100)) << "a fresh identity of the same goal arms";
+  EXPECT_FALSE(retired.contains(1, 101)) << "identity is (target, stamp): another goal's";
+  EXPECT_FALSE(retired.insert(3, 100)) << "re-retiring a held identity evicts nothing";
+  EXPECT_EQ(retired.size(), 5U);
+}
+
+TEST(RetiredGraspSet, OverflowEvictsOnlyTheOldestAndSaysSo) {
+  osk::RetiredGraspSet retired;
+  for (std::size_t n = 0; n < osk::kGraspRetiredCapacity; ++n) {
+    EXPECT_FALSE(retired.insert(n, 7));
+  }
+  EXPECT_TRUE(retired.insert(osk::kGraspRetiredCapacity, 7)) << "the 17th evicts";
+  EXPECT_FALSE(retired.contains(0, 7)) << "the oldest is the one evicted";
+  for (std::size_t n = 1; n <= osk::kGraspRetiredCapacity; ++n) {
+    EXPECT_TRUE(retired.contains(n, 7)) << n;
+  }
+  EXPECT_EQ(retired.size(), osk::kGraspRetiredCapacity);
+  retired.clear();
+  EXPECT_EQ(retired.size(), 0U);
+  EXPECT_FALSE(retired.contains(5, 7));
+}

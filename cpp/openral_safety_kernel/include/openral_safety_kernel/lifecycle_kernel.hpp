@@ -202,9 +202,10 @@ private:
   bool grasp_declaration_live() const noexcept;
 
   // Retire the current grasp declaration for good: the region is dropped and
-  // the declaration's identity is remembered so its heartbeat cannot re-arm
-  // it. Only a new declaration (new target or stamp) can arm again. Logs
-  // `safety.grasp_region_dropped reason=<reason>` when a region was armed.
+  // the declaration's identity joins the retired set so its heartbeat cannot
+  // re-arm it. Only a new declaration (new target or stamp) can arm again.
+  // Logs `safety.grasp_region_dropped reason=<reason>` when a region was armed.
+  // Allocation-free: it runs on the candidate path (`handover_exit`).
   void retire_grasp_declaration(const char* reason);
   // Is a payload attached at `attach_link` on the declaring gripper's chain —
   // a link in `mask` or a non-root ancestor of one? Only such an attachment can
@@ -352,12 +353,13 @@ private:
   std::int64_t grasp_declaration_stamp_ns_{0};
   double grasp_declaration_timeout_s_{0.0};
   std::string grasp_declaration_target_;
-  /// Identity (target, stamp) of a retired declaration. The world state is
-  /// heartbeated, so without this a retired exemption would re-arm on the next
-  /// beat; a retired identity never arms again.
-  std::string grasp_retired_target_;
-  std::int64_t grasp_retired_stamp_ns_{0};
-  bool grasp_retired_{false};
+  /// Identities (target, stamp) of every retired declaration, up to
+  /// `kGraspRetiredCapacity` (oldest evicted, logged once per activation). The
+  /// world state is heartbeated, so without this a retired exemption would
+  /// re-arm on the next beat; a retired identity never arms again — for every
+  /// pick of a multi-pick goal, not only the last one.
+  RetiredGraspSet grasp_retired_{};
+  bool grasp_retired_overflow_logged_{false};
   /// Region latched at the handover edge, keyed by (target, stamp) like the
   /// retirement memory. Later snapshots of that declaration cannot move or
   /// resize it, so a producer re-measuring the carried payload at its live pose

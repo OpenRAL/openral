@@ -10,9 +10,11 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <string>
 
 #include <opentelemetry/common/attribute_value.h>
 #include <opentelemetry/context/runtime_context.h>
@@ -761,9 +763,8 @@ SafetyKernelLifecycleNode::on_cleanup(const rclcpp_lifecycle::State& /*state*/) 
   grasp_declaration_stamp_ns_ = 0;
   grasp_declaration_timeout_s_ = 0.0;
   grasp_declaration_target_.clear();
-  grasp_retired_ = false;
-  grasp_retired_target_.clear();
-  grasp_retired_stamp_ns_ = 0;
+  grasp_retired_.clear();
+  grasp_retired_overflow_logged_ = false;
   grasp_region_refusal_reason_.clear();
   grasp_region_refusal_target_.clear();
   grasp_latched_region_ = GraspTargetRegion{};
@@ -1904,9 +1905,8 @@ bool SafetyKernelLifecycleNode::load_collision_model(std::string& error) {
   grasp_declaration_stamp_ns_ = 0;
   grasp_declaration_timeout_s_ = 0.0;
   grasp_declaration_target_.clear();
-  grasp_retired_ = false;
-  grasp_retired_target_.clear();
-  grasp_retired_stamp_ns_ = 0;
+  grasp_retired_.clear();
+  grasp_retired_overflow_logged_ = false;
   grasp_region_refusal_reason_.clear();
   grasp_region_refusal_target_.clear();
   grasp_latched_region_ = GraspTargetRegion{};
@@ -2688,9 +2688,15 @@ void SafetyKernelLifecycleNode::retire_grasp_declaration(const char* reason) {
   }
   grasp_region_ = GraspTargetRegion{};
   voxel_grid_.grasp_region = GraspTargetRegion{};
-  grasp_retired_ = true;
-  grasp_retired_target_ = grasp_declaration_target_;
-  grasp_retired_stamp_ns_ = grasp_declaration_stamp_ns_;
+  const bool evicted = grasp_retired_.insert(std::hash<std::string>{}(grasp_declaration_target_),
+                                             grasp_declaration_stamp_ns_);
+  if (evicted && !grasp_retired_overflow_logged_) {
+    grasp_retired_overflow_logged_ = true;
+    RCLCPP_WARN(this->get_logger(),
+                "safety.grasp_retired_overflow capacity=%zu target=%s: the oldest retired "
+                "identity was evicted (still bounded by its goal's timeout_s)",
+                kGraspRetiredCapacity, grasp_declaration_target_.c_str());
+  }
 }
 
 void SafetyKernelLifecycleNode::ingest_grasp_declaration(
@@ -2721,21 +2727,36 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   grasp_declaration_target_ = declaration.target_id;
   grasp_declaration_stamp_ns_ = declaration.stamp_ns;
   grasp_declaration_timeout_s_ = declaration.timeout_s;
+  // Has this declaration (target, stamp) latched at a handover? Then its pick is
+  // under way: the box is frozen (below), and the declaration losing its region
+  // or being retracted ends the pick — it retires rather than merely dropping,
+  // so the same identity can never re-arm against a later attachment (HZ-01xx-3).
+  const bool latched_declaration = grasp_latched_ &&
+                                   grasp_latched_target_ == declaration.target_id &&
+                                   grasp_latched_stamp_ns_ == declaration.stamp_ns;
   if (!declaration.active) {
     announce_dropped("retracted");
+    if (latched_declaration) {
+      retire_grasp_declaration("retracted");
+    }
     return;
   }
-  if (grasp_retired_ && declaration.target_id == grasp_retired_target_ &&
-      declaration.stamp_ns == grasp_retired_stamp_ns_) {
-    // The heartbeat of a declaration the kernel already retired: it does not
-    // re-arm. Only a new declaration can (HZ-01xx-3).
+  if (grasp_retired_.contains(std::hash<std::string>{}(declaration.target_id),
+                              declaration.stamp_ns)) {
+    // The heartbeat of a declaration the kernel already retired — this pick's
+    // or any earlier pick's of the goal: it does not re-arm. Only a new
+    // declaration can (HZ-01xx-3).
     announce_dropped("retired");
     return;
   }
   if (!declaration.region_valid) {
     // Dispatch's own publication, and the state before the producer measures:
-    // a declaration with no region exempts nothing.
+    // a declaration with no region exempts nothing. After its handover, the
+    // producer dropping the region (its DETACH) ends the pick.
     announce_dropped("no_region");
+    if (latched_declaration) {
+      retire_grasp_declaration("no_region");
+    }
     return;
   }
   const auto& region = declaration.region;
@@ -2782,9 +2803,6 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   // latched box, the stream deadline and timeout_s. Requiring a fresh
   // re-measurement would retire a valid handover with the fingers closed on
   // the target. Up to and including the handover edge the box must be fresh.
-  const bool latched_declaration = grasp_latched_ &&
-                                   grasp_latched_target_ == declaration.target_id &&
-                                   grasp_latched_stamp_ns_ == declaration.stamp_ns;
   if (!latched_declaration && !region_measurement_fresh(region.stamp_ns, grasp_region_max_age_s_)) {
     reject("region_stale");
     return;
@@ -2847,6 +2865,15 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
       grasp_region_.object_index = i;
       break;
     }
+  }
+  if (latched_declaration && !grasp_region_.handover) {
+    // This declaration's handover latched, and nothing is attached on the
+    // declaring chain any more: the gripper released its payload. The pick is
+    // over even when the attachment set is not empty — the other hand still
+    // holds, or the released payload is frozen on the base through its release
+    // window — so the declaration retires now (HZ-01xx-3), not at timeout_s.
+    retire_grasp_declaration("released");
+    return;
   }
   if (attached_on_gripper != nullptr && !grasp_region_.handover) {
     // The declaring gripper attached something the declaration does not name.

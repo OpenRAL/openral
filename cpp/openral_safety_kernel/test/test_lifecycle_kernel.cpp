@@ -3802,7 +3802,11 @@ struct GraspBeat {
   std::string attach_link{"link0"};          ///< the carried payload's attach link
   std::string object_label{"cell:cube"};     ///< the carried payload's object_id
   std::string declared_object{"cell:cube"};  ///< the declaration's object_id
-  std::int64_t region_stamp_ns{0};  ///< the region's measurement stamp; 0 = declaration_stamp_ns
+  std::int64_t region_stamp_ns{0};     ///< the region's measurement stamp; 0 = declaration_stamp_ns
+  std::string target_id{"cell:cube"};  ///< the declaration's identity (with its stamp)
+  /// A second payload, `cell:other` at the region centre, attached on this link
+  /// ("" = none): the other hand still holding, or a released payload frozen on the base.
+  std::string second_attach_link{};
 };
 
 // The producer-measured grasp declaration on the world-state envelope, stamped
@@ -3824,9 +3828,22 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
     obj.primitives.push_back(prim);
     msg.attached_objects.push_back(obj);
   }
+  if (!b.second_attach_link.empty()) {
+    openral_msgs::msg::AttachedCollisionObject obj;
+    obj.object_id = "cell:other";
+    obj.attach_link = b.second_attach_link;
+    obj.pose_in_link.position.x = 0.05;
+    obj.pose_in_link.orientation.w = 1.0;
+    openral_msgs::msg::AttachedCollisionPrimitive prim;
+    prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+    prim.shape_dimensions = {0.01, 0.01, 0.01};
+    prim.pose_in_object.orientation.w = 1.0;
+    obj.primitives.push_back(prim);
+    msg.attached_objects.push_back(obj);
+  }
   msg.grasp_declaration_valid = true;
   auto& d = msg.grasp_declaration;
-  d.target_id = "cell:cube";
+  d.target_id = b.target_id;
   d.object_id = b.declared_object;
   d.contact_links = b.contact_links;
   d.rskill_id = "pick_cube";
@@ -4478,6 +4495,9 @@ std::vector<rclcpp::Parameter> bimanual_grasp_params() {
   set("collision_capsule_link", rclcpp::ParameterValue(std::vector<std::int64_t>{1}));
   set("collision_link_names",
       rclcpp::ParameterValue(std::vector<std::string>{"base", "link0", "other"}));
+  // Room for one payload per hand.
+  set("attached_max_objects", rclcpp::ParameterValue(std::int64_t{2}));
+  set("attached_max_primitives", rclcpp::ParameterValue(std::int64_t{2}));
   return params;
 }
 
@@ -4559,6 +4579,137 @@ TEST_F(LifecycleKernelTest, AnUndeclaredObjectAttachedOnTheDeclaringGripperRetir
   EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=handover_object_mismatch"), 1U)
       << "the retired declaration's heartbeats must not repeat the rejection:\n"
       << logs.joined();
+}
+
+// ── Multi-pick per goal (design note §2.2, HZ-01xx-3) ────────────────────────
+// The producer arms one identity per pick, `approach:<link>:<n>`, all under the
+// goal's stamp_ns. Each pick's declaration retires at its release; a later pick
+// arms under a fresh identity; no retired identity ever arms again.
+
+namespace {
+
+// One full pick under `target`: armed and exempt, attached (handover), released.
+// The release leaves nothing on the declaring chain.
+void pick_and_release(GraspRig& rig, GraspBeat& b, const std::string& target) {
+  b.target_id = target;
+  b.carrying = false;
+  rig.warm(&b, 0.0, 200);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << target << " did not arm";
+  b.carrying = true;
+  ++b.revision;
+  rig.warm(&b, 0.0, 100);
+  b.carrying = false;
+  ++b.revision;
+  rig.warm(&b, kGraspClearQ, 100);
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, ASecondPickInTheGoalArmsUnderItsOwnIdentity) {
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_second_pick");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  pick_and_release(rig, b, "approach:link0:1");
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=detached target=approach:link0:1"), 1U)
+      << logs.joined();
+  // Same goal stamp, fresh identity: the second pick is exempt.
+  b.target_id = "approach:link0:2";
+  rig.warm(&b, 0.0, 200);
+  EXPECT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  EXPECT_EQ(logs.count("safety.grasp_region_armed target=approach:link0:2"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, EveryRetiredPickIdentityStaysRefusedEvenFromARestartedProducer) {
+  // A re-activated HAL whose counter restarted would re-send an identity the
+  // kernel already retired: none re-arms, whatever arrives in between.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_retired_set");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  for (int n = 1; n <= 4; ++n) {
+    pick_and_release(rig, b, "approach:link0:" + std::to_string(n));
+  }
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 4U) << logs.joined();
+  for (int n = 1; n <= 4; ++n) {
+    b.target_id = "approach:link0:" + std::to_string(n);
+    rig.warm(&b, kGraspClearQ, 100);
+  }
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 4U)
+      << "a retired pick identity re-armed: " << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "a retired identity exempted the finger";
+  EXPECT_TRUE(rig.node->fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, AReleaseOnTheDeclaringChainRetiresWhileTheOtherHandHolds) {
+  // Bimanual: the declaring hand (link0) lets go while the other hand still
+  // holds its payload — or the released payload stays frozen on the base link
+  // through the release window. The attachment set is not empty either way,
+  // yet the pick is over: the declaration retires at the release.
+  for (const char* remaining : {"other", "base"}) {
+    LogCapture logs;
+    GraspRig rig(std::string("kernel_grasp_release_") + remaining, bimanual_grasp_params());
+    rig.start();
+    GraspBeat b;
+    b.declaration_stamp_ns = rig.now_ns();
+    b.target_id = "approach:link0:1";
+    if (std::string(remaining) == "other") {
+      b.second_attach_link = "other";
+    }
+    rig.warm(&b, 0.0, 200);
+    ASSERT_TRUE(rig.offer(&b, 0.0)) << remaining << ": " << logs.joined();
+    b.carrying = true;
+    b.revision = 1;
+    rig.warm(&b, 0.0, 100);
+    ASSERT_EQ(logs.count("safety.grasp_region_handover target=approach:link0:1"), 1U)
+        << remaining << ": " << logs.joined();
+    b.carrying = false;
+    b.second_attach_link = remaining;  // the other hand's payload, or the frozen record
+    b.revision = 2;
+    rig.warm(&b, 0.0, 100);
+    EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=released target=approach:link0:1"), 1U)
+        << remaining << ": " << logs.joined();
+    EXPECT_FALSE(rig.offer(&b, 0.0)) << remaining << ": the released pick still exempted";
+    EXPECT_TRUE(rig.node->fault_latched());
+  }
+}
+
+TEST_F(LifecycleKernelTest, AHandedOverDeclarationThatLosesItsRegionRetires) {
+  // The producer drops a pick's region at its DETACH. Before the handover a
+  // region-less declaration only exempts nothing; after it, the pick is over:
+  // the identity retires, so a region re-sent under it later never re-arms.
+  LogCapture logs;
+  GraspRig rig("kernel_grasp_region_lost");
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.target_id = "approach:link0:1";
+  rig.warm(&b, 0.0, 200);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  b.carrying = true;
+  b.revision = 1;
+  rig.warm(&b, 0.0, 100);
+  ASSERT_EQ(logs.count("safety.grasp_region_handover target=approach:link0:1"), 1U)
+      << logs.joined();
+  // The region-less snapshot (the payload still held, as at a DETACH's next beat).
+  rig.state_fn = [&b](std::int64_t stream_ns) {
+    auto msg = grasp_state(stream_ns, b);
+    msg.grasp_declaration.region_valid = false;
+    return msg;
+  };
+  rig.warm(&b, 0.0, 100);
+  rig.state_fn = nullptr;
+  EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=no_region target=approach:link0:1"), 1U)
+      << logs.joined();
+  // The region back under the same identity, the payload still in the box: refused.
+  b.region_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 200);
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 1U) << logs.joined();
+  EXPECT_FALSE(rig.offer(&b, 0.0)) << "a handed-over identity re-armed after losing its region";
+  EXPECT_TRUE(rig.node->fault_latched());
 }
 
 TEST_F(LifecycleKernelTest, AnExemptFingerInsideItsTargetStillLeavesTheChunkScaled) {
