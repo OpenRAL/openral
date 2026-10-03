@@ -36,7 +36,6 @@ from openral_hal._grasp_target import (
     occupied_centers_in_box,
     project_point,
     region_covers_occupied,
-    support_cells_under,
     support_top_from_voxels,
     target_region_from_mask,
     target_seed_from_voxels,
@@ -267,11 +266,13 @@ def test_support_below_the_search_box_bottom_is_measured_not_assumed() -> None:
     grid = _scene_lattice([(bx, by, 0.05, 0.035, 0.4)])
     box_bottom = _SUPPORT_Z - 0.05
     measured = support_top_from_voxels(
-        grid, occupied_centers_in_box(grid, _column(box_bottom - 0.15)), min_cells=8
+        grid,
+        occupied_centers_in_box(grid, _column(box_bottom - 0.15)),
+        near_xy=(bx, by),
+        min_cells=8,
     )
     assert measured is not None
     assert abs(measured - _SUPPORT_Z) <= _RES / 2 + 1e-9  # the table top, to the lattice
-    assert support_cells_under(grid, measured, (bx, by), half_m=0.10) >= 8
     seed = target_seed_from_voxels(
         grid, occupied_centers_in_box(grid, _search_box()), support_z=measured, min_cells=20
     )
@@ -296,28 +297,27 @@ def test_no_support_layer_is_refused() -> None:
         grid.frame_id, grid.origin, grid.orientation_xyzw, grid.resolution, grid.size, no_table
     )
     column = occupied_centers_in_box(floating, _column(_SUPPORT_Z - 0.20))
-    # Only the box's own layers remain; each is far below min_cells for a 750-cell table.
-    assert support_top_from_voxels(floating, column, min_cells=100) is None
-    assert support_top_from_voxels(floating, np.empty((0, 3)), min_cells=1) is None
+    # Only the box's own layers remain, and none of them reaches past its own footprint.
+    assert support_top_from_voxels(floating, column, near_xy=(bx, by), min_cells=1) is None
+    empty = np.empty((0, 3))
+    assert support_top_from_voxels(floating, empty, near_xy=(bx, by), min_cells=1) is None
 
 
 def test_a_table_beside_the_target_is_not_support_under_it() -> None:
-    """The column finds a table, but none of it lies under the target (past the edge)."""
+    """The column holds a table, but none of it around the target (a gap past the edge)."""
     bx, by = _box_centre_xy()
     grid = _scene_lattice([(bx, by, 0.05, 0.035, 0.4)])
     centres = grid.occupied_centers()
     holed = grid.occupancy.copy()
     occupied = np.flatnonzero(holed)
-    near = np.all(np.abs(centres[:, :2] - (bx, by)) <= 0.12, axis=1)
+    near = np.all(np.abs(centres[:, :2] - (bx, by)) <= 0.18, axis=1)
     holed[occupied[near & (centres[:, 2] <= _SUPPORT_Z)]] = 0
     grid = VoxelLattice(
         grid.frame_id, grid.origin, grid.orientation_xyzw, grid.resolution, grid.size, holed
     )
-    measured = support_top_from_voxels(
-        grid, occupied_centers_in_box(grid, _column(_SUPPORT_Z - 0.20)), min_cells=8
-    )
-    assert measured is not None
-    assert support_cells_under(grid, measured, (bx, by), half_m=0.10) == 0
+    column = occupied_centers_in_box(grid, _column(_SUPPORT_Z - 0.20))
+    assert len(column[column[:, 2] <= _SUPPORT_Z]) > 100  # the table is in the column
+    assert support_top_from_voxels(grid, column, near_xy=(bx, by), min_cells=8) is None
 
 
 def test_a_tilted_lattice_has_no_support_layer() -> None:
@@ -325,7 +325,90 @@ def test_a_tilted_lattice_has_no_support_layer() -> None:
     pitched = (0.0, math.sin(0.15), 0.0, math.cos(0.15))
     tilted = VoxelLattice("base", (0.0, 0.0, 0.0), pitched, 0.1, (2, 2, 2), occ)
     with pytest.raises(ROSConfigError, match="z-up"):
-        support_top_from_voxels(tilted, tilted.occupied_centers(), min_cells=1)
+        support_top_from_voxels(tilted, tilted.occupied_centers(), near_xy=(0, 0), min_cells=1)
+
+
+# ── Support under the target, octomap-realistic ──────────────────────────────────
+#
+# A base-aligned 20 mm lattice built cell by cell, the way a head camera's octomap
+# holds a scene: surfaces only (shells, not solids), the table hidden under the
+# target and in its shadow behind it (the camera looks along +x).
+
+_CELLS = (24, 24, 20)
+
+
+def _cells_lattice(cells: set[tuple[int, int, int]]) -> VoxelLattice:
+    occ = np.zeros(int(np.prod(_CELLS)), dtype=np.uint8)
+    for i, j, k in cells:
+        occ[i + _CELLS[0] * (j + _CELLS[1] * k)] = 1
+    return VoxelLattice(_FRAME, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), _RES, _CELLS, occ)
+
+
+def _slab(i: range, j: range, k: int) -> set[tuple[int, int, int]]:
+    return {(a, b, k) for a in i for b in j}
+
+
+def _shell(i: range, j: range, k: range) -> set[tuple[int, int, int]]:
+    """A box's visible surface from a camera at -x above: top and every side but +x."""
+    out = _slab(i, j, k[-1])
+    for kk in k:
+        out |= {(i[0], b, kk) for b in j} | {(a, j[0], kk) for a in i}
+        out |= {(a, j[-1], kk) for a in i}
+    return out
+
+
+def _seen_table(k: int, item_i: range, item_j: range, shadow: int) -> set[tuple[int, int, int]]:
+    """The whole table layer minus the cells under the item and in its +x shadow."""
+    hidden = _slab(range(item_i[0], item_i[-1] + 1 + shadow), item_j, k)
+    return _slab(range(_CELLS[0]), range(_CELLS[1]), k) - hidden
+
+
+def _centre_xy(i: range, j: range) -> tuple[float, float]:
+    return ((i[0] + i[-1] + 1) * _RES / 2, (j[0] + j[-1] + 1) * _RES / 2)
+
+
+def _column_of(grid: VoxelLattice, i: range, j: range) -> NDArray[np.float64]:
+    """Occupied centres in a tight search column over cells ``i`` x ``j``, all heights."""
+    c = grid.occupied_centers()
+    lo = np.array((i[0], j[0])) * _RES
+    hi = np.array((i[-1] + 1, j[-1] + 1)) * _RES
+    return c[np.all((c[:, :2] >= lo) & (c[:, :2] <= hi), axis=1)]
+
+
+def test_a_dense_target_top_over_an_occluded_table_ring_is_not_the_support() -> None:
+    """A 10x10 cm item in a tight detection column: the table there is mostly hidden
+    (under the item, in its shadow), so the item's top layer (25 cells) holds more than
+    half the table layer's — "the densest layer's highest near-equal layer" picked it."""
+    item_i, item_j = range(8, 13), range(8, 13)
+    cells = _seen_table(5, item_i, item_j, shadow=3) | _shell(item_i, item_j, range(6, 11))
+    grid = _cells_lattice(cells)
+    column = _column_of(grid, range(6, 14), range(6, 14))
+    layers, counts = np.unique(np.floor(column[:, 2] / _RES).astype(int), return_counts=True)
+    top, table = counts[layers == 10][0], counts[layers == 5][0]
+    assert top >= 0.5 * table, "the scene must hold the trap the old rule fell into"
+    support = support_top_from_voxels(grid, column, near_xy=_centre_xy(item_i, item_j), min_cells=8)
+    assert support == pytest.approx(6 * _RES)  # the table's top face, not the item's
+
+
+def test_a_small_target_finds_the_table_under_it() -> None:
+    item_i, item_j = range(10, 12), range(10, 12)
+    cells = _seen_table(5, item_i, item_j, shadow=2) | _shell(item_i, item_j, range(6, 8))
+    grid = _cells_lattice(cells)
+    column = _column_of(grid, range(7, 15), range(7, 15))
+    support = support_top_from_voxels(grid, column, near_xy=_centre_xy(item_i, item_j), min_cells=8)
+    assert support == pytest.approx(6 * _RES)
+
+
+def test_a_target_on_a_shelf_board_edge_stands_on_the_board_not_the_bench() -> None:
+    """A board (k=10) whose front edge the item overhangs; a bench 10 cm lower (k=5)."""
+    item_i, item_j = range(6, 11), range(8, 13)
+    board = _slab(range(8, 24), range(24), 10) - _slab(range(8, 14), item_j, 10)
+    bench = _slab(range(24), range(24), 5) - _slab(range(6, 24), range(24), 5)
+    cells = board | bench | _shell(item_i, item_j, range(11, 16))
+    grid = _cells_lattice(cells)
+    column = _column_of(grid, range(3, 16), range(5, 16))
+    support = support_top_from_voxels(grid, column, near_xy=_centre_xy(item_i, item_j), min_cells=8)
+    assert support == pytest.approx(11 * _RES)  # the board's top face
 
 
 def test_seed_refuses_two_equal_objects() -> None:
