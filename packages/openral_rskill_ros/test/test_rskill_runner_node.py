@@ -140,7 +140,9 @@ def _compose_harness(
 
     Yields ``(executor, runtime, safety_node, observed)`` where
     ``observed`` is a dict of typed message lists subscribed by the
-    helper node. ``resolver`` overrides the default constant-skill resolver.
+    helper node. ``resolver`` overrides the default constant-skill resolver;
+    ``runner_parameters`` are set on the skill_runner node before it is configured
+    (e.g. the ``preload_*`` parameters read at on_activate).
     """
     import rclpy
     from openral_msgs.msg import ActionChunk
@@ -152,13 +154,12 @@ def _compose_harness(
 
     rclpy.init()
     runtime = compose_so100_runtime(skill_resolver=resolver or _local_skill_resolver)
-    if runner_parameters:
-        runtime.skill_runner_node.set_parameters(
-            [
-                rclpy.parameter.Parameter(name, value=value)
-                for name, value in runner_parameters.items()
-            ]
-        )
+    # The runner has no staleness window of its own (issue #303): production
+    # declares it in deploy_e2e.launch.py; this harness plays the launch's role.
+    parameters = {"joint_state_staleness_limit_s": 0.5, **(runner_parameters or {})}
+    runtime.skill_runner_node.set_parameters(
+        [rclpy.parameter.Parameter(name, value=value) for name, value in parameters.items()]
+    )
     safety = SafetyPassthroughNode(node_name="openral_safety_test")
     safety.set_parameters(
         [rclpy.parameter.Parameter("n_dof", value=6)],
@@ -295,6 +296,7 @@ def test_execute_skill_goal_publishes_chunks_through_safety_passthrough() -> Non
     from rclpy.action import ActionClient
 
     with _compose_harness() as (executor, runtime, _safety, observed):
+        session = runtime.skill_runner_node._runner_session_id
         client = ActionClient(
             runtime.skill_runner_node,
             ExecuteRskill,
@@ -343,6 +345,11 @@ def test_execute_skill_goal_publishes_chunks_through_safety_passthrough() -> Non
     # safety_node should have passed the chunks through.
     assert observed["safe"], "no ActionChunk landed on /openral/safe_action"
     assert observed["safe"][0].rskill_id == "openral/test-constant-skill"
+    # Every chunk carries this runner process's random session id, unchanged
+    # across the safety hop — the HAL keys its replay watermark on it.
+    assert session != 0
+    assert {int(c.runner_session_id) for c in observed["candidate"]} == {session}
+    assert {int(c.runner_session_id) for c in observed["safe"]} == {session}
 
     # Diagnostics: at least one heartbeat from each of the three
     # lifecycle nodes (world_state, skill_runner, safety).
@@ -359,7 +366,16 @@ def test_execute_skill_goal_publishes_chunks_through_safety_passthrough() -> Non
 # ── Single-resident-skill VRAM eviction ─────────────────────────────────────
 
 
-def _run_goal(executor: Any, node: Any, rskill_id: str, deadline_s: float = 0.4) -> None:
+def _run_goal(
+    executor: Any,
+    node: Any,
+    rskill_id: str,
+    deadline_s: float = 0.4,
+    *,
+    prompt: str = "drive",
+    revision: str = "",
+    goal_params_json: str = "",
+) -> None:
     """Send one ExecuteRskill goal for ``rskill_id`` and spin until it resolves."""
     from openral_msgs.action import ExecuteRskill
     from rclpy.action import ActionClient
@@ -369,9 +385,10 @@ def _run_goal(executor: Any, node: Any, rskill_id: str, deadline_s: float = 0.4)
     assert client.wait_for_server(timeout_sec=2.0), "ExecuteRskill action server not ready"
     goal = ExecuteRskill.Goal()
     goal.rskill_id = rskill_id
-    goal.revision = ""
-    goal.prompt = "drive"
+    goal.revision = revision
+    goal.prompt = prompt
     goal.prompt_metadata_json = ""
+    goal.goal_params_json = goal_params_json
     goal.deadline_s = deadline_s
     send_future = client.send_goal_async(goal)
     deadline = time.monotonic() + 3.0
@@ -422,6 +439,135 @@ def test_redispatching_same_rskill_id_reuses_resident_skill() -> None:
         _run_goal(executor, runtime.skill_runner_node, "openral/skill-a")
         _run_goal(executor, runtime.skill_runner_node, "openral/skill-a")
         assert len(built) == 1, "same id should resolve once and be reused"
+
+
+def test_changed_goal_params_rebuild_a_skill_that_bakes_them_in() -> None:
+    """A skill built from the goal's params is rebuilt when they change, never replayed.
+
+    A wrapped-ROS skill lowers ``goal_params_json`` into its action goal at
+    construction. Keyed without the params, a second dispatch of the same id
+    with new params reused the first skill and re-sent the first goal.
+    """
+    built: list[Any] = []
+    with _compose_harness(resolver=_tracking_resolver(built)) as (executor, runtime, _s, _o):
+        node = runtime.skill_runner_node
+        _run_goal(executor, node, "openral/skill-a", goal_params_json='{"x": 1}')
+        _run_goal(executor, node, "openral/skill-a", goal_params_json='{"x": 2}')
+        assert len(built) == 2, "changed goal params must rebuild the skill"
+
+
+def _prompted_resolver(built: list[Any], seen: list[str]) -> Any:
+    """Resolver for a policy-like skill that reads its prompt per step.
+
+    Like the VLA shim it exposes ``set_goal_prompt``, so the runner may keep it
+    resident across goal prompts. Every step appends the prompt it was
+    conditioned on to ``seen``.
+    """
+    from openral_core.schemas import Action, ControlMode
+    from openral_rskill.base import rSkillBase
+
+    class _PromptedSkill(rSkillBase):
+        def __init__(self, name: str, prompt: str) -> None:
+            super().__init__(
+                name=name, version="0.1.0", role="s1", embodiment_tags=["so100_follower"]
+            )
+            self._prompt = prompt
+
+        def set_goal_prompt(self, prompt: str) -> None:
+            self._prompt = prompt
+
+        def _configure_impl(self) -> None:
+            pass
+
+        def _activate_impl(self) -> None:
+            pass
+
+        def _deactivate_impl(self) -> None:
+            pass
+
+        def _shutdown_impl(self) -> None:
+            pass
+
+        def _step_impl(self, _world_state: Any) -> Action:
+            seen.append(self._prompt)
+            return Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[[0.0, 0.0, 0.0, 0.0, 0.0, 0.0]],
+            )
+
+    def _resolver(*_args: Any, **kwargs: Any) -> Any:
+        skill = _PromptedSkill(kwargs["rskill_id"], kwargs["prompt"])
+        skill.configure()
+        skill.activate()
+        built.append(skill)
+        return skill
+
+    return _resolver
+
+
+def test_policy_stays_resident_across_goal_prompts() -> None:
+    """Two goals with different prompts on one rSkill: one load, each goal its own prompt.
+
+    A subtask policy switches prompts every goal; keyed on the prompt, each
+    switch evicted and reloaded the whole model inside the deadman window.
+    """
+    built: list[Any] = []
+    seen: list[str] = []
+    resolver = _prompted_resolver(built, seen)
+    with _compose_harness(resolver=resolver) as (executor, runtime, _s, _o):
+        node = runtime.skill_runner_node
+        _run_goal(executor, node, "openral/skill-a", prompt="restock box x1 into lower slot 2")
+        n_first = len(seen)
+        _run_goal(executor, node, "openral/skill-a", prompt="restock box x2 into upper slot 1")
+        assert len(built) == 1, "a prompt change must not reload the policy"
+        assert n_first > 0 and len(seen) > n_first, "both goals must step the policy"
+        assert set(seen[:n_first]) == {"restock box x1 into lower slot 2"}
+        assert set(seen[n_first:]) == {"restock box x2 into upper slot 1"}
+
+
+def test_revision_change_reloads_a_resident_policy() -> None:
+    """A different revision is different weights: evict and load, prompt or not."""
+    from openral_rskill.base import RSkillState
+
+    built: list[Any] = []
+    with _compose_harness(resolver=_prompted_resolver(built, [])) as (executor, runtime, _s, _o):
+        node = runtime.skill_runner_node
+        _run_goal(executor, node, "openral/skill-a", revision="r1")
+        _run_goal(executor, node, "openral/skill-a", revision="r2")
+        assert len(built) == 2, "a revision change must reload"
+        assert built[0].state is RSkillState.FINALIZED, "old revision was not evicted"
+
+
+def test_prompt_change_rebuilds_a_skill_that_bakes_the_prompt_in() -> None:
+    """A skill without ``set_goal_prompt`` keeps the prompt in its key (wrapped-ROS skills)."""
+    built: list[Any] = []
+    with _compose_harness(resolver=_tracking_resolver(built)) as (executor, runtime, _s, _o):
+        node = runtime.skill_runner_node
+        _run_goal(executor, node, "openral/skill-a", prompt="one")
+        _run_goal(executor, node, "openral/skill-a", prompt="two")
+        assert len(built) == 2, "a skill that cannot retarget must be rebuilt"
+
+
+def test_preload_prompt_is_only_a_warm_up_prompt() -> None:
+    """A goal whose prompt differs from ``preload_prompt`` reuses the preloaded policy."""
+    built: list[Any] = []
+    seen: list[str] = []
+    params = {"preload_rskill_id": "openral/skill-a", "preload_prompt": "warm up"}
+    with _compose_harness(resolver=_prompted_resolver(built, seen), runner_parameters=params) as (
+        executor,
+        runtime,
+        _s,
+        _o,
+    ):
+        node = runtime.skill_runner_node
+        deadline = time.monotonic() + 5.0
+        while node._preload_in_flight.is_set() and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        assert len(built) == 1, "preload did not load the policy"
+        _run_goal(executor, node, "openral/skill-a", prompt="restock box x1 into lower slot 2")
+        assert len(built) == 1, "a goal prompt differing from preload_prompt must not reload"
+        assert set(seen) == {"restock box x1 into lower slot 2"}
 
 
 @pytest.fixture
@@ -1181,3 +1327,137 @@ def test_successful_goal_reports_failure_kind_none() -> None:
     assert result.success, result.failure_reason
     assert result.failure_reason == ""
     assert result.failure_kind == ExecuteRskill.Result.FAILURE_NONE
+
+
+def test_non_skill_resolver_result_carries_config_error_kind() -> None:
+    """A resolver returning something that is not an rSkillBase → FAILURE_CONFIG_ERROR.
+
+    This is what the production Hub resolver did until it bound the fetched
+    weights to a runtime skill: it handed back the ``rSkill`` packaging handle.
+    The embodiment gate then dereferenced ``getattr(skill, "info", None)`` and
+    the goal came back ABORTED with an EMPTY failure_reason and failure_kind 0.
+    The contract violation must be a typed, named failure.
+    """
+    from openral_msgs.action import ExecuteRskill
+
+    class _NotASkill:
+        """Has neither .info nor .step — the shape of the packaging handle."""
+
+    result = _dispatch_and_get_result(lambda *_a, **_k: _NotASkill())
+    assert not result.success
+    assert result.failure_reason.startswith("ROSConfigError:"), result.failure_reason
+    assert "not an rSkillBase" in result.failure_reason
+    assert result.failure_kind == ExecuteRskill.Result.FAILURE_CONFIG_ERROR
+
+
+def test_preload_loads_the_skill_before_the_first_goal_and_rejects_goals_meanwhile() -> None:
+    """``preload_rskill_id`` resolves at on_activate; goals during it are REJECTED, not queued.
+
+    The deadman watchdog opens its first-chunk window on goal ACCEPT, so a
+    goal parked behind a multi-minute cold load would be braked for producing
+    nothing. The preload has to happen with no goal in existence, and a goal
+    that arrives mid-load must be refused outright. Once resident, the goal
+    with the same (id, revision, prompt) reuses it — the resolver runs once.
+    """
+    from openral_msgs.action import ExecuteRskill
+    from rclpy.action import ActionClient
+
+    built: list[Any] = []
+
+    def _slow_resolver(*_args: Any, **kwargs: Any) -> Any:
+        time.sleep(1.5)  # stands in for the cold load
+        skill = _make_named_skill(kwargs.get("rskill_id", "openral/unknown"))
+        built.append(skill)
+        return skill
+
+    params = {"preload_rskill_id": "openral/skill-a", "preload_prompt": "drive"}
+    with _compose_harness(resolver=_slow_resolver, runner_parameters=params) as (
+        executor,
+        runtime,
+        _s,
+        _o,
+    ):
+        node = runtime.skill_runner_node
+        client = ActionClient(node, ExecuteRskill, "/openral/execute_rskill")
+        _spin_for(executor, 0.2)
+        assert client.wait_for_server(timeout_sec=2.0)
+
+        # Mid-preload: the goal is refused at goal_callback, so it never
+        # reaches ACCEPTED and never arms the watchdog.
+        goal = ExecuteRskill.Goal()
+        goal.rskill_id = "openral/skill-a"
+        goal.prompt = "drive"
+        goal.deadline_s = 0.4
+        send_future = client.send_goal_async(goal)
+        deadline = time.monotonic() + 3.0
+        while not send_future.done() and time.monotonic() < deadline:
+            executor.spin_once(timeout_sec=0.02)
+        handle = send_future.result()
+        assert handle is not None and not handle.accepted, "goal was accepted mid-preload"
+
+        # Let the preload finish; the resolver has now run exactly once.
+        _spin_for(executor, 2.5)
+        assert len(built) == 1, "preload should have resolved the skill once"
+
+        # Same key → resident skill reused; no second resolve.
+        _run_goal(executor, node, "openral/skill-a")
+        assert len(built) == 1, "a goal matching the preload key must not reload"
+
+
+def test_preload_hands_a_safety_violation_to_the_executor() -> None:
+    """A ``ROSSafetyViolation`` raised while preloading escapes ``spin()`` (CLAUDE.md §5).
+
+    The preload runs on a worker thread. A bare re-raise there ends only that
+    thread, with a traceback on stderr and the node still accepting goals, which
+    is a silenced safety violation. The goal path lets the violation escape the
+    executor; the preload must reach the same boundary.
+    """
+    from openral_core.exceptions import ROSSafetyViolation
+
+    def _violating_resolver(*_args: Any, **_kwargs: Any) -> Any:
+        raise ROSSafetyViolation("preload tripped a safety check")
+
+    params = {"preload_rskill_id": "openral/skill-a", "preload_prompt": "drive"}
+    with _compose_harness(resolver=_violating_resolver, runner_parameters=params) as (
+        executor,
+        runtime,
+        _s,
+        _o,
+    ):
+        with pytest.raises(ROSSafetyViolation, match="preload tripped"):
+            _spin_for(executor, 3.0)
+        assert not runtime.skill_runner_node._preload_in_flight.is_set()
+
+
+def test_reactivating_mid_preload_does_not_start_a_second_worker() -> None:
+    """A deactivate/activate cycle during a preload keeps the one worker and the goal gate.
+
+    A second worker would clear ``_preload_in_flight`` when the first finished,
+    letting a goal through while the second still loads: the goal would then
+    block behind the load inside the deadman's first-chunk window.
+    """
+    built: list[Any] = []
+
+    def _slow_resolver(*_args: Any, **kwargs: Any) -> Any:
+        time.sleep(1.5)
+        skill = _make_named_skill(kwargs.get("rskill_id", "openral/unknown"))
+        built.append(skill)
+        return skill
+
+    params = {"preload_rskill_id": "openral/skill-a", "preload_prompt": "drive"}
+    with _compose_harness(resolver=_slow_resolver, runner_parameters=params) as (
+        executor,
+        runtime,
+        _s,
+        _o,
+    ):
+        node = runtime.skill_runner_node
+        _spin_for(executor, 0.2)
+        assert node._preload_in_flight.is_set()
+        node.trigger_deactivate()
+        node.trigger_activate()
+        _spin_for(executor, 0.2)
+        assert node._preload_in_flight.is_set(), "the gate dropped while the load still ran"
+        _spin_for(executor, 2.5)
+        assert len(built) == 1, "a second preload worker ran"
+        assert not node._preload_in_flight.is_set()

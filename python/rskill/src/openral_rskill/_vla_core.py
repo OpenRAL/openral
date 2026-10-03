@@ -842,6 +842,7 @@ def build_chunk_executor(
     chunk_fn: Callable[[Any], Any] | None = None,
     chunk_size: int | None = None,
     adapter_name: str = "policy",
+    postprocess_action: Callable[[Any], Any] | None = None,
 ) -> ChunkedExecutor | None:
     """Build + start a ``ChunkedExecutor`` for a chunked adapter.
 
@@ -869,6 +870,10 @@ def build_chunk_executor(
         chunk_size: Actions consumed per inference; defaults to
             ``policy.config.n_action_steps``.
         adapter_name: Label for the enable log line.
+        postprocess_action: Per-action postprocessor handed to the executor,
+            which runs it on each chunk in the producing thread (see
+            ``ChunkedExecutor``). Adapters that pass it get finished actions
+            from ``select_action`` and must not postprocess again.
 
     Returns:
         A started executor. Returns ``None`` for single-step lerobot policies;
@@ -941,6 +946,7 @@ def build_chunk_executor(
         chunk_size=n,
         prefetch_at=prefetch_at,
         rtc_config=rtc_cfg,
+        postprocess_action=postprocess_action,
     )
     executor.start()
     log = structlog.get_logger("openral_rskill._vla_core")
@@ -1032,6 +1038,55 @@ def hf_download_cached_first(
                 **extra,
             )
         )
+
+
+def local_snapshot_dir(
+    repo_id: str,
+    *,
+    revision: str | None = None,
+    ignore_patterns: list[str] | tuple[str, ...] = ("*.md",),
+    **extra: Any,
+) -> str:
+    """A local directory holding ``repo_id``'s files: the directory itself, or its Hub snapshot.
+
+    The rSkill resolver hands adapters either a Hub repo id or — for a skill
+    installed with ``openral rskill install``, whose snapshot already carries
+    ``rskill.yaml`` next to ``model.safetensors`` — that snapshot's directory
+    (``resolve_rskill_to_hf_with_revision``). ``huggingface_hub.snapshot_download``
+    validates its argument as a repo id and rejects a filesystem path, so every
+    adapter that snapshotted the resolved id broke on an installed skill: ACT,
+    Diffusion, GR00T and the processor-sidecar fallback (found on the ACT
+    LIBERO checkpoint, 2026-09-23). A directory is returned as is — it is
+    already the pinned snapshot, so ``revision`` has nothing to add — and a
+    repo id is snapshotted with ``ignore_patterns`` / ``extra`` forwarded.
+
+    Args:
+        repo_id: Hub repo id, or a local checkpoint directory.
+        revision: Optional git revision, forwarded for the repo-id case.
+        ignore_patterns: Glob patterns ``snapshot_download`` skips.
+        **extra: Forwarded verbatim to ``snapshot_download``.
+
+    Returns:
+        Absolute path of a directory containing the checkpoint files.
+
+    Example:
+        >>> import os, tempfile
+        >>> d = tempfile.mkdtemp()
+        >>> local_snapshot_dir(d) == os.path.realpath(d)
+        True
+    """
+    from pathlib import Path
+
+    candidate = Path(repo_id)
+    if candidate.is_dir():
+        return str(candidate.resolve())
+    from huggingface_hub import snapshot_download
+
+    return str(
+        snapshot_download(
+            repo_id=repo_id, revision=revision, ignore_patterns=list(ignore_patterns), **extra
+        )
+    )
 
 
 def parse_hf_file_uri(uri: str) -> tuple[str, str | None, str]:
@@ -1320,116 +1375,7 @@ __all__ = [
     "resolve_state_dim",
     "run_inference",
     "to_numpy_action",
-    "warm_up_lerobot_policy",
 ]
-
-
-def rtc_enabled(policy: Any) -> bool:
-    """Return True when *policy* carries an enabled lerobot ``RTCConfig``.
-
-    RTC-enabled policies reject ``select_action`` outright, so callers that
-    warm or probe a policy must route through ``predict_action_chunk``.
-    """
-    cfg = getattr(getattr(policy, "config", None), "rtc_config", None)
-    return bool(cfg is not None and getattr(cfg, "enabled", False))
-
-
-def warm_up_lerobot_policy(adapter: object, *, prompt: str = "", torch: Any = None) -> bool:
-    """Run one dummy forward so the first *real* tick doesn't blow its deadline.
-
-    The first inference on a CUDA policy pays cuDNN autotune, kernel JIT and
-    lazy-module materialisation. Measured on an RTX 4070 with the ACT
-    so101-pen checkpoint (resnet18 + transformer, two 480x640 cameras)::
-
-        call 1   330.4 ms      <- 10x the 33.3 ms budget at 30 Hz
-        call 2+   14.9 ms
-
-    Charged to tick 1 that is a guaranteed deadline miss, and under
-    ``DeadlineOverrunPolicy.DROP`` the robot's first commanded action is
-    discarded. Paying it during ``activate()`` instead costs the same
-    wall-clock but lands where an operator is already waiting.
-
-    Shapes come from the policy's own ``config``
-    (``image_features[k].shape``, ``input_features["observation.state"]``),
-    so the warm-up exercises the exact kernels the real ticks will — a
-    guessed resolution would autotune the wrong ones and waste the pass.
-
-    Best-effort: a policy this cannot introspect returns ``False`` unchanged.
-    Anything else — a preprocessor that rejects the dummy batch, a forward
-    that raises — PROPAGATES. A warm-up must never be why a skill fails to
-    activate, so every caller wraps this; ``rskill_runner_node.on_warmup``
-    catches and downgrades to a ``rskill_runner.warmup_failed`` warning.
-    Read that log: a silently skipped warm-up means tick 1 pays the cold
-    start (524 ms measured vs a 400 ms budget on the SO-101 eraser skill).
-
-    Args:
-        adapter: The policy adapter. Must expose ``_policy`` holding a
-            lerobot policy (all six in-tree lerobot families do); anything
-            else returns ``False`` unchanged.
-        prompt: Task string for language-conditioned families.
-        torch: The caller's torch module; imported on demand when omitted.
-
-    Returns:
-        ``True`` when a dummy forward actually ran, ``False`` when skipped.
-    """
-    policy = getattr(adapter, "_policy", None)
-    config = getattr(policy, "config", None)
-    if policy is None or config is None:
-        return False
-    image_features = getattr(config, "image_features", None)
-    input_features = getattr(config, "input_features", None)
-    if not image_features or not input_features:
-        return False
-
-    if torch is None:
-        import torch as torch_mod
-
-        torch = torch_mod
-
-    device = str(getattr(adapter, "device", "") or "cpu")
-    state_feature = input_features.get("observation.state")
-    if state_feature is None:
-        return False
-    # SmolVLA casts images to a non-default dtype; warming in the wrong one
-    # autotunes kernels the real path will not use.
-    image_dtype = getattr(adapter, "_image_dtype", None) or torch.float32
-
-    batch: dict[str, Any] = {
-        "observation.state": torch.zeros(
-            1, int(state_feature.shape[0]), dtype=torch.float32, device=device
-        ),
-        "task": [prompt],
-    }
-    for key, feature in image_features.items():
-        channels, height, width = (int(v) for v in feature.shape)
-        batch[key] = torch.zeros(1, channels, height, width, dtype=image_dtype, device=device)
-
-    # Run the batch through the adapter's own preprocessor first, exactly as
-    # `step()` does. Skipping it warms the wrong thing — or nothing at all:
-    # SmolVLA's `select_action` reads `observation.language.tokens`, which the
-    # preprocessor produces by tokenising `task`, so a raw batch raises
-    # KeyError and the warm-up is silently lost. Found on a live deploy sim;
-    # the guard downgraded it to a warning, which is exactly why it went
-    # unnoticed until the log was read.
-    preprocessor = getattr(adapter, "_preprocessor", None)
-    if callable(preprocessor):
-        batch = preprocessor(batch)
-
-    with contextlib.suppress(AttributeError, TypeError):
-        policy.reset()
-    # RTC-enabled policies hard-assert against `select_action` (lerobot:
-    # "RTC is not supported for select_action, use it with
-    # predict_action_chunk") — the executor only ever calls the chunk
-    # entry point, so warm the same one it will use. Without this the
-    # warm-up raises, the caller downgrades it to a warning, and tick 1
-    # pays the full cold-start (524 ms measured on the SO-101 eraser
-    # checkpoint against a 400 ms budget). Found on a live deploy run.
-    warm_call = policy.predict_action_chunk if rtc_enabled(policy) else policy.select_action
-    with torch.no_grad():
-        warm_call(batch)
-    if device.startswith("cuda"):
-        torch.cuda.synchronize()
-    return True
 
 
 def release_torch_modules(owner: object, *attrs: str, device: str = "", torch: Any = None) -> None:

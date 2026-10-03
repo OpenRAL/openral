@@ -131,14 +131,20 @@ the visual backend when the robot declares `has_vision_slam`; which engine
 ```yaml
 runtime:
   slam_visual_impl: pycuvslam        # default: isaac_ros (the composable node)
-  slam_stereo_cameras: [left, right] # camera names → /openral/cameras/<name>/…
+  slam_stereo_cameras: [left, right] # camera names → openral_core.camera_topic(<name>, …)
 ```
 
 `deploy_sim.py` forwards these as `slam_visual_impl:=` / `slam_stereo_cameras:=`,
 and `deploy_e2e.launch.py` composes the matching launch file with the rig's topics
 remapped onto that impl's camera args (Isaac ROS `image_0/1_topic`, PyCuVSLAM
-`left/right_image_topic`). Omitting `slam_stereo_cameras` keeps the impl's
-default `left`/`right` topics.
+`left/right_image_topic`). The stereo camera-topic arguments of `pycuvslam.launch.py` /
+`cuvslam.launch.py`, and `nvblox.launch.py`'s `depth_image_topic` /
+`depth_camera_info_topic`, have **no default** (ADR-0108 — no robot names its cameras
+`left`/`right`, and `front_depth` is only panda_mobile's): omitting `slam_stereo_cameras`
+leaves the stereo impl without inputs and it refuses to start (`pycuvslam_node` raises
+`ROSConfigError`; the Isaac container rejects the empty remap). Under `enable_nav2`, nvblox
+is fed the manifest's first depth sensor; a robot with none leaves the depth height filter
+without input, which refuses at startup.
 
 **Multi-camera mode (sim rigs).** For pycuvslam, `deploy_e2e.launch.py` also passes
 `robot_yaml`, so `pycuvslam_node.py` derives the rig frame from the manifest

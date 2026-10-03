@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from openral_cli.main import app
+from openral_core import CameraTopicKind, camera_topic
 from typer.testing import CliRunner
 
 runner = CliRunner()
@@ -229,3 +230,18 @@ def test_ral_profile_session_start_errors_when_lttng_missing(
     )
     assert result.exit_code != 0
     assert "lttng-tools not found" in result.output
+
+
+def test_record_profiles_capture_the_camera_topics_the_graph_publishes() -> None:
+    """Cameras live on ``/openral/cameras/<name>/image``; a profile that records
+    ``/openral/sensors/...`` (the old pattern) bags no frames at all."""
+    import re
+
+    from openral_observability.replay.cli import RECORD_PROFILES
+
+    slim = [re.compile(r) for r in RECORD_PROFILES["slim"]["regex"]]
+    full = [re.compile(r) for r in RECORD_PROFILES["full"]["regex"]]
+    assert any(r.fullmatch(camera_topic("top") + "/compressed") for r in slim)
+    assert not any(r.fullmatch(camera_topic("top")) for r in slim)
+    assert any(r.fullmatch(camera_topic("top")) for r in full)
+    assert any(r.fullmatch(camera_topic("top", CameraTopicKind.DEPTH_IMAGE)) for r in full)

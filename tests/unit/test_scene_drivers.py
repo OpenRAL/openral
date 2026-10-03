@@ -11,9 +11,9 @@ downstream of it produces nothing, with every node reporting healthy.
 The driver's own config travels with the scene rather than living in a home
 directory, so a committed scene works on more than one machine.
 
-No in-tree scene currently declares `drivers:` (it is a real-hardware-only
-field — see `DeployScene.drivers`), so these tests write their own
-`zed_wrapper`-shaped fixture rather than depending on one. The shape (a
+`drivers:` is a real-hardware-only field (see `DeployScene.drivers`); these tests
+write their own `zed_wrapper`-shaped fixture rather than depending on a committed
+scene. The shape (a
 `ros2_image` sensor binding paired with a `zed_wrapper` driver entry pinning
 positional tracking off) is real — it is the pairing that `deploy_e2e.launch.py`
 resolves on any workcell wiring a ZED into the octomap leg.
@@ -64,10 +64,13 @@ def _scene(tmp_path: pathlib.Path) -> _Scene:
                 },
             }
         ],
+        # A workcell ZED (its own name): a deploy scene never touches a robot camera, so a
+        # ros2_image binding in a scene belongs to a camera the robot manifest does not define.
         "sensors": [
             {
-                "name": "top",
+                "name": "workcell_zed",
                 "modality": "rgb",
+                "frame_id": "workcell_zed_left_camera_optical_frame",
                 "deploy_binding": {
                     "backend": "ros2_image",
                     "backend_params": {"topic": "/zed/zed_node/rgb/color/rect/image"},

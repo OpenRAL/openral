@@ -15,7 +15,35 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-__all__ = ["resolve_camera_topics"]
+from openral_core import ROSConfigError
+
+__all__ = ["parse_camera_entries", "resolve_camera_topics"]
+
+
+def parse_camera_entries(entries: Sequence[str]) -> dict[str, str]:
+    """Parse ``"id=topic"`` strings into an ordered camera-id → topic map.
+
+    The parsing half of :func:`resolve_camera_topics`, with no fallback: used
+    as-is for optional per-camera side streams such as the segmenter's
+    ``camera_infos``, where "none configured" is a valid answer.
+
+    Args:
+        entries: ``"id=topic"`` strings. Empty strings and entries missing
+            either half are skipped (rclpy's empty string array is ``[""]``).
+
+    Returns:
+        Camera id → topic, in declaration order; possibly empty.
+
+    Example:
+        >>> parse_camera_entries(["", "head=/zed/camera_info", "bad"])
+        {'head': '/zed/camera_info'}
+    """
+    cameras: dict[str, str] = {}
+    for entry in entries:
+        cid, _, topic = entry.partition("=")
+        if cid and topic:
+            cameras[cid] = topic
+    return cameras
 
 
 def resolve_camera_topics(
@@ -33,12 +61,16 @@ def resolve_camera_topics(
             never given cameras arrives here with one blank entry.
         primary_camera: Id to file the single-camera fallback under. Blank falls
             back to ``"default"``, matching the nodes' declared default.
-        image_topic: Topic for the single-camera fallback.
+        image_topic: Topic for the single-camera fallback. Empty (the nodes'
+            default, ADR-0108) means "no fallback": the launch must name a camera.
 
     Returns:
         Camera id → topic, in declaration order. The first key is the primary
         camera (dicts preserve insertion order), which is what the nodes use
         when a request leaves its ``camera`` field empty.
+
+    Raises:
+        ROSConfigError: Neither ``entries`` nor ``image_topic`` names a camera.
 
     Example:
         >>> resolve_camera_topics(
@@ -50,13 +82,12 @@ def resolve_camera_topics(
         >>> resolve_camera_topics([""], primary_camera="", image_topic="/cam/image")
         {'default': '/cam/image'}
     """
-    cameras: dict[str, str] = {}
-    for entry in entries:
-        if not entry:
-            continue
-        cid, _, topic = entry.partition("=")
-        if cid and topic:
-            cameras[cid] = topic
+    cameras = parse_camera_entries(entries)
     if not cameras:
+        if not image_topic:
+            raise ROSConfigError(
+                "no camera configured: set `cameras` (id=topic) or `image_topic` to the "
+                "manifest camera's openral_core.camera_topic(<name>)"
+            )
         cameras[primary_camera or "default"] = image_topic
     return cameras

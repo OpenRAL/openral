@@ -28,7 +28,7 @@ depth-validity fraction; the mask score is only recorded, as
 
 **On gate failure the attachment is not skipped**: ``on_grasp`` always
 returns an ``AttachedCollisionObject`` — a rejected mask degrades to a
-conservative jaw-span box stamped ``AttachmentEvidenceKind.GRIPPER_FORCE``
+conservative jaw-span box stamped ``AttachmentEvidenceKind.GRIPPER_CLOSURE``
 at low confidence, strictly safer than an invisible payload.
 
 Honest limitations — what this does NOT fix:
@@ -51,8 +51,8 @@ Honest limitations — what this does NOT fix:
 * **Deformable objects and multi-object grasps.** A single positive
   point means a single rigid object. Not addressed.
 * **The attach trigger itself.** This module is *told* a grasp happened;
-  it does not decide it. Whether SO-101's feetech effort readback is
-  trustworthy enough to be that trigger is unverified.
+  it does not decide it (``_grasp_trigger.PositionStallTrigger``: the jaw
+  settling short of a close command — position only, no effort channel).
 
 Every threshold on ``VisionGateConfig`` is a **calibration point, not a
 measured constant** (see that class's docstring): the design work
@@ -457,18 +457,31 @@ class VisionAttachmentEvidenceProducer:
     Args:
         description: The robot manifest, read for the gripper's parent link and
             the finger links that are allowed to touch the payload.
+        gripper_joint: One gripper-role joint this producer serves: its
+            ``parent_link`` is the attach link and its ``child_link`` the one
+            touch link. A bimanual robot builds one producer per hand. ``None``
+            serves every gripper joint at once, which needs them to share one
+            parent link.
         config: Gate thresholds. Every one is a calibration point — see
             ``VisionGateConfig``.
 
     Raises:
-        ROSConfigError: If the manifest declares no gripper-role joints, or its
-            gripper joints do not share exactly one parent link.
+        ROSConfigError: If the manifest declares no gripper-role joints,
+            ``gripper_joint`` names none of them, or (with ``gripper_joint``
+            unset) its gripper joints do not share exactly one parent link.
+
+    Example:
+        >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> left = VisionAttachmentEvidenceProducer(d, gripper_joint="left_gripper")
+        >>> left.attach_link, left.touch_links
+        ('openarm_left_link7', ('openarm_left_finger_pair',))
     """
 
     def __init__(
         self,
         description: RobotDescription,
         *,
+        gripper_joint: str | None = None,
         config: VisionGateConfig | None = None,
     ) -> None:
         """Resolve the attach link and touch links from the manifest."""
@@ -476,6 +489,13 @@ class VisionAttachmentEvidenceProducer:
         gripper_joints = [joint for joint in description.joints if joint.role == "gripper"]
         if not gripper_joints:
             raise ROSConfigError("Vision attachment evidence requires gripper-role joints.")
+        if gripper_joint is not None:
+            gripper_joints = [joint for joint in gripper_joints if joint.name == gripper_joint]
+            if not gripper_joints:
+                raise ROSConfigError(
+                    f"Vision attachment evidence: {gripper_joint!r} is not a gripper-role joint "
+                    f"of {description.name!r}."
+                )
         attach_links = {joint.parent_link for joint in gripper_joints}
         if len(attach_links) != 1:
             raise ROSConfigError(
@@ -489,6 +509,11 @@ class VisionAttachmentEvidenceProducer:
     def attach_link(self) -> str:
         """Robot link that owns the attached payload's pose."""
         return self._attach_link
+
+    @property
+    def touch_links(self) -> tuple[str, ...]:
+        """Finger links allowed to touch the attached payload."""
+        return tuple(self._touch_links)
 
     @property
     def config(self) -> VisionGateConfig:
@@ -616,7 +641,7 @@ class VisionAttachmentEvidenceProducer:
 
         **Always returns an attachment.** A rejected grasp yields the
         conservative jaw-span box stamped
-        ``AttachmentEvidenceKind.GRIPPER_FORCE`` at low confidence — never
+        ``AttachmentEvidenceKind.GRIPPER_CLOSURE`` at low confidence — never
         ``None``, never a silent skip; the report names every failed gate
         so the fallback is visible in the trace (CLAUDE.md §1.4).
 
@@ -773,7 +798,7 @@ class VisionAttachmentEvidenceProducer:
                 frame_id=self._attach_link,
             ),
             confidence=_FALLBACK_CONFIDENCE,
-            evidence_kind=AttachmentEvidenceKind.GRIPPER_FORCE,
+            evidence_kind=AttachmentEvidenceKind.GRIPPER_CLOSURE,
             evidence_ref=f"vision_gate_rejected:{object_id}@{stamp_ns}",
             stamp_ns=stamp_ns,
         )

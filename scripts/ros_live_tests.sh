@@ -42,7 +42,13 @@ TARGETS=(
     # the DEPLOYED margin -- the collision gtests run at margin 0, where
     # gating at `margin` vs at the surface is algebraically identical.
     tests/integration/test_safety_kernel_place_target_geometry.py
+    # Grasp-target exemption on the REAL OpenArm collision model at the real
+    # cell's 20 mm margin -- every fail-closed row, plus the default-off kernel.
+    tests/integration/test_safety_kernel_grasp_target_band.py
     tests/integration/test_sim_sensor_bridge_tf_guard.py
+    # Every MuJoCo twin heartbeats a fresh, empty attachment set, not only the
+    # HALs with attach mechanics (kernel fails closed on an unstamped set).
+    tests/integration/test_sim_sensor_bridge_attachment_heartbeat.py
     # Defense-in-depth E-stop, on a real three-process graph: the in-band
     # safety node is SIGKILLed mid chunk-stream and /openral/estop still fires,
     # from a different process, with the structured KIND_TIMEOUT trigger. Needs
@@ -55,6 +61,40 @@ TARGETS=(
     # unchanged payload must release the deferred action_applied tick; when it
     # did not, a SUCCESSFUL place aborted its own goal 8 s later.
     tests/integration/test_hal_attachment_barrier_live.py
+    # The vision attachment leg heartbeats its set only while every gripper's
+    # jaw-position channel is live, and its revision survives a re-activate.
+    tests/integration/test_vision_attachment_heartbeat_live.py
+    # Grasp masks back-project in the depth header's optical frame through the
+    # driver's CameraInfo, never the manifest's body frame or nominal K.
+    tests/integration/test_vision_attachment_optical_frame_live.py
+    # A released payload stays a checked attached record, frozen in the base frame, until
+    # the jaws are clear; the real kernel accepts the retreat only while it is published.
+    tests/integration/test_vision_attachment_release_window_live.py
+    # The pre-grasp target leg measures the declared target's region from the
+    # search box, the voxel map and a SegmentInView mask; freezes it under a TTL
+    # on a lost view, refuses two candidates, dies with the declaration.
+    tests/integration/test_grasp_target_leg_live.py
+    # The real place producer leg measures the surface under the carried payload
+    # in the voxel map (no fixture, no named target), declares it with a slab
+    # region, attests the map_support_proximity witness, and retracts within the
+    # freeze TTL on a silent grid; through a real aggregator into a real safety
+    # kernel (needs the colcon kernel + openral_msgs overlay).
+    tests/integration/test_place_target_leg_live.py
+    # Set-down then release on a measured surface against the real kernel: the
+    # retreat is accepted only with the map_support_proximity witness.
+    tests/integration/test_place_target_release_live.py
+    # Every scene vision_attachment_* param the deploy forwards is declared by the
+    # real HAL node and reaches the grasp trigger (rclpy drops undeclared names).
+    tests/integration/test_vision_attachment_hal_params_live.py
+    # A reasoner-named grasp target grounds from a live lifted detection into a
+    # search box on the goal's declaration (never a region); refusals send no goal.
+    tests/integration/test_reasoner_grounded_targets_live.py
+    # The sim producer measures a dispatched grasp declaration's target box and
+    # rides it on every attachment envelope, revision unchanged, until retracted.
+    tests/integration/test_sim_bridge_grasp_declaration_live.py
+    # Grasp-target control pair on a MuJoCo twin: real kernel (20 mm margin,
+    # grasp_allowance_enabled), World State node, SimSensorBridge producer.
+    tests/sim/test_gripper_twin_hal_mujoco_grasp_pair.py
     # A world-voxel stop names its cell only as an index; the grid that index
     # addresses arrives on a different topic, and until joined the record
     # can't look at the map -- how the 2026-08-22 round adjudicated two stops

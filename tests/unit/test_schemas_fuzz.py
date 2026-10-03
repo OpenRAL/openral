@@ -41,7 +41,11 @@ from openral_core.schemas import (
     DeviceInfo,
     EmbodimentKind,
     EndEffectorSpec,
+    ExecuteRskillTool,
     FrameEncoding,
+    GraspDeclaration,
+    GraspTargetRef,
+    GripperClosureCalibration,
     GripperConvention,
     HalConfig,
     HalEntrypoints,
@@ -53,6 +57,9 @@ from openral_core.schemas import (
     LinkCollisionGeometry,
     OccupancyGridRef,
     PhysicsBackend,
+    PlaceDeclaration,
+    PlaceRegion,
+    PlaceTargetRef,
     Pose6D,
     QuantizationBackend,
     QuantizationConfig,
@@ -67,6 +74,7 @@ from openral_core.schemas import (
     ResolvePlaceTool,
     RobotCapabilities,
     RobotDescription,
+    RobotUnit,
     RSkillAction,
     RSkillLatencyBudget,
     RSkillLicensePosture,
@@ -80,8 +88,10 @@ from openral_core.schemas import (
     SegmenterContract,
     SegmenterEngine,
     SensorBundle,
+    SensorDeployBinding,
     SensorFrame,
     SensorModality,
+    SensorOverlay,
     SensorReaderBackend,
     SensorReaderConfig,
     SensorSpec,
@@ -93,9 +103,9 @@ from openral_core.schemas import (
     SphereShape,
     TaskSpec,
     TickResult,
+    VisionAttachmentRuntime,
     VLASpec,
     WaitTool,
-    WorldCollisionPrimitive,
     WorldState,
 )
 from pydantic import ValidationError
@@ -152,10 +162,33 @@ _sensor_spec_st = st.builds(
     sim_placement=st.none() | _camera_sim_placement_st,
 )
 
+_sensor_overlay_st = st.builds(
+    SensorOverlay,
+    name=_name,
+    deploy_binding=st.none()
+    | st.builds(
+        SensorDeployBinding,
+        backend=st.sampled_from(list(SensorReaderBackend)),
+        backend_params=st.dictionaries(_name, _name | st.integers(), max_size=3),
+        max_age_ms=st.integers(min_value=1, max_value=10_000),
+    ),
+    ros2_topic=st.none() | _topic,
+    static_transform_xyz_rpy=st.none() | st.tuples(*[_safe_float] * 6),
+    intrinsics=st.none() | _intrinsics_st,
+)
+
 _sensor_bundle_st = st.builds(
     SensorBundle,
     bundle_name=_name,
     sensors=st.lists(_sensor_spec_st, min_size=1, max_size=3),
+)
+
+_closure_calibration_st = st.builds(
+    GripperClosureCalibration,
+    closed_position=st.floats(min_value=-1.0, max_value=1.0),
+    closed_rest_offset=st.floats(min_value=0.0, max_value=0.1),
+    stall_gap=st.floats(min_value=1e-4, max_value=0.5),
+    settle_tolerance=st.floats(min_value=1e-5, max_value=0.05),
 )
 
 _joint_spec_st = st.builds(
@@ -164,6 +197,7 @@ _joint_spec_st = st.builds(
     joint_type=st.sampled_from(list(JointType)),
     parent_link=_name,
     child_link=_name,
+    closure_calibration=st.none() | _closure_calibration_st,
 )
 
 _end_effector_st = st.builds(
@@ -234,7 +268,10 @@ _robot_description_st = st.builds(
     capabilities=_capabilities_st,
     safety=_safety_st,
     sdk_kind=st.sampled_from(["open", "closed_with_api", "closed"]),
-    hal=_hal_entrypoints_st,
+    # Sim-only: a manifest with `hal.real` must also declare its control rate,
+    # every kernel-read safety field and joint velocity limits (the real-hardware
+    # contract), which tests/unit/test_robot_description_real_contract.py pins.
+    hal=st.builds(HalEntrypoints, sim=st.none() | _name, real=st.none()),
     compute_edge=st.one_of(st.none(), _compute_spec_st),
     compute_local=st.one_of(st.none(), _compute_spec_st),
     compute_cloud=st.one_of(st.none(), _compute_spec_st),
@@ -254,6 +291,14 @@ _pose6d_st = st.builds(
     frame_id=_name,
 )
 
+
+_robot_unit_st = st.builds(
+    RobotUnit,
+    robot_id=_name,
+    unit=_name,
+    sensors=st.lists(_sensor_overlay_st, max_size=3),
+)
+
 _detected_object_st = st.builds(
     DetectedObject,
     label=_name,
@@ -261,11 +306,68 @@ _detected_object_st = st.builds(
     pose=_pose6d_st,
 )
 
+# Grasp region: every half-extent <= 0.15 m keeps the box under both
+# GraspDeclaration caps (0.20 m, 8 * 0.15^3 = 0.027 m^3 < 0.03 m^3).
+_grasp_region_st = st.builds(
+    PlaceRegion,
+    frame_id=_name,
+    pose=_pose6d_st,
+    half_extents=st.tuples(
+        *[st.floats(min_value=1e-3, max_value=0.15, allow_nan=False) for _ in range(3)]
+    ),
+    evidence_ref=_name,
+    stamp_ns=_ns,
+)
+_grasp_declaration_st = st.builds(
+    GraspDeclaration,
+    target_id=_name,
+    object_id=st.text(max_size=16),
+    contact_links=st.lists(_name, min_size=1, max_size=3).map(tuple),
+    rskill_id=st.text(max_size=16),
+    trace_id=st.text(max_size=16),
+    timeout_s=st.floats(min_value=1e-3, max_value=GraspDeclaration.MAX_TIMEOUT_S),
+    stamp_ns=_ns,
+    active=st.booleans(),
+    region=st.none() | _grasp_region_st,
+)
+
+_place_declaration_st = st.builds(
+    PlaceDeclaration,
+    target_id=_name,
+    object_id=st.text(max_size=16),
+    rskill_id=st.text(max_size=16),
+    trace_id=st.text(max_size=16),
+    timeout_s=st.floats(min_value=1e-3, max_value=PlaceDeclaration.MAX_TIMEOUT_S),
+    stamp_ns=_ns,
+    active=st.booleans(),
+    region=st.none() | _grasp_region_st,
+    search_box=st.none() | _grasp_region_st,
+)
+
+_grasp_target_ref_st = st.builds(
+    GraspTargetRef,
+    label=_name,
+    object_id=st.none() | _name,
+    contact_links=st.lists(_name, max_size=3),
+)
+_place_target_ref_st = st.one_of(
+    st.builds(PlaceTargetRef, label=_name, object_id=st.none() | _name),
+    st.builds(PlaceTargetRef, label=_name, place_node_id=_name),
+)
+_execute_rskill_tool_st = st.builds(
+    ExecuteRskillTool,
+    rskill_id=_name,
+    prompt=st.text(max_size=16),
+    grasp_target=st.none() | _grasp_target_ref_st,
+    place_target=st.none() | _place_target_ref_st,
+)
+
 _world_state_st = st.builds(
     WorldState,
     stamp_ns=_ns,
     joint_state=_joint_state_st,
     detected_objects=st.lists(_detected_object_st, max_size=4),
+    grasp_declaration=st.none() | _grasp_declaration_st,
 )
 
 _action_st = st.builds(
@@ -274,6 +376,7 @@ _action_st = st.builds(
     horizon=st.integers(min_value=1, max_value=64),
     confidence=_prob,
     stamp_ns=_ns,
+    runner_session_id=st.integers(min_value=0, max_value=2**64 - 1),
 )
 
 # ─── Collision geometry ──────────────────────────────────────────────────────────
@@ -325,13 +428,6 @@ _link_collision_geometry_st = st.builds(
     origin_xyz_rpy=st.tuples(*([_safe_float] * 6)),
 )
 
-_world_collision_primitive_st = st.builds(
-    WorldCollisionPrimitive,
-    shape=_collision_shape_st,
-    pose=_pose6d_st,
-    object_id=st.one_of(st.none(), _name),
-)
-
 _occupancy_grid_ref_st = st.builds(
     OccupancyGridRef,
     frame_id=_name,
@@ -361,6 +457,23 @@ _clock_authority_st = st.one_of(
 )
 
 _opt_bool = st.none() | st.booleans()
+_vision_attachment_st = st.builds(
+    VisionAttachmentRuntime,
+    # enabled requires every driver topic; topics are filled so both states are drawn.
+    enabled=st.booleans(),
+    camera=_name,
+    rgb_topic=_topic,
+    rgb_camera_info_topic=_topic,
+    depth_topic=_topic,
+    depth_camera_info_topic=_topic,
+    segmenter_manifest=_name,
+    deadline_s=st.floats(min_value=0.01, max_value=5.0),
+    evidence_timeout_s=st.floats(min_value=0.01, max_value=5.0),
+    tf_frames=st.dictionaries(_name, _name, max_size=3),
+    grasp_target_enabled=st.booleans(),
+    place_target_enabled=st.booleans(),
+    release_timeout_s=st.floats(min_value=0.01, max_value=30.0),
+)
 _deploy_runtime_st = st.builds(
     DeployRuntime,
     enable_slam=_opt_bool,
@@ -381,6 +494,8 @@ _deploy_runtime_st = st.builds(
     slam_visual_impl=st.none() | st.sampled_from(["isaac_ros", "pycuvslam"]),
     # distinct pair — the model_validator rejects two equal names.
     slam_stereo_cameras=st.none() | st.lists(_name, min_size=2, max_size=2, unique=True).map(tuple),
+    vision_attachment=st.none() | _vision_attachment_st,
+    grasp_allowance_enabled=st.booleans(),
 )
 
 _collision_evidence_st = st.builds(
@@ -443,6 +558,20 @@ def test_fuzz_camera_sim_placement(instance: CameraSimPlacement) -> None:
 def test_fuzz_sensor_spec(instance: SensorSpec) -> None:
     """SensorSpec round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(SensorSpec, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_sensor_overlay_st)
+def test_fuzz_sensor_overlay(instance: SensorOverlay) -> None:
+    """SensorOverlay round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(SensorOverlay, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_robot_unit_st)
+def test_fuzz_robot_unit(instance: RobotUnit) -> None:
+    """RobotUnit round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(RobotUnit, instance)
 
 
 @_FUZZ_SETTINGS
@@ -537,6 +666,41 @@ def test_fuzz_world_state(instance: WorldState) -> None:
 
 
 @_FUZZ_SETTINGS
+@given(_grasp_target_ref_st)
+def test_fuzz_grasp_target_ref(instance: GraspTargetRef) -> None:
+    """GraspTargetRef round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(GraspTargetRef, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_place_target_ref_st)
+def test_fuzz_place_target_ref(instance: PlaceTargetRef) -> None:
+    """PlaceTargetRef round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(PlaceTargetRef, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_execute_rskill_tool_st)
+def test_fuzz_execute_rskill_tool_with_targets(instance: ExecuteRskillTool) -> None:
+    """ExecuteRskillTool with named targets round-trips and validates against its schema."""
+    _round_trip_and_validate(ExecuteRskillTool, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_place_declaration_st)
+def test_fuzz_place_declaration(instance: PlaceDeclaration) -> None:
+    """PlaceDeclaration (with an optional search box) round-trips and validates."""
+    _round_trip_and_validate(PlaceDeclaration, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_grasp_declaration_st)
+def test_fuzz_grasp_declaration(instance: GraspDeclaration) -> None:
+    """GraspDeclaration round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(GraspDeclaration, instance)
+
+
+@_FUZZ_SETTINGS
 @given(_capsule_shape_st)
 def test_fuzz_capsule_shape(instance: CapsuleShape) -> None:
     """CapsuleShape round-trips through JSON and validates against its schema."""
@@ -555,13 +719,6 @@ def test_fuzz_sphere_shape(instance: SphereShape) -> None:
 def test_fuzz_link_collision_geometry(instance: LinkCollisionGeometry) -> None:
     """LinkCollisionGeometry round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(LinkCollisionGeometry, instance)
-
-
-@_FUZZ_SETTINGS
-@given(_world_collision_primitive_st)
-def test_fuzz_world_collision_primitive(instance: WorldCollisionPrimitive) -> None:
-    """WorldCollisionPrimitive round-trips through JSON and validates against its schema."""
-    _round_trip_and_validate(WorldCollisionPrimitive, instance)
 
 
 @_FUZZ_SETTINGS
@@ -1033,14 +1190,23 @@ def _sensor_reader_config_st(draw: st.DrawFn) -> SensorReaderConfig:
     publish = draw(st.booleans())
     topic = draw(_topic) if publish else None
     rate = draw(_pos_float.filter(lambda x: x > 0)) if publish else None
+    frame_id = draw(st.none() | _name) if publish else None
+    camera_info = draw(st.none() | _intrinsics_st) if publish else None
     return SensorReaderConfig(
         sensor_id=draw(_name),
-        backend=draw(st.sampled_from(list(SensorReaderBackend))),
+        # Only the gstreamer backend has a ROS tee; the others refuse publish_to_ros.
+        backend=(
+            SensorReaderBackend.GSTREAMER
+            if publish
+            else draw(st.sampled_from(list(SensorReaderBackend)))
+        ),
         backend_params=draw(st.dictionaries(_name, st.text(max_size=32), max_size=4)),
         max_age_ms=draw(st.integers(min_value=1, max_value=10_000)),
         publish_to_ros=publish,
         publish_topic=topic,
         publish_rate_hz=rate,
+        publish_frame_id=frame_id,
+        publish_camera_info=camera_info,
     )
 
 
@@ -1053,6 +1219,7 @@ def test_fuzz_sensor_reader_config(instance: SensorReaderConfig) -> None:
         assert instance.publish_topic is not None
     else:
         assert instance.publish_topic is None
+        assert instance.publish_frame_id is None and instance.publish_camera_info is None
 
 
 _hal_config_st = st.builds(
@@ -1332,3 +1499,10 @@ def test_fuzz_wait_tool(instance: WaitTool) -> None:
 def test_fuzz_deploy_runtime(instance: DeployRuntime) -> None:
     """DeployRuntime round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(DeployRuntime, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_vision_attachment_st)
+def test_fuzz_vision_attachment_runtime(instance: VisionAttachmentRuntime) -> None:
+    """VisionAttachmentRuntime round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(VisionAttachmentRuntime, instance)

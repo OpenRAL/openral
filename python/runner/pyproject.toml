@@ -11,6 +11,7 @@ dependencies = [
     "openral-hal==0.3.1",             # reason: HardwareRunner depends on the HAL Protocol
     "openral-observability==0.3.1",   # reason: rskill_span / safety_span wired into HardwareRunner ticks
     "openral-rskill==0.3.1",           # reason: HardwareRunner accepts a Skill and calls Skill.step
+    "openral-sensors==0.3.1",         # reason: GStreamer ROS tee builds CameraInfo via openral_sensors.ros_publisher
     "openral-world-state==0.3.1",     # reason: WorldStateAggregator is the runner's WorldState producer
     # x-release-please-end
     "msgpack>=1.1",            # reason: native A1 Runtime local service framing

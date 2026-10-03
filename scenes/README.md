@@ -46,6 +46,11 @@ sibling is **not** valid for paper claims; the loader-strictness gate
 # DeployScene — env-only playground (reasoner picks the rSkill at runtime).
 openral deploy sim --config scenes/deploy/openarm_tabletop.yaml
 
+# The same robot on real hardware. `deploy run`, not `deploy sim`: it binds the
+# cell's real cameras and the real CAN/ros2_control HAL. Bringup MOVES BOTH ARMS
+# (openarm_bringup returns to zero on activate) — read the scene's header first.
+openral deploy run --config scenes/deploy/openarm_bench.yaml
+
 # BEHAVIOR-1K R1 Pro — official OmniGibson evaluator environment.
 openral deploy sim --config scenes/deploy/behavior_r1pro.yaml \
   --initial-task "turn on the radio"
@@ -116,6 +121,11 @@ just sim-custom                     # ACT × gym-aloha insertion (rskills/act-al
 catalogue and reports row-by-row latency + success metrics.
 
 ## Adding a new YAML
+
+A real-hardware `DeployScene` with a StereoLabs ZED (driver block, RGB + depth
+bindings, octomap topic, TF and USB-hub pitfalls) is worked through in
+[the deploy tutorial](../docs/tutorials/deploy/deploy-run-and-dashboard.md#cameras-whose-stream-only-exists-as-a-ros-topic-ros2_image);
+`scenes/deploy/openarm_bench.yaml` is the verified instance.
 
 See [Create a sim environment](../docs/tutorials/sim/create-a-sim-environment.md)
 for the long-form tutorial covering YAML authoring, adding a new robot

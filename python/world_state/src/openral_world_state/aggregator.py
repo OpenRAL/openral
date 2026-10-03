@@ -59,6 +59,7 @@ import structlog
 from openral_core.schemas import (
     AttachedCollisionObject,
     DetectedObject,
+    GraspDeclaration,
     JointState,
     PlaceDeclaration,
     Pose6D,
@@ -232,6 +233,10 @@ class WorldStateAggregator:
         # re-checks `place_declaration_live()` per action on its own ROS clock —
         # the declaration's actual domain.
         self._place_declaration: PlaceDeclaration | None = None
+        # Grasp-phase declaration (real pick-and-place design §2.1): same
+        # envelope, same atomic replacement, same stream-clock liveness gate as
+        # the place declaration above.
+        self._grasp_declaration: GraspDeclaration | None = None
         # latched diagnostics for explicitly set errors
         self._forced_errors: dict[str, DiagStatus] = {}
         # Stale components from the previous snapshot — used by snapshot() to
@@ -401,6 +406,7 @@ class WorldStateAggregator:
         revision: int = 0,
         stamp_ns: int | None = None,
         place_declaration: PlaceDeclaration | None = None,
+        grasp_declaration: GraspDeclaration | None = None,
     ) -> None:
         """Atomically replace the attached-payload set.
 
@@ -420,6 +426,11 @@ class WorldStateAggregator:
                 stream-clock stamp) — the only clock it is comparable with. This
                 is the single evaluation point; ``snapshot`` publishes what
                 is stored here.
+            grasp_declaration: The grasp-phase declaration the evidence
+                producer resolved, with its measured region, or ``None``.
+                Stored atomically with the set and gated on ``is_live`` against
+                the same ``stamp_ns`` as ``place_declaration``; a set that
+                carries none clears it.
 
         Raises:
             ValueError: If ids duplicate or the revision moves backwards.
@@ -435,22 +446,38 @@ class WorldStateAggregator:
             if place_declaration is not None and place_declaration.is_live(now_ns=applied_stamp_ns)
             else None
         )
+        live_grasp = (
+            grasp_declaration
+            if grasp_declaration is not None and grasp_declaration.is_live(now_ns=applied_stamp_ns)
+            else None
+        )
         with self._lock:
             if revision < self._attachment_revision:
                 raise ValueError(
                     f"Attachment revision moved backwards: "
                     f"{revision} < {self._attachment_revision}."
                 )
+            # The producer republishes its latched set on a heartbeat; log the
+            # set changing, not every confirmation of it.
+            changed = (
+                by_id != self._attached_objects
+                or live_declaration != self._place_declaration
+                or live_grasp != self._grasp_declaration
+            )
             self._attached_objects = by_id
             self._attachment_revision = revision
             self._attachment_stamp_ns = applied_stamp_ns
             self._place_declaration = live_declaration
-        log.info(
-            "world_state.attached_objects.updated",
-            count=len(objects),
-            place_target=live_declaration.target_id if live_declaration is not None else None,
-            place_region=live_declaration is not None and live_declaration.region is not None,
-        )
+            self._grasp_declaration = live_grasp
+        if changed:
+            log.info(
+                "world_state.attached_objects.updated",
+                count=len(objects),
+                place_target=live_declaration.target_id if live_declaration is not None else None,
+                place_region=live_declaration is not None and live_declaration.region is not None,
+                grasp_target=live_grasp.target_id if live_grasp is not None else None,
+                grasp_region=live_grasp is not None and live_grasp.region is not None,
+            )
 
     def set_error(self, component: str, status: DiagStatus = "error") -> None:
         """Latch an explicit diagnostic status for a named component.
@@ -611,6 +638,7 @@ class WorldStateAggregator:
                 # declaration on its own and does not pretend to; see the
                 # HZ-0097-3 note in `__init__` for what does.
                 place_declaration=self._place_declaration,
+                grasp_declaration=self._grasp_declaration,
                 diagnostics=diag,
                 detected_objects=list(self._detected_objects),
             )

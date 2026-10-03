@@ -183,6 +183,16 @@ openral collision lower --robot robots/<robot>/robot.yaml \
         --emit-cumotion robots/<robot>/cumotion_spheres.yaml --write
 ```
 
+An MJCF-lowered robot whose collision geometry is meshes (the OpenArm) is
+fitted from its MJCF the same way a URDF robot is from its URDF: one fitter
+(`fit_link_primitives`) picks one capsule, one box or a capsule chain per link
+from the link's collision **and** visual geometry, by least mean protrusion
+(`docs/reference/collision-geometry-review.md`). `--tight-link <link>`
+(repeatable) lowers a link as a box plus its exact convex hull
+(`tight_geometry`) instead; a link the manifest already refines stays refined.
+The loosening guard still applies: delete the old entries first when the fit
+is larger.
+
 Isaac ROS 4.4+ cuMotion is a **self-contained C++/CUDA apt package** (ships a
 native `libcumotion.so.1` and uses the CUDA 13 runtime) — there is **no Python
 cuRobo to install** and no `uv`/`pip` group. The apt packages are the supported

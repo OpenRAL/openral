@@ -419,10 +419,10 @@ def main(args: Any = None) -> None:
 
         def __init__(self) -> None:
             super().__init__("openral_nvblox_depth_height_filter")
-            self.declare_parameter("input_depth_topic", "/openral/cameras/front_depth/depth/image")
-            self.declare_parameter(
-                "input_camera_info_topic", "/openral/cameras/front_depth/depth/camera_info"
-            )
+            # No default: nvblox.launch.py passes the depth camera's
+            # ``camera_topic(<name>, DEPTH_IMAGE / DEPTH_CAMERA_INFO)`` (ADR-0108).
+            self.declare_parameter("input_depth_topic", "")
+            self.declare_parameter("input_camera_info_topic", "")
             self.declare_parameter("output_depth_topic", "/openral/nvblox/depth_filtered/image")
             self.declare_parameter(
                 "output_camera_info_topic", "/openral/nvblox/depth_filtered/camera_info"
@@ -437,6 +437,18 @@ def main(args: Any = None) -> None:
             self.declare_parameter("tf_timeout_ms", 50)
 
             gp = self.get_parameter
+            missing = [
+                p
+                for p in ("input_depth_topic", "input_camera_info_topic")
+                if not gp(p).get_parameter_value().string_value
+            ]
+            if missing:
+                from openral_core import ROSConfigError
+
+                raise ROSConfigError(
+                    f"depth height filter: {missing} empty; pass the depth camera's "
+                    "camera_topic(<name>, DEPTH_IMAGE / DEPTH_CAMERA_INFO)."
+                )
             self._global_frame = gp("global_frame").get_parameter_value().string_value
             self._base_frame = gp("base_frame").get_parameter_value().string_value
             self._floor_clearance = gp("floor_clearance_m").get_parameter_value().double_value
