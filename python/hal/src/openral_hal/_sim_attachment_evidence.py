@@ -250,7 +250,7 @@ def lift_region_off_support(
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]] | None:
     """Raise a resting target's body-frame box so its lowest point is one voxel up.
 
-    The sim mirror of the real producer's HZ-01xx-6 rule
+    The sim mirror of the real producer's HZ-0115-6 rule
     (``_grasp_target.target_region_from_mask``): a grasp region's lower face sits
     at ``support_z + resolution``, so every cell holding the support surface (centres
     up to half a voxel above the plane) stays outside the region and the kernel still

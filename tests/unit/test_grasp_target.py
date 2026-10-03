@@ -308,7 +308,7 @@ def _column(bottom_z: float) -> PlaceRegion:
 
 
 def test_support_below_the_search_box_bottom_is_measured_not_assumed() -> None:
-    """HZ-01xx-6: a detection bbox whose min-z sits 5 cm *below* the table top must not
+    """HZ-0115-6: a detection bbox whose min-z sits 5 cm *below* the table top must not
     lower the region into the table — the region stands on the measured table top."""
     bx, by = _box_centre_xy()
     grid = _scene_lattice([(bx, by, 0.05, 0.035, 0.4)])
@@ -464,7 +464,7 @@ def test_a_target_on_a_shelf_board_edge_stands_on_the_board_not_the_bench() -> N
 
 
 def test_a_taller_neighbour_never_makes_the_targets_top_its_support() -> None:
-    """HZ-01xx-2: a flat box (the target, search box centred on it) beside a taller bottle.
+    """HZ-0115-2: a flat box (the target, search box centred on it) beside a taller bottle.
     Anchored on whatever stood above each layer, the scan took the bottle as "the target"
     at the box's top layer, found the box's top face ringing the bottle, called it the
     support and seeded on the bottle. Anchored on the box at every layer, the support is
@@ -486,7 +486,7 @@ def test_a_taller_neighbour_never_makes_the_targets_top_its_support() -> None:
 
 @pytest.mark.parametrize("under", ["same_footprint_box", "narrower_riser"])
 def test_a_target_standing_on_another_object_is_refused_not_on_support(under: str) -> None:
-    """HZ-01xx-6. Voxels: a 6 cm item on a 6 cm box of its footprint, or on a riser hidden
+    """HZ-0115-6. Voxels: a 6 cm item on a 6 cm box of its footprint, or on a riser hidden
     under it, clusters with what it stands on — one object whose bottom is on the table, so
     the seed's contact check passes. Mask: SAM names the item alone, whose cloud ends 6 cm
     above the table; a region pinned to the table would exempt the lower object's cells."""
@@ -510,7 +510,7 @@ def test_a_target_standing_on_another_object_is_refused_not_on_support(under: st
 
 
 def test_seed_refuses_two_equal_objects() -> None:
-    """HZ-01xx-2: two comparable candidates in the search box — no guessing."""
+    """HZ-0115-2: two comparable candidates in the search box — no guessing."""
     bx, by = _box_centre_xy()
     grid = _scene_lattice([(bx, by - 0.12, 0.04, 0.04, 0.0), (bx, by + 0.12, 0.04, 0.04, 0.0)])
     centres = occupied_centers_in_box(grid, _search_box())
@@ -562,7 +562,7 @@ def test_region_from_real_mask_sits_above_support_within_caps_and_matches_the_ma
     assert fit.refusal is None and fit.region is not None
     region = fit.region
     hx, hy, hz = region.half_extents
-    # HZ-01xx-6: the lower face is one voxel above the support plane, never below.
+    # HZ-0115-6: the lower face is one voxel above the support plane, never below.
     assert region.pose.xyz[2] - hz == pytest.approx(_SUPPORT_Z + _RES)
     assert region.pose.xyz[2] - hz >= _SUPPORT_Z
     assert max(hx, hy, hz) <= 0.20

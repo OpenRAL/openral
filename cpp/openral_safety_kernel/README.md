@@ -776,7 +776,7 @@ path skipped them whenever attach-time contact was active, because it had no
 pose-dependent way to tell the support contact apart. The skip remains only for
 the unattested legacy case.
 
-## Grasp-target exemption (ADR-01xx draft) — default off
+## Grasp-target exemption (ADR-0115 draft) — default off
 
 **Draft for Safety-WG review; off unless `grasp_allowance_enabled`.** The real OpenArm cell runs the
 world-voxel check at a 20 mm margin on 20 mm cells, and the finger link
@@ -784,7 +784,7 @@ world-voxel check at a 20 mm margin on 20 mm cells, and the finger link
 target during a grasp, so `check_voxel_collision` stops on the target's own
 cells before any attachment can exist. The spec is
 [`real-pick-place-design.md`](../../docs/reference/real-pick-place-design.md) §2.1;
-the decision and hazard drafts (ADR-01xx, HZ-01xx) are in
+the decision and hazard drafts (ADR-0115, HZ-0115) are in
 [`real-pick-place-adr-drafts.md`](../../docs/reference/real-pick-place-adr-drafts.md).
 
 Geometry: `VoxelGrid::grasp_region` (`GraspTargetRegion`: a validity flag, a
@@ -932,7 +932,7 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   links (`…MonotonicityOverRandomisedScenes`).
 * **Support surface.** Cells half a voxel below the box's lower face still stop
   the finger (`…TheSupportSurfaceUnderTheTargetStillStops`); keeping the lower
-  face above the support plane is a producer obligation (HZ-01xx-6).
+  face above the support plane is a producer obligation (HZ-0115-6).
 * **Bounds** (`ingest_grasp_region`): a non-empty mask, a finite pose, finite
   positive half-extents ≤ `kMaxGraspRegionHalfExtentM` (0.20 m) and a volume ≤
   `kMaxGraspRegionVolumeM3` (0.03 m³). Both caps are **WG placeholders**. A

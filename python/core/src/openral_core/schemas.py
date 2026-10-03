@@ -3536,8 +3536,8 @@ class GraspDeclaration(BaseModel):
         contact_links: Gripper links the declaration names, e.g.
             ``("openarm_left_finger_pair",)``. Non-empty while ``active``. A
             consumer intersects these with its own launch-derived allowlist.
-        rskill_id: Dispatching skill, for attributability (HZ-01xx-2).
-        trace_id: OTel trace id, for attributability (HZ-01xx-2).
+        rskill_id: Dispatching skill, for attributability (HZ-0115-2).
+        trace_id: OTel trace id, for attributability (HZ-0115-2).
         timeout_s: Backstop expiry window in seconds after ``stamp_ns``; capped
             at ``MAX_TIMEOUT_S``.
         stamp_ns: Dispatcher timestamp; with ``active`` this is the whole
@@ -10503,7 +10503,7 @@ class DeployScene(BaseModel):
 
         The same rule, for the same reason, applies to
         ``grasp_declaration.region``: only the producer that measured the
-        grasp target may supply it (HZ-01xx-2).
+        grasp target may supply it (HZ-0115-2).
 
         ``grasp_declaration.search_box`` is **not** refused, deliberately: it
         tells the target producer where in the occupancy map to look for a

@@ -1302,7 +1302,7 @@ def test_two_picks_in_one_goal_through_the_bridges_detach() -> None:
         )
 
 
-# ── ATTACH on what the arming measured, or not (HZ-01xx-8/-11) ─────────────────────
+# ── ATTACH on what the arming measured, or not (HZ-0115-8/-11) ─────────────────────
 
 
 def _segmented_attach(live: _LiveLeg, gripper: Any, stamp_ns: int) -> None:

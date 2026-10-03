@@ -2222,7 +2222,7 @@ if _ROS2_AVAILABLE:
             Clone of ``_arm_place_declaration``: ``rskill_id`` / ``trace_id`` /
             ``stamp_ns`` are overwritten from the live dispatch, and any
             ``region`` is dropped — dispatch names a target, only the evidence
-            producer measures it (HZ-01xx-2). A malformed declaration is refused
+            producer measures it (HZ-0115-2). A malformed declaration is refused
             and logged; the goal runs with no declaration, i.e. no exemption.
             """
             from openral_core.exceptions import ROSConfigError

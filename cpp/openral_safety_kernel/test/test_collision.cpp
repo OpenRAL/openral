@@ -5445,7 +5445,7 @@ TEST(AttachedIngestTightGeometry, AnUnprovableRefinementIsDroppedNotObeyed) {
   EXPECT_EQ(out.primitives[0].hull_index, -1);
 }
 
-// ── grasp-target exemption (ADR-01xx draft, hazard HZ-01xx) ─────────────────
+// ── grasp-target exemption (ADR-0115 draft, hazard HZ-0115) ─────────────────
 //
 // The real OpenArm cell runs the world-voxel check at a 20 mm margin on 20 mm
 // cells, and the finger link (`openarm_left_finger_pair`, one box + 26-DOP
@@ -5611,7 +5611,7 @@ TEST(GraspTargetExemption, TheUndeclaredFingerStopsExactlyAsToday) {
 }
 
 TEST(GraspTargetExemption, ArmLinksAreUntouchedByALiveRegion) {
-  // ADR-01xx amends ADR-0097's "arm-vs-world unchanged" for the declared
+  // ADR-0115 amends ADR-0097's "arm-vs-world unchanged" for the declared
   // contact links ONLY: an arm link inside the very same region cells keeps
   // its full margin, bit for bit.
   const osk::CollisionModel m = grasp_cell_model();
@@ -5631,7 +5631,7 @@ TEST(GraspTargetExemption, ArmLinksAreUntouchedByALiveRegion) {
 
 TEST(GraspTargetExemption, TheOtherGripperIsNotExempt) {
   // Bimanual: the region is the LEFT gripper's; the right finger entering the
-  // same cells stops exactly as today (HZ-01xx-5).
+  // same cells stops exactly as today (HZ-0115-5).
   const osk::CollisionModel m = grasp_cell_model();
   osk::CollisionScratch s = grasp_scratch_all_away();
   s.link_world[kGraspRightFinger] = identity();
@@ -5669,7 +5669,7 @@ TEST(GraspTargetExemption, OutsideTheRegionTheFingerMarginIsUnchanged) {
 }
 
 TEST(GraspTargetExemption, TheSupportSurfaceUnderTheTargetStillStops) {
-  // HZ-01xx-6: the producer keeps the region's lower face above the support
+  // HZ-0115-6: the producer keeps the region's lower face above the support
   // plane. Support cells whose centres sit half a voxel below that face are
   // outside the region, so driving the fingers into the table still stops, and
   // the report is the same support cell at the same distance as with no
@@ -6193,7 +6193,7 @@ TEST(GraspTargetOneHand, EmptyOrOutOfModelMasksAreRefused) {
   EXPECT_FALSE(osk::grasp_links_one_hand(cyclic, grasp_mask({1, 2}), grasp_mask({1})));
 }
 
-// ── Retired grasp identities (multi-pick per goal, HZ-01xx-3) ────────────────
+// ── Retired grasp identities (multi-pick per goal, HZ-0115-3) ────────────────
 
 TEST(RetiredGraspSet, EveryRetiredIdentityStaysRefusedAndANewOneIsNot) {
   osk::RetiredGraspSet retired;
