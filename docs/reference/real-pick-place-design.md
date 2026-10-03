@@ -335,10 +335,26 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   region first accepted mid-close). Any other ATTACH — the jaws closed on a neighbour, the
   region refused for this grasp and the grasp segmented — ends the arming as
   `attach_off_target`: handed over with **no** region (re-measurement stops; the hand holds
-  something else), never the measured region for a payload it was not measured for. The tracker
-  is serialized by one lock: the bridge's ATTACH runs on the HAL's proprio publisher thread,
-  the leg's tick/reply/deadline on the executor; `accept`/`refuse` take the request's
-  generation and apply only under it, atomically.
+  something else), never the measured region for a payload it was not measured for — and a
+  region payload whose region the tracker no longer holds at all (dropped since) is
+  `attach_off_target` too, never "absent".
+  *Threading (2026-10-03):* on a sim HAL the bridge's grasp trigger (`observe_joint_state`,
+  hence every ATTACH/DETACH) runs on the HAL's proprio publisher thread while the heartbeat,
+  release poll, segmentation replies and both producer legs' timers run on the executor. Three
+  review rounds found races between them, so the bridge is **serialized by one re-entrant
+  lock** rather than patched per field: every entry point that reads or mutates leg, tracker
+  or attachment state takes it — the trigger/command entry points, the heartbeat and release
+  poll, every publish, the segmentation reply/deadline commits, teardown, and the producer
+  legs' ticks, replies, deadlines and declaration callbacks (the legs alias the bridge's lock).
+  Lock order is bridge lock → the tracker's own lock (kept as an inner lock), never the
+  reverse: nothing run under the tracker lock — its log sink, `on_attach`'s `confirm` — takes
+  the bridge lock (unit test with order-recording locks). Slow pure work stays outside it, on
+  a snapshot, committed under the lock only while the generation it was asked under is
+  unchanged: a `SegmentInView` reply's mask decode and depth back-projection (bridge
+  `_finish`, leg `_measure` → `accept(generation=)`), and the whole-grid voxel scan, done once
+  at grid receipt and cached on the lattice. tf2 lookups at the latest time pass no timeout (a
+  non-blocking buffer read) and run under the lock. On real hardware every caller runs on the
+  executor's one thread: the lock is uncontended and behaviour is unchanged.
   *Multi-pick per goal (2026-10-03, default off with the approach-armed target):* a VLA may
   pick and place several objects within one goal, or one object per goal; both run on the same
   path. Each pick arms under its own identity, `approach:<link>:<n>`: `n` is the tracker's pick
@@ -350,11 +366,10 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   release window's frozen record (`GraspTargetLeg.on_detach`), the tracker drops that hand's
   region at once while keeping the handover so nothing re-measures or re-latches it
   (`on_release`), and once the hand's legs hold nothing — no attachment, no release window, no
-  pending segmentation, no trigger reading the jaws loaded; re-checked on the DETACH and when
-  the window closes (`on_release_closed`; a close is keyed on the window it judged, so the HAL's
-  poll racing a re-ATTACH is a no-op, and a poll that wins the lock instead finds the re-latched
-  trigger and completes nothing — either ordering leaves the live regrasp handed over) — the
-  pick is complete (`on_pick_complete`): the counter advances and
+  pending segmentation, no trigger reading the jaws loaded; re-checked on every DETACH — also
+  one that finds nothing latched (a regrasp superseded before its reply) — on every barrier
+  release and when the window closes (`on_hand_settled`; the release poll and a re-ATTACH
+  cannot interleave under the bridge lock) — the pick is complete (`on_pick_complete`): the counter advances and
   the hand may re-arm behind the same backoff as a refusal. **Not on what it just released
   (HZ-0115-11):** until the column the hand's next measurement would search (its approach
   box reaching `support_search_below_m` below it, `search_column`) clears the released
@@ -377,7 +392,13 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   revision whose set lost or replaced an object (a DETACH, a release window closing, a
   re-ATTACH) or is empty first calls `GraspTargetLeg.on_attachment_changed`, before that
   snapshot's envelope is filled. An arming not handed over (the other hand's) drops its region
-  at once and advances to a fresh identity, and from then on no region is accepted unless its
+  at once and advances to a fresh identity — the counter advances too when the arming has
+  retracted since its identity was armed (the kernel may still hold that identity and retires
+  it at this edge) — except a hand **mid-grasp** (holding, releasing or segmenting) across a
+  change that leaves the set non-empty, which the kernel does not retire on: its arming is
+  kept, so a bimanual pick survives the other hand's regrasp or release; on an emptying change
+  it is refreshed regardless (the kernel retires it, so that grasp hands nothing over — fail
+  closed). From then on no region is accepted unless its
   `stamp_ns` — the older of its depth frame and its grid's `source_stamp` — is later than the
   change: the other hand re-arms only from a measurement of the post-detach scene, and the
   region it measured before is never re-used (live kernel row:
@@ -390,7 +411,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   seen away on every sample for a continuous freeze window — located, its approach box off the
   column over its last target — re-arms under a fresh identity (ADR draft judgement call 4:
   wiggling, coming straight back, a tf2 gap or a `min_cells` dip over the target keeps the
-  retired one, and an unlocated or holding sample restarts the window). A named
+  retired one, and an unlocated or holding sample restarts the window — as does every tick
+  that cannot sample at all: no fresh grid, a request in flight, a stale verdict; unknown is
+  not away). A named
   `search_box` declaration stays handed over after its pick: a new target needs a new
   declaration from dispatch. A dispatch/reasoner declaration with a
   `search_box` wins (no approach runs); one naming a hand but no box narrows the approach to

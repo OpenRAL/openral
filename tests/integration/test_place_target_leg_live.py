@@ -471,10 +471,12 @@ def test_place_target_leg_measures_attests_ages_out_and_retracts_under_the_goal(
 
                 assert aggregator_errors == []
             finally:
-                with suppress(Exception):
-                    bridge.teardown()
+                # Stop the executor first: a timer callback waiting on the bridge lock must
+                # not run on entities the teardown destroyed.
                 executor.shutdown()
                 spin.join(timeout=5.0)
+                with suppress(Exception):
+                    bridge.teardown()
                 node.destroy_node()
                 peer.destroy_node()
                 rclpy.shutdown()

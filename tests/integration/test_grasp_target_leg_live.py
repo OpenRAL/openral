@@ -473,10 +473,12 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         time.sleep(0.5)
         assert len(prompts) <= segments_before + 2, "the attach re-segmented the target"
     finally:
-        with suppress(Exception):
-            bridge.teardown()
+        # Stop the executor first: a timer callback waiting on the bridge lock must not
+        # run on entities the teardown destroyed.
         executor.shutdown()
         spin.join(timeout=5.0)
+        with suppress(Exception):
+            bridge.teardown()
         for each in (segmenter, peer, node):
             each.destroy_node()
         rclpy.shutdown()
@@ -778,10 +780,12 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
         publish(goal.model_copy(update={"active": False}))
         assert _wait_until(lambda: not latest().grasp_declaration_valid, timeout_s=1.0)
     finally:
-        with suppress(Exception):
-            bridge.teardown()
+        # Stop the executor first: a timer callback waiting on the bridge lock must not
+        # run on entities the teardown destroyed.
         executor.shutdown()
         spin.join(timeout=5.0)
+        with suppress(Exception):
+            bridge.teardown()
         for each in (segmenter, peer, node):
             each.destroy_node()
         rclpy.shutdown()

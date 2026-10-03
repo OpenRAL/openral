@@ -72,6 +72,7 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable, Iterable, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -94,7 +95,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
 
 from openral_hal._grasp_target import VoxelLattice
-from openral_hal._grasp_target_leg import lattice_from_msg
+from openral_hal._grasp_target_leg import _locked, lattice_from_msg
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_hal.vision_attachment_bridge import (
@@ -726,15 +727,6 @@ class PlaceTargetTracker:
         ]
 
 
-def _published(leg: _GripperLeg) -> AttachedCollisionObject | None:
-    """What one leg publishes: its held payload, else its frozen release record."""
-    held: AttachedCollisionObject | None = leg.attachment
-    window = leg.release  # read once: the executor's poll may close it meanwhile
-    if held is None and window is not None:
-        held = window.record
-    return held
-
-
 def _witness_candidates(
     legs: Iterable[_GripperLeg],
     pose: Callable[[AttachedCollisionObject], NDArray[np.float64] | None],
@@ -749,7 +741,7 @@ def _witness_candidates(
     """
     candidates: list[tuple[AttachedCollisionObject, NDArray[np.float64] | None, bool]] = []
     for leg in legs:
-        held, window = leg.attachment, leg.release  # each read once (proprio vs executor)
+        held, window = leg.attachment, leg.release
         if held is not None:
             candidates.append((held, pose(held), bool(leg.trigger.attached)))
         elif window is not None:
@@ -907,6 +899,11 @@ class PlaceTargetLeg:
         self._timer: Any = None
         self._last_witness_s = -math.inf
 
+    @property
+    def _lock(self) -> AbstractContextManager[Any]:
+        """The owning bridge's lock: every entry point here runs under it."""
+        return self._bridge._lock
+
     def setup(self) -> None:
         """Subscribe the optional declaration and the voxel grid; start the timer."""
         from openral_msgs.msg import OccupancyVoxels
@@ -973,6 +970,7 @@ class PlaceTargetLeg:
         """The attachment set with the place witness on the payload it names."""
         return self.tracker.decorate(objects)
 
+    @_locked
     def on_joint_state(self) -> None:
         """Re-evaluate the witness (throttled); re-publish when it arms or drops."""
         now_s = time.monotonic()
@@ -988,6 +986,7 @@ class PlaceTargetLeg:
 
     # ── inputs ───────────────────────────────────────────────────────────────
 
+    @_locked
     def _on_declaration(self, msg: Any) -> None:
         try:
             declaration = PlaceDeclaration.from_idl(msg)
@@ -1007,10 +1006,13 @@ class PlaceTargetLeg:
         src = msg.source_stamp
         stamp_ns = int(src.sec) * 1_000_000_000 + int(src.nanosec)
         try:
-            self._grid = (lattice_from_msg(msg), stamp_ns, time.monotonic())
+            lattice = lattice_from_msg(msg)
         except ROSConfigError as exc:
             self._grid = None
             self._node.get_logger().warning(f"place target: voxel grid dropped — {exc}")
+            return
+        lattice.occupied_centers()  # the whole-grid scan, here: outside the bridge lock
+        self._grid = (lattice, stamp_ns, time.monotonic())
 
     def _now_ns(self) -> int:
         return int(self._node.get_clock().now().nanoseconds)
@@ -1021,8 +1023,16 @@ class PlaceTargetLeg:
 
     # ── measurement ──────────────────────────────────────────────────────────
 
+    @_locked
     def _tick(self) -> None:
-        from openral_hal.vision_attachment_bridge import primitive_poses  # circular at import
+        """One measurement, under the bridge lock: it reads the legs and moves the tracker.
+
+        The grid's whole scan was done at receipt (``_on_voxels``).
+        """
+        from openral_hal.vision_attachment_bridge import (  # circular at import
+            _published,
+            primitive_poses,
+        )
 
         now_ns = self._now_ns()
         self.tracker.live(now_ns=now_ns)
