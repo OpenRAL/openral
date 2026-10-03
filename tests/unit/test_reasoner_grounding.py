@@ -33,7 +33,7 @@ from openral_core import (
 )
 from openral_core.exceptions import ROSReasonerInvalidPlan
 from openral_reasoner.grounding import (
-    gripper_contact_links,
+    gripper_hands,
     ground_grasp_target,
     ground_place_target,
 )
@@ -107,7 +107,7 @@ def _ground(ref: GraspTargetRef, live: list[DetectedObject], graph: SceneGraph |
         live_objects=live,
         scene_graph=graph,
         base_frame=_BASE,
-        default_contact_links=gripper_contact_links(_OPENARM),
+        default_contact_links=gripper_hands(_OPENARM),
         patience_s=60.0,
         pad_m=_PAD,
     )
@@ -206,13 +206,13 @@ def test_the_reasoner_supplied_contact_links_win() -> None:
 def test_an_unnamed_gripper_on_a_bimanual_robot_refuses() -> None:
     """Defaulting to every gripper would name both OpenArm hands for one grasp."""
     live = _lift({"a": ("box", (0.40, -0.15, -0.10))})
-    with pytest.raises(ROSReasonerInvalidPlan, match=r"2 grippers.*openarm_left_finger_pair"):
+    with pytest.raises(ROSReasonerInvalidPlan, match=r"2 hands.*openarm_left_finger_pair"):
         _ground(GraspTargetRef(label="box"), live)
 
 
 def test_a_single_gripper_robot_keeps_the_default_contact_link() -> None:
     so101 = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "so101_follower" / "robot.yaml"))
-    (link,) = gripper_contact_links(so101)
+    ((link,),) = gripper_hands(so101)
     box = DetectedObject(
         label="eraser",
         confidence=0.9,
@@ -226,11 +226,69 @@ def test_a_single_gripper_robot_keeps_the_default_contact_link() -> None:
         live_objects=[box],
         scene_graph=None,
         base_frame=so101.base_frame,
-        default_contact_links=(link,),
+        default_contact_links=gripper_hands(so101),
         patience_s=60.0,
         pad_m=_PAD,
     )
     assert decl.contact_links == (link,)
+
+
+_R1PRO = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "r1pro" / "robot.yaml"))
+_R1_LEFT = ("left_gripper_finger_link1", "left_gripper_finger_link2")
+_R1_RIGHT = ("right_gripper_finger_link1", "right_gripper_finger_link2")
+
+
+def test_hands_group_finger_joints_by_the_arm_they_hang_off() -> None:
+    """R1 Pro's four finger joints are two hands; OpenArm's two pair joints are two hands."""
+    assert gripper_hands(_R1PRO) == (_R1_LEFT, _R1_RIGHT)
+    assert gripper_hands(_OPENARM) == (
+        ("openarm_left_finger_pair",),
+        ("openarm_right_finger_pair",),
+    )
+
+
+def _ground_r1(ref: GraspTargetRef) -> GraspDeclaration:
+    box = DetectedObject(
+        label="cup",
+        confidence=0.9,
+        pose=Pose6D(
+            xyz=(0.5, 0.0, 0.8), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id=_R1PRO.base_frame
+        ),
+        bbox_3d=(0.46, -0.04, 0.76, 0.54, 0.04, 0.84),
+    )
+    return ground_grasp_target(
+        ref,
+        live_objects=[box],
+        scene_graph=None,
+        base_frame=_R1PRO.base_frame,
+        default_contact_links=gripper_hands(_R1PRO),
+        patience_s=60.0,
+        pad_m=_PAD,
+    )
+
+
+def test_an_unnamed_hand_on_r1pro_refuses_listing_both_hands() -> None:
+    with pytest.raises(ROSReasonerInvalidPlan, match=r"2 hands.*left_gripper_finger_link2\]"):
+        _ground_r1(GraspTargetRef(label="cup"))
+
+
+def test_naming_fingers_of_one_hand_grounds() -> None:
+    decl = _ground_r1(GraspTargetRef(label="cup", contact_links=list(_R1_LEFT)))
+    assert decl.contact_links == _R1_LEFT
+    one = _ground_r1(GraspTargetRef(label="cup", contact_links=[_R1_RIGHT[1]]))
+    assert one.contact_links == (_R1_RIGHT[1],)
+
+
+def test_naming_fingers_of_two_hands_refuses() -> None:
+    with pytest.raises(ROSReasonerInvalidPlan, match="not gripper child links of one hand"):
+        _ground_r1(GraspTargetRef(label="cup", contact_links=[_R1_LEFT[0], _R1_RIGHT[0]]))
+
+
+def test_naming_a_link_that_is_no_gripper_child_refuses() -> None:
+    with pytest.raises(ROSReasonerInvalidPlan, match="not gripper child links of one hand"):
+        _ground_r1(GraspTargetRef(label="cup", contact_links=["left_gripper_link"]))
+    with pytest.raises(ROSReasonerInvalidPlan, match="not gripper child links of one hand"):
+        _ground_r1(GraspTargetRef(label="cup", contact_links=[_R1_LEFT[0], "torso_link1"]))
 
 
 def test_a_fixture_place_target_grounds_to_its_place_declaration() -> None:

@@ -139,8 +139,10 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   `openarm_base`,
   becomes `GraspDeclaration.search_box`; the fixture id becomes `PlaceDeclaration.target_id`. No
   match, more than one match without `object_id`, a box outside the base frame, an unknown
-  fixture, or no `contact_links` on a robot with more than one gripper (the bimanual OpenArm:
-  defaulting to every gripper would exempt the idle hand too) refuses the dispatch (no goal sent) and tells the LLM to disambiguate. Both
+  fixture, no `contact_links` on a robot with more than one hand (the bimanual OpenArm:
+  defaulting to every gripper would exempt the idle hand too), or `contact_links` that are not
+  gripper child links of ONE hand (a hand = the `role: gripper` joints hanging off one arm, so
+  R1 Pro's two finger joints per arm are one hand) refuses the dispatch (no goal sent) and tells the LLM to disambiguate. Both
   declarations ride the `ExecuteRskill` goal; the runner stamps them and strips any region, and
   the producers below measure. The search box only *seeds* perception: the exemption region is
   always the measured one, never named (HZ-0097-2/4 precedent), so the kernel's trust boundary

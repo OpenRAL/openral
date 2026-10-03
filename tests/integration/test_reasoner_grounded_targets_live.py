@@ -199,4 +199,4 @@ def test_a_bimanual_target_naming_no_gripper_sends_no_goal() -> None:
     received, last = _run([_box(-0.15)], contact_links=())
     assert received == [], "an unnamed gripper on a two-gripper robot must not be dispatched"
     assert last is not None and last.outcome == "failed"
-    assert "2 grippers" in last.summary
+    assert "2 hands" in last.summary

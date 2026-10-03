@@ -38,7 +38,7 @@ from openral_reasoner.cosmos3 import (
 from openral_reasoner.critic_watchdog import CriticWatchdog, CriticWatchdogGroup
 from openral_reasoner.grounding import (
     DECLARATION_TIMEOUT_MARGIN_S,
-    gripper_contact_links,
+    gripper_hands,
     ground_grasp_target,
     ground_place_target,
 )
@@ -123,7 +123,7 @@ __all__ = [
     "format_recall_object_result",
     "format_resolve_place_result",
     "format_search_frontier",
-    "gripper_contact_links",
+    "gripper_hands",
     "ground_grasp_target",
     "ground_place_target",
     "load_ladder_state",

@@ -34,7 +34,7 @@ from openral_core.exceptions import ROSReasonerInvalidPlan
 
 __all__ = [
     "DECLARATION_TIMEOUT_MARGIN_S",
-    "gripper_contact_links",
+    "gripper_hands",
     "ground_grasp_target",
     "ground_place_target",
 ]
@@ -44,18 +44,36 @@ __all__ = [
 DECLARATION_TIMEOUT_MARGIN_S = 10.0
 
 
-def gripper_contact_links(description: RobotDescription) -> tuple[str, ...]:
-    """Every ``role: gripper`` joint's ``child_link``: the grasp contact-link choices.
+def gripper_hands(description: RobotDescription) -> tuple[tuple[str, ...], ...]:
+    """The robot's hands: its ``role: gripper`` joints' ``child_link``s, grouped per hand.
 
-    On a single-gripper robot the one link is the default when the reasoner names none;
-    on a robot with several, ``ground_grasp_target`` makes the reasoner name one.
+    A hand is the set of gripper joints that hang off one arm: joints sharing a
+    ``parent_link``, plus any gripper joint whose parent is another gripper joint's
+    child (a chained finger). An SO-101's one jaw joint is one hand; an OpenArm's two
+    finger-pair joints are two hands (one per arm); an R1 Pro's four finger joints are
+    two hands of two fingers. ``ground_grasp_target`` defaults to the one hand of a
+    single-hand robot and makes the reasoner name one hand on a robot with several.
 
     Example:
-        >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
-        >>> gripper_contact_links(d)
-        ('openarm_left_finger_pair', 'openarm_right_finger_pair')
+        >>> gripper_hands(RobotDescription.from_yaml("robots/openarm/robot.yaml"))
+        (('openarm_left_finger_pair',), ('openarm_right_finger_pair',))
+        >>> gripper_hands(RobotDescription.from_yaml("robots/r1pro/robot.yaml"))[0]
+        ('left_gripper_finger_link1', 'left_gripper_finger_link2')
     """
-    return tuple(j.child_link for j in description.joints if j.role == "gripper")
+    grippers = [j for j in description.joints if j.role == "gripper"]
+    parent_of = {j.child_link: j.parent_link for j in grippers}
+
+    def mount(link: str) -> str:
+        seen: set[str] = set()
+        while link in parent_of and link not in seen:  # climb a chained finger to its arm
+            seen.add(link)
+            link = parent_of[link]
+        return link
+
+    hands: dict[str, list[str]] = {}
+    for j in grippers:
+        hands.setdefault(mount(j.parent_link), []).append(j.child_link)
+    return tuple(tuple(links) for links in hands.values())
 
 
 def _box(
@@ -107,7 +125,7 @@ def ground_grasp_target(
     live_objects: Sequence[DetectedObject],
     scene_graph: SceneGraph | None,
     base_frame: str,
-    default_contact_links: Sequence[str],
+    default_contact_links: Sequence[str | Sequence[str]],
     patience_s: float,
     pad_m: float,
 ) -> GraspDeclaration:
@@ -124,9 +142,10 @@ def ground_grasp_target(
         live_objects: The latest lifted ``WorldState.detected_objects``.
         scene_graph: The spatial-memory snapshot, or ``None`` without memory.
         base_frame: The robot base frame (the voxel grid's frame).
-        default_contact_links: The robot's gripper links (``gripper_contact_links``);
-            used when ``ref.contact_links`` is empty, which only a single-gripper
-            robot may leave so — with several, defaulting would exempt both hands.
+        default_contact_links: The robot's hands (``gripper_hands``), each its gripper
+            child links (a bare ``str`` is a one-link hand). Named ``ref.contact_links``
+            must all belong to ONE hand; empty ones default to the hand of a single-hand
+            robot — with several, defaulting would exempt every hand.
         patience_s: The goal's patience ceiling; the backstop is this plus
             ``DECLARATION_TIMEOUT_MARGIN_S``, capped at the declaration's ceiling.
         pad_m: Padding added to each half-extent, > 0.
@@ -134,7 +153,8 @@ def ground_grasp_target(
     Raises:
         ROSReasonerInvalidPlan: Nothing grounds, several instances match with no
             ``object_id``, the box is missing / in another frame, no contact link is
-            known, or none is named on a robot with more than one gripper.
+            known, none is named on a robot with more than one hand, or the named
+            links are not gripper child links of one hand.
 
     Example:
         >>> from openral_core import DetectedObject, Pose6D
@@ -195,15 +215,24 @@ def ground_grasp_target(
             base_frame=base_frame,
             pad_m=pad_m,
         )
+    hands = [(h,) if isinstance(h, str) else tuple(h) for h in default_contact_links]
+    listing = "; ".join(f"[{', '.join(h)}]" for h in hands) or "none"
     links = tuple(ref.contact_links)
-    if not links and len(default_contact_links) > 1:
+    if links:
+        owners = [h for h in hands if set(links) & set(h)]
+        if len(owners) != 1 or not set(links) <= set(owners[0]):
+            raise ROSReasonerInvalidPlan(
+                f"grasp_target contact_links {list(links)} are not gripper child links of "
+                f"one hand; name links of exactly one hand (hands: {listing})."
+            )
+    elif len(hands) > 1:
         raise ROSReasonerInvalidPlan(
-            f"grasp_target names no contact_links and this robot has "
-            f"{len(default_contact_links)} grippers; name the one gripper that grasps as "
-            f"contact_links (one of: {', '.join(default_contact_links)})."
+            f"grasp_target names no contact_links and this robot has {len(hands)} hands; "
+            f"name the one hand that grasps as contact_links (hands: {listing})."
         )
-    links = links or tuple(default_contact_links)
-    if not links:
+    elif hands:
+        links = hands[0]
+    else:
         raise ROSReasonerInvalidPlan(
             "grasp_target names no contact_links and the robot manifest has no gripper joint."
         )
