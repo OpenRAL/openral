@@ -67,6 +67,21 @@ _CAMERA_FRAME = "wrist_camera"
 _CALL_TIMEOUT_S = 180.0
 
 
+_ROW_PAD = 64  # bytes of pitch padding per row, as a pitch-aligned ZED buffer has
+
+
+def _bgra8_padded(rgb: object) -> tuple[bytes, int]:
+    """Lay an RGB array out as a ZED-style ``bgra8`` payload with padded rows."""
+    import numpy as np
+
+    pixels = np.asarray(rgb)
+    h, w, _ = pixels.shape
+    rows = np.zeros((h, w * 4 + _ROW_PAD), dtype=np.uint8)
+    bgra = np.concatenate([pixels[..., ::-1], np.full((h, w, 1), 255, np.uint8)], axis=-1)
+    rows[:, : w * 4] = bgra.reshape(h, w * 4)
+    return rows.tobytes(), w * 4 + _ROW_PAD
+
+
 def _spin(executor: object, stop: threading.Event) -> None:
     """Spin an executor until the test says stop."""
     while not stop.is_set():
@@ -175,9 +190,11 @@ def test_segment_in_view_returns_plural_masks_for_a_real_wrist_grasp() -> None:
         # The capture stamp the masks must echo — distinct from the request's.
         frame.header.stamp = Time(sec=5, nanosec=7)
         frame.height, frame.width = height, width
-        frame.encoding = "rgb8"
-        frame.step = width * 3
-        frame.data = np.ascontiguousarray(rgb).tobytes()
+        # The deploy camera's layout: the ZED wrapper publishes pitch-padded
+        # bgra8. An rgb8-only converter dropped every such frame on the real
+        # OpenArm cell (2026-10-04 twin pass) and every call came back stale.
+        frame.encoding = "bgra8"
+        frame.data, frame.step = _bgra8_padded(rgb)
 
         client = helper.create_client(SegmentInView, _SERVICE)
         assert client.wait_for_service(timeout_sec=30.0), "segmenter never offered the service"
@@ -459,6 +476,110 @@ def test_the_diagnostic_mask_topic_is_off_by_default_and_feeds_the_dashboard() -
         stop.set()
         if overlay is not None:
             overlay.close()
+        if spinner is not None:
+            spinner.join(timeout=5.0)
+        if node is not None:
+            node.destroy_node()
+        if helper is not None:
+            helper.destroy_node()
+        rclpy.try_shutdown()
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_a_zed_bgra8_frame_is_cached_as_bgr_without_the_model() -> None:
+    """A 1920x1080 pitch-padded ``bgra8`` frame lands in the cache as tight BGR.
+
+    The model-free half of the bgra8 fix, so it runs where ``transformers`` / a GPU
+    do not: subscriptions are wired at configure, so the real node caches frames
+    over a real DDS graph before SAM 2.1 is ever loaded. ``segment_in_view`` reads
+    exactly this cache; an empty one is the ``ROSPerceptionStale: no frame cached``
+    the twin pass hit. A frame in an encoding the converter refuses must not be
+    cached (it is logged at WARNING, throttled, naming camera and encoding).
+    """
+    rclpy = pytest.importorskip("rclpy")
+    import numpy as np
+    from openral_perception_ros.segmenter_node import make_segmenter_node
+    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.lifecycle import TransitionCallbackReturn
+    from rclpy.node import Node
+    from rclpy.parameter import Parameter
+    from rclpy.qos import (
+        QoSDurabilityPolicy,
+        QoSHistoryPolicy,
+        QoSProfile,
+        QoSReliabilityPolicy,
+    )
+    from sensor_msgs.msg import Image
+
+    width, height = 1920, 1080
+    rgb = np.random.default_rng(0).integers(0, 256, (height, width, 3), dtype=np.uint8)
+    top_topic = "/openral/cameras/top/image_bgra_itest"
+
+    rclpy.init()
+    stop = threading.Event()
+    spinner: threading.Thread | None = None
+    node = None
+    helper = None
+    try:
+        node = make_segmenter_node("openral_segmenter_bgra_itest")
+        node.set_parameters(
+            [
+                Parameter("robot_yaml", Parameter.Type.STRING, _ROBOT_YAML),
+                Parameter("manifest_path", Parameter.Type.STRING, _MANIFEST),
+                Parameter(
+                    "cameras",
+                    Parameter.Type.STRING_ARRAY,
+                    [f"wrist={_IMAGE_TOPIC}_bgra_itest", f"top={top_topic}"],
+                ),
+                Parameter("primary_camera", Parameter.Type.STRING, "wrist"),
+                Parameter("segment_in_view_service", Parameter.Type.STRING, _SERVICE + "_bgra"),
+            ]
+        )
+        helper = Node("segment_in_view_bgra_itest_client")
+        img_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        wrist_pub = helper.create_publisher(Image, f"{_IMAGE_TOPIC}_bgra_itest", img_qos)
+        top_pub = helper.create_publisher(Image, top_topic, img_qos)
+
+        executor = MultiThreadedExecutor(num_threads=2)
+        executor.add_node(node)
+        executor.add_node(helper)
+        spinner = threading.Thread(target=_spin, args=(executor, stop), daemon=True)
+        spinner.start()
+        # Configure only: no model load, but the frame cache is live.
+        assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+
+        frame = Image()
+        frame.header.frame_id = _CAMERA_FRAME
+        frame.height, frame.width = height, width
+        frame.encoding = "bgra8"
+        frame.data, frame.step = _bgra8_padded(rgb)
+        assert frame.step > width * 4, "the fixture must exercise row padding"
+
+        unsupported = Image()
+        unsupported.header.frame_id = _CAMERA_FRAME
+        unsupported.height, unsupported.width = 2, 2
+        unsupported.encoding = "32FC1"
+        unsupported.step = 8
+        unsupported.data = bytes(16)
+
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline and "wrist" not in node._frames:
+            wrist_pub.publish(frame)
+            top_pub.publish(unsupported)
+            time.sleep(0.1)
+        assert "wrist" in node._frames, "the segmenter never cached the bgra8 frame"
+
+        bgr, w, h, frame_id, _stamp = node._frames["wrist"]
+        assert (w, h, frame_id) == (width, height, _CAMERA_FRAME)
+        assert np.array_equal(np.frombuffer(bgr, np.uint8).reshape(h, w, 3), rgb[..., ::-1])
+        assert "top" not in node._frames, "an unsupported encoding must never be cached"
+    finally:
+        stop.set()
         if spinner is not None:
             spinner.join(timeout=5.0)
         if node is not None:
