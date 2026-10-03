@@ -401,7 +401,9 @@ def test_declared_grasp_target_is_reachable_and_undeclared_stops() -> None:
             try:
                 helper = rclpy.create_node("grasp_pair_helper")
                 # Before the helper joins our executor: activation spins it on the global one.
-                assert activate_kernel_node(node_name, helper), "kernel activation failed"
+                assert activate_kernel_node(node_name, helper), (
+                    f"kernel activation failed:\n{kernel_log()}"
+                )
                 bridge_node = rclpy.create_node("grasp_pair_sim_hal")
                 ws_node = lifecycle_node._WorldStateLifecycleNode()
                 executor = SingleThreadedExecutor()
