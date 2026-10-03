@@ -70,6 +70,7 @@ from openral_hal.mobile_base_bridge import describes_mobile_base
 if TYPE_CHECKING:
     from openral_core import RobotDescription
 
+    from openral_hal._grasp_trigger import GraspTriggerConfig
     from openral_hal.protocol import HAL
 
 __all__ = [
@@ -150,6 +151,59 @@ def sim_attachment_heartbeat(*, hal_mode: str, vision_attachment_enabled: bool) 
         False
     """
     return hal_mode == "sim" and not vision_attachment_enabled
+
+
+def vision_attachment_trigger_config(
+    description: RobotDescription, *, attach_effort: float, release_effort: float
+) -> GraspTriggerConfig | None:
+    """The grasp trigger's config for absolute ``vision_attachment_*_effort`` params.
+
+    The trigger scales fractions of each gripper joint's manifest ``effort_limit``; the
+    scene (``VisionAttachmentRuntime.attach_effort`` / ``release_effort``) names absolute
+    efforts. ``0.0`` = unset, that threshold keeps the trigger's default fraction.
+    Every gripper shares one config, so differing effort limits are refused rather than
+    scaled wrong on one hand.
+
+    Returns:
+        ``None`` when neither effort is set (the trigger's defaults).
+
+    Raises:
+        ROSConfigError: An effort is set and the gripper joints' effort limits differ
+            or are missing; or (from the trigger) release >= attach.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> vision_attachment_trigger_config(d, attach_effort=0.0, release_effort=0.0) is None
+        True
+        >>> c = vision_attachment_trigger_config(d, attach_effort=66.6, release_effort=0.0)
+        >>> round(c.attach_effort_fraction, 3), c.release_effort_fraction
+        (0.2, 0.1)
+    """
+    if attach_effort <= 0.0 and release_effort <= 0.0:
+        return None
+    from openral_core.exceptions import ROSConfigError
+
+    from openral_hal._grasp_trigger import GraspTriggerConfig, gripper_joints
+
+    joints = gripper_joints(description)
+    limits = {j.effort_limit for j in joints}
+    limit = limits.pop() if len(limits) == 1 else None
+    if limit is None or limit <= 0.0:
+        raise ROSConfigError(
+            f"vision_attachment_attach_effort/_release_effort need one positive effort_limit "
+            f"shared by every gripper joint of {description.name!r}; the manifest declares "
+            f"{[(j.name, j.effort_limit) for j in joints]!r}."
+        )
+    default = GraspTriggerConfig()
+    return GraspTriggerConfig(
+        attach_effort_fraction=(
+            attach_effort / limit if attach_effort > 0.0 else default.attach_effort_fraction
+        ),
+        release_effort_fraction=(
+            release_effort / limit if release_effort > 0.0 else default.release_effort_fraction
+        ),
+    )
 
 
 def decode_action_chunk(msg: object) -> object | None:
@@ -1608,6 +1662,8 @@ if _ROS2_AVAILABLE:
             # legs use — the deploy passes the kernel's world_voxel_deadline_s.
             # release_clear_m: the deploy passes the kernel's world-voxel margin +
             # one voxel resolution; release_timeout_s bounds the release window.
+            # attach_effort / release_effort: absolute gripper efforts for the grasp
+            # trigger (runtime.vision_attachment.*); 0.0 = the effort-limit fraction.
             # The defaults are the real OpenArm cell's values, fallbacks only.
             # See VisionAttachmentConfig.
             self.declare_parameters(
@@ -1618,6 +1674,8 @@ if _ROS2_AVAILABLE:
                     ("vision_attachment_grid_max_age_s", 1.0),
                     ("vision_attachment_release_clear_m", 0.04),
                     ("vision_attachment_release_timeout_s", 3.0),
+                    ("vision_attachment_attach_effort", 0.0),
+                    ("vision_attachment_release_effort", 0.0),
                 ],
             )
             self.declare_parameter("vision_attachment_tcp_frame", "")
@@ -2163,6 +2221,15 @@ if _ROS2_AVAILABLE:
                     .double_value,
                     unit_fixtures=unit_fixtures,
                     robot_unit=robot_unit,
+                ),
+                trigger_config=vision_attachment_trigger_config(
+                    self._hal.description,
+                    attach_effort=gp("vision_attachment_attach_effort")
+                    .get_parameter_value()
+                    .double_value,
+                    release_effort=gp("vision_attachment_release_effort")
+                    .get_parameter_value()
+                    .double_value,
                 ),
             )
             self._vision_attachment.setup()
