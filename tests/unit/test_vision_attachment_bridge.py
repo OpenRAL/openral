@@ -313,6 +313,135 @@ def test_a_slot_action_commands_only_the_jaw_it_names() -> None:
     assert right.trigger.last_command == -0.5, "a zero pad is not a right-hand close command"
 
 
+def _openarm_slot_group(left_jaw: float, right_jaw: float, *, tick: int = 1) -> list[Action]:
+    """The four actions the real runner dispatches for one OpenArm v2 bimanual tick.
+
+    Built by the runner's own ``_dispatch_slots`` against the real manifest — arm slots
+    zero-padded to 16 dof at their manifest indices (``_pad_joint_payload``), gripper
+    slots ``GRIPPER_POSITION`` with ``gripper=[value]`` and ``ee_name`` the gripper
+    joint — then stamped with the tick the runner adds.
+    """
+    import importlib.util
+
+    from openral_core import ActionSlot
+
+    src = Path("packages/openral_rskill_ros/openral_rskill_ros/rskill_runner_node.py")
+    spec = importlib.util.spec_from_file_location("_bridge_test_rskill_runner_node", src)
+    assert spec is not None and spec.loader is not None
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    slots = [
+        ActionSlot(
+            range=(0, 6),
+            control_mode=ControlMode.JOINT_POSITION,
+            joint_names=[f"left_joint{i}" for i in range(1, 8)],
+        ),
+        ActionSlot(range=(7, 7), control_mode=ControlMode.GRIPPER_POSITION, ee="left_gripper"),
+        ActionSlot(
+            range=(8, 14),
+            control_mode=ControlMode.JOINT_POSITION,
+            joint_names=[f"right_joint{i}" for i in range(1, 8)],
+        ),
+        ActionSlot(range=(15, 15), control_mode=ControlMode.GRIPPER_POSITION, ee="right_gripper"),
+    ]
+    vector = np.array([0.1] * 7 + [left_jaw] + [-0.1] * 7 + [right_jaw], dtype=np.float32)
+    group = runner._dispatch_slots(slots, vector, description=_openarm())
+    for action in group:
+        action.tick_index = tick
+        action.runner_session_id = 0xA11CE
+    return list(group)
+
+
+def test_a_real_openarm_slot_group_commands_both_jaws_as_the_hal_composes_it() -> None:
+    """ADR-0102: the jaws are GRIPPER_POSITION slots; folded once the tick is whole.
+
+    The targets are the very values ``compose_slot_group`` hands the OpenArm
+    controllers, so the trigger's "short of the command" is measured against what the
+    jaw was actually told.
+    """
+    from openral_hal._slot_group import compose_slot_group
+
+    description = _openarm()
+    bridge = VisionAttachmentBridge(
+        None, description, config=VisionAttachmentConfig(camera="head_zed")
+    )
+    left, right = bridge._legs
+    group = _openarm_slot_group(0.0, -0.75)
+    assert [a.control_mode for a in group].count(ControlMode.GRIPPER_POSITION) == 2
+    for action in group[:-1]:
+        bridge.observe_command(action)
+        assert left.trigger.last_command is None, "an incomplete tick commanded nothing yet"
+    bridge.observe_command(group[-1])
+    names = [j.name for j in description.joints]
+    hal_row = compose_slot_group(group, names)
+    assert left.trigger.last_command == pytest.approx(hal_row[names.index("left_gripper")])
+    assert right.trigger.last_command == pytest.approx(hal_row[names.index("right_gripper")])
+    assert (left.trigger.last_command, right.trigger.last_command) == pytest.approx((0.0, -0.75))
+
+
+def test_an_incomplete_slot_group_never_commands_a_jaw() -> None:
+    """A tick the kernel cut short never reached the robot, so its gripper slot is not a command."""
+    bridge = VisionAttachmentBridge(
+        None, _openarm(), config=VisionAttachmentConfig(camera="head_zed")
+    )
+    left, _ = bridge._legs
+    for action in _openarm_slot_group(0.0, 0.0, tick=1)[:3]:  # right gripper slot rejected
+        bridge.observe_command(action)
+    for action in _openarm_slot_group(0.7, -0.7, tick=2):
+        bridge.observe_command(action)
+    assert left.trigger.last_command == pytest.approx(0.7), "tick 1's close was never applied"
+
+
+def test_a_right_arm_slot_reads_the_right_jaw_column_not_the_left_pad() -> None:
+    """A padded right slot owns ``right_gripper`` at manifest index 15, not at its own index 7.
+
+    Index 7 of a right-hand padded row is ``left_gripper``'s zero pad: read there, a
+    right jaw held open reads "commanded closed" and its stall test turns an open hand
+    into an ATTACH.
+    """
+    description = _openarm()
+    bridge = VisionAttachmentBridge(
+        None, description, config=VisionAttachmentConfig(camera="head_zed")
+    )
+    left, right = bridge._legs
+    left.trigger.command(0.7)
+    names = [j.name for j in description.joints]
+    row = [0.0] * len(names)
+    owned = [f"right_joint{i}" for i in range(1, 8)] + ["right_gripper"]
+    for name in owned:
+        row[names.index(name)] = -0.1
+    row[names.index("right_gripper")] = -0.6  # held open
+    bridge.observe_command(_action([row], names=owned))
+    assert right.trigger.last_command == pytest.approx(-0.6)
+    assert left.trigger.last_command == pytest.approx(0.7), "the left pad commands nothing"
+    # And the open right hand never attaches, however long it sits still.
+    for tick in range(60):
+        bridge.observe_joint_state(_gripper_sample(left=0.7, right=-0.6, stamp_ns=_at(tick)))
+    assert not right.trigger.attached
+
+
+def test_a_compact_row_is_read_positionally() -> None:
+    """``len(row) == len(joint_names)``: ``joint_names[i]`` owns ``row[i]``."""
+    bridge = VisionAttachmentBridge(
+        None, _openarm(), config=VisionAttachmentConfig(camera="head_zed")
+    )
+    left, right = bridge._legs
+    bridge.observe_command(_action([[0.05, -0.6]], names=["left_gripper", "right_gripper"]))
+    assert (left.trigger.last_command, right.trigger.last_command) == (0.05, -0.6)
+    bridge.observe_command(_action([[-0.3]], names=["right_gripper"]))
+    assert (left.trigger.last_command, right.trigger.last_command) == (0.05, -0.3)
+
+
+def test_a_row_of_any_other_length_commands_nothing() -> None:
+    """Neither full dof nor as long as its names: unplaceable, so no jaw command."""
+    bridge = VisionAttachmentBridge(
+        None, _openarm(), config=VisionAttachmentConfig(camera="head_zed")
+    )
+    bridge.observe_command(_action([[0.0, 0.0, 0.0]], names=["left_gripper", "right_gripper"]))
+    bridge.observe_command(_action([[0.0] * 8]))
+    assert all(leg.trigger.last_command is None for leg in bridge._legs)
+
+
 def test_a_non_joint_position_action_commands_no_jaw() -> None:
     bridge = VisionAttachmentBridge(
         None, _openarm(), config=VisionAttachmentConfig(camera="head_zed")
@@ -439,6 +568,11 @@ def test_tf_frames_rejects_a_link_the_manifest_does_not_have() -> None:
         )
 
 
+def _at(tick: int) -> int:
+    """Stamp of the ``tick``-th 30 Hz sample."""
+    return 1_000_000_000 + tick * 33_333_333
+
+
 def _gripper_sample(*, left: float | None, right: float | None, stamp_ns: int) -> JointState:
     """One OpenArm read carrying a jaw position for whichever grippers have a value.
 
@@ -469,21 +603,47 @@ def test_the_heartbeat_evidence_needs_every_gripper_for_n_samples_in_a_row() -> 
     unloaded = 0.01  # an open-ish jaw, no command yet: present, never an event
     now = time.monotonic
     for tick in range(2):
-        bridge.observe_joint_state(_gripper_sample(left=unloaded, right=unloaded, stamp_ns=tick))
+        bridge.observe_joint_state(
+            _gripper_sample(left=unloaded, right=unloaded, stamp_ns=_at(tick))
+        )
     assert not bridge._evidence.live(now_s=now()), "two samples are under the debounce"
-    bridge.observe_joint_state(_gripper_sample(left=unloaded, right=None, stamp_ns=2))
-    bridge.observe_joint_state(_gripper_sample(left=unloaded, right=unloaded, stamp_ns=3))
+    bridge.observe_joint_state(_gripper_sample(left=unloaded, right=None, stamp_ns=_at(2)))
+    bridge.observe_joint_state(_gripper_sample(left=unloaded, right=unloaded, stamp_ns=_at(3)))
     assert not bridge._evidence.live(now_s=now()), "a missing hand must restart the count"
     for tick in range(4, 6):
-        bridge.observe_joint_state(_gripper_sample(left=unloaded, right=unloaded, stamp_ns=tick))
+        bridge.observe_joint_state(
+            _gripper_sample(left=unloaded, right=unloaded, stamp_ns=_at(tick))
+        )
     assert bridge._evidence.live(now_s=now())
     assert not bridge._evidence.live(now_s=now() + 0.6), "evidence older than 0.5 s is dead"
-    bridge.observe_joint_state(_gripper_sample(left=float("nan"), right=unloaded, stamp_ns=6))
+    bridge.observe_joint_state(_gripper_sample(left=float("nan"), right=unloaded, stamp_ns=_at(6)))
     assert not bridge._evidence.live(now_s=now()), "a non-finite jaw position is a dead channel"
     assert bridge.missing_position_ticks == 2
     later = now() + 1.0
-    bridge._evidence.observe(complete=True, now_s=later)
+    bridge._evidence.observe(complete=True, stamp_ns=_at(7), now_s=later)
     assert not bridge._evidence.live(now_s=later), "a channel back from a gap must re-earn N"
+
+
+def test_a_repeated_cached_joint_state_is_no_heartbeat_evidence() -> None:
+    """One cached sample re-read every tick (stamp jittering by us) never makes evidence live.
+
+    Nor does it keep evidence alive once real samples stop: liveness is refreshed only by
+    a new sample.
+    """
+    bridge = VisionAttachmentBridge(
+        None, _openarm(), config=VisionAttachmentConfig(camera="head_zed")
+    )
+    for i in range(30):
+        jitter = (i % 5 - 2) * 1_000
+        bridge.observe_joint_state(_gripper_sample(left=0.5, right=-0.5, stamp_ns=_at(0) + jitter))
+    assert not bridge._evidence.live(now_s=time.monotonic()), "one sample, re-read, is one sample"
+    for tick in range(1, 4):
+        bridge.observe_joint_state(_gripper_sample(left=0.5, right=-0.5, stamp_ns=_at(tick)))
+    assert bridge._evidence.live(now_s=time.monotonic())
+    last_s = time.monotonic()
+    bridge._evidence.observe(complete=True, stamp_ns=_at(3) + 2_000, now_s=last_s + 0.4)
+    assert not bridge._evidence.live(now_s=last_s + 0.6), "a re-read refreshed liveness"
+    assert all(leg.trigger.repeated_samples == 29 for leg in bridge._legs)
 
 
 def test_the_segment_request_is_sent_in_the_cameras_optical_frame() -> None:

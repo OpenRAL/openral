@@ -48,7 +48,8 @@ set is republished on a 0.2 s heartbeat — the same period as the simulator
 bridge's. That heartbeat is a claim about the jaws, so it is only made while
 the claim has evidence behind it: every gripper's jaw *position* channel must
 have reported a finite value within ``VisionAttachmentConfig.evidence_timeout_s``,
-for at least ``PositionStallConfig.consecutive_ticks`` samples in a row, with no
+in an unbroken run of new samples (repeated stamps do not count) spanning at least
+``PositionStallConfig.consecutive_s`` seconds of sample time, with no
 grasp being resolved and every trigger agreeing with its leg's attachment. A
 dead position channel therefore ages into a kernel drop, never into a stale
 "nothing attached".
@@ -56,7 +57,20 @@ dead position channel therefore ages into a kernel drop, never into a stale
 The grasp trigger is ``_grasp_trigger.PositionStallTrigger``: the jaw settling
 short of a close command. It needs the command, so the HAL node feeds every
 applied action through ``observe_command`` (the safety-approved target, the
-chunk's last row — what the transport sends the trajectory controller).
+chunk's last row — what the transport sends the trajectory controller). An
+ADR-0102 slot group is folded in only once every slot of its tick has arrived, and
+composed exactly as the HAL composes it (``compose_slot_group``): a
+``GRIPPER_POSITION`` slot's ``gripper`` value lands on the joint its ``ee_name``
+names, a zero-padded ``JOINT_POSITION`` slot is read at each owned joint's manifest
+index.
+
+Every grasp event supersedes whatever request its leg still has in flight: the
+leg's generation advances, the old deadline timer is cancelled and the old future
+dropped, so a late reply for an older event is discarded rather than overwriting
+what the newer event decided (a DETACH while a segmentation is in flight resolves
+to no attachment). A REGRASP always segments: the latched grasp-target region is a
+pre-grasp measurement and is the payload only on the first ATTACH of its
+declaration.
 Confirmation is geometric and an AND: a stall attaches with vision-measured
 geometry only when vision agrees — the grasp-target leg's latched pre-grasp
 region with the jaw at it (preferred: the hand occludes the head camera at that
@@ -104,6 +118,7 @@ from openral_hal._grasp_trigger import (
     gripper_joints,
 )
 from openral_hal._place_target_leg import PlaceTargetLeg
+from openral_hal._slot_group import compose_slot_group
 from openral_hal._vision_attachment_evidence import (
     VisionAttachmentEvidenceProducer,
     VisionGateConfig,
@@ -161,6 +176,11 @@ class _GripperLeg:
         attachment: What this leg currently holds, or ``None``.
         inflight: The outstanding ``SegmentInView`` future, if any.
         deadline_timer: The one-shot deadline timer for that future, if any.
+        generation: Bumped by every grasp event; a reply or deadline carrying an
+            older one is stale and dropped.
+        region_spent: ``(target_id, stamp_ns)`` of the declaration whose region this
+            leg already took as its payload — its first ATTACH; later ATTACHes of the
+            same declaration segment instead.
         pending: Whether this leg is holding the ack barrier.
         jaw_link: The gripper joint's child link — what a ``GraspDeclaration``
             names in ``contact_links``.
@@ -178,6 +198,8 @@ class _GripperLeg:
     attachment: Any = None
     inflight: Any = None
     deadline_timer: Any = None
+    generation: int = 0
+    region_spent: tuple[str, int] | None = None
     pending: bool = False
     jaw_link: str = ""
     release: ReleaseWindow | None = None
@@ -200,45 +222,57 @@ class _JawEvidence:
 
     Pure bookkeeping on a caller-supplied monotonic clock. A sample counts only
     when *every* leg read a finite jaw position from it; one missing value, or a gap
-    longer than the timeout, restarts the count, because a heartbeat claims
+    longer than the timeout, restarts the run, because a heartbeat claims
     something about every hand at once and a channel that just came back has
-    not yet shown it is steady.
+    not yet shown it is steady. The run is measured in sample time
+    (``consecutive_s``), and a sample whose stamp repeats the last one
+    (``PositionStallConfig.is_repeat``) is no evidence at all — a cached joint
+    state re-read neither extends the run nor refreshes liveness.
 
     Args:
-        required_samples: Consecutive complete samples before evidence is live.
-        timeout_s: How old the newest complete sample may be.
+        config: The trigger windows: ``consecutive_s`` of unbroken complete samples
+            before evidence is live, and the repeated-stamp rule.
+        timeout_s: How old (monotonic) the newest complete sample may be.
 
     Example:
-        >>> evidence = _JawEvidence(required_samples=2, timeout_s=0.5)
-        >>> evidence.observe(complete=True, now_s=0.0)
-        >>> evidence.live(now_s=0.0)
+        >>> evidence = _JawEvidence(PositionStallConfig(consecutive_s=0.05), timeout_s=0.5)
+        >>> evidence.observe(complete=True, stamp_ns=0, now_s=0.0)
+        >>> evidence.observe(complete=True, stamp_ns=10, now_s=0.05)  # a repeat
+        >>> evidence.live(now_s=0.05)
         False
-        >>> evidence.observe(complete=True, now_s=0.1)
+        >>> evidence.observe(complete=True, stamp_ns=50_000_000, now_s=0.1)
         >>> evidence.live(now_s=0.5), evidence.live(now_s=0.7)
         (True, False)
     """
 
-    def __init__(self, *, required_samples: int, timeout_s: float) -> None:
+    def __init__(self, config: PositionStallConfig, *, timeout_s: float) -> None:
         """Start with no evidence."""
-        self._required = required_samples
+        self._config = config
         self._timeout_s = timeout_s
-        self._streak = 0
+        self._since_ns: int | None = None
+        self._last_ns: int | None = None
         self._last_s: float | None = None
 
-    def observe(self, *, complete: bool, now_s: float) -> None:
+    def observe(self, *, complete: bool, stamp_ns: int, now_s: float) -> None:
         """Fold one joint-state sample in."""
+        if self._config.is_repeat(stamp_ns, self._last_ns):
+            return
+        self._last_ns = stamp_ns
         stale = self._last_s is not None and now_s - self._last_s > self._timeout_s
         if not complete or stale:
-            self._streak = 0
+            self._since_ns = None
         if not complete:
             return
-        self._streak += 1
+        if self._since_ns is None:
+            self._since_ns = stamp_ns
         self._last_s = now_s
 
     def live(self, *, now_s: float) -> bool:
         """Whether enough fresh, complete samples back a claim about the jaws."""
         return (
-            self._streak >= self._required
+            self._since_ns is not None
+            and self._last_ns is not None
+            and self._last_ns - self._since_ns >= self._config.consecutive_s * 1e9
             and self._last_s is not None
             and now_s - self._last_s <= self._timeout_s
         )
@@ -725,9 +759,9 @@ class VisionAttachmentConfig:
         grasp_target_freeze_s: How long past its ``stamp_ns`` the last accepted
             region survives while the view is lost (the gripper occluding the
             target). ``None`` (default) = ``2 * grid_max_age_s``: at most twice
-            the deploy's kernel voxel deadline. Refused above ``4 *
-            grid_max_age_s``, past which the map the region was vouched against
-            is long superseded. *Calibration point.*
+            the deploy's kernel voxel deadline. Refused above ``2 *
+            grid_max_age_s`` — the kernel's ``grasp_region_max_age_s`` — past which
+            the map the region was vouched against is superseded. *Calibration point.*
         grasp_target_min_cells: Fewest occupied cells the seed cluster above the
             support plane may have. *Calibration point.*
         grasp_target_min_cover: Fraction of the region's footprint cell count
@@ -1101,9 +1135,14 @@ class VisionAttachmentBridge:
         self._heartbeat_timer: Any = None
         self._heartbeat_open: bool | None = None
         self._evidence = _JawEvidence(
-            required_samples=(trigger_config or PositionStallConfig()).consecutive_ticks,
+            trigger_config or PositionStallConfig(),
             timeout_s=self._config.evidence_timeout_s,
         )
+        self._joint_order = [joint.name for joint in description.joints]
+        # ADR-0102: the slots of the tick being assembled, keyed (session, tick).
+        self._slot_key: tuple[int, int] | None = None
+        self._slots: list[Action] = []
+        self._warned_row_shape = False
         self._revision = 0
         # Latest joint positions by name: the jaws' angles for the release test.
         self._positions: dict[str, float] = {}
@@ -1192,7 +1231,7 @@ class VisionAttachmentBridge:
     def teardown(self) -> None:
         """Destroy every ROS entity; idempotent, and never leaves the barrier shut."""
         for leg in self._legs:
-            self._cancel_deadline(leg)
+            self._supersede(leg)
         if self._grasp_target is not None:
             self._grasp_target.teardown()
         if self._place_target is not None:
@@ -1219,7 +1258,6 @@ class VisionAttachmentBridge:
         # notify is only safe because each holder re-issues one when it settles,
         # so the holder that goes away has to issue its last one here.
         for leg in self._legs:
-            leg.inflight = None
             if leg.pending:
                 self._release_barrier(leg)
 
@@ -1274,15 +1312,22 @@ class VisionAttachmentBridge:
                 leg.announced_uncommanded = True
                 self._node.get_logger().info(
                     f"grasp trigger {leg.joint_name}: no commanded target yet — it cannot "
-                    "ATTACH until an applied JOINT_POSITION action names this joint"
+                    "ATTACH until an applied action commands this joint"
                 )
             complete = complete and leg.trigger.missing_position_ticks == missing_before
             if event is None:
                 continue
+            if self._supersede(leg):
+                self._node.get_logger().warning(
+                    f"grasp trigger {leg.joint_name}: {event.value.upper()} superseded the "
+                    "segmentation still in flight; its reply will be dropped"
+                )
             if event is GraspEvent.DETACH:
                 self._open_release(leg)
                 leg.attachment = None
                 self._publish_attachment()
+                if leg.pending:
+                    self._release_barrier(leg)
                 continue
             if leg.release is not None:
                 self._close_release(leg, "attach")
@@ -1290,8 +1335,10 @@ class VisionAttachmentBridge:
                 f"grasp trigger {leg.joint_name}: {event.value.upper()} — holding the action "
                 "ack for segmentation"
             )
-            self._begin_segmentation(leg, stamp_ns=int(state.stamp_ns))
-        self._evidence.observe(complete=complete, now_s=time.monotonic())
+            self._begin_segmentation(leg, event, stamp_ns=int(state.stamp_ns))
+        self._evidence.observe(
+            complete=complete, stamp_ns=int(state.stamp_ns), now_s=time.monotonic()
+        )
         if self._place_target is not None:
             self._place_target.on_joint_state()
 
@@ -1299,24 +1346,88 @@ class VisionAttachmentBridge:
         """Fold an applied action's gripper targets into every leg's trigger.
 
         The commanded target is the chunk's **last** row — what the ros2_control
-        transport hands the trajectory controller as the goal. Rows map to joints
-        by ``action.joint_names`` when set (ADR-0102 slots), else by manifest joint
-        order. Only joint-position actions command a jaw angle; any other mode, or a
-        slot that does not own a gripper joint, leaves that leg's last command as is.
+        transport hands the trajectory controller as the goal.
+
+        * An ADR-0102 slot (``tick_group_size > 1``) is staged until every slot of
+          its ``(runner_session_id, tick_index)`` has arrived — the HAL commits a
+          tick only whole, and a group whose sibling the kernel rejected never
+          reaches the robot — then composed with ``compose_slot_group``, the very
+          function the HAL composes the controller targets with: a
+          ``GRIPPER_POSITION`` slot's last ``gripper`` value on the joint its
+          ``ee_name`` names, a zero-padded ``JOINT_POSITION`` slot read at each of
+          its ``joint_names``' manifest index. A group it cannot compose commanded
+          nothing (the HAL refused it too) and is logged.
+        * An ungrouped ``JOINT_POSITION`` action: a full-dof row is padded and read
+          at each owned joint's manifest index (every joint when it names none); a
+          row as long as its ``joint_names`` is compact and read positionally; any
+          other length is logged once and ignored (``_row_targets``).
+
+        Any other action leaves every leg's last command as it is.
 
         Args:
             action: The action the HAL just applied (safety-approved).
         """
-        rows = action.joint_targets
-        if action.control_mode is not ControlMode.JOINT_POSITION or not rows:
+        if int(action.tick_group_size) > 1:
+            targets = self._stage_slot(action)
+            if targets is None:
+                return
+        elif action.control_mode is ControlMode.JOINT_POSITION and action.joint_targets:
+            targets = self._row_targets(action.joint_targets[-1], action.joint_names)
+            if targets is None:
+                return
+        else:
             return
-        names = action.joint_names or [joint.name for joint in self._description.joints]
-        row = rows[-1]
-        index = {name: i for i, name in enumerate(names) if i < len(row)}
         for leg in self._legs:
-            i = index.get(leg.joint_name)
-            if i is not None:
-                leg.trigger.command(float(row[i]))
+            target = targets.get(leg.joint_name)
+            if target is not None:
+                leg.trigger.command(target)
+
+    def _row_targets(
+        self, row: Sequence[float], names: Sequence[str] | None
+    ) -> dict[str, float] | None:
+        """An ungrouped JOINT_POSITION row by joint name; ``None`` when unplaceable.
+
+        A full-dof row is padded (ADR-0102): each owned joint is read at its manifest
+        index, as ``compose_slot_group`` reads it — also when ``joint_names`` lists every
+        joint, the padded reading being the contract. A row as long as ``joint_names``
+        is compact: ``joint_names[i]`` owns ``row[i]``. Any other length says nothing
+        placeable and is logged (once).
+        """
+        if len(row) == len(self._joint_order):
+            owned = set(names or self._joint_order)
+            return {
+                name: float(row[i]) for i, name in enumerate(self._joint_order) if name in owned
+            }
+        if names and len(row) == len(names):
+            return {name: float(value) for name, value in zip(names, row, strict=True)}
+        if not self._warned_row_shape and self._node is not None:
+            self._warned_row_shape = True
+            self._node.get_logger().warning(
+                f"grasp trigger: ROSConfigError: a JOINT_POSITION row of {len(row)} values is "
+                f"neither full dof ({len(self._joint_order)}) nor as long as its joint_names "
+                f"({len(names or [])}); not folded in as a jaw command (logged once)"
+            )
+        return None
+
+    def _stage_slot(self, action: Action) -> dict[str, float] | None:
+        """Stage one slot; the composed tick's targets by joint once it is whole."""
+        key = (int(action.runner_session_id), int(action.tick_index))
+        if key != self._slot_key:
+            # A new tick abandons an incomplete one: the HAL never committed it.
+            self._slot_key, self._slots = key, []
+        self._slots.append(action)
+        if len(self._slots) < int(action.tick_group_size):
+            return None
+        group, self._slot_key, self._slots = self._slots, None, []
+        try:
+            row = compose_slot_group(group, self._joint_order)
+        except ROSConfigError as exc:
+            if self._node is not None:
+                self._node.get_logger().warning(
+                    f"grasp trigger: slot group of tick {key[1]} not folded in — {exc}"
+                )
+            return None
+        return dict(zip(self._joint_order, row, strict=True))
 
     @property
     def missing_position_ticks(self) -> int:
@@ -1328,9 +1439,30 @@ class VisionAttachmentBridge:
 
     # ── segmentation round trip ──────────────────────────────────────────────
 
-    def _begin_segmentation(self, leg: _GripperLeg, *, stamp_ns: int) -> None:
-        """Attach the latched target region, or close the barrier and ask SegmentInView."""
-        held = self._region_payload(leg, stamp_ns=stamp_ns)
+    def _supersede(self, leg: _GripperLeg) -> bool:
+        """Invalidate the leg's in-flight request, if any; whether there was one.
+
+        Advances the generation, cancels and destroys the deadline timer, and drops
+        the future *before* cancelling it — ``rclpy.Future.cancel`` runs the done
+        callback synchronously, and the generation check is what discards it. The
+        barrier (``pending``) is left to the caller: the next request keeps it, a
+        DETACH releases it.
+        """
+        leg.generation += 1
+        self._cancel_deadline(leg)
+        inflight, leg.inflight = leg.inflight, None
+        if inflight is None:
+            return False
+        inflight.cancel()
+        return True
+
+    def _begin_segmentation(self, leg: _GripperLeg, event: GraspEvent, *, stamp_ns: int) -> None:
+        """Attach the latched target region, or close the barrier and ask SegmentInView.
+
+        Only an ATTACH may take the region: on a REGRASP the jaws have re-seated the
+        payload away from where the pre-grasp region measured it, so it is segmented.
+        """
+        held = self._region_payload(leg, stamp_ns=stamp_ns) if event is GraspEvent.ATTACH else None
         if held is not None:
             leg.attachment = held
             self._node.get_logger().info(
@@ -1340,6 +1472,8 @@ class VisionAttachmentBridge:
             if self._grasp_target is not None:
                 self._grasp_target.tracker.on_attach(leg.jaw_link)
             self._publish_attachment()
+            if leg.pending:  # a superseded request was still holding the barrier
+                self._release_barrier(leg)
             return
         leg.pending = True
         context = self._gather_context(leg)
@@ -1369,12 +1503,14 @@ class VisionAttachmentBridge:
             tcp_in_link=tcp_in_link,
             negatives_in_link=negatives,
         )
+        generation = leg.generation
         future = self._client.call_async(request)
         leg.inflight = future
         future.add_done_callback(
             lambda fut: self._on_reply(
                 leg,
                 fut,
+                generation=generation,
                 stamp_ns=stamp_ns,
                 t_link_from_cam=t_link_from_cam,
                 tcp_in_link=tcp_in_link,
@@ -1384,6 +1520,7 @@ class VisionAttachmentBridge:
             self._config.deadline_s,
             lambda: self._on_deadline(
                 leg,
+                generation=generation,
                 stamp_ns=stamp_ns,
                 t_link_from_cam=t_link_from_cam,
                 tcp_in_link=tcp_in_link,
@@ -1395,13 +1532,14 @@ class VisionAttachmentBridge:
         leg: _GripperLeg,
         future: Any,
         *,
+        generation: int,
         stamp_ns: int,
         t_link_from_cam: NDArray[np.float64],
         tcp_in_link: tuple[float, float, float],
     ) -> None:
         """Resolve the attachment from a SegmentInView reply (or its exception)."""
-        if future is not leg.inflight:
-            return  # already resolved by the deadline; this reply is late
+        if generation != leg.generation or future is not leg.inflight:
+            return  # resolved by the deadline, or superseded by a newer grasp event
         self._cancel_deadline(leg)
         leg.inflight = None
         try:
@@ -1471,11 +1609,14 @@ class VisionAttachmentBridge:
         self,
         leg: _GripperLeg,
         *,
+        generation: int,
         stamp_ns: int,
         t_link_from_cam: NDArray[np.float64],
         tcp_in_link: tuple[float, float, float],
     ) -> None:
         """Resolve conservatively when the segmenter overran its budget."""
+        if generation != leg.generation:
+            return  # superseded: ``_supersede`` already destroyed that timer
         self._cancel_deadline(leg)
         inflight = leg.inflight
         if inflight is None:
@@ -1584,8 +1725,10 @@ class VisionAttachmentBridge:
 
         Confirmation is geometric: the declaration names this leg's jaw link and the
         leg's TCP (``jaw_point``) lies within ``grasp_target_occluder_margin_m`` of the
-        region. ``None`` — logged when a declaration was live — sends the grasp to
-        ``SegmentInView`` instead.
+        region. The region is a pre-grasp measurement, so a leg takes it once per
+        declaration (``region_spent``): a later ATTACH of the same declaration — the
+        object set down and picked up again — is segmented. ``None`` — logged when a
+        declaration was live — sends the grasp to ``SegmentInView`` instead.
         """
         if self._grasp_target is None:
             return None
@@ -1596,6 +1739,13 @@ class VisionAttachmentBridge:
         )
         region = declaration.region if declaration is not None else None
         if declaration is None or region is None or leg.jaw_link not in declaration.contact_links:
+            return None
+        key = (declaration.target_id, int(declaration.stamp_ns))
+        if leg.region_spent == key:
+            self._node.get_logger().info(
+                f"vision attachment {leg.joint_name}: grasp-target region for "
+                f"{declaration.target_id!r} already handed over; segmenting instead"
+            )
             return None
         hand = self.jaw_point(leg.jaw_link, region.frame_id)
         link = self.tf_frame(leg.producer.attach_link)
@@ -1614,6 +1764,7 @@ class VisionAttachmentBridge:
                 f"{declaration.target_id!r} not used — {why}; segmenting instead"
             )
             return None
+        leg.region_spent = key
         return region_attachment(
             declaration,
             attach_link=leg.producer.attach_link,

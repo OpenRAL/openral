@@ -10,7 +10,7 @@ rejects as moving backwards.
 
 The heartbeat is a claim about the jaws, so it is gated: nothing is published
 until every gripper's jaw *position* channel has reported for
-``PositionStallConfig.consecutive_ticks`` samples in a row, and it stops within
+``PositionStallConfig.consecutive_s`` of new samples in a row, and it stops within
 ``evidence_timeout_s`` of the channel going quiet — a dead channel becomes a
 kernel drop, never a stale "nothing attached". Effort is fed as the real OpenArm
 driver publishes it — zeros, every tick — and plays no part. The ATTACH comes from the
@@ -202,7 +202,7 @@ def test_the_vision_leg_heartbeats_only_on_live_jaw_positions_with_a_monotonic_r
         assert _wait_until(lambda: bool(received)), "no heartbeat once jaw positions were live"
         assert received[0][1] >= 3, (
             f"published after {received[0][1]} samples; the debounce needs "
-            "consecutive_ticks=3 complete samples first"
+            "consecutive_s=0.06 (3 samples at 30 Hz) of complete samples first"
         )
 
         # ── (b) ~5 Hz, empty, stamp advancing, revision constant. ────────────

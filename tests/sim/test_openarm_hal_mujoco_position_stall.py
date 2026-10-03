@@ -101,13 +101,20 @@ def _command(hal: object, left: float) -> None:
 def _run(
     hal: object, trigger: PositionStallTrigger, left: float, ticks: int
 ) -> tuple[list[GraspEvent], list[float]]:
-    """Command ``left`` for ``ticks`` 30 Hz ticks; feed every read to the trigger."""
+    """Command ``left`` for ``ticks`` 30 Hz ticks; feed every read to the trigger.
+
+    Each read is re-stamped with the twin's simulated time: the HAL stamps wall time,
+    and this loop steps 1/30 s of physics per tick far faster than real time, so wall
+    stamps would compress the trigger's seconds-based windows (and read as repeats).
+    """
     trigger.command(left)
     events: list[GraspEvent] = []
     trace: list[float] = []
     for _ in range(ticks):
         _command(hal, left)
         state = hal.read_state()  # type: ignore[attr-defined]
+        sim_ns = round(float(hal._data.time) * 1e9)  # type: ignore[attr-defined]
+        state = state.model_copy(update={"stamp_ns": sim_ns})
         trace.append(float(state.position[state.name.index("left_gripper")]))
         event = trigger.update(state)
         if event is not None:

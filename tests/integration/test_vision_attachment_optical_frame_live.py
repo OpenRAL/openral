@@ -309,7 +309,7 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
                     name=["left_gripper", "right_gripper"],
                     position=[0.2, -0.0116],
                     effort=[0.0, 0.0],
-                    stamp_ns=1_000 + tick,
+                    stamp_ns=1_000 + tick * 33_333_333,
                 )
             )
             if not bridge.attachment_action_ack_ready():
@@ -393,6 +393,261 @@ def test_grasp_masks_back_project_in_the_depth_headers_optical_frame() -> None:
                 bridge.teardown()
         executor.shutdown()
         spin.join(timeout=5.0)
+        for each in (segmenter, peer, node):
+            each.destroy_node()
+        rclpy.shutdown()
+
+
+_RACE_SERVICE = "/openral/perception/segment_in_view_race_itest"
+_RACE_SHAPE = (_FULL[0] // 2, _FULL[1] // 2)
+_RACE_K = tuple(value / 2.0 for value in _THOR_K)
+_PERIOD_NS = 33_333_333  # 30 Hz joint states
+
+
+def test_every_grasp_event_supersedes_the_segmentation_in_flight() -> None:
+    """Generation-tagged requests: a late reply for an older grasp event changes nothing.
+
+    The segmenter holds every request until the test releases it, so each race is
+    staged exactly: (1) a DETACH while an ATTACH segmentation is in flight resolves to
+    no attachment and releases the barrier; (2) its late reply does not clobber the
+    grasp-target region a newer ATTACH took as the payload; (3) a REGRASP of that
+    region payload segments instead of re-publishing the pre-grasp region; (4) a second
+    REGRASP cancels the first one's deadline timer, and the first one's late reply is
+    dropped while the second's is the attachment. Real rclpy, real bridge on the
+    bimanual OpenArm manifest, real tf2, real ``SegmentInView`` peer at the process
+    boundary (CLAUDE.md §1.11).
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs")
+
+    from openral_core import (
+        Action,
+        AttachmentEvidenceKind,
+        ControlMode,
+        GraspDeclaration,
+        JointState,
+        PlaceRegion,
+        Pose6D,
+        RobotDescription,
+    )
+    from openral_hal.vision_attachment_bridge import (
+        VisionAttachmentBridge,
+        VisionAttachmentConfig,
+    )
+    from openral_msgs.srv import SegmentInView
+    from rclpy.callback_groups import ReentrantCallbackGroup
+    from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
+    from rclpy.node import Node
+    from rclpy.qos import QoSProfile, QoSReliabilityPolicy
+    from sensor_msgs.msg import CameraInfo, Image
+    from tf2_ros import StaticTransformBroadcaster
+
+    description = RobotDescription.from_yaml(str(_ROBOT_YAML))
+    names = [j.name for j in description.joints]
+    left = next(j for j in description.joints if j.name == "left_gripper")
+    camera = next(spec for spec in description.sensors if spec.name == _CAMERA)
+    mount = camera.static_transform_xyz_rpy
+    assert mount is not None
+    tcp_in_link = np.asarray(left.origin_xyz, dtype=np.float64)
+    t_base_body = _homogeneous(_rot_rpy(*mount[3:]), mount[:3])
+    t_body_opt = _homogeneous(_rot_rpy(-math.pi / 2, 0.0, -math.pi / 2), (0.0, 0.0, 0.0))
+    r_opt_link = _rot_rpy(0.3, -0.2, 0.5)
+    t_opt_link = _homogeneous(r_opt_link, _TCP_IN_OPTICAL - r_opt_link @ tcp_in_link)
+    t_base_link = t_base_body @ t_body_opt @ t_opt_link
+    tcp_in_base = (t_base_link @ np.append(tcp_in_link, 1.0))[:3]
+
+    rclpy.init()
+    node = Node("test_vision_race_hal")
+    peer = Node("test_vision_race_peer")
+    segmenter = Node("test_vision_race_segmenter")
+    held: list[tuple[Any, threading.Event]] = []
+
+    def segment(request: Any, response: Any) -> Any:
+        """Mask a disc at the TCP pixel — once the test releases this request."""
+        gate = threading.Event()
+        held.append((request, gate))
+        gate.wait(timeout=30.0)
+        point = np.array([request.tcp_point.x, request.tcp_point.y, request.tcp_point.z])
+        u, v = _pixel(point, _RACE_K)
+        rows, cols = np.mgrid[0 : _RACE_SHAPE[0], 0 : _RACE_SHAPE[1]]
+        disc = (rows + 0.5 - v) ** 2 + (cols + 0.5 - u) ** 2 <= (_MASK_RADIUS_PX / 2) ** 2
+        mask = Image()
+        mask.height, mask.width = _RACE_SHAPE
+        mask.encoding = "mono8"
+        mask.step = _RACE_SHAPE[1]
+        mask.data = (disc.astype(np.uint8) * 255).tobytes()
+        response.ok = True
+        response.camera = request.camera
+        response.masks = [mask]
+        response.mask_scores_advisory = [0.9]
+        return response
+
+    segmenter.create_service(
+        SegmentInView, _RACE_SERVICE, segment, callback_group=ReentrantCallbackGroup()
+    )
+    StaticTransformBroadcaster(peer).sendTransform(
+        [
+            _tf_msg("openarm_base", "zed_camera_link", t_base_body),
+            _tf_msg("zed_camera_link", _OPTICAL, t_body_opt),
+            _tf_msg("openarm_base", left.parent_link, t_base_link),
+        ]
+    )
+    depth_topic, info_topic = "/test_vision_race/depth", "/test_vision_race/camera_info"
+    sensor_qos = QoSProfile(reliability=QoSReliabilityPolicy.RELIABLE, depth=1)
+    depth_pub = peer.create_publisher(Image, depth_topic, sensor_qos)
+    info_pub = peer.create_publisher(CameraInfo, info_topic, sensor_qos)
+    hal_executor = SingleThreadedExecutor()
+    for each in (node, peer):
+        hal_executor.add_node(each)
+    segmenter_executor = MultiThreadedExecutor(num_threads=4)
+    segmenter_executor.add_node(segmenter)
+    spins = [
+        threading.Thread(target=hal_executor.spin, daemon=True),
+        threading.Thread(target=segmenter_executor.spin, daemon=True),
+    ]
+    for spin in spins:
+        spin.start()
+
+    bridge = VisionAttachmentBridge(
+        node,
+        description,
+        config=VisionAttachmentConfig(
+            camera=_CAMERA,
+            depth_topic=depth_topic,
+            camera_info_topic=info_topic,
+            service_name=_RACE_SERVICE,
+            deadline_s=20.0,  # never the deadline: every race here is a newer event
+            grasp_target_enabled=True,
+            grid_max_age_s=60.0,
+            grasp_target_freeze_s=120.0,  # no voxels here: hold the region for the test
+        ),
+    )
+    leg = bridge._legs[0]
+    clock = {"stamp": 1_000_000_000}
+
+    def command(jaw: float) -> None:
+        row = [0.0] * len(names)
+        row[names.index("left_gripper")] = jaw
+        bridge.observe_command(
+            Action(control_mode=ControlMode.JOINT_POSITION, horizon=1, joint_targets=[row])
+        )
+
+    def jaw(position: float, ticks: int = 12) -> None:
+        """30 Hz samples of the left jaw at ``position``; the right rests closed."""
+        for _ in range(ticks):
+            clock["stamp"] += _PERIOD_NS
+            bridge.observe_joint_state(
+                JointState(
+                    name=["left_gripper", "right_gripper"],
+                    position=[position, -0.0116],
+                    effort=[0.0, 0.0],
+                    stamp_ns=clock["stamp"],
+                )
+            )
+
+    def kind() -> Any:
+        return None if leg.attachment is None else leg.attachment.evidence_kind
+
+    try:
+        bridge.setup()
+        depth = _depth_image(_RACE_SHAPE, _RACE_K)
+        info = _camera_info(_RACE_SHAPE, _RACE_K)
+
+        def inputs_cached() -> bool:
+            depth_pub.publish(depth)
+            info_pub.publish(info)
+            return bridge._depth is not None and bridge._camera_info is not None
+
+        assert _wait_until(inputs_cached), "the bridge never cached depth + CameraInfo"
+        assert _wait_until(bridge._client.service_is_ready), "SegmentInView never discovered"
+        assert _wait_until(lambda: bridge._lookup(left.parent_link, _OPTICAL) is not None)
+        assert _wait_until(lambda: bridge.jaw_point(left.child_link, "openarm_base") is not None)
+
+        # ── 1. ATTACH (segmenting, held) then DETACH: no attachment, barrier open. ──
+        command(0.0)
+        jaw(0.2)
+        assert _wait_until(lambda: len(held) == 1), "the ATTACH never asked SegmentInView"
+        assert not bridge.attachment_action_ack_ready()
+        stale_reply = held[0][1]
+        command(0.7)
+        jaw(0.5)
+        assert not leg.trigger.attached
+        assert bridge.attachment_action_ack_ready(), "a DETACH must release the barrier"
+        assert leg.attachment is None and leg.inflight is None
+
+        # ── 2. A new declaration's region at the hand: the next ATTACH takes it,
+        #       and the late reply of step 1 must not clobber it. ─────────────────
+        now_ns = int(node.get_clock().now().nanoseconds)
+        box = PlaceRegion(
+            frame_id="openarm_base",
+            pose=Pose6D(
+                xyz=tuple(float(v) for v in tcp_in_base),
+                quat_xyzw=(0.0, 0.0, 0.0, 1.0),
+                frame_id="openarm_base",
+            ),
+            half_extents=(0.03, 0.03, 0.03),
+        )
+        tracker = bridge._grasp_target.tracker
+        tracker.on_declaration(
+            GraspDeclaration(
+                target_id="cell:race_box",
+                contact_links=(left.child_link,),
+                timeout_s=60.0,
+                stamp_ns=now_ns,
+                search_box=box,
+            )
+        )
+        tracker.accept(
+            box.model_copy(update={"evidence_ref": "itest:race_region", "stamp_ns": now_ns})
+        )
+        command(0.0)
+        jaw(0.29)
+        assert leg.trigger.attached
+        assert kind() is AttachmentEvidenceKind.GRASP_TARGET_REGION, kind()
+        assert len(held) == 1, "the region ATTACH asked SegmentInView"
+        assert bridge.attachment_action_ack_ready()
+        stale_reply.set()
+        time.sleep(1.0)
+        assert kind() is AttachmentEvidenceKind.GRASP_TARGET_REGION, (
+            "a stale reply clobbered the region payload"
+        )
+
+        # ── 3. REGRASP of the region payload: segmented, never the pre-grasp box. ──
+        jaw(0.20)
+        assert _wait_until(lambda: len(held) == 2), "the REGRASP did not segment"
+        assert not bridge.attachment_action_ack_ready()
+        first_timer = leg.deadline_timer
+        assert first_timer is not None
+
+        # ── 4. A second REGRASP supersedes the first: its timer is gone, its reply
+        #       is dropped, and only the newest reply becomes the attachment. ────
+        jaw(0.25)
+        assert _wait_until(lambda: len(held) == 3), "the second REGRASP did not segment"
+        regrasp_stamp = clock["stamp"]
+        assert leg.deadline_timer is not first_timer
+        assert first_timer not in list(node.timers), "the superseded deadline timer survived"
+        held[1][1].set()
+        time.sleep(1.0)
+        assert not bridge.attachment_action_ack_ready(), "a stale reply released the barrier"
+        assert kind() is AttachmentEvidenceKind.GRASP_TARGET_REGION, "a stale reply attached"
+        held[2][1].set()
+        assert _wait_until(bridge.attachment_action_ack_ready), "the newest reply never settled"
+        assert leg.attachment is not None
+        assert kind() is not AttachmentEvidenceKind.GRASP_TARGET_REGION
+        assert leg.attachment.stamp_ns <= regrasp_stamp
+        assert leg.attachment.stamp_ns > held[1][0].stamp.sec * 1_000_000_000 + (
+            held[1][0].stamp.nanosec
+        ), "the attachment is the superseded request's"
+        assert leg.trigger.attached == (leg.attachment is not None)
+    finally:
+        for _, gate in held:
+            gate.set()
+        with suppress(Exception):
+            bridge.teardown()
+        hal_executor.shutdown()
+        segmenter_executor.shutdown()
+        for spin in spins:
+            spin.join(timeout=5.0)
         for each in (segmenter, peer, node):
             each.destroy_node()
         rclpy.shutdown()
