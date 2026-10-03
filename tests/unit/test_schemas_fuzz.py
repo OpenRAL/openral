@@ -41,7 +41,11 @@ from openral_core.schemas import (
     DeviceInfo,
     EmbodimentKind,
     EndEffectorSpec,
+    ExecuteRskillTool,
     FrameEncoding,
+    GraspDeclaration,
+    GraspTargetRef,
+    GripperClosureCalibration,
     GripperConvention,
     HalConfig,
     HalEntrypoints,
@@ -53,6 +57,9 @@ from openral_core.schemas import (
     LinkCollisionGeometry,
     OccupancyGridRef,
     PhysicsBackend,
+    PlaceDeclaration,
+    PlaceRegion,
+    PlaceTargetRef,
     Pose6D,
     QuantizationBackend,
     QuantizationConfig,
@@ -96,6 +103,7 @@ from openral_core.schemas import (
     SphereShape,
     TaskSpec,
     TickResult,
+    VisionAttachmentRuntime,
     VLASpec,
     WaitTool,
     WorldState,
@@ -169,17 +177,18 @@ _sensor_overlay_st = st.builds(
     intrinsics=st.none() | _intrinsics_st,
 )
 
-_robot_unit_st = st.builds(
-    RobotUnit,
-    robot_id=_name,
-    unit=_name,
-    sensors=st.lists(_sensor_overlay_st, max_size=3),
-)
-
 _sensor_bundle_st = st.builds(
     SensorBundle,
     bundle_name=_name,
     sensors=st.lists(_sensor_spec_st, min_size=1, max_size=3),
+)
+
+_closure_calibration_st = st.builds(
+    GripperClosureCalibration,
+    closed_position=st.floats(min_value=-1.0, max_value=1.0),
+    closed_rest_offset=st.floats(min_value=0.0, max_value=0.1),
+    stall_gap=st.floats(min_value=1e-4, max_value=0.5),
+    settle_tolerance=st.floats(min_value=1e-5, max_value=0.05),
 )
 
 _joint_spec_st = st.builds(
@@ -188,6 +197,7 @@ _joint_spec_st = st.builds(
     joint_type=st.sampled_from(list(JointType)),
     parent_link=_name,
     child_link=_name,
+    closure_calibration=st.none() | _closure_calibration_st,
 )
 
 _end_effector_st = st.builds(
@@ -281,6 +291,14 @@ _pose6d_st = st.builds(
     frame_id=_name,
 )
 
+
+_robot_unit_st = st.builds(
+    RobotUnit,
+    robot_id=_name,
+    unit=_name,
+    sensors=st.lists(_sensor_overlay_st, max_size=3),
+)
+
 _detected_object_st = st.builds(
     DetectedObject,
     label=_name,
@@ -288,11 +306,68 @@ _detected_object_st = st.builds(
     pose=_pose6d_st,
 )
 
+# Grasp region: every half-extent <= 0.15 m keeps the box under both
+# GraspDeclaration caps (0.20 m, 8 * 0.15^3 = 0.027 m^3 < 0.03 m^3).
+_grasp_region_st = st.builds(
+    PlaceRegion,
+    frame_id=_name,
+    pose=_pose6d_st,
+    half_extents=st.tuples(
+        *[st.floats(min_value=1e-3, max_value=0.15, allow_nan=False) for _ in range(3)]
+    ),
+    evidence_ref=_name,
+    stamp_ns=_ns,
+)
+_grasp_declaration_st = st.builds(
+    GraspDeclaration,
+    target_id=_name,
+    object_id=st.text(max_size=16),
+    contact_links=st.lists(_name, min_size=1, max_size=3).map(tuple),
+    rskill_id=st.text(max_size=16),
+    trace_id=st.text(max_size=16),
+    timeout_s=st.floats(min_value=1e-3, max_value=GraspDeclaration.MAX_TIMEOUT_S),
+    stamp_ns=_ns,
+    active=st.booleans(),
+    region=st.none() | _grasp_region_st,
+)
+
+_place_declaration_st = st.builds(
+    PlaceDeclaration,
+    target_id=_name,
+    object_id=st.text(max_size=16),
+    rskill_id=st.text(max_size=16),
+    trace_id=st.text(max_size=16),
+    timeout_s=st.floats(min_value=1e-3, max_value=PlaceDeclaration.MAX_TIMEOUT_S),
+    stamp_ns=_ns,
+    active=st.booleans(),
+    region=st.none() | _grasp_region_st,
+    search_box=st.none() | _grasp_region_st,
+)
+
+_grasp_target_ref_st = st.builds(
+    GraspTargetRef,
+    label=_name,
+    object_id=st.none() | _name,
+    contact_links=st.lists(_name, max_size=3),
+)
+_place_target_ref_st = st.one_of(
+    st.builds(PlaceTargetRef, label=_name, object_id=st.none() | _name),
+    st.builds(PlaceTargetRef, label=_name, place_node_id=_name),
+)
+_execute_rskill_tool_st = st.builds(
+    ExecuteRskillTool,
+    rskill_id=_name,
+    prompt=st.text(max_size=16),
+    grasp_target=st.none() | _grasp_target_ref_st,
+    place_target=st.none() | _place_target_ref_st,
+)
+
 _world_state_st = st.builds(
     WorldState,
     stamp_ns=_ns,
     joint_state=_joint_state_st,
     detected_objects=st.lists(_detected_object_st, max_size=4),
+    grasp_declaration=st.none() | _grasp_declaration_st,
 )
 
 _action_st = st.builds(
@@ -382,6 +457,23 @@ _clock_authority_st = st.one_of(
 )
 
 _opt_bool = st.none() | st.booleans()
+_vision_attachment_st = st.builds(
+    VisionAttachmentRuntime,
+    # enabled requires every driver topic; topics are filled so both states are drawn.
+    enabled=st.booleans(),
+    camera=_name,
+    rgb_topic=_topic,
+    rgb_camera_info_topic=_topic,
+    depth_topic=_topic,
+    depth_camera_info_topic=_topic,
+    segmenter_manifest=_name,
+    deadline_s=st.floats(min_value=0.01, max_value=5.0),
+    evidence_timeout_s=st.floats(min_value=0.01, max_value=5.0),
+    tf_frames=st.dictionaries(_name, _name, max_size=3),
+    grasp_target_enabled=st.booleans(),
+    place_target_enabled=st.booleans(),
+    release_timeout_s=st.floats(min_value=0.01, max_value=30.0),
+)
 _deploy_runtime_st = st.builds(
     DeployRuntime,
     enable_slam=_opt_bool,
@@ -402,6 +494,8 @@ _deploy_runtime_st = st.builds(
     slam_visual_impl=st.none() | st.sampled_from(["isaac_ros", "pycuvslam"]),
     # distinct pair — the model_validator rejects two equal names.
     slam_stereo_cameras=st.none() | st.lists(_name, min_size=2, max_size=2, unique=True).map(tuple),
+    vision_attachment=st.none() | _vision_attachment_st,
+    grasp_allowance_enabled=st.booleans(),
 )
 
 _collision_evidence_st = st.builds(
@@ -569,6 +663,41 @@ def test_fuzz_detected_object(instance: DetectedObject) -> None:
 def test_fuzz_world_state(instance: WorldState) -> None:
     """WorldState round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(WorldState, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_grasp_target_ref_st)
+def test_fuzz_grasp_target_ref(instance: GraspTargetRef) -> None:
+    """GraspTargetRef round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(GraspTargetRef, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_place_target_ref_st)
+def test_fuzz_place_target_ref(instance: PlaceTargetRef) -> None:
+    """PlaceTargetRef round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(PlaceTargetRef, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_execute_rskill_tool_st)
+def test_fuzz_execute_rskill_tool_with_targets(instance: ExecuteRskillTool) -> None:
+    """ExecuteRskillTool with named targets round-trips and validates against its schema."""
+    _round_trip_and_validate(ExecuteRskillTool, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_place_declaration_st)
+def test_fuzz_place_declaration(instance: PlaceDeclaration) -> None:
+    """PlaceDeclaration (with an optional search box) round-trips and validates."""
+    _round_trip_and_validate(PlaceDeclaration, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_grasp_declaration_st)
+def test_fuzz_grasp_declaration(instance: GraspDeclaration) -> None:
+    """GraspDeclaration round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(GraspDeclaration, instance)
 
 
 @_FUZZ_SETTINGS
@@ -1370,3 +1499,10 @@ def test_fuzz_wait_tool(instance: WaitTool) -> None:
 def test_fuzz_deploy_runtime(instance: DeployRuntime) -> None:
     """DeployRuntime round-trips through JSON and validates against its schema."""
     _round_trip_and_validate(DeployRuntime, instance)
+
+
+@_FUZZ_SETTINGS
+@given(_vision_attachment_st)
+def test_fuzz_vision_attachment_runtime(instance: VisionAttachmentRuntime) -> None:
+    """VisionAttachmentRuntime round-trips through JSON and validates against its schema."""
+    _round_trip_and_validate(VisionAttachmentRuntime, instance)

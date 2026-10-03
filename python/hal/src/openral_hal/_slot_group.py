@@ -37,9 +37,21 @@ __all__ = [
     "compose_slot_group",
     "compose_slot_group_action",
     "refuse_stale_tick",
+    "slot_group_targets",
 ]
 
 GRIPPER_MODES = (ControlMode.GRIPPER_POSITION, ControlMode.GRIPPER_BINARY)
+# Modes that address no joint by name: ``slot_group_targets`` skips them.
+_JOINTLESS_MODES = frozenset(
+    {
+        ControlMode.CARTESIAN_POSE,
+        ControlMode.CARTESIAN_DELTA,
+        ControlMode.CARTESIAN_TWIST,
+        ControlMode.BODY_TWIST,
+        ControlMode.FOOT_PLACEMENT,
+        ControlMode.COMPOSITE_MODE,
+    }
+)
 
 
 def compose_slot_group(
@@ -77,6 +89,57 @@ def compose_slot_group(
         >>> compose_slot_group([arm, grip], ["j1", "grip"])
         [0.5, 0.3]
     """
+    for action in actions:
+        mode = action.control_mode
+        if mode not in GRIPPER_MODES and mode is not ControlMode.JOINT_POSITION:
+            raise ROSConfigError(
+                f"slot group carries control_mode {mode.value!r}, which this "
+                "composer cannot place into a joint-position command."
+            )
+    targets = slot_group_targets(actions, joint_names)
+    missing = [joint_names[i] for i, v in enumerate(targets) if v is None]
+    if missing:
+        raise ROSConfigError(
+            f"slot group leaves {len(missing)} joint(s) uncommanded: {missing}. "
+            "Publishing a partial command would drive the covered joints and "
+            "leave the rest on a stale setpoint, so the whole tick is refused."
+        )
+    return [float(v) for v in targets]  # type: ignore[arg-type]  # reason: `missing` proved no None remains
+
+
+def slot_group_targets(
+    actions: list[Action],
+    joint_names: list[str],
+) -> list[float | None]:
+    """Place one tick's joint-addressed slots by name; ``None`` where none wrote.
+
+    ``compose_slot_group``'s placement, with the same strictness, for a group that
+    need not cover every joint: slots that address no joint (``BODY_TWIST``,
+    Cartesian, footsteps, the composite flag) are skipped, and an uncommanded joint
+    is ``None`` instead of an error. Every slot that does address joints must be
+    readable — so a caller reading a subset (the gripper joints) can trust that a
+    ``None`` means "not commanded", never "commanded unreadably".
+
+    Args:
+        actions: Every slot action of one inference tick, in any order.
+        joint_names: The robot's actuated joint names, in HAL/action order.
+
+    Returns:
+        One target per entry of ``joint_names``, ``None`` for joints no slot wrote.
+
+    Raises:
+        ROSConfigError: A gripper / joint-position slot carries no payload, no
+            ``ee_name`` / ``joint_names``, an unknown name, or a row too short for
+            a joint it names; a joint-space slot is not a position (velocity,
+            torque, trajectory, dex hand); or two slots command one joint.
+
+    Example:
+        >>> from openral_core.schemas import Action, ControlMode
+        >>> twist = Action(control_mode=ControlMode.BODY_TWIST, body_twist=[[0.1] + [0.0] * 5])
+        >>> grip = Action(control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.3], ee_name="grip")
+        >>> slot_group_targets([twist, grip], ["j1", "grip"])
+        [None, 0.3]
+    """
     index_of = {name: i for i, name in enumerate(joint_names)}
     targets: list[float | None] = [None] * len(joint_names)
 
@@ -91,6 +154,8 @@ def compose_slot_group(
 
     for action in actions:
         mode = action.control_mode
+        if mode in _JOINTLESS_MODES:
+            continue
         if mode in GRIPPER_MODES:
             if not action.gripper:
                 raise ROSConfigError(
@@ -111,8 +176,8 @@ def compose_slot_group(
             continue
         if mode is not ControlMode.JOINT_POSITION:
             raise ROSConfigError(
-                f"slot group carries control_mode {mode.value!r}, which this "
-                "composer cannot place into a joint-position command."
+                f"slot group carries control_mode {mode.value!r}, which drives joints "
+                "but carries no joint position to place."
             )
         if not action.joint_targets:
             raise ROSConfigError("slot group has a joint_position action with no joint_targets.")
@@ -140,15 +205,7 @@ def compose_slot_group(
                     "to full dof."
                 )
             _claim(idx, float(row[idx]), f"joint {name!r}")
-
-    missing = [joint_names[i] for i, v in enumerate(targets) if v is None]
-    if missing:
-        raise ROSConfigError(
-            f"slot group leaves {len(missing)} joint(s) uncommanded: {missing}. "
-            "Publishing a partial command would drive the covered joints and "
-            "leave the rest on a stale setpoint, so the whole tick is refused."
-        )
-    return [float(v) for v in targets]  # type: ignore[arg-type]  # reason: `missing` proved no None remains
+    return targets
 
 
 def compose_slot_group_action(group: list[Action], joint_names: list[str]) -> Action:
@@ -323,11 +380,13 @@ class SlotGroupStager:
     keeps the watermark, ``reset`` (disconnect) clears it. ``last_committed_tick`` is what the HAL
     lifecycle node acknowledges on ``/openral/action_applied``. Ungrouped ticked actions
     go through ``admit`` / ``commit_tick`` so they share the same watermark.
+    ``last_applied_action`` is the command each commit applied (the composed one for a
+    group), which the lifecycle node feeds the grasp trigger.
 
     Example:
         >>> stager = SlotGroupStager()
-        >>> stager.pending, stager.last_committed_tick
-        (0, 0)
+        >>> stager.pending, stager.last_committed_tick, stager.last_applied_action
+        (0, 0, None)
     """
 
     def __init__(self) -> None:
@@ -335,6 +394,7 @@ class SlotGroupStager:
         self._actions: list[Action] = []
         self._key: tuple[int, int] | None = None
         self._watermark = TickWatermark()
+        self._applied: Action | None = None
 
     @property
     def pending(self) -> int:
@@ -351,15 +411,26 @@ class SlotGroupStager:
         """``runner_session_id`` of the last group the HAL applied (``0`` = none/legacy)."""
         return self._watermark.session
 
-    def commit(self, group: list[Action]) -> None:
-        """Record that a group ``stage`` released was applied to the robot.
+    @property
+    def last_applied_action(self) -> Action | None:
+        """The command the last commit applied (``None`` = none since ``reset``).
+
+        For a group, the composed action the HAL actually sent — never one slot; for an
+        ungrouped action (``commit_tick``), the action itself. Moves in step with
+        ``last_committed_tick``, so a reader that matched the tick reads its command.
+        """
+        return self._applied
+
+    def commit(self, group: list[Action], *, applied: Action) -> None:
+        """Record that a group ``stage`` released was applied to the robot as ``applied``.
 
         Call only after the apply succeeded: the lifecycle node acknowledges
         ``last_committed_tick``, so committing a group that failed would ack a
-        tick the robot never received.
+        tick the robot never received. ``applied`` is the composed command sent.
         """
         first = group[0]
         self._watermark.commit(int(first.tick_index), session=int(first.runner_session_id))
+        self._applied = applied
 
     def admit(self, action: Action) -> None:
         """Check an UNGROUPED ticked action against the watermark before it is applied.
@@ -380,10 +451,14 @@ class SlotGroupStager:
             self._watermark.check(tick, session=int(action.runner_session_id))
 
     def commit_tick(self, action: Action) -> None:
-        """Record that an ungrouped ticked ``action`` was applied (see ``admit``)."""
+        """Record that an ungrouped ``action`` was applied (see ``admit``).
+
+        The watermark moves only for a ticked action; ``last_applied_action`` always.
+        """
         tick = int(action.tick_index)
         if tick > 0:
             self._watermark.commit(tick, session=int(action.runner_session_id))
+        self._applied = action
 
     def discard(self) -> None:
         """Drop the half-staged tick but keep the committed watermark (estop).
@@ -397,10 +472,12 @@ class SlotGroupStager:
     def reset(self) -> None:
         """Drop the staged tick AND the watermark (disconnect: numbering restarts).
 
-        Retired runner sessions stay refused (``TickWatermark.reset``).
+        Retired runner sessions stay refused (``TickWatermark.reset``). The last applied
+        command is forgotten: after a reconnect nothing has been commanded yet.
         """
         self.discard()
         self._watermark.reset()
+        self._applied = None
 
     def stage(self, action: Action) -> list[Action] | None:
         """Add one slot; return the whole group once complete, else ``None``.

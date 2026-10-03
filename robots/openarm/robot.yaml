@@ -170,6 +170,20 @@ joints:
     has_torque_sensor: false
     actuator_kind: "servo"
     role: "gripper"
+    # Position-stall grasp trigger (the real gripper reports NO effort: vendor
+    # openarm_ros2 4e837e1 openarm_simple_hardware.cpp L268-279 hard-codes effort
+    # and velocity to 0.0). Calibration points from 30 fps real teleop
+    # (qualiadev/openarm-canonical-and-fabians-vr): closing on an object stalls
+    # 0.18-0.29 rad short of a 0.0 command and stays flat to ~1e-3 rad; closing on
+    # nothing rests 0.0086 rad from closed (<= 0.02); free-motion steady-state error
+    # 0.006-0.025 rad; position LSB 3.815e-4 rad. Robot-type constants of the
+    # gripper mechanism, not per cell: no unit overrides them
+    # (docs/reference/real-pick-place-design.md §5).
+    closure_calibration:
+      closed_position: 0.0
+      closed_rest_offset: 0.0086
+      stall_gap: 0.08
+      settle_tolerance: 0.001
   # ── Right arm (7 revolute) ────────────────────────────────────────
   - name: "right_joint1"
     origin_xyz: [0, -0.0625, 0]
@@ -280,6 +294,20 @@ joints:
     has_torque_sensor: false
     actuator_kind: "servo"
     role: "gripper"
+    # Position-stall grasp trigger (the real gripper reports NO effort: vendor
+    # openarm_ros2 4e837e1 openarm_simple_hardware.cpp L268-279 hard-codes effort
+    # and velocity to 0.0). Calibration points from 30 fps real teleop
+    # (qualiadev/openarm-canonical-and-fabians-vr): closing on an object stalls
+    # 0.18-0.29 rad short of a 0.0 command and stays flat to ~1e-3 rad; closing on
+    # nothing rests 0.0116 rad from closed (<= 0.02); free-motion steady-state error
+    # 0.006-0.025 rad; position LSB 3.815e-4 rad. Robot-type constants of the
+    # gripper mechanism, not per cell: no unit overrides them
+    # (docs/reference/real-pick-place-design.md §5).
+    closure_calibration:
+      closed_position: 0.0
+      closed_rest_offset: 0.0116
+      stall_gap: 0.08
+      settle_tolerance: 0.001
 
 end_effectors:
   - name: "left_gripper"
@@ -498,6 +526,19 @@ sensors:
   # set `octomap_cloud_topic` (this cloud comes from the SDK topic, not raycast).
   # Optional hardware: entry is inert (no device/topic) on cells without the
   # stereo camera.
+  #
+  # IMAGE GEOMETRY — `frame_id` IS NOT THE IMAGE FRAME, AND THE INTRINSICS ARE
+  # NOT THE CAMERA'S. `frame_id: zed_camera_link` is the ZED *body* frame
+  # (x forward, REP-103 body), kept because the kernel's world-voxel mount
+  # (openarm_base -> zed_camera_link) and the unit overlays are keyed on it. The
+  # driver publishes its depth (/zed/zed_node/depth/depth_registered) AND RGB
+  # (/zed/zed_node/rgb/color/rect/image) in `zed_left_camera_frame_optical`, both
+  # 1920x1080, with camera_info (/zed/zed_node/depth/camera_info,
+  # .../rgb/color/rect/camera_info) K = [1498.18, 0, 936.11; 0, 1498.18, 541.81;
+  # 0, 0, 1] (Thor cell, 2026-10-02): that focal length is 56 % longer than the
+  # nominal fx = fy = 960 below. Anything that projects or back-projects pixels
+  # MUST use the image header's frame_id and the driver's camera_info, never this
+  # frame_id or these intrinsics (segmenter_node: `camera_infos` parameter).
   #
   # SIM cost, accepted: MuJoCo twin's MJCF has no `head_zed` camera, so
   # SimSensorBridge's `synthesize_depth_pointcloud` raises ROSConfigError once,

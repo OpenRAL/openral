@@ -49,6 +49,7 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -129,6 +130,20 @@ public:
     attached_state_timeout_s_ = this->declare_parameter<double>("attached_state_timeout_s", 0.5);
     const auto world_state_topic =
         this->declare_parameter<std::string>("world_state_topic", "/openral/world_state_fast");
+    // Manifest attach link -> the frame the live TF tree names that body
+    // ("link=frame"; the scene's `vision_attachment.tf_frames`, the same strings
+    // the HAL gets). Empty: every attach link is looked up by its own name.
+    const auto tf_frame_entries = this->declare_parameter<std::vector<std::string>>(
+        "attach_link_tf_frames", std::vector<std::string>{});
+    std::string tf_frames_error;
+    if (!parse_attach_link_tf_frames(tf_frame_entries, attach_link_tf_frames_, tf_frames_error)) {
+      // Identity for every link: a renamed hand then fails its lookup and its
+      // payload stays in the map — fail closed, never cleared through a misread.
+      RCLCPP_ERROR(this->get_logger(),
+                   "attach_link_tf_frames: %s — ignoring the whole mapping; a held payload whose "
+                   "attach link is not itself a TF frame stays in the map",
+                   tf_frames_error.c_str());
+    }
 
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -334,13 +349,23 @@ private:
     present.reserve(state->attached_objects.size());
     for (const auto& object : state->attached_objects) {
       geometry_msgs::msg::TransformStamped tf_msg;
+      const std::string& link_frame = tf_frame_for(attach_link_tf_frames_, object.attach_link);
       try {
-        tf_msg = tf_buffer_->lookupTransform(base_frame_, object.attach_link, tf2::TimePointZero);
+        tf_msg = tf_buffer_->lookupTransform(base_frame_, link_frame, tf2::TimePointZero);
       } catch (const tf2::TransformException& ex) {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000,
                              "TF %s <- %s unavailable (%s): payload %s stays in the map",
-                             base_frame_.c_str(), object.attach_link.c_str(), ex.what(),
+                             base_frame_.c_str(), link_frame.c_str(), ex.what(),
                              object.object_id.c_str());
+        if (attach_link_tf_frames_.count(object.attach_link) == 0 &&
+            unmapped_links_warned_.insert(object.attach_link).second) {
+          RCLCPP_WARN(this->get_logger(),
+                      "attach link %s is not a TF frame and attach_link_tf_frames does not map "
+                      "it: if the cell's TF tree names this body differently, set "
+                      "attach_link_tf_frames ['%s=<tf frame>'] (the scene's "
+                      "vision_attachment.tf_frames)",
+                      object.attach_link.c_str(), object.attach_link.c_str());
+        }
         return;
       }
       tf2::Transform base_from_link;
@@ -414,6 +439,8 @@ private:
   rclcpp::Time octree_stamp_;
   bool octree_stale_{false};
   AttachSweepLedger attach_sweep_ledger_;
+  AttachLinkTfFrames attach_link_tf_frames_;
+  std::unordered_set<std::string> unmapped_links_warned_;  ///< one hint per link, not per tick
 
   std::unique_ptr<octomap::OcTree> octree_;
   openral_msgs::msg::WorldStateStamped::SharedPtr world_state_;

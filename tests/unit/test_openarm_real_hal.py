@@ -312,6 +312,34 @@ class TestReadState:
         hal.connect()
         assert hal.read_state().name == [j.name for j in hal.description.joints]
 
+    def test_effort_is_reordered_by_name_too(self, both_buses_up: Path) -> None:
+        hal = OpenArmRealHAL(require_can_links=False)
+        hal._state_fn = lambda: self._shuffled_state(hal)
+        hal.connect()
+        assert hal.read_state().effort == pytest.approx([i * 0.01 for i in range(16)])
+
+    @pytest.mark.parametrize("effort", [None, [0.5] * 15], ids=["absent", "short"])
+    def test_an_absent_effort_channel_stays_empty_not_zero(
+        self, both_buses_up: Path, effort: list[float] | None
+    ) -> None:
+        # Zero effort reads as "gripper unloaded", so zero-filling a missing
+        # channel hid a driver with no effort from the grasp trigger.
+        hal = OpenArmRealHAL(require_can_links=False)
+
+        def state() -> dict[str, object]:
+            raw = self._shuffled_state(hal)
+            if effort is None:
+                del raw["effort"]
+            else:
+                raw["effort"] = effort
+            return raw
+
+        hal._state_fn = state
+        hal.connect()
+        read = hal.read_state()
+        assert read.effort == []
+        assert read.position == [float(i) for i in range(16)]  # positions unaffected
+
     def test_a_partial_joint_state_is_an_error_not_a_zero_fill(self, both_buses_up: Path) -> None:
         # A gripper controller that failed to spawn must not read as "gripper
         # at 0.0" — that is a plausible pose, so it would go unnoticed.

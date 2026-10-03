@@ -280,7 +280,31 @@ def test_place_witness_revision_releases_the_deferred_action_tick() -> None:
         rclpy.shutdown()
 
 
-def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
+def _calibrated_so101(tmp_path: Path) -> Path:
+    """The real SO-101 manifest plus an ILLUSTRATIVE gripper ``closure_calibration``.
+
+    SO-101 has no measured closure calibration, so the vision leg (rightly) refuses it.
+    This test is about barrier composition, not the SO-101's jaw, so it loads a copy with
+    labelled, unmeasured numbers; the URDF ref is made absolute so the copy resolves it.
+    """
+    import yaml
+
+    data = yaml.safe_load(_ROBOT_YAML.read_text(encoding="utf-8"))
+    data["assets"]["urdf"]["ref"] = "file:" + str(_ROBOT_YAML.parent / "so101_follower.urdf")
+    for joint in data["joints"]:
+        if joint.get("role") == "gripper":
+            joint["closure_calibration"] = {
+                "closed_position": 0.0,
+                "closed_rest_offset": 0.0,
+                "stall_gap": 0.1,
+                "settle_tolerance": 0.01,
+            }
+    path = tmp_path / "so101_calibrated.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
+def test_a_vision_holder_and_an_attestation_only_revision_compose(tmp_path: Path) -> None:
     """Both barrier holders wired: the tick clears only when BOTH have settled.
 
     Landing the vision attachment leg put two holders on one barrier, pulling opposite ways:
@@ -332,7 +356,8 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
     from std_msgs.msg import UInt64
     from tf2_ros import StaticTransformBroadcaster
 
-    description = RobotDescription.from_yaml(str(_ROBOT_YAML))
+    robot_yaml = _calibrated_so101(tmp_path)
+    description = RobotDescription.from_yaml(str(robot_yaml))
     # Read off the manifest, never invented: the vision producer attaches to the
     # gripper joint's PARENT link and defaults its TCP to the moving jaw.
     gripper = next(joint for joint in description.joints if joint.role == "gripper")
@@ -347,12 +372,12 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
     node: Any = ManifestHALLifecycleNode("test_attachment_barrier_vision_live")
     node.set_parameters(
         [
-            Parameter("robot_yaml", value=str(_ROBOT_YAML)),
+            Parameter("robot_yaml", value=str(robot_yaml)),
             Parameter("hal_mode", value="sim"),
             Parameter("sim_env_yaml", value=str(_SCENE_YAML)),
             # 1 Hz: the node feeds every joint-state read into the grasp
-            # trigger, and an interleaved zero-effort tick would reset the
-            # debounce mid-burst below.
+            # trigger, and an interleaved sim jaw reading would break the
+            # settle window mid-burst below.
             Parameter("publish_rate_hz", value=1.0),
             Parameter("viewer_enabled", value=False),
             Parameter("vision_attachment_enabled", value=True),
@@ -360,6 +385,10 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
             Parameter("vision_attachment_depth_topic", value=depth_topic),
             Parameter("vision_attachment_service", value=segment_service),
             Parameter("vision_attachment_deadline_s", value=_VISION_DEADLINE_S),
+            # Required with the leg on: the launch passes the kernel's voxel deadline
+            # and margin + resolution; these are the real-cell derivations.
+            Parameter("vision_attachment_grid_max_age_s", value=1.0),
+            Parameter("vision_attachment_release_clear_m", value=0.04),
         ]
     )
     peer = Node("test_attachment_barrier_vision_peer")
@@ -462,21 +491,43 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
             "bridge short-circuits and never holds the barrier"
         )
 
+        # The producer looks both hops up at segmentation time; a lookup that misses
+        # resolves the grasp at once (no barrier to hold), so wait for tf2 to hold them.
+        from rclpy.time import Time
+
+        for hop in hops:
+            assert _wait_until(
+                lambda hop=hop: vision._tf_buffer.can_transform(
+                    hop.header.frame_id, hop.child_frame_id, Time()
+                )
+            ), f"tf2 never held {hop.header.frame_id} <- {hop.child_frame_id}"
+
         # ── 3. Load the jaws: the real trigger closes the vision barrier. ─────
-        held = float(gripper.effort_limit) * 0.9
-        for tick in range(6):
+        # Commanded closed, the jaw settles 0.4 short of it: a position stall.
+        vision.observe_command(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_targets=[[0.0] * len(description.joints)],
+            )
+        )
+        # 30 Hz samples stamped a minute ahead of the HAL's own wall-clock joint states,
+        # which the node feeds the same trigger at 1 Hz: every live sample for the rest of
+        # the test is older than the burst and dropped as a repeat, so none can land
+        # inside the settle window however slowly this loop runs.
+        start_ns = time.time_ns() + 60 * 1_000_000_000
+        for tick in range(12):
             vision.observe_joint_state(
                 JointState(
                     name=[str(gripper.name)],
                     position=[0.4],
-                    effort=[held],
-                    stamp_ns=1_000 + tick,
+                    stamp_ns=start_ns + (tick + 1) * 33_333_333,
                 )
             )
             if not vision.attachment_action_ack_ready():
                 break
         assert not vision.attachment_action_ack_ready(), (
-            "the gripper-effort trigger never fired; without a held vision "
+            "the position-stall trigger never fired; without a held vision "
             "barrier there is nothing to compose here"
         )
         assert not node._attachment_perception_ready()
@@ -540,5 +591,175 @@ def test_a_vision_holder_and_an_attestation_only_revision_compose() -> None:
         spin.join(timeout=5.0)
         unanswered.destroy_node()
         peer.destroy_node()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+@pytest.mark.parametrize(
+    "unset", ["vision_attachment_grid_max_age_s", "vision_attachment_release_clear_m"]
+)
+def test_the_vision_leg_refuses_to_activate_without_the_kernels_bounds(unset: str) -> None:
+    """``grid_max_age_s`` / ``release_clear_m`` belong to the kernel this deploy runs, so the
+    generic HAL node has no fallback for them: with the leg on, an unset one (0.0) is a
+    ``ROSConfigError`` naming it at activate, never a cell's values used silently."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("mujoco")
+    pytest.importorskip("openral_msgs")
+
+    from openral_core.exceptions import ROSConfigError
+    from openral_hal.lifecycle import ManifestHALLifecycleNode
+    from rclpy.parameter import Parameter
+
+    bounds = {"vision_attachment_grid_max_age_s": 1.0, "vision_attachment_release_clear_m": 0.04}
+    bounds.pop(unset)
+    rclpy.init()
+    node: Any = ManifestHALLifecycleNode("test_vision_leg_requires_kernel_bounds")
+    node.set_parameters(
+        [
+            Parameter("robot_yaml", value=str(_ROBOT_YAML)),
+            Parameter("hal_mode", value="sim"),
+            Parameter("sim_env_yaml", value=str(_SCENE_YAML)),
+            Parameter("viewer_enabled", value=False),
+            Parameter("vision_attachment_enabled", value=True),
+            Parameter("vision_attachment_camera", value=_VISION_CAMERA),
+            *(Parameter(name, value=value) for name, value in bounds.items()),
+        ]
+    )
+    try:
+        assert str(node.trigger_configure()).endswith("SUCCESS"), "configure failed"
+        with pytest.raises(ROSConfigError, match=unset):
+            node._setup_vision_attachment()
+        assert node._vision_attachment is None
+    finally:
+        with suppress(Exception):
+            node.trigger_cleanup()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+def _so101_slot_chunks(
+    description: Any, jaw: float, *, tick: int, named: bool, jaw_named: bool = True
+) -> list[Any]:
+    """One SO-101 tick (arm + gripper slot) encoded as ``ROSPublishingHAL`` encodes it."""
+    from openral_core import CONTROL_MODE_TO_UINT8, Action, ControlMode
+    from openral_msgs.msg import ActionChunk
+    from openral_runner.ros_publishing_hal import ROSPublishingHAL
+
+    arm = [joint.name for joint in description.joints if joint.role != "gripper"]
+    gripper = next(joint.name for joint in description.joints if joint.role == "gripper")
+    slots = [
+        Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            horizon=1,
+            joint_targets=[[0.0] * len(arm)],
+            joint_names=arm if named else None,
+            tick_index=tick,
+            tick_group_size=2,
+        ),
+        Action(
+            control_mode=ControlMode.GRIPPER_POSITION,
+            horizon=1,
+            gripper=[jaw],
+            ee_name=gripper if jaw_named else None,
+            tick_index=tick,
+            tick_group_size=2,
+        ),
+    ]
+    chunks = []
+    for action in slots:
+        flat, n_dof, horizon = ROSPublishingHAL._flatten_action_payload(action)
+        chunk = ActionChunk()
+        chunk.control_mode = CONTROL_MODE_TO_UINT8[action.control_mode]
+        chunk.horizon, chunk.flat, chunk.n_dof = int(horizon), flat, int(n_dof)
+        chunk.ee_name = action.ee_name or ""
+        chunk.tick_index = tick
+        chunk.tick_group_size = 2
+        chunk.runner_session_id = 0xA11CE
+        chunk.joint_names = list(action.joint_names or ())
+        chunks.append(chunk)
+    return chunks
+
+
+def test_a_sim_attached_slot_group_reaches_the_trigger_and_an_unknown_one_clears_it(
+    tmp_path: Path,
+) -> None:
+    """Round-6 phantom ATTACH, through the production ``_on_safe_action`` on ``SimAttachedHAL``.
+
+    ``SimAttachedHAL`` had no ``last_applied_action``, so every slot group's jaw command was
+    dropped and the trigger kept the start-pose ramp's close while the policy opened the
+    jaw: an open, stationary jaw then read as a stall. Now the composed group reaches the
+    trigger, and a committed group whose command cannot be read — an unnamed arm slot or an
+    unnamed jaw slot — clears it (no ATTACH possible) rather than leaving the stale close in
+    force. The trigger windows follow the
+    node's joint-state rate.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("mujoco")
+    pytest.importorskip("openral_msgs")
+
+    from openral_core import RobotDescription
+    from openral_hal._grasp_trigger import PositionStallConfig
+    from openral_hal.lifecycle import ManifestHALLifecycleNode
+    from rclpy.parameter import Parameter
+
+    robot_yaml = _calibrated_so101(tmp_path)
+    description = RobotDescription.from_yaml(str(robot_yaml))
+    rclpy.init()
+    node: Any = ManifestHALLifecycleNode("test_sim_attached_slot_group_trigger")
+    node.set_parameters(
+        [
+            Parameter("robot_yaml", value=str(robot_yaml)),
+            Parameter("hal_mode", value="sim"),
+            Parameter("sim_env_yaml", value=str(_SCENE_YAML)),
+            Parameter("publish_rate_hz", value=10.0),
+            Parameter("viewer_enabled", value=False),
+            Parameter("vision_attachment_enabled", value=True),
+            Parameter("vision_attachment_camera", value=_VISION_CAMERA),
+            Parameter("vision_attachment_grid_max_age_s", value=1.0),
+            Parameter("vision_attachment_release_clear_m", value=0.04),
+        ]
+    )
+    try:
+        assert str(node.trigger_configure()).endswith("SUCCESS"), "configure failed"
+        assert str(node.trigger_activate()).endswith("SUCCESS"), "activate failed"
+        vision = node._vision_attachment
+        assert vision is not None
+        (leg,) = vision._legs
+        assert leg.trigger._config == PositionStallConfig.for_rate(10.0), "10 Hz windows"
+        assert type(node._hal).__name__ == "SimAttachedHAL"
+        # The twin's joint states pause for the idle stepper's hold between VLA chunks;
+        # the jaw evidence must outlive it or the heartbeat drops on every pause.
+        assert vision._config.evidence_timeout_s == pytest.approx(
+            node._bridge.idle_hold_s + 4.0 / 10.0
+        )
+        assert vision._config.evidence_run_spans_gaps, "a re-inference pause resets the run"
+
+        leg.trigger.command(0.0)  # the start-pose ramp closed the jaw
+        for chunk in _so101_slot_chunks(description, 0.6, tick=1, named=True):
+            node._on_safe_action(chunk)
+        assert node._hal.last_committed_tick == 1
+        assert leg.trigger.last_command == pytest.approx(0.6), (
+            "the slot group that opened the jaw never reached the trigger"
+        )
+
+        leg.trigger.command(0.0)
+        for chunk in _so101_slot_chunks(description, 0.6, tick=2, named=False):
+            node._on_safe_action(chunk)
+        assert node._hal.last_committed_tick == 2, "the sim applied the group"
+        # An arm slot with no joint_names may have written the jaw (a padded row cannot
+        # say which joints it owns): the jaw command is unknown, so it is cleared.
+        assert node._hal.last_applied_action is None
+        assert leg.trigger.last_command is None, "an unreadable slot must not leave the close"
+
+        leg.trigger.command(0.0)
+        for chunk in _so101_slot_chunks(description, 0.6, tick=3, named=False, jaw_named=False):
+            node._on_safe_action(chunk)
+        assert node._hal.last_committed_tick == 3, "the sim applied the group"
+        assert node._hal.last_applied_action is None
+        assert leg.trigger.last_command is None, "an unknown command must not stay a close"
+    finally:
+        with suppress(Exception):
+            node.trigger_deactivate()
+            node.trigger_cleanup()
         node.destroy_node()
         rclpy.shutdown()

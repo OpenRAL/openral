@@ -137,6 +137,7 @@ def start_kernel(
     *,
     estop_reset_cooldown_s: float = 0.1,
     log_path: os.PathLike[str] | str | None = None,
+    params_file: os.PathLike[str] | str | None = None,
 ) -> Any:
     """Launch ``safety_kernel_node`` on an isolated DDS domain.
 
@@ -154,6 +155,12 @@ def start_kernel(
         estop_reset_cooldown_s: Tests use a short cooldown (≤100 ms).
         log_path: When given, redirects stdout+stderr to this file so
             the parent process can surface the kernel's logs on failure.
+        params_file: Dict sources only. When given, the parameters are
+            written to this YAML file and passed as ``--params-file``
+            instead of ``-p`` pairs. Needed for a real manifest's tight
+            collision geometry: OpenArm's hull-vertex array alone renders
+            to ~195 KB, over Linux's 128 KiB per-argument cap
+            (``MAX_ARG_STRLEN``), so ``exec`` fails with E2BIG.
 
     Returns:
         ``subprocess.Popen`` for the kernel; callers should pass it to
@@ -174,11 +181,25 @@ def start_kernel(
         stdout = subprocess.DEVNULL
         stderr = subprocess.DEVNULL
 
-    param_args = (
-        kernel_param_args_from_dict(source)
-        if isinstance(source, dict)
-        else kernel_param_args(source)
-    )
+    if params_file is not None:
+        if not isinstance(source, dict):
+            raise TypeError("params_file needs a parameter dict source")
+        import yaml
+
+        values = {
+            k: list(v) if isinstance(v, tuple) else v
+            for k, v in source.items()
+            if not (isinstance(v, (list, tuple)) and not v)  # untypeable, kernel defaults it
+        }
+        with open(params_file, "w", encoding="utf-8") as fp:
+            yaml.safe_dump({"/**": {"ros__parameters": values}}, fp)
+        param_args = ["--params-file", os.fspath(params_file)]
+    else:
+        param_args = (
+            kernel_param_args_from_dict(source)
+            if isinstance(source, dict)
+            else kernel_param_args(source)
+        )
 
     return subprocess.Popen(
         [

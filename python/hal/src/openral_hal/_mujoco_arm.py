@@ -581,6 +581,17 @@ class MujocoArmHAL(HALBase):
         )
 
     @property
+    def last_applied_action(self) -> Action | None:
+        """The command the robot was last actually given, as applied (``None`` = none yet).
+
+        For a slot group this is the composed full-dof ``JOINT_POSITION`` action, not any
+        one slot; set only once the apply succeeded, in step with ``last_committed_tick``.
+        The lifecycle node folds it into the grasp trigger, which must measure "short of
+        the command" against what the jaw was really told.
+        """
+        return self._slot_group.last_applied_action
+
+    @property
     def last_committed_tick(self) -> int:
         """Inference tick of the last slot group applied to MuJoCo (0 = none).
 
@@ -648,7 +659,7 @@ class MujocoArmHAL(HALBase):
         self._last_action_ns = time.monotonic_ns()
 
         if group is not None:
-            self._slot_group.commit(group)
+            self._slot_group.commit(group, applied=action)
         else:
             self._slot_group.commit_tick(action)
 

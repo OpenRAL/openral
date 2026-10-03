@@ -11,6 +11,7 @@
 #include "openral_safety_kernel/otel.hpp"
 #include "openral_safety_kernel/validator.hpp"
 
+#include <bitset>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -51,6 +52,15 @@ inline constexpr std::int64_t kDefaultChunkValidationDeadlineUs = 1000;
 inline constexpr double kMaxWorldVoxelDeadlineMs = 2000.0;
 inline constexpr double kMaxWorldVoxelDataAgeBudgetMs = 3000.0;
 inline constexpr double kDefaultWorldVoxelDataAgeBudgetMs = 1500.0;
+
+/// Cap on `grasp_region_max_age_s` / `place_region_max_age_s` — how old a
+/// producer-measured region's `stamp_ns` may be and still exempt anything. A
+/// region is measured from the voxel grid, so it may never be trusted for
+/// longer than twice the oldest grid the kernel will check against
+/// (`kMaxWorldVoxelDeadlineMs`). `0` (the default) derives the bound as
+/// `2 x world_voxel_deadline_ms`; configure refuses anything outside
+/// (0, cap] once resolved while the matching allowance is enabled.
+inline constexpr double kMaxRegionMeasurementAgeS = 2.0 * kMaxWorldVoxelDeadlineMs / 1000.0;
 
 class SafetyKernelLifecycleNode : public rclcpp_lifecycle::LifecycleNode {
 public:
@@ -171,6 +181,38 @@ private:
   // cannot outlive its declaration between world-state messages.
   bool place_declaration_live() const noexcept;
 
+  // Is a producer-measured region stamped `stamp_ns` young enough to exempt
+  // anything at `now`? False when older than `max_age_s`, stamped in the
+  // future, or when `max_age_s` is not positive (fails closed). Same clock as
+  // every other freshness check here (`this->now()`).
+  bool region_measurement_fresh(std::int64_t stamp_ns, double max_age_s) const noexcept;
+
+  // Grasp-phase declaration (ADR-0115 draft, hazard HZ-0115) — resolve the
+  // producer-measured grasp declaration riding the world state into the
+  // contact-link-scoped region `check_voxel_collision` exempts. Only called
+  // with `grasp_allowance_enabled`. Every refusal yields NO region, i.e. the
+  // unchanged world-voxel margin. Transition-only logs.
+  void ingest_grasp_declaration(const openral_msgs::msg::WorldStateStamped& msg);
+
+  // Is the ingested grasp region in force at `now`, before the handover rule?
+  // Dead on: no region, retracted (no region is ingested), `timeout_s`
+  // lapsed, a future stamp, or a world-state stream older than
+  // `attached_collision_deadline` (stale is "no exemption", never a drop by
+  // itself). Re-evaluated per candidate action.
+  bool grasp_declaration_live() const noexcept;
+
+  // Retire the current grasp declaration for good: the region is dropped and
+  // the declaration's identity joins the retired set so its heartbeat cannot
+  // re-arm it. Only a new declaration (new target or stamp) can arm again.
+  // Logs `safety.grasp_region_dropped reason=<reason>` when a region was armed.
+  // Allocation-free: it runs on the candidate path (`handover_exit`).
+  void retire_grasp_declaration(const char* reason);
+  // Is a payload attached at `attach_link` on the declaring gripper's chain —
+  // a link in `mask` or a non-root ancestor of one? Only such an attachment can
+  // be a grasp handover (or retire the declaration as the wrong object).
+  bool attachment_on_grasp_chain(int attach_link,
+                                 const std::bitset<kMaxGraspMaskLinks>& mask) const noexcept;
+
   // Measured joint-state seed for non-position-mode collision checks.
   // /joint_states feeds q_meas_ (in the action's dof order, mapped by joint
   // name) so a velocity chunk can be reconstructed into the configurations FK
@@ -284,6 +326,12 @@ private:
   std::vector<AttachedPrimitive> place_geometry_;
   std::vector<AttachedPrimitiveInput> place_geometry_scratch_;
   std::int64_t place_declaration_stamp_ns_{0};
+  /// Measurement age bounds for the producer regions (`*_region_max_age_s`,
+  /// resolved at configure) and the ingested place region's own `stamp_ns`.
+  double place_region_max_age_s_{0.0};
+  double grasp_region_max_age_s_{0.0};
+  std::int64_t place_region_stamp_ns_{0};
+  std::int64_t grasp_region_stamp_ns_{0};
   double place_declaration_timeout_s_{0.0};
   std::string place_declaration_target_;
   /// Last announced place-region refusal, as (reason token, target). The
@@ -294,6 +342,37 @@ private:
   /// state stays readable on the 1 Hz `/diagnostics` `place_region` key.
   std::string place_region_refusal_reason_;
   std::string place_region_refusal_target_;
+  /// Grasp-phase declaration state (ADR-0115 draft). Off unless
+  /// `grasp_allowance_enabled`; `grasp_allowlist_` is the launch-derived set of
+  /// contact links (`grasp_contact_links`, resolved at configure — an unknown
+  /// name fails configure). `grasp_region_` is the validated region whose mask
+  /// is the declaration's `contact_links` (all of which must be allowlisted).
+  bool grasp_allowance_enabled_{false};
+  std::bitset<kMaxGraspMaskLinks> grasp_allowlist_{};
+  GraspTargetRegion grasp_region_{};
+  std::int64_t grasp_declaration_stamp_ns_{0};
+  double grasp_declaration_timeout_s_{0.0};
+  std::string grasp_declaration_target_;
+  /// Identities (target, stamp) of every retired declaration, up to
+  /// `kGraspRetiredCapacity` (oldest evicted, logged once per activation). The
+  /// world state is heartbeated, so without this a retired exemption would
+  /// re-arm on the next beat; a retired identity never arms again — for every
+  /// pick of a multi-pick goal, not only the last one.
+  RetiredGraspSet grasp_retired_{};
+  bool grasp_retired_overflow_logged_{false};
+  /// Region latched at the handover edge, keyed by (target, stamp) like the
+  /// retirement memory. Later snapshots of that declaration cannot move or
+  /// resize it, so a producer re-measuring the carried payload at its live pose
+  /// cannot extend the exemption by dragging the box along with it.
+  GraspTargetRegion grasp_latched_region_{};
+  std::string grasp_latched_target_;
+  std::int64_t grasp_latched_stamp_ns_{0};
+  bool grasp_latched_{false};
+  bool grasp_latched_moved_warned_{false};
+  /// Last announced refusal (reason, target): refusals are logged on a change
+  /// only; the standing state is on the 1 Hz `/diagnostics` `grasp_region` key.
+  std::string grasp_region_refusal_reason_;
+  std::string grasp_region_refusal_target_;
   std::vector<std::uint8_t> attached_contact_mask_;
   std::vector<double> attached_contact_distance_;
   std::vector<AttachedObjectInput> attached_ingest_scratch_;  ///< reused across messages

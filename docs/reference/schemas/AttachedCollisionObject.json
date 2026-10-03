@@ -57,7 +57,10 @@
         "perception_track",
         "operator",
         "vision_segmentation",
-        "sim_contact_force"
+        "sim_contact_force",
+        "map_support_proximity",
+        "gripper_closure",
+        "grasp_target_region"
       ],
       "title": "AttachmentEvidenceKind",
       "type": "string"

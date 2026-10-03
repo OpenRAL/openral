@@ -23,6 +23,7 @@ import pytest
 from openral_cli import deploy_sim
 from openral_cli.deploy_sim import (
     _HEAD_CAM_ENV,
+    LaunchInvocation,
     _alloc_conf_var,
     _apply_palette_head_cam,
     _capability_matched_manifests,
@@ -2930,3 +2931,175 @@ def test_scene_preload_revision_is_forwarded_with_the_preload_id(tmp_path: Path)
     assert "preload_rskill_id:=rskill-smolvla-so101-eraser_place-bf16" in joined
     assert "preload_rskill_revision:=v1.2.0" in joined
     assert "preload_prompt:=" not in joined
+
+
+def test_deploy_vision_attachment_block_maps_to_hal_params_and_launch_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``runtime.vision_attachment`` reaches the HAL as ``vision_attachment_*`` params and
+    the launch as the segmenter args; an explicit ``--hal`` override still wins."""
+    import yaml
+
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    scene_src = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
+    data = yaml.safe_load(scene_src.read_text(encoding="utf-8"))
+    data["runtime"]["vision_attachment"].update(enabled=True, device="cpu", evidence_timeout_s=0.75)
+    scene = tmp_path / "vision_leg.yaml"
+    scene.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    invocation = resolve_launch_invocation(
+        config=scene,
+        robot_override="openarm",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides={"vision_attachment_deadline_s": 0.4},
+        enable_dashboard=False,
+    )
+
+    hal = {k: v for k, v in invocation.hal_params.items() if k.startswith("vision_attachment_")}
+    assert hal == {
+        "vision_attachment_enabled": True,
+        "vision_attachment_camera": "head_zed",
+        "vision_attachment_depth_topic": "/zed/zed_node/depth/depth_registered",
+        "vision_attachment_camera_info_topic": "/zed/zed_node/depth/camera_info",
+        "vision_attachment_deadline_s": 0.4,  # --hal wins over the scene's 0.25
+        "vision_attachment_evidence_timeout_s": 0.75,
+        "vision_attachment_grasp_target_enabled": False,
+        "vision_attachment_grasp_target_approach_m": 0.0,
+        "vision_attachment_place_target_enabled": False,
+        "vision_attachment_release_timeout_s": 3.0,
+        "vision_attachment_tf_frames": [
+            "openarm_left_link7=openarm_left_ee_base_link",
+            "openarm_right_link7=openarm_right_ee_base_link",
+        ],
+    }
+    manifest = _REPO_ROOT / "rskills/rskill-sam2_1-any-grasped_object_mask-bf16/rskill.yaml"
+    assert manifest.is_file()
+    for arg in (
+        "enable_vision_attachment:=true",
+        "vision_attachment_camera:=head_zed",
+        "vision_attachment_rgb_topic:=/zed/zed_node/rgb/color/rect/image",
+        "vision_attachment_rgb_camera_info_topic:=/zed/zed_node/rgb/color/rect/camera_info",
+        f"vision_attachment_segmenter_manifest:={manifest.resolve()}",
+        "vision_attachment_segmenter_device:=cpu",
+    ):
+        assert arg in invocation.argv_template
+
+
+def _openarm_cell_scene(
+    tmp_path: Path, *, runtime: dict[str, object], leg: dict[str, object]
+) -> Path:
+    """The committed OpenArm cell scene with ``runtime`` / ``vision_attachment`` overrides."""
+    import yaml
+
+    scene_src = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
+    data = yaml.safe_load(scene_src.read_text(encoding="utf-8"))
+    data["runtime"].update(runtime)
+    data["runtime"]["vision_attachment"].update(leg)
+    scene = tmp_path / "cell.yaml"
+    scene.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return scene
+
+
+def _invoke_cell(scene: Path, hal_mode: str = "sim") -> LaunchInvocation:
+    return resolve_launch_invocation(
+        config=scene,
+        robot_override="openarm",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        enable_dashboard=False,
+        hal_mode=hal_mode,
+    )
+
+
+def test_deploy_vision_attachment_producers_reach_the_hal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both producer legs forward as HAL params; nothing about the cell rides along."""
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    scene = _openarm_cell_scene(
+        tmp_path,
+        runtime={"grasp_allowance_enabled": True},
+        leg={
+            "enabled": True,
+            "grasp_target_enabled": True,
+            "place_target_enabled": True,
+            "release_timeout_s": 4.5,
+        },
+    )
+    hal = _invoke_cell(scene).hal_params
+    assert hal["vision_attachment_release_timeout_s"] == 4.5  # the scene's calibration
+    assert hal["vision_attachment_grasp_target_enabled"] is True
+    assert hal["vision_attachment_place_target_enabled"] is True
+    assert "vision_attachment_robot_unit" not in hal
+
+
+@pytest.mark.parametrize(
+    "leg",
+    [
+        {"enabled": False, "grasp_target_enabled": True},
+        {"enabled": True, "grasp_target_enabled": False},
+    ],
+)
+def test_deploy_refuses_grasp_allowance_without_its_producer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, leg: dict[str, object]
+) -> None:
+    """On real the kernel would arm the exemption with nothing measuring the region; the
+    twin keeps it (its MuJoCo evidence tracker is the producer)."""
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    scene = _openarm_cell_scene(tmp_path, runtime={"grasp_allowance_enabled": True}, leg=leg)
+    with pytest.raises(ROSConfigError, match="grasp_target_enabled"):
+        _invoke_cell(scene, hal_mode="real")
+    assert "grasp_allowance_enabled:=true" in _invoke_cell(scene).argv_template
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"vision_attachment_grasp_target_enabled": False},
+        {"vision_attachment_enabled": False},
+    ],
+)
+def test_deploy_run_refuses_a_hal_override_that_turns_the_producer_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, override: dict[str, object]
+) -> None:
+    """The scene enables the target leg, but ``--hal`` turns it off on the HAL: the refusal
+    judges the effective HAL params, so the override cannot arm an unmeasured exemption."""
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    scene = _openarm_cell_scene(
+        tmp_path,
+        runtime={"grasp_allowance_enabled": True},
+        leg={"enabled": True, "grasp_target_enabled": True},
+    )
+
+    def invoke(overrides: dict[str, object] | None) -> LaunchInvocation:
+        return resolve_launch_invocation(
+            config=scene,
+            robot_override="openarm",
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides=overrides,
+            enable_dashboard=False,
+            hal_mode="real",
+        )
+
+    with pytest.raises(ROSConfigError, match="--hal"):
+        invoke(override)
+    hal = invoke(None).hal_params
+    assert hal["vision_attachment_grasp_target_enabled"] is True
+
+
+def test_deploy_vision_attachment_off_forwards_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The committed scene keeps the leg off: no HAL param, no launch arg."""
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    invocation = resolve_launch_invocation(
+        config=_REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml",
+        robot_override="openarm",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        enable_dashboard=False,
+    )
+    assert not any(k.startswith("vision_attachment_") for k in invocation.hal_params)
+    assert not any("vision_attachment" in a for a in invocation.argv_template)

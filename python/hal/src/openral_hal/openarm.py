@@ -73,6 +73,7 @@ from openral_core.schemas import (
     ControlMode,
     EmbodimentKind,
     EndEffectorSpec,
+    GripperClosureCalibration,
     GripperReadMode,
     GripperWriteMode,
     HalEntrypoints,
@@ -197,7 +198,7 @@ def _openarm_arm_joint_specs(
 
 
 def _openarm_gripper_joint_spec(
-    name: str, side: str, position_limits: tuple[float, float]
+    name: str, side: str, position_limits: tuple[float, float], closed_rest_offset: float
 ) -> JointSpec:
     return JointSpec(
         name=name,
@@ -213,6 +214,15 @@ def _openarm_gripper_joint_spec(
         # collision lowering place finger_pair via mujoco FK and SimAttachedHAL
         # read the real jaw position (must match robots/openarm/robot.yaml).
         sim_joint_name=f"openarm_{side}_finger_joint1",
+        # Position-stall grasp-trigger thresholds: robot-type constants of the gripper
+        # mechanism (not per cell); must match robots/openarm/robot.yaml, where the teleop
+        # measurement behind each number is cited.
+        closure_calibration=GripperClosureCalibration(
+            closed_position=0.0,
+            closed_rest_offset=closed_rest_offset,
+            stall_gap=0.08,
+            settle_tolerance=0.001,
+        ),
     )
 
 
@@ -222,13 +232,13 @@ def _openarm_joint_specs() -> list[JointSpec]:
             _OPENARM_LEFT_ARM_JOINTS, _OPENARM_LEFT_ARM_POSITION_LIMITS, "left"
         ),
         _openarm_gripper_joint_spec(
-            _OPENARM_LEFT_GRIPPER_JOINT, "left", _OPENARM_LEFT_GRIPPER_POSITION_LIMITS
+            _OPENARM_LEFT_GRIPPER_JOINT, "left", _OPENARM_LEFT_GRIPPER_POSITION_LIMITS, 0.0086
         ),
         *_openarm_arm_joint_specs(
             _OPENARM_RIGHT_ARM_JOINTS, _OPENARM_RIGHT_ARM_POSITION_LIMITS, "right"
         ),
         _openarm_gripper_joint_spec(
-            _OPENARM_RIGHT_GRIPPER_JOINT, "right", _OPENARM_RIGHT_GRIPPER_POSITION_LIMITS
+            _OPENARM_RIGHT_GRIPPER_JOINT, "right", _OPENARM_RIGHT_GRIPPER_POSITION_LIMITS, 0.0116
         ),
     ]
 

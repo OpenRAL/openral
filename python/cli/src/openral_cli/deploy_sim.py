@@ -65,6 +65,7 @@ if TYPE_CHECKING:
         RSkillManifest,
         SensorOverlay,
         SensorSpec,
+        VisionAttachmentRuntime,
     )
 
 __all__ = [
@@ -433,6 +434,42 @@ def _scan_params_from_description(description: RobotDescription) -> dict[str, ob
         params["scan_max_range_m"] = lidar.range_max_m
     if lidar.range_min_m is not None:
         params["scan_min_range_m"] = lidar.range_min_m
+    return params
+
+
+def _vision_attachment_hal_params(leg: VisionAttachmentRuntime) -> dict[str, object]:
+    """Map an enabled ``DeployRuntime.vision_attachment`` block to the HAL's ROS params.
+
+    The HAL node's ``vision_attachment_*`` parameters (``openral_hal.lifecycle``) configure
+    its attachment-evidence bridge. Every value is forwarded by name as declared; rclpy
+    silently drops a name the HAL does not declare, so every name here must be one
+    (``tests/integration/test_vision_attachment_hal_params_live.py`` pins it). The bridge
+    back-projects the DEPTH stream, so its
+    ``camera_info`` is the depth one; the RGB pair goes to the segmenter (launch args).
+
+    Example:
+        >>> from openral_core import VisionAttachmentRuntime
+        >>> leg = VisionAttachmentRuntime(camera="head_zed", tf_frames={"l7": "ee"})
+        >>> _vision_attachment_hal_params(leg)["vision_attachment_tf_frames"]
+        ['l7=ee']
+    """
+    params: dict[str, object] = {
+        "vision_attachment_enabled": True,
+        "vision_attachment_camera": leg.camera,
+        "vision_attachment_depth_topic": leg.depth_topic or "",
+        "vision_attachment_camera_info_topic": leg.depth_camera_info_topic or "",
+        "vision_attachment_deadline_s": leg.deadline_s,
+        "vision_attachment_evidence_timeout_s": leg.evidence_timeout_s,
+        "vision_attachment_grasp_target_enabled": leg.grasp_target_enabled,
+        "vision_attachment_grasp_target_approach_m": leg.grasp_target_approach_m or 0.0,
+        "vision_attachment_place_target_enabled": leg.place_target_enabled,
+        "vision_attachment_release_timeout_s": leg.release_timeout_s,
+    }
+    # An empty YAML list has no ROS parameter type; the node's default is [""] = none.
+    if leg.tf_frames:
+        params["vision_attachment_tf_frames"] = [
+            f"{link}={frame}" for link, frame in sorted(leg.tf_frames.items())
+        ]
     return params
 
 
@@ -1207,7 +1244,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             )
             + "."
         )
-    if hal_mode == "real" and enable_octomap and enable_octomap_kernel_check:
+    # The vision attachment leg back-projects the payload through the same camera mount
+    # the world map uses, so a real deploy with it on passes the same mount gate.
+    vision_leg = rt.vision_attachment if rt is not None else None
+    vision_enabled = vision_leg is not None and vision_leg.enabled
+    if hal_mode == "real" and ((enable_octomap and enable_octomap_kernel_check) or vision_enabled):
         _preflight_depth_extrinsics(
             description,
             overlays,
@@ -1367,6 +1408,32 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # raises ROSCapabilityMismatch for a sim-only-vs-real mismatch.
     hal_params.setdefault("robot_yaml", str(robot_yaml))
     hal_params.setdefault("hal_mode", hal_mode)
+    if vision_leg is not None and vision_leg.enabled:
+        # setdefault: an explicit ``--hal vision_attachment_*=`` still wins.
+        for _va_key, _va_value in _vision_attachment_hal_params(vision_leg).items():
+            hal_params.setdefault(_va_key, _va_value)
+    # On real hardware the vision bridge's target leg is the only grasp-region producer (in
+    # sim the HAL's MuJoCo evidence tracker measures it), so the exemption without it would
+    # arm with nothing measuring the region. Judged on the EFFECTIVE HAL params (scene plus
+    # `--hal`), so `--hal vision_attachment_grasp_target_enabled=false` cannot defeat it; the
+    # scene leg must also be on, since it is what brings the segmenter up.
+    if (
+        hal_mode == "real"
+        and rt is not None
+        and rt.grasp_allowance_enabled
+        and not (
+            vision_enabled
+            and hal_params.get("vision_attachment_enabled") is True
+            and hal_params.get("vision_attachment_grasp_target_enabled") is True
+        )
+    ):
+        raise ROSConfigError(
+            "runtime.grasp_allowance_enabled on deploy run needs runtime.vision_attachment."
+            "enabled and runtime.vision_attachment.grasp_target_enabled, with no --hal "
+            "override turning vision_attachment_enabled / vision_attachment_grasp_target_enabled "
+            "off: the kernel would arm the grasp-target exemption with no producer measuring "
+            "its region."
+        )
     if hal_mode == "sim" and config is not None and not hal.bare_twin_sim:
         # A registered scene with no own composition: scene-attach
         # (SimAttachedHAL around the scene's SimRollout). Real never attaches.
@@ -1516,6 +1583,39 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     # carries the sim default and ros2 launch rejects an empty ``name:=``.
     if octomap_cloud_topic:
         argv_template.append(f"octomap_cloud_topic:={octomap_cloud_topic}")
+    # Grasp-target exemption: forwarded only when enabled, so the off path's argv is
+    # unchanged. The launch always passes the kernel the manifest's gripper links.
+    if rt is not None and rt.grasp_allowance_enabled:
+        argv_template.append("grasp_allowance_enabled:=true")
+    # Vision attachment leg: forwarded only when enabled, so a scene without it composes
+    # exactly as before. The launch couples it to the kernel's attached check.
+    if vision_leg is not None and vision_leg.enabled:
+        segmenter_manifest = Path(vision_leg.segmenter_manifest)
+        if not segmenter_manifest.is_absolute():
+            beside_scene = config.parent / segmenter_manifest if config is not None else None
+            segmenter_manifest = (
+                beside_scene
+                if beside_scene is not None and beside_scene.exists()
+                else repo_root / segmenter_manifest
+            )
+        argv_template.extend(
+            [
+                "enable_vision_attachment:=true",
+                f"vision_attachment_camera:={vision_leg.camera}",
+                f"vision_attachment_rgb_topic:={vision_leg.rgb_topic}",
+                f"vision_attachment_rgb_camera_info_topic:={vision_leg.rgb_camera_info_topic}",
+                f"vision_attachment_segmenter_manifest:={segmenter_manifest.resolve()}",
+                f"vision_attachment_segmenter_device:={vision_leg.device}",
+            ]
+        )
+        # The octomap bridge clears a held payload by looking its attach link up on TF, so it
+        # needs the same manifest-link -> TF-frame renames as the HAL: the exact strings the
+        # HAL gets (scene `tf_frames`, or a `--hal` override), never a second spelling.
+        va_tf_frames = hal_params.get("vision_attachment_tf_frames")
+        if isinstance(va_tf_frames, list) and va_tf_frames:
+            argv_template.append(
+                f"vision_attachment_tf_frames:={','.join(str(e) for e in va_tf_frames)}"
+            )
 
     # only forward the dataset args when recording is opted in
     # (empty defaults; ros2 launch rejects an empty ``name:=`` value, and the
@@ -1539,6 +1639,11 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
     if deploy_scene is not None and deploy_scene.place_declaration is not None:
         argv_template.append(
             f"place_declaration_json:={deploy_scene.place_declaration.model_dump_json()}"
+        )
+    # The grasp-phase sibling (real pick-and-place design §2.1), same path.
+    if deploy_scene is not None and deploy_scene.grasp_declaration is not None:
+        argv_template.append(
+            f"grasp_declaration_json:={deploy_scene.grasp_declaration.model_dump_json()}"
         )
 
     # The deploy memory bundle. ``--memory-dir`` (CLI) wins;

@@ -76,12 +76,16 @@ def test_sim_octomap_requires_repeated_occupancy_hits() -> None:
     assert module._octomap_occupancy_threshold("real") == 0.6
 
 
-def test_attached_collision_is_enabled_only_for_sim_manager() -> None:
-    """Sim has an attachment heartbeat; real remains off until its manager lands."""
+def test_attached_collision_follows_the_attachment_producer() -> None:
+    """Sim has its attachment manager; real only with the vision leg, and then always."""
     module = _import_launch_module(_LAUNCH_FILE)
 
-    assert module._attached_collision_enabled("sim") is True
-    assert module._attached_collision_enabled("real") is False
+    assert module._attached_collision_enabled("sim", False) is True
+    assert module._attached_collision_enabled("sim", True) is True
+    assert module._attached_collision_enabled("real", False) is False
+    assert module._attached_collision_enabled("real", True) is True
+    assert module._attached_collision_deadline_ms("sim") == 5000.0
+    assert module._attached_collision_deadline_ms("real") == 1000.0
 
 
 def _make_launch_context(robot_yaml: Path) -> object:
@@ -276,3 +280,34 @@ def test_an_unparseable_collision_scale_arms_nothing(
     monkeypatch.delenv("OPENRAL_COLLISION_SCALE_K", raising=False)
     monkeypatch.delenv("OPENRAL_COLLISION_SCALE_MIN", raising=False)
     assert module._collision_scale_params() == {}
+
+
+def test_a_robot_without_a_gripper_omits_the_grasp_links_and_refuses_the_allowance() -> None:
+    """UR5e declares no ``role: gripper`` joint: off, the allowlist is omitted (an empty list
+    has no ROS parameter type); on, the launch refuses rather than arm an exemption with
+    nothing to apply to."""
+    from openral_core.exceptions import ROSConfigError
+
+    params = _safety_kernel_params("ur5e")
+    assert params["grasp_allowance_enabled"] is False
+    assert "grasp_contact_links" not in params
+
+    module = _import_launch_module(_LAUNCH_FILE)
+    ctx = _make_launch_context(_REPO_ROOT / "robots" / "ur5e" / "robot.yaml")
+    ctx.launch_configurations["grasp_allowance_enabled"] = "true"  # type: ignore[attr-defined]
+    with pytest.raises(ROSConfigError, match="no role: gripper joint"):
+        module.compose_runtime_graph(ctx)  # type: ignore[attr-defined]
+
+
+def test_region_age_bounds_are_derived_from_the_voxel_deadline() -> None:
+    """Both producer-region age bounds reach the kernel as 2 x ``world_voxel_deadline_s``.
+
+    A region perceived from the voxel map is never trusted for longer than twice the age of
+    the grid it was measured from; the kernel refuses a bound above 2 x its own voxel cap.
+    """
+    params = _safety_kernel_params("openarm")
+    module = _import_launch_module(_LAUNCH_FILE)
+    deadline_s, _ = module._rig_from_launch_args({}).voxel_freshness_s  # type: ignore[attr-defined]
+    assert params["grasp_region_max_age_s"] == pytest.approx(2.0 * deadline_s)
+    assert params["place_region_max_age_s"] == pytest.approx(2.0 * deadline_s)
+    assert 0.0 < params["grasp_region_max_age_s"] <= 4.0
