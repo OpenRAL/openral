@@ -12024,7 +12024,9 @@ class ExecuteRskillTool(_ReasonerToolBase):
         description=(
             "Optional: the surface under the carried object is measured from the map "
             "anyway. Set only to restrict the place to one labelled surface (recall it first "
-            "when memory has it); naming it arms nothing by itself."
+            "when memory has it); naming it arms nothing by itself, and a hint perception "
+            "cannot ground REFUSES the goal rather than placing anywhere, so omit it unless "
+            "you can name a surface perception sees."
         ),
     )
 
