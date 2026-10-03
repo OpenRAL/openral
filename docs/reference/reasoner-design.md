@@ -91,7 +91,11 @@ requiring depth:
   `in_view[top]: #0 milk @px(412,233), #1 ketchup @px(388,251), …`. Pixel
   centers, not 3D poses — kept in a separate line from `scene_objects[map]:
   …@(x,y,z)` so coordinate spaces never blur. Identity exists with or without
-  depth.
+  depth. `scene_objects` lists every lifted instance (never deduped by label),
+  and the spatial-memory `memory_objects[map]: box id=obj_box_1@(…), box
+  id=obj_box_2@(…)` line gives each instance the id `grasp_target.object_id`
+  takes — "pick up the boxes" decomposes to one subtask per id, since grounding
+  refuses a bare label that matches several detections.
 - **A sticky `located` line**.
   The continuous detector's fixed ~230-class vocab *mislabels* the goal objects
   (a basket read as "box", ketchup as "bottle"). So every successful open-vocab
