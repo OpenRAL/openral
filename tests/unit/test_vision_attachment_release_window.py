@@ -1,6 +1,6 @@
 """The frozen release window, on the real OpenArm manifest (design note §1.6, §2.3 "Release").
 
-Gripper-effort DETACH fires when the jaws open, while the fingers still surround the
+The position-stall DETACH fires when the jaws open, while the fingers still surround the
 released object. Dropping the attachment then lets the octomap re-mark the object inside the
 fingers' 20 mm world margin and the first retreat chunk stops on it. The bridge instead keeps
 the payload as a checked attached record frozen in the base frame until the links it exempts
