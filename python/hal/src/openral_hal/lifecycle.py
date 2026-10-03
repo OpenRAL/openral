@@ -528,6 +528,9 @@ if _ROS2_AVAILABLE:
             # sim-only manifest that declares no rate falls back to 30 Hz with a
             # warning; a real manifest cannot load without one (issue #303).
             self.declare_parameter("publish_rate_hz", 0.0)
+            # The rate joint states are read (and fed to the grasp trigger) at,
+            # resolved on activate; ``None`` until then.
+            self._joint_state_rate_hz: float | None = None
             self.get_logger().info(f"{node_name} HAL node initialised.")
 
         # ── Subclass hooks ────────────────────────────────────────────────
@@ -806,6 +809,7 @@ if _ROS2_AVAILABLE:
                         "given; publishing proprio at 30 Hz. Declare the field."
                     )
                 rate_hz = 30.0 if declared is None else declared
+            self._joint_state_rate_hz = max(rate_hz, 1.0)
             # For sim-attached HALs, joint_state (and odom, in
             # MobileBaseBridge) is published off a dedicated thread reading the
             # snapshot, NOT a timer on the single executor thread (which is busy
@@ -1149,40 +1153,47 @@ if _ROS2_AVAILABLE:
             # the command the HAL actually applied, never a re-staged copy of it.
             vision = getattr(self, "_vision_attachment", None)
             if vision is not None:
-                applied = self._applied_command(action)
-                if applied is not None:
-                    vision.observe_command(applied)
+                self._fold_applied_command(vision, action)
             self._publish_action_applied_if_complete(action)
 
-        def _applied_command(self, action: Any) -> Any:  # noqa: ANN401  # reason: typed Action is imported only on the ROS path
-            """The command the HAL applied for ``action`` (just sent OK), or ``None``.
+        def _fold_applied_command(self, vision: Any, action: Any) -> None:  # noqa: ANN401  # reason: typed Action is imported only on the ROS path
+            """Tell the grasp trigger what the HAL applied for ``action`` (just sent OK).
 
-            An ungrouped action is applied as sent. An ADR-0102 slot is applied only
-            as part of its composed group, once the HAL committed that very
-            ``(runner_session_id, tick_index)`` — then the HAL's own
-            ``last_applied_action`` (the composed full-dof command) is it; a slot that
-            only staged applied nothing yet. A HAL that does not expose
-            ``last_applied_action`` cannot say what a group applied: logged once, and the
-            jaw command is left as it was (the trigger keeps its last one).
+            An ungrouped action is applied as sent. An ADR-0102 slot is applied only as
+            part of its composed group, once the HAL committed that very
+            ``(runner_session_id, tick_index)`` — then the HAL's ``last_applied_action``
+            (the composed full-dof command) is it; a slot that only staged applied nothing
+            yet and changes nothing. A committed group whose command the HAL cannot state
+            (no ``last_applied_action``, or ``None``) CLEARS the trigger's command: the
+            jaw was just told something unknown, and the previous command — say, closed
+            by the start-pose ramp while the policy has since opened the jaws — would
+            read an open, stationary jaw as a stall (a phantom ATTACH). The no-accessor
+            case is also logged once.
             """
             if int(action.tick_group_size) <= 1:
-                return action
+                vision.observe_command(action)
+                return
             if not hasattr(self._hal, "last_applied_action"):
                 if not self._warned_no_applied_action:
                     self._warned_no_applied_action = True
                     self.get_logger().error(
                         f"grasp trigger: {type(self._hal).__name__} exposes no "
-                        "last_applied_action, so no slot-group jaw command reaches the "
-                        "position-stall trigger (logged once)"
+                        "last_applied_action, so a slot group's jaw command is unknown and "
+                        "the position-stall trigger's command is cleared (logged once)"
                     )
-                return None
+                vision.clear_command()
+                return
             committed = (
                 getattr(self._hal, "last_committed_tick", None),
                 getattr(self._hal, "last_committed_session", None),
             )
             if committed != (int(action.tick_index), int(action.runner_session_id)):
-                return None
-            return getattr(self._hal, "last_applied_action", None)
+                return
+            applied = getattr(self._hal, "last_applied_action", None)
+            if applied is None:
+                vision.clear_command()
+            else:
+                vision.observe_command(applied)
 
         def _publish_action_applied_if_complete(self, action: Any) -> None:  # noqa: ANN401  # reason: typed Action is imported only on the ROS path
             """Acknowledge a tick only after its HAL application completes."""
@@ -1668,6 +1679,9 @@ if _ROS2_AVAILABLE:
                     ("vision_attachment_release_timeout_s", 3.0),
                 ],
             )
+            # Seconds; 0 = derive the grasp trigger's max sample gap from the joint-state
+            # rate (PositionStallConfig.for_rate). An operator calibration override.
+            self.declare_parameter("vision_attachment_trigger_max_gap_s", 0.0)
             self.declare_parameter("vision_attachment_tcp_frame", "")
             self.declare_parameter("vision_attachment_jaw_tip_frames", [""])
             # "manifest_link=tf_frame" entries for links the published TF tree
@@ -2165,10 +2179,24 @@ if _ROS2_AVAILABLE:
                         f"vision_attachment_tf_frames entry {entry!r} is not 'link=frame'."
                     )
                 tf_frames[link] = frame
+            from openral_hal._grasp_trigger import PositionStallConfig
+
+            # The trigger samples at the joint-state rate this node reads at, so its
+            # windows derive from that rate, not from a 30 Hz-tuned constant.
+            max_gap_s = gp("vision_attachment_trigger_max_gap_s").get_parameter_value().double_value
+            rate_hz = self._joint_state_rate_hz or self._hal.description.control_rate_hz or 30.0
+            trigger_config = PositionStallConfig.for_rate(
+                rate_hz, max_gap_s=max_gap_s if max_gap_s > 0.0 else None
+            )
+            self.get_logger().info(
+                f"grasp trigger windows for {rate_hz:.1f} Hz joint states: "
+                f"max_gap_s={trigger_config.max_gap_s:.3f}"
+            )
             self._vision_attachment = VisionAttachmentBridge(
                 self,
                 self._hal.description,
                 on_perception_ready=self._on_attachment_perception_ready,
+                trigger_config=trigger_config,
                 config=VisionAttachmentConfig(
                     camera=gp("vision_attachment_camera").get_parameter_value().string_value,
                     depth_topic=gp("vision_attachment_depth_topic")

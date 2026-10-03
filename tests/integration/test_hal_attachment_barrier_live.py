@@ -622,3 +622,113 @@ def test_the_vision_leg_refuses_to_activate_without_the_kernels_bounds(unset: st
             node.trigger_cleanup()
         node.destroy_node()
         rclpy.shutdown()
+
+
+def _so101_slot_chunks(description: Any, jaw: float, *, tick: int, named: bool) -> list[Any]:
+    """One SO-101 tick (arm + gripper slot) encoded as ``ROSPublishingHAL`` encodes it."""
+    from openral_core import CONTROL_MODE_TO_UINT8, Action, ControlMode
+    from openral_msgs.msg import ActionChunk
+    from openral_runner.ros_publishing_hal import ROSPublishingHAL
+
+    arm = [joint.name for joint in description.joints if joint.role != "gripper"]
+    gripper = next(joint.name for joint in description.joints if joint.role == "gripper")
+    slots = [
+        Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            horizon=1,
+            joint_targets=[[0.0] * len(arm)],
+            joint_names=arm if named else None,
+            tick_index=tick,
+            tick_group_size=2,
+        ),
+        Action(
+            control_mode=ControlMode.GRIPPER_POSITION,
+            horizon=1,
+            gripper=[jaw],
+            ee_name=gripper,
+            tick_index=tick,
+            tick_group_size=2,
+        ),
+    ]
+    chunks = []
+    for action in slots:
+        flat, n_dof, horizon = ROSPublishingHAL._flatten_action_payload(action)
+        chunk = ActionChunk()
+        chunk.control_mode = CONTROL_MODE_TO_UINT8[action.control_mode]
+        chunk.horizon, chunk.flat, chunk.n_dof = int(horizon), flat, int(n_dof)
+        chunk.ee_name = action.ee_name or ""
+        chunk.tick_index = tick
+        chunk.tick_group_size = 2
+        chunk.runner_session_id = 0xA11CE
+        chunk.joint_names = list(action.joint_names or ())
+        chunks.append(chunk)
+    return chunks
+
+
+def test_a_sim_attached_slot_group_reaches_the_trigger_and_an_unknown_one_clears_it(
+    tmp_path: Path,
+) -> None:
+    """Round-6 phantom ATTACH, through the production ``_on_safe_action`` on ``SimAttachedHAL``.
+
+    ``SimAttachedHAL`` had no ``last_applied_action``, so every slot group's jaw command was
+    dropped and the trigger kept the start-pose ramp's close while the policy opened the
+    jaw: an open, stationary jaw then read as a stall. Now the composed group reaches the
+    trigger, and a committed group whose command cannot be read clears it (no ATTACH
+    possible) rather than leaving the stale close in force. The trigger windows follow the
+    node's joint-state rate.
+    """
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("mujoco")
+    pytest.importorskip("openral_msgs")
+
+    from openral_core import RobotDescription
+    from openral_hal._grasp_trigger import PositionStallConfig
+    from openral_hal.lifecycle import ManifestHALLifecycleNode
+    from rclpy.parameter import Parameter
+
+    robot_yaml = _calibrated_so101(tmp_path)
+    description = RobotDescription.from_yaml(str(robot_yaml))
+    rclpy.init()
+    node: Any = ManifestHALLifecycleNode("test_sim_attached_slot_group_trigger")
+    node.set_parameters(
+        [
+            Parameter("robot_yaml", value=str(robot_yaml)),
+            Parameter("hal_mode", value="sim"),
+            Parameter("sim_env_yaml", value=str(_SCENE_YAML)),
+            Parameter("publish_rate_hz", value=10.0),
+            Parameter("viewer_enabled", value=False),
+            Parameter("vision_attachment_enabled", value=True),
+            Parameter("vision_attachment_camera", value=_VISION_CAMERA),
+            Parameter("vision_attachment_grid_max_age_s", value=1.0),
+            Parameter("vision_attachment_release_clear_m", value=0.04),
+        ]
+    )
+    try:
+        assert str(node.trigger_configure()).endswith("SUCCESS"), "configure failed"
+        assert str(node.trigger_activate()).endswith("SUCCESS"), "activate failed"
+        vision = node._vision_attachment
+        assert vision is not None
+        (leg,) = vision._legs
+        assert leg.trigger._config == PositionStallConfig.for_rate(10.0), "10 Hz windows"
+        assert type(node._hal).__name__ == "SimAttachedHAL"
+
+        leg.trigger.command(0.0)  # the start-pose ramp closed the jaw
+        for chunk in _so101_slot_chunks(description, 0.6, tick=1, named=True):
+            node._on_safe_action(chunk)
+        assert node._hal.last_committed_tick == 1
+        assert leg.trigger.last_command == pytest.approx(0.6), (
+            "the slot group that opened the jaw never reached the trigger"
+        )
+
+        leg.trigger.command(0.0)
+        for chunk in _so101_slot_chunks(description, 0.6, tick=2, named=False):
+            node._on_safe_action(chunk)
+        assert node._hal.last_committed_tick == 2, "the sim applied the group"
+        assert node._hal.last_applied_action is None
+        assert leg.trigger.last_command is None, "an unknown command must not stay a close"
+    finally:
+        with suppress(Exception):
+            node.trigger_deactivate()
+            node.trigger_cleanup()
+        node.destroy_node()
+        rclpy.shutdown()

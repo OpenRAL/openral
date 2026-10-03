@@ -211,7 +211,6 @@ class OpenArmRealHAL(RosControlHAL):
         # safety, so the four controllers are commanded from one reassembled
         # vector instead of from four partial ones.
         self._slot_group = SlotGroupStager()
-        self._last_applied_action: Action | None = None
 
         # Logical (Skill-facing) name → ros2_control (URDF) name.  Sourced from
         # the manifest so there is exactly one copy of this mapping in the repo.
@@ -473,10 +472,9 @@ class OpenArmRealHAL(RosControlHAL):
         for topic, msg in outbound:
             self._publish_fn(topic, msg)
         if group is not None:
-            self._slot_group.commit(group)
+            self._slot_group.commit(group, applied=action)
         else:
             self._slot_group.commit_tick(action)
-        self._last_applied_action = action
 
         log.debug(
             "hal.send_action",
@@ -505,7 +503,7 @@ class OpenArmRealHAL(RosControlHAL):
         The lifecycle node folds it into the grasp trigger, which must measure "short of
         the command" against what the jaw was really told.
         """
-        return self._last_applied_action
+        return self._slot_group.last_applied_action
 
     @property
     def last_committed_tick(self) -> int:

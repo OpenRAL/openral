@@ -1071,8 +1071,11 @@ class VisionAttachmentBridge:
             simulator bridge is given.
         config: Wiring and the segmentation deadline.
         gate_config: Geometric gate thresholds handed to the producer.
-        trigger_config: Debounce for every leg's position-stall trigger; the thresholds
-            are each gripper joint's own ``closure_calibration`` in the manifest.
+        trigger_config: Debounce for every leg's position-stall trigger and the heartbeat
+            evidence; the thresholds are each gripper joint's own ``closure_calibration``
+            in the manifest. ``None`` derives it from the manifest's control rate
+            (``PositionStallConfig.for_rate``; the 30 Hz-tuned defaults when it declares
+            none) — the HAL node passes one derived from the rate it actually feeds.
 
     Raises:
         ROSConfigError: If the manifest cannot support the producer or the
@@ -1106,6 +1109,11 @@ class VisionAttachmentBridge:
         self._description = description
         self._config = config or VisionAttachmentConfig()
         self._on_perception_ready = on_perception_ready
+        rate_hz = description.control_rate_hz
+        if trigger_config is None:
+            trigger_config = (
+                PositionStallConfig() if rate_hz is None else PositionStallConfig.for_rate(rate_hz)
+            )
         self._legs = self._build_legs(gate_config, trigger_config)
         # The manifest K is never projected through: it only fills the
         # producer's signature on the no-mask paths, which never back-project.
@@ -1142,7 +1150,7 @@ class VisionAttachmentBridge:
         self._heartbeat_timer: Any = None
         self._heartbeat_open: bool | None = None
         self._evidence = _JawEvidence(
-            trigger_config or PositionStallConfig(),
+            trigger_config,
             timeout_s=self._config.evidence_timeout_s,
         )
         self._joint_order = [joint.name for joint in description.joints]
@@ -1383,6 +1391,16 @@ class VisionAttachmentBridge:
             target = targets.get(leg.joint_name)
             if target is not None:
                 leg.trigger.command(target)
+
+    def clear_command(self) -> None:
+        """Forget every leg's commanded target: the HAL applied a command nobody can read.
+
+        Called by the HAL node when a committed slot group's command is unknown
+        (``PositionStallTrigger.clear_command``): no leg may measure "short of the
+        command" against an older one until the next readable command arrives.
+        """
+        for leg in self._legs:
+            leg.trigger.clear_command()
 
     def _row_targets(
         self, row: Sequence[float], names: Sequence[str] | None

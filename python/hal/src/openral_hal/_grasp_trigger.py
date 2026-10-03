@@ -62,6 +62,7 @@ never from this file: a gripper joint with no calibration refuses to arm.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from collections import deque
 from dataclasses import dataclass
@@ -74,12 +75,19 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_core import JointSpec, JointState, RobotDescription
 
 __all__ = [
+    "GAP_PERIODS",
     "GraspEvent",
     "PositionStallConfig",
     "PositionStallTrigger",
     "gripper_joint",
     "gripper_joints",
 ]
+
+
+#: How many sample periods ``PositionStallConfig.for_rate`` tolerates between accepted samples
+#: before a window restarts: three missed samples (one executor stall of a few ticks) are
+#: jitter, a fourth is a gap. Calibration point, not a benchmark.
+GAP_PERIODS = 4.0
 
 
 class GraspEvent(str, Enum):
@@ -163,6 +171,40 @@ class PositionStallConfig:
                 "max_gap_s > min_sample_interval_s >= 0, consecutive_samples >= 1 and "
                 f"settle_samples >= 2, got {self!r}."
             )
+
+    @classmethod
+    def for_rate(cls, rate_hz: float, *, max_gap_s: float | None = None) -> PositionStallConfig:
+        """The windows for a joint-state stream sampled at ``rate_hz``.
+
+        The defaults were tuned on a 30 Hz stream, and only ``max_gap_s`` is rate-bound:
+        a fixed 0.1 s is one period at 10 Hz, so every jittered sample read as a gap and
+        nothing (trigger nor heartbeat evidence) ever confirmed. It becomes
+        ``GAP_PERIODS`` periods, never below the 0.1 s default. ``consecutive_s`` /
+        ``settle_s`` stay: their sample-count floors already stretch them to
+        ``(count - 1)`` periods at a slow rate, and at a fast one the seconds hold.
+
+        Args:
+            rate_hz: The rate the trigger is fed — the HAL node's joint-state rate.
+            max_gap_s: Explicit override of the derived gap (an operator calibration).
+
+        Returns:
+            A validated config.
+
+        Raises:
+            ROSConfigError: A non-finite or non-positive ``rate_hz``, or a degenerate
+                override.
+
+        Example:
+            >>> [round(PositionStallConfig.for_rate(hz).max_gap_s, 3) for hz in (10, 30, 500)]
+            [0.4, 0.133, 0.1]
+        """
+        if not (math.isfinite(rate_hz) and rate_hz > 0.0):
+            raise ROSConfigError(f"PositionStallConfig.for_rate needs rate_hz > 0, got {rate_hz}.")
+        default = cls()
+        gap = max(default.max_gap_s, GAP_PERIODS / rate_hz) if max_gap_s is None else max_gap_s
+        config = dataclasses.replace(default, max_gap_s=gap)
+        config.validate()
+        return config
 
     def is_gap(self, stamp_ns: int, last_ns: int | None) -> bool:
         """Whether ``stamp_ns`` follows the last accepted sample by more than ``max_gap_s``.
@@ -372,6 +414,15 @@ class PositionStallTrigger:
         """
         if math.isfinite(target):
             self._command = float(target)
+
+    def clear_command(self) -> None:
+        """Forget the commanded target: what this jaw was last told is no longer known.
+
+        Until the next ``command`` the trigger cannot ATTACH, REGRASP or DETACH (each tick
+        counts in ``uncommanded_ticks``); a held payload stays held. Measuring "short of
+        the command" against a stale one is how an open, stationary jaw reads as a grasp.
+        """
+        self._command = None
 
     def update(self, state: JointState) -> GraspEvent | None:
         """Fold one state snapshot into the state machine.

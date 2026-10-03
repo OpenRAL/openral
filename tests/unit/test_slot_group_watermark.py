@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from openral_core.exceptions import ROSRuntimeError
 from openral_core.schemas import Action, ControlMode
-from openral_hal._slot_group import SlotGroupStager, TickWatermark
+from openral_hal._slot_group import SlotGroupStager, TickWatermark, compose_slot_group_action
 
 _A = 0xA11CE
 _B = 0xB0B
@@ -44,7 +44,7 @@ def _apply(stager: SlotGroupStager, tick: int, session: int) -> None:
     for slot in _slots(tick, session):
         group = stager.stage(slot)
     assert group is not None
-    stager.commit(group)
+    stager.commit(group, applied=compose_slot_group_action(group, ["j1", "grip"]))
 
 
 def test_same_session_refuses_every_tick_at_or_below_the_watermark_including_one() -> None:
@@ -67,7 +67,7 @@ def test_a_new_session_is_admitted_but_adopted_only_on_commit() -> None:
         stager.stage(_slots(41, _A)[0])
     group = stager.stage(_slots(41, _A)[1])
     assert group is not None
-    stager.commit(group)
+    stager.commit(group, applied=compose_slot_group_action(group, ["j1", "grip"]))
     _apply(stager, 1, _B)
     assert (stager.last_committed_tick, stager.last_committed_session) == (1, _B)
 
@@ -127,3 +127,29 @@ def test_legacy_actions_keep_the_entry_036_heuristic_exactly() -> None:
     assert stager.last_committed_tick == 1
     with pytest.raises(ROSRuntimeError, match="stale slot group"):
         stager.stage(_slots(1, 0)[0])
+
+
+def test_the_stager_holds_the_command_each_commit_applied_until_reset() -> None:
+    """``last_applied_action``: the composed group, then an ungrouped action, then nothing.
+
+    One accessor every stager-backed HAL reads, so the grasp trigger sees what the robot
+    was actually told — the composed row for a group, never a staged slot.
+    """
+    stager = SlotGroupStager()
+    slots = _slots(1, _A)
+    assert stager.stage(slots[0]) is None
+    assert stager.last_applied_action is None, "a staged slot applied nothing"
+    group = stager.stage(slots[1])
+    assert group is not None
+    composed = compose_slot_group_action(group, ["j1", "grip"])
+    stager.commit(group, applied=composed)
+    assert stager.last_applied_action is composed
+    assert composed.joint_targets == [[0.1, 0.5]]
+    ramp = Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[[0.0, 0.0]])
+    stager.commit_tick(ramp)  # unticked: the watermark stays, the command moves
+    assert stager.last_applied_action is ramp
+    assert stager.last_committed_tick == 1
+    stager.discard()
+    assert stager.last_applied_action is ramp, "an estop drop is not a new command"
+    stager.reset()
+    assert stager.last_applied_action is None, "after a disconnect nothing is commanded"
