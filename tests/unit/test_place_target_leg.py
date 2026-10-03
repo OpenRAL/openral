@@ -38,7 +38,6 @@ from openral_hal._place_target_leg import (
     PlaceRefusal,
     PlaceTargetLeg,
     PlaceTargetTracker,
-    _posed_primitives,
     _witness_candidates,
     measure_under_payload,
     place_tick,
@@ -54,6 +53,7 @@ from openral_hal.vision_attachment_bridge import (
     VisionAttachmentBridge,
     VisionAttachmentConfig,
     _GripperLeg,
+    primitive_poses,
 )
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -150,7 +150,7 @@ def _payload(
 
 def _posed(bottom_z: float, xy: tuple[float, float] = (0.45, 0.0)) -> _Posed:
     obj, t = _payload(bottom_z=bottom_z, xy=xy)
-    return _posed_primitives(obj, t)
+    return list(zip(obj.primitives, primitive_poses(obj, t), strict=True))
 
 
 def _under(grid: VoxelLattice, bottom_z: float, xy: tuple[float, float] = (0.45, 0.0)) -> object:
@@ -282,7 +282,7 @@ def _tick(
     ``grid_stamp_ns`` is the grid's ``source_stamp`` (defaults to ``now_ns``: fresh data).
     """
     obj, t = _payload(bottom_z=bottom_z if bottom_z is not None else 0.5, xy=xy)
-    posed = _posed_primitives(obj, t)
+    posed = list(zip(obj.primitives, primitive_poses(obj, t), strict=True))
     key = (obj.object_id, obj.stamp_ns)
     place_tick(
         tracker,
