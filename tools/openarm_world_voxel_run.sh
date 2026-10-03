@@ -14,10 +14,13 @@
 #      never the manifest's nominal value. `openral deploy run` applies the same gate; this
 #      copy only refuses earlier;
 #   3. it runs in an interactive terminal and the operator types the confirmation.
-# Extra arguments pass through to `openral deploy run` only from an allow-list of
-# observability flags (--foxglove, --dataset-out <dir>, ...). Anything else — a second
-# --config, a --no-enable-octomap-kernel-check — could swap or weaken the graph the gates
-# just verified, so it is refused.
+# `--scene <path>` swaps in a local copy of that scene (runbook step 4: one carrying a
+# grasp_declaration) under the same gates. It must be a .yaml under scenes/deploy/ that
+# validates as a DeployScene for robot_id openarm, keeps enable_octomap_kernel_check: true,
+# and names no robot_unit other than $OPENRAL_ROBOT_UNIT. Other extra arguments pass through
+# to `openral deploy run` only from an allow-list of observability flags (--foxglove,
+# --dataset-out <dir>, ...). Anything else — a --config, a --no-enable-octomap-kernel-check
+# — could swap or weaken the graph the gates just verified, so it is refused.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,6 +43,13 @@ while (($#)); do
     --dataset-out | --dataset-repo-id | --dataset-license | --dashboard-port | --foxglove-port)
       (($# >= 2)) || refuse "$1 needs a value."
       passthrough+=("$1" "$2")
+      shift 2
+      ;;
+    --scene)
+      (($# >= 2)) || refuse "--scene needs a path."
+      scene="$(readlink -f -- "$2")" || refuse "--scene $2 does not resolve."
+      [[ "${scene}" == "${root}/scenes/deploy/"*.yaml && -f "${scene}" ]] ||
+        refuse "--scene must be an existing .yaml file under ${root}/scenes/deploy/."
       shift 2
       ;;
     *)
@@ -94,6 +104,24 @@ print("\n".join(problems), file=sys.stderr)
 sys.exit(1 if problems else 0)
 PY
   refuse "head_zed's mount is not declared for unit ${unit} (runbook step 2)."
+# The scene `deploy run` gets: OpenArm's, world-voxel check still on, unit from the env.
+"${openral_python}" - "${scene}" "${unit}" <<'PY' ||
+import sys
+
+from openral_core import DeployScene
+
+scene = DeployScene.from_yaml(sys.argv[1])
+problems = []
+if scene.robot_id != "openarm":
+    problems.append(f"robot_id is {scene.robot_id!r}, not 'openarm'")
+if scene.runtime is None or scene.runtime.enable_octomap_kernel_check is not True:
+    problems.append("runtime.enable_octomap_kernel_check is not true")
+if scene.robot_unit not in (None, sys.argv[2]):
+    problems.append(f"robot_unit {scene.robot_unit!r} is not OPENRAL_ROBOT_UNIT {sys.argv[2]!r}")
+print("\n".join(problems), file=sys.stderr)
+sys.exit(1 if problems else 0)
+PY
+  refuse "scene ${scene} is not an OpenArm world-voxel scene (see above)."
 [[ -t 0 ]] || refuse "not an interactive terminal; a person at the cell launches this."
 
 echo "Bringup steps all 16 motors to zero UNRAMPED. Arms parked near zero, cell clear,"
