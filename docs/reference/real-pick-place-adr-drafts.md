@@ -29,7 +29,10 @@ bridge's "an occupied cell is an obstacle" invariant) were considered and reject
   `contact_links`. An exempt (link, cell) pair never trips and never supplies the reported
   identity; it reaches `sweep_min` clamped to no less than the margin (slack 0, the velocity
   band's slowest rate), so a finger inside its target can never drive the sweep minimum negative
-  and hide the graded slowdown every non-exempt pair still earns.
+  and hide the graded slowdown every non-exempt pair still earns. An exempt pair never spends
+  the check's shared stage-2 refinement budget (it cannot trip, so stage 1 suffices), so a finger
+  buried in its target cannot starve a non-exempt link of the exact hull distance and false-stop
+  it.
 - All other links, all cells outside the region, self-collision, attached checks and the force
   gate are unchanged. The support surface under the target is outside the region (producer
   obligation: the region's lower face sits above the support plane).
