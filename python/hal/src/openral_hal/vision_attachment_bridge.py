@@ -178,9 +178,10 @@ class _GripperLeg:
         deadline_timer: The one-shot deadline timer for that future, if any.
         generation: Bumped by every grasp event; a reply or deadline carrying an
             older one is stale and dropped.
-        region_spent: ``(target_id, stamp_ns)`` of the declaration whose region this
-            leg already took as its payload — its first ATTACH; later ATTACHes of the
-            same declaration segment instead.
+        region_spent: ``(target_id, region stamp_ns)`` of the measured region this leg
+            already took as its payload; an ATTACH offered that same region again
+            segments instead, while a region re-measured later in the goal (a second
+            approach-armed pick: same target id, new measurement) may be taken.
         pending: Whether this leg is holding the ack barrier.
         jaw_link: The gripper joint's child link — what a ``GraspDeclaration``
             names in ``contact_links``.
@@ -1725,9 +1726,11 @@ class VisionAttachmentBridge:
 
         Confirmation is geometric: the declaration names this leg's jaw link and the
         leg's TCP (``jaw_point``) lies within ``grasp_target_occluder_margin_m`` of the
-        region. The region is a pre-grasp measurement, so a leg takes it once per
-        declaration (``region_spent``): a later ATTACH of the same declaration — the
-        object set down and picked up again — is segmented. ``None`` — logged when a
+        region. The region is a pre-grasp measurement, so a leg takes each measured
+        region once (``region_spent``, keyed by the region's own ``stamp_ns``): a later
+        ATTACH offered the same region — the object set down and picked up again
+        before any re-measurement — is segmented, while a region re-measured for a
+        second pick in the same goal is a new payload. ``None`` — logged when a
         declaration was live — sends the grasp to ``SegmentInView`` instead.
         """
         if self._grasp_target is None:
@@ -1740,11 +1743,14 @@ class VisionAttachmentBridge:
         region = declaration.region if declaration is not None else None
         if declaration is None or region is None or leg.jaw_link not in declaration.contact_links:
             return None
-        key = (declaration.target_id, int(declaration.stamp_ns))
+        # The region's own measurement stamp, not the declaration's: an approach-armed
+        # goal keeps one ``(target_id, stamp_ns)`` across picks, each re-measured.
+        key = (declaration.target_id, int(region.stamp_ns))
         if leg.region_spent == key:
             self._node.get_logger().info(
                 f"vision attachment {leg.joint_name}: grasp-target region for "
-                f"{declaration.target_id!r} already handed over; segmenting instead"
+                f"{declaration.target_id!r} (measured at {region.stamp_ns}) already handed "
+                "over; segmenting instead"
             )
             return None
         hand = self.jaw_point(leg.jaw_link, region.frame_id)

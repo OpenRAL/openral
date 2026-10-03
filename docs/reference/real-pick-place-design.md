@@ -287,7 +287,10 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   occupied layer (`approach_cell_count`): a hand low over an empty table holds only the table and
   is not approaching (ceiling: a surface two layers thick still counts its upper layer). A hand
   whose legs hold a payload, a release window or a pending segmentation is never approaching
-  (what is near its TCP is what it carries). After any retraction of an arming, that hand
+  (what is near its TCP is what it carries) — but the *armed* hand in that state keeps its arming
+  and box unchanged (no `approach_ended`, no backoff): its ATTACH went to segmentation and only
+  `_finish` → `on_attach` resolves it, so retracting there would hand nothing over
+  (`attach_unarmed`). Only the hand holding nothing again ends it, on a later tick. After any retraction of an arming, that hand
   re-arms only once its box centre moved more than one voxel or one freeze window elapsed — the
   same map at the same pose gives the same verdict, so re-arming every tick would only flood the
   log and the segmenter; a backed-off hand still counts toward "two at once".
@@ -295,6 +298,11 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   `search_box` declaration) hands over and stops re-measurement. The goal-scope declaration names
   every hand before any approach arms, so an ATTACH there — a false positive, or a grasp of
   something never measured — hands nothing over and does not stop the other hand's approach.
+  A grasp-leg measurement in flight at the handover (or at any change of what is measured) is
+  discarded: requests carry the tracker's `generation`, and a reply or deadline under an older
+  one is dropped — its refusal never retracts the handed-over arming, its region never
+  overwrites the frozen one; a handed-over tracker also ignores `accept` / `refuse` outright,
+  and `on_detach` releases an approach-armed hand even if its arming is gone.
   *Second pick (chosen conservatively):* once every leg of the handed-over hand holds nothing (no
   payload, no release window, no pending segmentation — polled each tick), an approach-armed pick
   is complete: its region is dropped (`picked`) and the hand may re-arm within the goal from a
@@ -335,7 +343,10 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   naming this leg's jaw link and the leg's TCP lies within `grasp_target_occluder_margin_m` of it,
   the region box is the payload — `object_id` = the declaration's `object_id` (what the kernel's
   handover matches; `target_id` when empty), `AttachmentEvidenceKind.GRASP_TARGET_REGION`, no
-  `SegmentInView` call; otherwise the attach segments as before. Live:
+  `SegmentInView` call; otherwise the attach segments as before. A leg takes each *measured*
+  region once (`region_spent` = `(target_id, region.stamp_ns)`): an ATTACH offered the same region
+  again segments, while the region re-measured for a second approach-armed pick — same
+  `approach:<link>` id, same goal stamp, a new measurement — is a new payload. Live:
   `tests/integration/test_grasp_target_leg_live.py` step 6.
 - Must be fixed first (all three are silent): `head_zed` optical frame, intrinsics from the
   driver's `camera_info`, explicit mask/depth resampling.

@@ -80,7 +80,12 @@ approaching hand arms a one-hand declaration (``target_id="approach:<first
 link>"``, ``contact_links`` = that hand, the box as its ``search_box``, every
 other field the goal's); two at once arm none. The box then follows the TCP and
 runs the measurement above unchanged; the hand leaving the approach distance
-retracts the region at once (``approach_ended``). After any retraction a hand
+retracts the region at once (``approach_ended``) — but not while one of its legs
+holds, releases or is segmenting a payload: its grasp is being resolved, and the
+ATTACH that resolves it (after ``SegmentInView``, or at once from the region) hands
+the arming over. A measurement in flight when the target changes or is handed over
+is discarded (``GraspTargetTracker.generation``), its refusal or region dropped,
+and a handed-over target takes no ``accept`` / ``refuse``. After any retraction a hand
 re-arms only once it moved more than one voxel or a freeze window elapsed. Once
 the handed-over hand's legs hold nothing (polled each tick), the pick is
 complete: the region is dropped and the hand may re-arm for a second pick. A
@@ -193,6 +198,9 @@ class GraspTargetTracker:
         # Per hand: (approach box centre, now_ns) of its last refused/ended arming.
         self._backoff: dict[tuple[str, ...], tuple[tuple[float, float, float], int]] = {}
         self._status = ""
+        # Bumped whenever what a measurement in flight was asked for stops being what is
+        # measured (new/cleared declaration, arming, retraction, handover, pick done).
+        self._generation = 0
 
     @property
     def declaration(self) -> GraspDeclaration | None:
@@ -214,12 +222,18 @@ class GraspTargetTracker:
         """The links of the hand whose ATTACH ended re-measurement, or ``None``."""
         return self._handed_over
 
+    @property
+    def generation(self) -> int:
+        """Tag a measurement request with this; a reply under another one is stale."""
+        return self._generation
+
     def _transition(self, status: str, line: str) -> None:
         if status != self._status:
             self._status = status
             self._log(line)
 
     def _retract(self, kind: str, detail: str, *, now_ns: int) -> None:
+        self._generation += 1
         had = self._region is not None
         self._region = None
         # An approach-armed target exists only for its region; it re-arms from scratch,
@@ -247,6 +261,7 @@ class GraspTargetTracker:
             declaration.stamp_ns,
         ):
             return  # the latched copy again
+        self._generation += 1
         self._region = None
         self._approach = None
         self._handed_over = None
@@ -260,6 +275,7 @@ class GraspTargetTracker:
         )
 
     def _clear(self, why: str) -> None:
+        self._generation += 1
         self._declaration = None
         self._approach = None
         self._region = None
@@ -283,6 +299,7 @@ class GraspTargetTracker:
         *,
         now_ns: int,
         move_m: float,
+        holding: Sequence[tuple[str, ...]] = (),
     ) -> None:
         """Arm, follow or end the approach-armed target from this tick's approaching hands.
 
@@ -293,6 +310,12 @@ class GraspTargetTracker:
             move_m: How far a hand's approach box centre must move from where its
                 last arming was refused or ended before it re-arms inside the
                 backoff (the leg passes one voxel).
+            holding: Hands whose legs hold, release or are segmenting a payload. The
+                held hand among them keeps its arming and box unchanged (no
+                retraction, no backoff): its grasp is being resolved, and the
+                ATTACH that resolves it hands the region over (``on_attach``). Only
+                the hand holding nothing again — no attachment — ends it, on a
+                later tick, by leaving the approach distance.
 
         Only hands whose links the declaration names count (a named declaration
         narrows the choice). The held hand absent from ``near`` retracts at once
@@ -310,15 +333,20 @@ class GraspTargetTracker:
         near = [(links, box) for links, box in near if set(links) <= named]
         held = self._approach
         if held is not None:
+            # Mid-grasp (``holding``) the arming stays as it is: what is near the TCP
+            # now is what the hand closes on, and its ATTACH hands the region over.
             box = next((b for links, b in near if links == held.contact_links), None)
-            if box is None:
+            if held.contact_links in holding:
+                pass
+            elif box is None:
                 self._retract(
                     "approach_ended",
-                    f"{held.target_id!r}: the hand's TCP left the approach distance",
+                    f"{held.target_id!r}: the hand's TCP left the approach distance "
+                    "(or is no longer located)",
                     now_ns=now_ns,
                 )
-                return
-            self._approach = held.model_copy(update={"search_box": box})
+            else:
+                self._approach = held.model_copy(update={"search_box": box})
             return
         if len(near) > 1:
             self._transition(
@@ -337,6 +365,7 @@ class GraspTargetTracker:
             if moved <= move_m and now_ns - since_ns <= self._freeze_ns:
                 return  # same place, same map: the refusal would repeat
             del self._backoff[links]
+        self._generation += 1
         self._approach = goal.model_copy(
             update={
                 "target_id": f"{APPROACH_TARGET_PREFIX}{links[0]}",
@@ -381,6 +410,7 @@ class GraspTargetTracker:
                 )
             return
         self._handed_over = armed.contact_links
+        self._generation += 1  # a measurement in flight was asked before the grasp
         self._transition(
             "handed_over",
             f"grasp target {armed.target_id!r}: ATTACH on {contact_link!r} — region "
@@ -398,12 +428,17 @@ class GraspTargetTracker:
         declaration from dispatch.
         """
         handed = self._handed_over
-        held = self._approach
-        if handed is None or held is None or contact_link not in handed:
+        goal = self._declaration
+        if handed is None or goal is None or contact_link not in handed:
             return
+        held = self._approach
+        if held is None and goal.search_box is not None:
+            return  # a named target stays handed over
+        # ``held`` is ``None`` only if the arming was dropped after the handover; the
+        # hand is released either way, never left handed over for the rest of the goal.
         self._retract(
             "picked",
-            f"{held.target_id!r}: {contact_link!r} released its payload; may re-arm",
+            f"{(held or goal).target_id!r}: {contact_link!r} released its payload; may re-arm",
             now_ns=now_ns,
         )
         self._handed_over = None
@@ -419,9 +454,12 @@ class GraspTargetTracker:
         )
 
     def accept(self, region: PlaceRegion) -> None:
-        """Hold a region that passed every gate; a declaration-cap violation refuses it."""
+        """Hold a region that passed every gate; a declaration-cap violation refuses it.
+
+        Ignored once handed over: the region the ATTACH took is frozen.
+        """
         declaration = self.target
-        if declaration is None:
+        if declaration is None or self._handed_over is not None:
             return
         try:
             GraspDeclaration.model_validate(declaration.model_dump() | {"region": region})
@@ -438,7 +476,13 @@ class GraspTargetTracker:
         )
 
     def refuse(self, kind: str, detail: str, *, retract: bool, now_ns: int) -> None:
-        """One failed measurement: retract now, or freeze the held region under its TTL."""
+        """One failed measurement: retract now, or freeze the held region under its TTL.
+
+        Ignored once handed over: no measurement runs for a hand that grasped, so a
+        refusal is a stale one and must not retract the handed-over arming.
+        """
+        if self._handed_over is not None:
+            return
         if retract or self._region is None:
             self._retract(kind, detail, now_ns=now_ns)
             return
@@ -677,9 +721,15 @@ def _gate_refit(
 
 
 #: What a request was made against: (depth, depth stamp ns, intrinsics,
-#: T_base_from_cam, support_z, the declaration it measures).
+#: T_base_from_cam, support_z, the declaration it measures, the tracker generation).
 _Snapshot = tuple[
-    "NDArray[np.float64]", int, "IntrinsicsPinhole", "NDArray[np.float64]", float, GraspDeclaration
+    "NDArray[np.float64]",
+    int,
+    "IntrinsicsPinhole",
+    "NDArray[np.float64]",
+    float,
+    GraspDeclaration,
+    int,
 ]
 
 
@@ -790,7 +840,8 @@ class GraspTargetLeg:
         self._grid: tuple[VoxelLattice, int, float] | None = None
         self._subs: list[Any] = []
         self._timer: Any = None
-        self._inflight: Any = None
+        # (future, tracker generation it was asked under) of the request in flight.
+        self._inflight: tuple[Any, int] | None = None
         self._deadline_timer: Any = None
 
     def setup(self) -> None:
@@ -957,8 +1008,9 @@ class GraspTargetLeg:
         """
         grid, _ = self._fresh_grid(now_ns)
         near: list[tuple[tuple[str, ...], PlaceRegion]] = []
+        holding = [hand for hand in self._hands_of_robot if self._holding(hand)]
         for hand in self._hands_of_robot:
-            if self._holding(hand):
+            if hand in holding:
                 continue
             located = [self._bridge.jaw_point(link, grid.frame_id) for link in hand]
             points = [point for point in located if point is not None]
@@ -967,7 +1019,7 @@ class GraspTargetLeg:
             box = approach_box(points, approach_m=approach_m, frame_id=grid.frame_id)
             if approach_cell_count(grid, box) >= self._config.grasp_target_min_cells:
                 near.append((hand, box))
-        self.tracker.on_approach(near, now_ns=now_ns, move_m=grid.resolution)
+        self.tracker.on_approach(near, now_ns=now_ns, move_m=grid.resolution, holding=holding)
 
     def _seed(
         self, grid: VoxelLattice, box: PlaceRegion
@@ -1088,18 +1140,32 @@ class GraspTargetLeg:
             t_base_from_cam,
             support_z,
             declaration,
+            self.tracker.generation,
         )
         future = client.call_async(request)
-        self._inflight = future
+        self._inflight = (future, snapshot[6])
         future.add_done_callback(lambda fut: self._on_reply(fut, snapshot))
         self._deadline_timer = self._node.create_timer(self._config.deadline_s, self._on_deadline)
+
+    def _stale(self, generation: int) -> bool:
+        """Whether a request asked under ``generation`` no longer measures the target."""
+        if generation == self.tracker.generation:
+            return False
+        self._node.get_logger().info(
+            "grasp target: measurement in flight discarded — the target changed or was "
+            "handed over while it ran"
+        )
+        return True
 
     def _on_deadline(self) -> None:
         self._cancel_deadline()
         inflight, self._inflight = self._inflight, None
         if inflight is None:
             return
-        inflight.cancel()  # runs _on_reply, which sees it is no longer in flight
+        future, generation = inflight
+        future.cancel()  # runs _on_reply, which sees it is no longer in flight
+        if self._stale(generation):
+            return
         self.tracker.refuse(
             "deadline",
             f"SegmentInView did not answer within {self._config.deadline_s:.3f} s",
@@ -1114,10 +1180,12 @@ class GraspTargetLeg:
             self._deadline_timer = None
 
     def _on_reply(self, future: Any, snapshot: _Snapshot) -> None:
-        if future is not self._inflight:
+        if self._inflight is None or future is not self._inflight[0]:
             return  # resolved by the deadline already
         self._cancel_deadline()
         self._inflight = None
+        if self._stale(snapshot[6]):
+            return  # neither its refusal nor its region applies any more
         now_ns = self._now_ns()
         try:
             try:
@@ -1129,8 +1197,8 @@ class GraspTargetLeg:
                 refusal.kind, refusal.detail, retract=refusal.retract, now_ns=now_ns
             )
             return
-        if snapshot[5] is not self.tracker.target:
-            return  # the declaration changed or died while the request was in flight
+        if self._stale(snapshot[6]):
+            return  # a handover on another executor thread while ``_measure`` ran
         self.tracker.accept(region)
 
     def _measure(self, future: Any, snapshot: _Snapshot, now_ns: int) -> PlaceRegion:
@@ -1142,7 +1210,7 @@ class GraspTargetLeg:
             resolve_segment_outcome,
         )
 
-        depth, depth_stamp_ns, _intrinsics, t_base_from_cam, support_z, declaration = snapshot
+        depth, depth_stamp_ns, _intrinsics, t_base_from_cam, support_z, declaration, _ = snapshot
         try:
             response = future.result()
         except Exception as exc:  # a service exception must degrade, not propagate
