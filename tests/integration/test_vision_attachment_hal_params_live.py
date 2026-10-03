@@ -83,7 +83,7 @@ def test_scene_vision_params_are_declared_by_the_hal_and_reach_the_trigger(
                 openarm,
                 attach_effort=node.get_parameter("vision_attachment_attach_effort").value,
                 release_effort=node.get_parameter("vision_attachment_release_effort").value,
-            ),
+            )["left_gripper"],
         )
         assert trigger.thresholds_n == pytest.approx((120.0, 40.0))
     finally:

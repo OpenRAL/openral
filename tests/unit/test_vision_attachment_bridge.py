@@ -243,6 +243,48 @@ def _openarm() -> RobotDescription:
     return RobotDescription.from_yaml("robots/openarm/robot.yaml")
 
 
+def test_absolute_efforts_scale_per_gripper_on_hands_with_different_limits() -> None:
+    """A scene's absolute attach/release effort holds on each hand even when the two gripper
+    joints declare different ``effort_limit`` s: each trigger's fraction comes from its own
+    joint's limit, so neither hand's threshold is scaled against the other's."""
+    from openral_hal.lifecycle import vision_attachment_trigger_config
+
+    openarm = _openarm()
+    joints = [
+        joint.model_copy(update={"effort_limit": 100.0}) if joint.name == "right_gripper" else joint
+        for joint in openarm.joints
+    ]
+    description = openarm.model_copy(update={"joints": joints})
+    limits = {j.name: j.effort_limit for j in description.joints if j.role == "gripper"}
+    assert limits["left_gripper"] != limits["right_gripper"]
+
+    configs = vision_attachment_trigger_config(description, attach_effort=60.0, release_effort=20.0)
+    assert configs is not None
+    bridge = VisionAttachmentBridge(
+        None,
+        description,
+        config=VisionAttachmentConfig(camera="head_zed"),
+        trigger_config=configs,
+    )
+    assert [leg.trigger.thresholds_n for leg in bridge._legs] == [
+        pytest.approx((60.0, 20.0)),
+        pytest.approx((60.0, 20.0)),
+    ]
+    assert configs["right_gripper"].attach_effort_fraction == pytest.approx(0.6)
+
+
+def test_a_per_joint_trigger_config_must_name_every_gripper() -> None:
+    from openral_hal._grasp_trigger import GraspTriggerConfig
+
+    with pytest.raises(ROSConfigError, match="right_gripper"):
+        VisionAttachmentBridge(
+            None,
+            _openarm(),
+            config=VisionAttachmentConfig(camera="head_zed"),
+            trigger_config={"left_gripper": GraspTriggerConfig()},
+        )
+
+
 def test_a_bimanual_bridge_builds_one_leg_per_gripper() -> None:
     """OpenArm's two hands each get a trigger, a producer and a unique object id."""
     bridge = VisionAttachmentBridge(

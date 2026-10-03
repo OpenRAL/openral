@@ -155,21 +155,22 @@ def sim_attachment_heartbeat(*, hal_mode: str, vision_attachment_enabled: bool) 
 
 def vision_attachment_trigger_config(
     description: RobotDescription, *, attach_effort: float, release_effort: float
-) -> GraspTriggerConfig | None:
-    """The grasp trigger's config for absolute ``vision_attachment_*_effort`` params.
+) -> dict[str, GraspTriggerConfig] | None:
+    """Per-gripper grasp trigger configs for absolute ``vision_attachment_*_effort`` params.
 
-    The trigger scales fractions of each gripper joint's manifest ``effort_limit``; the
+    The trigger scales fractions of its gripper joint's manifest ``effort_limit``; the
     scene (``VisionAttachmentRuntime.attach_effort`` / ``release_effort``) names absolute
-    efforts. ``0.0`` = unset, that threshold keeps the trigger's default fraction.
-    Every gripper shares one config, so differing effort limits are refused rather than
-    scaled wrong on one hand.
+    efforts. ``0.0`` = unset, that threshold keeps the trigger's default fraction. Each
+    gripper joint gets its own fraction from its own ``effort_limit``, so the same absolute
+    effort holds on hands with different limits.
 
     Returns:
-        ``None`` when neither effort is set (the trigger's defaults).
+        Gripper joint name -> config; ``None`` when neither effort is set (the trigger's
+        defaults).
 
     Raises:
-        ROSConfigError: An effort is set and the gripper joints' effort limits differ
-            or are missing; or (from the trigger) release >= attach.
+        ROSConfigError: An effort is set and a gripper joint declares no positive
+            ``effort_limit``; or (from the trigger) release >= attach on some hand.
 
     Example:
         >>> from openral_core import RobotDescription
@@ -177,7 +178,8 @@ def vision_attachment_trigger_config(
         >>> vision_attachment_trigger_config(d, attach_effort=0.0, release_effort=0.0) is None
         True
         >>> c = vision_attachment_trigger_config(d, attach_effort=66.6, release_effort=0.0)
-        >>> round(c.attach_effort_fraction, 3), c.release_effort_fraction
+        >>> left = c["left_gripper"]
+        >>> round(left.attach_effort_fraction, 3), left.release_effort_fraction
         (0.2, 0.1)
     """
     if attach_effort <= 0.0 and release_effort <= 0.0:
@@ -186,24 +188,24 @@ def vision_attachment_trigger_config(
 
     from openral_hal._grasp_trigger import GraspTriggerConfig, gripper_joints
 
-    joints = gripper_joints(description)
-    limits = {j.effort_limit for j in joints}
-    limit = limits.pop() if len(limits) == 1 else None
-    if limit is None or limit <= 0.0:
-        raise ROSConfigError(
-            f"vision_attachment_attach_effort/_release_effort need one positive effort_limit "
-            f"shared by every gripper joint of {description.name!r}; the manifest declares "
-            f"{[(j.name, j.effort_limit) for j in joints]!r}."
-        )
     default = GraspTriggerConfig()
-    return GraspTriggerConfig(
-        attach_effort_fraction=(
-            attach_effort / limit if attach_effort > 0.0 else default.attach_effort_fraction
-        ),
-        release_effort_fraction=(
-            release_effort / limit if release_effort > 0.0 else default.release_effort_fraction
-        ),
-    )
+    configs: dict[str, GraspTriggerConfig] = {}
+    for joint in gripper_joints(description):
+        limit = joint.effort_limit
+        if limit is None or limit <= 0.0:
+            raise ROSConfigError(
+                f"vision_attachment_attach_effort/_release_effort need a positive effort_limit "
+                f"on gripper joint {joint.name!r} of {description.name!r}; it declares {limit!r}."
+            )
+        configs[joint.name] = GraspTriggerConfig(
+            attach_effort_fraction=(
+                attach_effort / limit if attach_effort > 0.0 else default.attach_effort_fraction
+            ),
+            release_effort_fraction=(
+                release_effort / limit if release_effort > 0.0 else default.release_effort_fraction
+            ),
+        )
+    return configs
 
 
 def decode_action_chunk(msg: object) -> object | None:
