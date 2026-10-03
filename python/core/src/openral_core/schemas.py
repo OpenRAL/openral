@@ -3475,8 +3475,10 @@ class GraspDeclaration(BaseModel):
         region: Producer-measured oriented box around the target; ``None`` =
             no exemption. Dies with the declaration.
         search_box: Optional box (in the voxel grid's base frame) the target
-            producer searches the occupancy map in for a seed; its bottom face is
-            the support plane. It only *seeds* perception and never arms anything:
+            producer searches the occupancy map in for a seed: a search hint only,
+            with no support semantics — the producer measures the support layer
+            from the voxel map itself (the box is padded so that layer lies inside
+            it). It only *seeds* perception and never arms anything:
             the exemption is always the measured ``region``. The reasoner grounds
             it from a named ``GraspTargetRef`` (the generic path); unlike
             ``region`` a direct-dispatch scene may also supply it; dispatch passes
