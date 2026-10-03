@@ -40,7 +40,11 @@ bridge's "an occupied cell is an obstacle" invariant) were considered and reject
   change, rejected attachment set, non-allowlisted link, frame mismatch, oversize/degenerate
   region, non-empty `geometry`, detach, or the payload origin (FK of the measured configuration)
   leaving the region after attach (handover to ADR-0092 attached geometry + bridge payload
-  clearing).
+  clearing), or an attach on the declaring gripper of an object the declaration does not name
+  (`handover_object_mismatch`).
+- The handover binds only to a payload attached on the declaring gripper's own chain — a declared
+  contact link or a non-root ancestor of one. The other hand's payload and a released payload
+  frozen on the collision root (the base) can neither be the handover nor retire it.
 - Feature parameter `grasp_allowance_enabled` defaults off.
 - **This amends ADR-0097's "arm-vs-world unchanged" invariant for the declared contact links
   only.**
@@ -66,9 +70,9 @@ ADR-0100's force gate should arm during close as additive conservatism.
 |---|---|---|---|
 | HZ-01xx-1 | Finger link contacts a non-target body (a hand, a neighbouring object) inside the declared region without a stop | Exemption is per cell, not per body | Region small (caps) and measured tight to the target; only the declared gripper's contact links exempt, arm links keep the full margin on the same cells; attended operation + hardware E-stop (mandatory on the cell); disclosure in logs/diagnostics/spans. Residual risk accepted by the WG or reduced later by ADR-0100 force gating during close. |
 | HZ-01xx-2 | Wrong object / wrong region declared | Dispatch error or mis-segmentation | Dispatch can never supply a region; `evidence_ref`, `rskill_id`, `trace_id` logged at arm time; the producer checks the measured region against the declared target hint and the occupied cells it covers; frame mismatch refused. |
-| HZ-01xx-3 | Stale declaration outlives its goal or grasp | Dispatcher crash, producer stall, missed retraction | Goal-scoped retraction on every runner exit incl. E-stop; `timeout_s` backstop per candidate; region-age bound; world-state freshness; position-based handover retirement; future stamps dead. |
+| HZ-01xx-3 | Stale declaration outlives its goal or grasp | Dispatcher crash, producer stall, missed retraction | Goal-scoped retraction on every runner exit incl. E-stop; `timeout_s` backstop per candidate; region-age bound; world-state freshness; position-based handover retirement; an attach of an undeclared object on the declaring gripper retires the declaration at once (`handover_object_mismatch`) instead of leaving it alive to `timeout_s`; future stamps dead. |
 | HZ-01xx-4 | Target moved after measurement; exemption covers vacated space or a new arrival | Measure-once region | Region-age bound and re-measurement, or a short TTL (WG). |
-| HZ-01xx-5 | Exemption leaks to other links, arms or robots | Configuration error | Static allowlist resolved at configure (unknown link fails configure); declaration links must be a subset; intersection mask; bimanual test. |
+| HZ-01xx-5 | Exemption leaks to other links, arms or robots | Configuration error | Static allowlist resolved at configure (unknown link fails configure); declaration links must be a subset; intersection mask; bimanual test. The handover binds only to a payload on the declaring gripper's chain (contact link or non-root ancestor), never the other hand's payload or a release record frozen on the base, so another arm's attachment can neither extend nor end this gripper's exemption. |
 | HZ-01xx-6 | Fingers driven into the support surface under the target | Region extends into the support plane | Producer obligation that the region's lower face sits above the support plane; kernel test pins that support cells outside the region still stop. |
 | HZ-01xx-7 | The exemption silences the graded velocity band for the whole chunk | An exempt finger inside its target reads a negative distance; the sweep keeps one minimum, and the band discards a negative slack as "tripped", so every non-exempt pair's slowdown is lost with it | An exempt pair reaches the sweep minimum clamped to the margin (slack 0: the band's slowest rate, never full speed); collision + lifecycle tests pin the scaled chunk with the exempt finger inside its target. |
 

@@ -191,6 +191,11 @@ private:
   // it. Only a new declaration (new target or stamp) can arm again. Logs
   // `safety.grasp_region_dropped reason=<reason>` when a region was armed.
   void retire_grasp_declaration(const char* reason);
+  // Is a payload attached at `attach_link` on the declaring gripper's chain —
+  // a link in `mask` or a non-root ancestor of one? Only such an attachment can
+  // be a grasp handover (or retire the declaration as the wrong object).
+  bool attachment_on_grasp_chain(int attach_link,
+                                 const std::bitset<kMaxGraspMaskLinks>& mask) const noexcept;
 
   // Measured joint-state seed for non-position-mode collision checks.
   // /joint_states feeds q_meas_ (in the action's dof order, mapped by joint

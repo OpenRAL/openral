@@ -2727,16 +2727,35 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
     reject(grasp_region_status_reason(status));
     return;
   }
-  // Handover: the declared object (or, for an empty object_id, the first
-  // carried one) is attached. From here the per-candidate rule applies — the
-  // exemption lives only while that payload's origin stays in the region.
+  // Handover: the declared object (or, for an empty object_id, the first one
+  // carried on the declaring gripper) is attached. From here the per-candidate
+  // rule applies — the exemption lives only while that payload's origin stays
+  // in the region. Only an attachment on the declaring gripper's own chain can
+  // be the handover: its attach link is a declared contact link or an ancestor
+  // of one, and never the collision root (a released payload frozen in the
+  // base frame, `freeze_released_attachment`, is attached there, and the root
+  // is an ancestor of every link). Bimanual: the other hand's payload is on
+  // neither chain, so it can neither stand in for the handover nor keep it.
+  bool attached_on_gripper = false;
   const std::size_t objects = attached_model_.n_objects;
   for (std::size_t i = 0; i < objects && i < attached_labels_.size(); ++i) {
+    if (!attachment_on_grasp_chain(attached_model_.objects[i].attach_link, mask)) {
+      continue;
+    }
+    attached_on_gripper = true;
     if (declaration.object_id.empty() || attached_labels_[i] == declaration.object_id) {
       grasp_region_.handover = true;
       grasp_region_.object_index = i;
       break;
     }
+  }
+  if (attached_on_gripper && !grasp_region_.handover) {
+    // The declaring gripper attached something the declaration does not name.
+    // Whatever it grasped, it is not the scene the region was measured for, and
+    // without a handover the exemption would live on to timeout_s. Fail closed:
+    // retire it for good (HZ-01xx-3: only a new declaration re-arms).
+    retire_grasp_declaration("handover_object_mismatch");
+    return;
   }
   // Latch at the handover edge: the first snapshot that sees the declared object
   // attached freezes the box for this (target, stamp). Later snapshots of the
@@ -2787,6 +2806,34 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
                 declaration.target_id.c_str(),
                 attached_labels_[grasp_region_.object_index].c_str());
   }
+}
+
+bool SafetyKernelLifecycleNode::attachment_on_grasp_chain(
+    int attach_link, const std::bitset<kMaxGraspMaskLinks>& mask) const noexcept {
+  const auto& parent = collision_model_.parent;
+  if (attach_link < 0 || static_cast<std::size_t>(attach_link) >= parent.size()) {
+    return false;
+  }
+  const auto a = static_cast<std::size_t>(attach_link);
+  if (a < kMaxGraspMaskLinks && mask[a]) {
+    return true;  // attached to a declared contact link itself
+  }
+  if (parent[a] < 0) {
+    return false;  // the root: every link's ancestor, and where released payloads are frozen
+  }
+  // Is `attach_link` an ancestor of a declared contact link? Parents index
+  // below their children, so each walk ends at the root in < n_links steps.
+  for (std::size_t c = 0; c < kMaxGraspMaskLinks && c < parent.size(); ++c) {
+    if (!mask[c]) {
+      continue;
+    }
+    for (int l = parent[c]; l >= 0; l = parent[static_cast<std::size_t>(l)]) {
+      if (l == attach_link) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 bool SafetyKernelLifecycleNode::grasp_declaration_live() const noexcept {

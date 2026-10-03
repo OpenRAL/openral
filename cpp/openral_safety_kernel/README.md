@@ -811,6 +811,17 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   lapsed, a future stamp, or a world-state stream older than
   `attached_collision_deadline_ms`. Stale is "no exemption", never a drop by
   itself.
+* **Handover binding.** Only a payload attached on the declaring gripper's own
+  chain can be the handover: its attach link is a declared contact link or a
+  non-root ancestor of one (`attachment_on_grasp_chain`). The other hand's
+  payload, or a released payload frozen on the collision root
+  (`freeze_released_attachment`), can neither stand in for the handover nor
+  retire it (`…AGraspHandoverBindsOnlyToAPayloadOnTheDeclaringGripper`). The
+  declared `object_id` (or, when empty, the first payload on that chain) is the
+  handover; a payload on the chain that the declaration does not name retires
+  the declaration at once, `reason=handover_object_mismatch`, rather than
+  leaving it alive to `timeout_s`
+  (`…AnUndeclaredObjectAttachedOnTheDeclaringGripperRetiresTheExemption`).
 * **Handover.** Once the declared object is attached, the exemption lives only
   while that payload's origin (FK of the measured configuration) is inside the
   region; when it leaves, the declaration is retired. The region is **latched at
