@@ -4,8 +4,10 @@ Real pick-and-place design §2.3. Pure core of ``_place_target_leg`` (no ROS): t
 OpenArm manifest, a real ``VoxelLattice`` at the real cell's 20 mm built the way the
 octomap bridge publishes one (single-layer surfaces: a table, a two-board shelf), and the
 vision producer's own fallback payload (the 10 cm jaw-span box on ``link7``). Nothing
-about the cell is surveyed and nobody names a place target: the only inputs are the map
-and the held payload (plus, optionally, a reasoner-grounded hint box).
+about the cell is surveyed and nobody names a place target: the only inputs are the map,
+the held payload and the runner's goal-scope declaration (``target_id = surface``, no
+region — the goal is the only thing that licenses a place allowance), optionally with a
+reasoner-grounded hint box.
 """
 
 from __future__ import annotations
@@ -248,11 +250,21 @@ def test_the_set_down_payload_is_a_lost_view_not_a_contradiction() -> None:
     assert verdict is not None and verdict[0] is PlaceRefusal.SUPPORT_OCCLUDED
 
 
-# ── the tick loop: no declaration needed ─────────────────────────────────────
+# ── the tick loop: the goal scope, and no place target named ─────────────────
 
 
-def _tracker(lines: list[str]) -> PlaceTargetTracker:
-    return PlaceTargetTracker(freeze_s=_FREEZE_S, extrinsic_error_m=_EXT, log=lines.append)
+def _goal(stamp_ns: int = _STAMP, timeout_s: float = 60.0) -> PlaceDeclaration:
+    """The runner's goal-scope declaration (``place_approach_enabled``): names nothing."""
+    return PlaceDeclaration(
+        target_id="surface", rskill_id="openral/itest-place", timeout_s=timeout_s, stamp_ns=stamp_ns
+    )
+
+
+def _tracker(lines: list[str], *, goal: bool = True) -> PlaceTargetTracker:
+    tracker = PlaceTargetTracker(freeze_s=_FREEZE_S, extrinsic_error_m=_EXT, log=lines.append)
+    if goal:
+        tracker.on_declaration(_goal())
+    return tracker
 
 
 def _tick(
@@ -263,15 +275,19 @@ def _tick(
     xy: tuple[float, float] = (0.45, 0.0),
     now_ns: int,
     released: bool = False,
+    grid_stamp_ns: int | None = None,
 ) -> None:
-    """One tick with the payload held at ``bottom_z`` (or released there / absent)."""
+    """One tick with the payload held at ``bottom_z`` (or released there / absent).
+
+    ``grid_stamp_ns`` is the grid's ``source_stamp`` (defaults to ``now_ns``: fresh data).
+    """
     obj, t = _payload(bottom_z=bottom_z if bottom_z is not None else 0.5, xy=xy)
     posed = _posed_primitives(obj, t)
     key = (obj.object_id, obj.stamp_ns)
     place_tick(
         tracker,
         grid,
-        now_ns,
+        now_ns if grid_stamp_ns is None else grid_stamp_ns,
         carried=None if released or bottom_z is None else (obj, posed),
         published={} if bottom_z is None else {key: posed},
         extrinsic_error_m=_EXT,
@@ -280,14 +296,16 @@ def _tick(
     )
 
 
-def test_a_surface_under_the_held_payload_arms_a_self_declared_region() -> None:
+def test_a_surface_under_the_held_payload_rides_the_goal_declaration() -> None:
     lines: list[str] = []
     tracker = _tracker(lines)
-    assert tracker.envelope(now_ns=_STAMP) is None, "nothing held, nothing declared"
+    envelope = tracker.envelope(now_ns=_STAMP)
+    assert envelope is not None and envelope.region is None, "goal declared, nothing measured"
     _tick(tracker, _lattice(_table), bottom_z=_TABLE_TOP + 0.10, now_ns=_STAMP)
     envelope = tracker.envelope(now_ns=_STAMP + 10 * _MS)
     assert envelope is not None and envelope.region is not None
-    assert envelope.target_id == "surface:under:grasped_payload:left_gripper"
+    assert envelope.target_id == "surface", "the goal's own target, never a producer one"
+    assert envelope.stamp_ns == _STAMP and envelope.timeout_s == 60.0, "the goal's backstop"
     assert envelope.object_id == "grasped_payload:left_gripper", "scoped to that payload"
     assert envelope.region.stamp_ns == _STAMP
     assert envelope.is_live(now_ns=_STAMP + 10 * _MS)
@@ -332,7 +350,7 @@ def test_the_payload_moving_off_the_patch_re_measures_or_retracts() -> None:
     assert tracker.patch is not None
     _tick(tracker, _lattice(_table), bottom_z=_TABLE_TOP + 0.10, xy=(0.45, 0.30), now_ns=_STAMP)
     envelope = tracker.envelope(now_ns=_STAMP)
-    assert envelope is None, "off the table: retracted, and nothing declares it"
+    assert envelope is not None and envelope.region is None, "off the table: retracted"
     assert lines[-1].startswith("place_target_retracted reason=no_surface")
 
 
@@ -345,7 +363,8 @@ def test_the_region_carries_through_the_release_window_then_dies_with_the_payloa
     envelope = tracker.envelope(now_ns=_STAMP)
     assert envelope is not None and envelope.region is not None, "frozen record keeps it"
     _tick(tracker, resting, bottom_z=None, now_ns=_STAMP)  # the window closed
-    assert tracker.envelope(now_ns=_STAMP) is None
+    envelope = tracker.envelope(now_ns=_STAMP)
+    assert envelope is not None and envelope.region is None
 
 
 def test_a_dispatch_declaration_is_an_optional_hint() -> None:
@@ -362,14 +381,14 @@ def test_a_dispatch_declaration_is_an_optional_hint() -> None:
             ),
         )
 
-    named = _tracker([])
+    named = _tracker([], goal=False)
     named.on_declaration(declaration(0.0))
     _tick(named, _lattice(_table), bottom_z=_TABLE_TOP + 0.10, now_ns=_STAMP)
     envelope = named.envelope(now_ns=_STAMP)
     assert envelope is not None and envelope.region is not None
     assert envelope.target_id == "surface:shelf", "dispatch's own fields when it names one"
 
-    elsewhere = _tracker([])
+    elsewhere = _tracker([], goal=False)
     elsewhere.on_declaration(declaration(-0.4))
     _tick(elsewhere, _lattice(_table), bottom_z=_TABLE_TOP + 0.10, now_ns=_STAMP)
     envelope = elsewhere.envelope(now_ns=_STAMP)
@@ -414,7 +433,7 @@ def test_the_witness_attests_once_on_a_loaded_payload_at_the_measured_plane() ->
     (decorated,) = tracker.decorate([obj])
     witness = decorated.support_contact
     assert witness is not None
-    assert witness.support_id == "surface:under:grasped_payload:left_gripper"
+    assert witness.support_id == "surface"
     assert witness.evidence_kind is AttachmentEvidenceKind.MAP_SUPPORT_PROXIMITY
     assert "not sensed contact" in (witness.evidence_ref or "")
     assert "not a proven support" in (witness.evidence_ref or "")
@@ -457,7 +476,8 @@ def test_a_retracted_region_drops_the_witness() -> None:
     assert tracker.attest([(obj, t_base_link, True)], now_ns=now + 100 * _MS), "drop publishes"
     assert tracker.decorate([obj])[0].support_contact is None
     assert any("witness dropped" in line for line in lines)
-    assert tracker.envelope(now_ns=now) is None
+    envelope = tracker.envelope(now_ns=now)
+    assert envelope is not None and envelope.region is None
 
 
 def test_a_frozen_release_record_keeps_the_witness_until_the_window_closes() -> None:
@@ -516,6 +536,110 @@ def test_the_freeze_ttl_takes_the_witness_with_the_region() -> None:
     assert tracker.attest([(obj, t_base_link, True)], now_ns=now)
     late = _STAMP + int(_FREEZE_S * 1e9) + 100 * _MS
     tracker.refuse(PlaceRefusal.SUPPORT_OCCLUDED, "occluded", now_ns=late)
-    assert tracker.patch is None and tracker.envelope(now_ns=late) is None
+    envelope = tracker.envelope(now_ns=late)
+    assert tracker.patch is None and envelope is not None and envelope.region is None
     assert tracker.attest([(obj, t_base_link, True)], now_ns=late), "the drop re-publishes"
     assert tracker.decorate([obj])[0].support_contact is None
+
+
+# ── goal scope: retraction, expiry, re-declaration, stalled data ─────────────
+
+
+def test_no_goal_no_measurement_and_no_allowance() -> None:
+    lines: list[str] = []
+    tracker = _tracker(lines, goal=False)
+    _tick(tracker, _lattice(_table), bottom_z=_TABLE_TOP + 0.10, now_ns=_STAMP)
+    assert tracker.patch is None and tracker.envelope(now_ns=_STAMP) is None
+    assert lines[-1].startswith("place_target_refused reason=no_declaration")
+
+
+def test_a_retraction_during_the_hold_ends_the_allowance_until_a_new_declaration() -> None:
+    """Goal end / cancel / E-stop: nothing about the hold may re-arm by itself."""
+    lines: list[str] = []
+    tracker = _armed(lines)
+    obj, t_base_link = _on_patch(tracker)
+    now = _STAMP + 100 * _MS
+    assert tracker.attest([(obj, t_base_link, True)], now_ns=now)
+    tracker.on_declaration(_goal().model_copy(update={"active": False}))
+    assert tracker.patch is None and tracker.envelope(now_ns=now) is None
+    assert tracker.attest([(obj, t_base_link, True)], now_ns=now), "the drop re-publishes"
+    assert tracker.decorate([obj])[0].support_contact is None
+    assert any("place_target_retracted reason=no_declaration" in line for line in lines)
+    # The same payload, still held over the same table, for well past the witness period.
+    for step in range(1, 6):
+        _tick(tracker, _lattice(_table), bottom_z=_TABLE_TOP + 0.10, now_ns=now + step * _MS)
+        assert not tracker.attest([(obj, t_base_link, True)], now_ns=now + step * _MS)
+        assert tracker.envelope(now_ns=now + step * _MS) is None
+        assert tracker.decorate([obj])[0].support_contact is None
+    # A new goal re-measures and re-arms, under its own stamp.
+    tracker.on_declaration(_goal(stamp_ns=now + 10 * _MS))
+    _tick(tracker, _lattice(_table), bottom_z=_TABLE_TOP + 0.10, now_ns=now + 20 * _MS)
+    envelope = tracker.envelope(now_ns=now + 20 * _MS)
+    assert envelope is not None and envelope.region is not None
+    assert envelope.stamp_ns == now + 10 * _MS
+    obj, t_base_link = _on_patch(tracker)
+    assert tracker.attest([(obj, t_base_link, True)], now_ns=now + 30 * _MS)
+    assert tracker.decorate([obj])[0].support_contact is not None
+
+
+def test_an_expired_goal_declaration_ends_the_allowance_with_a_logged_transition() -> None:
+    lines: list[str] = []
+    tracker = _tracker(lines, goal=False)
+    tracker.on_declaration(_goal(timeout_s=1.0))
+    _tick(tracker, _lattice(_table), bottom_z=_TABLE_TOP + 0.10, now_ns=_STAMP)
+    obj, t_base_link = _on_patch(tracker)
+    assert tracker.attest([(obj, t_base_link, True)], now_ns=_STAMP + 100 * _MS)
+    late = _STAMP + 1100 * _MS
+    assert tracker.envelope(now_ns=late) is None and tracker.patch is None
+    assert any("expired" in line and "reason=no_declaration" in line for line in lines)
+    assert tracker.attest([(obj, t_base_link, True)], now_ns=late), "the witness drop publishes"
+    assert tracker.decorate([obj])[0].support_contact is None
+
+
+def test_a_new_declaration_rechecks_the_latched_patch_against_its_hint() -> None:
+    lines: list[str] = []
+    tracker = _armed(lines)
+    assert tracker.patch is not None
+    elsewhere = PlaceDeclaration(
+        target_id="surface:shelf",
+        timeout_s=60.0,
+        stamp_ns=_STAMP + 1,
+        search_box=PlaceRegion(
+            frame_id=_BASE,
+            pose=Pose6D(xyz=(0.45, -0.4, 0.3), quat_xyzw=(0, 0, 0, 1), frame_id=_BASE),
+            half_extents=(0.2, 0.2, 0.1),
+        ),
+    )
+    tracker.on_declaration(elsewhere)
+    assert tracker.patch is None, "the latch from the previous declaration does not survive"
+    envelope = tracker.envelope(now_ns=_STAMP + 2)
+    assert envelope is not None and envelope.region is None
+    _tick(tracker, _lattice(_table), bottom_z=_TABLE_TOP + 0.10, now_ns=_STAMP + 2)
+    assert tracker.patch is None, "re-measured under the new hint: outside it"
+    assert lines[-1].startswith("place_target_refused reason=outside_hint")
+
+
+def test_a_stalled_map_ages_the_region_out_on_its_data_stamp() -> None:
+    """An octree republished unchanged keeps a fresh header but an old ``source_stamp``:
+    re-verifying on it never makes the region younger than the data."""
+    tracker = _tracker([])
+    data_ns = _STAMP
+    now = _STAMP
+    _tick(tracker, _lattice(_table), bottom_z=_TABLE_TOP + 0.10, now_ns=now, grid_stamp_ns=data_ns)
+    bound_ns = int(_FREEZE_S * 1e9)
+    while now <= data_ns + bound_ns + 200 * _MS:
+        _tick(
+            tracker,
+            _lattice(_table),
+            bottom_z=_TABLE_TOP + 0.10,
+            now_ns=now,
+            grid_stamp_ns=data_ns,
+        )
+        envelope = tracker.envelope(now_ns=now)
+        assert envelope is not None
+        if envelope.region is not None:
+            assert envelope.region.stamp_ns == data_ns
+            assert now - data_ns <= bound_ns
+        now += 100 * _MS
+    envelope = tracker.envelope(now_ns=now)
+    assert envelope is not None and envelope.region is None

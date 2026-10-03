@@ -334,9 +334,11 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   the spot under the payload is a surface is the **map's**. So the place producer
   (`openral_hal._place_target_leg`, owned by `VisionAttachmentBridge`, HAL param
   `vision_attachment_place_target_enabled`, scene `runtime.vision_attachment.place_target_enabled`,
-  default **off**) needs no declaration from the reasoner:
-  - *Column.* While a payload is held and loaded, at `place_target_rate_hz` (2 Hz) on the newest
-    `/openral/world_voxels` (older than `grid_max_age_s` = unusable): the column under the
+  default **off**) needs no declaration from the reasoner — but it never arms outside a goal:
+  - *Column.* While a goal's place declaration is live and a payload is held and loaded, at
+    `place_target_rate_hz` (2 Hz) on the newest `/openral/world_voxels` (received, or its
+    `source_stamp` data, older than `grid_max_age_s` = unusable; an unset or future
+    `source_stamp` too — the kernel's own voxel data-age rule): the column under the
     payload's measured footprint (its primitives' AABB in the lattice axes) grown by one voxel +
     the extrinsic accuracy bound (`place_target_extrinsic_error_m`, default
     `MAX_PLANAR_ERR_M` = 15 mm) on every side, from the payload's bottom down
@@ -354,23 +356,32 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
     payload clearing removes the cells under it) or a stale/missing grid is a lost view that holds
     the latched region for at most `place_target_freeze_s` (default **and ceiling** 2 ×
     `grid_max_age_s` — the kernel's `place_region_max_age_s`) from the grid stamp it was last
-    verified on; the region's `stamp_ns` is that grid stamp, so the published region is never older
-    than the kernel accepts. The payload moving off the patch re-measures; a different payload
+    verified on; the region's `stamp_ns` is that grid's `source_stamp` (the world data's capture
+    time — never `header.stamp`, which a bridge republishing a stalled octree keeps fresh), so the
+    published region is never older than the kernel accepts, and a stalled map ages it out. The payload moving off the patch re-measures; a different payload
     drops the latch. Consequence: a set-down has to complete within the freeze after the board
     leaves view.
-  - *Declaration.* The kernel applies a region only inside a `PlaceDeclaration`. With no dispatch
-    declaration the leg publishes its own on the attachment envelope — `target_id =
-    surface:under:<object_id>`, `object_id` = that payload (the kernel scopes the region to it),
-    stamped at the latch — alive only while the patch is held. A dispatch declaration (the optional
-    `place_target`, or a direct-dispatch scene) supplies its own fields instead, and its
-    `search_box` narrows the place: a patch whose centre lies outside it is refused
-    (`outside_hint`). Dispatch still never supplies a region (the runner strips it).
+  - *Declaration.* The kernel applies a region only inside a `PlaceDeclaration`, and the leg never
+    declares on its own: no goal, no place allowance. Mirroring the grasp side's approach
+    declaration, the runner arms a goal-scope one per goal (`place_approach_enabled`, turned on by
+    `deploy_e2e` exactly when the HAL runs this leg): `target_id = surface`, no object, no search
+    box, stamped at goal start, `timeout_s` = the goal deadline (≤ 120 s), retracted on every goal
+    exit incl. cancel and E-stop. A goal's own declaration (the optional `place_target`) or a
+    direct-dispatch scene's wins over it. The leg attaches the measured region to whichever is
+    live, its `object_id` narrowed to the measured payload when dispatch names none (the kernel
+    scopes the region to it); a `search_box` narrows the place: a patch whose centre lies outside
+    it is refused (`outside_hint`). A retraction or expiry retracts the patch and the witness at
+    once (`no_declaration`) and nothing re-arms until a new declaration, however long the payload
+    stays held over the surface; a new declaration drops a latched patch (`redeclared`), so it is
+    re-measured under the new hint. Dispatch still never supplies a region (the runner strips
+    it).
   - *Witness substitute.* A proximity attestation (`MAP_SUPPORT_PROXIMITY` evidence kind, labelled
     as **not sensed contact and not a proven support**), once per declaration, when the payload's
     lowest primitive is within max(1 voxel, extrinsic bound) of the latched plane, its centre is
     over the patch and the gripper is still loaded (`leg.trigger.attached`); `support_id` = the
     declaration's `target_id`, `max_penetration_m = min(extrinsic bound, 10 mm)`. It dies with the
-    region — contradicting evidence, the freeze TTL, a dispatch retraction or a payload change — so
+    region — contradicting evidence, the freeze TTL, a goal retraction or expiry, or a payload
+    change — so
     no part of the place allowance outlives the region age the kernel accepts
     (`place_region_max_age_s`, 2 × the voxel deadline; the kernel independently drops an older
     region as `region_stale`). Set-down and release therefore have to finish within the freeze.

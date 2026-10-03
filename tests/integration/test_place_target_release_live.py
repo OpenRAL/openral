@@ -4,7 +4,8 @@
 Real pick-and-place design §2.3 "Release": the witness, if one is live, keeps the table
 partition correct while the frozen record is published. Nothing is surveyed and nothing
 names a place target: real rclpy, a real ``VisionAttachmentBridge`` on the bimanual OpenArm
-manifest with the place-target leg measuring the table under the carried payload, real
+manifest with the place-target leg measuring the table under the carried payload (the
+only declaration is the runner's goal-scope one, ``target_id = surface``), real
 tf2, every
 ``/openral/attachment_state`` through a real ``WorldStateAggregator`` and the World State
 node's ``build_world_state_stamped_msg`` into a real ``safety_kernel_node`` (the real cell's
@@ -75,7 +76,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 _OBJECT_ID = "grasped_payload:left_gripper"
-_ARMED = f"safety.support_witness_armed object={_OBJECT_ID} support=surface:under:{_OBJECT_ID}"
+_ARMED = f"safety.support_witness_armed object={_OBJECT_ID} support=surface"
 _SPAN = 0.05  # VisionGateConfig.jaw_span_m: the fallback box's half-extent
 #: The payload's centre x: its +x face at 0.506, 6 mm into the i = 15 cell column.
 _PAYLOAD_X = 0.456
@@ -130,6 +131,7 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
         OccupancyVoxels,
         WorldStateStamped,
     )
+    from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
     from openral_world_state import WorldStateAggregator
     from rcl_interfaces.msg import Log
     from rclpy.executors import MultiThreadedExecutor
@@ -294,6 +296,20 @@ def test_the_frozen_record_keeps_its_witness_and_the_kernel_accepts_the_retreat(
 
             bridge.setup()
             node.create_timer(1.0 / 30.0, feed)
+            # The goal in progress: the runner's goal-scope declaration
+            # (``place_approach_enabled``) — no target, no object, no region. The leg
+            # attaches its measured region to it and never declares on its own.
+            goal = PlaceDeclarationMsg()
+            PlaceDeclaration(
+                target_id="surface",
+                rskill_id="openral/itest-place-target",
+                trace_id="itest",
+                timeout_s=60.0,
+                stamp_ns=int(peer.get_clock().now().nanoseconds),
+            ).fill_idl(goal)
+            peer.create_publisher(
+                PlaceDeclarationMsg, "/openral/place_declaration", latched
+            ).publish(goal)
 
             def publish_grid() -> None:
                 stamp = peer.get_clock().now().to_msg()
