@@ -474,6 +474,8 @@ _vision_attachment_st = st.builds(
     attach_effort=st.none() | st.floats(min_value=0.01, max_value=500.0),
     release_effort=st.none() | st.floats(min_value=0.01, max_value=500.0),
     tf_frames=st.dictionaries(_name, _name, max_size=3),
+    grasp_target_enabled=st.booleans(),
+    place_fixture_enabled=st.booleans(),
 )
 _deploy_runtime_st = st.builds(
     DeployRuntime,

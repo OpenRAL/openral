@@ -23,6 +23,7 @@ import pytest
 from openral_cli import deploy_sim
 from openral_cli.deploy_sim import (
     _HEAD_CAM_ENV,
+    LaunchInvocation,
     _alloc_conf_var,
     _apply_palette_head_cam,
     _capability_matched_manifests,
@@ -2967,6 +2968,8 @@ def test_deploy_vision_attachment_block_maps_to_hal_params_and_launch_args(
         "vision_attachment_evidence_timeout_s": 0.75,
         "vision_attachment_attach_effort": 12.5,
         "vision_attachment_release_effort": 0.0,
+        "vision_attachment_grasp_target_enabled": False,
+        "vision_attachment_place_fixture_enabled": False,
         "vision_attachment_tf_frames": [
             "openarm_left_link7=openarm_left_ee_base_link",
             "openarm_right_link7=openarm_right_ee_base_link",
@@ -2983,6 +2986,68 @@ def test_deploy_vision_attachment_block_maps_to_hal_params_and_launch_args(
         "vision_attachment_segmenter_device:=cpu",
     ):
         assert arg in invocation.argv_template
+
+
+def _openarm_cell_scene(
+    tmp_path: Path, *, runtime: dict[str, object], leg: dict[str, object]
+) -> Path:
+    """The committed OpenArm cell scene with ``runtime`` / ``vision_attachment`` overrides."""
+    import yaml
+
+    scene_src = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
+    data = yaml.safe_load(scene_src.read_text(encoding="utf-8"))
+    data["runtime"].update(runtime)
+    data["runtime"]["vision_attachment"].update(leg)
+    scene = tmp_path / "cell.yaml"
+    scene.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return scene
+
+
+def _invoke_cell(scene: Path, hal_mode: str = "sim") -> LaunchInvocation:
+    return resolve_launch_invocation(
+        config=scene,
+        robot_override="openarm",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        enable_dashboard=False,
+        hal_mode=hal_mode,
+    )
+
+
+def test_deploy_vision_attachment_producers_reach_the_hal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both producer legs forward as HAL params; the place leg also gets the robot unit."""
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    scene = _openarm_cell_scene(
+        tmp_path,
+        runtime={"grasp_allowance_enabled": True},
+        leg={"enabled": True, "grasp_target_enabled": True, "place_fixture_enabled": True},
+    )
+    hal = _invoke_cell(scene).hal_params
+    assert hal["vision_attachment_grasp_target_enabled"] is True
+    assert hal["vision_attachment_place_fixture_enabled"] is True
+    assert hal["vision_attachment_robot_unit"] == "thor"
+
+
+@pytest.mark.parametrize(
+    "leg",
+    [
+        {"enabled": False, "grasp_target_enabled": True},
+        {"enabled": True, "grasp_target_enabled": False},
+    ],
+)
+def test_deploy_refuses_grasp_allowance_without_its_producer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, leg: dict[str, object]
+) -> None:
+    """On real the kernel would arm the exemption with nothing measuring the region; the
+    twin keeps it (its MuJoCo evidence tracker is the producer)."""
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    scene = _openarm_cell_scene(tmp_path, runtime={"grasp_allowance_enabled": True}, leg=leg)
+    with pytest.raises(ROSConfigError, match="grasp_target_enabled"):
+        _invoke_cell(scene, hal_mode="real")
+    assert "grasp_allowance_enabled:=true" in _invoke_cell(scene).argv_template
 
 
 def test_deploy_vision_attachment_off_forwards_nothing(monkeypatch: pytest.MonkeyPatch) -> None:

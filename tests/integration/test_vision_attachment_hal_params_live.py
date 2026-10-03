@@ -42,7 +42,11 @@ def test_scene_vision_params_are_declared_by_the_hal_and_reach_the_trigger(
         (_REPO / "scenes" / "deploy" / "openarm_real_world_voxels.yaml").read_text()
     )
     data["runtime"]["vision_attachment"].update(
-        enabled=True, attach_effort=120.0, release_effort=40.0
+        enabled=True,
+        attach_effort=120.0,
+        release_effort=40.0,
+        grasp_target_enabled=True,
+        place_fixture_enabled=True,
     )
     scene = tmp_path / "vision_leg.yaml"
     scene.write_text(yaml.safe_dump(data), encoding="utf-8")

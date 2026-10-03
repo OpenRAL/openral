@@ -321,6 +321,8 @@ def test_the_vision_leg_on_real_turns_the_kernel_attached_check_on(
         "vision_attachment_evidence_timeout_s": 0.5,
         "vision_attachment_attach_effort": 0.0,
         "vision_attachment_release_effort": 0.0,
+        "vision_attachment_grasp_target_enabled": False,
+        "vision_attachment_place_fixture_enabled": False,
         "vision_attachment_tf_frames": [
             "openarm_left_link7=openarm_left_ee_base_link",
             "openarm_right_link7=openarm_right_ee_base_link",
@@ -411,6 +413,9 @@ def _scene_with_grasp_allowance(tmp_path: Path, *, enabled: bool | None) -> Path
         data["runtime"].pop("grasp_allowance_enabled", None)
     else:
         data["runtime"]["grasp_allowance_enabled"] = enabled
+    if enabled:
+        # `deploy run` refuses the exemption without its producer, the vision target leg.
+        data["runtime"]["vision_attachment"].update(enabled=True, grasp_target_enabled=True)
     scene = tmp_path / f"grasp_allowance_{enabled}.yaml"
     scene.write_text(yaml.safe_dump(data), encoding="utf-8")
     return scene
