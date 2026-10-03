@@ -853,13 +853,18 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   a new stop.
 * **Evidence.** An exempt pair never supplies the reported identity or
   distance (`…AnExemptCellNeverSuppliesTheEvidence`). It reaches
-  `sweep_min_distance` **clamped to no less than the margin**: the exempt finger
-  is inside its target, so its raw distance is negative, and the graded
-  velocity band drops a negative slack as "tripped" — which, the sweep keeping
-  one minimum, would also drop every non-exempt pair's graded slack and send
-  the chunk out at full rate. Clamped, it reads as slack 0, the band's slowest
-  rate (`…AnExemptPairNeverDrivesTheSweepMinimumBelowTheMargin`,
-  `LifecycleKernelTest.AnExemptFingerInsideItsTargetStillLeavesTheChunkScaled`).
+  `sweep_min_distance` at its own depth — negative, the finger being inside its
+  target — exactly as the attached path's support-witness and embedded-residue
+  exemptions do (`…AnExemptPairReachesTheSweepMinimumAtItsOwnDepth`).
+* **Graded band.** The sweep keeps one minimum, so an exempted pair's negative
+  depth used to make the whole check's slack negative, which the velocity band
+  discarded as "tripped" — dropping every non-exempt pair's graded slack with
+  it and sending the chunk out at full rate. That hit all three exemptions
+  (grasp target, support witness, embedded residue). The band now clamps an
+  untripped check's slack to `max(slack, 0)`, so an exempt contact reads as the
+  band's slowest rate
+  (`LifecycleKernelTest.AnExemptFingerInsideItsTargetStillLeavesTheChunkScaled`,
+  `LifecycleKernelTest.APayloadOnItsWitnessedSupportStillLeavesTheChunkScaled`).
 * **Monotonicity.** Trips with the region ⊆ trips without it, the difference
   is exactly the (mask link, cell centred in the box) pairs, and the sweep
   minimum is never lowered by the region — pinned over

@@ -21,6 +21,7 @@
 #pragma GCC diagnostic ignored "-Wnonnull"
 #include "openral_safety_kernel/collision.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <bitset>
@@ -5605,8 +5606,8 @@ TEST(GraspTargetExemption, TheUndeclaredFingerStopsExactlyAsToday) {
   const auto declared = osk::check_voxel_collision(m, s, grid, kGraspMargin);
   EXPECT_FALSE(declared.hit);
   ASSERT_LT(today.sweep_min_distance, kGraspMargin);
-  EXPECT_EQ(declared.sweep_min_distance, kGraspMargin)
-      << "the exempt pair still reaches the sweep minimum, clamped to the margin";
+  EXPECT_EQ(declared.sweep_min_distance, today.sweep_min_distance)
+      << "the exempt pair still reaches the sweep minimum, at its own depth";
 }
 
 TEST(GraspTargetExemption, ArmLinksAreUntouchedByALiveRegion) {
@@ -5708,8 +5709,8 @@ TEST(GraspTargetExemption, TheSupportSurfaceUnderTheTargetStillStops) {
 TEST(GraspTargetExemption, AnExemptCellNeverSuppliesTheEvidence) {
   // The attached-path contract: an exempt pair reaches sweep_min only. With a
   // deep exempt cell and a shallower non-exempt one that trips, the report
-  // names the latter, and the exempt pair (clamped to the margin) is not
-  // deeper than it in the sweep minimum either.
+  // names the latter; the exempt pair's deeper reading is the sweep minimum,
+  // which is how a reviewer tells an exemption was in force.
   const osk::CollisionModel m = grasp_cell_model();
   osk::CollisionScratch s = grasp_scratch_all_away();
   s.link_world[kGraspLeftFinger] = identity();
@@ -5729,16 +5730,18 @@ TEST(GraspTargetExemption, AnExemptCellNeverSuppliesTheEvidence) {
   ASSERT_TRUE(hit.hit);
   EXPECT_EQ(hit.link_b, grasp_index(0, 0, 3));
   EXPECT_EQ(hit.min_distance, d_trip);
-  EXPECT_EQ(hit.sweep_min_distance, d_trip);
+  EXPECT_EQ(hit.sweep_min_distance, d_exempt);
 }
 
-TEST(GraspTargetExemption, AnExemptPairNeverDrivesTheSweepMinimumBelowTheMargin) {
-  // Review finding: the sweep minimum is ONE number per sweep and the
-  // lifecycle's velocity band discards a negative slack as "tripped". An exempt
-  // finger inside its target reads negative, so fed raw it hid every
-  // non-exempt pair's graded slack (here a cell above the region, clear of the
-  // margin but inside the band) and the chunk went out unscaled. Clamped, the
-  // exempt pair reads exactly the margin — slack 0, the band's slowest rate.
+TEST(GraspTargetExemption, AnExemptPairReachesTheSweepMinimumAtItsOwnDepth) {
+  // The sweep minimum is ONE number per sweep. An exempt finger inside its
+  // target reads negative and reaches it unclamped, exactly as the support
+  // witness and the embedded attach-time residue do on the attached path; the
+  // lifecycle's velocity band (`note_slack`) clamps an untripped check's slack
+  // to 0, so the exempt contact reads as the band's slowest rate instead of
+  // hiding the non-exempt pair's graded slack (here a cell above the region,
+  // clear of the margin but inside the band). The lifecycle test
+  // AnExemptFingerInsideItsTargetStillLeavesTheChunkScaled pins that end.
   const osk::CollisionModel m = grasp_cell_model();
   osk::CollisionScratch s = grasp_scratch_all_away();
   s.link_world[kGraspLeftFinger] = identity();
@@ -5759,9 +5762,9 @@ TEST(GraspTargetExemption, AnExemptPairNeverDrivesTheSweepMinimumBelowTheMargin)
   grid.grasp_region = grasp_region(0.015, {kGraspLeftFinger});
   const auto with = osk::check_voxel_collision(m, s, grid, kGraspMargin, kBand);
   EXPECT_FALSE(with.hit);
-  EXPECT_EQ(with.sweep_min_distance, kGraspMargin)
-      << "never negative: slack 0, so the band still slows the chunk";
-  EXPECT_EQ(with.min_distance, kGraspMargin);
+  EXPECT_EQ(with.sweep_min_distance, today.sweep_min_distance)
+      << "the exempt pair's true (negative) depth, not a clamped stand-in";
+  EXPECT_EQ(with.min_distance, today.sweep_min_distance);
 }
 
 TEST(GraspTargetExemption, ExemptCellsDoNotSpendTheStage2BudgetOfOtherLinks) {
@@ -5850,7 +5853,7 @@ TEST(GraspTargetExemption, ExemptCellsDoNotSpendTheStage2BudgetOfOtherLinks) {
   const auto with = osk::check_voxel_collision(m, s, grid, kMargin);
   EXPECT_FALSE(with.hit) << "link 2 still gets its refinement: no false stop on cell "
                          << with.link_b << " for link " << with.link_a;
-  EXPECT_EQ(with.sweep_min_distance, kMargin) << "the exempt cells, clamped to the margin";
+  EXPECT_LE(with.sweep_min_distance, kMargin) << "the exempt cells, at their stage-1 bound";
 }
 
 TEST(GraspTargetExemption, TheCapsulePassAppliesTheSameRule) {
@@ -5870,8 +5873,9 @@ TEST(GraspTargetExemption, TheCapsulePassAppliesTheSameRule) {
   ASSERT_TRUE(with.hit) << "the cell outside the region still stops the capsule";
   EXPECT_EQ(with.link_a, kGraspCapFinger);
   EXPECT_EQ(with.link_b, grasp_index(0, 0, 2));
-  EXPECT_EQ(with.sweep_min_distance, with.min_distance)
-      << "the exempt cell, clamped to the margin, is not the sweep minimum";
+  EXPECT_EQ(with.sweep_min_distance, today.sweep_min_distance)
+      << "the exempt cell is the sweep minimum, never the evidence";
+  EXPECT_LT(with.sweep_min_distance, with.min_distance);
 }
 
 TEST(GraspTargetExemption, DegenerateOversizedNonFiniteRegionsGrantNothing) {
@@ -6105,12 +6109,14 @@ TEST(GraspTargetExemption, MonotonicityOverRandomisedScenes) {
           << "trial " << trial << ": the evidence names an exempt pair";
     }
     EXPECT_EQ(full_without.hit, !without.empty()) << "trial " << trial;
-    // The region can only RAISE the sweep minimum (an exempt pair is clamped
-    // to the margin), and with nothing tripping it never drops below the
-    // margin — so the velocity band never sees a negative slack it would drop.
-    EXPECT_GE(full_with.sweep_min_distance, full_without.sweep_min_distance) << "trial " << trial;
-    if (!full_with.hit) {
-      EXPECT_GE(full_with.sweep_min_distance, margin) << "trial " << trial;
+    // The velocity band reads an untripped sweep as max(sweep_min - margin, 0)
+    // (`note_slack`). Where the region changes nothing about the verdict it
+    // must never raise that slack: it may only slow a chunk, never speed one.
+    if (!full_without.hit) {
+      const auto band_slack = [margin](const osk::CollisionHit& h) {
+        return std::max(h.sweep_min_distance - margin, 0.0);
+      };
+      EXPECT_LE(band_slack(full_with), band_slack(full_without)) << "trial " << trial;
     }
   }
   EXPECT_GT(trials_with_difference, 20) << "the property must not hold vacuously";

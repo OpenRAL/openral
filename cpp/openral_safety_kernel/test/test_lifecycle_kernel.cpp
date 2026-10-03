@@ -4350,8 +4350,9 @@ TEST_F(LifecycleKernelTest, AnExemptFingerInsideItsTargetStillLeavesTheChunkScal
   // negative distance. Fed raw into the sweep minimum it made the chunk's slack
   // negative, which the velocity band discards as "tripped" — the chunk went out
   // at full rate even with a non-exempt cell (the one above the target, outside
-  // the region) 2.5 mm from the same finger. The exempt pair now reaches the
-  // minimum at the margin, i.e. slack 0: the band's slowest rate.
+  // the region) 2.5 mm from the same finger. The band now clamps an untripped
+  // check's slack to 0 (`note_slack`), so the exempt contact reads as the
+  // band's slowest rate.
   auto params = grasp_params();
   params.emplace_back("collision_scale_proximity_m", 0.1);
   params.emplace_back("collision_scale_k", 20.0);
@@ -4375,4 +4376,149 @@ TEST_F(LifecycleKernelTest, AnExemptFingerInsideItsTargetStillLeavesTheChunkScal
   EXPECT_NEAR(rig.last_flat[0], std::exp(20.0 * (0.0 - 0.1)), 1e-9)
       << "the exempt pair reads as slack 0 — never a negative slack the band throws away";
   EXPECT_GE(rig.node->chunks_scaled(), 1U);
+}
+
+namespace {
+
+// A payload resting on a witnessed support, next to a cell it is NOT allowed to
+// touch. Geometry, all on the x axis (25 mm lattice from x = 0.2625):
+//   payload   20 mm half-extent box on link0 at x = 0.30 → faces at 0.28 / 0.32
+//   support   cell 0, x in [0.2625, 0.2875]: 7.5 mm into the payload's -x face
+//             (the lattice's own inflation of a resting contact), exempted by
+//             the witness — so the sweep minimum reads -0.0075
+//   neighbour cell 4, x in [0.3625, 0.3875]: 42.5 mm off the +x face, i.e.
+//             12.5 mm of slack at the 30 mm attached margin, inside a 0.1 m band
+// The robot's own r = 10 mm sphere at the origin is 0.25 m from every cell, so
+// the only thing that can slow the chunk is the neighbour's slack.
+ScaleOutcome run_witnessed_support_chunk(const std::string& node_name, bool support_cell) {
+  auto params = place_declaration_params();
+  params.emplace_back("collision_scale_proximity_m", 0.1);
+  params.emplace_back("collision_scale_k", 20.0);
+  params.emplace_back("collision_scale_min", 0.1);
+  params.emplace_back("collision_seed_dt_s", 0.0);  // reactive: the measured pose only
+  rclcpp::NodeOptions opts;
+  opts.parameter_overrides(params);
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>(node_name, opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+  EXPECT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+  rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+  EXPECT_EQ(node->on_activate(inactive), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+
+  rclcpp::Node helper(node_name + "_helper");
+  rclcpp::QoS reliable(rclcpp::KeepLast(1));
+  reliable.reliable();
+  rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+  js_qos.best_effort();
+  auto cand_pub = helper.create_publisher<openral_msgs::msg::ActionChunk>(
+      "/openral/candidate_action", reliable);
+  auto js_pub = helper.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+  auto voxel_pub = helper.create_publisher<openral_msgs::msg::OccupancyVoxels>(
+      "/openral/world_voxels", reliable);
+  auto ws_pub = helper.create_publisher<openral_msgs::msg::WorldStateStamped>(
+      "/openral/world_state_fast", reliable);
+  ScaleOutcome out;
+  auto safe_sub = helper.create_subscription<openral_msgs::msg::ActionChunk>(
+      "/openral/safe_action", reliable,
+      [&out](const openral_msgs::msg::ActionChunk::SharedPtr msg) {
+        if (!out.published) {
+          out.published = true;
+          out.flat = msg->flat;
+        }
+      });
+  rclcpp::executors::SingleThreadedExecutor exec;
+  exec.add_node(node->get_node_base_interface());
+  exec.add_node(helper.get_node_base_interface());
+
+  openral_msgs::msg::OccupancyVoxels vox;
+  vox.orientation.w = 1.0;
+  vox.header.frame_id = "base_link";
+  vox.resolution = 0.025;
+  vox.size_x = 5;
+  vox.size_y = 1;
+  vox.size_z = 1;
+  vox.origin.x = 0.2625;
+  vox.origin.y = -0.0125;
+  vox.origin.z = -0.0125;
+  vox.occupancy = {static_cast<std::uint8_t>(support_cell ? 1 : 0), 0, 0, 0, 1};
+
+  openral_msgs::msg::WorldStateStamped ws;
+  ws.attachment_revision = 1;
+  openral_msgs::msg::AttachedCollisionObject obj;
+  obj.object_id = "sim:obj_main";
+  obj.attach_link = "link0";
+  obj.pose_in_link.position.x = 0.30;
+  obj.pose_in_link.orientation.w = 1.0;
+  openral_msgs::msg::AttachedCollisionPrimitive prim;
+  prim.shape_type = openral_msgs::msg::AttachedCollisionPrimitive::SHAPE_BOX;
+  prim.shape_dimensions = {0.02, 0.02, 0.02};
+  prim.pose_in_object.orientation.w = 1.0;
+  obj.primitives.push_back(prim);
+  obj.support_contact_valid = true;
+  obj.support_contact.support_id = "sim:counter_main";
+  obj.support_contact.contact_point_in_object.x = -0.02;  // the payload's -x face
+  obj.support_contact.contact_normal_in_object.x = 1.0;   // support → payload
+  obj.support_contact.patch_radius_m = 0.02;
+  obj.support_contact.max_penetration_m = 0.002;
+  obj.support_contact.evidence_kind = "sim_geom_distance";
+  ws.attached_objects.push_back(obj);
+
+  sensor_msgs::msg::JointState js;
+  js.name = {"j0"};
+  js.position = {0.0};
+  const auto pump = [&]() {
+    js_pub->publish(js);
+    vox.source_stamp = helper.now();
+    voxel_pub->publish(vox);
+    ws.attachment_stamp_ns = node->now().nanoseconds();
+    ws.attached_objects[0].support_contact.stamp_ns = 1;  // one attestation, held
+    ws_pub->publish(ws);
+    exec.spin_some(std::chrono::milliseconds(10));
+  };
+  const auto warm = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+  while (std::chrono::steady_clock::now() < warm) {
+    pump();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+  while (!out.published && std::chrono::steady_clock::now() < deadline) {
+    pump();
+    cand_pub->publish(velocity_chunk(1.0));
+    exec.spin_some(std::chrono::milliseconds(10));
+  }
+  out.latched = node->fault_latched();
+  out.scaled = node->chunks_scaled();
+  exec.remove_node(node->get_node_base_interface());
+  rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+  node->on_deactivate(active);
+  node->on_cleanup(inactive);
+  return out;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, APayloadOnItsWitnessedSupportStillLeavesTheChunkScaled) {
+  // Review finding: ANY exempted pair (the support witness, the embedded
+  // attach-time residue, the grasp target) reads a negative distance, and the
+  // velocity band discarded a negative slack as "tripped" — so a payload resting
+  // on its attested support threw away every other pair's graded slowdown, and
+  // the chunk went out at full rate 12.5 mm from a cell it must not touch.
+  const double expected = std::exp(20.0 * (0.0125 - 0.1));
+
+  // The control: the neighbour alone sets the scale.
+  const auto alone = run_witnessed_support_chunk("kernel_witness_band_alone", false);
+  ASSERT_TRUE(alone.published);
+  ASSERT_FALSE(alone.latched);
+  ASSERT_EQ(alone.flat.size(), 1U);
+  ASSERT_NEAR(alone.flat[0], expected, 1e-6) << "the neighbour's 12.5 mm of slack";
+
+  // On its support: the witness clears the contact, and the band still slows
+  // the chunk — at least as much as the neighbour alone does.
+  const auto resting = run_witnessed_support_chunk("kernel_witness_band_resting", true);
+  ASSERT_TRUE(resting.published) << "the witnessed contact must not stop the chunk";
+  EXPECT_FALSE(resting.latched);
+  ASSERT_EQ(resting.flat.size(), 1U);
+  EXPECT_LE(resting.flat[0], expected + 1e-12) << "an exempt pair must never speed the chunk up";
+  EXPECT_NEAR(resting.flat[0], std::exp(20.0 * (0.0 - 0.1)), 1e-9)
+      << "the exempt contact reads as slack 0: the band's slowest rate";
+  EXPECT_GE(resting.scaled, 1U);
 }

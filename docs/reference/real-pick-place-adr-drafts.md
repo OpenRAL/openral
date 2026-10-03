@@ -27,9 +27,10 @@ bridge's "an occupied cell is an obstacle" invariant) were considered and reject
   exempt **for the declared gripper's contact links only** — the intersection of a launch-derived
   manifest allowlist (the `role: gripper` joints' `child_link`s) and the declaration's
   `contact_links`. An exempt (link, cell) pair never trips and never supplies the reported
-  identity; it reaches `sweep_min` clamped to no less than the margin (slack 0, the velocity
-  band's slowest rate), so a finger inside its target can never drive the sweep minimum negative
-  and hide the graded slowdown every non-exempt pair still earns. An exempt pair never spends
+  identity; it reaches `sweep_min` at its own (negative) depth, and the kernel's velocity band
+  clamps an untripped check's slack to 0, so a finger inside its target reads as the band's
+  slowest rate and can never hide the graded slowdown every non-exempt pair still earns (the same
+  clamp covers the support-witness and embedded-residue exemptions on the attached path). An exempt pair never spends
   the check's shared stage-2 refinement budget (it cannot trip, so stage 1 suffices), so a finger
   buried in its target cannot starve a non-exempt link of the exact hull distance and false-stop
   it.
@@ -74,7 +75,7 @@ ADR-0100's force gate should arm during close as additive conservatism.
 | HZ-01xx-4 | Target moved after measurement; exemption covers vacated space or a new arrival | Measure-once region | Region-age bound and re-measurement, or a short TTL (WG). |
 | HZ-01xx-5 | Exemption leaks to other links, arms or robots | Configuration error | Static allowlist resolved at configure (unknown link fails configure); declaration links must be a subset; intersection mask; bimanual test. The handover binds only to a payload on the declaring gripper's chain (contact link or non-root ancestor), never the other hand's payload or a release record frozen on the base, so another arm's attachment can neither extend nor end this gripper's exemption. |
 | HZ-01xx-6 | Fingers driven into the support surface under the target | Region extends into the support plane | Producer obligation that the region's lower face sits above the support plane; kernel test pins that support cells outside the region still stop. |
-| HZ-01xx-7 | The exemption silences the graded velocity band for the whole chunk | An exempt finger inside its target reads a negative distance; the sweep keeps one minimum, and the band discards a negative slack as "tripped", so every non-exempt pair's slowdown is lost with it | An exempt pair reaches the sweep minimum clamped to the margin (slack 0: the band's slowest rate, never full speed); collision + lifecycle tests pin the scaled chunk with the exempt finger inside its target. |
+| HZ-01xx-7 | The exemption silences the graded velocity band for the whole chunk | An exempt finger inside its target reads a negative distance; the sweep keeps one minimum, and the band discards a negative slack as "tripped", so every non-exempt pair's slowdown is lost with it | The band clamps an untripped check's slack to `max(slack, 0)`, so any exempt pair (grasp target, support witness, embedded residue) reads as slack 0 — the band's slowest rate, never full speed; lifecycle tests pin the scaled chunk with the exempt finger inside its target and with a payload resting on its witnessed support. |
 
 Cite alongside: the existing self-filter shell hazard (2 cm padding around the swept finger hull
 already blinds the map near the jaws).
