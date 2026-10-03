@@ -13,7 +13,7 @@
 #
 # Bring up the camera driver on the SAME ROS_DOMAIN_ID first, then:
 #     ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedm \
-#         publish_tf:=false publish_map_tf:=false
+#         publish_tf:=false publish_map_tf:=false enable_ipc:=false
 #     openral deploy sim --config scenes/deploy/openarm_zed_octomap.yaml \
 #         --hal viewer_enabled=false
 # `publish_tf:=false` matters: otherwise zed_wrapper publishes its own
