@@ -300,7 +300,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   manifest-only `finger_pair` through the attach link) span a gravity-aligned box grown by the
   approach distance (`approach_box`); a hand whose box holds ≥ `grasp_target_min_cells` occupied
   cells is *approaching*. **Exactly one** approaching hand arms a one-hand declaration
-  (`target_id="approach:<first link>"`; `contact_links` = that hand only, the box as its
+  (`target_id="approach:<first link>:<n>"`, one per pick; `contact_links` = that hand only, the box as its
   `search_box`, everything else — `stamp_ns` included, so the kernel's `timeout_s` backstop
   still runs from the goal — the goal's); two at once arm none. The box follows the TCP and
   feeds the measurement above **unchanged** (measured support, anchored seed at the column
@@ -339,17 +339,34 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   is serialized by one lock: the bridge's ATTACH runs on the HAL's proprio publisher thread,
   the leg's tick/reply/deadline on the executor; `accept`/`refuse` take the request's
   generation and apply only under it, atomically.
-  *One approach-armed pick per goal (chosen for safety and simplicity, 2026-10-03):* once a
-  hand is handed over the goal stays handed over until dispatch declares afresh (goal end,
-  cancel, E-stop, expiry, a new goal) — no hand re-arms for a second pick in the same goal; a
-  later grasp in that goal gets no exemption and its fingers stop at the normal margin. The
-  envelope keeps the picked declaration, whose `(target_id, stamp_ns)` the kernel retired at
-  the detach, so the kernel's "a retired declaration never re-arms" (HZ-01xx-3) is the bound,
-  not a producer-side guard. A pre-handover retraction (`approach_ended`, a refusal) re-arms
-  behind the backoff under the same `approach:<link>` identity, so an arming the kernel already
-  retired for a fault stays refused. A named declaration behaves the same: a new target needs a
-  new declaration from dispatch. *Deferred:* several picks per goal (a per-pick identity, a
-  guard against re-arming on the just-placed object) — a WG call (ADR draft judgement call 4). A dispatch/reasoner declaration with a
+  *Multi-pick per goal (2026-10-03, default off with the approach-armed target):* a VLA may
+  pick and place several objects within one goal, or one object per goal; both run on the same
+  path. Each pick arms under its own identity, `approach:<link>:<n>`: `n` is the tracker's pick
+  counter, **seeded from the wall clock at tracker construction** (like the bridge's
+  attachment revision) and advanced at every completed pick, so a HAL re-activated mid-goal
+  never re-mints an identity the kernel retired; `stamp_ns` stays the goal's, so the kernel's
+  `timeout_s` backstop still counts from the goal. While a hand is handed over nothing arms.
+  The pick ends on the bridge's **DETACH event**, never by polling: the bridge hands the leg the
+  release window's frozen record (`GraspTargetLeg.on_detach`), the tracker drops that hand's
+  region at once while keeping the handover so nothing re-measures or re-latches it
+  (`on_release`), and once the hand's legs hold nothing — no attachment, no release window, no
+  pending segmentation; re-checked on the DETACH and when the window closes
+  (`on_release_closed`) — the pick is complete (`on_pick_complete`): the counter advances and
+  the hand may re-arm behind the same backoff as a refusal. **Not on what it just released
+  (HZ-01xx-11):** until the hand's approach box clears the released payload's frozen pose
+  (each primitive bounded by a sphere) by one voxel, the hand does not arm (it still counts
+  toward "two hands at once"); a release that left no record (no tf2 at the DETACH) keeps it
+  from arming for the rest of the goal. **The kernel bounds it, not the producer:** it retires
+  each pick's identity at its release — when the payload attached on the declaring chain
+  disappears (`reason=released`; the other hand may still hold, and the released payload may
+  sit frozen on the base through its window), when the whole attachment set empties
+  (`detached`), or when a handed-over declaration loses its region or is retracted — and keeps
+  every retired identity, up to 16 per activation (oldest evicted, logged once; an evicted one
+  stays bounded by its goal's `timeout_s`), so no pick's identity re-arms (HZ-01xx-3). A
+  pre-handover retraction (`approach_ended`, a refusal) re-arms behind the backoff under the
+  same identity, so an arming the kernel already retired for a fault stays refused. A named
+  `search_box` declaration stays handed over after its pick: a new target needs a new
+  declaration from dispatch. A dispatch/reasoner declaration with a
   `search_box` wins (no approach runs); one naming a hand but no box narrows the approach to
   that hand. The kernel reads it from the envelope like any producer-measured declaration —
   it never required the dispatch relay — and now also refuses a region-carrying declaration
@@ -368,7 +385,12 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   `tests/integration/test_grasp_target_leg_live.py::test_an_approaching_hand_arms_the_target_with_no_named_target`,
   the real kernel in
   `tests/integration/test_safety_kernel_grasp_target_band.py::test_an_approach_armed_declaration_exempts_one_hand_and_nothing_beside_the_target`
-  and `::test_a_second_approach_armed_pick_in_one_goal_gets_no_exemption_on_the_real_kernel`,
+  and `::test_two_approach_armed_picks_in_one_goal_on_the_real_kernel` (multi-pick: both picks
+  exempt, the release retiring pick 1 while the other hand holds, pick 1's identity refused
+  afterwards), the kernel gtests `…ASecondPickInTheGoalArmsUnderItsOwnIdentity`,
+  `…EveryRetiredPickIdentityStaysRefusedEvenFromARestartedProducer`,
+  `…AReleaseOnTheDeclaringChainRetiresWhileTheOtherHandHolds`,
+  `…AHandedOverDeclarationThatLosesItsRegionRetires`,
   the runner in `packages/openral_rskill_ros/test/test_grasp_declaration_lifecycle.py`.
 - **Representation:** an oriented box in `openarm_base` (reuse `PlaceRegion`): ~150 B, grid-instance
   independent, exact point-in-OBB already in the kernel.

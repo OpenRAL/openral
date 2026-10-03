@@ -602,7 +602,7 @@ def test_grasp_exemption_band_on_the_real_openarm_model(
 #: 0.04-0.06; the region ends at x = 0.03): outside the measured region, but 13 mm from the
 #: left finger pair's hull, whose lower part spans x <= 0.027 at q = 0 (same FK as above).
 _NEIGHBOUR = frozenset(_index(5, j, k) for j in (3, 4) for k in (2, 3))
-_APPROACH_TARGET = f"approach:{_LEFT_FINGER}"  # one identity per hand per goal
+_APPROACH_TARGET = f"approach:{_LEFT_FINGER}:1"  # the tracker's first pick (``first_pick=1``)
 
 
 def _approach_declaration() -> GraspDeclaration:
@@ -625,7 +625,7 @@ def _approach_declaration() -> GraspDeclaration:
         timeout_s=_TIMEOUT_S,
         stamp_ns=now,
     )
-    tracker = GraspTargetTracker(freeze_s=2.0, log=lambda _line: None)
+    tracker = GraspTargetTracker(freeze_s=2.0, log=lambda _line: None, first_pick=1)
     tracker.on_declaration(goal)
     tcp = (_REGION_CENTRE[0], _REGION_CENTRE[1], _REGION_CENTRE[2] + 0.05)
     tracker.on_approach(
@@ -718,23 +718,24 @@ def _t_base_from_link_at_q0(link: str) -> Any:
     return t
 
 
-def test_a_second_approach_armed_pick_in_one_goal_gets_no_exemption_on_the_real_kernel(
+def test_two_approach_armed_picks_in_one_goal_on_the_real_kernel(
     reset_kernel_estop: Callable[..., None],
 ) -> None:
-    """One approach-armed pick per goal: the producer's real tracker and the real bridge
-    record, against the real kernel.
+    """Multi-pick per goal: the producer's real tracker and the real bridge records, against
+    the real kernel, the right hand holding its own payload throughout.
 
     ====================================================  =====================================
     row                                                   verdict
     ====================================================  =====================================
-    arming (``approach:<left>``), measured region         ACCEPTED, finger in the target
+    pick 1 (``approach:<left>:1``), measured region       ACCEPTED, finger in the target
     ATTACH: the region payload on the left gripper        handover latched, ACCEPTED
-    DETACH: nothing attached                              ``grasp_region_dropped reason=detached``
-    the hand approaches again, same goal                  never declared: the producer stays
-                                                          handed over; REFUSED, finger stops
-                                                          at the target, nothing exempt
-    a re-arm under the same identity, fresh region        REFUSED — the kernel's retired
-    (what the producer would publish if it re-armed)      ``(target_id, stamp_ns)`` never re-arms
+    release: the left payload frozen on the base, the     ``grasp_region_dropped reason=released``
+    right hand still holding (attachment set not empty)   — retired at the release; then the
+                                                          producer drops the region
+    pick 2 (``approach:<left>:2``), re-measured, same     ACCEPTED, finger in the target — a
+    goal stamp                                            fresh identity, not the retired one
+    pick 1's identity again, fresh region (a restarted    REFUSED — retired, nothing exempt
+    producer re-sending it)
     ====================================================  =====================================
     """
     import numpy as np
@@ -742,17 +743,16 @@ def test_a_second_approach_armed_pick_in_one_goal_gets_no_exemption_on_the_real_
     from openral_hal.vision_attachment_bridge import (
         VisionAttachmentBridge,
         VisionAttachmentConfig,
+        freeze_released_attachment,
         region_attachment,
     )
 
-    gripper = next(
-        g
-        for g in VisionAttachmentBridge(
-            None, _description(), config=VisionAttachmentConfig(camera="head_zed")
-        )._legs
-        if g.jaw_link == _LEFT_FINGER
-    )
-    t_link_from_base = np.linalg.inv(_t_base_from_link_at_q0(gripper.producer.attach_link))
+    legs = VisionAttachmentBridge(
+        None, _description(), config=VisionAttachmentConfig(camera="head_zed")
+    )._legs
+    left = next(g for g in legs if g.jaw_link == _LEFT_FINGER)
+    right = next(g for g in legs if g.jaw_link == _RIGHT_FINGER)
+    t_base_from_left = _t_base_from_link_at_q0(left.producer.attach_link)
     now = time.time_ns()
     goal = GraspDeclaration(
         target_id="approach",
@@ -762,7 +762,7 @@ def test_a_second_approach_armed_pick_in_one_goal_gets_no_exemption_on_the_real_
         timeout_s=_TIMEOUT_S,
         stamp_ns=now,
     )
-    tracker = GraspTargetTracker(freeze_s=2.0, log=lambda _line: None)
+    tracker = GraspTargetTracker(freeze_s=2.0, log=lambda _line: None, first_pick=1)
     tracker.on_declaration(goal)
 
     def arm(tcp_dy: float) -> GraspDeclaration:
@@ -778,57 +778,72 @@ def test_a_second_approach_armed_pick_in_one_goal_gets_no_exemption_on_the_real_
         assert declaration is not None and declaration.region is not None
         return declaration
 
-    first_id = f"approach:{_LEFT_FINGER}"
+    def payload(declaration: GraspDeclaration, gripper: Any) -> Any:
+        """The bridge's region payload of ``declaration`` on ``gripper``, posed at ``q = 0``."""
+        return region_attachment(
+            declaration,
+            attach_link=gripper.producer.attach_link,
+            touch_links=gripper.producer.touch_links,
+            t_link_from_region=np.linalg.inv(_t_base_from_link_at_q0(gripper.producer.attach_link)),
+            stamp_ns=time.time_ns(),
+        )
+
+    first_id, second_id = f"approach:{_LEFT_FINGER}:1", f"approach:{_LEFT_FINGER}:2"
     with _live_cell(grasp_allowance_enabled=True, reset_kernel_estop=reset_kernel_estop) as (
         cell,
         reset,
     ):
-        # ── The arming: the finger reaches the measured target ──────────────────────────
+        # The right hand holds its own payload throughout (attached checking is off here).
+        right_held = payload(_declaration(_region((0.0, -0.18, -0.61), _REGION_HALF)), right)
+
+        # ── Pick 1: the finger reaches the measured target ──────────────────────────────
         first = arm(0.0)
         assert first.target_id == first_id
-        cell.world(_TARGET | _PLANE, first, attached=[])
+        cell.world(_TARGET | _PLANE, first, attached=[right_held])
         cell.send("pick-1", expect_accept=True)
         assert "pick-1" in cell.safe, cell.log()
 
-        # ── ATTACH: the bridge's region payload; the producer hands the arming over ─────
-        payload = region_attachment(
-            first,
-            attach_link=gripper.producer.attach_link,
-            touch_links=gripper.producer.touch_links,
-            t_link_from_region=t_link_from_base,
-            stamp_ns=time.time_ns(),
-        )
+        # ── ATTACH: the bridge's region payload; the producer hands pick 1 over ─────────
+        held_payload = payload(first, left)
         tracker.on_attach(_LEFT_FINGER, confirm=lambda region: region == first.region)
         assert tracker.handed_over == (_LEFT_FINGER,)
         held = tracker.envelope(now_ns=time.time_ns())
         assert held is not None and held.region == first.region
-        cell.world(_TARGET | _PLANE, held, attached=[payload])
+        cell.world(_TARGET | _PLANE, held, attached=[right_held, held_payload])
         cell.send("pick-1-held", expect_accept=True)
         assert "pick-1-held" in cell.safe, cell.log()
         assert f"safety.grasp_region_handover target={first_id}" in cell.log()
 
-        # ── DETACH: the kernel retires the arming ───────────────────────────────────────
-        cell.world(_TARGET | _PLANE, held, attached=[])
-        assert f"safety.grasp_region_dropped reason=detached target={first_id}" in cell.log()
-
-        # ── The hand approaches again in the same goal: the producer does not arm ───────
-        again = arm(2.0 * _RES)  # moved on by two voxels: past any refusal backoff
-        assert again == held, "a second pick in the same goal armed"
-        cell.world(_TARGET | _PLANE, again)
-        cell.send("pick-2", expect_accept=False)
-        evidence = cell.refused("pick-2")
-        assert evidence["link_a"] == _LEFT_FINGER
-        assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _TARGET}, (
-            "the second pick's target must stop the finger at the margin"
+        # ── Release: the payload frozen on the base, the right hand still holding ───────
+        frozen = freeze_released_attachment(
+            held_payload, base_link=_FRAME, t_base_from_link=t_base_from_left
         )
-        assert cell.stop_lines()[-1][2] == 0, "nothing exempt on the second pick"
-        reset()
+        # The bridge's DETACH publishes the frozen record first, the envelope unchanged...
+        cell.world(_TARGET | _PLANE, held, attached=[right_held, frozen])
+        assert f"safety.grasp_region_dropped reason=released target={first_id}" in cell.log()
+        # ...then hands the record to the leg, which drops the region at once.
+        tracker.on_release((_LEFT_FINGER,), frozen)
+        released = tracker.envelope(now_ns=time.time_ns())
+        assert released is not None and released.region is None, "region dropped at DETACH"
+        cell.world(_TARGET | _PLANE, released, attached=[right_held, frozen])
+        # The release window closes: the hand holds nothing, the pick is complete.
+        cell.world(_TARGET | _PLANE, released, attached=[right_held])
+        assert tracker.on_pick_complete((_LEFT_FINGER,), now_ns=time.time_ns())
 
-        # ── Belt and braces: a re-arm under the same identity is refused as retired ─────
-        rearmed = held.model_copy(update={"region": _region(_REGION_CENTRE, _REGION_HALF)})
+        # ── Pick 2, same goal: a fresh identity, so the kernel arms it ──────────────────
+        second = arm(2.0 * _RES)  # the hand moved on by two voxels: past the backoff
+        assert second.target_id == second_id and second.stamp_ns == goal.stamp_ns
+        cell.world(_TARGET | _PLANE, second, attached=[right_held])
+        cell.send("pick-2", expect_accept=True)
+        assert "pick-2" in cell.safe, "the second pick's region was refused"
+        assert f"safety.grasp_region_armed target={second_id} links=1" in cell.log()
+
+        # ── Pick 1's identity again (a restarted producer): refused as retired ──────────
+        rearmed = first.model_copy(update={"region": _region(_REGION_CENTRE, _REGION_HALF)})
         assert (rearmed.target_id, rearmed.stamp_ns) == (first_id, goal.stamp_ns)
-        cell.world(_TARGET | _PLANE, rearmed)
-        cell.send("pick-2-rearmed", expect_accept=False)
-        evidence = cell.refused("pick-2-rearmed")
+        cell.world(_TARGET | _PLANE, rearmed, attached=[right_held])
+        cell.send("pick-1-rearmed", expect_accept=False)
+        evidence = cell.refused("pick-1-rearmed")
         assert evidence["link_a"] == _LEFT_FINGER
         assert cell.stop_lines()[-1][2] == 0, "a retired identity re-armed"
+        reset()

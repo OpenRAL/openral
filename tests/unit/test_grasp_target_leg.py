@@ -605,7 +605,7 @@ def test_one_approaching_hand_arms_a_one_hand_declaration_with_the_goals_attribu
     _approach(tracker, _near(_LEFT))
     target = tracker.target
     assert target is not None
-    assert target.target_id == f"{APPROACH_TARGET_PREFIX}openarm_left_finger_pair"
+    assert target.target_id.startswith(f"{APPROACH_TARGET_PREFIX}openarm_left_finger_pair:")
     assert target.contact_links == _LEFT, "the exemption is for the approaching hand only"
     assert (target.rskill_id, target.trace_id, target.stamp_ns, target.timeout_s) == (
         "openral/pi05-openarm-restock",
@@ -801,28 +801,101 @@ def test_an_attach_on_an_unarmed_hand_does_not_block_the_other_hand() -> None:
     assert tracker.handed_over is None and tracker.wants_measurement(now_ns=11 * _S)
 
 
-def test_a_handed_over_goal_never_arms_a_second_pick() -> None:
-    """One approach-armed handover per goal: after the pick, neither hand re-arms — not
-    after the hand lets go, not elsewhere, not after any backoff — until dispatch declares
-    afresh. The envelope keeps the picked declaration, whose identity the kernel retired."""
-    tracker, lines = _approach_tracker()
-    _approach(tracker, _near(_LEFT))
-    tracker.accept(_measured(11 * _S))
+def _pick(tracker: GraspTargetTracker, box: PlaceRegion, *, now_ns: int) -> GraspDeclaration:
+    """Arm the left hand at ``box``, measure, and hand it over: one pick's ATTACH."""
+    _approach(tracker, [(_LEFT, box)], now_ns=now_ns)
+    tracker.accept(_measured(now_ns))
     picked = tracker.target
+    assert picked is not None and picked.contact_links == _LEFT
     tracker.on_attach("openarm_left_finger_pair", confirm=_CONFIRMED)
-    assert tracker.handed_over == _LEFT and not tracker.wants_approach(now_ns=11 * _S)
-    second = approach_box([(0.30, 0.20, 0.10)], approach_m=0.1, frame_id="openarm_base")
-    for hand in (_LEFT, _RIGHT):
-        _approach(tracker, [(hand, second)], now_ns=60 * _S)
-        assert tracker.target is picked, "a second pick in the same goal armed"
-    assert not tracker.wants_measurement(now_ns=60 * _S)
-    assert sum("armed from the approach" in line for line in lines) == 1
-    # The next goal arms afresh, under the same per-hand identity.
-    tracker.on_declaration(_goal_scope(stamp_ns=61 * _S))
-    _approach(tracker, [(_LEFT, second)], now_ns=62 * _S)
-    target = tracker.target
-    assert target is not None and target.target_id == f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}"
-    assert target.stamp_ns == 61 * _S
+    assert tracker.handed_over == _LEFT
+    return picked
+
+
+def test_a_completed_pick_re_arms_the_hand_under_a_fresh_identity() -> None:
+    """Multi-pick per goal: while handed over nothing arms; the DETACH drops the region at
+    once but keeps the handover; once the hand holds nothing the pick is complete and the
+    hand re-arms — under a fresh ``target_id``, the goal's ``stamp_ns``, behind the backoff."""
+    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append, first_pick=7)
+    tracker.on_declaration(_goal_scope())
+    here = approach_box([(0.45, 0.0, 0.18)], approach_m=0.1, frame_id="openarm_base")
+    first = _pick(tracker, here, now_ns=11 * _S)
+    assert first.target_id == f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}:7"
+    second_place = approach_box([(0.30, 0.20, 0.10)], approach_m=0.1, frame_id="openarm_base")
+    for hand in (_LEFT, _RIGHT):  # handed over: nothing arms, either hand
+        _approach(tracker, [(hand, second_place)], now_ns=12 * _S)
+        assert tracker.target is first
+    record = _released_record()
+    tracker.on_release(_LEFT, record)
+    assert tracker.region is None, "the region is dropped at the DETACH"
+    assert tracker.handed_over == _LEFT, "kept until the hand holds nothing"
+    envelope = tracker.envelope(now_ns=12 * _S)
+    assert envelope is not None and envelope.region is None
+    tracker.accept(_measured(12 * _S))
+    assert tracker.region is None, "nothing re-latches a region while handed over"
+    assert not tracker.on_pick_complete(_RIGHT, now_ns=12 * _S), "not the handed-over hand"
+    assert tracker.on_pick_complete(_LEFT, now_ns=12 * _S)
+    assert tracker.handed_over is None and tracker.target == _goal_scope()
+    assert tracker.spent(_LEFT) == (True, record), "the leg guards the released payload"
+    # Behind the backoff: the same place does not re-arm at once.
+    _approach(tracker, [(_LEFT, here)], now_ns=12 * _S + 1)
+    assert tracker.target == _goal_scope()
+    second = _pick(tracker, second_place, now_ns=13 * _S)
+    assert second.target_id == f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}:8"
+    assert second.stamp_ns == first.stamp_ns, "the goal's stamp: its timeout backstop"
+    # A new goal forgets the spent payload, never the counter.
+    tracker.on_release(_LEFT, record)
+    tracker.on_pick_complete(_LEFT, now_ns=14 * _S)
+    tracker.on_declaration(_goal_scope(stamp_ns=20 * _S))
+    assert tracker.spent(_LEFT) == (False, None)
+    third = _pick(tracker, here, now_ns=21 * _S)
+    assert third.target_id == f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}:9"
+
+
+def test_a_re_activated_hals_tracker_never_reuses_an_identity() -> None:
+    """The counter is seeded from the wall clock: a tracker built mid-goal by a re-activated
+    HAL mints identities past every one the previous tracker minted."""
+    here = approach_box([(0.45, 0.0, 0.18)], approach_m=0.1, frame_id="openarm_base")
+    minted: list[int] = []
+    for _ in range(2):
+        tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=[].append)
+        tracker.on_declaration(_goal_scope())
+        for k in range(3):
+            picked = _pick(tracker, here, now_ns=(11 + 10 * k) * _S)
+            minted.append(int(picked.target_id.rsplit(":", 1)[1]))
+            tracker.on_release(_LEFT, None)
+            assert tracker.on_pick_complete(_LEFT, now_ns=(12 + 10 * k) * _S)
+    assert minted == sorted(set(minted)), f"an identity was reused: {minted}"
+
+
+def test_a_pick_with_no_release_record_keeps_the_hand_guarded() -> None:
+    """No tf2 at the DETACH: no record. The hand is guarded for the rest of the goal, and a
+    pick completing with no DETACH seen at all is guarded the same way."""
+    tracker, _ = _approach_tracker()
+    here = approach_box([(0.45, 0.0, 0.18)], approach_m=0.1, frame_id="openarm_base")
+    _pick(tracker, here, now_ns=11 * _S)
+    assert tracker.on_pick_complete(_LEFT, now_ns=12 * _S)
+    assert tracker.spent(_LEFT) == (True, None)
+    tracker.clear_spent(_LEFT, _released_record())
+    assert tracker.spent(_LEFT) == (True, None), "only the guarded record ends the guard"
+
+
+def test_an_approach_computed_before_a_pick_completed_is_stale() -> None:
+    """The leg's tick reads the generation first; a pick completing on the HAL's thread
+    before its ``on_approach`` lands makes that verdict stale (it could not see the guard)."""
+    tracker, _ = _approach_tracker()
+    here = approach_box([(0.45, 0.0, 0.18)], approach_m=0.1, frame_id="openarm_base")
+    _pick(tracker, here, now_ns=11 * _S)
+    tracker.on_release(_LEFT, _released_record())
+    generation = tracker.generation
+    tracker.on_pick_complete(_LEFT, now_ns=12 * _S)
+    elsewhere = approach_box([(0.30, 0.20, 0.10)], approach_m=0.1, frame_id="openarm_base")
+    tracker.on_approach([(_LEFT, elsewhere)], now_ns=20 * _S, move_m=_CELL, generation=generation)
+    assert tracker.target == _goal_scope()
+    tracker.on_approach(
+        [(_LEFT, elsewhere)], now_ns=20 * _S, move_m=_CELL, generation=tracker.generation
+    )
+    assert tracker.target is not None and tracker.target.contact_links == _LEFT
 
 
 def test_a_confirm_that_raises_hands_nothing_over() -> None:
@@ -848,7 +921,11 @@ def test_a_named_declaration_stays_handed_over_after_its_pick() -> None:
     tracker, _ = _tracker()
     tracker.accept(_measured(11 * _S))
     tracker.on_attach("openarm_left_finger_pair", confirm=_CONFIRMED)
-    assert tracker.handed_over is not None
+    handed = tracker.handed_over
+    assert handed is not None
+    tracker.on_release(handed, None)
+    assert not tracker.on_pick_complete(handed, now_ns=12 * _S)
+    assert tracker.handed_over == handed and tracker.region == _measured(11 * _S)
     assert not tracker.wants_measurement(now_ns=12 * _S)
 
 
@@ -971,10 +1048,35 @@ def _payload(gripper: Any, tracker: GraspTargetTracker) -> AttachedCollisionObje
     )
 
 
+def _released_record() -> AttachedCollisionObject:
+    """A real frozen release record: the left gripper's region payload of ``_measured``,
+    released and frozen in the base frame (``freeze_released_attachment``)."""
+    from openral_hal.vision_attachment_bridge import freeze_released_attachment
+
+    robot = RobotDescription.from_yaml(str(_ROBOT))
+    bridge = VisionAttachmentBridge(None, robot, config=VisionAttachmentConfig(camera="head_zed"))
+    gripper = next(g for g in bridge._legs if g.jaw_link == _LEFT[0])
+    declaration = _goal_scope().model_copy(
+        update={
+            "target_id": f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}:1",
+            "contact_links": _LEFT,
+            "region": _measured(11 * _S),
+        }
+    )
+    held = region_attachment(
+        declaration,
+        attach_link=gripper.producer.attach_link,
+        touch_links=gripper.producer.touch_links,
+        t_link_from_region=np.eye(4),
+        stamp_ns=11 * _S,
+    )
+    return freeze_released_attachment(held, base_link=robot.base_frame, t_base_from_link=np.eye(4))
+
+
 class _LiveLeg:
     """A real bridge on a real rclpy node and tf2 buffer, the hands placed by TCP."""
 
-    def __init__(self, node: Any, tf2_ros: Any) -> None:
+    def __init__(self, node: Any, tf2_ros: Any, **config: Any) -> None:
         self.node = node
         self.robot = RobotDescription.from_yaml(str(_ROBOT))
         self.bridge = VisionAttachmentBridge(
@@ -988,6 +1090,7 @@ class _LiveLeg:
                     "openarm_left_link7": "openarm_left_ee_base_link",
                     "openarm_right_link7": "openarm_right_ee_base_link",
                 },
+                **config,
             ),
         )
         self.buffer = tf2_ros.Buffer()
@@ -1015,7 +1118,7 @@ class _LiveLeg:
 
 
 @contextmanager
-def _live_leg(name: str) -> Iterator[_LiveLeg]:
+def _live_leg(name: str, **config: Any) -> Iterator[_LiveLeg]:
     """A ``_LiveLeg`` whose rclpy context and node are torn down whatever fails, setup too."""
     tf2_ros = pytest.importorskip("tf2_ros")
     rclpy = pytest.importorskip("rclpy")
@@ -1023,7 +1126,7 @@ def _live_leg(name: str) -> Iterator[_LiveLeg]:
     try:
         node = rclpy.create_node(name)
         try:
-            yield _LiveLeg(node, tf2_ros)
+            yield _LiveLeg(node, tf2_ros, **config)
         finally:
             node.destroy_node()
     finally:
@@ -1107,13 +1210,42 @@ def test_a_measurement_in_flight_at_handover_is_discarded() -> None:
         assert leg.tracker.region == _measured(now_ns + 3 * _S)
 
 
-def test_a_second_pick_in_the_same_goal_does_not_arm() -> None:
-    """The bridge end to end: the first pick takes the measured region once; the hand lets
-    go, moves off and comes back to the target area — no arming, no region, so the second
-    grasp segments and its jaws get no exemption. A new goal arms ``approach:<link>``."""
+def _grip(bridge: VisionAttachmentBridge, q: float, *, t0_ns: int) -> int:
+    """The left jaw commanded closed and read at ``q`` for 0.8 s of 50 Hz HAL ticks — the
+    bridge's real trigger path (``observe_command`` / ``observe_joint_state``). ``q`` = 0.2
+    stalls on an object (ATTACH); 0.0 closes onto nothing once loaded (DETACH)."""
+    from openral_core import Action, ControlMode, JointState
+
+    close = Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_names=["left_gripper"],
+        joint_targets=[[0.0]],
+    )
+    t = t0_ns
+    for _ in range(40):
+        t += 20_000_000
+        bridge.observe_command(close)
+        bridge.observe_joint_state(
+            JointState(
+                name=["left_gripper", "right_gripper"],
+                position=[q, 0.0],
+                effort=[0.0, 0.0],
+                stamp_ns=t,
+            )
+        )
+    return t
+
+
+def test_two_picks_in_one_goal_through_the_bridges_detach() -> None:
+    """The bridge end to end, event-driven: pick 1 takes the measured region; its DETACH
+    drops the region at once (handover kept while the release window is open); the window
+    closing completes the pick; the hand by the payload it just released does not arm;
+    lifted clear and back, it arms pick 2 under a fresh identity and the goal's stamp, and
+    pick 2's region is a new payload."""
     import time
 
-    with _live_leg("test_grasp_target_second_pick") as live:
+    with _live_leg("test_grasp_target_two_picks", release_timeout_s=0.05) as live:
         leg, bridge = live.leg, live.bridge
         now_ns = leg._now_ns()
         left = live.gripper("openarm_left_finger_pair")
@@ -1127,31 +1259,47 @@ def test_a_second_pick_in_the_same_goal_does_not_arm() -> None:
         goal = _goal_scope(stamp_ns=now_ns)
         leg.tracker.on_declaration(goal)
         detect((0.45, 0.0, 0.18), now_ns)
-        first_target = leg.tracker.target
-        assert first_target is not None
-        assert first_target.target_id == f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}"
-        assert first_target.stamp_ns == goal.stamp_ns, "the goal's stamp: its timeout backstop"
+        first = leg.tracker.target
+        assert first is not None and first.contact_links == _LEFT
+        assert first.target_id.startswith(f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}:")
         live.place("left", (0.45, 0.0, 0.10))  # inside ``_measured``'s box
         leg.tracker.accept(_measured(now_ns))
-        first = bridge._region_payload(left, stamp_ns=now_ns)
-        assert first is not None
-        assert bridge._region_payload(left, stamp_ns=now_ns) is None, "the same region twice"
-        left.attachment = first[0]
-        leg.on_attach("openarm_left_finger_pair", first[0], region=first[1])
-        assert leg.tracker.handed_over == _LEFT and leg.tracker.region == first[1]
-        left.attachment = None  # placed and released: the hand holds nothing
-        for step, z in enumerate((0.40, 0.18, 0.40, 0.18), start=1):
-            detect((0.45, 0.0, z), now_ns + step * 3 * _S)  # well past any backoff
-            assert leg.tracker.target is first_target, "a second pick in the goal armed"
-            assert not leg.tracker.wants_measurement(now_ns=now_ns + step * 3 * _S)
+
+        # ── Pick 1: ATTACH on the region, then DETACH ───────────────────────────────────
+        t = _grip(bridge, 0.2, t0_ns=1)
+        assert left.attachment is not None and left.attachment.object_id == first.target_id
+        assert leg.tracker.handed_over == _LEFT and leg.tracker.region == _measured(now_ns)
+        _grip(bridge, 0.0, t0_ns=t)
+        assert left.attachment is None and left.release is not None, "release window open"
+        assert leg.tracker.region is None, "the region is dropped at the DETACH"
+        assert leg.tracker.handed_over == _LEFT, "kept while the window is open"
+        detect((0.45, 0.0, 0.18), now_ns + 1 * _S)
+        assert leg.tracker.target is first, "nothing arms while the hand releases"
+
+        # ── The window times out with the hand still by the payload: pick complete ──────
+        time.sleep(0.1)
+        bridge._poll_releases()
+        assert left.release is None and leg.tracker.handed_over is None
+        assert leg.tracker.spent(_LEFT)[0], "the released payload is guarded"
+        for step in range(2, 5):
+            detect((0.45, 0.0, 0.18), now_ns + step * 3 * _S)  # well past any backoff
+            assert leg.tracker.target == goal, "the hand armed on its just-released payload"
+
+        # ── Lifted clear, then back: pick 2 under a fresh identity ──────────────────────
+        detect((0.45, 0.0, 0.45), now_ns + 15 * _S)
+        assert leg.tracker.spent(_LEFT) == (False, None), "clear of the payload: guard over"
+        detect((0.45, 0.0, 0.18), now_ns + 18 * _S)
+        second = leg.tracker.target
+        assert second is not None and second.contact_links == _LEFT
+        n_first = int(first.target_id.rsplit(":", 1)[1])
+        assert second.target_id == f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}:{n_first + 1}"
+        assert second.stamp_ns == goal.stamp_ns, "the goal's stamp: its timeout backstop"
         live.place("left", (0.45, 0.0, 0.10))
-        assert bridge._region_payload(left, stamp_ns=now_ns + 13 * _S) is None
-        # A new goal arms afresh.
-        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns + 1))
-        detect((0.45, 0.0, 0.18), now_ns + 20 * _S)
-        target = leg.tracker.target
-        assert target is not None and target.target_id == f"{APPROACH_TARGET_PREFIX}{_LEFT[0]}"
-        assert target.stamp_ns == now_ns + 1
+        leg.tracker.accept(_measured(now_ns + 18 * _S))
+        taken = bridge._region_payload(left, stamp_ns=now_ns + 18 * _S)
+        assert taken is not None and taken[0].object_id == second.target_id, (
+            "pick 2's region is a new payload"
+        )
 
 
 # ── ATTACH on what the arming measured, or not (HZ-01xx-8/-11) ─────────────────────
@@ -1190,7 +1338,8 @@ def test_jaws_closing_on_a_neighbour_hand_nothing_over() -> None:
         assert leg.tracker.region is None, "X's region must not be handed over for Y"
         envelope = leg.tracker.envelope(now_ns=now_ns)
         assert envelope is not None and envelope.region is None
-        # Y released: the goal stays handed over (one approach-armed pick per goal).
+        # The hand empty with no DETACH event: still handed over (the pick completes on the
+        # bridge's DETACH, never by polling the legs).
         left.attachment = None
         assert leg.tracker.handed_over == _LEFT and not leg.tracker.wants_approach(now_ns=now_ns)
 
