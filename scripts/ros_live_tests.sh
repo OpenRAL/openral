@@ -62,7 +62,7 @@ TARGETS=(
     # did not, a SUCCESSFUL place aborted its own goal 8 s later.
     tests/integration/test_hal_attachment_barrier_live.py
     # The vision attachment leg heartbeats its set only while every gripper's
-    # effort channel is live, and its revision survives a re-activate.
+    # jaw-position channel is live, and its revision survives a re-activate.
     tests/integration/test_vision_attachment_heartbeat_live.py
     # Grasp masks back-project in the depth header's optical frame through the
     # driver's CameraInfo, never the manifest's body frame or nominal K.
@@ -80,6 +80,15 @@ TARGETS=(
     # freeze TTL on a silent grid; through a real aggregator into a real safety
     # kernel (needs the colcon kernel + openral_msgs overlay).
     tests/integration/test_place_target_leg_live.py
+    # Set-down then release on a measured surface against the real kernel: the
+    # retreat is accepted only with the map_support_proximity witness.
+    tests/integration/test_place_target_release_live.py
+    # Every scene vision_attachment_* param the deploy forwards is declared by the
+    # real HAL node and reaches the grasp trigger (rclpy drops undeclared names).
+    tests/integration/test_vision_attachment_hal_params_live.py
+    # A reasoner-named grasp target grounds from a live lifted detection into a
+    # search box on the goal's declaration (never a region); refusals send no goal.
+    tests/integration/test_reasoner_grounded_targets_live.py
     # The sim producer measures a dispatched grasp declaration's target box and
     # rides it on every attachment envelope, revision unchanged, until retracted.
     tests/integration/test_sim_bridge_grasp_declaration_live.py
