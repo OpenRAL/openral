@@ -1263,6 +1263,16 @@ bool grasp_mask_has(const GraspTargetRegion& region, int link) noexcept {
          region.link_mask[static_cast<std::size_t>(link)];
 }
 
+// The distance an exempt grasp pair hands the sweep minimum: never below the
+// margin. An exempt finger is IN the target, so its true distance is negative,
+// and the slowdown band (`note_slack`) discards negative slack as "tripped" —
+// which would also discard every NON-exempt pair's graded slack, since the
+// sweep keeps one minimum. Clamped, the exempt pair reads as slack 0: the
+// band's slowest rate, the most conservative reading short of a stop.
+double grasp_slack_distance(double d, double margin, bool exempt) noexcept {
+  return exempt && !(d >= margin) ? margin : d;
+}
+
 }  // namespace
 
 bool grasp_region_contains(const GraspTargetRegion& region, const Vec3& p) noexcept {
@@ -1331,11 +1341,11 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
           const double d =
               box_capsule_distance(voxel, voxel_half, cap, r, model.capsules[c].half_length);
           // ADR-01xx: a declared contact link vs a cell centred in the grasp
-          // region reaches sweep_min only, never the reported evidence.
-          const bool tripped =
-              d <= margin &&
-              !(grasp_link && grasp_target_exempts(grid, li, apply(grid.pose, voxel.t)));
-          fold_pair(result, sweep_min, d, tripped, li, static_cast<int>(idx));
+          // region never trips and never supplies the reported evidence.
+          const bool exempt =
+              grasp_link && grasp_target_exempts(grid, li, apply(grid.pose, voxel.t));
+          fold_pair(result, sweep_min, grasp_slack_distance(d, margin, exempt),
+                    !exempt && d <= margin, li, static_cast<int>(idx));
         }
       }
     }
@@ -1383,6 +1393,9 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
             continue;
           }
           const Vec3 center = voxel_center_local(grid, ix, iy, iz);
+          // ADR-01xx, as in the capsule pass.
+          const bool exempt =
+              grasp_link && grasp_target_exempts(grid, lb, apply(grid.pose, center));
           double d;
           if (hull_index < 0) {
             Transform voxel;
@@ -1417,13 +1430,8 @@ CollisionHit check_voxel_collision(const CollisionModel& model, const CollisionS
               }
             }
           }
-          // ADR-01xx, as in the capsule pass. `d` was computed (and the
-          // stage-2 budget spent) exactly as without a region, so every other
-          // pair's answer is unchanged.
-          const bool tripped =
-              d <= margin &&
-              !(grasp_link && grasp_target_exempts(grid, lb, apply(grid.pose, center)));
-          fold_pair(result, sweep_min, d, tripped, lb, static_cast<int>(idx));
+          fold_pair(result, sweep_min, grasp_slack_distance(d, margin, exempt),
+                    !exempt && d <= margin, lb, static_cast<int>(idx));
         }
       }
     }

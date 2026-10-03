@@ -5604,8 +5604,9 @@ TEST(GraspTargetExemption, TheUndeclaredFingerStopsExactlyAsToday) {
   grid.grasp_region = grasp_region(0.03, {kGraspLeftFinger});
   const auto declared = osk::check_voxel_collision(m, s, grid, kGraspMargin);
   EXPECT_FALSE(declared.hit);
-  EXPECT_EQ(declared.sweep_min_distance, today.sweep_min_distance)
-      << "the exempt pair still reaches the sweep minimum";
+  ASSERT_LT(today.sweep_min_distance, kGraspMargin);
+  EXPECT_EQ(declared.sweep_min_distance, kGraspMargin)
+      << "the exempt pair still reaches the sweep minimum, clamped to the margin";
 }
 
 TEST(GraspTargetExemption, ArmLinksAreUntouchedByALiveRegion) {
@@ -5707,7 +5708,8 @@ TEST(GraspTargetExemption, TheSupportSurfaceUnderTheTargetStillStops) {
 TEST(GraspTargetExemption, AnExemptCellNeverSuppliesTheEvidence) {
   // The attached-path contract: an exempt pair reaches sweep_min only. With a
   // deep exempt cell and a shallower non-exempt one that trips, the report
-  // names the latter, and only the sweep minimum shows the former.
+  // names the latter, and the exempt pair (clamped to the margin) is not
+  // deeper than it in the sweep minimum either.
   const osk::CollisionModel m = grasp_cell_model();
   osk::CollisionScratch s = grasp_scratch_all_away();
   s.link_world[kGraspLeftFinger] = identity();
@@ -5727,7 +5729,39 @@ TEST(GraspTargetExemption, AnExemptCellNeverSuppliesTheEvidence) {
   ASSERT_TRUE(hit.hit);
   EXPECT_EQ(hit.link_b, grasp_index(0, 0, 3));
   EXPECT_EQ(hit.min_distance, d_trip);
-  EXPECT_EQ(hit.sweep_min_distance, d_exempt);
+  EXPECT_EQ(hit.sweep_min_distance, d_trip);
+}
+
+TEST(GraspTargetExemption, AnExemptPairNeverDrivesTheSweepMinimumBelowTheMargin) {
+  // Review finding: the sweep minimum is ONE number per sweep and the
+  // lifecycle's velocity band discards a negative slack as "tripped". An exempt
+  // finger inside its target reads negative, so fed raw it hid every
+  // non-exempt pair's graded slack (here a cell above the region, clear of the
+  // margin but inside the band) and the chunk went out unscaled. Clamped, the
+  // exempt pair reads exactly the margin — slack 0, the band's slowest rate.
+  const osk::CollisionModel m = grasp_cell_model();
+  osk::CollisionScratch s = grasp_scratch_all_away();
+  s.link_world[kGraspLeftFinger] = identity();
+  constexpr double kBand = 0.2;
+  const auto band_occ = grasp_occ({{0, 0, 6}});
+  const auto band_only =
+      osk::check_voxel_collision(m, s, grasp_grid(band_occ), kGraspMargin, kBand);
+  ASSERT_FALSE(band_only.hit);
+  ASSERT_GT(band_only.sweep_min_distance, kGraspMargin) << "the band cell is clear of the margin";
+  ASSERT_LT(band_only.sweep_min_distance, kGraspMargin + kBand) << "and inside the band";
+
+  const auto occ = grasp_occ({{0, 0, 0}, {0, 0, 6}});
+  auto grid = grasp_grid(occ);
+  const auto today = osk::check_voxel_collision(m, s, grid, kGraspMargin, kBand);
+  ASSERT_TRUE(today.hit);
+  ASSERT_LT(today.sweep_min_distance, 0.0) << "the finger is inside the target cell";
+
+  grid.grasp_region = grasp_region(0.015, {kGraspLeftFinger});
+  const auto with = osk::check_voxel_collision(m, s, grid, kGraspMargin, kBand);
+  EXPECT_FALSE(with.hit);
+  EXPECT_EQ(with.sweep_min_distance, kGraspMargin)
+      << "never negative: slack 0, so the band still slows the chunk";
+  EXPECT_EQ(with.min_distance, kGraspMargin);
 }
 
 TEST(GraspTargetExemption, TheCapsulePassAppliesTheSameRule) {
@@ -5747,7 +5781,8 @@ TEST(GraspTargetExemption, TheCapsulePassAppliesTheSameRule) {
   ASSERT_TRUE(with.hit) << "the cell outside the region still stops the capsule";
   EXPECT_EQ(with.link_a, kGraspCapFinger);
   EXPECT_EQ(with.link_b, grasp_index(0, 0, 2));
-  EXPECT_EQ(with.sweep_min_distance, today.sweep_min_distance);
+  EXPECT_EQ(with.sweep_min_distance, with.min_distance)
+      << "the exempt cell, clamped to the margin, is not the sweep minimum";
 }
 
 TEST(GraspTargetExemption, DegenerateOversizedNonFiniteRegionsGrantNothing) {
@@ -5907,7 +5942,7 @@ TEST(GraspTargetExemption, MonotonicityOverRandomisedScenes) {
   //   trips_without \ trips_with = {(l, c) : l in mask, c centred in region}
   //                                 ∩ trips_without.
   // Plus the evidence contract on the full sweep: the reported pair is always
-  // a tripping one, and the sweep minimum is unchanged by the region.
+  // a tripping one, and the sweep minimum is never lowered by the region.
   // Randomised over link poses, oriented grids, region pose/size, mask and
   // margin; fixed seed, so a failure is reproducible.
   std::mt19937 rng(20261002U);
@@ -5981,7 +6016,13 @@ TEST(GraspTargetExemption, MonotonicityOverRandomisedScenes) {
           << "trial " << trial << ": the evidence names an exempt pair";
     }
     EXPECT_EQ(full_without.hit, !without.empty()) << "trial " << trial;
-    EXPECT_EQ(full_with.sweep_min_distance, full_without.sweep_min_distance) << "trial " << trial;
+    // The region can only RAISE the sweep minimum (an exempt pair is clamped
+    // to the margin), and with nothing tripping it never drops below the
+    // margin — so the velocity band never sees a negative slack it would drop.
+    EXPECT_GE(full_with.sweep_min_distance, full_without.sweep_min_distance) << "trial " << trial;
+    if (!full_with.hit) {
+      EXPECT_GE(full_with.sweep_min_distance, margin) << "trial " << trial;
+    }
   }
   EXPECT_GT(trials_with_difference, 20) << "the property must not hold vacuously";
 }
