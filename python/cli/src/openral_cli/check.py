@@ -33,6 +33,7 @@ from openral_core.schemas import (
     RobotDescription,
     RSkillManifest,
     SimScene,
+    apply_joint_overlays,
     apply_sensor_overlays,
     check_scene_sensor_overrides,
     load_robot_unit,
@@ -213,6 +214,7 @@ def _check_robots(
             try:
                 unit = load_robot_unit(path, unit_path.stem)
                 apply_sensor_overlays(robot.sensors, unit.sensors)
+                apply_joint_overlays(robot.joints, unit.joints)
             except _LOAD_ERRORS as exc:
                 findings.append(
                     _error("robot_unit", f"robots/{robot_id}/units/{unit_path.name}", _exc(exc))
