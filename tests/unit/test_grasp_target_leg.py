@@ -19,6 +19,7 @@ from openral_core import DeployScene, GraspDeclaration, PlaceRegion, Pose6D, Rob
 from openral_core.exceptions import ROSConfigError
 from openral_hal._grasp_target import VoxelLattice
 from openral_hal._grasp_target_leg import (
+    GraspTargetLeg,
     GraspTargetTracker,
     _gate_refit,
     _Refusal,
@@ -242,6 +243,26 @@ def test_the_support_column_reaches_below_the_box_and_must_be_level() -> None:
     )
     with pytest.raises(ROSConfigError, match="gravity-aligned"):
         search_column(tilted, below_m=0.15)
+
+
+def test_the_freeze_ttl_derives_from_the_deploys_grid_age_unless_set() -> None:
+    """The kernel's voxel deadline (``grid_max_age_s``) sets the freeze: twice it."""
+    robot = RobotDescription.from_yaml(str(_ROBOT))
+
+    def leg(**kwargs: float) -> GraspTargetLeg:
+        bridge = VisionAttachmentBridge(
+            None,
+            robot,
+            config=VisionAttachmentConfig(camera="head_zed", grasp_target_enabled=True, **kwargs),
+        )
+        assert bridge._grasp_target is not None
+        return bridge._grasp_target
+
+    assert leg()._freeze_s == pytest.approx(2.0)  # the real cell's 1.0 s fallback
+    assert leg(grid_max_age_s=0.4)._freeze_s == pytest.approx(0.8)
+    assert leg(grid_max_age_s=0.4, grasp_target_freeze_s=0.5)._freeze_s == pytest.approx(0.5)
+    with pytest.raises(ROSConfigError, match="grid_max_age_s"):
+        leg(grid_max_age_s=0.0)
 
 
 def test_the_bridge_owns_the_leg_only_when_enabled_and_validates_its_rate() -> None:

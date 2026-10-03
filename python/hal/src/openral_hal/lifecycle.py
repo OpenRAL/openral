@@ -1603,13 +1603,21 @@ if _ROS2_AVAILABLE:
             # "nothing attached".
             # mask_depth_max_skew_s: seconds, the largest |mask capture stamp -
             # depth stamp| a SegmentInView mask is back-projected across (same-grab
-            # pairs are 0; 0.1 admits one frame of cache lag at >= 10 Hz). See
-            # VisionAttachmentConfig.
+            # pairs are 0; 0.1 admits one frame of cache lag at >= 10 Hz).
+            # grid_max_age_s: oldest world-voxel grid the grasp-target / place
+            # legs use — the deploy passes the kernel's world_voxel_deadline_s.
+            # release_clear_m: the deploy passes the kernel's world-voxel margin +
+            # one voxel resolution; release_timeout_s bounds the release window.
+            # The defaults are the real OpenArm cell's values, fallbacks only.
+            # See VisionAttachmentConfig.
             self.declare_parameters(
                 "",
                 [
                     ("vision_attachment_evidence_timeout_s", 0.5),
                     ("vision_attachment_mask_depth_max_skew_s", 0.1),
+                    ("vision_attachment_grid_max_age_s", 1.0),
+                    ("vision_attachment_release_clear_m", 0.04),
+                    ("vision_attachment_release_timeout_s", 3.0),
                 ],
             )
             self.declare_parameter("vision_attachment_tcp_frame", "")
@@ -1622,9 +1630,9 @@ if _ROS2_AVAILABLE:
             # the region a grasp-target exemption would be armed with.
             self.declare_parameter("vision_attachment_grasp_target_enabled", False)
             self.declare_parameter("vision_attachment_grasp_target_rate_hz", 3.0)
-            # Seconds the last accepted region survives a lost view (<= 2x the
-            # real cell's 1.0 s kernel voxel deadline).
-            self.declare_parameter("vision_attachment_grasp_target_freeze_s", 2.0)
+            # Seconds the last accepted region survives a lost view; 0 = derive it
+            # as 2x vision_attachment_grid_max_age_s (the kernel voxel deadline).
+            self.declare_parameter("vision_attachment_grasp_target_freeze_s", 0.0)
             self.declare_parameter("vision_attachment_grasp_target_min_cells", 8)
             self.declare_parameter("vision_attachment_grasp_target_min_cover", 0.5)
             # Real place producer leg (real pick-and-place design §2.3). OFF by
@@ -2116,6 +2124,15 @@ if _ROS2_AVAILABLE:
                     mask_depth_max_skew_s=gp("vision_attachment_mask_depth_max_skew_s")
                     .get_parameter_value()
                     .double_value,
+                    grid_max_age_s=gp("vision_attachment_grid_max_age_s")
+                    .get_parameter_value()
+                    .double_value,
+                    release_clear_m=gp("vision_attachment_release_clear_m")
+                    .get_parameter_value()
+                    .double_value,
+                    release_timeout_s=gp("vision_attachment_release_timeout_s")
+                    .get_parameter_value()
+                    .double_value,
                     grasp_target_enabled=gp("vision_attachment_grasp_target_enabled")
                     .get_parameter_value()
                     .bool_value,
@@ -2124,7 +2141,8 @@ if _ROS2_AVAILABLE:
                     .double_value,
                     grasp_target_freeze_s=gp("vision_attachment_grasp_target_freeze_s")
                     .get_parameter_value()
-                    .double_value,
+                    .double_value
+                    or None,
                     grasp_target_min_cells=gp("vision_attachment_grasp_target_min_cells")
                     .get_parameter_value()
                     .integer_value,
