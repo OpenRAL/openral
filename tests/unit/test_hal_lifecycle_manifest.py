@@ -96,3 +96,57 @@ class TestManifestNode:
                 node._create_hal()
         finally:
             node.destroy_node()
+
+    def test_the_hal_description_carries_its_unit_joint_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A unit's per-gripper ``closure_calibration`` replaces the manifest's in the HAL."""
+        import shutil
+
+        import yaml
+
+        monkeypatch.delenv("OPENRAL_ROBOT_UNIT", raising=False)
+        robot_dir = tmp_path / "openarm"
+        (robot_dir / "units").mkdir(parents=True)
+        shutil.copy(REPO_ROOT / "robots/openarm/robot.yaml", robot_dir / "robot.yaml")
+        measured = {
+            "closed_position": 0.0,
+            "closed_rest_offset": 0.0123,
+            "stall_gap": 0.07,
+            "settle_tolerance": 0.002,
+        }
+        (robot_dir / "units" / "bench.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "robot_id": "openarm",
+                    "unit": "bench",
+                    "joints": [{"name": "left_gripper", "closure_calibration": measured}],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def gripper_cal(unit: str | None, side: str) -> dict[str, float]:
+            node = _ManifestHALLifecycleNode(f"t_unit_{unit or 'none'}_{side}")
+            params = [
+                Parameter("robot_yaml", value=str(robot_dir / "robot.yaml")),
+                Parameter("hal_mode", value="sim"),
+            ]
+            if unit:
+                params.append(Parameter("robot_unit", value=unit))
+            node.set_parameters(params)
+            try:
+                hal = node._create_hal()
+            finally:
+                node.destroy_node()
+            joint = next(j for j in hal.description.joints if j.name == f"{side}_gripper")
+            assert joint.closure_calibration is not None
+            return joint.closure_calibration.model_dump()
+
+        assert gripper_cal("bench", "left") == measured
+        # The other gripper and a unit-less build keep the manifest's nominal value.
+        assert gripper_cal("bench", "right")["closed_rest_offset"] == 0.0116
+        assert gripper_cal(None, "left")["closed_rest_offset"] == 0.0086
+        # $OPENRAL_ROBOT_UNIT selects the unit when the launch passes none.
+        monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "bench")
+        assert gripper_cal(None, "left") == measured

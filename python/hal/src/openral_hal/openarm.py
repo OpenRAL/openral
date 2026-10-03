@@ -215,7 +215,8 @@ def _openarm_gripper_joint_spec(
         # read the real jaw position (must match robots/openarm/robot.yaml).
         sim_joint_name=f"openarm_{side}_finger_joint1",
         # Position-stall grasp-trigger calibration; must match robots/openarm/robot.yaml,
-        # where the measurement behind each number is cited.
+        # where the measurement behind each number is cited. The robot type's nominal: a
+        # unit's own measurement overrides it (robots/openarm/units/<unit>.yaml `joints:`).
         closure_calibration=GripperClosureCalibration(
             closed_position=0.0,
             closed_rest_offset=closed_rest_offset,
