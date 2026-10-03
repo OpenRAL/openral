@@ -170,7 +170,9 @@ def vision_attachment_trigger_config(
 
     Raises:
         ROSConfigError: An effort is set and a gripper joint declares no positive
-            ``effort_limit``; or (from the trigger) release >= attach on some hand.
+            ``effort_limit``; an effort exceeds some gripper joint's own
+            ``effort_limit`` (fraction outside ``(0, 1]``, that hand could never
+            ATTACH); or (from the trigger) release >= attach on some hand.
 
     Example:
         >>> from openral_core import RobotDescription
@@ -197,13 +199,24 @@ def vision_attachment_trigger_config(
                 f"vision_attachment_attach_effort/_release_effort need a positive effort_limit "
                 f"on gripper joint {joint.name!r} of {description.name!r}; it declares {limit!r}."
             )
+        attach = attach_effort / limit if attach_effort > 0.0 else default.attach_effort_fraction
+        release = (
+            release_effort / limit if release_effort > 0.0 else default.release_effort_fraction
+        )
+        # An effort above this joint's own limit can never be read back, so that
+        # hand would never ATTACH -- refuse instead of arming a dead trigger.
+        for param, effort, fraction in (
+            ("attach", attach_effort, attach),
+            ("release", release_effort, release),
+        ):
+            if not 0.0 < fraction <= 1.0:
+                raise ROSConfigError(
+                    f"vision_attachment_{param}_effort={effort!r} is {fraction:.3g}x the "
+                    f"effort_limit {limit!r} of gripper joint {joint.name!r} of "
+                    f"{description.name!r}; the fraction must be in (0, 1]."
+                )
         configs[joint.name] = GraspTriggerConfig(
-            attach_effort_fraction=(
-                attach_effort / limit if attach_effort > 0.0 else default.attach_effort_fraction
-            ),
-            release_effort_fraction=(
-                release_effort / limit if release_effort > 0.0 else default.release_effort_fraction
-            ),
+            attach_effort_fraction=attach, release_effort_fraction=release
         )
     return configs
 

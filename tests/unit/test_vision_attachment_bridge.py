@@ -273,6 +273,28 @@ def test_absolute_efforts_scale_per_gripper_on_hands_with_different_limits() -> 
     assert configs["right_gripper"].attach_effort_fraction == pytest.approx(0.6)
 
 
+def test_an_effort_above_one_hands_own_limit_is_refused() -> None:
+    """150 fits the 333 left hand but exceeds the 100 right one: that hand could never ATTACH."""
+    from openral_hal.lifecycle import vision_attachment_trigger_config
+
+    openarm = _openarm()
+    joints = [
+        joint.model_copy(update={"effort_limit": 100.0}) if joint.name == "right_gripper" else joint
+        for joint in openarm.joints
+    ]
+    description = openarm.model_copy(update={"joints": joints})
+    with pytest.raises(ROSConfigError, match="right_gripper"):
+        vision_attachment_trigger_config(description, attach_effort=150.0, release_effort=0.0)
+    with pytest.raises(ROSConfigError, match="right_gripper"):
+        vision_attachment_trigger_config(description, attach_effort=0.0, release_effort=150.0)
+    # 100 is exactly the right hand's limit: fraction 1.0 is allowed.
+    configs = vision_attachment_trigger_config(
+        description, attach_effort=100.0, release_effort=20.0
+    )
+    assert configs is not None
+    assert configs["right_gripper"].attach_effort_fraction == pytest.approx(1.0)
+
+
 def test_a_per_joint_trigger_config_must_name_every_gripper() -> None:
     from openral_hal._grasp_trigger import GraspTriggerConfig
 
