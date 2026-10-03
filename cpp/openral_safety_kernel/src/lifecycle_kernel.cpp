@@ -2746,24 +2746,33 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   // base frame, `freeze_released_attachment`, is attached there, and the root
   // is an ancestor of every link). Bimanual: the other hand's payload is on
   // neither chain, so it can neither stand in for the handover nor keep it.
-  bool attached_on_gripper = false;
+  const std::string* attached_on_gripper = nullptr;
   const std::size_t objects = attached_model_.n_objects;
   for (std::size_t i = 0; i < objects && i < attached_labels_.size(); ++i) {
     if (!attachment_on_grasp_chain(attached_model_.objects[i].attach_link, mask)) {
       continue;
     }
-    attached_on_gripper = true;
+    attached_on_gripper = &attached_labels_[i];
     if (declaration.object_id.empty() || attached_labels_[i] == declaration.object_id) {
       grasp_region_.handover = true;
       grasp_region_.object_index = i;
       break;
     }
   }
-  if (attached_on_gripper && !grasp_region_.handover) {
+  if (attached_on_gripper != nullptr && !grasp_region_.handover) {
     // The declaring gripper attached something the declaration does not name.
     // Whatever it grasped, it is not the scene the region was measured for, and
     // without a handover the exemption would live on to timeout_s. Fail closed:
-    // retire it for good (HZ-01xx-3: only a new declaration re-arms).
+    // retire it for good (HZ-01xx-3: only a new declaration re-arms). A
+    // producer contradicting the attachment stream is a rejection, not a
+    // routine disarm, so it is WARNed with what was declared vs attached. Once
+    // per declaration: its later heartbeats take the `retired` path above.
+    RCLCPP_WARN(this->get_logger(),
+                "safety.grasp_region_rejected reason=handover_object_mismatch target=%s "
+                "object=%s attached=%s rskill=%s trace=%s",
+                declaration.target_id.c_str(), declaration.object_id.c_str(),
+                attached_on_gripper->c_str(), declaration.rskill_id.c_str(),
+                declaration.trace_id.c_str());
     retire_grasp_declaration("handover_object_mismatch");
     return;
   }
