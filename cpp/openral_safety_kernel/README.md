@@ -870,6 +870,25 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   updates on every snapshot. A detach, a rejected
   attachment set or a grid-frame change also retires it. A retired declaration's
   heartbeat never re-arms it; only a new declaration (new target or stamp) can.
+* **Multi-pick per goal.** The approach-armed producer arms each pick of a goal
+  under its own identity (`approach:<link>:<n>`, the goal's stamp), so retirement
+  is per pick. A handed-over declaration retires at its **release**: when no
+  payload is attached on the declaring chain any more
+  (`grasp_region_dropped reason=released`) even though the attachment set is not
+  empty — the other hand still holds, or the released payload sits frozen on the
+  base link through its release window
+  (`…AReleaseOnTheDeclaringChainRetiresWhileTheOtherHandHolds`) — and when it
+  loses its region or is retracted (`…AHandedOverDeclarationThatLosesItsRegionRetires`).
+  Retired identities are kept in `RetiredGraspSet` (`collision.hpp`): a fixed ring
+  of `kGraspRetiredCapacity` = 16 (target hash, stamp) pairs, cleared on
+  activate/cleanup, with no allocation (it runs on the candidate path at
+  `handover_exit`; `test_no_alloc`). Overflow evicts the oldest with one WARN
+  `safety.grasp_retired_overflow` per activation; an evicted identity could arm
+  again only if re-sent within its goal's `timeout_s`. A hash collision can only
+  refuse a fresh identity (fail closed). Every retired pick stays refused, a
+  restarted producer re-sending one included
+  (`…EveryRetiredPickIdentityStaysRefusedEvenFromARestartedProducer`), while a
+  fresh one arms (`…ASecondPickInTheGoalArmsUnderItsOwnIdentity`).
 * **Disclosure.** `/diagnostics` key `grasp_region` (`off`, `-`,
   `live|expired:<target>:links=<n>[:handover]`, or `<reason>:<target>`), span
   attribute `safety.grasp_exemption_active`, and `grasp_exemption_active=` /

@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <array>
 #include <bitset>
 #include <cstddef>
 #include <cstdint>
@@ -414,6 +415,62 @@ struct GraspTargetRegion {
   /// the measured configuration) stays inside the box, then retires for good.
   bool handover{false};
   std::size_t object_index{0};  ///< attached-object index of that payload, when `handover`
+};
+
+/// Capacity of the kernel's retired grasp-identity set (`RetiredGraspSet`).
+/// **A Safety-WG placeholder**: a goal may run several approach-armed picks,
+/// each under its own `approach:<link>:<n>` identity; 16 covers any goal the
+/// pick rate and `kMaxGraspDeclarationTimeoutS` allow in practice. Past it the
+/// oldest is evicted (logged once per activation); an evicted identity could
+/// re-arm only if its producer re-sent it while its goal's `timeout_s`
+/// backstop — counted from the goal's own `stamp_ns` — still runs.
+inline constexpr std::size_t kGraspRetiredCapacity = 16;
+
+/// The grasp-declaration identities (target, stamp) the kernel retired —
+/// HZ-01xx-3: "a retired declaration never re-arms" for every pick of a goal,
+/// not only the last one. A fixed ring: no allocation, so the candidate path
+/// (`handover_exit`) can retire. The target is held as its `std::hash`: a
+/// collision can only refuse a fresh identity as retired (fail closed), never
+/// let a retired one arm.
+class RetiredGraspSet {
+public:
+  /// Is (target hash, stamp) retired?
+  bool contains(std::size_t target_hash, std::int64_t stamp_ns) const noexcept {
+    for (std::size_t i = 0; i < count_; ++i) {
+      if (slots_[i].target_hash == target_hash && slots_[i].stamp_ns == stamp_ns) {
+        return true;
+      }
+    }
+    return false;
+  }
+  /// Retire (target hash, stamp). Returns true when the set was full and the
+  /// oldest identity was evicted for it; a held identity is a no-op.
+  bool insert(std::size_t target_hash, std::int64_t stamp_ns) noexcept {
+    if (contains(target_hash, stamp_ns)) {
+      return false;
+    }
+    const bool evicted = count_ == kGraspRetiredCapacity;
+    slots_[next_] = Slot{target_hash, stamp_ns};
+    next_ = (next_ + 1) % kGraspRetiredCapacity;
+    if (!evicted) {
+      ++count_;
+    }
+    return evicted;
+  }
+  void clear() noexcept {
+    count_ = 0;
+    next_ = 0;
+  }
+  std::size_t size() const noexcept { return count_; }
+
+private:
+  struct Slot {
+    std::size_t target_hash{0};
+    std::int64_t stamp_ns{0};
+  };
+  std::array<Slot, kGraspRetiredCapacity> slots_{};
+  std::size_t count_{0};
+  std::size_t next_{0};  ///< the slot the next insert writes — the oldest once full
 };
 
 /// Outcome of a grasp-region ingest attempt (`ingest_grasp_region`). Every

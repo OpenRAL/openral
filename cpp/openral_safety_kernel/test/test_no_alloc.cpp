@@ -190,3 +190,19 @@ TEST(NoAlloc, VoxelCheckWithALiveGraspRegionIsAllocationFree) {
       << "the voxel check allocated with a live grasp region; CLAUDE.md §2 forbids this.";
   EXPECT_LT(sink, 0.0) << "the loop really exercised penetrating cells";
 }
+
+TEST(NoAlloc, RetiringAndCheckingGraspIdentitiesIsAllocationFree) {
+  // The kernel retires a grasp declaration on the candidate path
+  // (`handover_exit`): the retired set must not allocate, overflow included.
+  openral_safety_kernel::RetiredGraspSet retired;
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  bool seen = false;
+  for (std::size_t n = 0; n < 1000; ++n) {
+    retired.insert(n, 42);
+    seen = retired.contains(n / 2, 42) || seen;
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_TRUE(seen);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
+}
