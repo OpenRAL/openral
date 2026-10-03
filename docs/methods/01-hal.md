@@ -866,18 +866,20 @@ _Real-hardware attachment evidence from a segmenter mask plus wrist depth — th
 
 _Pre-grasp target geometry (design note `docs/reference/real-pick-place-design.md` §2.2): seed from the voxel map, SAM prompt projection, a measured region from mask + depth, a map cross-check and a re-prompt tracking gate. Pure numpy, no ROS; the producer node that wires it is a follow-up. Every threshold is a calibration point; the caps are the Safety-WG placeholders._
 
-- `class TargetRefusal(StrEnum)` (L81) — `TOO_FEW_CELLS`, `AMBIGUOUS` (runner-up cluster ≥ `ambiguity_ratio` of the largest — HZ-01xx-2), `TOO_FEW_POINTS`, `NO_HEIGHT_ABOVE_SUPPORT`, `HALF_EXTENT_CAP`, `VOLUME_CAP`.
-- `class VoxelLattice(frame_id, origin, orientation_xyzw, resolution, size, occupancy)` (L93) — The `OccupancyVoxels` fields, same convention as `bucket2_markers.occupied_voxel_centers` (re-derived, cross-checked in `tests/unit/test_grasp_target.py`). Raises `ROSConfigError` on a length mismatch, non-positive resolution or non-unit orientation.
-  - `rotation() -> NDArray` (L137) — lattice axes → `frame_id`.
-  - `occupied_centers() -> NDArray` (L141) — `(N, 3)` occupied cell centres in `frame_id`, vectorised.
-- `class TargetSeed` (L151) — `point | None`, `refusal | None`, `cluster_sizes` (descending).
-- `class TargetRegionFit` (L166) — `region: PlaceRegion | None`, `refusal | None`, `point_count`, `depth_valid_fraction`, `half_extents`.
-- `occupied_centers_in_box(grid, box: PlaceRegion) -> NDArray` (L199) — Occupied centres inside an oriented box (the declaration's search box — reasoner-grounded, or a direct-dispatch scene's); refuses a frame mismatch with `ROSConfigError`.
-- `target_seed_from_voxels(grid, centers, *, support_z, min_cells, ambiguity_ratio=0.5) -> TargetSeed` (L254) — Drops cells within one voxel of the support plane, labels 26-connected components on the lattice, returns the largest cluster's top-centre; refuses too few cells or two comparable clusters.
-- `project_point(point_base, t_cam_from_base, intrinsics) -> tuple[float, float] | None` (L308) — Base-frame point → REP-103 optical pixel `(u, v)` (pixel-centre convention of `backproject_masked_depth`); `None` behind the camera or outside the image. SAM 2.1's positive point prompt.
-- `target_region_from_mask(mask, depth_m, intrinsics, t_base_from_cam, *, support_z, resolution, frame_id, evidence_ref, stamp_ns=0, erode_px=2, extrinsic_error_m=0.01, trim_percentile=1.0, min_points=200, min_depth_m=0.1, max_depth_m=3.0, max_half_extent_m=0.20, max_volume_m3=0.03) -> TargetRegionFit` (L360) — Erode → `backproject_masked_depth` → base frame → percentile-trimmed, gravity-aligned (yaw-only, 2-D PCA footprint) box; lower face fixed at `support_z + resolution` (never below — HZ-01xx-6), sides and top padded by `√3·resolution/2 + extrinsic_error_m`; refuses on the caps.
-- `region_covers_occupied(grid, region, *, min_fraction=0.5) -> tuple[int, bool]` (L491) — Occupied cells with centres in the region vs. `min_fraction` of the region's footprint cell count; a region the map does not see is refused.
-- `track_region(previous, current, *, max_centroid_shift_m, extents_tol_m) -> bool` (L538) — The 2-5 Hz re-prompt gate: same frame, centroid shift and (sorted-horizontal) half-extent change within tolerance.
+- `class TargetRefusal(StrEnum)` (L88) — `TOO_FEW_CELLS`, `AMBIGUOUS` (runner-up cluster ≥ `ambiguity_ratio` of the largest — HZ-01xx-2), `TOO_FEW_POINTS`, `NO_HEIGHT_ABOVE_SUPPORT`, `HALF_EXTENT_CAP`, `VOLUME_CAP`.
+- `class VoxelLattice(frame_id, origin, orientation_xyzw, resolution, size, occupancy)` (L100) — The `OccupancyVoxels` fields, same convention as `bucket2_markers.occupied_voxel_centers` (re-derived, cross-checked in `tests/unit/test_grasp_target.py`). Raises `ROSConfigError` on a length mismatch, non-positive resolution or non-unit orientation.
+  - `rotation() -> NDArray` (L144) — lattice axes → `frame_id`.
+  - `occupied_centers() -> NDArray` (L148) — `(N, 3)` occupied cell centres in `frame_id`, vectorised.
+- `class TargetSeed` (L158) — `point | None`, `refusal | None`, `cluster_sizes` (descending).
+- `class TargetRegionFit` (L173) — `region: PlaceRegion | None`, `refusal | None`, `point_count`, `depth_valid_fraction`, `half_extents`.
+- `occupied_centers_in_box(grid, box: PlaceRegion) -> NDArray` (L206) — Occupied centres inside an oriented box (the declaration's search box — reasoner-grounded, or a direct-dispatch scene's); refuses a frame mismatch with `ROSConfigError`.
+- `support_top_from_voxels(grid, centers, *, min_cells, dense_fraction=0.5) -> float | None` (L248) — The measured support (HZ-01xx-6): top face of the highest lattice z-layer holding ≥ `dense_fraction` of the densest layer's count; `None` when no layer holds `min_cells`. `ROSConfigError` on a tilted (non-z-up) lattice.
+- `support_cells_under(grid, support_top_z, xy, *, half_m) -> int` (L296) — Occupied cells of that layer in the square of half-size `half_m` around `xy`: the support must lie under the target, not merely in the search column.
+- `target_seed_from_voxels(grid, centers, *, support_z, min_cells, ambiguity_ratio=0.5) -> TargetSeed` (L360) — Drops cells within one voxel of the support plane, labels 26-connected components on the lattice, returns the largest cluster's top-centre; refuses too few cells or two comparable clusters.
+- `project_point(point_base, t_cam_from_base, intrinsics) -> tuple[float, float] | None` (L414) — Base-frame point → REP-103 optical pixel `(u, v)` (pixel-centre convention of `backproject_masked_depth`); `None` behind the camera or outside the image. SAM 2.1's positive point prompt.
+- `target_region_from_mask(mask, depth_m, intrinsics, t_base_from_cam, *, support_z, resolution, frame_id, evidence_ref, stamp_ns=0, erode_px=2, extrinsic_error_m=0.01, trim_percentile=1.0, min_points=200, min_depth_m=0.1, max_depth_m=3.0, max_half_extent_m=0.20, max_volume_m3=0.03) -> TargetRegionFit` (L466) — Erode → `backproject_masked_depth` → base frame → percentile-trimmed, gravity-aligned (yaw-only, 2-D PCA footprint) box; lower face fixed at `support_z + resolution` (never below — HZ-01xx-6), sides and top padded by `√3·resolution/2 + extrinsic_error_m`; refuses on the caps.
+- `region_covers_occupied(grid, region, *, min_fraction=0.5) -> tuple[int, bool]` (L597) — Occupied cells with centres in the region vs. `min_fraction` of the region's footprint cell count; a region the map does not see is refused.
+- `track_region(previous, current, *, max_centroid_shift_m, extents_tol_m) -> bool` (L644) — The 2-5 Hz re-prompt gate: same frame, centroid shift and (sorted-horizontal) half-extent change within tolerance.
 
 ### `python/hal/src/openral_hal/_grasp_trigger.py`
 
@@ -931,23 +933,23 @@ _The ROS wiring that turns `_grasp_trigger` events into `openral_msgs/srv/Segmen
 
 ### `python/hal/src/openral_hal/_grasp_target_leg.py`
 
-_The pre-grasp target producer (design note `docs/reference/real-pick-place-design.md` §2.2), owned by `VisionAttachmentBridge` (single `/openral/attachment_state` authority), default off. Subscribes `/openral/grasp_declaration` (RELIABLE + TRANSIENT_LOCAL, depth 1) and `/openral/world_voxels` (the kernel's RELIABLE/VOLATILE/KEEP_LAST 1); at `grasp_target_rate_hz` seeds from the occupied cells in the declaration's `search_box` (support plane = the box's bottom face), sends the seed as the single positive `SegmentInView` point (optical frame, no negatives, the leg's own deadline), fits `target_region_from_mask` on the depth frame the request was made against, cross-checks `region_covers_occupied` and gates `track_region` at one voxel. Contradicting evidence (`ambiguous`, caps, `no_height_above_support`, `map_disagrees`, `target_moved`, frame/calibration mismatch) retracts at once; a lost view (no seed cells, seed off-image, no mask, deadline, `too_few_points`, stale or missing grid/depth/TF/CameraInfo) freezes the last accepted region for `grasp_target_freeze_s` from its `stamp_ns` (the depth stamp), then retracts. Each transition logged once. A grid older than 1.0 s (module const `_GRID_MAX_AGE_S`, the real kernel voxel deadline) is not used. Follow-up: FK-based occlusion test instead of the bare TTL._
+_The pre-grasp target producer (design note `docs/reference/real-pick-place-design.md` §2.2), owned by `VisionAttachmentBridge` (single `/openral/attachment_state` authority), default off. Subscribes `/openral/grasp_declaration` (RELIABLE + TRANSIENT_LOCAL, depth 1) and `/openral/world_voxels` (the kernel's RELIABLE/VOLATILE/KEEP_LAST 1); at `grasp_target_rate_hz` measures the support plane from the map (`support_top_from_voxels` over `search_column(box, below_m=0.15)`, then `support_cells_under` within 0.10 m of the seed — never the box's bottom face, a lifted bbox min-z that can sit below the table top; none is a `no_support` contradiction), seeds from the occupied cells in the declaration's `search_box` above it, sends the seed as the single positive `SegmentInView` point (optical frame, no negatives, the leg's own deadline), fits `target_region_from_mask` on the depth frame the request was made against, cross-checks `region_covers_occupied` and gates `track_region` at one voxel. Contradicting evidence (`no_support`, `ambiguous`, caps, `no_height_above_support`, `map_disagrees`, `target_moved`, frame/calibration mismatch) retracts at once; a lost view (no seed cells, seed off-image, no mask, deadline, `too_few_points`, stale or missing grid/depth/TF/CameraInfo) freezes the last accepted region for `grasp_target_freeze_s` from its `stamp_ns` (the depth stamp), then retracts. Each transition logged once. A grid older than 1.0 s (module const `_GRID_MAX_AGE_S`, the real kernel voxel deadline) is not used. Follow-up: FK-based occlusion test instead of the bare TTL._
 
-- `class GraspTargetTracker(*, freeze_s, log)` (L83) — Pure state machine on a caller-supplied ROS-clock `now_ns`.
-  - `on_declaration(declaration) -> None` (L145) — `active=False` clears; a new `(target_id, stamp_ns)` resets the region; the latched copy again is a no-op.
-  - `on_attach(contact_link) -> None` (L173) — A declared jaw link attached: no further measurement, region kept for the kernel's handover.
-  - `wants_measurement(*, now_ns) -> bool` (L185) — Live, has a `search_box`, not handed over.
-  - `accept(region) -> None` (L195) — Hold a region; one that breaks `GraspDeclaration`'s caps is refused (`declaration_bounds`).
-  - `refuse(kind, detail, *, retract, now_ns) -> None` (L214) — Retract now, or freeze under the TTL.
-  - `envelope(*, now_ns) -> GraspDeclaration | None` (L237) — Dispatch's fields verbatim + the held region; expiry clears, an over-age unfrozen region is retracted.
-  - **(property)** `declaration -> GraspDeclaration | None` (L121) — dispatch's live copy, region-less.
-  - **(property)** `region -> PlaceRegion | None` (L126) — the last accepted region still held.
-- `lattice_from_msg(msg) -> VoxelLattice` (L254) — `openral_msgs/OccupancyVoxels` → `VoxelLattice`.
-- `support_z_of(search_box) -> float` (L271) — The box's bottom face; a tilted box is a `ROSConfigError`.
-- `class GraspTargetLeg(node, bridge, config)` (L317) — ROS wiring; reuses the bridge's depth/`CameraInfo` caches, tf2 buffer and `SegmentInView` client. `ROSConfigError` on a rate outside 2-5 Hz or a non-positive freeze / cell count / cover.
-  - `setup() -> None` (L365) — Subscriptions + the measurement timer.
-  - `teardown() -> None` (L408) — Idempotent; cancels any in-flight request's deadline.
-  - `fill(msg, *, now_ns) -> None` (L422) — Sets `grasp_declaration_valid` / `grasp_declaration` on one `AttachmentState`.
+- `class GraspTargetTracker(*, freeze_s, log)` (L101) — Pure state machine on a caller-supplied ROS-clock `now_ns`.
+  - `on_declaration(declaration) -> None` (L163) — `active=False` clears; a new `(target_id, stamp_ns)` resets the region; the latched copy again is a no-op.
+  - `on_attach(contact_link) -> None` (L191) — A declared jaw link attached: no further measurement, region kept for the kernel's handover.
+  - `wants_measurement(*, now_ns) -> bool` (L203) — Live, has a `search_box`, not handed over.
+  - `accept(region) -> None` (L213) — Hold a region; one that breaks `GraspDeclaration`'s caps is refused (`declaration_bounds`).
+  - `refuse(kind, detail, *, retract, now_ns) -> None` (L232) — Retract now, or freeze under the TTL.
+  - `envelope(*, now_ns) -> GraspDeclaration | None` (L255) — Dispatch's fields verbatim + the held region; expiry clears, an over-age unfrozen region is retracted.
+  - **(property)** `declaration -> GraspDeclaration | None` (L139) — dispatch's live copy, region-less.
+  - **(property)** `region -> PlaceRegion | None` (L144) — the last accepted region still held.
+- `lattice_from_msg(msg) -> VoxelLattice` (L272) — `openral_msgs/OccupancyVoxels` → `VoxelLattice`.
+- `search_column(search_box, *, below_m) -> PlaceRegion` (L289) — The search box extended `below_m` downward, the column the support is measured in; a tilted box is a `ROSConfigError`.
+- `class GraspTargetLeg(node, bridge, config)` (L344) — ROS wiring; reuses the bridge's depth/`CameraInfo` caches, tf2 buffer and `SegmentInView` client. `ROSConfigError` on a rate outside 2-5 Hz or a non-positive freeze / cell count / cover.
+  - `setup() -> None` (L392) — Subscriptions + the measurement timer.
+  - `teardown() -> None` (L435) — Idempotent; cancels any in-flight request's deadline.
+  - `fill(msg, *, now_ns) -> None` (L449) — Sets `grasp_declaration_valid` / `grasp_declaration` on one `AttachmentState`.
 
 ### `python/hal/src/openral_hal/_place_fixture_leg.py`
 

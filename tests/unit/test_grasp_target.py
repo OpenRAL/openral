@@ -36,6 +36,8 @@ from openral_hal._grasp_target import (
     occupied_centers_in_box,
     project_point,
     region_covers_occupied,
+    support_cells_under,
+    support_top_from_voxels,
     target_region_from_mask,
     target_seed_from_voxels,
     track_region,
@@ -213,13 +215,19 @@ def _footprint_lattice(mask: NDArray[np.bool_], depth: NDArray[np.float64]) -> V
 
 
 def _fit(mask: NDArray[np.bool_]) -> tuple[TargetRegionFit, NDArray[np.float64]]:
+    return _fit_on(mask, _SUPPORT_Z)
+
+
+def _fit_on(
+    mask: NDArray[np.bool_], support_z: float
+) -> tuple[TargetRegionFit, NDArray[np.float64]]:
     depth = _slab_depth(_TOP_Z)
     return target_region_from_mask(
         mask,
         depth,
         _ZED_K,
         _t_base_from_optical(),
-        support_z=_SUPPORT_Z,
+        support_z=support_z,
         resolution=_RES,
         frame_id=_FRAME,
         evidence_ref="head_zed:sam2.1:test",
@@ -239,6 +247,85 @@ def test_seed_is_the_box_top_centre() -> None:
     x, y, z = seed.point
     assert math.hypot(x - bx, y - by) <= _RES
     assert abs(z - _TOP_Z) <= _RES
+
+
+def _column(bottom_z: float) -> PlaceRegion:
+    """The search box's footprint, from ``bottom_z`` up to the box top."""
+    bx, by = _box_centre_xy()
+    top = _TOP_Z + 0.05
+    return PlaceRegion(
+        frame_id=_FRAME,
+        pose=Pose6D(xyz=(bx, by, (top + bottom_z) / 2), quat_xyzw=(0, 0, 0, 1), frame_id=_FRAME),
+        half_extents=(0.25, 0.30, (top - bottom_z) / 2),
+    )
+
+
+def test_support_below_the_search_box_bottom_is_measured_not_assumed() -> None:
+    """HZ-01xx-6: a detection bbox whose min-z sits 5 cm *below* the table top must not
+    lower the region into the table — the region stands on the measured table top."""
+    bx, by = _box_centre_xy()
+    grid = _scene_lattice([(bx, by, 0.05, 0.035, 0.4)])
+    box_bottom = _SUPPORT_Z - 0.05
+    measured = support_top_from_voxels(
+        grid, occupied_centers_in_box(grid, _column(box_bottom - 0.15)), min_cells=8
+    )
+    assert measured is not None
+    assert abs(measured - _SUPPORT_Z) <= _RES / 2 + 1e-9  # the table top, to the lattice
+    assert support_cells_under(grid, measured, (bx, by), half_m=0.10) >= 8
+    seed = target_seed_from_voxels(
+        grid, occupied_centers_in_box(grid, _search_box()), support_z=measured, min_cells=20
+    )
+    assert seed.refusal is None and seed.cluster_sizes[0] < 200  # the box alone, no table
+    fit, _ = _fit_on(_mask_in_zed(_ERASER_MASK, factor=4), measured)
+    assert fit.region is not None
+    lower = fit.region.pose.xyz[2] - fit.region.half_extents[2]
+    assert lower == pytest.approx(measured + _RES)
+    assert lower > _SUPPORT_Z + _RES / 2  # every table cell stays outside the region
+    # The bbox's own bottom would have dropped the lower face into the table.
+    assert box_bottom + _RES < _SUPPORT_Z - _RES / 2
+
+
+def test_no_support_layer_is_refused() -> None:
+    bx, by = _box_centre_xy()
+    grid = _scene_lattice([(bx, by, 0.05, 0.035, 0.4)])
+    centres = grid.occupied_centers()
+    no_table = grid.occupancy.copy()
+    occupied = np.flatnonzero(no_table)
+    no_table[occupied[centres[:, 2] <= _SUPPORT_Z]] = 0
+    floating = VoxelLattice(  # the box alone: no table under it
+        grid.frame_id, grid.origin, grid.orientation_xyzw, grid.resolution, grid.size, no_table
+    )
+    column = occupied_centers_in_box(floating, _column(_SUPPORT_Z - 0.20))
+    # Only the box's own layers remain; each is far below min_cells for a 750-cell table.
+    assert support_top_from_voxels(floating, column, min_cells=100) is None
+    assert support_top_from_voxels(floating, np.empty((0, 3)), min_cells=1) is None
+
+
+def test_a_table_beside_the_target_is_not_support_under_it() -> None:
+    """The column finds a table, but none of it lies under the target (past the edge)."""
+    bx, by = _box_centre_xy()
+    grid = _scene_lattice([(bx, by, 0.05, 0.035, 0.4)])
+    centres = grid.occupied_centers()
+    holed = grid.occupancy.copy()
+    occupied = np.flatnonzero(holed)
+    near = np.all(np.abs(centres[:, :2] - (bx, by)) <= 0.12, axis=1)
+    holed[occupied[near & (centres[:, 2] <= _SUPPORT_Z)]] = 0
+    grid = VoxelLattice(
+        grid.frame_id, grid.origin, grid.orientation_xyzw, grid.resolution, grid.size, holed
+    )
+    measured = support_top_from_voxels(
+        grid, occupied_centers_in_box(grid, _column(_SUPPORT_Z - 0.20)), min_cells=8
+    )
+    assert measured is not None
+    assert support_cells_under(grid, measured, (bx, by), half_m=0.10) == 0
+
+
+def test_a_tilted_lattice_has_no_support_layer() -> None:
+    occ = np.ones(8, dtype=np.uint8)
+    pitched = (0.0, math.sin(0.15), 0.0, math.cos(0.15))
+    tilted = VoxelLattice("base", (0.0, 0.0, 0.0), pitched, 0.1, (2, 2, 2), occ)
+    with pytest.raises(ROSConfigError, match="z-up"):
+        support_top_from_voxels(tilted, tilted.occupied_centers(), min_cells=1)
 
 
 def test_seed_refuses_two_equal_objects() -> None:

@@ -133,8 +133,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   holds: `object_id` → the recalled spatial-memory node's 3D box; else the ONE live detection on
   `/openral/world_state_slow` carrying the label — the world-state lift's (`VoxelFrustumLifter`)
   axis-aligned box, which `WorldStateStamped` now carries (`detected_object_bbox_*`). That box,
-  padded by one voxel + the extrinsic accuracy bound sideways and upward (never downward: the
-  producer reads its bottom face as the support plane, HZ-01xx-6) and gravity-aligned in
+  padded by one voxel + the extrinsic accuracy bound sideways and upward (never downward) and
+  gravity-aligned in
   `openarm_base`,
   becomes `GraspDeclaration.search_box`; the fixture id becomes `PlaceDeclaration.target_id`. No
   match, more than one match without `object_id`, a box outside the base frame, or an unknown
@@ -149,7 +149,12 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   continuous detector publishes; the lift must run in the base frame (`object_lift_map_frame`)
   on a fixed-base cell without a `map` frame; a recalled free-space place (`place_node_id`) is
   refused until a free-space place producer exists.
-- **Measurement:** occupied voxels inside the search box → cluster above the support plane →
+- **Measurement:** the support plane is *measured*, never read off the search box (whose
+  bottom is a lifted detection bbox min-z and can sit below the real table top, HZ-01xx-6): the
+  densest occupied layer in a column under the box (reaching 0.15 m below its bottom), whose
+  top face is the support, and that layer must also hold cells within 0.10 m of the seed — no
+  such layer is a typed `no_support` refusal and no region. Then occupied voxels inside the
+  search box → cluster above the measured support plane →
   cluster top-centre projected into the ZED left image as SAM 2.1's positive point → mask (eroded
   2-3 px) → masked ZED depth → base-frame cloud → robust PCA OBB (reuse `_pca_basis` /
   `clustered_obb_primitives`), extruded down to the support plane, padded by ≥ √3·10 mm plus
@@ -159,7 +164,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   default off:* `openral_hal._grasp_target_leg`, owned by `VisionAttachmentBridge`
   (`vision_attachment_grasp_target_enabled`): the search box is `GraspDeclaration.search_box`
   (optional, grounded by the reasoner or supplied by a direct-dispatch scene, passed through by
-  the runner; the support plane is its bottom face),
+  the runner; the support plane is measured from the map under it, as above),
   re-measured at `grasp_target_rate_hz` (3 Hz), the region filled onto every attachment
   publication; contradicting evidence retracts at once, a lost view freezes the last accepted region
   for `grasp_target_freeze_s` (2 s) from its depth stamp. Tests: `tests/unit/test_grasp_target_leg.py`,

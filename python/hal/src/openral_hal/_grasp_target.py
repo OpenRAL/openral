@@ -10,7 +10,12 @@ Flow, one call per step so every step is replayable from its inputs alone:
 1. ``occupied_centers_in_box`` — occupied cells of the published voxel lattice
    whose centre lies in the scene's search box (the box only *seeds*
    perception; it never becomes the exemption region).
-2. ``target_seed_from_voxels`` — cluster those cells above the support plane,
+2. ``support_top_from_voxels`` — the support plane is **measured**: the densest
+   occupied layer in a column under the search box, its top face. The search
+   box's own bottom (a lifted detection bbox) can sit below the real table top,
+   so it is never taken as the support (HZ-01xx-6); ``support_cells_under``
+   then requires that layer to be occupied directly under the seed.
+   ``target_seed_from_voxels`` clusters the cells above that plane,
    take the largest cluster's top-centre. Refuses on too few cells or on two
    comparably-sized clusters (HZ-01xx-2, wrong object: guessing between two
    candidates is exactly the mis-declaration the hazard row names).
@@ -58,6 +63,8 @@ __all__ = [
     "occupied_centers_in_box",
     "project_point",
     "region_covers_occupied",
+    "support_cells_under",
+    "support_top_from_voxels",
     "target_region_from_mask",
     "target_seed_from_voxels",
     "track_region",
@@ -226,6 +233,105 @@ def occupied_centers_in_box(grid: VoxelLattice, box: PlaceRegion) -> NDArray[np.
     _check_frame(grid, box)
     centers = grid.occupied_centers()
     return centers[_in_region(centers, box)]
+
+
+def _layer_index(grid: VoxelLattice, z: NDArray[np.float64]) -> NDArray[np.int64]:
+    """Lattice z-layer of each cell centre; the lattice must be z-up (yaw-only)."""
+    if abs(grid.rotation()[2, 2] - 1.0) > _UNIT_QUAT_TOL:
+        raise ROSConfigError(
+            "VoxelLattice: a support layer needs a z-up (yaw-only) lattice; "
+            f"orientation {grid.orientation_xyzw!r} tilts it."
+        )
+    return np.asarray(np.round((z - grid.origin[2]) / grid.resolution - 0.5), dtype=np.int64)
+
+
+def support_top_from_voxels(
+    grid: VoxelLattice,
+    centers: NDArray[np.float64],
+    *,
+    min_cells: int,
+    dense_fraction: float = 0.5,
+) -> float | None:
+    """Measure the support surface: the top face of the densest occupied layer.
+
+    A table seen from above is one wide horizontal layer of occupied cells; a
+    target on it holds far fewer cells per layer. Among the lattice z-layers of
+    ``centers`` (a column under the search box), the support is the **highest**
+    layer holding at least ``dense_fraction`` of the densest layer's count (a
+    thick table top is several near-equal layers; its top one is the surface).
+
+    Args:
+        grid: The lattice ``centers`` came from; must be z-up (yaw-only).
+        centers: ``(N, 3)`` occupied centres in ``grid.frame_id``.
+        min_cells: Fewest cells the densest layer must hold to be a support at
+            all. *Calibration point.*
+        dense_fraction: Fraction of the densest layer's count a higher layer
+            needs to count as the same support. *Calibration point.*
+
+    Returns:
+        The support's top face z in ``grid.frame_id``, or ``None`` when no layer
+        holds ``min_cells`` — there is no measured support to stand a region on.
+
+    Raises:
+        ROSConfigError: On a tilted lattice (its cells form no horizontal layers).
+
+    Example:
+        >>> import numpy as np
+        >>> occ = np.zeros(27, dtype=np.uint8)
+        >>> occ[9:18] = 1  # the whole k=1 layer: a table top
+        >>> occ[22] = 1  # one cell on it
+        >>> g = VoxelLattice("base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (3, 3, 3), occ)
+        >>> round(support_top_from_voxels(g, g.occupied_centers(), min_cells=4), 6)
+        0.2
+        >>> support_top_from_voxels(g, g.occupied_centers(), min_cells=10) is None
+        True
+    """
+    layers, counts = np.unique(_layer_index(grid, centers[:, 2]), return_counts=True)
+    if len(counts) == 0 or counts.max() < min_cells:
+        return None
+    top = int(layers[counts >= dense_fraction * counts.max()].max())
+    return float(grid.origin[2] + (top + 1) * grid.resolution)
+
+
+def support_cells_under(
+    grid: VoxelLattice,
+    support_top_z: float,
+    xy: tuple[float, float],
+    *,
+    half_m: float,
+) -> int:
+    """Occupied cells of the support layer in the square of half-size ``half_m`` at ``xy``.
+
+    The column measurement can find a table that is not under the target at all
+    (a target over a gap, past the table edge, on a different surface); this
+    counts the measured layer's cells directly under it. The square is wider
+    than the target because the cells right beneath it are occluded from a
+    head camera and so never occupied in the map.
+
+    Args:
+        grid: The published lattice; must be z-up (yaw-only).
+        support_top_z: ``support_top_from_voxels``'s result.
+        xy: The target's horizontal centre in ``grid.frame_id``.
+        half_m: Half-size of the square, metres. *Calibration point.*
+
+    Returns:
+        The count; the caller compares it to its ``min_cells``.
+
+    Raises:
+        ROSConfigError: On a tilted lattice.
+
+    Example:
+        >>> import numpy as np
+        >>> occ = np.zeros(27, dtype=np.uint8)
+        >>> occ[9:18] = 1  # the whole k=1 layer
+        >>> g = VoxelLattice("base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (3, 3, 3), occ)
+        >>> support_cells_under(g, 0.2, (0.2, 0.2), half_m=0.06)
+        4
+    """
+    centers = grid.occupied_centers()
+    top = _layer_index(grid, np.asarray([support_top_z - 0.5 * grid.resolution]))[0]
+    near = np.all(np.abs(centers[:, :2] - np.asarray(xy)) <= half_m, axis=1)
+    return int((near & (_layer_index(grid, centers[:, 2]) == top)).sum())
 
 
 def _components(ijk: NDArray[np.int64]) -> list[NDArray[np.int64]]:
