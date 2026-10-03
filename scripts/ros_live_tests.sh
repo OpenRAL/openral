@@ -101,6 +101,9 @@ TARGETS=(
     # on ground truth that never examined the cell.
     tests/integration/test_estop_voxel_backing_live.py
     tests/integration/test_segment_in_view_service.py
+    # `openral estop reset` clears the kernel, then the runner; a latched
+    # goal rejection logs a WARNING naming the recovery.
+    tests/integration/test_estop_reset_cli_live.py
     # Nav2's side of issue #108: a filtered scan keeps a carried payload out
     # of the cost grid, and a self-return inside the robot's own footprint is
     # dropped while a real obstacle at the same bearing survives -- only a

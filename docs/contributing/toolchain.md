@@ -278,6 +278,8 @@ openral sensor show <id>         # resolve a catalog entry to a SensorSpec/Bundl
 openral benchmark run --suite S --rskill R  # run a benchmark suite (canonical eval producer)
 openral benchmark report         # aggregate rskills/<id>/eval/*.json benchmark blocks
 openral sim run --config FILE    # run a SimScene YAML end-to-end
+openral prompt "pick the cube"   # one-shot operator prompt to the prompt-router (ROS)
+openral estop reset              # clear every e-stop latch: kernel reset, then /openral/estop_cleared (ROS)
 ```
 
 ## Tooling self-help

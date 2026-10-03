@@ -996,6 +996,15 @@ if _ROS2_AVAILABLE:
             Result message instead of refusing to even start the goal.
             """
             if self._estop_latched:
+                # ROS 2 rejections carry no reason: without this line a reset
+                # that cleared only the kernel looked like a silent dead runner
+                # (2026-10-04 twin pass).
+                self.get_logger().warning(
+                    "rskill_runner.goal_rejected: e-stop latched (/openral/estop) — clear "
+                    "it with `openral estop reset` (kernel /openral/estop_reset, then "
+                    "/openral/estop_cleared); the kernel service alone leaves the runner "
+                    "and HAL latched"
+                )
                 return GoalResponse.REJECT
             if self._preload_in_flight.is_set():
                 # Not accept-and-wait: acceptance is what arms the deadman
