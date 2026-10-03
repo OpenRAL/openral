@@ -622,10 +622,11 @@ class GraspTargetLeg:
             )
         min_cells = self._config.grasp_target_min_cells
         column_centers = occupied_centers_in_box(grid, column)
+        near_xy = (box.pose.xyz[0], box.pose.xyz[1])
         support_z = support_top_from_voxels(
             grid,
             column_centers,
-            near_xy=(box.pose.xyz[0], box.pose.xyz[1]),
+            near_xy=near_xy,
             min_cells=min_cells,
             probe_margin_m=self._probe_margin_m,
         )
@@ -639,7 +640,7 @@ class GraspTargetLeg:
         # Seeded from the whole column, so a lifted box bottom cannot hide the
         # target's lower cells from the contact check below.
         seed = target_seed_from_voxels(
-            grid, column_centers, support_z=support_z, min_cells=min_cells
+            grid, column_centers, near_xy=near_xy, support_z=support_z, min_cells=min_cells
         )
         if seed.point is None:
             assert seed.refusal is not None

@@ -153,7 +153,7 @@ def _declaration(stamp_ns: int, centre: np.ndarray, *, active: bool = True) -> A
     search_box = PlaceRegion(
         frame_id=_BASE,
         pose=Pose6D(
-            xyz=(float(centre[0]), 0.0, _SUPPORT_Z + 0.12),
+            xyz=(float(centre[0]), float(centre[1]), _SUPPORT_Z + 0.12),
             quat_xyzw=(0.0, 0.0, 0.0, 1.0),
             frame_id=_BASE,
         ),
@@ -366,9 +366,11 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         assert any("grid_stale" in line for line in logs), "the lost-view reason was not logged"
 
         # ── 3. Two equal boxes: ambiguous, no region ever. ───────────────────
+        # The detection box centres on one of them (the leg anchors the target on
+        # the column nearest the box centre); the other, as big, stands beside it.
         state.update(scene="two", grid=True)
         mark = len(envelopes)
-        declaration_pub.publish(_declaration(now_ns(), one))
+        declaration_pub.publish(_declaration(now_ns(), two[0]))
         assert _wait_until(
             lambda: any("refused — ambiguous" in line for line in logs), timeout_s=10.0
         ), f"no ambiguous refusal: {[line for line in logs if 'grasp target' in line]}"

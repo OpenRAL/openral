@@ -162,14 +162,16 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
 - **Measurement:** the support plane is *measured*, never read off the search box (whose
   bottom is a lifted detection bbox min-z and can sit below the real table top, HZ-01xx-6): in a
   column under the box (reaching 0.15 m below its bottom), scanned top-down, the first layer
-  whose top-surface cells ring the footprint of the target standing above it (between one cell
+  whose top-surface cells ring the footprint of the target standing above it (the target
+  anchored at every layer on the top of the occupied column nearest the box centre, so a taller
+  neighbour never makes the target's own top its support; between one cell
   and 0.05 m out, which must be at least two cells — a grid too coarse for it is a
   `probe_margin_under_two_cells` lost view, never silently widened — a surface extends past what stands on it, the target's own dense top does
   not), whose top face is the support — no such layer is a typed `no_support` refusal and no
   region; the target's lowest cell must sit within one voxel (+ one of tolerance) of it, else
   `not_on_support` (a bench below the shelf board the target stands on) and no region. Then occupied voxels inside the
-  search box → cluster above the measured support plane →
-  cluster top-centre projected into the ZED left image as SAM 2.1's positive point → mask (eroded
+  search box → the anchored cluster above the measured support plane (another cluster at least
+  half its size is `ambiguous`) → cluster top-centre projected into the ZED left image as SAM 2.1's positive point → mask (eroded
   2-3 px) → masked ZED depth → base-frame cloud → robust PCA OBB (reuse `_pca_basis` /
   `clustered_obb_primitives`), extruded down to the support plane, padded by ≥ √3·10 mm plus
   extrinsic error. Cross-check: the OBB must contain enough occupied cells or it is refused.
