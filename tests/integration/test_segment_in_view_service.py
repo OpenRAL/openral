@@ -42,6 +42,7 @@ from pathlib import Path
 import pytest
 
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
+_DEVICE = os.getenv("OPENRAL_TEST_SEGMENTER_DEVICE", "cpu")
 _LIVE_ROS_REASON = (
     "live rclpy service round trip — set OPENRAL_TEST_ROS_LIVE=1 in a clean shell "
     "and source install/setup.bash first."
@@ -128,8 +129,9 @@ def test_segment_in_view_returns_plural_masks_for_a_real_wrist_grasp() -> None:
                 ),
                 Parameter("primary_camera", Parameter.Type.STRING, "wrist"),
                 Parameter("segment_in_view_service", Parameter.Type.STRING, _SERVICE),
-                # sm_61 dev GPU: no CUDA kernels, so run the model for real on CPU.
-                Parameter("device", Parameter.Type.STRING, "cpu"),
+                # sm_61 dev GPU: no CUDA kernels, so CPU by default; a host with a
+                # supported GPU (Thor, the 4070) sets OPENRAL_TEST_SEGMENTER_DEVICE=cuda.
+                Parameter("device", Parameter.Type.STRING, _DEVICE),
             ]
         )
         helper = Node("segment_in_view_itest_client")
@@ -343,7 +345,7 @@ def test_the_diagnostic_mask_topic_is_off_by_default_and_feeds_the_dashboard() -
                 Parameter("cameras", Parameter.Type.STRING_ARRAY, [f"wrist={_IMAGE_TOPIC}"]),
                 Parameter("primary_camera", Parameter.Type.STRING, "wrist"),
                 Parameter("segment_in_view_service", Parameter.Type.STRING, _SERVICE),
-                Parameter("device", Parameter.Type.STRING, "cpu"),
+                Parameter("device", Parameter.Type.STRING, _DEVICE),
             ]
         )
         helper = Node("segment_in_view_masks_itest_client")
