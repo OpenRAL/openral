@@ -733,7 +733,7 @@ def test_the_leg_arms_the_hand_whose_tcp_is_near_occupied_cells_and_not_the_far_
         live.place("right", (0.45, -0.30, 0.18))
         leg = live.leg
         now_ns = leg._now_ns()
-        leg._grid = (_held_block_lattice(), now_ns, time.monotonic())
+        leg._bridge._grid = (_held_block_lattice(), now_ns, time.monotonic())
         leg.tracker.on_declaration(_goal_scope())
 
         leg._detect_approach(0.10, now_ns)
@@ -769,14 +769,14 @@ def test_a_freshly_republished_grid_of_stale_world_data_is_a_lost_view() -> None
 
     leg = _offline_leg()  # freeze 2.0 s
     now_ns = 100 * _S
-    leg._grid = (_held_block_lattice(), now_ns - 1 * _S, time.monotonic())
+    leg._bridge._grid = (_held_block_lattice(), now_ns - 1 * _S, time.monotonic())
     grid, source_ns = leg._fresh_grid(now_ns)
     assert source_ns == now_ns - 1 * _S and grid.resolution == pytest.approx(0.02)
-    leg._grid = (_held_block_lattice(), now_ns - 3 * _S, time.monotonic())
+    leg._bridge._grid = (_held_block_lattice(), now_ns - 3 * _S, time.monotonic())
     with pytest.raises(_Refusal) as stale:
         leg._fresh_grid(now_ns)
     assert stale.value.kind == "grid_source_stale" and not stale.value.retract
-    leg._grid = (_held_block_lattice(), 0, time.monotonic())
+    leg._bridge._grid = (_held_block_lattice(), 0, time.monotonic())
     with pytest.raises(_Refusal) as unknown:
         leg._fresh_grid(now_ns)
     assert unknown.value.kind == "grid_source_unknown", "unset = unknown age = stale (kernel)"
@@ -1143,7 +1143,7 @@ def test_a_pending_segmentation_spanning_a_leg_tick_still_hands_over() -> None:
         leg, now_ns = live.leg, live.leg._now_ns()
         live.place("left", (0.45, 0.0, 0.18))
         live.place("right", (0.45, -0.30, 0.18))
-        leg._grid = (_held_block_lattice(), now_ns, time.monotonic())
+        leg._bridge._grid = (_held_block_lattice(), now_ns, time.monotonic())
         leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
         leg._detect_approach(0.10, now_ns)
         armed = leg.tracker.target
@@ -1254,7 +1254,7 @@ def test_two_picks_in_one_goal_through_the_bridges_detach() -> None:
         def detect(tcp: tuple[float, float, float], at_ns: int) -> None:
             live.place("left", tcp)
             live.place("right", (0.45, -0.30, 0.40))
-            leg._grid = (_held_block_lattice(), at_ns, time.monotonic())
+            leg._bridge._grid = (_held_block_lattice(), at_ns, time.monotonic())
             leg._detect_approach(0.10, at_ns)
 
         goal = _goal_scope(stamp_ns=now_ns)
@@ -1452,7 +1452,7 @@ def test_the_lock_order_is_bridge_then_tracker_never_the_reverse() -> None:
         now_ns = leg._now_ns()
         live.place("left", (0.45, 0.0, 0.18))
         live.place("right", (0.45, -0.30, 0.40))
-        leg._grid = (_held_block_lattice(), now_ns, time.monotonic())
+        leg._bridge._grid = (_held_block_lattice(), now_ns, time.monotonic())
         leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
         leg._detect_approach(0.10, now_ns)
         live.place("left", (0.45, 0.0, 0.10))
@@ -1482,7 +1482,7 @@ def test_a_detach_that_finds_nothing_latched_still_completes_the_pick() -> None:
             left = live.gripper("openarm_left_finger_pair")
             live.place("left", (0.45, 0.0, 0.18))
             live.place("right", (0.45, -0.30, 0.40))
-            leg._grid = (_held_block_lattice(), now_ns, time.monotonic())
+            leg._bridge._grid = (_held_block_lattice(), now_ns, time.monotonic())
             leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
             leg._detect_approach(0.10, now_ns)
             live.place("left", (0.45, 0.0, 0.10))
@@ -1526,7 +1526,7 @@ def test_an_attachment_change_refreshes_the_other_hands_pre_handover_arming() ->
         right = live.gripper("openarm_right_finger_pair")
         live.place("left", (0.45, 0.0, 0.18))
         live.place("right", (0.45, -0.30, 0.40))
-        leg._grid = (_held_block_lattice(), now_ns, time.monotonic())
+        leg._bridge._grid = (_held_block_lattice(), now_ns, time.monotonic())
         leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
         leg._detect_approach(0.10, now_ns)
         armed = leg.tracker.target
@@ -1596,13 +1596,16 @@ def test_an_attachment_change_leaves_a_handed_over_pick_to_its_own_path() -> Non
     assert tracker.region == _measured(12 * _S + 1)
 
 
-def test_a_mid_grasp_hand_keeps_its_arming_unless_the_change_empties_the_set() -> None:
-    """Review finding: a change the kernel does not retire on (the set stays non-empty) used
+def test_a_mid_grasp_hand_keeps_its_identity_but_never_its_pre_change_region() -> None:
+    """Review findings: a change the kernel does not retire on (the set stays non-empty) used
     to refresh the arming of a hand that is mid-grasp — its segmentation in flight — so the
-    ATTACH found no region and the bimanual pick failed when the other hand regrasped or
-    let go. A holding/pending hand is exempt from the refresh, unless the change empties the
-    set: the kernel retires there regardless, so that grasp hands nothing over (fail
-    closed)."""
+    ATTACH found no identity and the bimanual pick failed when the other hand regrasped or
+    let go. The mid-grasp hand keeps its identity; but it must NOT keep the region measured
+    before the change (the next review: handing that over is less conservative than the
+    pre-fix drop) — its handover latches with no region (fail closed). A carried payload or a
+    release window is not mid-grasp. An emptying change refreshes regardless."""
+    from openral_hal.vision_attachment_bridge import ReleaseWindow
+
     with _live_leg("test_grasp_target_mid_grasp_refresh") as live:
         leg, bridge = live.leg, live.bridge
         _attachment_publisher(live)
@@ -1621,20 +1624,62 @@ def test_a_mid_grasp_hand_keeps_its_arming_unless_the_change_empties_the_set() -
         leg.tracker.accept(region)
         assert armed is not None and leg.tracker.region == region
         left.pending = True  # the left ATTACH's SegmentInView is in flight
-        # The right hand's regrasp replaces its payload: a change, the set non-empty.
-        right.attachment = other.model_copy(update={"stamp_ns": other.stamp_ns + 1})
-        bridge._publish_attachment()
-        assert leg.tracker.target is armed and leg.tracker.region == region, (
-            "a mid-grasp arming was refreshed on a change the kernel does not retire on"
+        # The right hand's DETACH: its payload is replaced by its frozen release record
+        # (a change, the set non-empty).
+        right.attachment = None
+        right.release = ReleaseWindow(
+            record=other.model_copy(update={"stamp_ns": other.stamp_ns + 1}),
+            opened_s=time.monotonic(),
+            hand_link=right.producer.attach_link,
+            hand_boxes=(),
+            jaws=(),
         )
-        # The same change with the left hand NOT mid-grasp: refreshed.
+        bridge._publish_attachment()
+        assert leg.tracker.target is armed, "a mid-grasp identity was refreshed"
+        assert leg.tracker.region is None, "a region measured before the change was kept"
+        # The left segmentation resolves: handed over, with no region (fail closed).
+        left.pending = False
+        segmented = other.model_copy(
+            update={"object_id": "cell:left", "attach_link": left.producer.attach_link}
+        )
+        left.attachment = segmented  # ``_finish`` latched the segmented payload
+        leg.on_attach(left.jaw_link, segmented, region=None)
+        assert leg.tracker.handed_over == _LEFT
+        envelope = leg.tracker.envelope(now_ns=leg._now_ns())
+        assert envelope is not None and envelope.target_id == armed.target_id
+        assert envelope.region is None, "the handover carried a pre-change region"
+
+
+def test_a_carried_payload_or_release_window_is_not_mid_grasp() -> None:
+    """Only an ATTACH being resolved keeps an identity across a change: a hand that already
+    carries a payload (or is in its release window) is refreshed like any other."""
+    with _live_leg("test_grasp_target_not_mid_grasp") as live:
+        leg, bridge = live.leg, live.bridge
+        _attachment_publisher(live)
+        now_ns = leg._now_ns()
+        left = live.gripper("openarm_left_finger_pair")
+        right = live.gripper("openarm_right_finger_pair")
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+        _approach(leg.tracker, _near(_LEFT), now_ns=now_ns)
+        other = _released_record().model_copy(
+            update={"object_id": "cell:other", "attach_link": right.producer.attach_link}
+        )
+        right.attachment = other
+        bridge._publish_attachment()
+        armed = leg.tracker.target
+        assert armed is not None
+        assert not leg._resolving(_LEFT)
+        left.pending = True
+        assert leg._resolving(_LEFT)
+        left.attachment = other  # carrying (a REGRASP segmenting): not an ATTACH resolving
+        assert not leg._resolving(_LEFT)
+        left.attachment = None
         left.pending = False
         right.attachment = other.model_copy(update={"stamp_ns": other.stamp_ns + 2})
         bridge._publish_attachment()
         refreshed = leg.tracker.target
         assert refreshed is not None and refreshed.target_id != armed.target_id
-        assert leg.tracker.region is None
-        # Mid-grasp again, and the right hand lets go: the set empties — refreshed anyway.
+        # Mid-grasp, and the right hand lets go: the set empties — refreshed anyway.
         leg.tracker.accept(_measured(leg._now_ns()))
         left.pending = True
         right.attachment = None
@@ -1701,7 +1746,7 @@ def test_a_tick_that_cannot_sample_the_hands_restarts_the_away_window() -> None:
             return target.target_id
 
         def stale_grid() -> None:
-            leg._grid = (_held_block_lattice(), leg._now_ns(), time.monotonic() - 60.0)
+            leg._bridge._grid = (_held_block_lattice(), leg._now_ns(), time.monotonic() - 60.0)
             leg._tick()
 
         def in_flight() -> None:
@@ -1710,7 +1755,7 @@ def test_a_tick_that_cannot_sample_the_hands_restarts_the_away_window() -> None:
             leg._inflight = None
 
         unknowns: dict[str, Any] = {
-            "no grid": lambda: (setattr(leg, "_grid", None), leg._tick()),
+            "no grid": lambda: (setattr(leg._bridge, "_grid", None), leg._tick()),
             "stale grid": stale_grid,
             "request in flight": in_flight,
             "stale verdict": lambda: tracker.on_approach(
@@ -1806,7 +1851,7 @@ def test_a_guarded_hand_does_not_block_the_other_hands_approach() -> None:
         live.place("left", (0.47, 0.02, 0.18))
         live.place("right", (0.43, -0.02, 0.18))
         at = now_ns + 5 * _S  # past the left hand's backoff
-        leg._grid = (_held_block_lattice(), at, time.monotonic())
+        leg._bridge._grid = (_held_block_lattice(), at, time.monotonic())
         leg._detect_approach(0.10, at)
         armed = leg.tracker.target
         assert armed is not None and armed.contact_links == _RIGHT, "the guarded hand blocked it"
@@ -2088,3 +2133,82 @@ def test_two_threads_hammering_the_tracker_never_replace_a_handed_over_region() 
         stop.set()
         worker.join(timeout=10.0)
     assert not broken, broken[:3]
+
+
+def test_a_tick_commits_its_request_only_under_the_lock_it_snapshotted() -> None:
+    """Review finding: ``_tick`` ran ``_request`` (the in-flight record, the deadline timer,
+    tf2) outside the bridge lock, so a teardown on another thread could leave a deadline
+    timer on a torn-down leg, and an ATTACH meanwhile could be raced. Now only the pure
+    column scan (``_seed``) runs outside; the request is committed under the lock, and not
+    at all when the leg was torn down or the target changed while the column was scanned."""
+    with _live_leg("test_grasp_target_tick_commit") as live:
+        leg = live.leg
+        now_ns = leg._now_ns()
+        leg.tracker.on_declaration(_dispatched(stamp_ns=now_ns))  # a named search box
+        leg._bridge._grid = (_held_block_lattice(), now_ns, time.monotonic())
+        requested: list[int] = []
+        leg._request = lambda *args: requested.append(args[2])  # type: ignore[method-assign]  # reason: records the commit
+
+        def scan_then(during: Any) -> Any:
+            def seed(*_: Any) -> tuple[tuple[float, float, float], float]:
+                during()  # another thread, while the column is scanned outside the lock
+                return (0.45, 0.0, 0.09), 0.05
+
+            return seed
+
+        leg._seed = scan_then(lambda: None)  # type: ignore[method-assign]  # reason: forces the interleaving
+        leg._tick()
+        assert requested == [leg.tracker.generation], "the control tick sent nothing"
+        requested.clear()
+        # The target changed while the column was scanned: the scan is stale, no request.
+        leg._seed = scan_then(  # type: ignore[method-assign]  # reason: forces the interleaving
+            lambda: leg.tracker.on_declaration(_dispatched(stamp_ns=now_ns + 1))
+        )
+        leg._tick()
+        assert requested == [], "a request was sent for a target that changed mid-scan"
+        # Torn down while the column was scanned: nothing is sent, no timer is left.
+        leg._seed = scan_then(leg.teardown)  # type: ignore[method-assign]  # reason: forces the interleaving
+        leg._tick()
+        assert requested == [] and leg._inflight is None and leg._deadline_timer is None
+        leg._on_deadline()  # a deadline already queued at teardown: a no-op
+        assert leg._deadline_timer is None
+
+
+def test_both_legs_share_one_voxel_subscription_and_one_lazy_decode() -> None:
+    """Review finding: the grasp and place legs each subscribed ``/openral/world_voxels`` and
+    eagerly decoded and scanned every grid, armed or not. The bridge owns ONE subscription;
+    each grid is decoded once, shared by both legs, and its whole-grid scan runs only on first
+    use (cached on the lattice)."""
+    pytest.importorskip("openral_msgs")
+    from openral_msgs.msg import OccupancyVoxels
+
+    with _live_leg("test_grasp_target_one_voxel_sub", place_target_enabled=True) as live:
+        bridge, leg = live.bridge, live.leg
+        place = bridge._place_target
+        assert place is not None
+        bridge.setup()
+        try:
+            topics = [sub.topic_name for sub in live.node.subscriptions]
+            assert topics.count("/openral/world_voxels") == 1, topics
+            msg = OccupancyVoxels()
+            msg.header.frame_id = "openarm_base"
+            msg.source_stamp.sec = 12
+            msg.origin.x, msg.origin.y, msg.origin.z = 0.41, -0.04, 0.05
+            msg.orientation.w = 1.0
+            msg.resolution = 0.02
+            msg.size_x = msg.size_y = msg.size_z = 4
+            msg.occupancy = [1] * 64
+            bridge._on_voxels(msg)
+            assert bridge._grid is not None
+            assert leg._grid is bridge._grid and place._grid is bridge._grid
+            lattice, source_ns, _ = bridge._grid
+            assert source_ns == 12 * _S
+            assert "_occupied_centers" not in lattice.__dict__, "scanned with nothing armed"
+            first = lattice.occupied_centers()
+            assert lattice.occupied_centers() is first, "the scan is not cached per grid"
+            msg.size_x = 5  # 64 cells for a 5x4x4 grid: malformed, dropped
+            bridge._on_voxels(msg)
+            assert bridge._grid is None and leg._grid is None and place._grid is None
+        finally:
+            bridge.teardown()
+        assert "/openral/world_voxels" not in [s.topic_name for s in live.node.subscriptions]

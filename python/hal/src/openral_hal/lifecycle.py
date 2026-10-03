@@ -540,6 +540,8 @@ if _ROS2_AVAILABLE:
             # runner_session_id the ack counter above belongs to (0 = legacy/none).
             self._last_action_applied_session: int = 0
             self._deferred_action_applied_tick: int = 0
+            # Serializes the ack's check-and-publish (``_publish_action_applied_tick``).
+            self._ack_publish_lock = threading.Lock()
             self._safe_group_tick: int | None = None
             self._safe_group_count: int = 0
             self._warned_no_applied_action = False
@@ -1293,6 +1295,11 @@ if _ROS2_AVAILABLE:
                 self.get_logger().info(
                     f"deferring action_applied tick={tick} for attachment perception"
                 )
+                # A holder that settled on another thread (the vision bridge on the
+                # proprio thread) between that check and the store above notified a
+                # tick of 0 — a lost wakeup that would strand this one. Re-check now
+                # that it is stored; a notify after the store finds it either way.
+                self._on_attachment_perception_ready()
                 return
             self._publish_action_applied_tick(tick)
 
@@ -1330,17 +1337,21 @@ if _ROS2_AVAILABLE:
 
         def _publish_action_applied_tick(self, tick: int) -> None:
             """Publish one completed tick and reset grouped-action bookkeeping."""
-            if self._action_applied_pub is None or tick <= self._last_action_applied_tick:
-                return
             from std_msgs.msg import UInt64
 
-            msg = UInt64()
-            msg.data = tick
-            self._action_applied_pub.publish(msg)
-            self._last_action_applied_tick = tick
-            self._safe_group_tick = None
-            self._safe_group_count = 0
-            self._deferred_action_applied_tick = 0
+            # The deferral re-check and a holder's notify can both reach here for one
+            # tick from two threads: check-and-publish once. Nothing under this lock
+            # calls a barrier holder, so it nests under any holder's lock.
+            with self._ack_publish_lock:
+                if self._action_applied_pub is None or tick <= self._last_action_applied_tick:
+                    return
+                msg = UInt64()
+                msg.data = tick
+                self._action_applied_pub.publish(msg)
+                self._last_action_applied_tick = tick
+                self._safe_group_tick = None
+                self._safe_group_count = 0
+                self._deferred_action_applied_tick = 0
 
         def _on_attachment_perception_ready(self) -> None:
             """Release the grouped tick held while attached perception settles.

@@ -651,3 +651,80 @@ def test_send_action_rejects_unsupported_control_mode() -> None:
         if host is not None:
             host.destroy_node()
         rclpy.shutdown()
+
+
+@pytest.mark.skipif(
+    not _rclpy_available(),
+    reason="rclpy / openral_msgs / std_msgs not on PYTHONPATH",
+)
+def test_a_barrier_release_between_the_check_and_the_deferral_is_not_lost() -> None:
+    """Review finding: the node checked ``attachment_action_ack_ready`` and only then stored
+    the deferred tick. A vision-bridge barrier release on the proprio thread between the two
+    notified a deferred tick of 0 — nothing — and the tick was never acked (an 8 s goal
+    abort). The interleaving is forced deterministically: the release lands right after the
+    readiness check read "not ready". The tick must still be acked, exactly once."""
+    import rclpy
+    from openral_hal.lifecycle import HALLifecycleNodeBase
+    from openral_hal.vision_attachment_bridge import (
+        VisionAttachmentBridge,
+        VisionAttachmentConfig,
+    )
+    from rclpy.lifecycle import LifecycleNode
+    from std_msgs.msg import UInt64
+
+    rclpy.init()
+    node: HALLifecycleNodeBase | None = None
+    peer: LifecycleNode | None = None
+    try:
+        node = HALLifecycleNodeBase("openral_lost_wakeup_ack_test")
+        peer = LifecycleNode("openral_lost_wakeup_ack_peer")
+        topic = "/openral/test/action_applied_lost_wakeup"
+        received: list[int] = []
+        node._action_applied_pub = node.create_publisher(UInt64, topic, 10)
+        peer.create_subscription(UInt64, topic, lambda msg: received.append(int(msg.data)), 10)
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and node.count_subscribers(topic) == 0:
+            rclpy.spin_once(node, timeout_sec=0.01)
+            rclpy.spin_once(peer, timeout_sec=0.01)
+        assert node.count_subscribers(topic) == 1
+
+        robot = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        bridge = VisionAttachmentBridge(
+            None,
+            robot,
+            on_perception_ready=node._on_attachment_perception_ready,
+            config=VisionAttachmentConfig(camera="head_zed"),
+        )
+        leg = bridge._legs[0]
+        leg.pending = True  # a SegmentInView round trip holds the barrier
+        node._vision_attachment = bridge
+        ready = bridge.attachment_action_ack_ready
+
+        def check_then_release() -> bool:
+            settled = ready()
+            if leg.pending:
+                bridge._release_barrier(leg)  # the proprio thread's release, in the window
+            return settled
+
+        bridge.attachment_action_ack_ready = check_then_release  # type: ignore[method-assign]  # reason: forces the interleaving
+        node._publish_action_applied_if_complete(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                joint_targets=[[0.0] * 16],
+                tick_index=3,
+            )
+        )
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and not received:
+            rclpy.spin_once(peer, timeout_sec=0.02)
+        assert received == [3], "the deferred tick was stranded"
+        node._on_attachment_perception_ready()  # a late duplicate notify: no second ack
+        rclpy.spin_once(peer, timeout_sec=0.1)
+        assert received == [3], "the tick was acked twice"
+        assert node._deferred_action_applied_tick == 0
+    finally:
+        if peer is not None:
+            peer.destroy_node()
+        if node is not None:
+            node.destroy_node()
+        rclpy.shutdown()

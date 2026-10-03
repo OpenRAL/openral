@@ -95,7 +95,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
 
 from openral_hal._grasp_target import VoxelLattice
-from openral_hal._grasp_target_leg import _locked, lattice_from_msg
+from openral_hal._grasp_target_leg import _locked
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_hal.vision_attachment_bridge import (
@@ -893,8 +893,6 @@ class PlaceTargetLeg:
             extrinsic_error_m=config.place_target_extrinsic_error_m,
             log=lambda line: node.get_logger().info(line),
         )
-        # (lattice, grid stamp ns, monotonic receive time) of the newest grid.
-        self._grid: tuple[VoxelLattice, int, float] | None = None
         self._subs: list[Any] = []
         self._timer: Any = None
         self._last_witness_s = -math.inf
@@ -904,9 +902,16 @@ class PlaceTargetLeg:
         """The owning bridge's lock: every entry point here runs under it."""
         return self._bridge._lock
 
+    @property
+    def _grid(self) -> tuple[VoxelLattice, int, float] | None:
+        """The bridge's newest grid (``VisionAttachmentBridge._on_voxels``).
+
+        Shared with the grasp leg: (lattice, ``source_stamp`` ns, monotonic receive time).
+        """
+        return self._bridge._grid
+
     def setup(self) -> None:
-        """Subscribe the optional declaration and the voxel grid; start the timer."""
-        from openral_msgs.msg import OccupancyVoxels
+        """Subscribe the optional declaration; start the timer (the bridge owns the grid)."""
         from openral_msgs.msg import PlaceDeclaration as PlaceDeclarationMsg
         from rclpy.qos import (
             QoSDurabilityPolicy,
@@ -921,21 +926,12 @@ class PlaceTargetLeg:
             reliability=QoSReliabilityPolicy.RELIABLE,
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
         )
-        voxel_qos = QoSProfile(  # the safety kernel's own profile for this topic
-            history=QoSHistoryPolicy.KEEP_LAST,
-            depth=1,
-            reliability=QoSReliabilityPolicy.RELIABLE,
-            durability=QoSDurabilityPolicy.VOLATILE,
-        )
         self._subs = [
             self._node.create_subscription(
                 PlaceDeclarationMsg,
                 "/openral/place_declaration",
                 self._on_declaration,
                 declaration_qos,
-            ),
-            self._node.create_subscription(
-                OccupancyVoxels, "/openral/world_voxels", self._on_voxels, voxel_qos
             ),
         ]
         self._timer = self._node.create_timer(1.0 / self._config.place_target_rate_hz, self._tick)
@@ -999,21 +995,6 @@ class PlaceTargetLeg:
             return
         self.tracker.on_declaration(declaration)
 
-    def _on_voxels(self, msg: Any) -> None:
-        # The world data's capture time, not ``header.stamp`` (production time, which a
-        # bridge republishing an unchanged octree keeps fresh) — the kernel's own
-        # voxel data-age clock. Unset (0) reads as stale in ``_tick``.
-        src = msg.source_stamp
-        stamp_ns = int(src.sec) * 1_000_000_000 + int(src.nanosec)
-        try:
-            lattice = lattice_from_msg(msg)
-        except ROSConfigError as exc:
-            self._grid = None
-            self._node.get_logger().warning(f"place target: voxel grid dropped — {exc}")
-            return
-        lattice.occupied_centers()  # the whole-grid scan, here: outside the bridge lock
-        self._grid = (lattice, stamp_ns, time.monotonic())
-
     def _now_ns(self) -> int:
         return int(self._node.get_clock().now().nanoseconds)
 
@@ -1027,7 +1008,8 @@ class PlaceTargetLeg:
     def _tick(self) -> None:
         """One measurement, under the bridge lock: it reads the legs and moves the tracker.
 
-        The grid's whole scan was done at receipt (``_on_voxels``).
+        The grid is the bridge's shared one; its whole-grid scan runs on first use
+        (cached on the lattice).
         """
         from openral_hal.vision_attachment_bridge import (  # circular at import
             _published,

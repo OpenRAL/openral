@@ -351,10 +351,22 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   the bridge lock (unit test with order-recording locks). Slow pure work stays outside it, on
   a snapshot, committed under the lock only while the generation it was asked under is
   unchanged: a `SegmentInView` reply's mask decode and depth back-projection (bridge
-  `_finish`, leg `_measure` → `accept(generation=)`), and the whole-grid voxel scan, done once
-  at grid receipt and cached on the lattice. tf2 lookups at the latest time pass no timeout (a
-  non-blocking buffer read) and run under the lock. On real hardware every caller runs on the
-  executor's one thread: the lock is uncontended and behaviour is unchanged.
+  `_finish`, leg `_measure` → `accept(generation=)`, given the grid, the contact links' hand
+  points and the held region read under the lock), and the grasp leg's support/seed scan of
+  the grid column (`_seed`): the tick snapshots target, generation and grid under the lock,
+  scans outside, then commits the request — depth, tf2, projection, the `SegmentInView` call,
+  the in-flight record and its deadline timer — under the lock only while the generation is
+  unchanged and the leg is not torn down (a flag `teardown` sets under the lock, also checked
+  by the deadline, so no timer outlives a torn-down leg). The bridge owns the one
+  `/openral/world_voxels` subscription for both producer legs: each grid is decoded once and
+  shared, its whole-grid occupied-cell scan deferred to first use and cached on the lattice (a
+  grid nothing is armed for costs one decode). A malformed `SegmentInView` reply resolves like
+  a missed deadline (`GRIPPER_CLOSURE`, barrier released), never as an exception out of the
+  executor. The HAL node re-checks barrier readiness right after storing a deferred tick, so a
+  release on the proprio thread between its check and the store is not a lost wakeup. tf2
+  lookups at the latest time pass no timeout (a non-blocking buffer read) and run under the
+  lock. On real hardware every caller runs on the executor's one thread: the lock is
+  uncontended and behaviour is unchanged.
   *Multi-pick per goal (2026-10-03, default off with the approach-armed target):* a VLA may
   pick and place several objects within one goal, or one object per goal; both run on the same
   path. Each pick arms under its own identity, `approach:<link>:<n>`: `n` is the tracker's pick
@@ -394,11 +406,14 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   snapshot's envelope is filled. An arming not handed over (the other hand's) drops its region
   at once and advances to a fresh identity — the counter advances too when the arming has
   retracted since its identity was armed (the kernel may still hold that identity and retires
-  it at this edge) — except a hand **mid-grasp** (holding, releasing or segmenting) across a
-  change that leaves the set non-empty, which the kernel does not retire on: its arming is
-  kept, so a bimanual pick survives the other hand's regrasp or release; on an emptying change
-  it is refreshed regardless (the kernel retires it, so that grasp hands nothing over — fail
-  closed). From then on no region is accepted unless its
+  it at this edge) — except a hand **mid-grasp** (an ATTACH being resolved: a segmentation in
+  flight, or jaws read loaded with nothing latched yet — not a carried payload or a release
+  window) across a change that leaves the set non-empty, which the kernel does not retire on:
+  its identity is kept, so a bimanual pick survives the other hand's regrasp or release, but
+  its region is dropped like any other (it was measured before the change), so that ATTACH is
+  handed over with **no** region (fail closed: no exemption from a pre-change measurement); on
+  an emptying change it is refreshed regardless (the kernel retires it, so that grasp hands
+  nothing over — fail closed). From then on no region is accepted unless its
   `stamp_ns` — the older of its depth frame and its grid's `source_stamp` — is later than the
   change: the other hand re-arms only from a measurement of the post-detach scene, and the
   region it measured before is never re-used (live kernel row:
