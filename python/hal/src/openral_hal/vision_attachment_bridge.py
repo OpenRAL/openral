@@ -626,18 +626,20 @@ class VisionAttachmentConfig:
         grasp_target_rate_hz: Re-measurement rate, 2-5 Hz (design §2.2).
         grasp_target_freeze_s: How long past its ``stamp_ns`` the last accepted
             region survives while the view is lost (the gripper occluding the
-            target). *Calibration point*, ``2.0`` s — at most twice the real
-            cell's 1.0 s kernel voxel deadline.
+            target). ``None`` (default) = ``2 * grid_max_age_s``: at most twice
+            the deploy's kernel voxel deadline. *Calibration point.*
         grasp_target_min_cells: Fewest occupied cells the seed cluster above the
             support plane may have. *Calibration point.*
         grasp_target_min_cover: Fraction of the region's footprint cell count
             that must be occupied in the map. *Calibration point.*
         release_clear_m: How far every link a released payload's frozen record
             exempts (the hand and its jaws) must be from it before the record is
-            dropped (``ReleaseWindow``). ``0.04`` m = the real cell's world-voxel
-            margin (``REAL_WORLD_VOXEL_MARGIN_M``, 20 mm) plus one 20 mm voxel:
-            once the record goes, the octomap re-marks the payload's cells, and a
-            cell is a cube the kernel measures against at that margin. A lower
+            dropped (``ReleaseWindow``). The deploy sets it to the kernel's
+            world-voxel margin plus one voxel resolution: once the record goes,
+            the octomap re-marks the payload's cells, and a cell is a cube the
+            kernel measures against at that margin. ``0.04`` m is only the
+            fallback — the real OpenArm cell's values
+            (``REAL_WORLD_VOXEL_MARGIN_M`` 20 mm + one 20 mm voxel). A lower
             bound is measured (bounding boxes, separating axes), so the window can
             only stay open longer than the true gap needs. *Calibration point.*
         release_timeout_s: Hard bound on a release window: the frozen record is
@@ -646,6 +648,12 @@ class VisionAttachmentConfig:
             retreat still inside its margin (fail-closed). The bridge sees no goal
             end, so this is the window's bound when the hand does not retreat.
             *Calibration point*, ``3.0`` s.
+        grid_max_age_s: Oldest ``/openral/world_voxels`` grid the grasp-target
+            and place-fixture legs may use, seconds. The deploy sets it to the
+            safety kernel's ``world_voxel_deadline_s``: a grid the kernel itself
+            would refuse as stale cannot vouch for a region. ``1.0`` s is only
+            the fallback — the real OpenArm cell's deadline
+            (``scenes/deploy/openarm_real_world_voxels.yaml``).
         mask_depth_max_skew_s: Largest accepted ``|mask stamp - depth stamp|``:
             a ``SegmentInView`` mask (stamped with the RGB frame the segmenter
             captured) is only back-projected through a depth frame from the
@@ -684,11 +692,12 @@ class VisionAttachmentConfig:
     evidence_timeout_s: float = 0.5
     grasp_target_enabled: bool = False
     grasp_target_rate_hz: float = 3.0
-    grasp_target_freeze_s: float = 2.0
+    grasp_target_freeze_s: float | None = None
     grasp_target_min_cells: int = 8
     grasp_target_min_cover: float = 0.5
     release_clear_m: float = 0.04
     release_timeout_s: float = 3.0
+    grid_max_age_s: float = 1.0
     mask_depth_max_skew_s: float = 0.1
     place_fixture_enabled: bool = False
     place_fixture_rate_hz: float = 2.0
@@ -932,10 +941,10 @@ class VisionAttachmentBridge:
         # The manifest K is never projected through: it only fills the
         # producer's signature on the no-mask paths, which never back-project.
         self._camera, self._no_mask_intrinsics = self._resolve_camera()
-        if not self._config.mask_depth_max_skew_s > 0.0:
+        if not (self._config.mask_depth_max_skew_s > 0.0 and self._config.grid_max_age_s > 0.0):
             raise ROSConfigError(
-                "vision attachment: mask_depth_max_skew_s must be positive, got "
-                f"{self._config.mask_depth_max_skew_s}."
+                "vision attachment: mask_depth_max_skew_s and grid_max_age_s must be positive, "
+                f"got {self._config.mask_depth_max_skew_s} and {self._config.grid_max_age_s}."
             )
         if self._config.release_clear_m <= 0.0 or self._config.release_timeout_s <= 0.0:
             raise ROSConfigError(

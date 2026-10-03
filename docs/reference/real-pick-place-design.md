@@ -170,7 +170,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   (a re-fit that shrinks or shifts *inside* the held region grown by one voxel — the approaching
   hand occluding part of the target — is a lost view, `occluded_refit`, not a `target_moved`
   contradiction; one reaching outside it still retracts)
-  for `grasp_target_freeze_s` (2 s) from its depth stamp. A mask whose capture stamp is more than
+  for `grasp_target_freeze_s` (default twice `grid_max_age_s`, the deploy's kernel voxel deadline —
+  2 s on the real cell) from its depth stamp; a grid older than `grid_max_age_s` is not used. A mask whose capture stamp is more than
   `mask_depth_max_skew_s` (0.1 s) from the depth frame it would be back-projected through is
   refused (`mask_depth_skew`, a lost view here; a `GRIPPER_FORCE` fallback in the attachment path). Tests: `tests/unit/test_grasp_target_leg.py`,
   live `tests/integration/test_grasp_target_leg_live.py`. The occlusion freeze is a bare TTL; an
@@ -213,7 +214,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   object stays put. `touch_links` = the held record's hand + finger links (no link the held
   record did not already exempt); the separation test is a separating-axis lower bound between
   the manifest's hand/finger boxes (posed by tf2 + the jaw angle) and the payload, against
-  `release_clear_m` (0.04 m); `release_timeout_s` (3.0 s) bounds it, since the bridge sees no
+  `release_clear_m` (the deploy's kernel world-voxel margin + one voxel; 0.04 m on the real cell,
+  HAL param `vision_attachment_release_clear_m`); `release_timeout_s` (3.0 s,
+  `vision_attachment_release_timeout_s`) bounds it, since the bridge sees no
   goal end. No octomap-bridge change was needed: payload clearing clears every attached object
   on `/openral/world_state_fast`, and the frozen record does not move, so its
   `AttachSweepLedger` window behaves as a held payload's. Proven on the real kernel by

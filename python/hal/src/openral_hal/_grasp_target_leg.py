@@ -40,7 +40,8 @@ classes, each logged once per transition with its typed reason:
   shrinks and shifts the fit; it never replaces the held region). The
   gripper closing in on the target occludes it from the head camera exactly
   then, so the last accepted
-  region is **frozen** for at most ``grasp_target_freeze_s`` from its own
+  region is **frozen** for at most ``grasp_target_freeze_s`` (unset: twice
+  ``grid_max_age_s``, the kernel's voxel deadline) from its own
   ``stamp_ns`` (the depth frame it was measured on), then retracted. Follow-up:
   an FK-based "is the hand what occludes it" test instead of a bare TTL.
 
@@ -82,11 +83,6 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
     from openral_hal.vision_attachment_bridge import VisionAttachmentBridge, VisionAttachmentConfig
 
 __all__ = ["GraspTargetLeg", "GraspTargetTracker", "lattice_from_msg", "search_column"]
-
-#: Oldest ``/openral/world_voxels`` grid a measurement may use, seconds. The real
-#: cell's kernel voxel deadline (``scenes/deploy/openarm_real_world_voxels.yaml``):
-#: a grid the kernel itself would refuse as stale cannot vouch for a region.
-_GRID_MAX_AGE_S = 1.0
 
 #: The design's re-prompt band, Hz (§2.2).
 _RATE_BAND_HZ = (2.0, 5.0)
@@ -396,7 +392,7 @@ class GraspTargetLeg:
 
     Raises:
         ROSConfigError: On a rate outside 2-5 Hz or a non-positive freeze, cell
-            count or cover fraction.
+            count or cover fraction (``grid_max_age_s`` is checked by the bridge).
     """
 
     def __init__(
@@ -408,8 +404,14 @@ class GraspTargetLeg:
                 f"grasp_target_rate_hz={config.grasp_target_rate_hz} is outside the design's "
                 "2-5 Hz re-prompt band."
             )
+        # Unset: twice the grid age the kernel itself accepts (its voxel deadline).
+        freeze_s = (
+            config.grasp_target_freeze_s
+            if config.grasp_target_freeze_s is not None
+            else 2.0 * config.grid_max_age_s
+        )
         if not (
-            config.grasp_target_freeze_s > 0.0
+            freeze_s > 0.0
             and config.grasp_target_min_cells > 0
             and 0.0 < config.grasp_target_min_cover <= 1.0
         ):
@@ -420,8 +422,9 @@ class GraspTargetLeg:
         self._node = node
         self._bridge = bridge
         self._config = config
+        self._freeze_s = freeze_s
         self.tracker = GraspTargetTracker(
-            freeze_s=config.grasp_target_freeze_s,
+            freeze_s=freeze_s,
             log=lambda line: node.get_logger().info(line),
         )
         # (lattice, monotonic receive time) of the newest grid.
@@ -468,7 +471,7 @@ class GraspTargetLeg:
         self._timer = self._node.create_timer(1.0 / self._config.grasp_target_rate_hz, self._tick)
         self._node.get_logger().info(
             f"grasp target leg: rate={self._config.grasp_target_rate_hz:.1f}Hz "
-            f"freeze={self._config.grasp_target_freeze_s:.2f}s "
+            f"freeze={self._freeze_s:.2f}s grid_max_age={self._config.grid_max_age_s:.2f}s "
             f"min_cells={self._config.grasp_target_min_cells} "
             f"min_cover={self._config.grasp_target_min_cover:.2f} "
             f"deadline={self._config.deadline_s:.3f}s"
@@ -521,7 +524,7 @@ class GraspTargetLeg:
             raise _lost("no_grid", "no /openral/world_voxels grid yet")
         lattice, received = self._grid
         age = time.monotonic() - received
-        if age > _GRID_MAX_AGE_S:
+        if age > self._config.grid_max_age_s:
             raise _lost("grid_stale", f"newest voxel grid is {age:.2f} s old")
         return lattice
 
@@ -607,7 +610,7 @@ class GraspTargetLeg:
         # than now (a clock-skewed future stamp would be refused downstream), and
         # a frame already past the freeze TTL could never be held.
         depth_stamp_ns = min(depth_stamp_ns, now_ns)
-        if now_ns - depth_stamp_ns > int(self._config.grasp_target_freeze_s * 1e9):
+        if now_ns - depth_stamp_ns > int(self._freeze_s * 1e9):
             raise _lost(
                 "depth_stale", f"newest depth frame is {(now_ns - depth_stamp_ns) / 1e9:.2f} s old"
             )

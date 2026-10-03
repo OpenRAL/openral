@@ -40,13 +40,15 @@ from openral_hal._vision_attachment_evidence import (
     VisionGateConfig,
     jaw_span_primitive,
 )
-from openral_hal.vision_attachment_bridge import ReleaseWindow, _GripperLeg
+from openral_hal.vision_attachment_bridge import ReleaseWindow, VisionAttachmentConfig, _GripperLeg
 
 _ROOT = Path(__file__).resolve().parents[2]
 _OPENARM = _ROOT / "robots" / "openarm" / "robot.yaml"
 _SHELF_UNIT = _ROOT / "tests" / "unit" / "fixtures" / "robot_units" / "openarm_shelf_cell.yaml"
 _BASE = "openarm_base"
 _RES = 0.02
+# The deploy passes the kernel's world_voxel_deadline_s; the real cell's is 1.0 s.
+_GRID_MAX_AGE_S = VisionAttachmentConfig().grid_max_age_s
 _FACE_Z = 0.31
 _GRID_STAMP_NS = 5_000_000_000
 
@@ -144,7 +146,7 @@ def _declaration(stamp_ns: int = 1_000_000_000, target: str = "cell:shelf_top") 
 def _verified_tracker(shelf: UnitFixture, lines: list[str]) -> PlaceFixtureTracker:
     tracker = PlaceFixtureTracker(fixtures=[shelf], unit="shelf_cell", log=lines.append)
     tracker.on_declaration(_declaration())
-    assert tracker.grid_fresh(0.1)
+    assert tracker.grid_fresh(0.1, max_age_s=_GRID_MAX_AGE_S)
     tracker.verified(
         fixture_region(shelf, unit="shelf_cell", grid_stamp_ns=_GRID_STAMP_NS), resolution=_RES
     )
@@ -169,12 +171,21 @@ def test_a_verified_fixture_rides_the_envelope_as_the_region(shelf: UnitFixture)
 def test_a_stale_grid_retracts_the_region_with_its_reason(shelf: UnitFixture) -> None:
     lines: list[str] = []
     tracker = _verified_tracker(shelf, lines)
-    assert not tracker.grid_fresh(1.5)
+    assert not tracker.grid_fresh(1.5, max_age_s=_GRID_MAX_AGE_S)
     envelope = tracker.envelope(now_ns=2_000_000_000)
     assert envelope is not None and envelope.region is None, "the declaration stays, region-less"
     assert lines[-1].startswith("place_fixture_unverified reason=grid_stale")
-    tracker.grid_fresh(1.6)
+    tracker.grid_fresh(1.6, max_age_s=_GRID_MAX_AGE_S)
     assert sum("grid_stale" in line for line in lines) == 1, "logged once per transition"
+
+
+def test_the_grid_age_bound_is_the_deploys_not_a_constant(shelf: UnitFixture) -> None:
+    """A deploy whose kernel voxel deadline is 0.3 s refuses a 0.5 s-old grid."""
+    lines: list[str] = []
+    tracker = _verified_tracker(shelf, lines)
+    assert tracker.grid_fresh(0.5, max_age_s=1.0)
+    assert not tracker.grid_fresh(0.5, max_age_s=0.3)
+    assert lines[-1].startswith("place_fixture_unverified reason=grid_stale")
 
 
 def test_an_unknown_fixture_passes_the_declaration_region_less(shelf: UnitFixture) -> None:
@@ -258,7 +269,7 @@ def test_no_witness_off_the_plane_unloaded_or_off_the_face(
 
 def test_no_witness_without_a_verified_region(shelf: UnitFixture) -> None:
     tracker = _verified_tracker(shelf, [])
-    tracker.grid_fresh(2.0)
+    tracker.grid_fresh(2.0, max_age_s=_GRID_MAX_AGE_S)
     obj, t_base_link = _payload(bottom_z=_FACE_Z + 0.004)
     assert not tracker.attest([(obj, t_base_link, True)], now_ns=3_000_000_000)
 

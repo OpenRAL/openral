@@ -89,10 +89,6 @@ __all__ = [
     "verify_fixture",
 ]
 
-#: Oldest grid a verification may use, seconds — the real cell's kernel voxel
-#: deadline (``scenes/deploy/openarm_real_world_voxels.yaml``), as the grasp leg.
-_GRID_MAX_AGE_S = 1.0
-
 #: The kernel's ADR-0092 D6 witness caps (``support_witness_max_patch_radius_m`` /
 #: ``support_witness_max_penetration_m``); a witness past either fails the kernel's
 #: whole attachment message closed, so the producer never emits one.
@@ -478,8 +474,11 @@ class PlaceFixtureTracker:
     def _drop_witness(self) -> None:
         self._witness = None
 
-    def grid_fresh(self, age_s: float | None) -> bool:
+    def grid_fresh(self, age_s: float | None, *, max_age_s: float) -> bool:
         """Whether the newest grid (``age_s`` old, ``None`` = none yet) can vouch for the face.
+
+        ``max_age_s`` is ``VisionAttachmentConfig.grid_max_age_s``: the kernel's own
+        voxel deadline, so a grid the kernel would refuse as stale vouches for nothing.
 
         A missing or stale grid unverifies the region (``no_grid`` / ``grid_stale``):
         the face is only as verified as the newest map. ``False`` too when there is
@@ -490,7 +489,7 @@ class PlaceFixtureTracker:
         if age_s is None:
             self.unverified("no_grid", "no /openral/world_voxels grid yet")
             return False
-        if age_s > _GRID_MAX_AGE_S:
+        if age_s > max_age_s:
             self.unverified("grid_stale", f"newest voxel grid is {age_s:.2f} s old")
             return False
         return True
@@ -774,7 +773,8 @@ class PlaceFixtureLeg:
     def _check_grid_age(self) -> bool:
         """Whether a fresh grid is in hand (see ``PlaceFixtureTracker.grid_fresh``)."""
         return self.tracker.grid_fresh(
-            None if self._grid is None else time.monotonic() - self._grid[2]
+            None if self._grid is None else time.monotonic() - self._grid[2],
+            max_age_s=self._config.grid_max_age_s,
         )
 
     def _pose(self, obj: AttachedCollisionObject, frame: str) -> NDArray[np.float64] | None:
