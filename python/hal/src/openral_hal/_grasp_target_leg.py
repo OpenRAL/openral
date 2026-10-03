@@ -21,6 +21,8 @@ region onto every attachment publication. At ``grasp_target_rate_hz``:
    ``CameraInfo`` and tf2 ``optical <- base``, is sent to ``SegmentInView`` as
    the single positive point (no negatives), under the leg's own deadline;
 3. the mask + the depth frame it was asked about → ``target_region_from_mask``
+   (whose masked cloud must reach within two voxels of the support, else
+   ``not_on_support``: a target stacked on another object)
    → ``region_covers_occupied`` against the latest map → ``track_region``
    against the previous accepted region.
 
