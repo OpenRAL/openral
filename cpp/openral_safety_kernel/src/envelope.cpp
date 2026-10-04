@@ -6,7 +6,9 @@
 
 #include "openral_safety_kernel/envelope.hpp"
 
+#include <cmath>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
@@ -84,6 +86,27 @@ EnvelopeLoadStatus load_envelope_from_ros_parameters(rclcpp_lifecycle::Lifecycle
   out.max_cartesian_step_m = node.get_parameter("max_cartesian_step_m").as_double();
   out.max_cartesian_step_rad = node.get_parameter("max_cartesian_step_rad").as_double();
   out.deadman_required = node.get_parameter("deadman_required").as_bool();
+
+  // The per-mode bounds are compared as `magnitude > bound`, so a NaN bound
+  // passes everything and a negative one refuses everything. +inf is the
+  // "no bound declared" sentinel and stays legal. kernel_params_from_envelope
+  // already refuses NaN; this guards a direct ROS-parameter override.
+  const std::pair<const char*, double> per_mode_bounds[] = {
+      {"max_ee_angular_speed_rad_s", out.max_ee_angular_speed_rad_s},
+      {"max_base_linear_speed_m_s", out.max_base_linear_speed_m_s},
+      {"max_base_angular_speed_rad_s", out.max_base_angular_speed_rad_s},
+      {"max_cartesian_step_m", out.max_cartesian_step_m},
+      {"max_cartesian_step_rad", out.max_cartesian_step_rad},
+  };
+  for (const auto& [name, value] : per_mode_bounds) {
+    if (std::isnan(value) || value < 0.0) {
+      std::ostringstream oss;
+      oss << name << " must be >= 0 or +inf (unbounded); got " << value;
+      error_message = oss.str();
+      out = EnvelopeIntersection{};
+      return EnvelopeLoadStatus::kInvalidValue;
+    }
+  }
 
   return EnvelopeLoadStatus::kOk;
 }

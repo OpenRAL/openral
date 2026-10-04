@@ -95,6 +95,7 @@ enum class EnvelopeLoadStatus : std::uint8_t {
   kOk = 0,
   kInvalidShape = 1,  ///< joint arrays disagree with `n_dof`
   kUnconfigured = 2,  ///< `n_dof` is 0 — no envelope supplied
+  kInvalidValue = 3,  ///< a per-mode bound is NaN or negative
 };
 
 /// Build the envelope from this node's ROS parameters.
