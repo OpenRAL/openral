@@ -46,7 +46,7 @@ from openral_perception_ros.camera_topics import resolve_camera_topics
 def main(args: Any = None) -> None:
     """Entry point: init ROS, spin the scene-VLM node, shut down cleanly."""
     import rclpy
-    from rclpy.executors import ExternalShutdownException
+    from openral_observability.rclpy_spin import spin_node_until_shutdown
     from rclpy.node import Node
     from rclpy.qos import (
         QoSDurabilityPolicy,
@@ -182,9 +182,7 @@ def main(args: Any = None) -> None:
     node = SceneVlmNode()
     try:
         try:
-            rclpy.spin(node)
-        except (KeyboardInterrupt, ExternalShutdownException):
-            pass
+            spin_node_until_shutdown(node)  # quiet on the SIGINT shutdown race
         finally:
             node.destroy_node()
     finally:
