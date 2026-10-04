@@ -224,21 +224,25 @@ def start_kernel(
     )
 
 
-def terminate_kernel(proc: Any, *, sigint_grace_s: float = 2.0) -> None:
+def terminate_kernel(proc: Any, *, sigint_grace_s: float = 2.0) -> int | None:
     """SIGINT the kernel's process group, then escalate to SIGKILL.
 
     rclcpp::spin() exits on SIGINT but ignores SIGTERM, so plain
     ``proc.terminate()`` leaks the process. We send SIGINT to the
     whole process group (including any subprocesses the kernel may
     have spawned), wait briefly, then SIGKILL if still alive.
+
+    Returns:
+        The process's exit status (``0`` on a clean SIGINT shutdown; a
+        crash through ``ros2 run`` is non-zero), or ``None`` if it outlived
+        the SIGKILL wait.
     """
     if proc.poll() is not None:
-        return
+        return int(proc.returncode)
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(proc.pid, signal.SIGINT)
     try:
-        proc.wait(timeout=sigint_grace_s)
-        return
+        return int(proc.wait(timeout=sigint_grace_s))
     except subprocess.TimeoutExpired:
         pass
     # Escalate.
@@ -246,6 +250,7 @@ def terminate_kernel(proc: Any, *, sigint_grace_s: float = 2.0) -> None:
         os.killpg(proc.pid, signal.SIGKILL)
     with contextlib.suppress(subprocess.TimeoutExpired):
         proc.wait(timeout=2.0)
+    return None if proc.returncode is None else int(proc.returncode)
 
 
 def activate_kernel_node(

@@ -247,6 +247,8 @@ class _Cell:
     #: its revision; a change of the set is a new revision, as the bridge publishes it.
     attached: list[Any] = field(default_factory=list)
     revision: int = 1
+    #: The kernel's ``Popen`` (``start_kernel``), for the shutdown row's own SIGINT.
+    kernel: Any = None
 
     def spin(self, seconds: float) -> None:
         end = time.time() + seconds
@@ -365,6 +367,7 @@ def _live_cell(
                     chunk_pub=helper.create_publisher(ActionChunk, "/openral/candidate_action", 10),
                     reset_client=helper.create_client(Trigger, "/openral/estop_reset"),
                     log_path=log_path,
+                    kernel=proc,
                 )
                 safe_sub = helper.create_subscription(
                     ActionChunk,
@@ -964,3 +967,62 @@ def test_another_hands_release_retires_a_pre_handover_arming_and_the_producer_re
         assert cell.stop_lines()[-1][2] == 0, "a retired identity re-armed"
         assert cell.log().count(f"safety.grasp_region_armed target={first_id} links=1") == 1
         reset()
+
+
+def test_sigint_mid_goal_with_an_armed_region_exits_cleanly(
+    reset_kernel_estop: Callable[..., None],
+) -> None:
+    """SIGINT while every input still flows and an approach-armed region is live exits 0.
+
+    Deploy-sim trial i35: the launch SIGINTed the kernel mid-goal (approach-armed region
+    live, HAL still publishing) and it died with SIGSEGV. ``main()`` returned with the node
+    still ACTIVE, so the OTel ``BatchSpanProcessor`` was shut down by exit-time static
+    destruction, exporting the queued ``safety.check`` spans while the HTTP client's
+    static objects were already gone. The kernel now runs its lifecycle shutdown (``on_cleanup`` →
+    ``shutdown_tracing``) before ``main()`` returns. The verdicts are unchanged; what a
+    SIGINT leaves behind is a kernel that stops publishing, which the HAL's
+    ``/openral/safety_status`` staleness abort and the deadman watchdog already handle.
+    """
+    import threading
+
+    from openral_msgs.msg import ActionChunk
+
+    with _live_cell(grasp_allowance_enabled=True, reset_kernel_estop=reset_kernel_estop) as (
+        cell,
+        _reset,
+    ):
+        cell.world(_TARGET | _PLANE, _approach_declaration())
+        cell.send("armed", expect_accept=True)
+        assert f"safety.grasp_region_armed target={_APPROACH_TARGET} links=1" in cell.log()
+
+        # The HAL keeps publishing candidates (~500 Hz) up to and through the SIGINT. Three
+        # seconds is past the processor's first 512-span batch export (that export starts the
+        # HTTP client's worker thread, as the collector-less deploy runs had), so spans are
+        # queued and an export is in flight when the kernel exits. Under ~1.5 s it never
+        # crashed; past it, it crashed every run before the fix.
+        stop = threading.Event()
+
+        def stream() -> None:
+            i = 0
+            while not stop.is_set():
+                chunk = ActionChunk()
+                chunk.control_mode = 0  # JOINT_POSITION
+                chunk.horizon = 1
+                chunk.n_dof = len(_Q)
+                chunk.flat = list(_Q)
+                chunk.rskill_id = _RSKILL_ID
+                chunk.trace_id = f"stream-{i}"
+                cell.chunk_pub.publish(chunk)
+                i += 1
+                time.sleep(0.002)
+
+        pump = threading.Thread(target=stream, daemon=True)
+        pump.start()
+        try:
+            cell.spin(3.0)
+            assert any(t.startswith("stream-") for t in cell.safe), "the stream never flowed"
+            status = terminate_kernel(cell.kernel, sigint_grace_s=10.0)
+        finally:
+            stop.set()
+            pump.join()
+        assert status == 0, f"kernel exit status {status} on SIGINT\n{cell.log()}"

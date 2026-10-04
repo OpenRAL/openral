@@ -9,8 +9,8 @@ _Shared lifecycle helpers for kernel-twin tests._
 
 - `isolated_domain_id() -> int` — Pick an unused `ROS_DOMAIN_ID` so concurrent kernel subprocesses don't cross-talk. (L43)
 - `start_kernel(*, domain_id, robot_yaml, ...) -> subprocess.Popen` — Launch the `openral_safety_kernel` binary with the test's robot manifest under an isolated DDS domain. (L133)
-- `terminate_kernel(proc, *, sigint_grace_s=2.0) -> None` — SIGINT → SIGKILL teardown. (L227)
-- `activate_kernel_node(domain_id, *, node_name="openral_safety_kernel") -> None` — Run the configure → activate lifecycle transitions against the spawned kernel node (uses `ros2 lifecycle set …`); extracted from the four kernel-twin tests so the lifecycle ceremony lives once. (L251)
+- `terminate_kernel(proc, *, sigint_grace_s=2.0) -> int | None` — SIGINT → SIGKILL teardown; returns the exit status (`None` if it outlived the SIGKILL wait). (L227)
+- `activate_kernel_node(domain_id, *, node_name="openral_safety_kernel") -> None` — Run the configure → activate lifecycle transitions against the spawned kernel node (uses `ros2 lifecycle set …`); extracted from the four kernel-twin tests so the lifecycle ceremony lives once. (L256)
 - `kernel_param_args_from_dict(params) -> list[str]` — Format a dict of kernel parameters as `-p key:=value` argv pairs, for tests that hand-roll specific envelope values rather than drive the kernel from a real `RobotDescription`. (L86)
 - `kernel_param_args(robot_description) -> list[str]` — Synthesise the safety envelope from a robot manifest and emit each canonical field as a `--ros-args -p key:=value` argv list (mirrors `deploy_e2e.launch.py` in-process). (L101)
 
