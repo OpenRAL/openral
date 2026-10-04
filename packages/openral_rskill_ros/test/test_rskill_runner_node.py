@@ -24,6 +24,7 @@ calls ``aggregator.snapshot()`` in-process via the shared instance the
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Iterator
@@ -1181,3 +1182,96 @@ def test_successful_goal_reports_failure_kind_none() -> None:
     assert result.success, result.failure_reason
     assert result.failure_reason == ""
     assert result.failure_kind == ExecuteRskill.Result.FAILURE_NONE
+
+
+_NAV2_MANIFEST = (
+    Path(__file__).resolve().parents[3] / "rskills" / "rskill-nav2-navigate-to-pose" / "rskill.yaml"
+)
+
+
+def _nav2_goal_params(x: float) -> str:
+    return json.dumps({"pose": {"pose": {"position": {"x": x, "y": 0.0, "z": 0.0}}}})
+
+
+def test_wrapped_ros_skill_is_resolved_again_when_goal_params_change() -> None:
+    """A wrapped-ROS skill merges goal_params_json into its goal at configure().
+
+    Reusing the resident instance for a second dispatch with a different
+    target would send the first dispatch's goal. Uses the in-tree Nav2
+    manifest; its embodiment tag is swapped for the harness robot's so the
+    runner's embodiment gate admits it.
+    """
+    from openral_core import RSkillManifest
+    from openral_rskill.ros_action_rskill import ROSActionRskill
+
+    manifest = RSkillManifest.from_yaml(str(_NAV2_MANIFEST)).model_copy(
+        update={"embodiment_tags": ["so100_follower"]}
+    )
+    built: list[Any] = []
+
+    def _nav2_resolver(*, goal_params_json: str = "", ros_node: Any = None, **_k: Any) -> Any:
+        skill = ROSActionRskill(
+            manifest=manifest,
+            ros_node=ros_node,
+            robot_description=None,
+            prompt="",
+            prompt_metadata_json="",
+            goal_params_json=goal_params_json,
+        )
+        skill.configure()
+        skill.activate()
+        built.append(skill)
+        return skill
+
+    pytest.importorskip("nav2_msgs")
+    import rclpy
+    from nav2_msgs.action import NavigateToPose
+    from rclpy.action import ActionServer
+
+    with _compose_harness(resolver=_nav2_resolver) as (executor, runtime, _safety, _observed):
+        # configure() waits for the wrapped server; host a real one at the graph boundary.
+        nav2_side = rclpy.create_node("openral_test_nav2_side")
+        server = ActionServer(
+            nav2_side, NavigateToPose, "/navigate_to_pose", lambda _g: NavigateToPose.Result()
+        )
+        executor.add_node(nav2_side)
+        _spin_for(executor, 0.3)
+        runner = runtime.skill_runner_node
+        kwargs = {
+            "rskill_id": manifest.name,
+            "revision": "",
+            "prompt": "go",
+            "prompt_metadata_json": "",
+        }
+        first = runner._acquire_skill(**kwargs, goal_params_json=_nav2_goal_params(1.0))
+        again = runner._acquire_skill(**kwargs, goal_params_json=_nav2_goal_params(1.0))
+        moved = runner._acquire_skill(**kwargs, goal_params_json=_nav2_goal_params(2.0))
+        server.destroy()
+        executor.remove_node(nav2_side)
+        nav2_side.destroy_node()
+
+    assert again is first, "an identical dispatch must reuse the resident skill"
+    assert moved is not first, "new goal params must not reuse the old target's skill"
+    assert len(built) == 2
+    assert moved._goal_dict["pose"]["pose"]["position"]["x"] == 2.0
+
+
+def test_vla_style_skill_stays_resident_across_goal_params() -> None:
+    """A skill that ignores goal params (every VLA) must not reload when they vary."""
+    built: list[Any] = []
+
+    def _resolver(**_k: Any) -> Any:
+        skill = _make_constant_skill()
+        built.append(skill)
+        return skill
+
+    with _compose_harness(resolver=_resolver) as (_executor, runtime, _safety, _observed):
+        runner = runtime.skill_runner_node
+        kwargs = {"rskill_id": "openral/test-constant-skill", "revision": "", "prompt": "go"}
+        first = runner._acquire_skill(**kwargs, prompt_metadata_json="", goal_params_json="")
+        second = runner._acquire_skill(
+            **kwargs, prompt_metadata_json="", goal_params_json='{"speed": "slow"}'
+        )
+
+    assert second is first
+    assert len(built) == 1

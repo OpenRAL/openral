@@ -317,9 +317,12 @@ if _ROS2_AVAILABLE:
             # resolved skill loaded, keyed by (rskill_id, revision, prompt).
             # Dispatching a different key evicts (``shutdown()`` → frees VRAM)
             # the resident skill before loading the next; re-dispatching the
-            # same key reuses it (no reload, no double-load).
+            # same key reuses it (no reload, no double-load). A wrapped-ROS
+            # skill also bakes the goal's params in at configure, so it is
+            # reused only when those match too (see _acquire_skill).
             self._resident_skill: Any = None
             self._resident_key: tuple[str, str, str] = ("", "", "")
+            self._resident_params: tuple[str, str] = ("", "")
             self._chunks_published: int = 0
             self._estop_latched: bool = False
             self._cancel_requested: bool = False
@@ -681,11 +684,26 @@ if _ROS2_AVAILABLE:
             next; an exact match reuses it (no reload, no double-load); a miss
             resolves + caches. Resolve failures propagate to the caller's abort
             path unchanged.
+
+            A ``ROSActionRskill`` merges ``goal_params_json`` into its goal at
+            ``configure()``, so reusing one across different params would send
+            the previous dispatch's goal (the old pose / joint target). It is
+            reused only when ``(prompt_metadata_json, goal_params_json)``
+            match as well. A VLA ignores both, so they stay out of its key and
+            a varying LLM payload cannot force a weight reload.
             """
             from openral_core.schemas import RSkillState
+            from openral_rskill.ros_action_rskill import ROSActionRskill
 
             req_key = (rskill_id, revision, prompt)
-            if self._resident_skill is not None and self._resident_key != req_key:
+            req_params = (prompt_metadata_json, goal_params_json)
+            if self._resident_skill is not None and (
+                self._resident_key != req_key
+                or (
+                    isinstance(self._resident_skill, ROSActionRskill)
+                    and self._resident_params != req_params
+                )
+            ):
                 self._evict_resident_skill()
             if self._resident_skill is not None and self._resident_key == req_key:
                 resident = cast("rSkillBase", self._resident_skill)
@@ -712,6 +730,7 @@ if _ROS2_AVAILABLE:
             )
             self._resident_skill = skill
             self._resident_key = req_key
+            self._resident_params = req_params
             return skill
 
         def _evict_resident_skill(self) -> None:
@@ -725,6 +744,7 @@ if _ROS2_AVAILABLE:
             skill = self._resident_skill
             self._resident_skill = None
             self._resident_key = ("", "", "")
+            self._resident_params = ("", "")
             if skill is None:
                 return
             shutdown = getattr(skill, "shutdown", None)
