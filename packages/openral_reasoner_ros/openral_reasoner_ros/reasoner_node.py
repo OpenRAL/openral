@@ -989,8 +989,10 @@ class ReasonerNode(LifecycleNode):
         # dispatch: the runner serves one goal at a time, and a forced tick
         # mid-execution would otherwise double-dispatch blind.
         self._rskill_inflight: bool = False
-        # Set while a dispatch waits for /openral/execute_rskill (monotonic s).
+        # Set while a dispatch waits for /openral/execute_rskill (monotonic s),
+        # and the one-shot timer that re-probes for it.
         self._execute_server_wait_deadline: float | None = None
+        self._execute_server_retry_timer: Any = None
         # Dispatch-phase watchdog: bounds the send→goal-response window the
         # busy latch opens. rclpy futures never time out on their own, so a
         # runner (or VRAM peer) that dies AFTER the readiness probe but before
@@ -1362,6 +1364,8 @@ class ReasonerNode(LifecycleNode):
         self._tick_in_flight = False
         self._queued_tick = None
         self._tick_replays = 0
+        # A dispatch waiting for the runner must not fire on a deactivated node.
+        self._abandon_execute_server_wait()
         self.get_logger().info("on_deactivate: stopped")
         return TransitionCallbackReturn.SUCCESS
 
@@ -1378,6 +1382,7 @@ class ReasonerNode(LifecycleNode):
             with contextlib.suppress(Exception):
                 timer.cancel()
         self._pending_skill_deadlines.clear()
+        self._abandon_execute_server_wait()
         if self._execute_rskill_client is not None:
             self._execute_rskill_client.destroy()
             self._execute_rskill_client = None
@@ -4425,20 +4430,36 @@ class ReasonerNode(LifecycleNode):
             stamp_ns=self.get_clock().now().nanoseconds,
             state="dispatching",
         )
-        timer: Any = None
 
         def _retry() -> None:
-            timer.cancel()
-            self.destroy_timer(timer)
+            self._cancel_execute_server_retry()
             self._rskill_inflight = False
-            if self._execute_rskill_client is None:  # cleaned up while waiting
+            self._dispatch_execute_rskill(call, traceparent=traceparent)
+            if self._execute_server_retry_timer is None and not self._rskill_inflight:
+                # A gate refused the re-dispatch (collective task, busy): the
+                # wait is over, and nothing holds the in-flight line.
                 self._execute_server_wait_deadline = None
                 self._renderer.set_inflight_skill(None)
-                return
-            self._dispatch_execute_rskill(call, traceparent=traceparent)
 
-        timer = self.create_timer(_EXECUTE_SKILL_SERVER_RETRY_S, _retry)
+        self._execute_server_retry_timer = self.create_timer(_EXECUTE_SKILL_SERVER_RETRY_S, _retry)
         return True
+
+    def _cancel_execute_server_retry(self) -> None:
+        """Cancel and destroy the pending re-probe timer, if any."""
+        timer = self._execute_server_retry_timer
+        self._execute_server_retry_timer = None
+        if timer is not None:
+            timer.cancel()
+            self.destroy_timer(timer)
+
+    def _abandon_execute_server_wait(self) -> None:
+        """Drop a dispatch waiting for the runner (lifecycle teardown)."""
+        if self._execute_server_retry_timer is None and self._execute_server_wait_deadline is None:
+            return
+        self._cancel_execute_server_retry()
+        self._execute_server_wait_deadline = None
+        self._rskill_inflight = False
+        self._renderer.set_inflight_skill(None)
 
     def _set_reward_task(self, task: str) -> None:
         """Publish the instruction the reward monitor should score (2026-06-29).

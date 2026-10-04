@@ -441,7 +441,7 @@ def _isolate_domain(monkeypatch: pytest.MonkeyPatch, slot: int) -> None:
     in the DDS discovery cache past ``rclpy.shutdown()`` and satisfy the
     reasoner's readiness probe.
     """
-    monkeypatch.setenv("ROS_DOMAIN_ID", str(150 + (os.getpid() % 40) * 2 + slot))
+    monkeypatch.setenv("ROS_DOMAIN_ID", str(110 + (os.getpid() % 40) * 3 + slot))
 
 
 def test_dispatch_waits_for_a_runner_that_comes_up_late(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -506,4 +506,48 @@ def test_dispatch_fails_when_the_runner_never_comes_up(monkeypatch: pytest.Monke
         assert not reasoner._rskill_inflight, "the busy gate must be released"
         assert reasoner._renderer.inflight_skill is None
     finally:
+        rclpy.shutdown()
+
+
+def test_deactivating_while_waiting_for_the_runner_drops_the_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pending re-probe must not fire a dispatch on a deactivated node."""
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("openral_msgs.msg")
+    from openral_core import ExecuteRskillTool
+
+    from tests.integration.fakes.action_servers import execute_rskill_server
+
+    _isolate_domain(monkeypatch, 2)
+    rclpy.init()
+    server = None
+    try:
+        reasoner, sub_node, failures = _reasoner_with_failure_sub(server_wait_s=20.0)
+        executor = rclpy.executors.SingleThreadedExecutor()
+        executor.add_node(reasoner)
+        executor.add_node(sub_node)
+        _spin_until(executor, lambda: False, 1.0)
+
+        call = ExecuteRskillTool(rskill_id=_VLA_ID, prompt="pick the cube", deadline_s=0.0)
+        reasoner._dispatch_execute_rskill(call, traceparent=None)
+        _spin_until(executor, lambda: False, 0.5)
+        assert reasoner._rskill_inflight
+
+        reasoner.trigger_deactivate()
+        assert not reasoner._rskill_inflight, "deactivate must release the busy gate"
+        assert reasoner._renderer.inflight_skill is None
+        assert reasoner._execute_server_wait_deadline is None
+
+        # The runner appearing now must not receive the dropped goal.
+        runner_side = rclpy.create_node("openral_test_runner_after_deactivate")
+        received: list[Any] = []
+        server = execute_rskill_server(runner_side, received)
+        executor.add_node(runner_side)
+        _spin_until(executor, lambda: bool(received), 2.0)
+        assert not received, "a deactivated reasoner sent the waiting goal"
+        assert not failures
+    finally:
+        if server is not None:
+            server.destroy()
         rclpy.shutdown()
