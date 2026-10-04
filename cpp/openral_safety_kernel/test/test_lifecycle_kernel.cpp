@@ -5074,6 +5074,21 @@ public:
     exec_.add_node(helper_.get_node_base_interface());
   }
 
+  // Same teardown as GraspRig: `on_cleanup` flushes the span processor, and
+  // dropping an active node races process teardown into a segfault at exit.
+  ~SlotRig() {
+    exec_.remove_node(node_->get_node_base_interface());
+    exec_.remove_node(helper_.get_node_base_interface());
+    if (configured_) {
+      rclcpp_lifecycle::State active(lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE, "ac");
+      node_->on_deactivate(active);
+      rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+      node_->on_cleanup(inactive);
+    }
+  }
+  SlotRig(const SlotRig&) = delete;
+  SlotRig& operator=(const SlotRig&) = delete;
+
   bool configured() const { return configured_; }
   osk::SafetyKernelLifecycleNode& node() { return *node_; }
   /// Spin until a non-latched status with `drop_code` has arrived.
