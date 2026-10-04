@@ -586,7 +586,7 @@ def mask_without_removed_points(
         k = keys + (1 << 20)
         return (k[:, 0] << 42) | (k[:, 1] << 21) | k[:, 2]
 
-    kept = np.asarray(kept_points_base, dtype=np.float64).reshape(-1, 3)
+    kept: NDArray[np.float64] = np.asarray(kept_points_base, dtype=np.float64).reshape(-1, 3)
     kept = kept[np.isfinite(kept).all(axis=1)]
     kept_codes = np.unique(code(np.floor(kept / cell_m).astype(np.int64)))
     own = np.floor(pts / cell_m).astype(np.int64)
