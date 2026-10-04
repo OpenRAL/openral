@@ -35,6 +35,14 @@ scene:
   backend_options:
     # First boot also streams the stage + its props from the asset server.
     boot_timeout_s: 1200
+    # The head ZED at the manifest's nominal mount (openarm_base -> zed_camera_link,
+    # xyz [0, 0, 0.2], rpy [-0.0123, 1.1823, 0]); unmounted cameras get the scene's
+    # generic viewpoints. Wrist cameras are mounted the same way, per cell.
+    camera_mounts:
+      head_zed:
+        link: openarm_base
+        xyz: [0.0, 0.0, 0.2]
+        quat_wxyz: [0.830285, -0.005106, 0.557306, 0.003427]
     objects:
       - name: cracker_box
         usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd"
