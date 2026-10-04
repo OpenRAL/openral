@@ -4323,8 +4323,8 @@ class RSkillLatencyBudget(BaseModel):
             the reference host (CLAUDE.md §7.4).
         warmup_ms: Maximum allowed warm-up time during ``activate()``.
         load_ms: Maximum allowed weight-load time during ``configure()``.
-        max_execution_s: Total wall-clock budget for a single ``execute_rskill``
-            goal (one task attempt). A VLA policy never self-terminates (only
+        max_execution_s: Total execution budget for one ``execute_rskill`` goal, in graph-clock
+            seconds under ``use_sim_time``, else wall. A VLA policy never self-terminates (only
             wrapped-ROS skills raise ``ROSRskillGoalSatisfied``), so a deploy
             dispatch with ``deadline_s=0`` (the LLM's "use the manifest default"
             sentinel) would otherwise run forever. The skill_runner resolves

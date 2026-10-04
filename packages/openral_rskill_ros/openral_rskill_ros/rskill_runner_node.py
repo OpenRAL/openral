@@ -42,6 +42,13 @@ from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from openral_core import required_vla_camera_slots, sensor_name_to_slot
+from openral_rskill.execution_budget import (
+    DEFAULT_CLOCK_STALL_S,
+    DEFAULT_WALL_CAP_FACTOR,
+    BudgetMiss,
+    ExecutionBudget,
+    graph_clock_fn,
+)
 
 if TYPE_CHECKING:
     from openral_core.schemas import Action, ActionSlot, RobotDescription, RSkillManifest
@@ -83,8 +90,9 @@ _CANCEL_DRAIN_S = 0.1
 # trajectories are far smaller (hundreds of points).
 _MAX_APPROACH_WAYPOINTS = 100_000
 
-# CLAUDE.md §3 — global fallback for a single execute_rskill goal's wall-clock
-# budget when the dispatch leaves ``deadline_s=0`` (the LLM's "use the manifest
+# CLAUDE.md §3 — global fallback for a single execute_rskill goal's execution
+# budget (graph-clock seconds under ``use_sim_time``, else wall seconds; see
+# ``ExecutionBudget``) when the dispatch leaves ``deadline_s=0`` (the LLM's "use the manifest
 # default" sentinel) AND the skill manifest declares no ``latency_budget.
 # max_execution_s``. A VLA policy never self-terminates, so without a bound the
 # goal runs forever and the reasoner can never re-evaluate the attempt.
@@ -248,6 +256,10 @@ if _ROS2_AVAILABLE:
             super().__init__(node_name)
             self.declare_parameter("rate_hz", 30.0)
             self.declare_parameter("action_applied_timeout_s", 5.0)
+            # Wall-clock backstops on a graph-clock execution budget (``use_sim_time``):
+            # the goal still ends when /clock stops or crawls. See ``ExecutionBudget``.
+            self.declare_parameter("execution_wall_cap_factor", DEFAULT_WALL_CAP_FACTOR)
+            self.declare_parameter("graph_clock_stall_s", DEFAULT_CLOCK_STALL_S)
             self.declare_parameter("joint_state_staleness_limit_s", 0.5)
             # Conservative speed for the kernel-checked move from the live pose to an
             # rSkill's starting_pose. The gripper channel is normalised [0, 1], so the same
@@ -310,9 +322,12 @@ if _ROS2_AVAILABLE:
             # ``None``. Held so the terminal transitions can retract exactly
             # what they armed rather than guessing.
             self._active_place_declaration: Any = None
-            # True elapsed time when the execution budget last lapsed, so an
+            # Why the execution budget last lapsed (true elapsed + kind), so an
             # aborted goal's failure_reason can quote the overrun.
-            self._last_deadline_elapsed_s: float | None = None
+            self._last_deadline_miss: BudgetMiss | None = None
+            # Graph-clock seconds callable under ``use_sim_time``; ``None`` keeps
+            # execution budgets on ``time.monotonic()`` (every real robot).
+            self._graph_now: Callable[[], float] | None = None
             # Single GPU-resident skill. The runner keeps exactly one
             # resolved skill loaded, keyed by (rskill_id, revision, prompt).
             # Dispatching a different key evicts (``shutdown()`` → frees VRAM)
@@ -561,6 +576,20 @@ if _ROS2_AVAILABLE:
                 status_fn=_status,
             )
             self._heartbeat.create_publisher()
+            # Execution budgets follow the clock the robot moves on: the graph
+            # clock under use_sim_time (Nav2/MoveIt time themselves on it too),
+            # time.monotonic() otherwise. Adapted from DsslRobot/openral.
+            self._graph_now = graph_clock_fn(self)
+            self.get_logger().info(
+                "rskill_runner.clock: execution budgets on "
+                + (
+                    f"the graph clock (use_sim_time; now={self._graph_now():.3f}s, "
+                    f"wall cap {self.get_parameter('execution_wall_cap_factor').value}x, "
+                    f"stall {self.get_parameter('graph_clock_stall_s').value}s)"
+                    if self._graph_now is not None
+                    else "time.monotonic() (use_sim_time=false)"
+                )
+            )
             self.get_logger().info(f"rskill_runner_node configured (robot={robot_name}).")
             return TransitionCallbackReturn.SUCCESS
 
@@ -815,9 +844,7 @@ if _ROS2_AVAILABLE:
                 self._active_skill_revision = revision
                 self._chunks_published = 0
                 self._cancel_requested = False
-                # True elapsed time when the execution budget lapsed, so the
-                # abort reason can quote the overrun rather than the budget.
-                self._last_deadline_elapsed_s: float | None = None
+                self._last_deadline_miss = None
             # Reward-gate signal: this instruction is now executing.
             self._publish_active_task(req.prompt)
 
@@ -994,12 +1021,15 @@ if _ROS2_AVAILABLE:
                     # reason, matching the ROSError path the ladder already
                     # parses.
                     if exit_reason == "deadline":
-                        _over = self._last_deadline_elapsed_s
-                        _elapsed_txt = f"{_over:.1f}" if _over is not None else "?"
+                        _miss = self._last_deadline_miss
                         self._drain_and_idle_hold(skill)
                         result.success = False
+                        # ``clock_stalled: …`` (a graph clock that stopped) or
+                        # ``deadline_exceeded: …``; both are FAILURE_DEADLINE_MISSED.
                         result.failure_reason = (
-                            f"deadline_exceeded: elapsed={_elapsed_txt}s budget={deadline_s:.1f}s"
+                            f"{_miss.kind}: {_miss.detail}"
+                            if _miss is not None
+                            else f"deadline_exceeded: elapsed=?s budget={deadline_s:.1f}s"
                         )
                         result.failure_kind = ExecuteRskill.Result.FAILURE_DEADLINE_MISSED
                         self._finalize_goal(goal_handle, "abort")
@@ -1101,40 +1131,50 @@ if _ROS2_AVAILABLE:
             )
             return engine, (str(_device) if _device is not None else None), consumed
 
-        def _deadline_lapsed(self, start: float, budget_s: float, chunks: int) -> bool:
+        def _new_execution_budget(self, budget_s: float) -> ExecutionBudget:
+            """An ``ExecutionBudget`` on this node's clock (graph clock under ``use_sim_time``)."""
+            return ExecutionBudget(
+                budget_s,
+                graph_now=self._graph_now,
+                wall_cap_factor=float(self.get_parameter("execution_wall_cap_factor").value),
+                stall_s=float(self.get_parameter("graph_clock_stall_s").value),
+            )
+
+        def _deadline_lapsed(self, budget: ExecutionBudget, chunks: int) -> bool:
             """Return True once the execution budget has lapsed, reporting the miss.
 
             Reports the REAL elapsed time rather than the budget — a blocking ``skill.step()``
             can overshoot a lot (144.5 s against a 45 s budget on the SO-101 bench, since the
             budget is only tested between steps) and rounding down to the limit would hide
             that. Emits ``openral.event.deadline_missed`` (dashboard-counted) and stashes the
-            elapsed so the goal's ``failure_reason`` can quote it.
+            miss so the goal's ``failure_reason`` can quote it. A ``clock_stalled`` miss (the
+            graph clock stopped advancing under ``use_sim_time``) is reported the same way,
+            with its own log line and ``miss.kind`` on the span event.
 
             Args:
-                start: ``time.monotonic()`` captured when execution began.
-                budget_s: Resolved deadline; ``<= 0`` disables the check.
+                budget: The goal's ``ExecutionBudget`` (``budget_s <= 0`` disables the check).
                 chunks: Chunks published so far, for the operator log.
 
             Returns:
                 ``True`` if the budget has lapsed and the loop must stop.
             """
-            if budget_s <= 0.0:
-                return False
-            elapsed_s = time.monotonic() - start
-            if elapsed_s <= budget_s:
+            miss = budget.check()
+            if miss is None:
                 return False
             from openral_observability import semconv
             from opentelemetry import trace
 
-            self.get_logger().warning(
-                f"rskill_runner.deadline_exceeded: elapsed={elapsed_s:.1f}s "
-                f"budget={budget_s:.1f}s chunks={chunks}"
-            )
+            self.get_logger().warning(f"rskill_runner.{miss.kind}: {miss.detail} chunks={chunks}")
             trace.get_current_span().add_event(
                 semconv.EVENT_DEADLINE_MISSED,
-                {"elapsed_s": round(elapsed_s, 1), "budget_s": budget_s},
+                {
+                    "elapsed_s": round(miss.elapsed_s, 1),
+                    "budget_s": budget.budget_s,
+                    "miss.kind": miss.kind,
+                    "on_graph_clock": budget.on_graph_clock,
+                },
             )
-            self._last_deadline_elapsed_s = elapsed_s
+            self._last_deadline_miss = miss
             return True
 
         def _run_until_done_or_deadline(
@@ -1172,7 +1212,7 @@ if _ROS2_AVAILABLE:
 
             rate_hz: float = self.get_parameter("rate_hz").get_parameter_value().double_value
             period_s = 1.0 / max(rate_hz, 1.0)
-            start = time.monotonic()
+            budget = self._new_execution_budget(deadline_s)
             # Absolute deadlines absorb tick work into the configured period.
             chunk_index, next_tick_deadline = 0, time.perf_counter()
             skill_info = getattr(skill, "info", None)
@@ -1196,7 +1236,7 @@ if _ROS2_AVAILABLE:
                 self._raise_if_safety_aborted(f"about to dispatch inference tick {chunk_index + 1}")
                 if self._cancel_requested or goal_handle.is_cancel_requested:
                     return "cancelled"
-                if self._deadline_lapsed(start, deadline_s, chunk_index):
+                if self._deadline_lapsed(budget, chunk_index):
                     return "deadline"
 
                 snapshot = self._aggregator.snapshot()
@@ -1267,9 +1307,7 @@ if _ROS2_AVAILABLE:
                 chunk_index += 1
 
                 feedback = ExecuteRskill.Feedback()
-                feedback.progress = (
-                    min((time.monotonic() - start) / deadline_s, 1.0) if deadline_s > 0.0 else 0.0
-                )
+                feedback.progress = budget.progress()
                 feedback.state = "executing"
                 feedback.chunk_index = chunk_index
                 feedback.chunks_total = 0  # unknown — rskills are open-loop

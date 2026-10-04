@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
@@ -51,6 +51,7 @@ from openral_core.schemas import (
 )
 
 from openral_rskill.base import rSkillBase
+from openral_rskill.execution_budget import ExecutionBudget, graph_clock_fn
 
 if TYPE_CHECKING:
     # `rclpy` and the wrapped IDL package are not importable on every host
@@ -371,6 +372,9 @@ class ROSActionRskill(rSkillBase):
         self._interface_kind: str = ""  # "action" | "service"
         self._interface_type: type | None = None
         self._client: Any = None
+        # Graph-clock seconds callable when the host node runs on sim time
+        # (set at configure); ``None`` keeps result waits on time.monotonic().
+        self._graph_now: Callable[[], float] | None = None
         self._goal_dict: dict[str, Any] = {}
         # Cached trajectory in robot-order. Filled on the first step in
         # trajectory mode; empty in result-only mode.
@@ -408,6 +412,11 @@ class ROSActionRskill(rSkillBase):
         """
         type_obj, kind = _import_action_or_service(self._integration)
         self._interface_type = type_obj
+        # The wrapped server times itself on the graph clock (Nav2's and MoveIt's
+        # timeouts are ROS time), so the result wait must too — a 0.09x sim lost a
+        # 300 s Nav2 budget after 28 s of sim time when this was wall-clock.
+        # Adapted from DsslRobot/openral; wall backstops in ``ExecutionBudget``.
+        self._graph_now = graph_clock_fn(self._node)
         self._interface_kind = kind
 
         try:
@@ -693,7 +702,13 @@ class ROSActionRskill(rSkillBase):
             ) from exc
 
         goal_future = self._client.send_goal_async(goal_msg)
-        self._poll_future(goal_future, deadline_s=_WAIT_FOR_SERVER_TIMEOUT_S, what="goal-accept")
+        # Goal acceptance is IPC, not robot motion: wall clock even under sim time.
+        self._poll_future(
+            goal_future,
+            deadline_s=_WAIT_FOR_SERVER_TIMEOUT_S,
+            what="goal-accept",
+            graph_clock=False,
+        )
         goal_handle = goal_future.result()
         if goal_handle is None or not getattr(goal_handle, "accepted", False):
             raise ROSRuntimeError(
@@ -780,19 +795,32 @@ class ROSActionRskill(rSkillBase):
             raise ROSRuntimeError(f"ROSActionRskill({self.name!r}): wrapped service returned null.")
         return response
 
-    def _poll_future(self, future: Any, *, deadline_s: float, what: str) -> None:  # noqa: ANN401  # reason: rclpy.task.Future is untyped
+    def _poll_future(
+        self,
+        future: Any,  # noqa: ANN401  # reason: rclpy.task.Future is untyped
+        *,
+        deadline_s: float,
+        what: str,
+        graph_clock: bool = True,
+    ) -> None:
         """Block (without spinning) until ``future.done()`` or deadline.
 
         The host node's main rclpy spin services callbacks; we just poll
         ``done()`` here. Avoids re-entering ``rclpy.spin_until_future_complete``
         from a worker thread, which is unsafe with the default
         single-threaded executor.
+
+        ``deadline_s`` is measured on the graph clock when the host node runs on
+        sim time and ``graph_clock`` is true (``ExecutionBudget`` keeps the wall
+        backstops: a stalled ``/clock`` still raises); otherwise on
+        ``time.monotonic()`` as before.
         """
-        deadline = time.monotonic() + deadline_s
+        budget = ExecutionBudget(deadline_s, graph_now=self._graph_now if graph_clock else None)
         while not future.done():
-            if time.monotonic() >= deadline:
+            miss = budget.check()
+            if miss is not None:
                 raise ROSRuntimeError(
                     f"ROSActionRskill({self.name!r}): wrapped {what} did not "
-                    f"complete within {deadline_s:.1f}s."
+                    f"complete within {deadline_s:.1f}s ({miss.kind}: {miss.detail})."
                 )
             time.sleep(_FUTURE_POLL_INTERVAL_S)

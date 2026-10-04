@@ -63,6 +63,29 @@ Note the MoveIt approach in particular: `ROSEStopRequested` is a
 `FAILURE_PLANNING_ERROR` — the ladder replanning around an "unreachable"
 pose while the kernel was in fact latched.
 
+### Execution budgets run on the clock the robot moves on
+
+A goal's budget (`deadline_s`, else the manifest's `latency_budget.max_execution_s`, else
+45 s) is measured by `openral_rskill.execution_budget.ExecutionBudget`. Under
+`openral deploy sim` the graph runs with `use_sim_time=true` and Nav2 / MoveIt / the
+controllers time themselves in sim seconds, so the budget does too — measured on
+`time.monotonic()` it fired while a slow simulator was still mid-motion (a rendering
+graph at 0.09x real time lost a 300 s Nav2 budget after 28 s of sim time; adapted from
+DsslRobot/openral). `ROSActionRskill._poll_future`'s result wait follows the same clock.
+With `use_sim_time=false` (every real robot) budgets are `time.monotonic()` exactly as
+before — never the NTP-stepped ROS system clock.
+
+Two wall-clock backstops keep the goal bounded when `/clock` stops (sim pause, HAL
+crash, e-stop) or crawls; both abort with `FAILURE_DEADLINE_MISSED`:
+
+| ROS parameter | default | fires as |
+|---|---|---|
+| `graph_clock_stall_s` | 10 s | `failure_reason="clock_stalled: graph clock has not advanced for N s of wall time …"` (or `never started` when no `/clock` ever arrived — a sim node reads 0 until then, and the budget does not start counting before its first message) |
+| `execution_wall_cap_factor` | 10 | `failure_reason="deadline_exceeded: wall elapsed=… exceeds 10x budget=…"` |
+
+Every miss is logged (`rskill_runner.deadline_exceeded` / `rskill_runner.clock_stalled`)
+and recorded as the `deadline_missed` span event with `miss.kind`.
+
 `_drain_and_idle_hold`'s fixed 100 ms sleep and `_pace_tick`'s period sleep wait on the
 clock, not the safety layer. `ROSActionRskill._poll_future` (a wrapped `ros_action`/
 `ros_service` skill blocking on its server's result — Nav2 will never arrive if the robot
@@ -208,7 +231,7 @@ must therefore read `failure_kind == FAILURE_NONE` on a failed result as
 | `FAILURE_SAFETY_ESTOP` | 4 | `ROSEStopRequested` |
 | `FAILURE_PERCEPTION_STALE` | 5 | `ROSPerceptionStale` |
 | `FAILURE_PLANNING_ERROR` | 6 | `ROSPlanningError` — the MoveIt starting-pose approach |
-| `FAILURE_DEADLINE_MISSED` | 7 | The execution budget lapsed; `ROSDeadlineMissed` |
+| `FAILURE_DEADLINE_MISSED` | 7 | The execution budget lapsed (`deadline_exceeded: …`) or the graph clock stalled under `use_sim_time` (`clock_stalled: …`); `ROSDeadlineMissed` |
 | `FAILURE_CANCELLED` | 8 | Cancel honoured (no exception) |
 | `FAILURE_UNKNOWN` | 255 | A non-`ROSError` escaped the OpenRAL exception surface |
 
