@@ -10547,6 +10547,35 @@ REASONER_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset] = {
 }
 
 
+REASONER_TOOL_CHOICES: tuple[str, ...] = ("auto", "required")
+"""Values ``OPENRAL_REASONER_TOOL_CHOICE`` accepts (OpenAI ``tool_choice`` modes)."""
+
+
+def parse_reasoner_tool_choice(raw: str | None) -> str | None:
+    """Validate an ``OPENRAL_REASONER_TOOL_CHOICE`` value; ``None`` when unset.
+
+    Shared by the reasoner's client factory and ``openral doctor`` so the two
+    cannot drift. Case-insensitive, like ``OPENRAL_REASONER_DIALECT``.
+
+    Raises:
+        ROSConfigError: When set to anything but ``auto`` / ``required``.
+
+    Example:
+        >>> parse_reasoner_tool_choice(" AUTO ")
+        'auto'
+        >>> parse_reasoner_tool_choice("") is None
+        True
+    """
+    value = (raw or "").strip().lower()
+    if not value:
+        return None
+    if value not in REASONER_TOOL_CHOICES:
+        raise ROSConfigError(
+            f"OPENRAL_REASONER_TOOL_CHOICE={raw!r}; expected one of {list(REASONER_TOOL_CHOICES)}."
+        )
+    return value
+
+
 # ─── Reasoner tool calls ─────────────────────────────────────────
 
 

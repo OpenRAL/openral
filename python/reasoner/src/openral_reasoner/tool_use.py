@@ -49,6 +49,7 @@ from openral_core import (
     ReasonerModel,
     ReasonerToolCall,
     RobotCapabilities,
+    parse_reasoner_tool_choice,
 )
 from openral_core.exceptions import (
     ROSConfigError,
@@ -688,10 +689,25 @@ def build_tool_use_client_from_env() -> ToolUseClient:
             "for an uncurated endpoint. The open-core path has no default — tests use "
             "FakeToolUseClient."
         )
+    # Validated on every path, so a bad value fails at build even where it
+    # would be ignored.
+    tool_choice = parse_reasoner_tool_choice(os.environ.get(REASONER_TOOL_CHOICE_ENV))
     entry = REASONER_MODELS.get(model_key)
     if entry is None:
-        return _build_uncurated_model(model_key)
+        return _build_uncurated_model(model_key, tool_choice)
+    if tool_choice is not None:
+        _warn_tool_choice_ignored(tool_choice, f"curated model {entry.id!r}")
     return _build_curated_model(entry)
+
+
+def _warn_tool_choice_ignored(tool_choice: str, why: str) -> None:
+    """Log that ``OPENRAL_REASONER_TOOL_CHOICE`` is set but has no effect here."""
+    log.warning(
+        "reasoner.tool_choice_ignored",
+        tool_choice=tool_choice,
+        reason=f"{REASONER_TOOL_CHOICE_ENV} only applies to a bare-URL openai endpoint; "
+        f"{why} carries its own value",
+    )
 
 
 def _env_float(name: str) -> float | None:
@@ -857,7 +873,7 @@ def _build_managed_local(
     )
 
 
-def _build_uncurated_model(model_key: str) -> ToolUseClient:
+def _build_uncurated_model(model_key: str, tool_choice: str | None) -> ToolUseClient:
     """Escape hatch: a non-registry model id + a named or raw endpoint.
 
     ``OPENRAL_REASONER_ENDPOINT`` takes either a ``_ENDPOINT_PRESETS`` name
@@ -912,6 +928,8 @@ def _build_uncurated_model(model_key: str) -> ToolUseClient:
             raise ROSConfigError(
                 f"{REASONER_API_KEY_ENV} is unset; required for dialect=anthropic."
             )
+        if tool_choice is not None:
+            _warn_tool_choice_ignored(tool_choice, "the anthropic dialect")
         return AnthropicToolUseClient(
             model_id=model_key,
             api_key=api_key,
@@ -919,19 +937,14 @@ def _build_uncurated_model(model_key: str) -> ToolUseClient:
             max_tokens=max_tokens or 1024,
             timeout_s=timeout_s,
         )
-    tool_choice_override = os.environ.get(REASONER_TOOL_CHOICE_ENV, "").strip()
-    if tool_choice_override not in ("", "auto", "required"):
-        raise ROSConfigError(
-            f"{REASONER_TOOL_CHOICE_ENV}={tool_choice_override!r}; expected 'auto' or 'required'."
-        )
+    if preset is not None and tool_choice is not None:
+        _warn_tool_choice_ignored(tool_choice, f"named endpoint {raw_endpoint!r}")
     return OpenAICompatibleToolUseClient(
         model_id=model_key,
         api_key=api_key,
         base_url=endpoint,
         timeout_s=timeout_s,
-        tool_choice=(
-            preset.tool_choice if preset is not None else (tool_choice_override or "required")
-        ),
+        tool_choice=(preset.tool_choice if preset is not None else (tool_choice or "required")),
         max_tokens=max_tokens,
     )
 
