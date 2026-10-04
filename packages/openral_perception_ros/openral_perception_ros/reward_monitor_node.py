@@ -79,9 +79,9 @@ def _camera_label(topic: str) -> str:
 def main(args: Any = None) -> None:
     """Entry point: init ROS, spin the reward-monitor node, shut down cleanly."""
     import rclpy
+    from openral_observability.rclpy_spin import spin_node_until_shutdown
     from openral_runner.backends.reward.frame_source import Frame, RollingFrameBuffer
     from openral_runner.backends.reward.robometer_reward import critic_score_from_assessment
-    from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
     from rclpy.qos import (
         QoSDurabilityPolicy,
@@ -447,9 +447,7 @@ def main(args: Any = None) -> None:
     node = RewardMonitorNode()
     try:
         try:
-            rclpy.spin(node)
-        except (KeyboardInterrupt, ExternalShutdownException):
-            pass
+            spin_node_until_shutdown(node)  # quiet on the SIGINT shutdown race
         finally:
             node.destroy_node()
     finally:
