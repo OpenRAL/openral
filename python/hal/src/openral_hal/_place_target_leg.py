@@ -111,6 +111,7 @@ __all__ = [
     "PlaceTargetTracker",
     "measure_under_payload",
     "payload_witness",
+    "plane_witness",
     "verify_patch",
 ]
 
@@ -440,6 +441,56 @@ def payload_witness(
         return None, detail
     if not _over_patch(posed, patch):
         return None, f"payload centre is off the measured patch ({detail})"
+    witness = plane_witness(
+        obj,
+        t_base_link,
+        plane_z=patch.plane_z,
+        support_id=support_id,
+        extrinsic_error_m=extrinsic_error_m,
+        detail=detail,
+        stamp_ns=stamp_ns,
+    )
+    return witness, detail
+
+
+def plane_witness(
+    obj: AttachedCollisionObject,
+    t_base_link: NDArray[np.float64],
+    *,
+    plane_z: float,
+    support_id: str,
+    extrinsic_error_m: float,
+    detail: str,
+    stamp_ns: int,
+) -> SupportContactWitness:
+    """``obj``'s map-support proximity witness on the measured plane ``z = plane_z``.
+
+    The one construction both real producers attest with: the place leg
+    (``payload_witness``, after its proximity gate) and the vision pick
+    (``vision_attachment_bridge.region_attachment``, on the support the grasp-target leg
+    measured under the target). Contact point under the payload's centre on the plane and
+    normal +z, both expressed in the object frame; ``patch_radius_m`` the payload's
+    footprint about that centre (each primitive's horizontal offset plus its half-extent
+    norm), capped at the kernel's ``support_witness_max_patch_radius_m``;
+    ``max_penetration_m`` the depth extrinsic's accuracy bound, capped at
+    ``support_witness_max_penetration_m``. Not sensed contact: ``evidence_ref`` says so.
+
+    Args:
+        obj: The attached payload.
+        t_base_link: ``(4, 4)`` pose of ``obj.attach_link`` in the plane's frame (z up).
+        plane_z: The measured support's top face in that frame.
+        support_id: The support's identity (the kernel's re-arm key with ``stamp_ns``).
+        extrinsic_error_m: The depth extrinsic's accuracy bound.
+        detail: How the plane and the payload were related (quoted in ``evidence_ref``).
+        stamp_ns: Producer timestamp.
+
+    Returns:
+        The witness.
+    """
+    from openral_hal.vision_attachment_bridge import primitive_poses  # circular at import
+
+    n = np.array([0.0, 0.0, 1.0])
+    posed = list(zip(obj.primitives, primitive_poses(obj, t_base_link), strict=True))
     centre = np.mean([t[:3, 3] for _, t in posed], axis=0)
     lateral = [
         float(np.linalg.norm((t[:3, 3] - centre)[:2]))
@@ -449,9 +500,9 @@ def payload_witness(
     p = obj.pose_in_link
     t_base_obj = t_base_link @ homogeneous_from_quat_xyz(p.xyz, p.quat_xyzw)
     r_obj, t_obj = t_base_obj[:3, :3], t_base_obj[:3, 3]
-    contact = np.array([centre[0], centre[1], patch.plane_z])
+    contact = np.array([centre[0], centre[1], plane_z])
     normal_obj = r_obj.T @ n
-    witness = SupportContactWitness(
+    return SupportContactWitness(
         support_id=support_id,
         contact_point_in_object=tuple(float(v) for v in r_obj.T @ (contact - t_obj)),
         contact_normal_in_object=tuple(float(v) for v in normal_obj / np.linalg.norm(normal_obj)),
@@ -465,7 +516,6 @@ def payload_witness(
         ),
         stamp_ns=stamp_ns,
     )
-    return witness, detail
 
 
 # ── state machine ────────────────────────────────────────────────────────────
