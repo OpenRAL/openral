@@ -321,7 +321,6 @@ log = logging.getLogger(__name__)
 try:
     import rclpy
     from openral_observability import log_lifecycle_errors
-    from rclpy._rclpy_pybind11 import RCLError
     from rclpy.executors import ExternalShutdownException
     from rclpy.lifecycle import (
         LifecycleNode,
@@ -461,14 +460,14 @@ def spin_until_shutdown(node: Any) -> None:  # noqa: ANN401  # reason: rclpy Nod
     timer callback already dequeued when the context went down (a sensor publish)
     publishes on the invalidated context and raises ``RCLError`` out of the spin: also
     teardown, not a fault — the HAL used to exit 1 on every Ctrl-C of a graph with a
-    depth camera (2026-10-04). An ``RCLError`` while the context is still up is a real
-    error and propagates. The caller's ``finally`` uses ``rclpy.try_shutdown()``
-    (idempotent), not the bare ``rclpy.shutdown()`` that raised
-    ``RCLError: rcl_shutdown already called``.
+    depth camera (2026-10-04). A ``RuntimeError`` (``RCLError``, ``InvalidHandle``, a take
+    racing the shutdown) while the context is still up is a real error and propagates.
+    The caller's ``finally`` uses ``rclpy.try_shutdown()`` (idempotent), not the bare
+    ``rclpy.shutdown()`` that raised ``RCLError: rcl_shutdown already called``.
     """
     try:
         rclpy.spin(node)
-    except RCLError:
+    except RuntimeError:  # RCLError / InvalidHandle subclass it; so does a racing take
         if rclpy.ok():
             raise
     except (KeyboardInterrupt, ExternalShutdownException):

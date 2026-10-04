@@ -91,17 +91,18 @@ def spin_until_shutdown(executor: Any) -> None:
     set: the given context is not valid``), or a dequeued callback publishes on the dead
     context — an ``RCLError`` out of ``spin`` that is teardown, not a fault. The deploy
     runtime exited 1 on it (2026-10-04, ``runtime_node``). ``KeyboardInterrupt`` and
-    ``ExternalShutdownException`` end it quietly too; an ``RCLError`` while the context
-    is still up is a real error and propagates. Same contract as the HAL's
-    ``openral_hal.lifecycle.spin_until_shutdown`` (which spins a node, not an executor).
+    ``ExternalShutdownException`` end it quietly too (a ``RuntimeError`` after the context
+    went down, which covers ``RCLError``/``InvalidHandle`` and a subscription take racing
+    the shutdown); one while the context is still up is a real error and propagates.
+    Same contract as the HAL's ``openral_hal.lifecycle.spin_until_shutdown`` (which spins
+    a node, not an executor).
     """
     import rclpy
-    from rclpy._rclpy_pybind11 import RCLError
     from rclpy.executors import ExternalShutdownException
 
     try:
         executor.spin()
-    except RCLError:
+    except RuntimeError:  # RCLError / InvalidHandle subclass it; so does a racing take
         if rclpy.ok():
             raise
     except (KeyboardInterrupt, ExternalShutdownException):
