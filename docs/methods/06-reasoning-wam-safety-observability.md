@@ -843,6 +843,11 @@ _Producer-side helpers for recording rich span attributes on OpenRAL hot-path sp
 - `modality_for_encoding(encoding) -> str` — Map a `FrameEncoding` to the dashboard's modality label (`rgb`/`mono`/`depth`/`raw`/`unknown`); shared by `DeployRunner` and the world-state node so both produce identical labels. (L57)
 - `_MODALITY_BY_ENCODING: dict[str, str]` (L45) — Canonical encoding → modality lookup table.
 
+### `python/observability/src/openral_observability/rclpy_spin.py`
+_Quiet teardown for rclpy executor spin threads._
+
+- `spin_executor_until_shutdown(executor) -> None` (L17) — `executor.spin()` until a signal-driven shutdown, which ends it quietly: `ExternalShutdownException`, `KeyboardInterrupt` and an `RCLError` raised after the context went down (the SIGINT handler invalidates it mid-spin) return normally instead of printing a thread traceback; an `RCLError` with the context still up propagates. The `threading.Thread` target of the dashboard's e-stop / safety-status / perception-overlay executors and of `Ros2ImageSensorReader`'s private node (the Isaac `deploy sim` teardown traceback in `runtime_node`). Third twin of `openral_hal.lifecycle.spin_until_shutdown` and `openral_rskill_ros.compose.spin_until_shutdown`; kept in the lowest layer so the runner and dashboard share one copy.
+
 ### `python/observability/src/openral_observability/system_metrics.py`
 _Background sampler for the `openral.system.*` gauges; feeds the dashboard's System Health card via `psutil` (CPU + RAM) and optional `pynvml` (GPU memory + util)._
 
@@ -927,33 +932,33 @@ _**Event-log severity band** (distinct from the headline-card routing above). `_
 ### `python/observability/src/openral_observability/dashboard/perception_overlay_subscriber.py`
 _Detector boxes + segmenter masks drawn over the camera tiles. Same shape as `safety_status_subscriber.py` — one node created at launch, spun on a daemon thread, inert-but-harmless without rclpy / the `openral_msgs` overlay. Read-only and **advisory**: it decides what an operator sees, never what the robot does._
 
-- module constant `PERCEPTION_OBJECTS_TOPIC: str = "/openral/perception/objects"` — the detector node's `output_topic` default. (L48)
-- module constant `PERCEPTION_MASKS_TOPIC: str = "/openral/perception/masks"` (L49)
+- module constant `PERCEPTION_OBJECTS_TOPIC: str = "/openral/perception/objects"` — the detector node's `output_topic` default. (L49)
+- module constant `PERCEPTION_MASKS_TOPIC: str = "/openral/perception/masks"` (L50)
 - module constant `PERCEPTION_MASKS_TOPIC: str = "/openral/perception/masks"` — the segmenter node's `debug_masks_topic` default; a diagnostic re-publication of its latest reply, off by default there, so subscribing costs nothing when nobody enabled it.
-- `dashboard_flip_180() -> bool` — Whether this host rotates the dashboard's display copy of camera frames, parsing `OPENRAL_DASHBOARD_FLIP_180` with the same truthy set as the sensor leg and the world-state node. Stamped onto each overlay so the renderer applies exactly the flip the image got. (L64)
-- `mono8_mask_to_png_b64(data: bytes, width: int, height: int) -> str` — Encode one mono8 mask as a base64 LA PNG whose alpha channel is the mask, so the frontend tints it with one composite instead of decoding pixels in JS. Raises `ValueError` when `data` is not exactly `width * height` bytes. (L93)
-- `class PerceptionOverlaySubscriber` (L141) — Opens the node + subscription immediately, at the detector's sensor-class QoS (BEST_EFFORT + VOLATILE + KEEP_LAST=5) — a RELIABLE subscriber would never match and the overlay would sit silently blank.
-  - `available(self) -> bool` (L218) — True when the subscription is live (rclpy + `openral_msgs` present).
-  - `masks_available(self) -> bool` (L223) — True when the mask subscription is live (needs `SegmentMasks` built).
-  - `close(self) -> None` (L310) — Tear down the node/executor and shut rclpy down only if it started it. `_on_objects` and `_on_masks` each drop a malformed payload with a logged decode-failure rather than letting an exception kill the spin thread and end overlays for the session. The mask leg is optional (its own `ImportError` guard) so an older `openral_msgs` build without `SegmentMasks` keeps drawing boxes; `masks_available` reports it separately from `available`. Wired in `run_dashboard` onto `app.state.perception_overlay`.
+- `dashboard_flip_180() -> bool` — Whether this host rotates the dashboard's display copy of camera frames, parsing `OPENRAL_DASHBOARD_FLIP_180` with the same truthy set as the sensor leg and the world-state node. Stamped onto each overlay so the renderer applies exactly the flip the image got. (L65)
+- `mono8_mask_to_png_b64(data: bytes, width: int, height: int) -> str` — Encode one mono8 mask as a base64 LA PNG whose alpha channel is the mask, so the frontend tints it with one composite instead of decoding pixels in JS. Raises `ValueError` when `data` is not exactly `width * height` bytes. (L94)
+- `class PerceptionOverlaySubscriber` (L142) — Opens the node + subscription immediately, at the detector's sensor-class QoS (BEST_EFFORT + VOLATILE + KEEP_LAST=5) — a RELIABLE subscriber would never match and the overlay would sit silently blank.
+  - `available(self) -> bool` (L220) — True when the subscription is live (rclpy + `openral_msgs` present).
+  - `masks_available(self) -> bool` (L225) — True when the mask subscription is live (needs `SegmentMasks` built).
+  - `close(self) -> None` (L312) — Tear down the node/executor and shut rclpy down only if it started it. `_on_objects` and `_on_masks` each drop a malformed payload with a logged decode-failure rather than letting an exception kill the spin thread and end overlays for the session. The mask leg is optional (its own `ImportError` guard) so an older `openral_msgs` build without `SegmentMasks` keeps drawing boxes; `masks_available` reports it separately from `available`. Wired in `run_dashboard` onto `app.state.perception_overlay`.
 
 ### `python/observability/src/openral_observability/dashboard/estop_publisher.py`
 _Persistent ROS 2 e-stop publisher for the dashboard (safety-critical) — the dashboard's first rclpy publisher. One publisher created at dashboard startup so DDS discovery happens once; a later press publishes instantly instead of racing a fresh subprocess's discovery._
 
-- `class EstopPublisher` — Creates the node + `/openral/estop` + `/openral/estop_cleared` publishers immediately at RELIABLE/VOLATILE/depth-10 QoS, matching the HAL/kernel/runner subscriptions; degrades to inert (callers fall back to the shell-out path) when rclpy/ROS is unavailable. (L24)
-  - `available(self) -> bool` (L76) — True when the persistent publisher is live (rclpy + ROS present).
-  - `trigger(self) -> bool` (L80) — Publish `/openral/estop` instantly. Returns `False` if unavailable.
-  - `clear(self) -> bool` (L84) — Publish `/openral/estop_cleared` instantly. Returns `False` if unavailable.
-  - `close(self) -> None` (L98) — Tear down the node + executor; shut down rclpy only if we started it.
+- `class EstopPublisher` — Creates the node + `/openral/estop` + `/openral/estop_cleared` publishers immediately at RELIABLE/VOLATILE/depth-10 QoS, matching the HAL/kernel/runner subscriptions; degrades to inert (callers fall back to the shell-out path) when rclpy/ROS is unavailable. (L26)
+  - `available(self) -> bool` (L81) — True when the persistent publisher is live (rclpy + ROS present).
+  - `trigger(self) -> bool` (L85) — Publish `/openral/estop` instantly. Returns `False` if unavailable.
+  - `clear(self) -> bool` (L89) — Publish `/openral/estop_cleared` instantly. Returns `False` if unavailable.
+  - `close(self) -> None` (L103) — Tear down the node + executor; shut down rclpy only if we started it.
 
 ### `python/observability/src/openral_observability/dashboard/safety_status_subscriber.py`
 _The dashboard's first rclpy subscriber: one node created at launch, spun on a daemon thread, inert-but-harmless without rclpy / the `openral_msgs` overlay. Read-only: no publisher, no service client, no authority over the robot._
 
-- module constant `SAFETY_STATUS_TOPIC: str = "/openral/safety_status"` (L30)
-- `drop_reason_label(code: int, status_cls: Any) -> str` — Name a `drop_reason` by reverse-mapping it against the generated message class's own constants, so a constant added to `SafetyStatus.msg` needs no second table here; unknown values degrade to `"drop_reason_<code>"`. (L33)
-- `class SafetyStatusSubscriber` — Opens the node + subscription immediately at the publishers' QoS (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1) — a VOLATILE subscriber would never match and the card would sit silently empty. Wired in `run_dashboard` onto `app.state.safety_status`. (L66)
-  - `available(self) -> bool` (L117) — True when the subscription is live (rclpy + `openral_msgs` present).
-  - `close(self) -> None` (L134) — Tear down the node/executor and shuts rclpy down only if it started it.
+- module constant `SAFETY_STATUS_TOPIC: str = "/openral/safety_status"` (L32)
+- `drop_reason_label(code: int, status_cls: Any) -> str` — Name a `drop_reason` by reverse-mapping it against the generated message class's own constants, so a constant added to `SafetyStatus.msg` needs no second table here; unknown values degrade to `"drop_reason_<code>"`. (L35)
+- `class SafetyStatusSubscriber` — Opens the node + subscription immediately at the publishers' QoS (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1) — a VOLATILE subscriber would never match and the card would sit silently empty. Wired in `run_dashboard` onto `app.state.safety_status`. (L68)
+  - `available(self) -> bool` (L122) — True when the subscription is live (rclpy + `openral_msgs` present).
+  - `close(self) -> None` (L139) — Tear down the node/executor and shuts rclpy down only if it started it.
 
 ### `python/observability/src/openral_observability/dashboard/discovery.py`
 _mDNS advertise + browse for the live dashboard. Optional, requires the `mdns` extra; when `zeroconf` is not importable, `Discovery` stays disabled and the dashboard runs exactly as before._
