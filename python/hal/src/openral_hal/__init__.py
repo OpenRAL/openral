@@ -92,7 +92,7 @@ from openral_hal.protocol import (
     LifecycleEStopHAL,
     ResettableLifecycleEStopHAL,
 )
-from openral_hal.resolver import build_hal, hal_joint_states_topic
+from openral_hal.resolver import build_hal, hal_joint_states_topic, urdf_joint_names
 from openral_hal.ros_control import (
     ControllerKind,
     ControllerStoppable,
@@ -194,4 +194,5 @@ __all__ = [
     "so100_with_sensors",
     "ur5e_with_sensors",
     "ur10e_with_sensors",
+    "urdf_joint_names",
 ]

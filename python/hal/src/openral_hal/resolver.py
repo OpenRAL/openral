@@ -31,7 +31,7 @@ from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError
 from openral_hal._mujoco_arm import MujocoArmHAL
 from openral_hal.protocol import HAL
 
-__all__ = ["build_hal", "hal_joint_states_topic"]
+__all__ = ["build_hal", "hal_joint_states_topic", "urdf_joint_names"]
 
 HalMode = Literal["sim", "real"]
 
@@ -191,6 +191,61 @@ def hal_joint_states_topic(
     if all(hasattr(cls, m) for m in members):
         return f"/{hal_node_name}/joint_states"
     return None
+
+
+def urdf_joint_names(description: RobotDescription, urdf_xml: str) -> list[str]:
+    """The URDF joint each manifest joint's state drives, or ``[]`` when the names agree.
+
+    A sim HAL publishes ``JointState`` under the manifest's logical joint names
+    (``left_joint1``) — what the kernel, the runner and every Skill read. The
+    manifest's URDF may name the same joints differently (the OpenArm's vendored
+    URDF says ``openarm_left_joint1``, which ``JointSpec.sim_joint_name`` carries),
+    and ``robot_state_publisher`` only moves links whose URDF joint names it is
+    sent: under the logical names every moving link is missing from ``/tf``, so
+    nothing that looks a link up through tf2 (the vision attachment leg's TCP and
+    attach link, the octomap bridge's payload clearing) can work. On real hardware
+    the vendor's ``joint_state_broadcaster`` already publishes the URDF names.
+
+    Each joint maps to its own ``name`` when the URDF declares it, else to its
+    ``sim_joint_name`` when the URDF declares that, else to ``""`` (no URDF joint;
+    left out of the renamed stream).
+
+    Args:
+        description: The robot manifest.
+        urdf_xml: The URDF ``robot_state_publisher`` is given.
+
+    Returns:
+        URDF names parallel to ``description.joints``, or ``[]`` when every joint is
+        already named as in the URDF (no renamed stream is needed).
+
+    Raises:
+        ROSConfigError: ``urdf_xml`` is not parseable XML.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")  # doctest: +SKIP
+        >>> urdf = open("robots/openarm/openarm.urdf").read()  # doctest: +SKIP
+        >>> urdf_joint_names(desc, urdf)[:2]  # doctest: +SKIP
+        ['openarm_left_joint1', 'openarm_left_joint2']
+    """
+    import xml.etree.ElementTree as ET  # reason: stdlib, only on this launch-time path
+
+    try:
+        root = ET.fromstring(urdf_xml)  # the manifest's own URDF, not untrusted input
+    except ET.ParseError as exc:
+        raise ROSConfigError(f"urdf_joint_names: the URDF does not parse: {exc}") from exc
+    declared = {j.get("name") for j in root.iter("joint")}
+    names = []
+    for joint in description.joints:
+        if joint.name in declared:
+            names.append(joint.name)
+        elif joint.sim_joint_name and joint.sim_joint_name in declared:
+            names.append(joint.sim_joint_name)
+        else:
+            names.append("")
+    if names == [joint.name for joint in description.joints]:
+        return []
+    return names
 
 
 def _construct(obj: object, description: RobotDescription, transport: dict[str, object]) -> HAL:
