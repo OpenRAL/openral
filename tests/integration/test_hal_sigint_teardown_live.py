@@ -162,3 +162,89 @@ def test_the_ros2_image_reader_spin_thread_ends_quietly_on_shutdown() -> None:
         threading.excepthook = previous  # type: ignore[assignment]  # reason: restoring the saved hook
         reader.close()
         rclpy.try_shutdown()
+
+
+def test_a_node_spin_ends_quietly_on_a_take_racing_the_shutdown() -> None:
+    """The segmenter's teardown crash: a bare ``RuntimeError`` once the context is down."""
+    rclpy = pytest.importorskip("rclpy")
+    from openral_observability.rclpy_spin import spin_node_until_shutdown
+    from std_msgs.msg import Empty
+
+    rclpy.init()
+    node = rclpy.create_node("test_spin_node_take_race")
+    pub = node.create_publisher(Empty, "/test_spin_node_take_race", 10)
+
+    def on_msg(_: Empty) -> None:
+        rclpy.shutdown()  # what the SIGINT handler does first, with messages still pending
+        raise RuntimeError("Unable to convert call argument '0' to Python object")
+
+    node.create_subscription(Empty, "/test_spin_node_take_race", on_msg, 10)
+    node.create_timer(0.01, lambda: [pub.publish(Empty()) for _ in range(5)])
+    try:
+        spin_node_until_shutdown(node)  # must return, not raise
+        assert not rclpy.ok()
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+
+def test_a_runtime_error_on_a_live_context_still_propagates_from_a_node_spin() -> None:
+    rclpy = pytest.importorskip("rclpy")
+    from openral_observability.rclpy_spin import spin_node_until_shutdown
+
+    rclpy.init()
+    node = rclpy.create_node("test_spin_node_live_error")
+
+    def tick() -> None:
+        raise RuntimeError("a real failure with the context still up")
+
+    node.create_timer(0.01, tick)
+    try:
+        with pytest.raises(RuntimeError, match="real failure"):
+            spin_node_until_shutdown(node)
+        assert rclpy.ok()
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+
+def test_sigint_to_a_node_spinning_through_a_busy_subscription_exits_zero() -> None:
+    """Real SIGINT, subscription saturated with pending messages: exit 0, no traceback."""
+    import signal
+    import subprocess
+    import sys
+    import time
+
+    script = (
+        "import rclpy\n"
+        "from std_msgs.msg import Empty\n"
+        "from openral_observability.rclpy_spin import spin_node_until_shutdown\n"
+        "rclpy.init()\n"
+        "node = rclpy.create_node('test_sigint_busy_spin')\n"
+        "pub = node.create_publisher(Empty, '/test_sigint_busy_spin', 100)\n"
+        "node.create_subscription(Empty, '/test_sigint_busy_spin', lambda m: None, 100)\n"
+        "node.create_timer(0.001, lambda: [pub.publish(Empty()) for _ in range(50)])\n"
+        "print('ready', flush=True)\n"
+        "try:\n"
+        "    spin_node_until_shutdown(node)\n"
+        "finally:\n"
+        "    node.destroy_node()\n"
+        "    rclpy.try_shutdown()\n"
+    )
+    proc = subprocess.Popen(  # reason: fixed argv, test-owned script
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert proc.stdout is not None
+        assert proc.stdout.readline().strip() == "ready"
+        time.sleep(0.5)
+        proc.send_signal(signal.SIGINT)
+        _, err = proc.communicate(timeout=20)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert proc.returncode == 0, err
+    assert "Traceback" not in err, err
