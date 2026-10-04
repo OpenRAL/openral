@@ -36,6 +36,14 @@ deleted: 20 mm is below the pre-Second-Amendment cap (``min(one voxel, 2.5 cm)``
 reverting ``kPlaceApproachAllowanceVoxels`` (1.5 -> 1.0) or ``kMaxPlaceApproachAllowanceM``
 (0.04 -> 0.025) turns that accept back to refusal.
 
+A second test drives the sibling exemption on the same carriage, stood upright: the
+support-contact witness (ADR-0092 D6, hazard log Entry 012) the vision pick now attaches at
+ATTACH (``vision_attachment_bridge.region_attachment``, Isaac i42). A grasp-target region
+payload pressed 2 mm into the support cell it was measured on (i42: -1.86 mm) is REFUSED
+without the witness and ACCEPTED with it; lifted three cells, the kernel retires the witness
+(``safety.support_witness_separated``), and the same witness republished cannot bring it back:
+set down again, the same contact is REFUSED.
+
 Gates: ``OPENRAL_TEST_ROS_LIVE=1`` + ROS_DISTRO + rclpy + openral_msgs + colcon-built kernel.
 ``scripts/ros_live_tests.sh`` is the only runner (``just test-ros-live``, docker-build
 workflow); ``tests/unit/test_ros_live_targets.py`` keeps this file in TARGETS.
@@ -50,7 +58,9 @@ import re
 import tempfile
 import time
 import uuid
+from typing import Any
 
+import numpy as np
 import pytest
 
 _LIVE = os.environ.get("OPENRAL_TEST_ROS_LIVE") == "1" and bool(os.environ.get("ROS_DISTRO"))
@@ -130,8 +140,8 @@ _OBJECT_ID = "sim:cup"
 _RSKILL_ID = "openral/place-approach-band"
 
 
-def _carriage_rig() -> RobotDescription:
-    """A 1-DoF prismatic carriage that translates the payload along +x.
+def _carriage_rig(axis_xyz: tuple[float, float, float] = (1.0, 0.0, 0.0)) -> RobotDescription:
+    """A 1-DoF prismatic carriage that translates the payload along ``axis_xyz`` (+x).
 
     The link's capsule sits 300 mm behind the carriage frame so only the attached payload can
     reach the obstacle. Arm-vs-world voxel checking stays enabled and never gets an allowance
@@ -146,7 +156,7 @@ def _carriage_rig() -> RobotDescription:
                 joint_type=JointType.PRISMATIC,
                 parent_link="base",
                 child_link="carriage",
-                axis_xyz=(1.0, 0.0, 0.0),
+                axis_xyz=axis_xyz,
                 origin_xyz=(0.0, 0.0, 0.0),
             )
         ],
@@ -165,7 +175,9 @@ def _carriage_rig() -> RobotDescription:
     )
 
 
-def _kernel_params() -> dict[str, object]:
+def _kernel_params(
+    rig: RobotDescription | None = None, *, attached_margin_m: float = _ATTACHED_MARGIN_M
+) -> dict[str, object]:
     params: dict[str, object] = {
         "n_dof": 1,
         "robot_name": "place_allowance_carriage",
@@ -178,13 +190,13 @@ def _kernel_params() -> dict[str, object]:
         "world_voxel_deadline_ms": 2000.0,
         "world_voxel_max_cells": 4096,
         "attached_collision_enabled": True,
-        "attached_collision_margin_m": _ATTACHED_MARGIN_M,
+        "attached_collision_margin_m": attached_margin_m,
         "attached_collision_deadline_ms": 30000.0,
         "collision_joint_names": ["carriage"],
         "collision_state_deadline_ms": 30000.0,
         "collision_seed_dt_s": 0.0,
     }
-    params.update(collision_params_from_description(_carriage_rig()))
+    params.update(collision_params_from_description(rig or _carriage_rig()))
     return params
 
 
@@ -484,6 +496,223 @@ def test_place_allowance_band_accepts_only_with_a_live_declaration(
             # Every verdict this test asserts on has a matching line in the
             # kernel's own log; surfacing it turns a bare "not in safe" into a
             # diagnosis (which gate dropped the chunk, and why).
+            raise AssertionError(
+                f"{exc}\n\n--- safety_kernel_node log ---\n"
+                f"{log_path.read_text(encoding='utf-8', errors='replace')}"
+            ) from exc
+        finally:
+            terminate_kernel(proc)
+
+
+# ── The support-contact witness at a vision pick (Isaac i42) ─────────────────
+# 15 mm cells (i42's octomap). One support cell, (4, 4, 4), centred on the origin: the
+# support's top face — what ``support_top_from_voxels`` measures — is z = 7.5 mm.
+_W_RES = 0.015
+_W_GRID_N = 9
+_W_ORIGIN = -0.0675
+_W_CELL = 4 + _W_GRID_N * (4 + _W_GRID_N * 4)
+_W_SUPPORT_Z = 0.5 * _W_RES
+#: The tight fit, i42's footprint; its lower face one cell above the support
+#: (``target_region_from_mask``), measured with the carriage at q = 0.
+_W_HALF = (0.06, 0.06, 0.03)
+_W_CENTRE_Z = _W_SUPPORT_Z + _W_RES + _W_HALF[2]
+#: Pressed 2 mm into the support cell (i42 stopped at -1.86 mm); and three cells above that.
+_W_Q_REST = -(_W_RES + 0.002)
+_W_Q_LIFT = _W_Q_REST + 3 * _W_RES
+
+
+def test_the_vision_pick_support_witness_exempts_the_rest_and_dies_on_the_lift(
+    publish_occupancy_grid, publish_carriage_joint_state, reset_kernel_estop
+) -> None:
+    """The region payload's witness, built by the producer's own ``region_attachment``.
+
+    On the real cell's 0 mm attached margin (``deploy_e2e``): resting 2 mm into its support
+    it is refused without the witness and accepted with it; the lift retires it in the
+    kernel, and the very same witness (same object, support and stamp) does not re-arm.
+    """
+    import rclpy
+    from openral_core import GraspDeclaration, PlaceRegion, Pose6D
+    from openral_hal.vision_attachment_bridge import region_attachment
+    from openral_msgs.msg import (
+        ActionChunk,
+        AttachedCollisionObject,
+        AttachedCollisionPrimitive,
+        FailureTrigger,
+        OccupancyVoxels,
+        WorldStateStamped,
+    )
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.qos import QoSProfile, ReliabilityPolicy
+    from sensor_msgs.msg import JointState
+    from std_msgs.msg import Empty
+    from std_srvs.srv import Trigger
+
+    rig = _carriage_rig(axis_xyz=(0.0, 0.0, 1.0))
+    node_name = f"safety_kernel_support_witness_{uuid.uuid4().hex[:8]}"
+    with tempfile.TemporaryDirectory() as td:
+        log_path = pathlib.Path(td) / "kernel.log"
+        proc = start_kernel(
+            _kernel_params(rig, attached_margin_m=0.0),
+            node_name,
+            isolated_domain_id(),
+            log_path=log_path,
+        )
+        try:
+            time.sleep(1.5)
+            rclpy.init()
+            try:
+                helper = rclpy.create_node("support_witness_helper")
+                assert activate_kernel_node(node_name, helper), "kernel activation failed"
+                safe: dict[str, ActionChunk] = {}
+                failures: list[FailureTrigger] = []
+                estops: list[Empty] = []
+                safe_sub = helper.create_subscription(
+                    ActionChunk,
+                    "/openral/safe_action",
+                    lambda m: safe.__setitem__(m.trace_id, m),
+                    10,
+                )
+                helper.create_subscription(
+                    FailureTrigger, "/openral/failure/safety", failures.append, 50
+                )
+                helper.create_subscription(Empty, "/openral/estop", estops.append, 10)
+                chunk_pub = helper.create_publisher(ActionChunk, "/openral/candidate_action", 10)
+                reliable_kl1 = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
+                voxel_pub = helper.create_publisher(
+                    OccupancyVoxels, "/openral/world_voxels", reliable_kl1
+                )
+                state_pub = helper.create_publisher(
+                    WorldStateStamped, "/openral/world_state_fast", reliable_kl1
+                )
+                joint_pub = helper.create_publisher(JointState, "/joint_states", 10)
+                reset_client = helper.create_client(Trigger, "/openral/estop_reset")
+                executor = SingleThreadedExecutor()
+                executor.add_node(helper)
+
+                def spin(seconds: float) -> None:
+                    end = time.time() + seconds
+                    while time.time() < end:
+                        executor.spin_once(timeout_sec=0.02)
+
+                deadline = time.time() + 5.0
+                while time.time() < deadline and not (
+                    chunk_pub.get_subscription_count() >= 1 and safe_sub.get_publisher_count() >= 1
+                ):
+                    executor.spin_once(timeout_sec=0.05)
+
+                now_ns = helper.get_clock().now().nanoseconds
+                region = PlaceRegion(
+                    frame_id="base",
+                    pose=Pose6D(
+                        xyz=(0.0, 0.0, _W_CENTRE_Z), quat_xyzw=(0, 0, 0, 1), frame_id="base"
+                    ),
+                    half_extents=_W_HALF,
+                    evidence_ref="segment_in_view:support-witness-band@0",
+                    stamp_ns=now_ns,
+                )
+                declaration = GraspDeclaration(
+                    target_id="approach:carriage:1",
+                    contact_links=("carriage",),
+                    rskill_id=_RSKILL_ID,
+                    trace_id=uuid.uuid4().hex,
+                    timeout_s=60.0,
+                    stamp_ns=now_ns,
+                    region=region,
+                )
+                payload = {
+                    "attach_link": "carriage",
+                    "touch_links": ("carriage",),
+                    "t_link_from_region": np.eye(4),  # measured with the carriage at q = 0
+                    "stamp_ns": now_ns,
+                }
+                bare = region_attachment(declaration, **payload)
+                attested = region_attachment(declaration, support_z=_W_SUPPORT_Z, **payload)
+                assert bare.support_contact is None and attested.support_contact is not None
+
+                def publish_attachment(held: Any) -> None:
+                    """One payload at one revision: only its witness differs between rows."""
+                    obj = AttachedCollisionObject()
+                    held.fill_idl(obj, primitive_factory=AttachedCollisionPrimitive)
+                    state = WorldStateStamped()
+                    state.header.frame_id = "base"
+                    state.header.stamp = helper.get_clock().now().to_msg()
+                    state.stamp_ns = helper.get_clock().now().nanoseconds
+                    state.attached_objects = [obj]
+                    state.attachment_revision = 1
+                    state.attachment_stamp_ns = state.stamp_ns
+                    state_pub.publish(state)
+                    spin(0.4)
+
+                def at(q: float) -> None:
+                    publish_carriage_joint_state(
+                        joint_pub, helper, spin, joint_names=["carriage"], positions=[q]
+                    )
+
+                def send(trace: str, q: float, *, expect_accept: bool) -> None:
+                    seen = len(failures)
+                    chunk = ActionChunk()
+                    chunk.control_mode = 0  # JOINT_POSITION
+                    chunk.horizon = 1
+                    chunk.n_dof = 1
+                    chunk.flat = [q]
+                    chunk.rskill_id = _RSKILL_ID
+                    chunk.trace_id = trace
+                    chunk_pub.publish(chunk)
+                    end = time.time() + 10.0
+                    while time.time() < end:
+                        executor.spin_once(timeout_sec=0.02)
+                        if expect_accept and trace in safe:
+                            break
+                        if not expect_accept and len(failures) > seen and estops:
+                            break
+                    spin(0.4)
+                    if expect_accept:
+                        assert trace in safe and not estops, f"{trace} was refused"
+                    else:
+                        assert trace not in safe and estops, f"{trace} was accepted"
+                        evidence = json.loads(failures[-1].evidence_json)
+                        assert failures[-1].kind == FailureTrigger.KIND_COLLISION
+                        assert evidence["link_a"] == f"attached:{declaration.target_id}"
+                        assert evidence["link_b_or_object"] == f"voxel_{_W_CELL}"
+                        assert evidence["min_distance_m"] == pytest.approx(-0.002, abs=1e-9)
+
+                publish_occupancy_grid(
+                    voxel_pub,
+                    helper,
+                    spin,
+                    grid_origin_m=_W_ORIGIN,
+                    resolution_m=_W_RES,
+                    grid_n=_W_GRID_N,
+                    occ_index=_W_CELL,
+                )
+                at(_W_Q_REST)
+
+                # ── Resting on its measured support, no witness: the i42 stop ──
+                publish_attachment(bare)
+                send("rest-bare", _W_Q_REST, expect_accept=False)
+                reset_kernel_estop(reset_client, executor, spin, estops)
+
+                # ── The producer's witness: the same contact is the support ────
+                publish_attachment(attested)
+                send("rest-attested", _W_Q_REST, expect_accept=True)
+
+                # ── Lifted three cells: the kernel retires it ─────────────────
+                at(_W_Q_LIFT)
+                send("lifted", _W_Q_LIFT, expect_accept=True)
+                log = log_path.read_text(encoding="utf-8", errors="replace")
+                assert "safety.support_witness_separated live=0x0 was=0x1" in log, log
+
+                # ── Set down again under the same witness: dead stays dead ─────
+                at(_W_Q_REST)
+                publish_attachment(attested)
+                send("rest-again", _W_Q_REST, expect_accept=False)
+                log = log_path.read_text(encoding="utf-8", errors="replace")
+                armed = f"safety.support_witness_armed object={declaration.target_id}"
+                assert log.count(armed) == 1, "a republished witness re-armed"
+                assert f"support=map_support_under:{declaration.target_id}" in log
+            finally:
+                rclpy.shutdown()
+        except AssertionError as exc:
             raise AssertionError(
                 f"{exc}\n\n--- safety_kernel_node log ---\n"
                 f"{log_path.read_text(encoding='utf-8', errors='replace')}"

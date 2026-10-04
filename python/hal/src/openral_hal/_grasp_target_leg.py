@@ -1302,6 +1302,9 @@ class GraspTargetLeg:
         # Why the last published region was not exactly the cell-closed fit ("" when it
         # was): logged on every change, never per publish (``_kernel_region``).
         self._closure_note = ""
+        # The last accepted region and the support top it was fitted on
+        # (``measured_support``).
+        self._support: tuple[PlaceRegion, float] | None = None
 
     @property
     def _lock(self) -> AbstractContextManager[Any]:
@@ -1981,6 +1984,19 @@ class GraspTargetLeg:
             # An ATTACH (proprio thread) may have handed over or re-armed while
             # ``_measure`` ran: ``accept`` drops the region when the generation moved.
             self.tracker.accept(region, generation=snapshot[6])
+            if self.tracker.region is region:
+                self._support = (region, snapshot[4])
+
+    def measured_support(self, region: PlaceRegion) -> float | None:
+        """The support top ``region`` was fitted on, in ``region.frame_id``, or ``None``.
+
+        ``support_top_from_voxels``' measurement for the request whose reply the tracker
+        accepted as exactly ``region`` (``target_region_from_mask`` pins its lower face one
+        voxel above it). ``None`` for any other region — nothing was measured for it. The
+        region payload's support witness stands on this (``region_attachment``).
+        """
+        support = self._support
+        return support[1] if support is not None and support[0] == region else None
 
     def _measure(
         self,
