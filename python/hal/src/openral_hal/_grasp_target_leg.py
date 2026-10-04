@@ -24,7 +24,9 @@ region onto every attachment publication. At ``grasp_target_rate_hz``:
    (whose masked cloud must reach within two voxels of the support, else
    ``not_on_support``: a target stacked on another object)
    → ``region_covers_occupied`` against the latest map → ``track_region``
-   against the previous accepted region.
+   against the previous accepted region → the whole-target gate: the region the
+   kernel would get must hold the target's whole map component
+   (``occupied_touching_outside``, else ``partial_fit``).
 
 **Every failure is an outcome, never a guess** (HZ-0115-2/-3/-4/-6). Two
 classes, each logged once per transition with its typed reason:
@@ -52,8 +54,12 @@ classes, each logged once per transition with its typed reason:
   finger length above the fingertips) over the held footprint, up to the approach
   distance above its top. A fit refused outright with the hand there (what is left
   of an occluded target no longer reaches the support) is the lost view
-  ``hand_at_target``. The gripper closing in on the target occludes it from the head
-  camera exactly then, so the last accepted
+  ``hand_at_target``. A fit that passed every gate above but whose cell-closed region
+  leaves an occupied cell of the target's map component outside — a cell more than a
+  voxel above the support, touching the region's cells (the far side the hovering hand
+  hid from the head camera, Isaac i40/i43) — is the lost view ``partial_fit``; it is
+  checked last, so it never changes another refusal's class. The gripper closing in on
+  the target occludes it from the head camera exactly then, so the last accepted
   region is **frozen** for at most ``grasp_target_freeze_s`` (unset: twice
   ``grid_max_age_s``, the kernel's voxel deadline; never more — the kernel's
   ``grasp_region_max_age_s``) from its own ``stamp_ns``, then retracted. That
@@ -178,6 +184,7 @@ from openral_hal._grasp_target import (
     cell_closed_region,
     mask_without_removed_points,
     occupied_centers_in_box,
+    occupied_touching_outside,
     project_point,
     region_covers_occupied,
     region_within,
@@ -1120,17 +1127,38 @@ def _refused_fit(
     return _contradicted(kind, detail)
 
 
+def _kernel_closure(region: PlaceRegion, grid: VoxelLattice) -> tuple[PlaceRegion, str]:
+    """``region`` as the kernel gets it over ``grid``, and a note when not cell-closed.
+
+    ``cell_closed_region`` clamped at ``GraspDeclaration.MAX_HALF_EXTENT_M`` (noted); a
+    closure over ``GraspDeclaration.MAX_VOLUME_M3`` is the tight fit (noted). Raises
+    ``ROSConfigError`` as ``cell_closed_region`` does (another frame, a tilted region).
+    """
+    closed, clamped = cell_closed_region(
+        region, grid, max_half_extent_m=GraspDeclaration.MAX_HALF_EXTENT_M
+    )
+    if closed.volume_m3() > GraspDeclaration.MAX_VOLUME_M3:
+        return region, (
+            f"published tight: the closure exceeds the {GraspDeclaration.MAX_VOLUME_M3} "
+            "m^3 volume cap"
+        )
+    if clamped:
+        return closed, f"clamped at the {GraspDeclaration.MAX_HALF_EXTENT_M} m half-extent cap"
+    return closed, ""
+
+
 def _gate_refit(
     grid: VoxelLattice,
     region: PlaceRegion,
     previous: PlaceRegion | None,
     *,
+    support_z: float,
     min_cover: float,
     hands: Sequence[tuple[float, float, float]] = (),
     occluder_margin_m: float = 0.05,
     hand_rise_m: float = 0.0,
 ) -> PlaceRegion:
-    """Map cover + tracking gate on a fresh fit, or the typed refusal (lost vs contradicted).
+    """Map cover + tracking gate + whole-target gate on a fresh fit, or the typed refusal.
 
     A re-fit the map does not cover is always a contradiction (the target is
     gone). A covered re-fit that fails tracking but shrank inside the held
@@ -1140,6 +1168,16 @@ def _gate_refit(
     within one voxel + ``occluder_margin_m`` of the held region; otherwise
     nothing of the robot's explains the shrink (a person's hand, the target
     knocked over) and it is retracted.
+
+    A fit that passes both is accepted only when the region the kernel would get
+    (``_kernel_closure``) holds the target's whole map component: no occupied cell
+    more than a voxel above ``support_z`` touches it from outside
+    (``occupied_touching_outside``). Otherwise it is the lost view ``partial_fit`` —
+    the head camera saw part of the target (its far side occluded by the hovering
+    hand, Isaac i40/i43) and the kernel would stop the fingers on the unexempt rest.
+    Nothing new is accepted; a held region stays under its freeze TTL, never retracted.
+    Checked last, so every refusal above keeps its class (a lost view here can never
+    turn a contradiction into a hold).
     """
     count, covered = region_covers_occupied(grid, region, min_fraction=min_cover)
     tracked = previous is None or track_region(
@@ -1149,6 +1187,19 @@ def _gate_refit(
         extents_tol_m=grid.resolution,
     )
     if covered and tracked:
+        kernel, _ = _kernel_closure(region, grid)
+        # ponytail: anything 26-touching the target above the support (a neighbour within
+        # one cell, a wall it leans on) is "the target" here too — such a target is never
+        # armed; a per-object map segmentation is the upgrade.
+        left = occupied_touching_outside(grid, kernel, support_z=support_z)
+        if len(left):
+            raise _lost(
+                "partial_fit",
+                f"fit centre {tuple(round(v, 3) for v in region.pose.xyz)} half_extents "
+                f"{tuple(round(v, 3) for v in region.half_extents)}: {len(left)} occupied "
+                f"cell(s) of the target's map component touch the kernel's region from "
+                f"outside, e.g. {tuple(round(float(v), 4) for v in left[0])}",
+            )
         return region
     if not covered:
         raise _contradicted("map_disagrees", f"only {count} occupied cells inside the region")
@@ -1402,22 +1453,10 @@ class GraspTargetLeg:
         once per change.
         """
         grid = self._grid
-        note = ""
-        closed = region
         try:
             if grid is None:
                 raise ROSConfigError("no voxel grid to close the region over")
-            closed, clamped = cell_closed_region(
-                region, grid[0], max_half_extent_m=GraspDeclaration.MAX_HALF_EXTENT_M
-            )
-            if clamped:
-                note = f"clamped at the {GraspDeclaration.MAX_HALF_EXTENT_M} m half-extent cap"
-            if closed.volume_m3() > GraspDeclaration.MAX_VOLUME_M3:
-                closed = region
-                note = (
-                    f"published tight: the closure exceeds the {GraspDeclaration.MAX_VOLUME_M3} "
-                    "m^3 volume cap"
-                )
+            closed, note = _kernel_closure(region, grid[0])
         except ROSConfigError as exc:
             closed = region
             note = f"published tight: {exc}"
@@ -2109,6 +2148,7 @@ class GraspTargetLeg:
             grid,
             fit.region,
             previous,
+            support_z=support_z,
             min_cover=self._config.grasp_target_min_cover,
             hands=hands,
             occluder_margin_m=self._occluder_margin_m,
