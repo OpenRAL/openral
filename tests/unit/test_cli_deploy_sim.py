@@ -37,6 +37,7 @@ from openral_cli.deploy_sim import (
     _run_launch,
     _scan_params_from_description,
     _scene_builds_bare_twin,
+    _spawn_launch,
     _terminate_launch_group,
     assert_ros2_packages_discoverable,
     resolve_launch_invocation,
@@ -1873,6 +1874,23 @@ def test_run_launch_returns_exit_code_and_leaves_no_orphans() -> None:
         grace_s=5.0,
     )
     assert rc == 7
+
+
+def test_run_launch_child_honours_sigint_even_when_the_cli_ignores_it() -> None:
+    """A CLI started with SIGINT ignored (``cmd &`` in a script, nohup) must not hand
+    that to ``ros2 launch``: an ignored SIGINT is inherited across exec, the launch then
+    ignores the very signal teardown forwards to it, and every node only dies at the
+    SIGKILL/SIGTERM backstop (the HAL exit -15 of 2026-10-04's Isaac runs)."""
+    probe = (
+        "import signal, sys\n"
+        "sys.exit(3 if signal.getsignal(signal.SIGINT) is signal.SIG_IGN else 0)"
+    )
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        proc = _spawn_launch([sys.executable, "-c", probe], dict(os.environ))
+    finally:
+        signal.signal(signal.SIGINT, previous)
+    assert proc.wait(timeout=30) == 0
 
 
 def test_orphan_needles_cover_tf_publishers_and_sidecar() -> None:
