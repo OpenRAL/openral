@@ -449,6 +449,22 @@ def _octomap_input_bounds() -> dict[str, float]:
     }
 
 
+def _cloud_shows_the_robot(hal_mode: str, scene_backend: str | None) -> bool:
+    """Whether the octomap input cloud contains the robot's own body, so it needs the self filter.
+
+    A real depth camera sees the arm. In sim it depends on who makes the cloud: the MuJoCo
+    sensor bridge ray-casts with the robot's bodies transparent, but an Isaac Sim scene
+    renders its depth camera with the robot in view (``read_depth_clouds``). Unfiltered,
+    those returns become occupied voxels on the arm and the kernel's world-voxel check stops
+    every motion as a collision with the robot itself.
+
+    Example:
+        >>> _cloud_shows_the_robot("sim", "isaacsim"), _cloud_shows_the_robot("sim", "mujoco")
+        (True, False)
+    """
+    return hal_mode == "real" or scene_backend == "isaacsim"
+
+
 def _attached_collision_enabled(hal_mode: str, vision_attachment_enabled: bool) -> bool:
     """Whether the kernel checks attached payloads: where something publishes attachments.
 
@@ -1400,6 +1416,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     scene_drivers: list = []  # type: ignore[type-arg]  # reason: openral_core.LaunchInclude, deferred import
     joint_states_override: str | None = None
     scene_unit: str | None = None
+    scene_backend: str | None = None
     if deploy_config:
         from openral_core import DeployScene
 
@@ -1409,6 +1426,8 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         scene_unit = _scene.robot_unit
         if _scene.runtime is not None:
             joint_states_override = _scene.runtime.joint_states_topic
+        if _scene.scene is not None:
+            scene_backend = str(getattr(_scene.scene.backend, "value", _scene.scene.backend))
     from openral_hal.resolver import hal_joint_states_topic
 
     # The Python nodes' JointState topic: the scene's override, else the HAL's
@@ -2652,13 +2671,14 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # Requires ros-${ROS_DISTRO}-octomap-server + the openral_octomap_bridge package built —
         # opt-in, default off, like slam/nav2.
         perception_prefix = _cpuset_prefix("OPENRAL_PERCEPTION_CPUSET")
-        # Real camera: remove the robot's (and a held payload's) own returns
-        # before octomap inserts the cloud, as the sim depth renderer does by
-        # making those bodies transparent. Sim needs no filter; a robot with
-        # no collision model has nothing to filter against.
+        # A camera that sees the robot (real, or a rendered sim depth camera): remove the
+        # robot's (and a held payload's) own returns before octomap inserts the cloud, as
+        # the MuJoCo sensor bridge does by making those bodies transparent
+        # (_cloud_shows_the_robot); a robot with no collision model has nothing to filter
+        # against.
         octomap_input_topic = octomap_cloud_topic
         self_filter_nodes: list = []  # type: ignore[type-arg]  # reason: launch_ros.actions.Node, deferred import
-        if hal_mode == "real" and has_collision_capsules:
+        if _cloud_shows_the_robot(hal_mode, scene_backend) and has_collision_capsules:
             octomap_input_topic = _SELF_FILTERED_CLOUD_TOPIC
             self_filter_nodes.append(
                 Node(
