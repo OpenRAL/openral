@@ -132,7 +132,7 @@ from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
 
-from openral_hal._grasp_target_leg import GraspTargetLeg, _hand_near, _locked, lattice_from_msg
+from openral_hal._grasp_target_leg import GraspTargetLeg, _locked, lattice_from_msg
 from openral_hal._grasp_trigger import (
     GraspEvent,
     PositionStallConfig,
@@ -407,6 +407,18 @@ def _joint_motion(joint: Any, q: float) -> NDArray[np.float64]:
     return t
 
 
+def _link_boxes(description: RobotDescription, link: str) -> tuple[_FramedBox, ...]:
+    """``link``'s manifest collision primitives, bounded as boxes, in the link frame."""
+    return tuple(
+        (
+            _xyz_rpy_matrix(geom.origin_xyz_rpy[:3], geom.origin_xyz_rpy[3:]),
+            bounding_half_extents(geom.shape),
+        )
+        for geom in description.collision_geometry
+        if geom.link_name == link
+    )
+
+
 #: Below this a cross-product axis is degenerate (parallel edges).
 _PARALLEL_EPS = 1e-9
 
@@ -642,19 +654,12 @@ class ReleaseWindow:
         Returns:
             The open window.
         """
-
-        def boxes(link: str) -> tuple[_FramedBox, ...]:
-            return tuple(
-                (
-                    _xyz_rpy_matrix(geom.origin_xyz_rpy[:3], geom.origin_xyz_rpy[3:]),
-                    bounding_half_extents(geom.shape),
-                )
-                for geom in description.collision_geometry
-                if geom.link_name == link
-            )
-
         jaws = tuple(
-            (joint, _xyz_rpy_matrix(joint.origin_xyz, joint.origin_rpy), boxes(joint.child_link))
+            (
+                joint,
+                _xyz_rpy_matrix(joint.origin_xyz, joint.origin_rpy),
+                _link_boxes(description, joint.child_link),
+            )
             for joint in description.joints
             if joint.parent_link == held.attach_link and joint.child_link in held.touch_links
         )
@@ -664,7 +669,7 @@ class ReleaseWindow:
             ),
             opened_s=now_s,
             hand_link=held.attach_link,
-            hand_boxes=boxes(held.attach_link),
+            hand_boxes=_link_boxes(description, held.attach_link),
             jaws=jaws,
         )
 
@@ -859,7 +864,8 @@ class VisionAttachmentConfig:
         grasp_target_occluder_margin_m: Distance (beyond one voxel) from the
             held region within which a declared contact link's hand point (its
             leg's TCP, ``jaw_point``) makes a shrunken re-fit an occlusion by the
-            robot's own hand, at most 0.10 m.
+            robot's own hand, at most 0.10 m; also how far beyond the region the TCP
+            may be for an ATTACH to be on it (``jaw_at``).
             *Calibration point.*
         grasp_target_approach_m: Approach-armed target (``_grasp_target_leg``):
             while a live declaration has no ``search_box``, a hand whose TCP comes
@@ -1948,8 +1954,9 @@ class VisionAttachmentBridge:
         """The latched grasp-target region as this leg's payload, when it is confirmed.
 
         Confirmation is geometric: the declaration names this leg's jaw link and the
-        leg's TCP (``jaw_point``) lies within ``grasp_target_occluder_margin_m`` of the
-        region. The region is a pre-grasp measurement, so a leg takes each measured
+        jaw is at the region (``jaw_at``: its TCP within ``grasp_target_occluder_margin_m``
+        of it, or its jaw link's collision geometry overlapping it).
+        The region is a pre-grasp measurement, so a leg takes each measured
         region once (``region_spent``, keyed by ``target_id`` — one per pick — and the
         region's own ``stamp_ns``): a later ATTACH offered the same region — the object
         set down and picked up again before any re-measurement — is segmented, while a
@@ -1979,17 +1986,16 @@ class VisionAttachmentBridge:
                 "over; segmenting instead"
             )
             return None
-        hand = self.jaw_point(leg.jaw_link, region.frame_id)
         link = self.tf_frame(leg.producer.attach_link)
         t_link_from_region = self._lookup(link, region.frame_id)
+        at, measure = self.jaw_at(
+            leg.jaw_link, region, reach_m=self._config.grasp_target_occluder_margin_m
+        )
         why = ""
-        if hand is None or t_link_from_region is None:
+        if t_link_from_region is None:
             why = f"no tf2 {link} <- {region.frame_id}"
-        elif not _hand_near([hand], region, reach_m=self._config.grasp_target_occluder_margin_m):
-            why = (
-                f"jaw at {tuple(round(v, 3) for v in hand)} is not within "
-                f"{self._config.grasp_target_occluder_margin_m} m of the region"
-            )
+        elif not at:
+            why = f"jaw not at the region: {measure}"
         if why or t_link_from_region is None:
             self._node.get_logger().warning(
                 f"vision attachment {leg.joint_name}: grasp-target region for "
@@ -2082,6 +2088,70 @@ class VisionAttachmentBridge:
             return None
         x, y, z = (float(v) for v in t_frame_from_link[:3, :3] @ tcp + t_frame_from_link[:3, 3])
         return x, y, z
+
+    def jaw_at(self, jaw_link: str, region: PlaceRegion, *, reach_m: float) -> tuple[bool, str]:
+        """Whether the hand whose jaw link is ``jaw_link`` is at ``region``, and the measure.
+
+        At it when its TCP (``jaw_point``) lies in the region grown by ``reach_m`` on
+        every face, **or** a manifest collision primitive of ``jaw_link`` (bounded as a
+        box, the release window's geometry), posed at the jaw's last read angle through
+        the attach link's tf2 pose and the gripper joint's origin, overlaps the region
+        itself (no reach). The TCP may sit at the finger hinge, a finger length above
+        what the jaws close on (the OpenArm's does); the jaw link's geometry is where the
+        fingers are. Both tests are exact: the TCP's separating-axis gap on the region's
+        own axes is the grown-box test, and a separating-axis gap ``<= 0`` is overlap.
+        An unknown jaw angle leaves the geometry unposed — the TCP alone decides.
+
+        Args:
+            jaw_link: A gripper joint's child link (``GraspDeclaration.contact_links``).
+            region: The held target region.
+            reach_m: How far beyond the region the TCP may be.
+
+        Returns:
+            ``(at, measure)`` — ``measure`` is the log text for the decision.
+        """
+        leg = next((each for each in self._legs if each.jaw_link == jaw_link), None)
+        if leg is None:
+            return False, f"{jaw_link!r} is no gripper's jaw link"
+        link = self.tf_frame(leg.producer.attach_link)
+        t_region_from_link = self._lookup(region.frame_id, link)
+        tcp = self._tcp_in(leg, link)
+        if t_region_from_link is None or tcp is None:
+            return False, f"jaw not located (no tf2 {region.frame_id} <- {link})"
+        t_region = homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)
+        target: _Box = (t_region[:3, 3], t_region[:3, :3], np.asarray(region.half_extents))
+        point = t_region_from_link[:3, :3] @ np.asarray(tcp) + t_region_from_link[:3, 3]
+        tcp_gap = box_gap_lower_bound_m((point, target[1], np.zeros(3)), target)
+        measure = (
+            f"jaw TCP at {tuple(round(float(v), 3) for v in point)} is {tcp_gap:.3f} m "
+            f"outside the region (reach {reach_m} m)"
+        )
+        if tcp_gap <= reach_m:
+            return True, measure
+        # ponytail: each primitive's bounding box, not the kernel's tight hull — a box that
+        # spans the whole opening (OpenArm's finger_pair) reaches a target beside the jaw
+        # along it; a hull-vs-box distance on ``tight_geometry`` if that ever matters.
+        boxes = _link_boxes(self._description, jaw_link)
+        q = self._positions.get(leg.joint_name)
+        if not boxes:
+            return False, f"{measure}; {jaw_link} has no collision geometry"
+        if q is None:
+            return False, f"{measure}; {leg.joint_name} has no position yet to pose {jaw_link}"
+        joint = next(j for j in self._description.joints if j.name == leg.joint_name)
+        t_jaw = (
+            t_region_from_link
+            @ _xyz_rpy_matrix(joint.origin_xyz, joint.origin_rpy)
+            @ _joint_motion(joint, q)
+        )
+        gap = min(
+            box_gap_lower_bound_m(((t := t_jaw @ t_prim)[:3, 3], t[:3, :3], half), target)
+            for t_prim, half in boxes
+        )
+        at = gap <= 0.0
+        return at, (
+            f"{measure}; {jaw_link} collision geometry at q={q:.3f} "
+            + (f"overlaps it by {-gap:.3f} m" if at else f"is >= {gap:.3f} m from it")
+        )
 
     def _on_voxels(self, msg: Any) -> None:
         """Decode the newest voxel grid once for both producer legs; scan nothing yet.

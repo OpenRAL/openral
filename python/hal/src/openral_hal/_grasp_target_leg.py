@@ -79,7 +79,10 @@ approach-armed hand, or a named ``search_box`` declaration), re-measurement stop
 and the region is kept for the kernel's handover rule (§2.1) — but only for an
 ATTACH on what was measured (``GraspTargetLeg.on_attach``): the payload built from
 the region itself, or a segmented payload lying in the region (+1 voxel) with the
-jaw at it. Any other ATTACH (jaws closed on a neighbour) ends the arming as
+jaw at it (``VisionAttachmentBridge.jaw_at``: its TCP within ``occluder_margin_m`` of
+the region, or its jaw link's collision geometry, posed at the jaw's angle, overlapping
+it — the TCP may be the finger hinge, a finger length above what the jaws close on).
+Any other ATTACH (jaws closed on a neighbour) ends the arming as
 ``attach_off_target``: handed over with no region. Handover is per hand: an ATTACH
 on a hand with nothing armed hands nothing over.
 
@@ -1654,8 +1657,8 @@ class GraspTargetLeg:
           exactly that region (a re-fit accepted on another thread since is not it).
         * ``region`` ``None`` — the grasp was segmented (``_finish``), possibly because
           the jaw was *not* at the region: a neighbouring object. Handed over only when
-          the jaw is within ``occluder_margin_m`` of the held region (the region payload's
-          own test, so a region first accepted mid-close passes it too) **and** every
+          the jaw is at the held region (``VisionAttachmentBridge.jaw_at``, the region
+          payload's own test, so a region first accepted mid-close passes it too) **and** every
           primitive centre of the segmented payload lies in the held region grown by one
           voxel. Otherwise the arming ends as ``attach_off_target`` (no handover).
 
@@ -1681,8 +1684,7 @@ class GraspTargetLeg:
         from openral_hal.vision_attachment_bridge import primitive_poses
 
         bridge = self._bridge
-        hand = bridge.jaw_point(jaw_link, region.frame_id)
-        if hand is None or not _hand_near([hand], region, reach_m=self._occluder_margin_m):
+        if not bridge.jaw_at(jaw_link, region, reach_m=self._occluder_margin_m)[0]:
             return False
         t_region_from_link = bridge._lookup(region.frame_id, bridge.tf_frame(payload.attach_link))
         if t_region_from_link is None or not payload.primitives:
