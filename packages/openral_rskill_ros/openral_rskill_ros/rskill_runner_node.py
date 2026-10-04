@@ -45,9 +45,11 @@ from openral_core import required_vla_camera_slots, sensor_name_to_slot
 from openral_rskill.execution_budget import (
     DEFAULT_CLOCK_STALL_S,
     DEFAULT_WALL_CAP_FACTOR,
+    PARAM_CLOCK_STALL_S,
+    PARAM_WALL_CAP_FACTOR,
     BudgetMiss,
     ExecutionBudget,
-    graph_clock_fn,
+    node_execution_budget,
 )
 
 if TYPE_CHECKING:
@@ -257,9 +259,11 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("rate_hz", 30.0)
             self.declare_parameter("action_applied_timeout_s", 5.0)
             # Wall-clock backstops on a graph-clock execution budget (``use_sim_time``):
-            # the goal still ends when /clock stops or crawls. See ``ExecutionBudget``.
-            self.declare_parameter("execution_wall_cap_factor", DEFAULT_WALL_CAP_FACTOR)
-            self.declare_parameter("graph_clock_stall_s", DEFAULT_CLOCK_STALL_S)
+            # the goal still ends when /clock stops or crawls. Read by
+            # ``node_execution_budget`` for this node's goals AND every wrapped skill's
+            # result wait; validated (finite, > 0) at on_configure.
+            self.declare_parameter(PARAM_WALL_CAP_FACTOR, DEFAULT_WALL_CAP_FACTOR)
+            self.declare_parameter(PARAM_CLOCK_STALL_S, DEFAULT_CLOCK_STALL_S)
             self.declare_parameter("joint_state_staleness_limit_s", 0.5)
             # Conservative speed for the kernel-checked move from the live pose to an
             # rSkill's starting_pose. The gripper channel is normalised [0, 1], so the same
@@ -325,9 +329,6 @@ if _ROS2_AVAILABLE:
             # Why the execution budget last lapsed (true elapsed + kind), so an
             # aborted goal's failure_reason can quote the overrun.
             self._last_deadline_miss: BudgetMiss | None = None
-            # Graph-clock seconds callable under ``use_sim_time``; ``None`` keeps
-            # execution budgets on ``time.monotonic()`` (every real robot).
-            self._graph_now: Callable[[], float] | None = None
             # Single GPU-resident skill. The runner keeps exactly one
             # resolved skill loaded, keyed by (rskill_id, revision, prompt).
             # Dispatching a different key evicts (``shutdown()`` → frees VRAM)
@@ -578,15 +579,20 @@ if _ROS2_AVAILABLE:
             self._heartbeat.create_publisher()
             # Execution budgets follow the clock the robot moves on: the graph
             # clock under use_sim_time (Nav2/MoveIt time themselves on it too),
-            # time.monotonic() otherwise. Adapted from DsslRobot/openral.
-            self._graph_now = graph_clock_fn(self)
+            # time.monotonic() otherwise. Adapted from DsslRobot/openral. Built
+            # once here so invalid backstop params fail configure, not a goal.
+            try:
+                probe = self._new_execution_budget(1.0)
+            except ROSConfigError as exc:
+                self.get_logger().error(f"rskill_runner_node: {exc!s}")
+                return TransitionCallbackReturn.FAILURE
             self.get_logger().info(
                 "rskill_runner.clock: execution budgets on "
                 + (
-                    f"the graph clock (use_sim_time; now={self._graph_now():.3f}s, "
-                    f"wall cap {self.get_parameter('execution_wall_cap_factor').value}x, "
-                    f"stall {self.get_parameter('graph_clock_stall_s').value}s)"
-                    if self._graph_now is not None
+                    f"the graph clock (use_sim_time; "
+                    f"wall cap {self.get_parameter(PARAM_WALL_CAP_FACTOR).value}x, "
+                    f"stall {self.get_parameter(PARAM_CLOCK_STALL_S).value}s)"
+                    if probe.on_graph_clock
                     else "time.monotonic() (use_sim_time=false)"
                 )
             )
@@ -822,7 +828,7 @@ if _ROS2_AVAILABLE:
                     # normal path's retraction is not doubled.
                     self._retract_place_declaration()
 
-        def _execute_locked(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0911, PLR0915  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
+        def _execute_locked(self, goal_handle: ServerGoalHandle) -> Any:  # noqa: PLR0911, PLR0912, PLR0915  # reason: sequential goal-lifecycle handler — acquire → starting-pose → run, each with a typed failure branch that sets failure_reason + finalizes the goal; splitting the linear flow hurts readability
             """Run a single ExecuteRskill goal end-to-end (synchronously)."""
             from openral_core.exceptions import (
                 ROSCapabilityMismatch,
@@ -863,6 +869,12 @@ if _ROS2_AVAILABLE:
                 self._arm_place_declaration(req, rskill_id=rskill_id, trace_id=result.trace_id)
 
                 try:
+                    # A NaN deadline would never lapse (every comparison is
+                    # false); refuse it like any other unusable goal.
+                    if not math.isfinite(deadline_s):
+                        raise ROSConfigError(
+                            f"ExecuteRskill.deadline_s must be finite; got {deadline_s!r}."
+                        )
                     # Single GPU-resident skill: evict-on-switch,
                     # reuse-on-match, else resolve + cache (see _acquire_skill).
                     skill = self._acquire_skill(
@@ -1132,13 +1144,12 @@ if _ROS2_AVAILABLE:
             return engine, (str(_device) if _device is not None else None), consumed
 
         def _new_execution_budget(self, budget_s: float) -> ExecutionBudget:
-            """An ``ExecutionBudget`` on this node's clock (graph clock under ``use_sim_time``)."""
-            return ExecutionBudget(
-                budget_s,
-                graph_now=self._graph_now,
-                wall_cap_factor=float(self.get_parameter("execution_wall_cap_factor").value),
-                stall_s=float(self.get_parameter("graph_clock_stall_s").value),
-            )
+            """An ``ExecutionBudget`` on this node's clock (graph clock under ``use_sim_time``).
+
+            ``use_sim_time`` is re-read per goal, so a node switched off sim time
+            mid-session goes back to ``time.monotonic()``.
+            """
+            return node_execution_budget(self, budget_s)
 
         def _deadline_lapsed(self, budget: ExecutionBudget, chunks: int) -> bool:
             """Return True once the execution budget has lapsed, reporting the miss.

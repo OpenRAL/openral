@@ -71,17 +71,25 @@ A goal's budget (`deadline_s`, else the manifest's `latency_budget.max_execution
 controllers time themselves in sim seconds, so the budget does too — measured on
 `time.monotonic()` it fired while a slow simulator was still mid-motion (a rendering
 graph at 0.09x real time lost a 300 s Nav2 budget after 28 s of sim time; adapted from
-DsslRobot/openral). `ROSActionRskill._poll_future`'s result wait follows the same clock.
-With `use_sim_time=false` (every real robot) budgets are `time.monotonic()` exactly as
-before — never the NTP-stepped ROS system clock.
+DsslRobot/openral). `ROSActionRskill`'s result wait in result-only mode (Nav2: the server
+is moving the robot) follows the same clock; goal acceptance, service responses and a
+MoveIt plan (trajectory mode, CPU planning) stay on the wall clock. Giving up on a
+result wait cancels the wrapped goal, and the wait raises `ROSDeadlineMissed`
+(`FAILURE_DEADLINE_MISSED`, like the runner's own budget). With `use_sim_time=false`
+(every real robot) budgets are `time.monotonic()` exactly as before — never the
+NTP-stepped ROS system clock; `use_sim_time` is re-read per goal, not cached.
 
 Two wall-clock backstops keep the goal bounded when `/clock` stops (sim pause, HAL
-crash, e-stop) or crawls; both abort with `FAILURE_DEADLINE_MISSED`:
+crash, e-stop) or crawls; both abort with `FAILURE_DEADLINE_MISSED`. They are read
+from this node by `openral_rskill.execution_budget.node_execution_budget` for the
+runner's goals and for every wrapped skill's result wait, cannot be disabled (a
+non-positive / non-finite value fails `on_configure`), and a NaN `deadline_s` on a
+goal is rejected as `FAILURE_CONFIG_ERROR` rather than never lapsing:
 
 | ROS parameter | default | fires as |
 |---|---|---|
-| `graph_clock_stall_s` | 10 s | `failure_reason="clock_stalled: graph clock has not advanced for N s of wall time …"` (or `never started` when no `/clock` ever arrived — a sim node reads 0 until then, and the budget does not start counting before its first message) |
-| `execution_wall_cap_factor` | 10 | `failure_reason="deadline_exceeded: wall elapsed=… exceeds 10x budget=…"` |
+| `graph_clock_stall_s` | 10 s | `failure_reason="clock_stalled: graph clock has not advanced for N s of wall time …"` (or `never started` when no `/clock` ever arrived — a sim node reads 0 until then, and the budget does not start counting before its first message). A backward `/clock` jump (sim reset) re-anchors the budget and keeps the elapsed time banked so far. |
+| `execution_wall_cap_factor` | 20 | `failure_reason="deadline_exceeded: wall elapsed=… exceeds 20x budget=…"` — a budget survives intact down to 1/20 = 0.05x real time (the slowest measured rendering graph, 0.09x, needs 11.1x); a frozen clock is caught by the stall guard long before. |
 
 Every miss is logged (`rskill_runner.deadline_exceeded` / `rskill_runner.clock_stalled`)
 and recorded as the `deadline_missed` span event with `miss.kind`.
