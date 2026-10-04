@@ -574,10 +574,9 @@ REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"
 # Escape hatch for the uncurated bare-URL path only (openai dialect): some
 # OpenAI-compatible gateways front a "thinking mode" model that rejects
 # ``tool_choice: "required"`` outright (HTTP 400, "Thinking mode does not
-# support this tool_choice") -- DeepSeek-V4.1-Flash on one such gateway is
-# the case that surfaced this (B3 live-testing). Named endpoints already
-# carry their own correct ``tool_choice`` via their preset and are
-# unaffected by this var.
+# support this tool_choice"), e.g. DeepSeek-V4.1-Flash behind a third-party
+# gateway. Named endpoints already carry their own correct ``tool_choice``
+# via their preset and are unaffected by this var.
 REASONER_TOOL_CHOICE_ENV: str = "OPENRAL_REASONER_TOOL_CHOICE"
 
 
@@ -921,6 +920,10 @@ def _build_uncurated_model(model_key: str) -> ToolUseClient:
             timeout_s=timeout_s,
         )
     tool_choice_override = os.environ.get(REASONER_TOOL_CHOICE_ENV, "").strip()
+    if tool_choice_override not in ("", "auto", "required"):
+        raise ROSConfigError(
+            f"{REASONER_TOOL_CHOICE_ENV}={tool_choice_override!r}; expected 'auto' or 'required'."
+        )
     return OpenAICompatibleToolUseClient(
         model_id=model_key,
         api_key=api_key,

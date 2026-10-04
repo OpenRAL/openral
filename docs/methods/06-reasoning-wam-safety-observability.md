@@ -9,7 +9,7 @@ _Typed LLM tool-use clients (direct-dispatch surface); the `ReasonerToolCall` un
 
 - module constant `DEFAULT_SYSTEM_PROMPT: str` — Base S2 system prompt: one-tool-per-tick, safe skill selection, never bypass e-stop, exact field names, `wait` while a skill runs. Deployments may override. (L91)
 - module constants `ANTHROPIC_BASE_URL` / `OPENROUTER_BASE_URL` / `OLLAMA_BASE_URL` / `VLLM_BASE_URL` / `GEMINI_BASE_URL` / `XAI_BASE_URL` / `DEEPSEEK_BASE_URL` / `HUGGINGFACE_BASE_URL: str` — Named-endpoint base URLs; canonical copy now lives in `openral_core.schemas`, re-exported here unchanged.
-- module constant `_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset]` — Back-compat alias of `openral_core.REASONER_ENDPOINT_PRESETS`: per-endpoint `url`/`dialect`/`auth_required`/`timeout_s`/`tool_choice` for each `OPENRAL_REASONER_ENDPOINT` name. The curated model-first path takes only the endpoint properties from it; the uncurated path takes all five. (L626)
+- module constant `_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset]` — Back-compat alias of `openral_core.REASONER_ENDPOINT_PRESETS`: per-endpoint `url`/`dialect`/`auth_required`/`timeout_s`/`tool_choice` for each `OPENRAL_REASONER_ENDPOINT` name. The curated model-first path takes only the endpoint properties from it; the uncurated path takes all five. (L633)
 - module constant `SYSTEM_PROMPT_ENV_VAR: str = "OPENRAL_REASONER_SYSTEM_PROMPT"` (L430) — env var that overrides the base operating brief; honoured by `resolve_reasoner_system_prompt`.
 - `render_robot_context_prompt(capabilities: RobotCapabilities | None, *, base_prompt=DEFAULT_SYSTEM_PROMPT) -> str` (L319) — Appends a deterministic `## THIS ROBOT` body-awareness block (embodiment, locomotion, manipulation/sensing, payload, control modes) to the prompt; `None` returns `base_prompt` unchanged.
 - `resolve_reasoner_system_prompt(capabilities: RobotCapabilities | None, *, env=None) -> str` (L433) — Composes the full reasoner system prompt (env override or default base brief + `## THIS ROBOT` block). `env` is injectable for tests; called from `ReasonerNode.on_configure`.
@@ -23,22 +23,23 @@ _Typed LLM tool-use clients (direct-dispatch surface); the `ReasonerToolCall` un
 - module constant `REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"` (L571)
 - module constant `REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"` (L572)
 - module constant `REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"` (L573) — model-first env names (ADR-0088).
-- `build_tool_use_client_from_env() -> ToolUseClient` — Model-first client factory: `OPENRAL_REASONER_MODEL` resolves `openral_core.REASONER_MODELS` for dialect/endpoint/auth/hosting/tool-choice/token-cap; `OPENRAL_REASONER_ENDPOINT` overrides location (a named preset, a bare URL, or `managed`); `API_KEY`/`MAX_TOKENS`/`TIMEOUT_S` override the rest. `DIALECT` is needed only for a bare URL and always wins when set. No hidden model default. (L629)
-- `class AnthropicToolUseClient` (L1417) — Anthropic SDK-backed client; builds/reuses one client/HTTP pool and marks the static system/tools prefix cacheable.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L1484) — Call Anthropic and decode the resulting tool payload.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L1531) — Ask the Anthropic model a free-text question about a camera frame.
+- module constant `REASONER_TOOL_CHOICE_ENV: str = "OPENRAL_REASONER_TOOL_CHOICE"` (L580) — `auto`/`required` override for the uncurated bare-URL `openai` path only.
+- `build_tool_use_client_from_env() -> ToolUseClient` — Model-first client factory: `OPENRAL_REASONER_MODEL` resolves `openral_core.REASONER_MODELS` for dialect/endpoint/auth/hosting/tool-choice/token-cap; `OPENRAL_REASONER_ENDPOINT` overrides location (a named preset, a bare URL, or `managed`); `API_KEY`/`MAX_TOKENS`/`TIMEOUT_S` override the rest. `DIALECT` is needed only for a bare URL and always wins when set. No hidden model default. (L636)
+- `class AnthropicToolUseClient` (L1436) — Anthropic SDK-backed client; builds/reuses one client/HTTP pool and marks the static system/tools prefix cacheable.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L1503) — Call Anthropic and decode the resulting tool payload.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L1550) — Ask the Anthropic model a free-text question about a camera frame.
 - `_anthropic_response_text(response) -> str` — Concatenate all text blocks so thinking-enabled responses do not lose an answer after a leading thinking block.
-- `class OpenAICompatibleToolUseClient` (L1578) — OpenAI-compatible client with cached SDK/HTTP pool, endpoint/tool-choice/token-cap configuration, and image-description support.
-  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L1653) — Call the OpenAI-compatible endpoint and decode the tool call.
-  - `describe_image(self, *, image_jpeg, question) -> str` (L1728) — Ask an OpenAI-compatible model a free-text question about a frame.
+- `class OpenAICompatibleToolUseClient` (L1597) — OpenAI-compatible client with cached SDK/HTTP pool, endpoint/tool-choice/token-cap configuration, and image-description support.
+  - `select_tool(self, *, context_text, palette, system_prompt=DEFAULT_SYSTEM_PROMPT) -> ReasonerToolCall` (L1672) — Call the OpenAI-compatible endpoint and decode the tool call.
+  - `describe_image(self, *, image_jpeg, question) -> str` (L1747) — Ask an OpenAI-compatible model a free-text question about a frame.
 - `_tool_palette_to_anthropic_tools(palette) -> list[dict]` — Render the closed palette, including `WaitTool`; per-skill names use collision-resistant `execute_rskill__<slug>_<sha1-8>`.
 - `_tool_palette_to_openai_tools(palette) -> list[dict]` — Convert the same surface to OpenAI function shape without leaking the Anthropic-only `input_schema` key.
 - `_decode_tool_payload(*, tool_name, arguments, palette) -> ReasonerToolCall` — Validate provider output against the union + palette; per-skill names resolve through the same hashed mapping used to render them.
-- module constant `_PER_SKILL_TOOL_PREFIX: str = "execute_rskill__"` — prefix the decoder matches on to identify per-skill tool calls. (L923)
-- module constant `_LLM_TOOL_NAME_MAX_LEN: int = 64` — Anthropic + OpenAI tool-name regex limit; long HF Hub ids are sha1-suffix-truncated to fit. (L926)
-- `_skill_id_to_tool_name(rskill_id: str) -> str` — Map a `<owner>/<repo>` id into a collision-resistant 64-char-max `execute_rskill__<slug>_<sha1-8>` name. (L929)
-- `_format_skill_tool_description(entry: RSkillToolEntry) -> str` — Render the skill's id + description + actions + objects + scenes into the NL string the LLM scores. (L946)
-- `_drop_property(schema: dict, name: str) -> dict` — Return a copy of a JSON Schema dict with `name` stripped from both `properties` and `required`. Used to drop `rskill_id` from per-skill `ExecuteRskillTool` schemas. (L1301)
+- module constant `_PER_SKILL_TOOL_PREFIX: str = "execute_rskill__"` — prefix the decoder matches on to identify per-skill tool calls. (L942)
+- module constant `_LLM_TOOL_NAME_MAX_LEN: int = 64` — Anthropic + OpenAI tool-name regex limit; long HF Hub ids are sha1-suffix-truncated to fit. (L945)
+- `_skill_id_to_tool_name(rskill_id: str) -> str` — Map a `<owner>/<repo>` id into a collision-resistant 64-char-max `execute_rskill__<slug>_<sha1-8>` name. (L948)
+- `_format_skill_tool_description(entry: RSkillToolEntry) -> str` — Render the skill's id + description + actions + objects + scenes into the NL string the LLM scores. (L965)
+- `_drop_property(schema: dict, name: str) -> dict` — Return a copy of a JSON Schema dict with `name` stripped from both `properties` and `required`. Used to drop `rskill_id` from per-skill `ExecuteRskillTool` schemas. (L1320)
 - module constant `_TOOL_ADAPTER: TypeAdapter[ReasonerToolCall]` (L316) — cached `TypeAdapter(ReasonerToolCall)` used to validate a decoded tool payload against the discriminated union.
 
 ### `python/reasoner/src/openral_reasoner/cosmos3.py`
@@ -481,18 +482,18 @@ _`reasoner_node` lifecycle wrapper. Thin rclpy shell around `openral_reasoner.Re
 ### `packages/openral_prompt_router/openral_prompt_router/prompt_router_node.py`
 _Single lifecycle node that fans in operator prompts from any external source into `/openral/prompt`. CLI is the only v1 adapter; WebSocket / voice / Slack are out of scope._
 
-- module constant `DEFAULT_SOURCES: dict[str, int] = {"cli": 100, "dashboard": 100, "auto": 10}` — Default source → priority registry; human sources get 100, machine cascades get 10. (L76)
+- module constant `DEFAULT_SOURCES: dict[str, int] = {"cli": 100, "dashboard": 100, "auto": 10}` — Default source → priority registry; human sources get 100, machine cascades get 10. (L85)
 - module constant `_QOS_PROMPT` (L60) — `KEEP_LAST=10, RELIABLE, VOLATILE`, the fan-out publisher / per-source subscriber QoS.
 - module constant `_STARTUP_PROMPT_SUBSCRIBER_TIMEOUT_S: float = 30.0` (L71) — how long `on_activate` waits for a subscriber before publishing the configured startup prompt anyway.
-- `class PromptRouterNode(LifecycleNode)` (L83) — Lifecycle node.
+- `class PromptRouterNode(LifecycleNode)` (L92) — Lifecycle node.
   - `__init__(*, node_name="openral_prompt_router", sources=None)` — Initialise with a source → priority registry. Defaults to `DEFAULT_SOURCES`.
-  - `on_configure(self, state) -> TransitionCallbackReturn` (L119) — Build the `/openral/prompt` fan-out publisher and one `/openral/prompt_in/<source>` subscriber per allowed source.
-  - `on_activate(self, state) -> TransitionCallbackReturn` (L141) — Publish the startup prompt if configured; then idle (purely reactive).
-  - `on_deactivate(self, state) -> TransitionCallbackReturn` (L150) — Stop forwarding (subscriptions remain attached).
-  - `on_cleanup(self, state) -> TransitionCallbackReturn` (L156) — Drop the publisher; subscriptions auto-cleaned by rclpy.
+  - `on_configure(self, state) -> TransitionCallbackReturn` (L128) — Build the `/openral/prompt` fan-out publisher and one `/openral/prompt_in/<source>` subscriber per allowed source.
+  - `on_activate(self, state) -> TransitionCallbackReturn` (L150) — Publish the startup prompt if configured; then idle (purely reactive).
+  - `on_deactivate(self, state) -> TransitionCallbackReturn` (L159) — Stop forwarding (subscriptions remain attached).
+  - `on_cleanup(self, state) -> TransitionCallbackReturn` (L165) — Drop the publisher; subscriptions auto-cleaned by rclpy.
   - `_on_inbound(source, priority, msg)` — Forward the inbound PromptStamped onto `/openral/prompt` after merging `{"source": ..., "priority": ...}` into `metadata_json` (preserving any per-source fields).
-  - `forwarded_count(self) -> int` (L238) — Number of prompts forwarded since `on_configure` (for tests).
-- `main(args=None) -> int` (L243) — Entry point for `ros2 run openral_prompt_router prompt_router_node`.
+  - `forwarded_count(self) -> int` (L264) — Number of prompts forwarded since `on_configure` (for tests).
+- `main(args=None) -> int` (L269) — Entry point for `ros2 run openral_prompt_router prompt_router_node`.
 
 ### `python/cli/src/openral_cli/prompt.py`
 _`openral prompt "do X"` CLI adapter. Publishes a one-shot `PromptStamped` onto `/openral/prompt_in/cli` for the prompt-router to fan out. `rclpy` lazy-imported so `openral --help` stays sub-second._

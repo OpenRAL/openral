@@ -92,8 +92,8 @@ def test_bare_url_defaults_to_required_tool_choice(monkeypatch: pytest.MonkeyPat
 
 
 def test_bare_url_tool_choice_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A gateway fronting a thinking-mode model (B3 live-testing, DeepSeek-V4.1-Flash
-    on a third-party OpenAI-compatible gateway) 400s on tool_choice="required" —
+    """A gateway fronting a thinking-mode model (DeepSeek-V4.1-Flash behind a
+    third-party OpenAI-compatible gateway) 400s on tool_choice="required" —
     OPENRAL_REASONER_TOOL_CHOICE is the escape hatch's escape hatch."""
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", _MODEL)
     monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://10.0.0.5:9000/v1")
@@ -222,4 +222,14 @@ def test_bare_url_still_waives_auth_for_a_curated_model(monkeypatch: pytest.Monk
     monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "openrouter")
     monkeypatch.delenv("OPENRAL_REASONER_API_KEY", raising=False)
     with pytest.raises(ROSConfigError, match="OPENRAL_REASONER_API_KEY"):
+        build_tool_use_client_from_env()
+
+
+def test_bare_url_tool_choice_env_rejects_unknown_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unsupported mode must fail at build time, not as a 400 on the first tick."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", _MODEL)
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://10.0.0.5:9000/v1")
+    monkeypatch.setenv("OPENRAL_REASONER_DIALECT", "openai")
+    monkeypatch.setenv("OPENRAL_REASONER_TOOL_CHOICE", "any")
+    with pytest.raises(ROSConfigError, match="OPENRAL_REASONER_TOOL_CHOICE"):
         build_tool_use_client_from_env()

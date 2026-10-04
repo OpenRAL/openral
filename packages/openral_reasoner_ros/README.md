@@ -109,6 +109,10 @@ The env contract is:
   not a longer timeout.
 - `OPENRAL_REASONER_DIALECT=anthropic|openai` — required only for an uncurated
   raw model id.
+- `OPENRAL_REASONER_TOOL_CHOICE=auto|required` — the bare-URL `openai` path
+  sends `tool_choice: "required"`; set `auto` for a gateway whose thinking-mode
+  model rejects that with HTTP 400. Ignored for named endpoints and curated
+  models, which carry their own value.
 
 ```bash
 # Curated cloud model
