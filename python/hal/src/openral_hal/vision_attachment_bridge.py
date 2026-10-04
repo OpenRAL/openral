@@ -2127,9 +2127,10 @@ class VisionAttachmentBridge:
 
         The nearest cached self-filtered cloud within ``mask_depth_max_skew_s`` of the
         depth frame — the same bound a mask is held to against that frame. The clouds
-        are best-effort full-resolution ``PointCloud2`` and some are lost (Isaac 2026-10-04:
-        one in three reached the self-filter), so an exact-capture match left most fits
-        unfiltered. A neighbouring capture can only REMOVE more masked pixels
+        are best-effort full-resolution ``PointCloud2`` and some can be lost (Isaac
+        2026-10-04: one in three reached the self-filter, before the deploy's Fast DDS
+        large-data profile, ``docs/reference/dds-large-messages.md``), so an exact-capture
+        match would leave fits unfiltered. A neighbouring capture can only REMOVE more masked pixels
         (``mask_without_removed_points`` never adds one): never a larger fit than the
         unfiltered one. ``None`` when no cloud is that close or its frame has no tf2
         transform: the grasp target leg then refuses the capture (lost view ``unfiltered``).

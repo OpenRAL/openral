@@ -16,7 +16,7 @@ rows join only on identical placeholder text, except that every
 Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 `just lint` and pre-commit fail when this page is stale.
 
-## Topics (45)
+## Topics (46)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -24,7 +24,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/cmd_vel` | `geometry_msgs/Twist` | — | python/hal/src/openral_hal/mobile_base_bridge.py (MobileBaseBridge.setup) |
 | `/collision_markers` | `MarkerArray` | tools/viz_collision.py (_run_rviz) | — |
 | `/diagnostics` | `diagnostic_msgs/DiagnosticArray` | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>python/observability/src/openral_observability/diagnostics.py (DiagnosticsHeartbeat.create_publisher) | — |
-| `/joint_states` | `sensor_msgs/JointState` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate)<br>tools/viz_collision.py (_run_rviz) | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_octomap_bridge/src/robot_self_filter.hpp [param `joint_states_topic`]<br>packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) [param `joint_states_topic`]<br>python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__)<br>python/runner/src/openral_runner/ros_publishing_hal.py (ROSPublishingHAL.connect) |
+| `/joint_states` | `sensor_msgs/JointState` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate)<br>tools/cloud_transport_probe.py (run_pub) [param `--joint-topic`]<br>tools/viz_collision.py (_run_rviz) | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_octomap_bridge/src/robot_self_filter.hpp [param `joint_states_topic`]<br>packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) [param `joint_states_topic`]<br>python/hal/src/openral_hal/ros_control_transport.py (RosControlTransport.__init__)<br>python/runner/src/openral_runner/ros_publishing_hal.py (ROSPublishingHAL.connect) |
 | `/local_costmap/published_footprint` | `geometry_msgs/PolygonStamped` | — | tools/_nav2_mppi_loop_probe.py (Probe.__init__) |
 | `/map` | `nav_msgs/OccupancyGrid` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) [param `occupancy_map_topic`]<br>python/runner/src/openral_runner/slam_bridge.py (SlamMapBridge.__init__) |
 | `/octomap_binary` | `octomap_msgs/Octomap` | — | packages/openral_octomap_bridge/src/octomap_voxel_bridge.hpp [param `octomap_topic`] |
@@ -60,6 +60,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `/openral/world_state_slow` | `openral_msgs/WorldStateStamped` | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | `/openral/world_voxels` | `openral_msgs/OccupancyVoxels` | packages/openral_octomap_bridge/src/octomap_voxel_bridge.hpp [param `output_topic`]<br>tools/voxel_transport_probe.py (run_pub) | cpp/openral_safety_kernel/src/lifecycle_kernel.cpp<br>packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__)<br>packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) [param `object_voxels_topic`]<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_attachment_state)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_estop_ground_truth)<br>python/hal/src/openral_hal/vision_attachment_bridge.py (VisionAttachmentBridge.setup)<br>tools/_validation_matrix_monitor.py (Monitor.__init__)<br>tools/voxel_transport_probe.py (run_sub) |
 | `/openral/world_voxels_cloud` | `sensor_msgs/PointCloud2` | packages/openral_foxglove_bringup/openral_foxglove_bringup/bucket2_markers.py (Bucket2MarkersNode.__init__) | — |
+| `/probe/cloud` | `sensor_msgs/PointCloud2` | tools/cloud_transport_probe.py (run_pub) [param `--topic`] | tools/cloud_transport_probe.py (run_sub) [param `--topic`] |
 | `/scan` | `sensor_msgs/LaserScan` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_scan) | packages/openral_nav2_bringup/openral_nav2_bringup/payload_scan_filter_node.py (main.PayloadScanFilterNode.__init__) [param `input_topic`] |
 | `cloud_in` | `sensor_msgs/PointCloud2` | — | packages/openral_octomap_bridge/src/robot_self_filter.hpp |
 | `cloud_out` | `sensor_msgs/PointCloud2` | packages/openral_octomap_bridge/src/robot_self_filter.hpp | — |

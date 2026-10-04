@@ -79,6 +79,10 @@ TARGETS=(
     # search box, the voxel map and a SegmentInView mask; freezes it under a TTL
     # on a lost view, refuses two candidates, dies with the declaration.
     tests/integration/test_grasp_target_leg_live.py
+    # Megabyte best-effort clouds cross the real robot_self_filter (both lossy hops)
+    # under the deploy's Fast DDS large-data profile: >= 95 % delivered, publish()
+    # non-blocking. Forces rmw_fastrtps_cpp (the image defaults to Cyclone).
+    tests/integration/test_large_cloud_transport_live.py
     # The real place producer leg measures the surface under the carried payload
     # in the voxel map (no fixture, no named target), declares it with a slab
     # region, attests the map_support_proximity witness, and retracts within the
