@@ -144,3 +144,103 @@ def test_environment_on_a_hardcoded_layout_is_an_error(
     monkeypatch.setenv("OPENRAL_ISAAC_SIDECAR_SCRIPT", str(_FAKE_SIDECAR))
     with pytest.raises(ROSConfigError, match="need layout 'manifest'"):
         build_sim_env_from_yaml(str(yaml_path))
+
+
+# ── URDF joint matching + grippers (real OpenArm manifest vs its real URDF) ───
+
+
+def test_openarm_manifest_joints_resolve_onto_its_urdf() -> None:
+    from openral_core import RobotDescription
+    from openral_sim.backends.isaac_sim import (
+        _gripper_spec,
+        _match_urdf_joint,
+        _parse_urdf_joints,
+    )
+
+    desc = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "openarm" / "robot.yaml"))
+    urdf = _parse_urdf_joints(_REPO_ROOT / "robots" / "openarm" / "openarm.urdf")
+    claimed: set[str] = set()
+    resolved = {}
+    for j in desc.joints:
+        resolved[j.name] = _match_urdf_joint(j, urdf, claimed)
+        claimed.add(resolved[j.name])
+    # Manifest names drop the URDF's openarm_ prefix; the (parent, child) pair
+    # resolves the arms, sim_joint_name the logical-link grippers.
+    assert resolved["left_joint1"] == "openarm_left_joint1"
+    assert resolved["right_joint7"] == "openarm_right_joint7"
+    assert resolved["left_gripper"] == "openarm_left_finger_joint1"
+    left = _gripper_spec(
+        next(j for j in desc.joints if j.name == "left_gripper"),
+        urdf["openarm_left_finger_joint1"],
+        urdf,
+    )
+    # The URDF jaw spans [-1.571, 0]; the hardware (manifest) travel is 0.785.
+    assert (left["closed"], left["open"]) == pytest.approx((0.0, -0.7854))
+    assert (left["manifest_closed"], left["manifest_open"]) == pytest.approx((0.0, 0.7854))
+    # The second finger mirrors the first through the URDF <mimic>.
+    assert left["followers"] == [
+        {"dof": "openarm_left_finger_joint2", "multiplier": -1.0, "offset": 0.0}
+    ]
+    right = _gripper_spec(
+        next(j for j in desc.joints if j.name == "right_gripper"),
+        urdf["openarm_right_finger_joint1"],
+        urdf,
+    )
+    assert (right["manifest_closed"], right["manifest_open"]) == pytest.approx((0.0, -0.7854))
+
+
+def test_ros_package_paths_from_ament_prefix_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from openral_sim.backends.isaac_sim import _ros_package_paths
+
+    urdf = _REPO_ROOT / "robots" / "openarm" / "openarm.urdf"
+    monkeypatch.setenv("AMENT_PREFIX_PATH", str(tmp_path))
+    with pytest.raises(ROSConfigError, match="openarm_description"):
+        _ros_package_paths(urdf)
+    share = tmp_path / "share" / "openarm_description"
+    share.mkdir(parents=True)
+    assert _ros_package_paths(urdf) == [{"name": "openarm_description", "path": str(share)}]
+
+
+# ── backend options + objects ─────────────────────────────────────────────────
+
+
+def test_options_reject_unknown_keys() -> None:
+    from openral_sim import SCENES
+
+    with pytest.raises(ROSConfigError):
+        SCENES.validate_options("isaac_sim", {"control_mode": "joint"})
+
+
+def test_objects_resolve_their_usd_and_key_the_sidecar() -> None:
+    from openral_sim.backends.isaac_sim import (
+        IsaacSceneObject,
+        _objects_json,
+        _scene_default_port,
+        _world_key,
+    )
+
+    box = IsaacSceneObject(
+        usd="isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd",
+        name="cracker_box",
+        xyz=(-0.45, 4.8, 0.4),
+    )
+    payload = json.loads(_objects_json([box]))
+    assert payload == [
+        {
+            "usd": "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd",
+            "name": "cracker_box",
+            "xyz": [-0.45, 4.8, 0.4],
+            "yaw": 0.0,
+            "dynamic": True,
+        }
+    ]
+    # Same stage + spawn, different props → a different sidecar.
+    a = _scene_default_port("t", "r", "manifest", _world_key("isaac:e.usd", None))
+    b = _scene_default_port(
+        "t", "r", "manifest", _world_key("isaac:e.usd", None, json.dumps(payload))
+    )
+    assert a != b
+    with pytest.raises(ROSConfigError, match=r"objects\[mesh\]\.usd"):
+        _objects_json([IsaacSceneObject(usd="props/mesh.obj", name="mesh", xyz=(0, 0, 0))])

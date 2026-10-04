@@ -60,7 +60,7 @@ def isaac_rollout():
         backend=PhysicsBackend.ISAACSIM,
         observation_height=128,
         observation_width=128,
-        backend_options={"headless": True, "boot_timeout_s": 1200, "control_mode": "joint"},
+        backend_options={"headless": True, "boot_timeout_s": 1200},
     )
     task = TaskSpec(
         id="isaac_sim/lift_cube",

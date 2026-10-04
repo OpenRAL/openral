@@ -94,6 +94,7 @@ def test_the_sidecar_scenes_are_the_ones_that_exceed_the_floor() -> None:
         "isaac_franka_bowl.yaml",
         "isaac_franka_urdf.yaml",
         "isaac_panda_mobile_urdf.yaml",
+        "isaac_openarm_warehouse.yaml",
         "isaac_panda_mobile_warehouse.yaml",
     }
 

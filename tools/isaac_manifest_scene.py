@@ -46,6 +46,13 @@ import numpy as np
 from _isaac_scene_base import IsaacSceneBase
 from numpy.typing import NDArray
 
+# Joint drive gains applied when the Isaac >= 6 URDF importer converts the robot
+# (URDFs carry no drive gains; without them the arm sags under gravity within a
+# few steps). Revolute: Nm/rad, Nm*s/rad; prismatic: N/m, N*s/m.
+# ponytail: one gain for every joint; per-joint gains from the manifest if a
+# heavy arm sags or a light one rings.
+_DRIVE_STIFFNESS = 1000.0
+_DRIVE_DAMPING = 100.0
 # Below this magnitude a gripper action channel means HOLD (don't open/close) —
 # lets a pure BODY_TWIST step (zero arm/gripper slots) leave the gripper alone.
 _GRIPPER_DEADBAND = 1e-3
@@ -66,17 +73,19 @@ def map_dof_to_manifest(
     *,
     dof_index: dict[str, int],
     manifest_joints: list[dict[str, Any]],
-    finger_dof_idx: list[int],
+    grippers: list[dict[str, Any]],
     base_values: list[float] | None = None,
     base_joints: list[str] | None = None,
+    rates: bool = False,
 ) -> NDArray[np.float32]:
     """Map an Isaac articulation DOF vector to the full manifest joint order.
 
-    Generic replacement for the Franka-specific ``_franka_dof_to_manifest``. Per
-    manifest joint: a base joint reads ``base_values`` (not a URDF DOF); an arm
-    joint reads its matching URDF DOF; a gripper joint (manifest collapses the
-    two physical fingers into one width DoF) reads the mean of ``finger_dof_idx``;
-    anything else is ``0.0``. Works for positions or velocities (same indexing).
+    Per manifest joint: a base joint reads ``base_values`` (not a URDF DOF); an
+    arm joint reads its URDF DOF (``urdf_name``); a gripper reads its leader
+    finger DOF, mapped linearly from the URDF ``closed``/``open`` targets onto
+    the manifest's own range (a normalised ``[0, 1]`` Panda width, the OpenArm
+    jaw angle) so ``/joint_states`` stays inside the manifest limits; anything
+    unresolved is ``0.0``. ``rates=True`` maps velocities (scale only, no offset).
 
     Returns:
         Vector in ``manifest_joints`` order, for ``SimAttachedHAL.read_state``
@@ -84,6 +93,7 @@ def map_dof_to_manifest(
     """
     v = np.asarray(values, dtype=np.float32).reshape(-1)
     base_idx = {name: i for i, name in enumerate(base_joints or [])}
+    by_gripper = {str(g["name"]): g for g in grippers}
     bv = base_values or []
     out: list[float] = []
     for j in manifest_joints:
@@ -91,14 +101,61 @@ def map_dof_to_manifest(
         if name in base_idx and base_idx[name] < len(bv):
             out.append(float(bv[base_idx[name]]))
             continue
-        idx = dof_index.get(name)
-        if idx is not None and idx < v.shape[0]:
-            out.append(float(v[idx]))
-        elif j.get("role") == "gripper" and finger_dof_idx:
-            out.append(float(np.mean([v[i] for i in finger_dof_idx if i < v.shape[0]] or [0.0])))
-        else:
+        idx = dof_index.get(str(j.get("urdf_name")))
+        if idx is None or idx >= v.shape[0]:
             out.append(0.0)
+            continue
+        g = by_gripper.get(name)
+        if g is None:
+            out.append(float(v[idx]))
+            continue
+        span = float(g["open"]) - float(g["closed"])
+        scale = (float(g["manifest_open"]) - float(g["manifest_closed"])) / span if span else 0.0
+        if rates:
+            out.append(float(v[idx]) * scale)
+        else:
+            out.append(float(g["manifest_closed"]) + (float(v[idx]) - float(g["closed"])) * scale)
     return np.asarray(out, dtype=np.float32)
+
+
+def _yaw_quat(yaw: float) -> NDArray[np.float64]:
+    """``(w, x, y, z)`` quaternion of a rotation by ``yaw`` about world z."""
+    return np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)])
+
+
+def strip_urdf_mimics(urdf_text: str, source_dir: str) -> str:
+    """A URDF without ``<mimic>`` tags, its relative mesh paths made absolute.
+
+    Isaac 6's converter turns ``<mimic>`` into a Newton mimic constraint that
+    destabilises PhysX articulations — OpenArm's mirrored (x -1) jaw drags its
+    wrist into spinning even with gravity off. The scene drives every mimic
+    follower itself (``grippers[].followers``), so the engine never needs the
+    constraint. The copy lives elsewhere, hence the absolute mesh paths
+    (``package://`` and absolute refs are left alone).
+
+    Example:
+        >>> text = (
+        ...     '<robot name="r"><joint name="b" type="revolute">'
+        ...     '<mimic joint="a" multiplier="-1"/></joint>'
+        ...     '<link name="l"><visual><geometry><mesh filename="m/x.stl"/>'
+        ...     "</geometry></visual></link></robot>"
+        ... )
+        >>> out = strip_urdf_mimics(text, "/robots/r")
+        >>> "mimic" in out, 'filename="/robots/r/m/x.stl"' in out
+        (False, True)
+    """
+    import os
+    import xml.etree.ElementTree as ET
+
+    root = ET.fromstring(urdf_text)
+    for joint in root.iter("joint"):
+        for mimic in joint.findall("mimic"):
+            joint.remove(mimic)
+    for mesh in root.iter("mesh"):
+        ref = mesh.attrib.get("filename", "")
+        if ref and not ref.startswith(("package://", "file://", "/")):
+            mesh.attrib["filename"] = os.path.normpath(os.path.join(source_dir, ref))
+    return ET.tostring(root, encoding="unicode")
 
 
 def compose_planar(
@@ -205,6 +262,7 @@ class IsaacManifestScene(IsaacSceneBase):
         robot_spec: dict[str, Any],
         environment_usd: str | None = None,
         spawn_pose: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0),
+        objects: list[dict[str, Any]] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -214,23 +272,26 @@ class IsaacManifestScene(IsaacSceneBase):
         # Actuated manifest joints (the planar base is handled separately in M3;
         # it has no URDF DOF). Order is the manifest order.
         self._manifest_joints: list[dict[str, Any]] = list(robot_spec.get("joints", []))
-        self._arm_names = [j["name"] for j in self._manifest_joints if j.get("role") == "arm"]
+        self._arm_names = [
+            str(j["urdf_name"]) for j in self._manifest_joints if j.get("role") == "arm"
+        ]
+        # One entry per manifest gripper: URDF leader DOF, open/closed targets,
+        # mimic followers (see openral_sim.backends.isaac_sim._gripper_spec).
+        self._grippers: list[dict[str, Any]] = list(robot_spec.get("grippers") or [])
         self._base_joints: list[str] = list(robot_spec.get("base_joints") or [])
         action = robot_spec.get("action", {}) or {}
         self._control_mode = str(action.get("control_mode", "joint_position"))
         self._arm_delta_scale = float(action.get("arm_delta_scale", 0.05))
-        self._gripper_open = float(action.get("gripper_open_m", 0.04))
-        self._gripper_closed = float(action.get("gripper_closed_m", 0.0))
-        n_gripper = sum(1 for j in self._manifest_joints if j.get("role") == "gripper")
         self._n_arm = len(self._arm_names)
-        self._has_gripper = n_gripper > 0
         self._has_base = bool(action.get("has_base", False))
         self.action_dim = int(
             action.get(
                 "dim",
-                self._n_arm + (1 if self._has_gripper else 0) + (3 if self._has_base else 0),
+                self._n_arm + len(self._grippers) + (3 if self._has_base else 0),
             )
         )
+        self._objects: list[dict[str, Any]] = list(objects or [])
+        self._object_prims: dict[str, Any] = {}
 
         # Kinematic planar base: the arm imports fix_base=True (pinned) and the
         # whole articulation root is teleported each step from an integrated
@@ -244,6 +305,11 @@ class IsaacManifestScene(IsaacSceneBase):
 
         self._robot: Any = None
         self._robot_prim = ""
+        # Isaac >= 6: the importer pins the base with a fixed joint whose body0 is
+        # not a rigid body — its localPos0/localRot0 are a WORLD-frame anchor, so
+        # placing (or kinematically driving) the robot moves that anchor rather
+        # than fighting it. None on the < 6 command importer.
+        self._anchor_joint: Any = None
         self._ArticulationAction: Any = None
         self._euler_to_quat: Any = None
         # One Isaac Camera per manifest RGB/depth sensor, base-relative so they
@@ -263,7 +329,11 @@ class IsaacManifestScene(IsaacSceneBase):
         # DOF mapping, resolved post-reset once dof_names is populated.
         self._dof_index: dict[str, int] = {}
         self._arm_dof_idx: list[int] = []
-        self._finger_dof_idx: list[int] = []
+        # Commanded joint targets (full DOF vector). Arm deltas and gripper
+        # commands accumulate here, NOT on the measured positions — otherwise a
+        # zero action re-targets wherever gravity has dragged the arm and it never
+        # holds. Re-seeded from the articulation at every reset.
+        self._target: NDArray[np.float32] | None = None
 
     def _plan_cameras(self) -> list[dict[str, Any]]:
         """Plan one base-relative camera per manifest RGB/depth sensor.
@@ -333,6 +403,14 @@ class IsaacManifestScene(IsaacSceneBase):
 
         self._ArticulationAction = ArticulationAction
 
+        # Isaac >= 6 converts the URDF to a USD file first — its importer opens
+        # its own stage, so this must run before World() owns a fresh one.
+        robot_usd = self._convert_urdf()
+        if robot_usd is not None:
+            from isaacsim.core.utils.stage import create_new_stage
+
+            create_new_stage()
+
         # NOTE: no device="cuda:0" — forcing GPU PhysX hangs the first warmup for
         # minutes on an 8 GB laptop GPU (per the PoC notes). Default device
         # renders the same scene in ~15 s.
@@ -344,15 +422,29 @@ class IsaacManifestScene(IsaacSceneBase):
 
         self._euler_to_quat = rot_utils.euler_angles_to_quats
 
-        prim_path = self._import_urdf(omni.kit.commands)
+        prim_path = (
+            self._reference_robot(robot_usd)
+            if robot_usd is not None
+            else self._import_urdf(omni.kit.commands)
+        )
         self._robot_prim = prim_path
-        self._robot = self._world.scene.add(Robot(prim_path=prim_path, name="robot"))
+        wx, wy, wz, wyaw = self._world_pose()
+        self._set_anchor(wx, wy, wz, wyaw)
+        self._robot = self._world.scene.add(
+            Robot(
+                prim_path=prim_path,
+                name="robot",
+                position=np.array([wx, wy, wz]),
+                orientation=_yaw_quat(wyaw),
+            )
+        )
 
         # On the bare bring-up stage a lidar robot gets a few static obstacles so
         # /scan, slam, and Nav2 have real geometry to map + avoid (a bare ground
         # plane returns no hits). An environment USD brings its own geometry.
         if self._lidar is not None and not self._environment_usd:
             self._add_obstacles()
+        self._add_objects()
 
         # One Camera per planned sensor. A bare deploy scene with no RGB sensor
         # still gets a default camera1 so the obs always carries a frame.
@@ -404,21 +496,77 @@ class IsaacManifestScene(IsaacSceneBase):
         """
         from isaacsim.core.utils.stage import add_reference_to_stage
 
-        if usd.startswith("isaac:"):
-            try:
-                from isaacsim.storage.native import get_assets_root_path
-            except ImportError:  # Isaac Sim < 5.0
-                from isaacsim.core.utils.nucleus import get_assets_root_path
-            root = get_assets_root_path()
-            if not root:
-                raise RuntimeError(
-                    f"environment {usd!r}: Isaac Sim reports no asset root "
-                    "(get_assets_root_path() is empty) — offline host without a "
-                    "local asset pack? Use a local path or URL instead."
-                )
-            usd = f"{str(root).rstrip('/')}/{usd[len('isaac:') :].lstrip('/')}"
+        usd = self._resolve_usd(usd)
         print(f"[isaac_manifest_scene] environment: {usd}", flush=True)
         add_reference_to_stage(usd_path=usd, prim_path="/World/environment")
+
+    @staticmethod
+    def _resolve_usd(usd: str) -> str:
+        """Expand an ``isaac:<path>`` ref against the installed Isaac asset root."""
+        if not usd.startswith("isaac:"):
+            return usd
+        try:
+            from isaacsim.storage.native import get_assets_root_path
+        except ImportError:  # Isaac Sim < 5.0
+            from isaacsim.core.utils.nucleus import get_assets_root_path
+        root = get_assets_root_path()
+        if not root:
+            raise RuntimeError(
+                f"{usd!r}: Isaac Sim reports no asset root (get_assets_root_path() is "
+                "empty) — offline host without a local asset pack? Use a local path or "
+                "URL instead."
+            )
+        return f"{str(root).rstrip('/')}/{usd[len('isaac:') :].lstrip('/')}"
+
+    def _add_objects(self) -> None:
+        """Place the scene's extra USD objects; dynamic ones are graspable rigid bodies.
+
+        Each object is ``{"usd", "name", "xyz", "yaw", "dynamic"}`` (validated
+        openral-side). A dynamic object without physics gets a rigid body on its
+        root and convex-hull colliders on its meshes; one that already carries a
+        rigid body (Isaac's ``Axis_Aligned_Physics`` YCB props) is used as is.
+        Registered with the World scene, so ``world.reset()`` puts every object
+        back at its declared pose.
+        """
+        if not self._objects:
+            return
+        from isaacsim.core.prims import SingleRigidPrim, SingleXFormPrim
+        from isaacsim.core.utils.stage import add_reference_to_stage, get_current_stage
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = get_current_stage()
+        for obj in self._objects:
+            path = f"/World/objects/{obj['name']}"
+            add_reference_to_stage(usd_path=self._resolve_usd(str(obj["usd"])), prim_path=path)
+            yaw = float(obj.get("yaw", 0.0))
+            quat = _yaw_quat(yaw)
+            pos = np.asarray(obj["xyz"], dtype=np.float64)
+            name = str(obj["name"])
+            prim: Any
+            if not obj.get("dynamic", True):
+                prim = SingleXFormPrim(prim_path=path, name=name, position=pos, orientation=quat)
+            else:
+                subtree = list(Usd.PrimRange(stage.GetPrimAtPath(path)))
+                body = next((p for p in subtree if p.HasAPI(UsdPhysics.RigidBodyAPI)), None)
+                if body is None:
+                    UsdPhysics.RigidBodyAPI.Apply(subtree[0])
+                if not any(p.HasAPI(UsdPhysics.CollisionAPI) for p in subtree):
+                    for mesh in (p for p in subtree if p.IsA(UsdGeom.Mesh)):
+                        UsdPhysics.CollisionAPI.Apply(mesh)
+                        UsdPhysics.MeshCollisionAPI.Apply(mesh).CreateApproximationAttr(
+                            "convexHull"
+                        )
+                if body is not None and body != subtree[0]:
+                    # The rigid body is a child prim: place the referencing root
+                    # and let the body ride it.
+                    SingleXFormPrim(prim_path=path, position=pos, orientation=quat)
+                    prim = SingleRigidPrim(prim_path=str(body.GetPath()), name=name)
+                else:
+                    prim = SingleRigidPrim(
+                        prim_path=path, name=name, position=pos, orientation=quat
+                    )
+            self._object_prims[name] = self._world.scene.add(prim)
+            print(f"[isaac_manifest_scene] object {obj['name']} at {pos.tolist()}", flush=True)
 
     def _add_obstacles(self) -> None:
         """Add a few static boxes around the robot for lidar/slam/Nav2 to see."""
@@ -491,8 +639,84 @@ class IsaacManifestScene(IsaacSceneBase):
             quat = self._euler_to_quat(np.array([roll, pitch, yaw + byaw_deg]), degrees=True)
             self._cameras[meta["name"]].set_world_pose(np.array([wx, wy, bz + oz]), quat)
 
+    def _convert_urdf(self) -> str | None:
+        """Isaac >= 6: convert the URDF to a USD file; ``None`` on older Isaac.
+
+        The 6.x importer (``URDFImporter``, built on ``urdf-usd-converter``)
+        replaced the ``URDFParseAndImportFile`` command. It resolves
+        ``package://`` meshes from the spec's ``ros_package_paths`` and authors
+        position drives with explicit gains (``_DRIVE_STIFFNESS``). It converts
+        a mimic-free copy (``strip_urdf_mimics``).
+        """
+        try:
+            from isaacsim.asset.importer.urdf import URDFImporter, URDFImporterConfig
+        except ImportError:
+            return None
+        import os
+        import tempfile
+
+        source = str(self._spec["urdf_path"])
+        work = tempfile.mkdtemp(prefix="openral_isaac_urdf_")
+        urdf = os.path.join(work, os.path.basename(source))
+        with open(source, encoding="utf-8") as src, open(urdf, "w", encoding="utf-8") as dst:
+            dst.write(strip_urdf_mimics(src.read(), os.path.dirname(source)))
+        config = URDFImporterConfig(
+            urdf_path=urdf,
+            usd_path=os.path.join(work, "usd"),
+            # Keep the kinematic tree faithful to the manifest: DOFs map by URDF
+            # joint name.
+            merge_fixed_joints=False,
+            fix_base=bool(self._spec.get("fix_base", True)),
+            joint_target_type="position",
+            override_joint_stiffness=_DRIVE_STIFFNESS,
+            override_joint_damping=_DRIVE_DAMPING,
+            ros_package_paths=list(self._spec.get("ros_package_paths") or []),
+        )
+        return str(URDFImporter(config).import_urdf())
+
+    def _reference_robot(self, robot_usd: str) -> str:
+        """Reference a converted robot USD into the stage; return its prim path.
+
+        The converter's asset keeps its physics behind a ``Physics`` variant set
+        (``none`` / ``physics`` / ``physx`` / ``mujoco``) with no default — PhysX
+        is selected, else the robot has no articulation.
+        """
+        import re
+
+        from isaacsim.core.utils.stage import add_reference_to_stage, get_current_stage
+        from pxr import Usd, UsdPhysics
+
+        prim_path = "/" + re.sub(r"\W", "_", str(self._spec.get("robot_id", "robot")))
+        add_reference_to_stage(usd_path=robot_usd, prim_path=prim_path)
+        stage = get_current_stage()
+        variants = stage.GetPrimAtPath(prim_path).GetVariantSets()
+        if "Physics" in variants.GetNames():
+            variants.GetVariantSet("Physics").SetVariantSelection("physx")
+        self._anchor_joint = next(
+            (
+                UsdPhysics.FixedJoint(p)
+                for p in Usd.PrimRange(stage.GetPrimAtPath(prim_path))
+                if p.IsA(UsdPhysics.FixedJoint)
+                and [str(t) for t in UsdPhysics.FixedJoint(p).GetBody0Rel().GetTargets()]
+                in ([], [prim_path])
+            ),
+            None,
+        )
+        return prim_path
+
+    def _set_anchor(self, x: float, y: float, z: float, yaw: float) -> None:
+        """Move the world-frame base anchor (Isaac >= 6) to a world pose."""
+        if self._anchor_joint is None:
+            return
+        from pxr import Gf
+
+        self._anchor_joint.GetLocalPos0Attr().Set(Gf.Vec3f(x, y, z))
+        self._anchor_joint.GetLocalRot0Attr().Set(
+            Gf.Quatf(float(np.cos(yaw / 2)), 0.0, 0.0, float(np.sin(yaw / 2)))
+        )
+
     def _import_urdf(self, commands: Any) -> str:
-        """Run the Isaac URDF importer; return the imported articulation prim path."""
+        """Isaac < 6: run the command-based URDF importer; return the prim path."""
         urdf_path = str(self._spec["urdf_path"])
         _status, import_config = commands.execute("URDFCreateImportConfig")
         # Keep the kinematic tree faithful to the manifest: do NOT merge fixed
@@ -520,9 +744,16 @@ class IsaacManifestScene(IsaacSceneBase):
         """Index the imported articulation's DOFs by name (post-reset)."""
         dof_names = [str(n) for n in (self._robot.dof_names or [])]
         self._dof_index = {n: i for i, n in enumerate(dof_names)}
-        self._arm_dof_idx = [self._dof_index[n] for n in self._arm_names if n in self._dof_index]
-        # Finger DOFs back the collapsed manifest gripper joint.
-        self._finger_dof_idx = [i for i, n in enumerate(dof_names) if "finger" in n.lower()]
+        missing = [n for n in self._arm_names if n not in self._dof_index]
+        missing += [
+            name
+            for g in self._grippers
+            for name in [g["leader"], *(f["dof"] for f in g["followers"])]
+            if name not in self._dof_index
+        ]
+        if missing:
+            raise RuntimeError(f"URDF joints {missing} are not DOFs of the imported robot.")
+        self._arm_dof_idx = [self._dof_index[n] for n in self._arm_names]
 
     # ── IsaacSceneBase template methods ──────────────────────────────────────
 
@@ -531,26 +762,32 @@ class IsaacManifestScene(IsaacSceneBase):
             # JOINT_POSITION (+ kinematic base) is wired; CARTESIAN_DELTA (Lula IK)
             # for EE-delta VLAs is a follow-up.
             raise NotImplementedError(f"control_mode {self._control_mode!r} not wired yet")
-        # Action layout: [arm deltas (n_arm), gripper (0/1), base twist (0/3)].
-        current = np.asarray(self._robot.get_joint_positions(), dtype=np.float32).reshape(-1)
-        target = current.copy()
+        # Action layout: [arm deltas (n_arm), one slot per gripper, base twist (0/3)].
+        if self._target is None:
+            self._target = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
+        target = self._target
         for k, dof_i in enumerate(self._arm_dof_idx):
             if k < action.shape[0]:
-                target[dof_i] = current[dof_i] + float(action[k]) * self._arm_delta_scale
-        if self._has_gripper and self._finger_dof_idx and action.shape[0] > self._n_arm:
-            cmd = float(action[self._n_arm])
+                target[dof_i] += float(action[k]) * self._arm_delta_scale
+        for gi, g in enumerate(self._grippers):
+            slot = self._n_arm + gi
+            cmd = float(action[slot]) if slot < action.shape[0] else 0.0
             # Deadband: a ~0 gripper command means HOLD (don't toggle), so a pure
             # base move (BODY_TWIST → zero arm/gripper slots) doesn't clamp the
             # gripper shut every /cmd_vel tick. >0 opens, <0 closes.
             if abs(cmd) > _GRIPPER_DEADBAND:
-                finger = self._gripper_open if cmd > 0.0 else self._gripper_closed
-                for fi in self._finger_dof_idx:
-                    target[fi] = finger
+                lead = float(g["open"] if cmd > 0.0 else g["closed"])
+                target[self._dof_index[g["leader"]]] = lead
+                # Mimic followers (the second finger) — the URDF <mimic> relation.
+                for f in g["followers"]:
+                    target[self._dof_index[f["dof"]]] = float(f["multiplier"]) * lead + float(
+                        f["offset"]
+                    )
         self._robot.get_articulation_controller().apply_action(
             self._ArticulationAction(joint_positions=target)
         )
         if self._has_base:
-            base_i = self._n_arm + (1 if self._has_gripper else 0)
+            base_i = self._n_arm + len(self._grippers)
             if action.shape[0] >= base_i + 3:
                 self._integrate_base(
                     float(action[base_i]), float(action[base_i + 1]), float(action[base_i + 2])
@@ -574,11 +811,20 @@ class IsaacManifestScene(IsaacSceneBase):
         self._base_pose = [x, y, yaw]
         self._place_robot()
 
-    def _place_robot(self) -> None:
-        """Teleport the pinned root to spawn ∘ odom; the mounted cameras follow."""
+    def _world_pose(self) -> tuple[float, float, float, float]:
+        """World ``(x, y, z, yaw)`` of the robot root: spawn ∘ odom, plus the mount height."""
         wx, wy, wz, wyaw = compose_planar(self._spawn, self._base_pose)
-        quat = np.array([float(np.cos(wyaw / 2)), 0.0, 0.0, float(np.sin(wyaw / 2))])  # wxyz
-        self._robot.set_world_pose(np.array([wx, wy, wz + self._mount_z]), quat)
+        return wx, wy, wz + self._mount_z, wyaw
+
+    def _place_robot(self) -> None:
+        """Move the pinned root to spawn ∘ odom; the mounted cameras follow.
+
+        Moves the base anchor and teleports the root together, so the pinning
+        joint is satisfied at the new pose instead of yanking the robot back.
+        """
+        wx, wy, wz, wyaw = self._world_pose()
+        self._set_anchor(wx, wy, wz, wyaw)
+        self._robot.set_world_pose(np.array([wx, wy, wz]), _yaw_quat(wyaw))
         self._update_camera_poses()
 
     def _on_reset(self, rng: np.random.Generator) -> None:
@@ -589,6 +835,11 @@ class IsaacManifestScene(IsaacSceneBase):
         # world.reset() puts the pinned root back at its import pose (the
         # origin); move it to the spawn before the warmup steps settle physics.
         self._place_robot()
+        # Hold the reset pose until the first command arrives.
+        self._target = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
+        self._robot.get_articulation_controller().apply_action(
+            self._ArticulationAction(joint_positions=self._target)
+        )
 
     def _observe(self) -> dict[str, Any]:
         obs = super()._observe()
@@ -657,6 +908,24 @@ class IsaacManifestScene(IsaacSceneBase):
         # Bare bring-up scene: no task reward / termination.
         return 0.0, False
 
+    def _extra_info(self) -> dict[str, Any]:
+        """Simulator ground truth in the step ``info`` — never a policy observation.
+
+        ``robot_position``: the articulation root's world ``[x, y, z]`` as PhysX
+        holds it (where the robot physically is, vs. the integrated odometry);
+        ``object_positions``: ``{name: [x, y, z]}`` per scene object, for
+        checking a grasp or a placement.
+        """
+        info: dict[str, Any] = {
+            "robot_position": [float(v) for v in self._robot.get_world_pose()[0]]
+        }
+        if self._object_prims:
+            info["object_positions"] = {
+                name: [float(v) for v in prim.get_world_pose()[0]]
+                for name, prim in self._object_prims.items()
+            }
+        return info
+
     def _joint_positions(self) -> NDArray[np.float32] | None:
         if self._robot is None:
             return None
@@ -664,7 +933,7 @@ class IsaacManifestScene(IsaacSceneBase):
             np.asarray(self._robot.get_joint_positions(), dtype=np.float32),
             dof_index=self._dof_index,
             manifest_joints=self._manifest_joints,
-            finger_dof_idx=self._finger_dof_idx,
+            grippers=self._grippers,
             base_values=list(self._base_pose),  # base joints = kinematic (x, y, yaw)
             base_joints=self._base_joints,
         )
@@ -678,7 +947,8 @@ class IsaacManifestScene(IsaacSceneBase):
             np.asarray(self._robot.get_joint_velocities(), dtype=np.float32),
             dof_index=self._dof_index,
             manifest_joints=self._manifest_joints,
-            finger_dof_idx=self._finger_dof_idx,
+            grippers=self._grippers,
             base_values=[0.0 for _ in self._base_joints],
             base_joints=self._base_joints,
+            rates=True,
         )

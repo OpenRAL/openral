@@ -98,6 +98,22 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="robot world placement, metres + radians (manifest layout only)",
     )
     p.add_argument(
+        "--objects-json",
+        default=None,
+        help=(
+            "JSON list of extra scene objects (manifest layout only): "
+            '[{"usd", "name", "xyz", "yaw", "dynamic"}, ...]'
+        ),
+    )
+    p.add_argument(
+        "--site-dir",
+        default=None,
+        help=(
+            "extra import dir prepended to sys.path (a binary Isaac Sim install's "
+            "pyzmq/msgpack, installed beside it rather than into it)"
+        ),
+    )
+    p.add_argument(
         "--require-min",
         action="append",
         default=[],
@@ -111,9 +127,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     args = p.parse_args(argv)
     if args.layout != "manifest" and (
-        args.environment_usd or any(v != 0.0 for v in args.spawn_pose)
+        args.environment_usd or args.objects_json or any(v != 0.0 for v in args.spawn_pose)
     ):
-        p.error("--environment-usd / --spawn-pose need --layout manifest")
+        p.error("--environment-usd / --spawn-pose / --objects-json need --layout manifest")
     return args
 
 
@@ -154,8 +170,19 @@ def _check_required_versions(requirements: list[str]) -> None:
 
 def main(argv: list[str]) -> int:
     args = _parse_args(argv)
+    if args.site_dir:
+        sys.path.insert(0, args.site_dir)
     # Before the ~50 s Kit boot: a stale venv must not cost a full boot timeout.
     _check_required_versions(args.require_min)
+
+    # A shared, root-owned binary install (/opt/isaac-sim) can't take Kit's
+    # caches + documents: point Kit at a per-user data root instead (Kit reads
+    # --portable-root off sys.argv).
+    isaac_root = os.environ.get("ISAAC_PATH")
+    if isaac_root and not os.access(os.path.join(isaac_root, "kit"), os.W_OK):
+        kit_data = os.path.expanduser("~/.cache/openral/isaac-sidecar/kit-data")
+        os.makedirs(kit_data, exist_ok=True)
+        sys.argv += ["--portable-root", kit_data]
 
     # 1) Launch the Kit app FIRST — every omni.* / isaaclab import below depends
     #    on a live SimulationApp.
@@ -178,6 +205,7 @@ def main(argv: list[str]) -> int:
                 robot_spec=robot_spec,
                 environment_usd=args.environment_usd,
                 spawn_pose=tuple(args.spawn_pose),
+                objects=json.loads(args.objects_json) if args.objects_json else None,
                 obs_height=args.obs_height,
                 obs_width=args.obs_width,
                 instruction=args.instruction,

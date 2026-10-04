@@ -28,14 +28,15 @@ Lifecycle (mirrors the RLDX adapter's auto-spawn block)
 
 Sidecar python resolution
 -------------------------
-The launcher runs under the **isaac** venv, not this one. We resolve its
-interpreter from ``OPENRAL_ISAAC_SIDECAR_PYTHON`` (absolute path to the py3.11
-venv's ``python``). That venv (Isaac Sim is a ~50 GB, RTX-only, license-gated
-install) is provisioned out of band by the user — there is no auto-install plan
-for it, unlike the lightweight openral-side ``isaac_client`` wire deps. Without
-the env var set we fall back to the cache default
-(``~/.cache/openral/isaac-sidecar/.venv/bin/python``) and raise a typed
-``ROSConfigError`` carrying the exact provisioning commands if absent.
+The launcher runs under the **isaac** interpreter, not this one. We resolve it
+from ``OPENRAL_ISAAC_SIDECAR_PYTHON`` (absolute path to a pip venv's ``python``
+or a binary install's ``python.sh``), else the opt-in auto-provisioned pip venv
+(``~/.cache/openral/isaac-sidecar/.venv``), else a host-wide **binary install**
+(``/opt/isaac-sim/python.sh``, NVIDIA's standalone package — any Isaac Sim
+release whose Python the sidecar supports), and raise a typed ``ROSConfigError``
+carrying the exact provisioning commands if none exists. A binary install's
+Python lacks the sidecar's two wire deps (pyzmq, msgpack); they go into a
+per-install user-cache dir (``--site-dir``), never into the install itself.
 
 Scene category: **free-axis** (``fixed_robot=None``). The sidecar's env is
 Franka-based today but the scene is robot-flagged for forward compatibility with
@@ -82,9 +83,9 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
+from pydantic import BaseModel, ConfigDict, Field
 
 from openral_sim._sidecar_common import ensure_pip_venv, run_cmd, sidecar_port_for_key
-from openral_sim._sidecar_common import opt_num as _opt_num
 from openral_sim.registry import SCENES
 from openral_sim.sidecar import SidecarClient, SidecarSimRollout
 
@@ -133,6 +134,11 @@ _ISAAC_CUDA_FLOORS = {
     "nvidia-cusparse-cu12": "12.5",
 }
 _ISAAC_CUDA_DEPS = tuple(f"{dist}>={floor},<13" for dist, floor in _ISAAC_CUDA_FLOORS.items())
+# Host-wide Isaac Sim binary installs (NVIDIA's standalone package), probed after
+# the pip venv. Each root ships ``python.sh`` (its bundled interpreter + env).
+_BINARY_INSTALL_ROOTS = (Path("/opt/isaac-sim"), Path.home() / "isaacsim")
+# The sidecar's wire deps, installed beside (not into) a binary install.
+_BINARY_SITE_DEPS = ("pyzmq", "msgpack")
 # Default ZMQ endpoint. Distinct port from the RLDX sidecar (5555-ish) so the
 # two can coexist on one host.
 _DEFAULT_HOST = "127.0.0.1"
@@ -170,10 +176,6 @@ _DEFAULT_TIMEOUT_MS = 120_000
 _DEFAULT_BOOT_TIMEOUT_S = 900.0
 # Truncation cap when the scene comes from a taskless DeployScene (deploy sim).
 _DEFAULT_MAX_STEPS = 1_000_000
-# Above this (m), a manifest gripper position-limit reads as a NORMALISED [0, 1]
-# width rather than physical Panda finger travel — don't apply it to the Isaac
-# finger DOF (it would tear the joint); fall back to the Panda default.
-_MAX_PHYSICAL_GRIPPER_TRAVEL_M = 0.1
 
 
 # ── SimRollout adapter ────────────────────────────────────────────────────────
@@ -335,10 +337,15 @@ def _sidecar_python() -> Path:
     default = _ISAAC_SIDECAR_HOME / ".venv" / "bin" / "python"
     if default.is_file():
         return default
+    for root in _BINARY_INSTALL_ROOTS:
+        if (root / "python.sh").is_file():
+            print(f"[isaac-sidecar] using the Isaac Sim binary install at {root}", flush=True)
+            return root / "python.sh"
     raise ROSConfigError(
         "Isaac Sim sidecar venv not found. It is an externally-provisioned "
         "dependency (NVIDIA Isaac Sim / Isaac Lab, separate license, RTX GPU). "
-        "Set "
+        "No binary install found either "
+        f"({', '.join(str(r) for r in _BINARY_INSTALL_ROOTS)}). Set "
         f"{_AUTO_PROVISION_ENV}=1 to auto-provision it (a multi-GB download), or "
         f"provision it manually and point {_SIDECAR_PYTHON_ENV} at its py3.11 python:\n"
         "  uv venv --python 3.11 ~/.cache/openral/isaac-sidecar/.venv\n"
@@ -348,6 +355,40 @@ def _sidecar_python() -> Path:
         "    isaacsim-sensor==5.1.0.0 isaacsim-robot-motion==5.1.0.0 \\\n"
         "    isaacsim-asset==5.1.0.0 pyzmq msgpack 'nvidia-nvjitlink-cu12>=12.8,<13'"
     )
+
+
+def _is_binary_install(py: Path) -> bool:
+    """True when ``py`` is a binary install's ``python.sh``, not a pip venv's python.
+
+    The two need different handling: a pip venv carries the CUDA ``nvidia-*``
+    wheels the ``--require-min`` floors check, and the wire deps; a binary install
+    bundles its own CUDA runtime and needs the wire deps beside it
+    (``_binary_site_dir``).
+    """
+    return py.name == "python.sh"
+
+
+def _binary_site_dir(py: Path) -> Path:
+    """Install the sidecar's wire deps for a binary install; return the dir.
+
+    ``pip install --target`` with the install's own interpreter (ABI-matched),
+    into a user-cache dir keyed on the install path + its ``VERSION`` — never into
+    the (often root-owned, shared) install itself. Idempotent via a sentinel.
+    """
+    import hashlib
+
+    version_file = py.parent / "VERSION"
+    version = version_file.read_text().strip() if version_file.is_file() else "unknown"
+    key = hashlib.sha256(f"{py}|{version}".encode()).hexdigest()[:12]
+    site = _ISAAC_SIDECAR_HOME / "binary-site" / key
+    sentinel = site / ".deps-installed"
+    if not sentinel.is_file():
+        run_cmd(
+            "isaac-sidecar",
+            [str(py), "-m", "pip", "install", "--target", str(site), *_BINARY_SITE_DEPS],
+        )
+        sentinel.write_text(f"{py}\n{version}\n")
+    return site
 
 
 def _locate_sidecar_script() -> Path:
@@ -369,6 +410,54 @@ def _locate_sidecar_script() -> Path:
     )
 
 
+# ── backend options ──
+
+
+class IsaacSceneObject(BaseModel):
+    """One extra USD object placed in the ``isaac_sim`` manifest scene.
+
+    ``usd`` takes the same forms as ``scene.assets_uri`` (local path, URL,
+    ``isaac:<path>``). ``dynamic`` objects are graspable rigid bodies (a rigid
+    body + convex-hull colliders are added when the asset has none); static ones
+    are fixed props. ``yaw`` is radians about world z.
+
+    Example:
+        >>> IsaacSceneObject(
+        ...     usd="isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd",
+        ...     name="cracker_box",
+        ...     xyz=(-0.4, 5.0, 0.35),
+        ... ).dynamic
+        True
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    usd: str
+    name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    xyz: tuple[float, float, float]
+    yaw: float = 0.0
+    dynamic: bool = True
+
+
+class IsaacSimOptions(BaseModel):
+    """``scene.backend_options`` for the ``isaac_sim`` scene (validated at load).
+
+    Example:
+        >>> IsaacSimOptions().headless
+        True
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    layout: str | None = Field(default=None, pattern=r"^(lift_cube|bowl_plate|manifest)$")
+    headless: bool = True
+    host: str = _DEFAULT_HOST
+    port: int | None = Field(default=None, ge=1, le=65535)
+    boot_timeout_s: float = Field(default=_DEFAULT_BOOT_TIMEOUT_S, gt=0)
+    timeout_ms: int = Field(default=_DEFAULT_TIMEOUT_MS, gt=0)
+    objects: list[IsaacSceneObject] = Field(default_factory=list)
+
+
 # ── environment + spawn (manifest layout) ──
 
 _USD_SUFFIXES = (".usd", ".usda", ".usdc", ".usdz")
@@ -378,8 +467,8 @@ _REMOTE_USD_PREFIXES = ("isaac:", "http://", "https://", "omniverse://")
 _PLANAR_QUAT_TOL = 1e-4
 
 
-def _resolve_environment_usd(assets_uri: str | None) -> str | None:
-    """Validate ``scene.assets_uri`` as an environment USD for the sidecar.
+def _resolve_environment_usd(assets_uri: str | None, field: str = "scene.assets_uri") -> str | None:
+    """Validate ``scene.assets_uri`` (or an object's ``usd``) as a USD for the sidecar.
 
     Remote forms (``isaac:``, ``http(s)://``, ``omniverse://``) pass through; a
     local path (optionally ``file://``) is resolved against the working
@@ -395,14 +484,13 @@ def _resolve_environment_usd(assets_uri: str | None) -> str | None:
         return None
     if not assets_uri.lower().endswith(_USD_SUFFIXES):
         raise ROSConfigError(
-            f"scene.assets_uri {assets_uri!r} is not a USD file "
-            f"({', '.join(_USD_SUFFIXES)}); the isaac_sim scene loads it as its environment."
+            f"{field} {assets_uri!r} is not a USD file ({', '.join(_USD_SUFFIXES)})."
         )
     if assets_uri.startswith(_REMOTE_USD_PREFIXES):
         return assets_uri
     path = Path(assets_uri.removeprefix("file://")).expanduser().resolve()
     if not path.is_file():
-        raise ROSConfigError(f"scene.assets_uri {assets_uri!r}: no such file ({path}).")
+        raise ROSConfigError(f"{field} {assets_uri!r}: no such file ({path}).")
     return str(path)
 
 
@@ -435,16 +523,32 @@ def _spawn_pose(base_pose: Pose6D | None) -> tuple[float, float, float, float]:
     return (x, y, z, 2.0 * math.atan2(qz, qw))
 
 
-def _world_key(environment_usd: str | None, base_pose: Pose6D | None) -> str:
-    """The environment + spawn part of a scene's sidecar identity.
+def _world_key(
+    environment_usd: str | None, base_pose: Pose6D | None, objects_json: str = ""
+) -> str:
+    """The environment + spawn + objects part of a scene's sidecar identity.
 
-    Empty when neither is set, so a scene without them keeps its pre-existing
-    port; otherwise two scenes differing only in stage or spawn get distinct
-    sidecars (``_scene_default_port``).
+    Empty when none is set, so a scene without them keeps its pre-existing
+    port; otherwise two scenes differing only in stage, spawn or objects get
+    distinct sidecars (``_scene_default_port``).
     """
-    if environment_usd is None and base_pose is None:
+    if environment_usd is None and base_pose is None and not objects_json:
         return ""
-    return f"{environment_usd or ''}|{list(_spawn_pose(base_pose))}"
+    key = f"{environment_usd or ''}|{list(_spawn_pose(base_pose))}"
+    return key + (f"|{objects_json}" if objects_json else "")
+
+
+def _objects_json(objects: list[IsaacSceneObject]) -> str:
+    """The validated objects as the sidecar's ``--objects-json`` (USDs resolved)."""
+    return json.dumps(
+        [
+            {
+                **o.model_dump(),
+                "usd": _resolve_environment_usd(o.usd, field=f"objects[{o.name}].usd"),
+            }
+            for o in objects
+        ]
+    )
 
 
 # ── robot-spec marshalling (robot-agnostic manifest scene) ──
@@ -482,15 +586,178 @@ def _sensor_dict(sensor: SensorSpec) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True)
+class _UrdfJoint:
+    """One ``<joint>`` of a URDF, as far as the Isaac spec needs it."""
+
+    name: str
+    joint_type: str
+    parent: str
+    child: str
+    lower: float | None
+    upper: float | None
+    mimic: tuple[str, float, float] | None  # (leader, multiplier, offset)
+
+
+def _parse_urdf_joints(urdf_path: Path) -> dict[str, _UrdfJoint]:
+    """``{name: _UrdfJoint}`` for every joint in a URDF (stdlib XML; URDF is XML)."""
+    import xml.etree.ElementTree as ET
+
+    joints: dict[str, _UrdfJoint] = {}
+    for el in ET.parse(urdf_path).getroot().iter("joint"):
+        parent, child = el.find("parent"), el.find("child")
+        if parent is None or child is None:
+            continue  # a <transmission>'s <joint> reference, not a joint
+        limit, mimic = el.find("limit"), el.find("mimic")
+        joints[el.attrib["name"]] = _UrdfJoint(
+            name=el.attrib["name"],
+            joint_type=el.attrib.get("type", "fixed"),
+            parent=parent.attrib["link"],
+            child=child.attrib["link"],
+            lower=None
+            if limit is None or "lower" not in limit.attrib
+            else float(limit.attrib["lower"]),
+            upper=None
+            if limit is None or "upper" not in limit.attrib
+            else float(limit.attrib["upper"]),
+            mimic=None
+            if mimic is None
+            else (
+                mimic.attrib["joint"],
+                float(mimic.attrib.get("multiplier", 1.0)),
+                float(mimic.attrib.get("offset", 0.0)),
+            ),
+        )
+    return joints
+
+
+def _urdf_subtree_links(urdf: dict[str, _UrdfJoint], root: str) -> set[str]:
+    """Every link below ``root`` in the URDF kinematic tree."""
+    children: dict[str, list[str]] = {}
+    for j in urdf.values():
+        children.setdefault(j.parent, []).append(j.child)
+    out: set[str] = set()
+    stack = [root]
+    while stack:
+        for c in children.get(stack.pop(), []):
+            if c not in out:
+                out.add(c)
+                stack.append(c)
+    return out
+
+
+def _match_urdf_joint(j: Any, urdf: dict[str, _UrdfJoint], claimed: set[str]) -> str:
+    """The URDF joint a manifest joint drives, by the URDF's own structure.
+
+    In order: the manifest name itself; the URDF joint with the same
+    ``(parent_link, child_link)``; ``sim_joint_name`` (when it is a URDF joint —
+    it usually names the MuJoCo joint, so it is not trusted first); else the one
+    unclaimed, movable, non-mimic URDF joint below the manifest ``parent_link``
+    (a gripper whose manifest child is a logical link, e.g. ``panda_finger_pair``).
+
+    Raises:
+        ROSConfigError: no match, or an ambiguous subtree.
+    """
+    if j.name in urdf:
+        return str(j.name)
+    for u in urdf.values():
+        if (u.parent, u.child) == (j.parent_link, j.child_link):
+            return u.name
+    if j.sim_joint_name and j.sim_joint_name in urdf:
+        return str(j.sim_joint_name)
+    below = _urdf_subtree_links(urdf, str(j.parent_link))
+    candidates = [
+        u.name
+        for u in urdf.values()
+        if u.child in below
+        and u.joint_type != "fixed"
+        and u.mimic is None
+        and u.name not in claimed
+    ]
+    if len(candidates) == 1:
+        return candidates[0]
+    raise ROSConfigError(
+        f"manifest joint {j.name!r} matches no URDF joint (by name, "
+        f"({j.parent_link!r}, {j.child_link!r}), or sim_joint_name {j.sim_joint_name!r}); "
+        f"movable URDF joints below {j.parent_link!r}: {candidates or 'none'}."
+    )
+
+
+def _gripper_spec(j: Any, leader: _UrdfJoint, urdf: dict[str, _UrdfJoint]) -> dict[str, Any]:
+    """Open/closed targets (URDF units) + mimic followers for one manifest gripper.
+
+    ``closed`` is the URDF limit nearer zero and ``open`` lies toward the other
+    limit — by at most the manifest's own travel when that is the smaller (the
+    hardware range: OpenArm's jaw spans 0.785 rad of the URDF's 1.571). A
+    manifest range in other units (a normalised ``[0, 1]`` width) only ever
+    shrinks nothing — the URDF travel wins. The manifest's own closed/open ends
+    (nearer/farther from zero) map ``/joint_states`` back into manifest units.
+    """
+    if leader.lower is None or leader.upper is None:
+        raise ROSConfigError(f"URDF gripper joint {leader.name!r} has no <limit>.")
+    closed, far = sorted((leader.lower, leader.upper), key=abs)
+    m_lo, m_hi = j.position_limits if j.position_limits is not None else (0.0, 1.0)
+    m_closed, m_open = sorted((float(m_lo), float(m_hi)), key=abs)
+    travel = min(abs(far - closed), abs(m_open - m_closed))
+    opened = closed + math.copysign(travel, far - closed)
+    return {
+        "name": j.name,
+        "leader": leader.name,
+        "closed": closed,
+        "open": opened,
+        "manifest_closed": m_closed,
+        "manifest_open": m_open,
+        "followers": [
+            {"dof": u.name, "multiplier": u.mimic[1], "offset": u.mimic[2]}
+            for u in urdf.values()
+            if u.mimic is not None and u.mimic[0] == leader.name
+        ],
+    }
+
+
+def _ros_package_paths(urdf_path: Path) -> list[dict[str, str]]:
+    """Resolve every ``package://<pkg>/`` root a URDF references.
+
+    The standard ROS 2 lookup first (``<AMENT_PREFIX_PATH entry>/share/<pkg>``),
+    so a URDF whose meshes live in a sourced workspace imports without copying
+    them; else an ancestor directory of the URDF named ``<pkg>`` (a standalone
+    description repo, e.g. the ``robot_descriptions`` cache).
+
+    Raises:
+        ROSConfigError: a referenced package is found neither way.
+    """
+    import re
+
+    pkgs = sorted(set(re.findall(r"package://([^/\"']+)/", urdf_path.read_text())))
+    prefixes = [p for p in os.environ.get("AMENT_PREFIX_PATH", "").split(os.pathsep) if p]
+    out: list[dict[str, str]] = []
+    for pkg in pkgs:
+        candidates = [Path(p) / "share" / pkg for p in prefixes]
+        candidates += [a for a in urdf_path.parents if a.name == pkg]
+        share = next((c for c in candidates if c.is_dir()), None)
+        if share is None:
+            raise ROSConfigError(
+                f"URDF {urdf_path} references package://{pkg}/, found on no "
+                f"AMENT_PREFIX_PATH entry (share/{pkg}) nor as an ancestor directory; "
+                "source the ROS workspace that provides it."
+            )
+        out.append({"name": pkg, "path": str(share)})
+    return out
+
+
 def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
     """Marshal a ``RobotDescription`` to the JSON isaac robot spec.
 
-    Resolves the manifest ``assets.urdf.ref`` to an on-disk file (the
-    ``python:<module>:<attr>`` form resolves where ``robot_descriptions`` lives,
-    on this py3.12 side), then carries the URDF path + actuated-joint order/role +
-    action contract + sensors. The planar base joints (``base_joints``) are
-    excluded from ``joints`` — they are not URDF DOFs; the sidecar adds the base
-    programmatically (M3).
+    Resolves the manifest ``assets.urdf.ref`` to an on-disk file, maps every
+    actuated manifest joint onto its URDF joint (``_match_urdf_joint`` — manifest
+    names, URDF names and MuJoCo ``sim_joint_name`` all differ across robots),
+    and carries the action contract, one entry per gripper (open/closed targets
+    + mimic followers, ``_gripper_spec``), the ``package://`` roots the URDF
+    needs, and the sensors. The planar base joints (``base_joints``) are not URDF
+    DOFs; the sidecar drives the base kinematically.
+
+    Action layout: ``[arm joints (manifest order), one slot per gripper, base
+    twist (vx, vy, wyaw) when mobile]``.
     """
     from openral_core.assets import AssetRefError, resolve_asset
 
@@ -513,21 +780,18 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
         raise ROSConfigError(
             f"assets.urdf.ref {desc.assets.urdf.ref!r} for {robot_id!r} did not resolve to a file."
         )
-    urdf = str(urdf_path)
-
+    urdf_path = urdf_path.resolve()
+    urdf = _parse_urdf_joints(urdf_path)
     base_joint_names = set(desc.base_joints or [])
 
     def _joint_type(j: Any) -> str:
         return getattr(j.joint_type, "value", str(j.joint_type))
 
     def _eff_role(j: Any) -> str:
-        """Normalise the joint role for the sidecar's joint wiring.
+        """``base`` (kinematic, not a URDF DOF) / ``gripper`` / otherwise ``arm``.
 
-        ``base`` = a planar-base joint (driven kinematically, not a URDF DOF);
-        ``gripper`` = the manifest gripper (collapsed two-finger width DoF);
-        otherwise ``arm`` — the URDF DOFs the articulation controller drives. The
-        manifest's own ``role`` is advisory and often left ``unknown`` on arm
-        joints (e.g. ``franka_panda`` tags only the gripper).
+        The manifest's own ``role`` is advisory and often left ``unknown`` on
+        arm joints (e.g. ``franka_panda`` tags only the gripper).
         """
         if j.name in base_joint_names:
             return "base"
@@ -535,53 +799,43 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
             return "gripper"
         return "arm"
 
-    # Keep ALL non-fixed manifest joints in order (URDF fixed joints carry no DOF):
-    # base joints stay so the sidecar can fill /joint_states from the kinematic
-    # base pose; arm/gripper map to URDF DOFs.
+    # Keep ALL non-fixed manifest joints in order (base joints stay so the sidecar
+    # can fill /joint_states from the kinematic base pose).
     joints = [j for j in desc.joints if _joint_type(j) != "fixed"]
-    arm_n = sum(1 for j in joints if _eff_role(j) == "arm")
-    has_gripper = any(_eff_role(j) == "gripper" for j in joints)
-    # A planar base (base_joints) is driven kinematically, not as URDF DOFs — its
-    # 3 twist channels (vx, vy, wyaw, base frame) extend the action vector.
-    has_base = bool(desc.base_joints)
-
-    gripper_open, gripper_closed = 0.04, 0.0
+    claimed: set[str] = set()
+    entries: list[dict[str, Any]] = []
+    grippers: list[dict[str, Any]] = []
     for j in joints:
-        if _eff_role(j) == "gripper" and j.position_limits is not None:
-            lo, hi = float(j.position_limits[0]), float(j.position_limits[1])
-            # Use the manifest limits only when they read as physical finger
-            # travel (metres). Some manifests (e.g. panda_mobile) declare a
-            # NORMALISED [0, 1] gripper width — applying 1.0 m to the Isaac
-            # finger DOF would tear the joint, so fall back to the Panda default.
-            if 0.0 <= lo < hi <= _MAX_PHYSICAL_GRIPPER_TRAVEL_M:
-                gripper_closed, gripper_open = lo, hi
-            break
+        role = _eff_role(j)
+        urdf_name = None
+        if role != "base":
+            urdf_name = _match_urdf_joint(j, urdf, claimed)
+            claimed.add(urdf_name)
+            if role == "gripper":
+                grippers.append(_gripper_spec(j, urdf[urdf_name], urdf))
+        entries.append(
+            {"name": j.name, "role": role, "joint_type": _joint_type(j), "urdf_name": urdf_name}
+        )
+    arm_n = sum(1 for e in entries if e["role"] == "arm")
+    has_base = bool(desc.base_joints)
 
     return {
         "robot_id": robot_id,
-        "urdf_path": urdf,
+        "urdf_path": str(urdf_path),
+        "ros_package_paths": _ros_package_paths(urdf_path),
         "base_frame": desc.base_frame,
         # The arm is always pinned to its (possibly moving) root: a fixed arm is
         # pinned to the world; a mobile base teleports that pinned root each step
-        # (kinematic base). Either way fix_base=True keeps
-        # the arm from falling.
+        # (kinematic base). Either way fix_base=True keeps the arm from falling.
         "fix_base": True,
-        "joints": [
-            {
-                "name": j.name,
-                "role": _eff_role(j),
-                "joint_type": _joint_type(j),
-            }
-            for j in joints
-        ],
+        "joints": entries,
+        "grippers": grippers,
         "base_joints": desc.base_joints,
         "base_kinematics": desc.base_kinematics,
         "action": {
-            "dim": arm_n + (1 if has_gripper else 0) + (3 if has_base else 0),
+            "dim": arm_n + len(grippers) + (3 if has_base else 0),
             "control_mode": "joint_position",
             "arm_delta_scale": 0.05,
-            "gripper_open_m": gripper_open,
-            "gripper_closed_m": gripper_closed,
             "has_base": has_base,
         },
         "sensors": [_sensor_dict(s) for s in desc.sensors],
@@ -633,7 +887,32 @@ def provision_isaac_sim() -> None:
     from openral_sim._deps import ensure_backend_deps
 
     ensure_backend_deps("isaac_client")
-    _sidecar_python()
+    py = _sidecar_python()
+    if _is_binary_install(py):
+        _binary_site_dir(py)
+
+
+def _placement(
+    env_cfg: SimEnvironment, opts: IsaacSimOptions
+) -> tuple[str, str | None, tuple[float, float, float, float], str, str]:
+    """``(layout, environment_usd, spawn, objects_json, world_key)`` for a scene.
+
+    An environment / spawn pose / objects are manifest-layout features (the PoC
+    layouts hardcode their own stage), so they imply that layout; contradicting
+    it is an error rather than a silently ignored field.
+    """
+    environment_usd = _resolve_environment_usd(env_cfg.scene.assets_uri)
+    spawn = _spawn_pose(env_cfg.base_pose)
+    objects_json = _objects_json(opts.objects) if opts.objects else ""
+    placed = environment_usd is not None or env_cfg.base_pose is not None or bool(objects_json)
+    layout = opts.layout or ("manifest" if placed else "lift_cube")
+    if placed and layout != "manifest":
+        raise ROSConfigError(
+            f"isaac_sim layout {layout!r} has a hardcoded stage; scene.assets_uri / "
+            "base_pose / objects need layout 'manifest' (the default when any is set)."
+        )
+    world = _world_key(environment_usd, env_cfg.base_pose, objects_json)
+    return layout, environment_usd, spawn, objects_json, world
 
 
 @SCENES.register(
@@ -642,6 +921,7 @@ def provision_isaac_sim() -> None:
     provision=provision_isaac_sim,
     sim_clock=True,
     base_pose=True,
+    options_model=IsaacSimOptions,
 )
 def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     """Build an Isaac Lab scene behind the out-of-process sidecar.
@@ -662,34 +942,23 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
             "uv sync --all-packages --group isaacsim --inexact"
         ) from exc
 
-    opts = env_cfg.scene.backend_options
-    host = str(opts.get("host", _DEFAULT_HOST))
-    timeout_ms = _opt_num(opts, "timeout_ms", _DEFAULT_TIMEOUT_MS, int)
-    boot_timeout_s = _opt_num(opts, "boot_timeout_s", _DEFAULT_BOOT_TIMEOUT_S, float)
-    environment_usd = _resolve_environment_usd(env_cfg.scene.assets_uri)
-    spawn = _spawn_pose(env_cfg.base_pose)
-    placed = environment_usd is not None or env_cfg.base_pose is not None
-    # An environment / spawn pose is a manifest-layout feature (the PoC layouts
-    # hardcode their own stage), so it implies that layout; contradicting it is
-    # an error rather than a silently ignored field.
-    layout = str(opts.get("layout", "manifest" if placed else "lift_cube"))
-    if placed and layout != "manifest":
-        raise ROSConfigError(
-            f"isaac_sim layout {layout!r} has a hardcoded stage; scene.assets_uri / "
-            "base_pose need layout 'manifest' (the default when either is set)."
-        )
-    world = _world_key(environment_usd, env_cfg.base_pose)
+    opts = SCENES.validate_options(env_cfg.scene.id, env_cfg.scene.backend_options)
+    if not isinstance(opts, IsaacSimOptions):  # pragma: no cover — registry invariant
+        raise ROSConfigError("isaac_sim backend options did not validate to IsaacSimOptions")
+    host = opts.host
+    timeout_ms = opts.timeout_ms
+    boot_timeout_s = opts.boot_timeout_s
+    layout, environment_usd, spawn, objects_json, world = _placement(env_cfg, opts)
     # Default to a per-scene port (no cross-scene sidecar reuse); an explicit
     # ``port`` in backend_options still wins.
     robot_id = env_cfg.robot_id or "franka_panda"
-    port = _opt_num(
-        opts, "port", _scene_default_port(env_cfg.task.id, robot_id, layout, world), int
-    )
-    headless = bool(opts.get("headless", True))
+    port = opts.port or _scene_default_port(env_cfg.task.id, robot_id, layout, world)
+    headless = opts.headless
     auto_spawn = os.environ.get(_AUTO_SPAWN_ENV, "1") != "0"
 
+    sidecar_python = _sidecar_python()
     launch_argv = [
-        str(_sidecar_python()),
+        str(sidecar_python),
         str(_locate_sidecar_script()),
         "--task",
         env_cfg.task.id,
@@ -720,8 +989,13 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     # _sidecar_python's error) reports the actual versions in a second instead of
     # loading a CUDA library too old for Isaac's own prebundled one and hanging
     # for the whole boot_timeout_s (issue #89).
-    for dist, floor in _ISAAC_CUDA_FLOORS.items():
-        launch_argv += ["--require-min", f"{dist}>={floor}"]
+    # The floors guard the pip venv's own nvidia-* wheels; a binary install
+    # bundles its CUDA runtime instead and gets its wire deps via --site-dir.
+    if _is_binary_install(sidecar_python):
+        launch_argv += ["--site-dir", str(_binary_site_dir(sidecar_python))]
+    else:
+        for dist, floor in _ISAAC_CUDA_FLOORS.items():
+            launch_argv += ["--require-min", f"{dist}>={floor}"]
     if headless:
         launch_argv.append("--headless")
 
@@ -736,6 +1010,8 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         launch_argv += ["--environment-usd", environment_usd]
     if env_cfg.base_pose is not None:
         launch_argv += ["--spawn-pose", *(repr(v) for v in spawn)]
+    if objects_json:
+        launch_argv += ["--objects-json", objects_json]
 
     client = SidecarClient(
         name="isaac",

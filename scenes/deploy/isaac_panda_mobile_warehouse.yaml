@@ -18,13 +18,18 @@
 # down it (+y). The racks span y = -4.5 .. 13.1 and are 6 m tall; the panda's
 # lidar/SLAM/Nav2 bring-up maps them like any other obstacle.
 #
+# Pickable objects: the stage itself ships no rigid bodies, so three YCB props
+# (Isaac's physics-ready `Axis_Aligned_Physics` set) sit on the empty pallet in
+# front of Shelf_1 (x -0.75..0.26, y 4.48..5.70, deck top z 0.21) — 5 m down the
+# aisle from the spawn: drive there, turn to +x, pick. They drop a few cm onto
+# the pallet at reset and settle; `world.reset()` puts them back each episode.
+#
 # Licence: NVIDIA's Isaac Sim assets may be used inside Isaac Sim — they are
 # referenced from NVIDIA's asset server at run time, never converted or vendored.
-# No rigid bodies ship in this stage: it is a navigation / shelf-approach world;
-# pickable objects are a separate USD layer.
 #
-# Requirements: NVIDIA RTX GPU, the externally-provisioned Isaac Sim sidecar venv
-# (OPENRAL_ISAAC_SIDECAR_PYTHON), and network access to NVIDIA's asset server.
+# Requirements: NVIDIA RTX GPU, Isaac Sim (a binary install such as
+# /opt/isaac-sim, or the sidecar venv — OPENRAL_ISAAC_SIDECAR_PYTHON overrides),
+# and network access to NVIDIA's asset server.
 #
 # Run::
 #
@@ -45,3 +50,13 @@ scene:
   backend_options:
     # First boot also streams the stage + its props from the asset server.
     boot_timeout_s: 1200
+    objects:
+      - name: cracker_box
+        usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd"
+        xyz: [-0.45, 4.80, 0.40]
+      - name: sugar_box
+        usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/004_sugar_box.usd"
+        xyz: [-0.45, 5.10, 0.35]
+      - name: mustard_bottle
+        usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/006_mustard_bottle.usd"
+        xyz: [-0.45, 5.40, 0.35]

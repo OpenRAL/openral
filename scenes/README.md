@@ -252,6 +252,37 @@ Blender or elsewhere load the same way once exported to USD. NVIDIA's Isaac
 assets are licensed for use inside Isaac Sim, where they are referenced at run
 time — never converted or vendored.
 
+**Pickable objects** go in `backend_options.objects` (validated by
+`IsaacSimOptions`, so a typo fails at load):
+
+```yaml
+  backend_options:
+    objects:
+      - name: cracker_box          # prim name; also the key in step info
+        usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd"
+        xyz: [-0.45, 4.80, 0.40]   # world frame; dropped a few cm, it settles
+        yaw: 0.0                   # rad, optional
+        dynamic: true              # graspable rigid body (default) vs static prop
+```
+
+A dynamic object without physics gets a rigid body and convex-hull colliders;
+`world.reset()` returns every object to its declared pose. Step `info` carries
+`object_positions` and `robot_position` (simulator ground truth, not a policy
+observation).
+
+**Any manifest robot** with an `assets.urdf` imports — manifest joints are
+matched to URDF joints by the URDF's own structure, each gripper's mimic finger
+follows its leader, and `package://` meshes resolve via `AMENT_PREFIX_PATH`
+(source the workspace that provides them). Shipped:
+[`isaac_panda_mobile_warehouse.yaml`](deploy/isaac_panda_mobile_warehouse.yaml)
+(navigate the aisle to a pallet of YCB props) and
+[`isaac_openarm_warehouse.yaml`](deploy/isaac_openarm_warehouse.yaml) (bimanual
+OpenArm at the same pallet).
+
+**Isaac install**: a host-wide binary install (`/opt/isaac-sim`, `~/isaacsim`)
+is picked up automatically after the pip venv; `OPENRAL_ISAAC_SIDECAR_PYTHON`
+overrides. Verified on Isaac Sim 6.1.
+
 ## rSkill compatibility check
 
 The runner resolves `--rskill <name>` to its `RSkillManifest`, looks up the
