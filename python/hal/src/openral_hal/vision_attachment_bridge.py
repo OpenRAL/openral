@@ -2132,7 +2132,7 @@ class VisionAttachmentBridge:
         unfiltered. A neighbouring capture can only REMOVE more masked pixels
         (``mask_without_removed_points`` never adds one): never a larger fit than the
         unfiltered one. ``None`` when no cloud is that close or its frame has no tf2
-        transform: the caller then fits unfiltered.
+        transform: the grasp target leg then refuses the capture (lost view ``unfiltered``).
         """
         max_skew_ns = self._config.mask_depth_max_skew_s * 1e9
         nearest = min(

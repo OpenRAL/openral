@@ -283,9 +283,11 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   re-measured at `grasp_target_rate_hz` (3 Hz) on the masked pixels the robot self-filter kept
   for the nearest capture within the mask/depth skew bound (best-effort clouds are lost in transit, and a neighbouring capture can only remove more pixels) (`mask_without_removed_points`: the fingers closing in on the target leave
   its fit exactly as they leave the map, so they neither grow it nor fail it as `not_on_support`;
-  without a self-filtered cloud that close the fit is unfiltered, and says so: with the
-  topic configured, the first unfiltered fit logs a warning naming the topic, the depth stamp and
-  the cache span, and the next filtered fit logs how many ran unfiltered), the region filled onto every attachment
+  with the topic configured, a capture with no self-filtered cloud that close is not fitted at
+  all — the lost view `unfiltered` (Isaac i38: an unfiltered fit grew a 32 cm hand column that
+  still reached the support and was armed) — and says so: the first such capture logs a warning
+  naming the topic, the depth stamp and the cache span, the next filtered fit logs how many were
+  skipped; without the topic (no self-filter in the graph) the fit is unfiltered as before), the region filled onto every attachment
   publication; contradicting evidence retracts at once, a lost view freezes the last accepted region
   (a map-covered re-fit that shrinks or shifts *inside* the held region grown by one voxel while a
   declared contact link's hand point (the bridge's TCP for that jaw link's leg: attach link via
