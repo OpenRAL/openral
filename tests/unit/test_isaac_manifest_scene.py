@@ -419,3 +419,15 @@ def test_camera_fov_comes_from_the_mount_else_the_manifest(_manifest_scene_mod: 
     assert mod.camera_hfov_deg({"intrinsics": k}) == pytest.approx(90.0)  # type: ignore[attr-defined]
     assert mod.camera_hfov_deg({"mount": {"hfov_deg": 70.0}, "intrinsics": k}) == 70.0  # type: ignore[attr-defined]
     assert mod.camera_hfov_deg({}) is None  # type: ignore[attr-defined]
+
+
+def test_object_rpy_is_the_urdf_order(_manifest_scene_mod: object) -> None:
+    """A scene object's roll/pitch/yaw compose as ``Rz·Ry·Rx``: a YCB box authored
+    lying down stands on end with a quarter-turn roll, then turns by its yaw."""
+    rpy_quat = _manifest_scene_mod._rpy_quat  # type: ignore[attr-defined]  # reason: module loaded off sys.path
+    pose = _manifest_scene_mod.pose_matrix((0.1, 0.2, -0.08), rpy_quat(np.pi / 2, 0.0, np.pi / 2))  # type: ignore[attr-defined]  # reason: module loaded off sys.path
+    rz = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    rx = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]])
+    np.testing.assert_allclose(pose[:3, :3], rz @ rx, atol=1e-12)
+    np.testing.assert_allclose(pose[:3, 3], [0.1, 0.2, -0.08])
+    np.testing.assert_allclose(rpy_quat(0.0, 0.0, 0.4), _manifest_scene_mod._yaw_quat(0.4))  # type: ignore[attr-defined]  # reason: module loaded off sys.path

@@ -48,20 +48,40 @@ def _franka() -> Any:
     return FrankaPandaHAL(gravity_enabled=False)
 
 
+def _sim_attached_tabletop() -> Any:
+    """A HAL WITH the attachment API: ``SimAttachedHAL`` over the real tabletop_push scene."""
+    from pathlib import Path
+
+    from openral_core import RobotDescription
+    from openral_hal.sim_attached import SimAttachedHAL
+    from openral_hal.sim_bringup import build_sim_env_from_yaml
+
+    repo = Path(__file__).resolve().parents[2]
+    desc = RobotDescription.from_yaml(str(repo / "robots" / "so101_follower" / "robot.yaml"))
+    env, seed = build_sim_env_from_yaml(str(repo / "scenes" / "sim" / "tabletop_cube_push.yaml"))
+    return SimAttachedHAL(env, desc, env_reset_seed=seed)
+
+
 @pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
-def test_the_heartbeat_yields_to_another_attachment_authority() -> None:
+@pytest.mark.parametrize(
+    "make_hal", [_openarm, _sim_attached_tabletop], ids=["no_attachment_api", "attachment_api"]
+)
+def test_the_heartbeat_yields_to_another_attachment_authority(make_hal: Callable[[], Any]) -> None:
     """``attachment_heartbeat=False``: no publisher, no timer, nothing on the latched topic.
 
     The HAL node's vision attachment leg publishes revisions on the same
     TRANSIENT_LOCAL topic; a revision-0 heartbeat beside it would move the
-    aggregator's attachment revision backwards on every timer tick.
+    aggregator's attachment revision backwards on every timer tick. That holds
+    for a HAL with the attachment API too (``SimAttachedHAL``, the Isaac and
+    scene-attached path): it used to keep its publisher, so the leg's set and
+    grasp/place declarations alternated with this bridge's empty snapshot.
     """
     rclpy = pytest.importorskip("rclpy")
 
     from openral_hal.sim_sensor_bridge import SimSensorBridge
     from rclpy.node import Node
 
-    hal = _openarm()
+    hal = make_hal()
     rclpy.init()
     try:
         node = Node("test_attachment_heartbeat_yields")

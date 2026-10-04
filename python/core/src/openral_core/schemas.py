@@ -390,7 +390,7 @@ def scale_intrinsics_to(base: IntrinsicsPinhole, width: int, height: int) -> Int
 
 
 class CameraSimPlacement(BaseModel):
-    """Where an RGB sensor's camera sits in the sim MJCF.
+    """Where a camera sensor's (RGB or depth) camera sits in the sim MJCF.
 
     Lets the generic HAL camera rig (``openral_hal._camera_rig``) splice a
     manifest camera into a bare-arm MJCF that ships no ``<camera>`` elements, so
