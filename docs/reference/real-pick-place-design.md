@@ -361,8 +361,19 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   hands its region over
   only when the payload is the region (`_region_payload`: the jaw at it; and the tracker still
   holds exactly that region) or a segmented payload every primitive centre of which lies in the
-  region grown by one voxel with the jaw within `occluder_margin_m` of it (also the test for a
-  region first accepted mid-close). Any other ATTACH — the jaws closed on a neighbour, the
+  region grown by one voxel with the jaw at it (also the test for a region first accepted
+  mid-close). "The jaw at it" is `VisionAttachmentBridge.jaw_at`: its TCP within
+  `occluder_margin_m` of the region, **or** the jaw link's manifest collision primitives
+  (bounding boxes, posed by the attach link's tf2 pose, the gripper joint's origin and the
+  jaw's last read angle) overlapping the region; an unknown jaw angle leaves the TCP alone.
+  *Fix (2026-10-05, Isaac trial i41, the first ATTACH):* the TCP alone was the test, and the
+  OpenArm's TCP is the finger hinge (`tcp_in_link` = the gripper joint's `origin_xyz`), ~10 cm
+  above the fingertips — with the jaws closed round the can it sat 6.8 cm outside the region,
+  so the region payload was never taken, the grasp segmented (`payload_extent`) and the arming
+  ended `attach_off_target` (`grasp_region_dropped`, the kernel then stopped the finger inside
+  the can). The finger_pair box at q = −0.717 overlaps the held fit by 0.09 m; 15 cm beside it
+  (along x) or 40 cm above it, it does not. Ceiling: a bounding box that spans the whole jaw
+  opening (OpenArm's finger_pair) reaches a target beside the jaw *along* the opening. Any other ATTACH — the jaws closed on a neighbour, the
   region refused for this grasp and the grasp segmented — ends the arming as
   `attach_off_target`: handed over with **no** region (re-measurement stops; the hand holds
   something else), never the measured region for a payload it was not measured for — and a
@@ -499,7 +510,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   on this robot.
   *Implemented* (`VisionAttachmentBridge._region_payload` / `region_attachment`): on a stall
   ATTACH, when the grasp-target envelope (TTL and expiry applied) holds a region for a declaration
-  naming this leg's jaw link and the leg's TCP lies within `grasp_target_occluder_margin_m` of it,
+  naming this leg's jaw link and the jaw is at it (`jaw_at`, above: the TCP within
+  `grasp_target_occluder_margin_m` of it or the jaw link's collision geometry overlapping it),
   the region box is the payload — `object_id` = the declaration's `object_id` (what the kernel's
   handover matches; `target_id` when empty), `AttachmentEvidenceKind.GRASP_TARGET_REGION`, no
   `SegmentInView` call; otherwise the attach segments as before. A leg takes each *measured*

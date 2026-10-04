@@ -2084,6 +2084,89 @@ def test_jaws_closing_on_the_target_via_segmentation_hand_it_over() -> None:
         assert leg.tracker.handed_over == _LEFT and leg.tracker.region is None
 
 
+#: Isaac trial i41's first ATTACH: the right TCP (the finger hinge, ~10 cm above the
+#: fingertips), the jaw angle it stalled at, and the tight held fit of the can (its yaw
+#: from the armed region the driver logged).
+_I41_JAW = (0.252, -0.192, -0.345)
+_I41_GRIP = -0.717
+_I41_YAW = 2.856
+
+
+def _i41_region(stamp_ns: int) -> PlaceRegion:
+    half_yaw = _I41_YAW / 2.0
+    quat = (0.0, 0.0, float(np.sin(half_yaw)), float(np.cos(half_yaw)))
+    return PlaceRegion(
+        frame_id="openarm_base",
+        pose=Pose6D(xyz=(0.259, -0.199, -0.439), quat_xyzw=quat, frame_id="openarm_base"),
+        half_extents=(0.0738, 0.0621, 0.0262),
+        evidence_ref="segment_in_view:test@0",
+        stamp_ns=stamp_ns,
+    )
+
+
+def _i41_armed(live: _LiveLeg, now_ns: int) -> Any:
+    """The right hand armed on i41's can, its jaw angle read; returns the right gripper."""
+    leg = live.leg
+    leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+    _approach(leg.tracker, _near(_RIGHT), now_ns=now_ns)
+    leg.tracker.accept(_i41_region(now_ns))
+    live.bridge._positions["right_gripper"] = _I41_GRIP
+    return live.gripper("openarm_right_finger_pair")
+
+
+def test_a_jaw_closed_on_the_target_is_at_it_though_its_hinge_is_above_it() -> None:
+    """i41: the hinge 9 cm above the can's centre is not within 5 cm of it, but the jaw
+    link's collision geometry, posed at the stalled angle, overlaps it — the region is
+    the payload and is handed over (it segmented and was ``attach_off_target`` before)."""
+    with _live_leg("test_grasp_target_i41_on_target") as live:
+        leg, bridge = live.leg, live.bridge
+        now_ns = leg._now_ns()
+        right = _i41_armed(live, now_ns)
+        live.place("right", _I41_JAW)
+        at, measure = bridge.jaw_at(right.jaw_link, _i41_region(now_ns), reach_m=0.05)
+        assert at, measure
+        assert "collision geometry at q=-0.717" in measure
+        taken = bridge._region_payload(right, stamp_ns=now_ns)
+        assert taken is not None and taken[1] == _i41_region(now_ns)
+        leg.on_attach(right.jaw_link, taken[0], region=taken[1])
+        assert leg.tracker.handed_over == _RIGHT and leg.tracker.region == _i41_region(now_ns)
+
+
+def test_an_unknown_jaw_angle_measures_the_tcp_alone() -> None:
+    """No jaw position yet: the geometry is not posed (never guessed), the TCP alone is
+    9 cm off, so the region is not the payload — and the log says why."""
+    with _live_leg("test_grasp_target_i41_no_angle") as live:
+        bridge, now_ns = live.bridge, live.leg._now_ns()
+        right = _i41_armed(live, now_ns)
+        del bridge._positions["right_gripper"]
+        live.place("right", _I41_JAW)
+        at, measure = bridge.jaw_at(right.jaw_link, _i41_region(now_ns), reach_m=0.05)
+        assert not at and "no position yet" in measure
+        assert bridge._region_payload(right, stamp_ns=now_ns) is None
+
+
+@pytest.mark.parametrize(
+    ("offset", "why"),
+    [((0.15, 0.0, 0.0), "beside"), ((-0.15, 0.0, 0.0), "beside"), ((0.0, 0.0, 0.40), "above")],
+)
+def test_a_jaw_off_the_target_is_not_at_it(offset: tuple[float, float, float], why: str) -> None:
+    """The same stalled jaw 15 cm beside the can, or 40 cm above it: neither its TCP nor
+    its collision geometry reaches the region — it segments, and the segmented payload
+    is ``attach_off_target`` (no region handed over)."""
+    with _live_leg(f"test_grasp_target_i41_off_{why}") as live:
+        leg, bridge = live.leg, live.bridge
+        now_ns = leg._now_ns()
+        right = _i41_armed(live, now_ns)
+        jaw = tuple(j + o for j, o in zip(_I41_JAW, offset, strict=True))
+        live.place("right", (jaw[0], jaw[1], jaw[2]))
+        at, measure = bridge.jaw_at(right.jaw_link, _i41_region(now_ns), reach_m=0.05)
+        assert not at, measure
+        assert bridge._region_payload(right, stamp_ns=now_ns) is None
+        _segmented_attach(live, right, now_ns)
+        assert leg.tracker.handed_over == _RIGHT and leg.tracker.region is None
+        assert leg.tracker._status == "attach_off_target"
+
+
 def test_a_region_payload_hands_over_only_the_region_it_was_built_from() -> None:
     """``_region_payload`` read region R; a re-fit R' accepted on another thread before the
     ATTACH reached the tracker is not what the payload is: nothing handed over."""
