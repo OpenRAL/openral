@@ -16,7 +16,7 @@ rows join only on identical placeholder text, except that every
 Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 `just lint` and pre-commit fail when this page is stale.
 
-## Topics (44)
+## Topics (45)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -64,6 +64,7 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `cloud_in` | `sensor_msgs/PointCloud2` | — | packages/openral_octomap_bridge/src/robot_self_filter.hpp |
 | `cloud_out` | `sensor_msgs/PointCloud2` | packages/openral_octomap_bridge/src/robot_self_filter.hpp | — |
 | `~/joint_states` | `sensor_msgs/JointState` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | — |
+| `~/urdf_joint_states` | `msg_type` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase._open_urdf_joint_state_pub) | — |
 
 ## Per-instance topics (10)
 
