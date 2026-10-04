@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -1387,4 +1388,59 @@ TEST(PayloadClearing, TheAttachPaddingNeverShrinksTheSteadyReach) {
   EXPECT_NEAR(bridge::attach_transition_padding(0.004, std::nan("")), 0.004, 1e-12);
   EXPECT_NEAR(bridge::attach_transition_padding(-1.0, kAttachSweepPadding), kAttachSweepPadding,
               1e-12);
+}
+
+// ── attach_link_tf_frames: the manifest link → the cell's TF frame ───────────
+//
+// The published attach link is the manifest's (the kernel's collision model
+// uses manifest names); the real OpenArm cell's TF tree names the same hand
+// body `openarm_left_ee_base_link`. These pin the parse and the lookup name the
+// bridge then asks tf2 for.
+
+TEST(AttachLinkTfFrames, NoMappingLooksEveryLinkUpByItsOwnName) {
+  bridge::AttachLinkTfFrames frames;
+  std::string error;
+  ASSERT_TRUE(bridge::parse_attach_link_tf_frames({}, frames, error));
+  EXPECT_TRUE(frames.empty());
+  // The ROS default for an unset string array is [""]: still no mapping.
+  ASSERT_TRUE(bridge::parse_attach_link_tf_frames({""}, frames, error));
+  EXPECT_TRUE(frames.empty());
+  EXPECT_EQ(bridge::tf_frame_for(frames, "openarm_left_link7"), "openarm_left_link7");
+  // The frozen release record attaches to the base frame: unchanged too.
+  EXPECT_EQ(bridge::tf_frame_for(frames, "openarm_base"), "openarm_base");
+}
+
+TEST(AttachLinkTfFrames, AMappedLinkIsLookedUpAsItsFrameAndOthersAsThemselves) {
+  bridge::AttachLinkTfFrames frames;
+  std::string error;
+  // The strings the HAL gets as `vision_attachment_tf_frames` for the Thor scene.
+  ASSERT_TRUE(
+      bridge::parse_attach_link_tf_frames({"openarm_left_link7=openarm_left_ee_base_link",
+                                           "openarm_right_link7=openarm_right_ee_base_link"},
+                                          frames, error))
+      << error;
+  EXPECT_EQ(frames.size(), 2U);
+  EXPECT_EQ(bridge::tf_frame_for(frames, "openarm_left_link7"), "openarm_left_ee_base_link");
+  EXPECT_EQ(bridge::tf_frame_for(frames, "openarm_right_link7"), "openarm_right_ee_base_link");
+  EXPECT_EQ(bridge::tf_frame_for(frames, "openarm_base"), "openarm_base");
+  // A repeated identical entry is the same mapping, not a conflict.
+  ASSERT_TRUE(bridge::parse_attach_link_tf_frames({"a=b", "a=b"}, frames, error));
+  EXPECT_EQ(bridge::tf_frame_for(frames, "a"), "b");
+}
+
+TEST(AttachLinkTfFrames, AMalformedOrConflictingMappingIsRefusedWhole) {
+  for (const std::vector<std::string>& bad : std::vector<std::vector<std::string>>{
+           {"openarm_left_link7"},
+           {"=openarm_left_ee_base_link"},
+           {"openarm_left_link7="},
+           {"ok=frame", "no_separator"},
+           {"openarm_left_link7=a", "openarm_left_link7=b"},
+       }) {
+    // Pre-filled, to show a refusal leaves no partial map behind.
+    bridge::AttachLinkTfFrames frames{{"stale", "entry"}};
+    std::string error;
+    EXPECT_FALSE(bridge::parse_attach_link_tf_frames(bad, frames, error)) << bad.front();
+    EXPECT_FALSE(error.empty());
+    EXPECT_TRUE(frames.empty()) << "a refused mapping must leave every link at identity";
+  }
 }

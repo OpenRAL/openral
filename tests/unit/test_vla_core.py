@@ -7,7 +7,7 @@ The shared core owns the three seams every VLA adapter goes through:
 ``InMemorySpanExporter`` — no MagicMocks for OpenRAL types.
 
 The lerobot policy itself is not an OpenRAL type; like
-``tests/unit/test_smolvla_adapter.py`` we stand in a tiny class that
+``tests/unit/test_chunked_executor.py`` we stand in a tiny class that
 exposes ``select_action(batch) -> Tensor``. That's fixture, not mock.
 """
 

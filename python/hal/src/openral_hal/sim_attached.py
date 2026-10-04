@@ -52,6 +52,12 @@ from openral_core import (
 from openral_core.exceptions import ROSConfigError, ROSRuntimeError
 from openral_core.schemas import Action, ControlMode, JointState
 
+from openral_hal._slot_group import (
+    TickWatermark,
+    compose_slot_group_action,
+    slot_group_targets,
+)
+
 # Module logger — falls through to stderr via the rclpy logging bridge in a
 # ROS node, else plain stdlib logging.
 _log = logging.getLogger(__name__)
@@ -101,9 +107,72 @@ __all__ = [
     "SIM_EXECUTABLE_CONTROL_MODES",
     "ActionPacker",
     "SimAttachedHAL",
+    "gripper_targets_action",
     "normalized_joint_index",
     "pack_action_for_env",
 ]
+
+
+def gripper_targets_action(group: list[Action], description: RobotDescription) -> Action | None:
+    """What one committed slot group set for every gripper joint, as a compact action.
+
+    The gripper-subset form of ``compose_slot_group_action`` for a group that does not
+    compose into one whole joint-position command (a BODY_TWIST or Cartesian slot,
+    arm joints left uncommanded): ``slot_group_targets`` places the group with the
+    composer's own strictness, and the ``role: "gripper"`` joints are read out as a
+    one-row ``JOINT_POSITION`` action (``joint_names`` = every gripper, manifest
+    order) — the compact row ``VisionAttachmentBridge.observe_command`` reads
+    positionally. Never a command to apply: the record of what the jaws were told.
+
+    All or nothing: a partial record would leave the uncovered jaw's previous command
+    standing in the grasp trigger (a phantom attach on the twin), so any gripper the
+    group left uncommanded, or any slot the composer cannot read, gives ``None``,
+    which clears every jaw's command.
+
+    Args:
+        group: Every slot action of the committed tick.
+        description: The robot manifest (gripper roles and joint order).
+
+    Returns:
+        Every gripper's target, or ``None`` when the manifest has no gripper, the
+        group left one uncommanded, or ``slot_group_targets`` refused the group
+        (an unreadable or overlapping slot: which value the jaw got is unknown).
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> d = RobotDescription.from_yaml("robots/franka_panda/robot.yaml")
+        >>> twist = Action(control_mode=ControlMode.BODY_TWIST, body_twist=[[0.1] + [0.0] * 5])
+        >>> grip = Action(
+        ...     control_mode=ControlMode.GRIPPER_POSITION, gripper=[0.02], ee_name="panda_gripper"
+        ... )
+        >>> applied = gripper_targets_action([twist, grip], d)
+        >>> applied.joint_names, applied.joint_targets
+        (['panda_gripper'], [[0.02]])
+        >>> gripper_targets_action([twist], d) is None
+        True
+    """
+    names = [joint.name for joint in description.joints]
+    try:
+        targets = slot_group_targets(group, names)
+    except ROSConfigError:
+        return None
+    jaws: dict[str, float] = {}
+    for joint, target in zip(description.joints, targets, strict=True):
+        if joint.role == "gripper":
+            if target is None:
+                return None
+            jaws[joint.name] = target
+    if not jaws:
+        return None
+    return Action(
+        control_mode=ControlMode.JOINT_POSITION,
+        horizon=1,
+        joint_targets=[list(jaws.values())],
+        joint_names=list(jaws),
+        stamp_ns=group[0].stamp_ns,
+        confidence=group[0].confidence,
+    )
+
 
 _ROBOSUITE_GROUP_PREFIX = re.compile(r"^[a-z]+[0-9]+_")  # robot0_ / gripper0_ / mobilebase0_
 
@@ -464,9 +533,12 @@ class SimAttachedHAL:
         # ``step_action_group(actions)`` receive every safety-approved slot from
         # one ActionChunk.tick_index and step exactly once when their declared
         # ``action_group_size`` is complete.
-        self._pending_action_tick: int | None = None
+        # Keyed by (runner_session_id, tick_index): ticks restart per runner.
+        self._pending_action_key: tuple[int, int] | None = None
         self._pending_actions: list[Action] = []
-        self._last_committed_tick: int = 0
+        self._watermark = TickWatermark()
+        # What the last applied command was (``last_applied_action``).
+        self._last_applied_action: Action | None = None
         # Wall-clock stamp of the oldest pending slot so a skill that dies
         # mid-tick cannot block ``idle_step`` forever.
         self._pending_since_ns: int = 0
@@ -542,9 +614,10 @@ class SimAttachedHAL:
         self._last_obs = dict(obs) if isinstance(obs, dict) else None
         self._last_state_ns = time.time_ns()
         self._connected = True
-        self._pending_action_tick = None
+        self._pending_action_key = None
         self._pending_actions.clear()
-        self._last_committed_tick = 0
+        self._watermark.reset()
+        self._last_applied_action = None
         # The reset re-seeded the scene: commands from before it must not ride
         # along as the next pack's ``prev`` (an absolute-target env would move
         # the arm back to its pre-reset pose on the first base twist).
@@ -812,6 +885,7 @@ class SimAttachedHAL:
                 self._apply_body_twist_to_qpos(row)
             else:
                 self._apply_body_twist_via_env_step(row, action)
+            self._last_applied_action = action
             return
         # A non-BODY_TWIST action means the base is no longer being
         # velocity-commanded — clear the latched twist so /odom doesn't
@@ -859,6 +933,7 @@ class SimAttachedHAL:
                 flush=True,
             )
         self._step_and_cache(env_action, source="send_action")
+        self._last_applied_action = action
 
     def _stage_action_group(
         self,
@@ -878,32 +953,40 @@ class SimAttachedHAL:
             raise ROSConfigError(
                 "SimAttachedHAL: atomic action-group backend requires Action.tick_index > 0."
             )
-        if self._pending_action_tick is not None and tick != self._pending_action_tick:
+        # Same replay guard as ``SlotGroupStager.stage`` (``TickWatermark``): a
+        # group of an already-committed tick of the same runner session, or any
+        # slot of a retired session, must not step the simulator again. A check
+        # only: the watermark moves (and a new session is adopted) when the
+        # group commits below, so one stray slot cannot move it.
+        session = int(action.runner_session_id)
+        self._watermark.check(tick, session=session)
+        key = (session, tick)
+        if self._pending_action_key is not None and key != self._pending_action_key:
             # Atomicity is preserved: a group missing a safety-rejected slot
             # must never commit its other slots. Under the producer's applied-
             # tick barrier, any transition to a newer tick is a contract error.
             dropped_modes = [a.control_mode.value for a in self._pending_actions]
             print(
                 f"[sim_attached.send_action] ERROR dropping incomplete safe action group "
-                f"tick={self._pending_action_tick} "
+                f"(session, tick)={self._pending_action_key} "
                 f"slots={len(self._pending_actions)}/{group_size} "
                 f"modes={dropped_modes}; starting tick={tick}",
                 flush=True,
             )
             self._pending_actions.clear()
-            self._pending_action_tick = None
+            self._pending_action_key = None
             raise ROSRuntimeError(
                 f"SimAttachedHAL: incomplete action group tick staged "
                 f"{len(dropped_modes)}/{group_size} slots, modes={dropped_modes}; "
                 "the safety supervisor rejected/dropped a slot or the rSkill contract "
                 "declared the wrong group size."
             )
-        if self._pending_action_tick is None:
-            self._pending_action_tick = tick
+        if self._pending_action_key is None:
+            self._pending_action_key = key
         elif action.tick_group_size != self._pending_actions[0].tick_group_size:
             expected_group_size = self._pending_actions[0].tick_group_size
             self._pending_actions.clear()
-            self._pending_action_tick = None
+            self._pending_action_key = None
             raise ROSRuntimeError(
                 f"SimAttachedHAL: action group tick={tick} changed size from "
                 f"{expected_group_size} to {action.tick_group_size}."
@@ -914,16 +997,16 @@ class SimAttachedHAL:
             return
         if len(self._pending_actions) > group_size:
             self._pending_actions.clear()
-            self._pending_action_tick = None
+            self._pending_action_key = None
             raise ROSRuntimeError(
                 f"SimAttachedHAL: action group tick={tick} exceeded {group_size} slots."
             )
         actions = list(self._pending_actions)
         self._pending_actions.clear()
-        self._pending_action_tick = None
+        self._pending_action_key = None
         if group_step is None:
             self._step_packed_action_group(actions)
-            self._last_committed_tick = tick
+            self._commit_group(actions, tick, session)
             return
         try:
             step_result = group_step(actions)
@@ -957,7 +1040,26 @@ class SimAttachedHAL:
         else:
             self._last_body_twist = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         self._cache_step_result(step_result)
-        self._last_committed_tick = tick
+        self._commit_group(actions, tick, session)
+
+    def _commit_group(self, actions: list[Action], tick: int, session: int) -> None:
+        """Move the watermark and record the group's command as one full-dof action.
+
+        The command is ``compose_slot_group_action`` over the manifest joints, as the real
+        HAL composes it. A group that is not one whole joint-position command (a
+        BODY_TWIST or Cartesian slot, joints it leaves uncommanded) records what it set
+        for the gripper joints instead (``gripper_targets_action``), so the grasp trigger
+        still reads the jaw command on a mobile manipulator; ``None`` — command unknown,
+        every jaw's command in the trigger is cleared — unless every gripper was commanded
+        readably (never a partial record that leaves one jaw's stale command standing).
+        """
+        self._watermark.commit(tick, session=session)
+        try:
+            self._last_applied_action = compose_slot_group_action(
+                actions, [joint.name for joint in self.description.joints]
+            )
+        except ROSConfigError:
+            self._last_applied_action = gripper_targets_action(actions, self.description)
 
     def _step_packed_action_group(self, actions: list[Action]) -> None:
         """Pack every safe slot, then execute exactly one simulator step."""
@@ -1292,13 +1394,13 @@ class SimAttachedHAL:
                 return False
             print(
                 f"[sim_attached.idle_step] ERROR discarding stale pending action group "
-                f"tick={self._pending_action_tick} "
+                f"(session, tick)={self._pending_action_key} "
                 f"slots={len(self._pending_actions)} (no new slot for "
                 f"{_PENDING_GROUP_STALE_NS / 1e9:.0f}s); resuming idle stepping",
                 flush=True,
             )
             self._pending_actions.clear()
-            self._pending_action_tick = None
+            self._pending_action_key = None
         # No MuJoCo-handle gate: valid for ANY wrapped SimRollout, including
         # non-MuJoCo backends (Isaac Sim sidecar, ManiSkill3). Steps via the
         # same env.step idiom as send_action's tail (not robocasa.refresh_obs,
@@ -1689,7 +1791,7 @@ class SimAttachedHAL:
     def estop(self) -> None:
         """Latch e-stop. Subsequent send_action calls are dropped."""
         self._estop_latched = True
-        self._pending_action_tick = None
+        self._pending_action_key = None
         self._pending_actions.clear()
 
     # ── Helpers exposed to the lifecycle node ──────────────────────────
@@ -1706,9 +1808,26 @@ class SimAttachedHAL:
         return self._mujoco_handles()
 
     @property
+    def last_applied_action(self) -> Action | None:
+        """The command the simulator was last stepped with (``None`` = none, or unreadable).
+
+        For a slot group, the composed full-dof ``JOINT_POSITION`` action, set in step with
+        ``last_committed_tick`` — or, when the group is not one joint-position command,
+        its gripper targets as a compact action (``gripper_targets_action``; ``None``
+        when it set none); for an ungrouped action, the action itself. The lifecycle node
+        folds it into the grasp trigger.
+        """
+        return self._last_applied_action
+
+    @property
     def last_committed_tick(self) -> int:
         """Most recent atomic action-group tick committed to the simulator."""
-        return self._last_committed_tick
+        return self._watermark.tick
+
+    @property
+    def last_committed_session(self) -> int:
+        """``runner_session_id`` of ``last_committed_tick`` (0 = none/legacy)."""
+        return self._watermark.session
 
     def _rollout_sim_time_ns(self) -> int | None:
         """Read the wrapped rollout's per-episode sim time, or ``None``.

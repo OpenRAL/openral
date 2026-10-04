@@ -240,13 +240,13 @@ def _try_load_norm_stats(repo_id: str, device: str, torch: Any) -> dict[str, Any
     normalisation.
     """
     try:
-        from huggingface_hub import snapshot_download
+        from openral_rskill import local_snapshot_dir
         from safetensors import safe_open
     except ImportError:
         return {}
 
     try:
-        local = snapshot_download(repo_id=repo_id, ignore_patterns=["*.md"])
+        local = local_snapshot_dir(repo_id)
     except Exception:
         return {}
 

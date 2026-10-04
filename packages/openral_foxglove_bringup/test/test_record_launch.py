@@ -19,6 +19,7 @@ import re
 from pathlib import Path
 
 import pytest
+from openral_core import camera_topic
 
 _PKG_DIR = Path(__file__).resolve().parent.parent
 _LAUNCH_FILE = _PKG_DIR / "launch" / "record.launch.py"
@@ -62,9 +63,9 @@ _FORBIDDEN_TOPIC_LITERALS = [
 # ``layout.DEFAULT_CAMERAS`` needs its image topic here.
 _EXPECTED_ALLOWED: set[str] = {
     # Scene
-    "/openral/cameras/top/image",
-    "/openral/cameras/wrist_left/image",
-    "/openral/cameras/wrist_right/image",
+    camera_topic("top"),
+    camera_topic("wrist_left"),
+    camera_topic("wrist_right"),
     "/map",
     "/octomap_point_cloud_centers",
     "/scan",
@@ -74,7 +75,6 @@ _EXPECTED_ALLOWED: set[str] = {
     "/tf",
     "/tf_static",
     # Bucket-2 converter outputs
-    "/openral/world_collisions_markers",
     "/openral/world_voxels_cloud",
     # Telemetry mirrored from the OTel dashboard's cards
     "/openral/world_state_fast",
@@ -222,12 +222,9 @@ def test_layout_bucket2_panel_present() -> None:
 
 
 def test_layout_bucket2_topics_referenced() -> None:
-    """The Bucket-2 panel must reference both Phase-3 converter topics."""
+    """The Bucket-2 panel must reference the converter's voxel topic."""
     layout = json.loads(_LAYOUT.read_text())
     panel_topics: dict = layout["configById"]["3D!bucket2"]["topics"]
-    assert "/openral/world_collisions_markers" in panel_topics, (
-        "/openral/world_collisions_markers not in 3D!bucket2 topics"
-    )
     assert "/openral/world_voxels_cloud" in panel_topics, (
         "/openral/world_voxels_cloud not in 3D!bucket2 topics"
     )

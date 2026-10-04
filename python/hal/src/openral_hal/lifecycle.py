@@ -76,9 +76,134 @@ __all__ = [
     "HALLifecycleNodeBase",
     "ManifestHALLifecycleNode",
     "decode_action_chunk",
+    "joint_state_republish_stamp_ns",
     "make_lifecycle_main",
     "make_lifecycle_main_from_manifest",
+    "sim_attachment_heartbeat",
+    "twin_jaw_evidence_timeout_s",
 ]
+
+
+# A HAL sample older than this on the wall clock is not a sample from this run's
+# clock domain (a sim HAL stamping sim-elapsed time, a HAL with a hardware epoch);
+# its age cannot be carried over, so the republish keeps the node's own now.
+_MAX_CARRIED_SAMPLE_AGE_NS = 5_000_000_000
+
+
+def joint_state_republish_stamp_ns(
+    node_now_ns: int, sample_stamp_ns: int, *, wall_now_ns: int | None = None
+) -> int:
+    """Stamp for the HAL's ``~/joint_states`` republish: node now minus the sample's age.
+
+    A HAL's ``JointState.stamp_ns`` is wall-clock (``time.time_ns``) on every real HAL,
+    while the node's clock may be sim time, so the absolute stamp cannot be copied. The
+    sample's AGE can: consumers that pair joint states with other sensors by stamp (the
+    robot self-filter's ``max_joint_state_skew_s``) then see a stale sample as stale,
+    instead of as fresh at every republish. An age that is negative or implausibly large
+    (another clock domain) falls back to ``node_now_ns``, the previous behaviour.
+
+    Args:
+        node_now_ns: The node clock's now, in nanoseconds.
+        sample_stamp_ns: The HAL's ``JointState.stamp_ns``.
+        wall_now_ns: Wall-clock now; ``time.time_ns()`` when omitted.
+
+    Returns:
+        The stamp to publish, in the node's clock domain.
+
+    Example:
+        >>> joint_state_republish_stamp_ns(10_000_000_000, 900, wall_now_ns=1_000)
+        9999999900
+        >>> joint_state_republish_stamp_ns(10_000_000_000, 0, wall_now_ns=1_000)
+        10000000000
+    """
+    import time
+
+    wall = time.time_ns() if wall_now_ns is None else wall_now_ns
+    age = wall - int(sample_stamp_ns)
+    if sample_stamp_ns <= 0 or age < 0 or age > _MAX_CARRIED_SAMPLE_AGE_NS:
+        return node_now_ns
+    return node_now_ns - age
+
+
+def sim_attachment_heartbeat(*, hal_mode: str, vision_attachment_enabled: bool) -> bool:
+    """Whether ``SimSensorBridge`` may heartbeat "nothing attached, fresh".
+
+    That heartbeat is the exact truth only for a simulated HAL with no attach
+    mechanics. On a real arm no evidence backs it: something can be in the jaws
+    and the kernel would certify motion against an empty payload set. So it is
+    sim-only, and even there it yields to the vision attachment leg, which is
+    the attachment authority on the same latched topic when enabled. A real arm
+    without the vision leg then publishes no attachment state at all, and the
+    kernel's attached-payload check (when on) fails closed instead of trusting
+    a claim nobody measured.
+
+    Args:
+        hal_mode: The node's ``hal_mode`` parameter (``"sim"`` or ``"real"``).
+        vision_attachment_enabled: The node's ``vision_attachment_enabled``.
+
+    Returns:
+        ``True`` only for ``hal_mode == "sim"`` with the vision leg off.
+
+    Example:
+        >>> sim_attachment_heartbeat(hal_mode="sim", vision_attachment_enabled=False)
+        True
+        >>> sim_attachment_heartbeat(hal_mode="real", vision_attachment_enabled=False)
+        False
+    """
+    return hal_mode == "sim" and not vision_attachment_enabled
+
+
+def twin_jaw_evidence_timeout_s(
+    *,
+    hal_mode: str,
+    hal_idle_steps: bool,
+    idle_hold_s: object,
+    configured_s: float,
+    rate_hz: float,
+) -> float | None:
+    """The vision leg's jaw-evidence timeout on the idle-stepping sim twin; ``None`` elsewhere.
+
+    The MuJoCo twin stamps joint states only when an action or an idle step captures
+    them, and the idle stepper holds off for ``idle_hold_s`` while a skill pauses
+    between VLA chunks — a shorter timeout withholds the attachment heartbeat on
+    every re-inference pause. So on the twin the timeout is raised to span that hold
+    (never lowered) and the evidence run spans gaps shorter than it. Anywhere else —
+    ``hal_mode`` ``"real"`` (whose node also carries a ``SimSensorBridge``), or a sim
+    HAL with no ``idle_step`` — returns ``None``: the configured timeout stands and
+    a sample gap resets the run, so a dead jaw channel ages out inside the kernel's
+    attached deadline.
+
+    Args:
+        hal_mode: The node's ``hal_mode`` parameter.
+        hal_idle_steps: Whether the HAL exposes a callable ``idle_step``.
+        idle_hold_s: The sensor bridge's ``idle_hold_s`` (anything not a float: no twin).
+        configured_s: ``vision_attachment_evidence_timeout_s``.
+        rate_hz: The joint-state rate the node reads at.
+
+    Returns:
+        The twin's timeout, or ``None`` when the configured one must stand.
+
+    Example:
+        >>> twin_jaw_evidence_timeout_s(
+        ...     hal_mode="real",
+        ...     hal_idle_steps=True,
+        ...     idle_hold_s=2.0,
+        ...     configured_s=0.5,
+        ...     rate_hz=40.0,
+        ... ) is None
+        True
+        >>> twin_jaw_evidence_timeout_s(
+        ...     hal_mode="sim",
+        ...     hal_idle_steps=True,
+        ...     idle_hold_s=2.0,
+        ...     configured_s=0.5,
+        ...     rate_hz=40.0,
+        ... )
+        2.1
+    """
+    if hal_mode != "sim" or not hal_idle_steps or not isinstance(idle_hold_s, float):
+        return None
+    return max(configured_s, idle_hold_s + 4.0 / rate_hz)
 
 
 def decode_action_chunk(msg: object) -> object | None:
@@ -126,6 +251,8 @@ def decode_action_chunk(msg: object) -> object | None:
     kwargs["confidence"] = 1.0 if confidence_raw is None else float(confidence_raw)
     kwargs["tick_index"] = int(getattr(msg, "tick_index", 0) or 0)
     kwargs["tick_group_size"] = max(int(getattr(msg, "tick_group_size", 1) or 1), 1)
+    # A pre-session IDL (no field) decodes to 0, the legacy "unknown runner".
+    kwargs["runner_session_id"] = int(getattr(msg, "runner_session_id", 0) or 0)
     # ADR-0102. Empty (or a pre-0102 IDL with no such field) decodes to None,
     # which is the whole-vector-in-manifest-order meaning the field replaced.
     slot_joint_names = [str(n) for n in (getattr(msg, "joint_names", None) or [])]
@@ -410,9 +537,14 @@ if _ROS2_AVAILABLE:
             self._safe_action_sub: Any = None
             self._action_applied_pub: Any = None
             self._last_action_applied_tick: int = 0
+            # runner_session_id the ack counter above belongs to (0 = legacy/none).
+            self._last_action_applied_session: int = 0
             self._deferred_action_applied_tick: int = 0
+            # Serializes the ack's check-and-publish (``_publish_action_applied_tick``).
+            self._ack_publish_lock = threading.Lock()
             self._safe_group_tick: int | None = None
             self._safe_group_count: int = 0
+            self._warned_no_applied_action = False
             self._estop_sub: Any = None
             self._estop_reset_sub: Any = None
             # Decouple the cheap, latency-sensitive publishers (odom /
@@ -446,7 +578,14 @@ if _ROS2_AVAILABLE:
             # within a single goal lifecycle.
             self._read_tick_idx: int = 0
             self._send_tick_idx: int = 0
-            self.declare_parameter("publish_rate_hz", 30.0)
+            # 0 = the manifest's action_spec.control_freq_hz — the runner reads
+            # state once per tick, so proprio is published once per tick. A
+            # sim-only manifest that declares no rate falls back to 30 Hz with a
+            # warning; a real manifest cannot load without one (issue #303).
+            self.declare_parameter("publish_rate_hz", 0.0)
+            # The rate joint states are read (and fed to the grasp trigger) at,
+            # resolved on activate; ``None`` until then.
+            self._joint_state_rate_hz: float | None = None
             self.get_logger().info(f"{node_name} HAL node initialised.")
 
         # ── Subclass hooks ────────────────────────────────────────────────
@@ -715,6 +854,17 @@ if _ROS2_AVAILABLE:
             rate_hz: float = (
                 self.get_parameter("publish_rate_hz").get_parameter_value().double_value
             )
+            if rate_hz <= 0.0:
+                assert self._hal is not None  # invariant: configure built it
+                declared = self._hal.description.control_rate_hz
+                if declared is None:
+                    self.get_logger().warning(
+                        f"robot {self._hal.description.name!r} declares no "
+                        "action_spec.control_freq_hz and no publish_rate_hz param was "
+                        "given; publishing proprio at 30 Hz. Declare the field."
+                    )
+                rate_hz = 30.0 if declared is None else declared
+            self._joint_state_rate_hz = max(rate_hz, 1.0)
             # For sim-attached HALs, joint_state (and odom, in
             # MobileBaseBridge) is published off a dedicated thread reading the
             # snapshot, NOT a timer on the single executor thread (which is busy
@@ -999,7 +1149,11 @@ if _ROS2_AVAILABLE:
                 )
 
             msg = RosJointState()
-            msg.header.stamp = self.get_clock().now().to_msg()
+            now = self.get_clock().now()
+            msg.header.stamp = type(now)(
+                nanoseconds=joint_state_republish_stamp_ns(now.nanoseconds, state.stamp_ns),
+                clock_type=now.clock_type,
+            ).to_msg()
             msg.name = list(state.name)
             msg.position = list(state.position)
             msg.velocity = list(state.velocity) if state.velocity else []
@@ -1050,7 +1204,51 @@ if _ROS2_AVAILABLE:
                 return
             if not self._send_action_traced(action, source="safe_action"):
                 return
+            # The position-stall grasp trigger needs the jaw's commanded target:
+            # the command the HAL actually applied, never a re-staged copy of it.
+            vision = getattr(self, "_vision_attachment", None)
+            if vision is not None:
+                self._fold_applied_command(vision, action)
             self._publish_action_applied_if_complete(action)
+
+        def _fold_applied_command(self, vision: Any, action: Any) -> None:  # noqa: ANN401  # reason: typed Action is imported only on the ROS path
+            """Tell the grasp trigger what the HAL applied for ``action`` (just sent OK).
+
+            An ungrouped action is applied as sent. An ADR-0102 slot is applied only as
+            part of its composed group, once the HAL committed that very
+            ``(runner_session_id, tick_index)`` — then the HAL's ``last_applied_action``
+            (the composed full-dof command) is it; a slot that only staged applied nothing
+            yet and changes nothing. A committed group whose command the HAL cannot state
+            (no ``last_applied_action``, or ``None``) CLEARS the trigger's command: the
+            jaw was just told something unknown, and the previous command — say, closed
+            by the start-pose ramp while the policy has since opened the jaws — would
+            read an open, stationary jaw as a stall (a phantom ATTACH). The no-accessor
+            case is also logged once.
+            """
+            if int(action.tick_group_size) <= 1:
+                vision.observe_command(action)
+                return
+            if not hasattr(self._hal, "last_applied_action"):
+                if not self._warned_no_applied_action:
+                    self._warned_no_applied_action = True
+                    self.get_logger().error(
+                        f"grasp trigger: {type(self._hal).__name__} exposes no "
+                        "last_applied_action, so a slot group's jaw command is unknown and "
+                        "the position-stall trigger's command is cleared (logged once)"
+                    )
+                vision.clear_command()
+                return
+            committed = (
+                getattr(self._hal, "last_committed_tick", None),
+                getattr(self._hal, "last_committed_session", None),
+            )
+            if committed != (int(action.tick_index), int(action.runner_session_id)):
+                return
+            applied = getattr(self._hal, "last_applied_action", None)
+            if applied is None:
+                vision.clear_command()
+            else:
+                vision.observe_command(applied)
 
         def _publish_action_applied_if_complete(self, action: Any) -> None:  # noqa: ANN401  # reason: typed Action is imported only on the ROS path
             """Acknowledge a tick only after its HAL application completes."""
@@ -1058,14 +1256,26 @@ if _ROS2_AVAILABLE:
                 return
             group_size = int(action.tick_group_size)
             tick = int(action.tick_index)
-            if tick <= 0 or tick <= self._last_action_applied_tick:
+            session = int(action.runner_session_id)
+            # A different, non-legacy runner session is a restarted runner whose
+            # ticks start over; the HAL adopts it only when its first group
+            # commits (``TickWatermark``), so the ack renumbers only on completion
+            # below. A monotonic ack would leave the new runner waiting on tick 1.
+            new_session = session not in (0, self._last_action_applied_session)
+            if session == 0 and tick == 1 and self._last_action_applied_tick > 1:
+                # Legacy (no session id): Entry 036's heuristic — tick 1 is a
+                # restarted runner (``refuse_stale_tick``).
+                self._last_action_applied_tick = 0
+                self._deferred_action_applied_tick = 0
+            if tick <= 0 or (not new_session and tick <= self._last_action_applied_tick):
                 return
             if group_size <= 1:
                 complete = True
             else:
                 committed_tick = getattr(self._hal, "last_committed_tick", None)
                 if committed_tick is not None:
-                    complete = int(committed_tick) == tick
+                    committed_session = getattr(self._hal, "last_committed_session", session)
+                    complete = int(committed_tick) == tick and int(committed_session) == session
                 else:
                     if self._safe_group_tick is None:
                         self._safe_group_tick = tick
@@ -1076,11 +1286,20 @@ if _ROS2_AVAILABLE:
                     complete = self._safe_group_count == group_size
             if not complete:
                 return
+            if new_session:
+                self._last_action_applied_tick = 0
+                self._deferred_action_applied_tick = 0
+            self._last_action_applied_session = session
             if not self._attachment_perception_ready():
                 self._deferred_action_applied_tick = tick
                 self.get_logger().info(
                     f"deferring action_applied tick={tick} for attachment perception"
                 )
+                # A holder that settled on another thread (the vision bridge on the
+                # proprio thread) between that check and the store above notified a
+                # tick of 0 — a lost wakeup that would strand this one. Re-check now
+                # that it is stored; a notify after the store finds it either way.
+                self._on_attachment_perception_ready()
                 return
             self._publish_action_applied_tick(tick)
 
@@ -1118,17 +1337,21 @@ if _ROS2_AVAILABLE:
 
         def _publish_action_applied_tick(self, tick: int) -> None:
             """Publish one completed tick and reset grouped-action bookkeeping."""
-            if self._action_applied_pub is None or tick <= self._last_action_applied_tick:
-                return
             from std_msgs.msg import UInt64
 
-            msg = UInt64()
-            msg.data = tick
-            self._action_applied_pub.publish(msg)
-            self._last_action_applied_tick = tick
-            self._safe_group_tick = None
-            self._safe_group_count = 0
-            self._deferred_action_applied_tick = 0
+            # The deferral re-check and a holder's notify can both reach here for one
+            # tick from two threads: check-and-publish once. Nothing under this lock
+            # calls a barrier holder, so it nests under any holder's lock.
+            with self._ack_publish_lock:
+                if self._action_applied_pub is None or tick <= self._last_action_applied_tick:
+                    return
+                msg = UInt64()
+                msg.data = tick
+                self._action_applied_pub.publish(msg)
+                self._last_action_applied_tick = tick
+                self._safe_group_tick = None
+                self._safe_group_count = 0
+                self._deferred_action_applied_tick = 0
 
         def _on_attachment_perception_ready(self) -> None:
             """Release the grouped tick held while attached perception settles.
@@ -1474,19 +1697,95 @@ if _ROS2_AVAILABLE:
             # authorities on one attachment topic is not a thing to arrive at by
             # accident. Needs an active `openral_perception_ros/segmenter_node`
             # serving SegmentInView; without one every grasp degrades (visibly)
-            # to the conservative GRIPPER_FORCE box.
+            # to the conservative GRIPPER_CLOSURE box. The grasp trigger is the
+            # jaw position stalling short of its command (manifest
+            # closure_calibration); no effort channel is read.
+            from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
+
             from openral_hal.vision_attachment_bridge import DEFAULT_SEGMENT_SERVICE
 
             self.declare_parameter("vision_attachment_enabled", False)
             self.declare_parameter("vision_attachment_camera", "")
             self.declare_parameter("vision_attachment_depth_topic", "")
+            # Empty → the camera's conventional depth/camera_info topic. The
+            # driver's live K is the only one ever projected through.
+            self.declare_parameter("vision_attachment_camera_info_topic", "")
             self.declare_parameter("vision_attachment_service", DEFAULT_SEGMENT_SERVICE)
             # Seconds. A warmed SAM 2.1 call is ~53 ms on the reference GPU; the
             # default leaves ~4x margin while staying the same order as the
             # ~100 ms barrier it rides inside. A CPU-only host must raise it.
             self.declare_parameter("vision_attachment_deadline_s", 0.25)
+            # evidence_timeout_s: seconds; the attachment heartbeat stops once the
+            # newest sample with a finite jaw position for every gripper is older
+            # than this, so a dead position channel becomes a kernel drop, not a
+            # stale "nothing attached".
+            # mask_depth_max_skew_s: seconds, the largest |mask capture stamp -
+            # depth stamp| a SegmentInView mask is back-projected across (same-grab
+            # pairs are 0; 0.1 admits one frame of cache lag at >= 10 Hz).
+            # grid_max_age_s: oldest world-voxel grid the grasp-target / place
+            # legs use — the deploy passes the kernel's world_voxel_deadline_s.
+            # release_clear_m: the deploy passes the kernel's world-voxel margin +
+            # one voxel resolution. Both are 0.0 = unset, and REQUIRED with the leg
+            # on: they belong to the kernel this deploy runs, so no cell's values are
+            # a safe fallback (refused at activate). release_timeout_s bounds the
+            # release window. See VisionAttachmentConfig.
+            self.declare_parameters(
+                "",
+                [
+                    ("vision_attachment_evidence_timeout_s", 0.5),
+                    ("vision_attachment_mask_depth_max_skew_s", 0.1),
+                    ("vision_attachment_grid_max_age_s", 0.0),
+                    ("vision_attachment_release_clear_m", 0.0),
+                    ("vision_attachment_release_timeout_s", 3.0),
+                ],
+            )
+            # Seconds; 0 = derive the grasp trigger's max sample gap from the joint-state
+            # rate (PositionStallConfig.for_rate). An operator calibration override.
+            self.declare_parameter("vision_attachment_trigger_max_gap_s", 0.0)
             self.declare_parameter("vision_attachment_tcp_frame", "")
             self.declare_parameter("vision_attachment_jaw_tip_frames", [""])
+            # "manifest_link=tf_frame" entries for links the published TF tree
+            # names differently (same body only — see VisionAttachmentConfig).
+            self.declare_parameter("vision_attachment_tf_frames", [""])
+            # Pre-grasp target producer leg (real pick-and-place design §2.2),
+            # owned by the vision attachment bridge. OFF by default: it measures
+            # the region a grasp-target exemption would be armed with.
+            self.declare_parameter("vision_attachment_grasp_target_enabled", False)
+            # freeze_s: seconds the last accepted region survives a lost view; 0 =
+            # derive it as 2x vision_attachment_grid_max_age_s (the kernel voxel
+            # deadline). The support search depth, support ring reach and own-hand
+            # occluder reach are calibration points (VisionAttachmentConfig).
+            self.declare_parameters(
+                "",
+                [
+                    ("vision_attachment_grasp_target_rate_hz", 3.0),
+                    ("vision_attachment_grasp_target_freeze_s", 0.0),
+                    ("vision_attachment_grasp_target_min_cells", 8),
+                    ("vision_attachment_grasp_target_min_cover", 0.5),
+                    ("vision_attachment_grasp_target_support_search_below_m", 0.15),
+                    ("vision_attachment_grasp_target_support_probe_margin_m", 0.05),
+                    ("vision_attachment_grasp_target_occluder_margin_m", 0.05),
+                    # Approach-armed target distance, metres; 0 = off (the default).
+                    ("vision_attachment_grasp_target_approach_m", 0.0),
+                ],
+            )
+            # Real place producer leg (real pick-and-place design §2.3). OFF by
+            # default: drafted, unapproved ADR-0097 / ADR-0092 D6 amendments. It
+            # measures the surface directly under the carried payload from the voxel
+            # map; nothing about the cell is surveyed or named. freeze_s 0 = derive it
+            # as 2x vision_attachment_grid_max_age_s (also its ceiling); the extrinsic
+            # bound defaults to openral_core.depth_extrinsic.MAX_PLANAR_ERR_M; the
+            # search depth is how far under the payload it looks. Calibration points.
+            self.declare_parameter("vision_attachment_place_target_enabled", False)
+            self.declare_parameters(
+                "",
+                [
+                    ("vision_attachment_place_target_rate_hz", 2.0),
+                    ("vision_attachment_place_target_freeze_s", 0.0),
+                    ("vision_attachment_place_target_search_depth_m", 0.20),
+                    ("vision_attachment_place_target_extrinsic_error_m", MAX_PLANAR_ERR_M),
+                ],
+            )
             self._bridge: Any = None
             self._mobile_base: Any = None
             self._vision_attachment: Any = None
@@ -1817,6 +2116,13 @@ if _ROS2_AVAILABLE:
                 viewer_enabled=self.get_parameter("viewer_enabled")
                 .get_parameter_value()
                 .bool_value,
+                attachment_heartbeat=sim_attachment_heartbeat(
+                    hal_mode=self.get_parameter("hal_mode").get_parameter_value().string_value
+                    or "sim",
+                    vision_attachment_enabled=self.get_parameter("vision_attachment_enabled")
+                    .get_parameter_value()
+                    .bool_value,
+                ),
                 camera_rate_hz=self.get_parameter("camera_publish_rate_hz")
                 .get_parameter_value()
                 .double_value,
@@ -1879,28 +2185,89 @@ if _ROS2_AVAILABLE:
 
             Opt-in (``vision_attachment_enabled``) because it becomes a second
             authority on ``/openral/attachment_state``. A manifest that cannot
-            support it (no gripper joints, no effort limit, no camera
+            support it (no gripper joints, an uncalibrated gripper, no camera
             intrinsics) is a loud configuration error at activate, not a
             silently-disabled safety input.
             """
             gp = self.get_parameter
             if not gp("vision_attachment_enabled").get_parameter_value().bool_value:
                 return
+            from openral_core.exceptions import ROSConfigError
+
             from openral_hal.vision_attachment_bridge import (
                 VisionAttachmentBridge,
                 VisionAttachmentConfig,
             )
 
             assert self._hal is not None
+            for name, source in (
+                ("vision_attachment_grid_max_age_s", "the kernel's world_voxel_deadline_s"),
+                (
+                    "vision_attachment_release_clear_m",
+                    "the kernel's world_voxel_margin_m + one octomap resolution",
+                ),
+            ):
+                if gp(name).get_parameter_value().double_value <= 0.0:
+                    raise ROSConfigError(
+                        f"{name} is unset but the vision attachment leg is enabled: the "
+                        f"deploy must pass {source} (deploy_e2e.launch.py derives it)."
+                    )
+            tf_frames: dict[str, str] = {}
+            for entry in gp("vision_attachment_tf_frames").get_parameter_value().string_array_value:
+                if not entry:
+                    continue
+                link, sep, frame = entry.partition("=")
+                if not (sep and link and frame):
+                    raise ROSConfigError(
+                        f"vision_attachment_tf_frames entry {entry!r} is not 'link=frame'."
+                    )
+                tf_frames[link] = frame
+            from openral_hal._grasp_trigger import PositionStallConfig
+
+            # The trigger samples at the joint-state rate this node reads at, so its
+            # windows derive from that rate, not from a 30 Hz-tuned constant.
+            max_gap_s = gp("vision_attachment_trigger_max_gap_s").get_parameter_value().double_value
+            rate_hz = self._joint_state_rate_hz or self._hal.description.control_rate_hz or 30.0
+            trigger_config = PositionStallConfig.for_rate(
+                rate_hz, max_gap_s=max_gap_s if max_gap_s > 0.0 else None
+            )
+            self.get_logger().info(
+                f"grasp trigger windows for {rate_hz:.1f} Hz joint states: "
+                f"max_gap_s={trigger_config.max_gap_s:.3f}"
+            )
+            hal_mode = gp("hal_mode").get_parameter_value().string_value or "sim"
+            configured_timeout_s = (
+                gp("vision_attachment_evidence_timeout_s").get_parameter_value().double_value
+            )
+            twin_timeout_s = twin_jaw_evidence_timeout_s(
+                hal_mode=hal_mode,
+                hal_idle_steps=callable(getattr(self._hal, "idle_step", None)),
+                idle_hold_s=getattr(self._bridge, "idle_hold_s", None),
+                configured_s=configured_timeout_s,
+                rate_hz=rate_hz,
+            )
+            twin_idle_stepping = twin_timeout_s is not None
+            evidence_timeout_s = configured_timeout_s if twin_timeout_s is None else twin_timeout_s
+            if evidence_timeout_s != configured_timeout_s:
+                self.get_logger().info(
+                    f"vision attachment (sim twin): jaw evidence timeout raised "
+                    f"{configured_timeout_s:.2f} -> {evidence_timeout_s:.2f} s to span the "
+                    "idle stepper's hold; evidence runs span gaps shorter than it"
+                )
             self._vision_attachment = VisionAttachmentBridge(
                 self,
                 self._hal.description,
                 on_perception_ready=self._on_attachment_perception_ready,
+                trigger_config=trigger_config,
                 config=VisionAttachmentConfig(
                     camera=gp("vision_attachment_camera").get_parameter_value().string_value,
                     depth_topic=gp("vision_attachment_depth_topic")
                     .get_parameter_value()
                     .string_value,
+                    camera_info_topic=gp("vision_attachment_camera_info_topic")
+                    .get_parameter_value()
+                    .string_value
+                    or None,
                     service_name=gp("vision_attachment_service").get_parameter_value().string_value,
                     deadline_s=gp("vision_attachment_deadline_s")
                     .get_parameter_value()
@@ -1913,6 +2280,76 @@ if _ROS2_AVAILABLE:
                         .string_array_value
                         if frame
                     ),
+                    tf_frames=tf_frames,
+                    evidence_timeout_s=evidence_timeout_s,
+                    evidence_run_spans_gaps=twin_idle_stepping,
+                    mask_depth_max_skew_s=gp("vision_attachment_mask_depth_max_skew_s")
+                    .get_parameter_value()
+                    .double_value,
+                    grid_max_age_s=gp("vision_attachment_grid_max_age_s")
+                    .get_parameter_value()
+                    .double_value,
+                    release_clear_m=gp("vision_attachment_release_clear_m")
+                    .get_parameter_value()
+                    .double_value,
+                    release_timeout_s=gp("vision_attachment_release_timeout_s")
+                    .get_parameter_value()
+                    .double_value,
+                    grasp_target_enabled=gp("vision_attachment_grasp_target_enabled")
+                    .get_parameter_value()
+                    .bool_value,
+                    grasp_target_rate_hz=gp("vision_attachment_grasp_target_rate_hz")
+                    .get_parameter_value()
+                    .double_value,
+                    grasp_target_freeze_s=gp("vision_attachment_grasp_target_freeze_s")
+                    .get_parameter_value()
+                    .double_value
+                    or None,
+                    grasp_target_min_cells=gp("vision_attachment_grasp_target_min_cells")
+                    .get_parameter_value()
+                    .integer_value,
+                    grasp_target_min_cover=gp("vision_attachment_grasp_target_min_cover")
+                    .get_parameter_value()
+                    .double_value,
+                    grasp_target_support_search_below_m=gp(
+                        "vision_attachment_grasp_target_support_search_below_m"
+                    )
+                    .get_parameter_value()
+                    .double_value,
+                    grasp_target_support_probe_margin_m=gp(
+                        "vision_attachment_grasp_target_support_probe_margin_m"
+                    )
+                    .get_parameter_value()
+                    .double_value,
+                    grasp_target_occluder_margin_m=gp(
+                        "vision_attachment_grasp_target_occluder_margin_m"
+                    )
+                    .get_parameter_value()
+                    .double_value,
+                    grasp_target_approach_m=gp("vision_attachment_grasp_target_approach_m")
+                    .get_parameter_value()
+                    .double_value
+                    or None,
+                    place_target_enabled=gp("vision_attachment_place_target_enabled")
+                    .get_parameter_value()
+                    .bool_value,
+                    place_target_rate_hz=gp("vision_attachment_place_target_rate_hz")
+                    .get_parameter_value()
+                    .double_value,
+                    place_target_freeze_s=(
+                        gp("vision_attachment_place_target_freeze_s")
+                        .get_parameter_value()
+                        .double_value
+                        or None
+                    ),
+                    place_target_search_depth_m=gp("vision_attachment_place_target_search_depth_m")
+                    .get_parameter_value()
+                    .double_value,
+                    place_target_extrinsic_error_m=gp(
+                        "vision_attachment_place_target_extrinsic_error_m"
+                    )
+                    .get_parameter_value()
+                    .double_value,
                 ),
             )
             self._vision_attachment.setup()

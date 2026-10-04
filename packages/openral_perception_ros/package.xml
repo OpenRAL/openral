@@ -28,6 +28,8 @@
   <!-- Python runtime: the OpenRAL Python workspace (openral_runner,
        providing ObjectsDetector) must be on PYTHONPATH. -->
   <exec_depend>python3-openral-runner</exec_depend>
+  <!-- segmenter_node + ros_image_detector_node: openral_hal.depth_cloud.intrinsics_from_camera_info -->
+  <exec_depend>python3-openral-hal</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

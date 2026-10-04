@@ -12,8 +12,10 @@ defer those imports until ``_run()`` so ``openral doctor`` startup stays light.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 from openral_cli.main import app
 from typer.testing import CliRunner
@@ -222,3 +224,20 @@ def test_bh_sim_run_rejects_non_vla_rskill_cleanly() -> None:
     assert "no model_family" in result.output
     assert "expects a VLA skill" in result.output
     assert "string_type" not in result.output
+
+
+def test_sim_list_never_advertises_gitignored_operator_scene_copies() -> None:
+    """`scenes/deploy/local/` holds operator copies; `openral sim list` must skip them."""
+    from openral_sim.cli import _discover_sim_configs
+
+    local = Path(__file__).resolve().parents[2] / "scenes" / "deploy" / "local"
+    local.mkdir(exist_ok=True)
+    copy = local / f"_test_sim_list_{os.getpid()}.yaml"
+    copy.write_text("robot_id: openarm\nscene:\n  id: openarm_real_world_voxels\n")
+    try:
+        listed = _discover_sim_configs()
+        assert listed, "the committed scenes are still listed"
+        assert copy not in listed
+        assert all("local" not in p.parts for p in listed)
+    finally:
+        copy.unlink()

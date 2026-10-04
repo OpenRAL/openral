@@ -31,7 +31,7 @@ pytest.importorskip("robot_descriptions")
 
 from openral_cli.collision import render_blocks
 from openral_core import RobotDescription
-from openral_core.schemas import CapsuleShape, LinkCollisionGeometry
+from openral_core.schemas import BoxShape, CapsuleShape, LinkCollisionGeometry
 from openral_safety.urdf_lowering import LoweredCollisionModel, lower_robot_auto, select_lowering
 
 # Every committed robot manifest; the test skips those without collision geometry.
@@ -58,8 +58,8 @@ ROBOTS = sorted(Path("robots").glob("*/robot.yaml"))
 #
 # Detected structurally (same as tests/unit/test_collision_lowering_fleet.py): a tool-generated
 # block carries "# GENERATED" directly above ``collision_geometry:``; hand-authored ones don't.
-# openarm also lacks the header, but its MJCF path keeps the manifest geometry verbatim, so it
-# re-lowers byte-identically — not a drift.
+# openarm lowers from its MJCF with the same fitter, so it carries the header too and is
+# regressed like every other generated block.
 
 
 def _has_generated_geometry_header(manifest: Path) -> bool:
@@ -72,15 +72,10 @@ def _has_generated_geometry_header(manifest: Path) -> bool:
 def _is_known_hand_authored_drift(manifest: Path) -> bool:
     """Hand-authored geometry (no GENERATED header) that no current path re-lowers.
 
-    openarm also lacks the header, but its MJCF lowering keeps the manifest
-    capsules verbatim, so it reproduces byte-identically — only robots WITHOUT an
-    MJCF-native keep path (panda_mobile today) genuinely drift.
+    Every lowering path now fits geometry, so any manifest without the header
+    (panda_mobile today) genuinely drifts.
     """
-    desc = RobotDescription.model_validate(yaml.safe_load(manifest.read_text()))
-    if _has_generated_geometry_header(manifest):
-        return False
-    # A robot that lowers from MJCF keeps its manifest geometry verbatim → no drift.
-    return bool(select_lowering(desc, manifest_dir=manifest.parent) != "mjcf")
+    return not _has_generated_geometry_header(manifest)
 
 
 # The committed manifests render geometry to 4 dp (openral_cli.collision.render_blocks),
@@ -97,15 +92,19 @@ def _round(v: float) -> float:
 
 
 def _geom_scalars(g: LinkCollisionGeometry) -> tuple[float, ...]:
-    """A link's numeric capsule/sphere params at committed (4-dp) precision.
+    """A link's numeric primitive params at committed (4-dp) precision.
 
-    radius, then half-length (0.0 for a sphere — it carries no ``length_m``),
-    then the 6-DoF origin (xyz + rpy). The shape kind and link name are compared
+    A box gives its three half-extents; a capsule/sphere its radius, then its
+    length (0.0 for a sphere — it carries no ``length_m``), padded to three. Then
+    the 6-DoF origin (xyz + rpy). The shape kind and link name are compared
     separately (exact, not numeric).
     """
-    radius = _round(g.shape.radius_m)
-    length = _round(g.shape.length_m) if isinstance(g.shape, CapsuleShape) else 0.0
-    return (radius, length, *(_round(x) for x in g.origin_xyz_rpy))
+    if isinstance(g.shape, BoxShape):
+        size = tuple(_round(h) for h in g.shape.half_extents_m)
+    else:
+        length = _round(g.shape.length_m) if isinstance(g.shape, CapsuleShape) else 0.0
+        size = (_round(g.shape.radius_m), length, 0.0)
+    return (*size, *(_round(x) for x in g.origin_xyz_rpy))
 
 
 def _geom_equal(
@@ -116,22 +115,34 @@ def _geom_equal(
 ) -> bool:
     """True iff the two per-link geometries match at committed precision within ``tol``.
 
-    Compares per link: shape kind, radius, half-length (capsule), and the 6-DoF
-    origin (xyz + rpy). The lists must cover the same link set and the same length
-    — a missing or extra link is a drift, never silently ignored.
+    Compares per link, over the link's primitive set: shape kind, radius,
+    half-length (capsule) or half-extents (box), and the 6-DoF origin (xyz +
+    rpy). The lists must cover the same link set and the same length — a
+    missing or extra link or primitive is a drift, never silently ignored.
     """
     if len(relowered) != len(committed):
         return False
-    rel = {g.link_name: g for g in relowered}
-    com = {g.link_name: g for g in committed}
+    rel: dict[str, list[LinkCollisionGeometry]] = {}
+    for g in relowered:
+        rel.setdefault(g.link_name, []).append(g)
+    com: dict[str, list[LinkCollisionGeometry]] = {}
+    for g in committed:
+        com.setdefault(g.link_name, []).append(g)
     if set(rel) != set(com):
         return False
-    for link_name, b in com.items():
-        a = rel[link_name]
-        if a.shape.shape != b.shape.shape:
+    for link_name, bs in com.items():
+        as_ = rel[link_name]
+        if len(as_) != len(bs):
             return False
-        if any(abs(x - y) > tol for x, y in zip(_geom_scalars(a), _geom_scalars(b), strict=True)):
-            return False
+        # A link's primitives are compared as a set: sort both sides the same way.
+        key = lambda g: (g.shape.shape, _geom_scalars(g))  # noqa: E731  # reason: local sort key
+        for a, b in zip(sorted(as_, key=key), sorted(bs, key=key), strict=True):
+            if a.shape.shape != b.shape.shape:
+                return False
+            if any(
+                abs(x - y) > tol for x, y in zip(_geom_scalars(a), _geom_scalars(b), strict=True)
+            ):
+                return False
     return True
 
 

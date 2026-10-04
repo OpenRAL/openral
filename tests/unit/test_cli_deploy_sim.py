@@ -23,6 +23,7 @@ import pytest
 from openral_cli import deploy_sim
 from openral_cli.deploy_sim import (
     _HEAD_CAM_ENV,
+    LaunchInvocation,
     _alloc_conf_var,
     _apply_palette_head_cam,
     _capability_matched_manifests,
@@ -30,6 +31,7 @@ from openral_cli.deploy_sim import (
     _derive_hal_spec,
     _preflight_palette_deps,
     _prepare_launch_env,
+    _resolve_clock_origin,
     _resolve_slam_backend,
     _ros2_argv_head,
     _run_launch,
@@ -1117,6 +1119,18 @@ def test_bh_preflight_palette_deps_returns_silent_when_no_rskills_dir(tmp_path: 
     _preflight_palette_deps(repo_root=tmp_path, robot_yaml=fake_yaml)
 
 
+@pytest.fixture()
+def _just_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pretend `just` is installed: the install path refuses up front without it (CI lacks it)."""
+    real_which = deploy_sim.shutil.which
+    monkeypatch.setattr(
+        deploy_sim.shutil,
+        "which",
+        lambda name, *a, **kw: "/usr/bin/just" if name == "just" else real_which(name, *a, **kw),
+    )
+
+
+@pytest.mark.usefixtures("_just_on_path")
 def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1192,6 +1206,7 @@ def test_bh_preflight_palette_deps_drops_blocked_non_tty_when_extras_missing(
     assert "--group libero" in out and "--group sim" in out, out
 
 
+@pytest.mark.usefixtures("_just_on_path")
 def test_bh_preflight_install_cmd_uses_just_sync_all_packages(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1313,6 +1328,7 @@ def test_bh_preflight_refuses_when_just_is_missing(
     )
 
 
+@pytest.mark.usefixtures("_just_on_path")
 def test_bh_preflight_accept_propagates_auto_install_consent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1370,6 +1386,7 @@ def test_bh_preflight_accept_propagates_auto_install_consent(
     assert os.environ.get("OPENRAL_AUTO_INSTALL_DEPS") == "1"
 
 
+@pytest.mark.usefixtures("_just_on_path")
 def test_bh_preflight_warns_and_proceeds_when_some_skills_importable(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1412,6 +1429,7 @@ def test_bh_preflight_warns_and_proceeds_when_some_skills_importable(
     assert "--group rldx" in out, out
 
 
+@pytest.mark.usefixtures("_just_on_path")
 def test_bh_preflight_auto_installs_when_env_set(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1464,6 +1482,7 @@ def test_bh_preflight_auto_installs_when_env_set(
     assert "extras installed" in out, out
 
 
+@pytest.mark.usefixtures("_just_on_path")
 def test_bh_preflight_auto_install_failure_exits_with_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1623,8 +1642,12 @@ def test_bh_prepare_launch_env_defaults_expandable_segments(
     `deploy sim` shells through deploy_sim_command's own inline env build — so the
     var never reached the runtime_node. Both paths now route through this helper.
     """
+    import openral_core.gpu
+
     monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
     monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
+    # A discrete-GPU host; the Tegra branch has its own test below.
+    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: False)
     env = _prepare_launch_env()
     chosen = _alloc_conf_var()
     other = "PYTORCH_CUDA_ALLOC_CONF" if chosen == "PYTORCH_ALLOC_CONF" else "PYTORCH_ALLOC_CONF"
@@ -1634,6 +1657,31 @@ def test_bh_prepare_launch_env_defaults_expandable_segments(
 
     monkeypatch.setenv(chosen, "garbage_collection_threshold:0.9")
     assert _prepare_launch_env()[chosen] == "garbage_collection_threshold:0.9"
+
+
+def test_bh_prepare_launch_env_leaves_the_allocator_alone_on_tegra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a Jetson, expandable segments are NOT defaulted.
+
+    torch's expandable-segments allocator queries NVML GPU-fabric info on its
+    first allocation, which the integrated GPU cannot answer: on qorin1
+    (torch 2.13+cu130) the runtime_node raised ``Expected NVML_SUCCESS ==
+    ...nvmlDeviceGetGpuFabricInfoV_...`` 363 s into a policy load, while the
+    same load in the same venv without the variable succeeded. Unified memory
+    also makes the discrete-card fragmentation headroom moot. An operator's
+    explicit setting still passes through untouched.
+    """
+    import openral_core.gpu
+
+    chosen = _alloc_conf_var()
+    monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
+    monkeypatch.delenv("PYTORCH_CUDA_ALLOC_CONF", raising=False)
+    monkeypatch.setattr(openral_core.gpu, "is_tegra_host", lambda: True)
+    assert chosen not in _prepare_launch_env()
+
+    monkeypatch.setenv(chosen, "expandable_segments:True")
+    assert _prepare_launch_env()[chosen] == "expandable_segments:True"
 
 
 def test_bh_run_launch_invocation_sets_expandable_segments(
@@ -2646,11 +2694,12 @@ def _openarm_scene_with_octomap(tmp_path: Path, extra: str) -> Path:
 def test_scene_pinned_octomap_cloud_topic_is_forwarded(tmp_path: Path) -> None:
     """A workcell can point octomap_server at the topic its depth driver publishes.
 
-    The launch default is ``/openral/cameras/front_depth/points``, back-projected
-    by the **sim** sensor bridge — nothing publishes it under ``hal_mode:=real``.
-    So without this field a real deploy runs octomap_server against silence and
-    the map, ``/openral/world_voxels`` and the dashboard pointcloud card all stay
-    empty while every node reports healthy. The ZED topic below is
+    Unpinned, the launch derives ``/openral/cameras/head_zed/points`` from the
+    manifest's depth sensor, back-projected by the **sim** sensor bridge —
+    nothing publishes it under ``hal_mode:=real``. So without this field a real
+    deploy runs octomap_server against silence and the map,
+    ``/openral/world_voxels`` and the dashboard pointcloud card all stay empty
+    while every node reports healthy. The ZED topic below is
     ``mTopicRoot + "point_cloud/cloud_registered"`` from zed_camera_component.
     """
     topic = "/zed/zed_node/point_cloud/cloud_registered"
@@ -2680,3 +2729,377 @@ def test_an_unpinned_octomap_cloud_topic_leaves_the_launch_default(tmp_path: Pat
     assert invocation.enable_octomap is True
     assert invocation.octomap_cloud_topic is None
     assert "octomap_cloud_topic:=" not in " ".join(invocation.argv_template)
+
+
+def test_zed_twin_scene_pins_host_wall_clock() -> None:
+    """A bare MuJoCo twin fed by a real ZED must run on wall-clock.
+
+    Found on Thor 2026-09-24: under the auto-selected simulated clock,
+    ``octomap_server`` sat near t=0 and dropped every wall-stamped ZED cloud as
+    "from the future" — 53 s of graph, zero clouds inserted, no world voxels.
+    """
+    invocation = resolve_launch_invocation(
+        config=_REPO_ROOT / "scenes" / "deploy" / "openarm_zed_octomap.yaml",
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides={"viewer_enabled": False},
+    )
+    assert invocation.hal.bare_twin_sim is True
+    assert invocation.clock_origin == "host_wall"
+    assert "clock_origin:=host_wall" in " ".join(invocation.argv_template)
+
+
+def test_pinned_clock_origin_wins_and_simulation_needs_a_clock() -> None:
+    twin = _SO101_CONFIG  # bare MuJoCo twin: exposes a sim clock
+    assert _resolve_clock_origin(hal_mode="sim", config=twin) == "simulation"
+    assert _resolve_clock_origin(hal_mode="sim", config=twin, pinned="host_wall") == "host_wall"
+    assert _resolve_clock_origin(hal_mode="sim", config=twin, pinned="simulation") == "simulation"
+    assert _resolve_clock_origin(hal_mode="real", config=twin) == "host_wall"
+    with pytest.raises(ROSConfigError, match="real deploy"):
+        _resolve_clock_origin(hal_mode="real", config=twin, pinned="simulation")
+
+
+def test_a_simulation_pin_is_refused_on_a_clockless_sim_backend(tmp_path: Path) -> None:
+    """``pusht`` is registered without ``sim_clock``: nothing there would publish ``/clock``."""
+    pytest.importorskip("openral_sim")
+    from openral_sim import SCENES
+
+    assert SCENES.meta("pusht").get("sim_clock") is not True
+    # A scene-attached deploy scene (no `composition`), re-pointed at the clockless backend.
+    text = (_REPO_ROOT / "scenes" / "deploy" / "behavior_r1pro.yaml").read_text(encoding="utf-8")
+    assert '\n  id: "behavior"\n' in text and "\ncomposition:" not in text
+    scene = tmp_path / "pusht_attached.yaml"
+    scene.write_text(text.replace('\n  id: "behavior"\n', "\n  id: pusht\n"), encoding="utf-8")
+    assert _resolve_clock_origin(hal_mode="sim", config=scene) == "host_wall"
+    with pytest.raises(ROSConfigError, match="sim backend without a clock"):
+        _resolve_clock_origin(hal_mode="sim", config=scene, pinned="simulation")
+
+
+def test_implicit_visual_slam_without_named_cameras_is_downgraded() -> None:
+    """panda_mobile_vslam has vision SLAM and no lidar; with no scene naming a rig, the
+    manifest-derived SLAM default is switched off before launch (Nav2 follows it)."""
+    invocation = resolve_launch_invocation(
+        config=None,
+        robot_override="panda_mobile_vslam",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides={"viewer_enabled": False},
+    )
+    assert invocation.enable_slam is False
+    assert invocation.enable_nav2 is False
+
+
+def test_explicit_visual_slam_without_named_cameras_is_refused() -> None:
+    """An explicit request fails loud before launch instead of a SLAM node dying later."""
+    with pytest.raises(ROSConfigError, match="names no cameras"):
+        resolve_launch_invocation(
+            config=None,
+            robot_override="panda_mobile_vslam",
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides={"viewer_enabled": False},
+            enable_slam=True,
+        )
+
+
+def test_default_detector_is_downgraded_when_no_camera_publishes_on_a_real_deploy(
+    tmp_path: Path,
+) -> None:
+    """The SO-100 manifest binds none of its cameras (a scene never binds a robot camera),
+    so a real deploy has no RGB topic: the implicit detector is switched off rather than
+    the launch refusing the whole graph."""
+    scene = tmp_path / "so100_real.yaml"
+    scene.write_text("scene:\n  id: so100_real\nrobot_id: so100_follower\n", encoding="utf-8")
+    invocation = resolve_launch_invocation(
+        config=scene,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        hal_mode="real",
+    )
+    assert invocation.enable_object_detector is False
+
+
+def _vslam_scene(tmp_path: Path, runtime_edits: dict[str, str]) -> Path:
+    """``robocasa_vslam.yaml`` with some ``runtime:`` keys rewritten or dropped (value None)."""
+    text = (_REPO_ROOT / "scenes" / "deploy" / "robocasa_vslam.yaml").read_text(encoding="utf-8")
+    for key, value in runtime_edits.items():
+        pattern = rf"\n  {key}:[^\n]*"
+        assert re.search(pattern, text), key
+        text = re.sub(pattern, "" if value is None else f"\n  {key}: {value}", text)
+    scene = tmp_path / "vslam.yaml"
+    scene.write_text(text, encoding="utf-8")
+    return scene
+
+
+def test_a_mono_camera_is_not_enough_for_isaac_ros(tmp_path: Path) -> None:
+    """Only pycuvslam reads slam_mono_camera; isaac_ros with no stereo pair is refused."""
+    scene = _vslam_scene(
+        tmp_path,
+        {
+            "slam_visual_impl": "isaac_ros",
+            "slam_stereo_cameras": None,
+            "enable_nav2": "false\n  slam_mono_camera: shoulder_left",
+        },
+    )
+    with pytest.raises(ROSConfigError, match="only read by pycuvslam"):
+        resolve_launch_invocation(
+            config=scene,
+            robot_override=None,
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides={"viewer_enabled": False},
+        )
+
+
+def test_nav2_over_stereo_vslam_resolves_with_a_depth_sensor(tmp_path: Path) -> None:
+    """nvblox maps from the robot's depth sensor; panda_mobile_vslam declares ``front_depth``,
+    so an explicit Nav2 request over its stereo rig resolves. (No in-tree vision-SLAM robot
+    lacks a depth sensor, so the refusal branch has no real manifest to exercise it.)"""
+    scene = _vslam_scene(tmp_path, {"enable_nav2": "true"})
+    ok = resolve_launch_invocation(
+        config=scene,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides={"viewer_enabled": False},
+    )
+    assert ok.enable_nav2 is True
+
+
+def test_scene_preload_pair_is_forwarded_only_when_the_scene_sets_it() -> None:
+    """``DeployRuntime.preload_rskill_id`` / ``preload_prompt`` → ``preload_*:=`` launch args.
+
+    The OpenArm bench scene pins its policy so the skill_runner loads it right
+    after activation, outside any goal's deadman first-chunk window; the
+    tabletop scene pins nothing and must forward nothing (ros2 launch rejects an
+    empty ``name:=``).
+    """
+    bench = _REPO_ROOT / "scenes" / "deploy" / "openarm_bench.yaml"
+    invocation = resolve_launch_invocation(
+        config=bench,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        hal_mode="real",
+    )
+    assert invocation.preload_rskill_id == "OpenRAL/rskill-pi05-openarm-restock_shelf-bf16"
+    assert invocation.preload_prompt == "restock-shelf-from-front-box"
+    joined = " ".join(invocation.argv_template)
+    assert "preload_rskill_id:=OpenRAL/rskill-pi05-openarm-restock_shelf-bf16" in joined
+    assert "preload_prompt:=restock-shelf-from-front-box" in joined
+
+    invocation = resolve_launch_invocation(
+        config=_OPENARM_CONFIG,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+    )
+    assert invocation.preload_rskill_id == ""
+    assert "preload_rskill_id:=" not in " ".join(invocation.argv_template)
+
+
+def test_scene_preload_revision_is_forwarded_with_the_preload_id(tmp_path: Path) -> None:
+    """``DeployRuntime.preload_rskill_revision`` → ``preload_rskill_revision:=`` (SO-101 bench).
+
+    The policy is resident per (id, revision): a goal pinning a revision the
+    preload did not use evicts the warm skill, so a scene must be able to pin it.
+    """
+    text = (_REPO_ROOT / "scenes" / "deploy" / "so101_bench.yaml").read_text(encoding="utf-8")
+    text = text.replace(
+        "\nruntime:\n",
+        "\nruntime:\n  preload_rskill_id: rskill-smolvla-so101-eraser_place-bf16\n"
+        "  preload_rskill_revision: v1.2.0\n",
+        1,
+    )
+    scene = tmp_path / "so101_bench.yaml"
+    scene.write_text(text, encoding="utf-8")
+    invocation = resolve_launch_invocation(
+        config=scene,
+        robot_override=None,
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        hal_mode="real",
+    )
+    assert invocation.preload_rskill_revision == "v1.2.0"
+    joined = " ".join(invocation.argv_template)
+    assert "preload_rskill_id:=rskill-smolvla-so101-eraser_place-bf16" in joined
+    assert "preload_rskill_revision:=v1.2.0" in joined
+    assert "preload_prompt:=" not in joined
+
+
+def test_deploy_vision_attachment_block_maps_to_hal_params_and_launch_args(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``runtime.vision_attachment`` reaches the HAL as ``vision_attachment_*`` params and
+    the launch as the segmenter args; an explicit ``--hal`` override still wins."""
+    import yaml
+
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    scene_src = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
+    data = yaml.safe_load(scene_src.read_text(encoding="utf-8"))
+    data["runtime"]["vision_attachment"].update(enabled=True, device="cpu", evidence_timeout_s=0.75)
+    scene = tmp_path / "vision_leg.yaml"
+    scene.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    invocation = resolve_launch_invocation(
+        config=scene,
+        robot_override="openarm",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides={"vision_attachment_deadline_s": 0.4},
+        enable_dashboard=False,
+    )
+
+    hal = {k: v for k, v in invocation.hal_params.items() if k.startswith("vision_attachment_")}
+    assert hal == {
+        "vision_attachment_enabled": True,
+        "vision_attachment_camera": "head_zed",
+        "vision_attachment_depth_topic": "/zed/zed_node/depth/depth_registered",
+        "vision_attachment_camera_info_topic": "/zed/zed_node/depth/camera_info",
+        "vision_attachment_deadline_s": 0.4,  # --hal wins over the scene's 0.25
+        "vision_attachment_evidence_timeout_s": 0.75,
+        "vision_attachment_grasp_target_enabled": False,
+        "vision_attachment_grasp_target_approach_m": 0.0,
+        "vision_attachment_place_target_enabled": False,
+        "vision_attachment_release_timeout_s": 3.0,
+        "vision_attachment_tf_frames": [
+            "openarm_left_link7=openarm_left_ee_base_link",
+            "openarm_right_link7=openarm_right_ee_base_link",
+        ],
+    }
+    manifest = _REPO_ROOT / "rskills/rskill-sam2_1-any-grasped_object_mask-bf16/rskill.yaml"
+    assert manifest.is_file()
+    for arg in (
+        "enable_vision_attachment:=true",
+        "vision_attachment_camera:=head_zed",
+        "vision_attachment_rgb_topic:=/zed/zed_node/rgb/color/rect/image",
+        "vision_attachment_rgb_camera_info_topic:=/zed/zed_node/rgb/color/rect/camera_info",
+        f"vision_attachment_segmenter_manifest:={manifest.resolve()}",
+        "vision_attachment_segmenter_device:=cpu",
+    ):
+        assert arg in invocation.argv_template
+
+
+def _openarm_cell_scene(
+    tmp_path: Path, *, runtime: dict[str, object], leg: dict[str, object]
+) -> Path:
+    """The committed OpenArm cell scene with ``runtime`` / ``vision_attachment`` overrides."""
+    import yaml
+
+    scene_src = _REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml"
+    data = yaml.safe_load(scene_src.read_text(encoding="utf-8"))
+    data["runtime"].update(runtime)
+    data["runtime"]["vision_attachment"].update(leg)
+    scene = tmp_path / "cell.yaml"
+    scene.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return scene
+
+
+def _invoke_cell(scene: Path, hal_mode: str = "sim") -> LaunchInvocation:
+    return resolve_launch_invocation(
+        config=scene,
+        robot_override="openarm",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        enable_dashboard=False,
+        hal_mode=hal_mode,
+    )
+
+
+def test_deploy_vision_attachment_producers_reach_the_hal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both producer legs forward as HAL params; nothing about the cell rides along."""
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    scene = _openarm_cell_scene(
+        tmp_path,
+        runtime={"grasp_allowance_enabled": True},
+        leg={
+            "enabled": True,
+            "grasp_target_enabled": True,
+            "place_target_enabled": True,
+            "release_timeout_s": 4.5,
+        },
+    )
+    hal = _invoke_cell(scene).hal_params
+    assert hal["vision_attachment_release_timeout_s"] == 4.5  # the scene's calibration
+    assert hal["vision_attachment_grasp_target_enabled"] is True
+    assert hal["vision_attachment_place_target_enabled"] is True
+    assert "vision_attachment_robot_unit" not in hal
+
+
+@pytest.mark.parametrize(
+    "leg",
+    [
+        {"enabled": False, "grasp_target_enabled": True},
+        {"enabled": True, "grasp_target_enabled": False},
+    ],
+)
+def test_deploy_refuses_grasp_allowance_without_its_producer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, leg: dict[str, object]
+) -> None:
+    """On real the kernel would arm the exemption with nothing measuring the region; the
+    twin keeps it (its MuJoCo evidence tracker is the producer)."""
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    scene = _openarm_cell_scene(tmp_path, runtime={"grasp_allowance_enabled": True}, leg=leg)
+    with pytest.raises(ROSConfigError, match="grasp_target_enabled"):
+        _invoke_cell(scene, hal_mode="real")
+    assert "grasp_allowance_enabled:=true" in _invoke_cell(scene).argv_template
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"vision_attachment_grasp_target_enabled": False},
+        {"vision_attachment_enabled": False},
+    ],
+)
+def test_deploy_run_refuses_a_hal_override_that_turns_the_producer_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, override: dict[str, object]
+) -> None:
+    """The scene enables the target leg, but ``--hal`` turns it off on the HAL: the refusal
+    judges the effective HAL params, so the override cannot arm an unmeasured exemption."""
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    scene = _openarm_cell_scene(
+        tmp_path,
+        runtime={"grasp_allowance_enabled": True},
+        leg={"enabled": True, "grasp_target_enabled": True},
+    )
+
+    def invoke(overrides: dict[str, object] | None) -> LaunchInvocation:
+        return resolve_launch_invocation(
+            config=scene,
+            robot_override="openarm",
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides=overrides,
+            enable_dashboard=False,
+            hal_mode="real",
+        )
+
+    with pytest.raises(ROSConfigError, match="--hal"):
+        invoke(override)
+    hal = invoke(None).hal_params
+    assert hal["vision_attachment_grasp_target_enabled"] is True
+
+
+def test_deploy_vision_attachment_off_forwards_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The committed scene keeps the leg off: no HAL param, no launch arg."""
+    monkeypatch.setenv("OPENRAL_ROBOT_UNIT", "thor")
+    invocation = resolve_launch_invocation(
+        config=_REPO_ROOT / "scenes" / "deploy" / "openarm_real_world_voxels.yaml",
+        robot_override="openarm",
+        dashboard_port=4318,
+        reset_to_pose_service=None,
+        hal_param_overrides=None,
+        enable_dashboard=False,
+    )
+    assert not any(k.startswith("vision_attachment_") for k in invocation.hal_params)
+    assert not any("vision_attachment" in a for a in invocation.argv_template)

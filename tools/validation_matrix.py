@@ -178,14 +178,22 @@ _SCENE_SAFETY_KEYS: Final[tuple[str, ...]] = (
     "extra_allowed_collision_pairs",
     "hal",
     "place_declaration",
+    "grasp_declaration",
 )
 
-# Inside `runtime:`, exactly one key is a safety knob rather than stack
-# composition: the octomap→kernel collision gate. `enable_reasoner`,
+# Inside `runtime:`, three keys are safety knobs rather than stack composition:
+# the octomap→kernel collision gate, the kernel's grasp-target exemption
+# (which the `allowance` pattern would also catch) and the vision attachment
+# leg (enabling it turns the kernel's attached-payload check on; its tf_frames
+# decide which link a payload rides). `enable_reasoner`,
 # `enable_slam`, `enable_nav2`, `enable_octomap`, the detector and the scene VLM
 # compose the stack and are the whole point of pinning a scene, so they stay
 # pinnable.
-_SCENE_SAFETY_RUNTIME_KEYS: Final[tuple[str, ...]] = ("enable_octomap_kernel_check",)
+_SCENE_SAFETY_RUNTIME_KEYS: Final[tuple[str, ...]] = (
+    "enable_octomap_kernel_check",
+    "grasp_allowance_enabled",
+    "vision_attachment",
+)
 
 # Sources whose change invalidates the built ROS overlay: the C++ kernel, the
 # IDL, the octomap bridge and every HAL/ROS package colcon compiles.
@@ -1881,9 +1889,10 @@ def scene_safety_surface(document: Mapping[str, Any]) -> dict[str, object]:
     """The safety-relevant keys of a parsed DeployScene, flattened.
 
     The kernel envelope, the collision-pair allowlist, the HAL parameter block
-    and the place declaration are safety-relevant wholesale; inside
-    ``runtime:`` only the octomap→kernel gate is, because SLAM/Nav2/octomap/
-    detector/scene-VLM/reasoner enablement is stack *composition* — pinning it
+    and the place and grasp declarations are safety-relevant wholesale; inside
+    ``runtime:`` only the octomap→kernel gate, the grasp-target exemption and
+    the vision attachment leg are, because SLAM/Nav2/octomap/detector/scene-VLM/reasoner enablement is
+    stack *composition* — pinning it
     is what the harness is for. Anything else whose leaf name looks like a
     margin, tolerance, allowance, limit, watchdog or E-stop is caught by name.
 
@@ -1898,6 +1907,8 @@ def scene_safety_surface(document: Mapping[str, Any]) -> dict[str, object]:
         {}
         >>> scene_safety_surface({"runtime": {"enable_octomap_kernel_check": False}})
         {'runtime.enable_octomap_kernel_check': False}
+        >>> scene_safety_surface({"runtime": {"grasp_allowance_enabled": True}})
+        {'runtime.grasp_allowance_enabled': True}
     """
     return {
         key: value for key, value in _flatten_scene(document) if key and _is_scene_safety_key(key)
@@ -2121,11 +2132,12 @@ def wait_for_dds_transport_ready(
 ) -> str:
     """Block until the deploy CLI announces its DDS transport is safe to join.
 
-    ``openral deploy sim`` unlinks every ``/dev/shm/fastrtps_*`` this user owns before spawning
-    ``ros2 launch`` (``openral_cli.deploy_sim._apply_rmw_default``); a participant created before
-    that purge loses its shared-memory segments silently (no error, nothing received again). The
-    2026-08-23 round lost all 24 monitors this way — every ``run_monitor.jsonl`` holds only
-    ``monitor_started``/``monitor_stopped``.
+    ``openral deploy sim`` unlinks stale ``/dev/shm/fastrtps_*`` files before spawning
+    ``ros2 launch`` (``openral_cli.deploy_sim._apply_rmw_default``). Until 2026-09-24 it unlinked
+    every such file this user owned, so a participant created before the purge lost its
+    shared-memory segments silently; the 2026-08-23 round lost all 24 monitors that way — every
+    ``run_monitor.jsonl`` holds only ``monitor_started``/``monitor_stopped``. The clean now keeps
+    files a live process uses, and the gate stays so the monitor joins the graph being launched.
 
     So the monitor starts on the far side of the marker
     (``DDS_TRANSPORT_READY_MARKER``, printed after the purge, before

@@ -53,8 +53,8 @@ composition:
 # declares `head_zed` (a depth SensorSpec with intrinsics), which flips
 # deploy's octomap auto-enable to true — but that camera's cloud is computed
 # by the ZED SDK and arrives on a topic, so auto-enabling here would map
-# silence: octomap_server subscribes to the launch default
-# `/openral/cameras/front_depth/points` (only the sim sensor bridge publishes
+# silence: octomap_server subscribes to the manifest-derived
+# `/openral/cameras/head_zed/points` (only the sim sensor bridge publishes
 # it), leaving the octree/world_voxels/pointcloud card empty while every node
 # reports healthy. A scene that DOES want the map sets both keys together —
 # see scenes/deploy/openarm_zed_octomap.yaml.

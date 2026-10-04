@@ -33,7 +33,12 @@ import structlog
 from opentelemetry import trace
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 
-__all__ = ["install_structlog_bridge", "resolve_log_level", "trace_context_processor"]
+__all__ = [
+    "apply_structlog_level_floor",
+    "install_structlog_bridge",
+    "resolve_log_level",
+    "trace_context_processor",
+]
 
 _BRIDGE_LOGGER_NAME = "openral.otel_bridge"
 _INSTALLED = False
@@ -93,6 +98,32 @@ def resolve_log_level() -> int:
         return int(raw)
     resolved = logging.getLevelNamesMapping().get(raw.upper())
     return resolved if resolved is not None else _DEFAULT_LEVEL
+
+
+def apply_structlog_level_floor() -> None:
+    """Make structlog drop events below ``OPENRAL_LOG_LEVEL`` with no OTel bridge.
+
+    ``configure_observability`` installs the full stdlib bridge only when an
+    OTLP endpoint resolves. Without one, structlog's stock config rendered
+    and printed every DEBUG event — and a deploy runtime emits one per
+    joint state (750 Hz on a ros2_control arm) and per camera frame, which
+    cost the process ~10 % of its GIL on an AGX Orin. Same floor as the
+    bridge (``resolve_log_level``), applied to the stock renderer.
+
+    Example:
+        >>> import os, structlog
+        >>> os.environ["OPENRAL_LOG_LEVEL"] = "INFO"
+        >>> apply_structlog_level_floor()
+        >>> structlog.get_logger("openral.doctest").debug("dropped")  # prints nothing
+        >>> del os.environ["OPENRAL_LOG_LEVEL"]
+    """
+    # ``cache_logger_on_first_use=False``: a logger bound before this call
+    # (an import-time proxy that already emitted) re-binds on its next use
+    # and picks the floor up; a cached one would keep the stock wrapper.
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(resolve_log_level()),
+        cache_logger_on_first_use=False,
+    )
 
 
 def install_structlog_bridge(logger_provider: LoggerProvider) -> None:

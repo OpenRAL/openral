@@ -118,6 +118,97 @@ class TestDecodeImageFrames:
         img = _decode_image_frames({"top": frame}, {"top": "camera1"})["camera1"]
         assert img[0, 0].tolist() == [0, 0, 200]
 
+    def test_a_depth16_frame_decodes_as_uint16_beside_the_rgb_slots(self) -> None:
+        """The first real OpenArm dispatch aborted on exactly this frame mix.
+
+        `head_zed` arrives as 16UC1 (two bytes per pixel, one channel); read as
+        uint8 the reshape raised `ValueError: cannot reshape array of size
+        1843200 into shape (720,1280,1)` and the policy never saw the RGB
+        frames next to it (qorin1, 2026-09-22).
+        """
+        depth = np.full((2, 2, 1), 1234, dtype=np.uint16)
+        frames = {
+            "wrist_left": _rgb_frame("wrist_left", fill=3),
+            "head_zed": SensorFrame(
+                sensor_id="head_zed",
+                stamp_monotonic_ns=1,
+                stamp_wall_ns=2,
+                encoding=FrameEncoding.DEPTH16,
+                width=2,
+                height=2,
+                channels=1,
+                data=depth.tobytes(),
+            ),
+        }
+        images = _decode_image_frames(frames, {"wrist_left": "camera1"})
+        assert images["camera1"].dtype == np.uint8
+        assert images["camera1"].shape == (2, 2, 3)
+        assert images["head_zed"].dtype == np.uint16
+        assert images["head_zed"].shape == (2, 2, 1)
+        assert int(images["head_zed"][0, 0, 0]) == 1234
+
+    def test_compressed_frames_are_skipped_not_misreshaped(self) -> None:
+        frame = SensorFrame(
+            sensor_id="cam",
+            stamp_monotonic_ns=1,
+            stamp_wall_ns=2,
+            encoding=FrameEncoding.JPEG,
+            width=640,
+            height=480,
+            channels=3,
+            data=b"\xff\xd8\xff\xe0not-really-a-jpeg",
+        )
+        assert _decode_image_frames({"cam": frame}, {"cam": "camera1"}) == {}
+
+    def test_jpeg_frames_decode_to_rgb_under_their_slot(self) -> None:
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.fromarray(np.full((4, 6, 3), 90, dtype=np.uint8), mode="RGB").save(buf, "PNG")
+        frame = SensorFrame(
+            sensor_id="top",
+            stamp_monotonic_ns=1,
+            stamp_wall_ns=2,
+            encoding=FrameEncoding.PNG,
+            width=6,
+            height=4,
+            channels=3,
+            data=buf.getvalue(),
+        )
+        img = _decode_image_frames({"top": frame}, {"top": "camera1"})["camera1"]
+        assert img.shape == (4, 6, 3) and int(img[0, 0, 0]) == 90
+
+    def test_undecodable_frame_on_a_required_slot_raises(self) -> None:
+        """SO-101 SmolVLA needs camera1 (``top``): a corrupt MJPEG frame must not blind it."""
+        from openral_core import required_vla_camera_slots
+        from openral_core.exceptions import ROSPerceptionStale
+
+        so101 = RobotDescription.from_yaml(
+            str(_REPO_ROOT / "robots" / "so101_follower" / "robot.yaml")
+        )
+        skill = RSkillManifest.from_yaml(
+            str(_REPO_ROOT / "rskills" / "rskill-smolvla-so101-eraser_place-bf16" / "rskill.yaml")
+        )
+        slot_map = sensor_name_to_slot(so101)
+        required = required_vla_camera_slots(skill, so101)
+        assert slot_map["top"] in required
+        bad = SensorFrame(
+            sensor_id="top",
+            stamp_monotonic_ns=1,
+            stamp_wall_ns=2,
+            encoding=FrameEncoding.JPEG,
+            width=640,
+            height=480,
+            channels=3,
+            data=b"\xff\xd8\xff\xe0not-really-a-jpeg",
+        )
+        with pytest.raises(ROSPerceptionStale, match="top"):
+            _decode_image_frames({"top": bad}, slot_map, required)
+        # The same frame on a sensor no required slot reads is a logged skip only.
+        assert _decode_image_frames({"top": bad}, slot_map, ()) == {}
+
     def test_frames_without_data_are_skipped(self) -> None:
         frame = SensorFrame(
             sensor_id="front",
@@ -167,6 +258,139 @@ class TestBuildRuntimeSkillSceneCameras:
             # ``policy_extras.chunk_prefetch: false`` wins over it).
             "chunk_prefetch": True,
         }
+
+    def test_activate_warms_the_adapters_real_step_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The preload's warm-up runs `adapter.step` on a cell-shaped observation, then resets.
+
+        A bare policy forward left the first real tick paying 306-357 s on a
+        Jetson AGX Orin under a live graph (2026-09-22) — the chunk executor,
+        its autocast and the preprocessor on real-sized frames all have their
+        own first-call costs — while the deadman's first-chunk window is 120 s.
+        Warming through `step` moves that into the preload, where the operator
+        is already waiting.
+        """
+        import openral_sim.factory as _sim_factory
+
+        yaml_path = _REPO_ROOT / "rskills" / "lingbot-va-galaxea-a1-fruit-placement" / "rskill.yaml"
+        description = RobotDescription.from_yaml(
+            str(_REPO_ROOT / "robots" / "galaxea_a1" / "robot.yaml")
+        )
+        manifest = RSkillManifest.from_yaml(str(yaml_path))
+
+        class _RecordingAdapter:
+            """A real PolicyAdapter: zero actions, remembers what it was fed."""
+
+            def __init__(self, env_cfg: object) -> None:
+                self.spec = env_cfg.vla  # type: ignore[attr-defined]
+                self.device = "cpu"
+                self.steps: list[tuple[dict[str, object], str]] = []
+                self.resets = 0
+
+            def reset(self) -> None:
+                self.resets += 1
+
+            def step(self, observation: dict[str, object], instruction: str) -> np.ndarray:
+                self.steps.append((observation, instruction))
+                return np.zeros(int(manifest.action_contract.dim), dtype=np.float32)
+
+            def close(self) -> None:
+                pass
+
+        built: list[_RecordingAdapter] = []
+
+        def _make(env_cfg: object) -> _RecordingAdapter:
+            adapter = _RecordingAdapter(env_cfg)
+            built.append(adapter)
+            return adapter
+
+        monkeypatch.setattr(_sim_factory, "make_policy", _make)
+        skill = _build_runtime_skill_from_manifest(
+            yaml_path=yaml_path,
+            prompt="put the mango into the blue bowl",
+            scene_cameras=("front", "wrist"),
+            description=description,
+        )
+        from openral_rskill.base import RSkillState
+
+        assert skill.info.state is RSkillState.ACTIVE
+        (adapter,) = built
+        # One warm-up step during activate, then a reset so tick 1 starts clean
+        # (the activate-time reset plus the warm-up's own).
+        assert len(adapter.steps) == 1
+        obs, instruction = adapter.steps[0]
+        assert instruction == "put the mango into the blue bowl"
+        assert obs["task"] == instruction
+        assert obs["state"].shape == (int(manifest.state_contract.dim),)  # type: ignore[union-attr]
+        rgb = {s.name: s for s in description.sensors if getattr(s, "modality", None) == "rgb"}
+        slots = sensor_name_to_slot(description)
+        for name, sensor in rgb.items():
+            image = obs["images"][slots[name]]  # type: ignore[index]
+            assert image.shape == (sensor.intrinsics.height, sensor.intrinsics.width, 3)
+            assert image.dtype == np.uint8
+        assert adapter.resets >= 1
+        skill.shutdown()
+
+    def test_warmup_without_a_state_width_is_skipped_with_a_typed_reason(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No ``state_contract.dim`` and no robot description: warm-up skips, activate succeeds.
+
+        The state width used to fall through to ``description.joints`` with no
+        description, so the warm-up died on an ``AttributeError`` that the
+        non-fatal wrapper logged as an opaque ``warmup_failed``.
+        """
+        import openral_sim.factory as _sim_factory
+
+        yaml_path = _REPO_ROOT / "rskills" / "lingbot-va-galaxea-a1-fruit-placement" / "rskill.yaml"
+        no_state = RSkillManifest.from_yaml(str(yaml_path)).model_copy(
+            update={"state_contract": None}
+        )
+        monkeypatch.setattr(RSkillManifest, "from_yaml", staticmethod(lambda _p: no_state))
+
+        steps: list[object] = []
+
+        class _Adapter:
+            def __init__(self, env_cfg: object) -> None:
+                self.spec = env_cfg.vla  # type: ignore[attr-defined]
+                self.device = "cpu"
+
+            def step(self, observation: dict[str, object], instruction: str) -> np.ndarray:
+                steps.append(observation)
+                return np.zeros(int(no_state.action_contract.dim), dtype=np.float32)  # type: ignore[union-attr]
+
+            def reset(self) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr(_sim_factory, "make_policy", _Adapter)
+        warnings: list[tuple[str, dict[str, object]]] = []
+
+        class _CapturingLogger:
+            def warning(self, event: str, **kw: object) -> None:
+                warnings.append((event, kw))
+
+            def __getattr__(self, _name: str) -> object:
+                return lambda *_a, **_k: None
+
+        monkeypatch.setattr(_RUNNER, "log", _CapturingLogger())
+
+        skill = _build_runtime_skill_from_manifest(
+            yaml_path=yaml_path,
+            prompt="put the mango into the blue bowl",
+            scene_cameras=("front", "wrist"),
+            description=None,
+        )
+        from openral_rskill.base import RSkillState
+
+        assert skill.info.state is RSkillState.ACTIVE
+        assert steps == [], "warm-up must not step a policy with an unknown state width"
+        failed = [kw for event, kw in warnings if event == "rskill_runner.warmup_failed"]
+        assert len(failed) == 1 and "state_contract.dim" in str(failed[0]["error"])
+        skill.shutdown()
 
     def test_smolvla_deploy_enables_realtime_chunk_prefetch(
         self, monkeypatch: pytest.MonkeyPatch

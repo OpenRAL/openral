@@ -388,14 +388,17 @@ class TestPyTorchRuntime:
         # advertise an engine in `supported_engines` but still raise
         # `NoQEngine` from `quantized::linear_prepack`; treat that as a
         # platform-skip rather than a test failure, but still exercise the
-        # unload leg below.
+        # unload leg below. On GitHub's linux-arm64 runners QNNPACK's cpuinfo
+        # cannot identify the CPU and raises "unknown architecture" (misspelled upstream,
+        # so match its prefix) — the same missing-engine case.
         skip_msg: str | None = None
         try:
             rt.quantize(QuantizationConfig(dtype=QuantizationDtype.INT8))
             out2 = rt.infer(dummy)
             assert "output" in out2
         except RuntimeError as exc:
-            if "NoQEngine" not in str(exc) and "quantized engine" not in str(exc):
+            no_engine = ("NoQEngine", "quantized engine", "unknown archite")
+            if not any(sig in str(exc) for sig in no_engine):
                 raise
             skip_msg = f"no torch quantized engine available: {exc}"
 

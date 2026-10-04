@@ -19,11 +19,17 @@ This is the **geometric** counterpart of the object-localization detector node
 ``locate_in_view`` for a free-text query): a different contract — no label
 vocabulary, no score threshold, a point in and masks out.
 
-**Intrinsics.** The request carries a 3-D point, not a pixel, so intrinsics
-stay on this side of the boundary. This node transforms that point from the
-request's ``frame_id`` into the camera's optical frame through TF2 (the only
-source of coordinate frames — CLAUDE.md §2), then projects it with the
-**manifest's** ``SensorSpec.intrinsics``, rescaled to the frame received.
+**Intrinsics and frame.** The request carries a 3-D point, not a pixel, so
+intrinsics stay on this side of the boundary. This node transforms that point
+from the request's ``frame_id`` into the **image header's** ``frame_id`` — the
+optical frame the camera driver declares for the pixels — through TF2 (the only
+source of coordinate frames — CLAUDE.md §2), then projects it with the driver's
+**live** ``CameraInfo`` K when ``camera_infos`` names one for that camera,
+rescaled to the frame received. ``SensorSpec.frame_id`` is not an optical frame
+on every robot (the OpenArm's ``head_zed`` names the ZED *body* frame, while the
+driver stamps its images ``zed_left_camera_frame_optical``), and a manifest's
+intrinsics may be nominal (that same camera: fx 960 declared, 1498.18 published,
+2026-10-02), so both are fallbacks only, each warned about once per camera.
 Nothing here hardcodes a pixel or a frame id.
 
 **Why the reply is plural.** With ``segmenter.multimask`` the model emits
@@ -43,12 +49,19 @@ barrier the HAL holds while it calls this.
 
 Parameters:
     cameras (str[]): logical cameras as ``"id=topic"`` entries. Each id MUST be
-        a ``SensorSpec`` name in ``robot_yaml`` — that is where its intrinsics
-        and optical ``frame_id`` come from. Empty = a single camera
+        a ``SensorSpec`` name in ``robot_yaml`` — that is where its fallback
+        intrinsics and ``frame_id`` come from. Empty = a single camera
         ``primary_camera`` on ``image_topic``.
+    camera_infos (str[]): optional ``"id=topic"`` entries naming each camera's
+        ``sensor_msgs/CameraInfo`` (sensor-data QoS). A camera listed here is
+        projected through the driver's live K and a request is refused
+        (``ROSPerceptionStale``) until one has arrived; a camera not listed
+        falls back to the manifest's nominal intrinsics, warned once. Each id
+        must also be in ``cameras``.
     primary_camera (str): id of the default camera (used when a request leaves
         ``camera`` empty).
-    image_topic (str): single-camera fallback topic.
+    image_topic (str): single-camera fallback topic; default empty — ``cameras`` or this
+        must name a camera (ADR-0108), else configure raises ``ROSConfigError``.
     robot_yaml (str): RobotDescription path, for each camera's intrinsics +
         optical frame. Required.
     manifest_path (str): rSkill manifest path (``kind: "segmenter"``). Required.
@@ -81,17 +94,18 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
-from openral_perception_ros.camera_topics import resolve_camera_topics
+from openral_perception_ros.camera_topics import parse_camera_entries, resolve_camera_topics
 
 if TYPE_CHECKING:  # pragma: no cover — typing only, keeps numpy off the import path
     import numpy as np
     from numpy.typing import NDArray
-    from openral_core import RobotDescription, SensorSpec
+    from openral_core import IntrinsicsPinhole, RobotDescription, SensorSpec
 
 __all__ = [
     "main",
     "make_segmenter_node",
     "mono8_bytes_from_mask",
+    "projection_geometry",
     "sensor_spec_by_name",
 ]
 
@@ -123,6 +137,76 @@ def sensor_spec_by_name(description: RobotDescription, name: str) -> SensorSpec 
             if spec.name == name:
                 return spec
     return None
+
+
+def projection_geometry(
+    spec: SensorSpec,
+    *,
+    width: int,
+    height: int,
+    header_frame_id: str,
+    camera_info: Any = None,
+) -> tuple[IntrinsicsPinhole, str, tuple[str, ...]]:
+    """Pick the intrinsics and optical frame a cached frame is projected through.
+
+    The image's own header frame wins over ``spec.frame_id`` (which may name a
+    camera *body* frame), and the driver's live ``CameraInfo`` K wins over the
+    manifest's (possibly nominal) intrinsics. Each fallback taken is named in
+    the returned notes so the caller can log it (CLAUDE.md §1.4).
+
+    Args:
+        spec: The camera's manifest ``SensorSpec``.
+        width: Width of the cached frame (pixels).
+        height: Height of the cached frame (pixels).
+        header_frame_id: ``header.frame_id`` of the cached image; blank when
+            the driver left it empty.
+        camera_info: The driver's latest ``sensor_msgs/CameraInfo`` for this
+            camera, or ``None`` when none is configured.
+
+    Returns:
+        ``(intrinsics, optical_frame, fallbacks)`` — intrinsics rescaled to
+        ``width`` x ``height``, the tf2 frame to project in, and one note per
+        fallback taken (empty when both came from the live stream).
+
+    Raises:
+        ROSConfigError: The live ``CameraInfo`` is uncalibrated, or there is no
+            live K and the manifest declares no intrinsics either.
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> spec = sensor_spec_by_name(
+        ...     RobotDescription.from_yaml("robots/openarm/robot.yaml"), "head_zed"
+        ... )
+        >>> k, frame, notes = projection_geometry(
+        ...     spec, width=1920, height=1080, header_frame_id="zed_left_camera_frame_optical"
+        ... )
+        >>> (frame, k.fx, len(notes))
+        ('zed_left_camera_frame_optical', 960.0, 1)
+    """
+    from openral_core import ROSConfigError, scale_intrinsics_to
+    from openral_hal.depth_cloud import intrinsics_from_camera_info
+
+    fallbacks: list[str] = []
+    if camera_info is not None:
+        base = intrinsics_from_camera_info(camera_info)
+    elif spec.intrinsics is not None:
+        base = spec.intrinsics
+        fallbacks.append(
+            f"projecting through the manifest's nominal intrinsics for {spec.name!r} "
+            "(no camera_infos entry); set camera_infos to use the driver's calibration"
+        )
+    else:
+        raise ROSConfigError(
+            f"camera {spec.name!r} has no camera_infos entry and no SensorSpec intrinsics"
+        )
+    frame = header_frame_id.strip()
+    if not frame:
+        frame = spec.frame_id
+        fallbacks.append(
+            f"image header frame_id is empty for {spec.name!r}; projecting in "
+            f"SensorSpec.frame_id {spec.frame_id!r}, which must then be an optical frame"
+        )
+    return scale_intrinsics_to(base, width, height), frame, tuple(fallbacks)
 
 
 def mono8_bytes_from_mask(mask: NDArray[np.bool_]) -> bytes:
@@ -163,7 +247,7 @@ def _node_class() -> type:
     without rclpy.
     """
     import numpy as np
-    from openral_core import RobotDescription, scale_intrinsics_to
+    from openral_core import RobotDescription, ROSConfigError
     from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
     from rclpy.qos import (
         QoSDurabilityPolicy,
@@ -171,7 +255,7 @@ def _node_class() -> type:
         QoSProfile,
         QoSReliabilityPolicy,
     )
-    from sensor_msgs.msg import Image
+    from sensor_msgs.msg import CameraInfo, Image
 
     from openral_perception_ros.image_convert import ImageConvertError, image_to_bgr_bytes
 
@@ -182,8 +266,9 @@ def _node_class() -> type:
             """Declare parameters; no ROS entities and no model yet."""
             super().__init__(node_name)
             self.declare_parameter("cameras", [""])
+            self.declare_parameter("camera_infos", [""])
             self.declare_parameter("primary_camera", "default")
-            self.declare_parameter("image_topic", "/openral/cameras/wrist/image")
+            self.declare_parameter("image_topic", "")
             self.declare_parameter("robot_yaml", "")
             self.declare_parameter("manifest_path", "")
             self.declare_parameter("segment_in_view_service", DEFAULT_SEGMENT_SERVICE)
@@ -194,8 +279,14 @@ def _node_class() -> type:
             self.declare_parameter("debug_masks_topic", DEFAULT_DEBUG_MASKS_TOPIC)
             self.declare_parameter("device", "auto")
 
-            self._frames: dict[str, tuple[bytes, int, int]] = {}
+            # (bgr, width, height, header.frame_id, header.stamp) per camera:
+            # the header travels with the pixels so geometry and the reply's
+            # masks name the frame they actually came from.
+            self._frames: dict[str, tuple[bytes, int, int, str, Any]] = {}
             self._cameras: dict[str, str] = {}
+            self._info_topics: dict[str, str] = {}
+            self._infos: dict[str, Any] = {}
+            self._warned: set[str] = set()
             self._primary_id = ""
             self._description: Any = None
             self._segmenter: Any = None
@@ -224,6 +315,14 @@ def _node_class() -> type:
                 image_topic=gp("image_topic").get_parameter_value().string_value,
             )
             self._primary_id = next(iter(self._cameras))
+            self._info_topics = parse_camera_entries(
+                list(gp("camera_infos").get_parameter_value().string_array_value)
+            )
+            unknown = sorted(set(self._info_topics) - set(self._cameras))
+            if unknown:
+                raise ROSConfigError(
+                    f"camera_infos names cameras {unknown} that `cameras` does not configure"
+                )
 
             import tf2_ros
 
@@ -241,6 +340,9 @@ def _node_class() -> type:
             self._subs = [
                 self.create_subscription(Image, topic, self._make_cache_cb(cid), img_qos)
                 for cid, topic in self._cameras.items()
+            ] + [
+                self.create_subscription(CameraInfo, topic, self._make_info_cb(cid), img_qos)
+                for cid, topic in self._info_topics.items()
             ]
 
             # An instantaneous query => a service, not a topic (CLAUDE.md §2).
@@ -262,6 +364,7 @@ def _node_class() -> type:
             self._open_debug_masks_publisher()
             self.get_logger().info(
                 f"segmenter configured: cameras={self._cameras} primary={self._primary_id!r} "
+                f"camera_infos={self._info_topics} "
                 f"segment_in_view={'on' if self._srv else 'off'} "
                 f"debug_masks={'on' if self._masks_pub else 'off'}"
             )
@@ -375,11 +478,27 @@ def _node_class() -> type:
                 try:
                     bgr, w, h = image_to_bgr_bytes(msg)
                 except ImageConvertError as exc:
-                    self.get_logger().debug(f"cache_frame({cid}): convert failed: {exc}")
+                    self.get_logger().warning(
+                        f"camera {cid!r}: dropping {msg.encoding!r} frame: {exc}",
+                        throttle_duration_sec=5.0,
+                    )
                     return
-                self._frames[cid] = (bgr, w, h)
+                header = msg.header
+                self._frames[cid] = (bgr, w, h, str(header.frame_id), header.stamp)
 
             return _cb
+
+        def _make_info_cb(self, cid: str) -> Callable[[Any], None]:
+            def _cb(msg: Any) -> None:
+                self._infos[cid] = msg
+
+            return _cb
+
+        def _warn_once(self, message: str) -> None:
+            """Log a fallback at warning level the first time it is taken."""
+            if message not in self._warned:
+                self._warned.add(message)
+                self.get_logger().warning(message)
 
         # ── service ──────────────────────────────────────────────────────────
 
@@ -411,21 +530,43 @@ def _node_class() -> type:
                 self.get_logger().warning(response.failure_reason)
                 return response
             spec = sensor_spec_by_name(self._description, camera)
-            if spec is None or spec.intrinsics is None:
+            if spec is None:
                 response.failure_reason = (
-                    f"ROSConfigError: camera {camera!r} has no SensorSpec intrinsics "
-                    "in the robot manifest"
+                    f"ROSConfigError: camera {camera!r} has no SensorSpec in the robot manifest"
+                )
+                self.get_logger().warning(response.failure_reason)
+                return response
+            camera_info = self._infos.get(camera)
+            if camera in self._info_topics and camera_info is None:
+                # Configured for the live K but none has arrived: refuse rather
+                # than silently project through the nominal one.
+                response.failure_reason = (
+                    f"ROSPerceptionStale: no CameraInfo received yet for camera {camera!r} "
+                    f"on {self._info_topics[camera]!r}"
                 )
                 self.get_logger().warning(response.failure_reason)
                 return response
 
-            bgr, width, height = frame
-            intrinsics = scale_intrinsics_to(spec.intrinsics, width, height)
-            transform = self._prompt_transform(request, spec.frame_id)
+            bgr, width, height, header_frame, image_stamp = frame
+            try:
+                intrinsics, optical_frame, fallbacks = projection_geometry(
+                    spec,
+                    width=width,
+                    height=height,
+                    header_frame_id=header_frame,
+                    camera_info=camera_info,
+                )
+            except ROSConfigError as exc:
+                response.failure_reason = f"ROSConfigError: {exc}"
+                self.get_logger().warning(response.failure_reason)
+                return response
+            for note in fallbacks:
+                self._warn_once(note)
+            transform = self._prompt_transform(request, optical_frame)
             if transform is None:
                 response.failure_reason = (
-                    f"ROSPerceptionStale: no tf2 {spec.frame_id} <- "
-                    f"{request.frame_id or spec.frame_id} at the requested stamp"
+                    f"ROSPerceptionStale: no tf2 {optical_frame} <- "
+                    f"{request.frame_id or optical_frame} at the requested stamp"
                 )
                 self.get_logger().warning(response.failure_reason)
                 return response
@@ -469,8 +610,11 @@ def _node_class() -> type:
                 )
                 return response
 
+            # The masks are pixels of the cached image, so they carry ITS header
+            # (optical frame + capture stamp): a consumer pairing them with a
+            # depth frame can then tell which frame they were cut from.
             response.masks = [
-                self._mask_image(candidate.mask, request.stamp, spec.frame_id)
+                self._mask_image(candidate.mask, image_stamp, optical_frame)
                 for candidate in candidates
             ]
             response.mask_scores_advisory = [
@@ -483,7 +627,7 @@ def _node_class() -> type:
             )
             # LAST, and only after the reply is complete: the caller is holding
             # an action-acknowledgement barrier open on this call.
-            self._publish_debug_masks(response, spec.frame_id)
+            self._publish_debug_masks(response, optical_frame)
             return response
 
         def _publish_debug_masks(self, response: Any, frame_id: str) -> None:
@@ -503,7 +647,7 @@ def _node_class() -> type:
                 from openral_msgs.msg import SegmentMasks
 
                 msg = SegmentMasks()
-                # The CALLER's attach stamp, copied through — a mask that
+                # The source image's stamp, copied through — a mask that
                 # describes a frame that is gone must be detectable as stale.
                 msg.header.stamp = response.masks[0].header.stamp
                 msg.header.frame_id = frame_id
@@ -552,8 +696,8 @@ def _node_class() -> type:
             """Wrap one boolean mask as a ``mono8`` ``sensor_msgs/Image``."""
             height, width = mask.shape
             msg = Image()
-            # The CALLER's stamp: this mask describes the attach instant it
-            # asked about, and the trace has to replay against that.
+            # The source image's stamp: the mask describes that frame's pixels,
+            # and the trace replays against the frame actually segmented.
             msg.header.stamp = stamp
             msg.header.frame_id = frame_id
             msg.height = int(height)

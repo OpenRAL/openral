@@ -2,7 +2,7 @@
 
 Covers the typed surface added for self/world-collision checking: the
 ``CollisionShape`` discriminated union, ``LinkCollisionGeometry`` /
-``WorldCollisionPrimitive`` / ``OccupancyGridRef``, the ``CollisionEvidence``
+``OccupancyGridRef``, the ``CollisionEvidence``
 ``FailureEvidence`` variant, and the real ``robots/openarm/robot.yaml``
 fixture carrying capsule/sphere link geometry + an allowed-collision matrix.
 
@@ -24,7 +24,6 @@ from openral_core import (
     Pose6D,
     RobotDescription,
     SphereShape,
-    WorldCollisionPrimitive,
     WorldState,
 )
 from openral_core.schemas import JointState
@@ -130,9 +129,12 @@ def test_every_real_manifest_round_trips_through_the_tagged_union() -> None:
             checked += 1
 
     assert checked > 0, "no collision geometry exercised"
-    # All three variants are represented in the committed corpus, so this is a
-    # round-trip over every member of the union, not just the common one.
-    assert seen == {"capsule", "sphere", "box"}, seen
+    # Both variants the lowering emits are represented in the committed corpus.
+    # No committed manifest carries a sphere since the OpenArm's hand-written
+    # finger sphere was replaced by a fitted primitive (hazard-log Entry 045);
+    # the sphere variant's round-trip is pinned by the hypothesis fuzz in
+    # tests/unit/test_schemas_fuzz.py (test_fuzz_sphere_shape).
+    assert {"capsule", "box"} <= seen <= {"capsule", "sphere", "box"}, seen
 
 
 def test_capsule_rejects_nonpositive_radius() -> None:
@@ -234,20 +236,14 @@ def test_collision_evidence_rejects_below_reactive_sentinel() -> None:
 
 
 def test_world_state_world_surface_defaults_empty() -> None:
-    """A WorldState with no obstacles has an empty/absent world surface."""
+    """A WorldState with no obstacles has an absent world surface."""
     ws = WorldState(stamp_ns=0, joint_state=JointState(name=["j1"], position=[0.0], stamp_ns=0))
-    assert ws.collision_primitives == []
     assert ws.occupancy_grid is None
 
 
-def test_world_collision_primitive_and_occupancy_grid_validate() -> None:
-    """A placed obstacle and an occupancy-grid reference validate against schema."""
+def test_occupancy_grid_validates() -> None:
+    """An occupancy-grid reference validates against schema."""
     origin = Pose6D(xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map")
-    obstacle = WorldCollisionPrimitive(
-        shape=SphereShape(radius_m=0.1),
-        pose=Pose6D(xyz=(0.5, 0.0, 0.2), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"),
-        object_id="mug-7",
-    )
     grid = OccupancyGridRef(
         frame_id="map",
         resolution_m=0.05,
@@ -256,7 +252,6 @@ def test_world_collision_primitive_and_occupancy_grid_validate() -> None:
         origin=origin,
         data_topic="/map",
     )
-    assert obstacle.object_id == "mug-7"
     assert grid.width == 200
 
 
@@ -264,7 +259,7 @@ def test_world_collision_primitive_and_occupancy_grid_validate() -> None:
 
 
 def test_openarm_fixture_loads_collision_geometry() -> None:
-    """``robots/openarm/robot.yaml`` parses its capsule/sphere link geometry."""
+    """``robots/openarm/robot.yaml`` parses its mesh-fitted, hull-refined link geometry."""
     desc = RobotDescription.from_yaml(_OPENARM_YAML)
 
     by_link = {g.link_name: g.shape for g in desc.collision_geometry}
@@ -273,9 +268,14 @@ def test_openarm_fixture_loads_collision_geometry() -> None:
     chain_links = {j.parent_link for j in desc.joints} | {j.child_link for j in desc.joints}
     assert set(by_link).issubset(chain_links)
 
-    assert isinstance(by_link["openarm_left_link3"], CapsuleShape)
-    assert isinstance(by_link["openarm_left_finger_pair"], SphereShape)
-    assert by_link["openarm_left_link3"].radius_m > 0.0
+    # Every OpenArm link is lowered as a box refined by its exact hull
+    # (docs/reference/collision-geometry-review.md §8.2), the finger pair included.
+    assert all(isinstance(shape, BoxShape) for shape in by_link.values())
+    assert min(by_link["openarm_left_finger_pair"].half_extents_m) > 0.0  # type: ignore[union-attr]  # reason: asserted a BoxShape above
+    assert all(
+        g.tight_geometry is not None and g.tight_geometry.hull_vertices_m
+        for g in desc.collision_geometry
+    )
 
 
 def test_openarm_allowed_collision_matrix_excludes_adjacent_not_cross_arm() -> None:

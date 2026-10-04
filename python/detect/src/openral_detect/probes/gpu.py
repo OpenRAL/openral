@@ -25,6 +25,7 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 
+from openral_core.gpu import TEGRA_RELEASE_PATH
 from openral_core.schemas import QuantizationDtype
 
 from openral_detect.report import (
@@ -468,7 +469,7 @@ def _probe_nvidia_smi(warnings: list[str]) -> list[NvidiaGpuInfo]:
 
 
 _DEFAULT_MODEL_PATH: Path = Path("/proc/device-tree/model")
-_DEFAULT_RELEASE_PATH: Path = Path("/etc/nv_tegra_release")
+_DEFAULT_RELEASE_PATH: Path = TEGRA_RELEASE_PATH
 
 
 def _probe_jetson(

@@ -47,10 +47,28 @@ Published on **every transition**:
 | geometric collision | `true` | `KIND_COLLISION` |
 | external `/openral/estop` | `true` | `DROP_EXTERNAL_ESTOP` |
 | `envelope_unconfigured` drop | `false` | `DROP_ENVELOPE_UNCONFIGURED` |
-| world/voxel/state unavailable or overflow | `false` | `DROP_{WORLD,VOXEL,STATE}_UNAVAILABLE`, `DROP_{WORLD,VOXEL}_OVERFLOW` |
+| voxel/state unavailable or overflow | `false` | `DROP_{VOXEL,STATE}_UNAVAILABLE`, `DROP_VOXEL_OVERFLOW` |
 | attached payload unverifiable (ADR-0092) | `false` | `DROP_ATTACHED_UNAVAILABLE`, `DROP_ATTACHED_OVERFLOW` |
 | chunk accepted after a drop | `false` | `DROP_NONE` |
 | `/openral/estop_reset` succeeded | `false` | `DROP_NONE` |
+
+Values `101` and `104` are reserved and never reused: they were
+`DROP_WORLD_UNAVAILABLE` / `DROP_WORLD_OVERFLOW` of the capsule world phase,
+retired 2026-09-23 by ADR-0109, and still appear in older recorded bags. The
+kernel's only world-geometry input is now the voxel grid on
+`/openral/world_voxels` (plus attached payloads on `/openral/world_state_fast`).
+
+**World-voxel freshness is capped in the kernel, not only in the schema.**
+With `world_voxel_enabled`, `on_configure` returns FAILURE (and logs why) for a
+`world_voxel_deadline_ms` outside (0, `kMaxWorldVoxelDeadlineMs` = 2000] or a
+`world_voxel_data_age_budget_ms` outside (0, `kMaxWorldVoxelDataAgeBudgetMs` =
+3000]. The budget defaults to `kDefaultWorldVoxelDataAgeBudgetMs` = 1500 and
+0 no longer means "not enforced", so a grid without a `source_stamp` always
+drops as `voxel_stale`. These mirror `DeployRuntime`'s caps (hazard log
+Entries 033/034) so a kernel started with `ros2 run` or another launch file
+cannot run looser than a validated scene; `tests/unit/test_perception_caps_mirror.py`
+pins the two sides. With the world check off the two values are unused and
+not checked.
 
 Two rules make the durable value trustworthy (hazard-log HZ-0096-1):
 
@@ -706,9 +724,9 @@ Three events, and the reason is always the real one:
 | Line | Severity | When |
 | --- | --- | --- |
 | `safety.place_region_armed` | INFO | a validated region goes live (on the transition); `geometry=<n>` says how many declared-target primitives armed with it, `0` being the pre-ADR-0098 box-only case. Re-emitted when that count changes, because a region that gains or loses the declared body is adjudicating against something materially different |
-| `safety.place_region_dropped reason=…` | INFO | an armed region is disarmed — `no_declaration`, `retracted`, `no_region`, `detached`, `grid_frame_changed` |
+| `safety.place_region_dropped reason=…` | INFO | an armed region is disarmed — `no_declaration`, `retracted`, `no_region`, `detached`, `grid_frame_changed`, `region_stale` |
 | `safety.place_region_not_armed reason=no_object` | INFO | a live declaration names a payload the kernel is not carrying |
-| `safety.place_region_rejected reason=…` | WARN | a malformed region reached the kernel — `frame_mismatch`, `bad_pose`, `bad_extents`, `degenerate`, `oversize`, `oversize_volume`, `bad_geometry`, `geometry_overflow` |
+| `safety.place_region_rejected reason=…` | WARN | a malformed region reached the kernel — `region_stale` (its `stamp_ns` is older than `place_region_max_age_s` or in the future; see below), `frame_mismatch`, `bad_pose`, `bad_extents`, `degenerate`, `oversize`, `oversize_volume`, `bad_geometry`, `geometry_overflow` |
 
 Two rules keep them honest. **The reason is the branch that fired**
 (`place_region_status_reason`), not a category: `reason=bounds` used to label
@@ -757,6 +775,188 @@ With a live witness the predicted Cartesian steps are checked too — the old
 path skipped them whenever attach-time contact was active, because it had no
 pose-dependent way to tell the support contact apart. The skip remains only for
 the unattested legacy case.
+
+## Grasp-target exemption (ADR-0115 draft) — default off
+
+**Draft for Safety-WG review; off unless `grasp_allowance_enabled`.** The real OpenArm cell runs the
+world-voxel check at a 20 mm margin on 20 mm cells, and the finger link
+(`openarm_<side>_finger_pair`, one hull swept over the stroke) contains the grasp
+target during a grasp, so `check_voxel_collision` stops on the target's own
+cells before any attachment can exist. The spec is
+[`real-pick-place-design.md`](../../docs/reference/real-pick-place-design.md) §2.1;
+the decision and hazard drafts (ADR-0115, HZ-0115) are in
+[`real-pick-place-adr-drafts.md`](../../docs/reference/real-pick-place-adr-drafts.md).
+
+Geometry: `VoxelGrid::grasp_region` (`GraspTargetRegion`: a validity flag, a
+robot-link mask, a base-frame oriented box), `ingest_grasp_region`,
+`grasp_target_exempts`, `grasp_region_contains`. With `grasp_allowance_enabled`
+false (the default) the region is never set and the kernel behaves bit-for-bit
+as before.
+
+Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fast`):
+
+* **Parameters.** `grasp_allowance_enabled` (default `false`) and
+  `grasp_contact_links` (the launch-derived allowlist — the manifest's
+  `role: gripper` joints' child links). Enabled with an empty allowlist, or an
+  allowlist naming a link the collision model does not have, fails configure.
+  Enabling it subscribes to the world state even with attached checking off.
+* **Region measurement age.** `grasp_region_max_age_s` and
+  `place_region_max_age_s` (default `0` = 2 × `world_voxel_deadline_ms`, i.e. 2 s
+  at the 1 s schema default; logged at configure as
+  `safety.region_max_age grasp_s=… place_s=…`). Regions are perceived from the
+  voxel map, so the declaration's `timeout_s` (up to 120 s) is no bound on how
+  old the *measurement* is. A region whose `stamp_ns` is older than the bound or
+  in the future (kernel clock, `this->now()`) exempts nothing: it is dropped at
+  ingest with `reason=region_stale` (WARN `…_rejected` once per transition, INFO
+  `…_dropped` if it was armed) and re-checked per candidate, so it also ages out
+  between world-state messages. Configure refuses a resolved bound outside
+  (0, `kMaxRegionMeasurementAgeS` = 4 s] while the matching allowance is on
+  (grasp: `grasp_allowance_enabled`; place: `attached_collision_enabled`).
+  `deploy_e2e` passes both as 2 × `world_voxel_deadline_s`. **Not applied once a
+  grasp declaration has latched its box at the handover edge**: producer updates
+  are ignored from then on, the fingers occlude the target so it cannot be
+  re-measured, and the exemption is bounded by the payload origin staying in the
+  latched box, the stream deadline and `timeout_s` — a fresh-measurement
+  requirement there would retire a valid handover with the fingers closed on the
+  target. The latched box itself must be fresh at the edge
+  (`…AStaleRegionAtTheAttachEdgeLatchesNoHandover`,
+  `…TheAgeBoundDoesNotRetireALatchedHandover`).
+* **Arming** (`ingest_grasp_declaration`, transition-only logs
+  `safety.grasp_region_armed|dropped|rejected reason=… target=… links=… half_m=…
+  rskill=… trace=… evidence=…`): target, stamp and timeout are recorded before any
+  decision; the region must be valid, in the grid's frame, with empty `geometry`,
+  a backstop in (0, `kMaxGraspDeclarationTimeoutS` = 120 s] (WG placeholder),
+  and every `contact_links` entry must be allowlisted (one that is not refuses the
+  whole declaration). The exempt mask is exactly those links, and they must all be
+  **one hand** (`grasp_links_one_hand`: every link's mount — its first ancestor that
+  is not itself allowlisted, so a chained finger climbs to its hand — is the same;
+  the grouping of `openral_core.gripper_hands`). A declaration spanning two hands is
+  refused, `reason=links_span_hands` (`GraspTargetOneHand.*`; live row in
+  `tests/integration/test_safety_kernel_grasp_target_band.py`). The HAL may now
+  infer the target from one hand's own approach instead of a named one (design
+  §2.2 "Approach-armed target"); the kernel holds the producer to one hand rather
+  than trusting it. Origin of the declaration is not checked and never was: the
+  kernel reads only the envelope copy, whose region the producer measured.
+* **Per candidate** (`grasp_declaration_live`): dead on retraction, `timeout_s`
+  lapsed, a future stamp, a pre-handover region older than
+  `grasp_region_max_age_s`, or a world-state stream older than
+  `attached_collision_deadline_ms`. Stale is "no exemption", never a drop by
+  itself.
+* **Handover binding.** Only a payload attached on the declaring gripper's own
+  chain can be the handover: its attach link is a declared contact link or a
+  non-root ancestor of one (`attachment_on_grasp_chain`). The other hand's
+  payload, or a released payload frozen on the collision root
+  (`freeze_released_attachment`), can neither stand in for the handover nor
+  retire it (`…AGraspHandoverBindsOnlyToAPayloadOnTheDeclaringGripper`). The
+  declared `object_id` (or, when empty, the first payload on that chain) is the
+  handover; a payload on the chain that the declaration does not name retires
+  the declaration at once, `reason=handover_object_mismatch`, rather than
+  leaving it alive to `timeout_s`. That is a producer contradicting the
+  attachment stream, so beside the INFO `grasp_region_dropped` it emits one
+  WARN `safety.grasp_region_rejected reason=handover_object_mismatch` per
+  declaration, naming the declared `object`, the `attached` label, `target`,
+  `rskill` and `trace`
+  (`…AnUndeclaredObjectAttachedOnTheDeclaringGripperRetiresTheExemption`).
+* **Handover.** Once the declared object is attached, the exemption lives only
+  while that payload's origin (FK of the measured configuration) is inside the
+  region; when it leaves, the declaration is retired. The region is **latched at
+  the handover edge** (keyed by target + stamp, like the retirement memory): later
+  snapshots of that declaration keep the latched box whatever region they carry
+  (`safety.grasp_region_latched target=… at handover` once; a re-measured region
+  that differs beyond float noise is ignored with one WARN
+  `safety.grasp_region_moved_after_handover … ignored`), so a producer that
+  re-measures the target at the carried payload's live pose cannot extend the
+  exemption by moving the box with it. Before the handover the region still
+  updates on every snapshot. A rejected attachment set or a grid-frame change also
+  retires it, before or after the handover (genuine faults; a pre-handover one stays
+  retired — the producer re-arms only under a fresh identity, after its hand left
+  the approach distance and was seen away for a freeze window:
+  `…AFaultRetiredPreHandoverIdentityStaysRefused`). A detach (the attachment set
+  emptying at a new revision) retires it too, **before or after the handover** and
+  whichever hand let go (`…AGraspDetachRetiresTheExemption`,
+  `…AnotherHandsDetachRetiresAPreHandoverDeclaration`). The kernel does not try to
+  tell "another hand's" detach apart: with KeepLast(1) a missed ATTACH snapshot would
+  make the declaring hand's own release look like another's, and keeping the
+  pre-detach region would exempt cells nothing re-checked. Liveness is the
+  producer's: it owns the attachment set, and on every change it publishes it
+  re-arms the other hand under a fresh identity from a measurement taken after the
+  detach (`GraspTargetLeg.on_attachment_changed`). A retired declaration's
+  heartbeat never re-arms it; only a new declaration (new target or stamp) can.
+* **Multi-pick per goal.** The approach-armed producer arms each pick of a goal
+  under its own identity (`approach:<link>:<n>`, the goal's stamp), so retirement
+  is per pick. A handed-over declaration retires at its **release**: when no
+  payload is attached on the declaring chain any more
+  (`grasp_region_dropped reason=released`) even though the attachment set is not
+  empty — the other hand still holds, or the released payload sits frozen on the
+  base link through its release window
+  (`…AReleaseOnTheDeclaringChainRetiresWhileTheOtherHandHolds`) — and when it
+  loses its region or is retracted (`…AHandedOverDeclarationThatLosesItsRegionRetires`,
+  `…AHandedOverDeclarationRetractedByTheProducerRetires`; a pre-handover retraction
+  only drops).
+  Retired identities are kept in `RetiredGraspSet` (`collision.hpp`): a fixed ring
+  of `kGraspRetiredCapacity` = 16 (target hash, stamp) pairs, cleared on
+  activate/cleanup, with no allocation (it runs on the candidate path at
+  `handover_exit`; `test_no_alloc`). Overflow evicts the oldest with one WARN
+  `safety.grasp_retired_overflow` per activation; an evicted identity could arm
+  again only if re-sent within its goal's `timeout_s`. A hash collision can only
+  refuse a fresh identity (fail closed). Every retired pick stays refused, a
+  restarted producer re-sending one included
+  (`…EveryRetiredPickIdentityStaysRefusedEvenFromARestartedProducer`), while a
+  fresh one arms (`…ASecondPickInTheGoalArmsUnderItsOwnIdentity`).
+* **Disclosure.** `/diagnostics` key `grasp_region` (`off`, `-`,
+  `live|expired:<target>:links=<n>[:handover]`, or `<reason>:<target>`), span
+  attribute `safety.grasp_exemption_active`, and `grasp_exemption_active=` /
+  `grasp_target=` on every `safety.collision` stop line.
+
+* **Scope.** While valid, a cell whose base-frame centre is inside the box does
+  not trip **for a link in the mask only**. Every other link takes the unchanged
+  path with no extra work; cells outside the box, self-collision, the attached
+  checks and the force gate are untouched. An exempt pair is decided before the
+  narrow phase and never spends the call's shared stage-2 budget
+  (`kMaxStage2PerCheck`): a finger buried in its target puts every region cell
+  inside stage 1's margin, and refining those (they cannot trip) used to exhaust
+  the budget and leave a non-exempt link on the looser fallback bound — a false
+  stop (`…ExemptCellsDoNotSpendTheStage2BudgetOfOtherLinks`). The only change a
+  region can make to a non-mask link is therefore more exact refinement, never
+  a new stop.
+* **Evidence.** An exempt pair never supplies the reported identity or
+  distance (`…AnExemptCellNeverSuppliesTheEvidence`). It reaches
+  `sweep_min_distance` at its own depth — negative, the finger being inside its
+  target — exactly as the attached path's support-witness and embedded-residue
+  exemptions do (`…AnExemptPairReachesTheSweepMinimumAtItsOwnDepth`).
+* **Graded band.** The sweep keeps one minimum, so an exempted pair's negative
+  depth used to make the whole check's slack negative, which the velocity band
+  discarded as "tripped" — dropping every non-exempt pair's graded slack with
+  it and sending the chunk out at full rate. That hit all three exemptions
+  (grasp target, support witness, embedded residue). The band now clamps an
+  untripped check's slack to `max(slack, 0)`, so an exempt contact reads as the
+  band's slowest rate
+  (`LifecycleKernelTest.AnExemptFingerInsideItsTargetStillLeavesTheChunkScaled`,
+  `LifecycleKernelTest.APayloadOnItsWitnessedSupportStillLeavesTheChunkScaled`).
+* **Monotonicity.** The region never adds a stop, never removes one for a
+  non-exempt pair that exact geometry upholds, never lets an exempt pair supply
+  the evidence, and never raises the band slack of a sweep that would have
+  passed without it — it may only slow. On stage-1-only links the trips with
+  the region are exactly the trips without it minus the (mask link, cell
+  centred in the box) pairs. It does **not** leave `sweep_min_distance` alone:
+  an exempt pair reaches it at its own depth, and on a link with a stage-2
+  hull that depth is stage 1's bound (refinement skipped), which can sit below
+  the exact distance the undeclared check refines to — erring slower. Pinned
+  over randomised scenes and oriented grids, on both DOP-only and hull-vertex
+  links (`…MonotonicityOverRandomisedScenes`).
+* **Support surface.** Cells half a voxel below the box's lower face still stop
+  the finger (`…TheSupportSurfaceUnderTheTargetStillStops`); keeping the lower
+  face above the support plane is a producer obligation (HZ-0115-6).
+* **Bounds** (`ingest_grasp_region`): a non-empty mask, a finite pose, finite
+  positive half-extents ≤ `kMaxGraspRegionHalfExtentM` (0.20 m) and a volume ≤
+  `kMaxGraspRegionVolumeM3` (0.03 m³). Both caps are **WG placeholders**. A
+  refusal means no exemption, under its own `reason=` token.
+* **End to end.** `tests/integration/test_safety_kernel_grasp_target_band.py`
+  runs the real node on the real OpenArm collision model at the real cell's
+  20 mm margin and 20 mm cells: undeclared, feature off, wrist in the region,
+  other hand only, expired, wrong frame and the support plane all refuse; only
+  the declared left finger in its region is accepted, and the stop line and
+  `/diagnostics` disclose the exemption.
 
 ## The contact-force gate (ADR-0100, survey Path C)
 
@@ -930,8 +1130,7 @@ cells. Its 26-DOP still cuts the link's support excess from 53.27 mm to 25.69 mm
 `panda_link5` (152-vertex, 45.20 mm) and `panda_link7` (102-vertex, 28.25 mm) —
 added for the self-collision path below.
 
-Everything else keeps the primitive path unchanged: world-capsule obstacles,
-capsule-lowered robots, and every link that declares no tight geometry. Hazard-log
+Everything else keeps the primitive path unchanged: capsule-lowered robots, and every link that declares no tight geometry. Hazard-log
 Entry 012's lockstep is **not engaged** — `check_attached_self_collision` still
 reads the same link boxes it always did. Carried payloads got their own staged
 path in #266, below.
@@ -978,8 +1177,8 @@ is not known until something is carried:
 Untouched on purpose: **ADR-0098's place-target adjudication**, whose
 `target_distance ≤ d + allowance` bound keeps reading the shipped box distance
 (that bound is calibrated against the box model the declaration is adjudicated
-on); `check_attached_self_collision` and `check_attached_world_collision`, which
-are 3 % of measured stops and whose adjudication budget
+on); `check_attached_self_collision` (and, until its retirement on 2026-09-23 by
+ADR-0109, `check_attached_world_collision`), which were 3 % of measured stops and whose adjudication budget
 (`attached_payload_mesh_slop`) is stated against exactly that box; and the
 support-witness liveness probe, where a tighter payload would *shorten* an
 exemption.

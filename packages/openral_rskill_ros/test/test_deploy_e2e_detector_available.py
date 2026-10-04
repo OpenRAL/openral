@@ -125,3 +125,22 @@ def test_both_legs_together_still_grants_it_correctly() -> None:
     """A continuous detector plus a locator: the locator is what makes this True, not the sum."""
     entities = _compose(enable_object_detector=True, locator_manifest=str(_LOCATOR_MANIFEST))
     assert _reasoner_param(entities, "detector_available") is True
+
+
+def test_the_reasoner_no_longer_gets_a_robot_unit_param() -> None:
+    """Place targets are measured, not surveyed: the reasoner lists no unit fixtures."""
+    with pytest.raises(pytest.fail.Exception, match="no 'robot_unit' parameter"):
+        _reasoner_param(_compose(enable_object_detector=False, locator_manifest=""), "robot_unit")
+
+
+def test_the_reasoner_pads_grasp_targets_by_the_deploys_octree_cell() -> None:
+    """One cell of the map the producer searches, from the launch's own octree resolution."""
+    module = _import_launch_module()
+    entities = _compose(enable_object_detector=False, locator_manifest="")
+    value = _reasoner_param(entities, "grasp_target_voxel_m")
+    expected = module._octomap_resolution("sim")  # type: ignore[attr-defined]
+    if isinstance(value, tuple):  # launch may wrap a value as substitutions
+        import yaml
+
+        value = yaml.safe_load("".join(s.text for s in value))
+    assert value == pytest.approx(expected)

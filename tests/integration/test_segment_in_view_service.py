@@ -6,16 +6,16 @@ the real SO-101 manifest for wrist intrinsics/optical frame, real static TF, and
 in-tree wrist frame holding an eraser. Calls the service over a real DDS graph with a real
 ``rclpy`` client, checking the whole contract the HAL's attachment bridge depends on:
 
-    RGB frame + 3-D TCP point (attach link's frame) → tf2 into camera optical frame →
-    manifest intrinsics → pixel prompt → SAM 2.1 → plural mono8 masks, area ascending,
-    parallel advisory scores
+    RGB frame + 3-D TCP point (attach link's frame) → tf2 into the image header's optical
+    frame → manifest intrinsics (no camera_infos here) → pixel prompt → SAM 2.1 → plural
+    mono8 masks, area ascending, parallel advisory scores, the image's own header
 
 No doubles (CLAUDE.md §1.11), including the model: SAM 2.1 runs for real, on CPU — the dev
 box's GTX 1060 is sm_61 with no CUDA kernels for it, so ``device:=cpu``. Measured: ~9 s to
 load/warm, ~3.7 s per call here vs ~53 ms warmed on an RTX 4070 — why the HAL side has a
 bounded deadline and conservative fallback.
 
-Three failure branches covered too (each is what the HAL turns into a GRIPPER_FORCE
+Three failure branches covered too (each is what the HAL turns into a GRIPPER_CLOSURE
 attachment rather than a stall): un-published camera, a prompt that doesn't project into the
 frame, and a deactivated node.
 
@@ -42,6 +42,7 @@ from pathlib import Path
 import pytest
 
 _LIVE_ROS = bool(os.getenv("OPENRAL_TEST_ROS_LIVE"))
+_DEVICE = os.getenv("OPENRAL_TEST_SEGMENTER_DEVICE", "cpu")
 _LIVE_ROS_REASON = (
     "live rclpy service round trip — set OPENRAL_TEST_ROS_LIVE=1 in a clean shell "
     "and source install/setup.bash first."
@@ -64,6 +65,21 @@ _CAMERA_FRAME = "wrist_camera"
 # CPU inference plus a cold model load. Generous on purpose: this bound exists
 # so a wedged test fails instead of hanging, not to assert a latency budget.
 _CALL_TIMEOUT_S = 180.0
+
+
+_ROW_PAD = 64  # bytes of pitch padding per row, as a pitch-aligned ZED buffer has
+
+
+def _bgra8_padded(rgb: object) -> tuple[bytes, int]:
+    """Lay an RGB array out as a ZED-style ``bgra8`` payload with padded rows."""
+    import numpy as np
+
+    pixels = np.asarray(rgb)
+    h, w, _ = pixels.shape
+    rows = np.zeros((h, w * 4 + _ROW_PAD), dtype=np.uint8)
+    bgra = np.concatenate([pixels[..., ::-1], np.full((h, w, 1), 255, np.uint8)], axis=-1)
+    rows[:, : w * 4] = bgra.reshape(h, w * 4)
+    return rows.tobytes(), w * 4 + _ROW_PAD
 
 
 def _spin(executor: object, stop: threading.Event) -> None:
@@ -128,8 +144,9 @@ def test_segment_in_view_returns_plural_masks_for_a_real_wrist_grasp() -> None:
                 ),
                 Parameter("primary_camera", Parameter.Type.STRING, "wrist"),
                 Parameter("segment_in_view_service", Parameter.Type.STRING, _SERVICE),
-                # sm_61 dev GPU: no CUDA kernels, so run the model for real on CPU.
-                Parameter("device", Parameter.Type.STRING, "cpu"),
+                # sm_61 dev GPU: no CUDA kernels, so CPU by default; a host with a
+                # supported GPU (Thor, the 4070) sets OPENRAL_TEST_SEGMENTER_DEVICE=cuda.
+                Parameter("device", Parameter.Type.STRING, _DEVICE),
             ]
         )
         helper = Node("segment_in_view_itest_client")
@@ -170,10 +187,14 @@ def test_segment_in_view_returns_plural_masks_for_a_real_wrist_grasp() -> None:
 
         frame = Image()
         frame.header.frame_id = _CAMERA_FRAME
+        # The capture stamp the masks must echo — distinct from the request's.
+        frame.header.stamp = Time(sec=5, nanosec=7)
         frame.height, frame.width = height, width
-        frame.encoding = "rgb8"
-        frame.step = width * 3
-        frame.data = np.ascontiguousarray(rgb).tobytes()
+        # The deploy camera's layout: the ZED wrapper publishes pitch-padded
+        # bgra8. An rgb8-only converter dropped every such frame on the real
+        # OpenArm cell (2026-10-04 twin pass) and every call came back stale.
+        frame.encoding = "bgra8"
+        frame.data, frame.step = _bgra8_padded(rgb)
 
         client = helper.create_client(SegmentInView, _SERVICE)
         assert client.wait_for_service(timeout_sec=30.0), "segmenter never offered the service"
@@ -222,8 +243,9 @@ def test_segment_in_view_returns_plural_masks_for_a_real_wrist_grasp() -> None:
             )
             assert mask.step == width
             assert len(mask.data) == height * width
-            # The CALLER's stamp, so the trace replays against the attach instant.
-            assert (mask.header.stamp.sec, mask.header.stamp.nanosec) == (17, 42)
+            # The segmented IMAGE's header (capture stamp + the frame the driver
+            # declared), so a consumer can pair the mask with its depth frame.
+            assert (mask.header.stamp.sec, mask.header.stamp.nanosec) == (5, 7)
             assert mask.header.frame_id == _CAMERA_FRAME
             decoded = np.frombuffer(bytes(mask.data), dtype=np.uint8)
             assert set(np.unique(decoded).tolist()) <= {0, 255}
@@ -340,7 +362,7 @@ def test_the_diagnostic_mask_topic_is_off_by_default_and_feeds_the_dashboard() -
                 Parameter("cameras", Parameter.Type.STRING_ARRAY, [f"wrist={_IMAGE_TOPIC}"]),
                 Parameter("primary_camera", Parameter.Type.STRING, "wrist"),
                 Parameter("segment_in_view_service", Parameter.Type.STRING, _SERVICE),
-                Parameter("device", Parameter.Type.STRING, "cpu"),
+                Parameter("device", Parameter.Type.STRING, _DEVICE),
             ]
         )
         helper = Node("segment_in_view_masks_itest_client")
@@ -397,6 +419,8 @@ def test_the_diagnostic_mask_topic_is_off_by_default_and_feeds_the_dashboard() -
 
         frame = Image()
         frame.header.frame_id = _CAMERA_FRAME
+        # The capture stamp the masks must echo — distinct from the request's.
+        frame.header.stamp = Time(sec=5, nanosec=7)
         frame.height, frame.width = height, width
         frame.encoding = "rgb8"
         frame.step = width * 3
@@ -432,9 +456,9 @@ def test_the_diagnostic_mask_topic_is_off_by_default_and_feeds_the_dashboard() -
 
         lane = store.snapshot()["topics"]["perception"]["overlays"]["wrist"]["masks"]
         assert lane["rskill_id"] == _SEGMENTER_ID, "whose masks these are must not be a guess"
-        # The CALLER's attach stamp, copied through the topic — a stale overlay
+        # The segmented image's capture stamp, copied through the topic — a stale overlay
         # has to be detectable rather than plausible.
-        assert lane["stamp_unix"] == pytest.approx(17 + 42e-9)
+        assert lane["stamp_unix"] == pytest.approx(5 + 7e-9)
         assert len(lane["masks"]) == len(response.masks) > 1
         for drawn, served in zip(lane["masks"], response.masks, strict=True):
             assert (drawn["width"], drawn["height"]) == (served.width, served.height)
@@ -452,6 +476,110 @@ def test_the_diagnostic_mask_topic_is_off_by_default_and_feeds_the_dashboard() -
         stop.set()
         if overlay is not None:
             overlay.close()
+        if spinner is not None:
+            spinner.join(timeout=5.0)
+        if node is not None:
+            node.destroy_node()
+        if helper is not None:
+            helper.destroy_node()
+        rclpy.try_shutdown()
+
+
+@pytest.mark.skipif(not _LIVE_ROS, reason=_LIVE_ROS_REASON)
+def test_a_zed_bgra8_frame_is_cached_as_bgr_without_the_model() -> None:
+    """A 1920x1080 pitch-padded ``bgra8`` frame lands in the cache as tight BGR.
+
+    The model-free half of the bgra8 fix, so it runs where ``transformers`` / a GPU
+    do not: subscriptions are wired at configure, so the real node caches frames
+    over a real DDS graph before SAM 2.1 is ever loaded. ``segment_in_view`` reads
+    exactly this cache; an empty one is the ``ROSPerceptionStale: no frame cached``
+    the twin pass hit. A frame in an encoding the converter refuses must not be
+    cached (it is logged at WARNING, throttled, naming camera and encoding).
+    """
+    rclpy = pytest.importorskip("rclpy")
+    import numpy as np
+    from openral_perception_ros.segmenter_node import make_segmenter_node
+    from rclpy.executors import MultiThreadedExecutor
+    from rclpy.lifecycle import TransitionCallbackReturn
+    from rclpy.node import Node
+    from rclpy.parameter import Parameter
+    from rclpy.qos import (
+        QoSDurabilityPolicy,
+        QoSHistoryPolicy,
+        QoSProfile,
+        QoSReliabilityPolicy,
+    )
+    from sensor_msgs.msg import Image
+
+    width, height = 1920, 1080
+    rgb = np.random.default_rng(0).integers(0, 256, (height, width, 3), dtype=np.uint8)
+    top_topic = "/openral/cameras/top/image_bgra_itest"
+
+    rclpy.init()
+    stop = threading.Event()
+    spinner: threading.Thread | None = None
+    node = None
+    helper = None
+    try:
+        node = make_segmenter_node("openral_segmenter_bgra_itest")
+        node.set_parameters(
+            [
+                Parameter("robot_yaml", Parameter.Type.STRING, _ROBOT_YAML),
+                Parameter("manifest_path", Parameter.Type.STRING, _MANIFEST),
+                Parameter(
+                    "cameras",
+                    Parameter.Type.STRING_ARRAY,
+                    [f"wrist={_IMAGE_TOPIC}_bgra_itest", f"top={top_topic}"],
+                ),
+                Parameter("primary_camera", Parameter.Type.STRING, "wrist"),
+                Parameter("segment_in_view_service", Parameter.Type.STRING, _SERVICE + "_bgra"),
+            ]
+        )
+        helper = Node("segment_in_view_bgra_itest_client")
+        img_qos = QoSProfile(
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            durability=QoSDurabilityPolicy.VOLATILE,
+        )
+        wrist_pub = helper.create_publisher(Image, f"{_IMAGE_TOPIC}_bgra_itest", img_qos)
+        top_pub = helper.create_publisher(Image, top_topic, img_qos)
+
+        executor = MultiThreadedExecutor(num_threads=2)
+        executor.add_node(node)
+        executor.add_node(helper)
+        spinner = threading.Thread(target=_spin, args=(executor, stop), daemon=True)
+        spinner.start()
+        # Configure only: no model load, but the frame cache is live.
+        assert node.trigger_configure() == TransitionCallbackReturn.SUCCESS
+
+        frame = Image()
+        frame.header.frame_id = _CAMERA_FRAME
+        frame.height, frame.width = height, width
+        frame.encoding = "bgra8"
+        frame.data, frame.step = _bgra8_padded(rgb)
+        assert frame.step > width * 4, "the fixture must exercise row padding"
+
+        unsupported = Image()
+        unsupported.header.frame_id = _CAMERA_FRAME
+        unsupported.height, unsupported.width = 2, 2
+        unsupported.encoding = "32FC1"
+        unsupported.step = 8
+        unsupported.data = bytes(16)
+
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline and "wrist" not in node._frames:
+            wrist_pub.publish(frame)
+            top_pub.publish(unsupported)
+            time.sleep(0.1)
+        assert "wrist" in node._frames, "the segmenter never cached the bgra8 frame"
+
+        bgr, w, h, frame_id, _stamp = node._frames["wrist"]
+        assert (w, h, frame_id) == (width, height, _CAMERA_FRAME)
+        assert np.array_equal(np.frombuffer(bgr, np.uint8).reshape(h, w, 3), rgb[..., ::-1])
+        assert "top" not in node._frames, "an unsupported encoding must never be cached"
+    finally:
+        stop.set()
         if spinner is not None:
             spinner.join(timeout=5.0)
         if node is not None:

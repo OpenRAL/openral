@@ -82,6 +82,12 @@ command continues to the native controller. RoboSuite `OSC_POSE` uses
 `[0.05, 0.05, 0.05, 0.5, 0.5, 0.5]` (metres, then radians). Omit the field
 when the policy already emits physical deltas.
 
+Declare `action_contract.control_freq_hz` when the checkpoint was trained at a
+known rate (DROID 15 Hz, ALOHA 50 Hz, …). The skill runner executes one chunk
+row per tick at the robot's `action_spec.control_freq_hz` and has no resampler,
+so it rejects the goal when the two differ instead of running the policy at the
+wrong speed. Omit it only if the rate is genuinely unknown.
+
 ### Naming convention
 
 The `name` is **enforced** at publish time. Hyphens are ONLY the segment

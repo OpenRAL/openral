@@ -44,6 +44,8 @@ from openral_core.exceptions import (
 )
 from openral_core.schemas import (
     Action,
+    ActionRepresentation,
+    ActionSpec,
     AssetRefs,
     ControlMode,
     EmbodimentKind,
@@ -61,7 +63,7 @@ from openral_core.schemas import (
     UrdfAsset,
 )
 
-from openral_hal._base import HALBase
+from openral_hal._base import HALBase, resolve_staleness_limit_s
 from openral_hal._sensor_wiring import with_sensors
 from openral_hal.protocol import EStopRecovery
 
@@ -195,8 +197,30 @@ SO100_DESCRIPTION = RobotDescription(
         # --required deadman autostart gate, not the C++ kernel, which parses
         # the field and does not yet consult it (safety-WG item).
         deadman_required=True,
+        # provisional: former schema default, not measured on this rig — see issue #303
+        max_force_n=50.0,
+        max_torque_nm=10.0,
+        max_ee_accel_m_s2=2.0,  # matches both shipped manifests
+        contact_force_threshold_n=30.0,
+        self_collision_margin_m=0.0,
+        # runner ramp to starting_pose — the former defaults, declared (issue #303)
+        starting_pose_max_joint_speed_rad_s=0.5,
+        starting_pose_tolerance_rad=0.05,
+        # The in-code gripper is typed prismatic on the normalised [0, 1] jaw
+        # fraction (robots/so100_follower/robot.yaml types it revolute); the
+        # former values, unchanged, in those units.
+        starting_pose_max_joint_speed_m_s=0.5,
+        starting_pose_tolerance_m=0.05,
+        joint_state_staleness_limit_s=0.5,  # provisional, mirrors the YAML
     ),
     sdk_kind="open",
+    # Control rate: the runner ticks at it, the HAL node publishes proprio at
+    # it, and the recorder stamps it as fps (issue #303). Mirrors the YAML.
+    action_spec=ActionSpec(
+        dim=6,
+        representation=ActionRepresentation.JOINT_POSITIONS,
+        control_freq_hz=30.0,
+    ),
     hal=HalEntrypoints(sim=None, real="openral_hal.so100_follower:SO100FollowerHAL"),
     assets=AssetRefs(
         urdf=UrdfAsset(ref="rd:so_arm100_description"),
@@ -316,7 +340,8 @@ class SO100FollowerHAL(HALBase):
             forwarded to the motor bus.  ``None`` means no capping.  Ignored
             when ``robot`` is provided.
         staleness_limit_s: How old (seconds) a ``read_state()`` timestamp may
-            be before ``ROSPerceptionStale`` is raised.  Defaults to ``0.5``.
+            be before ``ROSPerceptionStale`` is raised. ``None`` (default) reads the manifest's
+            ``safety.joint_state_staleness_limit_s``.
         robot: Optional pre-constructed lerobot ``Robot`` instance.  When
             provided, ``connect()`` calls ``robot.connect()`` directly instead
             of constructing a ``SO100Follower`` and opening the serial port.
@@ -342,7 +367,7 @@ class SO100FollowerHAL(HALBase):
         id: str | None = None,  # reason: mirrors lerobot RobotConfig.id verbatim
         calibration_dir: str | None = None,  # reason: mirrors lerobot RobotConfig.calibration_dir
         max_relative_target: float | dict[str, float] | None = None,
-        staleness_limit_s: float = 0.5,
+        staleness_limit_s: float | None = None,
         robot: _LeRobotRobot | None = None,
         description: RobotDescription | None = None,
     ) -> None:
@@ -369,7 +394,7 @@ class SO100FollowerHAL(HALBase):
         self._id = id
         self._calibration_dir = calibration_dir
         self._max_relative_target = max_relative_target
-        self._staleness_limit_s = staleness_limit_s
+        self._staleness_limit_s = resolve_staleness_limit_s(self.description, staleness_limit_s)
         self._injected_robot: _LeRobotRobot | None = robot
 
         self._robot: _LeRobotRobot | None = None
