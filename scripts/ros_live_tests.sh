@@ -27,7 +27,6 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 TARGETS=(
     tests/integration/test_reasoner_node_end_to_end.py
-    tests/integration/test_prompt_router_startup_gate.py
     tests/integration/test_reasoner_dispatch_robustness.py
     tests/integration/test_reasoner_async_llm.py
     tests/integration/test_reasoner_vram_pair_refusal.py

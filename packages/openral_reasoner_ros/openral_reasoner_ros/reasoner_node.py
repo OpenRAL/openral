@@ -304,10 +304,14 @@ _SKILL_FAILURE_KIND_NAMES: dict[int, str] = {
     _KIND_CONTROLLER: "controller",
 }
 
-# Brief, non-blocking probe used before sending an ExecuteSkill goal — if
-# the F1 server isn't on the graph yet we emit a KIND_CONTROLLER
-# FailureTrigger instead of blocking the executor thread.
+# Brief, non-blocking probe used before sending an ExecuteSkill goal. When
+# the F1 server isn't on the graph yet (the runner creates it in its own
+# on_configure, which can finish after the first prompt lands) the dispatch
+# waits, re-probing every _EXECUTE_SKILL_SERVER_RETRY_S, for up to the
+# `execute_server_wait_s` parameter before emitting KIND_CONTROLLER — never
+# blocking the executor thread.
 _EXECUTE_SKILL_SERVER_PROBE_S: float = 0.1
+_EXECUTE_SKILL_SERVER_RETRY_S: float = 0.25
 _LIFECYCLE_SERVER_PROBE_S: float = 0.1
 
 # Reasoner+supervisor design, 2026-05-25 amendment — trigger taxonomy. Maps each failure
@@ -757,6 +761,10 @@ class ReasonerNode(LifecycleNode):
         # latency observed live so executor starvation (issue #21) cannot
         # produce false wedge verdicts; <= 0 disables the watchdog.
         self.declare_parameter("dispatch_watchdog_s", 30.0)
+        # Bound on waiting for /openral/execute_rskill to appear before a
+        # dispatch fails with KIND_CONTROLLER (see _EXECUTE_SKILL_SERVER_PROBE_S).
+        # 0 = fail on the first missed probe.
+        self.declare_parameter("execute_server_wait_s", 30.0)
         # Persistent spatial memory, live dynamic memory — when true, ``on_configure`` ensures a
         # ``SpatialMemory`` backend exists (auto-creating an empty one if no
         # ``spatial_memory_path`` was loaded and none injected) and ``_on_tick``
@@ -981,6 +989,8 @@ class ReasonerNode(LifecycleNode):
         # dispatch: the runner serves one goal at a time, and a forced tick
         # mid-execution would otherwise double-dispatch blind.
         self._rskill_inflight: bool = False
+        # Set while a dispatch waits for /openral/execute_rskill (monotonic s).
+        self._execute_server_wait_deadline: float | None = None
         # Dispatch-phase watchdog: bounds the send→goal-response window the
         # busy latch opens. rclpy futures never time out on their own, so a
         # runner (or VRAM peer) that dies AFTER the readiness probe but before
@@ -4305,8 +4315,11 @@ class ReasonerNode(LifecycleNode):
                 timeout_sec=_EXECUTE_SKILL_SERVER_PROBE_S,
             )
         ):
+            if self._defer_until_execute_server(call, traceparent):
+                return
             self.get_logger().warning(
-                "dispatch: execute_rskill server /openral/execute_rskill not on graph; "
+                "dispatch: execute_rskill server /openral/execute_rskill not on graph after "
+                "execute_server_wait_s; "
                 f"emitting KIND_CONTROLLER FailureTrigger for rskill_id={call.rskill_id!r}",
             )
             self._publish_skill_failure(
@@ -4320,6 +4333,7 @@ class ReasonerNode(LifecycleNode):
                 traceparent=traceparent,
             )
             return
+        self._execute_server_wait_deadline = None
 
         # VLA/reward VRAM-fit pairing — a VLA runs only with its reward model resident alongside it.
         # Refuse (and notify) before the goal is sent if the pair can't co-reside
@@ -4381,6 +4395,50 @@ class ReasonerNode(LifecycleNode):
             )
         else:
             self._send_execute_rskill_goal(call, generation, traceparent)
+
+    def _defer_until_execute_server(self, call: ExecuteRskillTool, traceparent: str | None) -> bool:
+        """Hold ``call`` while ``/openral/execute_rskill`` is not yet on the graph.
+
+        Returns ``True`` when the dispatch was deferred: the busy gate is held
+        (so a forced tick cannot double-dispatch) and a one-shot timer re-runs
+        the dispatch after ``_EXECUTE_SKILL_SERVER_RETRY_S``. Returns ``False``
+        once ``execute_server_wait_s`` has passed since the first miss, and the
+        caller fails the dispatch with KIND_CONTROLLER as before.
+        """
+        wait_s = self.get_parameter("execute_server_wait_s").get_parameter_value().double_value
+        now = time.monotonic()
+        if self._execute_server_wait_deadline is None:
+            self._execute_server_wait_deadline = now + max(0.0, wait_s)
+            if wait_s > 0:
+                self.get_logger().info(
+                    f"dispatch: /openral/execute_rskill not on the graph yet; holding "
+                    f"execute_rskill {call.rskill_id!r} for up to {wait_s:g} s",
+                )
+        if now >= self._execute_server_wait_deadline:
+            self._execute_server_wait_deadline = None
+            self._rskill_inflight = False
+            self._renderer.set_inflight_skill(None)
+            return False
+        self._rskill_inflight = True
+        self._renderer.set_inflight_skill(
+            call.rskill_id,
+            stamp_ns=self.get_clock().now().nanoseconds,
+            state="dispatching",
+        )
+        timer: Any = None
+
+        def _retry() -> None:
+            timer.cancel()
+            self.destroy_timer(timer)
+            self._rskill_inflight = False
+            if self._execute_rskill_client is None:  # cleaned up while waiting
+                self._execute_server_wait_deadline = None
+                self._renderer.set_inflight_skill(None)
+                return
+            self._dispatch_execute_rskill(call, traceparent=traceparent)
+
+        timer = self.create_timer(_EXECUTE_SKILL_SERVER_RETRY_S, _retry)
+        return True
 
     def _set_reward_task(self, task: str) -> None:
         """Publish the instruction the reward monitor should score (2026-06-29).
