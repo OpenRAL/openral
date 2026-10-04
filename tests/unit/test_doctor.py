@@ -296,6 +296,7 @@ _REASONER_ENV = (
     "OPENRAL_REASONER_DIALECT",
     "OPENRAL_REASONER_MAX_TOKENS",
     "OPENRAL_REASONER_TIMEOUT_S",
+    "OPENRAL_REASONER_TOOL_CHOICE",
     "OPENRAL_REASONER_LLM_PROVIDER",
     "OPENRAL_REASONER_LLM_MODEL",
     "OPENRAL_REASONER_LLM_API_KEY",
@@ -733,3 +734,16 @@ def test_doctor_and_factory_share_one_preset_table() -> None:
     assert not hasattr(doctor_module, "_REASONER_ENDPOINT_PRESETS"), (
         "openral_cli.main regrew a local mirror of the endpoint presets"
     )
+
+
+def test_check_reasoner_rejects_a_bad_tool_choice(
+    monkeypatch: pytest.MonkeyPatch, _clear_reasoner_env: None
+) -> None:
+    """doctor fails the config the factory refuses, instead of reporting it ok."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", "qwen3:8b")
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://10.0.0.5:9000/v1")
+    monkeypatch.setenv("OPENRAL_REASONER_DIALECT", "openai")
+    monkeypatch.setenv("OPENRAL_REASONER_TOOL_CHOICE", "any")
+    rows = _check_reasoner_llm()
+    assert rows[0].status == "fail"
+    assert "OPENRAL_REASONER_TOOL_CHOICE" in rows[0].details

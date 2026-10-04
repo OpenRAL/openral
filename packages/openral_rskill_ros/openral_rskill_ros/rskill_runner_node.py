@@ -321,7 +321,8 @@ if _ROS2_AVAILABLE:
             # resolved skill loaded, keyed by (rskill_id, revision, prompt).
             # Dispatching a different key evicts (``shutdown()`` → frees VRAM)
             # the resident skill before loading the next; re-dispatching the
-            # same key reuses it (no reload, no double-load).
+            # same key reuses it (no reload, no double-load). A wrapped-ROS
+            # skill is never reused (see _acquire_skill).
             self._resident_skill: Any = None
             self._resident_key: tuple[str, str, str] = ("", "", "")
             self._chunks_published: int = 0
@@ -685,11 +686,23 @@ if _ROS2_AVAILABLE:
             next; an exact match reuses it (no reload, no double-load); a miss
             resolves + caches. Resolve failures propagate to the caller's abort
             path unchanged.
+
+            A ``ROSActionRskill`` is never reused. It merges
+            ``goal_params_json`` into its goal at ``configure()`` (a reuse
+            would send the previous dispatch's target) and it is single-shot:
+            once its result is consumed or its waypoints replayed, a reused
+            instance reports success without sending a goal, or replays a
+            stale plan. It holds no weights, so rebuilding it is cheap. A VLA
+            keeps the ``(rskill_id, revision, prompt)`` key: it ignores the
+            goal params, and widening its key would reload weights.
             """
             from openral_core.schemas import RSkillState
+            from openral_rskill.ros_action_rskill import ROSActionRskill
 
             req_key = (rskill_id, revision, prompt)
-            if self._resident_skill is not None and self._resident_key != req_key:
+            if self._resident_skill is not None and (
+                self._resident_key != req_key or isinstance(self._resident_skill, ROSActionRskill)
+            ):
                 self._evict_resident_skill()
             if self._resident_skill is not None and self._resident_key == req_key:
                 resident = cast("rSkillBase", self._resident_skill)

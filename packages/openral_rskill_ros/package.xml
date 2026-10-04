@@ -28,6 +28,10 @@
 
   <exec_depend>python3-openral-core</exec_depend>
   <exec_depend>python3-openral-world-state</exec_depend>
+  <!-- ROS package providing openral_world_state_ros, which
+       compose_runtime imports; without it runtime_node never serves
+       /openral/execute_rskill. -->
+  <exec_depend>openral_world_state</exec_depend>
   <exec_depend>python3-openral-rskill</exec_depend>
   <exec_depend>python3-openral-runner</exec_depend>
   <exec_depend>python3-openral-observability</exec_depend>
