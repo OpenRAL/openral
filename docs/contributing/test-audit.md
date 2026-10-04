@@ -75,9 +75,6 @@ _None — no test is silently shadowed by a later redefinition._
     - `tests/sim/test_aloha_bimanual_hal_mujoco.py::test_capabilities_bimanual`
     - `tests/unit/test_aloha.py::test_capabilities_declare_bimanual`
 - 2 identical bodies:
-    - `tests/sim/test_franka_isaac_deploy_hal.py::test_connect_resolves_action_dim`
-    - `tests/sim/test_franka_urdf_isaac.py::test_connect_resolves_action_dim`
-- 2 identical bodies:
     - `tests/unit/test_eval_adapters_helpers.py::test_render_returns_none_before_step`
     - `tests/unit/test_eval_adapters_helpers.py::test_render_returns_none_without_pixels`
 - 2 identical bodies:

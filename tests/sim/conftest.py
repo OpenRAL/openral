@@ -193,12 +193,15 @@ def _libero_robosuite_conflict() -> bool:
 
 
 def _sidecar_python_available() -> bool:
-    """Whether the Isaac Sim sidecar venv (or an operator override) is provisioned."""
-    override = os.environ.get("OPENRAL_ISAAC_SIDECAR_PYTHON")
-    if override:
-        return Path(override).is_file()
-    default = Path.home() / ".cache" / "openral" / "isaac-sidecar" / ".venv" / "bin" / "python"
-    return default.is_file()
+    """Whether an Isaac Sim interpreter resolves: override, pip venv, or binary install.
+
+    Delegates to the backend's own lookup so the gate and the runtime never
+    disagree about what counts as an Isaac install — and never provisions: this
+    runs at collection time, where a multi-GB install (or its failure) must not.
+    """
+    from openral_sim.backends.isaac_sim import _find_sidecar_python
+
+    return _find_sidecar_python() is not None
 
 
 def _repo_root() -> Path:

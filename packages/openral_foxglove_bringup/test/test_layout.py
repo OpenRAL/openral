@@ -87,8 +87,8 @@ def _is_exposed(topic: str) -> bool:
     "cameras",
     [
         DEFAULT_CAMERAS,
-        ("top",),  # isaac_franka
-        ("top", "wrist"),  # isaac_franka_bowl
+        ("top",),  # single-camera arm
+        ("top", "wrist"),  # arm + wrist camera
         ("head", "left_wrist", "right_wrist"),  # behavior_r1pro
         ("agentview", "agentview_left", "cam_l", "cam_r"),  # LIBERO-style four-up
     ],
