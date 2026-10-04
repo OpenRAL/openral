@@ -49,6 +49,7 @@ TARGETS=(
     # are checked at their measured pose, never the zero padding.
     tests/integration/test_safety_kernel_slot_row_measured_fill.py
     tests/integration/test_sim_sensor_bridge_tf_guard.py
+    tests/integration/test_hal_sigint_teardown_live.py
     # Every MuJoCo twin heartbeats a fresh, empty attachment set, not only the
     # HALs with attach mechanics (kernel fails closed on an unstamped set).
     tests/integration/test_sim_sensor_bridge_attachment_heartbeat.py
