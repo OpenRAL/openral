@@ -1812,6 +1812,9 @@ if _ROS2_AVAILABLE:
             # driver's live K is the only one ever projected through.
             self.declare_parameter("vision_attachment_camera_info_topic", "")
             self.declare_parameter("vision_attachment_service", DEFAULT_SEGMENT_SERVICE)
+            # The robot self-filter's output for the attach camera, set by the deploy
+            # launch when that filter runs: the grasp target fit drops the robot's points.
+            self.declare_parameter("vision_attachment_self_filtered_cloud_topic", "")
             # Seconds. A warmed SAM 2.1 call is ~53 ms on the reference GPU; the
             # default leaves ~4x margin while staying the same order as the
             # ~100 ms barrier it rides inside. A CPU-only host must raise it.
@@ -2370,6 +2373,9 @@ if _ROS2_AVAILABLE:
                     .string_value
                     or None,
                     service_name=gp("vision_attachment_service").get_parameter_value().string_value,
+                    self_filtered_cloud_topic=gp("vision_attachment_self_filtered_cloud_topic")
+                    .get_parameter_value()
+                    .string_value,
                     deadline_s=gp("vision_attachment_deadline_s")
                     .get_parameter_value()
                     .double_value,

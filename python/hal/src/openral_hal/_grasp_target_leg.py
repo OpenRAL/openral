@@ -158,6 +158,7 @@ from openral_hal._grasp_target import (
     TargetRefusal,
     VoxelLattice,
     _in_region,
+    mask_without_removed_points,
     occupied_centers_in_box,
     project_point,
     region_covers_occupied,
@@ -1911,6 +1912,14 @@ class GraspTargetLeg:
         # Stamped no later than the map it is vouched against: a stalled octomap ages
         # the region out (freeze TTL here, grasp_region_max_age_s in the kernel).
         stamp_ns = min(depth_stamp_ns, source_ns)
+        # The robot's own points (the fingers closing in on the target) leave the fit
+        # exactly as the self-filter took them out of the map, at this capture.
+        kept = self._bridge.kept_points(depth_stamp_ns, grid.frame_id)
+        if kept is not None:
+            masks = [
+                mask_without_removed_points(mask, depth, intrinsics, t_base_from_cam, kept)
+                for mask in masks
+            ]
         model = declaration.rskill_id or self._config.service_name
         fit = None
         for mask in masks:  # candidates in the segmenter's order; first one that fits

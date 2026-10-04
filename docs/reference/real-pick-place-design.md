@@ -261,7 +261,10 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   (optional, grounded by the reasoner or supplied by a direct-dispatch scene, passed through by
   the runner; a search hint only — the support layer is measured from the voxel map, never read
   off the box's bottom face),
-  re-measured at `grasp_target_rate_hz` (3 Hz), the region filled onto every attachment
+  re-measured at `grasp_target_rate_hz` (3 Hz) on the masked pixels the robot self-filter kept
+  for the same capture (`mask_without_removed_points`: the fingers closing in on the target leave
+  its fit exactly as they leave the map, so they neither grow it nor fail it as `not_on_support`;
+  without a self-filtered cloud for that capture the fit is unfiltered), the region filled onto every attachment
   publication; contradicting evidence retracts at once, a lost view freezes the last accepted region
   (a map-covered re-fit that shrinks or shifts *inside* the held region grown by one voxel while a
   declared contact link's hand point (the bridge's TCP for that jaw link's leg: attach link via
