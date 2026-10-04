@@ -4,6 +4,7 @@
 
 #include "openral_safety_kernel/validator.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -33,10 +34,9 @@ Result<void, Violation> validate(const ChunkView& chunk,
 
   // 2. Decide whether chunk.n_dof is a JOINT-COUNT (must match the
   // envelope) or a per-mode width (cartesian = 6, gripper = 1, etc.,
-  // enforced per-mode by the openral_safety Python supervisor). Without
-  // this split, every slot-dispatched per-mode chunk fails the n_dof
-  // equality check and trips an estop before the supervisor's per-mode
-  // bounds run — leaving openral unable to dispatch any RoboCasa pi0.5/rldx
+  // bounded per mode in step 6 below). Without this split, every
+  // slot-dispatched per-mode chunk fails the n_dof equality check and
+  // trips an estop — leaving openral unable to dispatch any RoboCasa pi0.5/rldx
   // rSkill in deploy_sim. (sim_run is unaffected: that path bypasses both
   // safety nodes and drives env.step directly.)
   const auto mode = static_cast<ControlMode>(chunk.control_mode);
@@ -107,7 +107,14 @@ Result<void, Violation> validate(const ChunkView& chunk,
   // 6. Per-step / per-joint enforcement keyed off control_mode.
 
   switch (mode) {
-  case ControlMode::kJointPosition: {
+  case ControlMode::kJointPosition:
+  case ControlMode::kJointTrajectory: {
+    // JOINT_TRAJECTORY shares JOINT_POSITION's wire shape exactly (a
+    // [horizon][n_dof] matrix of per-joint position targets --
+    // ROSPublishingHAL._flatten_action_payload and
+    // ManifestHALLifecycleNode._on_safe_action both already treat the two
+    // modes identically) and the same per-joint position envelope applies
+    // per waypoint.
     for (std::uint16_t s = 0; s < chunk.horizon; ++s) {
       for (std::size_t j = 0; j < envelope.n_dof; ++j) {
         const double v = chunk.flat_data[s * envelope.n_dof + j];
@@ -172,9 +179,8 @@ Result<void, Violation> validate(const ChunkView& chunk,
       break;
     }
     // The cartesian flat layout is one 7-vec per step; chunk.n_dof
-    // is expected to be 7 in that mode (the message ferries it). We
-    // validate axis-by-axis.
-    const std::size_t per_step = envelope.n_dof;
+    // carries that row width (per_row), never the robot's joint count.
+    const std::size_t per_step = per_row;
     if (per_step < 7) {
       // Not a well-formed Cartesian chunk — fall through to dim-mismatch.
       Violation v = make_controller_violation(ControllerSubKind::kDimMismatch, "cartesian_pose");
@@ -202,8 +208,9 @@ Result<void, Violation> validate(const ChunkView& chunk,
   }
   case ControlMode::kCartesianTwist: {
     // Each step encodes (vx, vy, vz, wx, wy, wz). Bound linear speed
-    // against max_ee_speed_m_s.
-    const std::size_t per_step = envelope.n_dof;
+    // against max_ee_speed_m_s and angular speed against
+    // max_ee_angular_speed_rad_s.
+    const std::size_t per_step = per_row;
     if (per_step < 6) {
       Violation v = make_controller_violation(ControllerSubKind::kDimMismatch, "cartesian_twist");
       return Result<void, Violation>::err(v);
@@ -221,28 +228,139 @@ Result<void, Violation> validate(const ChunkView& chunk,
         viol.set_field("ee_speed");
         return Result<void, Violation>::err(viol);
       }
+      const double angular_speed = std::sqrt(p[3] * p[3] + p[4] * p[4] + p[5] * p[5]);
+      if (angular_speed > envelope.max_ee_angular_speed_rad_s) {
+        Violation viol{};
+        viol.kind = ViolationKind::kForce;
+        viol.joint_index = 0xFFFF;
+        viol.horizon_step = s;
+        viol.offending_value = angular_speed;
+        viol.limit_value = envelope.max_ee_angular_speed_rad_s;
+        viol.set_field("ee_angular_speed");
+        return Result<void, Violation>::err(viol);
+      }
     }
     break;
   }
-  case ControlMode::kJointTrajectory:
-  case ControlMode::kCartesianDelta:
-  case ControlMode::kBodyTwist:
-  case ControlMode::kGripperBinary:
-  case ControlMode::kGripperPosition:
+  case ControlMode::kBodyTwist: {
+    // Each step encodes (vx, vy, vz, wx, wy, wz) for the mobile base.
+    // Bound linear speed against max_base_linear_speed_m_s and angular
+    // speed against max_base_angular_speed_rad_s. Both default to
+    // kPosInfinity (no bound declared) so a robot.yaml that never sets
+    // them behaves exactly as before this check existed.
+    const std::size_t per_step = per_row;
+    if (per_step < 6) {
+      Violation v = make_controller_violation(ControllerSubKind::kDimMismatch, "body_twist");
+      return Result<void, Violation>::err(v);
+    }
+    for (std::uint16_t s = 0; s < chunk.horizon; ++s) {
+      const double* p = chunk.flat_data + s * per_step;
+      const double linear_speed = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+      if (linear_speed > envelope.max_base_linear_speed_m_s) {
+        Violation viol{};
+        viol.kind = ViolationKind::kForce;  // speed-induced
+        viol.joint_index = 0xFFFF;
+        viol.horizon_step = s;
+        viol.offending_value = linear_speed;
+        viol.limit_value = envelope.max_base_linear_speed_m_s;
+        viol.set_field("base_linear_speed");
+        return Result<void, Violation>::err(viol);
+      }
+      const double angular_speed = std::sqrt(p[3] * p[3] + p[4] * p[4] + p[5] * p[5]);
+      if (angular_speed > envelope.max_base_angular_speed_rad_s) {
+        Violation viol{};
+        viol.kind = ViolationKind::kForce;
+        viol.joint_index = 0xFFFF;
+        viol.horizon_step = s;
+        viol.offending_value = angular_speed;
+        viol.limit_value = envelope.max_base_angular_speed_rad_s;
+        viol.set_field("base_angular_speed");
+        return Result<void, Violation>::err(viol);
+      }
+    }
+    break;
+  }
+  case ControlMode::kCartesianDelta: {
+    // Each step encodes (dx, dy, dz, rx, ry, rz): a per-step Cartesian
+    // translation delta + axis-angle rotation delta. Bound the Euclidean
+    // magnitude of each triplet against max_cartesian_step_m /
+    // max_cartesian_step_rad, applying the clip(raw, -1, 1) * scale
+    // physical-unit derivation when cartesian_delta_scale is set (step 4
+    // above already validated its shape/positivity) -- the same formula
+    // lifecycle_kernel.cpp's apply path uses, so the magnitude checked
+    // here matches what actually reaches the HAL.
+    const std::size_t per_step = per_row;
+    if (per_step < 6) {
+      Violation v = make_controller_violation(ControllerSubKind::kDimMismatch, "cartesian_delta");
+      return Result<void, Violation>::err(v);
+    }
+    const bool scaled = chunk.cartesian_delta_scale_size > 0;
+    for (std::uint16_t s = 0; s < chunk.horizon; ++s) {
+      const double* p = chunk.flat_data + s * per_step;
+      double d[6];
+      for (std::size_t i = 0; i < 6; ++i) {
+        const double raw = p[i];
+        d[i] = scaled ? std::clamp(raw, -1.0, 1.0) * chunk.cartesian_delta_scale[i] : raw;
+      }
+      const double mag_xyz = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+      if (mag_xyz > envelope.max_cartesian_step_m) {
+        Violation viol{};
+        viol.kind = ViolationKind::kForce;
+        viol.joint_index = 0xFFFF;
+        viol.horizon_step = s;
+        viol.offending_value = mag_xyz;
+        viol.limit_value = envelope.max_cartesian_step_m;
+        viol.set_field("cartesian_step");
+        return Result<void, Violation>::err(viol);
+      }
+      const double mag_rot = std::sqrt(d[3] * d[3] + d[4] * d[4] + d[5] * d[5]);
+      if (mag_rot > envelope.max_cartesian_step_rad) {
+        Violation viol{};
+        viol.kind = ViolationKind::kForce;
+        viol.joint_index = 0xFFFF;
+        viol.horizon_step = s;
+        viol.offending_value = mag_rot;
+        viol.limit_value = envelope.max_cartesian_step_rad;
+        viol.set_field("cartesian_step_rot");
+        return Result<void, Violation>::err(viol);
+      }
+    }
+    break;
+  }
   case ControlMode::kCompositeMode: {
-    // Per-mode chunks. The C++ kernel intentionally delegates per-axis
-    // bound enforcement to the Python openral_safety/supervisor_node.py,
-    // which knows the per-mode bounds on the robot manifest
-    // (max_cartesian_step_m, max_base_linear_speed_m_s,
-    // max_base_angular_speed_rad_s, gripper_min/max, ...). The kernel
-    // already ran shape + NaN checks above, so routing unrejected lets the
-    // supervisor do its job before the HAL applies; without this case
-    // per-mode chunks hit the default branch and estop before the
-    // supervisor sees them. Net safety strictly improves vs pre-change:
-    // "reject every per-mode chunk" -> "structural-validate then delegate".
-    //
-    // kCompositeMode carries a single robosuite-specific multiplexer flag
-    // in [-1, +1] (sim-only); no per-joint/workspace bound applies.
+    // Single scalar per step: a robosuite-specific multiplexer flag,
+    // fixed protocol contract [-1, +1] (sim-only) -- not a manifest-
+    // derived bound like the others in this switch, so there is no
+    // envelope field to read; an out-of-range flag would silently
+    // confuse the downstream robosuite controller instead of being
+    // caught here.
+    const std::size_t per_step = per_row;
+    if (per_step < 1) {
+      Violation v = make_controller_violation(ControllerSubKind::kDimMismatch, "composite_mode");
+      return Result<void, Violation>::err(v);
+    }
+    for (std::uint16_t s = 0; s < chunk.horizon; ++s) {
+      const double flag = chunk.flat_data[s * per_step];
+      if (flag < -1.0 || flag > 1.0) {
+        Violation viol{};
+        viol.kind = ViolationKind::kWorkspace;
+        viol.joint_index = 0xFFFF;
+        viol.horizon_step = s;
+        viol.offending_value = flag;
+        viol.limit_value = (flag < -1.0) ? -1.0 : 1.0;
+        viol.set_field("composite_mode_range");
+        return Result<void, Violation>::err(viol);
+      }
+    }
+    break;
+  }
+  case ControlMode::kGripperBinary:
+  case ControlMode::kGripperPosition: {
+    // Shape + NaN checked above; no magnitude bound yet. The gripper
+    // channel's unit is per robot (a [0,1] fraction, finger metres or jaw
+    // radians -- JointSpec.position_limits is "the unit on this channel")
+    // and policies emit their own convention (e.g. RoboCasa's [-1,1]), so a
+    // single gripper_min/max would false-estop real skills.
     break;
   }
   case ControlMode::kFootPlacement:
