@@ -248,9 +248,10 @@ def _published(leg: _GripperLeg) -> AttachedCollisionObject | None:
 #: Mask/depth aspect-ratio agreement below which a resample is a resolution change.
 _ASPECT_TOLERANCE = 1e-3
 
-#: Heartbeat period, seconds — the simulator bridge's attachment heartbeat period.
 #: A self-filtered cloud is the depth frame's own capture within this (same render / driver tick).
 _KEPT_CLOUD_STAMP_TOL_NS = 1_000_000
+
+#: Heartbeat period, seconds — the simulator bridge's attachment heartbeat period.
 _HEARTBEAT_PERIOD_S = 0.2
 
 #: Confidence on a region payload: the vision producer's own accepted-mask value, since the
@@ -1229,6 +1230,7 @@ class VisionAttachmentBridge:
         self._camera_info: Any = None
         # (capture stamp ns, frame, points) of the self-filter's last few output clouds.
         self._kept_clouds: deque[tuple[int, str, Any]] = deque(maxlen=8)
+        self._kept_cloud_sub: Any = None
         self._camera_info_sub: Any = None
         self._logged_depth_frame = False
         self._client: Any = None
@@ -1347,6 +1349,7 @@ class VisionAttachmentBridge:
                 f"vision attachment bridge: gripper={leg.joint_name!r} camera={self._camera!r} "
                 f"depth={self._depth_topic()!r} camera_info={self._camera_info_topic()!r} "
                 f"service={self._config.service_name!r} "
+                f"self_filtered_cloud={self._config.self_filtered_cloud_topic or 'none'!r} "
                 f"attach_link={leg.producer.attach_link!r} "
                 f"tcp={leg.tcp_frame or leg.tcp_in_link!r} "
                 f"deadline={self._config.deadline_s:.3f}s "
@@ -1375,6 +1378,10 @@ class VisionAttachmentBridge:
         if self._camera_info_sub is not None:
             self._node.destroy_subscription(self._camera_info_sub)
             self._camera_info_sub = None
+        if self._kept_cloud_sub is not None:
+            self._node.destroy_subscription(self._kept_cloud_sub)
+            self._kept_cloud_sub = None
+        self._kept_clouds.clear()
         if self._attachment_pub is not None:
             self._node.destroy_publisher(self._attachment_pub)
             self._attachment_pub = None

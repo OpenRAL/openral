@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -907,6 +908,61 @@ def test_a_malformed_mask_reply_falls_back_and_releases_the_barrier() -> None:
             assert bridge.attachment_action_ack_ready()
             assert leg.attachment is not None
             assert leg.attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+
+_SELF_FILTERED = "/openral/world_cloud/self_filtered"
+
+
+def test_the_self_filtered_cloud_cache_matches_by_capture_stamp_and_is_torn_down() -> None:
+    """``kept_points`` hands back the self-filter's cloud of exactly the depth frame's capture
+    (within 1 ms), never a neighbouring one, and the bridge's subscription to it goes with
+    ``teardown``: the lifecycle node rebuilds the bridge on every activate, and a leaked
+    full-resolution ``PointCloud2`` subscription kept every dead bridge decoding clouds."""
+    pytest.importorskip("openral_msgs")
+    rclpy = pytest.importorskip("rclpy")
+    from sensor_msgs_py import point_cloud2
+    from std_msgs.msg import Header
+
+    def cloud(stamp_ns: int, points: np.ndarray) -> Any:
+        header = Header(frame_id="openarm_base")
+        header.stamp.sec, header.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
+        return point_cloud2.create_cloud_xyz32(header, points.tolist())
+
+    def on_topic(node: Any) -> int:
+        return [sub.topic_name for sub in node.subscriptions].count(_SELF_FILTERED)
+
+    rclpy.init()
+    try:
+        node = rclpy.create_node("test_vision_attachment_kept_cloud")
+        try:
+            config = VisionAttachmentConfig(
+                camera="head_zed", self_filtered_cloud_topic=_SELF_FILTERED
+            )
+            for _ in range(2):  # two activate cycles, each with a freshly built bridge
+                bridge = VisionAttachmentBridge(node, _openarm(), config=config)
+                bridge.setup()
+                try:
+                    assert on_topic(node) == 1
+                    points = np.array([[0.45, 0.0, 0.10], [0.46, 0.01, 0.12]], dtype=np.float32)
+                    stamp = 12 * 1_000_000_000 + 345_000_000
+                    bridge._on_kept_cloud(cloud(stamp, points))
+                    for probe in (stamp, stamp + 1_000_000, stamp - 1_000_000):
+                        kept = bridge.kept_points(probe, "openarm_base")
+                        assert kept is not None
+                        np.testing.assert_allclose(kept, points, atol=1e-6)
+                    assert bridge.kept_points(stamp + 2_000_000, "openarm_base") is None
+                    for i in range(1, 9):  # eight newer captures roll the first one out
+                        bridge._on_kept_cloud(cloud(stamp + i * 100_000_000, points))
+                    assert bridge.kept_points(stamp, "openarm_base") is None
+                    assert bridge.kept_points(stamp + 800_000_000, "openarm_base") is not None
+                finally:
+                    bridge.teardown()
+                assert on_topic(node) == 0, "the self-filtered subscription outlived teardown"
+                assert not bridge._kept_clouds
         finally:
             node.destroy_node()
     finally:

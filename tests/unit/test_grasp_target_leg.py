@@ -2276,3 +2276,109 @@ def test_both_legs_share_one_voxel_subscription_and_one_lazy_decode() -> None:
         finally:
             bridge.teardown()
         assert "/openral/world_voxels" not in [s.topic_name for s in live.node.subscriptions]
+
+
+# ── self-filtered fit (the fingers in the target's mask) ─────────────────────
+
+_SELF_FILTERED = "/openral/world_cloud/self_filtered"
+#: The target (``_measured``'s 8 cm block, standing on z=0.03) and a finger closing in
+#: over it — both inside the SAM mask, only the target in the self-filter's output.
+_TARGET_BOX = (np.array([0.41, -0.04, 0.03]), np.array([0.49, 0.04, 0.13]))
+_FINGER_BOX = (np.array([0.44, -0.015, 0.14]), np.array([0.46, 0.015, 0.20]))
+
+
+def _oblique_capture() -> tuple[np.ndarray, np.ndarray, np.ndarray, Any, np.ndarray]:
+    """Ray-cast the target and finger from a head camera 45 degrees above the target.
+
+    Returns ``(depth, mask, t_base_from_cam, intrinsics, kept)``: the z-depth raster, the
+    mask over both boxes (SAM sees the fingers too), and the base-frame points of the
+    target's pixels only — what the robot self-filter lets through of this capture.
+    """
+    from openral_core import IntrinsicsPinhole
+
+    k = IntrinsicsPinhole(width=160, height=120, fx=200.0, fy=200.0, cx=80.0, cy=60.0)
+    origin = np.array([0.0, 0.0, 0.50])
+    z = np.array([0.45, 0.0, 0.08]) - origin
+    z /= np.linalg.norm(z)
+    x = np.cross(z, (0.0, 0.0, 1.0))
+    x /= np.linalg.norm(x)
+    t = np.eye(4)
+    t[:3, 0], t[:3, 1], t[:3, 2], t[:3, 3] = x, np.cross(z, x), z, origin
+    rows, cols = np.mgrid[0 : k.height, 0 : k.width]
+    rays = np.stack(((cols + 0.5 - k.cx) / k.fx, (rows + 0.5 - k.cy) / k.fy, np.ones(rows.shape)))
+    rays = rays.reshape(3, -1).T @ t[:3, :3].T  # parameter along these is the optical z
+    depth = np.full(rays.shape[0], np.inf)
+    hit = np.zeros(rays.shape[0], dtype=np.int8)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        for label, (lo, hi) in ((1, _TARGET_BOX), (2, _FINGER_BOX)):
+            t1, t2 = (lo - origin) / rays, (hi - origin) / rays
+            near = np.nanmax(np.minimum(t1, t2), axis=1)
+            far = np.nanmin(np.maximum(t1, t2), axis=1)
+            closer = (near <= far) & (near > 0) & (near < depth)
+            depth[closer], hit[closer] = near[closer], label
+    target = hit == 1
+    kept = origin + rays[target] * depth[target][:, None]
+    depth[~np.isfinite(depth)] = 0.0
+    shape = (k.height, k.width)
+    return depth.reshape(shape), (hit > 0).reshape(shape), t, k, kept
+
+
+def test_the_fingers_in_the_mask_leave_the_fit_only_through_the_self_filtered_cloud(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """Isaac i24-i28: the closing fingers entered the target's SAM mask, the 3 Hz re-fit
+    grew up to the hand and the held region was retracted mid-grasp. With the self-filter's
+    cloud of the same capture the fit is the target alone; without it, the same capture
+    grows to the finger (refused against the held region) — the filter branch is live —
+    and, with the topic configured, the unfiltered fit is said out loud (CLAUDE.md §1.4)."""
+    pytest.importorskip("openral_msgs")
+    rclpy_task = pytest.importorskip("rclpy.task")
+    from openral_hal.depth_cloud import camera_info_from_intrinsics
+    from openral_msgs.srv import SegmentInView
+    from sensor_msgs.msg import Image as ImageMsg
+
+    depth, mask, t_base_from_cam, k, kept = _oblique_capture()
+    with _live_leg(
+        "test_grasp_target_self_filtered", self_filtered_cloud_topic=_SELF_FILTERED
+    ) as live:
+        bridge, leg = live.bridge, live.leg
+        now_ns = leg._now_ns()
+        bridge._camera_info = camera_info_from_intrinsics(
+            width=k.width, height=k.height, fx=k.fx, fy=k.fy, cx=k.cx, cy=k.cy, frame_id="cam"
+        )
+        grid = (_held_block_lattice(), now_ns, time.monotonic())
+
+        def measure(previous: PlaceRegion | None) -> PlaceRegion:
+            response = SegmentInView.Response(ok=True)
+            image = ImageMsg(height=k.height, width=k.width, encoding="mono8", step=k.width)
+            image.header.stamp.sec, image.header.stamp.nanosec = divmod(now_ns, _S)
+            image.data = (mask.astype(np.uint8) * 255).tobytes()
+            response.masks = [image]
+            future = rclpy_task.Future()
+            future.set_result(response)
+            snapshot = (depth, now_ns, k, t_base_from_cam, 0.03, _dispatched(), 0)
+            return leg._measure(future, snapshot, now_ns, grid, [], previous)
+
+        bridge._kept_clouds.append((now_ns, "openarm_base", kept))
+        filtered = measure(None)
+        top = filtered.pose.xyz[2] + filtered.half_extents[2]
+        pad = 3**0.5 * 0.02 / 2 + 0.01  # target_region_from_mask's padding
+        assert top == pytest.approx(_TARGET_BOX[1][2] + pad, abs=0.005), "the finger is in the fit"
+        assert leg.unfiltered_fits == 0
+
+        bridge._kept_clouds.clear()  # the self-filter dropped this capture
+        grown = measure(None)
+        assert grown.pose.xyz[2] + grown.half_extents[2] >= _FINGER_BOX[1][2]
+        assert leg.unfiltered_fits == 1, "an unfiltered fit went unreported"
+        with pytest.raises(_Refusal) as refused:
+            measure(filtered)
+        assert refused.value.kind == "target_moved", refused.value.detail
+        assert leg.unfiltered_fits == 2
+
+        bridge._kept_clouds.append((now_ns, "openarm_base", kept))
+        assert measure(filtered) == filtered
+        assert leg.unfiltered_fits == 0, "the filter's return was not noticed"
+    err = capfd.readouterr().err
+    assert err.count("grasp target fit unfiltered") == 1, "logged per fit, not per transition"
+    assert f"no self-filtered cloud on {_SELF_FILTERED!r} at stamp {now_ns}" in err
+    assert "self-filtered again after 2 unfiltered fit(s)" in err
