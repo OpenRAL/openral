@@ -78,6 +78,22 @@ def test_all_joints_hold_and_the_robot_is_at_its_spawn(env: Any) -> None:
         assert 0.21 < oz < 0.36, f"{name} not resting on the pallet: z={oz}"
 
 
+def test_head_depth_is_a_real_cloud_in_openarm_base(env: Any) -> None:
+    """The head depth camera, mounted on openarm_base at the manifest's nominal ZED
+    pose, yields finite points expressed in openarm_base: the floor 0.698 m below it.
+
+    Regressions: the near clip plane sat at Isaac's default 1 stage unit, so every
+    surface within a metre was inf and the cloud was all-NaN; and the cloud was
+    stamped openarm_base while expressed in the URDF root frame, 0.698 m too high.
+    """
+    result = _steps(env, np.zeros(env.action_dim, dtype=np.float32), 10)
+    cloud = result.observation["depth_points"]["head_zed"]
+    assert cloud.shape[0] > 1000
+    assert np.isfinite(cloud).all()
+    assert float(np.min(cloud[:, 2])) == pytest.approx(-0.698, abs=0.02)
+    assert float(np.median(cloud[:, 0])) > 0.0  # it looks forward, at the pallet
+
+
 def test_each_jaw_opens_into_its_own_manifest_range(env: Any) -> None:
     action = np.zeros(env.action_dim, dtype=np.float32)
     action[_LEFT_GRIPPER], action[_RIGHT_GRIPPER] = 0.7854, -0.7854  # each jaw's open end

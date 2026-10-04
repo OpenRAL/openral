@@ -389,3 +389,33 @@ def test_compose_planar_odom_moves_in_the_spawn_heading(_manifest_scene_mod: obj
 def test_compose_planar_keeps_the_spawn_height(_manifest_scene_mod: object) -> None:
     compose_planar = _manifest_scene_mod.compose_planar  # type: ignore[attr-defined]
     assert compose_planar((0.0, 0.0, 1.2, 0.0), [0.4, 0.0, 0.0])[2] == pytest.approx(1.2)
+
+
+def test_points_in_frame_drops_misses_and_expresses_in_the_frame(
+    _manifest_scene_mod: object,
+) -> None:
+    """Depth pixels that hit nothing deproject to inf/NaN; they must not reach octomap.
+    Kept points land in the frame given by its world pose (yaw + offset)."""
+    mod = _manifest_scene_mod
+    pose = np.eye(4)
+    pose[:3, :3] = [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]  # yaw 90 deg
+    pose[:3, 3] = (1.0, 2.0, 0.7)
+    pts = np.array([[1.0, 3.0, 0.0], [np.inf, 0.0, 0.0], [np.nan, 1.0, 1.0]], dtype=np.float32)
+    out = mod.points_in_frame(pts, pose)  # type: ignore[attr-defined]
+    assert out == pytest.approx(np.array([[1.0, 0.0, -0.7]]))
+
+
+def test_look_at_aims_the_camera_x_axis(_manifest_scene_mod: object) -> None:
+    mod = _manifest_scene_mod
+    rot = mod.look_at_matrix(np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0]))  # type: ignore[attr-defined]
+    assert rot[:, 0] == pytest.approx(np.array([1.0, 0.0, -1.0]) / np.sqrt(2.0))
+    assert rot[:, 1] == pytest.approx([0.0, 1.0, 0.0])
+    assert np.linalg.det(rot) == pytest.approx(1.0)
+
+
+def test_camera_fov_comes_from_the_mount_else_the_manifest(_manifest_scene_mod: object) -> None:
+    mod = _manifest_scene_mod
+    k = {"width": 640, "fx": 320.0}
+    assert mod.camera_hfov_deg({"intrinsics": k}) == pytest.approx(90.0)  # type: ignore[attr-defined]
+    assert mod.camera_hfov_deg({"mount": {"hfov_deg": 70.0}, "intrinsics": k}) == 70.0  # type: ignore[attr-defined]
+    assert mod.camera_hfov_deg({}) is None  # type: ignore[attr-defined]
