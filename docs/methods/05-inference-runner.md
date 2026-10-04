@@ -86,19 +86,19 @@ _``OpenCVThreadSensorReader`` — default backend. Mirrors lerobot's per-camera-
 ### `python/runner/src/openral_runner/backends/ros2_image.py`
 _``Ros2ImageSensorReader`` — backend for a stream a device only publishes over ROS rather than emits over USB directly (e.g. ZED SDK depth, RealSense aligned depth). Subscribes rather than opening a device._
 
-- module constant `_DIRECT_ENCODINGS` (L57) — Maps supported `sensor_msgs/Image` encodings to `(FrameEncoding, dtype, channels)`; anything unlisted is refused by name, not misread as pixels.
-- module constant `_ALPHA_ENCODINGS: Final[dict[str, str]] = {"bgra8": "bgr8", "rgba8": "rgb8"}` (L76) — alpha-channel encodings accepted by dropping the alpha byte to their `_DIRECT_ENCODINGS` base.
-- module constant `_FLOAT_DEPTH_ENCODINGS = {"32FC1"}` (L81) — float metre depth (what the ZED SDK publishes), converted on the way in.
-- module constant `_DEPTH16_MAX_MM = 65535` (L85) — the uint16-millimetre ceiling of `FrameEncoding.DEPTH16`.
-- `_depth32f_to_depth16(metres) -> NDArray[uint16]` (L88) — Converts float32 metres to uint16 millimetres, the format every downstream consumer expects. Non-finite or out-of-range samples become 0 (ROS's "no reading") rather than wrapping to a confident, wrong, near distance.
-- `class Ros2ImageSensorReader` (L118) — Subscribes to a driver topic, keeps the newest message in a one-slot buffer, serves it through the same non-blocking `read_latest` staleness contract as every other backend. Owns no device.
-  - `__init__(*, sensor_id, topic, default_max_age_ms=100, reliability="best_effort", qos_depth=5, node=None)` (L146) — Config only; rejects empty `topic` or unknown `reliability`. Defaults to `BEST_EFFORT`/`VOLATILE`/`KEEP_LAST=5` because a `RELIABLE` subscriber receives nothing from a `BEST_EFFORT` publisher — a mismatch that looks exactly like a dead camera.
-  - `open() -> None` (L189) — Creates the subscription and, if it owns the node, spins an executor thread. Idempotent; sets `is_open` last so a failure mid-setup is still cleaned up.
-  - `close() -> None` (L252) — Destroys the subscription; calls `rclpy.shutdown()` only if this reader initialised it. Idempotent, guarding per-resource rather than on `is_open`.
-  - `read_latest(max_age_ms=None) -> SensorFrame` (L301) — Lock-protected snapshot; `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on a closed reader. Frames carry inlined `data`, not a `topic` reference.
-  - `_on_image(msg) -> None` (L343) — Subscription callback; conversion failures are counted and logged, never raised, since an exception here would kill the spin loop and silently stop the camera.
-- `_rows(raw, dtype, msg, height, width, channels) -> NDArray` (L445) — Unpacks an `Image` payload honouring `msg.step` (row stride), needed when a publisher hands out pitch-aligned buffers (e.g. Isaac/NITROS) or a cropped ROI. An implausible `step` falls back to the packed stride, so a wrong value fails loud rather than yielding a skewed image.
-- `_byte_order(msg) -> str` (L486) — Honours `Image.is_bigendian`; a 16-bit depth image from a big-endian publisher read little-endian is byte-swapped garbage.
+- module constant `_DIRECT_ENCODINGS` (L58) — Maps supported `sensor_msgs/Image` encodings to `(FrameEncoding, dtype, channels)`; anything unlisted is refused by name, not misread as pixels.
+- module constant `_ALPHA_ENCODINGS: Final[dict[str, str]] = {"bgra8": "bgr8", "rgba8": "rgb8"}` (L77) — alpha-channel encodings accepted by dropping the alpha byte to their `_DIRECT_ENCODINGS` base.
+- module constant `_FLOAT_DEPTH_ENCODINGS = {"32FC1"}` (L82) — float metre depth (what the ZED SDK publishes), converted on the way in.
+- module constant `_DEPTH16_MAX_MM = 65535` (L86) — the uint16-millimetre ceiling of `FrameEncoding.DEPTH16`.
+- `_depth32f_to_depth16(metres) -> NDArray[uint16]` (L89) — Converts float32 metres to uint16 millimetres, the format every downstream consumer expects. Non-finite or out-of-range samples become 0 (ROS's "no reading") rather than wrapping to a confident, wrong, near distance.
+- `class Ros2ImageSensorReader` (L119) — Subscribes to a driver topic, keeps the newest message in a one-slot buffer, serves it through the same non-blocking `read_latest` staleness contract as every other backend. Owns no device.
+  - `__init__(*, sensor_id, topic, default_max_age_ms=100, reliability="best_effort", qos_depth=5, node=None)` (L147) — Config only; rejects empty `topic` or unknown `reliability`. Defaults to `BEST_EFFORT`/`VOLATILE`/`KEEP_LAST=5` because a `RELIABLE` subscriber receives nothing from a `BEST_EFFORT` publisher — a mismatch that looks exactly like a dead camera.
+  - `open() -> None` (L190) — Creates the subscription and, if it owns the node, spins an executor thread. Idempotent; sets `is_open` last so a failure mid-setup is still cleaned up.
+  - `close() -> None` (L254) — Destroys the subscription; calls `rclpy.shutdown()` only if this reader initialised it. Idempotent, guarding per-resource rather than on `is_open`.
+  - `read_latest(max_age_ms=None) -> SensorFrame` (L303) — Lock-protected snapshot; `ROSPerceptionStale` on no-frame-yet or staleness, `RuntimeError` on a closed reader. Frames carry inlined `data`, not a `topic` reference.
+  - `_on_image(msg) -> None` (L345) — Subscription callback; conversion failures are counted and logged, never raised, since an exception here would kill the spin loop and silently stop the camera.
+- `_rows(raw, dtype, msg, height, width, channels) -> NDArray` (L447) — Unpacks an `Image` payload honouring `msg.step` (row stride), needed when a publisher hands out pitch-aligned buffers (e.g. Isaac/NITROS) or a cropped ROI. An implausible `step` falls back to the packed stride, so a wrong value fails loud rather than yielding a skewed image.
+- `_byte_order(msg) -> str` (L488) — Honours `Image.is_bigendian`; a 16-bit depth image from a big-endian publisher read little-endian is byte-swapped garbage.
 
 ### `python/runner/src/openral_runner/backends/galaxea_a1_camera_bridge.py`
 _Real-deploy reader for the public A1 Runtime paired-frame bridge. It never

@@ -43,6 +43,7 @@ import numpy as np
 import structlog
 from openral_core import FrameEncoding, SensorFrame
 from openral_core.exceptions import ROSConfigError, ROSPerceptionStale
+from openral_observability.rclpy_spin import spin_executor_until_shutdown
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -234,7 +235,8 @@ class Ros2ImageSensorReader:
             self._executor = SingleThreadedExecutor()
             self._executor.add_node(self._node)
             self._spin_thread = threading.Thread(
-                target=self._executor.spin,
+                target=spin_executor_until_shutdown,
+                args=(self._executor,),
                 name=f"ros2-image-{self.sensor_id}",
                 daemon=True,
             )
