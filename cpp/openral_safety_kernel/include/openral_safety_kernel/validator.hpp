@@ -42,6 +42,8 @@ enum class ControllerSubKind : std::uint8_t {
   kNdofMismatch = 3,
   kEnvelopeUnconfigured = 4,
   kInvalidScale = 5,
+  /// A GRIPPER_* chunk names no end effector the envelope bounds.
+  kGripperUnresolved = 6,
 };
 
 /// Fixed-size violation record — NO heap allocation. Returned by value
@@ -83,6 +85,9 @@ struct ChunkView {
   std::size_t flat_size{0};
   const double* cartesian_delta_scale{nullptr};
   std::size_t cartesian_delta_scale_size{0};
+  /// ``ActionChunk.ee_name`` (not NUL-terminated); empty = unnamed.
+  const char* ee_name{nullptr};
+  std::size_t ee_name_size{0};
 };
 
 /// Control-mode constants mirroring ``openral_core.ControlMode``

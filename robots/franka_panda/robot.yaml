@@ -140,6 +140,7 @@ joints:
 
 end_effectors:
   - name: "panda_hand"
+    command_convention: "normalized_open_unit"
     kind: "parallel_gripper"
     hand: "na"
     n_dof: 1

@@ -535,7 +535,15 @@ def provision_isaac_sim() -> None:
     _sidecar_python()
 
 
-@SCENES.register(_ISAAC_SCENE_ID, fixed_robot=None, provision=provision_isaac_sim, sim_clock=True)
+# tools/isaac_manifest_scene.py opens on > 0 and closes on < 0 (0 holds), so a
+# [0, 1] skill could never close it: only the symmetric open-positive encoding.
+@SCENES.register(
+    _ISAAC_SCENE_ID,
+    fixed_robot=None,
+    provision=provision_isaac_sim,
+    sim_clock=True,
+    gripper_convention="normalized_open_symmetric",
+)
 def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     """Build an Isaac Lab scene behind the out-of-process sidecar.
 

@@ -299,7 +299,7 @@ for a 7-DoF arm. The required top-level blocks are:
 |---|---|
 | `name`, `embodiment_kind`, `base_frame` | Identity + URDF root frame |
 | `joints[]` | Per-joint: name, type, parent/child links, axis, limits, actuator |
-| `end_effectors[]` | Gripper(s) / hand(s); kind, DoF, force/payload limits |
+| `end_effectors[]` | Gripper(s) / hand(s); kind, DoF, force/payload limits; `command_convention` (+ `command_range` for radians / metres) — the gripper value this end effector's HAL consumes, which the safety kernel bounds and skills must match |
 | `sensors[]` | Cameras / IMUs / etc.; each maps to a `vla_feature_key` |
 | `capabilities` | Control modes, embodiment tags, lift / dexterity flags |
 | `safety` | Workspace box, speed/force/torque limits, deadman flag |
@@ -385,7 +385,7 @@ stays green.
 | `franka_panda` | single-arm + parallel gripper (`read_mode: sum_over_scale`) |
 | `ur5e`, `ur10e`, `rizon4` | single-arm, no gripper, no overrides |
 | `g1`, `h1` | floating-base humanoid (`floating_base: true`) |
-| `aloha_bimanual` | bimanual + two passthrough grippers with `mirror_actuator_index` + `keyframe_index: 0` |
+| `aloha_bimanual` | bimanual + two normalized `[0, 1]` grippers (`NORMALISED` write / `AFFINE_LOW_HIGH` read over the finger range) with `mirror_actuator_index` + `keyframe_index: 0` |
 | `openarm` | bimanual + two passthrough grippers + explicit `joint_qpos_addr` skipping passive follower fingers + `seed_ctrl_from_qpos: true` |
 
 ### Drop a new robot in
@@ -547,6 +547,13 @@ class MySceneOptions(BaseModel):
 def _build(env_cfg: "SimEnvironment") -> _MyScene:
     return _MyScene(scene=env_cfg.scene, task=env_cfg.task)
 ```
+
+**Declare the gripper encoding your environment consumes.** A gripper value
+reaches the environment unconverted, so pass `gripper_convention=` to
+`@SCENES.register` (e.g. `"normalized_close_symmetric"` for a robosuite env,
+where -1 opens and +1 closes). It replaces the robot end effectors' own encoding
+in this scene: the safety kernel bounds gripper chunks by its range, and
+`openral sim run` / the deploy runner refuse a skill that emits another one.
 
 **Declare your options model at registration.** `SceneSpec.backend_options`
 is an opaque dict in `openral_core`; the backend owns its schema. Pass

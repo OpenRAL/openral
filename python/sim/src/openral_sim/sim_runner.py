@@ -1112,7 +1112,14 @@ def _check_rskill_compatibility(
             synced_sensors.append(sensor)
     robot = robot.model_copy(update={"sensors": synced_sensors})
 
-    rSkill.check_compatibility(manifest, robot)
+    from openral_sim.registry import SCENES
+
+    scene_convention = SCENES.meta(str(env_cfg.scene.id)).get("gripper_convention")
+    rSkill.check_compatibility(
+        manifest,
+        robot,
+        scene_gripper_convention=str(scene_convention) if scene_convention else None,
+    )
     _check_policy_units_owned(manifest, robot, str(env_cfg.scene.id), env_cfg.scene.backend_options)
     _log.info(
         "rskill_compat_ok",

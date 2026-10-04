@@ -1273,3 +1273,35 @@ def test_vla_style_skill_stays_resident_across_goal_params() -> None:
 
     assert second is first
     assert len(built) == 1
+
+
+def test_runner_refuses_a_skill_whose_gripper_encoding_does_not_fit_the_robot() -> None:
+    """The runner runs ``rSkill.check_gripper_conventions`` when it resolves a skill.
+
+    The harness robot is the SO-100 (gripper ``normalized_open_unit``, end
+    effector ``gripper``); the RoboCasa skill sends ``normalized_close_symmetric``
+    to ``panda_gripper``, so resolving it must fail before any chunk is sent.
+    """
+    from openral_core import RSkillManifest
+    from openral_core.exceptions import ROSCapabilityMismatch
+
+    manifest = RSkillManifest.from_yaml(
+        str(Path(__file__).resolve().parents[3] / "rskills" / "xr1-robocasa365" / "rskill.yaml")
+    )
+
+    def _resolver(**_k: Any) -> Any:
+        skill = _make_constant_skill()
+        skill.manifest = manifest
+        return skill
+
+    with (
+        _compose_harness(resolver=_resolver) as (_executor, runtime, _safety, _observed),
+        pytest.raises(ROSCapabilityMismatch, match="panda_gripper"),
+    ):
+        runtime.skill_runner_node._acquire_skill(
+            rskill_id=manifest.name,
+            revision="",
+            prompt="go",
+            prompt_metadata_json="",
+            goal_params_json="",
+        )

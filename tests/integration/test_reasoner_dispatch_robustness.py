@@ -434,9 +434,14 @@ def _reasoner_with_failure_sub(server_wait_s: float) -> tuple[Any, Any, list[Any
     return reasoner, sub_node, failures
 
 
-def _isolate_domain(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A per-process ROS domain, so a host's own runner cannot answer these tests."""
-    monkeypatch.setenv("ROS_DOMAIN_ID", str(150 + os.getpid() % 50))
+def _isolate_domain(monkeypatch: pytest.MonkeyPatch, slot: int) -> None:
+    """A ROS domain of this process and test, so no other runner can answer.
+
+    Per test, not just per process: a server from the previous test can stay
+    in the DDS discovery cache past ``rclpy.shutdown()`` and satisfy the
+    reasoner's readiness probe.
+    """
+    monkeypatch.setenv("ROS_DOMAIN_ID", str(150 + (os.getpid() % 40) * 2 + slot))
 
 
 def test_dispatch_waits_for_a_runner_that_comes_up_late(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -451,7 +456,7 @@ def test_dispatch_waits_for_a_runner_that_comes_up_late(monkeypatch: pytest.Monk
 
     from tests.integration.fakes.action_servers import execute_rskill_server
 
-    _isolate_domain(monkeypatch)
+    _isolate_domain(monkeypatch, 0)
     rclpy.init()
     server = None
     try:
@@ -485,7 +490,7 @@ def test_dispatch_fails_when_the_runner_never_comes_up(monkeypatch: pytest.Monke
     pytest.importorskip("openral_msgs.msg")
     from openral_core import ExecuteRskillTool
 
-    _isolate_domain(monkeypatch)
+    _isolate_domain(monkeypatch, 1)
     rclpy.init()
     try:
         reasoner, sub_node, failures = _reasoner_with_failure_sub(server_wait_s=1.0)

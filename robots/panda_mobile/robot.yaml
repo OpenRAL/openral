@@ -244,6 +244,7 @@ joints:
 
 end_effectors:
   - name: "panda_gripper"
+    command_convention: "normalized_close_symmetric"
     kind: "parallel_gripper"
     parent_link: "panda_link7"
     actuated: true

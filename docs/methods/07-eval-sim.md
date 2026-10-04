@@ -40,22 +40,22 @@ _Registries that map ID strings to backend factories._
   - `__init__(kind)` (L55)
   - `kind -> str` [@property] (L64)
   - `register(name, *, fixed_robot=None, provision=None, options_model=None, **meta) -> Callable[[Callable[..., T]], Callable[..., T]]` — Decorator. Ids are `/`-namespaced: a family registers its prefix once (`robocasa`, `robocasa/gr1`) and every `<prefix>/<task>` id resolves to it (longest prefix wins), so a task is YAML, not a registration. `fixed_robot: str | frozenset[str] | None` (SCENES-only) declares the robot id(s) the backend can instantiate, enforced by `resolve_robot`. SCENES `meta` flags: `sequential_init=True` (env/policy build must not run in parallel — `SimRunner`), `sim_clock=True` (rollout reports `sim_time_ns`, so `deploy sim` uses the simulation clock origin), `base_pose=True` (the scene honours `SimEnvironment.base_pose`; `sim run` rejects a `base_pose:` elsewhere), `converts_policy_units=True` (the backend owns the degrees / gripper-scale / joint-order conversion from `backend_options`; `sim run` rejects a non-identity `PolicyIOCodec` elsewhere). `provision` (SCENES-only) is the scene's slow first-run setup, run ahead of the HAL's 300s `on_configure`; must be idempotent. `options_model: type[BaseModel] | None` (SCENES-only) is the backend-owned Pydantic model for `SceneSpec.backend_options` (core keeps the field an opaque dict), run by `validate_options`. `**meta` stores static per-entry facts read back via `meta`; on `POLICIES` every family declares `install_groups` + `required_imports` (optional `install_note`), the single source `policy_deps` reads. (L67)
-  - `validate_options(name, raw) -> BaseModel | None` — Validate a scene's `backend_options` against the backend's declared `options_model` (prefix-resolved, so `robocasa/<Task>` inherits `robocasa`'s). `None` when the backend declares no model or the id is unregistered; `ROSConfigError` naming the scene id and field on failure. Called by `make_env`, `openral sim run`, `openral benchmark scene`, `openral deploy validate`, `tools/audit_sim_configs.py`, and each declaring backend's own factory. (L222)
-  - `meta(name) -> dict[str, object]` — Static facts registered with `name` (prefix-resolved; `{}` for an unknown id, like `fixed_robot`). (L258)
-  - `get(name) -> Callable[..., T]` — Look up by ID (prefix-resolved); `ROSConfigError` listing the registered ids when nothing matches. (L267)
-  - `_key(name) -> str | None` — Exact id, else the longest registered `/`-prefix, else `None`. Every lookup routes through it. (L142)
-  - `allowed_robots(name) -> frozenset[str] | None` — Robot ids the scene can instantiate (`None` for free-axis scenes or unregistered names). (L154)
-  - `fixed_robot(name) -> str | None` — The scene's default robot (`sorted(allowed_robots)[0]`), `None` if free-axis. (L163)
-  - `resolve_robot(name, requested) -> str` — THE robot-binding rule used by `sim run`, `benchmark`, `deploy sim` and the sim HAL: fixed scene → `requested` must be allowed (else `ROSConfigError`), `None` → default; free-axis → `requested` required. (L172)
-  - `provision(name) -> Callable[[], None] | None` — Scene's pre-launch provisioner (`None` for backends with nothing to fetch **and** for unregistered names — a preflight is advisory, so unlike `get` this does not raise on an unknown id). (L210)
-  - `names() -> list[str]` — Sorted IDs. (L282)
-  - `__contains__(name) -> bool` — prefix-resolved, like `get`. (L286)
+  - `validate_options(name, raw) -> BaseModel | None` — Validate a scene's `backend_options` against the backend's declared `options_model` (prefix-resolved, so `robocasa/<Task>` inherits `robocasa`'s). `None` when the backend declares no model or the id is unregistered; `ROSConfigError` naming the scene id and field on failure. Called by `make_env`, `openral sim run`, `openral benchmark scene`, `openral deploy validate`, `tools/audit_sim_configs.py`, and each declaring backend's own factory. (L225)
+  - `meta(name) -> dict[str, object]` — Static facts registered with `name` (prefix-resolved; `{}` for an unknown id, like `fixed_robot`). (L261)
+  - `get(name) -> Callable[..., T]` — Look up by ID (prefix-resolved); `ROSConfigError` listing the registered ids when nothing matches. (L270)
+  - `_key(name) -> str | None` — Exact id, else the longest registered `/`-prefix, else `None`. Every lookup routes through it. (L145)
+  - `allowed_robots(name) -> frozenset[str] | None` — Robot ids the scene can instantiate (`None` for free-axis scenes or unregistered names). (L157)
+  - `fixed_robot(name) -> str | None` — The scene's default robot (`sorted(allowed_robots)[0]`), `None` if free-axis. (L166)
+  - `resolve_robot(name, requested) -> str` — THE robot-binding rule used by `sim run`, `benchmark`, `deploy sim` and the sim HAL: fixed scene → `requested` must be allowed (else `ROSConfigError`), `None` → default; free-axis → `requested` required. (L175)
+  - `provision(name) -> Callable[[], None] | None` — Scene's pre-launch provisioner (`None` for backends with nothing to fetch **and** for unregistered names — a preflight is advisory, so unlike `get` this does not raise on an unknown id). (L213)
+  - `names() -> list[str]` — Sorted IDs. (L285)
+  - `__contains__(name) -> bool` — prefix-resolved, like `get`. (L289)
 - module-level globals: `SCENES`, `POLICIES`, `ROBOTS` — three `_Registry[T]` singletons.
 - `const T = TypeVar('T')` (L40)
 - `const F = TypeVar('F', bound=Callable[..., object])` (L41)
-- `const SCENES: _Registry[SimRollout] = _Registry('scene')` (L294)
-- `const POLICIES: _Registry[PolicyAdapter] = _Registry('policy')` (L295)
-- `const ROBOTS: _Registry[RobotDescription] = _Registry('robot')` (L296)
+- `const SCENES: _Registry[SimRollout] = _Registry('scene')` (L297)
+- `const POLICIES: _Registry[PolicyAdapter] = _Registry('policy')` (L298)
+- `const ROBOTS: _Registry[RobotDescription] = _Registry('robot')` (L299)
 
 ### `python/sim/src/openral_sim/factory.py`
 - `make_env(env_cfg) -> SimRollout` — Build the simulated environment; runs `SCENES.validate_options` on `scene.backend_options` before dispatch. (L25)
@@ -78,13 +78,13 @@ _Per-step `InferenceRunner` for the simulation runtime._
 - `class _EpisodeBuffer` — Private dataclass accumulating per-step latencies / frames / rewards inside one episode; reset on each boundary. (L265)
 - `_check_rskill_compatibility(env_cfg) -> RSkillManifest | None` — Load the rSkill manifest, run `rSkill.check_compatibility` against the registered `RobotDescription`, return the manifest or `None` for built-in mock policies. Strict-by-construction; also runs `_check_policy_units_owned`. (L1029)
 - `_check_policy_units_owned(manifest, robot, scene_id) -> None` — `ROSConfigError` when `PolicyIOCodec.from_manifest(manifest, robot)` is non-identity (degrees / `gripper_scale` / joint permutation) and `SCENES.meta(scene_id)["converts_policy_units"]` is not `True` — `sim run` applies no codec, so only a converting scene (`so101_box`, `tabletop_push`, `openarm_tabletop_pnp`) may take such a checkpoint. Fail-loud guard, never a conversion. (L943)
-- `_SEQUENTIAL_INIT_ENV: str = "OPENRAL_SIM_SEQUENTIAL_INIT"` — Module-level constant: the env var that forces `_build_env_and_policy` onto the legacy sequential path (set to `"1"`). (L1129)
+- `_SEQUENTIAL_INIT_ENV: str = "OPENRAL_SIM_SEQUENTIAL_INIT"` — Module-level constant: the env var that forces `_build_env_and_policy` onto the legacy sequential path (set to `"1"`). (L1136)
 - `_policy_scene_cameras(scene_cameras, description, manifest) -> (list[str], dict[str, str])` — Camera keys the policy is built on plus the obs rekey (scene name → VLA slot): scene cameras that are all robot RGB sensor names become their slots; an empty `scene.cameras` becomes `required_vla_camera_slots`; anything else is unchanged. Makes slot-keyed `image_preprocessing.aliases` mean the same under `sim run` as on deploy. (L209)
 - `_rekey_obs_images(obs, rekey) -> Observation` — Returns `obs` with `images` rekeyed scene-name → slot (renamed keys win over an env's own slot alias); applied after every `env.reset`/`env.step`. (L243)
-- `_build_env_and_policy(env_cfg, policy_cfg=None) -> (SimRollout, PolicyAdapter)` — `make_env` sees `env_cfg`, `make_policy` sees `policy_cfg` (slot-keyed scene cameras) when given. Builds env + policy concurrently on a 2-worker `ThreadPoolExecutor` by default; sequential when `OPENRAL_SIM_SEQUENTIAL_INIT=1`. Logs `sim_init_parallel`/`sim_init_sequential` timing. Exceptions from either side propagate verbatim. (L1179)
-- `_seed_global_rngs(seed) -> None` — Seed Python / NumPy / Torch RNGs so stochastic policies reproduce per `(seed + episode_idx)`. (L1272)
-- `_open_viewer_and_pacing(env, env_cfg, *, strict_view) -> (Any, float | None)` — Opens a passive `mujoco.viewer` against the adapter's `mujoco_handles()`, sets the camera + geom visibility via `_aim_viewer_camera`, and computes the per-step sleep budget so the viewer renders at the env's natural sim-time. (L1321)
-- `_aim_viewer_camera(viewer, env, mj_model, mj_data) -> None` — Sets the viewer's opening free-camera pose + geom visibility (hides collision shells so textures render); the user can still orbit/zoom afterward. Best effort — failure logs and leaves MuJoCo's default camera. (L1383)
+- `_build_env_and_policy(env_cfg, policy_cfg=None) -> (SimRollout, PolicyAdapter)` — `make_env` sees `env_cfg`, `make_policy` sees `policy_cfg` (slot-keyed scene cameras) when given. Builds env + policy concurrently on a 2-worker `ThreadPoolExecutor` by default; sequential when `OPENRAL_SIM_SEQUENTIAL_INIT=1`. Logs `sim_init_parallel`/`sim_init_sequential` timing. Exceptions from either side propagate verbatim. (L1186)
+- `_seed_global_rngs(seed) -> None` — Seed Python / NumPy / Torch RNGs so stochastic policies reproduce per `(seed + episode_idx)`. (L1279)
+- `_open_viewer_and_pacing(env, env_cfg, *, strict_view) -> (Any, float | None)` — Opens a passive `mujoco.viewer` against the adapter's `mujoco_handles()`, sets the camera + geom visibility via `_aim_viewer_camera`, and computes the per-step sleep budget so the viewer renders at the env's natural sim-time. (L1328)
+- `_aim_viewer_camera(viewer, env, mj_model, mj_data) -> None` — Sets the viewer's opening free-camera pose + geom visibility (hides collision shells so textures render); the user can still orbit/zoom afterward. Best effort — failure logs and leaves MuJoCo's default camera. (L1390)
 - `SimRunner.episode_start(task_string) -> int` — No-op on `SimRunner`: sim derives episode boundaries from env signals, not this `InferenceRunner` hook. (L566)
 - `SimRunner.episode_end(*, success) -> None` — No-op on `SimRunner`: sim closes episodes inside `_finalize_episode`. (L575)
 - `const _VIDEO_FRAMES_INFO_KEY = '_openral_video_frames'` (L60)
@@ -95,8 +95,8 @@ _Per-step `InferenceRunner` for the simulation runtime._
 - `const _RGBA_CHANNELS = 4` (L69)
 - `const _MOCK_POLICY_IDS = frozenset({'zero', 'random'})` (L939)
 - `const _MOCK_PLACEHOLDER_URI = 'placeholder'` (L940)
-- `const _VIEW_ENV = 'OPENRAL_SIM_VIEW'` (L1137)
-- `_scene_requires_sequential_init(env_cfg) -> bool` — `SCENES.meta(scene_id)["sequential_init"]`: scenes whose backend construction races the policy build on parallel threads (`openarm_tabletop_pnp`, `tabletop_push`, `maniskill3`, `simpler_env`, `robocasa*`). (L1172)
+- `const _VIEW_ENV = 'OPENRAL_SIM_VIEW'` (L1144)
+- `_scene_requires_sequential_init(env_cfg) -> bool` — `SCENES.meta(scene_id)["sequential_init"]`: scenes whose backend construction races the policy build on parallel threads (`openarm_tabletop_pnp`, `tabletop_push`, `maniskill3`, `simpler_env`, `robocasa*`). (L1179)
 
 ### `python/sim/src/openral_sim/benchmark.py`
 _Benchmark runner — loops a bare `list[BenchmarkScene]` (loaded via `load_benchmark_suite` + `raise_on_invalid_suite`) and emits a `RSkillEvalResult`._
@@ -265,7 +265,7 @@ _**Probe tiers.** The default probe resolves only each import's top-level packag
 _MetaWorld MT-50 scene adapter. Opt-in via the `metaworld` dependency group + a `metaworld==3.0.0 --no-deps` pip install (its transitive deps conflict with the workspace lock). Scene id `metaworld`; task id `metaworld/<task-name>` (e.g. `metaworld/reach-v3`)._
 - `class _MetaworldSim` — `SimRollout` wrapping `MetaworldEnv`. (L46) — `reset/step/render/close/mujoco_handles/sim_time_ns/_wrap_obs`. `mujoco_handles()` reaches through `unwrapped.{model,data}` for `sim run --view`; `sim_time_ns()` returns `round(MjData.time * 1e9)`.
 - `_parse_task_id(task_id) -> str` (L36)
-- `_build_metaworld_scene(env_cfg) -> _MetaworldSim` (L133)
+- `_build_metaworld_scene(env_cfg) -> _MetaworldSim` (L139)
 - `const _METAWORLD_SCENE_ID = 'metaworld'` (L32)
 - `const _METAWORLD_RENDER_SIZE = 480` (L33)
 
@@ -281,8 +281,8 @@ _ManiSkill3 (SAPIEN-backed) free-axis scene adapter. Opt-in via the `maniskill3`
 - `_unbatch(value)`, `_unbatch_info(info)`, `_unbatch_obs(obs)` — recursive numpy / torch unbatch helpers shared with the SimplerEnv adapter. (L106 / L114 / L130)
 - `_extract_rgb(flat)` — Returns the first MS3 `sensor_data.<camera>.rgb` stream as `NDArray[uint8]`. (L360)
 - `_extract_state(flat)` — Concatenates `agent.qpos` + `agent.qvel` into a 1-D float32 vector (returns 0-D when the obs mode doesn't expose the nested `agent` block). (L403)
-- `_build_maniskill3_scene(env_cfg) -> _ManiSkill3Sim` — `gym.make` with `obs_mode` / `control_mode` overridable via `scene.backend_options`; default `state_dict+rgb` + `pd_ee_delta_pose`. (L426)
-- Module side effect: `SCENES.register("maniskill3", fixed_robot="franka_panda", sequential_init=True, sim_clock=True)(_build_maniskill3_scene)` at import (L426).
+- `_build_maniskill3_scene(env_cfg) -> _ManiSkill3Sim` — `gym.make` with `obs_mode` / `control_mode` overridable via `scene.backend_options`; default `state_dict+rgb` + `pd_ee_delta_pose`. (L428)
+- Module side effect: `SCENES.register("maniskill3", fixed_robot="franka_panda", sequential_init=True, sim_clock=True)(_build_maniskill3_scene)` at import (L428).
 - `const _VIEW_ENV = 'OPENRAL_SIM_VIEW'` (L47)
 - `const _DEPLOY_NOOP_SUFFIX = '/_hal_deploy_noop'` (L41)
 - `const _UNSUPPORTED_ROBOT_WARNING = "not in the task's list of supported robots"` — The false MS3 log-record text `_suppress_unsupported_robot_warning` filters. (L124)
@@ -296,8 +296,8 @@ _SimplerEnv real-to-sim correlator adapter. Opt-in via the `simpler-env` depende
 - `_task_name_for_env(env_cfg) -> str` — Resolves the concrete SimplerEnv friendly/raw task name. Normal sim tasks parse `simpler_env/<friendly_name>`; deploy-sim's synthetic `_hal_deploy_noop` task maps to `scene.backend_options.deploy_task_id` or `widowx_carrot_on_plate`.
 - `_bump_version_if_deprecated(env_id) -> str` — Rounds an upstream `-v0` env id up to the highest registered `-v*` suffix; upstream `simpler_env.ENVIRONMENT_MAP` still ships `-v0` but MS3 v3.0.x registers `-v1`. (L111)
 - `_resolve_friendly_name(task_name) -> tuple[str, dict[str, Any]]` — Translates a SimplerEnv friendly task name into `(ms3_env_id, kwargs)`. Falls back to passing the input through unchanged so users can author configs against raw MS3 env ids. (L134)
-- `_build_simpler_env_scene(env_cfg) -> _SimplerEnvSim` — Calls `gym.make` directly (bypassing the broken upstream `simpler_env.make()` which still passes `prepackaged_config=True` / `obs_mode='rgbd'` that MS3 v3.0.x rejects). (L371)
-- Module side effect: `SCENES.register("simpler_env", fixed_robot="widowx", sequential_init=True, sim_clock=True)(_build_simpler_env_scene)` at import (L371).
+- `_build_simpler_env_scene(env_cfg) -> _SimplerEnvSim` — Calls `gym.make` directly (bypassing the broken upstream `simpler_env.make()` which still passes `prepackaged_config=True` / `obs_mode='rgbd'` that MS3 v3.0.x rejects). (L373)
+- Module side effect: `SCENES.register("simpler_env", fixed_robot="widowx", sequential_init=True, sim_clock=True)(_build_simpler_env_scene)` at import (L373).
 - `const _VIEW_ENV = 'OPENRAL_SIM_VIEW'` (L68)
 - `const _DEPLOY_NOOP_SUFFIX = '/_hal_deploy_noop'` (L72)
 - `const _TCP_LINK_CANDIDATES: tuple[str, ...] = ('ee_gripper_link', 'link_ee', 'tcp')` (L155)

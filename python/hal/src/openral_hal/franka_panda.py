@@ -182,6 +182,7 @@ FRANKA_PANDA_DESCRIPTION = RobotDescription(
         EndEffectorSpec(
             name="panda_hand",
             kind="parallel_gripper",
+            command_convention="normalized_open_unit",
             hand=Hand.NA,
             n_dof=1,
             max_grip_force_n=70.0,
