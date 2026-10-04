@@ -490,7 +490,8 @@ def _discover_sim_configs() -> list[Path]:
     ``scenes/sim/`` (richer hand-authored sims), and ``scenes/deploy/``
     (digital-twin deploy fixtures). Read-only filesystem walk; safe to
     call without any sim dependencies. Sorted by relative path so the
-    listing is deterministic.
+    listing is deterministic. Operator copies under a ``local/`` directory
+    (the gitignored ``scenes/deploy/local/``) are never listed.
     """
     from openral_rskill.loader import find_repo_root_from
 
@@ -500,7 +501,9 @@ def _discover_sim_configs() -> list[Path]:
     scenes_root = repo_root / "scenes"
     if not scenes_root.is_dir():
         return []
-    return sorted(scenes_root.rglob("*.yaml"))
+    return sorted(
+        p for p in scenes_root.rglob("*.yaml") if "local" not in p.relative_to(scenes_root).parts
+    )
 
 
 @sim_app.command("list")

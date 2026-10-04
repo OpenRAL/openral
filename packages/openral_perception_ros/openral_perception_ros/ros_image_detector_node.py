@@ -44,12 +44,19 @@ Parameters:
     cameras (str[]): logical cameras as ``"id=topic"`` entries. Empty = a single
         camera ``primary_camera`` on ``image_topic``.
     primary_camera (str): id of the primary (continuously-detected) camera.
-    image_topic (str): single-camera fallback topic.
+    image_topic (str): single-camera fallback topic; default empty — ``cameras`` or this
+        must name a camera (ADR-0108), else configure raises ``ROSConfigError``.
     output_topic (str): perception topic. Default /openral/perception/objects
     sensor_id (str): sensor name stamped on the metadata. Default "front_depth"
     onnx_path (str): RT-DETR ONNX path (legacy / onnx path).
     manifest_path (str): rSkill manifest path. When set, backend is manifest-driven.
     model_id, score_threshold, input_size, labels: legacy ONNX knobs.
+    camera_infos (str[]): optional ``"id=topic"`` entries naming each camera's
+        driver ``CameraInfo``. When one has arrived, every ``ObjectsMetadata`` for that
+        camera carries its ``header.frame_id`` and ``K`` (``camera_frame_id`` /
+        ``camera_intrinsics``) so the world-state lift projects through the real camera
+        rather than the manifest's ``SensorSpec``; without one the metadata carries
+        neither and the lift falls back to the manifest (logged once, here and there).
     max_rate_hz (float): continuous publish rate cap. Default 5.0
     query (str): initial open-vocab query override (VLM only).
     query_topic (str): std_msgs/String topic to retarget the continuous VLM query.
@@ -60,7 +67,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from openral_perception_ros.camera_topics import resolve_camera_topics
+from openral_perception_ros.camera_topics import parse_camera_entries, resolve_camera_topics
 
 # Operators set this to ``debug`` to surface the continuous leg's per-publish
 # DEBUG line (and any other detector DEBUG logs), which the default INFO console
@@ -164,6 +171,54 @@ def classify_continuous_tick(
     return ("debug", f"continuous leg published {detection_count} detection(s)")
 
 
+def camera_geometry_from_info(msg: Any) -> tuple[str, Any]:
+    """``(header.frame_id, IntrinsicsPinhole)`` of a driver ``sensor_msgs/CameraInfo``.
+
+    The frame and ``K`` a detection batch from that camera is projected through: on a
+    ZED, ``zed_left_camera_frame_optical`` and fx 1498.18 — not the manifest's
+    ``SensorSpec`` for the same camera, which may be a sim stand-in.
+
+    Raises:
+        ROSConfigError: The message is uncalibrated (all-zero ``K``) or names no frame.
+
+    Example:
+        >>> # Needs sensor_msgs; exercised in tests/unit/test_object_lift_real_camera.py
+        >>> pass
+    """
+    from openral_core import ROSConfigError
+    from openral_hal.depth_cloud import intrinsics_from_camera_info
+
+    frame = str(msg.header.frame_id).strip()
+    if not frame:
+        raise ROSConfigError("CameraInfo has no header.frame_id: its K belongs to no frame")
+    return frame, intrinsics_from_camera_info(msg)
+
+
+def stamp_camera_geometry(md: Any, geometry: tuple[str, Any] | None) -> Any:
+    """``md`` (an ``ObjectsMetadata``) carrying ``geometry``'s frame + K, or as-is when ``None``.
+
+    Example:
+        >>> from openral_core import IntrinsicsPinhole, ObjectsMetadata
+        >>> md = ObjectsMetadata(
+        ...     sensor_id="top", detections=[], model_id="m", frame_width=640, frame_height=360
+        ... )
+        >>> k = IntrinsicsPinhole(
+        ...     width=1920, height=1080, fx=1498.18, fy=1498.18, cx=936.11, cy=541.81
+        ... )
+        >>> stamp_camera_geometry(md, ("zed_left_camera_frame_optical", k)).camera_frame_id
+        'zed_left_camera_frame_optical'
+        >>> stamp_camera_geometry(md, None).camera_intrinsics is None
+        True
+    """
+    if geometry is None:
+        return md
+    frame, k = geometry
+    # Re-validate rather than model_copy, so the frame/K pair contract is enforced.
+    return type(md).model_validate(
+        {**md.model_dump(), "camera_frame_id": frame, "camera_intrinsics": k}
+    )
+
+
 def main(args: Any = None) -> None:
     """Entry point: init ROS, spin the detector node, shut down cleanly."""
     import rclpy
@@ -176,7 +231,7 @@ def main(args: Any = None) -> None:
         QoSProfile,
         QoSReliabilityPolicy,
     )
-    from sensor_msgs.msg import Image
+    from sensor_msgs.msg import CameraInfo, Image
     from std_msgs.msg import String
 
     from openral_perception_ros.image_convert import ImageConvertError, image_to_bgr_bytes
@@ -195,8 +250,9 @@ def main(args: Any = None) -> None:
         def __init__(self) -> None:
             super().__init__("openral_ros_image_detector")
             self.declare_parameter("cameras", [""])
+            self.declare_parameter("camera_infos", [""])
             self.declare_parameter("primary_camera", "default")
-            self.declare_parameter("image_topic", "/openral/cameras/agentview_left/image")
+            self.declare_parameter("image_topic", "")
             self.declare_parameter("output_topic", "/openral/perception/objects")
             self.declare_parameter("sensor_id", "front_depth")
             self.declare_parameter("onnx_path", "")
@@ -228,6 +284,9 @@ def main(args: Any = None) -> None:
             # and de-duplicate objects without the 3D lift. Built in on_configure.
             self._tracker: Any = None
             self._cameras: dict[str, str] = {}
+            self._info_topics: dict[str, str] = {}
+            # Latest driver CameraInfo per camera id, as (frame_id, IntrinsicsPinhole).
+            self._camera_geometry: dict[str, tuple[str, Any]] = {}
             self._primary_id = ""
             self._sensor_id = ""
             self._min_period_ns = int(1e9 / 5.0)
@@ -250,6 +309,17 @@ def main(args: Any = None) -> None:
             )
             self._cameras = self._resolve_cameras()
             self._primary_id = next(iter(self._cameras))
+            self._info_topics = parse_camera_entries(
+                list(gp("camera_infos").get_parameter_value().string_array_value)
+            )
+            unknown = sorted(set(self._info_topics) - set(self._cameras))
+            if unknown:
+                from openral_core import ROSConfigError
+
+                raise ROSConfigError(
+                    f"camera_infos names cameras {unknown} that `cameras` does not configure"
+                )
+            self._camera_geometry = {}
             self._wiring = self._resolve_wiring()
 
             img_qos = QoSProfile(
@@ -279,6 +349,16 @@ def main(args: Any = None) -> None:
                     else self._make_cache_cb(cid)
                 )
                 self._subs.append(self.create_subscription(Image, topic, cb, img_qos))
+            for cid, topic in self._info_topics.items():
+                self._subs.append(
+                    self.create_subscription(CameraInfo, topic, self._make_info_cb(cid), img_qos)
+                )
+            if self._primary_id not in self._info_topics:
+                self.get_logger().warning(
+                    f"no camera_infos entry for {self._primary_id!r}: detections carry no image "
+                    "frame or K, so the world-state lift projects through the manifest's "
+                    f"SensorSpec {self._sensor_id!r} (a sim stand-in on real hardware)"
+                )
 
             # locate_in_view service — only for `on_demand` detectors
             # and only if the IDL is built.
@@ -305,6 +385,7 @@ def main(args: Any = None) -> None:
             self.get_logger().info(
                 f"ros_image_detector configured: cameras={self._cameras} "
                 f"primary={self._primary_id!r} sensor_id={self._sensor_id}, "
+                f"camera_infos={self._info_topics}, "
                 f"mode={'on_demand' if self._wiring.serve_on_demand else 'continuous'}, "
                 f"continuous_leg={'on' if self._wiring.run_continuous_leg else 'off'}, "
                 f"locate_in_view={'on' if self._srv else 'off'}"
@@ -467,11 +548,33 @@ def main(args: Any = None) -> None:
 
             return _cb
 
+        def _make_info_cb(self, cid: str) -> Callable[[Any], None]:
+            def _cb(msg: Any) -> None:
+                self._on_camera_info(cid, msg)
+
+            return _cb
+
+        def _on_camera_info(self, cid: str, msg: Any) -> None:
+            """Cache the driver's frame + K for ``cid`` (unusable -> not cached, logged)."""
+            from openral_core import ROSConfigError
+
+            try:
+                self._camera_geometry[cid] = camera_geometry_from_info(msg)
+            except ROSConfigError as exc:
+                self._log_throttled("warning", f"camera_info({cid}) unusable: {exc}")
+
+        def _stamp_camera(self, cid: str, md: Any) -> Any:
+            """Attach ``cid``'s live frame + K to ``md`` when its CameraInfo has arrived."""
+            return stamp_camera_geometry(md, self._camera_geometry.get(cid))
+
         def _cache_frame(self, cid: str, msg: Any) -> None:
             try:
                 bgr, w, h = image_to_bgr_bytes(msg)
             except ImageConvertError as exc:
-                self.get_logger().debug(f"cache_frame({cid}): convert failed: {exc}")
+                self.get_logger().warning(
+                    f"camera {cid!r}: dropping {msg.encoding!r} frame: {exc}",
+                    throttle_duration_sec=5.0,
+                )
                 return
             self._frames[cid] = (bgr, w, h)
 
@@ -556,6 +659,7 @@ def main(args: Any = None) -> None:
             # the id into 3D). Only the continuous leg tracks identity.
             if self._tracker is not None:
                 md = md.model_copy(update={"detections": self._tracker.assign(list(md.detections))})
+            md = self._stamp_camera(self._primary_id, md)
             self._last_pub_ns = now_ns
             out = PromptStamped()
             out.header.stamp = msg.header.stamp
@@ -602,7 +706,7 @@ def main(args: Any = None) -> None:
                 response.metadata_json = ""
             else:
                 response.found = True
-                response.metadata_json = md.model_dump_json()
+                response.metadata_json = self._stamp_camera(camera, md).model_dump_json()
             self.get_logger().info(
                 f"locate_in_view: query={query!r} camera={camera!r} found={response.found}"
             )

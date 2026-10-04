@@ -128,11 +128,12 @@ def test_renders_ee_pose() -> None:
 
 
 def test_renders_detected_scene_objects() -> None:
-    """Lifted scene objects surface as ``scene_objects[<frame>]: label@(x,y,z), …``.
+    """Lifted scene objects surface one entry per instance in ``scene_objects[<frame>]``.
 
     Lets the LLM map a goal noun ("baguette") onto a detected label ("bread")
-    instead of only learning "not in memory" (#14). Deduped by label (the
-    open-vocab detector emits overlapping boxes).
+    instead of only learning "not in memory" (#14). Never deduped by label: two
+    breads must read as two, flagged under ``repeated_labels`` so the LLM names
+    each by its memory id.
     """
     from openral_core import DetectedObject
 
@@ -146,6 +147,8 @@ def test_renders_detected_scene_objects() -> None:
                 pose=Pose6D(
                     xyz=(4.83, -1.00, 0.94), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"
                 ),
+                bbox_3d=(4.78, -1.05, 0.90, 4.88, -0.95, 0.98),
+                track_id=7,
             ),
             DetectedObject(
                 label="banana",
@@ -154,23 +157,73 @@ def test_renders_detected_scene_objects() -> None:
                     xyz=(4.92, -1.13, 1.42), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"
                 ),
             ),
-            # Duplicate label (overlapping detection) collapses to one entry.
             DetectedObject(
                 label="bread",
                 confidence=0.66,
                 pose=Pose6D(
-                    xyz=(4.80, -1.02, 0.93), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"
+                    xyz=(4.50, -0.70, 0.93), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"
                 ),
             ),
         ],
     )
     text = ContextRenderer().render(world_state=ws)
-    assert "scene_objects[map]:" in text
-    assert "bread@(+4.83,-1.00,+0.94)" in text
-    assert "banana@(+4.92,-1.13,+1.42)" in text
-    # Deduped: the label "bread" appears once in the scene_objects line.
     scene_line = next(line for line in text.splitlines() if line.startswith("scene_objects[map]:"))
-    assert scene_line.count("bread@") == 1
+    assert scene_line == (
+        "scene_objects[map]: banana@(+4.92,-1.13,+1.42), bread@(+4.50,-0.70,+0.93), "
+        "bread@(+4.83,-1.00,+0.94) size=(0.10,0.10,0.08) track=7"
+    )
+    assert "repeated_labels: bread" in text
+    assert "repeated_labels: bread —" in text  # the unique banana is not flagged
+
+
+def test_renders_spatial_memory_instance_ids() -> None:
+    """Two same-label memory nodes render with their ids — what object_id takes."""
+    from openral_core import DetectedObject, SceneGraph, SpatialNode, SpatialNodeKind
+
+    def node(node_id: str, x: float) -> SpatialNode:
+        return SpatialNode(
+            node_id=node_id,
+            kind=SpatialNodeKind.OBJECT,
+            label="box",
+            pose=Pose6D(xyz=(x, 0.1, 0.05), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"),
+            bbox_3d=(x - 0.05, 0.05, 0.0, x + 0.05, 0.15, 0.1),
+            first_seen_ns=1,
+            last_seen_ns=2,
+        )
+
+    place = SpatialNode(
+        node_id="kitchen",
+        kind=SpatialNodeKind.PLACE,
+        label="kitchen",
+        pose=Pose6D(xyz=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"),
+        first_seen_ns=1,
+        last_seen_ns=1,
+    )
+    r = ContextRenderer()
+    seq = r.seq
+    r.set_spatial_memory(SceneGraph(nodes=[node("obj_box_2", 0.5), node("obj_box_1", 0.3), place]))
+    assert r.seq == seq  # advisory snapshot; ingest jitter must not wake the LLM
+    ws = WorldState(
+        stamp_ns=1,
+        joint_state=JointState(name=["j1"], position=[0.0], stamp_ns=1),
+        detected_objects=[
+            DetectedObject(
+                label="box",
+                confidence=0.9,
+                pose=Pose6D(xyz=(x, 0.1, 0.05), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="map"),
+            )
+            for x in (0.3, 0.5)
+        ],
+    )
+    text = r.render(world_state=ws)
+    assert (
+        "memory_objects[map]: box id=obj_box_1@(+0.30,+0.10,+0.05) size=(0.10,0.10,0.10), "
+        "box id=obj_box_2@(+0.50,+0.10,+0.05) size=(0.10,0.10,0.10)"
+    ) in text
+    assert "kitchen" not in text  # only OBJECT nodes are graspable instances
+    assert "repeated_labels: box" in text
+    r.set_spatial_memory(None)
+    assert "memory_objects[" not in r.render(world_state=ws)
 
 
 def test_failure_buffer_rolls_at_capacity() -> None:

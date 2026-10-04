@@ -66,13 +66,13 @@ them toward zero), `openral deploy run` starts this graph itself:
 openral deploy run --config scenes/deploy/<your-cell>.yaml
 ```
 
-This repo ships no committed real-hardware OpenArm scene — one is inherently
-host-specific (CAN interface names, camera udev paths, calibration), so it
-was never meant to be portable. Write your own modeled on
-`scenes/deploy/so101_bench.yaml` or `scenes/deploy/galaxea_a1_bench.yaml`
-(the `hal:` binding + per-camera `sensors[].deploy_binding` shape) and, for a
-vendor camera driver like `zed_wrapper`, the `drivers:` pairing covered by
-`tests/unit/test_scene_drivers.py`.
+The committed real-hardware scene is `scenes/deploy/openarm_bench.yaml`, written
+for one bench cell (CAN interface names, camera udev paths); another cell adapts
+it. The cameras are robot cameras, so their real-hardware `deploy_binding`s live
+in `robots/openarm/robot.yaml`, not in the scene — a deploy scene never touches a
+robot camera, and only a workcell camera (its own name) goes under `sensors:`.
+A vendor camera driver like `zed_wrapper` is started by the scene's `drivers:`
+block, covered by `tests/unit/test_scene_drivers.py`.
 
 `deploy_e2e.launch.py` includes `launch/real_bringup.launch.py` whenever
 `hal_mode:=real`, because the manifest declares it as `hal.real_bringup`. Do not

@@ -236,15 +236,20 @@ class _SmolVLAAdapter:
             self._chunk_executor = None
         if self._chunk_executor is not None:
             self._update_input_preview(observation)
-            action_tensor = self._chunk_executor.select_action(
+            # Finished (postprocessed, host-side) by the executor: see `_finished_action`.
+            action: NDArray[np.float32] = self._chunk_executor.select_action(
                 lambda: self._prepared_batch(observation, instruction)
             )
-            return to_numpy_action(self._postprocessor(action_tensor))
+            return action
 
         batch = self._prepared_batch(observation, instruction)
         action_tensor = run_inference(self._policy, batch)
         action_tensor = self._postprocessor(action_tensor)
         return to_numpy_action(action_tensor)
+
+    def _finished_action(self, action_tensor: Any) -> NDArray[np.float32]:
+        """Executor postprocess hook: lerobot postprocessor, then a flat float32 array."""
+        return to_numpy_action(self._postprocessor(action_tensor))
 
     def _prepared_batch(self, observation: Observation, instruction: str) -> dict[str, Any]:
         """Build the full on-device, dtype-cast batch for one chunk inference."""
@@ -721,6 +726,9 @@ def _build_smolvla(env_cfg: Any) -> _SmolVLAAdapter:
         _image_input_template=ip.input_template,
     )
     adapter._chunk_executor = build_chunk_executor(
-        spec.extra, policy=policy, adapter_name="smolvla"
+        spec.extra,
+        policy=policy,
+        adapter_name="smolvla",
+        postprocess_action=adapter._finished_action,
     )
     return adapter

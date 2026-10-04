@@ -20,6 +20,12 @@ float64 deadline_s         # 0 = use manifest default
 # E-stop, and the declaration's own timeout_s expires it if the runner dies.
 bool place_declaration_valid
 PlaceDeclaration place_declaration
+
+# Optional grasp-phase declaration (real pick-and-place design §2.1), additive
+# and defaulted off. The runner strips any region (dispatch never measures),
+# publishes it on accept and retracts it on success, failure, cancel and E-stop.
+bool grasp_declaration_valid
+GraspDeclaration grasp_declaration
 ---
 # Result
 bool success

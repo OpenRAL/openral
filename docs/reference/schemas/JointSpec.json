@@ -1,5 +1,38 @@
 {
   "$defs": {
+    "GripperClosureCalibration": {
+      "additionalProperties": false,
+      "description": "How a ``role: gripper`` joint's *position* reads \"closed on an object\".\n\nThe position-stall grasp trigger (``openral_hal._grasp_trigger``) needs no effort\nchannel: a jaw commanded toward closed that settles short of the command by more than\nits empty-close error is stalled on something. These are the numbers that turn that into\nthresholds, in the joint's own position units: robot-type constants of the gripper\nmechanism, declared in the robot manifest and derived from teleop data; not per cell\n(CLAUDE.md \u00a71.2: cited measurements, never a library default).\n\nAttributes:\n    closed_position: The commanded position of a fully closed jaw. Must be an end of the\n        joint's ``position_limits``: \"closer to closed\" is read as the distance to it.\n    closed_rest_offset: How far from ``closed_position`` the jaw rests when it closes on\n        nothing (mechanical stop, servo deadband). Measured from teleop data.\n    stall_gap: How much further from closed than the command (beyond\n        ``closed_rest_offset``) a settled jaw must sit to read as stalled on an object.\n        Also the band a command must be within of ``closed_position`` to count as a close\n        command, and (halved) the hysteresis for slip / release / re-seat.\n    settle_tolerance: Largest position span over the trigger's settle window for the jaw\n        to count as stationary. A few position-encoder LSBs.\n\nExample:\n    >>> GripperClosureCalibration(\n    ...     closed_position=0.0,\n    ...     closed_rest_offset=0.0086,\n    ...     stall_gap=0.08,\n    ...     settle_tolerance=0.001,\n    ... ).stall_gap\n    0.08",
+      "properties": {
+        "closed_position": {
+          "title": "Closed Position",
+          "type": "number"
+        },
+        "closed_rest_offset": {
+          "default": 0.0,
+          "minimum": 0.0,
+          "title": "Closed Rest Offset",
+          "type": "number"
+        },
+        "stall_gap": {
+          "exclusiveMinimum": 0.0,
+          "title": "Stall Gap",
+          "type": "number"
+        },
+        "settle_tolerance": {
+          "exclusiveMinimum": 0.0,
+          "title": "Settle Tolerance",
+          "type": "number"
+        }
+      },
+      "required": [
+        "closed_position",
+        "stall_gap",
+        "settle_tolerance"
+      ],
+      "title": "GripperClosureCalibration",
+      "type": "object"
+    },
     "JointType": {
       "description": "Kinematic joint type following URDF conventions.",
       "enum": [
@@ -14,7 +47,7 @@
       "type": "string"
     }
   },
-  "description": "URDF-derived joint specification.\n\nAttributes:\n    name: Joint name matching the URDF.\n    joint_type: Kinematic joint type.\n    parent_link: Parent link name.\n    child_link: Child link name.\n    axis_xyz: Rotation/translation axis unit vector.\n    position_limits: (min, max) in the unit of the value that travels\n        on this channel \u2014 radians or metres for arm joints, and\n        ``(0.0, 1.0)`` for a gripper whose HAL contract is a normalised\n        jaw fraction (i.e. one declared ``normalised`` in\n        ``SimDescription.grippers``). The safety kernel's envelope,\n        the rSkill runner's pre-clamp and the supervisor's\n        ``gripper_min`` / ``gripper_max`` all compare a **commanded\n        Action value** against these bounds, so declaring a normalised\n        gripper's mechanical radian range here stops the envelope from\n        constraining that channel at all (issue #62). A mechanical range\n        that differs from the channel unit belongs in\n        ``SimGripperDescription.ctrl_range`` / the URDF.\n    velocity_limit: Maximum velocity.\n    effort_limit: Maximum effort (N or Nm).\n    has_position_sensor: Whether position feedback is available.\n    has_velocity_sensor: Whether velocity feedback is available.\n    has_torque_sensor: Whether torque feedback is available.\n    backlash_estimate: Estimated backlash in radians.\n    actuator_kind: Type of actuator.\n    sim_joint_name: Optional override carrying the **MJCF/MuJoCo\n        joint name** as it appears in the simulator's compiled\n        model when that name differs from ``name``. The HAL\n        uses ``name`` for the world-state contract (it's the\n        URDF-shaped logical identifier the safety supervisor sees\n        on every chunk); a separate ``sim_joint_name`` lets a\n        sim-adapter look up ``mj_name2id`` without hardcoding\n        robosuite / robocasa / MuJoCo naming conventions in\n        backend modules. ``None`` means \"the MJCF joint name\n        matches ``name``\" \u2014 true for every fixed-base\n        manipulator we ship; only mobile bases and humanoids\n        whose MJCF auto-prefixes joints (robosuite's\n        ``mobilebase0_\u2026`` namespace, GR-1's ``robot0_\u2026``) need\n        it.\n    role: Structural classification. The downstream\n        runner / safety / dataset-bridge code identifies grippers\n        and base DoFs by this tag instead of substring-matching the\n        joint name (which silently misclassifies any joint\n        containing ``\"gripper\"``, e.g. ``\"gripper_pose\"``). Default\n        ``\"unknown\"`` keeps legacy manifests loadable; the fleet\n        annotates incrementally as this rolls out.\n    origin_xyz: Fixed translation (metres) of this joint's frame in\n        its ``parent_link`` frame \u2014 the URDF ``<joint><origin xyz>``.\n        With ``origin_rpy`` and ``axis_xyz`` it gives the\n        kernel everything it needs for forward kinematics.\n        Default ``(0, 0, 0)``; populated by the offline lowering tool\n        (from MJCF/URDF) only for robots that enable self-collision\n        checking \u2014 legacy manifests are unaffected.\n    origin_rpy: Fixed orientation (roll, pitch, yaw, radians) of this\n        joint's frame in its ``parent_link`` frame \u2014 the URDF\n        ``<joint><origin rpy>``. Default ``(0, 0, 0)``.",
+  "description": "URDF-derived joint specification.\n\nAttributes:\n    name: Joint name matching the URDF.\n    joint_type: Kinematic joint type.\n    parent_link: Parent link name.\n    child_link: Child link name.\n    axis_xyz: Rotation/translation axis unit vector.\n    position_limits: (min, max) in the unit of the value that travels\n        on this channel \u2014 radians or metres for arm joints, and\n        ``(0.0, 1.0)`` for a gripper whose HAL contract is a normalised\n        jaw fraction (i.e. one declared ``normalised`` in\n        ``SimDescription.grippers``). The safety kernel's envelope,\n        the rSkill runner's pre-clamp and the supervisor's\n        ``gripper_min`` / ``gripper_max`` all compare a **commanded\n        Action value** against these bounds, so declaring a normalised\n        gripper's mechanical radian range here stops the envelope from\n        constraining that channel at all (issue #62). A mechanical range\n        that differs from the channel unit belongs in\n        ``SimGripperDescription.ctrl_range`` / the URDF.\n    velocity_limit: Maximum velocity.\n    effort_limit: Maximum effort (N or Nm).\n    has_position_sensor: Whether position feedback is available.\n    has_velocity_sensor: Whether velocity feedback is available.\n    has_torque_sensor: Whether torque feedback is available.\n    backlash_estimate: Estimated backlash in radians.\n    actuator_kind: Type of actuator.\n    sim_joint_name: Optional override carrying the **MJCF/MuJoCo\n        joint name** as it appears in the simulator's compiled\n        model when that name differs from ``name``. The HAL\n        uses ``name`` for the world-state contract (it's the\n        URDF-shaped logical identifier the safety supervisor sees\n        on every chunk); a separate ``sim_joint_name`` lets a\n        sim-adapter look up ``mj_name2id`` without hardcoding\n        robosuite / robocasa / MuJoCo naming conventions in\n        backend modules. ``None`` means \"the MJCF joint name\n        matches ``name``\" \u2014 true for every fixed-base\n        manipulator we ship; only mobile bases and humanoids\n        whose MJCF auto-prefixes joints (robosuite's\n        ``mobilebase0_\u2026`` namespace, GR-1's ``robot0_\u2026``) need\n        it.\n    role: Structural classification. The downstream\n        runner / safety / dataset-bridge code identifies grippers\n        and base DoFs by this tag instead of substring-matching the\n        joint name (which silently misclassifies any joint\n        containing ``\"gripper\"``, e.g. ``\"gripper_pose\"``). Default\n        ``\"unknown\"`` keeps legacy manifests loadable; the fleet\n        annotates incrementally as this rolls out.\n    closure_calibration: Position-stall grasp-trigger calibration for a\n        ``role: \"gripper\"`` joint (``GripperClosureCalibration``). ``None``\n        = uncalibrated: the HAL's vision attachment leg refuses to arm a\n        trigger on that joint rather than guess thresholds.\n    origin_xyz: Fixed translation (metres) of this joint's frame in\n        its ``parent_link`` frame \u2014 the URDF ``<joint><origin xyz>``.\n        With ``origin_rpy`` and ``axis_xyz`` it gives the\n        kernel everything it needs for forward kinematics.\n        Default ``(0, 0, 0)``; populated by the offline lowering tool\n        (from MJCF/URDF) only for robots that enable self-collision\n        checking \u2014 legacy manifests are unaffected.\n    origin_rpy: Fixed orientation (roll, pitch, yaw, radians) of this\n        joint's frame in its ``parent_link`` frame \u2014 the URDF\n        ``<joint><origin rpy>``. Default ``(0, 0, 0)``.",
   "properties": {
     "name": {
       "title": "Name",
@@ -218,6 +251,17 @@
       ],
       "title": "Role",
       "type": "string"
+    },
+    "closure_calibration": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/GripperClosureCalibration"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [

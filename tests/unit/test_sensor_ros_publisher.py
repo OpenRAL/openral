@@ -118,7 +118,7 @@ def test_publisher_construction_does_not_touch_ros() -> None:
     assert pub.is_started is False
     assert pub.n_published == 0
     assert pub.topic == "/cam/image_raw"
-    assert pub.info_topic == "/cam/image_raw/camera_info"
+    assert pub.info_topic == "/cam/camera_info"  # image_pipeline sibling, as the tee
 
 
 def test_publisher_accepts_external_node_without_owning_its_lifecycle() -> None:

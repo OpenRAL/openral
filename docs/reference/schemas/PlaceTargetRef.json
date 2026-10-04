@@ -1,0 +1,44 @@
+{
+  "additionalProperties": false,
+  "description": "An OPTIONAL hint naming the surface an ``ExecuteRskillTool`` goal places onto.\n\nWhere to set the payload down is the policy's job, and the real place producer\nmeasures the support directly under the carried payload without being told\n(real pick-and-place design \u00a72.3), so a goal never needs this. Set, it restricts\nthe place to one labelled surface (\"shelf\", \"table\"): perception **grounds** it at\ndispatch to a padded, gravity-aligned box in the robot base frame \u2014 a recalled\nspatial-memory node's 3D box when ``object_id`` / ``place_node_id`` is set, else\nthe one live lifted detection whose label matches \u2014 sent as\n``PlaceDeclaration.search_box``, and the producer refuses a patch measured outside\nit. Nothing about the cell is surveyed or predeclared. A reference that grounds to\nnothing, or to more than one instance with no node id, is refused and the goal is\nnot sent. Naming arms nothing: the kernel only ever trusts the measured region.\n\nAttributes:\n    label: Open-vocabulary label of the surface, e.g. ``\"shelf\"``; matched\n        case-insensitively against the live lifted detections' labels.\n    object_id: A spatial-memory ``node_id`` from ``recall_object`` naming the\n        surface's instance; ``None`` = ground by ``label`` (or ``place_node_id``).\n    place_node_id: A spatial-memory place node id, for a remembered place that\n        carries a 3D box; ``None`` = ground by ``label`` (or ``object_id``). At\n        most one of ``object_id`` / ``place_node_id``.\n\nExample:\n    >>> PlaceTargetRef(label=\"shelf\").object_id is None\n    True",
+  "properties": {
+    "label": {
+      "description": "Open-vocabulary label of the ONE surface to place onto, as perception labels it (e.g. 'shelf', 'table'). Recall it first when memory has it.",
+      "minLength": 1,
+      "title": "Label",
+      "type": "string"
+    },
+    "object_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "node_id from a recall_object match naming the exact surface instance; required when more than one detection carries the label.",
+      "title": "Object Id"
+    },
+    "place_node_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "node_id of a remembered place with a 3D box; alternative to object_id.",
+      "title": "Place Node Id"
+    }
+  },
+  "required": [
+    "label"
+  ],
+  "title": "PlaceTargetRef",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

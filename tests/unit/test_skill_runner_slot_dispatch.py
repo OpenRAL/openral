@@ -21,6 +21,7 @@ from types import ModuleType
 import numpy as np
 import pytest
 from openral_core import Action, ActionSlot, ControlMode
+from openral_rskill._policy_io import PolicyIOCodec
 
 
 def _load_skill_runner_module() -> ModuleType:
@@ -312,7 +313,9 @@ def test_degrees_slot_manifest_reaches_the_wire_in_radians(runner_mod: ModuleTyp
 
     manifest, description = _so101_degrees_slot_manifest()
     codec = PolicyIOCodec.from_manifest(manifest, description)
-    policy_action = np.array([90.0, -45.0, 30.0, 0.0, 180.0, 50.0], dtype=np.float32)
+    # In-range values: the slot path now also pre-clamps to the joint envelope
+    # (wrist_roll tops out at 2.7925 rad), and this test pins the unit codec.
+    policy_action = np.array([90.0, -45.0, 30.0, 0.0, 90.0, 50.0], dtype=np.float32)
     actions = runner_mod._policy_action_to_actions(
         policy_action,
         codec=codec,
@@ -324,7 +327,7 @@ def test_degrees_slot_manifest_reaches_the_wire_in_radians(runner_mod: ModuleTyp
     assert joint.control_mode is ControlMode.JOINT_POSITION
     np.testing.assert_allclose(
         joint.joint_targets[0],
-        [math.pi / 2, -math.pi / 4, math.pi / 6, 0.0, math.pi, 0.0],
+        [math.pi / 2, -math.pi / 4, math.pi / 6, 0.0, math.pi / 2, 0.0],
         rtol=1e-5,
         atol=1e-6,
     )
@@ -354,3 +357,116 @@ def test_joint_path_converts_and_clamps(runner_mod: ModuleType) -> None:
     assert targets[0] == pytest.approx(math.radians(10.0), rel=1e-5)
     assert targets[1] < 1.7453  # 500 deg clamped inside the envelope
     assert targets[5] == pytest.approx(0.5)
+
+
+def test_joint_position_slots_are_clamped_inside_the_robots_joint_limits(
+    runner_mod: ModuleType,
+) -> None:
+    """A JOINT_POSITION slot target past a joint limit is pulled strictly inside it.
+
+    Real fixture: the OpenArm v2 manifest and its 16-D bimanual slot contract.
+    On qorin1 (2026-09-22) the restock π0.5's first tick proposed left_joint5 at
+    -1.58973 rad against a -1.5708 limit; the kernel E-stopped. The
+    single-surface path already clamps with a 1e-3 epsilon (the kernel checks
+    open intervals); slot dispatch now does the same for named joints.
+    """
+    import yaml
+    from openral_core import RobotDescription
+
+    repo_root = Path(__file__).resolve().parents[2]
+    desc = RobotDescription.model_validate(
+        yaml.safe_load((repo_root / "robots" / "openarm" / "robot.yaml").read_text())
+    )
+    left = [f"left_joint{i}" for i in range(1, 8)]
+    right = [f"right_joint{i}" for i in range(1, 8)]
+    slots = [
+        ActionSlot(range=(0, 6), control_mode=ControlMode.JOINT_POSITION, joint_names=left),
+        ActionSlot(range=(7, 7), control_mode=ControlMode.GRIPPER_POSITION, ee="left_gripper"),
+        ActionSlot(range=(8, 14), control_mode=ControlMode.JOINT_POSITION, joint_names=right),
+        ActionSlot(range=(15, 15), control_mode=ControlMode.GRIPPER_POSITION, ee="right_gripper"),
+    ]
+    lo, hi = desc.joints[[j.name for j in desc.joints].index("left_joint5")].position_limits
+    assert lo == pytest.approx(-1.5708, abs=1e-4)
+
+    vec = np.zeros(16, dtype=np.float32)
+    vec[4] = -1.58973  # left_joint5, 0.019 rad past its limit
+    vec[12] = float(hi) + 0.5  # right_joint5, well past the other end
+    actions = runner_mod._policy_action_to_actions(
+        vec,
+        codec=PolicyIOCodec.from_manifest(None, desc),
+        slots=slots,
+        description=desc,
+        cartesian_delta_scale=None,
+    )
+
+    left_action = next(a for a in actions if a.joint_names == left)
+    right_action = next(a for a in actions if a.joint_names == right)
+    assert left_action.joint_targets[0][4] == pytest.approx(float(lo) + 1e-3)
+    assert right_action.joint_targets[0][12] == pytest.approx(float(hi) - 1e-3)
+    # An in-range target is untouched, and nothing is clamped onto the limit itself.
+    assert left_action.joint_targets[0][0] == 0.0
+    assert left_action.joint_targets[0][4] > float(lo)
+
+
+def test_an_unnamed_joint_position_slot_is_clamped_in_description_order(
+    runner_mod: ModuleType,
+) -> None:
+    """A JOINT_POSITION slot without ``joint_names`` is clamped too (audit A.md F4).
+
+    Such a slot is a whole-vector action in ``RobotDescription.joints`` order
+    (``_slot_joint_names``). The runner's old slot clamp keyed on names only,
+    so it proposed these targets raw; the clamp now lives in the one codec
+    (``PolicyIOCodec``) with the same epsilon as the whole-vector path.
+    Real fixture: the Franka Panda manifest, an arm + gripper contract.
+    """
+    import yaml
+    from openral_core import RobotDescription
+
+    repo_root = Path(__file__).resolve().parents[2]
+    desc = RobotDescription.model_validate(
+        yaml.safe_load((repo_root / "robots" / "franka_panda" / "robot.yaml").read_text())
+    )
+    n = len(desc.joints)
+    slots = [ActionSlot(range=(0, n - 1), control_mode=ControlMode.JOINT_POSITION)]
+    limits = [j.position_limits for j in desc.joints]
+    lo4, hi4 = limits[3]
+    vec = np.zeros(n, dtype=np.float32)
+    vec[3] = float(hi4) + 0.3  # panda_joint4 past its upper limit
+    vec[0] = float(limits[0][0]) - 0.3  # panda_joint1 past its lower limit
+    codec = PolicyIOCodec.from_manifest(None, desc)
+
+    (action,) = runner_mod._policy_action_to_actions(
+        vec, codec=codec, slots=slots, description=desc, cartesian_delta_scale=None
+    )
+    row = action.joint_targets[0]
+    assert row[3] == pytest.approx(float(hi4) - 1e-3)
+    assert row[0] == pytest.approx(float(limits[0][0]) + 1e-3)
+    # Same result as the whole-vector path: one clamp, one epsilon.
+    assert row == pytest.approx(list(codec.clamp(codec.to_robot_action(vec))))
+    assert float(lo4) < row[3] < float(hi4)
+
+
+def test_a_joint_position_slot_whose_width_differs_from_its_joint_names_is_refused() -> None:
+    """A width/``joint_names`` mismatch never reaches the clamp (#289's slice fix).
+
+    ``PolicyIOCodec._slots_to_robot_units`` indexes ``slot.joint_names[k]`` over
+    the slot width, so a mismatch there would clamp against the wrong joint or
+    truncate. ``ActionSlot``'s own validator refuses it at manifest load, naming
+    ``joint_names``, so no codec-side guard is needed. Real joint names: the
+    Franka Panda manifest.
+    """
+    import yaml
+    from openral_core import RobotDescription
+    from pydantic import ValidationError
+
+    repo_root = Path(__file__).resolve().parents[2]
+    desc = RobotDescription.model_validate(
+        yaml.safe_load((repo_root / "robots" / "franka_panda" / "robot.yaml").read_text())
+    )
+    names = [j.name for j in desc.joints][:7]
+    for width in (6, 8):  # narrower and wider than the seven names
+        with pytest.raises(ValidationError, match=r"joint_names length \(7\) must equal"):
+            ActionSlot(
+                range=(0, width - 1), control_mode=ControlMode.JOINT_POSITION, joint_names=names
+            )
+    ActionSlot(range=(0, 6), control_mode=ControlMode.JOINT_POSITION, joint_names=names)

@@ -143,7 +143,6 @@ if _ROS2_AVAILABLE:
             # the rSkill's `image_preprocessing.aliases` keys (e.g. `top`,
             # `left_wrist`, `right_wrist`).
             self.declare_parameter("camera_names", [""])
-            self.declare_parameter("camera_topic_prefix", "/openral/cameras")
             self.declare_parameter("attachment_state_topic", "/openral/attachment_state")
             # Cameras the co-located sensor leg writes directly (zero-copy NVMM
             # handles intact); ``_on_image`` keeps their thumbnail span but must
@@ -154,10 +153,9 @@ if _ROS2_AVAILABLE:
             self.declare_parameter("object_voxels_topic", "/openral/world_voxels")
             # Depth-cloud fallback for the lift when no octomap voxel grid exists
             # (octomap is often disabled in dense scenes to avoid kernel false
-            # positives). Empty disables the fallback.
-            self.declare_parameter(
-                "object_depth_points_topic", "/openral/cameras/front_depth/points"
-            )
+            # positives). Empty (the default) disables the fallback; the deploy launch passes
+            # ``camera_topic(<first depth sensor>, POINTS)`` from the manifest.
+            self.declare_parameter("object_depth_points_topic", "")
             self.declare_parameter("object_lift_depth_max_points", 4000)
             self.declare_parameter("object_lift_map_frame", "map")
             self.declare_parameter("object_lift_k_nearest", 25)
@@ -202,7 +200,10 @@ if _ROS2_AVAILABLE:
             self._depth_points_stamp_ns: int = 0
             self._depth_max_points: int = 0
             self._candidate_buffer: list[object] = []
-            self._seen_sensor_ids: set[str] = set()
+            # Detection camera -> (optical frame, K) it was last lifted through; eviction
+            # projects the same geometry every memory tick.
+            self._seen_cameras: dict[str, tuple[str, object]] = {}
+            self._manifest_fallback_logged: set[str] = set()
             self._map_frame = "map"
             self._voxel_staleness_ns = 0
 
@@ -308,27 +309,25 @@ if _ROS2_AVAILABLE:
                 attachment_qos,
             )
 
-            # Per-camera subs on `<prefix>/<name>/image`. BEST_EFFORT (CLAUDE.md
+            # Per-camera subs on `camera_topic(name)`. BEST_EFFORT (CLAUDE.md
             # §2 sensor streams) matches both the sim HAL bridges (RELIABLE) and
             # real-mode GStreamer ros_tee/SensorRosPublisher readers
             # (BEST_EFFORT) — a RELIABLE profile never matched the real-camera
             # publishers, leaving real hardware with zero frames.
+            from openral_core import camera_topic
             from sensor_msgs.msg import Image as RosImage
 
             camera_names_raw = list(
                 self.get_parameter("camera_names").get_parameter_value().string_array_value,
             )
             camera_names = [n for n in camera_names_raw if n]
-            topic_prefix: str = (
-                self.get_parameter("camera_topic_prefix").get_parameter_value().string_value
-            )
             image_qos = QoSProfile(
                 reliability=QoSReliabilityPolicy.BEST_EFFORT,
                 durability=QoSDurabilityPolicy.VOLATILE,
                 depth=1,
             )
             for name in camera_names:
-                topic = f"{topic_prefix}/{name}/image"
+                topic = camera_topic(name)
                 self._camera_subs[name] = self.create_subscription(
                     RosImage,
                     topic,
@@ -520,7 +519,8 @@ if _ROS2_AVAILABLE:
             self._tf_buffer = None
             self._latest_voxels = None
             self._candidate_buffer = []
-            self._seen_sensor_ids = set()
+            self._seen_cameras = {}
+            self._manifest_fallback_logged = set()
             if self._pub_fast is not None:
                 self.destroy_publisher(self._pub_fast)
                 self._pub_fast = None
@@ -681,6 +681,7 @@ if _ROS2_AVAILABLE:
                     revision=int(msg.revision),  # type: ignore[attr-defined]
                     stamp_ns=stamp_ns,
                     place_declaration=_place_declaration_from_idl(msg),
+                    grasp_declaration=_grasp_declaration_from_idl(msg),
                 )
             except (ValueError, TypeError) as exc:
                 self.get_logger().error(f"attachment state rejected: {exc}")
@@ -781,6 +782,30 @@ if _ROS2_AVAILABLE:
                         return s
             return None
 
+        def _camera_geometry(self, md: object) -> tuple[str, object] | None:
+            """The (optical frame, K) a detection batch's pixels project through.
+
+            The detector stamps the driver's ``CameraInfo`` frame + K on the batch;
+            only when it could not (no ``camera_infos`` entry, or none arrived yet) does
+            this fall back to the manifest ``SensorSpec`` — logged once per camera,
+            because on real hardware that spec may be a sim stand-in.
+            """
+            if md.camera_intrinsics is not None:  # type: ignore[attr-defined]
+                return (md.camera_frame_id, md.camera_intrinsics)  # type: ignore[attr-defined]
+            sid = md.sensor_id  # type: ignore[attr-defined]
+            spec = self._sensor_spec(sid)
+            if spec is None or spec.intrinsics is None:  # type: ignore[attr-defined]
+                self.get_logger().debug(f"no intrinsics for sensor '{sid}'")
+                return None
+            if sid not in self._manifest_fallback_logged:
+                self._manifest_fallback_logged.add(sid)
+                self.get_logger().warning(
+                    f"object lift: detections from '{sid}' carry no CameraInfo frame/K; "
+                    f"projecting through the manifest SensorSpec (frame "
+                    f"'{spec.frame_id}', fx={spec.intrinsics.fx})"  # type: ignore[attr-defined]
+                )
+            return (spec.frame_id, spec.intrinsics)  # type: ignore[attr-defined]
+
         def _on_objects(self, msg: object) -> None:  # PromptStamped
             """Decode detections, lift to 3D, buffer candidates (best-effort)."""
             from openral_core.schemas import ObjectsMetadata
@@ -799,16 +824,16 @@ if _ROS2_AVAILABLE:
             except Exception as exc:
                 self.get_logger().debug(f"bad detection metadata_json: {exc}")
                 return
-            spec = self._sensor_spec(md.sensor_id)
-            if spec is None or spec.intrinsics is None:
-                self.get_logger().debug(f"no intrinsics for sensor '{md.sensor_id}'")
+            geometry = self._camera_geometry(md)
+            if geometry is None:
                 return
+            cam_frame, intrinsics = geometry
             # Remember this detection camera so eviction can project its FOV
             # every memory tick from the camera pose alone (the real detector
             # publishes nothing when it sees nothing).
-            self._seen_sensor_ids.add(md.sensor_id)
+            self._seen_cameras[md.sensor_id] = geometry
             base_frame = self._aggregator.description.base_frame
-            t_cam_from_base = self._lookup_4x4(spec.frame_id, base_frame)
+            t_cam_from_base = self._lookup_4x4(cam_frame, base_frame)
             t_map_from_base = self._lookup_4x4(self._map_frame, base_frame)
             if t_cam_from_base is None or t_map_from_base is None:
                 return  # best-effort: missing TF => skip
@@ -839,7 +864,7 @@ if _ROS2_AVAILABLE:
             cands = self._lifter.lift(  # type: ignore[union-attr]
                 detections=md.detections,
                 occupied_centers_base=centers,
-                intrinsics=spec.intrinsics,
+                intrinsics=intrinsics,  # type: ignore[arg-type]
                 frame_size=(md.frame_width, md.frame_height),
                 t_cam_from_base=t_cam_from_base,
                 t_map_from_base=t_map_from_base,
@@ -861,18 +886,15 @@ if _ROS2_AVAILABLE:
 
             preds = []
             base_frame = self._aggregator.description.base_frame
-            for sid in self._seen_sensor_ids:
-                spec = self._sensor_spec(sid)
-                if spec is None or spec.intrinsics is None:
-                    continue
-                t_cam_from_base = self._lookup_4x4(spec.frame_id, base_frame)
+            for cam_frame, intrinsics in self._seen_cameras.values():
+                t_cam_from_base = self._lookup_4x4(cam_frame, base_frame)
                 t_map_from_base = self._lookup_4x4(self._map_frame, base_frame)
                 if t_cam_from_base is None or t_map_from_base is None:
                     continue
                 t_cam_from_map = t_cam_from_base @ np.linalg.inv(t_map_from_base)
                 preds.append(
                     build_in_fov_predicate(
-                        intrinsics=spec.intrinsics,
+                        intrinsics=intrinsics,  # type: ignore[arg-type]
                         t_cam_from_map=t_cam_from_map,
                     )
                 )
@@ -981,6 +1003,12 @@ def world_state_from_idl(msg: object) -> object:
         else None
     )
 
+    labels = list(msg.detected_object_labels)  # type: ignore[attr-defined]
+    # Older publishers send empty bbox arrays; only index-aligned ones are read.
+    valid = list(msg.detected_object_bbox_valid)  # type: ignore[attr-defined]
+    lo = list(msg.detected_object_bbox_min)  # type: ignore[attr-defined]
+    hi = list(msg.detected_object_bbox_max)  # type: ignore[attr-defined]
+    has_boxes = len(valid) == len(lo) == len(hi) == len(labels)
     detected_objects = [
         DetectedObject(
             label=label,
@@ -990,14 +1018,21 @@ def world_state_from_idl(msg: object) -> object:
                 quat_xyzw=(0.0, 0.0, 0.0, 1.0),
                 frame_id=msg.detected_object_frame or "map",  # type: ignore[attr-defined]
             ),
+            bbox_3d=(
+                (lo[i].x, lo[i].y, lo[i].z, hi[i].x, hi[i].y, hi[i].z)
+                if has_boxes and valid[i]
+                else None
+            ),
             track_id=(int(tid) if int(tid) >= 0 else None),
         )
-        for label, conf, pos, tid in zip(
-            msg.detected_object_labels,  # type: ignore[attr-defined]
-            msg.detected_object_confidences,  # type: ignore[attr-defined]
-            msg.detected_object_positions,  # type: ignore[attr-defined]
-            msg.detected_object_track_ids,  # type: ignore[attr-defined]
-            strict=False,
+        for i, (label, conf, pos, tid) in enumerate(
+            zip(
+                labels,
+                msg.detected_object_confidences,  # type: ignore[attr-defined]
+                msg.detected_object_positions,  # type: ignore[attr-defined]
+                msg.detected_object_track_ids,  # type: ignore[attr-defined]
+                strict=False,
+            )
         )
     ]
     attached_objects = [
@@ -1020,6 +1055,7 @@ def world_state_from_idl(msg: object) -> object:
         attachment_revision=int(msg.attachment_revision),  # type: ignore[attr-defined]
         attachment_stamp_ns=int(msg.attachment_stamp_ns),  # type: ignore[attr-defined]
         place_declaration=_place_declaration_from_idl(msg),
+        grasp_declaration=_grasp_declaration_from_idl(msg),
     )
 
 
@@ -1061,6 +1097,20 @@ def _place_declaration_from_idl(msg: object) -> object | None:
     if not bool(getattr(msg, "place_declaration_valid", False)):
         return None
     declaration = PlaceDeclaration.from_idl(msg.place_declaration)  # type: ignore[attr-defined]
+    return declaration if declaration.active else None
+
+
+def _grasp_declaration_from_idl(msg: object) -> object | None:
+    """Decode the grasp declaration riding an ``AttachmentState``, if any.
+
+    Sibling of ``_place_declaration_from_idl``: ``None`` for an absent or
+    retracted declaration, i.e. no grasp exemption.
+    """
+    from openral_core.schemas import GraspDeclaration
+
+    if not bool(getattr(msg, "grasp_declaration_valid", False)):
+        return None
+    declaration = GraspDeclaration.from_idl(msg.grasp_declaration)  # type: ignore[attr-defined]
     return declaration if declaration.active else None
 
 
@@ -1117,6 +1167,7 @@ def build_world_state_stamped_msg(node: object, world_state: object) -> object:
     _fill_detected_objects(msg, world_state)
     _fill_attached_objects(msg, world_state)
     _fill_place_declaration(msg, world_state)
+    _fill_grasp_declaration(msg, world_state)
 
     return msg
 
@@ -1233,6 +1284,14 @@ def _fill_detected_objects(msg: object, world_state: object) -> None:
     msg.detected_object_frame = (  # type: ignore[attr-defined]
         objects[0].pose.frame_id if objects else ""
     )
+    boxes = [o.bbox_3d or (0.0,) * 6 for o in objects]
+    msg.detected_object_bbox_valid = [o.bbox_3d is not None for o in objects]  # type: ignore[attr-defined]
+    msg.detected_object_bbox_min = [  # type: ignore[attr-defined]
+        Point(x=float(b[0]), y=float(b[1]), z=float(b[2])) for b in boxes
+    ]
+    msg.detected_object_bbox_max = [  # type: ignore[attr-defined]
+        Point(x=float(b[3]), y=float(b[4]), z=float(b[5])) for b in boxes
+    ]
 
 
 def _fill_attached_objects(msg: object, world_state: object) -> None:
@@ -1274,6 +1333,18 @@ def _fill_place_declaration(msg: object, world_state: object) -> None:
             msg.place_declaration,  # type: ignore[attr-defined]
             primitive_factory=RosAttachedCollisionPrimitive,
         )
+
+
+def _fill_grasp_declaration(msg: object, world_state: object) -> None:
+    """Relay the live grasp declaration (and its region) to the safety kernel.
+
+    Sibling of ``_fill_place_declaration``: an absent declaration publishes
+    ``grasp_declaration_valid=False``, never a stale leftover.
+    """
+    declaration = getattr(world_state, "grasp_declaration", None)
+    msg.grasp_declaration_valid = declaration is not None  # type: ignore[attr-defined]
+    if declaration is not None:
+        declaration.fill_idl(msg.grasp_declaration)  # type: ignore[attr-defined]
 
 
 def _pose6d_to_ros_pose(pose: object, *, pose_cls: type, quat_cls: type) -> object:

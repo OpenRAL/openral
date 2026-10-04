@@ -158,6 +158,7 @@ sensors:
     vla_feature_key: "observation.images.camera1"
     vendor: "luxonis"
     model: "oak_d_pro"
+    # Real-hardware binding: per host, in robots/so101_follower/units/<unit>.yaml.
   - name: "wrist"
     modality: "rgb"
     # The wrist camera is bolted to the terminal gripper body; its own optical
@@ -180,7 +181,7 @@ sensors:
       up: [0.0, 0.0, -1.0]
       fovy_deg: 90.0
     # 640x480 is MEASURED (`v4l2-ctl --get-fmt-video` on the icSpring rig: 640/480
-    # MJPG; scenes/deploy/so101_bench.yaml requests the same) — the previous
+    # MJPG; the deploy_binding below requests the same) — the previous
     # 256x256 entry was fictional. Load-bearing twice: `rSkill.check_sensors`
     # gates min_width/min_height against these intrinsics
     # (openral_rskill/loader.py `_check_resolution`), and
@@ -203,6 +204,7 @@ sensors:
     catalog_id: "generic/usb_uvc_rgb"
     vendor: "generic_usb"
     model: "so101_wrist"
+    # Real-hardware binding: per host, in robots/so101_follower/units/<unit>.yaml.
 
 capabilities:
   locomotion: ["none"]
@@ -245,6 +247,16 @@ safety:
   # still E-stop. Safety-WG sign-off required (hazard-log). Do NOT enlarge without
   # re-running the envelope sweep; the world/self split is deliberate.
   self_collision_margin_m: -0.06
+  # Runner ramp to a skill's starting_pose — the runner's former defaults,
+  # declared here so they are visible; provisional until run on this rig.
+  starting_pose_max_joint_speed_rad_s: 0.5
+  starting_pose_tolerance_rad: 0.05
+  # Joint-state freshness window: the real HAL's read_state and the skill
+  # runner's blocking waits refuse state older than this (one place; build_hal
+  # and deploy_e2e.launch.py read it). provisional: SO100FollowerHAL's former constructor default,
+  # not measured on this rig — measure with
+  # tools/joint_state_staleness_probe.py --robot <this manifest>.
+  joint_state_staleness_limit_s: 0.5
 
 sdk_kind: "open"
 # Explicit sim/real HAL entrypoints (resolved by openral_hal.build_hal).
@@ -321,4 +333,4 @@ allowed_collision_pairs:
   - [lower_arm, upper_arm]
   - [lower_arm, wrist]
   - [shoulder, upper_arm]
-schema_version: '0.1'
+schema_version: "0.2"

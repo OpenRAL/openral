@@ -148,11 +148,20 @@ def test_openarm_fixture_lowers_to_well_formed_params() -> None:
     assert len(params["collision_parent"]) == n
     assert len(params["collision_origin_xyzrpy"]) == 6 * n
     assert len(params["collision_axis"]) == 3 * n
-    # Per-capsule arrays are parallel and tagged with valid link indices.
-    n_caps = len(params["collision_capsule_link"])
-    assert len(params["collision_capsule_radius"]) == n_caps
-    assert len(params["collision_capsule_origin_xyzrpy"]) == 6 * n_caps
-    assert all(0 <= li < n for li in params["collision_capsule_link"])
+    # Per-primitive arrays are parallel and tagged with valid link indices (the
+    # OpenArm lowers every link to a refined box today, so it may emit no
+    # capsule arrays at all — absent and empty mean the same to the kernel).
+    n_caps = len(params.get("collision_capsule_link", []))
+    assert len(params.get("collision_capsule_radius", [])) == n_caps
+    assert len(params.get("collision_capsule_origin_xyzrpy", [])) == 6 * n_caps
+    n_boxes = len(params.get("collision_box_link", []))
+    assert len(params.get("collision_box_half_extents", [])) == 3 * n_boxes
+    assert len(params.get("collision_box_origin_xyzrpy", [])) == 6 * n_boxes
+    assert n_caps + n_boxes > 0
+    assert all(
+        0 <= li < n
+        for li in [*params.get("collision_capsule_link", []), *params.get("collision_box_link", [])]
+    )
     # Parent-before-child holds for the lowered order.
     for child_idx, parent_idx in enumerate(params["collision_parent"]):
         assert parent_idx < child_idx
@@ -251,11 +260,104 @@ def test_no_tight_geometry_lowers_exactly_as_before() -> None:
     The kernel switches the staged narrow phase on by seeing
     ``box_hull.size() == boxes.size()``, so an accidentally-emitted empty array
     would be the difference between "no robot changed" and "every boxed robot
-    changed". Checked on the real openarm fixture, which declares no tight
-    geometry.
+    changed". Checked on the real so101_follower fixture, which declares no
+    tight geometry (the OpenArm, the previous fixture, now refines every link).
     """
-    robot = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+    robot = RobotDescription.from_yaml("robots/so101_follower/robot.yaml")
+    assert all(g.tight_geometry is None for g in robot.collision_geometry)
     params = collision_params_from_description(robot)
     assert "collision_box_hull" not in params
     assert "collision_hull_dop_lo" not in params
     assert "collision_hull_vertices" not in params
+
+
+def test_several_primitives_per_link_all_reach_the_kernel() -> None:
+    """A link may carry several primitives; every one lands in the kernel arrays.
+
+    The C++ kernel has always accepted several capsules/boxes per link (same-link
+    pairs are skipped in ``check_self_collision``); only this lowering refused
+    them. The unified fitter emits capsule chains and mixed sets, so the refusal
+    is lifted: each primitive is routed by its kind and tagged with its link index.
+    """
+    from openral_core import BoxShape
+
+    robot = _two_link_arm()
+    robot = robot.model_copy(
+        update={
+            "collision_geometry": [
+                LinkCollisionGeometry(
+                    link_name="link1",
+                    shape=CapsuleShape(radius_m=0.05, length_m=0.1),
+                    origin_xyz_rpy=(0.0, 0.0, -0.05, 0.0, 0.0, 0.0),
+                ),
+                LinkCollisionGeometry(
+                    link_name="link1",
+                    shape=CapsuleShape(radius_m=0.05, length_m=0.1),
+                    origin_xyz_rpy=(0.0, 0.0, 0.05, 0.0, 0.0, 0.0),
+                ),
+                LinkCollisionGeometry(
+                    link_name="link1", shape=BoxShape(half_extents_m=(0.02, 0.02, 0.02))
+                ),
+                LinkCollisionGeometry(link_name="link2", shape=SphereShape(radius_m=0.04)),
+            ]
+        }
+    )
+    params = collision_params_from_description(robot)
+    assert params["collision_capsule_link"] == [1, 1, 2]
+    assert params["collision_capsule_half_length"] == [0.05, 0.05, 0.0]
+    assert params["collision_capsule_origin_xyzrpy"][2] == -0.05
+    assert params["collision_capsule_origin_xyzrpy"][8] == 0.05
+    assert params["collision_box_link"] == [1]
+    assert params["collision_n_links"] == 3  # links, not primitives
+
+
+def test_a_capsule_split_into_a_chain_is_exactly_as_conservative() -> None:
+    """Two capsules covering one capsule's segment trip exactly where the one did.
+
+    The at-least-as-conservative proof for the chain output (CLAUDE.md §3): the
+    union of the two halves is the original capsule, so the kernel's pair gap —
+    the minimum over the link's primitives, as ``check_self_collision`` folds
+    it — equals the single-capsule gap at every pose.
+    """
+    import numpy as np
+    from openral_safety.kernel_predicates import capsule_distance
+
+    whole = LinkCollisionGeometry(
+        link_name="link1", shape=CapsuleShape(radius_m=0.05, length_m=0.2)
+    )
+    halves = [
+        LinkCollisionGeometry(
+            link_name="link1",
+            shape=CapsuleShape(radius_m=0.05, length_m=0.1),
+            origin_xyz_rpy=(0.0, 0.0, z, 0.0, 0.0, 0.0),
+        )
+        for z in (-0.05, 0.05)
+    ]
+    robot = _two_link_arm()
+    single = collision_params_from_description(
+        robot.model_copy(update={"collision_geometry": [whole, robot.collision_geometry[1]]})
+    )
+    chain = collision_params_from_description(
+        robot.model_copy(update={"collision_geometry": [*halves, robot.collision_geometry[1]]})
+    )
+    assert chain["collision_capsule_link"] == [1, 1, 2]
+    rng = np.random.default_rng(0)
+
+    def gaps(params: dict[str, object], probe: np.ndarray) -> float:
+        link = list(params["collision_capsule_link"])  # type: ignore[call-overload]  # reason: flat param list
+        radius = list(params["collision_capsule_radius"])  # type: ignore[call-overload]  # reason: flat param list
+        half = list(params["collision_capsule_half_length"])  # type: ignore[call-overload]  # reason: flat param list
+        origin = np.asarray(params["collision_capsule_origin_xyzrpy"], dtype=float).reshape(-1, 6)
+        tfs = [np.eye(4) for _ in link]
+        for i, o in enumerate(origin):
+            tfs[i][:3, 3] = o[:3]
+        return min(
+            float(capsule_distance(tfs[i][None], radius[i], half[i], probe[None], 0.01, 0.0)[0])
+            for i, li in enumerate(link)
+            if li == 1
+        )
+
+    for _ in range(200):
+        probe = np.eye(4)
+        probe[:3, 3] = rng.uniform(-0.3, 0.3, 3)
+        assert gaps(chain, probe) == pytest.approx(gaps(single, probe), abs=1e-12)

@@ -403,3 +403,71 @@ def test_bridge_tick_index_groups_same_key_slots(tmp_path: Path) -> None:
     assert len(ticks) == n_ticks, "same-key slots must stay in ONE tick via tick_index"
     for step, tick in enumerate(sorted(ticks, key=lambda t: t["step_idx"])):
         assert tick["action"] == pytest.approx([float(step)] * 4 + [float(step) + 0.5] * 3)
+
+
+def test_bridge_records_only_rgb_when_a_depth_frame_shares_the_world_state(
+    tmp_path: Path,
+) -> None:
+    """A DEPTH16 frame beside the RGB slots is neither recorded nor fatal.
+
+    The OpenArm bench scene carries the ZED's depth (`head_zed`, DEPTH16 uint16
+    millimetres) in the same world state as the three RGB cameras. The bridge
+    used to read every inline frame as uint8 and the reshape raised on the
+    two-byte-per-pixel depth frame; decoded by encoding it would then be handed
+    to `record_frame`, whose contract is `(H, W, 3) uint8` per camera key. Only
+    RGB frames may reach the recorder; the depth frame is skipped, not fatal.
+    """
+    robot = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "openarm" / "robot.yaml"))
+    from openral_world_state import WorldStateAggregator
+
+    depth_sensors = [s.name for s in robot.sensors if getattr(s, "modality", None) == "depth"]
+    assert depth_sensors, "fixture must carry a depth sensor"
+    aggregator = WorldStateAggregator(robot)
+    bag_path = tmp_path / "deploy.mcap"
+    recorder = RolloutRecorder(
+        robot=robot,
+        task_string="",
+        fps=30.0,
+        sinks=[Rosbag2Sink(bag_path=bag_path)],
+        repo_id=f"openral/dataset-{robot.name}",
+    )
+    bridge = DatasetRecorderBridge(
+        _StandinNode(), robot=robot, aggregator=aggregator, recorder=recorder
+    )
+    state_dim = action_dim = 16
+    n_ticks = 2
+    bridge._on_episode(SimpleNamespace(phase=0, task_string="restock", success=False))
+    for step in range(n_ticks):
+        _feed_snapshot(aggregator, robot, state_dim=state_dim, fill=10 + step, step=step)
+        for name in depth_sensors:
+            h, w = 8, 8
+            aggregator.update_image_frame(
+                name,
+                SensorFrame(
+                    sensor_id=name,
+                    stamp_monotonic_ns=step + 1,
+                    stamp_wall_ns=step + 1,
+                    encoding="depth16",
+                    width=w,
+                    height=h,
+                    channels=1,
+                    data=(b"\xe8\x03") * (h * w),  # 1000 mm, little-endian uint16
+                ),
+            )
+        bridge._on_action(SimpleNamespace(flat=[0.25] * action_dim, n_dof=action_dim))
+    bridge._on_episode(SimpleNamespace(phase=1, task_string="restock", success=True))
+    bridge.destroy()
+
+    from mcap.reader import make_reader
+
+    images: list[dict[str, Any]] = []
+    ticks = 0
+    with bag_path.open("rb") as f:
+        for _schema, channel, message in make_reader(f).iter_messages():
+            if channel.topic == "/openral/dataset/image":
+                images.append(json.loads(message.data.decode("utf-8")))
+            elif channel.topic == "/openral/tick":
+                ticks += 1
+    assert ticks == n_ticks, "the depth frame must not cost the tick"
+    assert len(images) == n_ticks * len(_rgb_sensor_names(robot))
+    assert not ({img["camera"] for img in images} & set(depth_sensors))

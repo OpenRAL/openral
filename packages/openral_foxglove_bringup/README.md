@@ -3,7 +3,7 @@
 A read-only live [Foxglove](https://foxglove.dev/) visualisation surface for
 OpenRAL's live ROS scene — camera images, the `/map` occupancy grid, the octomap
 point cloud (voxels), joint states, TF, the robot model (**Bucket-1**, native),
-plus the custom OpenRAL world types re-published as standard markers/clouds
+plus the kernel's custom voxel grid re-published as a standard point cloud
 (**Bucket-2**, via a converter node), plus the ROS-side telemetry plane —
 world state, diagnostics, node logs, episode/mission transitions, reward
 scores, detected objects.
@@ -40,7 +40,7 @@ groups, so it is reviewable a group at a time:
 |---|---|
 | `SCENE_TOPICS` | Camera images (+ `/compressed` siblings, `camera_info`), `/map`, octomap cloud, `/scan`, `/odom`, `/joint_states`, `/robot_description`, TF |
 | `DEPTH_TOPICS` | Per-camera depth + `points`, the DA3 metric-depth sidecar, nvblox filtered depth + ESDF slice, `/openral/imu`, cuVSLAM odometry |
-| `BUCKET2_TOPICS` | The converter's `MarkerArray` + `PointCloud2` outputs |
+| `BUCKET2_TOPICS` | The converter's `PointCloud2` output |
 | `TELEMETRY_TOPICS` | `world_state_fast`/`_slow`, `policy_state`, `episode`, `critic/score`, `reward/active_task`, `perception/objects`, `attachment_state`(`_applied`), `skill_registry_changed`, `/diagnostics`, `/rosout` |
 
 Every entry is an observation topic a node publishes *about itself*. The
@@ -89,7 +89,16 @@ openral deploy sim --config scenes/deploy/<scene>.yaml --foxglove --foxglove-por
 Default is `--no-foxglove`. The flag is view-only — it cannot actuate the robot.
 When a manifest robot carries an `assets.urdf`, deploy-sim already
 runs a `robot_state_publisher`, so `/tf` + `/robot_description` are on the bus
-and the 3D panel draws the robot with no extra wiring.
+and the 3D panel draws the robot — provided the layout is a generated one
+(re-import it after upgrading). Foxglove's 3D panel loads a URDF on its own
+only from the `/robot_description` *parameter*, which the bridge does not
+expose (no `parameters` capability), so the layout carries an explicit URDF
+layer (`layerId: "foxglove.Urdf"`, `sourceType: "topic"`,
+`topic: "/robot_description"`) on the hero and World-voxels panels. Its
+`package://` meshes are fetched through the bridge, so the package that owns
+them must be on the **bridge's** `AMENT_PREFIX_PATH` (for OpenArm,
+`openarm_description` — source the vendor workspace before `deploy sim` too);
+otherwise the panel shows `Failed to retrieve asset package://…` per link.
 
 ## Run stand-alone
 
@@ -114,10 +123,10 @@ import the layout — the scene-matched one the deploy logs a path to, or
 ┌───────────────────────────┬──────────────┐
 │ 3D · robot + environment  │ camera 0     │
 │ URDF · TF · map · voxels  │ camera 1     │
-│ · collisions · odom       │ camera 2     │
+│ · odom                    │ camera 2     │
 ├───────────────────────────┼──────────────┤
 │ tabs: nav map · joints ·  │ tabs: log ·  │
-│ collisions · policy state │ health · …   │
+│ voxels · policy state     │ health · …   │
 └───────────────────────────┴──────────────┘
 ```
 
@@ -128,7 +137,7 @@ stack beside it; everything else is tabbed, one click away.
 
 | Panel | Topics | Shows |
 |---|---|---|
-| 3D · scene (hero) | `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/openral/world_collisions_markers`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels, collision capsules |
+| 3D · scene (hero) | URDF layer on `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels |
 | Image ×N | `/openral/cameras/<slot>/image` | One panel per camera slot in the scene's `cameras:` list |
 
 **Scene tabs**
@@ -137,7 +146,7 @@ stack beside it; everything else is tabbed, one click away.
 |---|---|---|
 | Nav · 2D map | `/map`, `/odom`, `/scan` | Top-down 2D nav view |
 | Joints | `/joint_states.position[:]` | Every joint's position trace (`[:]` slices any DOF count) |
-| Collisions · voxels | `/openral/world_collisions_markers`, `/openral/world_voxels_cloud` | Bucket-2 geometry close-up |
+| World voxels | `/openral/world_voxels_cloud`, URDF layer on `/robot_description` | Bucket-2 geometry close-up, robot overlaid |
 | Policy state | `/openral/policy_state`, `world_state_fast.staleness_ms[:]`, `.battery_pct` | Step-locked policy vector; staleness/battery off by default |
 
 **Telemetry tabs**
@@ -179,7 +188,7 @@ python -m openral_foxglove_bringup.layout --follow-frame openarm_base
 that names its root otherwise (OpenArm broadcasts `openarm_base`) needs it
 passed. Getting it wrong is not a partial failure: Foxglove renders **nothing**
 in a 3D panel whose follow frame is absent from TF — no robot model, no point
-clouds, no collision markers — while every topic underneath keeps publishing.
+clouds, no voxels — while every topic underneath keeps publishing.
 The generated layout takes this from `RobotDescription.base_frame`, so it is
 only the hand-run generator above that needs the flag.
 
@@ -223,7 +232,7 @@ Under a real deploy-sim, set **only** `with_robot_state_publisher:=true` — the
 sim is the real `/joint_states` source; a second publisher would fight it.
 Resolve a manifest robot's URDF via `robot_descriptions` (e.g.
 `panda_description` for `franka_panda` / `panda_mobile`). `openarm` has no local
-URDF. Meshes render only when the URDF's `package://` paths resolve
+URDF in `robot_descriptions` (its manifest URDF is `robots/openarm/openarm.urdf`). Meshes render only when the URDF's `package://` paths resolve
 to an ament package on the ROS path. See `VERIFICATION.md`.
 
 ## Compress camera images
@@ -244,26 +253,23 @@ Default is off, so the raw path stays available for fidelity-sensitive use.
 
 ## Bucket-2 markers
 
-The custom OpenRAL world types don't render richly in Foxglove on their own. A
-small read-only converter node re-publishes them as **standard** viz types so
-Foxglove draws them natively — no TypeScript extension:
+The kernel's custom voxel grid doesn't render in Foxglove on its own. A small
+read-only converter node re-publishes it as a **standard** viz type so Foxglove
+draws it natively — no TypeScript extension:
 
 | In (`openral_msgs`) | Out (standard) | Topic |
 |---|---|---|
-| `WorldCollision` (capsules) | `visualization_msgs/MarkerArray` (cylinders) | `/openral/world_collisions_markers` |
 | `OccupancyVoxels` | `sensor_msgs/PointCloud2` (voxel centres) | `/openral/world_voxels_cloud` |
 
 `openral deploy sim/run --foxglove` spawns this converter as part of the graph,
-so these two topics are live on any deploy that has Foxglove on. Standalone
+so this topic is live on any deploy that has Foxglove on. Standalone
 (pairing with `foxglove.launch.py`, or against a graph you brought up yourself):
 
 ```bash
 ros2 launch openral_foxglove_bringup bucket2.launch.py
 ```
 
-Capsules are approximated as cylinders (the hemispherical end-caps aren't a
-single standard Marker type); a sphere obstacle renders as a zero-length
-cylinder. The conversion math lives in pure, unit-tested functions.
+The conversion math lives in a pure, unit-tested function.
 
 ## Record an MCAP
 

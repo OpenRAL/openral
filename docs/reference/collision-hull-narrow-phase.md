@@ -254,8 +254,8 @@ and the `box_box_distance` in `check_self_collision`'s **box↔box pass**, added
 
 | surface | keeps the primitive path because |
 |---|---|
-| ~~**attached payloads**~~ | **Reversed 2026-09-11 by [#266](https://github.com/OpenRAL/openral/issues/266) — `check_attached_voxel_collision` now runs the staged path.** The original reason ("no measured motivation") was true when written and stopped being true: the 25→15 mm resolution A/B ([#253](https://github.com/OpenRAL/openral/issues/253)) returned a null *because the voxel term is the small one*, and 424 samples across 4 scenes put the payload box's corners a median **50.78 mm** (max 88.22 mm) proud of the mesh — 2.3–3.9× the whole quantisation term — while payload-vs-world rose from 27/34 (79 %) of stops at 25 mm to 36/37 (97 %) at 15 mm. §10. `check_attached_world_collision` and `check_attached_self_collision` are still the primitive path |
-| **world-capsule obstacles** (`check_world_collision`) | out of scope; not voxel geometry |
+| ~~**attached payloads**~~ | **Reversed 2026-09-11 by [#266](https://github.com/OpenRAL/openral/issues/266) — `check_attached_voxel_collision` now runs the staged path.** The original reason ("no measured motivation") was true when written and stopped being true: the 25→15 mm resolution A/B ([#253](https://github.com/OpenRAL/openral/issues/253)) returned a null *because the voxel term is the small one*, and 424 samples across 4 scenes put the payload box's corners a median **50.78 mm** (max 88.22 mm) proud of the mesh — 2.3–3.9× the whole quantisation term — while payload-vs-world rose from 27/34 (79 %) of stops at 25 mm to 36/37 (97 %) at 15 mm. §10. `check_attached_self_collision` is still the primitive path (`check_attached_world_collision` was retired 2026-09-23 with the capsule world phase, ADR-0109) |
+| ~~**world-capsule obstacles**~~ (`check_world_collision`) | out of scope; not voxel geometry. **Retired 2026-09-23 with the capsule world phase (ADR-0109).** |
 | **capsule-lowered robots** (`h1`, `rizon4`, every MJCF-lowered model) | tight geometry refines a `BoxShape`; a capsule has no box to state the containment proof against, and the schema refuses it |
 | **the broad-phase window** | §4.2 — this is the one thing that must not move |
 | ~~**`panda_link3`, `link4`, `link6`**~~ | **Reversed 2026-09-07 — they now ship.** The original reason (#159: "zero of the 72 census stops") was measured on **start states**, and it was true of them. The 120-run #204 battery measured the **carry phase** instead and found `panda_link6` dominating **18 of 29 link-class stops**, with 33.1 mm of median link-class excess surviving once the voxel term is subtracted. The three DOPs recover 51.7 / 53.0 / 31.2 mm of support excess (75.6→23.8, 76.1→23.2, 52.7→21.5 mm), and `link6`'s 31.2 mm is almost exactly the measured excess. Hulls are 152/152/102 vertices — the same class as the already-shipped `link2`/`link5`/`link7`, well inside `kMaxTightHullVertices`. See the programme note §5 in `collision-validation-evidence.md` |
@@ -766,8 +766,8 @@ than a number that convicts.
   allowance` bound keeps reading the **shipped box** distance — the model the
   declaration's geometry is adjudicated on.
 * **`check_attached_self_collision`** (payload OBB ↔ link OBB) and
-  **`check_attached_world_collision`** (payload ↔ world capsule): 3 % of measured
-  stops, and `attached_payload_mesh_slop`'s budget is stated against exactly the
+  **`check_attached_world_collision`** (payload ↔ world capsule; retired
+  2026-09-23 by ADR-0109): 3 % of measured stops, and `attached_payload_mesh_slop`'s budget is stated against exactly the
   box those still use.
 * **`support_witness_still_in_contact`** — the witness *exempts* cells, so a
   tighter payload would shorten the exemption's life.

@@ -145,6 +145,7 @@ lint:
     uv run mypy --strict tools/
     uv run python tools/refresh_methods_linenos.py --check --coverage
     uv run python tools/gen_nav2_visual.py --check
+    uv run python tools/gen_ros_topic_graph.py --check
 
 # Format
 fmt:
@@ -716,6 +717,26 @@ hil robot:
 # run it attended with the physical power switch within reach.
 hil-so101:
     just hil so101_serial_live
+# Full-graph OpenArm HIL gate. `just hil openarm_deploy` would collect the same
+# file, but not survive contact with a rig: this gate needs the ROS overlay
+# sourced (rclpy, tf2_ros, controller_manager_msgs, lifecycle_msgs), and a
+# sourced overlay drags the system-Python `launch_testing` pytest plugin into
+# the workspace's pytest, where it is incompatible — hence
+# PYTEST_DISABLE_PLUGIN_AUTOLOAD=1, same reason as `hal-twin-sweep`.
+#
+# NON-MOTION, but it attaches to a graph that is NOT: `openral deploy run` on
+# real OpenArm hardware moves both arms to zero at bringup
+# (`OpenArmHW::on_activate` -> `return_to_zero()`). Start the graph yourself,
+# with the cell clear and a hand on the hardware E-stop, THEN run this.
+# See scenes/deploy/openarm_bench.yaml.
+hil-openarm-deploy:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # Off-rig the module skips itself (CAN links down -> pytest exit 0 with
+    # skips), so every non-zero status is a real failure: a usage error (4)
+    # or an empty collection (5) says nothing about the hardware.
+    OPENARM_DEPLOY_HIL=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+        uv run pytest -q -rs tests/hil/test_openarm_deploy.py
 
 # Docs serve
 docs:
