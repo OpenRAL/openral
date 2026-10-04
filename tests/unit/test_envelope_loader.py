@@ -392,3 +392,20 @@ class TestKernelParamsFromEnvelope:
         params = kernel_params_from_envelope(intersection)
         assert "workspace_box_min_xyz" not in params
         assert "workspace_box_max_xyz" not in params
+
+    def test_cartesian_step_bounds_pass_through(self) -> None:
+        """max_cartesian_step_m/_rad reach the kernel params."""
+        robot = _toy_robot()
+        robot.safety.max_cartesian_step_m = 0.05
+        robot.safety.max_cartesian_step_rad = 0.2
+        intersection = compute_intersection(robot, None)
+        params = kernel_params_from_envelope(intersection)
+        assert params["max_cartesian_step_m"] == 0.05
+        assert params["max_cartesian_step_rad"] == 0.2
+
+    def test_cartesian_step_bounds_default_to_unbounded(self) -> None:
+        robot = _toy_robot()  # no max_cartesian_step_* declared
+        intersection = compute_intersection(robot, None)
+        params = kernel_params_from_envelope(intersection)
+        assert math.isinf(params["max_cartesian_step_m"])  # type: ignore[arg-type]
+        assert math.isinf(params["max_cartesian_step_rad"])  # type: ignore[arg-type]

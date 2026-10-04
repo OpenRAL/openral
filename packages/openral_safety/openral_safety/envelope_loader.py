@@ -79,9 +79,36 @@ class EnvelopeIntersection:
         workspace_box_max_xyz: AABB upper corner; symmetric.
         max_ee_speed_m_s: Cartesian end-effector speed cap.
         max_ee_accel_m_s2: Cartesian end-effector acceleration cap.
+        max_ee_angular_speed_rad_s: CARTESIAN_TWIST angular-speed cap
+            (Euclidean over wx,wy,wz), enforced by the C++ kernel's
+            ``kCartesianTwist`` validator case alongside
+            ``max_ee_speed_m_s``. ``SafetyEnvelope.max_ee_angular_speed_rad_s``
+            is optional (``None`` = "no robot declares this bound");
+            resolved to ``math.inf`` here, same as the two
+            ``max_base_*_speed`` fields below.
         max_force_n: External force cap (Newtons).
         max_torque_nm: External torque cap (Nm).
         contact_force_threshold_n: Below this, no contact; above, contact.
+        max_base_linear_speed_m_s: BODY_TWIST linear-speed cap (Euclidean
+            over vx,vy,vz), enforced by the C++ kernel's ``kBodyTwist``
+            validator case. ``SafetyEnvelope.max_base_linear_speed_m_s`` is
+            optional (``None`` = "no robot declares this bound"); resolved
+            to ``math.inf`` here, the same "unbounded" sentinel
+            ``kPosInfinity`` is on the C++ side, so this field is always a
+            concrete float and the kernel never has to special-case an
+            absent bound.
+        max_base_angular_speed_rad_s: BODY_TWIST angular-speed cap
+            (Euclidean over wx,wy,wz); same optional-to-``inf`` resolution
+            as ``max_base_linear_speed_m_s``.
+        max_cartesian_step_m: CARTESIAN_DELTA per-step translation-delta
+            cap (Euclidean over dx,dy,dz), enforced by the C++ kernel's
+            ``kCartesianDelta`` validator case. ``SafetyEnvelope.max_cartesian_step_m``
+            is optional (``None`` = "no robot declares this bound");
+            resolved to ``math.inf`` here, same as the other optional
+            per-mode bounds.
+        max_cartesian_step_rad: CARTESIAN_DELTA per-step rotation-delta cap
+            (Euclidean over the axis-angle triplet rx,ry,rz); same
+            optional-to-``inf`` resolution as ``max_cartesian_step_m``.
         deadman_required: Logical OR of the two manifests.
     """
 
@@ -97,9 +124,14 @@ class EnvelopeIntersection:
     workspace_box_max_xyz: tuple[float, float, float] | None
     max_ee_speed_m_s: float
     max_ee_accel_m_s2: float
+    max_ee_angular_speed_rad_s: float
     max_force_n: float
     max_torque_nm: float
     contact_force_threshold_n: float
+    max_base_linear_speed_m_s: float
+    max_base_angular_speed_rad_s: float
+    max_cartesian_step_m: float
+    max_cartesian_step_rad: float
     deadman_required: bool
 
 
@@ -208,6 +240,17 @@ def _check_scalar_not_loosened(
         )
 
 
+def _resolve_optional_bound(value: float | None) -> float:
+    """``None`` (SafetyEnvelope's "no bound declared") -> ``math.inf``.
+
+    The same "unbounded" sentinel the C++ kernel's ``kPosInfinity`` uses, so
+    every consumer of a per-control-mode bound (``max_base_linear_speed_m_s``,
+    ``max_base_angular_speed_rad_s``, and any future optional bound) works
+    with a plain float and never has to special-case ``None``.
+    """
+    return math.inf if value is None else float(value)
+
+
 def _validate_envelope_tightens(
     ceiling: SafetyEnvelope,
     candidate: SafetyEnvelope,
@@ -234,6 +277,24 @@ def _validate_envelope_tightens(
         if field in explicit_fields:
             _check_scalar_not_loosened(
                 field, getattr(candidate, field), getattr(ceiling, field), label=label
+            )
+    # Optional (None-able) per-control-mode bounds: resolved through the same
+    # None -> inf sentinel compute_intersection/kernel_params_from_envelope
+    # use, so a skill genuinely cannot loosen a robot-declared base-speed
+    # ceiling (an unset skill field stays inf, which never loosens anything).
+    for field in (
+        "max_ee_angular_speed_rad_s",
+        "max_base_linear_speed_m_s",
+        "max_base_angular_speed_rad_s",
+        "max_cartesian_step_m",
+        "max_cartesian_step_rad",
+    ):
+        if field in explicit_fields:
+            _check_scalar_not_loosened(
+                field,
+                _resolve_optional_bound(getattr(candidate, field)),
+                _resolve_optional_bound(getattr(ceiling, field)),
+                label=label,
             )
     if (
         "deadman_required" in explicit_fields
@@ -353,6 +414,19 @@ def compute_intersection(
             return float(r)
         return float(min(r, getattr(skill_env, field)))
 
+    def _pick_min_optional(field: str) -> float:
+        """Like ``_pick_min``, for a ``float | None`` SafetyEnvelope field.
+
+        ``None`` (no bound declared) resolves to ``math.inf`` before the
+        min, so "robot declares no bound, skill declares 0.3" still picks
+        the skill's tighter 0.3, and "neither declares a bound" correctly
+        stays unbounded.
+        """
+        r = _resolve_optional_bound(getattr(merged_env, field))
+        if skill_env is None or field not in skill_set:
+            return r
+        return min(r, _resolve_optional_bound(getattr(skill_env, field)))
+
     # Workspace AABB: ``robot/deploy ∩ skill`` axis-by-axis when both corners are
     # explicitly set on the skill; otherwise use the deploy-tightened robot box.
     skill_set_box = (
@@ -397,9 +471,14 @@ def compute_intersection(
         workspace_box_max_xyz=ws_max,
         max_ee_speed_m_s=_pick_min("max_ee_speed_m_s"),
         max_ee_accel_m_s2=_pick_min("max_ee_accel_m_s2"),
+        max_ee_angular_speed_rad_s=_pick_min_optional("max_ee_angular_speed_rad_s"),
         max_force_n=_pick_min("max_force_n"),
         max_torque_nm=_pick_min("max_torque_nm"),
         contact_force_threshold_n=_pick_min("contact_force_threshold_n"),
+        max_base_linear_speed_m_s=_pick_min_optional("max_base_linear_speed_m_s"),
+        max_base_angular_speed_rad_s=_pick_min_optional("max_base_angular_speed_rad_s"),
+        max_cartesian_step_m=_pick_min_optional("max_cartesian_step_m"),
+        max_cartesian_step_rad=_pick_min_optional("max_cartesian_step_rad"),
         deadman_required=deadman_required,
     )
 
@@ -437,9 +516,14 @@ def kernel_params_from_envelope(envelope: EnvelopeIntersection) -> dict[str, obj
         for value in (
             envelope.max_ee_speed_m_s,
             envelope.max_ee_accel_m_s2,
+            envelope.max_ee_angular_speed_rad_s,
             envelope.max_force_n,
             envelope.max_torque_nm,
             envelope.contact_force_threshold_n,
+            envelope.max_base_linear_speed_m_s,
+            envelope.max_base_angular_speed_rad_s,
+            envelope.max_cartesian_step_m,
+            envelope.max_cartesian_step_rad,
         )
     ):
         raise ValueError(f"NaN scalar in envelope: {envelope!r}")
@@ -455,9 +539,14 @@ def kernel_params_from_envelope(envelope: EnvelopeIntersection) -> dict[str, obj
         "joint_torque_max": [float(v) for v in envelope.joint_torque_max],
         "max_ee_speed_m_s": float(envelope.max_ee_speed_m_s),
         "max_ee_accel_m_s2": float(envelope.max_ee_accel_m_s2),
+        "max_ee_angular_speed_rad_s": float(envelope.max_ee_angular_speed_rad_s),
         "max_force_n": float(envelope.max_force_n),
         "max_torque_nm": float(envelope.max_torque_nm),
         "contact_force_threshold_n": float(envelope.contact_force_threshold_n),
+        "max_base_linear_speed_m_s": float(envelope.max_base_linear_speed_m_s),
+        "max_base_angular_speed_rad_s": float(envelope.max_base_angular_speed_rad_s),
+        "max_cartesian_step_m": float(envelope.max_cartesian_step_m),
+        "max_cartesian_step_rad": float(envelope.max_cartesian_step_rad),
         "deadman_required": bool(envelope.deadman_required),
     }
     if envelope.workspace_box_min_xyz is not None:

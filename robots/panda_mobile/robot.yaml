@@ -302,17 +302,22 @@ safety:
   max_force_n: 100.0
   max_torque_nm: 87.0
   deadman_required: true
-  # Per the per-control-mode safety-bounds convention — per-control-mode bounds the safety supervisor enforces
-  # on RoboCasa pi0.5 / rldx1 chunks (cartesian_delta arm + body_twist
-  # base + gripper width). All bounds derive from RoboCasa's training
-  # config: 5 cm / 0.2 rad max OSC step (the policy emits per-step
-  # deltas at 20 Hz; 5 cm * 20 = 1 m/s envelope matches max_ee_speed
-  # above), 1 m/s + 1.5 rad/s base velocity (robosuite's holonomic
-  # mobile base default). Cartesian-twist angular bound is paired with
-  # the existing max_ee_speed_m_s linear bound for the eventual
-  # cartesian-twist VLA family.
-  max_cartesian_step_m: 0.05
-  max_cartesian_step_rad: 0.2
+  # Per-control-mode bounds the C++ safety kernel enforces (cartesian_delta
+  # arm; body_twist for twist-driven base skills -- RoboCasa's own base
+  # slots are joint_velocity, bounded per joint). The CARTESIAN_DELTA
+  # bounds are Euclidean over each triplet, so they sit at the corner of
+  # robosuite's OSC_POSE per-axis output box (output_max 0.05 m / 0.5 rad
+  # per axis, the cartesian_delta_scale every RoboCasa rSkill ships):
+  # 0.05*sqrt(3) = 0.0866 m and 0.5*sqrt(3) = 0.866 rad, rounded up. The
+  # earlier 0.05 m / 0.2 rad treated the per-axis limit as a norm: on
+  # RoboCasa365's own demonstrations (OpenMOSS-Team/robocasa365-lerobot-v3.0,
+  # pretrain-atomic file-000, 363,795 steps) 24 % of steps exceed 0.05 m and
+  # 10 % exceed 0.2 rad, so 1,632 of 1,832 episodes would E-stop.
+  # 1 m/s + 1.5 rad/s base velocity is robosuite's holonomic mobile base
+  # default; the angular EE bound pairs with max_ee_speed_m_s for the
+  # cartesian-twist family.
+  max_cartesian_step_m: 0.087
+  max_cartesian_step_rad: 0.87
   max_ee_angular_speed_rad_s: 1.0
   max_base_linear_speed_m_s: 1.0
   max_base_angular_speed_rad_s: 1.5
