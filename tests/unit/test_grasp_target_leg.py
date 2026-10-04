@@ -2328,9 +2328,9 @@ def test_the_fingers_in_the_mask_leave_the_fit_only_through_the_self_filtered_cl
 ) -> None:
     """Isaac i24-i28: the closing fingers entered the target's SAM mask, the 3 Hz re-fit
     grew up to the hand and the held region was retracted mid-grasp. With the self-filter's
-    cloud of the same capture the fit is the target alone; without it, the same capture
-    grows to the finger (refused against the held region) — the filter branch is live —
-    and, with the topic configured, the unfiltered fit is said out loud (CLAUDE.md §1.4)."""
+    cloud of the same capture the fit is the target alone; without it the capture is not
+    fitted at all — a lost view, so nothing hand-grown is ever accepted (Isaac i38 armed a
+    32 cm hand column from an unfiltered fit) — and it is said out loud (CLAUDE.md §1.4)."""
     pytest.importorskip("openral_msgs")
     rclpy_task = pytest.importorskip("rclpy.task")
     from openral_hal.depth_cloud import camera_info_from_intrinsics
@@ -2367,13 +2367,12 @@ def test_the_fingers_in_the_mask_leave_the_fit_only_through_the_self_filtered_cl
         assert leg.unfiltered_fits == 0
 
         bridge._kept_clouds.clear()  # the self-filter dropped this capture
-        grown = measure(None)
-        assert grown.pose.xyz[2] + grown.half_extents[2] >= _FINGER_BOX[1][2]
-        assert leg.unfiltered_fits == 1, "an unfiltered fit went unreported"
-        with pytest.raises(_Refusal) as refused:
-            measure(filtered)
-        assert refused.value.kind == "target_moved", refused.value.detail
-        assert leg.unfiltered_fits == 2
+        for previous in (None, filtered):  # nothing held yet / a region held
+            with pytest.raises(_Refusal) as refused:
+                measure(previous)
+            # A lost view, never a fit with the finger in it (Isaac i38 armed one).
+            assert (refused.value.kind, refused.value.retract) == ("unfiltered", False)
+        assert leg.unfiltered_fits == 2, "an unfiltered capture went unreported"
 
         bridge._kept_clouds.append((now_ns, "openarm_base", kept))
         assert measure(filtered) == filtered

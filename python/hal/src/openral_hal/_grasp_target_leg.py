@@ -2042,6 +2042,15 @@ class GraspTargetLeg:
         # The robot's own points (the fingers closing in on the target) leave the fit
         # exactly as the self-filter took them out of the map, at this capture.
         kept = self._kept_points(depth_stamp_ns, grid.frame_id)
+        if kept is None and self._config.self_filtered_cloud_topic:
+            # With the filter configured, a capture it did not cover is a lost view: the
+            # robot's own points would enter the fit (Isaac i38: a hand-grown 32 cm column
+            # reached the support and was armed). Nothing new is accepted from it; a held
+            # region stays under its freeze TTL.
+            raise _lost(
+                "unfiltered",
+                f"no self-filtered cloud within the mask/depth skew of stamp {depth_stamp_ns}",
+            )
         if kept is not None:
             masks = [
                 mask_without_removed_points(mask, depth, intrinsics, t_base_from_cam, kept)
@@ -2091,9 +2100,10 @@ class GraspTargetLeg:
     def _kept_points(self, stamp_ns: int, frame: str) -> NDArray[np.float64] | None:
         """``VisionAttachmentBridge.kept_points``, saying when a configured filter missed.
 
-        With ``self_filtered_cloud_topic`` set, a capture with no self-filtered cloud fits
-        with the robot's own points in: the first such fit warns (topic, stamp, cache
-        span), the next filtered one reports how many ran unfiltered (CLAUDE.md §1.4).
+        With ``self_filtered_cloud_topic`` set, a capture with no self-filtered cloud is not
+        fitted (``_measure`` refuses it as the lost view ``unfiltered``): the first such
+        capture warns (topic, stamp, cache span), the next filtered one reports how many
+        were skipped (CLAUDE.md §1.4).
         """
         kept = self._bridge.kept_points(stamp_ns, frame)
         topic = self._config.self_filtered_cloud_topic
@@ -2104,7 +2114,7 @@ class GraspTargetLeg:
                 self._node.get_logger().warning(
                     f"grasp target fit unfiltered: no self-filtered cloud on {topic!r} at "
                     f"stamp {stamp_ns} (or no tf2 to {frame!r}; cache {len(stamps)} clouds, "
-                    f"span {span}) — the robot's own points stay in the fit"
+                    f"span {span}) — not fitted (the robot's own points would enter it)"
                 )
             self.unfiltered_fits += 1
         elif kept is not None and self.unfiltered_fits:
