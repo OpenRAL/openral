@@ -8847,7 +8847,8 @@ class PhysicsBackend(str, Enum):
             benchmark backend runs it out-of-process via a py3.10 sidecar.
             ManiSkill3 scenes predate this slot and historically
             declared ``MUJOCO`` — new SAPIEN backends use this value.
-        ISAACSIM: NVIDIA Isaac Sim (Omniverse, GPU). Future.
+        ISAACSIM: NVIDIA Isaac Sim (Omniverse + PhysX + RTX, GPU) — the
+            ``isaac_sim`` scene, driven out-of-process via a py3.11 sidecar.
         COPPELIASIM: CoppeliaSim/PyRep — the RLBench benchmark backend, driven
             out-of-process via a py3.10 sidecar.
         GENESIS: Genesis (physics-language unification). Future.
