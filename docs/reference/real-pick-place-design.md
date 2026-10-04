@@ -177,6 +177,25 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   candidate; not applied to a grasp box latched at handover), stale
   world state, frame mismatch, oversize/degenerate region, non-empty geometry, non-allowlisted
   link, grid-frame change, rejected attachment set. Feature parameter default **off**.
+- **The published region is cell-closed** (producer side, `GraspTargetLeg.fill` →
+  `cell_closed_region`; Isaac trials i36/i37, 15 mm cells, and the real 20 mm cell). The kernel's
+  membership test is cell-centre-in-region (`grasp_target_exempts` → `point_in_obb` in
+  `cpp/openral_safety_kernel/src/collision.cpp`), while the fit is tight to the measured surface:
+  a target boundary cell whose volume holds the surface has its centre up to half a cell outside
+  the box, so it is never exempt — and the finger link's hull, swept over the jaw stroke, passes
+  over the target's top-edge cells on every descent and stopped on the target's own cell
+  (`kind=world a=openarm_right_finger_pair … grasp exemption active`). The region handed to the
+  kernel is therefore grown so every cell the box intersects has its centre inside: by
+  `r/2·(|cos θ|+|sin θ|)` (≤ `r/√2`) per horizontal half-extent for a box yawed θ against the
+  lattice, and by `r/2` **upward only** — the bottom stays where the fit put it, so the support
+  layer under the target stays non-exempt (HZ-0115-6). Each half-extent is clamped at
+  `MAX_HALF_EXTENT_M` (logged); a closure over the volume cap publishes the tight fit (logged).
+  Voxel-consistent: inside one cell the map cannot tell another body from the target. Only the
+  kernel-facing region grows — the held fit, every producer gate (`_gate_refit`,
+  `region_within`, `track_region`, the cover check, the hand tests) and the region payload stay
+  tight. *Safety-WG:* enlarges the exempt volume by at most half a cell per side; chosen by the
+  user as WG reviewer; hazard row HZ-0115-26 (management Entry 055). Band row:
+  `test_a_tight_fit_exempts_the_targets_boundary_cells_only_once_cell_closed`.
 - Handover: on the attachment edge that adds the declared object the exemption stays alive only
   while the payload origin (FK of the measured configuration) is inside the region, then retires
   permanently; a detach retires it. Only a payload attached on the declaring gripper's own chain

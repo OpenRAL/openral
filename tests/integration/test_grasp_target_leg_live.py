@@ -443,7 +443,18 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         state["mask_skew_s"] = 0.0
         declaration_pub.publish(_declaration(now_ns(), one))
         assert _wait_until(region_live, timeout_s=20.0)
-        region = PlaceRegion.from_idl(latest().grasp_declaration.region)
+        published = PlaceRegion.from_idl(latest().grasp_declaration.region)
+        # The payload is the held (tight) fit; the kernel gets it cell-closed — grown
+        # sideways and up, never down (``GraspTargetLeg.fill``).
+        assert bridge._grasp_target is not None
+        region = bridge._grasp_target.tracker.region
+        assert region is not None
+        # (a re-fit may land between the two reads: same static scene, millimetres apart)
+        assert published.pose.xyz[:2] == pytest.approx(region.pose.xyz[:2], abs=1e-3)
+        assert published.pose.xyz[2] - published.half_extents[2] == pytest.approx(
+            region.pose.xyz[2] - region.half_extents[2], abs=1e-3
+        )
+        assert all(p > h for p, h in zip(published.half_extents, region.half_extents, strict=True))
         left = next(j for j in description.joints if j.name == "left_gripper")
         # link7 placed so the left TCP (the gripper joint origin) sits at the region centre.
         t_base_link7 = _homogeneous(

@@ -62,6 +62,16 @@ classes, each logged once per transition with its typed reason:
   stalled octomap — whose bridge keeps republishing a fresh ``header.stamp`` —
   ages the region out instead of vouching for it.
 
+**What the kernel gets is cell-closed** (``GraspTargetLeg.fill``). The kernel exempts
+a voxel only when the cell's centre lies in the region; a fit tight to the measured
+surface leaves the target's own boundary cells (surface inside, centre outside)
+unexempt, and the finger hull swept over the target's top edge stops on them. The
+published region is ``cell_closed_region`` of the held fit against the newest grid:
+grown by ``r/2·(|cos θ|+|sin θ|)`` (≤ ``r/√2``) horizontally and ``r/2`` up, never
+down, so the support layer stays non-exempt. Every gate here (``_gate_refit``,
+``region_within``, ``track_region``, the cover check, the hand tests) and the region
+payload keep the tight fit.
+
 The region dies with the declaration: dispatch retraction (goal end, cancel,
 E-stop — the runner retracts on all of them) and ``timeout_s`` expiry clear it.
 On an ATTACH of a leg whose jaw link the *armed* declaration names (the
@@ -162,6 +172,7 @@ from openral_hal._grasp_target import (
     TargetRefusal,
     VoxelLattice,
     _in_region,
+    cell_closed_region,
     mask_without_removed_points,
     occupied_centers_in_box,
     project_point,
@@ -1285,6 +1296,9 @@ class GraspTargetLeg:
         # Consecutive fits that found no self-filtered cloud although a topic is
         # configured: logged on entering and on leaving that state (CLAUDE.md §1.4).
         self.unfiltered_fits = 0
+        # Why the last published region was not exactly the cell-closed fit ("" when it
+        # was): logged on every change, never per publish (``_kernel_region``).
+        self._closure_note = ""
 
     @property
     def _lock(self) -> AbstractContextManager[Any]:
@@ -1352,12 +1366,66 @@ class GraspTargetLeg:
 
     # ── envelope ─────────────────────────────────────────────────────────────
 
+    @_locked
     def fill(self, msg: Any, *, now_ns: int) -> None:
-        """Put the declaration in force (region and all) on one ``AttachmentState``."""
+        """Put the declaration in force (region and all) on one ``AttachmentState``.
+
+        The region goes out cell-closed (``_kernel_region``); the tracker keeps the
+        tight fit every producer gate compares against.
+        """
         declaration = self.tracker.envelope(now_ns=now_ns)
         msg.grasp_declaration_valid = declaration is not None
-        if declaration is not None:
-            declaration.fill_idl(msg.grasp_declaration)
+        if declaration is None:
+            return
+        if declaration.region is not None:
+            declaration = declaration.model_copy(
+                update={"region": self._kernel_region(declaration.target_id, declaration.region)}
+            )
+        declaration.fill_idl(msg.grasp_declaration)
+
+    def _kernel_region(self, target_id: str, region: PlaceRegion) -> PlaceRegion:
+        """The held fit as the kernel gets it: closed over the cells of the newest grid.
+
+        The kernel exempts a voxel only when its centre lies in the region, so the
+        tight fit leaves the target's own boundary cells unexempt; ``cell_closed_region``
+        grows it by at most half a cell per side (``r/√2`` horizontally, ``r/2`` up,
+        never down). The newest grid is the one the kernel checks the same publication
+        against. Each half-extent is clamped at ``GraspDeclaration.MAX_HALF_EXTENT_M``;
+        a closure over the volume cap, no grid or a grid in another frame (the kernel
+        refuses that region itself) publishes the tight fit. Every such case is logged
+        once per change.
+        """
+        grid = self._grid
+        note = ""
+        closed = region
+        try:
+            if grid is None:
+                raise ROSConfigError("no voxel grid to close the region over")
+            closed, clamped = cell_closed_region(
+                region, grid[0], max_half_extent_m=GraspDeclaration.MAX_HALF_EXTENT_M
+            )
+            if clamped:
+                note = f"clamped at the {GraspDeclaration.MAX_HALF_EXTENT_M} m half-extent cap"
+            if closed.volume_m3() > GraspDeclaration.MAX_VOLUME_M3:
+                closed = region
+                note = (
+                    f"published tight: the closure exceeds the {GraspDeclaration.MAX_VOLUME_M3} "
+                    "m^3 volume cap"
+                )
+        except ROSConfigError as exc:
+            closed = region
+            note = f"published tight: {exc}"
+        if note != self._closure_note:
+            self._closure_note = note
+            if note:
+                self._node.get_logger().warning(
+                    f"grasp target region for {target_id!r}: cell closure {note}"
+                )
+            else:
+                self._node.get_logger().info(
+                    f"grasp target region for {target_id!r}: cell-closed again"
+                )
+        return closed
 
     # ── inputs ───────────────────────────────────────────────────────────────
 

@@ -33,6 +33,10 @@ Flow, one call per step so every step is replayable from its inputs alone:
    the same target if it barely moved. ``region_within`` tells a re-fit that
    shrank inside the held region (the approaching hand occluding part of the
    target) from one that reaches outside it (the target moved).
+7. ``cell_closed_region`` — only what goes to the kernel: the held fit grown so
+   every lattice cell it touches has its centre inside (the kernel's exemption
+   test), horizontally and up, never down. The gates above keep comparing the
+   tight fits.
 
 Every threshold here is a **calibration point** (CLAUDE.md §1.2): the caps are
 the design note's Safety-WG placeholders (half-extent ≤ 0.20 m, volume ≤
@@ -63,6 +67,7 @@ __all__ = [
     "TargetRegionFit",
     "TargetSeed",
     "VoxelLattice",
+    "cell_closed_region",
     "mask_without_removed_points",
     "occupied_centers_in_box",
     "project_point",
@@ -867,3 +872,67 @@ def region_within(inner: PlaceRegion, outer: PlaceRegion, *, tol_m: float) -> bo
     corners = (signs * np.asarray(inner.half_extents)) @ t[:3, :3].T + t[:3, 3]
     grown = outer.model_copy(update={"half_extents": tuple(h + tol_m for h in outer.half_extents)})
     return bool(_in_region(corners, grown).all())
+
+
+def cell_closed_region(
+    region: PlaceRegion, grid: VoxelLattice, *, max_half_extent_m: float
+) -> tuple[PlaceRegion, bool]:
+    """``region`` grown so every lattice cell it intersects has its centre inside — never down.
+
+    The kernel exempts a world voxel only when the cell's *centre* lies in the grasp
+    region (``grasp_target_exempts`` in ``cpp/openral_safety_kernel/src/collision.cpp``).
+    A fit tight to the target's measured surface leaves the target's own boundary cells
+    — the surface inside them, their centres up to half a cell outside the box — never
+    exempt, and a finger hull swept over the target's top edge stops on them. A cell
+    meets the box iff its centre lies in the box ⊕ that cell, which the box grown per
+    local axis ``i`` by ``r/2 · Σ_j |(Rᵀ_box R_grid)_ij|`` contains: ``r/2 · (|cos θ| +
+    |sin θ|) ≤ r/√2`` horizontally for a yaw ``θ`` against a z-up lattice, ``r/2``
+    vertically. Grown horizontally on both sides and **up only**: the bottom stays where
+    the fit put it, so the support layer under it stays non-exempt (ADR-0115,
+    HZ-0115-6). Voxel-consistent: inside one cell the map cannot tell another body from
+    the target, so exempting the cells the target touches exempts nothing the map could
+    separate from it.
+
+    Args:
+        region: A gravity-aligned (yaw-only) fit in ``grid.frame_id``.
+        grid: The lattice the region is vouched against.
+        max_half_extent_m: Ceiling on each grown half-extent (the declaration's cap);
+            a clamped vertical half-extent keeps the bottom fixed.
+
+    Returns:
+        ``(closed, clamped)`` — ``clamped`` when any half-extent hit the ceiling.
+
+    Raises:
+        ROSConfigError: On a frame mismatch or a region that is not yaw-only.
+
+    Example:
+        >>> import numpy as np
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> origin, identity = (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)
+        >>> g = VoxelLattice("base", origin, identity, 0.02, (1, 1, 1), np.zeros(1, np.uint8))
+        >>> r = PlaceRegion(
+        ...     frame_id="base",
+        ...     half_extents=(0.05, 0.04, 0.03),
+        ...     pose=Pose6D(xyz=(0.3, 0.0, 0.1), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ... )
+        >>> closed, clamped = cell_closed_region(r, g, max_half_extent_m=0.2)
+        >>> [round(v, 3) for v in closed.half_extents], round(closed.pose.xyz[2], 3), clamped
+        ([0.06, 0.05, 0.035], 0.105, False)
+    """
+    _check_frame(grid, region)
+    rot = homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)[:3, :3]
+    if abs(rot[2, 2] - 1.0) > _UNIT_QUAT_TOL:
+        raise ROSConfigError("cell_closed_region: the region must be gravity-aligned (yaw only).")
+    grow = 0.5 * grid.resolution * np.abs(rot.T @ grid.rotation()).sum(axis=1)
+    hx, hy, hz = region.half_extents
+    wanted = (hx + float(grow[0]), hy + float(grow[1]), hz + float(grow[2]) / 2.0)
+    half = tuple(min(h, max_half_extent_m) for h in wanted)
+    x, y, z = region.pose.xyz
+    closed = region.model_copy(
+        update={
+            "half_extents": half,
+            # Bottom fixed: the top alone rises by what the vertical half-extent gained.
+            "pose": region.pose.model_copy(update={"xyz": (x, y, z - hz + half[2])}),
+        }
+    )
+    return closed, half != wanted
