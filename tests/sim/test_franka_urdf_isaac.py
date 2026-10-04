@@ -1,9 +1,8 @@
 """Sim test: URDF-driven (robot-agnostic) Isaac scene via the deploy-sim seam.
 
-Deploy-sim HAL generalization amendment (M1). Unlike ``test_franka_isaac_deploy_hal``
-— which uses the ``lift_cube`` layout's hardcoded Isaac built-in Franka example asset — this test
-drives ``scenes/deploy/isaac_franka_urdf.yaml`` (``--layout manifest``): the
-sidecar **imports the franka_panda manifest's URDF** via Isaac's URDF importer,
+Deploy-sim HAL generalization amendment (M1). This test drives
+``scenes/deploy/isaac_franka_urdf.yaml`` (``--layout manifest``): the sidecar
+**imports the franka_panda manifest's URDF** via Isaac's URDF importer,
 maps DOFs to the manifest joint order by name, and drives the arm with a
 JOINT_POSITION controller. This is the path that makes any manifest robot
 pluggable into Isaac.

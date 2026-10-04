@@ -202,65 +202,31 @@ _Isaac Sim scene sidecar, running Isaac Lab/Kit in its own py3.11 venv, auto-spa
 - `_parse_args(argv: list[str]) -> argparse.Namespace` — Sidecar CLI, including `--environment-usd` (local path / URL / `isaac:<path>`) and `--spawn-pose X Y Z YAW`; both are rejected outside `--layout manifest`.
 - `_serve(scene, *, host, port, sim_app, task, layout, environment, spawn) -> int` — ZMQ REP loop; `ping` answers the scene identity (`task`, `layout`, `environment`, `spawn`) the client checks before adopting a running sidecar.
 - `--objects-json` — JSON list of scene objects (manifest layout only). `--site-dir` — an import dir prepended to `sys.path` (a binary install's wire deps). A root-owned install (`ISAAC_PATH/kit` not writable) gets `--portable-root ~/.cache/openral/isaac-sidecar/kit-data` so Kit's caches land in the user's home.
-- `main(argv: list[str]) -> int` (L172) — Checks required dep versions (before the ~50 s Kit boot), launches `SimulationApp`, then imports and builds the scene named by `--layout` (`lift`/`bowl_plate`/`manifest`) and serves the ZMQ loop.
+- `main(argv: list[str]) -> int` (L165) — Checks required dep versions (before the ~50 s Kit boot), launches `SimulationApp`, then builds the manifest scene and serves the ZMQ loop; a boot exception is printed before Kit's fast shutdown (which would otherwise swallow it).
 
 ### `tools/_isaac_scene_base.py`
 _Shared base for the Isaac Sim sidecar scenes (py3.11 venv only), owning the obs/step lifecycle, RGBA→HWC frame grabbing, the warmup + physics-substep loop, and eval-layer observation assembly, so a new layout only overrides a few template methods._
 
-- `franka_joint_positions(franka: Any) -> NDArray[np.float32]` (L51) — Franka joint angles in manifest order (8 = 7 arm + gripper).
-- `franka_joint_velocities(franka: Any) -> NDArray[np.float32]` (L56) — Franka joint velocities in manifest order (8 = 7 arm + gripper).
-- `class IsaacSceneBase` (L61) — Lifecycle + obs skeleton common to the Isaac Sim sidecar scenes; class attrs `warmup_steps` / `physics_substeps`. Template methods `build`/`_apply_action`/`_images`/`_state`/`_reward_terminated` are overridden per scene.
-  - `IsaacSceneBase.build() -> None` (L155) — Template method (raises `NotImplementedError`): construct the stage (robot, props, cameras, controllers).
+- `class IsaacSceneBase` (L30) — Lifecycle + obs skeleton common to the Isaac Sim sidecar scenes; class attrs `warmup_steps` / `physics_substeps`. Template methods `build`/`_apply_action`/`_images`/`_state`/`_reward_terminated` are overridden per scene.
+  - `IsaacSceneBase.build() -> None` (L124) — Template method (raises `NotImplementedError`): construct the stage (robot, props, cameras, controllers).
   - `IsaacSceneBase._after_world_reset() -> None` — Hook run right after `world.reset()`, before the warmup steps, for state the reset overwrites (e.g. a robot root placed away from its import pose).
-  - `IsaacSceneBase.reset(seed: int | None = None) -> dict[str, Any]` (L91) — Per-episode reset: randomize, reset physics, warm up, observe.
-  - `IsaacSceneBase.render() -> NDArray[np.uint8] | None` (L150) — Last grabbed RGB frame, or `None`.
-  - `IsaacSceneBase.sim_time_ns() -> int | None` (L128) — Elapsed sim time in ns for `/clock`; prefers Isaac's `SimulationContext.current_time`, else integrates step count × physics dt.
-  - `IsaacSceneBase.step(action: NDArray[np.float32]) -> dict[str, Any]` (L102) — Apply one action, advance physics (renders only the final substep), return a StepResult dict (`observation`/`reward`/`terminated`/`truncated`/`info`/`sim_time_ns`).
-
-### `tools/isaac_scene.py`
-_Minimal Isaac Sim lift-cube scene for the sidecar, built on Isaac Sim core (not Isaac Lab). Franka on a ground plane, a cube in front, two RTX cameras matching the LIBERO contract. Lifecycle/obs skeleton in `_isaac_scene_base.IsaacSceneBase`._
-
-- `_ARM_DOF = 7` (L36) — arm joint count.
-- `_ACTION_DIM = 8` (L37) — 7 arm joint deltas + 1 gripper command.
-- `_ARM_DELTA_SCALE = 0.05` (L38) — rad per unit action, keeps a unit action sane.
-- `_GRIPPER_OPEN = 0.04` (L39) — Franka finger joint upper bound (m).
-- `_GRIPPER_CLOSED = 0.0` (L40) — Franka finger joint lower bound (m).
-- `_LIFT_SUCCESS_Z = 0.10` (L41) — cube CoM height (m) counted as "lifted".
-- `_CUBE_HALF = 0.025` (L42) — 5 cm cube → 2.5 cm half-extent.
-- `_AGENT_CAMERA_POS: NDArray[np.float64]` (L43) — front agent-view camera position.
-- `class IsaacLiftScene(IsaacSceneBase)` (L46) — A real Isaac Sim PhysX + RTX lift-cube scene, driven step-by-step.
-  - `IsaacLiftScene.build() -> None` (L62) — Construct the stage: ground + Franka + cube + camera.
-
-### `tools/isaac_bowl_plate_scene.py`
-_Isaac Sim table + bowl + plate Franka scene with the LIBERO obs/action contract, built on Isaac Sim core: arm motion via `ArticulationController`, end-effector control via the core Lula IK solver. Mirrors the LIBERO contract so act-libero/smolvla-libero drive it unchanged._
-
-- `_ARM_DOF = 7` (L38) — arm joint count.
-- `_ACTION_DIM = 7` (L39) — LIBERO OSC-pose delta: dpos(3) + drot(3) + gripper(1).
-- `_POS_SCALE = 0.03` (L40) — metres per unit position-delta action.
-- `_GRIPPER_OPEN = 0.04` (L41) — Franka finger joint upper bound.
-- `_GRIPPER_CLOSED = 0.0` (L42) — Franka finger joint lower bound.
-- `_TABLE_TOP_Z = 0.0` (L43) — table surface at the robot base height.
-- `_OBJ_Z = 0.03` (L44) — object resting height.
-- `_TASK_CENTER: NDArray[np.float64]` (L45) — nominal bowl/plate task centre.
-- `_WORKSPACE_LOW: NDArray[np.float64]` (L46) — randomization box lower bound for object placement.
-- `_WORKSPACE_HIGH: NDArray[np.float64]` (L47) — randomization box upper bound for object placement.
-- `_AGENT_CAMERA_POS: NDArray[np.float64]` (L48) — front agent-view camera position.
-- `_SECONDARY_CAMERA_POS: NDArray[np.float64]` (L49) — secondary prop-view camera position.
-- `class IsaacBowlPlateScene(IsaacSceneBase)` (L84) — Table + bowl + plate scene, LIBERO two-camera contract.
-  - `IsaacBowlPlateScene.build() -> None` (L101) — Construct the stage: table, Franka, bowl, plate, Lula IK solver, two cameras.
+  - `IsaacSceneBase.reset(seed: int | None = None) -> dict[str, Any]` (L60) — Per-episode reset: randomize, reset physics, warm up, observe.
+  - `IsaacSceneBase.render() -> NDArray[np.uint8] | None` (L119) — Last grabbed RGB frame, or `None`.
+  - `IsaacSceneBase.sim_time_ns() -> int | None` (L97) — Elapsed sim time in ns for `/clock`; prefers Isaac's `SimulationContext.current_time`, else integrates step count × physics dt.
+  - `IsaacSceneBase.step(action: NDArray[np.float32]) -> dict[str, Any]` (L71) — Apply one action, advance physics (renders only the final substep), return a StepResult dict (`observation`/`reward`/`terminated`/`truncated`/`info`/`sim_time_ns`).
 
 ### `tools/isaac_manifest_scene.py`
 _Robot-agnostic, URDF-driven Isaac Sim scene, unlike the PoC scenes that hardcode Isaac's Franka asset: imports the manifest robot's URDF and wires joints/sensors/control from a JSON robot spec marshaled across the venv boundary. This cut (M1): fixed-base arm, one RGB camera, JOINT_POSITION-delta control._
 
-- `_GRIPPER_DEADBAND = 1e-3` (L58) — Below this magnitude a gripper action channel means HOLD, letting a pure `BODY_TWIST` step (zero arm/gripper slots) leave the gripper alone.
-- `_SCAN_MAX_SELF_SKIPS = 8` (L65) — Self-occlusion handling for the lidar fan (mirrors `openral_sim.backends.robocasa._LASER_MAX_SELF_SKIPS`): caps how many self-layers one beam steps through before giving up and reading `range_max_m`.
-- `_SCAN_SELF_SKIP_EPS_M = 1e-3` (L68) — Nudge (m) added past a self-hit before re-casting.
-- `map_dof_to_manifest(values, *, dof_index, manifest_joints, grippers, base_values=None, base_joints=None, rates=False) -> NDArray[np.float32]` (L71) — Maps an Isaac articulation DOF vector to the full manifest joint order; a base joint reads `base_values`, an arm joint its `urdf_name` DOF, a gripper its leader finger mapped linearly from URDF closed/open onto the manifest's own range (so `/joint_states` stays inside the manifest limits); unresolved → `0.0`. `rates=True` maps velocities.
-- `strip_urdf_mimics(urdf_text, source_dir) -> str` (L126) — A URDF without `<mimic>` tags, relative mesh paths made absolute, for the Isaac >= 6 converter (its mimic constraint destabilises PhysX articulations).
-- `compose_planar(spawn, odom) -> tuple[float, float, float, float]` (L161) — World `(x, y, z, yaw)` of the base: the spawn pose composed with the planar odometry pose (odometry starts at the spawn). Pure.
-- `resolve_beam_range(raycast_closest, *, robot_prim, origin_xy, angle_rad, z, range_min_m, range_max_m) -> float` (L182) — One lidar beam's range, with the robot's own body (prims under `robot_prim`) skipped by rigid-body-path identity rather than assumed clear; re-casts past a self-hit up to a bounded number of times. Pure, so unit-testable without a Kit app.
-- `class IsaacManifestScene(IsaacSceneBase)` (L253) — URDF-driven, robot-agnostic Isaac scene built from the marshaled robot spec.
-  - `IsaacManifestScene.build() -> None` (L395) — Import the manifest robot's URDF (Isaac >= 6: `URDFImporter` before `World()` + reference with the `physx` variant; < 6: the command importer), wire joints/sensors/control, place cameras per `_plan_cameras`; references the `environment_usd` stage (else the default ground plane), adds `objects` (rigid bodies + convex-hull colliders when missing, reset with the World), and places the robot at `spawn_pose` by moving the base anchor joint with the root. Arm deltas accumulate on a commanded target (a zero action holds); each gripper drives its leader and mimic followers. Step `info` carries `robot_position` (PhysX root) and `object_positions`.
+- `_GRIPPER_DEADBAND = 1e-3` (L56) — Below this magnitude a gripper action channel means HOLD, letting a pure `BODY_TWIST` step (zero arm/gripper slots) leave the gripper alone.
+- `_SCAN_MAX_SELF_SKIPS = 8` (L63) — Self-occlusion handling for the lidar fan (mirrors `openral_sim.backends.robocasa._LASER_MAX_SELF_SKIPS`): caps how many self-layers one beam steps through before giving up and reading `range_max_m`.
+- `_SCAN_SELF_SKIP_EPS_M = 1e-3` (L66) — Nudge (m) added past a self-hit before re-casting.
+- `map_dof_to_manifest(values, *, dof_index, manifest_joints, grippers, base_values=None, base_joints=None, rates=False) -> NDArray[np.float32]` (L69) — Maps an Isaac articulation DOF vector to the full manifest joint order; a base joint reads `base_values`, an arm joint its `urdf_name` DOF, a gripper its leader finger mapped linearly from URDF closed/open onto the manifest's own range (so `/joint_states` stays inside the manifest limits); unresolved → `0.0`. `rates=True` maps velocities.
+- `strip_urdf_mimics(urdf_text, source_dir) -> str` (L124) — A URDF without `<mimic>` tags, relative mesh paths made absolute, for the Isaac >= 6 converter (its mimic constraint destabilises PhysX articulations).
+- `compose_planar(spawn, odom) -> tuple[float, float, float, float]` (L159) — World `(x, y, z, yaw)` of the base: the spawn pose composed with the planar odometry pose (odometry starts at the spawn). Pure.
+- `resolve_beam_range(raycast_closest, *, robot_prim, origin_xy, angle_rad, z, range_min_m, range_max_m) -> float` (L180) — One lidar beam's range, with the robot's own body (prims under `robot_prim`) skipped by rigid-body-path identity rather than assumed clear; re-casts past a self-hit up to a bounded number of times. Pure, so unit-testable without a Kit app.
+- `class IsaacManifestScene(IsaacSceneBase)` (L251) — URDF-driven, robot-agnostic Isaac scene built from the marshaled robot spec.
+  - `IsaacManifestScene.build() -> None` (L393) — Import the manifest robot's URDF (Isaac >= 6: `URDFImporter` before `World()` + reference with the `physx` variant; < 6: the command importer), wire joints/sensors/control, place cameras per `_plan_cameras`; references the `environment_usd` stage (else the default ground plane), adds `objects` (rigid bodies + convex-hull colliders when missing, reset with the World), and places the robot at `spawn_pose` by moving the base anchor joint with the root. Arm deltas accumulate on a commanded target (a zero action holds); each gripper drives its leader and mimic followers. Step `info` carries `robot_position` (PhysX root) and `object_positions`.
 
 ### `tools/robocasa_carry_survey.py`
 _Answers whether any RoboCasa task makes the base drive while holding something, by building the env and measuring the distance from the base's start pose to every manipulated object — not by reading the source. See [`docs/reference/robocasa-carry-survey.md`](../reference/robocasa-carry-survey.md)._

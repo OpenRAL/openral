@@ -1,11 +1,10 @@
 """Shared base for the Isaac Sim sidecar scenes.
 
-Runs under the Isaac Sim py3.11 venv only (imported by the scene modules, which
-``isaac_sidecar.py`` imports after ``SimulationApp`` is live). Owns the bits both
-the ``lift_cube`` and ``bowl_plate`` scenes share — the obs/step lifecycle,
-RGBA→HWC frame grabbing, the warmup + physics-substep loop, and the eval-layer
-observation assembly — so a new layout is a few template-method overrides rather
-than a third copy of the skeleton.
+Runs under the Isaac Sim interpreter only (imported by the scene module, which
+``isaac_sidecar.py`` imports after ``SimulationApp`` is live). Owns the
+obs/step lifecycle, RGBA→HWC frame grabbing, the warmup + physics-substep loop,
+and the eval-layer observation assembly; ``isaac_manifest_scene`` fills in the
+template methods.
 
 Subclasses implement the divergent parts:
 
@@ -26,36 +25,6 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
-
-
-def _franka_dof_to_manifest(vec: NDArray[np.float32]) -> NDArray[np.float32]:
-    """Map an Isaac Franka 9-DOF vector to the manifest's 8 joints.
-
-    Isaac's articulation orders ``[panda_joint1..7, finger1, finger2]``; the
-    OpenRAL manifest collapses the two fingers into one ``panda_gripper`` joint.
-    Returns ``[arm0..6, gripper]`` (gripper = mean of the two finger entries) in
-    manifest order so ``SimAttachedHAL.read_state`` can index it against
-    ``description.joints``. Works for positions or velocities.
-    """
-    v = np.asarray(vec, dtype=np.float32).reshape(-1)
-    arm = v[:7]
-    if v.shape[0] >= 9:
-        gripper = float(np.mean(v[7:9]))
-    elif v.shape[0] > 7:
-        gripper = float(v[7])
-    else:
-        gripper = 0.0
-    return np.concatenate([arm, np.asarray([gripper], dtype=np.float32)]).astype(np.float32)
-
-
-def franka_joint_positions(franka: Any) -> NDArray[np.float32]:
-    """Franka joint angles in manifest order (8 = 7 arm + gripper)."""
-    return _franka_dof_to_manifest(np.asarray(franka.get_joint_positions(), dtype=np.float32))
-
-
-def franka_joint_velocities(franka: Any) -> NDArray[np.float32]:
-    """Franka joint velocities in manifest order (8 = 7 arm + gripper)."""
-    return _franka_dof_to_manifest(np.asarray(franka.get_joint_velocities(), dtype=np.float32))
 
 
 class IsaacSceneBase:

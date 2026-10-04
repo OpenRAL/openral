@@ -129,21 +129,13 @@ def test_warehouse_deploy_scene_boots_the_sidecar_with_stage_and_spawn(
         env.close()
 
 
-def test_environment_on_a_hardcoded_layout_is_an_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    pytest.importorskip("zmq", reason="isaacsim group (pyzmq) not installed")
-    from openral_hal.sim_bringup import build_sim_env_from_yaml
+def test_a_removed_layout_is_rejected_at_load() -> None:
+    """The lift_cube / bowl_plate PoC layouts are gone (they never booted on
+    Isaac Sim 6.1); a YAML still naming one fails validation, not mid-boot."""
+    from openral_sim import SCENES
 
-    doc = _WAREHOUSE_YAML.read_text().replace(
-        "  backend_options:\n", '  backend_options:\n    layout: "lift_cube"\n'
-    )
-    yaml_path = tmp_path / "warehouse_lift_cube.yaml"
-    yaml_path.write_text(doc)
-    monkeypatch.setenv("OPENRAL_ISAAC_SIDECAR_PYTHON", sys.executable)
-    monkeypatch.setenv("OPENRAL_ISAAC_SIDECAR_SCRIPT", str(_FAKE_SIDECAR))
-    with pytest.raises(ROSConfigError, match="need layout 'manifest'"):
-        build_sim_env_from_yaml(str(yaml_path))
+    with pytest.raises(ROSConfigError, match="layout"):
+        SCENES.validate_options("isaac_sim", {"layout": "lift_cube"})
 
 
 # ── URDF joint matching + grippers (real OpenArm manifest vs its real URDF) ───

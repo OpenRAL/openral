@@ -3,8 +3,9 @@
 
 Isaac side of the backend in ``openral_sim.backends.isaac_sim`` (py3.12),
 auto-spawned under the venv named by ``OPENRAL_ISAAC_SIDECAR_PYTHON``. Launches
-Omniverse Kit headless, builds a Franka arm + liftable cube + tiled RGB camera
-scene, and serves ZMQ REP + msgpack/ndarray framing:
+Omniverse Kit headless, builds the robot-agnostic manifest scene
+(``isaac_manifest_scene``: the manifest robot from its URDF, plus an optional
+environment USD and objects), and serves ZMQ REP + msgpack/ndarray framing:
 
     ping->{"ok","action_dim","task","layout","environment","spawn"}   reset->{"observation"}
     step->{"observation","reward","terminated","truncated","info"}
@@ -56,7 +57,7 @@ def _decode_ndarray(obj: dict[str, Any]) -> Any:
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="OpenRAL Isaac Sim scene sidecar")
-    p.add_argument("--task", required=True, help="task id, e.g. isaac_sim/lift_cube")
+    p.add_argument("--task", required=True, help="task id, e.g. isaac_sim/_hal_deploy_noop")
     p.add_argument("--robot", default="franka_panda")
     p.add_argument("--instruction", default="")
     p.add_argument("--obs-height", type=int, default=256)
@@ -68,13 +69,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--headless", action="store_true")
     p.add_argument(
         "--layout",
-        default="lift_cube",
-        choices=["lift_cube", "bowl_plate", "manifest"],
-        help=(
-            "lift_cube = 8-D joint-delta PoC; bowl_plate = LIBERO-shaped 7-D "
-            "EE-delta scene; manifest = robot-agnostic URDF-driven scene "
-            "(needs --robot-spec)"
-        ),
+        default="manifest",
+        choices=["manifest"],
+        help="manifest = robot-agnostic URDF-driven scene (needs --robot-spec)",
     )
     p.add_argument(
         "--robot-spec",
@@ -127,10 +124,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     args = p.parse_args(argv)
-    if args.layout != "manifest" and (
-        args.environment_usd or args.objects_json or any(v != 0.0 for v in args.spawn_pose)
-    ):
-        p.error("--environment-usd / --spawn-pose / --objects-json need --layout manifest")
     return args
 
 
@@ -192,47 +185,26 @@ def main(argv: list[str]) -> int:
     sim_app = SimulationApp({"headless": bool(args.headless)})
 
     try:
-        # 2) Heavy imports, only valid post-launch. Pick the scene by --layout.
-        if args.layout == "manifest":
-            import json
+        # 2) Heavy imports, only valid post-launch.
+        import json
 
-            from isaac_manifest_scene import IsaacManifestScene
+        from isaac_manifest_scene import IsaacManifestScene
 
-            if not args.robot_spec:
-                raise SystemExit("--layout manifest requires --robot-spec <path>")
-            with open(args.robot_spec, encoding="utf-8") as fh:
-                robot_spec = json.load(fh)
-            scene: Any = IsaacManifestScene(
-                robot_spec=robot_spec,
-                environment_usd=args.environment_usd,
-                spawn_pose=tuple(args.spawn_pose),
-                objects=json.loads(args.objects_json) if args.objects_json else None,
-                obs_height=args.obs_height,
-                obs_width=args.obs_width,
-                instruction=args.instruction,
-                success_key=args.success_key,
-                max_steps=args.max_steps,
-            )
-        elif args.layout == "bowl_plate":
-            from isaac_bowl_plate_scene import IsaacBowlPlateScene
-
-            scene = IsaacBowlPlateScene(
-                obs_height=args.obs_height,
-                obs_width=args.obs_width,
-                instruction=args.instruction,
-                success_key=args.success_key,
-                max_steps=args.max_steps,
-            )
-        else:
-            from isaac_scene import IsaacLiftScene
-
-            scene = IsaacLiftScene(
-                obs_height=args.obs_height,
-                obs_width=args.obs_width,
-                instruction=args.instruction,
-                success_key=args.success_key,
-                max_steps=args.max_steps,
-            )
+        if not args.robot_spec:
+            raise SystemExit("--layout manifest requires --robot-spec <path>")
+        with open(args.robot_spec, encoding="utf-8") as fh:
+            robot_spec = json.load(fh)
+        scene = IsaacManifestScene(
+            robot_spec=robot_spec,
+            environment_usd=args.environment_usd,
+            spawn_pose=tuple(args.spawn_pose),
+            objects=json.loads(args.objects_json) if args.objects_json else None,
+            obs_height=args.obs_height,
+            obs_width=args.obs_width,
+            instruction=args.instruction,
+            success_key=args.success_key,
+            max_steps=args.max_steps,
+        )
         scene.build()
 
         # 3) Serve the ZMQ REP loop.

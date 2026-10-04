@@ -38,13 +38,11 @@ carrying the exact provisioning commands if none exists. A binary install's
 Python lacks the sidecar's two wire deps (pyzmq, msgpack); they go into a
 per-install user-cache dir (``--site-dir``), never into the install itself.
 
-Scene category: **free-axis** (``fixed_robot=None``). The sidecar's env is
-Franka-based today but the scene is robot-flagged for forward compatibility with
-other Isaac Lab embodiments; ``robot_id`` from the YAML is forwarded to the
-launcher.
+Scene category: **free-axis** (``fixed_robot=None``): any manifest robot with an
+``assets.urdf`` is imported from its URDF (the one sidecar layout, ``manifest``).
 
-Environment + placement (``layout: manifest``)
-----------------------------------------------
+Environment + placement
+-----------------------
 A deploy scene loads any Isaac stage around any manifest robot with three
 fields — ``scene.assets_uri`` (the environment USD), ``robot_id``, and
 ``base_pose`` (the spawn; planar: x, y, z + a yaw-only quaternion)::
@@ -56,8 +54,7 @@ fields — ``scene.assets_uri`` (the environment USD), ``robot_id``, and
       backend: isaacsim
       assets_uri: isaac:Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd
 
-Either field implies the ``manifest`` layout (the PoC layouts hardcode their own
-stage). ``assets_uri`` accepts a local path (``file://`` optional; relative to
+``assets_uri`` accepts a local path (``file://`` optional; relative to
 the working directory), an ``http(s)://`` / ``omniverse://`` URL, or
 ``isaac:<path>`` under the sidecar's own Isaac asset root. NVIDIA's Isaac
 environments are licensed for use inside Isaac Sim — they are referenced here,
@@ -201,8 +198,8 @@ class _IsaacSimSidecar(SidecarSimRollout):
         ``openral deploy sim`` wraps this rollout in ``SimAttachedHAL``, whose
         ``_probe_env_action_dim`` reads ``env.action_dim`` to size the HAL's
         action packing. The sidecar's ``ping`` reply already carries
-        the scene's action width (8 for ``lift_cube``, 7 for ``bowl_plate``); we
-        cache it on first access.
+        the scene's action width (``[arm, one slot per gripper, base twist]`` —
+        11 for panda_mobile, 16 for OpenArm); we cache it on first access.
         """
         if self._action_dim is None:
             reply = self._client.call("ping")
@@ -449,7 +446,9 @@ class IsaacSimOptions(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    layout: str | None = Field(default=None, pattern=r"^(lift_cube|bowl_plate|manifest)$")
+    # The one sidecar layout; kept as a field so existing YAMLs that spell it
+    # out still validate.
+    layout: str = Field(default="manifest", pattern=r"^manifest$")
     headless: bool = True
     host: str = _DEFAULT_HOST
     port: int | None = Field(default=None, ge=1, le=65535)
@@ -916,22 +915,11 @@ def provision_isaac_sim() -> None:
 def _placement(
     env_cfg: SimEnvironment, opts: IsaacSimOptions
 ) -> tuple[str, str | None, tuple[float, float, float, float], str, str]:
-    """``(layout, environment_usd, spawn, objects_json, world_key)`` for a scene.
-
-    An environment / spawn pose / objects are manifest-layout features (the PoC
-    layouts hardcode their own stage), so they imply that layout; contradicting
-    it is an error rather than a silently ignored field.
-    """
+    """``(layout, environment_usd, spawn, objects_json, world_key)`` for a scene."""
     environment_usd = _resolve_environment_usd(env_cfg.scene.assets_uri)
     spawn = _spawn_pose(env_cfg.base_pose)
     objects_json = _objects_json(opts.objects) if opts.objects else ""
-    placed = environment_usd is not None or env_cfg.base_pose is not None or bool(objects_json)
-    layout = opts.layout or ("manifest" if placed else "lift_cube")
-    if placed and layout != "manifest":
-        raise ROSConfigError(
-            f"isaac_sim layout {layout!r} has a hardcoded stage; scene.assets_uri / "
-            "base_pose / objects need layout 'manifest' (the default when any is set)."
-        )
+    layout = opts.layout
     world = _world_key(environment_usd, env_cfg.base_pose, objects_json)
     return layout, environment_usd, spawn, objects_json, world
 
@@ -1020,13 +1008,11 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     if headless:
         launch_argv.append("--headless")
 
-    # The robot-agnostic layout imports the manifest robot's
-    # URDF. Marshal the RobotDescription to a temp JSON the py3.11 sidecar reads
-    # (it cannot import openral_core) and pass it via --robot-spec.
-    robot_spec_path: str | None = None
-    if layout == "manifest":
-        robot_spec_path = _write_robot_spec(env_cfg)
-        launch_argv += ["--robot-spec", robot_spec_path]
+    # The scene imports the manifest robot's URDF. Marshal the RobotDescription
+    # to a temp JSON the sidecar reads (it cannot import openral_core) and pass
+    # it via --robot-spec.
+    robot_spec_path = _write_robot_spec(env_cfg)
+    launch_argv += ["--robot-spec", robot_spec_path]
     if environment_usd is not None:
         launch_argv += ["--environment-usd", environment_usd]
     if env_cfg.base_pose is not None:
@@ -1057,7 +1043,6 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         # The sidecar reads the spec once at boot (before it answers ping), so by
         # the time connect() returns or fails the temp file is consumed — unlink
         # it here rather than leaking it past process exit.
-        if robot_spec_path is not None:
-            with contextlib.suppress(OSError):
-                os.unlink(robot_spec_path)
+        with contextlib.suppress(OSError):
+            os.unlink(robot_spec_path)
     return _IsaacSimSidecar(scene=env_cfg.scene, task=env_cfg.task, _client=client)

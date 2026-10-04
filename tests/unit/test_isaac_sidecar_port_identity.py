@@ -35,9 +35,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # ─── per-scene port derivation ───────────────────────────────────────────────
 
-# Real Isaac scenes that collided on the old hard 5757 default.
-_LIFT = ("isaac_sim/lift_cube", "franka_panda", "lift_cube")
-_BOWL = ("isaac_sim/bowl_plate", "franka_panda", "bowl_plate")
+# Isaac scenes that differ only by robot (all three used to share 5757).
+_LIFT = ("isaac_sim/_hal_deploy_noop", "franka_panda", "manifest")
+_BOWL = ("isaac_sim/_hal_deploy_noop", "openarm", "manifest")
 _MANIFEST = ("isaac_sim/manifest", "panda_mobile", "manifest")
 
 
@@ -116,7 +116,7 @@ def test_shipped_isaac_scenes_derive_distinct_ports() -> None:
         doc = yaml.safe_load(path.read_text())
         scene = doc["scene"]
         opts = scene.get("backend_options") or {}
-        layout = str(opts.get("layout", "lift_cube"))
+        layout = str(opts.get("layout", "manifest"))
         robot = doc.get("robot_id") or "franka_panda"
         # deploy scenes (no task:) get a synthesised noop task id, matching the
         # runtime path; sim scenes carry their own task.id.
@@ -129,8 +129,6 @@ def test_shipped_isaac_scenes_derive_distinct_ports() -> None:
             _resolve_environment_usd(scene.get("assets_uri")),
             Pose6D(**base_pose) if base_pose else None,
         )
-        if world:
-            layout = str(opts.get("layout", "manifest"))
         port = _scene_default_port(task_id, robot, layout, world)
         assert port not in ports, f"port {port} collides: {path.name} vs {ports[port]}"
         ports[port] = path.name

@@ -3,9 +3,7 @@
 Runs under the Isaac Sim py3.11 venv only; imported by ``isaac_sidecar.py`` AFTER
 ``SimulationApp`` is live (every import here needs a running Kit app).
 
-Unlike the PoC scenes (``isaac_scene.py``, ``isaac_bowl_plate_scene.py``), which
-hardcode Isaac's ``Franka`` USD asset, this scene honours the forwarded
-``--robot``: it imports the manifest robot's URDF (``isaacsim.asset.importer.urdf``)
+The only sidecar scene: it honours the forwarded ``--robot`` — it imports the manifest robot's URDF (``isaacsim.asset.importer.urdf``)
 and wires joints/sensors/control from a plain-JSON "isaac robot spec" the
 openral-side backend marshals across the venv boundary (the sidecar cannot
 import ``openral_core``).
