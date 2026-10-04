@@ -429,16 +429,16 @@ _Reassembles a slot-dispatched inference tick into one whole-robot command (ADR-
   - `commit(tick, *, session) -> None` (L354) — Record an applied `(session, tick)`; retires the previous session on a change.
   - `reset() -> None` (L361) — Clear the watermark, keep the retired set.
 - `class SlotGroupStager` (L367) — Buffers at most one tick, keyed by `(runner_session_id, tick_index)`, and holds the committed watermark (`TickWatermark`). `stage(action) -> list[Action] | None` returns the group when the last slot lands, else `None`; it first refuses a replay (`TickWatermark.check`); the watermark moves, and a new runner session is adopted, only on `commit(group)`. `admit(action)` / `commit_tick(action)` apply the same watermark to UNGROUPED ticked actions (the runner's starting-pose ramp and approach share its tick counter), so a restarted runner's ramp renumbers the HAL instead of leaving its first policy tick under the old watermark. `discard()` (E-stop) keeps the watermark, so a pre-stop tick replayed after the stop is refused; `reset()` (disconnect) clears it. A tick change mid-group raises `ROSRuntimeError` rather than committing survivors and leaving one arm stale; the slot that exposed it opens the new tick instead of being dropped with it. A slot from a **different** non-legacy runner session instead drops the old session's partial tick silently (logged `hal.slot_group.stale_partial_dropped`) — a dead run's half tick is nobody's loss. Mirrors `SimAttachedHAL._stage_action_group`. Used by every `MujocoArmHAL` twin and `OpenArmRealHAL`.
-  - `admit(action: Action) -> None` (L440) — Check an ungrouped ticked action against the watermark before it is applied (`TickWatermark.check`); the watermark does not move.
-  - `commit_tick(action: Action) -> None` (L458) — Record that an ungrouped action was applied: moves the watermark to its `(runner_session_id, tick_index)` when ticked, and always records it as `last_applied_action`.
-  - `stage(action) -> list[Action] | None` (L492) — see above.
-  - `pending -> int` [@property] (L405) — count of slots in flight.
-  - `last_committed_tick -> int` [@property] — tick of the last group `commit`ted (0 = none since `reset`). (L410)
-  - `last_committed_session -> int` [@property] — its `runner_session_id` (0 = none/legacy). (L415)
-  - `commit(group, *, applied: Action) -> None` — record that a released group was applied as `applied` (the composed command sent); call only after the apply succeeded (the lifecycle node acks this tick). (L429)
-  - `last_applied_action -> Action | None` [@property] — the command the last `commit` / `commit_tick` applied (`None` since `reset`; `discard` keeps it). The one accessor the stager-backed HALs expose as their own `last_applied_action`. (L420)
-  - `discard() -> int` — drop the buffered slots, keep the watermark (estop latch / clear); returns how many slots were dropped. (L468)
-  - `reset() -> None` (L482) — drop the buffered slots, the watermark and `last_applied_action` (disconnect).
+  - `admit(action: Action) -> None` (L441) — Check an ungrouped ticked action against the watermark before it is applied (`TickWatermark.check`); the watermark does not move.
+  - `commit_tick(action: Action) -> None` (L459) — Record that an ungrouped action was applied: moves the watermark to its `(runner_session_id, tick_index)` when ticked, and always records it as `last_applied_action`.
+  - `stage(action) -> list[Action] | None` (L493) — see above.
+  - `pending -> int` [@property] (L406) — count of slots in flight.
+  - `last_committed_tick -> int` [@property] — tick of the last group `commit`ted (0 = none since `reset`). (L411)
+  - `last_committed_session -> int` [@property] — its `runner_session_id` (0 = none/legacy). (L416)
+  - `commit(group, *, applied: Action) -> None` — record that a released group was applied as `applied` (the composed command sent); call only after the apply succeeded (the lifecycle node acks this tick). (L430)
+  - `last_applied_action -> Action | None` [@property] — the command the last `commit` / `commit_tick` applied (`None` since `reset`; `discard` keeps it). The one accessor the stager-backed HALs expose as their own `last_applied_action`. (L421)
+  - `discard() -> int` — drop the buffered slots, keep the watermark (estop latch / clear); returns how many slots were dropped. (L469)
+  - `reset() -> None` (L483) — drop the buffered slots, the watermark and `last_applied_action` (disconnect).
 
 ### `python/hal/src/openral_hal/anvil_openarm_v2.py`
 _MuJoCo digital twin for the Anvil OpenARM 2.0 — Anvil Robotics' manufactured variant of the standard OpenArm v2. Differs from the Enactic v2 twin only in two joint ranges (J1, J6) and a wrist support bracket, baked into the fetched MJCF, so the HAL stays a thin manifest-driven subclass._
