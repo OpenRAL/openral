@@ -80,6 +80,7 @@ joints:
 
 end_effectors:
   - name: gripper
+    command_convention: "normalized_open_unit"
     kind: parallel_gripper
     n_dof: 1
 

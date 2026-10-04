@@ -295,6 +295,10 @@ def _build_vlabench_scene(env_cfg: SimEnvironment) -> _VLABenchSim:
     return _VLABenchSim(scene=env_cfg.scene, task=env_cfg.task, _env=env)
 
 
-SCENES.register(_VLABENCH_SCENE_ID, fixed_robot="franka_panda", provision=provision_vlabench)(
-    _build_vlabench_scene
-)
+# VLABench sets the finger opening to g * 0.04 m from a [0, 1] gripper (1 = open).
+SCENES.register(
+    _VLABENCH_SCENE_ID,
+    fixed_robot="franka_panda",
+    provision=provision_vlabench,
+    gripper_convention="normalized_open_unit",
+)(_build_vlabench_scene)

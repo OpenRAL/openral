@@ -52,6 +52,9 @@ sensors_required:
 # (rSkill self-containment audit, Gap 2). For joint_position kinds the
 # minimum is `mode: absolute | delta`; gripper kinds also require
 # `gripper_convention`, cartesian kinds also require `reference_frame`.
+# A skill that sends gripper commands (a gripper_* action slot, or a
+# representation ending in a gripper) needs a `gripper_position` entry: the
+# runner refuses it where the robot or scene consumes another encoding.
 actuators_required:
   - kind: "joint_position"
     control_mode_semantics:

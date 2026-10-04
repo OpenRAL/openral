@@ -277,6 +277,7 @@
               "enum": [
                 "normalized_open_unit",
                 "normalized_open_symmetric",
+                "normalized_close_symmetric",
                 "binary_close_one",
                 "raw_joint_rad",
                 "width_meters"

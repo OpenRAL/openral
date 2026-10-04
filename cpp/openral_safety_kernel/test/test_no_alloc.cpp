@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <new>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -128,6 +129,43 @@ TEST(NoAlloc, ValidatorViolationPathIsAlsoAllocationFree) {
   for (int i = 0; i < 5000; ++i) {
     const auto rc = osk::validate(view, env);
     ASSERT_FALSE(rc);
+  }
+  g_count_enabled.store(false, std::memory_order_relaxed);
+  EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);
+}
+
+TEST(NoAlloc, GripperEndEffectorLookupIsAllocationFree) {
+  // The gripper case resolves ee_name against the envelope's names by
+  // string_view comparison; pass and violation paths must both stay at 0.
+  osk::EnvelopeIntersection env;
+  env.n_dof = 16;
+  env.joint_position_min.assign(16, -1.0);
+  env.joint_position_max.assign(16, 1.0);
+  env.joint_velocity_max.assign(16, 3.15);
+  env.joint_torque_max.assign(16, 5.0);
+  env.gripper_ee_names = {"left_gripper_with_a_name_longer_than_sso", "right_gripper"};
+  env.gripper_command_min = {0.0, -0.7854};
+  env.gripper_command_max = {0.7854, 0.0};
+
+  const std::string ee = "right_gripper";
+  std::vector<double> ok(8, -0.3);
+  std::vector<double> bad(8, 0.3);
+  osk::ChunkView view{};
+  view.control_mode = static_cast<std::uint8_t>(osk::ControlMode::kGripperPosition);
+  view.horizon = 8;
+  view.n_dof = 1;
+  view.ee_name = ee.data();
+  view.ee_name_size = ee.size();
+
+  g_alloc_count.store(0, std::memory_order_relaxed);
+  g_count_enabled.store(true, std::memory_order_relaxed);
+  for (int i = 0; i < 5000; ++i) {
+    view.flat_data = ok.data();
+    view.flat_size = ok.size();
+    ASSERT_TRUE(osk::validate(view, env));
+    view.flat_data = bad.data();
+    view.flat_size = bad.size();
+    ASSERT_FALSE(osk::validate(view, env));
   }
   g_count_enabled.store(false, std::memory_order_relaxed);
   EXPECT_EQ(g_alloc_count.load(std::memory_order_relaxed), 0U);

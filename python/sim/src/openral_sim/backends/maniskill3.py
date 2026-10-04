@@ -422,6 +422,8 @@ def _extract_state(flat: Any) -> NDArray[np.float32]:
     fixed_robot="franka_panda",
     sequential_init=True,  # SAPIEN gym.make races the policy bf16 dtype window
     sim_clock=True,
+    # ManiSkill's Panda normalizes [-1, 1] onto the fingers, -1 = closed.
+    gripper_convention="normalized_open_symmetric",
 )
 def _build_maniskill3_scene(env_cfg: SimEnvironment) -> _ManiSkill3Sim:
     """Lazily import ``mani_skill`` and build a ``_ManiSkill3Sim``."""

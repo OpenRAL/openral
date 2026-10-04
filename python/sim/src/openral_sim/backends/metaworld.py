@@ -129,7 +129,13 @@ class _MetaworldSim:
         }
 
 
-@SCENES.register(_METAWORLD_SCENE_ID, fixed_robot="sawyer", sim_clock=True)
+# MetaWorld drives the fingers with [a, -a]; +1 grabs, -1 opens.
+@SCENES.register(
+    _METAWORLD_SCENE_ID,
+    fixed_robot="sawyer",
+    sim_clock=True,
+    gripper_convention="normalized_close_symmetric",
+)
 def _build_metaworld_scene(env_cfg: SimEnvironment) -> _MetaworldSim:
     """Lazily import ``lerobot.envs.metaworld`` and build a ``_MetaworldSim``."""
     from openral_sim._deps import ensure_backend_deps

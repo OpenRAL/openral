@@ -439,6 +439,8 @@ def provision_robotwin() -> None:
     fixed_robot=_ROBOTWIN_ROBOT_ID,
     provision=provision_robotwin,
     sim_clock=True,
+    # RoboTwin's set_gripper clips to [0, 1], 0 = closed.
+    gripper_convention="normalized_open_unit",
 )
 def _build_robotwin_scene(env_cfg: SimEnvironment) -> _RoboTwinSimSidecar:
     """Build a RoboTwin 2.0 SAPIEN scene behind the out-of-process sidecar.

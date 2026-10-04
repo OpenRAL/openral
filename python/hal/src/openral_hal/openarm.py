@@ -241,6 +241,8 @@ OPENARM_DESCRIPTION = RobotDescription(
         EndEffectorSpec(
             name="left_gripper",
             kind="parallel_gripper",
+            command_convention="raw_joint_rad",
+            command_range=(0.0, 0.7854),
             hand=Hand.LEFT,
             n_dof=1,
             max_grip_force_n=_OPENARM_GRIPPER_EFFORT_LIMIT,
@@ -250,6 +252,8 @@ OPENARM_DESCRIPTION = RobotDescription(
         EndEffectorSpec(
             name="right_gripper",
             kind="parallel_gripper",
+            command_convention="raw_joint_rad",
+            command_range=(-0.7854, 0.0),
             hand=Hand.RIGHT,
             n_dof=1,
             max_grip_force_n=_OPENARM_GRIPPER_EFFORT_LIMIT,

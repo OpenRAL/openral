@@ -61,6 +61,10 @@ actuators_required:
     control_mode_semantics:
       mode: "absolute"
       reference_frame: "panda_link0"
+  - kind: "gripper_position"
+    control_mode_semantics:
+      mode: "absolute"
+      gripper_convention: "normalized_open_unit"
 
 # ── Runtime / weights ──────────────────────────────────────────────────────
 runtime: "pytorch"

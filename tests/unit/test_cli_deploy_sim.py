@@ -2680,3 +2680,22 @@ def test_an_unpinned_octomap_cloud_topic_leaves_the_launch_default(tmp_path: Pat
     assert invocation.enable_octomap is True
     assert invocation.octomap_cloud_topic is None
     assert "octomap_cloud_topic:=" not in " ".join(invocation.argv_template)
+
+
+@pytest.mark.parametrize(
+    ("scene", "expected"),
+    [
+        # robosuite environments: -1 opens, +1 closes.
+        ("libero_pnp", "normalized_close_symmetric"),
+        ("robocasa_pnp", "normalized_close_symmetric"),
+        ("behavior_r1pro", "normalized_open_symmetric"),
+        # A bare twin: the robot's own end effector encoding applies.
+        ("so101_box", ""),
+    ],
+)
+def test_scene_gripper_convention_comes_from_the_scene_registry(scene: str, expected: str) -> None:
+    from openral_cli.deploy_sim import _scene_gripper_convention
+
+    repo = Path(__file__).resolve().parents[2]
+    assert _scene_gripper_convention(repo / "scenes" / "deploy" / f"{scene}.yaml") == expected
+    assert _scene_gripper_convention(None) == ""
