@@ -1334,6 +1334,7 @@ def test_two_picks_in_one_goal_through_the_bridges_detach() -> None:
         t = _grip(bridge, 0.2, t0_ns=1)
         assert left.attachment is not None and left.attachment.object_id == first.target_id
         assert leg.tracker.handed_over == _LEFT and leg.tracker.region == _measured(now_ns)
+        assert left.attachment.support_contact is None, "no support measured, none attested"
         _grip(bridge, 0.0, t0_ns=t)
         assert left.attachment is None and left.release is not None, "release window open"
         assert leg.tracker.region is None, "the region is dropped at the DETACH"
@@ -1365,6 +1366,79 @@ def test_two_picks_in_one_goal_through_the_bridges_detach() -> None:
         assert taken is not None and taken[0].object_id == second.target_id, (
             "pick 2's region is a new payload"
         )
+
+
+def test_the_region_payload_attests_its_measured_support_until_it_is_lifted() -> None:
+    """Isaac i42: the region payload, still resting on the table it was measured on, met
+    the table's cells at ATTACH and the kernel stopped 90 ms after the handover. The payload
+    now carries the ADR-0092 D6 witness on the support top the leg measured under exactly
+    that region — plane under the payload's centre, normal +z in the base frame, both in
+    the object frame, patch = the payload's footprint — and the producer retires it for good
+    once the payload leaves where it rested (here: lifted three cells)."""
+    from openral_core import AttachmentEvidenceKind
+    from openral_core.geometry import homogeneous_from_quat_xyz
+
+    with _live_leg("test_grasp_target_support_witness") as live:
+        leg, bridge = live.leg, live.bridge
+        now_ns = leg._now_ns()
+        left = live.gripper("openarm_left_finger_pair")
+        live.place("left", (0.45, 0.0, 0.18))
+        live.place("right", (0.45, -0.30, 0.40))
+        grid = _held_block_lattice()
+        leg._bridge._grid = (grid, now_ns, time.monotonic())
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+        leg._detect_approach(0.10, now_ns)
+        armed = leg.tracker.target
+        assert armed is not None and armed.contact_links == _LEFT
+        live.place("left", (0.45, 0.0, 0.10))  # inside ``_measured``'s box
+        region = _measured(now_ns)
+        leg.tracker.accept(region)
+        # What ``_on_reply`` records with the region it accepted: the support top the
+        # request measured (``target_region_from_mask`` stood the box one voxel above it).
+        support_z = region.pose.xyz[2] - region.half_extents[2] - grid.resolution
+        leg._support = (region, support_z)
+        assert leg.measured_support(region) == support_z
+        other = region.model_copy(update={"stamp_ns": region.stamp_ns + 1})
+        assert leg.measured_support(other) is None, "measured for that region only"
+
+        _grip(bridge, 0.2, t0_ns=1)
+        held = left.attachment
+        assert held is not None and held.object_id == armed.target_id
+        witness = held.support_contact
+        assert witness is not None
+        assert witness.support_id == f"map_support_under:{armed.target_id}"
+        assert witness.evidence_kind is AttachmentEvidenceKind.MAP_SUPPORT_PROXIMITY
+        assert witness.stamp_ns == held.stamp_ns
+        assert witness.patch_radius_m == pytest.approx(float(np.linalg.norm([0.04] * 3)))
+        assert witness.max_penetration_m == pytest.approx(0.01)
+        # Back in the base frame: the measured plane, normal up, under the payload's centre.
+        t_base_link = bridge._lookup("openarm_base", bridge.tf_frame(held.attach_link))
+        assert t_base_link is not None
+        t_base_obj = t_base_link @ homogeneous_from_quat_xyz(
+            held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
+        )
+        point = t_base_obj @ np.append(witness.contact_point_in_object, 1.0)
+        np.testing.assert_allclose(point[:3], (0.45, 0.0, support_z), atol=1e-9)
+        normal = t_base_obj[:3, :3] @ np.asarray(witness.contact_normal_in_object)
+        np.testing.assert_allclose(normal, (0.0, 0.0, 1.0), atol=1e-9)
+
+        # Still resting where it was measured: kept.
+        bridge._support_checked_s = 0.0
+        bridge._retire_lifted_supports()
+        assert left.attachment is not None and left.attachment.support_contact == witness
+        # Lifted three cells: retired, same payload identity and stamp otherwise.
+        live.place("left", (0.45, 0.0, 0.10 + 3 * grid.resolution))
+        bridge._support_checked_s = 0.0
+        bridge._retire_lifted_supports()
+        lifted = left.attachment
+        assert lifted is not None and lifted.support_contact is None
+        assert lifted.model_copy(update={"support_contact": witness}) == held
+        assert left.support_anchor is None
+        # Set back down where it was: nothing re-attests (only a new ATTACH measures anew).
+        live.place("left", (0.45, 0.0, 0.10))
+        bridge._support_checked_s = 0.0
+        bridge._retire_lifted_supports()
+        assert left.attachment is not None and left.attachment.support_contact is None
 
 
 def _blocks_on_the_bridge_lock(bridge: VisionAttachmentBridge, call: Any) -> bool:

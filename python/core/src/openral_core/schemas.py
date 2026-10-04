@@ -3075,11 +3075,11 @@ class AttachmentEvidenceKind(str, Enum):
     SIM_CONTACT_FORCE = "sim_contact_force"
     # Proximity to a support plane the producer MEASURED in the voxel map; NOT
     # sensed contact (real pick-and-place design §2.3, ADR-0092 D6 amendment,
-    # drafted). A producer attests it once per place declaration, when the
-    # payload's lowest primitive is within max(1 voxel, the extrinsic accuracy
-    # bound) of the plane it latched from the live map, the payload's centre is
-    # over the measured patch, and the gripper is still loaded. A consumer must
-    # never read it as a touch, nor the measured surface as a proven support.
+    # drafted). The place leg attests it once per place declaration (lowest
+    # primitive within max(1 voxel, extrinsic bound) of the plane it latched,
+    # centre over the patch, gripper loaded); a vision pick at ATTACH, on the
+    # support measured under its grasp-target region, until the payload moves.
+    # Never read it as a touch, nor the measured surface as a proven support.
     MAP_SUPPORT_PROXIMITY = "map_support_proximity"
     # A position-only gripper closed and stalled short of its command (the position-stall
     # trigger, no effort channel) and vision could not confirm the shape: the conservative

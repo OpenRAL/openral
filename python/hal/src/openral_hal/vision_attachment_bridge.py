@@ -88,6 +88,9 @@ the region and the attachment set from one snapshot. With ``grasp_target_approac
 (default off) a declaration that names no search box — no target — is measured
 around whichever one hand's TCP approaches occupied cells, so the policy, not
 the reasoner, picks the object (``_grasp_target_leg`` "Approach-armed target").
+An ATTACH that takes the measured region as its payload also attests the support
+the leg measured under it (``region_attachment``), retired once the payload moves
+off it (``_retire_lifted_supports``).
 
 With ``VisionAttachmentConfig.place_target_enabled`` (default off) it also owns
 the real place producer leg (``_place_target_leg``): while a payload is held it
@@ -139,7 +142,7 @@ from openral_hal._grasp_trigger import (
     PositionStallTrigger,
     gripper_joints,
 )
-from openral_hal._place_target_leg import PlaceTargetLeg
+from openral_hal._place_target_leg import _WITNESS_PERIOD_S, PlaceTargetLeg, plane_witness
 from openral_hal._vision_attachment_evidence import (
     VisionAttachmentEvidenceProducer,
     VisionGateConfig,
@@ -218,6 +221,9 @@ class _GripperLeg:
             close (command within ``stall_gap`` of closed, jaws empty) began, or ``None``
             outside one (``_log_close``).
         close_reported: Whether the current close's outcome was logged.
+        support_anchor: ``(frame, payload origin, tolerance)`` at the ATTACH whose region
+            payload carries the measured-support witness, until that witness is retired
+            (``VisionAttachmentBridge._retire_lifted_supports``); ``None`` otherwise.
     """
 
     joint_name: str
@@ -237,6 +243,7 @@ class _GripperLeg:
     announced_uncommanded: bool = False
     close_baseline: tuple[int, int] | None = None
     close_reported: bool = False
+    support_anchor: tuple[str, tuple[float, float, float], float] | None = None
 
 
 def _published(leg: _GripperLeg) -> AttachedCollisionObject | None:
@@ -526,6 +533,8 @@ def region_attachment(
     touch_links: Sequence[str],
     t_link_from_region: NDArray[np.float64],
     stamp_ns: int,
+    support_z: float | None = None,
+    extrinsic_error_m: float = MAX_PLANAR_ERR_M,
 ) -> AttachedCollisionObject:
     """The grasp-target leg's latched pre-grasp region as the held payload (design §2.2).
 
@@ -536,12 +545,25 @@ def region_attachment(
     ``object_id`` (what the kernel's handover matches the attachment against) or, when
     that is empty, its ``target_id``.
 
+    **Support witness.** The target still rests on the support it was measured on, so
+    the payload's own box meets the support's cells at ATTACH (Isaac i42: -1.9 mm, a
+    stop 90 ms after the handover). Given ``support_z`` — the support top the grasp-target
+    leg measured under *this* region (``GraspTargetLeg.measured_support``; the region's
+    lower face is pinned one voxel above it) — the payload carries the ADR-0092 D6
+    ``SupportContactWitness`` on that plane (``_place_target_leg.plane_witness``,
+    ``support_id = "map_support_under:<target_id>"``, ``MAP_SUPPORT_PROXIMITY``), stamped
+    ``stamp_ns``. ``None`` — nothing measured for this region — attests nothing.
+
     Args:
         declaration: The live declaration, carrying the accepted ``region``.
         attach_link: The gripper's attach link (the producer's).
         touch_links: Links allowed to touch the payload (the producer's).
         t_link_from_region: ``(4, 4)`` pose of ``region.frame_id`` in ``attach_link``.
         stamp_ns: The ATTACH instant.
+        support_z: The measured support top under the region, in ``region.frame_id``
+            (z up), or ``None``.
+        extrinsic_error_m: The depth extrinsic's accuracy bound (the witness's
+            penetration bound, capped at the kernel's 10 mm).
 
     Returns:
         The attachment, evidence ``GRASP_TARGET_REGION``.
@@ -566,7 +588,7 @@ def region_attachment(
     object_id = declaration.object_id or declaration.target_id
     pose = t_link_from_region @ homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)
     w, x, y, z = rotation_to_quat_wxyz(pose[:3, :3])
-    return _Attached(
+    held = _Attached(
         object_id=object_id,
         attach_link=attach_link,
         touch_links=list(touch_links),
@@ -588,6 +610,21 @@ def region_attachment(
         evidence_ref=f"grasp_target_region:{declaration.target_id}:{region.evidence_ref}@{stamp_ns}",
         stamp_ns=stamp_ns,
     )
+    if support_z is None:
+        return held
+    witness = plane_witness(
+        held,
+        np.asarray(np.linalg.inv(t_link_from_region), dtype=np.float64),
+        plane_z=support_z,
+        support_id=f"map_support_under:{declaration.target_id}",
+        extrinsic_error_m=extrinsic_error_m,
+        detail=(
+            f"support top z={support_z:.4f} measured under the target (support_top_from_voxels); "
+            "the region's lower face is pinned one voxel above it"
+        ),
+        stamp_ns=stamp_ns,
+    )
+    return held.model_copy(update={"support_contact": witness})
 
 
 def primitive_poses(
@@ -1259,6 +1296,8 @@ class VisionAttachmentBridge:
         self._revision = 0
         # (object_id, stamp_ns, attach_link) of the last set published at a new revision.
         self._published_keys: frozenset[tuple[str, int, str]] = frozenset()
+        # Monotonic time of the last region-payload support-witness check (throttle).
+        self._support_checked_s = 0.0
         # The one lock serializing the bridge and its producer legs (module docstring,
         # "Threading"); taken before any tracker lock, never after.
         self._lock = threading.RLock()
@@ -1497,6 +1536,7 @@ class VisionAttachmentBridge:
         self._evidence.observe(
             complete=complete, stamp_ns=int(state.stamp_ns), now_s=time.monotonic()
         )
+        self._retire_lifted_supports()
         if self._place_target is not None:
             self._place_target.on_joint_state()
 
@@ -2003,14 +2043,78 @@ class VisionAttachmentBridge:
             )
             return None
         leg.region_spent = key
+        extrinsic = self._config.place_target_extrinsic_error_m
         held = region_attachment(
             declaration,
             attach_link=leg.producer.attach_link,
             touch_links=leg.producer.touch_links,
             t_link_from_region=t_link_from_region,
             stamp_ns=stamp_ns,
+            support_z=self._grasp_target.measured_support(region),
+            extrinsic_error_m=extrinsic,
         )
+        leg.support_anchor = None
+        if held.support_contact is not None:
+            grid = self._grid
+            tol = max(grid[0].resolution if grid is not None else 0.0, extrinsic)
+            leg.support_anchor = (region.frame_id, region.pose.xyz, tol)
+            self._node.get_logger().info(
+                f"vision attachment {leg.joint_name}: {held.object_id!r} carries the measured "
+                f"support witness ({held.support_contact.evidence_ref}); retired once the "
+                f"payload moves > {tol * 1e3:.1f} mm from here"
+            )
         return held, region
+
+    def _retire_lifted_supports(self) -> None:
+        """Drop a region payload's support witness once the payload left where it rested.
+
+        The witness attests the support measured under the target before the grasp
+        (``region_attachment``). The kernel kills it once no exempt occupied cell touches
+        the payload (``update_support_contact_witnesses``), but that liveness reads the
+        map, and the octomap bridge keeps every cell the witness band claims
+        (``support_patch_withholds``) — the band rides with the payload, so the carried
+        object's own lowest cells, seen by the head camera, would keep it alive through the
+        carry. The producer retires it on its own geometry instead: the payload frame moved
+        more than ``max(resolution, extrinsic_error_m)`` from its ATTACH pose (a lift, a
+        slide), or tf2 cannot place it (the exemption dies on any doubt). For good: the
+        payload keeps its identity and stamp, and the kernel re-arms only a new
+        (object, support, stamp) key. Throttled to the place leg's witness period.
+        """
+        now_s = time.monotonic()
+        if now_s - self._support_checked_s < _WITNESS_PERIOD_S:
+            return
+        self._support_checked_s = now_s
+        retired = False
+        for leg in self._legs:
+            anchor, held = leg.support_anchor, leg.attachment
+            if anchor is None:
+                continue
+            if held is None or held.support_contact is None:
+                leg.support_anchor = None  # released, or replaced by a segmented payload
+                continue
+            frame, origin, tol = anchor
+            t_frame_link = self._lookup(frame, self.tf_frame(held.attach_link))
+            if t_frame_link is None:
+                why = f"no tf2 {frame} <- {self.tf_frame(held.attach_link)}"
+            else:
+                pose = t_frame_link @ homogeneous_from_quat_xyz(
+                    held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
+                )
+                moved = float(np.linalg.norm(pose[:3, 3] - np.asarray(origin)))
+                if moved <= tol:
+                    continue
+                why = f"payload moved {moved * 1e3:.1f} mm from its ATTACH pose"
+            leg.support_anchor = None
+            leg.attachment = held.model_copy(update={"support_contact": None})
+            retired = True
+            self._node.get_logger().info(
+                f"vision attachment {leg.joint_name}: support witness for {held.object_id!r} "
+                f"retired — {why} (tolerance {tol * 1e3:.1f} mm)"
+            )
+        if retired and self._heartbeat_open:
+            # At the current revision: no detach edge, no fresh attach-time baseline in the
+            # kernel or the octomap bridge. A closed heartbeat carries it when it reopens.
+            self._publish_snapshot()
 
     def _gather_context(self, leg: _GripperLeg) -> _PromptContext | str:
         """Collect depth, transforms and prompt geometry, or name what is missing.
