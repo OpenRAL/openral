@@ -11,10 +11,10 @@
 # front of Shelf_1 (deck top z 0.21) puts the props in reach of both arms.
 #
 # Requirements: NVIDIA RTX GPU, Isaac Sim (a binary install such as
-# /opt/isaac-sim, or the sidecar venv), network access to NVIDIA's asset
-# server, and the `openarm_description` ROS package on AMENT_PREFIX_PATH (the
-# URDF's meshes are package://openarm_description/...): source the workspace
-# that builds it before launching.
+# /opt/isaac-sim, or the sidecar venv), and network access to NVIDIA's asset
+# server. The URDF's package://openarm_description/ meshes come from a sourced
+# ROS workspace when one provides the package, else from a pinned clone of
+# Enactic's public openarm_description (Apache-2.0) fetched on first use.
 #
 # Run::
 #

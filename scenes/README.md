@@ -273,7 +273,9 @@ observation).
 **Any manifest robot** with an `assets.urdf` imports — manifest joints are
 matched to URDF joints by the URDF's own structure, each gripper's mimic finger
 follows its leader, and `package://` meshes resolve via `AMENT_PREFIX_PATH`
-(source the workspace that provides them). Shipped:
+(a sourced workspace), an ancestor directory of the URDF, or — for known public
+packages such as Enactic's `openarm_description` — a pinned clone fetched into
+the openral cache. Shipped:
 [`isaac_panda_mobile_warehouse.yaml`](deploy/isaac_panda_mobile_warehouse.yaml)
 (navigate the aisle to a pallet of YCB props) and
 [`isaac_openarm_warehouse.yaml`](deploy/isaac_openarm_warehouse.yaml) (bimanual

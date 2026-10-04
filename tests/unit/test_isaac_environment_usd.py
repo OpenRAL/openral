@@ -189,18 +189,31 @@ def test_openarm_manifest_joints_resolve_onto_its_urdf() -> None:
     assert (right["manifest_closed"], right["manifest_open"]) == pytest.approx((0.0, -0.7854))
 
 
-def test_ros_package_paths_from_ament_prefix_path(
+def test_ros_package_paths_prefer_a_sourced_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """AMENT_PREFIX_PATH wins over the public-package fetch (no network here)."""
     from openral_sim.backends.isaac_sim import _ros_package_paths
 
-    urdf = _REPO_ROOT / "robots" / "openarm" / "openarm.urdf"
-    monkeypatch.setenv("AMENT_PREFIX_PATH", str(tmp_path))
-    with pytest.raises(ROSConfigError, match="openarm_description"):
-        _ros_package_paths(urdf)
     share = tmp_path / "share" / "openarm_description"
     share.mkdir(parents=True)
+    monkeypatch.setenv("AMENT_PREFIX_PATH", str(tmp_path))
+    urdf = _REPO_ROOT / "robots" / "openarm" / "openarm.urdf"
     assert _ros_package_paths(urdf) == [{"name": "openarm_description", "path": str(share)}]
+
+
+def test_unknown_ros_package_is_an_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openral_sim.backends.isaac_sim import _ros_package_paths
+
+    monkeypatch.setenv("AMENT_PREFIX_PATH", str(tmp_path))
+    urdf = tmp_path / "robot.urdf"
+    urdf.write_text(
+        _REPO_ROOT.joinpath("robots/openarm/openarm.urdf")
+        .read_text()
+        .replace("package://openarm_description/", "package://no_such_description/")
+    )
+    with pytest.raises(ROSConfigError, match="no_such_description"):
+        _ros_package_paths(urdf)
 
 
 # ── backend options + objects ─────────────────────────────────────────────────

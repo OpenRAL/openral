@@ -202,7 +202,7 @@ _Isaac Sim scene sidecar, running Isaac Lab/Kit in its own py3.11 venv, auto-spa
 - `_parse_args(argv: list[str]) -> argparse.Namespace` — Sidecar CLI, including `--environment-usd` (local path / URL / `isaac:<path>`) and `--spawn-pose X Y Z YAW`; both are rejected outside `--layout manifest`.
 - `_serve(scene, *, host, port, sim_app, task, layout, environment, spawn) -> int` — ZMQ REP loop; `ping` answers the scene identity (`task`, `layout`, `environment`, `spawn`) the client checks before adopting a running sidecar.
 - `--objects-json` — JSON list of scene objects (manifest layout only). `--site-dir` — an import dir prepended to `sys.path` (a binary install's wire deps). A root-owned install (`ISAAC_PATH/kit` not writable) gets `--portable-root ~/.cache/openral/isaac-sidecar/kit-data` so Kit's caches land in the user's home.
-- `main(argv: list[str]) -> int` (L171) — Checks required dep versions (before the ~50 s Kit boot), launches `SimulationApp`, then imports and builds the scene named by `--layout` (`lift`/`bowl_plate`/`manifest`) and serves the ZMQ loop.
+- `main(argv: list[str]) -> int` (L172) — Checks required dep versions (before the ~50 s Kit boot), launches `SimulationApp`, then imports and builds the scene named by `--layout` (`lift`/`bowl_plate`/`manifest`) and serves the ZMQ loop.
 
 ### `tools/_isaac_scene_base.py`
 _Shared base for the Isaac Sim sidecar scenes (py3.11 venv only), owning the obs/step lifecycle, RGBA→HWC frame grabbing, the warmup + physics-substep loop, and eval-layer observation assembly, so a new layout only overrides a few template methods._

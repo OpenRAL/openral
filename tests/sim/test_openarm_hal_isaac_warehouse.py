@@ -12,16 +12,15 @@ real deploy loader on a real Isaac Sim and checks the URDF import holds up:
   relation the scene drives itself;
 * the robot is physically at its spawn and the props rest on the pallet.
 
-Skip policy: as the panda_mobile warehouse test, plus the ``openarm_description``
-ROS package on ``AMENT_PREFIX_PATH`` (the URDF's ``package://`` meshes).
+Skip policy: as the panda_mobile warehouse test. The URDF's ``package://``
+meshes come from a sourced workspace or, failing that, a pinned clone of
+Enactic's public ``openarm_description`` (network on first use).
 """
 
 from __future__ import annotations
 
 import importlib.util
-import os
 from collections.abc import Iterator
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -30,11 +29,6 @@ import pytest
 from tests.sim.conftest import _repo_root, _sidecar_python_available
 
 _WIRE_MISSING = [m for m in ("zmq", "msgpack") if importlib.util.find_spec(m) is None]
-_HAS_DESCRIPTION = any(
-    (Path(p) / "share" / "openarm_description").is_dir()
-    for p in os.environ.get("AMENT_PREFIX_PATH", "").split(os.pathsep)
-    if p
-)
 
 pytestmark = [
     pytest.mark.sim,
@@ -45,10 +39,6 @@ pytestmark = [
     pytest.mark.skipif(
         not _sidecar_python_available(),
         reason="Isaac Sim sidecar venv not provisioned (set OPENRAL_ISAAC_SIDECAR_PYTHON)",
-    ),
-    pytest.mark.skipif(
-        not _HAS_DESCRIPTION,
-        reason="openarm_description not on AMENT_PREFIX_PATH (source its ROS workspace)",
     ),
 ]
 

@@ -448,6 +448,11 @@ _Vendor the Anvil OpenARM 2.0 MJCF from `bensonlee5/anvil-openarm-mujoco` — no
 - module const `_ANVIL_MJCF_REL: str` (L42) — the bimanual MJCF's path within the clone.
 - module const `_ANVIL_MESH_SUBMODULE: str = "upstream/openarm_mujoco"` (L46) — mesh submodule the generated MJCF's meshdir points into; initialised by `ensure_anvil_openarm_v2_mjcf`.
 
+### `python/hal/src/openral_hal/_openarm_description_assets.py`
+_Fetch Enactic's public `openarm_description` ROS package (Apache-2.0) — the `package://openarm_description/...` meshes `robots/openarm/openarm.urdf` references — for hosts without a ROS workspace that builds it._
+
+- `ensure_openarm_description() -> Path` (L30) — Idempotently clones `enactic/openarm_description` at a pinned SHA into `$OPENRAL_CACHE_DIR/openarm_description/<sha>/` and returns the package root. Raises `ROSConfigError` when the clone fails or has no `package.xml`. Used by `openral_sim.backends.isaac_sim._ros_package_paths` (`_PUBLIC_ROS_PACKAGES`).
+
 ### `python/hal/src/openral_hal/_openarm_v2_assets.py`
 _Vendor the upstream `enactic/openarm_mujoco` v2 MJCF until `robot_descriptions` bumps its own pin to match._
 

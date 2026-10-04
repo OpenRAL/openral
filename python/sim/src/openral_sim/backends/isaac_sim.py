@@ -715,13 +715,34 @@ def _gripper_spec(j: Any, leader: _UrdfJoint, urdf: dict[str, _UrdfJoint]) -> di
     }
 
 
+# Public description packages fetched on demand when no sourced workspace or
+# ancestor directory provides them: ``{package: "module:function"}`` returning
+# the package root.
+_PUBLIC_ROS_PACKAGES: dict[str, str] = {
+    "openarm_description": "openral_hal._openarm_description_assets:ensure_openarm_description",
+}
+
+
+def _fetch_public_package(pkg: str) -> Path | None:
+    """The root of a known public ``pkg`` (``_PUBLIC_ROS_PACKAGES``), else ``None``."""
+    import importlib
+
+    target = _PUBLIC_ROS_PACKAGES.get(pkg)
+    if target is None:
+        return None
+    module, _, func = target.partition(":")
+    return Path(getattr(importlib.import_module(module), func)())
+
+
 def _ros_package_paths(urdf_path: Path) -> list[dict[str, str]]:
     """Resolve every ``package://<pkg>/`` root a URDF references.
 
     The standard ROS 2 lookup first (``<AMENT_PREFIX_PATH entry>/share/<pkg>``),
     so a URDF whose meshes live in a sourced workspace imports without copying
     them; else an ancestor directory of the URDF named ``<pkg>`` (a standalone
-    description repo, e.g. the ``robot_descriptions`` cache).
+    description repo, e.g. the ``robot_descriptions`` cache); else a known
+    public package fetched into the openral cache (``_PUBLIC_ROS_PACKAGES`` —
+    e.g. Enactic's ``openarm_description``).
 
     Raises:
         ROSConfigError: a referenced package is found neither way.
@@ -734,12 +755,12 @@ def _ros_package_paths(urdf_path: Path) -> list[dict[str, str]]:
     for pkg in pkgs:
         candidates = [Path(p) / "share" / pkg for p in prefixes]
         candidates += [a for a in urdf_path.parents if a.name == pkg]
-        share = next((c for c in candidates if c.is_dir()), None)
+        share = next((c for c in candidates if c.is_dir()), None) or _fetch_public_package(pkg)
         if share is None:
             raise ROSConfigError(
                 f"URDF {urdf_path} references package://{pkg}/, found on no "
-                f"AMENT_PREFIX_PATH entry (share/{pkg}) nor as an ancestor directory; "
-                "source the ROS workspace that provides it."
+                f"AMENT_PREFIX_PATH entry (share/{pkg}), as an ancestor directory, nor "
+                "among the known public packages; source the ROS workspace that provides it."
             )
         out.append({"name": pkg, "path": str(share)})
     return out
