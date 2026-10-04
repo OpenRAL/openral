@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -232,6 +233,9 @@ TEST(Validator, CartesianDeltaPassesWithSixDofWidthAndJointEnvelope) {
 
 TEST(Validator, GripperPositionPassesWithUnaryWidthAndJointEnvelope) {
   auto env = make_env(11);
+  env.gripper_ee_names = {"panda_gripper"};
+  env.gripper_command_min = {0.0};
+  env.gripper_command_max = {1.0};
   const std::vector<double> flat = {0.04};
   const auto view = make_chunk_view(flat, 1, 1, osk::ControlMode::kGripperPosition);
   const auto rc = osk::validate(view, env);
@@ -458,15 +462,94 @@ TEST(Validator, CompositeModeWithinRangePasses) {
   EXPECT_TRUE(rc);
 }
 
-TEST(Validator, GripperModesCarryNoKernelMagnitudeBoundYet) {
-  // Gripper channel units differ per robot (fraction / metres / radians),
-  // so neither gripper mode is magnitude-bounded by the kernel yet; only
-  // the shape + NaN checks apply.
-  auto env = make_env(11);
-  const std::vector<double> flat = {5.0};  // would violate [0,1] if checked
-  for (const auto mode : {osk::ControlMode::kGripperBinary, osk::ControlMode::kGripperPosition}) {
-    const auto view = make_chunk_view(flat, 1, 1, mode);
-    EXPECT_TRUE(osk::validate(view, env));
+// ── GRIPPER_* bounds, per end effector, in its own convention ─────────────────
+
+namespace {
+
+// OpenArm's two jaws: radians, mirrored ranges.
+osk::EnvelopeIntersection two_jaw_env() {
+  auto env = make_env(16);
+  env.gripper_ee_names = {"left_gripper", "right_gripper"};
+  env.gripper_command_min = {0.0, -0.7854};
+  env.gripper_command_max = {0.7854, 0.0};
+  return env;
+}
+
+osk::ChunkView gripper_view(const std::vector<double>& flat, osk::ControlMode mode,
+                            const std::string& ee) {
+  auto view = make_chunk_view(flat, static_cast<std::uint16_t>(flat.size()), 1, mode);
+  view.ee_name = ee.data();
+  view.ee_name_size = ee.size();
+  return view;
+}
+
+}  // namespace
+
+TEST(Validator, GripperBoundIsTheAddressedEndEffectorsOwnRange) {
+  const auto env = two_jaw_env();
+  // -0.5 rad closes the right jaw and opens nothing on the left: each jaw is
+  // bounded by its own range, never by the intersection ([0, 0]).
+  const std::string right = "right_gripper";
+  const std::string left = "left_gripper";
+  EXPECT_TRUE(
+      osk::validate(gripper_view({-0.5, -0.7}, osk::ControlMode::kGripperPosition, right), env));
+  EXPECT_TRUE(osk::validate(gripper_view({0.5}, osk::ControlMode::kGripperPosition, left), env));
+
+  const auto rc =
+      osk::validate(gripper_view({-0.5}, osk::ControlMode::kGripperPosition, left), env);
+  ASSERT_FALSE(rc);
+  EXPECT_EQ(rc.error().kind, osk::ViolationKind::kWorkspace);
+  EXPECT_STREQ(rc.error().field, "gripper_range");
+  EXPECT_EQ(rc.error().joint_index, 0);
+  EXPECT_NEAR(rc.error().limit_value, 0.0, 1e-12);
+}
+
+TEST(Validator, GripperViolationOnALaterStepIsCaught) {
+  const auto env = two_jaw_env();
+  const std::string right = "right_gripper";
+  const auto rc = osk::validate(
+      gripper_view({-0.1, -0.2, 0.3}, osk::ControlMode::kGripperPosition, right), env);
+  ASSERT_FALSE(rc);
+  EXPECT_EQ(rc.error().horizon_step, 2);
+  EXPECT_NEAR(rc.error().offending_value, 0.3, 1e-12);
+}
+
+TEST(Validator, GripperBinaryIsBoundedToo) {
+  auto env = make_env(7);
+  env.gripper_ee_names = {"panda_hand"};
+  env.gripper_command_min = {0.0};
+  env.gripper_command_max = {1.0};
+  const std::string ee = "panda_hand";
+  EXPECT_TRUE(osk::validate(gripper_view({1.0}, osk::ControlMode::kGripperBinary, ee), env));
+  EXPECT_FALSE(osk::validate(gripper_view({5.0}, osk::ControlMode::kGripperBinary, ee), env));
+}
+
+TEST(Validator, UnnamedGripperChunkBindsToTheOnlyGripper) {
+  auto env = make_env(7);
+  env.gripper_ee_names = {"panda_hand"};
+  env.gripper_command_min = {0.0};
+  env.gripper_command_max = {1.0};
+  const std::vector<double> ok = {0.5};
+  const std::vector<double> bad = {-1.0};
+  EXPECT_TRUE(osk::validate(make_chunk_view(ok, 1, 1, osk::ControlMode::kGripperPosition), env));
+  EXPECT_FALSE(osk::validate(make_chunk_view(bad, 1, 1, osk::ControlMode::kGripperPosition), env));
+}
+
+TEST(Validator, GripperChunkThatResolvesToNoEndEffectorIsRefused) {
+  // Unknown name; unnamed with two grippers; any gripper chunk on a robot
+  // that declares no gripper channel.
+  const auto env = two_jaw_env();
+  const std::string unknown = "panda_hand";
+  const std::vector<double> flat = {0.1};
+  for (const auto& rc :
+       {osk::validate(gripper_view(flat, osk::ControlMode::kGripperPosition, unknown), env),
+        osk::validate(make_chunk_view(flat, 1, 1, osk::ControlMode::kGripperPosition), env),
+        osk::validate(make_chunk_view(flat, 1, 1, osk::ControlMode::kGripperBinary),
+                      make_env(6))}) {
+    ASSERT_FALSE(rc);
+    EXPECT_EQ(rc.error().kind, osk::ViolationKind::kController);
+    EXPECT_EQ(rc.error().sub, osk::ControllerSubKind::kGripperUnresolved);
+    EXPECT_STREQ(rc.error().field, "gripper_ee");
   }
 }
 

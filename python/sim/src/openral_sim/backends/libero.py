@@ -509,4 +509,10 @@ for _suite in _LIBERO_SUITES:
     # LIBERO's MuJoCo physics hard-wire the Franka Panda; the scene rejects
     # any robot_id that disagrees so users get a typed ROSConfigError rather
     # than a silently-swapped robot.
-    SCENES.register(_suite, fixed_robot="franka_panda", sim_clock=True)(_build_libero_scene)
+    # robosuite's PandaGripper: -1 opens, +1 closes (format_action takes the sign).
+    SCENES.register(
+        _suite,
+        fixed_robot="franka_panda",
+        sim_clock=True,
+        gripper_convention="normalized_close_symmetric",
+    )(_build_libero_scene)

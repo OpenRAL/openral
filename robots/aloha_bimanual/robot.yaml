@@ -163,6 +163,7 @@ joints:
 
 end_effectors:
   - name: "left_gripper"
+    command_convention: "normalized_open_unit"
     kind: "parallel_gripper"
     hand: "left"
     n_dof: 1
@@ -170,6 +171,7 @@ end_effectors:
     max_payload_kg: 0.5
     workspace_radius_m: 0.6
   - name: "right_gripper"
+    command_convention: "normalized_open_unit"
     kind: "parallel_gripper"
     hand: "right"
     n_dof: 1

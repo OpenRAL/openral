@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <string_view>
 
 namespace openral_safety_kernel {
 
@@ -356,11 +357,47 @@ Result<void, Violation> validate(const ChunkView& chunk,
   }
   case ControlMode::kGripperBinary:
   case ControlMode::kGripperPosition: {
-    // Shape + NaN checked above; no magnitude bound yet. The gripper
-    // channel's unit is per robot (a [0,1] fraction, finger metres or jaw
-    // radians -- JointSpec.position_limits is "the unit on this channel")
-    // and policies emit their own convention (e.g. RoboCasa's [-1,1]), so a
-    // single gripper_min/max would false-estop real skills.
+    // Every value is bounded by the addressed end effector's command range,
+    // in that end effector's own convention (a [0,1] fraction, a [-1,1]
+    // symmetric command, jaw radians, ...). The skill's convention was
+    // matched to it at load time, so the value here is in that unit. An
+    // unnamed chunk binds to the robot's only gripper; anything else that
+    // resolves to no declared end effector is refused.
+    const std::string_view ee(chunk.ee_name == nullptr ? "" : chunk.ee_name, chunk.ee_name_size);
+    const std::size_t n_grippers = envelope.gripper_ee_names.size();
+    std::size_t idx = n_grippers;
+    if (ee.empty()) {
+      if (n_grippers == 1) {
+        idx = 0;
+      }
+    } else {
+      for (std::size_t i = 0; i < n_grippers; ++i) {
+        if (envelope.gripper_ee_names[i] == ee) {
+          idx = i;
+          break;
+        }
+      }
+    }
+    if (idx == n_grippers) {
+      Violation v = make_controller_violation(ControllerSubKind::kGripperUnresolved, "gripper_ee");
+      v.offending_value = static_cast<double>(n_grippers);
+      return Result<void, Violation>::err(v);
+    }
+    const double lo = envelope.gripper_command_min[idx];
+    const double hi = envelope.gripper_command_max[idx];
+    for (std::size_t i = 0; i < chunk.flat_size; ++i) {
+      const double w = chunk.flat_data[i];
+      if (w < lo || w > hi) {
+        Violation viol{};
+        viol.kind = ViolationKind::kWorkspace;
+        viol.joint_index = static_cast<std::uint16_t>(idx);
+        viol.horizon_step = per_row > 0 ? static_cast<std::uint16_t>(i / per_row) : 0;
+        viol.offending_value = w;
+        viol.limit_value = (w < lo) ? lo : hi;
+        viol.set_field("gripper_range");
+        return Result<void, Violation>::err(viol);
+      }
+    }
     break;
   }
   case ControlMode::kFootPlacement:

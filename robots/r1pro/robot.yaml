@@ -192,10 +192,12 @@ joints:
 
 end_effectors:
   - name: "left_gripper"
+    command_convention: "normalized_open_symmetric"
     kind: "parallel_gripper"
     parent_link: "left_gripper_link"
     actuated: true
   - name: "right_gripper"
+    command_convention: "normalized_open_symmetric"
     kind: "parallel_gripper"
     parent_link: "right_gripper_link"
     actuated: true

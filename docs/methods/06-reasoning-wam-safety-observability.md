@@ -328,15 +328,15 @@ _Allocation-free attached-payload contact handling, plus the staged 26-DOP → e
 ### `packages/openral_safety/openral_safety/envelope_loader.py`
 _Pydantic → C++ kernel ROS-param bridge._
 
-- module constant `_ACTUATED_JOINT_TYPES: frozenset[str]` (L140) — `{"revolute", "prismatic", "continuous"}`, joint types counted as actuated DOF.
-- `merge_deploy_envelope(robot_env, deploy) -> SafetyEnvelope` (L310) — Apply explicit `DeployScene.safety` fields to the robot ceiling with tighten-only validation; omitted fields keep robot manifest values.
-- `class EnvelopeIntersection` (L59) — The numerical product of `robot.safety ∩ skill.envelope`.
-- `compute_intersection(robot, skill, *, deploy=None) -> EnvelopeIntersection` (L353) — Robot ceiling ∩ optional deploy/workcell envelope ∩ optional skill envelope; rejects (never clamps) any deploy or skill safety field that loosens the robot ceiling.
-- `kernel_params_from_envelope(envelope) -> dict[str, object]` (L478) — Canonical scalar/AABB envelope → kernel ROS-param dict.
-- module constant `_JOINT_KIND_CODE: dict[JointType, int]` (L551) — `{REVOLUTE: 1, CONTINUOUS: 1, PRISMATIC: 2}`, the kernel's per-joint kind code used when flattening the kinematic chain.
-- `collision_params_from_description(robot, *, margin_m=None) -> dict[str, object]` (L698) — Flatten collision geometry + ACM + the kinematic chain into the kernel's collision params. Raises `ROSConfigError` unless the links form one connected tree, and again if it cannot lower a primitive's shape, rather than silently mis-approximating it. A boxed link with `tight_geometry` also lowers the staged-narrow-phase DOP/hull arrays.
-- `merge_extra_allowed_pairs(params, pairs) -> dict[str, object]` (L894) — Additive deploy-scene ACM merge. Resolves link names, rejects unknown/self pairs, dedupes order-insensitively, no-ops when self-collision geometry is disabled.
-- `ee_link_index_from_collision_params(params) -> int` (L938) — Picks the predictive-Cartesian EE control link (the kinematically deepest collision link) for the kernel's Jacobian look-ahead; `-1` when no collision model (predictive disabled, reactive floor only).
+- module constant `_ACTUATED_JOINT_TYPES: frozenset[str]` (L184) — `{"revolute", "prismatic", "continuous"}`, joint types counted as actuated DOF.
+- `merge_deploy_envelope(robot_env, deploy) -> SafetyEnvelope` (L354) — Apply explicit `DeployScene.safety` fields to the robot ceiling with tighten-only validation; omitted fields keep robot manifest values.
+- `class EnvelopeIntersection` (L60) — The numerical product of `robot.safety ∩ skill.envelope`.
+- `compute_intersection(robot, skill, *, deploy=None, gripper_convention=None) -> EnvelopeIntersection` (L397) — Robot ceiling ∩ optional deploy/workcell envelope ∩ optional skill envelope; rejects (never clamps) any deploy or skill safety field that loosens the robot ceiling. Gripper channels come from each actuated end effector's command range, or from `gripper_convention` (a simulated scene's encoding) when set.
+- `kernel_params_from_envelope(envelope) -> dict[str, object]` (L533) — Canonical scalar/AABB envelope → kernel ROS-param dict.
+- module constant `_JOINT_KIND_CODE: dict[JointType, int]` (L612) — `{REVOLUTE: 1, CONTINUOUS: 1, PRISMATIC: 2}`, the kernel's per-joint kind code used when flattening the kinematic chain.
+- `collision_params_from_description(robot, *, margin_m=None) -> dict[str, object]` (L759) — Flatten collision geometry + ACM + the kinematic chain into the kernel's collision params. Raises `ROSConfigError` unless the links form one connected tree, and again if it cannot lower a primitive's shape, rather than silently mis-approximating it. A boxed link with `tight_geometry` also lowers the staged-narrow-phase DOP/hull arrays.
+- `merge_extra_allowed_pairs(params, pairs) -> dict[str, object]` (L955) — Additive deploy-scene ACM merge. Resolves link names, rejects unknown/self pairs, dedupes order-insensitively, no-ops when self-collision geometry is disabled.
+- `ee_link_index_from_collision_params(params) -> int` (L999) — Picks the predictive-Cartesian EE control link (the kinematically deepest collision link) for the kernel's Jacobian look-ahead; `-1` when no collision model (predictive disabled, reactive floor only).
 
 ### `packages/openral_safety/openral_safety/mjcf_lowering.py`
 _Offline MJCF → kernel collision-params lowering; imports `mujoco` lazily._

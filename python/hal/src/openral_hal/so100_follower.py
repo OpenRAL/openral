@@ -177,6 +177,7 @@ SO100_DESCRIPTION = RobotDescription(
         EndEffectorSpec(
             name="gripper",
             kind="parallel_gripper",
+            command_convention="normalized_open_unit",
             n_dof=1,
             max_grip_force_n=5.0,
         )

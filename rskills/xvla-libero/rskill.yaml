@@ -38,6 +38,10 @@ actuators_required:
   - kind: "joint_position"
     control_mode_semantics:
       mode: "absolute"
+  - kind: "gripper_position"
+    control_mode_semantics:
+      mode: "absolute"
+      gripper_convention: "normalized_close_symmetric"
 
 # xVLA emits ABSOLUTE end-effector targets, so the LIBERO OSC controller must
 # run in absolute mode (the default "relative"/delta saturates the arm into a

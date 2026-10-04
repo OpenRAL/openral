@@ -108,6 +108,33 @@ EnvelopeLoadStatus load_envelope_from_ros_parameters(rclcpp_lifecycle::Lifecycle
     }
   }
 
+  out.gripper_ee_names = node.get_parameter("gripper_ee_names").as_string_array();
+  out.gripper_command_min = read_double_array(node, "gripper_command_min");
+  out.gripper_command_max = read_double_array(node, "gripper_command_max");
+  const std::size_t n_grippers = out.gripper_ee_names.size();
+  if (out.gripper_command_min.size() != n_grippers ||
+      out.gripper_command_max.size() != n_grippers) {
+    std::ostringstream oss;
+    oss << "gripper_* parameter arrays disagree: names=" << n_grippers
+        << " min=" << out.gripper_command_min.size() << " max=" << out.gripper_command_max.size();
+    error_message = oss.str();
+    out = EnvelopeIntersection{};
+    return EnvelopeLoadStatus::kInvalidShape;
+  }
+  for (std::size_t i = 0; i < n_grippers; ++i) {
+    const double lo = out.gripper_command_min[i];
+    const double hi = out.gripper_command_max[i];
+    if (out.gripper_ee_names[i].empty() || !std::isfinite(lo) || !std::isfinite(hi) || lo >= hi) {
+      std::ostringstream oss;
+      oss << "gripper end effector " << i << " (" << out.gripper_ee_names[i]
+          << ") needs a name and a finite command range with min < max; got [" << lo << ", " << hi
+          << "]";
+      error_message = oss.str();
+      out = EnvelopeIntersection{};
+      return EnvelopeLoadStatus::kInvalidValue;
+    }
+  }
+
   return EnvelopeLoadStatus::kOk;
 }
 

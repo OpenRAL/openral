@@ -2389,6 +2389,8 @@ _KITCHEN_ROBOTS = frozenset({"panda_mobile", "panda_mobile_vslam"})
     provision=partial(provision_robocasa, "robocasa_kitchen"),
     sequential_init=True,
     sim_clock=True,
+    # robosuite's PandaGripper: -1 opens, +1 closes (format_action takes the sign).
+    gripper_convention="normalized_close_symmetric",
 )
 def _build_robocasa_kitchen(env_cfg: SimEnvironment) -> _RoboCasaSim:
     """Kitchen scenes: procedural (``robocasa``) or prebuilt (``robocasa/<Task>``)."""

@@ -236,6 +236,9 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<double>("max_cartesian_step_m", kPosInfinity);
   this->declare_parameter<double>("max_cartesian_step_rad", kPosInfinity);
   this->declare_parameter<bool>("deadman_required", false);
+  this->declare_parameter<std::vector<std::string>>("gripper_ee_names", std::vector<std::string>{});
+  this->declare_parameter<std::vector<double>>("gripper_command_min", std::vector<double>{});
+  this->declare_parameter<std::vector<double>>("gripper_command_max", std::vector<double>{});
 
   // Self-collision model. Disabled unless the launch emits a
   // populated model (openral_safety.envelope_loader.collision_params_from_*).
@@ -760,6 +763,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
   view.cartesian_delta_scale =
       msg->cartesian_delta_scale.empty() ? nullptr : msg->cartesian_delta_scale.data();
   view.cartesian_delta_scale_size = msg->cartesian_delta_scale.size();
+  view.ee_name = msg->ee_name.data();
+  view.ee_name_size = msg->ee_name.size();
 
   const auto result = validate(view, envelope_);
   if (result) {
@@ -1632,13 +1637,14 @@ void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg:
   case ViolationKind::kController:
   default: {
     // ControllerEvidence: controller_name, state, detail.
-    const std::string state = (v.sub == ControllerSubKind::kNanInAction)    ? "nan_in_action"
-                              : (v.sub == ControllerSubKind::kNdofMismatch) ? "ndof_mismatch"
-                              : (v.sub == ControllerSubKind::kDimMismatch)  ? "dim_mismatch"
-                              : (v.sub == ControllerSubKind::kInvalidScale) ? "invalid_scale"
-                              : (v.sub == ControllerSubKind::kEnvelopeUnconfigured)
-                                  ? "envelope_unconfigured"
-                                  : "controller_error";
+    const std::string state =
+        (v.sub == ControllerSubKind::kNanInAction)            ? "nan_in_action"
+        : (v.sub == ControllerSubKind::kNdofMismatch)         ? "ndof_mismatch"
+        : (v.sub == ControllerSubKind::kDimMismatch)          ? "dim_mismatch"
+        : (v.sub == ControllerSubKind::kInvalidScale)         ? "invalid_scale"
+        : (v.sub == ControllerSubKind::kGripperUnresolved)    ? "gripper_unresolved"
+        : (v.sub == ControllerSubKind::kEnvelopeUnconfigured) ? "envelope_unconfigured"
+                                                              : "controller_error";
     std::ostringstream detail;
     detail << "field=" << v.field << " joint=" << v.joint_index << " value=" << v.offending_value
            << " limit=" << v.limit_value;

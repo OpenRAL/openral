@@ -137,15 +137,28 @@ an undeclared bound is `+inf`, so the check is a no-op for that robot.
 | `BODY_TWIST` | `‖v‖`, `‖ω‖` | `max_base_linear_speed_m_s`, `max_base_angular_speed_rad_s` | `force` |
 | `CARTESIAN_DELTA` | `‖Δxyz‖`, `‖Δrot‖` after `clip(raw,−1,1)·cartesian_delta_scale` | `max_cartesian_step_m`, `max_cartesian_step_rad` | `force` |
 | `COMPOSITE_MODE` | flag in `[−1, 1]` (wire contract) | — | `workspace` |
-| `GRIPPER_BINARY` / `GRIPPER_POSITION` | shape + NaN only | — | — |
+| `GRIPPER_BINARY` / `GRIPPER_POSITION` | every value inside the addressed end effector's command range; a chunk resolving to no declared end effector is refused (`gripper_unresolved`) | `end_effectors[].command_convention` / `command_range`, or the sim scene's `gripper_convention` | `workspace` / `controller` |
 
 The norms are Euclidean, so a controller with a per-axis output limit `a` needs
 a bound of at least `a·√3`: `panda_mobile` declares `0.087 m` / `0.87 rad` for
-robosuite's 0.05 m / 0.5 rad OSC box. Gripper chunks carry no magnitude bound
-yet because the channel's unit is per robot (a `[0,1]` fraction, finger metres or
-jaw radians) and policies emit their own convention (RoboCasa sends `[−1,1]`).
-`tests/sim/safety/test_kernel_per_mode_envelopes.py` drives the real node from
-the real `r1pro` and `panda_mobile` manifests.
+robosuite's 0.05 m / 0.5 rad OSC box.
+
+Gripper bounds are **per end effector, in its own encoding**. A gripper value
+reaches the HAL unconverted, and robots disagree on what it means — a `[0,1]`
+fraction (Franka twin, SO-101, ALOHA), robosuite's `[−1,1]` with `+1` closed
+(RoboCasa, LIBERO), jaw radians (OpenArm, left `[0, 0.785]`, right
+`[−0.785, 0]`). Each end effector declares `command_convention` (and a
+`command_range` for the physical ones); a simulated scene declares the
+convention its environment consumes (`SCENES.register(...,
+gripper_convention=...)`), which `openral deploy sim` forwards as the
+`gripper_convention` launch argument and which then replaces every end
+effector's range. The kernel receives parallel arrays `gripper_ee_names` /
+`gripper_command_min` / `gripper_command_max` and resolves each chunk by its
+`ee_name` (an unnamed chunk binds to the robot's only gripper). Matching the
+skill's encoding to that one is the loader's job:
+`rSkill.check_gripper_conventions` refuses a mismatch when the runner resolves
+the skill. `tests/sim/safety/test_kernel_per_mode_envelopes.py` drives the real
+node from the real `r1pro`, `panda_mobile` and `openarm` manifests.
 
 ## Observability
 

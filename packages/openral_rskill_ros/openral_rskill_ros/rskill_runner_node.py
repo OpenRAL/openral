@@ -248,6 +248,10 @@ if _ROS2_AVAILABLE:
             super().__init__(node_name)
             self.declare_parameter("rate_hz", 30.0)
             self.declare_parameter("action_applied_timeout_s", 5.0)
+            # The gripper encoding the simulated scene's environment consumes
+            # (SCENES meta, forwarded by `openral deploy sim`); empty = the
+            # robot end effectors' own command_convention.
+            self.declare_parameter("gripper_convention", "")
             self.declare_parameter("joint_state_staleness_limit_s", 0.5)
             # Conservative speed for the kernel-checked move from the live pose to an
             # rSkill's starting_pose. The gripper channel is normalised [0, 1], so the same
@@ -1062,6 +1066,21 @@ if _ROS2_AVAILABLE:
                         f"skill embodiment_tags {tags!r} disjoint from "
                         f"robot embodiment_tags {sorted(allowed)!r}"
                     )
+
+            # Gripper encoding gate: a GRIPPER_* value reaches the HAL
+            # unconverted, so the skill's convention must equal the end
+            # effector's. Skills built without a manifest (test harness) skip.
+            from openral_core import RSkillManifest as _Manifest
+            from openral_rskill.loader import rSkill
+
+            manifest = getattr(skill, "manifest", None)
+            if isinstance(manifest, _Manifest):
+                scene_convention = str(self.get_parameter("gripper_convention").value or "")
+                rSkill.check_gripper_conventions(
+                    manifest,
+                    self._description,
+                    scene_gripper_convention=scene_convention or None,
+                )
 
             # Hand-validate that the skill is in a runnable state. The
             # resolver is expected to have driven `configure` + `activate`;

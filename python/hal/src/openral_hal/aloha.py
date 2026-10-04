@@ -224,6 +224,7 @@ ALOHA_DESCRIPTION = RobotDescription(
             max_grip_force_n=4.0,
             max_payload_kg=0.5,
             workspace_radius_m=0.6,
+            command_convention="normalized_open_unit",
         ),
         EndEffectorSpec(
             name="right_gripper",
@@ -233,6 +234,7 @@ ALOHA_DESCRIPTION = RobotDescription(
             max_grip_force_n=4.0,
             max_payload_kg=0.5,
             workspace_radius_m=0.6,
+            command_convention="normalized_open_unit",
         ),
     ],
     capabilities=RobotCapabilities(
