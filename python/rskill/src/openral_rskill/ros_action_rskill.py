@@ -37,6 +37,8 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from openral_core.exceptions import (
     ROSConfigError,
+    ROSDeadlineMissed,
+    ROSError,
     ROSRskillGoalSatisfied,
     ROSRuntimeError,
 )
@@ -51,6 +53,7 @@ from openral_core.schemas import (
 )
 
 from openral_rskill.base import rSkillBase
+from openral_rskill.execution_budget import BudgetMiss, node_execution_budget
 
 if TYPE_CHECKING:
     # `rclpy` and the wrapped IDL package are not importable on every host
@@ -693,7 +696,13 @@ class ROSActionRskill(rSkillBase):
             ) from exc
 
         goal_future = self._client.send_goal_async(goal_msg)
-        self._poll_future(goal_future, deadline_s=_WAIT_FOR_SERVER_TIMEOUT_S, what="goal-accept")
+        # Goal acceptance is IPC, not robot motion: wall clock even under sim time.
+        self._poll_future(
+            goal_future,
+            deadline_s=_WAIT_FOR_SERVER_TIMEOUT_S,
+            what="goal-accept",
+            graph_clock=False,
+        )
         goal_handle = goal_future.result()
         if goal_handle is None or not getattr(goal_handle, "accepted", False):
             raise ROSRuntimeError(
@@ -701,7 +710,23 @@ class ROSActionRskill(rSkillBase):
             )
 
         result_future = goal_handle.get_result_async()
-        self._poll_future(result_future, deadline_s=self._result_deadline_s, what="result")
+        try:
+            # Result-only mode (Nav2 shape): the server is moving the robot, on the
+            # graph clock — a 0.09x sim lost a 300 s Nav2 budget after 28 s of sim
+            # time when this was wall-clock (adapted from DsslRobot/openral).
+            # Trajectory mode (MoveIt plan / plan_only) is CPU planning: wall clock.
+            self._poll_future(
+                result_future,
+                deadline_s=self._result_deadline_s,
+                what="result",
+                graph_clock=self._integration.result_trajectory_field is None,
+            )
+        except ROSError:
+            # Giving up on the wait must not leave the wrapped server driving the
+            # robot toward a goal nobody is tracking any more.
+            log.warning("ros_action_rskill.cancelling_wrapped_goal", name=self.name)
+            goal_handle.cancel_goal_async()
+            raise
         wrapper = result_future.result()
         if wrapper is None:
             raise ROSRuntimeError(
@@ -774,25 +799,54 @@ class ROSActionRskill(rSkillBase):
                 f"{exc}"
             ) from exc
         future = self._client.call_async(request)
-        self._poll_future(future, deadline_s=self._result_deadline_s, what="service-response")
+        # A service response is compute / IPC, not robot motion: wall clock.
+        self._poll_future(
+            future, deadline_s=self._result_deadline_s, what="service-response", graph_clock=False
+        )
         response = future.result()
         if response is None:
             raise ROSRuntimeError(f"ROSActionRskill({self.name!r}): wrapped service returned null.")
         return response
 
-    def _poll_future(self, future: Any, *, deadline_s: float, what: str) -> None:  # noqa: ANN401  # reason: rclpy.task.Future is untyped
+    def _poll_future(
+        self,
+        future: Any,  # noqa: ANN401  # reason: rclpy.task.Future is untyped
+        *,
+        deadline_s: float,
+        what: str,
+        graph_clock: bool = True,
+    ) -> None:
         """Block (without spinning) until ``future.done()`` or deadline.
 
         The host node's main rclpy spin services callbacks; we just poll
         ``done()`` here. Avoids re-entering ``rclpy.spin_until_future_complete``
         from a worker thread, which is unsafe with the default
         single-threaded executor.
+
+        ``deadline_s`` is measured on the graph clock when the host node runs on
+        sim time and ``graph_clock`` is true (``ExecutionBudget`` keeps the wall
+        backstops: a stalled ``/clock`` still raises); otherwise on
+        ``time.monotonic()`` as before. The backstops come from the host node's
+        ``execution_wall_cap_factor`` / ``graph_clock_stall_s`` parameters.
+
+        Raises:
+            ROSDeadlineMissed: The wait lapsed (``deadline_exceeded`` or
+                ``clock_stalled`` in the message) — ``FAILURE_DEADLINE_MISSED`` on the
+                goal, like the runner's own budget. A non-positive ``deadline_s``
+                lapses at once (fail closed) unless the future is already done.
         """
-        deadline = time.monotonic() + deadline_s
+        budget = node_execution_budget(self._node, deadline_s, graph_clock=graph_clock)
         while not future.done():
-            if time.monotonic() >= deadline:
-                raise ROSRuntimeError(
+            miss = budget.check()
+            if not deadline_s > 0.0:
+                miss = BudgetMiss(
+                    kind="deadline_exceeded",
+                    elapsed_s=0.0,
+                    detail=f"non-positive deadline_s={deadline_s!r}",
+                )
+            if miss is not None:
+                raise ROSDeadlineMissed(
                     f"ROSActionRskill({self.name!r}): wrapped {what} did not "
-                    f"complete within {deadline_s:.1f}s."
+                    f"complete within {deadline_s:.1f}s ({miss.kind}: {miss.detail})."
                 )
             time.sleep(_FUTURE_POLL_INTERVAL_S)

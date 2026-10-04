@@ -177,23 +177,41 @@ _Action-chunk executor shared by every chunked VLA family. Also the home of Real
   - private: `_pop_and_maybe_prefetch(batch)` (every pop routes through it so the trigger is branch-independent), `_produce(payload, chunk_index, kind, rtc_kwargs=None)` (passes `synchronize=True` on the prefetch path only), `_materialize`, `_extend_buffer`, `_launch_prefetch(batch)`
   - private (RTC): `_select_action_rtc(batch)` — serve from the `ActionQueue`, re-checking after the prefetch wait so a landed chunk isn't discarded. `_rtc_merge(chunk, *, idx_before)` — replace the tail; `real_delay` is the index delta the queue advanced during inference, and the producer's batch dim must be 1. `_raise_bg_error_if_any()` — re-raise a latched background error on the foreground thread. The prefetch path truncates the leftover tail to `execution_horizon` rows so tail length doesn't depend on how early `prefetch_at` fires.
 
+### `python/rskill/src/openral_rskill/execution_budget.py`
+_Execution budgets measured on the graph clock (sim seconds under `use_sim_time`) with wall-clock backstops, shared by the rSkill runner's goal budget and `ROSActionRskill`'s result wait. Without a graph clock the budget is `time.monotonic()` exactly as before — never the NTP-stepped ROS system clock. Adapted from DsslRobot/openral._
+
+- const `DEFAULT_WALL_CAP_FACTOR = 20.0` — a graph-clock budget may stretch to at most this many times its value in wall seconds: intact down to 0.05x real time (the slowest measured rendering graph, 0.09x, needs 11.1x). (L66)
+- const `DEFAULT_CLOCK_STALL_S = 10.0` — wall seconds the graph clock may stand still before the goal is failed. (L69)
+- const `PARAM_WALL_CAP_FACTOR = "execution_wall_cap_factor"` — ROS parameter name a host node declares to override `DEFAULT_WALL_CAP_FACTOR`; read by `node_execution_budget`. (L73)
+- const `PARAM_CLOCK_STALL_S = "graph_clock_stall_s"` — ROS parameter name a host node declares to override `DEFAULT_CLOCK_STALL_S`; read by `node_execution_budget`. (L74)
+- `class BudgetMiss(BaseModel)` — Frozen Pydantic record of why a budget lapsed: `kind` (`"deadline_exceeded"` | `"clock_stalled"`, the `failure_reason` prefix), `elapsed_s` on the budget's clock, and a `detail` string. (L77)
+- `class ExecutionBudget` — One goal's execution budget; starts at construction. (L97)
+  - `__init__(budget_s, *, graph_now=None, wall_cap_factor=DEFAULT_WALL_CAP_FACTOR, stall_s=DEFAULT_CLOCK_STALL_S, wall_now=time.monotonic)` — `graph_now` is a graph-clock seconds callable (see `graph_clock_fn`) or `None` for wall time; `budget_s <= 0` disables every check. Raises `ROSConfigError` on a non-finite `budget_s` (a NaN would never lapse) and, on a graph-clock budget, on a non-positive / non-finite backstop — the backstops cannot be disabled (deadline fallback is mandatory). (L117)
+  - `on_graph_clock -> bool` [@property] (L150)
+  - `elapsed_s() -> float` — Seconds on the budget's clock; `0` while a sim node has not yet received its first `/clock` (the budget anchors on the first non-zero reading, so that message is never a jump that lapses it). A backward `/clock` jump (sim reset) banks the elapsed so far and re-anchors, so elapsed neither freezes nor rewinds. (L171)
+  - `progress() -> float` — `elapsed / budget` clamped to `[0, 1]`. (L179)
+  - `check() -> BudgetMiss | None` — `deadline_exceeded` when elapsed > budget (either clock) or wall elapsed > `wall_cap_factor x budget`; `clock_stalled` when the graph clock has not advanced (or never started) for `stall_s` of wall time. (L183)
+- `graph_clock_fn(node) -> Callable[[], float] | None` — The rclpy node's clock as a seconds callable when its `use_sim_time` parameter is true *at call time*, else `None` (also for `node=None` or an undeclared parameter); re-read per call so a node switched off sim time goes back to `time.monotonic()`. (L222)
+- `node_execution_budget(node, budget_s, *, graph_clock=True) -> ExecutionBudget` — An `ExecutionBudget` on `node`'s clock (graph clock when `graph_clock` and the node is on sim time now), with the backstops taken from the node's `execution_wall_cap_factor` / `graph_clock_stall_s` parameters when declared, else the defaults — the one builder the rSkill runner and `ROSActionRskill` share. (L245)
+
 ### `python/rskill/src/openral_rskill/ros_action_rskill.py`
 _ROS-wrapping rSkill adapter — bridges arbitrary ROS 2 action / service servers (MoveIt, Nav2, …) into the `rSkillBase` lifecycle. Selected by `make_default_skill_resolver` when `manifest.kind in {"ros_action", "ros_service"}`._
 
-- const `_RESULT_DEADLINE_MULTIPLIER = 5.0` (L77)
-- const `_MIN_RESULT_DEADLINE_S = 2.0` (L82)
-- const `_FUTURE_POLL_INTERVAL_S = 0.02` (L86)
-- const `_WAIT_FOR_SERVER_TIMEOUT_S = 15.0` (L94)
-- const `_GOAL_STATUS_LABELS: dict[int, str] = {...}` — Human-readable labels for `action_msgs/GoalStatus` codes, used in error/log messages. (L101)
-- `build_joint_permutation_from_names(*, source_names, target_names) -> list[int]` — Build the permutation that reorders a wrapped server's `JointTrajectory.positions` into the host `RobotDescription.joints` order. Raises `ROSConfigError` on set-inequality so a joint mismatch surfaces loudly instead of silently swapping bytes. (L172)
-- const `CUMOTION_PIPELINE_ID = "isaac_ros_cumotion"` — the cuMotion MoveIt planning-pipeline id. (L141)
-- `maybe_inject_cumotion_pipeline(goal_dict, *, interface_type, capabilities) -> dict` — On a host clearing the cuMotion GPU floor, sets `request.pipeline_id = CUMOTION_PIPELINE_ID` on a `MoveGroup` goal so MoveIt plans with cuMotion; no-op for non-MoveGroup actions, low-VRAM hosts, an already-set `pipeline_id`, or a goal with no `request` block. Pure — never mutates the input. (L144)
-- `class ROSActionRskill(rSkillBase)` — `rSkillBase` shim wrapping a ROS 2 ActionClient (or service client), in two modes selected by `manifest.ros_integration.result_trajectory_field`: trajectory mode replays one waypoint per `step()`, result-only mode awaits the wrapped result — both raise `ROSRskillGoalSatisfied` on completion. ROS imports are deferred to `_configure_impl` so the module imports cleanly without ROS sourced. (L299)
-  - `__init__(*, manifest, ros_node, robot_description, prompt, prompt_metadata_json)` (L332)
-  - `_configure_impl()` — Lazy-import IDL, build ActionClient/service client, parse `default_goal_json`. (L403)
-  - `_activate_impl()` — no-op; the wrapped action dispatches on first `step()`. (L493)
-  - `_deactivate_impl()` / `_shutdown_impl()` — Release the wrapped client. (L496)
-  - `_step_impl(world_state) -> Action` — First call sends goal and caches result; subsequent calls dequeue waypoints. (L513)
+- const `_RESULT_DEADLINE_MULTIPLIER = 5.0` (L80)
+- const `_MIN_RESULT_DEADLINE_S = 2.0` (L85)
+- const `_FUTURE_POLL_INTERVAL_S = 0.02` (L89)
+- const `_WAIT_FOR_SERVER_TIMEOUT_S = 15.0` (L97)
+- const `_GOAL_STATUS_LABELS: dict[int, str] = {...}` — Human-readable labels for `action_msgs/GoalStatus` codes, used in error/log messages. (L104)
+- `build_joint_permutation_from_names(*, source_names, target_names) -> list[int]` — Build the permutation that reorders a wrapped server's `JointTrajectory.positions` into the host `RobotDescription.joints` order. Raises `ROSConfigError` on set-inequality so a joint mismatch surfaces loudly instead of silently swapping bytes. (L175)
+- const `CUMOTION_PIPELINE_ID = "isaac_ros_cumotion"` — the cuMotion MoveIt planning-pipeline id. (L144)
+- `maybe_inject_cumotion_pipeline(goal_dict, *, interface_type, capabilities) -> dict` — On a host clearing the cuMotion GPU floor, sets `request.pipeline_id = CUMOTION_PIPELINE_ID` on a `MoveGroup` goal so MoveIt plans with cuMotion; no-op for non-MoveGroup actions, low-VRAM hosts, an already-set `pipeline_id`, or a goal with no `request` block. Pure — never mutates the input. (L147)
+- `class ROSActionRskill(rSkillBase)` — `rSkillBase` shim wrapping a ROS 2 ActionClient (or service client), in two modes selected by `manifest.ros_integration.result_trajectory_field`: trajectory mode replays one waypoint per `step()`, result-only mode awaits the wrapped result — both raise `ROSRskillGoalSatisfied` on completion. ROS imports are deferred to `_configure_impl` so the module imports cleanly without ROS sourced. (L302)
+  - `__init__(*, manifest, ros_node, robot_description, prompt, prompt_metadata_json)` (L335)
+  - `_configure_impl()` — Lazy-import IDL, build ActionClient/service client, parse `default_goal_json`. (L406)
+  - `_activate_impl()` — no-op; the wrapped action dispatches on first `step()`. (L496)
+  - `_deactivate_impl()` / `_shutdown_impl()` — Release the wrapped client. (L499)
+  - `_step_impl(world_state) -> Action` — First call sends goal and caches result; subsequent calls dequeue waypoints. (L516)
+  - `_poll_future(future, *, deadline_s, what, graph_clock=True)` — Polls a wrapped future under `node_execution_budget(self._node, …)`: on the graph clock when `graph_clock` and the host node runs on sim time, else on `time.monotonic()`. Raises the typed `ROSDeadlineMissed` (`FAILURE_DEADLINE_MISSED`) naming `deadline_exceeded` / `clock_stalled`; a non-positive `deadline_s` lapses at once (fail closed). Only the result-only result wait (Nav2: the server moves the robot) uses the graph clock — goal acceptance, service responses and a MoveIt plan result are compute/IPC and pass `graph_clock=False`; a lapsed result wait cancels the wrapped goal before re-raising. (L811)
 
 ### `python/rskill/src/openral_rskill/look_at_rskill.py`
 _Camera-aiming MoveGroup skill. Selected by `make_default_skill_resolver` when `manifest.ros_integration.goal_builder == "look_at"` (new `RosIntegration.goal_builder` field; `RSkillAction` gains `LOOK = "look"`)._

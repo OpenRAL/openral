@@ -1057,6 +1057,15 @@ const LAYERS = [
         schemas: ["RSkillManifest", "RosIntegration", "Action"],
       },
       {
+        title: "ExecutionBudget (graph-clock execution budgets)",
+        pkg: "python/rskill · execution_budget.py",
+        status: "green",
+        desc: "One goal's execution budget, measured on the graph clock when the host node runs with use_sim_time (Nav2 / MoveIt / the controllers already time themselves in sim seconds; a 0.09x rendering graph lost a 300 s Nav2 budget after 28 s of sim time when the runner timed it on time.monotonic()) and on time.monotonic() otherwise — never the NTP-stepped ROS system clock. Two wall-clock backstops that cannot be disabled keep a goal bounded when /clock stops or crawls: clock_stalled after graph_clock_stall_s (10 s) of wall time without graph progress (a sim node reads 0 before its first /clock, so the budget anchors on the first non-zero reading; a backward jump re-anchors and banks the elapsed so far), and deadline_exceeded once wall elapsed passes execution_wall_cap_factor (20, i.e. intact down to 0.05x real time) x budget. node_execution_budget(node, budget_s) is the one builder: it re-reads use_sim_time per call and takes both backstops from the host node's parameters, so the rskill runner's goal budget and every ROSActionRskill result wait on that node share one configuration. BudgetMiss (frozen Pydantic) carries kind / elapsed_s / detail into the goal's failure_reason (both kinds are FAILURE_DEADLINE_MISSED), the runner's warning log and the deadline_missed span event. Adapted from DsslRobot/openral. Green: tests/unit/test_execution_budget.py drives it with a real /clock publisher, real sim-time nodes and a real NavigateToPose ActionServer.",
+        inputs: ["host node use_sim_time + clock (graph_clock_fn)", "ROS params execution_wall_cap_factor / graph_clock_stall_s", "time.monotonic()"],
+        outputs: ["BudgetMiss → ExecuteRskill failure_reason / FAILURE_DEADLINE_MISSED", "ROSDeadlineMissed from ROSActionRskill._poll_future", "deadline_missed span event (miss.kind)"],
+        schemas: ["action/ExecuteRskill"],
+      },
+      {
         title: "ROSPublishingHAL (F1)",
         pkg: "python/runner · openral_runner.ros_publishing_hal",
         status: "green",

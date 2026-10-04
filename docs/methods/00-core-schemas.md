@@ -233,7 +233,7 @@ _Advisory, queryable Layer-2 world model the S2 Reasoner consults to recall obje
 
 **Pydantic models — skill packaging (rSkill)**
 
-- `class RSkillLatencyBudget(BaseModel)` — Per-stage latency budget; `max_execution_s` is the total wall-clock budget for one `execute_rskill` goal, bounding a VLA that never self-terminates. (L4420)
+- `class RSkillLatencyBudget(BaseModel)` — Per-stage latency budget; `max_execution_s` is the total execution budget for one `execute_rskill` goal in seconds on the clock the robot moves on (graph clock under `use_sim_time`, else wall), bounding a VLA that never self-terminates. (L4420)
   fields: `per_chunk_ms, warmup_ms, load_ms, max_execution_s`
 - `class SensorRequirement(BaseModel)` — One sensor an rSkill needs the robot to provide. (L4445)
   fields: `modality, vla_feature_key, min_width, min_height, count`
