@@ -1,8 +1,7 @@
 # Franka in Isaac Sim, imported from the robot's URDF — robot-agnostic deploy
 # scene.
 #
-# Unlike isaac_franka.yaml (`lift_cube` layout, hardcoded Isaac built-in
-# Franka asset), this uses the `manifest` layout: sidecar imports the
+# The `manifest` layout: the sidecar imports the
 # franka_panda manifest's URDF (python:robot_descriptions.panda_description:URDF_PATH)
 # via Isaac's URDF importer, maps DOFs to the manifest joint order by name,
 # drives with JOINT_POSITION. Swap `robot_id` to any manifest robot whose

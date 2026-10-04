@@ -77,26 +77,17 @@ tools/record_demo.sh clip2_openarm 300
 
 ---
 
-## Clip 3 — Isaac Sim · Franka Panda · pick (bowl→plate)
-Isaac runs via the py3.11 sidecar venv (`~/.cache/openral/isaac-sidecar/.venv`, auto-resolved).
-**One Kit app at a time** — make sure no other Isaac process is running.
+## Clip 3 — Isaac Sim · OpenArm · warehouse pallet (pickable YCB props)
+Isaac is resolved automatically (sidecar venv, or a binary install such as `/opt/isaac-sim`).
+**One Kit app at a time** — make sure no other Isaac process of yours is running.
 
-### 3a. deploy-sim path (WITH dashboard)   [CONFIG REAL, deploy e2e NOT verified this session]
 ```bash
-openral deploy sim --config scenes/deploy/isaac_franka_bowl.yaml
+openral deploy sim --config scenes/deploy/isaac_openarm_warehouse.yaml --no-enable-octomap
 chromium --new-window --app=http://127.0.0.1:4318/ &
-tools/record_demo.sh clip3_isaac_franka 300
-ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
-  "{rskill_id: 'OpenRAL/rskill-act-franka_panda-libero-fp32', prompt: 'put the bowl on the plate', deadline_s: 120.0}"
+tools/record_demo.sh clip3_isaac_openarm 300
 ```
-
-### 3b. sim-run path (NO dashboard, but VERIFIED during the Isaac backend integration) — fallback
-```bash
-openral sim run --config scenes/sim/isaac_franka_bowl_plate.yaml \
-  --rskill rskill://rskills/act-libero --video recordings/clip3_isaac_franka_simrun.mp4
-```
-Expect: real RTX render + ACT drives the arm via Lula IK. Task success is OOD → `success=False`
-is expected; the point is perception + actuation, not a completed place.
+The former Franka bowl→plate clip used the `bowl_plate` layout, removed because it never
+booted on Isaac Sim 6.1.
 
 ---
 

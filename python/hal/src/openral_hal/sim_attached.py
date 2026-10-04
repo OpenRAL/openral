@@ -462,7 +462,9 @@ class SimAttachedHAL:
             description: The host ``RobotDescription`` — joint
                 ordering, ``base_joints`` + ``sim_joint_name`` map.
             action_packer: Per-composition Action-to-env-vec translator;
-                defaults to ``pack_action_for_env``.
+                defaults to the env's own ``pack_action(action, prev)`` when it
+                defines one (a backend that knows its slot layout — the Isaac
+                manifest scene), else ``pack_action_for_env``.
             env_reset_seed: Optional seed forwarded to ``env.reset``.
             env_action_dim: Override the auto-probed env action width;
                 useful for envs whose action space isn't introspectable.
@@ -485,7 +487,18 @@ class SimAttachedHAL:
         if callable(enable_continuous):
             enable_continuous()
         self.description = description
-        self._action_packer = action_packer if action_packer is not None else pack_action_for_env
+        # A backend that declares its own layout packs by name (env hook, like
+        # ``idle_action``); the default packer assumes the robosuite layout
+        # (base first, ONE gripper in the last slot, per-step deltas) and would
+        # misroute such an env's slots — an arm command into its base twist.
+        env_pack = getattr(env, "pack_action", None)
+        self._env_packs = action_packer is None and callable(env_pack)
+        if action_packer is not None:
+            self._action_packer: ActionPacker = action_packer
+        elif callable(env_pack):
+            self._action_packer = lambda action, _description, _dim, prev: env_pack(action, prev)
+        else:
+            self._action_packer = pack_action_for_env
         self._reset_seed = env_reset_seed
         self._env_action_dim: int | None = env_action_dim
         self._connected: bool = False
@@ -605,6 +618,10 @@ class SimAttachedHAL:
         self._pending_actions.clear()
         self._watermark.reset()
         self._last_applied_action = None
+        # The reset re-seeded the scene: commands from before it must not ride
+        # along as the next pack's ``prev`` (an absolute-target env would move
+        # the arm back to its pre-reset pose on the first base twist).
+        self._last_env_action = None
         self._joint_index = None  # rebuilt on next read_state (model identity stable per env)
         # A reset re-randomises the scene, so the previous episode's success
         # verdict no longer describes anything live. Re-seed the witness from
@@ -867,7 +884,7 @@ class SimAttachedHAL:
             if self._mujoco_handles() is not None:
                 self._apply_body_twist_to_qpos(row)
             else:
-                self._apply_body_twist_via_env_step(row)
+                self._apply_body_twist_via_env_step(row, action)
             self._last_applied_action = action
             return
         # A non-BODY_TWIST action means the base is no longer being
@@ -1046,23 +1063,56 @@ class SimAttachedHAL:
 
     def _step_packed_action_group(self, actions: list[Action]) -> None:
         """Pack every safe slot, then execute exactly one simulator step."""
-        if any(action.control_mode is ControlMode.BODY_TWIST for action in actions):
+        has_twist = any(action.control_mode is ControlMode.BODY_TWIST for action in actions)
+        if has_twist and not self._env_packs:
             raise ROSConfigError(
                 "SimAttachedHAL: BODY_TWIST cannot share a packed env-step group; "
                 "use the backend's step_action_group implementation."
             )
         env_action: NDArray[np.float32] | None = None
-        if self._has_composite_split():
+        if self._env_packs:
+            # The env packs by name; slots after the first carry the twist an
+            # earlier slot of this same step packed (a mobile-manipulation tick).
+            env_pack = self._env.pack_action  # type: ignore[attr-defined]  # reason: duck-typed env hook, checked in __init__
+            for i, action in enumerate(actions):
+                env_action = env_pack(
+                    action, self._last_env_action if i == 0 else env_action, carry_twist=i > 0
+                )
+            if env_action is not None:
+                self._last_env_action = env_action.copy()
+            twist = next(
+                (
+                    a.body_twist[0]
+                    for a in actions
+                    if a.control_mode is ControlMode.BODY_TWIST and a.body_twist
+                ),
+                None,
+            )
+            self._last_body_twist = (
+                (float(twist[0]), float(twist[1]), 0.0, 0.0, 0.0, float(twist[5]))
+                if twist is not None
+                else (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            )
+        elif self._has_composite_split():
             for action in actions:
                 env_action = self._pack_with_composite_split(action)
         else:
-            previous = (
+            # Nothing commanded yet: an env that packs by name gets None (its
+            # own HOLD); the default packer's robosuite envs read 0 as hold.
+            previous: NDArray[np.float32] | None = (
                 self._last_env_action.copy()
                 if self._last_env_action is not None
+                else None
+                if self._env_packs
                 else np.zeros(int(self._env_action_dim or 0), dtype=np.float32)
             )
             for action in actions:
-                if action.control_mode is ControlMode.GRIPPER_POSITION and action.gripper:
+                if (
+                    previous is not None  # always, unless the env packs by name
+                    and not self._env_packs
+                    and action.control_mode is ControlMode.GRIPPER_POSITION
+                    and action.gripper
+                ):
                     env_action = previous.copy()
                     env_action[-1] = float(action.gripper[0])
                 else:
@@ -1666,16 +1716,16 @@ class SimAttachedHAL:
         # run at 2x the rate of the motion it was timing.
         data.time = float(data.time) + dt
 
-    def _apply_body_twist_via_env_step(self, row: list[float]) -> None:
+    def _apply_body_twist_via_env_step(self, row: list[float], action: Action) -> None:
         """Integrate a BODY_TWIST through ``env.step`` (non-MuJoCo planar base).
 
         For a backend without a qpos handle (the Isaac kinematic base)
         the planar base lives inside the env: the scene integrates ``(vx, vy, wz)``
-        and teleports its root each ``env.step``. We pack the body-frame twist into
-        the **final three** slots of the env action vector — the convention the
-        manifest scene uses (``[arm…, gripper, vx, vy, wz]``) — and leave the
-        arm/gripper slots at zero so a pure base move holds the arm. The scene
-        integrates by its own command-interval dt, so we pass the velocity raw.
+        and teleports its root each ``env.step``. An env with its own
+        ``pack_action`` packs the twist itself (holding every joint target);
+        otherwise we pack the body-frame twist into the **final three** slots and
+        leave the rest at zero. The scene integrates by its own command-interval
+        dt, so we pass the velocity raw.
         """
         if any(abs(row[i]) > _PLANAR_TWIST_EPS for i in (2, 3, 4)):
             raise ROSConfigError(
@@ -1692,8 +1742,14 @@ class SimAttachedHAL:
         vx_body, vy_body, _vz, _wx, _wy, wz = row
         # Latch the commanded twist for the /odom publisher (base_link frame).
         self._last_body_twist = (vx_body, vy_body, 0.0, 0.0, 0.0, wz)
-        env_action = np.zeros(self._env_action_dim, dtype=np.float32)
-        env_action[-3:] = (vx_body, vy_body, wz)
+        if self._env_packs:
+            env_action = self._action_packer(
+                action, self.description, self._env_action_dim, self._last_env_action
+            )
+            self._last_env_action = env_action.copy()
+        else:
+            env_action = np.zeros(self._env_action_dim, dtype=np.float32)
+            env_action[-3:] = (vx_body, vy_body, wz)
         self._step_and_cache(env_action, source="cmd_vel")
 
     def _merge_refreshed_obs(self, refreshed: Any) -> None:  # noqa: ANN401  # reason: Observation is dict[str, Any]

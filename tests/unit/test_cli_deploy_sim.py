@@ -2529,7 +2529,7 @@ def test_scene_asset_preflight_provisions_a_sidecar_backend(
         lambda: seen.append("venv"),
     )
 
-    deploy_sim._preflight_scene_assets(Path("scenes/deploy/isaac_franka_bowl.yaml"))
+    deploy_sim._preflight_scene_assets(Path("scenes/deploy/isaac_franka_urdf.yaml"))
 
     assert seen == ["isaac_client", "venv"]
 
@@ -2550,7 +2550,7 @@ def test_scene_asset_preflight_is_advisory_when_provisioning_fails(
 
     monkeypatch.setattr("openral_sim.backends.isaac_sim._sidecar_python", _fail)
     # Must not raise.
-    deploy_sim._preflight_scene_assets(Path("scenes/deploy/isaac_franka_bowl.yaml"))
+    deploy_sim._preflight_scene_assets(Path("scenes/deploy/isaac_franka_urdf.yaml"))
 
 
 @pytest.mark.parametrize(

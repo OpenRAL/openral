@@ -227,7 +227,8 @@ def test_sim_mode_forwards_deploy_config_for_boot_timeout() -> None:
         hal_transition_timeout_s,
     )
 
-    config = (Path(__file__).resolve().parents[2] / "scenes/deploy/isaac_franka.yaml").resolve()
+    repo = Path(__file__).resolve().parents[2]
+    config = (repo / "scenes/deploy/isaac_franka_urdf.yaml").resolve()
     result = CliRunner(env={"COLUMNS": "100000"}).invoke(
         app, ["deploy", "sim", "--config", str(config), "--dry-run"]
     )

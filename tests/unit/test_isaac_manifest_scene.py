@@ -81,7 +81,14 @@ def test_build_robot_spec_franka_action_contract(franka: RobotDescription) -> No
     action = spec["action"]
     assert action["control_mode"] == "joint_position"
     assert action["dim"] == 8  # 7 arm + 1 gripper
-    assert action["gripper_open_m"] > action["gripper_closed_m"]
+    (gripper,) = spec["grippers"]
+    # The manifest's MuJoCo sim_joint_name (finger_joint1) is not a URDF joint;
+    # the gripper resolves to the one non-mimic finger below panda_hand.
+    assert gripper["leader"] == "panda_finger_joint1"
+    assert (gripper["closed"], gripper["open"]) == pytest.approx((0.0, 0.04))
+    assert gripper["followers"] == [
+        {"dof": "panda_finger_joint2", "multiplier": 1.0, "offset": 0.0}
+    ]
 
 
 def test_build_robot_spec_sensors_serialised(franka: RobotDescription) -> None:
@@ -113,9 +120,17 @@ def test_build_robot_spec_panda_mobile_base(panda_mobile: RobotDescription) -> N
     # The arm is always pinned (kinematic base teleports the pinned root).
     assert spec["fix_base"] is True
 
-    # panda_mobile declares a NORMALISED [0, 1] gripper width — must NOT leak to
-    # the Isaac finger DOF (would tear the joint); falls back to the Panda 0.04 m.
-    assert spec["action"]["gripper_open_m"] == pytest.approx(0.04)
+    # panda_mobile declares a NORMALISED [0, 1] gripper width: the URDF's 0.04 m
+    # finger travel drives the joint (never 1.0 m), and /joint_states maps back
+    # onto the manifest's [0, 1].
+    (gripper,) = spec["grippers"]
+    assert gripper["open"] == pytest.approx(0.04)
+    assert (gripper["manifest_closed"], gripper["manifest_open"]) == (0.0, 1.0)
+    # Arm joints keep their URDF names (the manifest's sim_joint_name is the
+    # robosuite MJCF's robot0_joint1, which the URDF does not have).
+    urdf_names = {j["name"]: j["urdf_name"] for j in spec["joints"]}
+    assert urdf_names["panda_joint1"] == "panda_joint1"
+    assert urdf_names["base_x"] is None
 
 
 def test_build_robot_spec_panda_mobile_has_depth_and_lidar(panda_mobile: RobotDescription) -> None:
@@ -138,91 +153,91 @@ def _manifest_scene_mod() -> object:
     return isaac_manifest_scene
 
 
-def test_map_dof_to_manifest_franka(_manifest_scene_mod: object) -> None:
+_PANDA_DOFS = [f"panda_joint{i}" for i in range(1, 8)] + [
+    "panda_finger_joint1",
+    "panda_finger_joint2",
+]
+
+
+def test_map_dof_to_manifest_franka(_manifest_scene_mod: object, franka: RobotDescription) -> None:
     map_dof_to_manifest = _manifest_scene_mod.map_dof_to_manifest  # type: ignore[attr-defined]
+    spec = _build_robot_spec(franka, "franka_panda")
 
-    # The Panda URDF's actuated DOFs (what Isaac's articulation exposes): 7 arm
-    # joints + 2 prismatic fingers. The manifest collapses the fingers into one
-    # `panda_gripper` width DoF.
-    dof_names = [
-        "panda_joint1",
-        "panda_joint2",
-        "panda_joint3",
-        "panda_joint4",
-        "panda_joint5",
-        "panda_joint6",
-        "panda_joint7",
-        "panda_finger_joint1",
-        "panda_finger_joint2",
-    ]
-    dof_index = {n: i for i, n in enumerate(dof_names)}
-    finger_dof_idx = [7, 8]
-    manifest_joints = [{"name": f"panda_joint{i}", "role": "arm"} for i in range(1, 8)]
-    manifest_joints.append({"name": "panda_gripper", "role": "gripper"})
-
-    values = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.02, 0.04], dtype=np.float32)
+    values = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.02, 0.02], dtype=np.float32)
     mapped = map_dof_to_manifest(
         values,
-        dof_index=dof_index,
-        manifest_joints=manifest_joints,
-        finger_dof_idx=finger_dof_idx,
+        dof_index={n: i for i, n in enumerate(_PANDA_DOFS)},
+        manifest_joints=spec["joints"],
+        grippers=spec["grippers"],
     )
 
     assert mapped.shape == (8,)
-    # Arm joints map straight through by name.
+    # Arm joints map straight through by URDF name.
     np.testing.assert_allclose(mapped[:7], values[:7], rtol=0, atol=1e-6)
-    # Gripper = mean of the two finger DOFs (0.02 + 0.04) / 2.
-    assert mapped[7] == pytest.approx(0.03)
+    # Gripper: the leader finger's 0.02 m of 0.04 m travel = half of the
+    # manifest's normalised [0, 1] width.
+    assert mapped[7] == pytest.approx(0.5)
+    # Velocities scale the same way, without the offset.
+    rates = map_dof_to_manifest(
+        values,
+        dof_index={n: i for i, n in enumerate(_PANDA_DOFS)},
+        manifest_joints=spec["joints"],
+        grippers=spec["grippers"],
+        rates=True,
+    )
+    assert rates[7] == pytest.approx(0.5)
 
 
-def test_map_dof_to_manifest_base_joints_from_pose(_manifest_scene_mod: object) -> None:
+def test_map_dof_to_manifest_base_joints_from_pose(
+    _manifest_scene_mod: object, panda_mobile: RobotDescription
+) -> None:
     map_dof_to_manifest = _manifest_scene_mod.map_dof_to_manifest  # type: ignore[attr-defined]
+    spec = _build_robot_spec(panda_mobile, "panda_mobile")
 
     # panda_mobile order: 3 base + 7 arm + 1 gripper. Base joints are NOT URDF
     # DOFs — they come from the kinematic base pose (x, y, yaw).
-    manifest_joints = [
-        {"name": "base_x", "role": "base"},
-        {"name": "base_y", "role": "base"},
-        {"name": "base_yaw", "role": "base"},
-        *({"name": f"panda_joint{i}", "role": "arm"} for i in range(1, 8)),
-        {"name": "panda_gripper", "role": "gripper"},
-    ]
-    dof_names = [f"panda_joint{i}" for i in range(1, 8)] + [
-        "panda_finger_joint1",
-        "panda_finger_joint2",
-    ]
-    dof_index = {n: i for i, n in enumerate(dof_names)}
-    arm_vals = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.02, 0.02], dtype=np.float32)
-
+    values = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.04, 0.04], dtype=np.float32)
     mapped = map_dof_to_manifest(
-        arm_vals,
-        dof_index=dof_index,
-        manifest_joints=manifest_joints,
-        finger_dof_idx=[7, 8],
+        values,
+        dof_index={n: i for i, n in enumerate(_PANDA_DOFS)},
+        manifest_joints=spec["joints"],
+        grippers=spec["grippers"],
         base_values=[1.5, -0.5, 0.785],  # x, y, yaw
-        base_joints=["base_x", "base_y", "base_yaw"],
+        base_joints=spec["base_joints"],
     )
 
     assert mapped.shape == (11,)
-    # Base joints carry the kinematic pose, in manifest order.
     np.testing.assert_allclose(mapped[:3], [1.5, -0.5, 0.785], rtol=0, atol=1e-6)
-    # Arm joints follow, then the collapsed gripper.
-    np.testing.assert_allclose(mapped[3:10], arm_vals[:7], rtol=0, atol=1e-6)
-    assert mapped[10] == pytest.approx(0.02)
+    np.testing.assert_allclose(mapped[3:10], values[:7], rtol=0, atol=1e-6)
+    assert mapped[10] == pytest.approx(1.0)  # fully open = the manifest's 1.0
 
 
 def test_map_dof_to_manifest_unresolved_joint_is_zero(_manifest_scene_mod: object) -> None:
     map_dof_to_manifest = _manifest_scene_mod.map_dof_to_manifest  # type: ignore[attr-defined]
-    # A manifest joint absent from the articulation (and not a gripper) → 0.0,
-    # never an index error.
+    # A manifest joint absent from the articulation → 0.0, never an index error.
     mapped = map_dof_to_manifest(
         np.array([1.0], dtype=np.float32),
         dof_index={"panda_joint1": 0},
-        manifest_joints=[{"name": "ghost_joint", "role": "arm"}],
-        finger_dof_idx=[],
+        manifest_joints=[{"name": "ghost_joint", "role": "arm", "urdf_name": "ghost"}],
+        grippers=[],
     )
     assert mapped.shape == (1,)
     assert mapped[0] == 0.0
+
+
+def test_strip_urdf_mimics_keeps_every_joint(_manifest_scene_mod: object) -> None:
+    """OpenArm's real URDF: mimics gone, joints and package:// meshes untouched."""
+    import xml.etree.ElementTree as ET
+
+    strip = _manifest_scene_mod.strip_urdf_mimics  # type: ignore[attr-defined]
+    urdf = _repo_root() / "robots" / "openarm" / "openarm.urdf"
+    source = urdf.read_text()
+    out = ET.fromstring(strip(source, str(urdf.parent)))
+    assert not list(out.iter("mimic"))
+    assert len(list(out.iter("joint"))) == len(list(ET.fromstring(source).iter("joint")))
+    assert all(
+        m.attrib["filename"].startswith("package://openarm_description/") for m in out.iter("mesh")
+    )
 
 
 # ── sidecar side: resolve_beam_range ──────────────────────────────────────────
@@ -255,7 +270,13 @@ def _world(*bodies: tuple[float, str]) -> object:
     return raycast_closest
 
 
-_BEAM = {"origin_xy": (0.0, 0.0), "angle_rad": 0.0, "z": 0.30, "range_max_m": 12.0}
+_BEAM = {
+    "robot_prim": "/panda",
+    "origin_xy": (0.0, 0.0),
+    "angle_rad": 0.0,
+    "z": 0.30,
+    "range_max_m": 12.0,
+}
 
 
 def test_beam_recasts_past_the_robots_own_chassis(_manifest_scene_mod: object) -> None:
@@ -324,3 +345,47 @@ def test_beam_misses_read_range_max(_manifest_scene_mod: object) -> None:
     resolve_beam_range = _manifest_scene_mod.resolve_beam_range  # type: ignore[attr-defined]
 
     assert resolve_beam_range(_world(), range_min_m=0.05, **_BEAM) == pytest.approx(12.0)
+
+
+def test_beam_self_skip_follows_the_imported_robot_prim(_manifest_scene_mod: object) -> None:
+    """Self-hits are keyed on the robot's own prim, not a hardcoded ``/panda``.
+
+    An environment USD can hold a prim whose path merely starts with the robot's
+    name (``/panda_shelf``): that is the world, and must be reported.
+    """
+    resolve_beam_range = _manifest_scene_mod.resolve_beam_range  # type: ignore[attr-defined]
+    beam = {**_BEAM, "robot_prim": "/openarm"}
+
+    got = resolve_beam_range(
+        _world((0.10, "/openarm/base_link"), (2.0, "/World/wall")), range_min_m=0.05, **beam
+    )
+    assert got == pytest.approx(2.0, abs=1e-3)
+    got = resolve_beam_range(
+        _world((0.10, "/openarm_shelf/rack"), (2.0, "/World/wall")), range_min_m=0.05, **beam
+    )
+    assert got == pytest.approx(0.10, abs=1e-3)
+
+
+# ── sidecar side: compose_planar (spawn ∘ odom) ───────────────────────────────
+
+
+def test_compose_planar_identity_spawn_is_odom(_manifest_scene_mod: object) -> None:
+    compose_planar = _manifest_scene_mod.compose_planar  # type: ignore[attr-defined]
+    assert compose_planar((0.0, 0.0, 0.0, 0.0), [1.5, -0.5, 0.3]) == pytest.approx(
+        (1.5, -0.5, 0.0, 0.3)
+    )
+
+
+def test_compose_planar_odom_moves_in_the_spawn_heading(_manifest_scene_mod: object) -> None:
+    """Driving 2 m forward from a spawn facing +y (the warehouse aisle) moves along +y."""
+    compose_planar = _manifest_scene_mod.compose_planar  # type: ignore[attr-defined]
+    x, y, z, yaw = compose_planar((-4.8, 0.0, 0.0, np.pi / 2), [2.0, 0.0, 0.0])
+    assert (x, y, z, yaw) == pytest.approx((-4.8, 2.0, 0.0, np.pi / 2))
+    # A strafe left (+y in the base frame) from that heading moves toward -x.
+    x, y, _, _ = compose_planar((-4.8, 0.0, 0.0, np.pi / 2), [0.0, 1.0, 0.0])
+    assert (x, y) == pytest.approx((-5.8, 0.0))
+
+
+def test_compose_planar_keeps_the_spawn_height(_manifest_scene_mod: object) -> None:
+    compose_planar = _manifest_scene_mod.compose_planar  # type: ignore[attr-defined]
+    assert compose_planar((0.0, 0.0, 1.2, 0.0), [0.4, 0.0, 0.0])[2] == pytest.approx(1.2)

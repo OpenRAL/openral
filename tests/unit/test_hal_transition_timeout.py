@@ -90,10 +90,10 @@ def test_the_sidecar_scenes_are_the_ones_that_exceed_the_floor() -> None:
     }
     assert raised == {
         "behavior_r1pro.yaml",
-        "isaac_franka.yaml",
-        "isaac_franka_bowl.yaml",
         "isaac_franka_urdf.yaml",
         "isaac_panda_mobile_urdf.yaml",
+        "isaac_openarm_warehouse.yaml",
+        "isaac_panda_mobile_warehouse.yaml",
     }
 
 
@@ -103,7 +103,7 @@ def test_the_budget_adds_margin_over_the_declared_boot() -> None:
     Granting exactly ``boot_timeout_s`` would let the sidecar consume the whole
     budget and still leave the transition to be reported as a timeout.
     """
-    scene = _REPO_ROOT / "scenes" / "deploy" / "isaac_franka.yaml"
+    scene = _REPO_ROOT / "scenes" / "deploy" / "isaac_franka_urdf.yaml"
     declared = _declared_boot_timeout_s(scene)
     assert declared is not None
     assert float(hal_transition_timeout_s(str(scene))) == pytest.approx(
