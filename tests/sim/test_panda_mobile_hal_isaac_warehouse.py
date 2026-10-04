@@ -41,7 +41,8 @@ pytestmark = [
     ),
 ]
 
-# panda_mobile action: 7 arm deltas, 1 gripper, 3 base twist (vx, vy, wyaw).
+# panda_mobile action (IsaacActionLayout): 7 absolute arm targets, the gripper in
+# manifest units ([0, 1] width), then the base twist (vx, vy, wz). NaN = hold.
 _GRIPPER_SLOT = 7
 _VX_SLOT = 8
 _SPAWN_XY = (-4.8, 0.0)
@@ -76,7 +77,7 @@ def test_robot_is_at_its_spawn_and_props_rest_on_the_pallet(env: Any) -> None:
     for name, (ox, oy, oz) in objects.items():
         assert -0.75 < ox < 0.26 and 4.48 < oy < 5.70, f"{name} left the pallet: {ox, oy}"
         assert _PALLET_TOP_Z < oz < _PALLET_TOP_Z + 0.15, f"{name} not resting on it: z={oz}"
-    # Zero action holds the arm (targets accumulate, they don't follow gravity).
+    # A zero action is a zero-pose target (joint4 sits at its -0.07 limit).
     joints = result.observation["joint_positions"]
     assert np.max(np.abs(joints[3:10] - np.array([0, 0, 0, -0.07, 0, 0, 0]))) < 0.02
 
@@ -85,7 +86,7 @@ def test_gripper_opens_and_closes_in_manifest_units(env: Any) -> None:
     action = np.zeros(env.action_dim, dtype=np.float32)
     action[_GRIPPER_SLOT] = 1.0
     opened = _steps(env, action, 40).observation["joint_positions"][10]
-    action[_GRIPPER_SLOT] = -1.0
+    action[_GRIPPER_SLOT] = 0.0
     closed = _steps(env, action, 40).observation["joint_positions"][10]
     # panda_mobile's gripper is a normalised [0, 1] width (URDF: 0..0.04 m).
     assert opened == pytest.approx(1.0, abs=0.05)
@@ -104,3 +105,32 @@ def test_base_twist_drives_the_robot_down_the_aisle(env: Any) -> None:
     assert end.observation["base_pose"][0] - start.observation["base_pose"][0] == pytest.approx(
         1.0, abs=0.02
     )
+
+
+def test_hal_arm_command_moves_the_arm_and_not_the_base(env: Any) -> None:
+    """Regression: the HAL's robosuite-shaped packer put an arm JOINT_POSITION
+    into this scene's base-twist slots (the base drove 1 m) and a gripper
+    command into wz (the base spun 1 rad). Through the env's own name-addressed
+    packer the arm reaches its targets and the base stays put."""
+    from openral_core import Action, RobotDescription
+    from openral_core.schemas import ControlMode
+    from openral_hal.sim_attached import SimAttachedHAL
+
+    desc = RobotDescription.from_yaml(str(_repo_root() / "robots" / "panda_mobile" / "robot.yaml"))
+    hal = SimAttachedHAL(env, desc)
+    hal.connect()
+    hold = np.full(env.action_dim, np.nan, dtype=np.float32)
+    hold[-3:] = 0.0
+    start = env.step(hold).info["robot_position"]
+    arm = [0.0, 0.5, 0.0, -1.0, 0.0, 1.0, 0.0]
+    for _ in range(60):
+        hal.send_action(Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[arm]))
+    for _ in range(40):
+        hal.send_action(Action(control_mode=ControlMode.GRIPPER_POSITION, gripper=[1.0]))
+    end = env.step(hold)
+    joints = dict(zip([j.name for j in desc.joints], hal.read_state().position, strict=True))
+    for i, target in enumerate(arm, start=1):
+        assert joints[f"panda_joint{i}"] == pytest.approx(target, abs=0.05)
+    assert joints["panda_gripper"] == pytest.approx(1.0, abs=0.05)
+    assert end.info["robot_position"] == pytest.approx(start, abs=1e-3)
+    assert hal.base_pose == pytest.approx((0.0, 0.0, 0.0), abs=1e-4)

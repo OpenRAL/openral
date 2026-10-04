@@ -8,8 +8,12 @@ and wires joints/sensors/control from a plain-JSON "isaac robot spec" the
 openral-side backend marshals across the venv boundary (the sidecar cannot
 import ``openral_core``).
 
-M1 (this cut): fixed-base arm (``franka_panda``), one RGB camera,
-JOINT_POSITION-delta control. M2 adds depth/lidar sensors, M3 the mobile base.
+Control is by ABSOLUTE targets, the same meaning ``SimAttachedHAL`` sends: one
+slot per non-base manifest joint in manifest order (arm in rad, grippers in the
+manifest's units, mapped onto the URDF finger by ``manifest_to_urdf_gripper``;
+NaN = hold), then the base twist (vx, vy, wz) for a planar base. The openral
+side packs typed actions into it by name
+(``openral_sim.backends.isaac_sim.pack_isaac_action``).
 
 The world around the robot is either the built-in bring-up stage (ground plane,
 plus a few obstacle boxes when the robot has a lidar) or an **environment USD**
@@ -25,11 +29,13 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
       "robot_id": str,
       "urdf_path": str,                  # resolved absolute path to the URDF file
       "fix_base": bool,                  # pin the root (True for a fixed arm)
-      "joints": [{"name", "role", "joint_type"}],   # manifest order, actuated only
+      "ros_package_paths": [{"name", "path"}],      # package:// roots for the meshes
+      "joints": [{"name", "role", "joint_type", "urdf_name"}],  # manifest order
+      "grippers": [{"name", "leader", "closed", "open", "manifest_closed",
+                    "manifest_open", "followers": [{"dof", "multiplier", "offset"}]}],
       "base_joints": [str] | null,       # [forward, side, yaw] for a planar base
       "base_kinematics": str | null,
-      "action": {"dim": int, "control_mode": str, "arm_delta_scale": float,
-                 "gripper_open_m": float, "gripper_closed_m": float},
+      "action": {"dim": int, "control_mode": "joint_position", "has_base": bool},
       "sensors": [{"name", "modality", "vla_feature_key", "frame_id",
                    "parent_frame", "intrinsics": {...}, "range_min_m",
                    "range_max_m", "n_channels"}],
@@ -51,9 +57,6 @@ from numpy.typing import NDArray
 # heavy arm sags or a light one rings.
 _DRIVE_STIFFNESS = 1000.0
 _DRIVE_DAMPING = 100.0
-# Below this magnitude a gripper action channel means HOLD (don't open/close) —
-# lets a pure BODY_TWIST step (zero arm/gripper slots) leave the gripper alone.
-_GRIPPER_DEADBAND = 1e-3
 # Self-occlusion handling for the lidar fan, mirroring the MuJoCo sibling
 # (`openral_sim.backends.robocasa._LASER_MAX_SELF_SKIPS` / `_LASER_SELF_SKIP_EPS_M`).
 # A beam may terminate on the robot's own body (chassis / wheels / arm column);
@@ -119,6 +122,26 @@ def map_dof_to_manifest(
 def _yaw_quat(yaw: float) -> NDArray[np.float64]:
     """``(w, x, y, z)`` quaternion of a rotation by ``yaw`` about world z."""
     return np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)])
+
+
+def manifest_to_urdf_gripper(gripper: dict[str, Any], value: float) -> float:
+    """A gripper target in manifest units → its URDF leader joint target.
+
+    Linear between the gripper's manifest closed/open ends and its URDF
+    closed/open targets (``_gripper_spec``), clamped to that travel — e.g.
+    panda_mobile's normalised width 1.0 → 0.04 m, OpenArm's right jaw -0.785 →
+    the URDF finger's -0.785.
+
+    Example:
+        >>> g = {"closed": 0.0, "open": 0.04, "manifest_closed": 0.0, "manifest_open": 1.0}
+        >>> round(manifest_to_urdf_gripper(g, 0.5), 3), manifest_to_urdf_gripper(g, 2.0)
+        (0.02, 0.04)
+    """
+    span = float(gripper["manifest_open"]) - float(gripper["manifest_closed"])
+    frac = (float(value) - float(gripper["manifest_closed"])) / span if span else 0.0
+    frac = min(max(frac, 0.0), 1.0)
+    closed, opened = float(gripper["closed"]), float(gripper["open"])
+    return closed + frac * (opened - closed)
 
 
 def strip_urdf_mimics(urdf_text: str, source_dir: str) -> str:
@@ -278,16 +301,19 @@ class IsaacManifestScene(IsaacSceneBase):
         self._grippers: list[dict[str, Any]] = list(robot_spec.get("grippers") or [])
         self._base_joints: list[str] = list(robot_spec.get("base_joints") or [])
         action = robot_spec.get("action", {}) or {}
-        self._control_mode = str(action.get("control_mode", "joint_position"))
-        self._arm_delta_scale = float(action.get("arm_delta_scale", 0.05))
-        self._n_arm = len(self._arm_names)
         self._has_base = bool(action.get("has_base", False))
-        self.action_dim = int(
-            action.get(
-                "dim",
-                self._n_arm + len(self._grippers) + (3 if self._has_base else 0),
-            )
-        )
+        # Action layout (openral_sim.backends.isaac_sim.IsaacActionLayout): one
+        # ABSOLUTE target per non-base manifest joint in manifest order (arm in
+        # rad, gripper in manifest units; NaN = hold), then the base twist.
+        by_gripper = {str(g["name"]): g for g in self._grippers}
+        self._slot_plan: list[tuple[str, Any]] = [
+            ("gripper", by_gripper[str(j["name"])])
+            if j.get("role") == "gripper"
+            else ("arm", str(j["urdf_name"]))
+            for j in self._manifest_joints
+            if j.get("role") != "base"
+        ]
+        self.action_dim = len(self._slot_plan) + (3 if self._has_base else 0)
         self._objects: list[dict[str, Any]] = list(objects or [])
         self._object_prims: dict[str, Any] = {}
 
@@ -327,10 +353,9 @@ class IsaacManifestScene(IsaacSceneBase):
         # DOF mapping, resolved post-reset once dof_names is populated.
         self._dof_index: dict[str, int] = {}
         self._arm_dof_idx: list[int] = []
-        # Commanded joint targets (full DOF vector). Arm deltas and gripper
-        # commands accumulate here, NOT on the measured positions — otherwise a
-        # zero action re-targets wherever gravity has dragged the arm and it never
-        # holds. Re-seeded from the articulation at every reset.
+        # Commanded joint targets (full DOF vector). A NaN action slot keeps its
+        # entry here, so holding never re-targets wherever gravity has dragged
+        # the arm. Re-seeded from the articulation at every reset.
         self._target: NDArray[np.float32] | None = None
 
     def _plan_cameras(self) -> list[dict[str, Any]]:
@@ -756,40 +781,32 @@ class IsaacManifestScene(IsaacSceneBase):
     # ── IsaacSceneBase template methods ──────────────────────────────────────
 
     def _apply_action(self, action: NDArray[np.float32]) -> None:
-        if self._control_mode != "joint_position":
-            # JOINT_POSITION (+ kinematic base) is wired; CARTESIAN_DELTA (Lula IK)
-            # for EE-delta VLAs is a follow-up.
-            raise NotImplementedError(f"control_mode {self._control_mode!r} not wired yet")
-        # Action layout: [arm deltas (n_arm), one slot per gripper, base twist (0/3)].
+        """Set absolute joint targets (NaN slots hold) and advance the base twist."""
         if self._target is None:
             self._target = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
         target = self._target
-        for k, dof_i in enumerate(self._arm_dof_idx):
-            if k < action.shape[0]:
-                target[dof_i] += float(action[k]) * self._arm_delta_scale
-        for gi, g in enumerate(self._grippers):
-            slot = self._n_arm + gi
-            cmd = float(action[slot]) if slot < action.shape[0] else 0.0
-            # Deadband: a ~0 gripper command means HOLD (don't toggle), so a pure
-            # base move (BODY_TWIST → zero arm/gripper slots) doesn't clamp the
-            # gripper shut every /cmd_vel tick. >0 opens, <0 closes.
-            if abs(cmd) > _GRIPPER_DEADBAND:
-                lead = float(g["open"] if cmd > 0.0 else g["closed"])
-                target[self._dof_index[g["leader"]]] = lead
-                # Mimic followers (the second finger) — the URDF <mimic> relation.
-                for f in g["followers"]:
-                    target[self._dof_index[f["dof"]]] = float(f["multiplier"]) * lead + float(
-                        f["offset"]
-                    )
+        for k, (kind, ref) in enumerate(self._slot_plan):
+            value = float(action[k]) if k < action.shape[0] else float("nan")
+            if np.isnan(value):
+                continue  # HOLD — 0.0 is a legal target, so only NaN means "untouched"
+            if kind == "arm":
+                target[self._dof_index[ref]] = value
+                continue
+            lead = manifest_to_urdf_gripper(ref, value)
+            target[self._dof_index[ref["leader"]]] = lead
+            # Mimic followers (the second finger) — the URDF <mimic> relation.
+            for f in ref["followers"]:
+                target[self._dof_index[f["dof"]]] = float(f["multiplier"]) * lead + float(
+                    f["offset"]
+                )
         self._robot.get_articulation_controller().apply_action(
             self._ArticulationAction(joint_positions=target)
         )
         if self._has_base:
-            base_i = self._n_arm + len(self._grippers)
+            base_i = len(self._slot_plan)
             if action.shape[0] >= base_i + 3:
-                self._integrate_base(
-                    float(action[base_i]), float(action[base_i + 1]), float(action[base_i + 2])
-                )
+                vx, vy, wz = (float(action[base_i + i]) for i in range(3))
+                self._integrate_base(*(0.0 if np.isnan(v) else v for v in (vx, vy, wz)))
 
     def _integrate_base(self, vx: float, vy: float, wyaw: float) -> None:
         """Advance the kinematic base by a base-frame twist and teleport the root.

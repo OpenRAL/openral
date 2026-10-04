@@ -281,6 +281,12 @@ the openral cache. Shipped:
 [`isaac_openarm_warehouse.yaml`](deploy/isaac_openarm_warehouse.yaml) (bimanual
 OpenArm at the same pallet).
 
+**Driving it**: the scene takes absolute joint targets — the meaning the HAL
+sends — and packs typed commands by name: JOINT_POSITION by `joint_names` (or a
+whole-vector row), GRIPPER_POSITION by `ee_name`, BODY_TWIST into the base; an
+untouched joint holds. A bimanual slot tick (left arm, left gripper, right arm,
+right gripper) commits as one simulator step.
+
 **Isaac install**: a host-wide binary install (`/opt/isaac-sim`, `~/isaacsim`)
 is picked up automatically after the pip venv; `OPENRAL_ISAAC_SIDECAR_PYTHON`
 overrides. Verified on Isaac Sim 6.1.

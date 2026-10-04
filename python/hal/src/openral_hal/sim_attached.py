@@ -393,7 +393,9 @@ class SimAttachedHAL:
             description: The host ``RobotDescription`` — joint
                 ordering, ``base_joints`` + ``sim_joint_name`` map.
             action_packer: Per-composition Action-to-env-vec translator;
-                defaults to ``pack_action_for_env``.
+                defaults to the env's own ``pack_action(action, prev)`` when it
+                defines one (a backend that knows its slot layout — the Isaac
+                manifest scene), else ``pack_action_for_env``.
             env_reset_seed: Optional seed forwarded to ``env.reset``.
             env_action_dim: Override the auto-probed env action width;
                 useful for envs whose action space isn't introspectable.
@@ -416,7 +418,18 @@ class SimAttachedHAL:
         if callable(enable_continuous):
             enable_continuous()
         self.description = description
-        self._action_packer = action_packer if action_packer is not None else pack_action_for_env
+        # A backend that declares its own layout packs by name (env hook, like
+        # ``idle_action``); the default packer assumes the robosuite layout
+        # (base first, ONE gripper in the last slot, per-step deltas) and would
+        # misroute such an env's slots — an arm command into its base twist.
+        env_pack = getattr(env, "pack_action", None)
+        self._env_packs = action_packer is None and callable(env_pack)
+        if action_packer is not None:
+            self._action_packer: ActionPacker = action_packer
+        elif callable(env_pack):
+            self._action_packer = lambda action, _description, _dim, prev: env_pack(action, prev)
+        else:
+            self._action_packer = pack_action_for_env
         self._reset_seed = env_reset_seed
         self._env_action_dim: int | None = env_action_dim
         self._connected: bool = False
@@ -794,7 +807,7 @@ class SimAttachedHAL:
             if self._mujoco_handles() is not None:
                 self._apply_body_twist_to_qpos(row)
             else:
-                self._apply_body_twist_via_env_step(row)
+                self._apply_body_twist_via_env_step(row, action)
             return
         # A non-BODY_TWIST action means the base is no longer being
         # velocity-commanded — clear the latched twist so /odom doesn't
@@ -954,13 +967,22 @@ class SimAttachedHAL:
             for action in actions:
                 env_action = self._pack_with_composite_split(action)
         else:
-            previous = (
+            # Nothing commanded yet: an env that packs by name gets None (its
+            # own HOLD); the default packer's robosuite envs read 0 as hold.
+            previous: NDArray[np.float32] | None = (
                 self._last_env_action.copy()
                 if self._last_env_action is not None
+                else None
+                if self._env_packs
                 else np.zeros(int(self._env_action_dim or 0), dtype=np.float32)
             )
             for action in actions:
-                if action.control_mode is ControlMode.GRIPPER_POSITION and action.gripper:
+                if (
+                    previous is not None  # always, unless the env packs by name
+                    and not self._env_packs
+                    and action.control_mode is ControlMode.GRIPPER_POSITION
+                    and action.gripper
+                ):
                     env_action = previous.copy()
                     env_action[-1] = float(action.gripper[0])
                 else:
@@ -1564,16 +1586,16 @@ class SimAttachedHAL:
         # run at 2x the rate of the motion it was timing.
         data.time = float(data.time) + dt
 
-    def _apply_body_twist_via_env_step(self, row: list[float]) -> None:
+    def _apply_body_twist_via_env_step(self, row: list[float], action: Action) -> None:
         """Integrate a BODY_TWIST through ``env.step`` (non-MuJoCo planar base).
 
         For a backend without a qpos handle (the Isaac kinematic base)
         the planar base lives inside the env: the scene integrates ``(vx, vy, wz)``
-        and teleports its root each ``env.step``. We pack the body-frame twist into
-        the **final three** slots of the env action vector — the convention the
-        manifest scene uses (``[arm…, gripper, vx, vy, wz]``) — and leave the
-        arm/gripper slots at zero so a pure base move holds the arm. The scene
-        integrates by its own command-interval dt, so we pass the velocity raw.
+        and teleports its root each ``env.step``. An env with its own
+        ``pack_action`` packs the twist itself (holding every joint target);
+        otherwise we pack the body-frame twist into the **final three** slots and
+        leave the rest at zero. The scene integrates by its own command-interval
+        dt, so we pass the velocity raw.
         """
         if any(abs(row[i]) > _PLANAR_TWIST_EPS for i in (2, 3, 4)):
             raise ROSConfigError(
@@ -1590,8 +1612,14 @@ class SimAttachedHAL:
         vx_body, vy_body, _vz, _wx, _wy, wz = row
         # Latch the commanded twist for the /odom publisher (base_link frame).
         self._last_body_twist = (vx_body, vy_body, 0.0, 0.0, 0.0, wz)
-        env_action = np.zeros(self._env_action_dim, dtype=np.float32)
-        env_action[-3:] = (vx_body, vy_body, wz)
+        if self._env_packs:
+            env_action = self._action_packer(
+                action, self.description, self._env_action_dim, self._last_env_action
+            )
+            self._last_env_action = env_action.copy()
+        else:
+            env_action = np.zeros(self._env_action_dim, dtype=np.float32)
+            env_action[-3:] = (vx_body, vy_body, wz)
         self._step_and_cache(env_action, source="cmd_vel")
 
     def _merge_refreshed_obs(self, refreshed: Any) -> None:  # noqa: ANN401  # reason: Observation is dict[str, Any]

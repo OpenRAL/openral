@@ -25,14 +25,37 @@ from isaac_sidecar import _parse_args, _serve
 
 
 class _NoKitScene:
-    """Answers the sidecar contract with the robot spec's action width."""
+    """Answers the sidecar contract with the robot spec's action width.
+
+    ``step`` appends every action it receives (NaN kept, as JSON ``null``) to the
+    file named by ``OPENRAL_TEST_ISAAC_ACTIONS_OUT`` when set — the exact vector
+    Isaac would have applied.
+    """
 
     def __init__(self, action_dim: int) -> None:
         self.action_dim = action_dim
 
+    def _obs(self) -> dict[str, Any]:
+        return {"images": {}, "state": np.zeros(0, dtype=np.float32), "task": ""}
+
     def reset(self, seed: int | None = None) -> dict[str, Any]:
         del seed
-        return {"images": {}, "state": np.zeros(0, dtype=np.float32), "task": ""}
+        return self._obs()
+
+    def step(self, action: np.ndarray) -> dict[str, Any]:
+        out = os.environ.get("OPENRAL_TEST_ISAAC_ACTIONS_OUT")
+        if out:
+            row = [None if np.isnan(v) else float(v) for v in np.asarray(action).reshape(-1)]
+            with open(out, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row) + "\n")
+        return {
+            "observation": self._obs(),
+            "reward": 0.0,
+            "terminated": False,
+            "truncated": False,
+            "info": {},
+            "sim_time_ns": 0,
+        }
 
     def sim_time_ns(self) -> int:
         return 0

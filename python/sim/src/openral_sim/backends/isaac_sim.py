@@ -87,7 +87,7 @@ from openral_sim.registry import SCENES
 from openral_sim.sidecar import SidecarClient, SidecarSimRollout
 
 if TYPE_CHECKING:
-    from openral_core import Pose6D, RobotDescription, SensorSpec, SimEnvironment
+    from openral_core import Action, Pose6D, RobotDescription, SensorSpec, SimEnvironment
 
     from openral_sim.rollout import Observation
 
@@ -178,6 +178,172 @@ _DEFAULT_MAX_STEPS = 1_000_000
 # ── SimRollout adapter ────────────────────────────────────────────────────────
 
 
+_PLANAR_TWIST_EPS = 1e-6
+
+
+@dataclass(frozen=True)
+class IsaacActionLayout:
+    """The manifest scene's action vector, named.
+
+    ``[one absolute target per non-base manifest joint, in manifest order
+    (arm joints in rad, grippers in the manifest's own units), then vx, vy, wz
+    when the robot has a planar base]``. A NaN target means HOLD the joint's
+    current target — the scene never reads "0" as "leave it alone", since 0 is
+    a legal joint target.
+
+    Example:
+        >>> layout = IsaacActionLayout(
+        ...     joints=("j1", "grip"), roles=("arm", "gripper"), end_effectors=("hand",)
+        ... )
+        >>> layout.slots, layout.dim
+        (('j1', 'grip'), 2)
+    """
+
+    joints: tuple[str, ...]
+    roles: tuple[str, ...]
+    end_effectors: tuple[str, ...] = ()
+
+    @classmethod
+    def from_description(cls, desc: RobotDescription) -> IsaacActionLayout:
+        """The layout ``_build_robot_spec`` gives the sidecar, from the manifest alone.
+
+        Same roles as the spec: ``base`` (a ``base_joints`` entry), ``gripper``
+        (manifest role), else ``arm``; fixed joints carry no slot.
+        """
+        base = set(desc.base_joints or [])
+        joints = [j for j in desc.joints if getattr(j.joint_type, "value", j.joint_type) != "fixed"]
+        return cls(
+            joints=tuple(j.name for j in joints),
+            roles=tuple(
+                "base" if j.name in base else "gripper" if j.role == "gripper" else "arm"
+                for j in joints
+            ),
+            end_effectors=tuple(e.name for e in desc.end_effectors),
+        )
+
+    @property
+    def slots(self) -> tuple[str, ...]:
+        """Manifest joints that own an action slot (everything but the base)."""
+        return tuple(n for n, r in zip(self.joints, self.roles, strict=True) if r != "base")
+
+    @property
+    def has_base(self) -> bool:
+        """Whether the robot has a planar base (three twist slots at the end)."""
+        return "base" in self.roles
+
+    @property
+    def dim(self) -> int:
+        """Action vector width."""
+        return len(self.slots) + (3 if self.has_base else 0)
+
+    def gripper_for(self, ee_name: str | None) -> str:
+        """The gripper joint a gripper action drives.
+
+        ``ee_name`` naming a gripper joint selects it; with exactly one gripper,
+        any end-effector name (or none) selects that one (franka_panda's
+        end-effector is ``panda_hand``, its gripper joint ``panda_gripper``).
+        """
+        grippers = [n for n, r in zip(self.joints, self.roles, strict=True) if r == "gripper"]
+        if ee_name in grippers:
+            return str(ee_name)
+        if len(grippers) == 1 and (ee_name is None or ee_name in self.end_effectors):
+            return grippers[0]
+        raise ROSConfigError(
+            f"gripper action names end-effector {ee_name!r}; this robot's grippers are "
+            f"{grippers} (end-effectors {list(self.end_effectors)})."
+        )
+
+
+def pack_isaac_action(
+    action: Action, layout: IsaacActionLayout, prev: NDArray[np.float32] | None
+) -> NDArray[np.float32]:
+    """One typed ``Action`` → the manifest scene's action vector (``IsaacActionLayout``).
+
+    Addressed by name, never by position (ADR-0102): a JOINT_POSITION row writes
+    the joints its ``joint_names`` list (the row zero-padded to full dof in
+    manifest order), or — without names — a whole-vector row in manifest order
+    (all joints, the non-base joints, or the arm joints alone); a
+    GRIPPER_POSITION writes the gripper its ``ee_name`` resolves to; a
+    BODY_TWIST writes ``(vx, vy, wz)``. Every other slot keeps ``prev`` (NaN =
+    HOLD when nothing was commanded yet), except the twist, which is zeroed by
+    any non-twist command — a velocity must not outlive the command that set
+    it. Base joints in a joint row are skipped: the kinematic base only takes a
+    BODY_TWIST.
+
+    Raises:
+        ROSConfigError: an unsupported control mode, a missing payload, an
+            unknown joint / end-effector, or a row whose width matches no form.
+
+    Example:
+        >>> from openral_core.schemas import Action, ControlMode
+        >>> layout = IsaacActionLayout(
+        ...     joints=("x", "y", "yaw", "j1", "j2", "grip"),
+        ...     roles=("base", "base", "base", "arm", "arm", "gripper"),
+        ... )
+        >>> a = Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[[0.5, -1.0]])
+        >>> pack_isaac_action(a, layout, None).tolist()
+        [0.5, -1.0, nan, 0.0, 0.0, 0.0]
+    """
+    from openral_core.schemas import ControlMode
+
+    slots = layout.slots
+    index = {n: i for i, n in enumerate(slots)}
+    out: NDArray[np.float32] = np.full(layout.dim, np.nan, dtype=np.float32)
+    if prev is not None and prev.shape == out.shape:
+        out = prev.astype(np.float32, copy=True)
+    if layout.has_base:
+        out[-3:] = 0.0
+    mode = action.control_mode
+    if mode is ControlMode.BODY_TWIST:
+        if not layout.has_base:
+            raise ROSConfigError("BODY_TWIST on a robot without a planar base (base_joints).")
+        if not action.body_twist:
+            raise ROSConfigError("BODY_TWIST action with an empty body_twist.")
+        vx, vy, vz, wx, wy, wz = (float(v) for v in action.body_twist[0])
+        if max(abs(vz), abs(wx), abs(wy)) > _PLANAR_TWIST_EPS:
+            raise ROSConfigError("BODY_TWIST with non-zero vz / wx / wy on a planar base.")
+        out[-3:] = (vx, vy, wz)
+        return out
+    if mode is ControlMode.GRIPPER_POSITION:
+        if not action.gripper:
+            raise ROSConfigError("GRIPPER_POSITION action with an empty gripper payload.")
+        out[index[layout.gripper_for(action.ee_name)]] = float(action.gripper[0])
+        return out
+    if mode is not ControlMode.JOINT_POSITION:
+        raise ROSConfigError(
+            f"the Isaac manifest scene takes JOINT_POSITION / GRIPPER_POSITION / "
+            f"BODY_TWIST, not {mode.value!r}."
+        )
+    if not action.joint_targets:
+        raise ROSConfigError("JOINT_POSITION action with no joint_targets.")
+    row = [float(v) for v in action.joint_targets[0]]
+    if action.joint_names:
+        names = list(action.joint_names)
+        if len(row) != len(layout.joints):
+            raise ROSConfigError(
+                f"JOINT_POSITION slot row has {len(row)} values; a named slot row is "
+                f"zero-padded to the robot's {len(layout.joints)} joints."
+            )
+        pairs = [(n, row[layout.joints.index(n)]) for n in names if n in layout.joints]
+        unknown = [n for n in names if n not in layout.joints]
+        if unknown:
+            raise ROSConfigError(f"JOINT_POSITION names unknown joints {unknown}.")
+    else:
+        arm = [n for n, r in zip(layout.joints, layout.roles, strict=True) if r == "arm"]
+        forms = {len(layout.joints): list(layout.joints), len(slots): list(slots)}
+        forms.setdefault(len(arm), arm)
+        if len(row) not in forms:
+            raise ROSConfigError(
+                f"JOINT_POSITION row has {len(row)} values; expected {sorted(forms)} "
+                "(all joints / non-base joints / arm joints, manifest order)."
+            )
+        pairs = list(zip(forms[len(row)], row, strict=True))
+    for name, value in pairs:
+        if name in index:  # base joints carry no slot (velocity-commanded)
+            out[index[name]] = value
+    return out
+
+
 @dataclass
 class _IsaacSimSidecar(SidecarSimRollout):
     """``SimRollout`` that proxies an Isaac Lab env over the sidecar.
@@ -190,6 +356,27 @@ class _IsaacSimSidecar(SidecarSimRollout):
     ``SidecarSimRollout`` (shared verbatim with the RoboTwin adapter); only
     ``_wrap_obs`` and this docstring-carrying ``action_dim`` are Isaac-specific.
     """
+
+    layout: IsaacActionLayout | None = None
+
+    def pack_action(self, action: Action, prev: NDArray[np.float32] | None) -> NDArray[np.float32]:
+        """``SimAttachedHAL``'s packing hook: this env addresses its slots by name.
+
+        See ``pack_isaac_action``. The HAL's default packer assumes the robosuite
+        slot order (base first, one gripper last) and per-step deltas; this scene
+        takes absolute targets in manifest order, base twist last, one slot per
+        gripper — so the env, which knows its own layout, packs.
+        """
+        if self.layout is None:
+            raise ROSConfigError("Isaac rollout built without an action layout.")
+        return pack_isaac_action(action, self.layout, prev)
+
+    def idle_action(self) -> NDArray[np.float32]:
+        """HOLD every joint target (NaN) and stop the base — never "drive to 0 rad"."""
+        out = np.full(self.action_dim, np.nan, dtype=np.float32)
+        if self.layout is not None and self.layout.has_base:
+            out[-3:] = 0.0
+        return out
 
     @property
     def action_dim(self) -> int:
@@ -776,8 +963,9 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
     needs, and the sensors. The planar base joints (``base_joints``) are not URDF
     DOFs; the sidecar drives the base kinematically.
 
-    Action layout: ``[arm joints (manifest order), one slot per gripper, base
-    twist (vx, vy, wyaw) when mobile]``.
+    Action layout (``IsaacActionLayout``): ``[one absolute target per non-base
+    joint in manifest order — grippers in manifest units — then the base twist
+    (vx, vy, wz) when mobile]``; NaN holds a joint.
     """
     from openral_core.assets import AssetRefError, resolve_asset
 
@@ -853,20 +1041,21 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
         "base_joints": desc.base_joints,
         "base_kinematics": desc.base_kinematics,
         "action": {
+            # IsaacActionLayout: absolute targets per non-base joint in manifest
+            # order (NaN = hold), then the base twist.
             "dim": arm_n + len(grippers) + (3 if has_base else 0),
             "control_mode": "joint_position",
-            "arm_delta_scale": 0.05,
             "has_base": has_base,
         },
         "sensors": [_sensor_dict(s) for s in desc.sensors],
     }
 
 
-def _write_robot_spec(env_cfg: SimEnvironment) -> str:
+def _write_robot_spec(env_cfg: SimEnvironment) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
-    Returns the temp file path passed to the sidecar via ``--robot-spec``; the
-    caller unlinks it on ``close()``.
+    Returns the temp file path passed to the sidecar via ``--robot-spec`` (the
+    caller unlinks it after connecting) and the robot's description.
     """
     from openral_sim.registry import ROBOTS
 
@@ -882,7 +1071,7 @@ def _write_robot_spec(env_cfg: SimEnvironment) -> str:
     fd, path = tempfile.mkstemp(prefix=f"isaac_robot_spec_{robot_id}_", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(spec, fh)
-    return path
+    return path, desc
 
 
 def provision_isaac_sim() -> None:
@@ -1011,7 +1200,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     # The scene imports the manifest robot's URDF. Marshal the RobotDescription
     # to a temp JSON the sidecar reads (it cannot import openral_core) and pass
     # it via --robot-spec.
-    robot_spec_path = _write_robot_spec(env_cfg)
+    robot_spec_path, desc = _write_robot_spec(env_cfg)
     launch_argv += ["--robot-spec", robot_spec_path]
     if environment_usd is not None:
         launch_argv += ["--environment-usd", environment_usd]
@@ -1045,4 +1234,9 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         # it here rather than leaking it past process exit.
         with contextlib.suppress(OSError):
             os.unlink(robot_spec_path)
-    return _IsaacSimSidecar(scene=env_cfg.scene, task=env_cfg.task, _client=client)
+    return _IsaacSimSidecar(
+        scene=env_cfg.scene,
+        task=env_cfg.task,
+        _client=client,
+        layout=IsaacActionLayout.from_description(desc),
+    )

@@ -42,9 +42,8 @@ pytestmark = [
     ),
 ]
 
-# OpenArm action: 14 arm deltas (manifest order), then left + right gripper.
-_N_ARM = 14
-# Manifest joint order: left_joint1..7, left_gripper, right_joint1..7, right_gripper.
+# OpenArm action (IsaacActionLayout): one absolute target per manifest joint, in
+# manifest order — left_joint1..7, left_gripper, right_joint1..7, right_gripper.
 _LEFT_GRIPPER, _RIGHT_GRIPPER = 7, 15
 
 
@@ -68,7 +67,7 @@ def _steps(env: Any, action: np.ndarray, n: int) -> Any:
 
 
 def test_all_joints_hold_and_the_robot_is_at_its_spawn(env: Any) -> None:
-    assert env.action_dim == _N_ARM + 2
+    assert env.action_dim == 16
     result = _steps(env, np.zeros(env.action_dim, dtype=np.float32), 60)
     joints = result.observation["joint_positions"]
     assert joints.shape == (16,)
@@ -81,14 +80,79 @@ def test_all_joints_hold_and_the_robot_is_at_its_spawn(env: Any) -> None:
 
 def test_each_jaw_opens_into_its_own_manifest_range(env: Any) -> None:
     action = np.zeros(env.action_dim, dtype=np.float32)
-    action[_N_ARM:] = 1.0
+    action[_LEFT_GRIPPER], action[_RIGHT_GRIPPER] = 0.7854, -0.7854  # each jaw's open end
     opened = _steps(env, action, 40).observation["joint_positions"]
     assert opened[_LEFT_GRIPPER] == pytest.approx(0.7854, abs=0.03)
     assert opened[_RIGHT_GRIPPER] == pytest.approx(-0.7854, abs=0.03)
-    action[_N_ARM:] = -1.0
+    action[_LEFT_GRIPPER] = action[_RIGHT_GRIPPER] = 0.0
     closed = _steps(env, action, 40).observation["joint_positions"]
     assert closed[_LEFT_GRIPPER] == pytest.approx(0.0, abs=0.03)
     assert closed[_RIGHT_GRIPPER] == pytest.approx(0.0, abs=0.03)
     # The arms never moved while the jaws did.
     arm = np.r_[closed[0:7], closed[8:15]]
     assert np.max(np.abs(arm)) < 0.02
+
+
+def test_hal_commits_a_bimanual_slot_tick(env: Any) -> None:
+    """Regression: the HAL refused every OpenArm slot tick (a zero-padded 16-wide
+    JOINT_POSITION row vs its 14-wide arm packer). Placed by joint_names /
+    ee_name, one tick drives both arms and both jaws; joints stop at their URDF
+    limits (left/right_joint2 at +-0.1745, right_joint4 at 0)."""
+    from openral_core import Action, RobotDescription
+    from openral_core.schemas import ControlMode
+    from openral_hal.sim_attached import SimAttachedHAL
+
+    desc = RobotDescription.from_yaml(str(_repo_root() / "robots" / "openarm" / "robot.yaml"))
+    names = [j.name for j in desc.joints]
+    left = [f"left_joint{i}" for i in range(1, 8)]
+    right = [f"right_joint{i}" for i in range(1, 8)]
+
+    def padded(value: float, sel: list[str]) -> list[list[float]]:
+        row = [0.0] * len(names)
+        for name in sel:
+            row[names.index(name)] = value
+        return [row]
+
+    hal = SimAttachedHAL(env, desc)
+    hal.connect()
+    for tick in range(1, 61):
+        for action in (
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                joint_targets=padded(0.3, left),
+                joint_names=left,
+                tick_index=tick,
+                tick_group_size=4,
+            ),
+            Action(
+                control_mode=ControlMode.GRIPPER_POSITION,
+                gripper=[0.7],
+                ee_name="left_gripper",
+                tick_index=tick,
+                tick_group_size=4,
+            ),
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                joint_targets=padded(-0.3, right),
+                joint_names=right,
+                tick_index=tick,
+                tick_group_size=4,
+            ),
+            Action(
+                control_mode=ControlMode.GRIPPER_POSITION,
+                gripper=[-0.7],
+                ee_name="right_gripper",
+                tick_index=tick,
+                tick_group_size=4,
+            ),
+        ):
+            hal.send_action(action)
+    q = dict(zip(names, hal.read_state().position, strict=True))
+    for name in left:
+        want = 0.1745 if name == "left_joint2" else 0.3
+        assert q[name] == pytest.approx(want, abs=0.03), name
+    for name in right:
+        want = {"right_joint2": -0.1745, "right_joint4": 0.0}.get(name, -0.3)
+        assert q[name] == pytest.approx(want, abs=0.03), name
+    assert q["left_gripper"] == pytest.approx(0.7, abs=0.03)
+    assert q["right_gripper"] == pytest.approx(-0.7, abs=0.03)
