@@ -563,6 +563,11 @@ SafetyKernelLifecycleNode::on_configure(const rclcpp_lifecycle::State& /*state*/
   q_meas_seen_.assign(ndof, false);
   q_check_.assign(ndof, 0.0);
   q_fk_.assign(ndof, 0.0);
+  slot_commanded_.assign(ndof, 0);
+  tick_target_.assign(ndof, 0.0);
+  tick_target_set_.assign(ndof, 0);
+  tick_target_session_ = 0;
+  tick_target_tick_ = 0;
   q_meas_received_ = false;
   collision_base_dofs_.clear();
   // NB: bind the parameter's array to a NAMED local first. Iterating directly
@@ -925,6 +930,60 @@ void SafetyKernelLifecycleNode::on_candidate_action(
         unavailable("state_unavailable", openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE);
         return;
       }
+      // ADR-0102 slot row. A slot-dispatched JOINT_POSITION chunk (the real
+      // OpenArm: left arm, right arm as separate chunks per tick) is zero-padded
+      // to full dof at the joints it does not own, so FK-ing the row as-is
+      // places the OTHER arm at a phantom all-zero pose: a target that hits the
+      // other arm where it really is passes, and one clear of it can false-stop.
+      // `joint_names` says which joints the row commands; every other FK dof
+      // takes its measured value, which therefore must be fresh and complete.
+      // A row naming a joint the kernel cannot place is refused outright.
+      // Velocity slots need nothing here: their zero padding already means
+      // "hold the measured pose" in the integration above.
+      bool slot_row = false;
+      bool tick_partner = false;
+      if (is_position && !msg->joint_names.empty()) {
+        std::fill(slot_commanded_.begin(), slot_commanded_.end(), std::uint8_t{0});
+        for (const auto& name : msg->joint_names) {
+          const auto it = joint_name_to_dof_.find(name);
+          if (it == joint_name_to_dof_.end() ||
+              static_cast<std::size_t>(it->second) >= slot_commanded_.size()) {
+            unavailable("slot_joints_unmapped",
+                        openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE);
+            return;
+          }
+          slot_commanded_[static_cast<std::size_t>(it->second)] = 1;
+        }
+        for (const int d : collision_fk_dofs_) {
+          if (slot_commanded_[static_cast<std::size_t>(d)] == 0) {
+            slot_row = true;
+            break;
+          }
+        }
+        if (slot_row && !measured_state_fresh()) {
+          unavailable("state_unavailable", openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE);
+          return;
+        }
+        // The HAL commits a tick's slots as ONE configuration, so a row is also
+        // checked against the targets the tick's earlier (accepted) slots set
+        // for the joints it leaves alone — both arms' targets at once. Keyed on
+        // (runner_session_id, tick_index); an unstamped chunk gets the measured
+        // check only.
+        if (slot_row && msg->tick_index != 0) {
+          if (msg->runner_session_id != tick_target_session_ ||
+              msg->tick_index != tick_target_tick_) {
+            std::fill(tick_target_set_.begin(), tick_target_set_.end(), std::uint8_t{0});
+            tick_target_session_ = msg->runner_session_id;
+            tick_target_tick_ = msg->tick_index;
+          }
+          for (std::size_t d = 0; d < tick_target_set_.size(); ++d) {
+            if (tick_target_set_[d] != 0 && slot_commanded_[d] == 0) {
+              tick_partner = true;
+              break;
+            }
+          }
+        }
+      }
       if (world_voxel_enabled_) {
         const bool fresh = voxel_received_ && !voxel_overflow_ &&
                            (this->now() - voxel_stamp_).seconds() <= world_voxel_deadline_s_;
@@ -1286,11 +1345,45 @@ void SafetyKernelLifecycleNode::on_candidate_action(
       };
 
       if (is_position) {
-        // Each row is a full joint configuration FK can place directly.
         for (std::uint16_t s = 0; s < view.horizon; ++s) {
           const double* row = view.flat_data + static_cast<std::size_t>(s) * robot_ndof;
-          if (check_config(row, static_cast<int>(s))) {
+          if (!slot_row) {
+            // A full row is the joint configuration itself.
+            if (check_config(row, static_cast<int>(s))) {
+              return;
+            }
+            continue;
+          }
+          // Slot row: commanded joints from the row, the rest measured ...
+          for (std::size_t d = 0; d < robot_ndof; ++d) {
+            q_check_[d] = slot_commanded_[d] != 0 ? row[d] : q_meas_[d];
+          }
+          if (check_config(q_check_.data(), static_cast<int>(s))) {
             return;
+          }
+          // ... and, additionally, at this tick's other committed targets.
+          // Only ever an extra check: it can refuse, never accept.
+          if (tick_partner) {
+            for (std::size_t d = 0; d < robot_ndof; ++d) {
+              if (slot_commanded_[d] == 0 && tick_target_set_[d] != 0) {
+                q_check_[d] = tick_target_[d];
+              }
+            }
+            if (check_config(q_check_.data(), static_cast<int>(s))) {
+              return;
+            }
+          }
+        }
+        // Accepted: this slot's final target is what the tick's later slots
+        // must be checked against.
+        if (slot_row && msg->tick_index != 0 && view.horizon > 0) {
+          const double* last =
+              view.flat_data + static_cast<std::size_t>(view.horizon - 1) * robot_ndof;
+          for (std::size_t d = 0; d < robot_ndof; ++d) {
+            if (slot_commanded_[d] != 0) {
+              tick_target_[d] = last[d];
+              tick_target_set_[d] = 1;
+            }
           }
         }
       } else {  // is_velocity (Phase 2) or is_cartesian (Phase 3)

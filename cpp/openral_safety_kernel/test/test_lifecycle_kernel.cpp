@@ -5010,3 +5010,224 @@ TEST_F(LifecycleKernelTest, APayloadOnItsWitnessedSupportStillLeavesTheChunkScal
       << "the exempt contact reads as slack 0: the band's slowest rate";
   EXPECT_GE(resting.scaled, 1U);
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0102 slot rows: a JOINT_POSITION chunk naming a strict subset of the
+// robot's joints (the real OpenArm sends left arm, left gripper, right arm,
+// right gripper as four chunks per tick, each zero-padded to full dof) must be
+// checked with every joint it does NOT command at its MEASURED pose — never
+// at the zero padding, which places the other arm at a phantom pose.
+//
+// Model: two one-link "arms" on prismatic-x joints, both roots. The left
+// capsule sits at x = q_left, the right one at x = 1 + q_right; radius 0.05
+// each, so they touch when |q_left - 1 - q_right| < 0.10.
+namespace {
+
+std::vector<rclcpp::Parameter> two_arm_params() {
+  return {
+      {"n_dof", std::int64_t{2}},
+      {"joint_position_min", std::vector<double>{-3.0, -3.0}},
+      {"joint_position_max", std::vector<double>{3.0, 3.0}},
+      {"joint_velocity_max", std::vector<double>{3.15, 3.15}},
+      {"joint_torque_max", std::vector<double>{5.0, 5.0}},
+      {"self_collision_enabled", true},
+      {"self_collision_margin_m", 0.0},
+      {"collision_n_links", std::int64_t{2}},
+      {"collision_parent", std::vector<std::int64_t>{-1, -1}},
+      {"collision_joint_kind", std::vector<std::int64_t>{2, 2}},  // prismatic, prismatic
+      {"collision_dof_index", std::vector<std::int64_t>{0, 1}},
+      {"collision_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 0}},
+      {"collision_axis", std::vector<double>{1, 0, 0, 1, 0, 0}},
+      {"collision_capsule_link", std::vector<std::int64_t>{0, 1}},
+      {"collision_capsule_radius", std::vector<double>{0.05, 0.05}},
+      {"collision_capsule_half_length", std::vector<double>{0.05, 0.05}},
+      {"collision_capsule_origin_xyzrpy", std::vector<double>{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+      {"collision_allowed_pairs", std::vector<std::int64_t>{}},
+      {"collision_link_names", std::vector<std::string>{"left_link", "right_link"}},
+      {"collision_joint_names", std::vector<std::string>{"left_j", "right_j"}},
+      {"collision_state_deadline_ms", 2000.0},
+  };
+}
+
+class SlotRig {
+public:
+  explicit SlotRig(const std::string& name) : helper_(name + "_helper"), spy_(helper_) {
+    rclcpp::NodeOptions opts;
+    opts.parameter_overrides(two_arm_params());
+    node_ = std::make_shared<osk::SafetyKernelLifecycleNode>(name, opts);
+    rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED, "uc");
+    rclcpp_lifecycle::State inactive(lifecycle_msgs::msg::State::PRIMARY_STATE_INACTIVE, "in");
+    configured_ =
+        node_->on_configure(unconf) == osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS &&
+        node_->on_activate(inactive) == osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS;
+    rclcpp::QoS chunk_qos(rclcpp::KeepLast(10));
+    chunk_qos.reliable();
+    cand_pub_ = helper_.create_publisher<openral_msgs::msg::ActionChunk>(
+        "/openral/candidate_action", chunk_qos);
+    safe_sub_ = helper_.create_subscription<openral_msgs::msg::ActionChunk>(
+        "/openral/safe_action", chunk_qos,
+        [this](const openral_msgs::msg::ActionChunk::SharedPtr) { ++safe_; });
+    rclcpp::QoS js_qos(rclcpp::KeepLast(1));
+    js_qos.best_effort();
+    js_pub_ = helper_.create_publisher<sensor_msgs::msg::JointState>("/joint_states", js_qos);
+    exec_.add_node(node_->get_node_base_interface());
+    exec_.add_node(helper_.get_node_base_interface());
+  }
+
+  bool configured() const { return configured_; }
+  osk::SafetyKernelLifecycleNode& node() { return *node_; }
+  /// Spin until a non-latched status with `drop_code` has arrived.
+  bool saw_drop(std::uint8_t drop_code) {
+    spin_until(exec_, [&] { return spy_.saw(false, drop_code); });
+    return spy_.saw(false, drop_code);
+  }
+
+  /// Publish the measured state until the kernel has a fresh copy of it.
+  void measure(double left, double right) {
+    js_.name = {"left_j", "right_j"};
+    js_.position = {left, right};
+    measured_ = true;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+    while (std::chrono::steady_clock::now() < deadline) {
+      js_pub_->publish(js_);
+      exec_.spin_some(std::chrono::milliseconds(10));
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+
+  /// Send one chunk and spin until the kernel decides it. Returns true when
+  /// it reached /openral/safe_action.
+  bool send(const openral_msgs::msg::ActionChunk& c) {
+    const int safe_before = safe_;
+    const auto passed_before = node_->chunks_passed();
+    const auto dropped_before = node_->chunks_dropped();
+    cand_pub_->publish(c);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    while (std::chrono::steady_clock::now() < deadline &&
+           node_->chunks_dropped() == dropped_before &&
+           (node_->chunks_passed() == passed_before || safe_ == safe_before)) {
+      if (measured_) {
+        js_pub_->publish(js_);
+      }
+      exec_.spin_some(std::chrono::milliseconds(10));
+    }
+    return safe_ > safe_before;
+  }
+
+private:
+  rclcpp::Node helper_;
+  StatusSpy spy_;
+  std::shared_ptr<osk::SafetyKernelLifecycleNode> node_;
+  bool configured_{false};
+  rclcpp::Publisher<openral_msgs::msg::ActionChunk>::SharedPtr cand_pub_;
+  rclcpp::Subscription<openral_msgs::msg::ActionChunk>::SharedPtr safe_sub_;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr js_pub_;
+  rclcpp::executors::SingleThreadedExecutor exec_;
+  sensor_msgs::msg::JointState js_;
+  bool measured_{false};
+  int safe_{0};
+};
+
+/// A JOINT_POSITION chunk padded to full dof, as `_pad_joint_payload` emits.
+openral_msgs::msg::ActionChunk position_chunk(double left, double right,
+                                              std::vector<std::string> names = {},
+                                              std::uint32_t tick = 0) {
+  openral_msgs::msg::ActionChunk c;
+  c.control_mode = 0;  // JOINT_POSITION
+  c.horizon = 1;
+  c.n_dof = 2;
+  c.flat = {left, right};
+  c.joint_names = std::move(names);
+  c.tick_index = tick;
+  c.tick_group_size = tick == 0 ? 0 : 2;
+  c.runner_session_id = tick == 0 ? 0 : 0xABCDu;
+  return c;
+}
+
+}  // namespace
+
+TEST_F(LifecycleKernelTest, ASlotRowIsCheckedAgainstTheOtherArmsMeasuredPose) {
+  SlotRig rig("kernel_slot_measured_hit");
+  ASSERT_TRUE(rig.configured());
+  // Right arm measured at x = 0.5. The left slot drives the left arm to 0.5:
+  // straight into it. Zero padding would put the right arm at x = 1.0, 0.5 m
+  // away, and the chunk would pass.
+  rig.measure(0.0, -0.5);
+  EXPECT_FALSE(rig.send(position_chunk(0.5, 0.0, {"left_j"})));
+  EXPECT_TRUE(rig.node().fault_latched())
+      << "the left target collides with the right arm where it really is";
+}
+
+TEST_F(LifecycleKernelTest, ASlotRowIsNotStoppedByThePaddingsPhantomPose) {
+  SlotRig rig("kernel_slot_phantom");
+  ASSERT_TRUE(rig.configured());
+  // Right arm measured at x = 1.5. The left slot drives the left arm to 0.95,
+  // 0.55 m clear of it, but 0.05 m from where the zero padding puts the right
+  // arm (x = 1.0) — a false stop against a pose nobody commanded.
+  rig.measure(0.0, 0.5);
+  EXPECT_TRUE(rig.send(position_chunk(0.95, 0.0, {"left_j"})));
+  EXPECT_FALSE(rig.node().fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, ASlotRowWithoutAFreshMeasuredStateIsDroppedNotLatched) {
+  SlotRig rig("kernel_slot_no_state");
+  ASSERT_TRUE(rig.configured());
+  const auto dropped_before = rig.node().chunks_dropped();
+  EXPECT_FALSE(rig.send(position_chunk(0.0, 0.0, {"left_j"})));
+  EXPECT_GT(rig.node().chunks_dropped(), dropped_before);
+  EXPECT_FALSE(rig.node().fault_latched());
+  EXPECT_TRUE(rig.saw_drop(openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE));
+}
+
+TEST_F(LifecycleKernelTest, ASlotRowNamingAnUnknownJointIsDroppedNotLatched) {
+  SlotRig rig("kernel_slot_unknown");
+  ASSERT_TRUE(rig.configured());
+  rig.measure(0.0, 0.5);
+  EXPECT_FALSE(rig.send(position_chunk(0.0, 0.0, {"left_j", "no_such_joint"})));
+  EXPECT_FALSE(rig.node().fault_latched());
+  EXPECT_TRUE(rig.saw_drop(openral_msgs::msg::SafetyStatus::DROP_STATE_UNAVAILABLE));
+}
+
+TEST_F(LifecycleKernelTest, AFullRowIsCheckedAsTheConfigurationItCommands) {
+  // Unchanged behaviour: no names, or names covering every joint, means the
+  // row IS the configuration — no measured state needed, none consulted.
+  {
+    SlotRig rig("kernel_full_row_clear");
+    ASSERT_TRUE(rig.configured());
+    EXPECT_TRUE(rig.send(position_chunk(0.0, 0.0)));
+    EXPECT_TRUE(rig.send(position_chunk(0.0, 0.0, {"right_j", "left_j"})));
+    EXPECT_FALSE(rig.node().fault_latched());
+  }
+  {
+    SlotRig rig("kernel_full_row_hit");
+    ASSERT_TRUE(rig.configured());
+    // Measured state says clear; the row itself collides.
+    rig.measure(0.0, 0.5);
+    EXPECT_FALSE(rig.send(position_chunk(0.95, 0.0)));
+    EXPECT_TRUE(rig.node().fault_latched());
+  }
+}
+
+TEST_F(LifecycleKernelTest, ASlotRowIsAlsoCheckedAgainstTheOtherArmsTargetInTheSameTick) {
+  SlotRig rig("kernel_slot_tick_target");
+  ASSERT_TRUE(rig.configured());
+  rig.measure(0.0, 0.0);  // left at 0, right at 1.0
+  // Tick 7: the right slot drives the right arm to x = 0.5 (clear of the
+  // measured left arm at 0) ...
+  ASSERT_TRUE(rig.send(position_chunk(0.0, -0.5, {"right_j"}, 7)));
+  // ... and the left slot drives the left arm to x = 0.5 (clear of the
+  // measured right arm at 1.0). The HAL commits both at once: the two
+  // targets collide with each other.
+  EXPECT_FALSE(rig.send(position_chunk(0.5, 0.0, {"left_j"}, 7)));
+  EXPECT_TRUE(rig.node().fault_latched());
+}
+
+TEST_F(LifecycleKernelTest, AnEarlierTicksTargetIsNotHeldAgainstTheNextTick) {
+  SlotRig rig("kernel_slot_tick_stale");
+  ASSERT_TRUE(rig.configured());
+  rig.measure(0.0, 0.0);
+  ASSERT_TRUE(rig.send(position_chunk(0.0, -0.5, {"right_j"}, 7)));
+  // Tick 8: only the measured right arm (x = 1.0) is the truth now.
+  EXPECT_TRUE(rig.send(position_chunk(0.5, 0.0, {"left_j"}, 8)));
+  EXPECT_FALSE(rig.node().fault_latched());
+}
