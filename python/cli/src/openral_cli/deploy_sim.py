@@ -2291,8 +2291,10 @@ DDS_TRANSPORT_READY_MARKER: Final[str] = "dds_transport_ready:"
 
 The orphan reap and the stale ``/dev/shm/fastrtps_*`` purge have run by the
 time this line appears, and ``ros2 launch`` has not been spawned yet. The line
-reads ``dds_transport_ready: rmw=<rmw> shm_purged=<N> shm_kept_live=<M>``
-(``n/a`` for both counts when Cyclone/Zenoh is selected). The purge only
+reads ``dds_transport_ready: rmw=<rmw> shm_purged=<N> shm_kept_live=<M>
+fastdds_profile=<path>`` (``n/a`` for both counts and the profile when Cyclone/Zenoh
+is selected; the profile is ``apply_fastdds_large_data_profile``'s, or the
+operator's own). The purge only
 unlinks files no live process uses, so a participant that joined earlier keeps
 working; the validation matrix's evidence monitor still waits for this line so
 it attaches to the graph ``ros2 launch`` is about to build, not a leftover one.
@@ -2326,6 +2328,10 @@ def _apply_rmw_default(env: dict[str, str]) -> None:
     ``OPENRAL_FASTDDS_SHM_CLEAN=0``, skip the clean entirely.
     ``DDS_TRANSPORT_READY_MARKER`` is printed on the line after the
     clean, on every RMW path — a waiter needs the signal either way.
+
+    On Fast-DDS it also exports the large-data profile
+    (``apply_fastdds_large_data_profile``) and names it on that line, so a run
+    whose depth clouds crossed the graph under a different transport says so.
     """
     rmw = env.get("RMW_IMPLEMENTATION", "")
     opted_out = "rmw_cyclonedds" in rmw or "rmw_zenoh" in rmw
@@ -2334,7 +2340,10 @@ def _apply_rmw_default(env: dict[str, str]) -> None:
     else:
         purged, kept = _clean_stale_fastrtps_shm()
         counts = f"shm_purged={purged} shm_kept_live={kept}"
-    _console.print(f"  {DDS_TRANSPORT_READY_MARKER} rmw={rmw or 'default'} {counts}")
+    profile = "n/a" if opted_out else apply_fastdds_large_data_profile(env)
+    _console.print(
+        f"  {DDS_TRANSPORT_READY_MARKER} rmw={rmw or 'default'} {counts} fastdds_profile={profile}"
+    )
     # A waiter reads this line out of a redirected stdout, so it must not sit
     # in a block buffer while the graph comes up around it.
     sys.stdout.flush()
@@ -2342,6 +2351,49 @@ def _apply_rmw_default(env: dict[str, str]) -> None:
 
 #: Set to ``0`` to skip the Fast-DDS shm clean on any RMW (never unlink anything).
 FASTDDS_SHM_CLEAN_ENV: Final[str] = "OPENRAL_FASTDDS_SHM_CLEAN"
+
+#: The env var Fast DDS 2.x (Jazzy) reads its default XML profile from, once per process.
+FASTDDS_PROFILES_ENV: Final[str] = "FASTRTPS_DEFAULT_PROFILES_FILE"
+#: The deploy graph's Fast DDS profile: the builtin transports with a 16 MiB shared-memory
+#: segment instead of 512 KiB (``docs/reference/dds-large-messages.md``).
+FASTDDS_LARGE_DATA_PROFILE: Final[Path] = Path(__file__).with_name("fastdds_large_data.xml")
+
+
+def apply_fastdds_large_data_profile(env: dict[str, str]) -> str:
+    """Point Fast DDS at the shipped large-data profile, unless the operator chose one.
+
+    Under the default 512 KiB shared-memory segment, a same-host ``BEST_EFFORT``
+    sample above ~512 KB is lost almost every time (2.8 MB clouds: 0/40 delivered;
+    480 KB: 40/40), so the depth clouds, depth and colour images the deploy graph
+    moves were mostly dropped before any node saw them. The profile only enlarges
+    that segment; transports stay SHM + UDPv4. Only the PUBLISHER's segment matters,
+    so it reaches every graph process — camera drivers launched from a scene's
+    ``drivers:`` block included — through the launch environment. A driver started
+    outside the deploy needs ``FASTRTPS_DEFAULT_PROFILES_FILE`` set itself.
+
+    An operator's own (non-empty) ``FASTRTPS_DEFAULT_PROFILES_FILE`` wins; an empty one
+    is replaced, since Fast DDS logs an ``XMLPARSER Error`` for it. Fast DDS 3's
+    ``FASTDDS_DEFAULT_PROFILES_FILE`` is not consulted: Jazzy ships Fast DDS 2.14, which
+    reads only the former.
+
+    Args:
+        env: The launch environment, updated in place.
+
+    Returns:
+        The profile path the graph will load.
+
+    Example:
+        >>> env: dict[str, str] = {}
+        >>> apply_fastdds_large_data_profile(env).endswith("fastdds_large_data.xml")
+        True
+        >>> apply_fastdds_large_data_profile({FASTDDS_PROFILES_ENV: "/etc/mine.xml"})
+        '/etc/mine.xml'
+    """
+    if not env.get(FASTDDS_PROFILES_ENV):
+        env[FASTDDS_PROFILES_ENV] = str(FASTDDS_LARGE_DATA_PROFILE)
+    return env[FASTDDS_PROFILES_ENV]
+
+
 #: Fast-DDS shm file prefixes: ``SHM_MANAGER_DOMAIN`` is ``"fastrtps"`` through 2.x and
 #: ``"fastdds"`` from 3.0 (``src/cpp/rtps/transport/shared_mem/SharedMemTransport.cpp``).
 _FASTDDS_SHM_PREFIXES: Final[tuple[str, ...]] = ("fastrtps_", "fastdds_")

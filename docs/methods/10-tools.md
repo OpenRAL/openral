@@ -348,6 +348,14 @@ _Package and publish a local rSkill directory to the HF Hub._
 - `_publish(skill_dir, manifest, token, *, public=False) -> str` — Create the HF repo (private unless `public`) and upload; runs the matching visibility gate (`_ensure_public` / `_ensure_private`) after `create_repo`.
 - `main() -> None` (L529) — Entry point: validate manifest → enforce repo name → validate task space → validate docs → license-visibility gate → optional `--bump-revision` → `--publish` (private unless `--public`).
 
+### `tools/cloud_transport_probe.py`
+
+- `run_pub(args) -> dict[str, Any]` (L74) — publisher role: `--count` xyz-float32 `PointCloud2` of `--points` at `--hz` under the sim bridge's depth-cloud QoS (BEST_EFFORT, KEEP_LAST 5; `--reliable` flips it), optionally streaming `--joint` joint states for a chain node such as `robot_self_filter`; reports `publish()` call cost, the RMW and the Fast DDS profile.
+- `run_sub(args) -> dict[str, Any]` (L128) — subscriber role: counts distinct clouds by capture stamp (`--depth` KEEP_LAST), reports delivery ratio and publish→receive latency.
+- `main() -> None` (L165) — CLI: `python tools/cloud_transport_probe.py pub|sub [...]`, one JSON line each; run the roles as separate processes. Needs a sourced ROS 2 overlay.
+
+Measures whether megabyte best-effort clouds arrive; the evidence behind the deploy's Fast DDS large-data profile ([`docs/reference/dds-large-messages.md`](../reference/dds-large-messages.md)). `tests/integration/test_large_cloud_transport_live.py` drives it through the real self-filter.
+
 ### `tools/voxel_transport_probe.py`
 
 - `RADIUS_M: float` (L57) — the shipped coverage radius (1.05 m), so grid sizes are the deployed ones.
