@@ -37,6 +37,10 @@ Flow, one call per step so every step is replayable from its inputs alone:
    every lattice cell it touches has its centre inside (the kernel's exemption
    test), horizontally and up, never down. The gates above keep comparing the
    tight fits.
+8. ``occupied_touching_outside`` — before a fit is accepted, the region the kernel
+   would get must hold the target's whole map component: no occupied cell above the
+   support touches it from outside (a fit of the part the hand left in view would
+   leave the far edge's cells unexempt).
 
 Every threshold here is a **calibration point** (CLAUDE.md §1.2): the caps are
 the design note's Safety-WG placeholders (half-extent ≤ 0.20 m, volume ≤
@@ -70,6 +74,7 @@ __all__ = [
     "cell_closed_region",
     "mask_without_removed_points",
     "occupied_centers_in_box",
+    "occupied_touching_outside",
     "project_point",
     "region_covers_occupied",
     "region_within",
@@ -936,3 +941,72 @@ def cell_closed_region(
         }
     )
     return closed, half != wanted
+
+
+def occupied_touching_outside(
+    grid: VoxelLattice, region: PlaceRegion, *, support_z: float
+) -> NDArray[np.float64]:
+    """Occupied cells above the support, outside ``region``, touching a cell inside it.
+
+    The target as the map sees it is the 26-connected component of the occupied cells
+    above the support (centres more than one voxel above ``support_z``, the layer
+    ``target_seed_from_voxels`` drops too) holding the cells whose centres lie in
+    ``region``. That component lies wholly in ``region`` exactly when no cell of it
+    outside ``region`` is 26-adjacent to one inside — any path out of the region
+    crosses that ring — so this looks one cell around the region, never the whole map,
+    and needs no bound on how far the component reaches. Empty means the region holds
+    every cell of the target the map has; anything else is a fit that saw part of it
+    (the far side occluded by the hand) or something touching it the map cannot
+    separate from it.
+
+    Args:
+        grid: The published lattice.
+        region: The region the kernel gets (``cell_closed_region`` of the fit), in
+            ``grid.frame_id``.
+        support_z: The measured support top the fit stands on.
+
+    Returns:
+        ``(N, 3)`` centres of those outside cells in ``grid.frame_id``.
+
+    Raises:
+        ROSConfigError: If ``region.frame_id`` is not the lattice frame.
+
+    Example:
+        >>> import numpy as np
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> occ = np.zeros(4 * 1 * 3, dtype=np.uint8)
+        >>> occ[[4, 5, 6]] = 1  # a 3-cell bar at k=1, i=0..2
+        >>> g = VoxelLattice("base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (4, 1, 3), occ)
+        >>> def box(hx):
+        ...     return PlaceRegion(
+        ...         frame_id="base",
+        ...         half_extents=(hx, 0.05, 0.05),
+        ...         pose=Pose6D(xyz=(hx, 0.05, 0.15), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ...     )
+        >>> occupied_touching_outside(g, box(0.1), support_z=0.0).round(3).tolist()
+        [[0.25, 0.05, 0.15]]
+        >>> len(occupied_touching_outside(g, box(0.15), support_z=0.0))
+        0
+    """
+    _check_frame(grid, region)
+    centers = grid.occupied_centers()
+    above = centers[centers[:, 2] > support_z + grid.resolution]
+    # Only cells within two of the region can be inside it or touch one inside it.
+    near = region.model_copy(
+        update={"half_extents": tuple(h + 2.0 * grid.resolution for h in region.half_extents)}
+    )
+    above = above[_in_region(above, near)]
+    inside = _in_region(above, region)
+    ijk = np.floor((above - np.asarray(grid.origin)) @ grid.rotation() / grid.resolution)
+    cells = [tuple(c) for c in ijk.astype(np.int64).tolist()]
+    touched = {
+        (i + di, j + dj, k + dk)
+        for (i, j, k), is_in in zip(cells, inside.tolist(), strict=True)
+        if is_in
+        for di, dj, dk in _NEIGHBOURS_26
+    }
+    outside = np.array(
+        [not is_in and c in touched for c, is_in in zip(cells, inside.tolist(), strict=True)],
+        dtype=bool,
+    )
+    return above[outside] if len(above) else above
