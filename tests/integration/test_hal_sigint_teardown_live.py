@@ -98,3 +98,67 @@ def test_the_deploy_runtime_executor_ends_quietly_on_the_same_race() -> None:
         executor.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()
+
+
+def _unhandled_thread_errors() -> tuple[list[BaseException], object]:
+    """Capture what would print as ``Exception in thread ...`` (restored by the caller)."""
+    import threading
+
+    errors: list[BaseException] = []
+    previous = threading.excepthook
+
+    def hook(args: threading.ExceptHookArgs) -> None:
+        if args.exc_value is not None:
+            errors.append(args.exc_value)
+
+    threading.excepthook = hook
+    return errors, previous
+
+
+def test_an_executor_spin_thread_ends_quietly_when_the_context_goes_down() -> None:
+    """The dashboard/runner spin threads: external shutdown must not escape the thread."""
+    import threading
+
+    rclpy = pytest.importorskip("rclpy")
+    from openral_observability.rclpy_spin import spin_executor_until_shutdown
+    from rclpy.executors import SingleThreadedExecutor
+
+    rclpy.init()
+    node = rclpy.create_node("test_spin_thread_shutdown")
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+    errors, previous = _unhandled_thread_errors()
+    thread = threading.Thread(target=spin_executor_until_shutdown, args=(executor,), daemon=True)
+    try:
+        thread.start()
+        rclpy.shutdown()  # what the SIGINT handler does, from outside the spin thread
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+        assert errors == []
+    finally:
+        threading.excepthook = previous  # type: ignore[assignment]  # reason: restoring the saved hook
+        executor.shutdown()
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+
+def test_the_ros2_image_reader_spin_thread_ends_quietly_on_shutdown() -> None:
+    """``Ros2ImageSensorReader`` (the Isaac deploy's camera leg) spins a private node."""
+    import threading
+
+    rclpy = pytest.importorskip("rclpy")
+    pytest.importorskip("sensor_msgs")
+    from openral_runner.backends.ros2_image import Ros2ImageSensorReader
+
+    reader = Ros2ImageSensorReader(sensor_id="cam", topic="/test_spin_shutdown/image")
+    errors, previous = _unhandled_thread_errors()
+    try:
+        reader.open()
+        rclpy.shutdown()
+        reader._spin_thread.join(timeout=5.0)  # reason: the thread under test
+        assert not reader._spin_thread.is_alive()
+        assert errors == []
+    finally:
+        threading.excepthook = previous  # type: ignore[assignment]  # reason: restoring the saved hook
+        reader.close()
+        rclpy.try_shutdown()
