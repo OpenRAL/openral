@@ -70,10 +70,10 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
-| `/openral/cameras/{sensor}/camera_info` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera) | — |
+| `/openral/cameras/{sensor}/camera_info` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._colour_publishers) | — |
 | `/openral/cameras/{sensor}/depth/camera_info` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | — |
 | `/openral/cameras/{sensor}/depth/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | — |
-| `/openral/cameras/{sensor}/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera) | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) |
+| `/openral/cameras/{sensor}/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._colour_publishers) | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) |
 | `/openral/cameras/{sensor}/points` | `sensor_msgs/PointCloud2` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | — |
 | `/openral/failure/{source}` | `openral_msgs/FailureTrigger` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | `/openral/perception/{detector.kind}` | `openral_msgs/PromptStamped` | python/runner/src/openral_runner/backends/gstreamer/perception_tee.py (PerceptionEventPublisher.start) | — |

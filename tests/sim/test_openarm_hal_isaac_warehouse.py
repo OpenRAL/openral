@@ -83,8 +83,9 @@ def test_head_depth_is_a_real_cloud_in_openarm_base(env: Any) -> None:
     pose, yields finite points expressed in openarm_base: the floor 0.698 m below it.
 
     Regressions: the near clip plane sat at Isaac's default 1 stage unit, so every
-    surface within a metre was inf and the cloud was all-NaN; and the cloud was
-    stamped openarm_base while expressed in the URDF root frame, 0.698 m too high.
+    surface within a metre was inf and the cloud was all-NaN; the cloud was
+    stamped openarm_base while expressed in the URDF root frame, 0.698 m too high;
+    and the camera rode the robot root Xform, which Isaac >= 6 leaves at the origin.
     """
     result = _steps(env, np.zeros(env.action_dim, dtype=np.float32), 10)
     cloud = result.observation["depth_points"]["head_zed"]
@@ -92,6 +93,55 @@ def test_head_depth_is_a_real_cloud_in_openarm_base(env: Any) -> None:
     assert np.isfinite(cloud).all()
     assert float(np.min(cloud[:, 2])) == pytest.approx(-0.698, abs=0.02)
     assert float(np.median(cloud[:, 0])) > 0.0  # it looks forward, at the pallet
+    # ...from the robot, not from the stage origin: on Isaac >= 6 the pinned robot root
+    # Xform stays at the import origin, so a camera parented to it looked at the floor
+    # 5 m away (median y -5.1 here) while every robot link rendered at the spawn.
+    assert abs(float(np.median(cloud[:, 1]))) < 0.3
+
+
+def test_head_camera_ships_registered_rgbd_frames(env: Any) -> None:
+    """The head camera's colour and metric depth come from ONE render, with Isaac's K
+    and the camera's optical pose in openarm_base — what the vision attachment leg
+    needs (a real RGB-D driver publishes the same four streams).
+
+    Registration is checked against Isaac's own deprojection: depth pixels lifted
+    through ``k`` and ``optical_in_base`` land on the ``depth_points`` cloud Isaac
+    computed for the same step (``Camera.get_pointcloud``).
+    """
+    from openral_core import RobotDescription
+    from openral_hal.sim_attached import SimAttachedHAL
+
+    result = None
+    for _ in range(6):
+        result = env.step(np.full(env.action_dim, np.nan, dtype=np.float32))
+        if "depth_frames" in result.observation:
+            break
+    assert result is not None and "depth_frames" in result.observation
+    frame = result.observation["depth_frames"]["head_zed"]
+    depth, rgb, k, pose = frame["depth"], frame["rgb"], frame["k"], frame["optical_in_base"]
+    h, w = depth.shape
+    assert rgb.shape == (h, w, 3) and rgb.dtype == np.uint8
+    fx, fy, cx, cy = k
+    assert fx == pytest.approx(fy, rel=1e-3)
+    assert (cx, cy) == pytest.approx((w / 2.0, h / 2.0), abs=1.0)
+    # Optical frame at the head mount (openarm_base + 0.2 m z), looking forward-down.
+    assert pose[:3, 3] == pytest.approx((0.0, 0.0, 0.2), abs=1e-3)
+    assert pose[0, 2] > 0.2 and pose[2, 2] < -0.8  # optical z: forward and down
+    v, u = np.nonzero(depth > 0.0)
+    pick = np.linspace(0, len(u) - 1, 200).astype(int)
+    z = depth[v[pick], u[pick]]
+    optical = np.stack([(u[pick] - cx) * z / fx, (v[pick] - cy) * z / fy, z], axis=1)
+    lifted = optical @ pose[:3, :3].T + pose[:3, 3]
+    cloud = result.observation["depth_points"]["head_zed"]
+    nearest = np.min(np.linalg.norm(lifted[:, None, :] - cloud[None, ::7, :], axis=2), axis=1)
+    assert float(np.median(nearest)) < 0.01
+    # The HAL keeps the newest frame for the sensor bridge between the steps that carry one.
+    desc = RobotDescription.from_yaml(str(_repo_root() / "robots" / "openarm" / "robot.yaml"))
+    hal = SimAttachedHAL(env, desc)
+    hal.connect()
+    for _ in range(3):
+        hal.idle_step()
+    assert set(hal.read_depth_frames()) == {"head_zed"}
 
 
 def test_each_jaw_opens_into_its_own_manifest_range(env: Any) -> None:

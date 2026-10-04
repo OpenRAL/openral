@@ -241,6 +241,8 @@ def test_objects_resolve_their_usd_and_key_the_sidecar() -> None:
             "usd": "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd",
             "name": "cracker_box",
             "xyz": [-0.45, 4.8, 0.4],
+            "roll": 0.0,
+            "pitch": 0.0,
             "yaw": 0.0,
             "dynamic": True,
         }

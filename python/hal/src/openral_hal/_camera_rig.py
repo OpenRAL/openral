@@ -1,11 +1,12 @@
 """Generic sim camera rig.
 
-Splice a robot's manifest-declared RGB cameras into a bare-arm MJCF that ships
-no ``<camera>`` elements, so a ``deploy sim`` ``MujocoArmHAL``
+Splice a robot's manifest-declared cameras (RGB, and depth — a depth sensor's
+sim camera is what the sim bridge ray-casts and renders its registered colour
+from) into a bare-arm MJCF that ships no ``<camera>`` elements, so a ``deploy sim`` ``MujocoArmHAL``
 twin renders the cameras the manifest declares — without a per-robot scene
 composer or any ``scene_defaults.composition`` hook on the robot manifest.
 
-Each RGB ``SensorSpec`` that carries a
+Each RGB or depth ``SensorSpec`` that carries a
 ``CameraSimPlacement`` is spliced as a ``<camera>`` either
 into its ``parent_body`` (a wrist camera that tracks the gripper) or into
 ``<worldbody>`` (a world-fixed overhead / third-person camera). The rig is
@@ -29,6 +30,9 @@ from openral_core.geometry import look_at_quat_wxyz
 
 __all__ = ["rig_cameras_into_mjcf"]
 
+# Modalities whose sensor is a pinhole camera MuJoCo can render / ray-cast.
+_RIGGED_MODALITIES = ("rgb", "depth")
+
 
 def _fovy_deg_for(sensor: SensorSpec) -> float:
     """Vertical FoV (degrees) for a sensor's sim camera.
@@ -48,7 +52,7 @@ def _fovy_deg_for(sensor: SensorSpec) -> float:
 
 
 def _camera_element(sensor: SensorSpec) -> str:
-    """Build the ``<camera>`` XML for one RGB sensor with a sim placement."""
+    """Build the ``<camera>`` XML for one camera sensor with a sim placement."""
     placement = sensor.sim_placement
     assert placement is not None  # caller guards
     name = sensor.sim_camera_name or sensor.name
@@ -106,9 +110,9 @@ def _ensure_staging(xml: str) -> str:
 
 
 def rig_cameras_into_mjcf(xml: str, sensors: list[SensorSpec]) -> tuple[str, bool]:
-    """Splice each RGB sensor's missing sim camera into ``xml``; return ``(xml, changed)``.
+    """Splice each camera sensor's missing sim camera into ``xml``; return ``(xml, changed)``.
 
-    For every RGB ``SensorSpec`` with a ``CameraSimPlacement``
+    For every RGB or depth ``SensorSpec`` with a ``CameraSimPlacement``
     whose camera name is absent from ``xml``, splice a ``<camera>`` into the
     named ``parent_body`` (or ``<worldbody>`` when ``parent_body`` is ``None``)
     and ensure a fill light. Cameras already present are skipped (idempotent), so
@@ -124,7 +128,7 @@ def rig_cameras_into_mjcf(xml: str, sensors: list[SensorSpec]) -> tuple[str, boo
     rigged = [
         s
         for s in sensors
-        if s.modality == "rgb"
+        if s.modality in _RIGGED_MODALITIES
         and s.sim_placement is not None
         and (s.sim_camera_name or s.name) not in existing
     ]

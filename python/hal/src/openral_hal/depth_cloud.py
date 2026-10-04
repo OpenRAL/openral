@@ -6,8 +6,8 @@ A deploy-sim HAL node turns each depth ``SensorSpec`` into a
 feeding the safety kernel's world-collision check. Shared pieces so a node
 only wires publishers/timers:
 
-* ``is_depth_sensor`` / ``mjcf_camera_name`` / ``depth_synth_kwargs``
-  — pure SensorSpec adapters (no ROS / MuJoCo import).
+* ``is_depth_sensor`` / ``mjcf_camera_name`` / ``depth_synth_kwargs`` /
+  ``depth_optical_frame_id`` — pure SensorSpec adapters (no ROS / MuJoCo import).
 * ``camera_optical_tf_to_base`` — camera-optical-frame → base transform
   from the live MuJoCo poses.
 * ``points_from_depth_grid`` — back-project a depth raster into an
@@ -57,6 +57,33 @@ def is_depth_sensor(spec: Any) -> bool:
     ``SensorSpec.is_depth_camera``; this is the HAL's name for it.
     """
     return bool(spec.is_depth_camera)
+
+
+# REP-103 body frame (x forward, y left, z up) -> its optical child (x right,
+# y down, z forward): rpy (-pi/2, 0, -pi/2), as an xyzw quaternion.
+BODY_TO_OPTICAL_QUAT_XYZW: tuple[float, float, float, float] = (-0.5, 0.5, -0.5, 0.5)
+
+
+def depth_optical_frame_id(spec: Any) -> str:
+    """The optical frame a depth sensor's sim raster, cloud and colour are stamped in.
+
+    A sim depth raster is optical-convention by construction (x right, y down, z
+    forward). A sensor whose ``frame_id`` is already an ``*_optical_frame`` keeps
+    it; a body-convention ``frame_id`` (a camera *mount* such as the ZED's
+    ``zed_camera_link``) gets its REP-103 child ``<frame_id>_optical_frame``,
+    which ``SimSensorBridge`` publishes under the mount
+    (``BODY_TO_OPTICAL_QUAT_XYZW``). Stamping optical data with the body frame
+    rotates every consumer's geometry by 90 degrees about two axes.
+
+    Example:
+        >>> from types import SimpleNamespace
+        >>> depth_optical_frame_id(SimpleNamespace(frame_id="zed_camera_link"))
+        'zed_camera_link_optical_frame'
+        >>> depth_optical_frame_id(SimpleNamespace(frame_id="front_depth_optical_frame"))
+        'front_depth_optical_frame'
+    """
+    frame = str(spec.frame_id)
+    return frame if frame.endswith("_optical_frame") else f"{frame}_optical_frame"
 
 
 def mjcf_camera_name(spec: Any) -> str:

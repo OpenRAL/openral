@@ -453,6 +453,22 @@ class _IsaacSimSidecar(SidecarSimRollout):
             obs["depth_points"] = {
                 k: np.asarray(v, dtype=np.float32).reshape(-1, 3) for k, v in clouds.items()
             }
+        # Registered colour + metric depth per depth camera (sidecar ``_depth_frames``):
+        # the RGB-D streams a real driver publishes, for the vision attachment leg.
+        frames = raw.get("depth_frames")
+        if isinstance(frames, dict):
+            obs["depth_frames"] = {
+                str(k): {
+                    "depth": np.asarray(v["depth"], dtype=np.float32),
+                    "rgb": np.asarray(v["rgb"], dtype=np.uint8),
+                    "k": np.asarray(v["k"], dtype=np.float64).reshape(4),
+                    "optical_in_base": np.asarray(v["optical_in_base"], dtype=np.float64).reshape(
+                        4, 4
+                    ),
+                }
+                for k, v in frames.items()
+                if isinstance(v, dict)
+            }
         # 2-D LaserScan range fan (base_link), when the manifest scene has a lidar
         # — SimSensorBridge publishes it as /scan.
         scan = raw.get("scan")
@@ -643,7 +659,9 @@ class IsaacSceneObject(BaseModel):
     ``usd`` takes the same forms as ``scene.assets_uri`` (local path, URL,
     ``isaac:<path>``). ``dynamic`` objects are graspable rigid bodies (a rigid
     body + convex-hull colliders are added when the asset has none); static ones
-    are fixed props. ``yaw`` is radians about world z.
+    are fixed props. ``roll``/``pitch``/``yaw`` are radians about world x/y/z in the
+    URDF ``rpy`` order (``Rz·Ry·Rx``): an asset authored lying down stands upright
+    with a quarter-turn roll or pitch.
 
     Example:
         >>> IsaacSceneObject(
@@ -659,6 +677,8 @@ class IsaacSceneObject(BaseModel):
     usd: str
     name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     xyz: tuple[float, float, float]
+    roll: float = 0.0
+    pitch: float = 0.0
     yaw: float = 0.0
     dynamic: bool = True
 

@@ -140,6 +140,7 @@ on first use and is cached on the lattice.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -835,11 +836,18 @@ class GraspTargetTracker:
             self._retract("declaration_bounds", str(exc).splitlines()[0], now_ns=region.stamp_ns)
             return
         self._region = region
+        qx, qy, qz, qw = region.pose.quat_xyzw
+        yaw_deg = math.degrees(
+            math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+        )
         self._transition(
             "accepted",
             f"grasp target region accepted for {declaration.target_id!r}: "
             f"centre={tuple(round(v, 3) for v in region.pose.xyz)} "
             f"half_extents={tuple(round(v, 3) for v in region.half_extents)} "
+            # The box is yaw-only; without its yaw a stopped cell near its edge
+            # cannot be placed inside or outside it after the fact.
+            f"yaw_deg={yaw_deg:.1f} "
             f"evidence={region.evidence_ref!r}",
         )
 
