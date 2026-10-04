@@ -196,6 +196,27 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   tight. *Safety-WG:* enlarges the exempt volume by at most half a cell per side; chosen by the
   user as WG reviewer; hazard row HZ-0115-26 (management Entry 055). Band row:
   `test_a_tight_fit_exempts_the_targets_boundary_cells_only_once_cell_closed`.
+- **A fit is accepted only when the kernel's region holds the whole target** (producer side,
+  `_gate_refit` → `occupied_touching_outside`; Isaac i40/i43). The map-cover gate needs only
+  `grasp_target_min_cover` (0.5) of the fit's own footprint, so a fit of the part the head camera
+  saw — the far side hidden by the hovering hand — passed it and was armed (i40: centre x 0.242,
+  half-x 0.043, the can's map cells reaching x 0.3225); the closed region then missed the can's
+  far occupied cells and the swept finger hull stopped on its own far-edge cell (centre (0.2925,
+  -0.2325, -0.4275)) outside the region. After every other gate the leg now requires that no
+  occupied cell more than one voxel above the measured support (the layer the seed drops too)
+  lies outside the cell-closed region while 26-touching a cell inside it — equivalently, the
+  region holds the whole 26-connected map component of the cells it contains (a path out
+  crosses that ring), so no bound on the component (search column or otherwise) is needed: a
+  target continuing past the column's face is refused unless the fit holds it, and a tight
+  detection box that cuts a whole-target fit does not refuse it. A failure is the lost view
+  `partial_fit` (nothing new accepted, a held region kept under its freeze TTL, never a
+  retraction); checked last, so `occluded_refit` / `hand_at_target` during descend and close,
+  and every contradiction, keep their class. Replayed on the trials' dumped maps: the i40 fit
+  leaves 7-9 far-edge cells outside, the i41/i42 fits (which armed and, in i42, attached)
+  leave none, nor do i41's descent re-fits. *Ceiling:* anything 26-touching the target above
+  the support — a neighbour within one cell, a wall it leans on — counts as the target, and
+  such a target is never armed. *Safety-WG:* more conservative (refuses partial fits; lost
+  view, no retraction).
 - Handover: on the attachment edge that adds the declared object the exemption stays alive only
   while the payload origin (FK of the measured configuration) is inside the region, then retires
   permanently; a detach retires it. Only a payload attached on the declaring gripper's own chain

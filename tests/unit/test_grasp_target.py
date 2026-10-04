@@ -37,6 +37,7 @@ from openral_hal._grasp_target import (
     cell_closed_region,
     mask_without_removed_points,
     occupied_centers_in_box,
+    occupied_touching_outside,
     project_point,
     region_covers_occupied,
     support_top_from_voxels,
@@ -862,3 +863,66 @@ def test_every_cell_the_fit_touches_has_its_centre_in_the_closure() -> None:
         assert not _in_region(centres[meets & below], closed).any()
         straddling += int((meets & below).sum())
     assert straddling, "no sample straddled a bottom face"
+
+
+# ── the region must hold the target's whole map component (Isaac i40/i43) ────────
+
+_I4X_RES = 0.015
+_I4X_CELLS = (36, 20, 14)
+#: The Isaac i41/i42 potted-meat can as the octomap holds it (15 mm cells, origin
+#: (0, -0.3, -0.6)): centres x 0.2175-0.3225, y -0.2325..-0.1575, z -0.4725..-0.4275 on a
+#: table whose top layer (k=7, centres -0.4875) puts the measured support at z=-0.48.
+_I4X_TARGET = {(i, j, k) for i in range(14, 22) for j in range(4, 10) for k in range(8, 12)}
+_I4X_TABLE = {(i, j, 7) for i in range(4, 32) for j in range(20)}
+_I4X_SUPPORT_Z = -0.48
+
+
+def _i4x_lattice(*extra: set[tuple[int, int, int]]) -> VoxelLattice:
+    occ = np.zeros(int(np.prod(_I4X_CELLS)), dtype=np.uint8)
+    for i, j, k in _I4X_TARGET.union(_I4X_TABLE, *extra):
+        occ[i + _I4X_CELLS[0] * (j + _I4X_CELLS[1] * k)] = 1
+    return VoxelLattice(_FRAME, (0.0, -0.3, -0.6), (0.0, 0.0, 0.0, 1.0), _I4X_RES, _I4X_CELLS, occ)
+
+
+def _touching(grid: VoxelLattice, tight: PlaceRegion) -> NDArray[np.float64]:
+    closed, _ = cell_closed_region(tight, grid, max_half_extent_m=0.2)
+    return occupied_touching_outside(grid, closed, support_z=_I4X_SUPPORT_Z)
+
+
+#: The fits the Isaac leg accepted (centre, half-extents, yaw), from the trials' graph.log.
+_I40_PARTIAL = ((0.242, -0.197, -0.439), (0.06, 0.043, 0.026), -90.8)
+_I41_FULL = ((0.259, -0.2, -0.439), (0.068, 0.06, 0.026), 163.6)
+_I42_FULL = ((0.257, -0.199, -0.439), (0.063, 0.064, 0.026), 76.0)
+
+
+def test_isaac_i40_a_fit_of_the_near_part_leaves_the_far_edge_cells_outside() -> None:
+    """Isaac i40/i43: the hovering hand hid the can's far side from the head camera; the
+    fit (x 0.199-0.285) passed the half-footprint map cover and was armed, and the finger
+    hull stopped on the can's own far-edge cells outside the kernel's region. Those cells
+    are occupied, touch the region's cells and lie outside it: the fit is partial."""
+    grid = _i4x_lattice()
+    assert region_covers_occupied(grid, _yawed(*_I40_PARTIAL), min_fraction=0.5)[1]
+    left = _touching(grid, _yawed(*_I40_PARTIAL))
+    assert len(left), "the partial fit's region holds the whole can"
+    assert (left[:, 0] > 0.29).all() and (left[:, 2] > _I4X_SUPPORT_Z + _I4X_RES).all()
+    far_x = {round(float(x), 4) for x in left[:, 0]}
+    assert 0.3075 in far_x, far_x
+
+
+@pytest.mark.parametrize("fit", [_I41_FULL, _I42_FULL], ids=["i41", "i42"])
+def test_isaac_i41_i42_a_fit_of_the_whole_can_holds_its_whole_component(
+    fit: tuple[tuple[float, float, float], tuple[float, float, float], float],
+) -> None:
+    """The good views (both armed, i42 attached from the region): nothing of the can
+    touches the kernel's region from outside — the table layer under it never counts."""
+    assert len(_touching(_i4x_lattice(), _yawed(*fit))) == 0
+
+
+def test_a_neighbour_touching_the_target_is_part_of_it_one_cell_apart_is_not() -> None:
+    """The map cannot separate bodies that touch (26-connected above the support): a full
+    fit of the can with a box against its +x side is refused; the same box one empty cell
+    away is another object and the can's fit stands."""
+    against = {(i, j, k) for i in range(22, 26) for j in range(4, 10) for k in range(8, 12)}
+    apart = {(i + 1, j, k) for i, j, k in against}
+    assert len(_touching(_i4x_lattice(against), _yawed(*_I41_FULL)))
+    assert len(_touching(_i4x_lattice(apart), _yawed(*_I41_FULL))) == 0

@@ -133,6 +133,11 @@ def test_a_lost_view_freezes_the_region_until_its_ttl() -> None:
     assert any("freeze_ttl" in line for line in lines)
 
 
+#: The support top under ``_held_block_lattice`` (its lowest cells start at z=0.05; the
+#: fit's lower face sits one 2 cm voxel above the support).
+_SUPPORT_Z = 0.03
+
+
 def _held_block_lattice() -> VoxelLattice:
     """20 mm cells filling exactly ``_measured``'s box (x 0.41-0.49, |y| <= 0.04, z 0.05-0.13)."""
     return VoxelLattice(
@@ -168,7 +173,14 @@ def _gate(
     lattice: VoxelLattice | None = None,
 ) -> _Refusal:
     with pytest.raises(_Refusal) as caught:
-        _gate_refit(lattice or _held_block_lattice(), region, held, min_cover=0.5, hands=hands)
+        _gate_refit(
+            lattice or _held_block_lattice(),
+            region,
+            held,
+            support_z=_SUPPORT_Z,
+            min_cover=0.5,
+            hands=hands,
+        )
     return caught.value
 
 
@@ -243,7 +255,13 @@ def test_a_hand_hovering_over_the_target_within_the_approach_distance_occludes()
     def gate(rise: float, hand: tuple[float, float, float] = hover) -> _Refusal:
         with pytest.raises(_Refusal) as caught:
             _gate_refit(
-                _held_block_lattice(), shrunk, held, min_cover=0.5, hands=(hand,), hand_rise_m=rise
+                _held_block_lattice(),
+                shrunk,
+                held,
+                support_z=_SUPPORT_Z,
+                min_cover=0.5,
+                hands=(hand,),
+                hand_rise_m=rise,
             )
         return caught.value
 
@@ -279,7 +297,91 @@ def test_a_refused_refit_with_the_hand_over_the_held_target_is_a_lost_view() -> 
 def test_a_refit_within_the_tracking_gate_replaces_the_held_region() -> None:
     held = _measured(11 * _S)
     nudged = _refit(0.46, (0.04, 0.04, 0.04))
-    assert _gate_refit(_held_block_lattice(), nudged, held, min_cover=0.5) is nudged
+    gated = _gate_refit(_held_block_lattice(), nudged, held, support_z=_SUPPORT_Z, min_cover=0.5)
+    assert gated is nudged
+
+
+def _long_block_lattice() -> VoxelLattice:
+    """``_held_block_lattice``'s block 6 cm longer in +x (x 0.41-0.55): the map holds the
+    target's far part, seen from an earlier view, that the current capture misses."""
+    return VoxelLattice(
+        "openarm_base",
+        (0.41, -0.04, 0.05),
+        (0.0, 0.0, 0.0, 1.0),
+        0.02,
+        (7, 4, 4),
+        np.ones(7 * 4 * 4, dtype=np.uint8),
+    )
+
+
+#: The fit of all of ``_long_block_lattice``'s block (x 0.41-0.55).
+_LONG_FIT = (0.48, (0.07, 0.04, 0.04))
+
+
+def test_a_fit_of_part_of_the_target_the_map_holds_is_a_lost_view_never_armed() -> None:
+    """Isaac i40/i43: the hovering hand hid the target's far side, the fit of the near part
+    covered half its own footprint in the map and was armed; the kernel then stopped the
+    fingers on the target's far-edge cells outside the region. Such a fit is the lost view
+    ``partial_fit``: with nothing held it arms nothing; the whole target's fit is accepted."""
+    tracker, lines = _tracker()
+    long = _long_block_lattice()
+    with pytest.raises(_Refusal) as caught:
+        _gate_refit(long, _measured(11 * _S), None, support_z=_SUPPORT_Z, min_cover=0.5)
+    assert (caught.value.kind, caught.value.retract) == ("partial_fit", False)
+    assert "touch the kernel's region from outside" in caught.value.detail
+    tracker.refuse(caught.value.kind, caught.value.detail, retract=False, now_ns=11 * _S)
+    assert tracker.region is None
+    assert any("refused — partial_fit" in line for line in lines)
+    whole = _refit(_LONG_FIT[0], _LONG_FIT[1])
+    assert _gate_refit(long, whole, None, support_z=_SUPPORT_Z, min_cover=0.5) is whole
+
+
+def test_a_partial_refit_within_the_tracking_gate_never_replaces_the_held_region() -> None:
+    """A re-fit that tracks (within a voxel of the held fit) but leaves the target's far
+    cells outside the kernel's region would shrink the exemption onto the target's own
+    cells: it is a lost view — the held region stays, under its freeze TTL."""
+    tracker, lines = _tracker()
+    held = _refit(_LONG_FIT[0], _LONG_FIT[1])
+    tracker.accept(held)
+    nudged = _refit(0.465, (0.055, 0.04, 0.04))  # x 0.41-0.52: the cell at 0.54 left out
+    refusal = _gate(nudged, held, lattice=_long_block_lattice())
+    assert (refusal.kind, refusal.retract) == ("partial_fit", False)
+    tracker.refuse(refusal.kind, refusal.detail, retract=refusal.retract, now_ns=12 * _S)
+    assert tracker.region == held, "the partial re-fit replaced the held region"
+    assert any("view lost — partial_fit" in line for line in lines)
+    gone = tracker.envelope(now_ns=14 * _S + 1)  # the held region's stamp (12 s) + 2 s
+    assert gone is not None and gone.region is None
+
+
+def test_the_hand_occlusion_refusals_keep_their_class_over_a_partial_fit() -> None:
+    """During descend/close every re-fit is partial by nature. The checks that held before
+    still decide first: a shrunk re-fit with the hand over the held target stays the lost
+    view ``occluded_refit`` (no retraction), with no hand near it stays the contradiction
+    ``unoccluded_refit``, one reaching outside stays ``target_moved`` — ``partial_fit``
+    never turns a retraction into a hold, nor a hold into a retraction."""
+    long = _long_block_lattice()
+    held = _refit(_LONG_FIT[0], _LONG_FIT[1])
+    shrunk = _refit(0.44, (0.03, 0.04, 0.03))
+    at = _gate(shrunk, held, lattice=long, hands=((0.48, 0.0, 0.18),))
+    assert (at.kind, at.retract) == ("occluded_refit", False)
+    assert _gate(shrunk, held, lattice=long, hands=(_HAND_FAR,)).kind == "unoccluded_refit"
+    assert _gate(_refit(0.56, (0.04, 0.04, 0.04)), held, lattice=long).kind == "target_moved"
+
+
+def test_a_target_reaching_past_the_search_column_is_partial_unless_the_fit_holds_it() -> None:
+    """The check looks one cell around the kernel's region, never at the search column: a
+    target whose map component continues past the column's lateral face is refused when
+    the fit stops at the face (the leg cannot vouch the rest is not the target), and a
+    whole-target fit is accepted even though the column — a tight detection box — cuts it."""
+    long = _long_block_lattice()
+    column = search_column(_box(half=0.04, z=0.09), below_m=0.15)  # x 0.41-0.49
+    centres = long.occupied_centers()
+    assert len(occupied_centers_in_box(long, column)) < len(centres), "the column holds it all"
+    with pytest.raises(_Refusal) as caught:
+        _gate_refit(long, _measured(11 * _S), None, support_z=_SUPPORT_Z, min_cover=0.5)
+    assert (caught.value.kind, caught.value.retract) == ("partial_fit", False)
+    whole = _refit(_LONG_FIT[0], _LONG_FIT[1])
+    assert _gate_refit(long, whole, None, support_z=_SUPPORT_Z, min_cover=0.5) is whole
 
 
 def test_a_lost_view_with_nothing_held_is_a_plain_refusal() -> None:
@@ -2538,6 +2640,47 @@ def test_the_fingers_in_the_mask_leave_the_fit_only_through_the_self_filtered_cl
     assert err.count("grasp target fit unfiltered") == 1, "logged per fit, not per transition"
     assert f"no self-filtered cloud on {_SELF_FILTERED!r} at stamp {now_ns}" in err
     assert "self-filtered again after 2 unfiltered fit(s)" in err
+
+
+def test_a_capture_of_the_targets_near_part_is_refused_through_measure() -> None:
+    """The wiring: ``_measure`` gates the fit against the support the request measured.
+    The map holds the target 6 cm longer than this capture sees (its far part seen from an
+    earlier view): the fit of what the camera sees is the lost view ``partial_fit``, with
+    or without a region held; against a map of just what it sees, the same fit stands."""
+    pytest.importorskip("openral_msgs")
+    rclpy_task = pytest.importorskip("rclpy.task")
+    from openral_hal.depth_cloud import camera_info_from_intrinsics
+    from openral_msgs.srv import SegmentInView
+    from sensor_msgs.msg import Image as ImageMsg
+
+    depth, mask, t_base_from_cam, k, kept = _oblique_capture()
+    with _live_leg(
+        "test_grasp_target_partial_fit", self_filtered_cloud_topic=_SELF_FILTERED
+    ) as live:
+        bridge, leg = live.bridge, live.leg
+        now_ns = leg._now_ns()
+        bridge._camera_info = camera_info_from_intrinsics(
+            width=k.width, height=k.height, fx=k.fx, fy=k.fy, cx=k.cx, cy=k.cy, frame_id="cam"
+        )
+        bridge._kept_clouds.append((now_ns, "openarm_base", kept))  # the finger filtered out
+
+        def measure(lattice: VoxelLattice, previous: PlaceRegion | None) -> PlaceRegion:
+            response = SegmentInView.Response(ok=True)
+            image = ImageMsg(height=k.height, width=k.width, encoding="mono8", step=k.width)
+            image.header.stamp.sec, image.header.stamp.nanosec = divmod(now_ns, _S)
+            image.data = (mask.astype(np.uint8) * 255).tobytes()
+            response.masks = [image]
+            future = rclpy_task.Future()
+            future.set_result(response)
+            snapshot = (depth, now_ns, k, t_base_from_cam, _SUPPORT_Z, _dispatched(), 0)
+            grid = (lattice, now_ns, time.monotonic())
+            return leg._measure(future, snapshot, now_ns, grid, [], previous)
+
+        fit = measure(_held_block_lattice(), None)
+        for previous in (None, fit):
+            with pytest.raises(_Refusal) as refused:
+                measure(_long_block_lattice(), previous)
+            assert (refused.value.kind, refused.value.retract) == ("partial_fit", False)
 
 
 def test_the_kernel_gets_the_cell_closed_region_while_the_held_fit_stays_tight() -> None:
