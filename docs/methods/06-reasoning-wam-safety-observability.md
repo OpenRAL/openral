@@ -269,22 +269,22 @@ _Tier-C critic progress-stall / success watchdog — default decision core for t
 ### `packages/openral_safety/openral_safety/supervisor_node.py`
 _Day-1 Python safety envelope: `candidate_action` → `safe_action` pass-through with real per-control-mode envelope checks, the estop latch/reset pair, and the latched SafetyStatus topic. Reserves the node name and topic surface for the future C++ kernel; any addition of enforcement beyond this file requires safety-WG sign-off._
 
-- `class SafetyPassthroughNode(LifecycleNode)` (L134) — Owns `/openral/candidate_action → /openral/safe_action` plus the estop latch/reset pair and the `SafetyStatus` topic.
-  - `__init__(node_name="openral_safety") -> None` (L155)
-  - `on_configure(state) -> TransitionCallbackReturn` (L218) — Opens the publishers, subscriptions, service, and diagnostics heartbeat.
-  - `on_activate(state) -> TransitionCallbackReturn` (L308)
-  - `on_deactivate(state) -> TransitionCallbackReturn` (L340)
-  - `on_cleanup(state) -> TransitionCallbackReturn` (L350)
-  - `on_shutdown(state) -> TransitionCallbackReturn` (L382)
-  - `_on_candidate_action(msg) -> None` (L388) — Subscribes `/openral/candidate_action`. Drops the candidate and re-fires `/openral/estop` on an envelope violation; drops silently while already latched; otherwise forwards unchanged on `/openral/safe_action`. Emits a `safety.check` OTel span per candidate.
-  - `_envelope_violation(msg) -> tuple[str | None, str]` (L445) — Dispatches on `control_mode`: joint modes get the position-limit check; Cartesian/twist/gripper modes each get their own bound check. Every bound parameter defaults to `-1.0` (no enforcement declared, skip).
-  - `_handle_violation(msg, *, kind, reason) -> None` (L706) — Drops the chunk, latches the estop, publishes `std_msgs/Empty` on `/openral/estop`, and updates the latched `SafetyStatus`.
-  - `_on_external_estop(_msg) -> None` (L735) — Subscribes `/openral/estop` (defense in depth): any external estop publication latches this node too, independent of its own checks.
-  - `_on_estop_reset(request, response) -> object` (L762) — Exposes `/openral/estop_reset` (`std_srvs/Trigger`); clears the latch only once `estop_reset_cooldown_s` (default 0.5 s) has elapsed since the last estop.
-- `SafetySupervisorNode` (L846) — Back-compat alias of `SafetyPassthroughNode`, not a separate skeleton.
+- `class SafetyPassthroughNode(LifecycleNode)` (L148) — Owns `/openral/candidate_action → /openral/safe_action` plus the estop latch/reset pair and the `SafetyStatus` topic.
+  - `__init__(node_name="openral_safety") -> None` (L169)
+  - `on_configure(state) -> TransitionCallbackReturn` (L232) — Opens the publishers, subscriptions, service, and diagnostics heartbeat.
+  - `on_activate(state) -> TransitionCallbackReturn` (L322)
+  - `on_deactivate(state) -> TransitionCallbackReturn` (L354)
+  - `on_cleanup(state) -> TransitionCallbackReturn` (L364)
+  - `on_shutdown(state) -> TransitionCallbackReturn` (L396)
+  - `_on_candidate_action(msg) -> None` (L402) — Subscribes `/openral/candidate_action`. Drops the candidate and re-fires `/openral/estop` on an envelope violation; drops silently while already latched; otherwise forwards unchanged on `/openral/safe_action`. Emits a `safety.check` OTel span per candidate.
+  - `_envelope_violation(msg) -> tuple[str | None, str]` (L459) — Dispatches on `control_mode`: joint modes get the position-limit check; Cartesian/twist/gripper modes each get their own bound check. Every bound parameter defaults to `-1.0` (no enforcement declared, skip).
+  - `_handle_violation(msg, *, kind, reason) -> None` (L720) — Drops the chunk, latches the estop, publishes `std_msgs/Empty` on `/openral/estop`, and updates the latched `SafetyStatus`.
+  - `_on_external_estop(_msg) -> None` (L749) — Subscribes `/openral/estop` (defense in depth): any external estop publication latches this node too, independent of its own checks.
+  - `_on_estop_reset(request, response) -> object` (L776) — Exposes `/openral/estop_reset` (`std_srvs/Trigger`); clears the latch only once `estop_reset_cooldown_s` (default 0.5 s) has elapsed since the last estop.
+- `SafetySupervisorNode` (L860) — Back-compat alias of `SafetyPassthroughNode`, not a separate skeleton.
 - `SAFETY_STATUS_TOPIC: str` (L69) — `/openral/safety_status`, the latched current-safety-state topic (RELIABLE + TRANSIENT_LOCAL + KEEP_LAST=1), published alongside — never instead of — `/openral/estop`. Same contract the C++ kernel publishes.
 - `SAFETY_STATUS_HEARTBEAT_S: float` (L76) — 1.0 s liveness refresh; `header.stamp` is re-stamped at this cadence even when nothing changed, so a durable value can be told apart from a dead publisher's leftover state.
-- `main(args=None) -> int` (L849) — Entry point for `ros2 run openral_safety supervisor_node`.
+- `main(args=None) -> int` (L863) — Entry point for `ros2 run openral_safety supervisor_node`.
 - module constant `_KERNEL_LABEL_PASSTHROUGH: str = "passthrough"` (L54) — `safety.kernel` span/log label this Python passthrough stamps (vs. the future C++ kernel's own label).
 - module constant `_WORKSPACE_VIOLATION_KINDS: frozenset[str]` (L93) — `{"workspace", "gripper_range"}`, envelope-violation kinds `_envelope_violation` can return.
 - module constant `_RATE_VIOLATION_KINDS: frozenset[str]` (L94) — `{"cartesian_step", "cartesian_step_rot", "ee_linear_speed", "ee_angular_speed", "base_linear_speed", "base_angular_speed"}`, the rate/speed-bound violation kinds.
@@ -332,12 +332,12 @@ _Pydantic → C++ kernel ROS-param bridge._
 - module constant `_ACTUATED_JOINT_TYPES: frozenset[str]` (L108) — `{"revolute", "prismatic", "continuous"}`, joint types counted as actuated DOF.
 - `merge_deploy_envelope(robot_env, deploy) -> SafetyEnvelope` (L249) — Apply explicit `DeployScene.safety` fields to the robot ceiling with tighten-only validation; omitted fields keep robot manifest values.
 - `class EnvelopeIntersection` (L59) — The numerical product of `robot.safety ∩ skill.envelope`.
-- `compute_intersection(robot, skill, *, deploy=None) -> EnvelopeIntersection` (L292) — Robot ceiling ∩ optional deploy/workcell envelope ∩ optional skill envelope; rejects (never clamps) any deploy or skill safety field that loosens the robot ceiling.
-- `kernel_params_from_envelope(envelope) -> dict[str, object]` (L399) — Canonical scalar/AABB envelope → kernel ROS-param dict.
-- module constant `_JOINT_KIND_CODE: dict[JointType, int]` (L462) — `{REVOLUTE: 1, CONTINUOUS: 1, PRISMATIC: 2}`, the kernel's per-joint kind code used when flattening the kinematic chain.
-- `collision_params_from_description(robot, *, margin_m=None) -> dict[str, object]` (L609) — Flatten collision geometry + ACM + the kinematic chain into the kernel's collision params. Raises `ROSConfigError` unless the links form one connected tree, and again if it cannot lower a primitive's shape, rather than silently mis-approximating it. A boxed link with `tight_geometry` also lowers the staged-narrow-phase DOP/hull arrays.
-- `merge_extra_allowed_pairs(params, pairs) -> dict[str, object]` (L805) — Additive deploy-scene ACM merge. Resolves link names, rejects unknown/self pairs, dedupes order-insensitively, no-ops when self-collision geometry is disabled.
-- `ee_link_index_from_collision_params(params) -> int` (L849) — Picks the predictive-Cartesian EE control link (the kinematically deepest collision link) for the kernel's Jacobian look-ahead; `-1` when no collision model (predictive disabled, reactive floor only).
+- `compute_intersection(robot, skill, *, deploy=None) -> EnvelopeIntersection` (L300) — Robot ceiling ∩ optional deploy/workcell envelope ∩ optional skill envelope; rejects (never clamps) any deploy or skill safety field that loosens the robot ceiling.
+- `kernel_params_from_envelope(envelope) -> dict[str, object]` (L407) — Canonical scalar/AABB envelope → kernel ROS-param dict.
+- module constant `_JOINT_KIND_CODE: dict[JointType, int]` (L470) — `{REVOLUTE: 1, CONTINUOUS: 1, PRISMATIC: 2}`, the kernel's per-joint kind code used when flattening the kinematic chain.
+- `collision_params_from_description(robot, *, margin_m=None) -> dict[str, object]` (L617) — Flatten collision geometry + ACM + the kinematic chain into the kernel's collision params. Raises `ROSConfigError` unless the links form one connected tree, and again if it cannot lower a primitive's shape, rather than silently mis-approximating it. A boxed link with `tight_geometry` also lowers the staged-narrow-phase DOP/hull arrays.
+- `merge_extra_allowed_pairs(params, pairs) -> dict[str, object]` (L813) — Additive deploy-scene ACM merge. Resolves link names, rejects unknown/self pairs, dedupes order-insensitively, no-ops when self-collision geometry is disabled.
+- `ee_link_index_from_collision_params(params) -> int` (L859) — Picks the predictive-Cartesian EE control link (the kinematically deepest collision link) for the kernel's Jacobian look-ahead; `-1` when no collision model (predictive disabled, reactive floor only).
 
 ### `packages/openral_safety/openral_safety/mjcf_lowering.py`
 _Offline MJCF → kernel collision-params lowering; imports `mujoco` lazily._
