@@ -215,9 +215,11 @@ def _failure_kind_for_exception(exc: BaseException) -> int:
 try:
     import rclpy
     from openral_observability import log_lifecycle_errors
+    from rclpy._rclpy_pybind11 import RCLError
     from rclpy.action import ActionServer, CancelResponse, GoalResponse
     from rclpy.action.server import ServerGoalHandle
     from rclpy.callback_groups import ReentrantCallbackGroup
+    from rclpy.exceptions import InvalidHandle
     from rclpy.executors import ExternalShutdownException
     from rclpy.lifecycle import LifecycleNode, LifecycleState, TransitionCallbackReturn
 
@@ -349,6 +351,8 @@ if _ROS2_AVAILABLE:
             self._safety_status_recv_monotonic: float = 0.0
             self._episode_pub: Any = None
             self._episode_counter: int = 0
+            # Set once a goal-end publish found the context already shut down.
+            self._shutdown_publish_logged: bool = False
             # 1-based inference-tick index stamped onto every
             # ActionChunk via the HAL's tick_index_getter (0 = no goal running).
             self._current_tick_index: int = 0
@@ -2043,6 +2047,28 @@ if _ROS2_AVAILABLE:
             """Publish an Episode(PHASE_END) marker. No-op if unconfigured."""
             self._publish_episode_marker(phase=1, task_string=task_string, success=success)
 
+        def _publish_unless_shut_down(self, publisher: Any, msg: Any, what: str) -> bool:
+            """Publish ``msg``; ``False`` if the rclpy context was already shut down.
+
+            SIGINT shuts the context down first, so a goal's execute callback that finishes
+            after it publishes on a dead publisher (``InvalidHandle`` / ``RCLError``) — that is
+            teardown, not a fault. Logged once at info. With the context up the error
+            propagates unchanged.
+            """
+            try:
+                publisher.publish(msg)
+            except (InvalidHandle, RCLError):
+                if self.context.ok():
+                    raise
+                if not self._shutdown_publish_logged:
+                    self._shutdown_publish_logged = True
+                    self.get_logger().info(
+                        f"rskill_runner.publish_skipped_context_shutdown first={what}: "
+                        "the rclpy context is shutting down"
+                    )
+                return False
+            return True
+
         def _publish_episode_marker(self, *, phase: int, task_string: str, success: bool) -> None:
             """Publish one ``openral_msgs/Episode`` boundary marker; bump idx on END."""
             if self._episode_pub is None:
@@ -2055,7 +2081,8 @@ if _ROS2_AVAILABLE:
             msg.task_string = task_string
             msg.phase = int(phase)
             msg.success = bool(success)
-            self._episode_pub.publish(msg)
+            if not self._publish_unless_shut_down(self._episode_pub, msg, "episode marker"):
+                return
             if int(phase) == Episode.PHASE_END:
                 self._episode_counter += 1
 
@@ -2182,12 +2209,12 @@ if _ROS2_AVAILABLE:
             declaration = self._active_place_declaration
             if declaration is None:
                 return
-            self._publish_place_declaration(declaration.model_copy(update={"active": False}))
-            self.get_logger().info(
-                f"rskill_runner.place_declaration_retracted target={declaration.target_id}"
-            )
+            if self._publish_place_declaration(declaration.model_copy(update={"active": False})):
+                self.get_logger().info(
+                    f"rskill_runner.place_declaration_retracted target={declaration.target_id}"
+                )
 
-        def _publish_place_declaration(self, declaration: Any) -> None:
+        def _publish_place_declaration(self, declaration: Any) -> bool:
             """Put one declaration on the wire and remember what is in force.
 
             A publish failure must never disturb the skill — but it must also
@@ -2198,11 +2225,15 @@ if _ROS2_AVAILABLE:
             msg = self._place_declaration_msg_cls()
             declaration.fill_idl(msg)
             try:
-                self._place_declaration_pub.publish(msg)
+                if not self._publish_unless_shut_down(
+                    self._place_declaration_pub, msg, "place declaration"
+                ):
+                    return False
             except Exception as exc:  # reason: transport failure is advisory here
                 self.get_logger().error(f"rskill_runner.place_declaration_publish_failed: {exc!s}")
-                return
+                return False
             self._active_place_declaration = declaration if declaration.active else None
+            return True
 
         def _resolve_grasp_declaration(self, request: Any) -> Any:
             """The grasp declaration in force for this goal, or ``None``.
@@ -2290,21 +2321,25 @@ if _ROS2_AVAILABLE:
             declaration = self._active_grasp_declaration
             if declaration is None:
                 return
-            self._publish_grasp_declaration(declaration.model_copy(update={"active": False}))
-            self.get_logger().info(
-                f"rskill_runner.grasp_declaration_retracted target={declaration.target_id}"
-            )
+            if self._publish_grasp_declaration(declaration.model_copy(update={"active": False})):
+                self.get_logger().info(
+                    f"rskill_runner.grasp_declaration_retracted target={declaration.target_id}"
+                )
 
-        def _publish_grasp_declaration(self, declaration: Any) -> None:
+        def _publish_grasp_declaration(self, declaration: Any) -> bool:
             """Put one grasp declaration on the wire and remember what is in force."""
             msg = self._grasp_declaration_msg_cls()
             declaration.fill_idl(msg)
             try:
-                self._grasp_declaration_pub.publish(msg)
+                if not self._publish_unless_shut_down(
+                    self._grasp_declaration_pub, msg, "grasp declaration"
+                ):
+                    return False
             except Exception as exc:  # reason: transport failure is advisory here
                 self.get_logger().error(f"rskill_runner.grasp_declaration_publish_failed: {exc!s}")
-                return
+                return False
             self._active_grasp_declaration = declaration if declaration.active else None
+            return True
 
         def _reset_active_goal(self) -> None:
             """Clear the per-goal state under the lock."""
