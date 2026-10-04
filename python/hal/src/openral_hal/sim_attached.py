@@ -973,13 +973,19 @@ class SimAttachedHAL:
                 f"modes={dropped_modes}; starting tick={tick}",
                 flush=True,
             )
-            self._pending_actions.clear()
-            self._pending_action_key = None
+            # Discard the abandoned tick but ADOPT the slot that exposed it, as
+            # ``SlotGroupStager.stage`` does: dropping it too left the new tick one
+            # slot short forever, so every following tick lost its first slot the
+            # same way and one lost slot froze the arm for the rest of the goal
+            # (Isaac deploy sim: 3558 of 3584 ticks dropped).
+            self._pending_actions = [action]
+            self._pending_action_key = key
+            self._pending_since_ns = time.monotonic_ns()
             raise ROSRuntimeError(
                 f"SimAttachedHAL: incomplete action group tick staged "
                 f"{len(dropped_modes)}/{group_size} slots, modes={dropped_modes}; "
                 "the safety supervisor rejected/dropped a slot or the rSkill contract "
-                "declared the wrong group size."
+                f"declared the wrong group size. Tick {tick} is staged from this slot."
             )
         if self._pending_action_key is None:
             self._pending_action_key = key

@@ -341,6 +341,28 @@ def test_a_same_numbered_tick_of_two_sessions_never_merges() -> None:
     assert env.step_calls == 0
 
 
+def test_one_lost_slot_costs_one_tick_not_the_rest_of_the_run() -> None:
+    """The slot that exposes an incomplete tick opens the next one.
+
+    Regression: it was dropped with the partial tick, so the next tick was one slot short
+    forever and every later tick lost its first slot the same way (Isaac deploy sim:
+    3558 of 3584 policy ticks dropped, the arm never moved).
+    """
+    env = FakeSimEnv(action_dim=11)
+    hal = SimAttachedHAL(env, _two_dof_description())
+    hal.connect()
+    hal.send_action(_slot_tick(1, _RUNNER_A)[0])  # tick 1's second slot is lost
+    first, second = _slot_tick(2, _RUNNER_A)
+    with pytest.raises(ROSRuntimeError, match="incomplete action group"):
+        hal.send_action(first)
+    assert env.step_calls == 0  # the partial tick never steps
+    hal.send_action(second)
+    assert (env.step_calls, hal.last_committed_tick) == (1, 2)
+    for slot in _slot_tick(3, _RUNNER_A):
+        hal.send_action(slot)
+    assert (env.step_calls, hal.last_committed_tick) == (2, 3)
+
+
 def test_tick_one_after_a_higher_watermark_is_a_restarted_runner_everything_else_is_a_replay() -> (
     None
 ):
