@@ -1193,16 +1193,20 @@ def _nav2_goal_params(x: float) -> str:
     return json.dumps({"pose": {"pose": {"position": {"x": x, "y": 0.0, "z": 0.0}}}})
 
 
-def test_wrapped_ros_skill_is_resolved_again_when_goal_params_change() -> None:
-    """A wrapped-ROS skill merges goal_params_json into its goal at configure().
+def test_wrapped_ros_skill_is_never_reused() -> None:
+    """A ``ROSActionRskill`` is rebuilt for every dispatch, identical or not.
 
-    Reusing the resident instance for a second dispatch with a different
-    target would send the first dispatch's goal. Uses the in-tree Nav2
-    manifest; its embodiment tag is swapped for the harness robot's so the
-    runner's embodiment gate admits it.
+    It merges goal_params_json at configure() (a reuse would send the old
+    target) and is single-shot (a reused one reports success without sending
+    a goal). Uses the in-tree Nav2 manifest; its embodiment tag is swapped for
+    the harness robot's so the runner's embodiment gate admits it.
     """
+    pytest.importorskip("nav2_msgs")
+    import rclpy
     from openral_core import RSkillManifest
     from openral_rskill.ros_action_rskill import ROSActionRskill
+
+    from tests.integration.fakes.action_servers import navigate_to_pose_server
 
     manifest = RSkillManifest.from_yaml(str(_NAV2_MANIFEST)).model_copy(
         update={"embodiment_tags": ["so100_follower"]}
@@ -1223,36 +1227,30 @@ def test_wrapped_ros_skill_is_resolved_again_when_goal_params_change() -> None:
         built.append(skill)
         return skill
 
-    pytest.importorskip("nav2_msgs")
-    import rclpy
-    from nav2_msgs.action import NavigateToPose
-    from rclpy.action import ActionServer
-
     with _compose_harness(resolver=_nav2_resolver) as (executor, runtime, _safety, _observed):
-        # configure() waits for the wrapped server; host a real one at the graph boundary.
+        # configure() waits for the wrapped server; host one at the graph boundary.
         nav2_side = rclpy.create_node("openral_test_nav2_side")
-        server = ActionServer(
-            nav2_side, NavigateToPose, "/navigate_to_pose", lambda _g: NavigateToPose.Result()
-        )
+        server = navigate_to_pose_server(nav2_side)
         executor.add_node(nav2_side)
-        _spin_for(executor, 0.3)
-        runner = runtime.skill_runner_node
-        kwargs = {
-            "rskill_id": manifest.name,
-            "revision": "",
-            "prompt": "go",
-            "prompt_metadata_json": "",
-        }
-        first = runner._acquire_skill(**kwargs, goal_params_json=_nav2_goal_params(1.0))
-        again = runner._acquire_skill(**kwargs, goal_params_json=_nav2_goal_params(1.0))
-        moved = runner._acquire_skill(**kwargs, goal_params_json=_nav2_goal_params(2.0))
-        server.destroy()
-        executor.remove_node(nav2_side)
-        nav2_side.destroy_node()
+        try:
+            _spin_for(executor, 0.3)
+            runner = runtime.skill_runner_node
+            kwargs = {
+                "rskill_id": manifest.name,
+                "revision": "",
+                "prompt": "go",
+                "prompt_metadata_json": "",
+            }
+            first = runner._acquire_skill(**kwargs, goal_params_json=_nav2_goal_params(1.0))
+            again = runner._acquire_skill(**kwargs, goal_params_json=_nav2_goal_params(1.0))
+            moved = runner._acquire_skill(**kwargs, goal_params_json=_nav2_goal_params(2.0))
+        finally:
+            server.destroy()
+            executor.remove_node(nav2_side)
+            nav2_side.destroy_node()
 
-    assert again is first, "an identical dispatch must reuse the resident skill"
-    assert moved is not first, "new goal params must not reuse the old target's skill"
-    assert len(built) == 2
+    assert len({id(first), id(again), id(moved)}) == 3, "a wrapped skill was reused"
+    assert len(built) == 3
     assert moved._goal_dict["pose"]["pose"]["position"]["x"] == 2.0
 
 
