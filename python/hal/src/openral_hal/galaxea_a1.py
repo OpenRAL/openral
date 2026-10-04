@@ -123,6 +123,7 @@ GALAXEA_A1_DESCRIPTION = RobotDescription(
         EndEffectorSpec(
             name="gripper",
             kind="parallel_gripper",
+            command_convention="normalized_open_unit",
             n_dof=1,
         )
     ],

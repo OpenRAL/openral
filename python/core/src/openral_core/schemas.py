@@ -671,6 +671,49 @@ class JointSpec(BaseModel):
     role: JointRole = "unknown"
 
 
+GripperConvention: TypeAlias = Literal[
+    "normalized_open_unit",
+    "normalized_open_symmetric",
+    "normalized_close_symmetric",
+    "binary_close_one",
+    "raw_joint_rad",
+    "width_meters",
+]
+"""How a gripper command value is encoded — on both sides of the wire.
+
+An rSkill declares the encoding it emits on its ``GRIPPER_*`` actuator
+(``ControlModeSemantics.gripper_convention``); a robot declares the encoding
+each gripper end effector consumes (``EndEffectorSpec.command_convention``).
+``rSkill.check_gripper_conventions`` refuses to load a skill whose encoding
+differs from the end effector it drives — silently mis-encoding the gripper
+between scenes / robots is a top observed mis-actuation failure — and the
+safety kernel bounds every ``GRIPPER_*`` chunk by that end effector's
+``command_range``.
+
+Conventions:
+
+* ``normalized_open_unit`` — ``0.0 = fully closed``, ``1.0 = fully open``.
+  Most lerobot / SmolVLA / pi0.5 LIBERO checkpoints.
+* ``normalized_open_symmetric`` — ``-1.0 = fully closed``, ``+1.0 = fully open``.
+  Some MetaWorld checkpoints.
+* ``normalized_close_symmetric`` — ``-1.0 = fully open``, ``+1.0 = fully closed``.
+  robosuite's gripper action (RoboCasa).
+* ``binary_close_one`` — ``0.0 = open``, ``1.0 = close`` (single bit).
+* ``raw_joint_rad`` — raw per-finger joint angle in radians (Fourier dexhands,
+  some humanoid skills).
+* ``width_meters`` — physical gripper width in metres (Franka FCI native).
+"""
+
+# The value range each normalized convention defines. Physical conventions
+# (radians, metres) have no intrinsic range: the end effector must declare it.
+GRIPPER_CONVENTION_RANGES: dict[str, tuple[float, float]] = {
+    "normalized_open_unit": (0.0, 1.0),
+    "normalized_open_symmetric": (-1.0, 1.0),
+    "normalized_close_symmetric": (-1.0, 1.0),
+    "binary_close_one": (0.0, 1.0),
+}
+
+
 class EndEffectorSpec(BaseModel):
     """End-effector specification.
 
@@ -691,6 +734,30 @@ class EndEffectorSpec(BaseModel):
             no-op rather than risking unintended motion. Default
             True: every actuated gripper / dexterous hand / suction
             cup we ship is driven.
+        command_convention: Encoding of the value a ``GRIPPER_*`` action
+            addressed at this end effector carries when it reaches the HAL
+            (see ``GripperConvention``). An rSkill whose gripper convention
+            differs is refused at load time. Every actuated
+            ``parallel_gripper`` in ``robots/`` declares it.
+        command_range: Inclusive ``(min, max)`` the safety kernel bounds
+            every ``GRIPPER_*`` value addressed at this end effector by, in
+            ``command_convention``'s unit. Defaults to the convention's own
+            range for the normalized conventions; REQUIRED for the physical
+            ones (``raw_joint_rad``, ``width_meters``).
+
+    Example:
+        >>> ee = EndEffectorSpec(
+        ...     name="left_gripper",
+        ...     kind="parallel_gripper",
+        ...     command_convention="raw_joint_rad",
+        ...     command_range=(0.0, 0.7854),
+        ... )
+        >>> ee.resolved_command_range()
+        (0.0, 0.7854)
+        >>> EndEffectorSpec(
+        ...     name="g", kind="parallel_gripper", command_convention="normalized_open_unit"
+        ... ).resolved_command_range()
+        (0.0, 1.0)
     """
 
     name: str
@@ -702,6 +769,46 @@ class EndEffectorSpec(BaseModel):
     workspace_radius_m: float | None = None
     tactile_sensors: list[str] = Field(default_factory=list)
     actuated: bool = True
+    command_convention: GripperConvention | None = None
+    command_range: tuple[float, float] | None = None
+
+    @model_validator(mode="after")
+    def _check_command_encoding(self) -> EndEffectorSpec:
+        """A command range needs a convention, lies inside it, and is non-empty."""
+        if self.command_range is not None:
+            lo, hi = self.command_range
+            if self.command_convention is None:
+                raise ValueError(
+                    f"EndEffectorSpec({self.name!r}): command_range needs command_convention."
+                )
+            if not (math.isfinite(lo) and math.isfinite(hi)) or lo >= hi:
+                raise ValueError(
+                    f"EndEffectorSpec({self.name!r}): command_range must be finite with "
+                    f"min < max; got {self.command_range!r}."
+                )
+            natural = GRIPPER_CONVENTION_RANGES.get(self.command_convention)
+            if natural is not None and (lo < natural[0] or hi > natural[1]):
+                raise ValueError(
+                    f"EndEffectorSpec({self.name!r}): command_range {self.command_range!r} "
+                    f"exceeds {self.command_convention!r}'s own range {natural!r}."
+                )
+        elif (
+            self.command_convention is not None
+            and self.command_convention not in GRIPPER_CONVENTION_RANGES
+        ):
+            raise ValueError(
+                f"EndEffectorSpec({self.name!r}): command_convention "
+                f"{self.command_convention!r} is physical, so command_range is required."
+            )
+        return self
+
+    def resolved_command_range(self) -> tuple[float, float] | None:
+        """The kernel's bound for this end effector, or ``None`` if undeclared."""
+        if self.command_range is not None:
+            return self.command_range
+        if self.command_convention is None:
+            return None
+        return GRIPPER_CONVENTION_RANGES[self.command_convention]
 
 
 # ─── Capabilities ──────────────────────────────────────────────────────────────
@@ -5736,33 +5843,6 @@ def scene_task_space_compatible(family: str, skill_space: TaskSpace) -> TaskSpac
             f"expected dim {spec.action_dim}"
         )
     return TaskSpaceMatch(ok=not reasons, reasons=reasons)
-
-
-GripperConvention: TypeAlias = Literal[
-    "normalized_open_unit",
-    "normalized_open_symmetric",
-    "binary_close_one",
-    "raw_joint_rad",
-    "width_meters",
-]
-"""Per-skill gripper action encoding (Gap 2 of the rSkill self-containment audit).
-
-Required on ``ControlModeSemantics`` whenever the parent
-``ActuatorRequirement.kind`` is ``ControlMode.GRIPPER_BINARY`` or
-``ControlMode.GRIPPER_POSITION`` — silently mis-encoding the gripper
-slot between scenes / robots is a top observed mis-actuation failure.
-
-Conventions:
-
-* ``normalized_open_unit`` — ``0.0 = fully closed``, ``1.0 = fully open``.
-  Most lerobot / SmolVLA / pi0.5 LIBERO checkpoints.
-* ``normalized_open_symmetric`` — ``-1.0 = fully closed``, ``+1.0 = fully open``.
-  Some MetaWorld checkpoints.
-* ``binary_close_one`` — ``0.0 = open``, ``1.0 = close`` (single bit, RoboCasa-style).
-* ``raw_joint_rad`` — raw per-finger joint angle in radians (Fourier dexhands,
-  some humanoid skills).
-* ``width_meters`` — physical gripper width in metres (Franka FCI native).
-"""
 
 
 class ControlModeSemantics(BaseModel):

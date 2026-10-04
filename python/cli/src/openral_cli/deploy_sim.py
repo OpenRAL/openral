@@ -440,6 +440,27 @@ def _scene_backend_has_sim_clock(config: Path | None) -> bool:
     return SCENES.meta(scene.scene.id).get("sim_clock") is True
 
 
+def _scene_gripper_convention(config: Path | None) -> str:
+    """The gripper encoding the DeployScene's sim environment consumes, or ``""``.
+
+    Read from ``SCENES.register(..., gripper_convention=...)``, where the
+    backend that wraps the environment declares it. A bare MuJoCo twin and an
+    unregistered scene have none, so each end effector's own
+    ``command_convention`` applies.
+    """
+    if config is None:
+        return ""
+    from openral_core import DeployScene, load_scene_strict
+
+    scene = load_scene_strict(str(config), DeployScene)
+    if _scene_builds_bare_twin(scene):
+        return ""
+    from openral_sim import SCENES  # reason: defer optional dep
+
+    value = SCENES.meta(scene.scene.id).get("gripper_convention")
+    return str(value) if value else ""
+
+
 def _resolve_clock_origin(*, hal_mode: str, config: Path | None) -> str:
     """Resolve the OpenRAL clock authority origin for the launch graph.
 
@@ -1044,6 +1065,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
             for s in description.sensors
         )
     clock_origin = _resolve_clock_origin(hal_mode=hal_mode, config=config)
+    # A real robot's HAL consumes its end effectors' own encoding.
+    gripper_convention = _scene_gripper_convention(config) if hal_mode == "sim" else ""
 
     # The object-detection leg is ON by default (deploy sim is a
     # perception-driven stack; ``--no-object-detector`` turns it off). The default
@@ -1229,6 +1252,8 @@ def resolve_launch_invocation(  # noqa: PLR0912, PLR0915  # reason: a flat resol
         # use_sim_time internally: simulation → use_sim_time=true + HAL /clock;
         # host_wall → system time and no OpenRAL /clock publisher.
         f"clock_origin:={clock_origin}",
+        # ros2 launch rejects an empty `name:=`; the launch defaults to "".
+        *([f"gripper_convention:={gripper_convention}"] if gripper_convention else []),
         f"enable_object_detector:={'true' if enable_object_detector else 'false'}",
         f"object_detector_onnx:={resolved_object_detector_onnx}",
         # reward monitor co-active with the VLA; the reasoner polls

@@ -87,6 +87,14 @@ struct EnvelopeIntersection {
   double max_cartesian_step_m{kPosInfinity};
   double max_cartesian_step_rad{kPosInfinity};
 
+  // GRIPPER_POSITION / GRIPPER_BINARY bounds, one entry per gripper end
+  // effector, in that end effector's command convention
+  // (EndEffectorSpec.command_range). Parallel arrays. Empty = the robot
+  // declares no gripper channel, and every gripper chunk is refused.
+  std::vector<std::string> gripper_ee_names;
+  std::vector<double> gripper_command_min;
+  std::vector<double> gripper_command_max;
+
   bool deadman_required{false};
 };
 

@@ -61,7 +61,7 @@ Open `rskills/<id>/rskill.yaml`. The fields that matter most for consumers
 | `kind` | `vla` for a learnable policy; detector kinds also exist. |
 | `embodiment_tags` | Must match a robot's `RobotCapabilities.embodiment_tags`. |
 | `sensors_required` | Modality + `vla_feature_key` + min resolution per camera. |
-| `actuators_required` | Each entry needs `control_mode_semantics` (e.g. `mode: absolute`). |
+| `actuators_required` | Each entry needs `control_mode_semantics` (e.g. `mode: absolute`). A skill that sends gripper commands — a `gripper_*` action slot, or a `representation` ending in a gripper — also needs a `gripper_position` entry whose `gripper_convention` names the encoding it emits (e.g. `normalized_close_symmetric` for robosuite/LIBERO data, `normalized_open_unit` for 0 = closed / 1 = open). The runner refuses the skill on a robot or scene that consumes a different encoding. |
 | `runtime` / `quantization` | `pytorch` / `onnx` / `tensorrt`; `dtype` + `min_vram_gb`. See [Quantize an rSkill](quantize-an-rskill.md). |
 | `weights_uri` | `hf://<owner>/<repo>` — the rSkill does **not** copy weights. |
 | `chunk_size` / `n_action_steps` | Action-chunk size and replan cadence. |

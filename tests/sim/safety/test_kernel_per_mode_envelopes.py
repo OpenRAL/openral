@@ -10,7 +10,8 @@ any magnitude through. Each case boots the kernel from a real manifest (the same
 E-stop and a ``FailureTrigger`` naming the measured value and the limit.
 
 Every chunk is horizon 2 with the violation on step 1, so a kernel that strides
-rows by the robot's joint count instead of the row width cannot pass.
+rows by the robot's joint count instead of the row width cannot pass. Gripper
+chunks are bounded per end effector, in that end effector's own encoding.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ from tests.sim.safety._kernel_subprocess import (  # noqa: E402
 _CARTESIAN_DELTA = 5
 _CARTESIAN_TWIST = 6
 _BODY_TWIST = 7
+_GRIPPER_POSITION = 10
 _COMPOSITE_MODE = 12
 
 # robosuite OSC_POSE output_max, the cartesian_delta_scale every RoboCasa rSkill ships.
@@ -60,6 +62,7 @@ class _Case:
     measured: float
     limit: float
     scale: tuple[float, ...] = ()
+    ee: str = ""
 
 
 _CASES = {
@@ -112,6 +115,40 @@ _CASES = {
         ((0.1, 0.0, 0.0, 0.0, 0.0, 0.5), (0.0, 0.0, 0.0, 1.5, 0.0, 0.0)),
         measured=1.5,
         limit=1.0,
+    ),
+    # Each OpenArm jaw is bounded by its own radian range. The intersection of
+    # the two ([0, 0]) would refuse every command; per jaw, -0.5 closes the
+    # right one and is out of range only on the left.
+    "openarm_right_jaw_in_its_own_range": _Case(
+        "robots/openarm/robot.yaml",
+        _GRIPPER_POSITION,
+        1,
+        ((-0.2,), (-0.5,)),
+        ((-0.2,), (0.3,)),
+        measured=0.3,
+        limit=0.0,
+        ee="right_gripper",
+    ),
+    "openarm_left_jaw_in_its_own_range": _Case(
+        "robots/openarm/robot.yaml",
+        _GRIPPER_POSITION,
+        1,
+        ((0.2,), (0.7,)),
+        ((0.2,), (-0.5,)),
+        measured=-0.5,
+        limit=0.0,
+        ee="left_gripper",
+    ),
+    # robosuite's gripper is [-1, 1]; -1 (open) must pass.
+    "panda_mobile_gripper_close_symmetric": _Case(
+        "robots/panda_mobile/robot.yaml",
+        _GRIPPER_POSITION,
+        1,
+        ((-1.0,), (1.0,)),
+        ((-1.0,), (1.5,)),
+        measured=1.5,
+        limit=1.0,
+        ee="panda_gripper",
     ),
     "panda_mobile_composite_mode": _Case(
         "robots/panda_mobile/robot.yaml",
@@ -174,6 +211,7 @@ def test_kernel_enforces_per_mode_bound_from_real_manifest(name: str) -> None:
                 chunk.n_dof = case.width
                 chunk.flat = _flat(rows)
                 chunk.cartesian_delta_scale = scale
+                chunk.ee_name = case.ee
                 chunk.rskill_id = "openral/per-mode-envelope-test"
                 chunk.trace_id = trace
                 pub.publish(chunk)
@@ -195,6 +233,9 @@ def test_kernel_enforces_per_mode_bound_from_real_manifest(name: str) -> None:
                 measured, limit = evidence["measured_n"], evidence["limit_n"]
             else:  # a 1-D range breach rides WorkspaceEvidence on the x axis
                 assert evidence["kind"] == "workspace", evidence
+                # A gripper violation names the end effector the reasoner reports.
+                if case.mode == _GRIPPER_POSITION:
+                    assert evidence["ee_name"] == case.ee, evidence
                 # The kernel spans [min(limit, measured), max(limit, measured)].
                 measured = evidence["measured_xyz"][0]
                 lo, hi = evidence["box_min"][0], evidence["box_max"][0]

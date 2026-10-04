@@ -107,7 +107,10 @@ class _Registry(Generic[T]):
                 before any env is built. Leave ``None`` for backends that read
                 their options ad hoc.
             **meta: Static facts about the entry, read back via ``meta``.
-                On ``POLICIES`` these are the family's dependency facts
+                On ``SCENES``, ``sim_clock`` (the env reports sim time) and
+                ``gripper_convention`` (the ``GripperConvention`` the env's
+                gripper consumes, which replaces the robot end effectors' own
+                in that scene). On ``POLICIES`` these are the family's dependency facts
                 (``install_groups``, ``required_imports``, optional
                 ``install_note``) consumed by ``openral_sim.policy_deps``, so
                 they live next to the factory instead of in parallel dicts.
