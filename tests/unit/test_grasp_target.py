@@ -33,6 +33,8 @@ from openral_hal._grasp_target import (
     TargetRefusal,
     TargetRegionFit,
     VoxelLattice,
+    _in_region,
+    cell_closed_region,
     mask_without_removed_points,
     occupied_centers_in_box,
     project_point,
@@ -747,3 +749,116 @@ def test_the_robots_own_pixels_leave_the_target_mask() -> None:
     assert out[16:48, 24:48].all(), "the target's own pixels must survive"
     # Nothing survived the filter (the hand covers the whole target): nothing is kept.
     assert not mask_without_removed_points(mask, depth, k, t, np.zeros((0, 3))).any()
+
+
+def _yawed(
+    xyz: tuple[float, float, float], half: tuple[float, float, float], yaw_deg: float
+) -> PlaceRegion:
+    return PlaceRegion(
+        frame_id=_FRAME,
+        half_extents=half,
+        pose=Pose6D(xyz=xyz, quat_xyzw=yaw_to_quat_xyzw(math.radians(yaw_deg)), frame_id=_FRAME),
+    )
+
+
+def _z_up_lattice(resolution: float) -> VoxelLattice:
+    """A z-up lattice with a cell corner at the origin (the closure needs only r and axes)."""
+    return VoxelLattice(
+        _FRAME, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), resolution, (1, 1, 1), np.zeros(1, np.uint8)
+    )
+
+
+@pytest.mark.parametrize(("yaw_deg", "grow"), [(0.0, _RES / 2.0), (45.0, _RES / math.sqrt(2.0))])
+def test_the_cell_closure_grows_sideways_by_the_cells_reach_and_up_only(
+    yaw_deg: float, grow: float
+) -> None:
+    """r/2·(|cos θ|+|sin θ|) horizontally (r/2 at 0°, r/√2 at 45°), the top up r/2, the
+    bottom exactly where the fit put it."""
+    tight = _yawed((0.3, 0.1, 0.2), (0.05, 0.03, 0.04), yaw_deg)
+    closed, clamped = cell_closed_region(tight, _z_up_lattice(_RES), max_half_extent_m=0.2)
+    assert not clamped
+    hx, hy, hz = closed.half_extents
+    assert (hx, hy) == (pytest.approx(0.05 + grow), pytest.approx(0.03 + grow))
+    assert closed.pose.xyz[:2] == tight.pose.xyz[:2]
+    assert closed.pose.quat_xyzw == tight.pose.quat_xyzw
+    assert closed.pose.xyz[2] - hz == pytest.approx(0.2 - 0.04), "the bottom moved"
+    assert closed.pose.xyz[2] + hz == pytest.approx(0.2 + 0.04 + _RES / 2.0)
+
+
+def test_the_cell_closure_is_clamped_at_the_cap_with_the_bottom_kept() -> None:
+    tight = _yawed((0.3, 0.1, 0.2), (0.195, 0.03, 0.198), 0.0)
+    closed, clamped = cell_closed_region(tight, _z_up_lattice(_RES), max_half_extent_m=0.2)
+    assert clamped
+    assert closed.half_extents == (0.2, pytest.approx(0.04), 0.2)
+    assert closed.pose.xyz[2] - 0.2 == pytest.approx(0.2 - 0.198)
+
+
+def test_the_cell_closure_refuses_another_frame_or_a_tilted_region() -> None:
+    lattice = _z_up_lattice(_RES)
+    with pytest.raises(ROSConfigError, match="frame"):
+        cell_closed_region(
+            _yawed((0, 0, 0), (0.05, 0.05, 0.05), 0.0).model_copy(update={"frame_id": "other"}),
+            lattice,
+            max_half_extent_m=0.2,
+        )
+    tilted = _yawed((0, 0, 0), (0.05, 0.05, 0.05), 0.0)
+    pitched = tilted.pose.model_copy(update={"quat_xyzw": (0.0, 0.3826834, 0.0, 0.9238795)})
+    tilted = tilted.model_copy(update={"pose": pitched})
+    with pytest.raises(ROSConfigError, match="gravity-aligned"):
+        cell_closed_region(tilted, lattice, max_half_extent_m=0.2)
+
+
+def test_isaac_i37_the_targets_top_edge_cell_is_exempt_only_once_cell_closed() -> None:
+    """Isaac i36/i37: the kernel stopped ``openarm_right_finger_pair`` on the cell centred
+    (0.2925, -0.2325, -0.4275) with the grasp exemption active. The true surface (x≈0.289)
+    lies inside that cell (x 0.285-0.300), its centre half a cell outside the tight fit.
+    Cell-closed, the target's own cell is exempt; the support cell straight under the
+    region (centre half a cell below its bottom) stays outside."""
+    res = 0.015
+    tight = _yawed((0.2430, -0.1966, -0.4387), (0.0615, 0.0453, 0.0263), -96.0)
+    closed, _ = cell_closed_region(tight, _z_up_lattice(res), max_half_extent_m=0.2)
+    edge = np.array([[0.2925, -0.2325, -0.4275]])
+    bottom = tight.pose.xyz[2] - tight.half_extents[2]
+    support = np.array([[0.2430, -0.1966, bottom - res / 2.0]])
+    assert not _in_region(edge, tight).any()
+    assert _in_region(edge, closed).all()
+    assert not _in_region(support, closed).any()
+    assert closed.pose.xyz[2] - closed.half_extents[2] == pytest.approx(bottom)
+
+
+def test_every_cell_the_fit_touches_has_its_centre_in_the_closure() -> None:
+    """The bound itself, sampled: every lattice cell that intersects a yawed box (cube vs
+    box separating-axis test) has its centre inside the closed box, for many yaws — except
+    the cells whose centre lies below the fit's bottom, which the closure never reaches."""
+    rng = np.random.default_rng(7)
+    lattice = _z_up_lattice(_RES)
+    ijk = np.stack(np.meshgrid(*[np.arange(-12, 12)] * 3, indexing="ij"), -1).reshape(-1, 3)
+    centres = (ijk + 0.5) * _RES
+    straddling = 0
+    for _ in range(20):
+        tight = _yawed(
+            tuple(rng.uniform(-0.02, 0.02, 3)),
+            tuple(rng.uniform(0.02, 0.08, 3)),
+            float(rng.uniform(-180.0, 180.0)),
+        )
+        closed, _ = cell_closed_region(tight, lattice, max_half_extent_m=0.2)
+        yaw = 2.0 * math.atan2(tight.pose.quat_xyzw[2], tight.pose.quat_xyzw[3])
+        c, s = math.cos(yaw), math.sin(yaw)
+        rot = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+        d = centres - np.asarray(tight.pose.xyz)
+        half = np.asarray(tight.half_extents)
+        # Separating axes for two boxes with a shared z axis: the cube's x, y, the box's
+        # x, y, and z. A cell meets the box iff no axis separates them.
+        cube_axes, box_axes = np.eye(3), rot
+        meets = np.ones(len(centres), dtype=bool)
+        for axis in (*cube_axes[:2], *box_axes.T[:2], np.array([0.0, 0.0, 1.0])):
+            reach = _RES / 2.0 * np.abs(cube_axes @ axis).sum() + np.abs(box_axes.T @ axis) @ half
+            meets &= np.abs(d @ axis) <= reach
+        bottom = tight.pose.xyz[2] - tight.half_extents[2]
+        below = centres[:, 2] < bottom
+        assert (meets & ~below).any()
+        assert _in_region(centres[meets & ~below], closed).all()
+        # Never down: a cell straddling the bottom face (the support side) stays outside.
+        assert not _in_region(centres[meets & below], closed).any()
+        straddling += int((meets & below).sum())
+    assert straddling, "no sample straddled a bottom face"

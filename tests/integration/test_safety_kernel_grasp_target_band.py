@@ -21,6 +21,10 @@ declared, expired (``timeout_s`` passed)               REFUSED, ``/diagnostics``
 declared, region in another frame                      REFUSED, ``reason=frame_mismatch``
 declared, support-plane cells half a voxel below       REFUSED, left finger on a plane cell,
 the region's lower face, in the finger's margin        ``grasp_exemption_active=1``
+declared, fit tight to a surface inside the target's   REFUSED, left finger on a target cell,
+boundary cells (their centres outside the fit)         ``grasp_exemption_active=1``
+the same fit cell-closed (``cell_closed_region``,      ACCEPTED; the plane under it still
+what the producer leg publishes)                       outside (bottom kept)
 =====================================================  ========================================
 
 Real throughout (CLAUDE.md §1.11): the real ``robots/openarm/robot.yaml``, the kernel parameters
@@ -596,6 +600,61 @@ def test_grasp_exemption_band_on_the_real_openarm_model(
             "the support surface under the target still stops the finger"
         )
         assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
+
+
+#: A fit tight to the target's measured surface (Isaac i36/i37): x within +-8 mm, inside the
+#: boundary cells x -0.02..0.02 whose centres (x = +-0.01) lie outside it; bottom on the plane's
+#: top face (z = -0.64), top at -0.605 inside the upper target layer.
+_TIGHT_CENTRE = (0.0, 0.18, -0.6225)
+_TIGHT_HALF = (0.008, 0.035, 0.0175)
+
+
+def test_a_tight_fit_exempts_the_targets_boundary_cells_only_once_cell_closed(
+    reset_kernel_estop: Callable[..., None],
+) -> None:
+    """The kernel exempts a cell only when its centre is in the region. A fit tight to the
+    measured surface leaves every target cell here (centres at x = +-0.01) outside, so the
+    finger hull stops on the target's own cells; closed over the grid's cells — what the
+    grasp-target leg publishes — the same fit exempts them, and the plane under it stays
+    non-exempt (the closure never grows down)."""
+    import numpy as np
+    from openral_core import GraspDeclaration as _Declaration
+    from openral_hal._grasp_target import VoxelLattice, cell_closed_region
+
+    lattice = VoxelLattice(
+        _FRAME,
+        _ORIGIN,
+        (0.0, 0.0, 0.0, 1.0),
+        _RES,
+        (_SX, _SY, _SZ),
+        np.zeros(_SX * _SY * _SZ, dtype=np.uint8),
+    )
+    with _live_cell(grasp_allowance_enabled=True, reset_kernel_estop=reset_kernel_estop) as (
+        cell,
+        reset,
+    ):
+        tight = _region(_TIGHT_CENTRE, _TIGHT_HALF)
+        cell.world(_TARGET | _PLANE, _declaration(tight))
+        cell.send("tight-fit", expect_accept=False)
+        evidence = cell.refused("tight-fit")
+        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _TARGET}, (
+            "the tight fit's own target cells must be what stops the finger"
+        )
+        assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
+        reset()
+
+        closed, clamped = cell_closed_region(
+            _region(_TIGHT_CENTRE, _TIGHT_HALF),
+            lattice,
+            max_half_extent_m=_Declaration.MAX_HALF_EXTENT_M,
+        )
+        assert not clamped
+        assert closed.pose.xyz[2] - closed.half_extents[2] == pytest.approx(-0.64)
+        cell.world(_TARGET | _PLANE, _declaration(closed))
+        cell.send("cell-closed", expect_accept=True)
+        assert "cell-closed" in cell.safe, "the cell-closed fit must exempt the target's cells"
+        assert not cell.estops
 
 
 #: A neighbour standing on the plane one empty column beside the target (x = 0.05, cube

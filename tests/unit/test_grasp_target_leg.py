@@ -2382,3 +2382,42 @@ def test_the_fingers_in_the_mask_leave_the_fit_only_through_the_self_filtered_cl
     assert err.count("grasp target fit unfiltered") == 1, "logged per fit, not per transition"
     assert f"no self-filtered cloud on {_SELF_FILTERED!r} at stamp {now_ns}" in err
     assert "self-filtered again after 2 unfiltered fit(s)" in err
+
+
+def test_the_kernel_gets_the_cell_closed_region_while_the_held_fit_stays_tight() -> None:
+    """The published declaration carries the fit closed over the grid's cells (2 cm here:
+    +1 cm sideways and up, the bottom kept); the tracker, its envelope (the region payload's
+    source) and so every producer gate keep the tight fit. A grid in another frame publishes
+    the tight fit (the kernel refuses that frame itself)."""
+    with _live_leg("test_grasp_target_cell_closed") as live:
+        attachment_state = pytest.importorskip("openral_msgs.msg").AttachmentState
+        leg = live.leg
+        now_ns = leg._now_ns()
+        lattice = _held_block_lattice()
+        leg._bridge._grid = (lattice, now_ns, time.monotonic())
+        leg.tracker.on_declaration(_dispatched(stamp_ns=now_ns))
+        tight = _measured(now_ns + 1)
+        leg.tracker.accept(tight)
+        assert leg.tracker.region == tight
+
+        msg = attachment_state()
+        leg.fill(msg, now_ns=now_ns + 2)
+        assert msg.grasp_declaration_valid and msg.grasp_declaration.region_valid
+        published = PlaceRegion.from_idl(msg.grasp_declaration.region)
+        assert published.half_extents == pytest.approx((0.05, 0.05, 0.045))
+        assert published.pose.xyz == pytest.approx((0.45, 0.0, 0.095))
+        assert published.pose.xyz[2] - published.half_extents[2] == pytest.approx(0.05)
+        assert published.stamp_ns == tight.stamp_ns
+        assert published.evidence_ref == tight.evidence_ref
+        assert leg.tracker.region == tight, "the held fit was replaced"
+        envelope = leg.tracker.envelope(now_ns=now_ns + 2)
+        assert envelope is not None and envelope.region == tight
+
+        other = VoxelLattice(
+            "world", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.02, (1, 1, 1), np.zeros(1, np.uint8)
+        )
+        leg._bridge._grid = (other, now_ns, time.monotonic())
+        leg.fill(msg, now_ns=now_ns + 3)
+        assert PlaceRegion.from_idl(msg.grasp_declaration.region).half_extents == pytest.approx(
+            tight.half_extents
+        )
