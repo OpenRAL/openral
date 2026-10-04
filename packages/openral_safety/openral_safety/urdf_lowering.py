@@ -472,7 +472,7 @@ def _axis_radius_bound(chain: list[object], joint: object, geom: LinkCollisionGe
         if link_joint is joint:
             seen = True
     origin_xyz = np.asarray(geom.origin_xyz_rpy[:3], dtype=np.float64)
-    return total + float(np.linalg.norm(origin_xyz)) + float(shape_max_extent_m(geom.shape))
+    return total + float(np.linalg.norm(origin_xyz)) + shape_max_extent_m(geom.shape)
 
 
 def _pair_relative_dofs(
@@ -572,7 +572,7 @@ def _certified_always_colliding(  # noqa: PLR0911  # reason: one early-out per w
         values = {name: centres[:, i] for i, name in enumerate(names)}
         t_a = _chain_transforms(chain_a, values, n) @ origin_a
         t_b = _chain_transforms(chain_b, values, n) @ origin_b
-        return np.asarray(shape_distance(geom_a.shape, t_a, geom_b.shape, t_b), dtype=np.float64)
+        return shape_distance(geom_a.shape, t_a, geom_b.shape, t_b)
 
     if not dofs:  # rigidly related links — one evaluation settles it exactly
         return bool(gaps_at(np.zeros((1, 0)))[0] <= margin_m)
