@@ -76,6 +76,20 @@ def test_sim_octomap_requires_repeated_occupancy_hits() -> None:
     assert module._octomap_occupancy_threshold("real") == 0.6
 
 
+def test_the_self_filter_runs_wherever_the_cloud_shows_the_robot() -> None:
+    """Real cameras and Isaac's rendered depth see the arm; the MuJoCo bridge does not.
+
+    Regression: on Isaac the unfiltered arm became occupied voxels and the kernel stopped
+    the subtask policy's first tick as a world collision of openarm_left_link7 with them.
+    """
+    module = _import_launch_module(_LAUNCH_FILE)
+
+    assert module._cloud_shows_the_robot("real", None) is True
+    assert module._cloud_shows_the_robot("sim", "isaacsim") is True
+    assert module._cloud_shows_the_robot("sim", "mujoco") is False
+    assert module._cloud_shows_the_robot("sim", None) is False
+
+
 def test_attached_collision_follows_the_attachment_producer() -> None:
     """Sim has its attachment manager; real only with the vision leg, and then always."""
     module = _import_launch_module(_LAUNCH_FILE)
