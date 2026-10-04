@@ -13,6 +13,14 @@ import ``openral_core``).
 M1 (this cut): fixed-base arm (``franka_panda``), one RGB camera,
 JOINT_POSITION-delta control. M2 adds depth/lidar sensors, M3 the mobile base.
 
+The world around the robot is either the built-in bring-up stage (ground plane,
+plus a few obstacle boxes when the robot has a lidar) or an **environment USD**
+(``environment_usd``, from the deploy scene's ``scene.assets_uri``) referenced
+under ``/World/environment`` — a warehouse, an office, any stage that carries
+its own floor collider and lights. The robot is placed at ``spawn_pose``
+(x, y, z, yaw — from the deploy scene's ``base_pose``); a mobile base's
+odometry is relative to that spawn, as on a real robot.
+
 Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec``)::
 
     {
@@ -93,9 +101,31 @@ def map_dof_to_manifest(
     return np.asarray(out, dtype=np.float32)
 
 
+def compose_planar(
+    spawn: tuple[float, float, float, float], odom: list[float]
+) -> tuple[float, float, float, float]:
+    """World ``(x, y, z, yaw)`` of the base: the spawn pose composed with the odom pose.
+
+    ``spawn`` is the world placement ``(x, y, z, yaw)``; ``odom`` the planar
+    ``(x, y, yaw)`` the kinematic base has integrated since that spawn (the
+    odometry frame starts at the spawn, like a real base's wheel odometry).
+
+    Example:
+        >>> import math
+        >>> x, y, z, yaw = compose_planar((1.0, 2.0, 0.5, math.pi / 2), [1.0, 0.0, 0.0])
+        >>> round(x, 6), round(y, 6), z, round(yaw, 6)
+        (1.0, 3.0, 0.5, 1.570796)
+    """
+    sx, sy, sz, syaw = spawn
+    ox, oy, oyaw = (float(v) for v in odom)
+    c, s = float(np.cos(syaw)), float(np.sin(syaw))
+    return (sx + c * ox - s * oy, sy + s * ox + c * oy, sz, syaw + oyaw)
+
+
 def resolve_beam_range(
     raycast_closest: Any,
     *,
+    robot_prim: str,
     origin_xy: tuple[float, float],
     angle_rad: float,
     z: float,
@@ -109,8 +139,9 @@ def resolve_beam_range(
     (``hit``/``distance``/``rigidBody``) or a falsy value.
 
     The beam starts at ``range_min_m`` (the sensor's own minimum) and walks
-    outward; a hit whose ``rigidBody`` prim is under ``/panda`` is the robot
-    itself, so the beam re-casts from just past it — same resolution as
+    outward; a hit whose ``rigidBody`` prim is under ``robot_prim`` (the
+    imported articulation's root prim) is the robot itself, so the beam
+    re-casts from just past it — same resolution as
     ``openral_sim.backends.robocasa.synthesize_laser_scan_2d`` (which compares
     ``model.body_rootid`` instead of a prim path). #194: ``range_min_m`` was
     lowered from chassis-sized (panda_mobile: 0.55 m vs 0.43 m circumscribed
@@ -129,6 +160,7 @@ def resolve_beam_range(
         >>> round(
         ...     resolve_beam_range(
         ...         cast,
+        ...         robot_prim="/panda",
         ...         origin_xy=(0.0, 0.0),
         ...         angle_rad=0.0,
         ...         z=0.3,
@@ -142,6 +174,7 @@ def resolve_beam_range(
     cx, cy = float(np.cos(angle_rad)), float(np.sin(angle_rad))
     ox, oy = float(origin_xy[0]), float(origin_xy[1])
     travelled = float(range_min_m)
+    own_prefix = robot_prim.rstrip("/") + "/"
     for _ in range(_SCAN_MAX_SELF_SKIPS):
         span = float(range_max_m) - travelled
         if span <= 0.0:
@@ -152,7 +185,8 @@ def resolve_beam_range(
         if not (isinstance(hit, dict) and hit.get("hit")):
             break  # nothing out there
         distance = float(hit.get("distance", span))
-        if str(hit.get("rigidBody", "")).startswith("/panda"):
+        body = str(hit.get("rigidBody", ""))
+        if body == robot_prim or body.startswith(own_prefix):
             travelled += distance + _SCAN_SELF_SKIP_EPS_M
             continue
         return min(travelled + distance, float(range_max_m))
@@ -165,9 +199,18 @@ class IsaacManifestScene(IsaacSceneBase):
     warmup_steps = 4
     physics_substeps = 1
 
-    def __init__(self, *, robot_spec: dict[str, Any], **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        robot_spec: dict[str, Any],
+        environment_usd: str | None = None,
+        spawn_pose: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0),
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
         self._spec = robot_spec
+        self._environment_usd = environment_usd
+        self._spawn = spawn_pose  # world x, y, z, yaw
         # Actuated manifest joints (the planar base is handled separately in M3;
         # it has no URDF DOF). Order is the manifest order.
         self._manifest_joints: list[dict[str, Any]] = list(robot_spec.get("joints", []))
@@ -195,11 +238,12 @@ class IsaacManifestScene(IsaacSceneBase):
         # (vx, vy, wyaw, base frame) — no PhysX base joints. Integrated by the
         # BODY_TWIST command interval (one env.step = one /cmd_vel command), not
         # the physics dt, matching SimAttachedHAL's body_twist_dt_s.
-        self._base_pose = [0.0, 0.0, 0.0]  # world x, y, yaw
+        self._base_pose = [0.0, 0.0, 0.0]  # odom x, y, yaw (relative to the spawn)
         self._mount_z = float(robot_spec.get("mount_z", 0.0))
         self._base_dt = float(action.get("body_twist_dt_s", 0.05))
 
         self._robot: Any = None
+        self._robot_prim = ""
         self._ArticulationAction: Any = None
         self._euler_to_quat: Any = None
         # One Isaac Camera per manifest RGB/depth sensor, base-relative so they
@@ -209,7 +253,8 @@ class IsaacManifestScene(IsaacSceneBase):
         self._cameras: dict[str, Any] = {}
         # 2-D lidar: a PhysX raycast fan from the base produces real /scan ranges
         # against the scene's obstacles (built in `build` when the manifest
-        # declares a lidar_2d sensor). `_scan_z` is the beam height above base.
+        # declares a lidar_2d sensor). `_scan_z` is the beam height above the floor
+        # the robot stands on (the spawn z).
         self._lidar: dict[str, Any] | None = next(
             (s for s in robot_spec.get("sensors", []) if s.get("modality") == "lidar_2d"), None
         )
@@ -278,7 +323,7 @@ class IsaacManifestScene(IsaacSceneBase):
     # ── build ────────────────────────────────────────────────────────────────
 
     def build(self) -> None:
-        """Import the manifest robot's URDF and stand up camera + ground."""
+        """Import the manifest robot's URDF and stand up cameras + the world."""
         import isaacsim.core.utils.numpy.rotations as rot_utils
         import omni.kit.commands
         from isaacsim.core.api import World
@@ -292,16 +337,21 @@ class IsaacManifestScene(IsaacSceneBase):
         # minutes on an 8 GB laptop GPU (per the PoC notes). Default device
         # renders the same scene in ~15 s.
         self._world = World(stage_units_in_meters=1.0)
-        self._world.scene.add_default_ground_plane()
+        if self._environment_usd:
+            self._add_environment(self._environment_usd)
+        else:
+            self._world.scene.add_default_ground_plane()
 
         self._euler_to_quat = rot_utils.euler_angles_to_quats
 
         prim_path = self._import_urdf(omni.kit.commands)
+        self._robot_prim = prim_path
         self._robot = self._world.scene.add(Robot(prim_path=prim_path, name="robot"))
 
-        # A lidar robot gets a few static obstacles so /scan, slam, and Nav2 have
-        # real geometry to map + avoid (a bare ground plane returns no hits).
-        if self._lidar is not None:
+        # On the bare bring-up stage a lidar robot gets a few static obstacles so
+        # /scan, slam, and Nav2 have real geometry to map + avoid (a bare ground
+        # plane returns no hits). An environment USD brings its own geometry.
+        if self._lidar is not None and not self._environment_usd:
             self._add_obstacles()
 
         # One Camera per planned sensor. A bare deploy scene with no RGB sensor
@@ -331,12 +381,44 @@ class IsaacManifestScene(IsaacSceneBase):
             if meta["modality"] == "depth":
                 # distance_to_image_plane → the depth array we deproject to a cloud.
                 cam.add_distance_to_image_plane_to_frame()
-        self._update_camera_poses()
+        self._place_robot()
         self._resolve_dof_mapping()
         if self._lidar is not None:
             from omni.physx import get_physx_scene_query_interface
 
             self._scan_query = get_physx_scene_query_interface()
+
+    def _add_environment(self, usd: str) -> None:
+        """Reference an environment USD under ``/World/environment``.
+
+        ``usd`` is a local path, an ``http(s)://`` / ``omniverse://`` URL, or
+        ``isaac:<path>`` — a path under the installed Isaac Sim's own asset root
+        (``get_assets_root_path()``, e.g.
+        ``isaac:Isaac/Environments/Simple_Warehouse/warehouse.usd``), so the
+        asset version always matches the sidecar's Isaac release. Isaac's own
+        assets are licensed for use inside Isaac Sim, which is exactly where they
+        are loaded here — never converted or vendored.
+
+        The environment replaces the default ground plane: it must carry its own
+        floor collider (Isaac's environments do).
+        """
+        from isaacsim.core.utils.stage import add_reference_to_stage
+
+        if usd.startswith("isaac:"):
+            try:
+                from isaacsim.storage.native import get_assets_root_path
+            except ImportError:  # Isaac Sim < 5.0
+                from isaacsim.core.utils.nucleus import get_assets_root_path
+            root = get_assets_root_path()
+            if not root:
+                raise RuntimeError(
+                    f"environment {usd!r}: Isaac Sim reports no asset root "
+                    "(get_assets_root_path() is empty) — offline host without a "
+                    "local asset pack? Use a local path or URL instead."
+                )
+            usd = f"{str(root).rstrip('/')}/{usd[len('isaac:') :].lstrip('/')}"
+        print(f"[isaac_manifest_scene] environment: {usd}", flush=True)
+        add_reference_to_stage(usd_path=usd, prim_path="/World/environment")
 
     def _add_obstacles(self) -> None:
         """Add a few static boxes around the robot for lidar/slam/Nav2 to see."""
@@ -374,14 +456,15 @@ class IsaacManifestScene(IsaacSceneBase):
         n = int(self._lidar.get("n_channels") or 360)
         rmin = float(self._lidar.get("range_min_m") or 0.0)
         rmax = float(self._lidar.get("range_max_m") or 12.0)
-        bx, by, byaw = self._base_pose
-        z = float(self._scan_z)
+        bx, by, bz, byaw = compose_planar(self._spawn, self._base_pose)
+        z = bz + float(self._scan_z)
         out = np.empty(n, dtype=np.float32)
         step = 2.0 * np.pi / n
         for i in range(n):
             ang = -np.pi + i * step + byaw  # base beam angle, rotated to world
             out[i] = resolve_beam_range(
                 self._scan_query.raycast_closest,
+                robot_prim=self._robot_prim,
                 origin_xy=(bx, by),
                 angle_rad=ang,
                 z=z,
@@ -397,7 +480,7 @@ class IsaacManifestScene(IsaacSceneBase):
         viewpoints follow. base frame is planar (x, y, yaw), so the offset position
         rotates by yaw about z and the camera's euler yaw adds the base yaw.
         """
-        bx, by, byaw = self._base_pose
+        bx, by, bz, byaw = compose_planar(self._spawn, self._base_pose)
         cos_y, sin_y = float(np.cos(byaw)), float(np.sin(byaw))
         byaw_deg = float(np.degrees(byaw))
         for meta in self._cam_meta:
@@ -406,7 +489,7 @@ class IsaacManifestScene(IsaacSceneBase):
             wy = by + sin_y * ox + cos_y * oy
             roll, pitch, yaw = meta["offset_euler"]
             quat = self._euler_to_quat(np.array([roll, pitch, yaw + byaw_deg]), degrees=True)
-            self._cameras[meta["name"]].set_world_pose(np.array([wx, wy, oz]), quat)
+            self._cameras[meta["name"]].set_world_pose(np.array([wx, wy, bz + oz]), quat)
 
     def _import_urdf(self, commands: Any) -> str:
         """Run the Isaac URDF importer; return the imported articulation prim path."""
@@ -477,9 +560,10 @@ class IsaacManifestScene(IsaacSceneBase):
         """Advance the kinematic base by a base-frame twist and teleport the root.
 
         ``(vx, vy)`` are body-frame linear velocities (m/s), ``wyaw`` the yaw rate
-        (rad/s). Integrated to a world ``(x, y, yaw)`` and applied as the
-        articulation's root world pose — the arm rides along, giving real base
-        motion + a ``base_pose`` for ``/odom`` without PhysX base joints.
+        (rad/s). Integrated to an odom ``(x, y, yaw)`` and applied (composed with
+        the spawn) as the articulation's root world pose — the arm rides along,
+        giving real base motion + a ``base_pose`` for ``/odom`` without PhysX
+        base joints.
         """
         x, y, yaw = self._base_pose
         dt = self._base_dt
@@ -488,17 +572,23 @@ class IsaacManifestScene(IsaacSceneBase):
         y += (vx * sin_y + vy * cos_y) * dt
         yaw += wyaw * dt
         self._base_pose = [x, y, yaw]
-        quat = np.array([float(np.cos(yaw / 2)), 0.0, 0.0, float(np.sin(yaw / 2))])  # wxyz
-        self._robot.set_world_pose(np.array([x, y, self._mount_z]), quat)
-        # The robot-mounted cameras ride the base.
+        self._place_robot()
+
+    def _place_robot(self) -> None:
+        """Teleport the pinned root to spawn ∘ odom; the mounted cameras follow."""
+        wx, wy, wz, wyaw = compose_planar(self._spawn, self._base_pose)
+        quat = np.array([float(np.cos(wyaw / 2)), 0.0, 0.0, float(np.sin(wyaw / 2))])  # wxyz
+        self._robot.set_world_pose(np.array([wx, wy, wz + self._mount_z]), quat)
         self._update_camera_poses()
 
     def _on_reset(self, rng: np.random.Generator) -> None:
-        # Base returns to the origin each episode; world.reset() puts the pinned
-        # arm root back at the import pose, which is the origin.
+        # Odometry restarts at the spawn each episode.
         self._base_pose = [0.0, 0.0, 0.0]
-        if self._cameras:
-            self._update_camera_poses()
+
+    def _after_world_reset(self) -> None:
+        # world.reset() puts the pinned root back at its import pose (the
+        # origin); move it to the spawn before the warmup steps settle physics.
+        self._place_robot()
 
     def _observe(self) -> dict[str, Any]:
         obs = super()._observe()
@@ -531,7 +621,7 @@ class IsaacManifestScene(IsaacSceneBase):
         from the base) per the depth ``SensorSpec``. Empty when the manifest
         declares no depth sensor — never a fabricated cloud.
         """
-        bx, by, byaw = self._base_pose
+        bx, by, bz, byaw = compose_planar(self._spawn, self._base_pose)
         cos_y, sin_y = float(np.cos(byaw)), float(np.sin(byaw))
         out: dict[str, NDArray[np.float32]] = {}
         for meta in self._cam_meta:
@@ -548,7 +638,7 @@ class IsaacManifestScene(IsaacSceneBase):
             dy = pw[:, 1] - by
             xb = cos_y * dx + sin_y * dy
             yb = -sin_y * dx + cos_y * dy
-            pb = np.stack([xb, yb, pw[:, 2]], axis=-1).astype(np.float32)
+            pb = np.stack([xb, yb, pw[:, 2] - bz], axis=-1).astype(np.float32)
             rmax = float(meta.get("range_max_m") or 0.0)
             if rmax > 0.0:
                 keep = (xb * xb + yb * yb) <= rmax * rmax

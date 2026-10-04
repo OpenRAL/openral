@@ -92,6 +92,7 @@ class IsaacSceneBase:
         """Per-episode reset: randomize, reset physics, warm up, observe."""
         self._on_reset(np.random.default_rng(seed))
         self._world.reset()
+        self._after_world_reset()
         self._step_idx = 0
         for _ in range(self.warmup_steps):
             self._before_render()
@@ -156,6 +157,13 @@ class IsaacSceneBase:
 
     def _on_reset(self, rng: np.random.Generator) -> None:
         """Per-episode randomization hook. Default: nothing to randomize."""
+
+    def _after_world_reset(self) -> None:
+        """Hook run right after ``world.reset()``, before the warmup steps.
+
+        For state ``world.reset()`` overwrites (e.g. a robot root placed away
+        from its import pose). Default: nothing.
+        """
 
     def _apply_action(self, action: NDArray[np.float32]) -> None:
         raise NotImplementedError

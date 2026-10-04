@@ -255,7 +255,13 @@ def _world(*bodies: tuple[float, str]) -> object:
     return raycast_closest
 
 
-_BEAM = {"origin_xy": (0.0, 0.0), "angle_rad": 0.0, "z": 0.30, "range_max_m": 12.0}
+_BEAM = {
+    "robot_prim": "/panda",
+    "origin_xy": (0.0, 0.0),
+    "angle_rad": 0.0,
+    "z": 0.30,
+    "range_max_m": 12.0,
+}
 
 
 def test_beam_recasts_past_the_robots_own_chassis(_manifest_scene_mod: object) -> None:
@@ -324,3 +330,47 @@ def test_beam_misses_read_range_max(_manifest_scene_mod: object) -> None:
     resolve_beam_range = _manifest_scene_mod.resolve_beam_range  # type: ignore[attr-defined]
 
     assert resolve_beam_range(_world(), range_min_m=0.05, **_BEAM) == pytest.approx(12.0)
+
+
+def test_beam_self_skip_follows_the_imported_robot_prim(_manifest_scene_mod: object) -> None:
+    """Self-hits are keyed on the robot's own prim, not a hardcoded ``/panda``.
+
+    An environment USD can hold a prim whose path merely starts with the robot's
+    name (``/panda_shelf``): that is the world, and must be reported.
+    """
+    resolve_beam_range = _manifest_scene_mod.resolve_beam_range  # type: ignore[attr-defined]
+    beam = {**_BEAM, "robot_prim": "/openarm"}
+
+    got = resolve_beam_range(
+        _world((0.10, "/openarm/base_link"), (2.0, "/World/wall")), range_min_m=0.05, **beam
+    )
+    assert got == pytest.approx(2.0, abs=1e-3)
+    got = resolve_beam_range(
+        _world((0.10, "/openarm_shelf/rack"), (2.0, "/World/wall")), range_min_m=0.05, **beam
+    )
+    assert got == pytest.approx(0.10, abs=1e-3)
+
+
+# ── sidecar side: compose_planar (spawn ∘ odom) ───────────────────────────────
+
+
+def test_compose_planar_identity_spawn_is_odom(_manifest_scene_mod: object) -> None:
+    compose_planar = _manifest_scene_mod.compose_planar  # type: ignore[attr-defined]
+    assert compose_planar((0.0, 0.0, 0.0, 0.0), [1.5, -0.5, 0.3]) == pytest.approx(
+        (1.5, -0.5, 0.0, 0.3)
+    )
+
+
+def test_compose_planar_odom_moves_in_the_spawn_heading(_manifest_scene_mod: object) -> None:
+    """Driving 2 m forward from a spawn facing +y (the warehouse aisle) moves along +y."""
+    compose_planar = _manifest_scene_mod.compose_planar  # type: ignore[attr-defined]
+    x, y, z, yaw = compose_planar((-4.8, 0.0, 0.0, np.pi / 2), [2.0, 0.0, 0.0])
+    assert (x, y, z, yaw) == pytest.approx((-4.8, 2.0, 0.0, np.pi / 2))
+    # A strafe left (+y in the base frame) from that heading moves toward -x.
+    x, y, _, _ = compose_planar((-4.8, 0.0, 0.0, np.pi / 2), [0.0, 1.0, 0.0])
+    assert (x, y) == pytest.approx((-5.8, 0.0))
+
+
+def test_compose_planar_keeps_the_spawn_height(_manifest_scene_mod: object) -> None:
+    compose_planar = _manifest_scene_mod.compose_planar  # type: ignore[attr-defined]
+    assert compose_planar((0.0, 0.0, 1.2, 0.0), [0.4, 0.0, 0.0])[2] == pytest.approx(1.2)

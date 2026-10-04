@@ -6,7 +6,7 @@ auto-spawned under the venv named by ``OPENRAL_ISAAC_SIDECAR_PYTHON``. Launches
 Omniverse Kit headless, builds a Franka arm + liftable cube + tiled RGB camera
 scene, and serves ZMQ REP + msgpack/ndarray framing:
 
-    ping->{"ok","action_dim","task","layout"}   reset->{"observation"}
+    ping->{"ok","action_dim","task","layout","environment","spawn"}   reset->{"observation"}
     step->{"observation","reward","terminated","truncated","info"}
     render->{"frame": uint8 HWC|None}   close->{"ok"}
     observation = {"images": {"camera1": <H,W,3 uint8>}, "state": 1-D float32, "task": str}
@@ -81,6 +81,23 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="path to the JSON isaac robot spec (manifest layout only)",
     )
     p.add_argument(
+        "--environment-usd",
+        default=None,
+        help=(
+            "environment USD referenced under /World/environment (manifest layout "
+            "only): a local path, an http(s):// or omniverse:// URL, or "
+            "isaac:<path> under the installed Isaac Sim asset root"
+        ),
+    )
+    p.add_argument(
+        "--spawn-pose",
+        type=float,
+        nargs=4,
+        default=[0.0, 0.0, 0.0, 0.0],
+        metavar=("X", "Y", "Z", "YAW"),
+        help="robot world placement, metres + radians (manifest layout only)",
+    )
+    p.add_argument(
         "--require-min",
         action="append",
         default=[],
@@ -92,7 +109,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
             "with the actual versions instead of hanging (issue #89)."
         ),
     )
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.layout != "manifest" and (
+        args.environment_usd or any(v != 0.0 for v in args.spawn_pose)
+    ):
+        p.error("--environment-usd / --spawn-pose need --layout manifest")
+    return args
 
 
 def _check_required_versions(requirements: list[str]) -> None:
@@ -154,6 +176,8 @@ def main(argv: list[str]) -> int:
                 robot_spec = json.load(fh)
             scene: Any = IsaacManifestScene(
                 robot_spec=robot_spec,
+                environment_usd=args.environment_usd,
+                spawn_pose=tuple(args.spawn_pose),
                 obs_height=args.obs_height,
                 obs_width=args.obs_width,
                 instruction=args.instruction,
@@ -190,12 +214,24 @@ def main(argv: list[str]) -> int:
             sim_app=sim_app,
             task=args.task,
             layout=args.layout,
+            environment=args.environment_usd or "",
+            spawn=list(args.spawn_pose),
         )
     finally:
         sim_app.close()
 
 
-def _serve(scene: Any, *, host: str, port: int, sim_app: Any, task: str, layout: str) -> int:
+def _serve(
+    scene: Any,
+    *,
+    host: str,
+    port: int,
+    sim_app: Any,
+    task: str,
+    layout: str,
+    environment: str,
+    spawn: list[float],
+) -> int:
     import msgpack
     import zmq
 
@@ -219,6 +255,8 @@ def _serve(scene: Any, *, host: str, port: int, sim_app: Any, task: str, layout:
                     "action_dim": scene.action_dim,
                     "task": task,
                     "layout": layout,
+                    "environment": environment,
+                    "spawn": spawn,
                 }
             elif endpoint == "reset":
                 # Carry sim time on reset too (≈0 after the

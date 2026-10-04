@@ -84,6 +84,7 @@ reasoner picks the rSkill. Consumed by `openral deploy sim`.
 | [`isaac_franka_bowl.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/isaac_franka_bowl.yaml) | `franka_panda` *(scene-fixed)* | `isaac_sim` | Isaac Sim | Franka bowl-manipulation sandbox (Isaac Sim) |
 | [`isaac_franka_urdf.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/isaac_franka_urdf.yaml) | `franka_panda` *(scene-fixed)* | `isaac_sim` | Isaac Sim | Franka sandbox loaded from URDF (Isaac Sim) |
 | [`isaac_panda_mobile_urdf.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/isaac_panda_mobile_urdf.yaml) | `panda_mobile` *(scene-fixed)* | `isaac_sim` | Isaac Sim | Mobile-base Panda loaded from URDF (Isaac Sim) |
+| [`isaac_panda_mobile_warehouse.yaml`](https://github.com/OpenRAL/openral/blob/master/scenes/deploy/isaac_panda_mobile_warehouse.yaml) | `panda_mobile` *(declared)* | `isaac_sim` | Isaac Sim | Mobile-base Panda spawned in an aisle of NVIDIA's `Simple_Warehouse` (three shelf racks, lidar/SLAM/Nav2). The generic template: `scene.assets_uri` (environment USD) + `robot_id` + `base_pose` (spawn) — see [`scenes/README.md`](https://github.com/OpenRAL/openral/tree/master/scenes/README.md#isaac-sim-any-stage-any-robot) |
 
 ## SimScene catalogue (`scenes/sim/`)
 

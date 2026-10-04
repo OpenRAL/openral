@@ -42,6 +42,26 @@ Franka-based today but the scene is robot-flagged for forward compatibility with
 other Isaac Lab embodiments; ``robot_id`` from the YAML is forwarded to the
 launcher.
 
+Environment + placement (``layout: manifest``)
+----------------------------------------------
+A deploy scene loads any Isaac stage around any manifest robot with three
+fields — ``scene.assets_uri`` (the environment USD), ``robot_id``, and
+``base_pose`` (the spawn; planar: x, y, z + a yaw-only quaternion)::
+
+    robot_id: panda_mobile
+    base_pose: {xyz: [-4.8, 0.0, 0.0], quat_xyzw: [0, 0, 0.7071068, 0.7071068], frame_id: world}
+    scene:
+      id: isaac_sim
+      backend: isaacsim
+      assets_uri: isaac:Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd
+
+Either field implies the ``manifest`` layout (the PoC layouts hardcode their own
+stage). ``assets_uri`` accepts a local path (``file://`` optional; relative to
+the working directory), an ``http(s)://`` / ``omniverse://`` URL, or
+``isaac:<path>`` under the sidecar's own Isaac asset root. NVIDIA's Isaac
+environments are licensed for use inside Isaac Sim — they are referenced here,
+never converted or vendored.
+
 Licensing (CLAUDE.md §1.9, §3): Isaac Sim's Omniverse Kit
 components are proprietary and **never vendored** — the sidecar venv is an
 externally-provisioned dependency the user installs (and, by running the
@@ -52,6 +72,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import os
 import tempfile
 from dataclasses import dataclass
@@ -68,7 +89,7 @@ from openral_sim.registry import SCENES
 from openral_sim.sidecar import SidecarClient, SidecarSimRollout
 
 if TYPE_CHECKING:
-    from openral_core import RobotDescription, SensorSpec, SimEnvironment
+    from openral_core import Pose6D, RobotDescription, SensorSpec, SimEnvironment
 
     from openral_sim.rollout import Observation
 
@@ -126,18 +147,20 @@ _SIDECAR_PORT_MIN = 20_000
 _SIDECAR_PORT_MAX = 40_000
 
 
-def _scene_default_port(task_id: str, robot_id: str, layout: str) -> int:
+def _scene_default_port(task_id: str, robot_id: str, layout: str, world: str = "") -> int:
     """Deterministic per-scene ZMQ port, stable across processes.
 
     Mirrors ``policies.rldx._derive_sidecar_port`` (policy identity) for the
-    scene-identity case. Any residual hash collision is caught loudly by the
+    scene-identity case. ``world`` keys the environment USD + spawn pose, so
+    two deploy scenes that differ only in where the robot stands never share
+    a sidecar (empty → the pre-environment key, so existing ports are
+    unchanged). Any residual hash collision is caught loudly by the
     identity-checked ping handshake (``SidecarClient.expected_identity``),
     never served as wrong data. See ``sidecar_port_for_key`` for the shared
     derivation.
     """
-    return sidecar_port_for_key(
-        f"{task_id}|{robot_id}|{layout}", port_min=_SIDECAR_PORT_MIN, port_max=_SIDECAR_PORT_MAX
-    )
+    key = f"{task_id}|{robot_id}|{layout}" + (f"|{world}" if world else "")
+    return sidecar_port_for_key(key, port_min=_SIDECAR_PORT_MIN, port_max=_SIDECAR_PORT_MAX)
 
 
 # REQ recv timeout for a steady-state step (Omniverse PhysX + RTX render of one
@@ -346,6 +369,84 @@ def _locate_sidecar_script() -> Path:
     )
 
 
+# ── environment + spawn (manifest layout) ──
+
+_USD_SUFFIXES = (".usd", ".usda", ".usdc", ".usdz")
+# Forwarded verbatim: the sidecar (Kit's omni.client) resolves these itself.
+_REMOTE_USD_PREFIXES = ("isaac:", "http://", "https://", "omniverse://")
+# |sin(roll/2)|, |sin(pitch/2)| above this reads as a tilted placement.
+_PLANAR_QUAT_TOL = 1e-4
+
+
+def _resolve_environment_usd(assets_uri: str | None) -> str | None:
+    """Validate ``scene.assets_uri`` as an environment USD for the sidecar.
+
+    Remote forms (``isaac:``, ``http(s)://``, ``omniverse://``) pass through; a
+    local path (optionally ``file://``) is resolved against the working
+    directory and must exist — a typo fails here, not minutes into a Kit boot.
+
+    Example:
+        >>> _resolve_environment_usd("isaac:Isaac/Environments/Simple_Warehouse/warehouse.usd")
+        'isaac:Isaac/Environments/Simple_Warehouse/warehouse.usd'
+        >>> _resolve_environment_usd(None) is None
+        True
+    """
+    if not assets_uri:
+        return None
+    if not assets_uri.lower().endswith(_USD_SUFFIXES):
+        raise ROSConfigError(
+            f"scene.assets_uri {assets_uri!r} is not a USD file "
+            f"({', '.join(_USD_SUFFIXES)}); the isaac_sim scene loads it as its environment."
+        )
+    if assets_uri.startswith(_REMOTE_USD_PREFIXES):
+        return assets_uri
+    path = Path(assets_uri.removeprefix("file://")).expanduser().resolve()
+    if not path.is_file():
+        raise ROSConfigError(f"scene.assets_uri {assets_uri!r}: no such file ({path}).")
+    return str(path)
+
+
+def _spawn_pose(base_pose: Pose6D | None) -> tuple[float, float, float, float]:
+    """``base_pose`` → the sidecar's planar ``(x, y, z, yaw)`` placement.
+
+    The manifest scene places (and, for a mobile base, drives) the robot on the
+    floor plane, so the orientation must be a pure yaw; a roll/pitch is rejected
+    rather than silently dropped.
+
+    Example:
+        >>> from openral_core import Pose6D
+        >>> p = Pose6D(xyz=(1.0, 2.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0), frame_id="world")
+        >>> _spawn_pose(p)
+        (1.0, 2.0, 0.0, 0.0)
+    """
+    if base_pose is None:
+        return (0.0, 0.0, 0.0, 0.0)
+    qx, qy, qz, qw = base_pose.quat_xyzw
+    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if norm == 0.0:
+        raise ROSConfigError("base_pose.quat_xyzw is the zero quaternion.")
+    if abs(qx) / norm > _PLANAR_QUAT_TOL or abs(qy) / norm > _PLANAR_QUAT_TOL:
+        raise ROSConfigError(
+            f"base_pose.quat_xyzw {base_pose.quat_xyzw} tilts the robot; the isaac_sim "
+            "scene places robots upright on the floor, so only a yaw (rotation about z) "
+            "is supported."
+        )
+    x, y, z = (float(v) for v in base_pose.xyz)
+    return (x, y, z, 2.0 * math.atan2(qz, qw))
+
+
+def _world_key(environment_usd: str | None, base_pose: Pose6D | None) -> str:
+    """The environment + spawn part of a scene's sidecar identity.
+
+    Empty when neither is set, so a scene without them keeps its pre-existing
+    port; otherwise two scenes differing only in stage or spawn get distinct
+    sidecars (``_scene_default_port``).
+    """
+    if environment_usd is None and base_pose is None:
+        return ""
+    return f"{environment_usd or ''}|{list(_spawn_pose(base_pose))}"
+
+
 # ── robot-spec marshalling (robot-agnostic manifest scene) ──
 
 
@@ -535,7 +636,13 @@ def provision_isaac_sim() -> None:
     _sidecar_python()
 
 
-@SCENES.register(_ISAAC_SCENE_ID, fixed_robot=None, provision=provision_isaac_sim, sim_clock=True)
+@SCENES.register(
+    _ISAAC_SCENE_ID,
+    fixed_robot=None,
+    provision=provision_isaac_sim,
+    sim_clock=True,
+    base_pose=True,
+)
 def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     """Build an Isaac Lab scene behind the out-of-process sidecar.
 
@@ -559,11 +666,25 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     host = str(opts.get("host", _DEFAULT_HOST))
     timeout_ms = _opt_num(opts, "timeout_ms", _DEFAULT_TIMEOUT_MS, int)
     boot_timeout_s = _opt_num(opts, "boot_timeout_s", _DEFAULT_BOOT_TIMEOUT_S, float)
-    layout = str(opts.get("layout", "lift_cube"))
+    environment_usd = _resolve_environment_usd(env_cfg.scene.assets_uri)
+    spawn = _spawn_pose(env_cfg.base_pose)
+    placed = environment_usd is not None or env_cfg.base_pose is not None
+    # An environment / spawn pose is a manifest-layout feature (the PoC layouts
+    # hardcode their own stage), so it implies that layout; contradicting it is
+    # an error rather than a silently ignored field.
+    layout = str(opts.get("layout", "manifest" if placed else "lift_cube"))
+    if placed and layout != "manifest":
+        raise ROSConfigError(
+            f"isaac_sim layout {layout!r} has a hardcoded stage; scene.assets_uri / "
+            "base_pose need layout 'manifest' (the default when either is set)."
+        )
+    world = _world_key(environment_usd, env_cfg.base_pose)
     # Default to a per-scene port (no cross-scene sidecar reuse); an explicit
     # ``port`` in backend_options still wins.
     robot_id = env_cfg.robot_id or "franka_panda"
-    port = _opt_num(opts, "port", _scene_default_port(env_cfg.task.id, robot_id, layout), int)
+    port = _opt_num(
+        opts, "port", _scene_default_port(env_cfg.task.id, robot_id, layout, world), int
+    )
     headless = bool(opts.get("headless", True))
     auto_spawn = os.environ.get(_AUTO_SPAWN_ENV, "1") != "0"
 
@@ -611,6 +732,10 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     if layout == "manifest":
         robot_spec_path = _write_robot_spec(env_cfg)
         launch_argv += ["--robot-spec", robot_spec_path]
+    if environment_usd is not None:
+        launch_argv += ["--environment-usd", environment_usd]
+    if env_cfg.base_pose is not None:
+        launch_argv += ["--spawn-pose", *(repr(v) for v in spawn)]
 
     client = SidecarClient(
         name="isaac",
@@ -622,7 +747,12 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
         auto_spawn=auto_spawn,
         # Reject (loudly) an already-running sidecar on this port that serves a
         # different scene, instead of silently adopting its wrong layout.
-        expected_identity={"task": env_cfg.task.id, "layout": layout},
+        expected_identity={
+            "task": env_cfg.task.id,
+            "layout": layout,
+            "environment": environment_usd or "",
+            "spawn": list(spawn),
+        },
     )
     try:
         client.connect()

@@ -8877,10 +8877,12 @@ class SceneSpec(BaseModel):
         id: Stable scene identifier used by the eval registry, e.g.
             ``"libero_spatial"``, ``"metaworld_mt50"``, ``"so100_tabletop"``.
         backend: Physics backend used to instantiate the scene.
-        assets_uri: Optional URI (file:// or hf://) pointing at scene assets
-            (XML / MJCF / asset bundle).  When ``None``, the registered
-            adapter resolves assets internally (LIBERO / MetaWorld pull theirs
-            from their own packages).
+        assets_uri: Optional URI pointing at scene assets.  When ``None``,
+            the registered adapter resolves assets internally (LIBERO /
+            MetaWorld pull theirs from their own packages).  Read by the
+            ``isaac_sim`` scene as its environment USD (a local path, an
+            ``http(s)://`` / ``omniverse://`` URL, or ``isaac:<path>`` under
+            the installed Isaac Sim asset root); other adapters ignore it.
         observation_height: Default render height in pixels for camera obs.
         observation_width: Default render width in pixels for camera obs.
         cameras: List of camera names the scene exposes.  Adapters use this
