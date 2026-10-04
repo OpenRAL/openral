@@ -84,7 +84,7 @@ joints:
     parent_link: "left_link6"
     child_link: "left_finger"
     axis_xyz: [1.0, 0.0, 0.0]
-    position_limits: [0.0, 0.07]
+    position_limits: [0.0, 1.0]
     velocity_limit: 0.5
     effort_limit: 30.0
     actuator_kind: "servo"
@@ -148,7 +148,7 @@ joints:
     parent_link: "right_link6"
     child_link: "right_finger"
     axis_xyz: [1.0, 0.0, 0.0]
-    position_limits: [0.0, 0.07]
+    position_limits: [0.0, 1.0]
     velocity_limit: 0.5
     effort_limit: 30.0
     actuator_kind: "servo"

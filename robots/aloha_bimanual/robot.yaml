@@ -91,7 +91,7 @@ joints:
     parent_link: "left_link6"
     child_link: "left_finger"
     axis_xyz: [1.0, 0.0, 0.0]
-    position_limits: [0.0, 0.041]
+    position_limits: [0.0, 1.0]
     velocity_limit: 0.5
     effort_limit: 4.0
     actuator_kind: "servo"
@@ -155,7 +155,7 @@ joints:
     parent_link: "right_link6"
     child_link: "right_finger"
     axis_xyz: [1.0, 0.0, 0.0]
-    position_limits: [0.0, 0.041]
+    position_limits: [0.0, 1.0]
     velocity_limit: 0.5
     effort_limit: 4.0
     actuator_kind: "servo"
@@ -280,17 +280,20 @@ sim:
     - joint: "left_gripper"
       ctrl_range: [0.021, 0.057]
       qpos_addrs: [6]
-      qpos_scale: 0.036   # 0.057 - 0.021; unused by passthrough but kept for symmetry
-      read_mode: "passthrough"
-      write_mode: "passthrough"
+      qpos_scale: 0.036   # 0.057 - 0.021
+      # The channel is normalized [0, 1] (0 closed, 1 open): what gym_aloha
+      # and the act-aloha checkpoints use. It maps affinely onto the MJCF
+      # finger range [0.021, 0.057] m, and reads back the same way.
+      read_mode: "affine_low_high"
+      write_mode: "normalised"
       actuator_index: 6
       mirror_actuator_index: 7
     - joint: "right_gripper"
       ctrl_range: [0.021, 0.057]
       qpos_addrs: [14]
       qpos_scale: 0.036
-      read_mode: "passthrough"
-      write_mode: "passthrough"
+      read_mode: "affine_low_high"
+      write_mode: "normalised"
       actuator_index: 14
       mirror_actuator_index: 15
   keyframe_index: 0
