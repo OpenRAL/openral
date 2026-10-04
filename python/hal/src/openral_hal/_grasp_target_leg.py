@@ -48,7 +48,11 @@ classes, each logged once per transition with its typed reason:
   occluding part of the target shrinks and shifts the fit; it never replaces
   the held region). The same shrink with no contact link near is
   ``unoccluded_refit``, a contradiction (a person's hand, the target knocked
-  over). The gripper closing in on the target occludes it from the head
+  over). "Near" is measured over the target: the jaw's hand point (its TCP, a
+  finger length above the fingertips) over the held footprint, up to the approach
+  distance above its top. A fit refused outright with the hand there (what is left
+  of an occluded target no longer reaches the support) is the lost view
+  ``hand_at_target``. The gripper closing in on the target occludes it from the head
   camera exactly then, so the last accepted
   region is **frozen** for at most ``grasp_target_freeze_s`` (unset: twice
   ``grid_max_age_s``, the kernel's voxel deadline; never more — the kernel's
@@ -1052,6 +1056,56 @@ def _hand_near(
     return bool(_in_region(np.asarray(hands, dtype=np.float64), grown).any())
 
 
+def _hand_over_target(
+    hands: Sequence[tuple[float, float, float]],
+    held: PlaceRegion,
+    *,
+    reach_m: float,
+    hand_rise_m: float,
+) -> bool:
+    """A declared contact link's hand point over the held target, within ``hand_rise_m``.
+
+    The hand point is the jaw's TCP (the finger hinge), a finger length above the
+    fingertips, so "near the target" is measured over its footprint: the held region
+    raised by ``hand_rise_m`` (the approach distance that armed it), grown by ``reach_m``.
+    """
+    x, y, z = held.pose.xyz
+    hx, hy, hz = held.half_extents
+    column = held.model_copy(
+        update={
+            "pose": held.pose.model_copy(update={"xyz": (x, y, z + hand_rise_m / 2.0)}),
+            "half_extents": (hx, hy, hz + hand_rise_m / 2.0),
+        }
+    )
+    return _hand_near(hands, column, reach_m=reach_m)
+
+
+def _refused_fit(
+    kind: str,
+    detail: str,
+    previous: PlaceRegion | None,
+    hands: Sequence[tuple[float, float, float]],
+    *,
+    reach_m: float,
+    hand_rise_m: float,
+) -> _Refusal:
+    """A re-fit ``target_region_from_mask`` refused: a lost view or a contradiction.
+
+    Too few points is a lost view. So is any refusal with a region held and a declared
+    contact link's hand over it (``hand_at_target``): the closing hand occludes the
+    target's lower part, so what is left no longer reaches the support. The held region
+    stays, never replaced, under its freeze TTL until the stall's ATTACH hands over.
+    Before anything is held, or with the hand elsewhere, it is the contradiction it names.
+    """
+    if kind == TargetRefusal.TOO_FEW_POINTS.value:
+        return _lost(kind, detail)
+    if previous is not None and _hand_over_target(
+        hands, previous, reach_m=reach_m, hand_rise_m=hand_rise_m
+    ):
+        return _lost("hand_at_target", f"{kind}: {detail}, hand over the held target")
+    return _contradicted(kind, detail)
+
+
 def _gate_refit(
     grid: VoxelLattice,
     region: PlaceRegion,
@@ -1060,6 +1114,7 @@ def _gate_refit(
     min_cover: float,
     hands: Sequence[tuple[float, float, float]] = (),
     occluder_margin_m: float = 0.05,
+    hand_rise_m: float = 0.0,
 ) -> PlaceRegion:
     """Map cover + tracking gate on a fresh fit, or the typed refusal (lost vs contradicted).
 
@@ -1093,7 +1148,7 @@ def _gate_refit(
     if not region_within(region, previous, tol_m=grid.resolution):
         raise _contradicted("target_moved", f"{moved}: reaches outside the held region")
     reach = grid.resolution + occluder_margin_m
-    if _hand_near(hands, previous, reach_m=reach):
+    if _hand_over_target(hands, previous, reach_m=reach, hand_rise_m=hand_rise_m):
         # The robot's own hand occluding part of the target: the held region
         # stays under its freeze TTL and is not replaced by the partial fit.
         raise _lost("occluded_refit", f"{moved}, inside the held region, hand within {reach:.3f} m")
@@ -1943,9 +1998,14 @@ class GraspTargetLeg:
                 f"points={fit.point_count} depth_valid={fit.depth_valid_fraction:.2f} "
                 f"half_extents={tuple(round(v, 3) for v in fit.half_extents)}"
             )
-            if fit.refusal is TargetRefusal.TOO_FEW_POINTS:
-                raise _lost(fit.refusal.value, detail)
-            raise _contradicted(fit.refusal.value, detail)
+            raise _refused_fit(
+                fit.refusal.value,
+                detail,
+                previous,
+                hands,
+                reach_m=grid.resolution + self._occluder_margin_m,
+                hand_rise_m=self._approach_m or 0.0,
+            )
         return _gate_refit(
             grid,
             fit.region,
@@ -1953,6 +2013,7 @@ class GraspTargetLeg:
             min_cover=self._config.grasp_target_min_cover,
             hands=hands,
             occluder_margin_m=self._occluder_margin_m,
+            hand_rise_m=self._approach_m or 0.0,
         )
 
     def _hands(self, declaration: GraspDeclaration, frame: str) -> list[tuple[float, float, float]]:

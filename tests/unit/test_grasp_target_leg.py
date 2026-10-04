@@ -35,6 +35,7 @@ from openral_hal._grasp_target_leg import (
     GraspTargetTracker,
     _gate_refit,
     _Refusal,
+    _refused_fit,
     approach_box,
     search_column,
 )
@@ -227,6 +228,52 @@ def test_a_refit_reaching_outside_the_held_region_retracts() -> None:
     assert any("retracted — target_moved" in line for line in lines)
     elsewhere = _gate(_refit(0.70, (0.04, 0.04, 0.04)), held)  # nothing in the map there
     assert (elsewhere.kind, elsewhere.retract) == ("map_disagrees", True)
+
+
+def test_a_hand_hovering_over_the_target_within_the_approach_distance_occludes() -> None:
+    """The hand point is the jaw's TCP (the finger hinge), a finger length above the
+    fingertips: waiting over the target it sits 12 cm over the held top while it shadows
+    part of the box from the head camera (Isaac i28: the shrunken re-fit retracted as
+    ``unoccluded_refit``). Over the held footprint within the approach distance that
+    armed the target, it is the robot's own hand — not a person's."""
+    held = _measured(11 * _S)
+    shrunk = _refit(0.425, (0.015, 0.04, 0.03))
+    hover = (0.45, 0.0, 0.25)
+
+    def gate(rise: float, hand: tuple[float, float, float] = hover) -> _Refusal:
+        with pytest.raises(_Refusal) as caught:
+            _gate_refit(
+                _held_block_lattice(), shrunk, held, min_cover=0.5, hands=(hand,), hand_rise_m=rise
+            )
+        return caught.value
+
+    assert (gate(0.20).kind, gate(0.20).retract) == ("occluded_refit", False)
+    assert gate(0.0).kind == "unoccluded_refit"
+    assert gate(0.20, (0.60, 0.0, 0.25)).kind == "unoccluded_refit"  # beside it, not over it
+    # A re-fit reaching outside the held region stays a move, hand or not.
+    assert _gate(_refit(0.50, (0.04, 0.04, 0.04)), held).kind == "target_moved"
+
+
+def test_a_refused_refit_with_the_hand_over_the_held_target_is_a_lost_view() -> None:
+    """With the fingers removed from the fit, the hand still OCCLUDES the target's lower
+    part from the head camera as it closes: what is left of the box no longer reaches the
+    support and the re-fit is refused (``not_on_support``, Isaac i25). With a region held
+    and the hand over it, that is a lost view (held region kept under its TTL); with
+    none held yet, or the hand elsewhere, it is the contradiction it names."""
+    held = _measured(11 * _S)
+
+    def refused(prev: PlaceRegion | None, hand: tuple[float, float, float]) -> _Refusal:
+        return _refused_fit(
+            "not_on_support", "points=900", prev, (hand,), reach_m=0.07, hand_rise_m=0.20
+        )
+
+    at = refused(held, (0.45, 0.0, 0.25))
+    assert (at.kind, at.retract) == ("hand_at_target", False)
+    assert "not_on_support" in at.detail
+    assert refused(held, _HAND_FAR).kind == "not_on_support"
+    assert refused(None, (0.45, 0.0, 0.25)).kind == "not_on_support"
+    few = _refused_fit("too_few_points", "points=3", None, (), reach_m=0.07, hand_rise_m=0.2)
+    assert (few.kind, few.retract) == ("too_few_points", False)
 
 
 def test_a_refit_within_the_tracking_gate_replaces_the_held_region() -> None:
