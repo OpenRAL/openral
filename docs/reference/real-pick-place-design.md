@@ -272,7 +272,11 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   one voxel + `occluder_margin_m` (0.05 m) of it —
   the robot's own hand occluding part of the target — is a lost view, `occluded_refit`; the same
   shrink with no contact link near is `unoccluded_refit`, and a re-fit the map does not cover is
-  `map_disagrees`, both retracting at once, as does one reaching outside the held region)
+  `map_disagrees`, both retracting at once, as does one reaching outside the held region;
+  "near" is measured over the target — the hand point is the jaw's TCP, a finger length above
+  the fingertips, so it counts over the held footprint up to `approach_m` above the held top —
+  and a fit refused outright with the hand there, an occluded target no longer reaching the
+  support, is the lost view `hand_at_target`)
   for `grasp_target_freeze_s` (default twice `grid_max_age_s`, the deploy's kernel voxel deadline —
   2 s on the real cell; refused above twice it — the kernel ages a grasp region out at
   `grasp_region_max_age_s` = 2 × its voxel deadline, so a longer freeze would publish a region the
