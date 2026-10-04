@@ -80,6 +80,7 @@ __all__ = [
     "make_lifecycle_main",
     "make_lifecycle_main_from_manifest",
     "sim_attachment_heartbeat",
+    "spin_until_shutdown",
     "twin_jaw_evidence_timeout_s",
 ]
 
@@ -290,6 +291,7 @@ log = logging.getLogger(__name__)
 try:
     import rclpy
     from openral_observability import log_lifecycle_errors
+    from rclpy._rclpy_pybind11 import RCLError
     from rclpy.executors import ExternalShutdownException
     from rclpy.lifecycle import (
         LifecycleNode,
@@ -408,16 +410,7 @@ def make_lifecycle_main(
         rclpy.init()
         node = _FactoryHALLifecycleNode(node_name, hal_factory)
         try:
-            rclpy.spin(node)
-        except (KeyboardInterrupt, ExternalShutdownException):
-            # Normal teardown: rclpy's SIGINT handler shuts the context down
-            # and raises KeyboardInterrupt out of `rclpy.spin()` on Jazzy;
-            # ROS 2 Rolling / a manual `rclpy.shutdown()` from another thread
-            # raises ExternalShutdownException instead. The context is
-            # already down by `finally`, so `try_shutdown()` (idempotent) is
-            # used instead of the bare `rclpy.shutdown()` that used to raise
-            # `RCLError: rcl_shutdown already called` here.
-            pass
+            spin_until_shutdown(node)
         finally:
             # SIGINT never runs a lifecycle transition, so this is the only
             # place `HAL.disconnect` (and the terminal `sim.task_success_final`
@@ -427,6 +420,29 @@ def make_lifecycle_main(
             rclpy.try_shutdown()  # idempotent if the context is already down
 
     return main
+
+
+def spin_until_shutdown(node: Any) -> None:  # noqa: ANN401  # reason: rclpy Node is untyped
+    """``rclpy.spin(node)`` until a signal-driven shutdown, which ends it quietly.
+
+    Normal teardown: rclpy's SIGINT handler shuts the context down and raises
+    ``KeyboardInterrupt`` out of ``rclpy.spin()`` on Jazzy; ROS 2 Rolling / a manual
+    ``rclpy.shutdown()`` from another thread raises ``ExternalShutdownException``. And a
+    timer callback already dequeued when the context went down (a sensor publish)
+    publishes on the invalidated context and raises ``RCLError`` out of the spin: also
+    teardown, not a fault — the HAL used to exit 1 on every Ctrl-C of a graph with a
+    depth camera (2026-10-04). An ``RCLError`` while the context is still up is a real
+    error and propagates. The caller's ``finally`` uses ``rclpy.try_shutdown()``
+    (idempotent), not the bare ``rclpy.shutdown()`` that raised
+    ``RCLError: rcl_shutdown already called``.
+    """
+    try:
+        rclpy.spin(node)
+    except RCLError:
+        if rclpy.ok():
+            raise
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
 
 
 def make_lifecycle_main_from_manifest(node_name: str) -> Callable[[], None]:
@@ -476,16 +492,7 @@ def make_lifecycle_main_from_manifest(node_name: str) -> Callable[[], None]:
         # node offloads odom/joint_state to a dedicated publisher thread reading
         # the proprio snapshot, keeping all env.step / render on this one thread.
         try:
-            rclpy.spin(node)
-        except (KeyboardInterrupt, ExternalShutdownException):
-            # Normal teardown: rclpy's SIGINT handler shuts the context down
-            # and raises KeyboardInterrupt out of `rclpy.spin()` on Jazzy;
-            # ROS 2 Rolling / a manual `rclpy.shutdown()` from another thread
-            # raises ExternalShutdownException instead. The context is
-            # already down by `finally`, so `try_shutdown()` (idempotent) is
-            # used instead of the bare `rclpy.shutdown()` that used to raise
-            # `RCLError: rcl_shutdown already called` here.
-            pass
+            spin_until_shutdown(node)
         finally:
             # SIGINT never runs a lifecycle transition, so this is the only
             # place `HAL.disconnect` (and the terminal `sim.task_success_final`
