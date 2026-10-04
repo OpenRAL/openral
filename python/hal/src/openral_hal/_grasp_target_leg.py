@@ -1282,6 +1282,9 @@ class GraspTargetLeg:
         self._deadline_timer: Any = None
         # Set by ``teardown`` (under the bridge lock): no request or deadline after it.
         self._torn_down = False
+        # Consecutive fits that found no self-filtered cloud although a topic is
+        # configured: logged on entering and on leaving that state (CLAUDE.md §1.4).
+        self.unfiltered_fits = 0
 
     @property
     def _lock(self) -> AbstractContextManager[Any]:
@@ -1921,7 +1924,8 @@ class GraspTargetLeg:
         """Reply → region → map cover → tracking gate, or a typed refusal.
 
         Pure on its arguments (snapshots taken under the bridge lock by ``_on_reply``),
-        but for ``_align_to_depth``'s read of the cached ``CameraInfo``.
+        but for ``_align_to_depth``'s read of the cached ``CameraInfo``, the read of the
+        self-filtered cloud cache (``_kept_points``) and the ``unfiltered_fits`` count.
         """
         from openral_hal.vision_attachment_bridge import (
             decode_mono8_mask,
@@ -1969,7 +1973,7 @@ class GraspTargetLeg:
         stamp_ns = min(depth_stamp_ns, source_ns)
         # The robot's own points (the fingers closing in on the target) leave the fit
         # exactly as the self-filter took them out of the map, at this capture.
-        kept = self._bridge.kept_points(depth_stamp_ns, grid.frame_id)
+        kept = self._kept_points(depth_stamp_ns, grid.frame_id)
         if kept is not None:
             masks = [
                 mask_without_removed_points(mask, depth, intrinsics, t_base_from_cam, kept)
@@ -2015,6 +2019,33 @@ class GraspTargetLeg:
             occluder_margin_m=self._occluder_margin_m,
             hand_rise_m=self._approach_m or 0.0,
         )
+
+    def _kept_points(self, stamp_ns: int, frame: str) -> NDArray[np.float64] | None:
+        """``VisionAttachmentBridge.kept_points``, saying when a configured filter missed.
+
+        With ``self_filtered_cloud_topic`` set, a capture with no self-filtered cloud fits
+        with the robot's own points in: the first such fit warns (topic, stamp, cache
+        span), the next filtered one reports how many ran unfiltered (CLAUDE.md §1.4).
+        """
+        kept = self._bridge.kept_points(stamp_ns, frame)
+        topic = self._config.self_filtered_cloud_topic
+        if kept is None and topic:
+            if not self.unfiltered_fits:
+                stamps = [cloud[0] for cloud in self._bridge._kept_clouds]
+                span = f"{min(stamps)}..{max(stamps)} ns" if stamps else "empty"
+                self._node.get_logger().warning(
+                    f"grasp target fit unfiltered: no self-filtered cloud on {topic!r} at "
+                    f"stamp {stamp_ns} (or no tf2 to {frame!r}; cache {len(stamps)} clouds, "
+                    f"span {span}) — the robot's own points stay in the fit"
+                )
+            self.unfiltered_fits += 1
+        elif kept is not None and self.unfiltered_fits:
+            self._node.get_logger().info(
+                f"grasp target fit self-filtered again after {self.unfiltered_fits} "
+                "unfiltered fit(s)"
+            )
+            self.unfiltered_fits = 0
+        return kept
 
     def _hands(self, declaration: GraspDeclaration, frame: str) -> list[tuple[float, float, float]]:
         """The located hand points of the declared contact links, in ``frame``."""
