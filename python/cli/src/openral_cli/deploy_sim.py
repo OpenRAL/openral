@@ -2205,6 +2205,22 @@ def _terminate_launch_group(proc: subprocess.Popen[bytes], *, grace_s: float = 1
         proc.wait(timeout=5.0)
 
 
+def _default_sigint() -> None:
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+
+def _spawn_launch(argv: list[str], env: dict[str, str]) -> subprocess.Popen[bytes]:
+    """Start ``ros2 launch`` in its own session, with SIGINT at its default disposition.
+
+    An ignored SIGINT survives ``exec``: a CLI started with it ignored (``cmd &`` in a
+    non-interactive shell, ``nohup``) would hand the launch a SIGINT it ignores, and the
+    graceful teardown below — SIGINT to the launch's session — then never reaches a
+    node; everything died at the SIGKILL/orphan backstop instead (the Isaac HAL exited
+    -15 on every scripted stop, 2026-10-04).
+    """
+    return subprocess.Popen(argv, env=env, start_new_session=True, preexec_fn=_default_sigint)  # noqa: PLW1509  # reason: only resets one signal disposition before exec; no locks, no imports
+
+
 def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) -> int:
     """Run ``ros2 launch`` in its own session, reaping the whole tree on exit.
 
@@ -2242,7 +2258,7 @@ def _run_launch(argv: list[str], env: dict[str, str], *, grace_s: float = 12.0) 
     Returns the launch process's exit code (0 if it exited via signal
     with no recorded returncode).
     """
-    proc = subprocess.Popen(argv, env=env, start_new_session=True)
+    proc = _spawn_launch(argv, env)
 
     def _forward(_signum: int, _frame: object) -> None:
         with contextlib.suppress(ProcessLookupError, OSError):
