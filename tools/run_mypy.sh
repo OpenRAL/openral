@@ -13,4 +13,7 @@ uv run mypy --strict \
   -p openral_runner \
   -p openral_reasoner \
   -p openral_hal
+# openral_safety is a colcon package, not a uv workspace member, so it is
+# checked by path; its rclpy / IDL imports resolve through mypy.ini.
+uv run mypy --strict packages/openral_safety/openral_safety
 uv run mypy --strict tools/
