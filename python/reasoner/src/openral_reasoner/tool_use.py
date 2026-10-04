@@ -49,6 +49,7 @@ from openral_core import (
     ReasonerModel,
     ReasonerToolCall,
     RobotCapabilities,
+    parse_reasoner_tool_choice,
 )
 from openral_core.exceptions import (
     ROSConfigError,
@@ -571,6 +572,13 @@ REASONER_API_KEY_ENV: str = "OPENRAL_REASONER_API_KEY"
 REASONER_DIALECT_ENV: str = "OPENRAL_REASONER_DIALECT"
 REASONER_MAX_TOKENS_ENV: str = "OPENRAL_REASONER_MAX_TOKENS"
 REASONER_TIMEOUT_ENV: str = "OPENRAL_REASONER_TIMEOUT_S"
+# Escape hatch for the uncurated bare-URL path only (openai dialect): some
+# OpenAI-compatible gateways front a "thinking mode" model that rejects
+# ``tool_choice: "required"`` outright (HTTP 400, "Thinking mode does not
+# support this tool_choice"), e.g. DeepSeek-V4.1-Flash behind a third-party
+# gateway. Named endpoints already carry their own correct ``tool_choice``
+# via their preset and are unaffected by this var.
+REASONER_TOOL_CHOICE_ENV: str = "OPENRAL_REASONER_TOOL_CHOICE"
 
 
 def _prompt_tokens(response: object) -> int | None:
@@ -647,6 +655,11 @@ def build_tool_use_client_from_env() -> ToolUseClient:
       named endpoint already knows its wire format.
     * ``OPENRAL_REASONER_{MAX_TOKENS,TIMEOUT_S}`` (optional) — override the
       registry defaults.
+    * ``OPENRAL_REASONER_TOOL_CHOICE`` (escape hatch only, openai dialect) —
+      overrides the uncurated bare-URL path's default ``tool_choice:
+      "required"`` (e.g. ``"auto"``). Some gateways front a thinking-mode
+      model that rejects ``"required"`` outright. Ignored for a named
+      endpoint or a curated model — both already carry the correct value.
 
     A raw model id that is not in the registry takes the escape hatch: it
     requires ``OPENRAL_REASONER_ENDPOINT`` + ``OPENRAL_REASONER_DIALECT`` and
@@ -676,10 +689,25 @@ def build_tool_use_client_from_env() -> ToolUseClient:
             "for an uncurated endpoint. The open-core path has no default — tests use "
             "FakeToolUseClient."
         )
+    # Validated on every path, so a bad value fails at build even where it
+    # would be ignored.
+    tool_choice = parse_reasoner_tool_choice(os.environ.get(REASONER_TOOL_CHOICE_ENV))
     entry = REASONER_MODELS.get(model_key)
     if entry is None:
-        return _build_uncurated_model(model_key)
+        return _build_uncurated_model(model_key, tool_choice)
+    if tool_choice is not None:
+        _warn_tool_choice_ignored(tool_choice, f"curated model {entry.id!r}")
     return _build_curated_model(entry)
+
+
+def _warn_tool_choice_ignored(tool_choice: str, why: str) -> None:
+    """Log that ``OPENRAL_REASONER_TOOL_CHOICE`` is set but has no effect here."""
+    log.warning(
+        "reasoner.tool_choice_ignored",
+        tool_choice=tool_choice,
+        reason=f"{REASONER_TOOL_CHOICE_ENV} only applies to a bare-URL openai endpoint; "
+        f"{why} carries its own value",
+    )
 
 
 def _env_float(name: str) -> float | None:
@@ -845,7 +873,7 @@ def _build_managed_local(
     )
 
 
-def _build_uncurated_model(model_key: str) -> ToolUseClient:
+def _build_uncurated_model(model_key: str, tool_choice: str | None) -> ToolUseClient:
     """Escape hatch: a non-registry model id + a named or raw endpoint.
 
     ``OPENRAL_REASONER_ENDPOINT`` takes either a ``_ENDPOINT_PRESETS`` name
@@ -900,6 +928,8 @@ def _build_uncurated_model(model_key: str) -> ToolUseClient:
             raise ROSConfigError(
                 f"{REASONER_API_KEY_ENV} is unset; required for dialect=anthropic."
             )
+        if tool_choice is not None:
+            _warn_tool_choice_ignored(tool_choice, "the anthropic dialect")
         return AnthropicToolUseClient(
             model_id=model_key,
             api_key=api_key,
@@ -907,12 +937,14 @@ def _build_uncurated_model(model_key: str) -> ToolUseClient:
             max_tokens=max_tokens or 1024,
             timeout_s=timeout_s,
         )
+    if preset is not None and tool_choice is not None:
+        _warn_tool_choice_ignored(tool_choice, f"named endpoint {raw_endpoint!r}")
     return OpenAICompatibleToolUseClient(
         model_id=model_key,
         api_key=api_key,
         base_url=endpoint,
         timeout_s=timeout_s,
-        tool_choice=preset.tool_choice if preset is not None else "required",
+        tool_choice=(preset.tool_choice if preset is not None else (tool_choice or "required")),
         max_tokens=max_tokens,
     )
 

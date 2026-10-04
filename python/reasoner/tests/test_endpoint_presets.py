@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import ClassVar
 
 import pytest
+from openral_core import REASONER_ENDPOINT_PRESETS
 from openral_core.exceptions import ROSConfigError
 from openral_reasoner.tool_use import (
     ANTHROPIC_BASE_URL,
@@ -34,6 +35,7 @@ def _clear_reasoner_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "OPENRAL_REASONER_DIALECT",
         "OPENRAL_REASONER_MAX_TOKENS",
         "OPENRAL_REASONER_TIMEOUT_S",
+        "OPENRAL_REASONER_TOOL_CHOICE",
         "OPENRAL_REASONER_LLM_PROVIDER",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -71,6 +73,33 @@ def test_huggingface_preset_keeps_auto_tool_choice(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("OPENRAL_REASONER_MODEL", "Qwen/Qwen3-8B")
     monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "huggingface")
     monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "hf-test")
+
+    client = build_tool_use_client_from_env()
+
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._tool_choice == "auto"
+
+
+def test_bare_url_defaults_to_required_tool_choice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unchanged default: nothing overriding it still means "required"."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", _MODEL)
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://10.0.0.5:9000/v1")
+    monkeypatch.setenv("OPENRAL_REASONER_DIALECT", "openai")
+
+    client = build_tool_use_client_from_env()
+
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._tool_choice == "required"
+
+
+def test_bare_url_tool_choice_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A gateway fronting a thinking-mode model (DeepSeek-V4.1-Flash behind a
+    third-party OpenAI-compatible gateway) 400s on tool_choice="required" —
+    OPENRAL_REASONER_TOOL_CHOICE is the escape hatch's escape hatch."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", _MODEL)
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://10.0.0.5:9000/v1")
+    monkeypatch.setenv("OPENRAL_REASONER_DIALECT", "openai")
+    monkeypatch.setenv("OPENRAL_REASONER_TOOL_CHOICE", "auto")
 
     client = build_tool_use_client_from_env()
 
@@ -195,3 +224,53 @@ def test_bare_url_still_waives_auth_for_a_curated_model(monkeypatch: pytest.Monk
     monkeypatch.delenv("OPENRAL_REASONER_API_KEY", raising=False)
     with pytest.raises(ROSConfigError, match="OPENRAL_REASONER_API_KEY"):
         build_tool_use_client_from_env()
+
+
+def test_bare_url_tool_choice_env_rejects_unknown_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unsupported mode must fail at build time, not as a 400 on the first tick."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", _MODEL)
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://10.0.0.5:9000/v1")
+    monkeypatch.setenv("OPENRAL_REASONER_DIALECT", "openai")
+    monkeypatch.setenv("OPENRAL_REASONER_TOOL_CHOICE", "any")
+    with pytest.raises(ROSConfigError, match="OPENRAL_REASONER_TOOL_CHOICE"):
+        build_tool_use_client_from_env()
+
+
+def test_tool_choice_env_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", _MODEL)
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://10.0.0.5:9000/v1")
+    monkeypatch.setenv("OPENRAL_REASONER_DIALECT", "openai")
+    monkeypatch.setenv("OPENRAL_REASONER_TOOL_CHOICE", "AUTO")
+    client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._tool_choice == "auto"
+
+
+def test_tool_choice_env_is_validated_on_the_anthropic_dialect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It is ignored there, but a bad value still fails rather than passing silently."""
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", _MODEL)
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "http://10.0.0.5:9000/v1")
+    monkeypatch.setenv("OPENRAL_REASONER_DIALECT", "anthropic")
+    monkeypatch.setenv("OPENRAL_REASONER_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENRAL_REASONER_TOOL_CHOICE", "any")
+    with pytest.raises(ROSConfigError, match="OPENRAL_REASONER_TOOL_CHOICE"):
+        build_tool_use_client_from_env()
+
+
+def test_tool_choice_env_ignored_on_a_named_endpoint_is_logged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A named endpoint keeps its own tool_choice; the override is reported, not silent."""
+    from structlog.testing import capture_logs
+
+    monkeypatch.setenv("OPENRAL_REASONER_MODEL", _MODEL)
+    monkeypatch.setenv("OPENRAL_REASONER_ENDPOINT", "ollama")
+    monkeypatch.setenv("OPENRAL_REASONER_TOOL_CHOICE", "auto")
+    with capture_logs() as logs:
+        client = build_tool_use_client_from_env()
+    assert isinstance(client, OpenAICompatibleToolUseClient)
+    assert client._tool_choice == REASONER_ENDPOINT_PRESETS["ollama"].tool_choice
+    ignored = [e for e in logs if e["event"] == "reasoner.tool_choice_ignored"]
+    assert ignored and "ollama" in ignored[0]["reason"]
