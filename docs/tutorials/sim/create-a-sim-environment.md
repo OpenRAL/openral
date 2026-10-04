@@ -385,7 +385,7 @@ stays green.
 | `franka_panda` | single-arm + parallel gripper (`read_mode: sum_over_scale`) |
 | `ur5e`, `ur10e`, `rizon4` | single-arm, no gripper, no overrides |
 | `g1`, `h1` | floating-base humanoid (`floating_base: true`) |
-| `aloha_bimanual` | bimanual + two passthrough grippers with `mirror_actuator_index` + `keyframe_index: 0` |
+| `aloha_bimanual` | bimanual + two normalized `[0, 1]` grippers (`NORMALISED` write / `AFFINE_LOW_HIGH` read over the finger range) with `mirror_actuator_index` + `keyframe_index: 0` |
 | `openarm` | bimanual + two passthrough grippers + explicit `joint_qpos_addr` skipping passive follower fingers + `seed_ctrl_from_qpos: true` |
 
 ### Drop a new robot in

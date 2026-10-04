@@ -233,6 +233,9 @@ def test_kernel_enforces_per_mode_bound_from_real_manifest(name: str) -> None:
                 measured, limit = evidence["measured_n"], evidence["limit_n"]
             else:  # a 1-D range breach rides WorkspaceEvidence on the x axis
                 assert evidence["kind"] == "workspace", evidence
+                # A gripper violation names the end effector the reasoner reports.
+                if case.mode == _GRIPPER_POSITION:
+                    assert evidence["ee_name"] == case.ee, evidence
                 # The kernel spans [min(limit, measured), max(limit, measured)].
                 measured = evidence["measured_xyz"][0]
                 lo, hi = evidence["box_min"][0], evidence["box_max"][0]

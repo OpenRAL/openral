@@ -8,11 +8,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <string>
+#include <string_view>
 
 #include <opentelemetry/common/attribute_value.h>
 #include <opentelemetry/context/runtime_context.h>
@@ -28,6 +31,31 @@
 namespace openral_safety_kernel {
 
 namespace {
+
+/// Escape a string for a JSON string literal (quotes, backslashes, control chars).
+std::string json_escape(std::string_view in) {
+  std::string out;
+  out.reserve(in.size());
+  for (const char c : in) {
+    switch (c) {
+    case '"':
+      out += "\\\"";
+      break;
+    case '\\':
+      out += "\\\\";
+      break;
+    default:
+      if (static_cast<unsigned char>(c) < 0x20) {
+        char buf[8];
+        std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(c));
+        out += buf;
+      } else {
+        out += c;
+      }
+    }
+  }
+  return out;
+}
 
 rclcpp::QoS chunk_qos() {
   // openral slot dispatcher publishes N chunks/tick on /openral/candidate_action
@@ -1598,8 +1626,13 @@ void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg:
     // carried by ``ee_name`` (e.g. ``"joint_1"``).
     const bool is_cartesian = (v.field[0] == 'w' && v.field[1] == 'o');
     // workspace_xyz field → real Cartesian violation. Other fields are joint.
-    const std::string ee_name = is_cartesian
-                                    ? std::string{"end_effector"}
+    // A gripper_range violation carries the gripper's index in joint_index;
+    // report the configured end-effector name, which the reasoner reads.
+    const bool is_gripper = std::string_view(v.field) == "gripper_range" &&
+                            v.joint_index < envelope_.gripper_ee_names.size();
+    const std::string ee_name = is_cartesian ? std::string{"end_effector"}
+                                : is_gripper
+                                    ? json_escape(envelope_.gripper_ee_names[v.joint_index])
                                     : std::string{"joint_"} + std::to_string(v.joint_index);
     const double meas = v.offending_value;
     const double limit = v.limit_value;
