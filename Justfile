@@ -141,8 +141,7 @@ sync *args:
 lint:
     uv run ruff check .
     uv run ruff format --check .
-    uv run mypy --strict -p openral_core -p openral_cli -p openral_sim -p openral_observability -p openral_runner -p openral_reasoner -p openral_hal
-    uv run mypy --strict tools/
+    bash tools/run_mypy.sh
     uv run python tools/refresh_methods_linenos.py --check --coverage
     uv run python tools/gen_nav2_visual.py --check
 

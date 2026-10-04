@@ -121,8 +121,7 @@ jobs:
       - run: uv sync --frozen --all-packages || uv sync --all-packages
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run mypy --strict -p openral_core -p openral_cli -p openral_hal
-      - run: uv run mypy --strict tools/
+      - run: bash tools/run_mypy.sh
       - name: Check schema drift
         run: uv run python tools/schema_export.py --check
       - name: Build docs (mkdocs --strict)
