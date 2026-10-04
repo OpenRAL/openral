@@ -45,7 +45,7 @@ import math
 from collections import deque
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -63,6 +63,7 @@ __all__ = [
     "TargetRegionFit",
     "TargetSeed",
     "VoxelLattice",
+    "mask_without_removed_points",
     "occupied_centers_in_box",
     "project_point",
     "region_covers_occupied",
@@ -535,6 +536,65 @@ def _erode(mask: NDArray[np.bool_], px: int) -> NDArray[np.bool_]:
         e[:, 0] = e[:, -1] = False
         m = e
     return m
+
+
+def mask_without_removed_points(
+    mask: NDArray[np.bool_],
+    depth_m: NDArray[np.float64],
+    intrinsics: IntrinsicsPinhole,
+    t_base_from_cam: NDArray[np.float64],
+    kept_points_base: NDArray[np.floating[Any]],
+    *,
+    cell_m: float = 0.005,
+) -> NDArray[np.bool_]:
+    """``mask`` without the pixels whose depth point the robot self-filter removed.
+
+    ``kept_points_base`` is the robot self-filter's output for the SAME capture
+    (``openral_octomap_bridge``'s ``robot_self_filter``: the robot's and a held
+    payload's returns removed against the collision model at the measured joint
+    state), in the base frame. A masked pixel is kept only if a kept point lies in its
+    own or a neighbouring ``cell_m`` cell — the robot is never re-modelled here, so
+    the fingers closing in on a target leave its fit exactly as they leave the map.
+    Pixels with no depth are left as they are (they contribute nothing). Removing
+    pixels only ever shrinks the fit.
+
+    Example:
+        >>> import numpy as np
+        >>> from openral_core import IntrinsicsPinhole
+        >>> k = IntrinsicsPinhole(width=4, height=4, fx=4.0, fy=4.0, cx=2.0, cy=2.0)
+        >>> m = np.ones((4, 4), dtype=bool)
+        >>> mask_without_removed_points(m, np.ones((4, 4)), k, np.eye(4), np.zeros((0, 3))).any()
+        np.False_
+    """
+    rows, cols = np.nonzero(mask & np.isfinite(depth_m) & (depth_m > 0.0))
+    out = mask.copy()
+    if len(rows) == 0:
+        return out
+    z = depth_m[rows, cols]
+    pts_cam = np.stack(
+        [
+            (cols + 0.5 - intrinsics.cx) / intrinsics.fx * z,
+            (rows + 0.5 - intrinsics.cy) / intrinsics.fy * z,
+            z,
+        ],
+        axis=1,
+    )
+    pts = pts_cam @ np.asarray(t_base_from_cam)[:3, :3].T + np.asarray(t_base_from_cam)[:3, 3]
+
+    def code(keys: NDArray[np.int64]) -> NDArray[np.int64]:
+        # ponytail: 21 bits per axis (±5 km at 5 mm), plenty for one camera's view.
+        k = keys + (1 << 20)
+        return (k[:, 0] << 42) | (k[:, 1] << 21) | k[:, 2]
+
+    kept = np.asarray(kept_points_base, dtype=np.float64).reshape(-1, 3)
+    kept = kept[np.isfinite(kept).all(axis=1)]
+    kept_codes = np.unique(code(np.floor(kept / cell_m).astype(np.int64)))
+    own = np.floor(pts / cell_m).astype(np.int64)
+    found = np.zeros(len(pts), dtype=bool)
+    for offset in [*_NEIGHBOURS_26, (0, 0, 0)]:
+        found |= np.isin(code(own + np.asarray(offset, dtype=np.int64)), kept_codes)
+    out[rows[~found], cols[~found]] = False
+    return out
 
 
 def target_region_from_mask(

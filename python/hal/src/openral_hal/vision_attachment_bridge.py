@@ -120,6 +120,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -248,6 +249,8 @@ def _published(leg: _GripperLeg) -> AttachedCollisionObject | None:
 _ASPECT_TOLERANCE = 1e-3
 
 #: Heartbeat period, seconds — the simulator bridge's attachment heartbeat period.
+#: A self-filtered cloud is the depth frame's own capture within this (same render / driver tick).
+_KEPT_CLOUD_STAMP_TOL_NS = 1_000_000
 _HEARTBEAT_PERIOD_S = 0.2
 
 #: Confidence on a region payload: the vision producer's own accepted-mask value, since the
@@ -912,11 +915,18 @@ class VisionAttachmentConfig:
             grows the patch on every side and the free height, and is the witness
             tolerance with one voxel. Default
             ``openral_core.depth_extrinsic.MAX_PLANAR_ERR_M``. *Calibration point.*
+        self_filtered_cloud_topic: The robot self-filter's output cloud
+            (``openral_octomap_bridge``'s ``robot_self_filter``) for THIS camera's
+            captures, set by the deploy launch when that filter runs. The grasp
+            target leg then fits only masked pixels whose point the filter kept
+            (``mask_without_removed_points``), so the robot's own fingers never enter
+            the target's fit. Empty: no removal (the fit sees the hand).
     """
 
     camera: str = ""
     depth_topic: str = ""
     camera_info_topic: str | None = None
+    self_filtered_cloud_topic: str = ""
     service_name: str = DEFAULT_SEGMENT_SERVICE
     deadline_s: float = 0.25
     tcp_frame: str = ""
@@ -1217,6 +1227,8 @@ class VisionAttachmentBridge:
         self._voxel_sub: Any = None
         self._depth_sub: Any = None
         self._camera_info: Any = None
+        # (capture stamp ns, frame, points) of the self-filter's last few output clouds.
+        self._kept_clouds: deque[tuple[int, str, Any]] = deque(maxlen=8)
         self._camera_info_sub: Any = None
         self._logged_depth_frame = False
         self._client: Any = None
@@ -1288,6 +1300,12 @@ class VisionAttachmentBridge:
         self._camera_info_sub = self._node.create_subscription(
             CameraInfo, self._camera_info_topic(), self._on_camera_info, depth_qos
         )
+        if self._config.self_filtered_cloud_topic:
+            from sensor_msgs.msg import PointCloud2
+
+            self._kept_cloud_sub = self._node.create_subscription(
+                PointCloud2, self._config.self_filtered_cloud_topic, self._on_kept_cloud, depth_qos
+            )
         # Same class the simulator bridge publishes on: the kernel's authoritative
         # attachment snapshot is latched description-class data.
         state_qos = QoSProfile(
@@ -2050,6 +2068,29 @@ class VisionAttachmentBridge:
             return
         stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
         self._depth = (grid, stamp_ns, str(msg.header.frame_id).strip())
+
+    def _on_kept_cloud(self, msg: Any) -> None:
+        """Cache the robot self-filter's recent output clouds by capture stamp."""
+        from sensor_msgs_py import point_cloud2
+
+        stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+        points = point_cloud2.read_points_numpy(msg, field_names=("x", "y", "z"), skip_nans=True)
+        self._kept_clouds.append((stamp_ns, str(msg.header.frame_id), points))
+
+    def kept_points(self, stamp_ns: int, frame: str) -> NDArray[np.float64] | None:
+        """The self-filter's kept points of the capture stamped ``stamp_ns``, in ``frame``.
+
+        ``None`` when no self-filtered cloud carries that exact capture stamp (within
+        1 ms) or its frame has no tf2 transform: the caller then fits unfiltered.
+        """
+        for cloud_stamp, cloud_frame, points in reversed(self._kept_clouds):
+            if abs(cloud_stamp - stamp_ns) <= _KEPT_CLOUD_STAMP_TOL_NS:
+                t = self._lookup(frame, cloud_frame)
+                if t is None:
+                    return None
+                pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+                return pts @ t[:3, :3].T + t[:3, 3]
+        return None
 
     def _on_camera_info(self, msg: Any) -> None:
         """Cache the newest ``CameraInfo`` for the depth stream."""

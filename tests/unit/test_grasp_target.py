@@ -33,6 +33,7 @@ from openral_hal._grasp_target import (
     TargetRefusal,
     TargetRegionFit,
     VoxelLattice,
+    mask_without_removed_points,
     occupied_centers_in_box,
     project_point,
     region_covers_occupied,
@@ -717,3 +718,32 @@ def test_a_probe_margin_under_two_cells_is_refused_not_widened() -> None:
         support_top_from_voxels(grid, column, near_xy=xy, min_cells=8, probe_margin_m=0.03)
     exact = support_top_from_voxels(grid, column, near_xy=xy, min_cells=8, probe_margin_m=0.04)
     assert exact == pytest.approx(6 * _RES)
+
+
+def test_the_robots_own_pixels_leave_the_target_mask() -> None:
+    """Closing on the target, the fingers enter its SAM mask; their depth points are the
+    robot's, which the robot self-filter removed from the same capture. Only masked pixels
+    whose point survives that filter are kept (Isaac 2026-10-04: the fingers in the mask
+    grew the re-fit to the hand, or failed it outright as ``not_on_support``)."""
+    from openral_core import IntrinsicsPinhole
+
+    k = IntrinsicsPinhole(width=64, height=64, fx=64.0, fy=64.0, cx=32.0, cy=32.0)
+    t = np.diag([1.0, -1.0, -1.0, 1.0])  # camera 1 m up, looking straight down
+    t[2, 3] = 1.0
+    mask = np.zeros((64, 64), dtype=bool)
+    mask[16:48, 16:48] = True
+    depth = np.full((64, 64), 0.9)  # the target's top, z = 0.1
+    depth[16:48, 16:24] = 0.7  # a finger over its left edge, z = 0.3
+    target_only = mask.copy()
+    target_only[16:48, 16:24] = False
+    rows, cols = np.nonzero(target_only)
+    z = depth[rows, cols]
+    pts_cam = np.stack([(cols + 0.5 - 32.0) / 64.0 * z, (rows + 0.5 - 32.0) / 64.0 * z, z], axis=1)
+    kept = pts_cam @ t[:3, :3].T + t[:3, 3] + 0.002  # what the self-filter let through, 2 mm off
+
+    out = mask_without_removed_points(mask, depth, k, t, kept)
+    assert out.dtype == np.bool_ and out.shape == mask.shape
+    assert not out[16:48, 16:24].any(), "the finger's pixels stay in the mask"
+    assert out[16:48, 24:48].all(), "the target's own pixels must survive"
+    # Nothing survived the filter (the hand covers the whole target): nothing is kept.
+    assert not mask_without_removed_points(mask, depth, k, t, np.zeros((0, 3))).any()

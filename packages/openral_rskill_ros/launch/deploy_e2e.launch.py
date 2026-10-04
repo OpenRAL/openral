@@ -1902,12 +1902,19 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # this launch's single sources: a grid is usable no longer than the kernel's voxel
     # deadline, and a released payload is clear once it sits the kernel's world margin plus
     # one octree cell away. First in the list, so an explicit `--hal` value still wins.
-    hal_derived_params: list[dict[str, float]] = (
+    hal_derived_params: list[dict[str, float | str]] = (
         [
             {
                 "vision_attachment_grid_max_age_s": world_voxel_deadline_s,
                 "vision_attachment_release_clear_m": _world_voxel_margin_m(hal_mode)
                 + _octomap_resolution(hal_mode),
+                # The self-filter's output for the camera octomap maps: the grasp target
+                # fit drops the robot's own points as the map does (empty: no filter).
+                "vision_attachment_self_filtered_cloud_topic": _SELF_FILTERED_CLOUD_TOPIC
+                if enable_octomap
+                and _cloud_shows_the_robot(hal_mode, scene_backend)
+                and has_collision_capsules
+                else "",
             }
         ]
         if vision_attachment_enabled
