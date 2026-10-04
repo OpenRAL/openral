@@ -214,6 +214,10 @@ class _GripperLeg:
         release: The payload this leg released and still publishes, frozen in
             the base frame, until its jaws are clear (``ReleaseWindow``).
         announced_uncommanded: Whether "no commanded target yet" was logged for this leg.
+        close_baseline: The trigger's ``(gap_resets, repeated_samples)`` when the current
+            close (command within ``stall_gap`` of closed, jaws empty) began, or ``None``
+            outside one (``_log_close``).
+        close_reported: Whether the current close's outcome was logged.
     """
 
     joint_name: str
@@ -231,6 +235,8 @@ class _GripperLeg:
     jaw_link: str = ""
     release: ReleaseWindow | None = None
     announced_uncommanded: bool = False
+    close_baseline: tuple[int, int] | None = None
+    close_reported: bool = False
 
 
 def _published(leg: _GripperLeg) -> AttachedCollisionObject | None:
@@ -1441,6 +1447,8 @@ class VisionAttachmentBridge:
         for leg in self._legs:
             missing_before = leg.trigger.missing_position_ticks
             event = leg.trigger.update(state)
+            if self._node is not None:
+                self._log_close(leg, event)
             if (
                 leg.trigger.last_command is None
                 and not leg.announced_uncommanded
@@ -1488,6 +1496,39 @@ class VisionAttachmentBridge:
         )
         if self._place_target is not None:
             self._place_target.on_joint_state()
+
+    def _log_close(self, leg: _GripperLeg, event: GraspEvent | None) -> None:
+        """Log the trigger's counters once per close: as it starts, and at ATTACH or give-up.
+
+        A close starts when the command enters ``stall_gap`` of closed with nothing held,
+        and ends when the command leaves that band; its summary is logged at the ATTACH, or
+        when it ends without one. Logging only — no threshold or decision reads this.
+        """
+        trigger = leg.trigger
+        if leg.close_baseline is None:
+            if not trigger.closing or trigger.attached:
+                return
+            leg.close_baseline = (trigger.gap_resets, trigger.repeated_samples)
+            leg.close_reported = False
+            self._node.get_logger().info(
+                f"grasp trigger {leg.joint_name}: close commanded (target "
+                f"{trigger.last_command:.4f}, thresholds(closed,rest,gap,settle)="
+                f"{trigger.thresholds}) — watching for a stall"
+            )
+        if not leg.close_reported and (event is GraspEvent.ATTACH or not trigger.closing):
+            leg.close_reported = True
+            gaps, repeats = leg.close_baseline
+            short, spread = trigger.last_short_of_command, trigger.last_settle_spread
+            self._node.get_logger().info(
+                f"grasp trigger {leg.joint_name}: "
+                f"{'ATTACH' if event is GraspEvent.ATTACH else 'no ATTACH before the close ended'}"
+                f" — this close: {trigger.gap_resets - gaps} gap resets, "
+                f"{trigger.repeated_samples - repeats} repeated samples, last short_of_command="
+                f"{'n/a' if short is None else f'{short:.4f}'}, settle spread="
+                f"{'n/a' if spread is None else f'{spread:.4f}'}"
+            )
+        if not trigger.closing:
+            leg.close_baseline = None
 
     @_locked
     def observe_command(self, action: Action) -> None:

@@ -306,8 +306,11 @@ class PositionStallTrigger:
     Nothing is silently ignored (CLAUDE.md §1.4): a tick with no finite position for the
     joint counts in ``missing_position_ticks`` (the bridge's heartbeat liveness reads it),
     a tick before any command has been seen counts in ``uncommanded_ticks`` — without a
-    command there is no "short of it", so the trigger cannot attach — and a sample whose
-    stamp repeats the last one counts in ``repeated_samples``.
+    command there is no "short of it", so the trigger cannot attach — a sample whose
+    stamp repeats the last one counts in ``repeated_samples``, and a gap longer than
+    ``max_gap_s`` that restarted every window counts in ``gap_resets``. The last
+    classified sample's ``last_short_of_command`` and ``last_settle_spread`` say how near
+    it came; the bridge logs them per close (``closing``).
 
     Args:
         description: The robot manifest — supplies the gripper joint and its
@@ -385,6 +388,9 @@ class PositionStallTrigger:
         self.missing_position_ticks = 0
         self.uncommanded_ticks = 0
         self.repeated_samples = 0
+        self.gap_resets = 0
+        self.last_short_of_command: float | None = None
+        self.last_settle_spread: float | None = None
 
     @property
     def joint_name(self) -> str:
@@ -400,6 +406,11 @@ class PositionStallTrigger:
     def last_command(self) -> float | None:
         """The last commanded target folded in, or ``None`` before the first."""
         return self._command
+
+    @property
+    def closing(self) -> bool:
+        """Whether the last command is within ``stall_gap`` of closed — the band ATTACH reads."""
+        return self._command is not None and abs(self._command - self._closed) <= self._gap
 
     @property
     def thresholds(self) -> tuple[float, float, float, float]:
@@ -440,6 +451,7 @@ class PositionStallTrigger:
             return None
         if self._config.is_gap(stamp_ns, self._last_stamp_ns):
             # What the jaw did in the gap is unknown: no window spans it.
+            self.gap_resets += 1
             self._history.clear()
             self._reset_streak()
         self._last_stamp_ns = stamp_ns
@@ -485,10 +497,12 @@ class PositionStallTrigger:
         closing = command_from_closed <= self._gap
         short_of_command = from_closed - command_from_closed
         positions = [q for _, q in self._history]
+        spread = max(positions) - min(positions)
+        self.last_short_of_command, self.last_settle_spread = short_of_command, spread
         settled = (
             len(positions) >= self._config.settle_samples
             and self._history[0][0] <= stamp_ns - self._settle_ns
-            and max(positions) - min(positions) <= self._settle
+            and spread <= self._settle
         )
         stalled = closing and settled and short_of_command > self._rest + self._gap
         if not self._loaded:

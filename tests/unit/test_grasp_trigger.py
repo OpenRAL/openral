@@ -379,6 +379,13 @@ def test_a_gap_restarts_the_settle_and_debounce_windows(openarm: RobotDescriptio
     stamps += [stamps[-1] + 200_000_000 + k * _PERIOD_NS for k in range(7)]
     events = [trigger.update(_state(openarm, stamp_ns=t, left_gripper=0.2)) for t in stamps]
     assert events.index(GraspEvent.ATTACH) == 12, "the gap must restart both windows"
+    # Counted, and the last sample's margin, for the bridge's per-close log line.
+    assert trigger.gap_resets == 1
+    assert trigger.closing
+    assert trigger.last_short_of_command == pytest.approx(0.2)
+    assert trigger.last_settle_spread == 0.0
+    trigger.command(_OPEN)
+    assert not trigger.closing
 
 
 def test_a_non_finite_command_is_ignored(openarm: RobotDescription) -> None:

@@ -967,3 +967,69 @@ def test_the_self_filtered_cloud_cache_matches_by_capture_stamp_and_is_torn_down
             node.destroy_node()
     finally:
         rclpy.shutdown()
+
+
+def test_each_close_logs_the_trigger_counters_once_at_attach_or_give_up(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """Isaac i24-i29 closed the jaw six times and never logged why no ATTACH came. A close
+    (command within ``stall_gap`` of closed, jaws empty) logs once as it starts and once at
+    its outcome: the ATTACH, or the command leaving the band without one — with the gap
+    resets and repeated samples of that close, and how near the last sample came."""
+    pytest.importorskip("openral_msgs")
+    rclpy = pytest.importorskip("rclpy")
+
+    def close(bridge: VisionAttachmentBridge, target: float) -> None:
+        bridge.observe_command(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_names=["left_gripper"],
+                joint_targets=[[target]],
+            )
+        )
+
+    def read(bridge: VisionAttachmentBridge, q: float, stamp_ns: int) -> None:
+        bridge.observe_joint_state(
+            JointState(
+                name=["left_gripper", "right_gripper"],
+                position=[q, 0.0],
+                effort=[0.0, 0.0],
+                stamp_ns=stamp_ns,
+            )
+        )
+
+    rclpy.init()
+    try:
+        node = rclpy.create_node("test_vision_attachment_close_log")
+        try:
+            bridge = VisionAttachmentBridge(
+                node, _openarm(), config=VisionAttachmentConfig(camera="head_zed")
+            )
+            period = 1_000_000_000 // 30
+            close(bridge, 0.0)  # a close opened again before the jaw ever stalls
+            read(bridge, 0.5, period)
+            read(bridge, 0.4, 2 * period)
+            close(bridge, 1.0)
+            read(bridge, 0.5, 3 * period)
+            close(bridge, 0.0)
+            # Stalled 0.2 rad short; a cached sample read twice and a 0.3 s gap that
+            # restarts the windows once, then the ATTACH.
+            stamps = [(4 + k) * period for k in range(4)]
+            stamps += [stamps[-1], *(stamps[-1] + 300_000_000 + k * period for k in range(8))]
+            for t in stamps:
+                read(bridge, 0.2, t)
+            close(bridge, 1.0)  # open: the close that attached ends quietly
+            read(bridge, 0.2, stamps[-1] + period)
+            bridge.teardown()
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
+    err = capfd.readouterr().err
+    assert err.count("grasp trigger left_gripper: close commanded") == 2, err
+    assert "left_gripper: no ATTACH before the close ended — this close: 0 gap resets" in err
+    assert "left_gripper: ATTACH — this close: 1 gap resets, 1 repeated samples" in err
+    assert "last short_of_command=0.2000, settle spread=0.0000" in err
+    assert err.count("this close:") == 2, "an outcome logged more than once per close"
+    assert "right_gripper: close commanded" not in err, "an uncommanded jaw logged a close"
