@@ -262,9 +262,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   the runner; a search hint only — the support layer is measured from the voxel map, never read
   off the box's bottom face),
   re-measured at `grasp_target_rate_hz` (3 Hz) on the masked pixels the robot self-filter kept
-  for the same capture (`mask_without_removed_points`: the fingers closing in on the target leave
+  for the nearest capture within the mask/depth skew bound (best-effort clouds are lost in transit, and a neighbouring capture can only remove more pixels) (`mask_without_removed_points`: the fingers closing in on the target leave
   its fit exactly as they leave the map, so they neither grow it nor fail it as `not_on_support`;
-  without a self-filtered cloud for that capture the fit is unfiltered, and says so: with the
+  without a self-filtered cloud that close the fit is unfiltered, and says so: with the
   topic configured, the first unfiltered fit logs a warning naming the topic, the depth stamp and
   the cache span, and the next filtered fit logs how many ran unfiltered), the region filled onto every attachment
   publication; contradicting evidence retracts at once, a lost view freezes the last accepted region

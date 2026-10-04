@@ -254,9 +254,6 @@ def _published(leg: _GripperLeg) -> AttachedCollisionObject | None:
 #: Mask/depth aspect-ratio agreement below which a resample is a resolution change.
 _ASPECT_TOLERANCE = 1e-3
 
-#: A self-filtered cloud is the depth frame's own capture within this (same render / driver tick).
-_KEPT_CLOUD_STAMP_TOL_NS = 1_000_000
-
 #: Heartbeat period, seconds — the simulator bridge's attachment heartbeat period.
 _HEARTBEAT_PERIOD_S = 0.2
 
@@ -2126,19 +2123,31 @@ class VisionAttachmentBridge:
         self._kept_clouds.append((stamp_ns, str(msg.header.frame_id), points))
 
     def kept_points(self, stamp_ns: int, frame: str) -> NDArray[np.float64] | None:
-        """The self-filter's kept points of the capture stamped ``stamp_ns``, in ``frame``.
+        """The self-filter's kept points of the capture nearest ``stamp_ns``, in ``frame``.
 
-        ``None`` when no self-filtered cloud carries that exact capture stamp (within
-        1 ms) or its frame has no tf2 transform: the caller then fits unfiltered.
+        The nearest cached self-filtered cloud within ``mask_depth_max_skew_s`` of the
+        depth frame — the same bound a mask is held to against that frame. The clouds
+        are best-effort full-resolution ``PointCloud2`` and some are lost (Isaac 2026-10-04:
+        one in three reached the self-filter), so an exact-capture match left most fits
+        unfiltered. A neighbouring capture can only REMOVE more masked pixels
+        (``mask_without_removed_points`` never adds one): never a larger fit than the
+        unfiltered one. ``None`` when no cloud is that close or its frame has no tf2
+        transform: the caller then fits unfiltered.
         """
-        for cloud_stamp, cloud_frame, points in reversed(self._kept_clouds):
-            if abs(cloud_stamp - stamp_ns) <= _KEPT_CLOUD_STAMP_TOL_NS:
-                t = self._lookup(frame, cloud_frame)
-                if t is None:
-                    return None
-                pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-                return pts @ t[:3, :3].T + t[:3, 3]
-        return None
+        max_skew_ns = self._config.mask_depth_max_skew_s * 1e9
+        nearest = min(
+            (c for c in self._kept_clouds if abs(c[0] - stamp_ns) <= max_skew_ns),
+            key=lambda c: abs(c[0] - stamp_ns),
+            default=None,
+        )
+        if nearest is None:
+            return None
+        _, cloud_frame, points = nearest
+        t = self._lookup(frame, cloud_frame)
+        if t is None:
+            return None
+        pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        return pts @ t[:3, :3].T + t[:3, 3]
 
     def _on_camera_info(self, msg: Any) -> None:
         """Cache the newest ``CameraInfo`` for the depth stream."""

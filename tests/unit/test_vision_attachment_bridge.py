@@ -918,8 +918,10 @@ _SELF_FILTERED = "/openral/world_cloud/self_filtered"
 
 
 def test_the_self_filtered_cloud_cache_matches_by_capture_stamp_and_is_torn_down() -> None:
-    """``kept_points`` hands back the self-filter's cloud of exactly the depth frame's capture
-    (within 1 ms), never a neighbouring one, and the bridge's subscription to it goes with
+    """``kept_points`` hands back the self-filter's cloud nearest the depth frame's capture
+    within the mask/depth skew bound (clouds are best-effort and some are lost: Isaac i30 had
+    one in three, so an exact match left every fit unfiltered), never one further away, and
+    the bridge's subscription to it goes with
     ``teardown``: the lifecycle node rebuilds the bridge on every activate, and a leaked
     full-resolution ``PointCloud2`` subscription kept every dead bridge decoding clouds."""
     pytest.importorskip("openral_msgs")
@@ -950,15 +952,22 @@ def test_the_self_filtered_cloud_cache_matches_by_capture_stamp_and_is_torn_down
                     points = np.array([[0.45, 0.0, 0.10], [0.46, 0.01, 0.12]], dtype=np.float32)
                     stamp = 12 * 1_000_000_000 + 345_000_000
                     bridge._on_kept_cloud(cloud(stamp, points))
-                    for probe in (stamp, stamp + 1_000_000, stamp - 1_000_000):
+                    for probe in (stamp, stamp + 100_000_000, stamp - 100_000_000):
                         kept = bridge.kept_points(probe, "openarm_base")
                         assert kept is not None
                         np.testing.assert_allclose(kept, points, atol=1e-6)
-                    assert bridge.kept_points(stamp + 2_000_000, "openarm_base") is None
-                    for i in range(1, 9):  # eight newer captures roll the first one out
-                        bridge._on_kept_cloud(cloud(stamp + i * 100_000_000, points))
+                    assert bridge.kept_points(stamp + 101_000_000, "openarm_base") is None
+                    # The nearest capture wins, not the newest.
+                    later = points + np.float32(1.0)
+                    bridge._on_kept_cloud(cloud(stamp + 150_000_000, later))
+                    near = bridge.kept_points(stamp + 60_000_000, "openarm_base")
+                    np.testing.assert_allclose(near, points, atol=1e-6)
+                    far = bridge.kept_points(stamp + 90_000_000, "openarm_base")
+                    np.testing.assert_allclose(far, later, atol=1e-6)
+                    for i in range(2, 10):  # eight newer captures roll the first one out
+                        bridge._on_kept_cloud(cloud(stamp + i * 150_000_000, points))
                     assert bridge.kept_points(stamp, "openarm_base") is None
-                    assert bridge.kept_points(stamp + 800_000_000, "openarm_base") is not None
+                    assert bridge.kept_points(stamp + 1_350_000_000, "openarm_base") is not None
                 finally:
                     bridge.teardown()
                 assert on_topic(node) == 0, "the self-filtered subscription outlived teardown"
