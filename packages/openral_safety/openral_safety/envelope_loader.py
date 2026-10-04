@@ -102,22 +102,13 @@ class EnvelopeIntersection:
             as ``max_base_linear_speed_m_s``.
         max_cartesian_step_m: CARTESIAN_DELTA per-step translation-delta
             cap (Euclidean over dx,dy,dz), enforced by the C++ kernel's
-            ``kCartesianDelta`` validator case (item 9,
-            execution_plan.md §8.3). ``SafetyEnvelope.max_cartesian_step_m``
+            ``kCartesianDelta`` validator case. ``SafetyEnvelope.max_cartesian_step_m``
             is optional (``None`` = "no robot declares this bound");
             resolved to ``math.inf`` here, same as the other optional
             per-mode bounds.
         max_cartesian_step_rad: CARTESIAN_DELTA per-step rotation-delta cap
             (Euclidean over the axis-angle triplet rx,ry,rz); same
             optional-to-``inf`` resolution as ``max_cartesian_step_m``.
-        gripper_min: GRIPPER_POSITION width lower bound, sourced from the
-            robot's gripper-role joint's ``position_limits`` (the min of
-            all gripper-role joints' lower bounds, when more than one is
-            declared) -- enforced by the C++ kernel's ``kGripperPosition``
-            validator case (item 9). ``-math.inf`` = "no gripper-role
-            joint declared" (unbounded, today's behaviour).
-        gripper_max: GRIPPER_POSITION width upper bound; symmetric,
-            ``math.inf`` = unbounded.
         deadman_required: Logical OR of the two manifests.
     """
 
@@ -141,8 +132,6 @@ class EnvelopeIntersection:
     max_base_angular_speed_rad_s: float
     max_cartesian_step_m: float
     max_cartesian_step_rad: float
-    gripper_min: float
-    gripper_max: float
     deadman_required: bool
 
 
@@ -190,31 +179,6 @@ def _extract_joint_limits(
         tau = j.effort_limit if j.effort_limit is not None else math.inf
         tau_max.append(float(tau))
     return (tuple(pos_min), tuple(pos_max), tuple(vel_max), tuple(tau_max))
-
-
-def _extract_gripper_limits(robot: RobotDescription) -> tuple[float, float]:
-    """Pull the GRIPPER_POSITION width bound from the robot's gripper-role joint(s).
-
-    Mirrors ``openral_safety.supervisor_node``'s documented (but
-    never-launched) intent: "the launch sources these parameters from
-    the robot.yaml's gripper joint's position_limits." A robot may
-    declare more than one gripper-role joint (e.g. a multi-finger hand
-    where every finger shares the same normalised jaw-fraction
-    convention, per ``JointSpec.position_limits``'s docstring) — since
-    GRIPPER_POSITION's wire format is a single scalar regardless of how
-    many mechanical joints it drives, this takes the intersection (the
-    tightest lower bound, the tightest upper bound) across all of them
-    rather than picking one arbitrarily. No gripper-role joint declared
-    -> unbounded (``-inf``/``inf``), same as today's behaviour.
-    """
-    limits = [
-        j.position_limits
-        for j in robot.joints
-        if j.role == "gripper" and j.position_limits is not None
-    ]
-    if not limits:
-        return (-math.inf, math.inf)
-    return (max(lo for lo, _ in limits), min(hi for _, hi in limits))
 
 
 def _check_box_subset(
@@ -478,7 +442,6 @@ def compute_intersection(
     # Joint-level limits — pull from JointSpec and pre-multiply velocity.
     factor = _pick_min("max_joint_speed_factor")
     pos_min, pos_max, vel_max, tau_max = _extract_joint_limits(robot, factor)
-    gripper_min, gripper_max = _extract_gripper_limits(robot)
 
     # OR with the skill's deadman_required only when explicitly set.
     deadman_required = merged_env.deadman_required or (
@@ -508,8 +471,6 @@ def compute_intersection(
         max_base_angular_speed_rad_s=_pick_min_optional("max_base_angular_speed_rad_s"),
         max_cartesian_step_m=_pick_min_optional("max_cartesian_step_m"),
         max_cartesian_step_rad=_pick_min_optional("max_cartesian_step_rad"),
-        gripper_min=gripper_min,
-        gripper_max=gripper_max,
         deadman_required=deadman_required,
     )
 
@@ -555,8 +516,6 @@ def kernel_params_from_envelope(envelope: EnvelopeIntersection) -> dict[str, obj
             envelope.max_base_angular_speed_rad_s,
             envelope.max_cartesian_step_m,
             envelope.max_cartesian_step_rad,
-            envelope.gripper_min,
-            envelope.gripper_max,
         )
     ):
         raise ValueError(f"NaN scalar in envelope: {envelope!r}")
@@ -572,30 +531,14 @@ def kernel_params_from_envelope(envelope: EnvelopeIntersection) -> dict[str, obj
         "joint_torque_max": [float(v) for v in envelope.joint_torque_max],
         "max_ee_speed_m_s": float(envelope.max_ee_speed_m_s),
         "max_ee_accel_m_s2": float(envelope.max_ee_accel_m_s2),
-        # This one was never forwarded before either -- same class of gap
-        # as the two max_base_* fields below (declared on manifests like
-        # panda_mobile, "enforced" only by a Python supervisor node
-        # deploy_e2e.launch.py never launches). See
-        # docs/f12_body_twist_envelope_fix.md and the CARTESIAN_TWIST
-        # angular-speed follow-up in the same spirit.
         "max_ee_angular_speed_rad_s": float(envelope.max_ee_angular_speed_rad_s),
         "max_force_n": float(envelope.max_force_n),
         "max_torque_nm": float(envelope.max_torque_nm),
         "contact_force_threshold_n": float(envelope.contact_force_threshold_n),
-        # F12 fix (2026-09-13): these two were never forwarded before, so the
-        # C++ kernel had no parameter to read even though robots have
-        # declared these bounds since before this fork existed -- see the
-        # research repo's docs/f12_body_twist_envelope_fix.md.
         "max_base_linear_speed_m_s": float(envelope.max_base_linear_speed_m_s),
         "max_base_angular_speed_rad_s": float(envelope.max_base_angular_speed_rad_s),
-        # item 9 (execution_plan.md §8.3): these four were never forwarded
-        # before either -- same class of gap as the two max_base_* fields
-        # above (declared/computed, "enforced" only by a Python supervisor
-        # node deploy_e2e.launch.py never launches).
         "max_cartesian_step_m": float(envelope.max_cartesian_step_m),
         "max_cartesian_step_rad": float(envelope.max_cartesian_step_rad),
-        "gripper_min": float(envelope.gripper_min),
-        "gripper_max": float(envelope.gripper_max),
         "deadman_required": bool(envelope.deadman_required),
     }
     if envelope.workspace_box_min_xyz is not None:

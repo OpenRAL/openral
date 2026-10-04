@@ -235,8 +235,6 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<double>("max_base_angular_speed_rad_s", kPosInfinity);
   this->declare_parameter<double>("max_cartesian_step_m", kPosInfinity);
   this->declare_parameter<double>("max_cartesian_step_rad", kPosInfinity);
-  this->declare_parameter<double>("gripper_min", kNegInfinity);
-  this->declare_parameter<double>("gripper_max", kPosInfinity);
   this->declare_parameter<bool>("deadman_required", false);
 
   // Self-collision model. Disabled unless the launch emits a
