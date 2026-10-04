@@ -880,8 +880,7 @@ class SafetyEnvelope(BaseModel):
         workspace_box_max_xyz: Upper corner of allowed workspace (m).
         no_go_zones: List of polygon definitions (dicts with 'vertices').
         max_ee_speed_m_s: Maximum end-effector linear speed in m/s.
-            Also used by the per-control-mode supervisor as the
-            CARTESIAN_TWIST linear bound.
+            Also the C++ safety kernel's CARTESIAN_TWIST linear bound.
         max_ee_accel_m_s2: Maximum end-effector acceleration in m/s².
         max_joint_speed_factor: Fraction of joint velocity_limit allowed.
         max_force_n: Maximum contact force in Newtons.
@@ -892,27 +891,26 @@ class SafetyEnvelope(BaseModel):
         contact_force_threshold_n: Force threshold for contact detection.
         cycle_time_violation_threshold_ms: Control cycle time violation threshold.
         human_in_loop_required: rSkill names requiring human supervision.
-        max_cartesian_step_m: Per-control-mode supervisor bound —
-            per-step magnitude bound on
-            CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means
-            "no per-mode check declared, skip"; today's behaviour
-            preserved. Robots that host OSC-trained checkpoints
-            (panda_mobile, future Franka + π0.7) declare this so the
-            supervisor rejects out-of-distribution arm deltas before
-            they reach the controller.
-        max_cartesian_step_rad: Per-control-mode supervisor bound —
+        max_cartesian_step_m: Per-control-mode bound the C++ safety
+            kernel enforces — per-step magnitude bound on
+            CARTESIAN_DELTA's xyz triplet (Euclidean, after
+            ``cartesian_delta_scale``). ``None`` means "no per-mode
+            check declared, skip". It is a norm, so a controller with a
+            per-axis output limit ``a`` needs at least ``a·√3`` here or
+            in-distribution diagonal moves E-stop.
+        max_cartesian_step_rad: Per-control-mode kernel bound —
             per-step magnitude bound on
             CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``
             skips the check.
-        max_ee_angular_speed_rad_s: Per-control-mode supervisor bound —
+        max_ee_angular_speed_rad_s: Per-control-mode kernel bound —
             angular component bound
             for CARTESIAN_TWIST (the linear bound reuses
             ``max_ee_speed_m_s``). ``None`` skips the check.
-        max_base_linear_speed_m_s: Per-control-mode supervisor bound —
+        max_base_linear_speed_m_s: Per-control-mode kernel bound —
             BODY_TWIST linear bound
             (Euclidean over vx,vy,vz). ``None`` skips the check;
             mobile manipulators / wheeled bases declare it.
-        max_base_angular_speed_rad_s: Per-control-mode supervisor bound —
+        max_base_angular_speed_rad_s: Per-control-mode kernel bound —
             BODY_TWIST angular
             bound (Euclidean over wx,wy,wz; for planar bases only
             wz is non-zero). ``None`` skips the check.
@@ -942,11 +940,8 @@ class SafetyEnvelope(BaseModel):
     contact_force_threshold_n: float = 30.0
     cycle_time_violation_threshold_ms: float = 5.0
     human_in_loop_required: list[str] = Field(default_factory=list)
-    # Per-control-mode bounds for the supervisor dispatch.
-    # All default to None so legacy behaviour is preserved: a robot
-    # that doesn't declare these gets its chunks passed through the
-    # per-mode check (cartesian / twist / gripper / etc.) verbatim, the
-    # same as today.
+    # Per-control-mode bounds the C++ safety kernel enforces. None =
+    # "not declared": the kernel treats the bound as +inf for that robot.
     max_cartesian_step_m: float | None = None
     max_cartesian_step_rad: float | None = None
     max_ee_angular_speed_rad_s: float | None = None

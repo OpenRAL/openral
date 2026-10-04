@@ -741,7 +741,7 @@ safety-kernel-build:
     colcon build --merge-install --base-paths packages cpp --packages-select \
         openral_msgs opentelemetry_cpp_vendor openral_safety_kernel \
         --cmake-args -DBUILD_TESTING=ON \
-                     -DPython3_EXECUTABLE=$(which python)
+                     -DPython3_EXECUTABLE="$(pwd)/.venv/bin/python"
 
 # Run the C++ kernel's gtest + lifecycle test suite. CI parity
 # with `colcon test`; linter failures (cpplint, flake8, pep257,
