@@ -37,6 +37,19 @@ the "per-source allowlist in deployment YAML").
 — a saturated subscriber surfaces as a structlog warning, not a
 swallowed message.
 
+## Startup prompt
+
+`openral deploy sim` passes the scene's goal as the `startup_prompt`
+parameter, and the router publishes it once from `on_activate`. Because
+`/openral/prompt` is VOLATILE and the reasoner dispatches on its first
+tick, the router first waits (each bounded at 30 s, then publishes anyway
+with a warning) for:
+
+1. a subscriber on `/openral/prompt` — otherwise the sample is dropped;
+2. `/openral/execute_rskill/_action/send_goal` on the graph — the runner
+   creates that server in its own `on_configure`, and a dispatch before it
+   exists fails with `KIND_CONTROLLER`.
+
 ## Synopsis
 
 ```bash

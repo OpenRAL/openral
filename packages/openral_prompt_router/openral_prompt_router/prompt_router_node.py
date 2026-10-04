@@ -70,6 +70,15 @@ _QOS_PROMPT = QoSProfile(
 # only then creates the subscription; missing the prompt boots the run idle.
 _STARTUP_PROMPT_SUBSCRIBER_TIMEOUT_S = 30.0
 
+# The reasoner dispatches on its first tick after the prompt lands, probing
+# the ExecuteRskill server for only 100 ms; runtime_node creates that server
+# in the runner's on_configure, which can finish after this router
+# activates. A prompt published before then fails the dispatch with
+# KIND_CONTROLLER and the mission never starts, so the startup prompt also
+# waits (bounded) for the action's send_goal service to be on the graph.
+_EXECUTE_RSKILL_SEND_GOAL = "/openral/execute_rskill/_action/send_goal"
+_STARTUP_PROMPT_ACTUATION_TIMEOUT_S = 30.0
+
 # v1 adapter registry — only the CLI source is wired. Priorities chosen
 # so a human prompt overtakes an auto-prompt (CLAUDE.md §6.2 — the
 # reasoner is below operator authority).
@@ -218,6 +227,17 @@ class PromptRouterNode(LifecycleNode):
                 f"{_STARTUP_PROMPT_SUBSCRIBER_TIMEOUT_S:.0f}s; publishing anyway "
                 "(reasoner may miss it under VOLATILE QoS)",
             )
+        # Graph query, not wait_for_server: on_activate runs on the executor,
+        # and spinning a client here would deadlock it.
+        deadline = time.monotonic() + _STARTUP_PROMPT_ACTUATION_TIMEOUT_S
+        while not self._execute_rskill_advertised() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if not self._execute_rskill_advertised():
+            self.get_logger().warning(
+                f"startup_prompt: {_EXECUTE_RSKILL_SEND_GOAL} not on the graph after "
+                f"{_STARTUP_PROMPT_ACTUATION_TIMEOUT_S:.0f}s; publishing anyway "
+                "(the reasoner's first dispatch may fail with KIND_CONTROLLER)",
+            )
         msg = IDLPromptStamped()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "openral_prompt_router"
@@ -230,6 +250,12 @@ class PromptRouterNode(LifecycleNode):
         self._forwarded_count += 1
         self.get_logger().info(
             f"startup_prompt published source=cli priority={DEFAULT_SOURCES['cli']} text={text!r}",
+        )
+
+    def _execute_rskill_advertised(self) -> bool:
+        """Whether the ExecuteRskill action server is on the ROS graph."""
+        return any(
+            name == _EXECUTE_RSKILL_SEND_GOAL for name, _ in self.get_service_names_and_types()
         )
 
     # ── public helpers for tests ───────────────────────────────────────────
