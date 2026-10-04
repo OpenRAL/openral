@@ -26,6 +26,7 @@ import io
 import os
 import re
 import sys
+import traceback
 from typing import Any
 
 import numpy as np
@@ -245,6 +246,13 @@ def main(argv: list[str]) -> int:
             environment=args.environment_usd or "",
             spawn=list(args.spawn_pose),
         )
+    except BaseException:
+        # Print before close(): Kit's fast shutdown ends the process inside
+        # close(), so an exception left to propagate is never printed — the
+        # sidecar would just vanish with exit code 0 mid-boot.
+        traceback.print_exc()
+        sys.stderr.flush()
+        raise
     finally:
         sim_app.close()
 
