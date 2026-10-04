@@ -487,6 +487,47 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         )
         time.sleep(0.5)
         assert len(prompts) <= segments_before + 2, "the attach re-segmented the target"
+
+        # ── 7. The payload still rests on the table it was measured on: it carries the
+        #       support witness on the support top the leg measured (the region's lower
+        #       face one voxel below), normal up — until it is lifted three cells.
+        assert held.support_contact_valid, "the measured support was not attested"
+        witness = held.support_contact
+        assert witness.support_id == "map_support_under:cell:restock_box"
+        assert witness.evidence_kind == "map_support_proximity"
+        t_base_obj = t_base_link7 @ homogeneous_from_quat_xyz(
+            (
+                held.pose_in_link.position.x,
+                held.pose_in_link.position.y,
+                held.pose_in_link.position.z,
+            ),
+            (
+                held.pose_in_link.orientation.x,
+                held.pose_in_link.orientation.y,
+                held.pose_in_link.orientation.z,
+                held.pose_in_link.orientation.w,
+            ),
+        )
+        c, nrm = witness.contact_point_in_object, witness.contact_normal_in_object
+        plane = t_base_obj @ np.array([c.x, c.y, c.z, 1.0])
+        bottom = region.pose.xyz[2] - region.half_extents[2]
+        assert plane[2] == pytest.approx(bottom - _RES, abs=1e-9), "not the measured support"
+        assert _SUPPORT_Z - _RES < plane[2] <= _SUPPORT_Z + 1e-6
+        np.testing.assert_allclose(plane[:2], region.pose.xyz[:2], atol=1e-3)  # a re-fit: mm
+        np.testing.assert_allclose(
+            t_base_obj[:3, :3] @ np.array([nrm.x, nrm.y, nrm.z]), (0.0, 0.0, 1.0), atol=1e-9
+        )
+        lifted = t_base_link7.copy()
+        lifted[2, 3] += 3 * _RES
+        # A fresh broadcaster: one keeps the first transform it sent per child frame.
+        StaticTransformBroadcaster(peer).sendTransform([_tf_msg(_BASE, left.parent_link, lifted)])
+        assert _wait_until(
+            lambda: bool(latest().objects) and not latest().objects[0].support_contact_valid,
+            timeout_s=5.0,
+        ), f"the witness outlived the lift: {[ln for ln in logs if 'support witness' in ln]}"
+        (carried,) = latest().objects
+        assert (carried.object_id, carried.stamp_ns) == (held.object_id, held.stamp_ns)
+        assert any("support witness for 'cell:restock_box' retired" in ln for ln in logs)
     finally:
         # Stop the executor first: a timer callback waiting on the bridge lock must not
         # run on entities the teardown destroyed.

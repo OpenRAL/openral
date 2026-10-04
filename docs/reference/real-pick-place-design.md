@@ -518,6 +518,37 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   region once (`region_spent` = `(target_id, region.stamp_ns)`): an ATTACH offered the same region
   again segments (a handed-over goal re-measures nothing). Live:
   `tests/integration/test_grasp_target_leg_live.py` step 6.
+  *Support witness (2026-10-05, Isaac trial i42, the first complete handover):* the region
+  payload is the target *still standing on its support*, and its box met the support's cells at
+  ATTACH — `safety.grasp_region_latched … at handover`, then 90 ms later `safety.collision
+  kind=world a=attached:approach:… b=voxel_86321 min_distance_m=-0.00186`, a table-top cell
+  beside/under the payload. The kernel already has the bounded exemption for exactly this
+  contact (the ADR-0092 D6 `SupportContactWitness`, hazard log Entry 012 / ADR-0097, kernel
+  unchanged), but only the MuJoCo producer and the place leg ever attached one. Now the region
+  payload carries it when the grasp-target leg measured the support for *that* region
+  (`GraspTargetLeg.measured_support`: the `support_top_from_voxels` top the accepted fit was
+  stood on, its lower face one voxel above): `_place_target_leg.plane_witness` — the same
+  construction the place leg uses — on `z = support_z`, normal +z, in the payload's object
+  frame, patch = the payload footprint, penetration = the extrinsic bound capped at 10 mm,
+  `support_id = map_support_under:<target_id>`, `MAP_SUPPORT_PROXIMITY` (proximity to a
+  map-measured plane, not sensed contact). No measured support for the region → no witness, the
+  pre-i42 behaviour. A *segmented* payload gets none: its geometry is not the measured region
+  and nothing measured its relation to the support (unchanged).
+  *Retirement.* The kernel kills a witness once no exempt occupied cell touches the payload
+  (`update_support_contact_witnesses`, `support_witness_still_in_contact`, measured
+  configuration only) and re-arms only a new (object, support, stamp) key. That liveness reads
+  the map, and the octomap bridge withholds every cell inside the witness band
+  (`support_patch_withholds`) — a band that rides with the payload, so the carried object's own
+  lowest cells, seen by the head camera, would sit in it and keep the witness alive through the
+  carry, exempting everything under the payload's footprint. The producer therefore retires
+  it itself (`VisionAttachmentBridge._retire_lifted_supports`, 20 Hz from the joint-state hook):
+  once the payload frame moved more than `max(resolution, extrinsic_error_m)` from its ATTACH
+  pose (a lift or a slide), or tf2 cannot place it, the witness is dropped for good (same
+  object and stamp: nothing re-arms) and the set republished at the current revision. Live:
+  `tests/integration/test_grasp_target_leg_live.py` step 7;
+  `tests/integration/test_safety_kernel_place_allowance_band.py::test_the_vision_pick_support_witness_exempts_the_rest_and_dies_on_the_lift`
+  (real kernel: refused without it, accepted with it, retired three cells up, not re-armed).
+  Safety-WG: extends Entry 012 / ADR-0097 to the vision pick path, hazard row HZ-0115-28.
 - Must be fixed first (all three are silent): `head_zed` optical frame, intrinsics from the
   driver's `camera_info`, explicit mask/depth resampling.
 

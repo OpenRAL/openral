@@ -498,6 +498,75 @@ def test_the_region_payload_is_the_declared_object_at_the_region() -> None:
     np.testing.assert_allclose(back[:3, :3], np.eye(3), atol=1e-9)
 
 
+def test_the_region_payload_carries_a_witness_only_on_a_measured_support() -> None:
+    """Isaac i42: the region payload still rests on the support it was measured on. Given
+    that measured support top, the payload carries the ADR-0092 D6 witness on it — the
+    plane under the payload's centre with normal +z in the base frame, both expressed in
+    the (yawed) object frame, patch = the payload's footprint, penetration = the extrinsic
+    bound capped at the kernel's 10 mm — and the wire's validity flag is set. Without one,
+    nothing is attested (the flag stays down: the kernel exempts nothing)."""
+    from openral_core import AttachmentEvidenceKind, DeployScene, PlaceRegion, Pose6D
+    from openral_core.geometry import homogeneous_from_quat_xyz, yaw_to_quat_xyzw
+    from openral_hal.vision_attachment_bridge import region_attachment
+
+    scene = DeployScene.from_yaml(
+        "tests/unit/fixtures/scenes/openarm_direct_dispatch_grasp.yaml"
+    ).grasp_declaration
+    assert scene is not None
+    region = PlaceRegion(
+        frame_id="openarm_base",
+        pose=Pose6D(
+            xyz=(0.2613, -0.1976, -0.4351),  # i42's tight fit
+            quat_xyzw=yaw_to_quat_xyzw(np.deg2rad(76.0)),
+            frame_id="openarm_base",
+        ),
+        half_extents=(0.069, 0.071, 0.030),
+        evidence_ref="segment_in_view:test@0",
+        stamp_ns=5,
+    )
+    declaration = scene.model_copy(update={"region": region})
+    t_base_from_link = homogeneous_from_quat_xyz(
+        (0.25, -0.2, -0.33), (0.0, 0.7071068, 0.0, 0.7071068)
+    )
+    support_z = -0.48  # i42's measured table top (its lower face is one 15 mm cell above)
+    kwargs: dict[str, Any] = {
+        "attach_link": "openarm_right_link7",
+        "touch_links": ("openarm_right_finger_pair",),
+        "t_link_from_region": np.linalg.inv(t_base_from_link),
+        "stamp_ns": 7,
+    }
+    held = region_attachment(declaration, support_z=support_z, extrinsic_error_m=0.015, **kwargs)
+    witness = held.support_contact
+    assert witness is not None
+    assert witness.support_id == f"map_support_under:{declaration.target_id}"
+    assert witness.evidence_kind is AttachmentEvidenceKind.MAP_SUPPORT_PROXIMITY
+    assert witness.stamp_ns == 7 == held.stamp_ns
+    assert witness.patch_radius_m == pytest.approx(float(np.linalg.norm(region.half_extents)))
+    assert witness.max_penetration_m == pytest.approx(0.01)
+    t_base_obj = t_base_from_link @ homogeneous_from_quat_xyz(
+        held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
+    )
+    point = t_base_obj @ np.append(witness.contact_point_in_object, 1.0)
+    np.testing.assert_allclose(point[:3], (0.2613, -0.1976, support_z), atol=1e-9)
+    normal = t_base_obj[:3, :3] @ np.asarray(witness.contact_normal_in_object)
+    np.testing.assert_allclose(normal, (0.0, 0.0, 1.0), atol=1e-9)
+    # The object frame is the (yaw-only) region's: the plane sits straight under its centre.
+    np.testing.assert_allclose(
+        witness.contact_point_in_object, (0.0, 0.0, support_z + 0.4351), atol=1e-9
+    )
+    np.testing.assert_allclose(witness.contact_normal_in_object, (0.0, 0.0, 1.0), atol=1e-9)
+    bare = region_attachment(declaration, **kwargs)
+    assert bare.support_contact is None
+    assert held.model_copy(update={"support_contact": None}) == bare
+
+    msgs = pytest.importorskip("openral_msgs.msg")
+    for payload, valid in ((held, True), (bare, False)):
+        wire = msgs.AttachedCollisionObject()
+        payload.fill_idl(wire, primitive_factory=msgs.AttachedCollisionPrimitive)
+        assert wire.support_contact_valid is valid
+    assert wire.support_contact.patch_radius_m == 0.0  # the bare payload sends nothing
+
+
 def test_a_bimanual_bridge_builds_one_leg_per_gripper() -> None:
     """OpenArm's two hands each get a trigger, a producer and a unique object id."""
     bridge = VisionAttachmentBridge(
