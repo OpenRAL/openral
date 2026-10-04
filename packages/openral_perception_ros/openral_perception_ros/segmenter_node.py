@@ -749,15 +749,13 @@ def make_segmenter_node(node_name: str = "openral_segmenter") -> Any:
 def main(args: Sequence[str] | None = None) -> None:
     """Entry point: init ROS, spin the segmenter node, shut down cleanly."""
     import rclpy
-    from rclpy.executors import ExternalShutdownException
+    from openral_observability.rclpy_spin import spin_node_until_shutdown
 
     rclpy.init(args=args)
     node = make_segmenter_node()
     try:
         try:
-            rclpy.spin(node)
-        except (KeyboardInterrupt, ExternalShutdownException):
-            pass  # context already shut down by the SIGINT handler
+            spin_node_until_shutdown(node)  # quiet on the SIGINT shutdown race
         finally:
             node.destroy_node()
     finally:
