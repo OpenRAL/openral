@@ -1023,6 +1023,40 @@ leave empty under a payload demonstrably in contact. That blind spot is
 survivable precisely because this check can only add refusals: failing to arm
 lands on today's behaviour, never on something more permissive than it.
 
+## Slot rows: uncommanded joints at their measured pose (ADR-0102)
+
+A multi-slot rSkill (the real OpenArm: left arm, left gripper, right arm,
+right gripper — four `ActionChunk`s per tick) sends each `JOINT_POSITION` arm
+slot zero-padded to full dof, naming the joints it owns in
+`ActionChunk.joint_names`. FK-ing such a row as-is would place every joint it
+does NOT own at 0.0 — the other arm at a phantom pose — so a target that hits
+the other arm where it really is would pass, and one clear of it could stop.
+
+A `JOINT_POSITION` chunk whose `joint_names` leave any FK dof uncommanded is
+therefore checked as:
+
+1. **measured fill** — the row's commanded joints (at their
+   `collision_joint_names` index), every other joint from the latest
+   `/joint_states`. This requires the same fresh, complete measured state as the
+   velocity/Cartesian paths: without it the chunk is dropped fail-closed
+   (`state_unavailable`, `DROP_STATE_UNAVAILABLE`, **not latched**). A name the
+   kernel cannot place drops the same way (`slot_joints_unmapped`).
+2. **same-tick targets, additionally** — the HAL commits a tick's slots as one
+   configuration, so when an earlier slot of the same
+   `(runner_session_id, tick_index)` was accepted, the row is checked again with
+   that slot's target in place of the measured values for the joints it set.
+   This only ever adds a check (it can refuse, never accept); it catches two
+   arms whose targets collide with each other while each is clear of the
+   other's measured pose. A chunk with `tick_index == 0` gets check 1 only.
+
+A row whose `joint_names` is empty or covers every FK dof is the full
+configuration and is checked exactly as before (no measured state consulted).
+Gripper slots carry no arm geometry and are unaffected; `JOINT_VELOCITY` slots
+already integrate from the measured state, where zero padding means "hold".
+The collision evidence's `joint_positions_rad` is the filled configuration, so
+it names the other arm's measured pose, not the padding. Scratch is sized at
+configure; the fill allocates nothing.
+
 ## Frame convention (ADR-0095)
 
 The kernel applies **no transforms**. It FKs each link from the manifest's

@@ -45,6 +45,9 @@ TARGETS=(
     # Grasp-target exemption on the REAL OpenArm collision model at the real
     # cell's 20 mm margin -- every fail-closed row, plus the default-off kernel.
     tests/integration/test_safety_kernel_grasp_target_band.py
+    # ADR-0102 slot rows on the real OpenArm model: a row's uncommanded joints
+    # are checked at their measured pose, never the zero padding.
+    tests/integration/test_safety_kernel_slot_row_measured_fill.py
     tests/integration/test_sim_sensor_bridge_tf_guard.py
     # Every MuJoCo twin heartbeats a fresh, empty attachment set, not only the
     # HALs with attach mechanics (kernel fails closed on an unstamped set).
