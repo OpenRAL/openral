@@ -18,7 +18,9 @@ import json
 import math
 import sys
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import pytest
 from openral_core import Pose6D
 from openral_core.exceptions import ROSConfigError
@@ -303,3 +305,71 @@ def test_relative_assets_resolve_against_the_repo_root_not_the_cwd(
         assert _resolve_environment_usd(str(rel)) == str(stage.resolve())
     finally:
         stage.unlink()
+
+
+def _openarm_env_cfg() -> Any:
+    """The shipped OpenArm warehouse scene as the SimEnvironment the backend builds from."""
+    from openral_core import SimEnvironment, VLASpec
+    from openral_hal.sim_bringup import _load_scene_for_hal
+
+    scene = _load_scene_for_hal(str(_REPO_ROOT / "scenes/deploy/isaac_openarm_warehouse.yaml"))
+    return SimEnvironment(
+        robot_id="openarm",
+        scene=scene.scene,
+        task=scene.task,
+        vla=VLASpec(id="smolvla", weights_uri="hf://lerobot/smolvla_base"),
+        base_pose=scene.base_pose,
+        n_episodes=1,
+    )
+
+
+def test_camera_mounts_validate_and_key_the_sidecar() -> None:
+    """A camera mount takes exactly one orientation, names a real manifest camera,
+    and a scene that only re-mounts a camera gets its own sidecar."""
+    from openral_sim.backends.isaac_sim import (
+        IsaacCameraMount,
+        IsaacSimOptions,
+        _camera_mounts_json,
+        _scene_default_port,
+        _world_key,
+        _write_robot_spec,
+    )
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="exactly one"):
+        IsaacCameraMount(xyz=(0, 0, 0))
+    with pytest.raises(ValidationError, match="axes: world"):
+        IsaacCameraMount(xyz=(0, 0, 0), look_at=(1, 0, 0), axes="usd")
+    opts = IsaacSimOptions(
+        camera_mounts={
+            "head_zed": {"link": "openarm_base", "xyz": (0, 0, 0.2), "look_at": (1, 0, 0)}
+        }
+    )
+    mounts = _camera_mounts_json(opts.camera_mounts)
+    assert json.loads(mounts)["head_zed"]["link"] == "openarm_base"
+    a = _scene_default_port("t", "r", "manifest", _world_key("isaac:e.usd", None))
+    b = _scene_default_port("t", "r", "manifest", _world_key("isaac:e.usd", None, mounts))
+    assert a != b
+
+    env_cfg = _openarm_env_cfg()
+    path, _desc = _write_robot_spec(env_cfg, opts.camera_mounts)
+    try:
+        spec = json.loads(Path(path).read_text())
+    finally:
+        Path(path).unlink()
+    assert spec["camera_mounts"]["head_zed"]["xyz"] == [0.0, 0.0, 0.2]
+    with pytest.raises(ROSConfigError, match="not 'openarm' camera sensors"):
+        _write_robot_spec(env_cfg, {"lidar": IsaacCameraMount(xyz=(0, 0, 0), look_at=(1, 0, 0))})
+
+
+def test_openarm_spec_carries_its_base_frame_offset() -> None:
+    """OpenArm's base_frame (openarm_base) is no URDF link: it sits 0.698 m above the
+    URDF root. The sidecar must publish depth in that frame, so the spec carries the
+    offset (the clouds were stamped openarm_base but expressed 0.698 m too high)."""
+    from openral_sim.backends.isaac_sim import _build_robot_spec
+    from openral_sim.registry import ROBOTS
+
+    spec = _build_robot_spec(ROBOTS.get("openarm")(), "openarm")
+    assert np.asarray(spec["root_to_base"])[:3, 3] == pytest.approx([0.0, 0.0, 0.698])
+    franka = _build_robot_spec(ROBOTS.get("franka_panda")(), "franka_panda")
+    assert np.asarray(franka["root_to_base"]) == pytest.approx(np.eye(4))

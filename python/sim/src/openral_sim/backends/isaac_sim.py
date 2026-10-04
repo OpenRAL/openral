@@ -76,7 +76,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -663,6 +663,42 @@ class IsaacSceneObject(BaseModel):
     dynamic: bool = True
 
 
+class IsaacCameraMount(BaseModel):
+    """Where one manifest camera sits on the robot in the ``isaac_sim`` scene.
+
+    Without a mount a camera gets the scene's generic base-relative viewpoint; with
+    one it is a child of the named URDF ``link`` (``None``: the robot root) at
+    ``xyz``, oriented by ``quat_wxyz`` (in Isaac's ``axes`` convention: ``world`` =
+    x forward / z up, ``usd`` = -z forward / y up, ``ros`` = z forward / y down) or
+    aimed at ``look_at`` (a point in the same link frame). So it rides the link:
+    a wrist camera follows the wrist. The pose is a fact about the cell being
+    simulated, so it lives in the scene, never in the robot manifest.
+
+    Example:
+        >>> IsaacCameraMount(link="openarm_base", xyz=(0, 0, 0.2), look_at=(0.4, 0, -0.5)).axes
+        'world'
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    link: str | None = None
+    xyz: tuple[float, float, float]
+    quat_wxyz: tuple[float, float, float, float] | None = None
+    look_at: tuple[float, float, float] | None = None
+    axes: Literal["world", "usd", "ros"] = "world"
+    # Horizontal field of view; None: from the sensor's manifest intrinsics.
+    hfov_deg: float | None = Field(default=None, gt=0.0, lt=180.0)
+
+    @model_validator(mode="after")
+    def _one_orientation(self) -> IsaacCameraMount:
+        """Exactly one of ``quat_wxyz`` / ``look_at``; ``look_at`` aims world axes."""
+        if (self.quat_wxyz is None) == (self.look_at is None):
+            raise ValueError("camera mount: give exactly one of quat_wxyz or look_at")
+        if self.look_at is not None and self.axes != "world":
+            raise ValueError("camera mount: look_at aims the camera's x axis (axes: world)")
+        return self
+
+
 class IsaacSimOptions(BaseModel):
     """``scene.backend_options`` for the ``isaac_sim`` scene (validated at load).
 
@@ -682,6 +718,8 @@ class IsaacSimOptions(BaseModel):
     boot_timeout_s: float = Field(default=_DEFAULT_BOOT_TIMEOUT_S, gt=0)
     timeout_ms: int = Field(default=_DEFAULT_TIMEOUT_MS, gt=0)
     objects: list[IsaacSceneObject] = Field(default_factory=list)
+    # Per-sensor camera mounts (manifest sensor name -> mount); see IsaacCameraMount.
+    camera_mounts: dict[str, IsaacCameraMount] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _object_names_are_free(self) -> IsaacSimOptions:
@@ -792,6 +830,11 @@ def _world_key(
         return ""
     key = f"{environment_usd or ''}|{list(_spawn_pose(base_pose))}"
     return key + (f"|{objects_json}" if objects_json else "")
+
+
+def _camera_mounts_json(mounts: dict[str, IsaacCameraMount]) -> str:
+    """The mounts as stable JSON (``""`` when none): part of the sidecar identity."""
+    return json.dumps({k: m.model_dump() for k, m in sorted(mounts.items())}) if mounts else ""
 
 
 def _objects_json(objects: list[IsaacSceneObject]) -> str:
@@ -1054,6 +1097,41 @@ def _ros_package_paths(urdf_path: Path) -> list[dict[str, str]]:
     return out
 
 
+def _root_to_base(desc: RobotDescription) -> NDArray[np.float64]:
+    """4x4 pose of the manifest ``base_frame`` in the URDF root frame.
+
+    Identity unless the manifest's URDF declares ``base_to_root_xyz_rpy`` (the
+    ``base_frame`` -> URDF-root transform), which is inverted here: OpenArm's
+    ``openarm_base`` is no URDF link but sits 0.698 m above the URDF root ``world``.
+
+    Example:
+        >>> from openral_sim.registry import ROBOTS
+        >>> _root_to_base(ROBOTS.get("openarm")())[:3, 3].round(3).tolist()
+        [0.0, 0.0, 0.698]
+    """
+    urdf = getattr(desc.assets, "urdf", None) if desc.assets is not None else None
+    xyzrpy = getattr(urdf, "base_to_root_xyz_rpy", None)
+    if xyzrpy is None:
+        return np.eye(4)
+    x, y, z, roll, pitch, yaw = (float(v) for v in xyzrpy)
+    cr, sr, cp, sp, cy, sy = (
+        math.cos(roll),
+        math.sin(roll),
+        math.cos(pitch),
+        math.sin(pitch),
+        math.cos(yaw),
+        math.sin(yaw),
+    )
+    base_to_root = np.eye(4)
+    base_to_root[:3, :3] = [
+        [cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+        [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+        [-sp, cp * sr, cp * cr],
+    ]
+    base_to_root[:3, 3] = (x, y, z)
+    return np.asarray(np.linalg.inv(base_to_root), dtype=np.float64)
+
+
 def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
     """Marshal a ``RobotDescription`` to the JSON isaac robot spec.
 
@@ -1129,6 +1207,7 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
         "urdf_path": str(urdf_path),
         "ros_package_paths": _ros_package_paths(urdf_path),
         "base_frame": desc.base_frame,
+        "root_to_base": _root_to_base(desc).tolist(),
         # The arm is always pinned to its (possibly moving) root: a fixed arm is
         # pinned to the world; a mobile base teleports that pinned root each step
         # (kinematic base). Either way fix_base=True keeps the arm from falling.
@@ -1148,7 +1227,9 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
     }
 
 
-def _write_robot_spec(env_cfg: SimEnvironment) -> tuple[str, RobotDescription]:
+def _write_robot_spec(
+    env_cfg: SimEnvironment, camera_mounts: dict[str, IsaacCameraMount] | None = None
+) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
     Returns the temp file path passed to the sidecar via ``--robot-spec`` (the
@@ -1165,6 +1246,15 @@ def _write_robot_spec(env_cfg: SimEnvironment) -> tuple[str, RobotDescription]:
             "expected a robots/<id>/robot.yaml manifest."
         ) from exc
     spec = _build_robot_spec(desc, robot_id)
+    if camera_mounts:
+        cameras = {s.name for s in desc.sensors if s.modality in ("rgb", "depth")}
+        unknown = sorted(set(camera_mounts) - cameras)
+        if unknown:
+            raise ROSConfigError(
+                f"backend_options.camera_mounts names {unknown}, which are not "
+                f"{robot_id!r} camera sensors (have {sorted(cameras)})."
+            )
+        spec["camera_mounts"] = {k: m.model_dump() for k, m in camera_mounts.items()}
     fd, path = tempfile.mkstemp(prefix=f"isaac_robot_spec_{robot_id}_", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(spec, fh)
@@ -1206,7 +1296,8 @@ def _placement(
     spawn = _spawn_pose(env_cfg.base_pose)
     objects_json = _objects_json(opts.objects) if opts.objects else ""
     layout = opts.layout
-    world = _world_key(environment_usd, env_cfg.base_pose, objects_json)
+    mounts = _camera_mounts_json(opts.camera_mounts)
+    world = _world_key(environment_usd, env_cfg.base_pose, objects_json + mounts)
     return layout, environment_usd, spawn, objects_json, world
 
 
@@ -1298,7 +1389,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     # The scene imports the manifest robot's URDF. Marshal the RobotDescription
     # to a temp JSON the sidecar reads (it cannot import openral_core) and pass
     # it via --robot-spec.
-    robot_spec_path, desc = _write_robot_spec(env_cfg)
+    robot_spec_path, desc = _write_robot_spec(env_cfg, opts.camera_mounts)
     launch_argv += ["--robot-spec", robot_spec_path]
     if environment_usd is not None:
         launch_argv += ["--environment-usd", environment_usd]

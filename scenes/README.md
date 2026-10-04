@@ -280,6 +280,25 @@ A dynamic object without physics gets a rigid body and convex-hull colliders;
 `object_positions` and `robot_position` (simulator ground truth, not a policy
 observation).
 
+**Cameras**: every manifest RGB/depth sensor becomes an Isaac camera with a
+1 cm near clip and the FOV of its manifest intrinsics. Unmounted, it gets a
+generic base-relative viewpoint; `backend_options.camera_mounts` puts it on a
+robot link instead, so it rides that link (a wrist camera follows the wrist):
+
+```yaml
+    camera_mounts:
+      head_zed:                    # manifest sensor name
+        link: openarm_base         # URDF link, or the manifest base_frame; omit = robot root
+        xyz: [0.0, 0.0, 0.2]       # in that link's frame
+        quat_wxyz: [0.830285, -0.005106, 0.557306, 0.003427]  # or look_at: [x, y, z]
+        axes: world                # quat convention: world (x fwd, z up) | usd | ros
+        hfov_deg: 90.0             # optional; default from the manifest intrinsics
+```
+
+Depth clouds are published in the manifest `base_frame` with misses dropped,
+and since the camera renders the robot, `deploy sim` runs the robot self-filter
+in front of octomap for an `isaacsim` scene, as on real hardware.
+
 **Any manifest robot** with an `assets.urdf` imports — manifest joints are
 matched to URDF joints by the URDF's own structure, each gripper's mimic finger
 follows its leader, and `package://` meshes resolve via `AMENT_PREFIX_PATH`
