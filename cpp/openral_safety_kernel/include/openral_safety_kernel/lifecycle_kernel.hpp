@@ -388,6 +388,15 @@ private:
   std::vector<int> collision_base_dofs_;  ///< mobile-base dofs zeroed for base-relative FK
   std::vector<double> q_check_;           ///< velocity-integration accumulator (no alloc)
   std::vector<double> q_fk_;              ///< per-config FK input (base zeroed; no alloc)
+  // ADR-0102 slot rows (a JOINT_POSITION chunk whose joint_names leave an FK
+  // dof uncommanded): those joints are checked at their measured pose, and
+  // again at the target an accepted slot of the SAME tick committed for them.
+  // Sized to n_dof at configure; the hot path never allocates.
+  std::vector<std::uint8_t> slot_commanded_;   ///< per-dof: this chunk commands it
+  std::vector<double> tick_target_;            ///< per-dof: same-tick accepted slot target
+  std::vector<std::uint8_t> tick_target_set_;  ///< per-dof: tick_target_ holds a value
+  std::uint64_t tick_target_session_{0};       ///< (session, tick) tick_target_ belongs to
+  std::uint32_t tick_target_tick_{0};
   bool q_meas_received_{false};
   rclcpp::Time q_meas_stamp_{};
   double collision_seed_dt_s_{0.0};         ///< velocity-integration step (s); 0 → reactive only
