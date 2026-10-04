@@ -22,9 +22,11 @@ import pytest
 import yaml
 from openral_core import Pose6D
 from openral_core.exceptions import ROSConfigError
+from openral_sim import SCENES
 from openral_sim.backends.isaac_sim import (
     _SIDECAR_PORT_MAX,
     _SIDECAR_PORT_MIN,
+    _objects_json,
     _resolve_environment_usd,
     _scene_default_port,
     _world_key,
@@ -125,9 +127,15 @@ def test_shipped_isaac_scenes_derive_distinct_ports() -> None:
         # Same derivation as the factory: environment + spawn key the port too,
         # so two deploy scenes differing only in stage/spawn stay distinct.
         base_pose = doc.get("base_pose")
+        objects = (
+            SCENES.validate_options("isaac_sim", opts).objects  # type: ignore[union-attr]
+            if scene["id"] == "isaac_sim"
+            else []
+        )
         world = _world_key(
             _resolve_environment_usd(scene.get("assets_uri")),
             Pose6D(**base_pose) if base_pose else None,
+            _objects_json(objects) if objects else "",
         )
         port = _scene_default_port(task_id, robot, layout, world)
         assert port not in ports, f"port {port} collides: {path.name} vs {ports[port]}"

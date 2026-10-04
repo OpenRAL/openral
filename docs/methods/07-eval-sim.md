@@ -327,47 +327,48 @@ _NVIDIA Isaac Sim (Omniverse + PhysX + RTX) free-axis scene adapter. Drives an I
 - `_ISAAC_SCENE_ID = "isaac_sim"` — module constant; scene-registry key.
 - `class _IsaacSimSidecar(SidecarSimRollout)` — `reset`/`step`/`render`/`close`/`sim_time_ns` inherited from `SidecarSimRollout`. Implements `_wrap_obs` for the eval-shaped Observation and caches `action_dim` from the sidecar `ping`. Minimal bring-up only — `/joint_states` reads zeros for this non-MuJoCo backend.
 - `_sidecar_python() -> Path` / `_provision_isaac_venv() -> Path` / `_locate_sidecar_script() -> Path` — Resolve the Isaac interpreter (env override → opt-in auto-provision → cache default pip venv → a host-wide binary install's `python.sh` under `_BINARY_INSTALL_ROOTS` (`/opt/isaac-sim`, `~/isaacsim`) → typed `ROSConfigError`) and `tools/isaac_sidecar.py` (env override → walk-up). Auto-provision runs before the existing-venv shortcut so a venv built from superseded pins gets repaired, not silently reused.
+- `_find_sidecar_python() -> Path | None` — The same lookup without provisioning (override, pip venv, binary install), for availability checks such as the sim-test gate.
 - `_is_binary_install(py) -> bool` / `_binary_site_dir(py) -> Path` — A binary install's `python.sh` skips the pip venv's `--require-min` CUDA floors (it bundles its own runtime) and gets the sidecar's wire deps (pyzmq, msgpack) `pip install --target`-ed into a user-cache dir keyed on install path + `VERSION`, passed as `--site-dir` — never into the (often root-owned, shared) install.
-- `class IsaacActionLayout` (L185) — The scene's action vector, named (frozen dataclass: `joints`, `roles`, `end_effectors`).
-  - `IsaacActionLayout.from_description(desc) -> IsaacActionLayout` (L207) — Built from the manifest alone, with the same roles `_build_robot_spec` gives the sidecar (`base` / `gripper` / `arm`; fixed joints skipped).
-  - `IsaacActionLayout.slots -> tuple[str, ...]` (L225) — Non-base manifest joints, manifest order: one action slot each.
-  - `IsaacActionLayout.has_base -> bool` (L230) — A planar base: three twist slots at the end.
-  - `IsaacActionLayout.dim -> int` (L235) — Action vector width.
-  - `IsaacActionLayout.gripper_for(ee_name) -> str` (L239) — The gripper joint a gripper action drives: a named gripper joint, or with exactly one gripper any end-effector name (franka's `panda_hand` → `panda_gripper`); else `ROSConfigError`.
-- `pack_isaac_action(action, layout, prev) -> NDArray[np.float32]` (L257) — One typed `Action` → the scene's vector, by name (ADR-0102): JOINT_POSITION by `joint_names` (zero-padded full-dof row) or a whole-vector row (all / non-base / arm joints); GRIPPER_POSITION by `ee_name`; BODY_TWIST into the last three slots. Other slots keep `prev` (NaN = hold); a non-twist command zeroes the twist; other modes raise `ROSConfigError`.
-- `_IsaacSimSidecar.pack_action(action, prev)` / `_IsaacSimSidecar.idle_action()` — The env hooks `SimAttachedHAL` uses: name-addressed packing, and an idle vector that HOLDs every joint (NaN) with the base stopped.
-- `class IsaacSimOptions(BaseModel)` (L626) — The scene's registered `options_model` (`extra="forbid"`): `layout`, `headless`, `host`, `port`, `boot_timeout_s`, `timeout_ms`, `objects`.
-- `class IsaacSceneObject(BaseModel)` (L600) — One scene object: `usd` (same forms as `scene.assets_uri`), `name`, `xyz`, `yaw` (rad), `dynamic` (graspable rigid body vs static prop).
+- `class IsaacActionLayout` (L186) — The scene's action vector, named (frozen dataclass: `joints`, `roles`, `end_effectors`).
+  - `IsaacActionLayout.from_description(desc) -> IsaacActionLayout` (L208) — THE slot layout, which `_build_robot_spec` also derives the sidecar's from: every manifest joint in order (slot rows are zero-padded to all of them) with a role — `fixed` / `base` (no slot) / `gripper` / `arm`.
+  - `IsaacActionLayout.slots -> tuple[str, ...]` (L232) — Non-base manifest joints, manifest order: one action slot each.
+  - `IsaacActionLayout.has_base -> bool` (L239) — A planar base: three twist slots at the end.
+  - `IsaacActionLayout.dim -> int` (L244) — Action vector width.
+  - `IsaacActionLayout.gripper_for(ee_name) -> str` (L248) — The gripper joint a gripper action drives: a named gripper joint, or with exactly one gripper any end-effector name (franka's `panda_hand` → `panda_gripper`); else `ROSConfigError`.
+- `pack_isaac_action(action, layout, prev, *, carry_twist=False) -> NDArray[np.float32]` (L266) — One typed `Action` → the scene's vector, by name (ADR-0102): JOINT_POSITION by `joint_names` (zero-padded full-dof row) or a whole-vector row (all / slot / arm joints); GRIPPER_POSITION by `ee_name`; BODY_TWIST into the last three slots. Other slots keep `prev` (NaN = hold); the twist starts at zero for each committed step unless `carry_twist` (an earlier slot of the same step); other modes raise `ROSConfigError`.
+- `_IsaacSimSidecar.pack_action(action, prev, *, carry_twist=False)` / `_IsaacSimSidecar.idle_action()` — The env hooks `SimAttachedHAL` uses: name-addressed packing, and an idle vector that HOLDs every joint (NaN) with the base stopped.
+- `class IsaacSimOptions(BaseModel)` (L666) — The scene's registered `options_model` (`extra="forbid"`): `layout`, `headless`, `host`, `port`, `boot_timeout_s`, `timeout_ms`, `objects`. Object names must be unique and not the scene's own (`robot`, `obstacle_<i>`).
+- `class IsaacSceneObject(BaseModel)` (L640) — One scene object: `usd` (same forms as `scene.assets_uri`), `name`, `xyz`, `yaw` (rad), `dynamic` (graspable rigid body vs static prop).
 - `_ISAAC_CUDA_FLOORS = {"nvidia-nvjitlink-cu12": "12.8", "nvidia-cusparse-cu12": "12.5"}` → `_ISAAC_CUDA_DEPS` — CUDA runtime floors forced on top of the Isaac install, and the single source of both the pip spec and the sidecar's `--require-min` boot probe. Needed because Isaac's bundled CUDA-12.8 `libcusparse` has no matching `libnvJitLink`, and a too-old bundled one hangs Kit past `app ready` instead of raising.
 - `_sensor_dict(sensor) -> dict` / `_build_robot_spec(desc, robot_id) -> dict` / `_write_robot_spec(env_cfg) -> str` — Robot-agnostic `--layout manifest` marshalling: since the sidecar can't import `openral_core`, `_build_robot_spec` serialises the `RobotDescription` to plain JSON — joints with their `urdf_name`, one `grippers[]` entry per manifest gripper, the `ros_package_paths`, the action contract (`[arm, one slot per gripper, base twist]`), sensors; `_write_robot_spec` writes it to a temp file passed via `--robot-spec`.
 - `_parse_urdf_joints(urdf_path) -> dict[str, _UrdfJoint]` / `_match_urdf_joint(j, urdf, claimed) -> str` — Map a manifest joint onto the URDF joint it drives by the URDF's own structure: manifest name → same `(parent_link, child_link)` → `sim_joint_name` (usually the MuJoCo name, so not trusted first) → the one unclaimed movable non-mimic joint below the manifest `parent_link`; ambiguity or no match is a `ROSConfigError`.
-- `_gripper_spec(j, leader, urdf) -> dict` — Open/closed targets in URDF units (closed = limit nearer zero; open toward the other limit, capped at the manifest's own travel), the manifest's closed/open ends for mapping `/joint_states` back, and the URDF `<mimic>` followers the scene drives itself.
+- `_gripper_spec(j, leader, urdf, *, passthrough) -> dict` — Open/closed targets in URDF units from the manifest's declared unit (`SimDescription.grippers[].write_mode`): `passthrough` — the manifest's own physical range, negated onto a mirrored URDF axis (OpenArm); `normalised` (default) — the full URDF travel, closed at the zero pose (SO-100: 0 → 2.0 rad). Plus the manifest's closed/open ends for mapping `/joint_states` back, and the URDF `<mimic>` followers the scene drives itself.
 - `_ros_package_paths(urdf_path) -> list[dict[str, str]]` — `package://<pkg>` roots via `AMENT_PREFIX_PATH` (`share/<pkg>`), else an ancestor directory named `<pkg>`, else a known public package fetched into the openral cache (`_PUBLIC_ROS_PACKAGES` / `_fetch_public_package`: `openarm_description` → `openral_hal._openarm_description_assets`); unresolved is a `ROSConfigError`.
-- `_resolve_environment_usd(assets_uri, field="scene.assets_uri") -> str | None` — Validates `scene.assets_uri` (or an object's `usd`) as a USD: `isaac:` / `http(s)://` / `omniverse://` pass through to the sidecar; a local path (`file://` optional) resolves against the working directory and must exist; a non-USD suffix is a `ROSConfigError`.
+- `_resolve_environment_usd(assets_uri, field="scene.assets_uri") -> str | None` — Validates `scene.assets_uri` (or an object's `usd`) as a USD: `isaac:` / `http(s)://` / `omniverse://` pass through; a local path (`file://` optional) must exist — relative ones resolve against the repo root (`_repo_roots`, as the scene YAML is resolved), then the cwd; a non-USD suffix is a `ROSConfigError`.
 - `_spawn_pose(base_pose) -> tuple[float, float, float, float]` — `Pose6D` → the sidecar's planar `(x, y, z, yaw)` spawn; a roll/pitch is rejected (`ROSConfigError`), `None` → the origin.
 - `_world_key(environment_usd, base_pose, objects_json="") -> str` — The environment + spawn + objects part of a scene's sidecar identity; empty when none is set, so unplaced scenes keep their existing port.
 - `_objects_json(objects) -> str` — The validated `IsaacSceneObject`s as the sidecar's `--objects-json`, each `usd` checked by `_resolve_environment_usd`.
 - `_placement(env_cfg, opts) -> (layout, environment_usd, spawn, objects_json, world_key)` — Resolves the three placement inputs; any of them implies (and a hardcoded PoC layout rejects) `layout: manifest`.
 - `_scene_default_port(task_id, robot_id, layout, world="") -> int` — Deterministic per-scene ZMQ port in `[_SIDECAR_PORT_MIN, _SIDECAR_PORT_MAX)`; `world` (from `_world_key`) keeps two scenes that differ only in stage/spawn on distinct sidecars.
-- `_build_isaac_sim_scene(env_cfg) -> _IsaacSimSidecar` — Factory: validates `backend_options` (`IsaacSimOptions`), resolves placement (`_placement`); for `layout == "manifest"` writes the robot spec, appends `--robot-spec`, and unlinks it after `connect()`; forwards `--environment-usd` / `--spawn-pose` / `--objects-json`, and `--site-dir` (binary install) or the `--require-min` floors (pip venv). Connects a `SidecarClient(name="isaac", …)` whose `expected_identity` includes the environment + spawn.
-- `provision_isaac_sim() -> None` — Pre-launch provisioner: builds the sidecar venv (auto under `OPENRAL_ISAAC_AUTO_PROVISION=1`, else raises the manual recipe). Covers provisioning only — the Omniverse Kit boot still runs inside the HAL's 300s-bounded `on_configure`, and the scene's boot timeout is raised well past that bound. (L1077)
+- `_build_isaac_sim_scene(env_cfg) -> _IsaacSimSidecar` — Factory: validates `backend_options` (`IsaacSimOptions`), resolves placement (`_placement`); for `layout == "manifest"` writes the robot spec, appends `--robot-spec`, and unlinks it after `connect()`; forwards `--environment-usd` / `--spawn-pose` / `--objects-json`, and `--site-dir` (binary install) or the `--require-min` floors (pip venv). Connects a `SidecarClient(name="isaac", …)` whose `expected_identity` includes the environment, the spawn (as the sidecar parses it back), the robot and the objects; the spawn is passed fixed-point, since argparse reads `-1e-05` as a flag.
+- `provision_isaac_sim() -> None` — Pre-launch provisioner: builds the sidecar venv (auto under `OPENRAL_ISAAC_AUTO_PROVISION=1`, else raises the manual recipe). Covers provisioning only — the Omniverse Kit boot still runs inside the HAL's 300s-bounded `on_configure`, and the scene's boot timeout is raised well past that bound. (L1174)
 - Module side effect: `SCENES.register("isaac_sim", fixed_robot=None, provision=provision_isaac_sim, sim_clock=True, base_pose=True, options_model=IsaacSimOptions)(_build_isaac_sim_scene)` at import.
-- `const _ISAAC_SCENE_ID = 'isaac_sim'` (L95)
-- `const _AUTO_SPAWN_ENV = 'OPENRAL_ISAAC_AUTO_SPAWN'` (L96)
-- `const _SIDECAR_PYTHON_ENV = 'OPENRAL_ISAAC_SIDECAR_PYTHON'` (L97)
-- `const _SIDECAR_SCRIPT_ENV = 'OPENRAL_ISAAC_SIDECAR_SCRIPT'` (L98)
-- `const _AUTO_PROVISION_ENV = 'OPENRAL_ISAAC_AUTO_PROVISION'` (L99)
-- `const _ISAAC_PYTHON = '3.11'` (L109)
-- `const _ISAAC_SIDECAR_HOME = Path.home() / '.cache' / 'openral' / 'isaac-sidecar'` (L108)
-- `const _ISAAC_DEPS` — Pinned `isaacsim==5.1.0.0` install spec (core/robot/replicator/… subpackages). (L110)
-- `const _ISAAC_CUDA_FLOORS = {'nvidia-nvjitlink-cu12': '12.8', 'nvidia-cusparse-cu12': '12.5'}` (L129)
-- `const _ISAAC_CUDA_DEPS` — `_ISAAC_CUDA_FLOORS` rendered as `>=floor,<13` pip specs. (L133)
-- `const _DEFAULT_HOST = '127.0.0.1'` (L141)
-- `const _SIDECAR_PORT_MIN = 20000` (L149)
-- `const _SIDECAR_PORT_MAX = 40000` (L150)
-- `const _DEFAULT_TIMEOUT_MS = 120000` (L172)
-- `const _DEFAULT_BOOT_TIMEOUT_S = 900.0` (L173)
-- `const _DEFAULT_MAX_STEPS = 1000000` (L175)
+- `const _ISAAC_SCENE_ID = 'isaac_sim'` (L96)
+- `const _AUTO_SPAWN_ENV = 'OPENRAL_ISAAC_AUTO_SPAWN'` (L97)
+- `const _SIDECAR_PYTHON_ENV = 'OPENRAL_ISAAC_SIDECAR_PYTHON'` (L98)
+- `const _SIDECAR_SCRIPT_ENV = 'OPENRAL_ISAAC_SIDECAR_SCRIPT'` (L99)
+- `const _AUTO_PROVISION_ENV = 'OPENRAL_ISAAC_AUTO_PROVISION'` (L100)
+- `const _ISAAC_PYTHON = '3.11'` (L110)
+- `const _ISAAC_SIDECAR_HOME = Path.home() / '.cache' / 'openral' / 'isaac-sidecar'` (L109)
+- `const _ISAAC_DEPS` — Pinned `isaacsim==5.1.0.0` install spec (core/robot/replicator/… subpackages). (L111)
+- `const _ISAAC_CUDA_FLOORS = {'nvidia-nvjitlink-cu12': '12.8', 'nvidia-cusparse-cu12': '12.5'}` (L130)
+- `const _ISAAC_CUDA_DEPS` — `_ISAAC_CUDA_FLOORS` rendered as `>=floor,<13` pip specs. (L134)
+- `const _DEFAULT_HOST = '127.0.0.1'` (L142)
+- `const _SIDECAR_PORT_MIN = 20000` (L150)
+- `const _SIDECAR_PORT_MAX = 40000` (L151)
+- `const _DEFAULT_TIMEOUT_MS = 120000` (L173)
+- `const _DEFAULT_BOOT_TIMEOUT_S = 900.0` (L174)
+- `const _DEFAULT_MAX_STEPS = 1000000` (L176)
 
 #### `tools/isaac_sidecar.py` + `tools/_isaac_scene_base.py` + `tools/isaac_manifest_scene.py`
 _Isaac-side sidecar (runs under the py3.11 Isaac Sim venv only). Verifies its dependency floors before launching the headless Omniverse Kit `SimulationApp`, then serves a ZMQ REP loop (`ping`/`reset`/`step`/`render`/`close`) speaking the same msgpack+ndarray framing as the openral side. `IsaacSceneBase` owns the shared lifecycle; subclasses override `build`/`_apply_action`/`_images`/`_state`/`_reward_terminated`. The one scene (`--layout manifest`; the `lift_cube` / `bowl_plate` PoC layouts were removed — they hardcoded Isaac's Franka example class, which Isaac Sim 6.1 no longer loads):_

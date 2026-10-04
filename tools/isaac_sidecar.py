@@ -7,7 +7,8 @@ Omniverse Kit headless, builds the robot-agnostic manifest scene
 (``isaac_manifest_scene``: the manifest robot from its URDF, plus an optional
 environment USD and objects), and serves ZMQ REP + msgpack/ndarray framing:
 
-    ping->{"ok","action_dim","task","layout","environment","spawn"}   reset->{"observation"}
+    ping->{"ok","action_dim","task","layout","environment","spawn","robot","objects"}
+    reset->{"observation"}
     step->{"observation","reward","terminated","truncated","info"}
     render->{"frame": uint8 HWC|None}   close->{"ok"}
     observation = {"images": {"camera1": <H,W,3 uint8>}, "state": 1-D float32, "task": str}
@@ -217,6 +218,8 @@ def main(argv: list[str]) -> int:
             layout=args.layout,
             environment=args.environment_usd or "",
             spawn=list(args.spawn_pose),
+            robot=args.robot,
+            objects=args.objects_json or "",
         )
     except BaseException:
         # Print before close(): Kit's fast shutdown ends the process inside
@@ -239,6 +242,8 @@ def _serve(
     layout: str,
     environment: str,
     spawn: list[float],
+    robot: str,
+    objects: str,
 ) -> int:
     import msgpack
     import zmq
@@ -265,6 +270,8 @@ def _serve(
                     "layout": layout,
                     "environment": environment,
                     "spawn": spawn,
+                    "robot": robot,
+                    "objects": objects,
                 }
             elif endpoint == "reset":
                 # Carry sim time on reset too (≈0 after the

@@ -78,10 +78,10 @@ def test_read_state_shaped_to_manifest(hal) -> None:
     assert state.name == [j.name for j in description.joints]
 
 
-# The RTX camera rig is scene-independent — the frame-shape/dtype check
-# lives once in test_franka_isaac_deploy_hal.py. Here we only assert the
-# URDF-import-specific paths (action_dim source, state shape, articulation
-# drive) that actually differ from the built-in-asset scene.
+# The RTX camera rig is robot-independent — the frame-shape/dtype check lives
+# in test_panda_mobile_isaac.py::test_reset_obs_has_all_manifest_cameras. Here
+# we only assert the URDF-import paths (action_dim source, state shape,
+# articulation drive).
 
 
 def test_send_action_drives_imported_articulation(hal) -> None:
@@ -93,9 +93,9 @@ def test_send_action_drives_imported_articulation(hal) -> None:
     n_arm = sum(1 for j in description.joints if "gripper" not in j.name)
     start = np.asarray(_hal.read_state().position[:n_arm], dtype=float)
 
-    # Command a clearly non-trivial joint target for several steps; the manifest
-    # scene applies it as a per-step delta, so the arm should accumulate motion.
-    for _ in range(8):
+    # Command an absolute joint target (the meaning the HAL sends; the scene
+    # holds it as the drive target) and let the articulation track it.
+    for _ in range(30):
         state = _hal.read_state()
         action = Action(
             control_mode=ControlMode.JOINT_POSITION,
@@ -107,5 +107,8 @@ def test_send_action_drives_imported_articulation(hal) -> None:
 
     end = np.asarray(_hal.read_state().position[:n_arm], dtype=float)
     # The imported URDF articulation actually moved — generic DOF mapping +
-    # JOINT_POSITION controller drive the arm, not a no-op.
+    # JOINT_POSITION controller drive the arm, not a no-op — toward the target
+    # (joint 4's range is [-3.07, -0.07], so it stops at its limit instead).
     assert float(np.max(np.abs(end - start))) > 1e-3
+    free = [i for i in range(n_arm) if i != 3]
+    assert np.all(np.abs(end[free] - 0.5) < np.abs(start[free] - 0.5) + 1e-6)

@@ -77,6 +77,8 @@ def main(argv: list[str]) -> int:
         layout=args.layout,
         environment=args.environment_usd or "",
         spawn=list(args.spawn_pose),
+        robot=args.robot,
+        objects=args.objects_json or "",
     )
 
 

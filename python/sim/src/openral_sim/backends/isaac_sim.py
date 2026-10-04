@@ -72,6 +72,7 @@ import contextlib
 import json
 import math
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,7 +81,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from numpy.typing import NDArray
 from openral_core.exceptions import ROSConfigError
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from openral_sim._sidecar_common import ensure_pip_venv, run_cmd, sidecar_port_for_key
 from openral_sim.registry import SCENES
@@ -205,26 +206,34 @@ class IsaacActionLayout:
 
     @classmethod
     def from_description(cls, desc: RobotDescription) -> IsaacActionLayout:
-        """The layout ``_build_robot_spec`` gives the sidecar, from the manifest alone.
+        """THE slot layout — ``_build_robot_spec`` derives the sidecar's from it too.
 
-        Same roles as the spec: ``base`` (a ``base_joints`` entry), ``gripper``
-        (manifest role), else ``arm``; fixed joints carry no slot.
+        Every manifest joint, in manifest order (a slot row is zero-padded to
+        all of them), with a role: ``fixed`` (no slot), ``base`` (a
+        ``base_joints`` entry — twist-commanded, no slot), ``gripper`` (manifest
+        role), else ``arm``.
         """
         base = set(desc.base_joints or [])
-        joints = [j for j in desc.joints if getattr(j.joint_type, "value", j.joint_type) != "fixed"]
+
+        def role(j: Any) -> str:
+            if getattr(j.joint_type, "value", j.joint_type) == "fixed":
+                return "fixed"
+            if j.name in base:
+                return "base"
+            return "gripper" if j.role == "gripper" else "arm"
+
         return cls(
-            joints=tuple(j.name for j in joints),
-            roles=tuple(
-                "base" if j.name in base else "gripper" if j.role == "gripper" else "arm"
-                for j in joints
-            ),
+            joints=tuple(j.name for j in desc.joints),
+            roles=tuple(role(j) for j in desc.joints),
             end_effectors=tuple(e.name for e in desc.end_effectors),
         )
 
     @property
     def slots(self) -> tuple[str, ...]:
-        """Manifest joints that own an action slot (everything but the base)."""
-        return tuple(n for n, r in zip(self.joints, self.roles, strict=True) if r != "base")
+        """Manifest joints that own an action slot (arm + gripper joints)."""
+        return tuple(
+            n for n, r in zip(self.joints, self.roles, strict=True) if r in ("arm", "gripper")
+        )
 
     @property
     def has_base(self) -> bool:
@@ -255,7 +264,11 @@ class IsaacActionLayout:
 
 
 def pack_isaac_action(
-    action: Action, layout: IsaacActionLayout, prev: NDArray[np.float32] | None
+    action: Action,
+    layout: IsaacActionLayout,
+    prev: NDArray[np.float32] | None,
+    *,
+    carry_twist: bool = False,
 ) -> NDArray[np.float32]:
     """One typed ``Action`` → the manifest scene's action vector (``IsaacActionLayout``).
 
@@ -265,10 +278,12 @@ def pack_isaac_action(
     (all joints, the non-base joints, or the arm joints alone); a
     GRIPPER_POSITION writes the gripper its ``ee_name`` resolves to; a
     BODY_TWIST writes ``(vx, vy, wz)``. Every other slot keeps ``prev`` (NaN =
-    HOLD when nothing was commanded yet), except the twist, which is zeroed by
-    any non-twist command — a velocity must not outlive the command that set
-    it. Base joints in a joint row are skipped: the kinematic base only takes a
-    BODY_TWIST.
+    HOLD when nothing was commanded yet), except the twist, which starts at
+    zero for every committed step — a velocity must not outlive the command
+    that set it. ``carry_twist=True`` keeps ``prev``'s twist instead: ``prev``
+    is then an earlier slot of the SAME step (a mobile-manipulation tick packs
+    twist, arm and gripper slots into one vector). Base joints in a joint row
+    are skipped: the kinematic base only takes a BODY_TWIST.
 
     Raises:
         ROSConfigError: an unsupported control mode, a missing payload, an
@@ -291,7 +306,7 @@ def pack_isaac_action(
     out: NDArray[np.float32] = np.full(layout.dim, np.nan, dtype=np.float32)
     if prev is not None and prev.shape == out.shape:
         out = prev.astype(np.float32, copy=True)
-    if layout.has_base:
+    if layout.has_base and not carry_twist:
         out[-3:] = 0.0
     mode = action.control_mode
     if mode is ControlMode.BODY_TWIST:
@@ -359,7 +374,13 @@ class _IsaacSimSidecar(SidecarSimRollout):
 
     layout: IsaacActionLayout | None = None
 
-    def pack_action(self, action: Action, prev: NDArray[np.float32] | None) -> NDArray[np.float32]:
+    def pack_action(
+        self,
+        action: Action,
+        prev: NDArray[np.float32] | None,
+        *,
+        carry_twist: bool = False,
+    ) -> NDArray[np.float32]:
         """``SimAttachedHAL``'s packing hook: this env addresses its slots by name.
 
         See ``pack_isaac_action``. The HAL's default packer assumes the robosuite
@@ -369,7 +390,7 @@ class _IsaacSimSidecar(SidecarSimRollout):
         """
         if self.layout is None:
             raise ROSConfigError("Isaac rollout built without an action layout.")
-        return pack_isaac_action(action, self.layout, prev)
+        return pack_isaac_action(action, self.layout, prev, carry_twist=carry_twist)
 
     def idle_action(self) -> NDArray[np.float32]:
         """HOLD every joint target (NaN) and stop the base — never "drive to 0 rad"."""
@@ -494,6 +515,25 @@ def _provision_isaac_venv() -> Path:
         # Keyed on the pins so raising a floor (e.g. the nvJitLink one) repairs
         # an already-provisioned venv instead of being ignored forever.
         spec=(*_ISAAC_DEPS, *_ISAAC_CUDA_DEPS),
+    )
+
+
+def _find_sidecar_python() -> Path | None:
+    """An Isaac interpreter that already exists — never provisions anything.
+
+    ``OPENRAL_ISAAC_SIDECAR_PYTHON`` (when it is a file), the default pip venv,
+    or a binary install's ``python.sh``; else ``None``. For availability checks
+    (the sim-test gate) that must not trigger a multi-GB install.
+    """
+    override = os.environ.get(_SIDECAR_PYTHON_ENV)
+    if override:
+        p = Path(override).expanduser()
+        return p if p.is_file() else None
+    default = _ISAAC_SIDECAR_HOME / ".venv" / "bin" / "python"
+    if default.is_file():
+        return default
+    return next(
+        (r / "python.sh" for r in _BINARY_INSTALL_ROOTS if (r / "python.sh").is_file()), None
     )
 
 
@@ -643,6 +683,23 @@ class IsaacSimOptions(BaseModel):
     timeout_ms: int = Field(default=_DEFAULT_TIMEOUT_MS, gt=0)
     objects: list[IsaacSceneObject] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _object_names_are_free(self) -> IsaacSimOptions:
+        """Reject duplicate or reserved object names at load, not mid-boot.
+
+        Names key ``/World/objects/<name>`` and the World's registry, which
+        already holds the scene's own ``robot`` / ``obstacle_<i>``.
+        """
+        names = [o.name for o in self.objects]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        reserved = [n for n in names if n == "robot" or re.fullmatch(r"obstacle_\d+", n)]
+        if dupes or reserved:
+            raise ValueError(
+                f"objects: duplicate names {dupes} / reserved names {reserved} "
+                "(the scene registers 'robot' and 'obstacle_<i>' itself)."
+            )
+        return self
+
 
 # ── environment + spawn (manifest layout) ──
 
@@ -657,8 +714,11 @@ def _resolve_environment_usd(assets_uri: str | None, field: str = "scene.assets_
     """Validate ``scene.assets_uri`` (or an object's ``usd``) as a USD for the sidecar.
 
     Remote forms (``isaac:``, ``http(s)://``, ``omniverse://``) pass through; a
-    local path (optionally ``file://``) is resolved against the working
-    directory and must exist — a typo fails here, not minutes into a Kit boot.
+    local path (optionally ``file://``) must exist — a typo fails here, not
+    minutes into a Kit boot. A relative path resolves against the repository
+    root first (the directory holding ``scenes/``, as the scene YAML itself is
+    resolved — the HAL node's working directory is arbitrary), then the
+    working directory.
 
     Example:
         >>> _resolve_environment_usd("isaac:Isaac/Environments/Simple_Warehouse/warehouse.usd")
@@ -674,10 +734,20 @@ def _resolve_environment_usd(assets_uri: str | None, field: str = "scene.assets_
         )
     if assets_uri.startswith(_REMOTE_USD_PREFIXES):
         return assets_uri
-    path = Path(assets_uri.removeprefix("file://")).expanduser().resolve()
-    if not path.is_file():
-        raise ROSConfigError(f"{field} {assets_uri!r}: no such file ({path}).")
+    raw = Path(assets_uri.removeprefix("file://")).expanduser()
+    candidates = [raw] if raw.is_absolute() else [*(_repo_roots()), Path.cwd()]
+    tried = [(c / raw if not raw.is_absolute() else raw).resolve() for c in candidates]
+    path = next((t for t in tried if t.is_file()), None)
+    if path is None:
+        raise ROSConfigError(
+            f"{field} {assets_uri!r}: no such file (tried {', '.join(map(str, tried))})."
+        )
     return str(path)
+
+
+def _repo_roots() -> list[Path]:
+    """The checkout this module lives in (the ancestor holding ``scenes/``), if any."""
+    return [p for p in Path(__file__).resolve().parents if (p / "scenes").is_dir()][:1]
 
 
 def _spawn_pose(base_pose: Pose6D | None) -> tuple[float, float, float, float]:
@@ -869,23 +939,48 @@ def _match_urdf_joint(j: Any, urdf: dict[str, _UrdfJoint], claimed: set[str]) ->
     )
 
 
-def _gripper_spec(j: Any, leader: _UrdfJoint, urdf: dict[str, _UrdfJoint]) -> dict[str, Any]:
+_LIMIT_EPS = 1e-6
+
+
+def _gripper_spec(
+    j: Any, leader: _UrdfJoint, urdf: dict[str, _UrdfJoint], *, passthrough: bool
+) -> dict[str, Any]:
     """Open/closed targets (URDF units) + mimic followers for one manifest gripper.
 
-    ``closed`` is the URDF limit nearer zero and ``open`` lies toward the other
-    limit — by at most the manifest's own travel when that is the smaller (the
-    hardware range: OpenArm's jaw spans 0.785 rad of the URDF's 1.571). A
-    manifest range in other units (a normalised ``[0, 1]`` width) only ever
-    shrinks nothing — the URDF travel wins. The manifest's own closed/open ends
-    (nearer/farther from zero) map ``/joint_states`` back into manifest units.
+    The manifest's gripper unit is declared, not guessed
+    (``SimDescription.grippers[].write_mode``):
+
+    * ``passthrough`` — ``position_limits`` are physical joint values (OpenArm's
+      jaw, 0..0.785 rad): closed/open are the manifest ends nearer/farther
+      from zero, on the URDF's axis — negated when the URDF finger turns the
+      other way (OpenArm's left finger spans [-1.571, 0]).
+    * ``normalised`` (the default, or no declaration) — ``[0 = closed, 1 =
+      open]`` is a fraction of the URDF's full travel: closed is the zero pose
+      (clamped into the limits), open the limit farther from it (SO-100's jaw:
+      0 → 2.0 rad; the Panda's fingers: 0 → 0.04 m).
+
+    The manifest's own closed/open ends map ``/joint_states`` back.
     """
     if leader.lower is None or leader.upper is None:
         raise ROSConfigError(f"URDF gripper joint {leader.name!r} has no <limit>.")
-    closed, far = sorted((leader.lower, leader.upper), key=abs)
+    lo, hi = float(leader.lower), float(leader.upper)
     m_lo, m_hi = j.position_limits if j.position_limits is not None else (0.0, 1.0)
     m_closed, m_open = sorted((float(m_lo), float(m_hi)), key=abs)
-    travel = min(abs(far - closed), abs(m_open - m_closed))
-    opened = closed + math.copysign(travel, far - closed)
+
+    def inside(v: float) -> bool:
+        return lo - _LIMIT_EPS <= v <= hi + _LIMIT_EPS
+
+    if passthrough:
+        sign = 1.0 if inside(m_open) and inside(m_closed) else -1.0
+        if not (inside(sign * m_open) and inside(sign * m_closed)):
+            raise ROSConfigError(
+                f"passthrough gripper {j.name!r}: manifest range ({m_lo}, {m_hi}) lies "
+                f"outside URDF joint {leader.name!r} limits ({lo}, {hi}) on either axis."
+            )
+        closed, opened = sign * m_closed, sign * m_open
+    else:
+        closed = min(max(0.0, lo), hi)
+        opened = hi if abs(hi - closed) >= abs(lo - closed) else lo
     return {
         "name": j.name,
         "leader": leader.name,
@@ -916,6 +1011,13 @@ def _fetch_public_package(pkg: str) -> Path | None:
     target = _PUBLIC_ROS_PACKAGES.get(pkg)
     if target is None:
         return None
+    # A fallback, said out loud (CLAUDE.md §1.4): the first use clones a pinned
+    # public repo into the openral cache.
+    print(
+        f"[isaac-sim] package://{pkg}/ is on no AMENT_PREFIX_PATH entry and not "
+        f"beside the URDF; using the pinned public clone ({target}).",
+        flush=True,
+    )
     module, _, func = target.partition(":")
     return Path(getattr(importlib.import_module(module), func)())
 
@@ -990,42 +1092,37 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
         )
     urdf_path = urdf_path.resolve()
     urdf = _parse_urdf_joints(urdf_path)
-    base_joint_names = set(desc.base_joints or [])
-
-    def _joint_type(j: Any) -> str:
-        return getattr(j.joint_type, "value", str(j.joint_type))
-
-    def _eff_role(j: Any) -> str:
-        """``base`` (kinematic, not a URDF DOF) / ``gripper`` / otherwise ``arm``.
-
-        The manifest's own ``role`` is advisory and often left ``unknown`` on
-        arm joints (e.g. ``franka_panda`` tags only the gripper).
-        """
-        if j.name in base_joint_names:
-            return "base"
-        if j.role == "gripper":
-            return "gripper"
-        return "arm"
-
-    # Keep ALL non-fixed manifest joints in order (base joints stay so the sidecar
-    # can fill /joint_states from the kinematic base pose).
-    joints = [j for j in desc.joints if _joint_type(j) != "fixed"]
+    # One derivation of the slot layout (roles + order), shared with the HAL's
+    # packer (IsaacActionLayout.from_description) so the two cannot drift.
+    layout = IsaacActionLayout.from_description(desc)
+    passthrough = {
+        g.joint
+        for g in ((desc.sim.grippers if desc.sim else None) or [])
+        if getattr(g.write_mode, "value", g.write_mode) == "passthrough"
+    }
+    by_name = {j.name: j for j in desc.joints}
     claimed: set[str] = set()
     entries: list[dict[str, Any]] = []
     grippers: list[dict[str, Any]] = []
-    for j in joints:
-        role = _eff_role(j)
+    for name, role in zip(layout.joints, layout.roles, strict=True):
+        j = by_name[name]
         urdf_name = None
-        if role != "base":
+        if role in ("arm", "gripper"):
             urdf_name = _match_urdf_joint(j, urdf, claimed)
             claimed.add(urdf_name)
             if role == "gripper":
-                grippers.append(_gripper_spec(j, urdf[urdf_name], urdf))
+                grippers.append(
+                    _gripper_spec(j, urdf[urdf_name], urdf, passthrough=name in passthrough)
+                )
         entries.append(
-            {"name": j.name, "role": role, "joint_type": _joint_type(j), "urdf_name": urdf_name}
+            {
+                "name": name,
+                "role": role,
+                "joint_type": getattr(j.joint_type, "value", str(j.joint_type)),
+                "urdf_name": urdf_name,
+            }
         )
-    arm_n = sum(1 for e in entries if e["role"] == "arm")
-    has_base = bool(desc.base_joints)
+    has_base = layout.has_base
 
     return {
         "robot_id": robot_id,
@@ -1041,9 +1138,9 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
         "base_joints": desc.base_joints,
         "base_kinematics": desc.base_kinematics,
         "action": {
-            # IsaacActionLayout: absolute targets per non-base joint in manifest
-            # order (NaN = hold), then the base twist.
-            "dim": arm_n + len(grippers) + (3 if has_base else 0),
+            # IsaacActionLayout: absolute targets per arm/gripper joint in
+            # manifest order (NaN = hold), then the base twist.
+            "dim": layout.dim,
             "control_mode": "joint_position",
             "has_base": has_base,
         },
@@ -1147,6 +1244,7 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     timeout_ms = opts.timeout_ms
     boot_timeout_s = opts.boot_timeout_s
     layout, environment_usd, spawn, objects_json, world = _placement(env_cfg, opts)
+    spawn_args = [f"{v:.9f}" for v in spawn]
     # Default to a per-scene port (no cross-scene sidecar reuse); an explicit
     # ``port`` in backend_options still wins.
     robot_id = env_cfg.robot_id or "franka_panda"
@@ -1205,7 +1303,9 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     if environment_usd is not None:
         launch_argv += ["--environment-usd", environment_usd]
     if env_cfg.base_pose is not None:
-        launch_argv += ["--spawn-pose", *(repr(v) for v in spawn)]
+        # Fixed-point, never repr(): argparse reads "-1e-05" as an option flag
+        # (Python <= 3.13), so a tiny negative coordinate or yaw broke the boot.
+        launch_argv += ["--spawn-pose", *spawn_args]
     if objects_json:
         launch_argv += ["--objects-json", objects_json]
 
@@ -1223,7 +1323,10 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
             "task": env_cfg.task.id,
             "layout": layout,
             "environment": environment_usd or "",
-            "spawn": list(spawn),
+            # What the sidecar parses back from --spawn-pose, exactly.
+            "spawn": [float(v) for v in spawn_args],
+            "robot": robot_id,
+            "objects": objects_json,
         },
     )
     try:

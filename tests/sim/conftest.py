@@ -195,17 +195,13 @@ def _libero_robosuite_conflict() -> bool:
 def _sidecar_python_available() -> bool:
     """Whether an Isaac Sim interpreter resolves: override, pip venv, or binary install.
 
-    Delegates to the backend's own resolution so the gate and the runtime never
-    disagree about what counts as an Isaac install.
+    Delegates to the backend's own lookup so the gate and the runtime never
+    disagree about what counts as an Isaac install — and never provisions: this
+    runs at collection time, where a multi-GB install (or its failure) must not.
     """
-    from openral_core.exceptions import ROSConfigError
-    from openral_sim.backends.isaac_sim import _sidecar_python
+    from openral_sim.backends.isaac_sim import _find_sidecar_python
 
-    try:
-        _sidecar_python()
-    except ROSConfigError:
-        return False
-    return True
+    return _find_sidecar_python() is not None
 
 
 def _repo_root() -> Path:

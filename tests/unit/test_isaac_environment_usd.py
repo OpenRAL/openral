@@ -165,6 +165,7 @@ def test_openarm_manifest_joints_resolve_onto_its_urdf() -> None:
         next(j for j in desc.joints if j.name == "left_gripper"),
         urdf["openarm_left_finger_joint1"],
         urdf,
+        passthrough=True,  # OpenArm declares write_mode: passthrough (radians)
     )
     # The URDF jaw spans [-1.571, 0]; the hardware (manifest) travel is 0.785.
     assert (left["closed"], left["open"]) == pytest.approx((0.0, -0.7854))
@@ -177,6 +178,7 @@ def test_openarm_manifest_joints_resolve_onto_its_urdf() -> None:
         next(j for j in desc.joints if j.name == "right_gripper"),
         urdf["openarm_right_finger_joint1"],
         urdf,
+        passthrough=True,
     )
     assert (right["manifest_closed"], right["manifest_open"]) == pytest.approx((0.0, -0.7854))
 
@@ -249,3 +251,55 @@ def test_objects_resolve_their_usd_and_key_the_sidecar() -> None:
     assert a != b
     with pytest.raises(ROSConfigError, match=r"objects\[mesh\]\.usd"):
         _objects_json([IsaacSceneObject(usd="props/mesh.obj", name="mesh", xyz=(0, 0, 0))])
+
+
+def test_a_normalised_gripper_spans_the_whole_urdf_travel() -> None:
+    """SO-100 declares a NORMALISED [0, 1] jaw on a revolute URDF jaw of
+    (-0.2, 2.0) rad: 1.0 must open it fully (2.0 rad), 0.0 close it at the zero
+    pose — not read [0, 1] as radians (which opened it to 0.8, ~45%)."""
+    from openral_core import RobotDescription
+    from openral_sim.backends.isaac_sim import _build_robot_spec
+
+    desc = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "so100_follower" / "robot.yaml"))
+    (gripper,) = _build_robot_spec(desc, "so100_follower")["grippers"]
+    assert (gripper["closed"], gripper["open"]) == pytest.approx((0.0, 2.0))
+    assert (gripper["manifest_closed"], gripper["manifest_open"]) == (0.0, 1.0)
+
+
+def test_spawn_args_never_look_like_option_flags() -> None:
+    """repr(-1e-05) == '-1e-05', which argparse (Python <= 3.13) takes for a flag."""
+    import argparse
+
+    from openral_sim.backends.isaac_sim import _spawn_pose
+
+    spawn = _spawn_pose(
+        Pose6D(xyz=(-1e-5, 2.0, 0.0), quat_xyzw=(0.0, 0.0, -1e-6, 1.0), frame_id="world")
+    )
+    args = [f"{v:.9f}" for v in spawn]
+    p = argparse.ArgumentParser()
+    p.add_argument("--spawn-pose", type=float, nargs=4)
+    assert p.parse_args(["--spawn-pose", *args]).spawn_pose == pytest.approx(spawn, abs=1e-8)
+
+
+def test_object_names_must_be_unique_and_not_reserved() -> None:
+    from openral_sim import SCENES
+
+    box = {"usd": "isaac:Isaac/Props/x.usd", "xyz": [0, 0, 0]}
+    for names, match in ((["box", "box"], "duplicate"), (["robot"], "reserved")):
+        with pytest.raises(ROSConfigError, match=match):
+            SCENES.validate_options("isaac_sim", {"objects": [{**box, "name": n} for n in names]})
+
+
+def test_relative_assets_resolve_against_the_repo_root_not_the_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The HAL node's working directory is arbitrary; a repo-relative USD path
+    must resolve the same from anywhere."""
+    rel = Path("scenes") / "_tmp_test_stage.usda"
+    stage = _REPO_ROOT / rel
+    stage.write_text("#usda 1.0\n")
+    try:
+        monkeypatch.chdir(tmp_path)
+        assert _resolve_environment_usd(str(rel)) == str(stage.resolve())
+    finally:
+        stage.unlink()

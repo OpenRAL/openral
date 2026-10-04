@@ -545,6 +545,10 @@ class SimAttachedHAL:
         self._pending_action_tick = None
         self._pending_actions.clear()
         self._last_committed_tick = 0
+        # The reset re-seeded the scene: commands from before it must not ride
+        # along as the next pack's ``prev`` (an absolute-target env would move
+        # the arm back to its pre-reset pose on the first base twist).
+        self._last_env_action = None
         self._joint_index = None  # rebuilt on next read_state (model identity stable per env)
         # A reset re-randomises the scene, so the previous episode's success
         # verdict no longer describes anything live. Re-seed the witness from
@@ -957,13 +961,37 @@ class SimAttachedHAL:
 
     def _step_packed_action_group(self, actions: list[Action]) -> None:
         """Pack every safe slot, then execute exactly one simulator step."""
-        if any(action.control_mode is ControlMode.BODY_TWIST for action in actions):
+        has_twist = any(action.control_mode is ControlMode.BODY_TWIST for action in actions)
+        if has_twist and not self._env_packs:
             raise ROSConfigError(
                 "SimAttachedHAL: BODY_TWIST cannot share a packed env-step group; "
                 "use the backend's step_action_group implementation."
             )
         env_action: NDArray[np.float32] | None = None
-        if self._has_composite_split():
+        if self._env_packs:
+            # The env packs by name; slots after the first carry the twist an
+            # earlier slot of this same step packed (a mobile-manipulation tick).
+            env_pack = self._env.pack_action  # type: ignore[attr-defined]  # reason: duck-typed env hook, checked in __init__
+            for i, action in enumerate(actions):
+                env_action = env_pack(
+                    action, self._last_env_action if i == 0 else env_action, carry_twist=i > 0
+                )
+            if env_action is not None:
+                self._last_env_action = env_action.copy()
+            twist = next(
+                (
+                    a.body_twist[0]
+                    for a in actions
+                    if a.control_mode is ControlMode.BODY_TWIST and a.body_twist
+                ),
+                None,
+            )
+            self._last_body_twist = (
+                (float(twist[0]), float(twist[1]), 0.0, 0.0, 0.0, float(twist[5]))
+                if twist is not None
+                else (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+            )
+        elif self._has_composite_split():
             for action in actions:
                 env_action = self._pack_with_composite_split(action)
         else:

@@ -311,7 +311,7 @@ class IsaacManifestScene(IsaacSceneBase):
             if j.get("role") == "gripper"
             else ("arm", str(j["urdf_name"]))
             for j in self._manifest_joints
-            if j.get("role") != "base"
+            if j.get("role") in ("arm", "gripper")
         ]
         self.action_dim = len(self._slot_plan) + (3 if self._has_base else 0)
         self._objects: list[dict[str, Any]] = list(objects or [])

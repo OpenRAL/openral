@@ -158,7 +158,7 @@ def _hal(robot: str, scene: str):
     env, seed = build_sim_env_from_yaml(str(_REPO_ROOT / "scenes" / "deploy" / scene))
     hal = SimAttachedHAL(env, _desc(robot), env_reset_seed=seed)
     hal.connect()
-    return hal
+    return hal, env
 
 
 def _rows(path: Path) -> list[list[float]]:
@@ -173,7 +173,7 @@ def _rows(path: Path) -> list[list[float]]:
 def test_hal_drives_panda_mobile_arm_gripper_and_base_into_their_own_slots(
     recorded: Path,
 ) -> None:
-    hal = _hal("panda_mobile", "isaac_panda_mobile_warehouse.yaml")
+    hal, env = _hal("panda_mobile", "isaac_panda_mobile_warehouse.yaml")
     try:
         arm = [0.0, 0.5, 0.0, -1.0, 0.0, 1.0, 0.0]
         hal.send_action(Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[arm]))
@@ -187,6 +187,7 @@ def test_hal_drives_panda_mobile_arm_gripper_and_base_into_their_own_slots(
         hal.idle_step()
     finally:
         hal.disconnect()
+        env.close()  # stops the sidecar — a leaked one is adopted by the next test
     joint, grip, twist, idle = _rows(recorded)[-4:]
     _nan_eq(np.asarray(joint), [*arm, NAN, 0.0, 0.0, 0.0])  # base untouched
     _nan_eq(np.asarray(grip), [*arm, 1.0, 0.0, 0.0, 0.0])  # gripper slot, not wz
@@ -209,7 +210,7 @@ def test_hal_commits_an_openarm_slot_tick_as_one_step(recorded: Path) -> None:
     def slot(**kw: object) -> Action:
         return Action(tick_index=1, tick_group_size=4, **kw)  # type: ignore[arg-type]
 
-    hal = _hal("openarm", "isaac_openarm_warehouse.yaml")
+    hal, env = _hal("openarm", "isaac_openarm_warehouse.yaml")
     try:
         before = len(_rows(recorded))
         for action in (
@@ -231,7 +232,76 @@ def test_hal_commits_an_openarm_slot_tick_as_one_step(recorded: Path) -> None:
             hal.send_action(action)
     finally:
         hal.disconnect()
+        env.close()
     rows = _rows(recorded)
     assert len(rows) == before + 1, "a slot tick must commit as exactly one env step"
     # Manifest order: left arm, left gripper, right arm, right gripper.
     _nan_eq(np.asarray(rows[-1]), [0.3] * 7 + [0.7] + [-0.3] * 7 + [-0.7])
+
+
+def test_a_mobile_manipulation_tick_keeps_its_twist(recorded: Path) -> None:
+    """Twist + arm + gripper slots of ONE tick commit as one step with the twist
+    intact (a later slot must not zero what an earlier one packed)."""
+    hal, env = _hal("panda_mobile", "isaac_panda_mobile_warehouse.yaml")
+    arm = [0.0, 0.5, 0.0, -1.0, 0.0, 1.0, 0.0]
+    try:
+        for action in (
+            Action(
+                control_mode=ControlMode.BODY_TWIST,
+                body_twist=[(0.3, 0.0, 0.0, 0.0, 0.0, 0.1)],
+                tick_index=1,
+                tick_group_size=3,
+            ),
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                joint_targets=[arm],
+                tick_index=1,
+                tick_group_size=3,
+            ),
+            Action(
+                control_mode=ControlMode.GRIPPER_POSITION,
+                gripper=[1.0],
+                tick_index=1,
+                tick_group_size=3,
+            ),
+        ):
+            hal.send_action(action)
+        assert hal.base_twist[0] == pytest.approx(0.3)  # latched for /odom
+    finally:
+        hal.disconnect()
+        env.close()
+    _nan_eq(np.asarray(_rows(recorded)[-1]), [*arm, 1.0, 0.3, 0.0, 0.1])
+
+
+def test_reconnect_drops_pre_reset_targets(recorded: Path) -> None:
+    """After connect() re-resets the env, a base twist must not re-send the arm
+    targets commanded before the reset."""
+    hal, env = _hal("panda_mobile", "isaac_panda_mobile_warehouse.yaml")
+    try:
+        hal.send_action(Action(control_mode=ControlMode.JOINT_POSITION, joint_targets=[[0.5] * 7]))
+        hal.connect()
+        hal.send_action(
+            Action(
+                control_mode=ControlMode.BODY_TWIST,
+                body_twist=[(0.2, 0.0, 0.0, 0.0, 0.0, 0.0)],
+            )
+        )
+    finally:
+        hal.disconnect()
+        env.close()
+    _nan_eq(np.asarray(_rows(recorded)[-1]), [NAN] * 8 + [0.2, 0.0, 0.0])
+
+
+def test_fixed_joints_take_no_slot_but_pad_named_rows() -> None:
+    layout = IsaacActionLayout(joints=("mount", "j1", "grip"), roles=("fixed", "arm", "gripper"))
+    assert layout.slots == ("j1", "grip")
+    out = pack_isaac_action(
+        Action(
+            control_mode=ControlMode.JOINT_POSITION,
+            joint_targets=[[0.0, 0.7, 0.0]],  # padded to ALL joints, fixed included
+            joint_names=["j1"],
+        ),
+        layout,
+        None,
+    )
+    _nan_eq(out, [0.7, NAN])

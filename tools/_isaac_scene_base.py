@@ -72,7 +72,10 @@ class IsaacSceneBase:
         """Apply one action, advance physics, and return a StepResult dict."""
         action = np.asarray(action, dtype=np.float32).reshape(-1)
         if action.shape[0] < self.action_dim:
-            action = np.pad(action, (0, self.action_dim - action.shape[0]))
+            # NaN, not 0: slots are absolute targets, and 0 is a legal one ("drive
+            # to 0 rad", "close the gripper"). NaN holds; the scene reads a NaN
+            # base twist as 0 (stop).
+            action = np.pad(action, (0, self.action_dim - action.shape[0]), constant_values=np.nan)
         self._apply_action(action)
         # Render only the final substep — it is the frame the obs reads.
         for _ in range(max(0, self.physics_substeps - 1)):

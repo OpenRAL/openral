@@ -200,19 +200,19 @@ _Sweeps a live graph's Nav2 costmaps for cells marked inside the robot's own sil
 _Isaac Sim scene sidecar, running Isaac Lab/Kit in its own py3.11 venv, auto-spawned by `openral_sim.backends.isaac_sim`. Launches Omniverse Kit headless, builds the scene named by `--layout`, and serves ZMQ REP + msgpack framing (`ping`/`reset`/`step`/`render`/`close`)._
 
 - `_parse_args(argv: list[str]) -> argparse.Namespace` — Sidecar CLI, including `--environment-usd` (local path / URL / `isaac:<path>`) and `--spawn-pose X Y Z YAW`; both are rejected outside `--layout manifest`.
-- `_serve(scene, *, host, port, sim_app, task, layout, environment, spawn) -> int` — ZMQ REP loop; `ping` answers the scene identity (`task`, `layout`, `environment`, `spawn`) the client checks before adopting a running sidecar.
+- `_serve(scene, *, host, port, sim_app, task, layout, environment, spawn, robot, objects) -> int` — ZMQ REP loop; `ping` answers the scene identity (`task`, `layout`, `environment`, `spawn`, `robot`, `objects`) the client checks before adopting a running sidecar.
 - `--objects-json` — JSON list of scene objects (manifest layout only). `--site-dir` — an import dir prepended to `sys.path` (a binary install's wire deps). A root-owned install (`ISAAC_PATH/kit` not writable) gets `--portable-root ~/.cache/openral/isaac-sidecar/kit-data` so Kit's caches land in the user's home.
-- `main(argv: list[str]) -> int` (L165) — Checks required dep versions (before the ~50 s Kit boot), launches `SimulationApp`, then builds the manifest scene and serves the ZMQ loop; a boot exception is printed before Kit's fast shutdown (which would otherwise swallow it).
+- `main(argv: list[str]) -> int` (L166) — Checks required dep versions (before the ~50 s Kit boot), launches `SimulationApp`, then builds the manifest scene and serves the ZMQ loop; a boot exception is printed before Kit's fast shutdown (which would otherwise swallow it).
 
 ### `tools/_isaac_scene_base.py`
 _Shared base for the Isaac Sim sidecar scenes (py3.11 venv only), owning the obs/step lifecycle, RGBA→HWC frame grabbing, the warmup + physics-substep loop, and eval-layer observation assembly, so a new layout only overrides a few template methods._
 
 - `class IsaacSceneBase` (L30) — Lifecycle + obs skeleton common to the Isaac Sim sidecar scenes; class attrs `warmup_steps` / `physics_substeps`. Template methods `build`/`_apply_action`/`_images`/`_state`/`_reward_terminated` are overridden per scene.
-  - `IsaacSceneBase.build() -> None` (L124) — Template method (raises `NotImplementedError`): construct the stage (robot, props, cameras, controllers).
+  - `IsaacSceneBase.build() -> None` (L127) — Template method (raises `NotImplementedError`): construct the stage (robot, props, cameras, controllers).
   - `IsaacSceneBase._after_world_reset() -> None` — Hook run right after `world.reset()`, before the warmup steps, for state the reset overwrites (e.g. a robot root placed away from its import pose).
   - `IsaacSceneBase.reset(seed: int | None = None) -> dict[str, Any]` (L60) — Per-episode reset: randomize, reset physics, warm up, observe.
-  - `IsaacSceneBase.render() -> NDArray[np.uint8] | None` (L119) — Last grabbed RGB frame, or `None`.
-  - `IsaacSceneBase.sim_time_ns() -> int | None` (L97) — Elapsed sim time in ns for `/clock`; prefers Isaac's `SimulationContext.current_time`, else integrates step count × physics dt.
+  - `IsaacSceneBase.render() -> NDArray[np.uint8] | None` (L122) — Last grabbed RGB frame, or `None`.
+  - `IsaacSceneBase.sim_time_ns() -> int | None` (L100) — Elapsed sim time in ns for `/clock`; prefers Isaac's `SimulationContext.current_time`, else integrates step count × physics dt.
   - `IsaacSceneBase.step(action: NDArray[np.float32]) -> dict[str, Any]` (L71) — Apply one action, advance physics (renders only the final substep), return a StepResult dict (`observation`/`reward`/`terminated`/`truncated`/`info`/`sim_time_ns`).
 
 ### `tools/isaac_manifest_scene.py`
