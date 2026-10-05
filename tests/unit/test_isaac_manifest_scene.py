@@ -566,3 +566,47 @@ def test_finger_friction_refuses_a_bad_coefficient(
 ) -> None:
     with pytest.raises(ValueError, match="friction"):
         _manifest_scene_mod.apply_finger_friction(object(), "/robot", ["j"], friction)  # type: ignore[attr-defined]
+
+
+# ── gripper commands are read in the end effector's command_convention ────────
+
+
+@pytest.mark.parametrize(
+    ("robot_id", "closed_cmd", "open_cmd"),
+    [
+        # robots driven by an isaac_sim scene under scenes/
+        ("panda_mobile", 1.0, -1.0),  # normalized_close_symmetric: +1 closes
+        ("franka_panda", 0.0, 1.0),  # normalized_open_unit
+        ("openarm", 0.0, None),  # raw_joint_rad passthrough: per-jaw command_range
+    ],
+)
+def test_isaac_gripper_command_follows_the_end_effector_convention(
+    _manifest_scene_mod: object, robot_id: str, closed_cmd: float, open_cmd: float | None
+) -> None:
+    """A closing command drives every Isaac gripper to its URDF closed target, an opening
+    one to its open target — panda_mobile's +1 used to open the jaw (merge 0cbebfcc)."""
+    to_urdf = _manifest_scene_mod.manifest_to_urdf_gripper  # type: ignore[attr-defined]
+    desc = RobotDescription.from_yaml(str(_repo_root() / "robots" / robot_id / "robot.yaml"))
+    spec = _build_robot_spec(desc, robot_id)
+    ranges = {e.name: e.command_range for e in desc.end_effectors}
+    assert spec["grippers"]
+    for g in spec["grippers"]:
+        opening = open_cmd
+        if opening is None:  # OpenArm: the open end of this jaw's command_range
+            opening = max(ranges[g["name"]], key=abs)
+        assert to_urdf(g, closed_cmd) == pytest.approx(g["closed"])
+        assert to_urdf(g, opening) == pytest.approx(g["open"])
+        assert g["open"] != pytest.approx(g["closed"])
+
+
+def test_a_width_meters_gripper_is_refused_in_the_isaac_scene() -> None:
+    """A physical convention with no mapping onto the joint fails the scene build."""
+    from openral_core.exceptions import ROSConfigError
+
+    desc = RobotDescription.from_yaml(str(_repo_root() / "robots" / "franka_panda" / "robot.yaml"))
+    ee = desc.end_effectors[0].model_copy(
+        update={"command_convention": "width_meters", "command_range": (0.0, 0.08)}
+    )
+    desc = desc.model_copy(update={"end_effectors": [ee, *desc.end_effectors[1:]]})
+    with pytest.raises(ROSConfigError, match="width_meters"):
+        _build_robot_spec(desc, "franka_panda")

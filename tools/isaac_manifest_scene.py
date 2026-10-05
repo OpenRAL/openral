@@ -9,8 +9,9 @@ openral-side backend marshals across the venv boundary (the sidecar cannot
 import ``openral_core``).
 
 Control is by ABSOLUTE targets, the same meaning ``SimAttachedHAL`` sends: one
-slot per non-base manifest joint in manifest order (arm in rad, grippers in the
-manifest's units, mapped onto the URDF finger by ``manifest_to_urdf_gripper``;
+slot per non-base manifest joint in manifest order (arm in rad, grippers in their
+end effector's ``command_convention``, mapped onto the URDF finger by
+``manifest_to_urdf_gripper``;
 NaN = hold), then the base twist (vx, vy, wz) for a planar base. The openral
 side packs typed actions into it by name
 (``openral_sim.backends.isaac_sim.pack_isaac_action``).
@@ -32,7 +33,8 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
       "ros_package_paths": [{"name", "path"}],      # package:// roots for the meshes
       "joints": [{"name", "role", "joint_type", "urdf_name"}],  # manifest order
       "grippers": [{"name", "leader", "closed", "open", "manifest_closed",
-                    "manifest_open", "followers": [{"dof", "multiplier", "offset"}]}],
+                    "manifest_open", "command_closed", "command_open",
+                    "followers": [{"dof", "multiplier", "offset"}]}],
       "base_joints": [str] | null,       # [forward, side, yaw] for a planar base
       "base_kinematics": str | null,
       "action": {"dim": int, "control_mode": "joint_position", "has_base": bool},
@@ -183,20 +185,20 @@ def pose_matrix(position: Any, quat_wxyz: Any) -> NDArray[np.float64]:
 
 
 def manifest_to_urdf_gripper(gripper: dict[str, Any], value: float) -> float:
-    """A gripper target in manifest units → its URDF leader joint target.
+    """A gripper command (its end effector's ``command_convention``) → its URDF leader target.
 
-    Linear between the gripper's manifest closed/open ends and its URDF
+    Linear between the gripper's command closed/open ends and its URDF
     closed/open targets (``_gripper_spec``), clamped to that travel — e.g.
-    panda_mobile's normalised width 1.0 → 0.04 m, OpenArm's right jaw -0.785 →
-    the URDF finger's -0.785.
+    panda_mobile's ``normalized_close_symmetric`` +1.0 → closed (0.0 m), -1.0 →
+    open (0.04 m); OpenArm's raw right jaw -0.785 → the URDF finger's -0.785.
 
     Example:
-        >>> g = {"closed": 0.0, "open": 0.04, "manifest_closed": 0.0, "manifest_open": 1.0}
-        >>> round(manifest_to_urdf_gripper(g, 0.5), 3), manifest_to_urdf_gripper(g, 2.0)
-        (0.02, 0.04)
+        >>> g = {"closed": 0.0, "open": 0.04, "command_closed": 1.0, "command_open": -1.0}
+        >>> manifest_to_urdf_gripper(g, 1.0), round(manifest_to_urdf_gripper(g, -1.0), 3)
+        (0.0, 0.04)
     """
-    span = float(gripper["manifest_open"]) - float(gripper["manifest_closed"])
-    frac = (float(value) - float(gripper["manifest_closed"])) / span if span else 0.0
+    span = float(gripper["command_open"]) - float(gripper["command_closed"])
+    frac = (float(value) - float(gripper["command_closed"])) / span if span else 0.0
     frac = min(max(frac, 0.0), 1.0)
     closed, opened = float(gripper["closed"]), float(gripper["open"])
     return closed + frac * (opened - closed)
@@ -530,7 +532,8 @@ class IsaacManifestScene(IsaacSceneBase):
         self._has_base = bool(action.get("has_base", False))
         # Action layout (openral_sim.backends.isaac_sim.IsaacActionLayout): one
         # ABSOLUTE target per non-base manifest joint in manifest order (arm in
-        # rad, gripper in manifest units; NaN = hold), then the base twist.
+        # rad, gripper in its end effector's command_convention; NaN = hold), then the
+        # base twist.
         by_gripper = {str(g["name"]): g for g in self._grippers}
         self._slot_plan: list[tuple[str, Any]] = [
             ("gripper", by_gripper[str(j["name"])])
