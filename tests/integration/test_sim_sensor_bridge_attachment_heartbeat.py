@@ -7,7 +7,7 @@ whose ``attachment_stamp_ns`` is still 0 is unverifiable, so every joint
 chunk is dropped as ``attached_overflow``. A ``MujocoArmHAL`` twin has no
 attachment API at all, so "nothing attached, fresh" is the exact truth for
 it, and saying so is what lets the kernel certify its motion. Seen on the
-OpenArm twin (qorin1, 2026-09-22): zero publishers on
+OpenArm twin (lab Orin, 2026-09-22): zero publishers on
 ``/openral/attachment_state`` and not one joint chunk reached the arm.
 
 Real ``SimSensorBridge`` on a real rclpy node against real MuJoCo twins of

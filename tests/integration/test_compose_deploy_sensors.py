@@ -6,7 +6,7 @@ to be merged into the robot description only for the sensor readers, so the
 runner kept the manifest's key: on the OpenArm bench the ZED view arrived as
 ``base`` while the restock π0.5 asked for ``context``, the slot was dropped, and
 lerobot fed the policy a masked blank in place of its head camera on real arms
-(qorin1, 2026-09-23).
+(lab Orin, 2026-09-23).
 
 Real ``compose_runtime``, real robot manifests, real committed deploy scenes;
 skips without a sourced ROS 2 workspace.

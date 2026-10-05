@@ -1,6 +1,6 @@
 # Sim + Dashboard Demo Recording — Runbook
 
-All commands run from the repo root: `cd /home/allopart/workspace/openral`
+All commands run from the repo root: `cd <your openral checkout>`
 
 ## 0. One-time per shell — env
 ```bash

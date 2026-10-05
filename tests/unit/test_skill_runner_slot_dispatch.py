@@ -365,7 +365,7 @@ def test_joint_position_slots_are_clamped_inside_the_robots_joint_limits(
     """A JOINT_POSITION slot target past a joint limit is pulled strictly inside it.
 
     Real fixture: the OpenArm v2 manifest and its 16-D bimanual slot contract.
-    On qorin1 (2026-09-22) the restock π0.5's first tick proposed left_joint5 at
+    On the lab Orin (2026-09-22) the restock π0.5's first tick proposed left_joint5 at
     -1.58973 rad against a -1.5708 limit; the kernel E-stopped. The
     single-surface path already clamps with a 1e-3 epsilon (the kernel checks
     open intervals); slot dispatch now does the same for named joints.

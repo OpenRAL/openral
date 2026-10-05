@@ -35,7 +35,7 @@ from tests.sim.safety._kernel_subprocess import isolated_domain_id
 # process on the host (domain 0 is a subnet multicast) — another worktree's leftover nodes, a
 # live `openral deploy sim`, a real robot. `SimSensorBridge._on_attachment_state_applied` arms
 # its voxel-update wait from `count_publishers("/openral/world_voxels")`, so a foreign
-# publisher changes the verdict, not just adds noise. Measured on `q-laptop`:
+# publisher changes the verdict, not just adds noise. Measured on an RTX 5070 Laptop host:
 # `test_bridge_masks_multiple_attached_objects_without_reset` failed against seven orphaned
 # `octomap_voxel_bridge` graphs left by another worktree, and passed on domains 91 and 92.
 #

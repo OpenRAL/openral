@@ -1,4 +1,4 @@
-# OpenArm v2 bimanual — REAL hardware bench cell (Jetson AGX Orin `qorin1`).
+# OpenArm v2 bimanual — REAL hardware bench cell (lab Jetson AGX Orin).
 #
 # The real-hardware counterpart to `openarm_tabletop.yaml` (MuJoCo, `deploy
 # sim`) and `openarm_zed_octomap.yaml` (real ZED, simulated HAL). This is the
@@ -74,10 +74,10 @@ robot_unit: orin
 # The override file is load-bearing on THIS cell, not a tidy-up: at the
 # wrapper's default HD1080 the ZED-M, sharing one 5 Gbit/s hub uplink with both
 # Arducams, opened and then dropped in a "CAMERA REBOOTING" loop with no frame
-# ever reaching the bus (qorin1, 2026-09-08 log); and with positional tracking
+# ever reaching the bus (lab Orin, 2026-09-08 log); and with positional tracking
 # at its default `zed_camera_link` gets a second TF parent and octomap drops
 # every cloud. `*_path` args are scene-relative (`deploy_e2e.launch.py`).
-# Camera-only check with exactly these args on qorin1, 2026-09-22: HD720,
+# Camera-only check with exactly these args on the lab Orin, 2026-09-22: HD720,
 # positional tracking FALSE, `cloud_registered` 9.9 Hz, `depth_registered`
 # 29.7 Hz, zero reboots — measured with the arms untouched.
 #

@@ -303,7 +303,7 @@ class TestSendAction:
         and carrying ``joint_names``, two GRIPPER_POSITION slots addressed by
         ``ee_name``. Until this landed the twin refused the gripper slots
         (``only supports joint_position``) and the tick never completed
-        (qorin1, 2026-09-22). Nothing may move before the last slot arrives,
+        (lab Orin, 2026-09-22). Nothing may move before the last slot arrives,
         and ``last_committed_tick`` is what the lifecycle node acknowledges.
         """
         joints = connected_hal.description.joints

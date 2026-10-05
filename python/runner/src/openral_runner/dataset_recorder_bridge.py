@@ -107,7 +107,7 @@ def decode_inline_frame(frame: SensorFrame) -> np.ndarray[Any, Any] | None:
     The element dtype comes from ``frame.encoding``: ``DEPTH16`` is uint16
     millimetres, the 8-bit colour/mono layouts are uint8. Reading everything
     as uint8 was what aborted the first real-hardware OpenArm dispatch
-    (qorin1, 2026-09-22): the ZED depth sensor's ``16UC1`` frame is
+    (lab Orin, 2026-09-22): the ZED depth sensor's ``16UC1`` frame is
     1280x720x1 at two bytes per pixel, and ``reshape(720, 1280, 1)`` on a
     uint8 view of it raised ``ValueError: cannot reshape array of size
     1843200`` while the policy only ever wanted the RGB slots next to it.

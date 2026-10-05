@@ -1666,7 +1666,7 @@ def test_bh_prepare_launch_env_leaves_the_allocator_alone_on_tegra(
     """On a Jetson, expandable segments are NOT defaulted.
 
     torch's expandable-segments allocator queries NVML GPU-fabric info on its
-    first allocation, which the integrated GPU cannot answer: on qorin1
+    first allocation, which the integrated GPU cannot answer: on the lab AGX Orin
     (torch 2.13+cu130) the runtime_node raised ``Expected NVML_SUCCESS ==
     ...nvmlDeviceGetGpuFabricInfoV_...`` 363 s into a policy load, while the
     same load in the same venv without the variable succeeded. Unified memory
@@ -1974,7 +1974,7 @@ def test_orphan_needles_cover_the_world_voxel_nodes() -> None:
     `ros2 launch` starts them in their own session, so a caller's ``killpg``
     misses them too — between the two gaps they were the only nodes that could
     survive indefinitely, and 46 of them (oldest 23.7 h) were found alive on
-    q-laptop on 2026-09-10. The cost is not the RSS: each holds its Fast-DDS
+    a dev laptop on 2026-09-10. The cost is not the RSS: each holds its Fast-DDS
     ``fastrtps_port<N>_el`` lock file, so the next run on that domain fails
     ``open_and_lock_file`` and its policy is handed 0 chunks.
 

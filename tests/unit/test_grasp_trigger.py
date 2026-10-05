@@ -6,7 +6,7 @@ and every threshold (``closure_calibration``) come from the shipped robot
 (CLAUDE.md §1.11).
 
 The position traces are **shaped on real data** rather than recorded: 30 fps OpenArm
-teleop (``qualiadev/openarm-canonical-and-fabians-vr``) shows a jaw commanded to 0.0
+teleop recordings show a jaw commanded to 0.0
 stalling 0.18-0.29 rad short on an object and staying flat to ~1e-3 rad, reaching
 <= 0.02 rad on nothing, and a free-motion steady-state error of 0.006-0.025 rad. The
 traces below reproduce those numbers with the real encoder's LSB (3.815e-4 rad) of

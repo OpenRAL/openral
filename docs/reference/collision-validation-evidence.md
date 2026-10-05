@@ -39,10 +39,10 @@ first (failed) live round.
 
 ## Reading the citations
 
-- **Artifact paths** are of the form `spark:/home/allopart/openral-runs/<round>/`.
-  `spark` is the project's DGX Spark (GB10) validation host; the run store is
-  not public and not in this repo. In-tree citations abbreviate it as
-  `spark:~/openral-runs/…` — same location.
+- **Artifact paths** are of the form `spark:~/openral-runs/<round>/`.
+  `spark` is the project's DGX Spark (GB10) validation host and `laptop` a
+  developer workstation with an RTX 5070 Laptop GPU (8 GB); the run store is
+  not public and not in this repo.
 - **Stack tips** are commit SHAs in this repo. Some are *branch* tips that were
   replayed on merge, so they are reachable by SHA but are not ancestors of
   `master`; where that is true it is said explicitly, with the merged
@@ -54,7 +54,7 @@ first (failed) live round.
 
 ### 2026-08-13 — `matrix-baseline`, `postfix-matrix`
 
-`spark:/home/allopart/openral-runs/2026-08-13-matrix-baseline/`,
+`spark:~/openral-runs/2026-08-13-matrix-baseline/`,
 `…/2026-08-13-postfix-matrix/`
 
 **No written summary exists for either.** What survives in-tree is the single
@@ -97,7 +97,7 @@ That is what the clearing/exemption partition exists to prevent.
 
 ### 2026-08-15 — `round8`
 
-`spark:/home/allopart/openral-runs/2026-08-15-round8/`
+`spark:~/openral-runs/2026-08-15-round8/`
 
 **No written summary.** Cited for two things: run r2's co-planar cell at
 `+42.9 mm` above the attested plane against a then-`~15–19 mm` envelope (the
@@ -107,7 +107,7 @@ run**, none of which described a bound.
 
 ### 2026-08-15 — `baguette-battery` (5 runs)
 
-`spark:/home/allopart/openral-runs/2026-08-15-baguette-battery/` —
+`spark:~/openral-runs/2026-08-15-baguette-battery/` —
 `BATTERY_SUMMARY.txt` (a table plus per-run JSON; no prose verdict).
 
 **0/5 completions.** The battery's value was diagnostic, not a pass rate:
@@ -139,7 +139,7 @@ Runs 2 and 3 both tripped on `panda_link1` at `-0.42 mm` / `-2.46 mm` with
 
 ### 2026-08-15 — `final-battery` (9 runs) — the #102 acceptance round
 
-`spark:/home/allopart/openral-runs/2026-08-15-final-battery/` —
+`spark:~/openral-runs/2026-08-15-final-battery/` —
 `BATTERY_SUMMARY.txt`, 282 lines, the most complete record in the store.
 
 Stack tip **`e35ed68`** ("one voxel more headroom, on the cap and on the
@@ -182,12 +182,12 @@ substance:**
 
 ### 2026-08-16 — `defect-ab`
 
-`spark:/home/allopart/openral-runs/2026-08-16-defect-ab/` — probe JSONs only,
+`spark:~/openral-runs/2026-08-16-defect-ab/` — probe JSONs only,
 **no summary. Outcome unrecorded.**
 
 ### 2026-08-16 — `postfix-matrix` — the #135 before/after
 
-`spark:/home/allopart/openral-runs/2026-08-16-postfix-matrix/` —
+`spark:~/openral-runs/2026-08-16-postfix-matrix/` —
 `BATTERY_SUMMARY.txt`, 304 lines.
 
 The matrix re-run at `2edcf67` (#135 merged) against the `e35ed68` baseline.
@@ -219,9 +219,9 @@ the octree→grid rasterization rule:
 
 | arm | path | tip | n |
 |---|---|---|---|
-| post-#135 | `spark:/home/allopart/openral-runs/2026-08-16-baguette-n15/` | `2edcf67` | 15 (`n1`…`n15`) |
-| pre-#135 control | `spark:/home/allopart/openral-runs/2026-08-16-baguette-pre135-n15/` | `4934080` | 15 (`p1`…`p15`) |
-| single re-run | `spark:/home/allopart/openral-runs/2026-08-16-master-1/` | `2edcf67` | 1 |
+| post-#135 | `spark:~/openral-runs/2026-08-16-baguette-n15/` | `2edcf67` | 15 (`n1`…`n15`) |
+| pre-#135 control | `spark:~/openral-runs/2026-08-16-baguette-pre135-n15/` | `4934080` | 15 (`p1`…`p15`) |
+| single re-run | `spark:~/openral-runs/2026-08-16-master-1/` | `2edcf67` | 1 |
 
 Identical scene YAML, prompt, seed (1) and deadline (420 s) across both arms;
 the recorded `git diff --stat 4934080 2edcf67` touches five files — one doc,
@@ -264,7 +264,7 @@ divergent, i.e. an exemption *was* active — at tick 264, `success=false`.
 
 ### 2026-08-22 — `master-1`, four scenes at `2edcf67`
 
-`spark:/home/allopart/openral-runs/2026-08-22-master-1/` — `NOTES.md`. The most
+`spark:~/openral-runs/2026-08-22-master-1/` — `NOTES.md`. The most
 recent round, and the current state of the stack.
 
 Tip `2edcf67`, verified equal to `origin/master` at run time; full clean
@@ -956,7 +956,7 @@ it.
 ### 2026-08-26 — `master-baseline` vs `oriented-grid-2`, the oriented-grid A/B
 
 The first paired round for the oriented world grid (#173): the same four scenes,
-same seed, same host (`q-laptop`, RTX 5070 Laptop), one round per arm, run
+same seed, same host (`laptop`, RTX 5070 Laptop), one round per arm, run
 through `tools/validation_matrix.py` and diffed with its own `diff` subcommand.
 
 **Arm A** is master `2e3b947`. **Arm B** is `195e2af` — the grid published on
@@ -1019,7 +1019,7 @@ to catch and both now fixed:
 
 Five full rounds of the four-scene matrix on one commit — `7cb2376`, the graded
 place outcome (#176 piece 2) on top of the oriented grid — same seed, same host
-(`q-laptop`, RTX 5070 Laptop), run through `tools/validation_matrix.py`. Twenty
+(`laptop`, RTX 5070 Laptop), run through `tools/validation_matrix.py`. Twenty
 scene runs, so for the first time on this branch the per-scene result is a
 distribution rather than a single draw. Rounds 4 and 5 were run a day later than
 1–3 after the laptop's battery cut the first attempt at the battery mid-round;
@@ -1159,7 +1159,7 @@ resting contact this module exists for instead of being skipped there.
 
 **Live round, and its master baseline.** `2026-09-03-190-witness-2` on this
 branch and `2026-09-04-190-master-baseline-1` at `ed850ac`, same scene, same
-seed, same host (`q-laptop`, RTX 5070 Laptop 8 GB; harness with
+seed, same host (`laptop`, RTX 5070 Laptop 8 GB; harness with
 `OPENRAL_ALLOW_REMOTE_CODE=1` for the XR-1 sidecar and `--force-shared-gpu`
 because the user's own unit-test session held ~200 MiB; artifacts under this
 host's `outputs/validation-matrix/`, not checked in). Both arms:
@@ -1208,7 +1208,7 @@ one scene settle nothing about rates either way.
 ### 2026-09-04 — `post200-1..5` and `post200-aon-1..5`, the post-#200 battery, both arms
 
 Ten rounds on one commit — `aceeca6`, master with Path A (#198) and Path B
-(#200) both merged — same seed, same host (`q-laptop`, RTX 5070 Laptop), run
+(#200) both merged — same seed, same host (`laptop`, RTX 5070 Laptop), run
 through `tools/validation_matrix.py`. Forty scene runs in two arms of twenty.
 This is the first battery since 2026-08-26, which predates both paths.
 
@@ -1682,7 +1682,7 @@ would have produced a confidently wrong answer:
 
 **Standing caveats on this entry.** `spark` is a shared host (a GR00T eval
 server was resident throughout), so absolute rates here are not directly
-comparable to q-laptop's; the arm-vs-arm comparison is what is valid. The
+comparable to `laptop`'s; the arm-vs-arm comparison is what is valid. The
 gate-off arm also runs longer per scene, because nothing stops it early. And
 `openral deploy sim` cannot run concurrently with itself —
 `_kill_orphan_openral_graph_processes()` matches by argv signature and cannot
@@ -1789,7 +1789,7 @@ Not a result. A **retraction of the harness's ability to produce one**: on
 post-#231 `master`, every scene of every `tools/validation_matrix.py` round
 reported `harness-error` — "action server never appeared" — beside a graph that
 was up and healthy the whole time. Two independent defects, each sufficient on
-its own, both found on `q-laptop` on `robocasa_drawer_utensil` and both now
+its own, both found on `laptop` on `robocasa_drawer_utensil` and both now
 fixed.
 
 **1. The harness polled a different DDS scope than the one it launched into.**
@@ -1852,7 +1852,7 @@ producing it.
 
 ### 2026-09-07 — the first post-fix round, and the cell that stopped it was decoration
 
-`2026-09-07-adr0101-live-1`, one scene (`utensil`, seed 1) on `q-laptop` at
+`2026-09-07-adr0101-live-1`, one scene (`utensil`, seed 1) on `laptop` at
 `60dcb2f` — the first `validation_matrix` round since #231 to reach a real
 outcome instead of `harness-error`. It carries both fixes from the entry above
 plus the backing-probe fix (`c7bd2c7`), verified live in the process that ran
@@ -1952,7 +1952,7 @@ direction.
 
 ### 2026-09-07 — `adr0101-live-*`, the first battery with a working harness and a working adjudicator
 
-Thirteen single-scene rounds on `q-laptop` (`utensil` and `fridge`, seeds 1-7),
+Thirteen single-scene rounds on `laptop` (`utensil` and `fridge`, seeds 1-7),
 all on `feat/216-tight-geometry-carry-phase`, run after both harness fixes and
 re-adjudicated offline after the `nearest_any` fix (caveat 11). This is the
 first battery on this page where the instrument and the harness were both
@@ -2039,7 +2039,7 @@ adjudicated at reset before the policy matters — but it also cannot *report* o
 here, since the graph tore down at boot.
 
 The prediction therefore stands unconfirmed. Confirming it needs either an
-uncontended window on `q-laptop` or a host with headroom; `spark` (GB10) is the
+uncontended window on `laptop` or a host with headroom; `spark` (GB10) is the
 latter, with the caveat that XR-1 has never completed an end-to-end rollout
 there (`docs/reference/aarch64-support.md`), so a single smoke round has to
 succeed before a battery is worth running.
@@ -2060,9 +2060,9 @@ refuted.** Same seeds, same scene, same stop, one commit apart:
 
 | seed | link1 envelope | reported depth | true clearance |
 | --- | --- | ---: | ---: |
-| s2 | 26-DOP (`adr0101-live`, q-laptop) | −2.37794 mm | +23.13 mm |
+| s2 | 26-DOP (`adr0101-live`, `laptop`) | −2.37794 mm | +23.13 mm |
 | s2 | **refined** (`link1spark`, spark) | **−2.37825 mm** | +23.13 mm |
-| s4 | 26-DOP (`adr0101-live`, q-laptop) | −8.31 mm | +22.01 mm |
+| s4 | 26-DOP (`adr0101-live`, `laptop`) | −8.31 mm | +22.01 mm |
 | s4 | **refined** (`link1spark`, spark) | **−8.31495 mm** | +22.01 mm |
 
 Tightening link1's envelope from a 25.68 mm worst-case support gap to 0.65 mm
@@ -2146,7 +2146,7 @@ visible at all because of a fix landed hours earlier.** Its cell holds both a
 door and two robot links. The robot geoms were found by the AABB overlap sweep,
 not by rays (0/27) — and that sweep is deliberately conservative, so it can claim
 a geom whose surface misses the cube. Treat this as suspected, not shown. Worth
-recording separately: the *same stop* on `q-laptop` before the sweep fix read
+recording separately: the *same stop* on `laptop` before the sweep fix read
 `unbacked` — no information at all. The fix turned a blank into a diagnosis.
 
 **What this does and does not establish.** One of three start-state stops is
@@ -2287,7 +2287,7 @@ takes one publish from 0.61 MB to 2.80 MB, ten times a second.
 Measured with `tools/voxel_transport_probe.py` — two processes over real DDS,
 real `openral_msgs`, at the deployed 10 Hz, under the kernel's own QoS for
 `/openral/world_voxels` (`RELIABLE`, `KEEP_LAST(1)`, `VOLATILE`), grid sizes from
-the shipped 1.05 m coverage radius. Two runs on `q-laptop`, Fast-DDS:
+the shipped 1.05 m coverage radius. Two runs on `laptop`, Fast-DDS:
 
 | resolution | MB | delivered | latency p50 | latency p99 |
 | ---: | ---: | ---: | ---: | ---: |
@@ -2416,7 +2416,7 @@ Three consequences worth separating:
 
 Thirty-six `utensil` rounds on **`spark`** at `448818c4`, the sha carrying both
 backing-probe fixes — the condition the re-derivation required and which no
-round on `q-laptop` had ever met. Run through `tools/adr0101_recovery.py`:
+round on `laptop` had ever met. Run through `tools/adr0101_recovery.py`:
 
 | | offline (certified truth) | **live map, re-derived** |
 | --- | ---: | ---: |
@@ -2458,9 +2458,9 @@ scene seed set.
 The exhaustion conclusion held at n=4 and holds harder at n=28: the payload class
 has nothing a tighter envelope can recover, and the link class has ~4 mm.
 
-### 2026-09-09 — correction: the "18–27 % carry-phase yield" was q-laptop's load, not the policy
+### 2026-09-09 — correction: the "18–27 % carry-phase yield" was `laptop`'s load, not the policy
 
-The 2026-09-08 entry above measured, across 26 `q-laptop` rounds, that only
+The 2026-09-08 entry above measured, across 26 `laptop` rounds, that only
 18–27 % of rounds reach the carry phase and 40–64 % end `deadline-no-grasp`. It
 read that as a property of the policy and sized future batteries from it.
 
@@ -2475,13 +2475,13 @@ read that as a property of the policy and sized future batteries from it.
 | `completed` | 1 |
 | **`deadline-no-grasp`** | **0** |
 
-**Zero rounds failed to grasp**, against 40 % on `q-laptop`, and 28 of 36 (78 %)
+**Zero rounds failed to grasp**, against 40 % on `laptop`, and 28 of 36 (78 %)
 produced a payload stop against 27 %. The policy is the same; the host is not.
 `deadline-no-grasp` is what a 420 s deadline does on a machine at load 19 with a
 shared GPU — it is a *host* measurement that was recorded as a policy one.
 
 Two things follow. The battery-sizing advice in that entry is wrong for an idle
-host: 36 rounds yielded 28 payload stops, not the ~10 the q-laptop yield
+host: 36 rounds yielded 28 payload stops, not the ~10 the `laptop` yield
 predicted. And **`deadline-no-grasp` should be read as a load symptom first**,
 not as evidence about the policy — which also means the ceiling battery's own
 policy-free exclusions deserve re-reading in that light.
@@ -2531,7 +2531,7 @@ occupied-cell set at the masking attach so a stop can report whether its cell
 predates the grasp.
 
 **Measured 2026-09-12 — the cell predates the grasp.** One `fridge` / gate-ON
-round on `q-laptop`, real deploy graph, on `master` with #267 and #269 already
+round on `laptop`, real deploy graph, on `master` with #267 and #269 already
 merged:
 
 ```
@@ -3005,7 +3005,7 @@ one still waiting on a human.
 The Programme status note below (§5) struck the 25 → 15 mm lever on cost. It was the only lever in the
 programme struck on paper rather than by test, and the paper was wrong.
 
-Measured on `q-laptop`: the real kernel binary, the real `panda_mobile` manifest
+Measured on `laptop`: the real kernel binary, the real `panda_mobile` manifest
 (all seven links lowering tight geometry), the `layout_ids: [47]` RoboCasa
 kitchen rasterised cell by cell at each resolution over the **same volume**,
 `world_voxel_margin_m = 0.0`, 200 chunks per point, round trip
@@ -3140,7 +3140,7 @@ as `deadline-no-grasp` — the policy failing to grasp.
 
 **This reconciles the host-load table in #256 without the load hypothesis
 being quite right.** A 4 s heartbeat is a *threshold* event, so it is
-load-sensitive (idle `spark` → 0 of these; loaded `q-laptop` → 40–64 %) while
+load-sensitive (idle `spark` → 0 of these; loaded `laptop` → 40–64 %) while
 correlating with nothing continuous. It also means re-running the battery
 unchanged on an idle host would have fixed nothing reliably: the defect was in
 the launch configuration, not in the host.
@@ -3223,7 +3223,7 @@ liveness check beside it, not a subtraction.
 ### 2026-09-10 — the ceiling, re-measured on a fixed harness: 62.5 % vs 2.7 %
 
 The re-run #256 asked for, on the harness that stopped scoring dead graphs as
-policy failures. `q-laptop`, `WORKERS=2`, 10 rounds x 4 scenes x 2 arms, arms
+policy failures. `laptop`, `WORKERS=2`, 10 rounds x 4 scenes x 2 arms, arms
 interleaved by scene so both see identical host conditions. **80 runs, 69
 valid, and zero Nav2 bond teardowns** — against roughly 35 % of runs in the
 2026-09-06 battery.
@@ -3374,7 +3374,7 @@ a **live** graph: the producer was proven at unit tier against a real compiled
 `panda_mj_description` MjModel and the real `panda_mobile` manifest, and the
 adjudicator against the archived battery, but no real
 `sim.estop_ground_truth_snapshot` had been observed carrying it. Two single
-rounds on q-laptop (RTX 5070 Laptop 8 GB, one round per `ROS_DOMAIN_ID`) close it.
+rounds on `laptop` (RTX 5070 Laptop 8 GB, one round per `ROS_DOMAIN_ID`) close it.
 
 **Host state, stated precisely.** The host was verified idle at launch — no
 `octomap` orphans, no live deploy graph, GPU at 15 MiB. Another session's
@@ -3462,7 +3462,7 @@ Not a validation round: an instrument defect found while testing whether a
 15 mm A/B needed `WORKERS=1` to survive. It does not — the memory hypothesis
 was wrong, and so was the resolution hypothesis that replaced it.
 
-**What was found.** 46 orphaned processes alive on q-laptop, oldest **23.7 h**,
+**What was found.** 46 orphaned processes alive on `laptop`, oldest **23.7 h**,
 spanning the ceiling battery and the first resolution A/B. Every one of them
 `octomap_server_node` or `octomap_voxel_bridge`; nothing else. Two independent
 gaps let exactly that pair survive and nothing else:
@@ -3682,7 +3682,7 @@ The claim is "the predicted effect is not there", not "resolution does
 nothing". The right time to re-ask is after #266 lands, when the voxel term is
 no longer the small one.
 
-Data: `outputs/resolution-ab/2026-09-10-serial` on q-laptop (`outputs/` is
+Data: `outputs/resolution-ab/2026-09-10-serial` on `laptop` (`outputs/` is
 gitignored); per-stop rows in its `report.json`.
 
 ### 2026-09-22 — harness rules and the rounds that produced them
@@ -3729,7 +3729,7 @@ comments; and each round re-derived the tooling with drift.
   the resolved scene copy is the control surface argv inspection cannot see.
 - `gpu_status` — the validation host is shared, and shared-host load has already
   produced a published number that was not a policy property: see the 2026-09-09
-  entry, `correction: the "18–27 % carry-phase yield" was q-laptop's load`.
+  entry, `correction: the "18–27 % carry-phase yield" was `laptop`'s load`.
 
 **Scene pins.**
 
@@ -3877,7 +3877,7 @@ camera came back.
 
 _Moved here from the root `PLAN.md` on 2026-09-22. §4 and §5 are cited by tools and tests; keep the section numbers._
 
-Written 2026-09-06 after the #204 A/B (120 runs, `q-laptop`); amended through 2026-09-12. Companions: this page's dated ledger above, [`collision-safety-alternatives-survey.md`](collision-safety-alternatives-survey.md) (2026-08-30) and [`robocasa-start-state-census.md`](robocasa-start-state-census.md).
+Written 2026-09-06 after the #204 A/B (120 runs, `laptop`); amended through 2026-09-12. Companions: this page's dated ledger above, [`collision-safety-alternatives-survey.md`](collision-safety-alternatives-survey.md) (2026-08-30) and [`robocasa-start-state-census.md`](robocasa-start-state-census.md).
 
 **Landing, 2026-09-07 — three slices, not one** (4 822 lines / 33 commits, over the 800-line ceiling):
 
@@ -3891,7 +3891,7 @@ A was urgent: since 2026-09-05 `master` carried a harness that could not see the
 
 ### §1. What actually cost the failures
 
-The #204 A/B: 120 runs, 60 per arm, `q-laptop`. 9 completed, 12 hit the deadline (11 never grasped — policy), **99 stopped by the kernel**; 91 of those carry a certified mesh gap at the stop:
+The #204 A/B: 120 runs, 60 per arm, `laptop`. 9 completed, 12 hit the deadline (11 never grasped — policy), **99 stopped by the kernel**; 91 of those carry a certified mesh gap at the stop:
 
 | certified gap at the stop | stops |
 | --- | ---: |
@@ -3984,7 +3984,7 @@ A finer cell moves reported depth *toward* truth, not by a fixed subtraction, so
 
 **Gate-OFF arm's own stops** (7 of 32 runs, envelope/self path): not false positives — scored through `hal_admissible_gap_m` every one that scores is `within-quantization` (`link5`↔`link7` ×3 at −27…−32 mm is a genuine ~1.5 mm hull overlap reported as the box bound, `depth_is_box_bound` set). Two pairs naming `panda_link1` were permanently `unadjudicated` because link1 ships no stage-2 hull and the scorer never checked the "both links" rule — filed **#260**, fixed diagnostics-only (HAL publishes `has_stage2_hull`). See the 2026-09-10 entry, `has_stage2_hull observed on a live round`.
 
-**Lever 3 cost terms, all measured** (see the 2026-09-07 entry, `the voxel-resolution strike was an estimate`, and the three 2026-09-08 entries `the producer half`, `the wire`, `the arm is slow`). Kernel consuming a grid, `q-laptop`, real kernel, real `panda_mobile`, layout 47, margin 0.0, 200 chunks/point:
+**Lever 3 cost terms, all measured** (see the 2026-09-07 entry, `the voxel-resolution strike was an estimate`, and the three 2026-09-08 entries `the producer half`, `the wire`, `the arm is slow`). Kernel consuming a grid, `laptop`, real kernel, real `panda_mobile`, layout 47, margin 0.0, 200 chunks/point:
 
 | resolution | grid cells | occupied | median | measured p99 | *estimated* | error term |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -4031,7 +4031,7 @@ Checklist, final state:
 - [x] **False-positive rate re-derived on the repaired instrument: 71 %, unchanged** (13 `adr0101-live-*` rounds, 5 of 7 stops clear).
 - [x] **`panda_link1` refined envelope withdrawn** — moved the stops 0.0003 mm (s2 −2.37794 → −2.37825; s4 ~0); the census's "10 mm clears 14/14" was OBB-relative headroom the 26-DOP had already collected. Entry 026 amended. See the 2026-09-07 entries, `link1envelope-*` and `link1spark-*`.
 - [x] **Start-state is quantisation** — map inflation refuted (cell contains the true surface), self-occupancy refuted (the fridge drawer was in the cell), envelope refuted (0.0003 mm). `utensil-s2` +23.13, `utensil-s4` +22.01, `fridge-s2` +0.67 mm true clearance. Same lever as the payload class; a scope note for the WG on extending ADR-0101 to bare links. See the two 2026-09-07 start-state entries.
-- [x] ~~Half the scenes never reach the kernel~~ — refuted 2026-09-09: the 18–27 % carry yield was `q-laptop` load (Nav2 4 s bond timeout, #257); `spark` produced zero `deadline-no-grasp`. See the 2026-09-08/09 carry-phase yield entries.
+- [x] ~~Half the scenes never reach the kernel~~ — refuted 2026-09-09: the 18–27 % carry yield was `laptop` load (Nav2 4 s bond timeout, #257); `spark` produced zero `deadline-no-grasp`. See the 2026-09-08/09 carry-phase yield entries.
 - [ ] **Implement ADR-0101** once ruled on (#254), on the 8.56 mm figure.
 
 Next, in order (2026-09-10, amended): #260 scoring gap (done, diagnostics-only); #259 answered (not a bug; lever 2 needs a ruling); the 15 mm A/B (done, null, re-ask after #266); widen the carry-speed sample from n=5 with the battery's 8 carrying stops (`openral-256/outputs/ceiling/2026-09-09-fixed`); the `CORRUPTED.md` top-up (11 runs) so `baguette-off` stops resting on 3 rounds. Not on the list: the 43 % of gate-ON runs never stopped at all — a policy limit.

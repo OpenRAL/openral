@@ -19,7 +19,7 @@ threshold silently never fires. No in-tree gripper declares a torque sensor
 robot it could honestly arm on and was removed.
 
 What position *does* say, from real 30 fps OpenArm teleop
-(``qualiadev/openarm-canonical-and-fabians-vr``): a position-controlled jaw
+recordings: a position-controlled jaw
 commanded closed on an object **stalls** 0.18-0.29 rad short of the command
 and stays flat to ~1e-3 rad; closed on nothing it reaches within ~0.02 rad;
 free-motion steady-state error is 0.006-0.025 rad. So:

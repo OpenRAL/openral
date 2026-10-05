@@ -1859,7 +1859,7 @@ def _prepare_launch_env(*, hal_mode: str = "sim") -> dict[str, str]:
     # is moot there — and torch's expandable path queries NVML GPU-fabric info,
     # which the iGPU cannot answer: the first CUDA allocation in the
     # runtime_node raised ``Expected NVML_SUCCESS ==
-    # DriverAPI::get()->nvmlDeviceGetGpuFabricInfoV_(...)`` (qorin1, torch
+    # DriverAPI::get()->nvmlDeviceGetGpuFabricInfoV_(...)`` (lab AGX Orin, torch
     # 2.13+cu130, 2026-09-22), 363 s into a policy load, while the identical
     # load in the same venv without the variable succeeded.
     # DGX Spark (GB10, DGX OS) is unified-memory too but is deliberately not
@@ -2119,7 +2119,7 @@ _ORPHAN_GRAPH_NEEDLES: tuple[str | tuple[str, ...], ...] = (
     # ``/dev/shm/fastrtps_*`` and its ``fastrtps_port<N>_el`` lock file. The
     # next run on that domain then failed ``open_and_lock_file``, its policy
     # was handed 0 chunks, and it scored as an ordinary non-completion. 46 such
-    # orphans, oldest 23.7 h, were found on q-laptop on 2026-09-10 — every one
+    # orphans, oldest 23.7 h, were found on a dev laptop on 2026-09-10 — every one
     # octomap, nothing else, which is what a single missing needle looks like.
     # The bridge is our own package binary, so the path alone is unambiguous.
     # ``octomap_server_node`` is upstream and shared — the same ZED lesson as

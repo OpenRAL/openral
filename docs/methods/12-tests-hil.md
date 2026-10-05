@@ -46,7 +46,7 @@ brought up.
 _The CAN-link skip gate every OpenArm HIL file shares._
 
 - `_can_links_up(can_links) -> bool` — True when every named SocketCAN interface exists and is up, via `openral_cli.autodetect.enumerate_can_interfaces`. (L15)
-- Lives in a `_`-prefixed module rather than `conftest.py` **because a conftest is not importable as a module**: pytest registers it under its own private name, so `from tests.hil.conftest import ...` raises `ModuleNotFoundError` on the lab hosts these tests run on. Found the hard way on `qorin1`.
+- Lives in a `_`-prefixed module rather than `conftest.py` **because a conftest is not importable as a module**: pytest registers it under its own private name, so `from tests.hil.conftest import ...` raises `ModuleNotFoundError` on the lab hosts these tests run on. Found the hard way on the lab Orin.
 
 ### `tests/hil/test_openarm_deploy.py`
 _Full-graph, non-motion gate for the real bimanual deploy. `[self-hosted, lab-openarm]`._

@@ -4,7 +4,7 @@ The C++ safety kernel evaluates every candidate chunk against the manifest's
 ``collision_geometry``, skipping only ``allowed_collision_pairs``. A pair that
 already overlaps at the pose the robot rests in is not a hazard the kernel can
 act on: it is a modelling error that makes the kernel refuse *every* chunk near
-rest. That is exactly what stopped the first OpenArm policy dispatch on qorin1
+rest. That is exactly what stopped the first OpenArm policy dispatch on the lab Orin
 (2026-09-22): ``openarm_*_link3``'s hand-authored capsule was 0.22 m long from
 a joint 0.154 m above the elbow, so it reached 6.6 cm past joint 4 into link 5's
 capsule — a constant ``-0.04575 m`` at every elbow angle, on both arms, on the

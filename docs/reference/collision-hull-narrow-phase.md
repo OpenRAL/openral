@@ -737,7 +737,7 @@ once a known-safe chunk is accepted again.
 
 ### 10.6 The live A/B, and why it answered nothing
 
-Run 2026-09-11 on q-laptop (4 scenes x 5 rounds x 2 arms, gate ON, 25 mm, the
+Run 2026-09-11 on the RTX 5070 laptop host (4 scenes x 5 rounds x 2 arms, gate ON, 25 mm, the
 arms being two worktrees rather than an env var), the primary endpoint — paired
 over-approximation shift — came back a null that proves nothing: median
 −2.83 mm, 95 % CI [−22.09, +8.26], 6 neg / 5 pos over n = 11 pairs, sd = 25.7 mm

@@ -277,7 +277,7 @@ is the command→motion gate and is double-gated on
 recorded run. Nothing in CI runs `tests/hil/`.
 
 `test_openarm_deploy.py` is the full-graph gate and **passed green on the
-wired cell for the first time on 2026-09-22** (qorin1, attended, hand on the
+wired cell for the first time on 2026-09-22** (lab Orin, attended, hand on the
 hardware E-stop): 7 passed in 28.5 s against a live `deploy run` of
 `scenes/deploy/openarm_bench.yaml`. What that run proved, on real hardware —
 all four `JointTrajectoryController`s plus `joint_state_broadcaster` active;

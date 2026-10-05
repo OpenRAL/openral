@@ -108,7 +108,7 @@ numbers anyway: they are the evidence those fixes need.
 
 The cell (ZED Mini, PEAK CAN adapter `openarm_left` / `openarm_right`) is attached to
 **Thor**. The ZED leg of this pipeline has been verified only on the lab **Orin**
-(`qorin1`, 2026-09-07: ZED SDK 5.4.1, `/octomap_point_cloud_centers` at about 5 Hz,
+(2026-09-07: ZED SDK 5.4.1, `/octomap_point_cloud_centers` at about 5 Hz,
 `/openral/world_voxels` at about 10 Hz). On Thor, confirm each of these before step 1:
 nothing here has been proven there.
 

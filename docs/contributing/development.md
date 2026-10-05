@@ -345,7 +345,7 @@ tar xzf runner.tar.gz
     --token "$ORG_RUNNER_TOKEN" \
     --runnergroup lab-openarm \
     --labels self-hosted,lab-openarm \
-    --name qorin1-openarm --work _work --unattended
+    --name openarm-orin --work _work --unattended
 
 # Before connecting the cell: confirm the runner sits in `lab-openarm` and that
 # the group is restricted to selected repositories AND selected workflows

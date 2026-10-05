@@ -82,7 +82,7 @@ using SAM 2.1 to see the object.
    fires and an effort trigger silently never ATTACHes. The gripper is a DM4310 in MIT position
    control (kp 5, kd 0.1) behind a `JointTrajectoryController` position command; the manifest
    declares `has_torque_sensor: false`, and its `effort_limit: 333` is not physical. Real 30 fps
-   teleop (`qualiadev/openarm-canonical-and-fabians-vr`): closing on an object stalls
+   teleop recordings: closing on an object stalls
    0.18-0.29 rad short of a 0.0 command and stays flat to ~1e-3 rad; closing on nothing reaches
    <= 0.02 rad (rest offsets ~0.0086 left / 0.0116 right); free-motion steady-state error
    0.006-0.025 rad; position LSB 3.815e-4 rad.

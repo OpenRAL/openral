@@ -1,4 +1,4 @@
-# OpenArm cell on the Jetson AGX Orin (qorin1). head_zed's mount is NOT declared here: this
+# OpenArm cell on the Jetson AGX Orin. head_zed's mount is NOT declared here: this
 # cell's camera has not been calibrated to the accuracy the world-voxel check needs, so a
 # real deploy with that check on refuses on this unit until it is (runbook step 2), and
 # everything else runs on the manifest's nominal mount. The best estimate so far, fitted

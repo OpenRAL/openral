@@ -124,7 +124,7 @@ class TestDecodeImageFrames:
         `head_zed` arrives as 16UC1 (two bytes per pixel, one channel); read as
         uint8 the reshape raised `ValueError: cannot reshape array of size
         1843200 into shape (720,1280,1)` and the policy never saw the RGB
-        frames next to it (qorin1, 2026-09-22).
+        frames next to it (lab Orin, 2026-09-22).
         """
         depth = np.full((2, 2, 1), 1234, dtype=np.uint16)
         frames = {
