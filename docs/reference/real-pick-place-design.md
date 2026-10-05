@@ -438,7 +438,12 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   `not_on_support` (a bench below the shelf board the target stands on) and no region; the
   masked depth cloud's lowest point must also sit within two voxels of the support, else
   `not_on_support` (a target on a same-footprint box or a hidden riser clusters with it in the
-  voxels, but the mask names the target alone; a view of its top face only is refused too). Then occupied voxels inside the
+  voxels, but the mask names the target alone; a view of its top face only is refused too). SAM
+  answers with nested candidates (subpart, part, whole): the first that fits is taken, except one
+  holding a smaller candidate refused `not_on_support` whose cloud has ≥ 2 voxels of height —
+  that candidate adds the body the target stands on, and is refused `stacked` (a lid-only
+  subpart vetoes nothing); a set refused whole reports its most severe refusal, so a
+  contradiction is never read as a lost view because a smaller mask came last. Then occupied voxels inside the
   search box → the anchored cluster above the measured support plane (another cluster at least
   half its size is `ambiguous`) → cluster top-centre projected into the ZED left image as SAM 2.1's positive point → mask (eroded
   2-3 px) → masked ZED depth → base-frame cloud → robust PCA OBB (reuse `_pca_basis` /

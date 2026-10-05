@@ -20,7 +20,7 @@ region onto every attachment publication. At ``grasp_target_rate_hz``:
 2. that seed, which must project into the depth camera through the driver's
    ``CameraInfo`` and tf2 ``optical <- base``, is sent to ``SegmentInView`` as
    the single positive point (no negatives), under the leg's own deadline;
-3. the mask + the depth frame it was asked about → ``target_region_from_mask``
+3. the masks + the depth frame they were asked about → ``target_region_from_masks``
    (whose masked cloud must reach within two voxels of the support, else
    ``not_on_support``: a target stacked on another object)
    → ``region_covers_occupied`` against the latest map → the whole-target gate: the
@@ -246,7 +246,7 @@ from openral_hal._grasp_target import (
     region_covers_occupied,
     region_within,
     support_top_from_voxels,
-    target_region_from_mask,
+    target_region_from_masks,
     target_seed_from_voxels,
     track_region,
 )
@@ -2340,22 +2340,20 @@ class GraspTargetLeg:
             )
             masks = [mask & kept_pixels for mask in masks]
         model = declaration.rskill_id or self._config.service_name
-        fit = None
-        for mask in masks:  # candidates in the segmenter's order; first one that fits
-            fit = target_region_from_mask(
-                mask,
-                depth,
-                intrinsics,
-                t_base_from_cam,
-                support_z=support_z,
-                resolution=grid.resolution,
-                frame_id=grid.frame_id,
-                evidence_ref=f"segment_in_view:{model}@{depth_stamp_ns}",
-                stamp_ns=stamp_ns,
-            )
-            if fit.region is not None:
-                break
-        assert fit is not None
+        # The segmenter's candidates in its order: the first that fits, unless it stands on
+        # a body a nested candidate was refused for; a set refused whole reports its most
+        # severe refusal (HZ-0115-6).
+        fit = target_region_from_masks(
+            masks,
+            depth,
+            intrinsics,
+            t_base_from_cam,
+            support_z=support_z,
+            resolution=grid.resolution,
+            frame_id=grid.frame_id,
+            evidence_ref=f"segment_in_view:{model}@{depth_stamp_ns}",
+            stamp_ns=stamp_ns,
+        )
         if fit.region is None:
             assert fit.refusal is not None
             detail = (

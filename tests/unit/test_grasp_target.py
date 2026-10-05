@@ -44,6 +44,7 @@ from openral_hal._grasp_target import (
     region_within,
     support_top_from_voxels,
     target_region_from_mask,
+    target_region_from_masks,
     target_seed_from_voxels,
     track_region,
 )
@@ -605,6 +606,61 @@ def test_whole_view_mask_is_refused_by_the_caps() -> None:
     assert fit.region is None
     assert fit.refusal is TargetRefusal.HALF_EXTENT_CAP
     assert max(fit.half_extents) > 0.20
+
+
+def _base_z(depth: NDArray[np.float64]) -> NDArray[np.float64]:
+    """Base-frame height of every ZED pixel's depth point (``nan`` where there is none)."""
+    t = _t_base_from_optical()
+    v, u = np.mgrid[0 : _ZED_K.height, 0 : _ZED_K.width].astype(np.float64) + 0.5
+    rays = np.stack(((u - _ZED_K.cx) / _ZED_K.fx, (v - _ZED_K.cy) / _ZED_K.fy, np.ones_like(u)))
+    z = np.tensordot(t[2, :3], rays, axes=1) * depth + t[2, 3]
+    return np.where(depth > 0.0, z, np.nan)
+
+
+def _masks_fit(masks: list[NDArray[np.bool_]], depth: NDArray[np.float64]) -> TargetRegionFit:
+    return target_region_from_masks(
+        masks,
+        depth,
+        _ZED_K,
+        _t_base_from_optical(),
+        support_z=_SUPPORT_Z,
+        resolution=_RES,
+        frame_id=_FRAME,
+        evidence_ref="head_zed:sam2.1:test",
+    )
+
+
+def test_a_whole_stack_mask_never_exempts_what_a_refused_part_stands_on() -> None:
+    """HZ-0115-6 under SAM's multimask: the item (top 6 cm) is refused ``not_on_support``,
+    the item + its same-footprint box (the whole 12 cm stack) reaches the table. Taking
+    the first candidate that fits would pin the region to the table over the box."""
+    whole, depth = _prism_view(_mask_in_zed(_ERASER_MASK, factor=4), _TOP_Z, _SUPPORT_Z)
+    item = whole & (_base_z(depth) >= _SUPPORT_Z + 0.06)
+    assert _masks_fit([item], depth).refusal is TargetRefusal.NOT_ON_SUPPORT
+    assert _masks_fit([whole], depth).region is not None  # alone, the stack fits
+    for masks in ([item, whole], [whole, item]):
+        fit = _masks_fit(masks, depth)
+        assert (fit.region, fit.refusal) == (None, TargetRefusal.STACKED)
+
+
+def test_a_top_face_subpart_does_not_veto_the_whole_object() -> None:
+    """An ordinary can: SAM's subpart is its lid (the top face, no height of its own), which
+    never reaches the table — the whole-object mask still fits."""
+    top = _mask_in_zed(_ERASER_MASK, factor=4)
+    whole, depth = _prism_view(top, _TOP_Z, _SUPPORT_Z)
+    assert _masks_fit([top], depth).refusal is TargetRefusal.NOT_ON_SUPPORT
+    fit = _masks_fit([top, whole], depth)
+    assert fit.refusal is None and fit.region is not None
+
+
+def test_an_all_refused_candidate_set_reports_its_most_severe_refusal() -> None:
+    """A contradiction beats a lost view whatever the segmenter's order: a mask spread over
+    the table (caps) and an empty one (too few points) is the caps refusal."""
+    cloth = _mask_in_zed(_TABLECLOTH_MASK, factor=3)
+    depth = _slab_depth(_TOP_Z)
+    empty = np.zeros_like(cloth)
+    for masks in ([cloth, empty], [empty, cloth]):
+        assert _masks_fit(masks, depth).refusal is TargetRefusal.HALF_EXTENT_CAP
 
 
 def test_mask_with_no_depth_is_refused() -> None:
