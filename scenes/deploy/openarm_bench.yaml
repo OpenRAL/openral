@@ -157,22 +157,22 @@ runtime:
   # only the capsule-vs-voxel check is skipped.
   enable_octomap_kernel_check: false
 
-  # The cell's policy, loaded by the skill_runner right after it activates —
-  # in a worker thread, before any goal exists. A goal's acceptance is what
-  # arms the deadman watchdog's 120 s first-chunk window, and this 3.6 B π0.5
-  # takes ~350 s to load on the Orin (measured 2026-09-22), so a cold load
-  # inside a goal is E-stopped every time, correctly. Goals are rejected
-  # until `rskill_runner.preload_done` is logged. The policy stays resident
-  # per (id, revision); the prompt here only warms the inference path, and
-  # each goal's own prompt is passed to the loaded policy per step. It is the
-  # training instruction verbatim, since that is what the goals send.
-  preload_rskill_id: OpenRAL/rskill-pi05-openarm-restock_shelf-bf16
-  preload_prompt: restock-shelf-from-front-box
+  # No policy is preloaded by default. To run one, set the pair below to the
+  # cell's policy: the skill_runner then loads it right after it activates — in
+  # a worker thread, before any goal exists. A goal's acceptance is what arms
+  # the deadman watchdog's 120 s first-chunk window, and a 3.6 B π0.5 takes
+  # ~350 s to load cold on an Orin, so a cold load inside a goal is E-stopped
+  # every time, correctly. Goals are rejected until `rskill_runner.preload_done`
+  # is logged. The policy stays resident per (id, revision); the prompt only
+  # warms the inference path, and each goal's own prompt is passed to the
+  # loaded policy per step, so use the training instruction verbatim.
+  # preload_rskill_id: <Hub id of the cell's OpenArm rSkill>
+  # preload_prompt: <its training instruction>
 
   # No reasoner: nothing in the graph selects or dispatches a policy on its
   # own. Bringup still energises the arm (see the header), but the only path to
   # a motion command is an operator's explicit `/openral/execute_rskill` goal —
-  # see "Running the restock policy" in robots/openarm/README.md. Turn the
+  # see "Running a π0.5 policy" in robots/openarm/README.md. Turn the
   # reasoner on only with a supervised operator present.
   enable_reasoner: false
 

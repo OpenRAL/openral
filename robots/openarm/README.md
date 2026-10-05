@@ -151,19 +151,17 @@ clearances (`openral_hal.convex_distance`; `mj_geomDistance` is wrong on these
 pairs under MuJoCo 3.8.0). The link1 ↔ link3 exemption was retired: the two
 hulls are at least 12 mm apart, so the pair is checked again.
 
-### Running the restock policy
+### Running a π0.5 policy
 
-The cell's policy is `OpenRAL/rskill-pi05-openarm-restock_shelf-bf16`, a
-**private** OpenRAL Hub repo (lerobot-format π0.5, 8.3 GB BF16, three RGB
-views in, 35-step chunks of 16-D actions out), so it is installed per host
-rather than shipped in `rskills/`. The weights are π0.5 derivatives under PI's
-permissive-research terms, hence `--non-commercial` here and
-`OPENRAL_ALLOW_NONCOMMERCIAL=1` at load:
+The cell runs a π0.5 OpenArm rSkill whose Hub id the operator supplies (for
+example a lerobot-format π0.5, ~8 GB BF16, three RGB views in, 35-step chunks
+of 16-D actions out). It is installed per host rather than shipped in
+`rskills/`. π0.5 derivatives carry PI's permissive-research terms, hence
+`--non-commercial` here and `OPENRAL_ALLOW_NONCOMMERCIAL=1` at load:
 
 ```bash
-HF_TOKEN=<token with OpenRAL org access> \
-    openral rskill install OpenRAL/rskill-pi05-openarm-restock_shelf-bf16 --non-commercial --yes
-openral rskill check OpenRAL/rskill-pi05-openarm-restock_shelf-bf16 --robot robots/openarm/robot.yaml
+openral rskill install <rskill_id> --non-commercial --yes
+openral rskill check <rskill_id> --robot robots/openarm/robot.yaml
 ```
 
 The cell's cameras are bound per unit in `units/<unit>.yaml` (`thor.yaml`,
@@ -183,8 +181,8 @@ no deploy-time key override is needed. The PaliGemma tokenizer
 (`google/paligemma-3b-pt-224`) must also be in the default Hugging Face
 cache for an offline load; `openral rskill install` does not fetch it.
 
-**Preload, not dispatch-time load.** The bench scene pins
-`runtime.preload_rskill_id` and `preload_prompt`, so the skill runner
+**Preload, not dispatch-time load.** Set `runtime.preload_rskill_id` and
+`preload_prompt` in the bench scene (unset by default), so the skill runner
 resolves and loads the policy right after it activates, in a worker thread,
 and rejects goals until `rskill_runner.preload_done` is logged. This is not
 an optimisation: the deadman watchdog opens its 120 s first-chunk window
@@ -210,7 +208,7 @@ out-of-distribution instruction to real arms:
 
 ```bash
 ros2 action send_goal /openral/execute_rskill openral_msgs/action/ExecuteRskill \
-    "{rskill_id: OpenRAL/rskill-pi05-openarm-restock_shelf-bf16, prompt: restock-shelf-from-front-box, deadline_s: 60.0}"
+    "{rskill_id: <rskill_id>, prompt: <training instruction>, deadline_s: 60.0}"
 ```
 
 Arm joints come out of the checkpoint as per-step deltas and the grippers as

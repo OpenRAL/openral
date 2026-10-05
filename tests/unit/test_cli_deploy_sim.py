@@ -2887,38 +2887,50 @@ def test_nav2_over_stereo_vslam_resolves_with_a_depth_sensor(tmp_path: Path) -> 
     assert ok.enable_nav2 is True
 
 
-def test_scene_preload_pair_is_forwarded_only_when_the_scene_sets_it() -> None:
+def test_scene_preload_pair_is_forwarded_only_when_the_scene_sets_it(tmp_path: Path) -> None:
     """``DeployRuntime.preload_rskill_id`` / ``preload_prompt`` → ``preload_*:=`` launch args.
 
-    The OpenArm bench scene pins its policy so the skill_runner loads it right
-    after activation, outside any goal's deadman first-chunk window; the
-    tabletop scene pins nothing and must forward nothing (ros2 launch rejects an
-    empty ``name:=``).
+    A scene that pins a policy has the skill_runner load it right after
+    activation, outside any goal's deadman first-chunk window; the OpenArm bench
+    ships with the pair unset, so it and the tabletop scene forward nothing (ros2
+    launch rejects an empty ``name:=``).
     """
     bench = _REPO_ROOT / "scenes" / "deploy" / "openarm_bench.yaml"
+    pinned = tmp_path / "openarm_bench.yaml"
+    pinned.write_text(
+        bench.read_text().replace(
+            "  # preload_rskill_id: <Hub id of the cell's OpenArm rSkill>\n"
+            "  # preload_prompt: <its training instruction>\n",
+            "  preload_rskill_id: OpenRAL/rskill-openarm-example\n"
+            "  preload_prompt: put-the-box-on-the-shelf\n",
+        )
+    )
+    assert pinned.read_text() != bench.read_text()
     invocation = resolve_launch_invocation(
-        config=bench,
+        config=pinned,
         robot_override=None,
         dashboard_port=4318,
         reset_to_pose_service=None,
         hal_param_overrides=None,
         hal_mode="real",
     )
-    assert invocation.preload_rskill_id == "OpenRAL/rskill-pi05-openarm-restock_shelf-bf16"
-    assert invocation.preload_prompt == "restock-shelf-from-front-box"
+    assert invocation.preload_rskill_id == "OpenRAL/rskill-openarm-example"
+    assert invocation.preload_prompt == "put-the-box-on-the-shelf"
     joined = " ".join(invocation.argv_template)
-    assert "preload_rskill_id:=OpenRAL/rskill-pi05-openarm-restock_shelf-bf16" in joined
-    assert "preload_prompt:=restock-shelf-from-front-box" in joined
+    assert "preload_rskill_id:=OpenRAL/rskill-openarm-example" in joined
+    assert "preload_prompt:=put-the-box-on-the-shelf" in joined
 
-    invocation = resolve_launch_invocation(
-        config=_OPENARM_CONFIG,
-        robot_override=None,
-        dashboard_port=4318,
-        reset_to_pose_service=None,
-        hal_param_overrides=None,
-    )
-    assert invocation.preload_rskill_id == ""
-    assert "preload_rskill_id:=" not in " ".join(invocation.argv_template)
+    for config, mode in ((bench, "real"), (_OPENARM_CONFIG, "sim")):
+        invocation = resolve_launch_invocation(
+            config=config,
+            robot_override=None,
+            dashboard_port=4318,
+            reset_to_pose_service=None,
+            hal_param_overrides=None,
+            hal_mode=mode,
+        )
+        assert invocation.preload_rskill_id == ""
+        assert "preload_rskill_id:=" not in " ".join(invocation.argv_template)
 
 
 def test_scene_preload_revision_is_forwarded_with_the_preload_id(tmp_path: Path) -> None:
