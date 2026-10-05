@@ -58,6 +58,12 @@ from numpy.typing import NDArray
 # heavy arm sags or a light one rings.
 _DRIVE_STIFFNESS = 1000.0
 _DRIVE_DAMPING = 100.0
+# Coulomb friction of the robot's finger colliders. The URDF importer authors no physics
+# material, so the fingers get PhysX's default (~0.5) and a lifted object slips out of a
+# closed, stalled jaw (Isaac i58/i59: jaw squeezing at its 7 Nm effort cap, can sliding).
+# Rubber-pad order of magnitude; combined with the object's material by max, so a default
+# 0.5 prop is gripped at this value.
+_FINGER_FRICTION = 1.0
 # Every camera's clipping range (m). Isaac's default near plane is 1 stage unit,
 # 1 m here: it blanked every surface closer than a metre, in RGB and in depth (an
 # all-inf depth image, so no cloud at all at tabletop range).
@@ -148,6 +154,62 @@ def manifest_to_urdf_gripper(gripper: dict[str, Any], value: float) -> float:
     frac = min(max(frac, 0.0), 1.0)
     closed, opened = float(gripper["closed"]), float(gripper["open"])
     return closed + frac * (opened - closed)
+
+
+def apply_finger_friction(
+    stage: Any, robot_prim: str, friction: float = _FINGER_FRICTION
+) -> list[str]:
+    """Bind a high-friction physics material to the robot's finger colliders.
+
+    The URDF importer authors no physics material, so every collider gets PhysX's default
+    friction and a gripped prop slips out when lifted. Every collision prim under
+    ``robot_prim`` whose path names a finger gets one shared material (static = dynamic =
+    ``friction``, no restitution, ``max`` friction combine when the PhysX schema is
+    available so a low-friction prop does not average the pad down), bound for the
+    ``physics`` purpose.
+
+    Args:
+        stage: The USD stage (``pxr.Usd.Stage``).
+        robot_prim: The robot's root prim path.
+        friction: Static and dynamic friction coefficient, ``> 0``.
+
+    Returns:
+        The collision prim paths the material was bound to — empty when the robot has no
+        finger collider (a gripper-less robot, or a URDF whose fingers carry no collision
+        geometry); the caller logs it.
+
+    Raises:
+        ValueError: On a non-positive or non-finite ``friction``.
+    """
+    import math
+
+    if not (math.isfinite(friction) and friction > 0.0):
+        raise ValueError(f"apply_finger_friction: friction {friction!r} must be finite and > 0")
+    from pxr import Usd, UsdPhysics, UsdShade
+
+    pads = [
+        p
+        for p in Usd.PrimRange(stage.GetPrimAtPath(robot_prim))
+        if p.HasAPI(UsdPhysics.CollisionAPI) and "finger" in str(p.GetPath()).lower()
+    ]
+    if not pads:
+        return []
+    material = UsdShade.Material.Define(stage, "/World/Physics_Materials/finger_pad")
+    physics = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+    physics.CreateStaticFrictionAttr(friction)
+    physics.CreateDynamicFrictionAttr(friction)
+    physics.CreateRestitutionAttr(0.0)
+    try:
+        from pxr import PhysxSchema
+
+        PhysxSchema.PhysxMaterialAPI.Apply(material.GetPrim()).CreateFrictionCombineModeAttr("max")
+    except ImportError:
+        pass  # ponytail: default average combine; max needs the PhysX schema Isaac always ships
+    for pad in pads:
+        UsdShade.MaterialBindingAPI.Apply(pad).Bind(
+            material, UsdShade.Tokens.weakerThanDescendants, "physics"
+        )
+    return [str(p.GetPath()) for p in pads]
 
 
 def strip_urdf_mimics(urdf_text: str, source_dir: str) -> str:
@@ -524,6 +586,14 @@ class IsaacManifestScene(IsaacSceneBase):
             else self._import_urdf(omni.kit.commands)
         )
         self._robot_prim = prim_path
+        from isaacsim.core.utils.stage import get_current_stage
+
+        pads = apply_finger_friction(get_current_stage(), prim_path)
+        print(
+            f"[isaac_manifest_scene] finger friction {_FINGER_FRICTION} on {len(pads)} collider(s)"
+            + ("" if pads else " — the robot has no finger collision geometry"),
+            flush=True,
+        )
         wx, wy, wz, wyaw = self._world_pose()
         self._set_anchor(wx, wy, wz, wyaw)
         self._robot = self._world.scene.add(
