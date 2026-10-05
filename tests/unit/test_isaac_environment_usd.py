@@ -373,3 +373,60 @@ def test_openarm_spec_carries_its_base_frame_offset() -> None:
     assert np.asarray(spec["root_to_base"])[:3, 3] == pytest.approx([0.0, 0.0, 0.698])
     franka = _build_robot_spec(ROBOTS.get("franka_panda")(), "franka_panda")
     assert np.asarray(franka["root_to_base"]) == pytest.approx(np.eye(4))
+
+
+def test_openarm_wrist_cameras_ride_the_jaw_like_the_mujoco_twin() -> None:
+    """The shipped OpenArm Isaac scene mounts each wrist camera where the twin has it.
+
+    Unmounted, they got the scene's generic base-relative viewpoints: on Spark
+    wrist_right rendered all-black (every pixel 0) and wrist_left stared at a shelf
+    upright, while the policy expects the view down its own jaw. The mounts must be
+    the compiled `camera_wrist_*` pose of the real MuJoCo twin, in the body that is
+    the same-named URDF link.
+    """
+    mujoco = pytest.importorskip("mujoco")
+    from openral_hal._openarm_v2_assets import ensure_openarm_v2_mjcf
+    from openral_sim.backends.isaac_sim import IsaacSimOptions
+
+    try:
+        mjcf = ensure_openarm_v2_mjcf()
+    except ROSConfigError as exc:
+        pytest.skip(f"OpenArm MJCF unavailable: {exc}")
+    model = mujoco.MjModel.from_xml_path(mjcf)
+    opts = IsaacSimOptions(**_openarm_env_cfg().scene.backend_options)
+    urdf = (_REPO_ROOT / "robots" / "openarm" / "openarm.urdf").read_text()
+    for side in ("left", "right"):
+        mount = opts.camera_mounts[f"wrist_{side}"]
+        cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, f"camera_wrist_{side}")
+        body = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, model.cam_bodyid[cam])
+        assert mount.link == body == f"openarm_{side}_ee_base_link"
+        assert f'<link name="{body}">' in urdf
+        assert mount.axes == "usd"  # MuJoCo cameras look down -z, +y up
+        assert mount.xyz == pytest.approx(model.cam_pos[cam], abs=1e-5)
+        assert mount.quat_wxyz is not None
+        assert abs(float(np.dot(mount.quat_wxyz, model.cam_quat[cam]))) == pytest.approx(
+            1.0, abs=1e-5
+        )
+        fovy = math.radians(float(model.cam_fovy[cam]))
+        assert mount.hfov_deg == pytest.approx(
+            math.degrees(2 * math.atan(math.tan(fovy / 2) * 640 / 480)), abs=0.1
+        )
+
+
+def test_unmounted_robot_cameras_are_announced(capsys: pytest.CaptureFixture[str]) -> None:
+    """A robot-framed camera left on a generic viewpoint is said out loud, once, at load."""
+    from openral_sim.backends.isaac_sim import IsaacSimOptions, _write_robot_spec
+
+    env_cfg = _openarm_env_cfg()
+    shipped = IsaacSimOptions(**env_cfg.scene.backend_options).camera_mounts
+    for mounts, unmounted in (
+        ({"head_zed": shipped["head_zed"]}, "['wrist_left', 'wrist_right']"),
+        (shipped, None),
+    ):
+        path, _desc = _write_robot_spec(env_cfg, mounts)
+        Path(path).unlink()
+        out = capsys.readouterr().out
+        if unmounted is None:
+            assert "camera_mounts" not in out  # `top` is world-framed: not robot-mounted
+        else:
+            assert f"cameras {unmounted} have no backend_options.camera_mounts" in out

@@ -1238,8 +1238,22 @@ def _write_robot_spec(
             "expected a robots/<id>/robot.yaml manifest."
         ) from exc
     spec = _build_robot_spec(desc, robot_id)
+    cameras = {s.name for s in desc.sensors if s.modality in ("rgb", "depth")}
+    # A robot-framed camera with no mount renders a generic base-relative viewpoint,
+    # not its frame's view (on Spark an unmounted wrist_right came out all-black).
+    # Say so (CLAUDE.md §1.4).
+    unmounted = sorted(
+        s.name
+        for s in desc.sensors
+        if s.name in cameras and s.frame_id != "world" and s.name not in (camera_mounts or {})
+    )
+    if unmounted:
+        print(
+            f"[isaac-sim] cameras {unmounted} have no backend_options.camera_mounts entry: "
+            "each renders a generic base-relative viewpoint, not the view from its frame_id.",
+            flush=True,
+        )
     if camera_mounts:
-        cameras = {s.name for s in desc.sensors if s.modality in ("rgb", "depth")}
         unknown = sorted(set(camera_mounts) - cameras)
         if unknown:
             raise ROSConfigError(
