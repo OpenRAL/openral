@@ -28,12 +28,18 @@ from openral_core import (
     RobotDescription,
 )
 from openral_core.exceptions import ROSConfigError
-from openral_hal._grasp_target import VoxelLattice, occupied_centers_in_box
+from openral_hal._grasp_target import (
+    VoxelLattice,
+    _in_region,
+    occupied_centers_in_box,
+    occupied_touching_outside,
+)
 from openral_hal._grasp_target_leg import (
     APPROACH_TARGET_PREFIX,
     GraspTargetLeg,
     GraspTargetTracker,
     _gate_refit,
+    _kernel_closure,
     _Refusal,
     _refused_fit,
     approach_box,
@@ -165,12 +171,20 @@ _HAND_NEAR = (0.47, 0.02, 0.18)
 _HAND_FAR = (0.45, 0.0, 0.45)
 
 
+#: A search column tight on ``_held_block_lattice``'s block (x 0.41-0.49, |y| <= 0.04): its
+#: cells touch the column's edge, so the map can never complete a fit there and these tests
+#: see the gates completion leaves in place. ``_WIDE_COLUMN`` is the dispatched box's column.
+_TIGHT_COLUMN = search_column(_box(half=0.04, z=0.09), below_m=0.15)
+_WIDE_COLUMN = search_column(_box(), below_m=0.15)
+
+
 def _gate(
     region: PlaceRegion,
     held: PlaceRegion,
     *,
     hands: tuple[tuple[float, float, float], ...] = (_HAND_NEAR,),
     lattice: VoxelLattice | None = None,
+    column: PlaceRegion = _TIGHT_COLUMN,
 ) -> _Refusal:
     with pytest.raises(_Refusal) as caught:
         _gate_refit(
@@ -178,6 +192,7 @@ def _gate(
             region,
             held,
             support_z=_SUPPORT_Z,
+            column=column,
             min_cover=0.5,
             hands=hands,
         )
@@ -260,6 +275,7 @@ def test_a_hand_hovering_over_the_target_within_the_approach_distance_occludes()
                 held,
                 support_z=_SUPPORT_Z,
                 min_cover=0.5,
+                column=_TIGHT_COLUMN,
                 hands=(hand,),
                 hand_rise_m=rise,
             )
@@ -297,8 +313,15 @@ def test_a_refused_refit_with_the_hand_over_the_held_target_is_a_lost_view() -> 
 def test_a_refit_within_the_tracking_gate_replaces_the_held_region() -> None:
     held = _measured(11 * _S)
     nudged = _refit(0.46, (0.04, 0.04, 0.04))
-    gated = _gate_refit(_held_block_lattice(), nudged, held, support_z=_SUPPORT_Z, min_cover=0.5)
-    assert gated is nudged
+    gated = _gate_refit(
+        _held_block_lattice(),
+        nudged,
+        held,
+        support_z=_SUPPORT_Z,
+        min_cover=0.5,
+        column=_WIDE_COLUMN,
+    )
+    assert gated == (nudged, 0) and gated[0] is nudged
 
 
 def _long_block_lattice() -> VoxelLattice:
@@ -318,27 +341,47 @@ def _long_block_lattice() -> VoxelLattice:
 _LONG_FIT = (0.48, (0.07, 0.04, 0.04))
 
 
-def test_a_fit_of_part_of_the_target_the_map_holds_is_a_lost_view_never_armed() -> None:
-    """Isaac i40/i43: the hovering hand hid the target's far side, the fit of the near part
-    covered half its own footprint in the map and was armed; the kernel then stopped the
-    fingers on the target's far-edge cells outside the region. Such a fit is the lost view
-    ``partial_fit``: with nothing held it arms nothing; the whole target's fit is accepted."""
+def test_a_fit_of_part_of_the_target_the_map_holds_is_completed_from_the_map() -> None:
+    """Isaac i40/i43/i45: the hovering hand hid the target's far side; the fit of the near
+    part, armed as is, left the far-edge cells outside the kernel's region (i40/i43), and
+    refused as ``partial_fit`` it never armed at all (i45). The map holds the rest from
+    earlier views: the fit is completed to the target's whole component — the region the
+    tracker holds, its bottom the fit's own. Where the search column cuts the component
+    the map cannot vouch for the rest: ``partial_fit``, nothing armed."""
     tracker, lines = _tracker()
     long = _long_block_lattice()
+    near = _measured(11 * _S)  # x 0.41-0.49 of the block's 0.41-0.55
+    done, added = _gate_refit(
+        long, near, None, support_z=_SUPPORT_Z, min_cover=0.5, column=_WIDE_COLUMN
+    )
+    assert added == 32, "the block's x=0.52-0.54 cells (4 across, 4 layers) beyond the closure"
+    assert done.pose.xyz[2] - done.half_extents[2] == pytest.approx(0.05), "bottom moved"
+    assert done.pose.xyz[0] + done.half_extents[0] == pytest.approx(0.54), "far cells left out"
+    assert done.stamp_ns == near.stamp_ns and done.evidence_ref == near.evidence_ref
+    tracker.accept(done, map_cells=added)
+    assert tracker.region == done
+    assert any("completed_from_map=32 cell(s)" in line for line in lines)
+
     with pytest.raises(_Refusal) as caught:
-        _gate_refit(long, _measured(11 * _S), None, support_z=_SUPPORT_Z, min_cover=0.5)
+        _gate_refit(long, near, None, support_z=_SUPPORT_Z, min_cover=0.5, column=_TIGHT_COLUMN)
     assert (caught.value.kind, caught.value.retract) == ("partial_fit", False)
     assert "touch the kernel's region from outside" in caught.value.detail
-    tracker.refuse(caught.value.kind, caught.value.detail, retract=False, now_ns=11 * _S)
-    assert tracker.region is None
-    assert any("refused — partial_fit" in line for line in lines)
+    assert "touches the search column's edge" in caught.value.detail
+    fresh, fresh_lines = _tracker()
+    fresh.refuse(caught.value.kind, caught.value.detail, retract=False, now_ns=11 * _S)
+    assert fresh.region is None
+    assert any("refused — partial_fit" in line for line in fresh_lines)
     whole = _refit(_LONG_FIT[0], _LONG_FIT[1])
-    assert _gate_refit(long, whole, None, support_z=_SUPPORT_Z, min_cover=0.5) is whole
+    gated = _gate_refit(
+        long, whole, None, support_z=_SUPPORT_Z, min_cover=0.5, column=_TIGHT_COLUMN
+    )
+    assert gated == (whole, 0)
 
 
 def test_a_partial_refit_within_the_tracking_gate_never_replaces_the_held_region() -> None:
     """A re-fit that tracks (within a voxel of the held fit) but leaves the target's far
-    cells outside the kernel's region would shrink the exemption onto the target's own
+    cells outside the kernel's region, and that the map cannot complete (its component
+    touches the search column's edge), would shrink the exemption onto the target's own
     cells: it is a lost view — the held region stays, under its freeze TTL."""
     tracker, lines = _tracker()
     held = _refit(_LONG_FIT[0], _LONG_FIT[1])
@@ -354,7 +397,8 @@ def test_a_partial_refit_within_the_tracking_gate_never_replaces_the_held_region
 
 
 def test_the_hand_occlusion_refusals_keep_their_class_over_a_partial_fit() -> None:
-    """During descend/close every re-fit is partial by nature. The checks that held before
+    """During descend/close every re-fit is partial by nature. Where the map cannot
+    complete it (here: the search column cuts the target), the checks that held before
     still decide first: a shrunk re-fit with the hand over the held target stays the lost
     view ``occluded_refit`` (no retraction), with no hand near it stays the contradiction
     ``unoccluded_refit``, one reaching outside stays ``target_moved`` — ``partial_fit``
@@ -369,19 +413,24 @@ def test_the_hand_occlusion_refusals_keep_their_class_over_a_partial_fit() -> No
 
 
 def test_a_target_reaching_past_the_search_column_is_partial_unless_the_fit_holds_it() -> None:
-    """The check looks one cell around the kernel's region, never at the search column: a
-    target whose map component continues past the column's lateral face is refused when
-    the fit stops at the face (the leg cannot vouch the rest is not the target), and a
-    whole-target fit is accepted even though the column — a tight detection box — cuts it."""
+    """The search column bounds only the completion: a target whose map component
+    continues past the column's lateral face is refused when the fit stops at the face (the
+    leg cannot vouch the rest is the target), and a whole-target fit is accepted as is even
+    though the column — a tight detection box — cuts it (nothing to complete)."""
     long = _long_block_lattice()
-    column = search_column(_box(half=0.04, z=0.09), below_m=0.15)  # x 0.41-0.49
+    column = _TIGHT_COLUMN  # x 0.41-0.49
     centres = long.occupied_centers()
     assert len(occupied_centers_in_box(long, column)) < len(centres), "the column holds it all"
     with pytest.raises(_Refusal) as caught:
-        _gate_refit(long, _measured(11 * _S), None, support_z=_SUPPORT_Z, min_cover=0.5)
+        _gate_refit(
+            long, _measured(11 * _S), None, support_z=_SUPPORT_Z, min_cover=0.5, column=column
+        )
     assert (caught.value.kind, caught.value.retract) == ("partial_fit", False)
     whole = _refit(_LONG_FIT[0], _LONG_FIT[1])
-    assert _gate_refit(long, whole, None, support_z=_SUPPORT_Z, min_cover=0.5) is whole
+    assert _gate_refit(long, whole, None, support_z=_SUPPORT_Z, min_cover=0.5, column=column) == (
+        whole,
+        0,
+    )
 
 
 def test_a_lost_view_with_nothing_held_is_a_plain_refusal() -> None:
@@ -2374,6 +2423,207 @@ def test_a_region_payload_hands_over_only_the_region_it_was_built_from() -> None
         assert leg.tracker._status == "attach_off_target", "handed over as 'absent'"
 
 
+# ── Isaac i45: a partial view completed from the map, through to the handover ──────
+
+#: The i41/i42 potted-meat can as the octomap holds it (15 mm cells; the same lattice as
+#: ``tests/unit/test_grasp_target.py``): centres x 0.2175-0.3225, y -0.2325..-0.1575,
+#: z -0.4725..-0.4275 on a table whose measured top is z=-0.48.
+_I4X_SUPPORT_Z = -0.48
+_I4X_CAN = {(i, j, k) for i in range(14, 22) for j in range(4, 10) for k in range(8, 12)}
+_I4X_TABLE = {(i, j, 7) for i in range(4, 32) for j in range(20)}
+#: The right TCP hovering ~12 cm over the can (where the i45 captures were all partial).
+_I45_HOVER = (0.27, -0.195, -0.29)
+
+
+def _i4x_lattice() -> VoxelLattice:
+    cells = (36, 20, 14)
+    occ = np.zeros(int(np.prod(cells)), dtype=np.uint8)
+    for i, j, k in _I4X_CAN | _I4X_TABLE:
+        occ[i + cells[0] * (j + cells[1] * k)] = 1
+    return VoxelLattice("openarm_base", (0.0, -0.3, -0.6), (0.0, 0.0, 0.0, 1.0), 0.015, cells, occ)
+
+
+def _i4x_centres(cells: set[tuple[int, int, int]]) -> np.ndarray:
+    ijk = np.asarray(sorted(cells), dtype=np.float64)
+    return (ijk + 0.5) * 0.015 + np.asarray((0.0, -0.3, -0.6))
+
+
+#: The can's map component: its cells more than a voxel above the support.
+_I4X_COMPONENT = {c for c in _I4X_CAN if c[2] > 8}
+
+
+def _i4x_fit(
+    xyz: tuple[float, float, float], half: tuple[float, float, float], yaw_deg: float, stamp_ns: int
+) -> PlaceRegion:
+    from openral_core.geometry import yaw_to_quat_xyzw
+
+    quat = yaw_to_quat_xyzw(float(np.radians(yaw_deg)))
+    return PlaceRegion(
+        frame_id="openarm_base",
+        pose=Pose6D(xyz=xyz, quat_xyzw=quat, frame_id="openarm_base"),
+        half_extents=half,
+        evidence_ref=f"segment_in_view:test@{stamp_ns}",
+        stamp_ns=stamp_ns,
+    )
+
+
+def _i45_partial(stamp_ns: int) -> PlaceRegion:
+    """i45's hover fit (graph.log; i40's yaw — the same view): the can's near part."""
+    return _i4x_fit((0.242, -0.196, -0.439), (0.06, 0.043, 0.026), -90.8, stamp_ns)
+
+
+def _i45_column() -> PlaceRegion:
+    box = approach_box([_I45_HOVER], approach_m=0.20, frame_id="openarm_base")
+    return search_column(box, below_m=0.15)
+
+
+def test_isaac_i45_a_partial_view_is_completed_held_through_descend_and_handed_over() -> None:
+    """i45: at the hover pose every capture saw the can's near part (5-6 far cells outside)
+    and was refused ``partial_fit`` — nothing ever armed. Completed from the map: the first
+    capture arms the whole can; the next partial capture completes to the same box (an
+    ordinary re-fit, the region refreshed); a fuller view later is a re-fit too, never
+    ``target_moved``; during the descend a capture the fingers shrink completes to less
+    than the held box — ``occluded_refit`` with the hand at it (held), ``unoccluded_refit``
+    without — and one refused outright is ``hand_at_target`` (held); the ATTACH on the
+    region hands it over. The kernel's closure of every held box holds the whole component
+    and no table cell, so the fingers never stop on the can's own far cells."""
+    grid = _i4x_lattice()
+    column = _i45_column()
+    lines: list[str] = []
+    tracker = GraspTargetTracker(freeze_s=_FREEZE_S, log=lines.append)
+    tracker.on_declaration(_goal_scope())
+    tracker.on_approach(
+        [(_RIGHT, approach_box([_I45_HOVER], approach_m=0.20, frame_id="openarm_base"))],
+        now_ns=11 * _S,
+        move_m=grid.resolution,
+    )
+    assert tracker.target is not None and tracker.target.contact_links == _RIGHT
+
+    def gate(
+        fit: PlaceRegion, hand: tuple[float, float, float] = _I45_HOVER
+    ) -> tuple[PlaceRegion, int]:
+        return _gate_refit(
+            grid,
+            fit,
+            tracker.region,
+            support_z=_I4X_SUPPORT_Z,
+            min_cover=0.5,
+            column=column,
+            hands=(hand,),
+            hand_rise_m=0.20,
+        )
+
+    def held_covers_the_can() -> None:
+        held = tracker.region
+        assert held is not None
+        kernel, _ = _kernel_closure(held, grid)
+        assert _in_region(_i4x_centres(_I4X_COMPONENT), kernel).all()
+        assert len(occupied_touching_outside(grid, kernel, support_z=_I4X_SUPPORT_Z)) == 0
+        assert not _in_region(_i4x_centres(_I4X_TABLE), kernel).any(), "table exempt"
+        assert held.pose.xyz[2] - held.half_extents[2] == pytest.approx(_I4X_SUPPORT_Z + 0.015)
+
+    first, added = gate(_i45_partial(11 * _S + 100))
+    assert added > 0
+    tracker.accept(first, map_cells=added)
+    assert tracker.region == first
+    held_covers_the_can()
+    assert any(f"completed_from_map={added} cell(s)" in line for line in lines)
+
+    again, _ = gate(_i4x_fit((0.242, -0.197, -0.439), (0.06, 0.043, 0.026), -90.8, 11 * _S + 400))
+    tracker.accept(again)
+    assert tracker.region == again and again.stamp_ns == 11 * _S + 400, "not refreshed"
+    held_covers_the_can()
+
+    fuller, none_added = gate(
+        _i4x_fit((0.259, -0.2, -0.439), (0.068, 0.06, 0.026), 163.6, 11 * _S + 700)
+    )
+    assert none_added == 0, "i41's good view holds the whole can"
+    tracker.accept(fuller)
+    assert tracker.region == fuller
+    back, _ = gate(_i45_partial(11 * _S + 900))  # partial again after the full view
+    tracker.accept(back)
+    assert tracker.region == back
+    held_covers_the_can()
+
+    # Descend: the right TCP at i41's ATTACH pose, the fingers hiding the can's middle.
+    jaw = (0.252, -0.192, -0.345)
+    held = tracker.region
+    with pytest.raises(_Refusal) as caught:
+        gate(_i4x_fit((0.235, -0.196, -0.445), (0.03, 0.04, 0.02), -90.8, 12 * _S), jaw)
+    assert (caught.value.kind, caught.value.retract) == ("occluded_refit", False)
+    tracker.refuse(caught.value.kind, caught.value.detail, retract=False, now_ns=12 * _S)
+    assert tracker.region == held
+    with pytest.raises(_Refusal) as far:  # the same capture with no hand of the robot's near
+        gate(_i4x_fit((0.235, -0.196, -0.445), (0.03, 0.04, 0.02), -90.8, 12 * _S), _HAND_FAR)
+    assert (far.value.kind, far.value.retract) == ("unoccluded_refit", True)
+    refused = _refused_fit(
+        "not_on_support",
+        "points=900",
+        tracker.region,
+        (jaw,),
+        reach_m=grid.resolution + 0.05,
+        hand_rise_m=0.20,
+    )
+    assert (refused.kind, refused.retract) == ("hand_at_target", False)
+    tracker.refuse(refused.kind, refused.detail, retract=False, now_ns=12 * _S + 300)
+    assert tracker.region == held, "the held region was dropped mid-close"
+
+    tracker.on_attach(_RIGHT[0], confirm=lambda region: region == held)
+    assert tracker.handed_over == _RIGHT and tracker.region == held
+    assert not any("retracted" in line for line in lines), lines
+
+
+def test_a_map_completed_region_is_the_region_payload_handed_over_at_attach() -> None:
+    """The bridge's ATTACH on the completed region: the jaw stalled at i41's angle and pose
+    is at it, the payload is the completed box standing on the support measured under it
+    (the witness), ``on_attach`` hands that region over, and what is published is its cell
+    closure — every cell of the can inside, nothing of it touching from outside."""
+    pytest.importorskip("openral_msgs")
+    with _live_leg("test_grasp_target_i45_completed_payload") as live:
+        attachment_state = pytest.importorskip("openral_msgs.msg").AttachmentState
+        leg, bridge = live.leg, live.bridge
+        now_ns = leg._now_ns()
+        grid = _i4x_lattice()
+        bridge._grid = (grid, now_ns, time.monotonic())
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+        box = approach_box([_I45_HOVER], approach_m=0.20, frame_id="openarm_base")
+        leg.tracker.on_approach([(_RIGHT, box)], now_ns=now_ns, move_m=grid.resolution)
+        done, added = _gate_refit(
+            grid,
+            _i45_partial(now_ns),
+            None,
+            support_z=_I4X_SUPPORT_Z,
+            min_cover=0.5,
+            column=_i45_column(),
+            hands=(_I45_HOVER,),
+            hand_rise_m=0.20,
+        )
+        assert added > 0
+        leg.tracker.accept(done, map_cells=added)
+        leg._support = (done, _I4X_SUPPORT_Z)  # what ``_on_reply`` records with it
+        assert leg.measured_support(done) == _I4X_SUPPORT_Z
+
+        right = live.gripper("openarm_right_finger_pair")
+        bridge._positions["right_gripper"] = _I41_GRIP
+        live.place("right", _I41_JAW)
+        taken = bridge._region_payload(right, stamp_ns=now_ns + 1)
+        assert taken is not None and taken[1] == done
+        payload = taken[0]
+        assert payload.primitives[0].shape.half_extents_m == pytest.approx(done.half_extents)
+        assert payload.support_contact is not None, "no support witness under the payload"
+        leg.on_attach(right.jaw_link, payload, region=taken[1])
+        assert leg.tracker.handed_over == _RIGHT and leg.tracker.region == done
+
+        msg = attachment_state()
+        leg.fill(msg, now_ns=now_ns + 2)
+        published = PlaceRegion.from_idl(msg.grasp_declaration.region)
+        assert _in_region(_i4x_centres(_I4X_COMPONENT), published).all()
+        assert len(occupied_touching_outside(grid, published, support_z=_I4X_SUPPORT_Z)) == 0
+        assert published.pose.xyz[2] - published.half_extents[2] == pytest.approx(
+            done.pose.xyz[2] - done.half_extents[2]
+        )
+
+
 # ── the tracker is serialized: the proprio thread vs the executor ──────────────────
 
 
@@ -2616,7 +2866,9 @@ def test_the_fingers_in_the_mask_leave_the_fit_only_through_the_self_filtered_cl
             future = rclpy_task.Future()
             future.set_result(response)
             snapshot = (depth, now_ns, k, t_base_from_cam, 0.03, _dispatched(), 0)
-            return leg._measure(future, snapshot, now_ns, grid, [], previous)
+            region, added = leg._measure(future, snapshot, now_ns, grid, [], previous)
+            assert added == 0, "the block's fit holds its whole component"
+            return region
 
         bridge._kept_clouds.append((now_ns, "openarm_base", kept))
         filtered = measure(None)
@@ -2642,11 +2894,12 @@ def test_the_fingers_in_the_mask_leave_the_fit_only_through_the_self_filtered_cl
     assert "self-filtered again after 2 unfiltered fit(s)" in err
 
 
-def test_a_capture_of_the_targets_near_part_is_refused_through_measure() -> None:
-    """The wiring: ``_measure`` gates the fit against the support the request measured.
-    The map holds the target 6 cm longer than this capture sees (its far part seen from an
-    earlier view): the fit of what the camera sees is the lost view ``partial_fit``, with
-    or without a region held; against a map of just what it sees, the same fit stands."""
+def test_a_capture_of_the_targets_near_part_is_completed_through_measure() -> None:
+    """The wiring: ``_measure`` gates the fit against the support the request measured and
+    completes it inside the armed declaration's search column. The map holds the target
+    6 cm longer than this capture sees (its far part seen from an earlier view): the fit
+    of what the camera sees is completed to the whole block, with or without a region
+    held; under a search box that cuts the block it is the lost view ``partial_fit``."""
     pytest.importorskip("openral_msgs")
     rclpy_task = pytest.importorskip("rclpy.task")
     from openral_hal.depth_cloud import camera_info_from_intrinsics
@@ -2664,7 +2917,11 @@ def test_a_capture_of_the_targets_near_part_is_refused_through_measure() -> None
         )
         bridge._kept_clouds.append((now_ns, "openarm_base", kept))  # the finger filtered out
 
-        def measure(lattice: VoxelLattice, previous: PlaceRegion | None) -> PlaceRegion:
+        def measure(
+            lattice: VoxelLattice,
+            previous: PlaceRegion | None,
+            declaration: GraspDeclaration | None = None,
+        ) -> tuple[PlaceRegion, int]:
             response = SegmentInView.Response(ok=True)
             image = ImageMsg(height=k.height, width=k.width, encoding="mono8", step=k.width)
             image.header.stamp.sec, image.header.stamp.nanosec = divmod(now_ns, _S)
@@ -2672,14 +2929,31 @@ def test_a_capture_of_the_targets_near_part_is_refused_through_measure() -> None
             response.masks = [image]
             future = rclpy_task.Future()
             future.set_result(response)
-            snapshot = (depth, now_ns, k, t_base_from_cam, _SUPPORT_Z, _dispatched(), 0)
+            snapshot = (
+                depth,
+                now_ns,
+                k,
+                t_base_from_cam,
+                _SUPPORT_Z,
+                declaration or _dispatched(),
+                0,
+            )
             grid = (lattice, now_ns, time.monotonic())
             return leg._measure(future, snapshot, now_ns, grid, [], previous)
 
-        fit = measure(_held_block_lattice(), None)
+        fit, added = measure(_held_block_lattice(), None)
+        assert added == 0
+        for previous in (None, fit):
+            done, added = measure(_long_block_lattice(), previous)
+            assert added > 0
+            assert _in_region(_long_block_lattice().occupied_centers(), done).all()
+            assert done.pose.xyz[2] - done.half_extents[2] == pytest.approx(
+                fit.pose.xyz[2] - fit.half_extents[2]
+            )
+        tight = _dispatched().model_copy(update={"search_box": _box(half=0.04, z=0.09)})
         for previous in (None, fit):
             with pytest.raises(_Refusal) as refused:
-                measure(_long_block_lattice(), previous)
+                measure(_long_block_lattice(), previous, tight)
             assert (refused.value.kind, refused.value.retract) == ("partial_fit", False)
 
 

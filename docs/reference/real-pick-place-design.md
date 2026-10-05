@@ -191,9 +191,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   layer under the target stays non-exempt (HZ-0115-6). Each half-extent is clamped at
   `MAX_HALF_EXTENT_M` (logged); a closure over the volume cap publishes the tight fit (logged).
   Voxel-consistent: inside one cell the map cannot tell another body from the target. Only the
-  kernel-facing region grows — the held fit, every producer gate (`_gate_refit`,
-  `region_within`, `track_region`, the cover check, the hand tests) and the region payload stay
-  tight. *Safety-WG:* enlarges the exempt volume by at most half a cell per side; chosen by the
+  kernel-facing region grows — the held region (the tight fit, or its map completion below),
+  every producer gate (`_gate_refit`, `region_within`, `track_region`, the cover check, the hand
+  tests) and the region payload are not closed. *Safety-WG:* enlarges the exempt volume by at most half a cell per side; chosen by the
   user as WG reviewer; hazard row HZ-0115-26 (management Entry 055). Band row:
   `test_a_tight_fit_exempts_the_targets_boundary_cells_only_once_cell_closed`.
 - **A fit is accepted only when the kernel's region holds the whole target** (producer side,
@@ -217,6 +217,42 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   the support — a neighbour within one cell, a wall it leans on — counts as the target, and
   such a target is never armed. *Safety-WG:* more conservative (refuses partial fits; lost
   view, no retraction).
+- **A partial fit is completed from the map** (producer side, `_gate_refit` →
+  `map_completed_region`; Isaac i45). At the hover pose every head-camera capture of the can
+  was partial — the hand hid its far side — so every fit (centre (0.242, -0.196, -0.439),
+  half-extents (0.06, 0.043, 0.026)) left 5-6 of the can's cells outside (e.g. (0.2925,
+  -0.2325, -0.4425); the can's map cells reach x 0.2175-0.3225) and was refused `partial_fit`:
+  nothing ever armed. The camera still confirms which object it is (the self-filtered fit of
+  its visible part, which must pass every gate); the map, which remembers the views from
+  before the hand arrived, holds the rest. The target's map component — occupied cells more
+  than one voxel above the measured support (the same filter as the whole-target check),
+  26-connected, seeded from those in the fit's cell closure, flooded inside the leg's search
+  column (`search_column` of the armed search box) — grows the fit to the smallest box in the
+  fit's yaw holding every component cell's centre; the bottom stays the fit's own (never down
+  into the support), so the support and the layer touching it stay non-exempt, and the
+  kernel's cell closure of that box holds every component cell whole. **Bounds:** refused
+  (`partial_fit`, as before — a lost view, no retraction) when a component cell's
+  26-neighbour lies outside the search column (the component touches the search edge: the
+  leg cannot vouch the rest is the target), when the box exceeds `GraspDeclaration`'s caps
+  (0.20 m half-extent, 0.03 m³), or when its cell closure holds an occupied cell above the
+  support that is not the component's (another body in the box's corners). The map alone
+  never arms: no accepted camera fit, no completion. **One region throughout:** the completed
+  box is the candidate every gate after it sees and what the tracker holds — the tracking gate
+  compares it with the held region (completed or not), so the next partial capture completes
+  to about the same box and refreshes it, a later fuller fit is an ordinary re-fit (never
+  `target_moved`; i41/i42's good-view fits track the i45 completion within one voxel), and a
+  capture the closing fingers shrink below it is `occluded_refit` (held) or, with no hand of
+  the robot's near, `unoccluded_refit` (retracted). The kernel gets its cell closure; the
+  hand tests (`_hand_over_target`), the ATTACH confirmation (`on_attach`: `held == region`),
+  the region payload (one box, the completed one, centred in the region so the kernel's
+  payload-origin-inside-region handover holds) and its support witness
+  (`measured_support`, recorded for the accepted — completed — region) all use it. Every
+  retraction class is unchanged. The accept line logs `completed_from_map=<n> cell(s)` and
+  the completed half-extents on entering that state (CLAUDE.md §1.4). *Residual:* a body
+  within one voxel of the target is 26-connected to it in the map and merges into the
+  component (the map cannot separate them); merged past the caps or the search edge it is
+  refused. *Safety-WG:* less conservative — the exemption covers the target's map component
+  beyond the camera's view; chosen by the user as WG reviewer; hazard row HZ-0115-30.
 - Handover: on the attachment edge that adds the declared object the exemption stays alive only
   while the payload origin (FK of the measured configuration) is inside the region, then retires
   permanently; a detach retires it. Only a payload attached on the declaring gripper's own chain
