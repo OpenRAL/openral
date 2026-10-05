@@ -41,6 +41,7 @@ from openral_hal._place_target_leg import (
     _witness_candidates,
     measure_under_payload,
     place_tick,
+    plane_witness,
     verify_patch,
 )
 from openral_hal._vision_attachment_evidence import (
@@ -534,12 +535,28 @@ def test_a_frozen_release_record_keeps_the_witness_until_the_window_closes() -> 
     trigger.command(0.7)  # released: the jaw opens past its hold
     trigger.update(JointState(name=["left_gripper"], position=[0.5], stamp_ns=2 * 33_333_333))
     assert not trigger.attached
+    # The held payload still carries an unretired grasp-time witness (a region payload
+    # lifted less than its rise tolerance): it must not ride the record at the release
+    # pose, while the place leg's set-down witness, decorated per publish, does.
+    patch = tracker.patch
+    assert patch is not None
+    grasp_witness = plane_witness(
+        obj,
+        t_base_link,
+        plane_z=patch.plane_z - 0.03,
+        support_id="map_support_under:approach:openarm_left_finger_pair:1",
+        extrinsic_error_m=_EXT,
+        detail="the grasp-time support",
+        stamp_ns=obj.stamp_ns,
+    )
+    held = obj.model_copy(update={"support_contact": grasp_witness})
     leg.release = ReleaseWindow.open(
-        description, obj, base_link=_BASE, t_base_from_link=t_base_link, now_s=0.0
+        description, held, base_link=_BASE, t_base_from_link=t_base_link, now_s=0.0
     )
     leg.attachment = None
     record = leg.release.record
     assert (record.object_id, record.stamp_ns) == (obj.object_id, obj.stamp_ns), "key preserved"
+    assert record.support_contact is None, "the grasp-time witness rode the frozen record"
     assert not tracker.attest(
         _witness_candidates([leg], lambda _: t_base_link), now_ns=now + 100 * _MS
     ), "the witness carries through the window"

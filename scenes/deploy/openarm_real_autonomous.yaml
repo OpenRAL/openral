@@ -143,6 +143,12 @@ runtime:
     rgb_camera_info_topic: /zed/zed_node/rgb/color/rect/camera_info
     depth_topic: /zed/zed_node/depth/depth_registered
     depth_camera_info_topic: /zed/zed_node/depth/camera_info
+    # Grasp-target bloat (used once grasp_target_enabled is on; the schema default is 0 =
+    # none). 0.03 m = 1.5 x this cell's 20 mm octomap resolution: the smallest margin whose
+    # pre-handover region takes in the support's top layer under the target, so the closing
+    # fingers are not stopped on it (docs/reference/real-pick-place-design.md "Grasp-target
+    # margin"; Safety-WG HZ-0115-32).
+    grasp_target_margin_m: 0.03
     # The attach links are not frames of the real cell's TF tree (the vendored
     # URDF describes a different assembly); renamed to the vendor bringup's
     # frames. The identity holds in the models (link7 is the MJCF / vendor-URDF

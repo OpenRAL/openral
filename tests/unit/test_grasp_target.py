@@ -512,7 +512,11 @@ def test_a_target_standing_on_another_object_is_refused_not_on_support(under: st
     fit, _ = _fit_on(mask, _SUPPORT_Z, bottom_z=_SUPPORT_Z + 0.06)
     assert (fit.region, fit.refusal) == (None, TargetRefusal.NOT_ON_SUPPORT)
     on_table, _ = _fit_on(mask, _SUPPORT_Z)  # the same item standing on the table
-    assert on_table.region is not None
+    assert on_table.region is not None and on_table.box is None
+    # The refused fit still reports the visible part's box (the leg's occlusion test),
+    # its lower face pinned one voxel above the support like a region's.
+    assert fit.box is not None and fit.box.half_extents == pytest.approx(fit.half_extents)
+    assert fit.box.pose.xyz[2] - fit.box.half_extents[2] == pytest.approx(_SUPPORT_Z + _RES)
 
 
 def test_seed_refuses_two_equal_objects() -> None:
@@ -1043,4 +1047,32 @@ def test_another_body_inside_the_completed_box_is_not_completed() -> None:
     done, added, _ = map_completed_region(grid(arms), fit, column, **kwargs)
     assert done is not None and added == 5
     refused, _, why = map_completed_region(grid(arms | corner), fit, column, **kwargs)
+    assert refused is None and "another body inside the completed region" in why
+
+
+def test_another_body_in_a_yawed_completed_boxs_corner_is_refused() -> None:
+    """The completed box is in the fit's yaw, the search column in the base frame's: at 45°
+    the box's corners reach past the column (and the seed box) by more than the cells the
+    flood looks at. A separate body standing in such a corner — two voxels past the column
+    grown by two, outside the seed box grown by two — lies inside the kernel's closure, so
+    it must be refused like any foreign cell, not exempted with the target."""
+    res, n = 0.02, 30
+    bar = {(i, 15, 1) for i in range(8, 22)}  # x -0.13..0.13 at y 0.01, z 0.03
+    corner = {(14, 21, 1)}  # (-0.01, 0.13, 0.03): six cells from the bar
+
+    def grid(cells: set[tuple[int, int, int]]) -> VoxelLattice:
+        occ = np.zeros(n * n * 4, dtype=np.uint8)
+        for i, j, k in cells:
+            occ[i + n * (j + n * k)] = 1
+        return VoxelLattice(_FRAME, (-0.3, -0.3, 0.0), (0.0, 0.0, 0.0, 1.0), res, (n, n, 4), occ)
+
+    fit = _yawed((0.0, 0.01, 0.04), (0.015, 0.015, 0.02), 45.0)  # the camera saw the middle
+    column = _yawed((0.0, 0.01, 0.04), (0.17, 0.05, 0.04), 0.0)
+    kwargs = {"support_z": 0.0, "max_half_extent_m": 0.2, "max_volume_m3": 0.03}
+    done, added, why = map_completed_region(grid(bar), fit, column, **kwargs)
+    assert done is not None and added > 0, why
+    closed, _ = cell_closed_region(done, grid(bar), max_half_extent_m=0.2)
+    centre = np.asarray([[-0.01, 0.13, 0.03]])
+    assert _in_region(centre, closed).all(), "the corner cell is not in the kernel's region"
+    refused, _, why = map_completed_region(grid(bar | corner), fit, column, **kwargs)
     assert refused is None and "another body inside the completed region" in why

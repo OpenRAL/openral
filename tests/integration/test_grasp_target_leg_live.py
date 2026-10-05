@@ -281,6 +281,8 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
             deadline_s=2.0,
             grasp_target_enabled=True,
             grasp_target_freeze_s=_FREEZE_S,
+            # Named, as a scene names it (the default is 0, no bloat): HZ-0115-32.
+            grasp_target_margin_m=0.025,
         ),
     )
     bridge.setup()
@@ -502,6 +504,13 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         assert _wait_until(
             lambda: any("from the grasp-target region" in line for line in logs), timeout_s=3.0
         )
+        # From the ATTACH snapshot on, the declaration's region is the payload box itself —
+        # what the kernel latches at the handover: no downward bloat into the support.
+        latched = PlaceRegion.from_idl(latest().grasp_declaration.region)
+        assert latest().grasp_declaration_valid and latest().grasp_declaration.region_valid
+        assert latched.half_extents == pytest.approx(closed.half_extents, abs=1e-3)
+        assert latched.pose.xyz == pytest.approx(closed.pose.xyz, abs=1e-3)
+        assert latched.pose.xyz[2] - latched.half_extents[2] == pytest.approx(support, abs=1e-3)
         time.sleep(0.5)
         assert len(prompts) <= segments_before + 2, "the attach re-segmented the target"
 
