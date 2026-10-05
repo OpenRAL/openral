@@ -38,19 +38,41 @@ sensors:
         reliability: best_effort
         qos_depth: 5
       max_age_ms: 200
+  # Wrist Arducams calibrated on this cell on 2026-10-02 (pinhole + Brown/plumb_bob,
+  # coefficients [k1, k2, p1, p2, k3]; validation RMS left 0.435 px, right 0.566 px). The
+  # calibration is at 960x600, so the capture is 960x600 too: a 4:3 capture would be a
+  # crop these intrinsics cannot be rescaled to. Recalibrate if a lens or mount is touched.
   - name: wrist_left
     deploy_binding:
       backend: opencv_thread
       backend_params:
         device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_LEFT-video-index0
-        width: 640
-        height: 480
+        width: 960
+        height: 600
         fps: 30
+    intrinsics:
+      width: 960
+      height: 600
+      fx: 614.255921
+      fy: 613.585651
+      cx: 502.490468
+      cy: 308.959123
+      distortion_model: plumb_bob
+      distortion_coeffs: [-0.072761672, -0.056848830, 0.002163274, 0.001326299, 0.035500496]
   - name: wrist_right
     deploy_binding:
       backend: opencv_thread
       backend_params:
         device: /dev/v4l/by-id/usb-Arducam_Arducam_B0495__USB3_2.3MP__CELL1_CAM_RIGHT-video-index0
-        width: 640
-        height: 480
+        width: 960
+        height: 600
         fps: 30
+    intrinsics:
+      width: 960
+      height: 600
+      fx: 616.019357
+      fy: 615.588168
+      cx: 483.154560
+      cy: 306.781145
+      distortion_model: plumb_bob
+      distortion_coeffs: [-0.085062635, -0.023430633, 0.000839384, -0.000490873, 0.001898197]

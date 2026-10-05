@@ -151,7 +151,10 @@ openral rskill check OpenRAL/rskill-pi05-openarm-restock_shelf-bf16 --robot robo
 
 The cell's cameras are bound per unit in `units/<unit>.yaml` (`thor.yaml`,
 `orin.yaml`: each sensor's `deploy_binding`, used only by `deploy run`, plus the
-unit's calibrated `head_zed` mount). Select the unit with `OPENRAL_ROBOT_UNIT=<unit>`
+unit's calibrated `head_zed` mount and, on Thor, the wrist Arducams' calibrated
+intrinsics: pinhole + plumb_bob from the cell's 2026-10-02 calibration at 960x600, so
+Thor captures the wrists at 960x600 too — the Orin cell keeps 640x480 and the manifest's
+nominal model). Select the unit with `OPENRAL_ROBOT_UNIT=<unit>`
 or the scene's `robot_unit`; a real deploy refuses when neither names one. `top` is
 the ZED's rectified left image, `head_zed` its SDK depth, the two Arducams are
 `wrist_left` / `wrist_right`. The manifest's
