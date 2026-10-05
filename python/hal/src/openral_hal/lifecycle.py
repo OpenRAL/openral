@@ -282,7 +282,7 @@ def decode_action_chunk(msg: object) -> object | None:
     kwargs["confidence"] = 1.0 if confidence_raw is None else float(confidence_raw)
     kwargs["tick_index"] = int(getattr(msg, "tick_index", 0) or 0)
     kwargs["tick_group_size"] = max(int(getattr(msg, "tick_group_size", 1) or 1), 1)
-    # A pre-session IDL (no field) decodes to 0, the legacy "unknown runner".
+    # A pre-session IDL (no field) decodes to 0, the "unknown runner" value.
     kwargs["runner_session_id"] = int(getattr(msg, "runner_session_id", 0) or 0)
     # ADR-0102. Empty (or a pre-0102 IDL with no such field) decodes to None,
     # which is the whole-vector-in-manifest-order meaning the field replaced.
@@ -459,8 +459,8 @@ def spin_until_shutdown(node: Any) -> None:  # noqa: ANN401  # reason: rclpy Nod
     ``rclpy.shutdown()`` from another thread raises ``ExternalShutdownException``. And a
     timer callback already dequeued when the context went down (a sensor publish)
     publishes on the invalidated context and raises ``RCLError`` out of the spin: also
-    teardown, not a fault — the HAL used to exit 1 on every Ctrl-C of a graph with a
-    depth camera (2026-10-04). A ``RuntimeError`` (``RCLError``, ``InvalidHandle``, a take
+    teardown, not a fault; treating it as one exits the HAL 1 on every Ctrl-C of a
+    graph with a depth camera. A ``RuntimeError`` (``RCLError``, ``InvalidHandle``, a take
     racing the shutdown) while the context is still up is a real error and propagates.
     The caller's ``finally`` uses ``rclpy.try_shutdown()`` (idempotent), not the bare
     ``rclpy.shutdown()`` that raised ``RCLError: rcl_shutdown already called``.
@@ -573,7 +573,7 @@ if _ROS2_AVAILABLE:
             self._safe_action_sub: Any = None
             self._action_applied_pub: Any = None
             self._last_action_applied_tick: int = 0
-            # runner_session_id the ack counter above belongs to (0 = legacy/none).
+            # runner_session_id the ack counter above belongs to (0 = none / session-less).
             self._last_action_applied_session: int = 0
             self._deferred_action_applied_tick: int = 0
             # Serializes the ack's check-and-publish (``_publish_action_applied_tick``).
@@ -1331,13 +1331,13 @@ if _ROS2_AVAILABLE:
             group_size = int(action.tick_group_size)
             tick = int(action.tick_index)
             session = int(action.runner_session_id)
-            # A different, non-legacy runner session is a restarted runner whose
+            # A different, non-zero runner session is a restarted runner whose
             # ticks start over; the HAL adopts it only when its first group
             # commits (``TickWatermark``), so the ack renumbers only on completion
             # below. A monotonic ack would leave the new runner waiting on tick 1.
             new_session = session not in (0, self._last_action_applied_session)
             if session == 0 and tick == 1 and self._last_action_applied_tick > 1:
-                # Legacy (no session id): Entry 036's heuristic — tick 1 is a
+                # Session-less (no session id): Entry 036's heuristic — tick 1 is a
                 # restarted runner (``refuse_stale_tick``).
                 self._last_action_applied_tick = 0
                 self._deferred_action_applied_tick = 0

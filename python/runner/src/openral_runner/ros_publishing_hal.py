@@ -185,7 +185,7 @@ class ROSPublishingHAL:
         # inference-tick index so a recorder can group a tick's slot chunks.
         self._tick_index_getter = tick_index_getter
         # Stamped on every chunk so a HAL can tell this runner process's ticks
-        # from a restarted one's (0 = unknown, the legacy tick-only heuristic).
+        # from a restarted one's (0 = unknown, the session-less tick-only heuristic).
         if not 0 <= runner_session_id < 2**64:
             raise ROSConfigError("ROSPublishingHAL: runner_session_id must fit in uint64")
         self._runner_session_id = runner_session_id

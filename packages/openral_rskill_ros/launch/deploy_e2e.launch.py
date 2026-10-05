@@ -372,7 +372,7 @@ def _rig_from_launch_args(raw: dict[str, str]) -> DeployRuntime:
 
 
 # Where the filtered cloud is published for octomap_server. Not a camera topic
-# (ADR-0108): it is no longer one camera's cloud, it is the world map's input.
+# (ADR-0108): it is not one camera's cloud, it is the world map's input.
 _SELF_FILTERED_CLOUD_TOPIC = "/openral/world_cloud/self_filtered"
 
 

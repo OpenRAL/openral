@@ -418,8 +418,8 @@ sdk_kind: "open"
 # fps, and the real HAL sets every trajectory point's
 # time_from_start = horizon / control_freq_hz so the controller reaches each
 # target exactly when the next command is due. A ros2_control HAL refuses to
-# build without it — the 100 ms fallback that used to fill the gap re-planned
-# a steep segment every 33 ms and amplified each step between targets (#303).
+# build without it — a fixed 100 ms deadline re-plans
+# a steep segment every 33 ms and amplifies each step between targets (#303).
 action_spec:
   dim: 16
   representation: "joint_positions"

@@ -266,7 +266,7 @@ def test_candidate_chunk_digest_flags_a_shape_mismatch() -> None:
 
     assert digest["shape_mismatch"] is True
     assert digest["flat"] == [0.0, 0.1, 0.2]
-    assert digest["runner_session_id"] == 0  # a legacy producer
+    assert digest["runner_session_id"] == 0  # a session-less producer
     assert "ticks" not in digest
 
 

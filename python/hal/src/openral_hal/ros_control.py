@@ -295,7 +295,7 @@ class RosControlHAL(HALBase):
     command is due. A manifest without the field is **refused at
     construction**, so ``build_hal(mode="real")`` — and with it the lifecycle
     node's configure — stops and names the missing value. There is no
-    fallback deadline: the 100 ms constant that used to fill this gap asked a
+    fallback deadline: a fixed 100 ms constant in this gap asks a
     30 Hz stream to cover each step in a third of its period (issue #303).
 
     Raises:

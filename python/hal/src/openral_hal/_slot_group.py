@@ -247,7 +247,7 @@ def refuse_stale_tick(tick: int, last_committed: int) -> int:
     adopted by returning a reset watermark (``0``); refusing it would wedge the
     HAL for the rest of its node's life. A replay of tick 1 itself (watermark
     1) is still refused. The rule is hazard-log Entry 036's, and since the
-    runner stamps ``Action.runner_session_id`` it applies only to legacy
+    runner stamps ``Action.runner_session_id`` it applies only to session-less
     actions that carry none (``TickWatermark`` handles the rest exactly).
 
     Args:
@@ -295,12 +295,12 @@ class TickWatermark:
 
     * **same session** as the committed one: the tick must be strictly greater
       than the watermark — no exceptions, tick 1 included;
-    * a **different, non-legacy** session: a new runner. Admitted (its ticks
+    * a **different, non-zero** session: a new runner. Admitted (its ticks
       are its own numbering), but ``commit`` alone adopts it — never the check
       — so a stray slot cannot move the watermark before a group was applied.
       On adoption the old session is **retired** and every later action that
       carries it (a late message from a dead runner) is refused;
-    * **legacy** (``runner_session_id == 0``, a producer that predates the
+    * **session-less** (``runner_session_id == 0``, a producer that predates the
       field): ``refuse_stale_tick``, hazard-log Entry 036's heuristic, unchanged.
 
     ``reset`` (disconnect) clears the watermark but keeps the retired set:
@@ -333,7 +333,7 @@ class TickWatermark:
 
         Raises:
             ROSRuntimeError: ``session`` was retired, or it is the committed
-                session and ``tick`` is not above the watermark, or (legacy
+                session and ``tick`` is not above the watermark, or (session-less
                 ``session == 0``) ``refuse_stale_tick`` refuses it.
         """
         if session == 0:
@@ -414,7 +414,7 @@ class SlotGroupStager:
 
     @property
     def last_committed_session(self) -> int:
-        """``runner_session_id`` of the last group the HAL applied (``0`` = none/legacy)."""
+        """``runner_session_id`` of the last group the HAL applied (``0`` = none / session-less)."""
         return self._watermark.session
 
     @property
@@ -450,7 +450,7 @@ class SlotGroupStager:
 
         Raises:
             ROSRuntimeError: A replay of the committed session's tick, a retired
-                session, or (legacy, no session id) ``refuse_stale_tick``'s refusal.
+                session, or (session-less) ``refuse_stale_tick``'s refusal.
         """
         tick = int(action.tick_index)
         if tick > 0:
@@ -504,7 +504,7 @@ class SlotGroupStager:
             ROSConfigError: The action carries no usable tick index.
             ROSRuntimeError: The slot is a replay (``TickWatermark.check``:
                 the committed session's tick at or below the watermark, a
-                retired session, or a legacy tick ``refuse_stale_tick``
+                retired session, or a session-less tick ``refuse_stale_tick``
                 refuses; nothing is staged), the staged
                 ``(runner_session_id, tick_index)`` changed before completing,
                 or the group overran its declared size — the last two mean a

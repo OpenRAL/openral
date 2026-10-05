@@ -135,7 +135,7 @@ the Thor ZED-M tail; hard cap 3.0 s); past it the chunk drops as `voxel_stale`.
 The kernel enforces the caps itself: with `world_voxel_enabled` it refuses to
 configure on a `world_voxel_deadline_ms` outside (0, 2000] or a
 `world_voxel_data_age_budget_ms` outside (0, 3000] (its own default is 1500;
-0 no longer disables the check), so a kernel started with `ros2 run` is held
+0 does not disable the check), so a kernel started with `ros2 run` is held
 to the same limits as a validated scene.
 
 `robot_self_filter` (real camera path only) removes the robot's own returns

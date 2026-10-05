@@ -94,7 +94,7 @@ expecting a clean pass:
    rests on drafted, unapproved ADR-0097 / ADR-0092 D6 amendments and its thresholds are
    uncalibrated. Do not enable it in this runbook.
 
-Camera loss **fails closed** (it used to fail open; fixed with hazard-log Entry 033):
+Camera loss **fails closed** (hazard-log Entry 033):
 `openral_octomap_bridge` stops publishing `/openral/world_voxels` once its last octree is
 older than `max_octree_age_s` (default 1.0 s, equal to the kernel's `world_voxel_deadline_ms`;
 both are `DeployRuntime` fields), and

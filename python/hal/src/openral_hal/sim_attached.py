@@ -1843,7 +1843,7 @@ class SimAttachedHAL:
 
     @property
     def last_committed_session(self) -> int:
-        """``runner_session_id`` of ``last_committed_tick`` (0 = none/legacy)."""
+        """``runner_session_id`` of ``last_committed_tick`` (0 = none / session-less)."""
         return self._watermark.session
 
     def _rollout_sim_time_ns(self) -> int | None:

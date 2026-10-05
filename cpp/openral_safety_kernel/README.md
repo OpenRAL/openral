@@ -63,7 +63,7 @@ With `world_voxel_enabled`, `on_configure` returns FAILURE (and logs why) for a
 `world_voxel_deadline_ms` outside (0, `kMaxWorldVoxelDeadlineMs` = 2000] or a
 `world_voxel_data_age_budget_ms` outside (0, `kMaxWorldVoxelDataAgeBudgetMs` =
 3000]. The budget defaults to `kDefaultWorldVoxelDataAgeBudgetMs` = 1500 and
-0 no longer means "not enforced", so a grid without a `source_stamp` always
+0 is refused rather than read as "not enforced", so a grid without a `source_stamp` always
 drops as `voxel_stale`. These mirror `DeployRuntime`'s caps (hazard log
 Entries 033/034) so a kernel started with `ros2 run` or another launch file
 cannot run looser than a validated scene; `tests/unit/test_perception_caps_mirror.py`
@@ -954,7 +954,7 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   checks and the force gate are untouched. An exempt pair is decided before the
   narrow phase and never spends the call's shared stage-2 budget
   (`kMaxStage2PerCheck`): a finger buried in its target puts every region cell
-  inside stage 1's margin, and refining those (they cannot trip) used to exhaust
+  inside stage 1's margin, and refining those (they cannot trip) would exhaust
   the budget and leave a non-exempt link on the looser fallback bound — a false
   stop (`…ExemptCellsDoNotSpendTheStage2BudgetOfOtherLinks`). The only change a
   region can make to a non-mask link is therefore more exact refinement, never
@@ -965,10 +965,10 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   target — exactly as the attached path's support-witness and embedded-residue
   exemptions do (`…AnExemptPairReachesTheSweepMinimumAtItsOwnDepth`).
 * **Graded band.** The sweep keeps one minimum, so an exempted pair's negative
-  depth used to make the whole check's slack negative, which the velocity band
-  discarded as "tripped" — dropping every non-exempt pair's graded slack with
-  it and sending the chunk out at full rate. That hit all three exemptions
-  (grasp target, support witness, embedded residue). The band now clamps an
+  depth would make the whole check's slack negative, which the velocity band
+  discards as "tripped" — dropping every non-exempt pair's graded slack with
+  it and sending the chunk out at full rate, for all three exemptions
+  (grasp target, support witness, embedded residue). The band therefore clamps an
   untripped check's slack to `max(slack, 0)`, so an exempt contact reads as the
   band's slowest rate
   (`LifecycleKernelTest.AnExemptFingerInsideItsTargetStillLeavesTheChunkScaled`,

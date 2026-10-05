@@ -243,7 +243,7 @@ _Advisory, queryable Layer-2 world model the S2 Reasoner consults to recall obje
   fields: `reference, kind: SpatialNodeKind | None`
 - `class ResolvePlaceResult(BaseModel)` — Resolved node plus a `traversable_to` path. (L4867)
   fields: `node_id, goal: Pose6D, path_node_ids: list[str]`
-- `class Action(BaseModel)` — Action step or chunk produced by a Skill; `tick_index` preserves multi-slot atomicity across the safety wire, `runner_session_id` (uint64, 0 = unknown/legacy) names the runner process that numbered it so a HAL can tell a restart from a replay, and optional `joint_names` names which joints a sub-slot targets (needed since a zero-padded slot would otherwise read `0.0` as a legal target). (L4888)
+- `class Action(BaseModel)` — Action step or chunk produced by a Skill; `tick_index` preserves multi-slot atomicity across the safety wire, `runner_session_id` (uint64, 0 = unknown / session-less) names the runner process that numbered it so a HAL can tell a restart from a replay, and optional `joint_names` names which joints a sub-slot targets (needed since a zero-padded slot would otherwise read `0.0` as a legal target). (L4888)
   fields: `control_mode, horizon, joint_targets, joint_velocities, joint_torques, cartesian_pose, cartesian_delta, cartesian_delta_scale, cartesian_twist, body_twist, foot_placements, gripper, dex_hand_joints, confidence, stamp_ns, ee_name, frame_id, safety_overrides`
 - `class QuantizationConfig(BaseModel)` — Quantization recipe. (L5049)
   fields: `dtype, backend, per_channel, calibration_dataset, extra`

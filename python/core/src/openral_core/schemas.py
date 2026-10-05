@@ -4923,7 +4923,7 @@ class Action(BaseModel):
             emitted this action (``ActionChunk.runner_session_id``). A HAL keys
             its replay watermark on ``(runner_session_id, tick_index)`` because
             ``tick_index`` restarts with every runner process. ``0`` = unknown
-            (legacy producer), which keeps the tick-only replay heuristic.
+            (session-less producer), which keeps the tick-only replay heuristic.
         safety_overrides: Operator-approved safety override tokens.
     """
 

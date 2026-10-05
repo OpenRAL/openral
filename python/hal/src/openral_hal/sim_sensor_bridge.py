@@ -2409,7 +2409,7 @@ def candidate_chunk_digest(
     disagrees with ``horizon * n_dof`` is reported as-is under
     ``flat`` with ``shape_mismatch: true`` rather than silently truncated.
 
-    ``runner_session_id`` (0 = a legacy producer) is recorded with ``tick_index``:
+    ``runner_session_id`` (0 = a session-less producer) is recorded with ``tick_index``:
     the tick number alone is ambiguous across a runner restart, so an adjudicator
     needs the pair to tell which runner produced the chunk the kernel stopped on.
 

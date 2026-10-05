@@ -344,8 +344,8 @@ def encode_frame_thumbnail(frame: Any, *, flip_180: bool = False) -> bytes | Non
     copied: a strided NumPy view of the frame, then the channel swap and the
     optional 180° flip on that small view. The thumbnail feeds only the
     dashboard's camera tile (Foxglove reads the full-resolution ROS image
-    topics), so full-resolution work bought nothing. It used to cost 8.2 ms per
-    1920x1200 frame on a Jetson AGX Thor and, at three cameras x 30 Hz, left a
+    topics), so full-resolution work buys nothing. It costs 8.2 ms per
+    1920x1200 frame on a Jetson AGX Thor and, at three cameras x 30 Hz, leaves a
     competing Python thread 34 % of its speed; downscaling first costs 0.6 ms
     and leaves it 97 % (``tools/`` benchmark numbers in the PR).
 
