@@ -46,6 +46,7 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -157,12 +158,32 @@ def manifest_to_urdf_gripper(gripper: dict[str, Any], value: float) -> float:
     return closed + frac * (opened - closed)
 
 
+@dataclass(frozen=True)
+class FingerFrictionResult:
+    """What :func:`apply_finger_friction` actually did, so the caller can log it honestly.
+
+    Attributes:
+        bound: Prim paths the pad material was bound to (finger links + instanced roots).
+        missing_joints: Requested joint names that resolved to no USD joint with a ``body1``
+            link (renamed or dropped by the importer) — their finger keeps PhysX's default.
+        displaced: Descendant prims under a finger link that already carried their own
+            ``physics``-purpose material binding; the pad overrides it.
+        combine_max: ``True`` when the ``max`` friction combine was authored; ``False`` when
+            the PhysX schema is unavailable and PhysX falls back to average combine.
+    """
+
+    bound: list[str]
+    missing_joints: list[str]
+    displaced: list[str]
+    combine_max: bool
+
+
 def apply_finger_friction(
     stage: Any,
     robot_prim: str,
     finger_joints: Iterable[str],
     friction: float = _FINGER_FRICTION,
-) -> list[str]:
+) -> FingerFrictionResult:
     """Bind a high-friction physics material to the links the robot's finger joints drive.
 
     The URDF importer authors no physics material, so every collider gets PhysX's default
@@ -175,6 +196,12 @@ def apply_finger_friction(
     on each finger link and on every instanced root under it (the importer instances its
     collision geometry, and an instance proxy cannot take a binding).
 
+    The binding is ``strongerThanDescendants``: the pad wins over any physics material
+    already authored on a finger collider, so the friction the caller logs is the friction
+    PhysX uses (``weakerThanDescendants`` would let a descendant's material silently win
+    while the prim is still reported as bound). Descendants whose own binding is thereby
+    replaced are returned in ``displaced`` for the caller to surface.
+
     Args:
         stage: The USD stage (``pxr.Usd.Stage``).
         robot_prim: The robot's root prim path.
@@ -182,8 +209,8 @@ def apply_finger_friction(
         friction: Static and dynamic friction coefficient, ``> 0``.
 
     Returns:
-        The prim paths the material was bound to — empty when no named joint was found
-        (a gripper-less robot, or joints the importer dropped); the caller logs it.
+        A :class:`FingerFrictionResult`. A partial match (``missing_joints`` non-empty)
+        grips asymmetrically; no match at all leaves ``bound`` empty and creates no material.
 
     Raises:
         ValueError: On a non-positive or non-finite ``friction``.
@@ -196,18 +223,28 @@ def apply_finger_friction(
 
     names = set(finger_joints)
     root = stage.GetPrimAtPath(robot_prim)
-    links = {
-        str(target)
-        for p in Usd.PrimRange(root)
-        if p.GetName() in names and p.IsA(UsdPhysics.Joint)
-        for target in UsdPhysics.Joint(p).GetBody1Rel().GetTargets()
-    }
+    links: set[str] = set()
+    found: set[str] = set()
+    for p in Usd.PrimRange(root):
+        if p.GetName() in names and p.IsA(UsdPhysics.Joint):
+            targets = UsdPhysics.Joint(p).GetBody1Rel().GetTargets()
+            if targets:
+                found.add(p.GetName())
+                links.update(str(t) for t in targets)
+    missing = sorted(names - found)
     pads: list[Any] = []
+    displaced: list[str] = []
     for link in sorted(links):
-        pads.append(stage.GetPrimAtPath(link))
-        pads.extend(p for p in Usd.PrimRange(stage.GetPrimAtPath(link)) if p.IsInstance())
+        link_prim = stage.GetPrimAtPath(link)
+        pads.append(link_prim)
+        pads.extend(p for p in Usd.PrimRange(link_prim) if p.IsInstance())
+        displaced.extend(
+            str(p.GetPath())
+            for p in Usd.PrimRange(link_prim, Usd.TraverseInstanceProxies())
+            if UsdShade.MaterialBindingAPI(p).GetDirectBinding("physics").GetMaterialPath()
+        )
     if not pads:
-        return []
+        return FingerFrictionResult([], missing, [], combine_max=False)
     material = UsdShade.Material.Define(stage, "/World/Physics_Materials/finger_pad")
     physics = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
     physics.CreateStaticFrictionAttr(friction)
@@ -215,15 +252,18 @@ def apply_finger_friction(
     physics.CreateRestitutionAttr(0.0)
     try:
         from pxr import PhysxSchema
-
-        PhysxSchema.PhysxMaterialAPI.Apply(material.GetPrim()).CreateFrictionCombineModeAttr("max")
     except ImportError:
-        pass  # ponytail: default average combine; max needs the PhysX schema Isaac always ships
+        combine_max = False  # reported, not hidden: PhysX averages the pad with the prop
+    else:
+        PhysxSchema.PhysxMaterialAPI.Apply(material.GetPrim()).CreateFrictionCombineModeAttr("max")
+        combine_max = True
     for pad in pads:
         UsdShade.MaterialBindingAPI.Apply(pad).Bind(
-            material, UsdShade.Tokens.weakerThanDescendants, "physics"
+            material, UsdShade.Tokens.strongerThanDescendants, "physics"
         )
-    return [str(p.GetPath()) for p in pads]
+    return FingerFrictionResult(
+        [str(p.GetPath()) for p in pads], missing, sorted(displaced), combine_max
+    )
 
 
 def strip_urdf_mimics(urdf_text: str, source_dir: str) -> str:
@@ -607,13 +647,43 @@ class IsaacManifestScene(IsaacSceneBase):
             for g in self._spec.get("grippers") or []
             for name in (g["leader"], *(f["dof"] for f in g["followers"]))
         ]
-        pads = apply_finger_friction(get_current_stage(), prim_path, finger_joints)
+        result = apply_finger_friction(get_current_stage(), prim_path, finger_joints)
         print(
-            f"[isaac_manifest_scene] finger friction {_FINGER_FRICTION} bound on {len(pads)} "
-            f"prim(s) for joints {finger_joints}"
-            + ("" if pads else " — NO finger link found, the fingers keep PhysX's default"),
+            f"[isaac_manifest_scene] finger friction {_FINGER_FRICTION} bound on "
+            f"{len(result.bound)} prim(s) for joints {finger_joints}, combine="
+            + (
+                "max"
+                if result.combine_max
+                else "n/a (no pad)"
+                if not result.bound
+                else "average (PhysxSchema unavailable)"
+            ),
             flush=True,
         )
+        if not result.bound:
+            print(
+                "[isaac_manifest_scene] WARNING: NO finger link found, the fingers keep "
+                "PhysX's default friction",
+                flush=True,
+            )
+        elif result.missing_joints:
+            print(
+                f"[isaac_manifest_scene] WARNING: finger joints {result.missing_joints} not "
+                "found, those fingers keep PhysX's default friction (asymmetric grip)",
+                flush=True,
+            )
+        if result.bound and not result.combine_max:
+            print(
+                "[isaac_manifest_scene] WARNING: PhysxSchema unavailable, friction combine is "
+                "average (a low-friction prop drags the pad below its nominal value)",
+                flush=True,
+            )
+        if result.displaced:
+            print(
+                "[isaac_manifest_scene] WARNING: finger colliders already carried a physics "
+                f"material, replaced by the pad: {result.displaced}",
+                flush=True,
+            )
         wx, wy, wz, wyaw = self._world_pose()
         self._set_anchor(wx, wy, wz, wyaw)
         self._robot = self._world.scene.add(
