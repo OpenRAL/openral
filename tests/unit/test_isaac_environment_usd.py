@@ -169,8 +169,8 @@ def test_openarm_manifest_joints_resolve_onto_its_urdf() -> None:
         urdf,
         passthrough=True,  # OpenArm declares write_mode: passthrough (radians)
     )
-    # The URDF jaw spans [-1.571, 0]; the hardware (manifest) travel is 0.785.
-    assert (left["closed"], left["open"]) == pytest.approx((0.0, -0.7854))
+    # Passthrough writes the manifest's physical value unchanged on the URDF axis.
+    assert (left["closed"], left["open"]) == pytest.approx((0.0, 0.7854))
     assert (left["manifest_closed"], left["manifest_open"]) == pytest.approx((0.0, 0.7854))
     # The second finger mirrors the first through the URDF <mimic>.
     assert left["followers"] == [
@@ -183,6 +183,54 @@ def test_openarm_manifest_joints_resolve_onto_its_urdf() -> None:
         passthrough=True,
     )
     assert (right["manifest_closed"], right["manifest_open"]) == pytest.approx((0.0, -0.7854))
+    assert (right["closed"], right["open"]) == pytest.approx((0.0, -0.7854))
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_openarm_isaac_open_target_swings_each_finger_outward(side: str) -> None:
+    """The Isaac open target opens the jaw: each finger swings away from the jaw centre.
+
+    The fingers hang along the hand's -z; rotating a point below a finger's hinge by
+    the scene's open target (the follower through its ``<mimic>``) must move it away
+    from the centre plane (y = 0) on the hinge's own side. An open target on the wrong
+    side of the URDF axis swings the fingers inward through each other, the way the
+    left jaw crossed in the warehouse pick trials and pushed the brick out instead of
+    squeezing it.
+    """
+    import xml.etree.ElementTree as ET
+
+    from openral_core import RobotDescription
+    from openral_sim.backends.isaac_sim import _gripper_spec, _parse_urdf_joints
+
+    urdf_path = _REPO_ROOT / "robots" / "openarm" / "openarm.urdf"
+    desc = RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "openarm" / "robot.yaml"))
+    urdf = _parse_urdf_joints(urdf_path)
+    leader = f"openarm_{side}_finger_joint1"
+    spec = _gripper_spec(
+        next(j for j in desc.joints if j.name == f"{side}_gripper"),
+        urdf[leader],
+        urdf,
+        passthrough=True,
+    )
+    angles = {leader: spec["open"]}
+    for f in spec["followers"]:
+        angles[f["dof"]] = f["multiplier"] * spec["open"] + f["offset"]
+    assert len(angles) == 2
+    # Kinematic <joint>s only: the <ros2_control> blocks reuse the names, without origins.
+    root = ET.parse(urdf_path).getroot()
+    joints = {el.attrib["name"]: el for el in root.iter("joint") if "type" in el.attrib}
+    for name, q in angles.items():
+        el = joints[name]
+        origin = np.array([float(v) for v in el.find("origin").attrib["xyz"].split()])
+        axis = np.array([float(v) for v in el.find("axis").attrib["xyz"].split()])
+        assert abs(axis[0]) == pytest.approx(1.0), "OpenArm's jaw hinges about the hand's x"
+        # Rotation by q about axis (+-x): a point 10 cm below the hinge moves in y by
+        # -sin(q * axis_x) * (-0.10).
+        tip_y = origin[1] + np.sin(q * axis[0]) * 0.10
+        assert abs(tip_y) > abs(origin[1]) and np.sign(tip_y) == np.sign(origin[1]), (
+            f"{name} at the open target {q:+.4f} swings inward (tip y {tip_y:+.4f}, "
+            f"hinge y {origin[1]:+.4f})"
+        )
 
 
 def test_ros_package_paths_prefer_a_sourced_workspace(

@@ -1014,9 +1014,11 @@ def _gripper_spec(
     (``SimDescription.grippers[].write_mode``):
 
     * ``passthrough`` — ``position_limits`` are physical joint values (OpenArm's
-      jaw, 0..0.785 rad): closed/open are the manifest ends nearer/farther
-      from zero, on the URDF's axis — negated when the URDF finger turns the
-      other way (OpenArm's left finger spans [-1.571, 0]).
+      jaw, 0..0.785 rad) on the URDF joint's own axis, written unchanged:
+      closed/open are the manifest ends nearer/farther from zero. A manifest
+      range outside the URDF limits is a ``ROSConfigError``: it means the two
+      disagree on the axis, and negating to fit would drive the jaw the wrong
+      way (an inverted OpenArm left jaw swings its fingers through each other).
     * ``normalised`` (the default, or no declaration) — ``[0 = closed, 1 =
       open]`` is a fraction of the URDF's full travel: closed is the zero pose
       (clamped into the limits), open the limit farther from it (SO-100's jaw:
@@ -1034,13 +1036,13 @@ def _gripper_spec(
         return lo - _LIMIT_EPS <= v <= hi + _LIMIT_EPS
 
     if passthrough:
-        sign = 1.0 if inside(m_open) and inside(m_closed) else -1.0
-        if not (inside(sign * m_open) and inside(sign * m_closed)):
+        if not (inside(m_open) and inside(m_closed)):
             raise ROSConfigError(
                 f"passthrough gripper {j.name!r}: manifest range ({m_lo}, {m_hi}) lies "
-                f"outside URDF joint {leader.name!r} limits ({lo}, {hi}) on either axis."
+                f"outside URDF joint {leader.name!r} limits ({lo}, {hi}); the manifest and "
+                "the URDF disagree on the jaw's axis."
             )
-        closed, opened = sign * m_closed, sign * m_open
+        closed, opened = m_closed, m_open
     else:
         closed = min(max(0.0, lo), hi)
         opened = hi if abs(hi - closed) >= abs(lo - closed) else lo

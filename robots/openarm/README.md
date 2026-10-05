@@ -78,6 +78,23 @@ pinned to a known-good v2 SHA. The helper goes away once
 | Upstream URDF | [enactic/openarm](https://github.com/enactic/openarm) |
 | Upstream MJCF | [enactic/openarm_mujoco](https://github.com/enactic/openarm_mujoco) (v2 on master) |
 
+### Vendored URDF deviations
+
+`openarm.urdf` is vendored from the upstream xacro and differs from it in two places:
+
+- **The `<ros2_control>` mimic finger joints carry no command interface**, which
+  `controller_manager` requires to load the file.
+- **The left fingers' joint limits are sign-flipped.** Upstream mirrors the left hand's
+  finger meshes (`scale="1 -1 1"`) and hinge origins but keeps the right hand's limits
+  (`finger_joint1` `[-1.5708, 0]`, `finger_joint2` `[0, 1.5708]`), so their only allowed
+  travel swings the left fingers inward through each other. On the shared hinge axis
+  (`-x`) the left jaw opens positive, as in the MJCF (`[0, 0.7854]`) and the manifest's
+  `left_gripper` range, so the vendored file uses `[0, 1.5708]` / `[-1.5708, 0]`. The
+  Isaac scene imports this URDF and writes the manifest's jaw values unchanged
+  (`write_mode: passthrough`), so with upstream's limits its left jaw opened crossed.
+  `tests/unit/test_isaac_environment_usd.py` checks that each finger opens outward.
+  Re-vendoring must keep both.
+
 ## Real hardware
 
 `hal.real` is `OpenArmRealHAL`, which publishes to the four `ros2_control`
