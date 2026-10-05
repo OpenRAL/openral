@@ -10,7 +10,7 @@ Run (from the worktree root)::
 
     WT=$(pwd)
     MYPYPATH=$(ls -d $WT/python/*/src | tr '\n' :)
-    PYTHONPATH=$MYPYPATH /home/allopart/workspace/openral/.venv/bin/python \\
+    PYTHONPATH=$MYPYPATH /home/user/workspace/openral/.venv/bin/python \\
         -m pytest python/reasoner/tests/test_critic_watchdog_success.py -v
 """
 

@@ -25,7 +25,7 @@
 # MUJOCO_GL=egl over ssh.
 #
 # Verified on the lab Jetson AGX Orin, 2026-09-07: ZED SDK 5.4.1
-# (L4T 39.2/CUDA 13.2), ZED-M S/N 18970159, HD1080, NEURAL_LIGHT depth.
+# (L4T 39.2/CUDA 13.2), ZED-M, HD1080, NEURAL_LIGHT depth.
 # /octomap_point_cloud_centers ~5 Hz, /openral/world_voxels ~10 Hz, dashboard
 # card 5330 points @ range 4.0 m in frame openarm_base. Arms UNPOWERED,
 # graph structurally non-actuating (see `enable_reasoner` below).

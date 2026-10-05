@@ -7,7 +7,7 @@
     "evaluated_by": "OpenRAL:openral benchmark scene",
     "reproduced_locally": true,
     "reproduction_planned": null,
-    "reproduction_cli": "openral benchmark scene --config /tmp/claude-1000/-home-allopart-workspace-openral/dfe7b013-2737-43f2-9151-4dbc7344746c/scratchpad/robotwin_lift_pot_300.yaml --rskill rskills/lingbot-vla-4b-robotwin",
+    "reproduction_cli": "openral benchmark scene --config /tmp/claude-1000/-home-user-workspace-openral/dfe7b013-2737-43f2-9151-4dbc7344746c/scratchpad/robotwin_lift_pot_300.yaml --rskill rskills/lingbot-vla-4b-robotwin",
     "table": null,
     "status": "reproduced"
   },

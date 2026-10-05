@@ -168,7 +168,7 @@ def _reap_domain(domain: str, sig: int) -> int:
     the policy is handed 0 chunks, and the round buckets `harness-error`
     with no line in any log naming the cause.
 
-    Measured on q-laptop 2026-09-10: 46 orphans surviving up to 23.7 h
+    Measured on laptop 2026-09-10: 46 orphans surviving up to 23.7 h
     across the ceiling battery and the first resolution A/B — 30 % of a
     core, 826 MB, 253 stale shm segments. A single round launched alone at
     load 1.2 still died with `latest_chunk: 0`.

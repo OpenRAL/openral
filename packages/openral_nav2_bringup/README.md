@@ -507,7 +507,7 @@ radius is most of the 3 m local costmap), so it is left at 0.40 m.
 ### MEASURED 2026-08-28: the full cycle fits with the flag on
 
 `scenes/deploy/robocasa_deliver_straw.yaml` driven with the full stack (SLAM +
-Nav2 + octomap + kernel gate) on `q-laptop`; `controller_server`'s own CPU per
+Nav2 + octomap + kernel gate) on the laptop workstation; `controller_server`'s own CPU per
 published control cycle, all four arms, 2 runs each:
 
 | footprint | `consider_footprint` | CPU / cycle | of 50 ms |
