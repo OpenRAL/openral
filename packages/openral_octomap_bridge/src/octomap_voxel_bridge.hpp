@@ -330,6 +330,7 @@ private:
       // Nothing attached: nothing to sweep and no window to keep, so the next
       // grasp — of this object or any other — opens a fresh one.
       attach_sweep_ledger_.sweep({}, attach_sweep_padding_m_);
+      support_patch_anchors_.anchor({});
       return;
     }
     const rclcpp::Time stamp(state->header.stamp);
@@ -345,6 +346,8 @@ private:
     // Staged per object, because the window is decided per object.
     std::vector<std::vector<PayloadPrimitive>> staged;
     std::vector<AttachSweepObservation> present;
+    // Each attestation's key and its patch in the OctoMap frame, for the anchors.
+    std::vector<SupportPatchObservation> attested;
     staged.reserve(state->attached_objects.size());
     present.reserve(state->attached_objects.size());
     for (const auto& object : state->attached_objects) {
@@ -382,6 +385,16 @@ private:
       // into the OctoMap frame — a material point of the payload, which is all
       // "has this payload moved away from its silhouette?" needs. A successful
       // placement always yields at least one primitive.
+      if (object.support_contact_valid) {
+        // `place_attached_object` appended this object's patch last.
+        SupportPatch world = patches.back();
+        world.point = base_to_octomap * world.point;
+        world.normal = base_to_octomap.getBasis() * world.normal;
+        attested.push_back(SupportPatchObservation{
+            SupportWitnessKey{object.object_id, object.support_contact.support_id,
+                              object.support_contact.stamp_ns},
+            world});
+      }
       present.push_back(AttachSweepObservation{
           AttachedObjectRevision{object.object_id, state->attachment_revision},
           base_to_octomap * object_primitives.front().pose.getOrigin()});
@@ -393,6 +406,16 @@ private:
     // so a frame that clears nothing leaves the padded sweep owed.
     const std::vector<std::uint8_t> window_open =
         attach_sweep_ledger_.sweep(present, attach_sweep_padding_m_);
+    // The band stays where the support was attested (`SupportPatchAnchors`):
+    // each patch withholds only what its first-grid plane also claims.
+    const std::vector<SupportPatch> anchors = support_patch_anchors_.anchor(attested);
+    const tf2::Transform octomap_to_base = base_to_octomap.inverse();
+    for (std::size_t i = 0; i < anchors.size(); ++i) {
+      SupportPatch& patch = patches[i];
+      patch.has_anchor = true;
+      patch.anchor_point = octomap_to_base * anchors[i].point;
+      patch.anchor_normal = octomap_to_base.getBasis() * anchors[i].normal;
+    }
     std::vector<PayloadPrimitive> steady_primitives;
     std::vector<PayloadPrimitive> attach_sweep_primitives;
     std::size_t attach_sweep_objects = 0;
@@ -439,6 +462,7 @@ private:
   rclcpp::Time octree_stamp_;
   bool octree_stale_{false};
   AttachSweepLedger attach_sweep_ledger_;
+  SupportPatchAnchors support_patch_anchors_;
   AttachLinkTfFrames attach_link_tf_frames_;
   std::unordered_set<std::string> unmapped_links_warned_;  ///< one hint per link, not per tick
 

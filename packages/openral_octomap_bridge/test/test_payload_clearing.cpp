@@ -1444,3 +1444,49 @@ TEST(AttachLinkTfFrames, AMalformedOrConflictingMappingIsRefusedWhole) {
     EXPECT_TRUE(frames.empty()) << "a refused mapping must leave every link at identity";
   }
 }
+
+TEST(PayloadClearing, AnAnchoredBandOnlyNarrowsTheLiveOne) {
+  // Isaac i64/i70: the live plane rides up with a lifted payload; the anchor
+  // (the plane on the attestation's first grid) does not. A cell is withheld
+  // only when both claim it, so a cell above the anchored ceiling clears however
+  // high the live band has climbed — and the anchor never withholds a cell the
+  // live plane would not.
+  const Placed p = placed(resting_payload());
+  ASSERT_EQ(p.patches.size(), 1U);
+  bridge::SupportPatch lifted = p.patches[0];
+  lifted.point += tf2::Vector3(0.0, 0.0, 0.012);
+  bridge::SupportPatch anchored = lifted;
+  anchored.has_anchor = true;
+  anchored.anchor_point = p.patches[0].point;
+  anchored.anchor_normal = p.patches[0].normal;
+
+  const tf2::Vector3 climbed(0.40, 0.0, kSupportFaceZ + kWithholdCeiling + 0.006);
+  EXPECT_TRUE(bridge::support_patch_withholds(lifted, climbed, kResolution));
+  EXPECT_FALSE(bridge::support_patch_withholds(anchored, climbed, kResolution));
+  const tf2::Vector3 support(0.40, 0.0, kSupportFaceZ - 0.5 * kResolution);
+  EXPECT_TRUE(bridge::support_patch_withholds(anchored, support, kResolution));
+  // Sinking: the live plane is the lower one and still gates.
+  bridge::SupportPatch sunk = anchored;
+  sunk.point -= tf2::Vector3(0.0, 0.0, 0.024);
+  const tf2::Vector3 near_ceiling(0.40, 0.0, kSupportFaceZ + kWithholdCeiling - 0.001);
+  EXPECT_TRUE(bridge::support_patch_withholds(anchored, near_ceiling, kResolution));
+  EXPECT_FALSE(bridge::support_patch_withholds(sunk, near_ceiling, kResolution));
+}
+
+TEST(PayloadClearing, AnAttestationKeepsItsFirstGridAnchorUntilItIsGone) {
+  bridge::SupportPatchAnchors anchors;
+  bridge::SupportPatch at_attach;
+  at_attach.point = tf2::Vector3(0.0, 0.0, 0.48);
+  const bridge::SupportWitnessKey key{"brick", "table", 7};
+  bridge::SupportPatch lifted = at_attach;
+  lifted.point += tf2::Vector3(0.0, 0.0, 0.016);
+
+  EXPECT_NEAR(anchors.anchor({{key, at_attach}})[0].point.z(), 0.48, 1e-12);
+  EXPECT_NEAR(anchors.anchor({{key, lifted}})[0].point.z(), 0.48, 1e-12) << "rides nowhere";
+  // A fresh attestation (new stamp: a regrasp, or the place leg's witness) anchors anew.
+  const bridge::SupportWitnessKey fresh{"brick", "table", 8};
+  EXPECT_NEAR(anchors.anchor({{fresh, lifted}})[0].point.z(), 0.496, 1e-12);
+  // Retired and re-seen under the old key: forgotten, so it anchors where it is now.
+  anchors.anchor({});
+  EXPECT_NEAR(anchors.anchor({{key, lifted}})[0].point.z(), 0.496, 1e-12);
+}

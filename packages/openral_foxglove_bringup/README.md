@@ -96,9 +96,12 @@ expose (no `parameters` capability), so the layout carries an explicit URDF
 layer (`layerId: "foxglove.Urdf"`, `sourceType: "topic"`,
 `topic: "/robot_description"`) on the hero and World-voxels panels. Its
 `package://` meshes are fetched through the bridge, so the package that owns
-them must be on the **bridge's** `AMENT_PREFIX_PATH` (for OpenArm,
-`openarm_description` — source the vendor workspace before `deploy sim` too);
-otherwise the panel shows `Failed to retrieve asset package://…` per link.
+them must be on the **bridge's** ament index. A sourced workspace that builds it
+wins; otherwise, for a known public package (`openarm_description`, see
+`openral_hal.ros_package_overlay`), `deploy sim` indexes OpenRAL's pinned clone
+in an overlay prefix (`$OPENRAL_CACHE_DIR/ament_overlay`) and prepends it to the
+bridge's `AMENT_PREFIX_PATH`. A package found neither way shows as
+`Failed to retrieve asset package://…` per link in the bridge log.
 
 ## Run stand-alone
 
