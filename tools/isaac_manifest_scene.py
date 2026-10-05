@@ -45,6 +45,7 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 import numpy as np
@@ -157,26 +158,32 @@ def manifest_to_urdf_gripper(gripper: dict[str, Any], value: float) -> float:
 
 
 def apply_finger_friction(
-    stage: Any, robot_prim: str, friction: float = _FINGER_FRICTION
+    stage: Any,
+    robot_prim: str,
+    finger_joints: Iterable[str],
+    friction: float = _FINGER_FRICTION,
 ) -> list[str]:
-    """Bind a high-friction physics material to the robot's finger colliders.
+    """Bind a high-friction physics material to the links the robot's finger joints drive.
 
     The URDF importer authors no physics material, so every collider gets PhysX's default
-    friction and a gripped prop slips out when lifted. Every collision prim under
-    ``robot_prim`` whose path names a finger gets one shared material (static = dynamic =
-    ``friction``, no restitution, ``max`` friction combine when the PhysX schema is
-    available so a low-friction prop does not average the pad down), bound for the
-    ``physics`` purpose.
+    friction and a gripped prop slips out when lifted. The finger links are found through
+    the gripper joints (``grippers[].leader`` and ``followers[].dof`` in the robot spec),
+    not by name: the OpenArm's finger colliders are ``openarm_*_ee_link1/2``, its
+    ``finger_*`` prims are visuals. One shared material (static = dynamic = ``friction``,
+    no restitution, ``max`` friction combine when the PhysX schema is available so a
+    low-friction prop does not average the pad down) is bound for the ``physics`` purpose
+    on each finger link and on every instanced root under it (the importer instances its
+    collision geometry, and an instance proxy cannot take a binding).
 
     Args:
         stage: The USD stage (``pxr.Usd.Stage``).
         robot_prim: The robot's root prim path.
+        finger_joints: URDF names of the gripper joints (leaders and mimic followers).
         friction: Static and dynamic friction coefficient, ``> 0``.
 
     Returns:
-        The collision prim paths the material was bound to — empty when the robot has no
-        finger collider (a gripper-less robot, or a URDF whose fingers carry no collision
-        geometry); the caller logs it.
+        The prim paths the material was bound to — empty when no named joint was found
+        (a gripper-less robot, or joints the importer dropped); the caller logs it.
 
     Raises:
         ValueError: On a non-positive or non-finite ``friction``.
@@ -187,11 +194,18 @@ def apply_finger_friction(
         raise ValueError(f"apply_finger_friction: friction {friction!r} must be finite and > 0")
     from pxr import Usd, UsdPhysics, UsdShade
 
-    pads = [
-        p
-        for p in Usd.PrimRange(stage.GetPrimAtPath(robot_prim))
-        if p.HasAPI(UsdPhysics.CollisionAPI) and "finger" in str(p.GetPath()).lower()
-    ]
+    names = set(finger_joints)
+    root = stage.GetPrimAtPath(robot_prim)
+    links = {
+        str(target)
+        for p in Usd.PrimRange(root)
+        if p.GetName() in names and p.IsA(UsdPhysics.Joint)
+        for target in UsdPhysics.Joint(p).GetBody1Rel().GetTargets()
+    }
+    pads: list[Any] = []
+    for link in sorted(links):
+        pads.append(stage.GetPrimAtPath(link))
+        pads.extend(p for p in Usd.PrimRange(stage.GetPrimAtPath(link)) if p.IsInstance())
     if not pads:
         return []
     material = UsdShade.Material.Define(stage, "/World/Physics_Materials/finger_pad")
@@ -588,10 +602,16 @@ class IsaacManifestScene(IsaacSceneBase):
         self._robot_prim = prim_path
         from isaacsim.core.utils.stage import get_current_stage
 
-        pads = apply_finger_friction(get_current_stage(), prim_path)
+        finger_joints = [
+            name
+            for g in self._spec.get("grippers") or []
+            for name in (g["leader"], *(f["dof"] for f in g["followers"]))
+        ]
+        pads = apply_finger_friction(get_current_stage(), prim_path, finger_joints)
         print(
-            f"[isaac_manifest_scene] finger friction {_FINGER_FRICTION} on {len(pads)} collider(s)"
-            + ("" if pads else " — the robot has no finger collision geometry"),
+            f"[isaac_manifest_scene] finger friction {_FINGER_FRICTION} bound on {len(pads)} "
+            f"prim(s) for joints {finger_joints}"
+            + ("" if pads else " — NO finger link found, the fingers keep PhysX's default"),
             flush=True,
         )
         wx, wy, wz, wyaw = self._world_pose()
