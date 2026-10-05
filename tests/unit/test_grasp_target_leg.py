@@ -1615,6 +1615,52 @@ def test_the_region_payload_attests_its_measured_support_until_it_is_lifted() ->
         assert left.attachment is not None and left.attachment.support_contact is None
 
 
+def test_a_regrasp_whose_segmentation_is_rejected_keeps_the_region_payload() -> None:
+    """Isaac i63 (HZ-0115-34): a lift re-seated the held object (jaw 0.09 rad), the REGRASP
+    re-segmented it, the producer rejected the fit (the mask took in the arm), and the
+    generic jaw-span box replaced the measured region payload — and overlapped link5 by
+    32 mm, a self-collision stop. A REGRASP on a held region payload whose segmentation is
+    rejected keeps that payload; a REGRASP on any other payload is unchanged (the jaw box)."""
+    from openral_core import AttachmentEvidenceKind
+
+    with _live_leg("test_regrasp_keeps_region_payload") as live:
+        leg, bridge = live.leg, live.bridge
+        now_ns = leg._now_ns()
+        left = live.gripper("openarm_left_finger_pair")
+        live.place("left", (0.45, 0.0, 0.18))
+        live.place("right", (0.45, -0.30, 0.40))
+        leg._bridge._grid = (_held_block_lattice(), now_ns, time.monotonic())
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+        leg._detect_approach(0.10, now_ns)
+        live.place("left", (0.45, 0.0, 0.10))
+        region = _measured(now_ns)
+        leg.tracker.accept(region)
+
+        t = _grip(bridge, 0.29, t0_ns=1)
+        held = left.attachment
+        assert held is not None
+        assert held.evidence_kind is AttachmentEvidenceKind.GRASP_TARGET_REGION
+        # The jaw re-seats 0.09 rad while stalled: a REGRASP, segmented — no depth frame, so
+        # the producer answers with the jaw-span box it would have shipped.
+        _grip(bridge, 0.20, t0_ns=t)
+        assert left.attachment == held, "the measured region payload stays"
+        assert left.regrasp_hold is None
+        assert not left.pending, "the ack barrier is released"
+
+    with _live_leg("test_regrasp_replaces_other_payload") as live:
+        bridge = live.bridge
+        left = live.gripper("openarm_left_finger_pair")
+        live.place("left", (0.45, 0.0, 0.10))
+        live.place("right", (0.45, -0.30, 0.40))
+        t = _grip(bridge, 0.29, t0_ns=1)  # no declaration: the jaw-span box
+        first = left.attachment
+        assert first is not None
+        assert first.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
+        _grip(bridge, 0.20, t0_ns=t)
+        assert left.attachment is not None
+        assert left.attachment.evidence_kind is AttachmentEvidenceKind.GRIPPER_CLOSURE
+
+
 def _blocks_on_the_bridge_lock(bridge: VisionAttachmentBridge, call: Any) -> bool:
     """Whether ``call``, run on another thread, waits while this thread holds the bridge
     lock — and then completes cleanly once it is released."""
