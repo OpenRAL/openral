@@ -370,7 +370,7 @@ of what the kernel exempts.
 
 **Phase-blind, so ADR-0097 is free here.** `place_attached_object` /
 `support_patch_withholds` read only `AttachedCollisionObject.support_contact`
-geometry, never `support_id`/`evidence_kind`, so ADR-0097's place-phase
+geometry (plus `support_id`/`stamp_ns` only as the anchor's identity key), never `evidence_kind`, so ADR-0097's place-phase
 witness rides this partition unchanged
 (`PayloadClearing.APlacePhaseWitnessIsWithheldExactlyAsAPickPhaseOneIs`
 asserts a bit-identical grid). ADR-0097's 2026-08-14 approach allowance and
@@ -382,9 +382,22 @@ The two predicates (bridge vs. kernel) are a deliberate cross-package
 mirror — consolidating them would couple this Layer-2 node to the Layer-6
 kernel's collision core — see `docs/methods/14-duplication-watch.md`, item 8.
 
-**No latch beyond the attach window.** Withholding is derived from the wire
-attestation every publish; the bridge's only memory is `AttachSweepLedger`'s
-per-object attach window, which decides reach, never which cells are taken.
+**No latch beyond the attach window and the support anchor.** Withholding is derived from the wire
+attestation every publish; the bridge's memory is `AttachSweepLedger`'s
+per-object attach window (decides reach) and `SupportPatchAnchors`' first-grid
+plane per attestation (keyed as the kernel arms: object, support id, stamp).
+
+**The band stays on the support (Isaac i64/i70, 2026-10-05).** The attestation
+is in the object frame, so its live plane rides a lifted payload; the support
+does not. A riding band climbed into the payload's own stale occupancy — the
+brick's top layer, cleared at the attach grid and therefore never baselined by
+the kernel as embedded residue — and re-published it inside the payload. When
+the producer retired the witness at 15 mm, the kernel dropped it on ingest
+while still holding a grid built under the old attestation: a -14.5 / -18.0 mm
+stop on the payload's own top layer. A cell is now withheld only when the
+attestation's first-grid plane also claims it — an AND, so `withheld ⊆ exempt`
+still holds (`BridgeLiftedPayload.TheBandStaysOnTheSupportWhileThePayloadRises`,
+`PayloadClearing.AnAnchoredBandOnlyNarrowsTheLiveOne`).
 Hysteresis lives in the kernel: a witness that died stays dead until a new
 attestation, so a lifted-and-set-down payload finds its support cells
 unexempted (correct, new violation). On a genuine lift the patch (object

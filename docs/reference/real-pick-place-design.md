@@ -720,7 +720,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   (`update_support_contact_witnesses`, `support_witness_still_in_contact`, measured
   configuration only) and re-arms only a new (object, support, stamp) key. That liveness reads
   the map, and the octomap bridge withholds every cell inside the witness band
-  (`support_patch_withholds`) — a band that rides with the payload, so the carried object's own
+  (`support_patch_withholds`, anchored at the attestation's first grid since i64/i70; the kernel's band rides with the payload), so the carried object's own
   lowest cells, seen by the head camera, would sit in it and keep the witness alive through the
   carry, exempting everything under the payload's footprint. The producer therefore retires
   it itself (`VisionAttachmentBridge._retire_lifted_supports`, 20 Hz from the joint-state hook):
