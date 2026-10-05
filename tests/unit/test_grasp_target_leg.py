@@ -1186,7 +1186,9 @@ def test_a_confirm_that_raises_hands_nothing_over() -> None:
 
 
 def test_a_named_declaration_stays_handed_over_after_its_pick() -> None:
-    """A named target was picked; a new target needs a new declaration from dispatch."""
+    """A named target was picked; a new target needs a new declaration from dispatch. Its
+    region dies at the release like an approach-armed one's: republished as the payload box
+    until the timeout, only the kernel's retired-identity set kept it from being used."""
     tracker, _ = _tracker()
     tracker.accept(_measured(11 * _S))
     tracker.on_attach("openarm_left_finger_pair", confirm=_CONFIRMED)
@@ -1194,8 +1196,10 @@ def test_a_named_declaration_stays_handed_over_after_its_pick() -> None:
     assert handed is not None
     tracker.on_release(handed, None)
     assert not tracker.on_pick_complete(handed, now_ns=12 * _S)
-    assert tracker.handed_over == handed and tracker.region == _measured(11 * _S)
+    assert tracker.handed_over == handed and tracker.region is None
     assert not tracker.wants_measurement(now_ns=12 * _S)
+    envelope = tracker.envelope(now_ns=12 * _S)
+    assert envelope is not None and envelope.region is None
 
 
 # ── approach: the support surface is not a target; no re-arm flood ──────────────

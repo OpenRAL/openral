@@ -758,14 +758,17 @@ class GraspTargetTracker:
         record stays so nothing re-measures or re-latches it — the hand may still be
         in its release window. ``record`` (the released payload frozen in the base
         frame, ``None`` when none was taken) is what ``spent`` guards the hand's
-        next arming against (HZ-0115-11). A named ``search_box`` declaration and a
-        hand not handed over are untouched.
+        next arming against (HZ-0115-11). A named ``search_box`` declaration drops its
+        region too (it never re-arms, so it records nothing to guard); a hand not handed
+        over is untouched.
         """
         goal = self._declaration
-        if self._handed_over != hand or goal is None or goal.search_box is not None:
+        if self._handed_over != hand or goal is None:
             return
         self._generation += 1
         self._region = None
+        if goal.search_box is not None:
+            return
         self._spent[hand] = record
         self._transition(
             "released",
