@@ -1005,8 +1005,23 @@ def _match_urdf_joint(j: Any, urdf: dict[str, _UrdfJoint], claimed: set[str]) ->
 _LIMIT_EPS = 1e-6
 
 
+# Command value at (closed, open) for each normalised ``GripperConvention``; the
+# scene maps a command linearly between them onto the URDF closed/open targets.
+_CONVENTION_ENDS: dict[str, tuple[float, float]] = {
+    "normalized_open_unit": (0.0, 1.0),
+    "normalized_open_symmetric": (-1.0, 1.0),
+    "normalized_close_symmetric": (1.0, -1.0),
+    "binary_close_one": (1.0, 0.0),
+}
+
+
 def _gripper_spec(
-    j: Any, leader: _UrdfJoint, urdf: dict[str, _UrdfJoint], *, passthrough: bool
+    j: Any,
+    leader: _UrdfJoint,
+    urdf: dict[str, _UrdfJoint],
+    *,
+    passthrough: bool,
+    command_convention: str | None = None,
 ) -> dict[str, Any]:
     """Open/closed targets (URDF units) + mimic followers for one manifest gripper.
 
@@ -1024,7 +1039,12 @@ def _gripper_spec(
       (clamped into the limits), open the limit farther from it (SO-100's jaw:
       0 → 2.0 rad; the Panda's fingers: 0 → 0.04 m).
 
-    The manifest's own closed/open ends map ``/joint_states`` back.
+    The manifest's own closed/open ends map ``/joint_states`` back. A command is
+    read in the driving end effector's ``command_convention``
+    (``command_closed`` / ``command_open``): a normalised one by its own ends
+    (``normalized_close_symmetric``: +1 closed, -1 open), ``raw_joint_rad`` (or
+    no declaration) as the manifest joint value itself. Any other convention
+    (``width_meters``) has no mapping onto the joint and is a ``ROSConfigError``.
     """
     if leader.lower is None or leader.upper is None:
         raise ROSConfigError(f"URDF gripper joint {leader.name!r} has no <limit>.")
@@ -1046,6 +1066,16 @@ def _gripper_spec(
     else:
         closed = min(max(0.0, lo), hi)
         opened = hi if abs(hi - closed) >= abs(lo - closed) else lo
+    if command_convention in _CONVENTION_ENDS:
+        cmd_closed, cmd_open = _CONVENTION_ENDS[command_convention]
+    elif command_convention is None or (command_convention == "raw_joint_rad" and passthrough):
+        cmd_closed, cmd_open = m_closed, m_open
+    else:
+        raise ROSConfigError(
+            f"gripper {j.name!r}: command_convention {command_convention!r} has no mapping "
+            f"onto its {'passthrough' if passthrough else 'normalised'} joint in the Isaac "
+            f"scene (raw_joint_rad needs write_mode: passthrough)."
+        )
     return {
         "name": j.name,
         "leader": leader.name,
@@ -1053,6 +1083,8 @@ def _gripper_spec(
         "open": opened,
         "manifest_closed": m_closed,
         "manifest_open": m_open,
+        "command_closed": cmd_closed,
+        "command_open": cmd_open,
         "followers": [
             {"dof": u.name, "multiplier": u.mimic[1], "offset": u.mimic[2]}
             for u in urdf.values()
@@ -1158,8 +1190,8 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
     DOFs; the sidecar drives the base kinematically.
 
     Action layout (``IsaacActionLayout``): ``[one absolute target per non-base
-    joint in manifest order — grippers in manifest units — then the base twist
-    (vx, vy, wz) when mobile]``; NaN holds a joint.
+    joint in manifest order — grippers in their end effector's command_convention —
+    then the base twist (vx, vy, wz) when mobile]``; NaN holds a joint.
     """
     from openral_core.assets import AssetRefError, resolve_asset
 
@@ -1192,6 +1224,11 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
         for g in ((desc.sim.grippers if desc.sim else None) or [])
         if getattr(g.write_mode, "value", g.write_mode) == "passthrough"
     }
+    # The encoding each gripper joint's commands arrive in: its end effector's.
+    conventions: dict[str, str] = {}
+    for ee in desc.end_effectors:
+        if ee.command_convention is not None:
+            conventions[layout.gripper_for(ee.name)] = ee.command_convention
     by_name = {j.name: j for j in desc.joints}
     claimed: set[str] = set()
     entries: list[dict[str, Any]] = []
@@ -1204,7 +1241,13 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
             claimed.add(urdf_name)
             if role == "gripper":
                 grippers.append(
-                    _gripper_spec(j, urdf[urdf_name], urdf, passthrough=name in passthrough)
+                    _gripper_spec(
+                        j,
+                        urdf[urdf_name],
+                        urdf,
+                        passthrough=name in passthrough,
+                        command_convention=conventions.get(name),
+                    )
                 )
         entries.append(
             {
