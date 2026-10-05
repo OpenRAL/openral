@@ -230,6 +230,16 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   (real kernel: tight payload pressed 19 mm → REFUSED on the boundary cell; closed → ACCEPTED; a
   foreign cell outside the closure → REFUSED; a tight-footprint witness patch on the closed
   payload → REFUSED on a support cell).
+- **A rejected REGRASP keeps the region payload** (`VisionAttachmentBridge._begin_segmentation` /
+  `_finish`, `_GripperLeg.regrasp_hold`; hazard row HZ-0115-34). A jaw re-seat while stalled
+  is a REGRASP, which always re-segments. If the producer rejects that fit (the mask took in
+  the arm — `payload_extent`, Isaac i63) the leg used to publish the generic jaw-span box,
+  which overlapped the arm's own link5 by 32 mm and latched a self-collision stop in the
+  carry. A REGRASP that began on a region payload now keeps it when the segmentation is
+  rejected (logged, warning); an accepted fit replaces it as before, and a REGRASP on any other
+  payload still falls back to the jaw box. Test:
+  `tests/unit/test_grasp_target_leg.py::test_a_regrasp_whose_segmentation_is_rejected_keeps_the_region_payload`
+  (fails without the change).
 - **Grasp-target margin: the target is bloated** (producer side, `GraspTargetLeg.kernel_region`
   → `margin_grown_region`; `VisionAttachmentRuntime.grasp_target_margin_m`, default 0.025 m,
   validated `0 <= m <= 0.05`, refused above; HAL param `vision_attachment_grasp_target_margin_m`,
