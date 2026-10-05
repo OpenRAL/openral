@@ -242,8 +242,12 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   only, are exempt against every cell centred within the margin of the held region —
   the support under the target included — so the fingers can close around the target and
   press up to the margin into the support under it without a stop. *After the handover*
-  the attached region payload is the cell closure of the held region grown by the margin on
-  the four sides and the top only, **never down**: it rides with the hand, the octomap
+  the attached region payload is the cell closure of the held region lowered onto the measured
+  support top (`lowered_to_support`: the held region stands one voxel above it, which left the
+  target's own bottom layer outside the payload — once lifted, that layer sat under the
+  payload's lower face and the kernel stopped the carry the moment the witness retired, Isaac
+  i56/i57) and grown by the margin on the four sides and the top only, **never below the
+  support top**: it rides with the hand, the octomap
   bridge clears what lies inside it, and the kernel keeps checking it against the
   environment and the robot against the environment; its support witness's patch is the
   bloated footprint, so the band covers the support cells under the payload's corners. The
@@ -676,7 +680,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   lowest cells, seen by the head camera, would sit in it and keep the witness alive through the
   carry, exempting everything under the payload's footprint. The producer therefore retires
   it itself (`VisionAttachmentBridge._retire_lifted_supports`, 20 Hz from the joint-state hook):
-  once the payload frame moved more than `max(resolution, extrinsic_error_m)` from its ATTACH
+  once the payload frame moved more than `max(resolution, extrinsic_error_m, release_clear_m)` (the kernel's world margin plus a cell, since the payload's lower face rests on the support top) from its ATTACH
   pose (a lift or a slide), or tf2 cannot place it, the witness is dropped for good (same
   object and stamp: nothing re-arms) and the set republished at the current revision. Live:
   `tests/integration/test_grasp_target_leg_live.py` step 7;

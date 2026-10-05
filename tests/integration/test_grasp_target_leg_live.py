@@ -185,6 +185,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
 
     from openral_core import Action, ControlMode, JointState, PlaceRegion, RobotDescription
     from openral_core.geometry import homogeneous_from_quat_xyz
+    from openral_hal._grasp_target import lowered_to_support
     from openral_hal.vision_attachment_bridge import (
         VisionAttachmentBridge,
         VisionAttachmentConfig,
@@ -478,12 +479,16 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         assert held.evidence_kind == "grasp_target_region"
         assert held.object_id == "cell:restock_box", "the declaration names it (no object_id)"
         assert held.attach_link == left.parent_link
-        # The payload is the region bloated on the sides and top, then cell-closed (Isaac
-        # i50, HZ-0115-32): same horizontal centre, its top (not its bottom) raised.
-        closed = bridge._grasp_target.kernel_region("cell:restock_box", region, payload=True)
-        assert closed.pose.xyz[2] - closed.half_extents[2] == pytest.approx(
-            region.pose.xyz[2] - region.half_extents[2]
+        # The payload is the region lowered onto the measured support top (one cell under
+        # its lower face; Isaac i56/i57), bloated on the sides and top, then cell-closed
+        # (Isaac i50, HZ-0115-32): same horizontal centre, its top raised, its bottom on the
+        # support. The leg measured the support for the pre-ATTACH region only, so it is
+        # named here.
+        support = region.pose.xyz[2] - region.half_extents[2] - _RES
+        closed = bridge._grasp_target.kernel_region(
+            "cell:restock_box", lowered_to_support(region, support), payload=True
         )
+        assert closed.pose.xyz[2] - closed.half_extents[2] == pytest.approx(support)
         assert tuple(held.primitives[0].shape_dimensions) == pytest.approx(closed.half_extents)
         np.testing.assert_allclose(
             [

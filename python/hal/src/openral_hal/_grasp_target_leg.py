@@ -226,6 +226,7 @@ from openral_hal._grasp_target import (
     VoxelLattice,
     _in_region,
     cell_closed_region,
+    lowered_to_support,
     map_completed_region,
     margin_grown_region,
     mask_without_removed_points,
@@ -1586,10 +1587,13 @@ class GraspTargetLeg:
         (``margin_grown_region``, HZ-0115-32), so for the declared finger links cells up
         to the margin below its lower face (the support under the target) and beside it
         are exempt. ``payload=True`` (``VisionAttachmentBridge._region_payload``): the
-        attached payload's box — grown by the same margin on the sides and the top only,
-        never down, so the support stays outside it; it lies inside the region the kernel
-        latched (the handover's payload-origin-in-region rule), and the target's own
-        boundary cells sit at least half a cell inside it (embedded residue, Isaac i50).
+        attached payload's box — its lower face lowered from one voxel above the measured
+        support onto the support top (``lowered_to_support``: the target's own bottom
+        layer is payload, Isaac i56/i57), then grown by the same margin on the sides and
+        the top only, never down, so the support stays outside it; it lies inside the
+        region the kernel latched (the handover's payload-origin-in-region rule), and the
+        target's own boundary cells sit at least half a cell inside it (embedded residue,
+        Isaac i50).
         The producer's own gates keep the held region.
 
         The kernel exempts a voxel only when its centre lies in the region, so the bloat
@@ -1602,6 +1606,10 @@ class GraspTargetLeg:
         case is logged once per change (the payload's at its ATTACH).
         """
         grid = self._grid
+        if payload:
+            support = self.measured_support(region)
+            if support is not None:
+                region = lowered_to_support(region, support)
         try:
             if grid is None:
                 raise ROSConfigError("no voxel grid to close the region over")
