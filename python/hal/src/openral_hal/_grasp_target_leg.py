@@ -78,8 +78,12 @@ unexempt, and the finger hull swept over the target's top edge stops on them. Th
 published region is ``cell_closed_region`` of the held fit against the newest grid:
 grown by ``r/2·(|cos θ|+|sin θ|)`` (≤ ``r/√2``) horizontally and ``r/2`` up, never
 down, so the support layer stays non-exempt. Every gate here (``_gate_refit``,
-``region_within``, ``track_region``, the cover check, the hand tests) and the region
-payload keep the held region (not its closure).
+``region_within``, ``track_region``, the cover check, the hand tests, the ATTACH
+confirmation, ``measured_support``) keeps the held region (not its closure). The region
+*payload* is the closure (``kernel_region``, Safety-WG choice for Isaac i50): the box the
+kernel latched, so the target's own boundary cells sit at least half a cell inside the
+payload when the kernel snapshots its attach-time contacts — embedded residue, not
+obstacles — never grown down, so the support layer stays outside it (HZ-0115-31).
 
 **Completed from the map** (``map_completed_region``, Safety-WG choice for Isaac i45).
 The camera confirms which object the target is (the self-filtered fit of its visible
@@ -94,9 +98,10 @@ holds another body's cell. The completed box is the candidate every gate after i
 and what is held: the tracking gate compares it with the held region (completed or not),
 so a later fit of more or less of the target completes or fits to about the same box and
 is an ordinary re-fit; the kernel gets its cell closure (every component cell whole);
-the hand tests, the ATTACH confirmation, the region payload and ``measured_support`` all
-use it. The map alone never arms: no accepted camera fit, no completion. A body within
-one voxel of the target is 26-connected to it and merges into it (HZ-0115-30).
+the hand tests, the ATTACH confirmation and ``measured_support`` use it, the region
+payload its cell closure. The map alone never arms: no accepted camera fit, no
+completion. A body within one voxel of the target is 26-connected to it and merges into
+it (HZ-0115-30).
 
 The region dies with the declaration: dispatch retraction (goal end, cancel,
 E-stop — the runner retracts on all of them) and ``timeout_s`` expiry clear it.
@@ -1401,7 +1406,7 @@ class GraspTargetLeg:
         # configured: logged on entering and on leaving that state (CLAUDE.md §1.4).
         self.unfiltered_fits = 0
         # Why the last published region was not exactly the cell-closed fit ("" when it
-        # was): logged on every change, never per publish (``_kernel_region``).
+        # was): logged on every change, never per publish (``kernel_region``).
         self._closure_note = ""
         # The last accepted region and the support top it was fitted on
         # (``measured_support``).
@@ -1477,7 +1482,7 @@ class GraspTargetLeg:
     def fill(self, msg: Any, *, now_ns: int) -> None:
         """Put the declaration in force (region and all) on one ``AttachmentState``.
 
-        The region goes out cell-closed (``_kernel_region``); the tracker keeps the
+        The region goes out cell-closed (``kernel_region``); the tracker keeps the
         held region (the tight fit, or its map completion) every producer gate compares
         against.
         """
@@ -1487,12 +1492,18 @@ class GraspTargetLeg:
             return
         if declaration.region is not None:
             declaration = declaration.model_copy(
-                update={"region": self._kernel_region(declaration.target_id, declaration.region)}
+                update={"region": self.kernel_region(declaration.target_id, declaration.region)}
             )
         declaration.fill_idl(msg.grasp_declaration)
 
-    def _kernel_region(self, target_id: str, region: PlaceRegion) -> PlaceRegion:
+    @_locked
+    def kernel_region(self, target_id: str, region: PlaceRegion) -> PlaceRegion:
         """The held fit as the kernel gets it: closed over the cells of the newest grid.
+
+        Also the region payload's box (``VisionAttachmentBridge._region_payload``): the
+        payload the kernel snapshots at the handover is the box it latched, so the
+        target's own boundary cells sit at least half a cell inside it (embedded
+        residue, Isaac i50) while the producer's own gates keep the held region.
 
         The kernel exempts a voxel only when its centre lies in the region, so the
         tight fit leaves the target's own boundary cells unexempt; ``cell_closed_region``
@@ -1745,9 +1756,11 @@ class GraspTargetLeg:
 
         The bridge's one entry for an ATTACH that resolved (design §2.2):
 
-        * ``region`` set — the payload *is* that measured region (``_region_payload``
-          confirmed the jaw at it); handed over only while the tracker still holds
-          exactly that region (a re-fit accepted on another thread since is not it).
+        * ``region`` set — the payload was built from that measured region (its cell
+          closure, ``kernel_region``; ``_region_payload`` confirmed the jaw at it);
+          handed over only while the tracker still holds exactly that region (a re-fit
+          accepted on another thread since is not it). ``region`` is the held region,
+          never the payload's closed box.
         * ``region`` ``None`` — the grasp was segmented (``_finish``), possibly because
           the jaw was *not* at the region: a neighbouring object. Handed over only when
           the jaw is at the held region (``VisionAttachmentBridge.jaw_at``, the region

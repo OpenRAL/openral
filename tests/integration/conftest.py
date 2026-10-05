@@ -12,7 +12,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import suppress
 from typing import Any
 
@@ -133,10 +133,11 @@ def move_group_subprocess() -> Iterator[None]:
 
 @pytest.fixture
 def publish_occupancy_grid() -> Callable[..., None]:
-    """Factory: publish a single-occupied-cell ``OccupancyVoxels`` lattice and settle.
+    """Factory: publish an ``OccupancyVoxels`` lattice and settle.
 
     Returns ``publish_grid(voxel_pub, helper, spin, *, grid_origin_m,
-    resolution_m, grid_n, occ_index)``.
+    resolution_m, grid_n, occ_index)``; ``occ_index`` is one occupied cell's flat
+    index, or a sequence of them.
     """
 
     def _publish_grid(
@@ -147,7 +148,7 @@ def publish_occupancy_grid() -> Callable[..., None]:
         grid_origin_m: float,
         resolution_m: float,
         grid_n: int,
-        occ_index: int,
+        occ_index: int | Sequence[int],
     ) -> None:
         from geometry_msgs.msg import Point, Quaternion
         from openral_msgs.msg import OccupancyVoxels
@@ -165,7 +166,8 @@ def publish_occupancy_grid() -> Callable[..., None]:
         grid.size_y = grid_n
         grid.size_z = grid_n
         occupancy = [0] * (grid_n**3)
-        occupancy[occ_index] = 1
+        for index in [occ_index] if isinstance(occ_index, int) else occ_index:
+            occupancy[index] = 1
         grid.occupancy = occupancy
 
         # Republished at 5 Hz, freshly stamped, as the octomap bridge does: the

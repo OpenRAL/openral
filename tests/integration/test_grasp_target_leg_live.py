@@ -444,8 +444,8 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         declaration_pub.publish(_declaration(now_ns(), one))
         assert _wait_until(region_live, timeout_s=20.0)
         published = PlaceRegion.from_idl(latest().grasp_declaration.region)
-        # The payload is the held (tight) fit; the kernel gets it cell-closed — grown
-        # sideways and up, never down (``GraspTargetLeg.fill``).
+        # The tracker holds the tight fit; the kernel gets it cell-closed — grown sideways
+        # and up, never down (``GraspTargetLeg.fill``) — and so does the payload (i50).
         assert bridge._grasp_target is not None
         region = bridge._grasp_target.tracker.region
         assert region is not None
@@ -473,13 +473,17 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         assert held.evidence_kind == "grasp_target_region"
         assert held.object_id == "cell:restock_box", "the declaration names it (no object_id)"
         assert held.attach_link == left.parent_link
+        # The payload is the region's cell closure, the box the kernel latched (Isaac i50):
+        # same horizontal centre, its top (not its bottom) raised.
+        closed = bridge._grasp_target.kernel_region("cell:restock_box", region)
+        assert tuple(held.primitives[0].shape_dimensions) == pytest.approx(closed.half_extents)
         np.testing.assert_allclose(
             [
                 held.pose_in_link.position.x,
                 held.pose_in_link.position.y,
                 held.pose_in_link.position.z,
             ],
-            left.origin_xyz,
+            np.asarray(left.origin_xyz) + np.asarray(closed.pose.xyz) - region.pose.xyz,
             atol=1e-6,
         )
         assert _wait_until(
