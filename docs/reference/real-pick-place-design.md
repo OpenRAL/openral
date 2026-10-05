@@ -378,7 +378,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   declaration (`handover_object_mismatch`, WARNed once per declaration as
   `grasp_region_rejected` with the declared object, attached label, target, rskill and trace). The region is latched at handover: later snapshots of the
   same declaration cannot move it, so a producer re-measuring the carried payload cannot extend
-  the exemption. The region-age bound stops at the latch: the fingers occlude the target, the box
+  the exemption, nor hand it to other contact links or another object (`latch_mismatch` retires it). The region-age bound stops at the latch: the fingers occlude the target, the box
   is frozen anyway, and the payload-in-box rule, stream deadline and `timeout_s` bound the window;
   the latched box must itself have been fresh at the handover edge. From then on the existing path applies (bridge clears the payload cells; kernel
   checks it as attached geometry).

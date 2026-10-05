@@ -3835,6 +3835,8 @@ struct GraspBeat {
   /// A second payload, `cell:other` at the region centre, attached on this link
   /// ("" = none): the other hand still holding, or a released payload frozen on the base.
   std::string second_attach_link{};
+  double region_qx{0.0};  ///< the region's orientation x
+  double region_qw{1.0};  ///< the region's orientation w
 };
 
 // The producer-measured grasp declaration on the world-state envelope, stamped
@@ -3882,7 +3884,8 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
   d.region_valid = true;
   d.region.frame_id = b.region_frame;
   d.region.pose.position.x = b.region_x;
-  d.region.pose.orientation.w = 1.0;
+  d.region.pose.orientation.x = b.region_qx;
+  d.region.pose.orientation.w = b.region_qw;
   d.region.half_extents.x = 0.02;
   d.region.half_extents.y = 0.02;
   d.region.half_extents.z = 0.02;
@@ -4351,7 +4354,7 @@ TEST_F(LifecycleKernelTest, AGraspRegionMeasuredTooLongAgoExemptsNothing) {
   rig.start();
   GraspBeat b;
   b.declaration_stamp_ns = rig.now_ns();  // a brand-new, live declaration...
-  b.region_stamp_ns = rig.now_ns() - std::int64_t{2'000'000'000};  // ...over an old measurement
+  b.region_stamp_ns = rig.now_ns() - std::int64_t{5'000'000'000};  // ...over an old measurement
   rig.warm(&b, 0.0, 200);
   EXPECT_FALSE(rig.offer(&b, 0.0));
   EXPECT_TRUE(rig.node->fault_latched());
@@ -4409,7 +4412,7 @@ TEST_F(LifecycleKernelTest, AStaleRegionAtTheAttachEdgeLatchesNoHandover) {
   rig.start();
   GraspBeat b;
   b.declaration_stamp_ns = rig.now_ns();
-  b.region_stamp_ns = rig.now_ns() - std::int64_t{2'000'000'000};
+  b.region_stamp_ns = rig.now_ns() - std::int64_t{5'000'000'000};
   b.carrying = true;
   b.revision = 1;
   rig.warm(&b, 0.0, 200);
@@ -5273,4 +5276,111 @@ TEST_F(LifecycleKernelTest, AnEarlierTicksTargetIsNotHeldAgainstTheNextTick) {
   // Tick 8: only the measured right arm (x = 1.0) is the truth now.
   EXPECT_TRUE(rig.send(position_chunk(0.5, 0.0, {"left_j"}, 8)));
   EXPECT_FALSE(rig.node().fault_latched());
+}
+
+// ── Code-review hardening (#289 review, findings 7 and 8) ───────────────────
+
+TEST_F(LifecycleKernelTest, AGraspRegionWithANonUnitQuaternionIsRefused) {
+  // An unset orientation is the all-zero quaternion, which the transform reads
+  // as identity: a yawed box would exempt cells along the wrong axis. Refused
+  // exactly as the voxel-grid ingest refuses one.
+  for (const auto& [qx, qw] : {std::pair{0.0, 0.0}, std::pair{0.0, 0.5}, std::pair{0.6, 0.9}}) {
+    LogCapture logs;
+    GraspRig rig("kernel_grasp_quat");
+    rig.start();
+    GraspBeat b;
+    b.declaration_stamp_ns = rig.now_ns();
+    b.region_qx = qx;
+    b.region_qw = qw;
+    rig.warm(&b, 0.0, 300);
+    EXPECT_FALSE(rig.offer(&b, 0.0)) << "q=(" << qx << "," << qw << ")";
+    EXPECT_TRUE(rig.node->fault_latched());
+    EXPECT_EQ(logs.count("safety.grasp_region_armed"), 0U) << logs.joined();
+    EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=bad_pose"), 1U) << logs.joined();
+  }
+}
+
+TEST_F(LifecycleKernelTest, APlaceRegionWithANonUnitQuaternionGrantsNoAllowance) {
+  for (const double qw : {0.0, 0.5}) {
+    LogCapture logs;
+    GraspRig rig("kernel_place_quat", place_declaration_params());
+    rig.voxels = declared_target_voxels();
+    const std::int64_t measured_ns = rig.now_ns();
+    rig.state_fn = [measured_ns, qw](std::int64_t stream_ns) {
+      auto msg = declared_carry_state(stream_ns, measured_ns, /*timeout_s=*/60.0);
+      msg.place_declaration.region.pose.orientation.w = qw;
+      return msg;
+    };
+    rig.start();
+    rig.warm(nullptr, 0.0, 200);
+    EXPECT_FALSE(rig.offer_chunk(nullptr, 0.0, declared_carry_chunk())) << "qw=" << qw;
+    EXPECT_TRUE(rig.node->fault_latched());
+    EXPECT_EQ(logs.count("safety.place_region_armed"), 0U) << logs.joined();
+    EXPECT_EQ(logs.count("safety.place_region_rejected reason=bad_pose"), 1U) << logs.joined();
+  }
+}
+
+TEST_F(LifecycleKernelTest, ALatchedGraspCannotMoveToAnotherObjectOrHand) {
+  // The handover latch froze the box but not who it exempts: a later heartbeat
+  // of the same (target, stamp) naming another object inside the box, or the
+  // other hand, kept the frozen exemption for it. Either retires the pick.
+  struct Case {
+    const char* name;
+    std::vector<std::string> links;
+    std::string object;
+    std::string second_link;
+  };
+  for (const Case& c : {Case{"object", {"link0"}, "cell:other", "link0"},
+                        Case{"hand", {"other"}, "cell:other", "other"}}) {
+    LogCapture logs;
+    GraspRig rig(std::string("kernel_grasp_latch_") + c.name, bimanual_grasp_params());
+    rig.start();
+    GraspBeat b;
+    b.declaration_stamp_ns = rig.now_ns();
+    b.carrying = true;
+    b.revision = 1;
+    rig.warm(&b, 0.0, 300);
+    ASSERT_TRUE(rig.offer(&b, 0.0)) << c.name << ": " << logs.joined();
+    ASSERT_EQ(logs.count("safety.grasp_region_latched target=cell:cube at handover"), 1U)
+        << c.name << ": " << logs.joined();
+    b.contact_links = c.links;
+    b.declared_object = c.object;
+    b.second_attach_link = c.second_link;
+    b.revision = 2;
+    rig.warm(&b, 0.0, 100);
+    EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=latch_mismatch"), 1U)
+        << c.name << ": " << logs.joined();
+    EXPECT_FALSE(rig.offer(&b, 0.0)) << c.name;
+    EXPECT_TRUE(rig.node->fault_latched()) << c.name;
+  }
+}
+
+TEST_F(LifecycleKernelTest, ADetachWhileTheArmedRegionIsMomentarilyStaleStillRetiresIt) {
+  // The detach retire ran only while the region was valid: one stale heartbeat
+  // at the detach edge let the same identity re-arm on the next fresh region,
+  // against a scene the detach had changed.
+  LogCapture logs;
+  GraspRig rig(
+      "kernel_grasp_detach_stale",
+      with_param(bimanual_grasp_params(), "grasp_region_max_age_s", rclcpp::ParameterValue(2.0)));
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.second_attach_link = "other";  // the other hand holds something
+  b.revision = 1;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  // The producer's measurement ages out, and the other hand lets go meanwhile.
+  b.region_stamp_ns = rig.now_ns() - std::int64_t{5'000'000'000};
+  rig.warm(&b, 0.0, 100);
+  ASSERT_EQ(logs.count("safety.grasp_region_rejected reason=region_stale"), 1U) << logs.joined();
+  b.second_attach_link.clear();
+  b.revision = 2;
+  rig.warm(&b, 0.0, 100);
+  // A fresh measurement of the same identity re-arms nothing.
+  b.region_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 200);
+  EXPECT_FALSE(rig.offer(&b, 0.0, 800));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 1U) << logs.joined();
 }

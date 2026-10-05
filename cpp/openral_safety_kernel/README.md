@@ -766,7 +766,7 @@ Three events, and the reason is always the real one:
 | `safety.place_region_armed` | INFO | a validated region goes live (on the transition); `geometry=<n>` says how many declared-target primitives armed with it, `0` being the pre-ADR-0098 box-only case. Re-emitted when that count changes, because a region that gains or loses the declared body is adjudicating against something materially different |
 | `safety.place_region_dropped reason=…` | INFO | an armed region is disarmed — `no_declaration`, `retracted`, `no_region`, `detached`, `grid_frame_changed`, `region_stale` |
 | `safety.place_region_not_armed reason=no_object` | INFO | a live declaration names a payload the kernel is not carrying |
-| `safety.place_region_rejected reason=…` | WARN | a malformed region reached the kernel — `region_stale` (its `stamp_ns` is older than `place_region_max_age_s` or in the future; see below), `frame_mismatch`, `bad_pose`, `bad_extents`, `degenerate`, `oversize`, `oversize_volume`, `bad_geometry`, `geometry_overflow` |
+| `safety.place_region_rejected reason=…` | WARN | a malformed region reached the kernel — `region_stale` (its `stamp_ns` is older than `place_region_max_age_s` or in the future; see below), `frame_mismatch`, `bad_pose` (non-finite, or a quaternion not unit to 1e-6 — the unset all-zero one included), `bad_extents`, `degenerate`, `oversize`, `oversize_volume`, `bad_geometry`, `geometry_overflow` |
 
 Two rules keep them honest. **The reason is the branch that fired**
 (`place_region_status_reason`), not a category: `reason=bounds` used to label
@@ -906,8 +906,12 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   that differs beyond float noise is ignored with one WARN
   `safety.grasp_region_moved_after_handover … ignored`), so a producer that
   re-measures the target at the carried payload's live pose cannot extend the
-  exemption by moving the box with it. Before the handover the region still
-  updates on every snapshot. A rejected attachment set or a grid-frame change also
+  exemption by moving the box with it. The latch also freezes who it exempts:
+  a later snapshot of the same declaration whose contact links or held object
+  differ from the latched ones retires it, `reason=latch_mismatch`, with one WARN
+  `safety.grasp_region_rejected reason=latch_mismatch` naming both sides
+  (`…ALatchedGraspCannotMoveToAnotherObjectOrHand`). Before the handover the region
+  still updates on every snapshot. A rejected attachment set or a grid-frame change also
   retires it, before or after the handover (genuine faults; a pre-handover one stays
   retired — the producer re-arms only under a fresh identity, after its hand left
   the approach distance and was seen away for a freeze window:
@@ -920,8 +924,13 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
   pre-detach region would exempt cells nothing re-checked. Liveness is the
   producer's: it owns the attachment set, and on every change it publishes it
   re-arms the other hand under a fresh identity from a measurement taken after the
-  detach (`GraspTargetLeg.on_attachment_changed`). A retired declaration's
-  heartbeat never re-arms it; only a new declaration (new target or stamp) can.
+  detach (`GraspTargetLeg.on_attachment_changed`). These edges retire the
+  declaration's identity even when its region failed its last check at that moment
+  (a stale measurement): an identity that armed before cannot re-arm on the next
+  fresh one (`safety.grasp_declaration_retired reason=…`,
+  `…ADetachWhileTheArmedRegionIsMomentarilyStaleStillRetiresIt`). A retired
+  declaration's heartbeat never re-arms it; only a new declaration (new target or
+  stamp) can.
 * **Multi-pick per goal.** The approach-armed producer arms each pick of a goal
   under its own identity (`approach:<link>:<n>`, the goal's stamp), so retirement
   is per pick. A handed-over declaration retires at its **release**: when no
@@ -987,7 +996,9 @@ Lifecycle (the producer-measured `GraspDeclaration` on `/openral/world_state_fas
 * **Support surface.** Cells half a voxel below the box's lower face still stop
   the finger (`…TheSupportSurfaceUnderTheTargetStillStops`); keeping the lower
   face above the support plane is a producer obligation (HZ-0115-6).
-* **Bounds** (`ingest_grasp_region`): a non-empty mask, a finite pose, finite
+* **Bounds** (`ingest_grasp_region`): a non-empty mask, a finite pose posed by a unit quaternion
+  (squared norm within 1e-6 of 1, else `bad_pose`; the unset all-zero one would read as
+  identity and exempt cells along the wrong axes), finite
   positive half-extents ≤ `kMaxGraspRegionHalfExtentM` (0.20 m) and a volume ≤
   `kMaxGraspRegionVolumeM3` (0.03 m³). Both caps are **WG placeholders**. A
   refusal means no exemption, under its own `reason=` token.

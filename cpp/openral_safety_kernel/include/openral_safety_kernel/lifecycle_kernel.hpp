@@ -204,9 +204,12 @@ private:
   // Retire the current grasp declaration for good: the region is dropped and
   // the declaration's identity joins the retired set so its heartbeat cannot
   // re-arm it. Only a new declaration (new target or stamp) can arm again.
-  // Logs `safety.grasp_region_dropped reason=<reason>` when a region was armed.
+  // Logs `safety.grasp_region_dropped reason=<reason>` when a region was armed,
+  // else `safety.grasp_declaration_retired` (an armed identity failing its last check).
   // Allocation-free: it runs on the candidate path (`handover_exit`).
   void retire_grasp_declaration(const char* reason);
+  /// True while a region is live, or the current declaration armed one before.
+  bool grasp_identity_armed() const noexcept;
   // Is a payload attached at `attach_link` on the declaring gripper's chain —
   // a link in `mask` or a non-root ancestor of one? Only such an attachment can
   // be a grasp handover (or retire the declaration as the wrong object).
@@ -363,8 +366,14 @@ private:
   /// Region latched at the handover edge, keyed by (target, stamp) like the
   /// retirement memory. Later snapshots of that declaration cannot move or
   /// resize it, so a producer re-measuring the carried payload at its live pose
-  /// cannot extend the exemption by dragging the box along with it.
+  /// cannot extend the exemption by dragging the box along with it; nor change
+  /// its contact links or held object (`grasp_latched_object_`), which retires it.
   GraspTargetRegion grasp_latched_region_{};
+  std::string grasp_latched_object_;
+  /// Identity (target, stamp) of the declaration that last armed a region; see
+  /// `grasp_identity_armed`.
+  std::string grasp_armed_target_;
+  std::int64_t grasp_armed_stamp_ns_{0};
   std::string grasp_latched_target_;
   std::int64_t grasp_latched_stamp_ns_{0};
   bool grasp_latched_{false};

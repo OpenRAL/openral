@@ -38,6 +38,17 @@ namespace {
 // latched at handover that still counts as the same box: float noise only.
 constexpr double kGraspRegionLatchNoise = 1e-6;
 
+/// A wire quaternion the kernel may turn into a rotation: finite and unit to
+/// 1e-6. `transform_from_translation_quat` reads the all-zero (unset) quaternion
+/// as identity, so a box or grid posed by one would sit on the wrong axes —
+/// fail-OPEN wherever that geometry exempts or clears anything. Templated on the
+/// wire type (`geometry_msgs` Quaternion, reached through `openral_msgs`).
+template <typename Quaternion>
+bool is_unit_quaternion(const Quaternion& q) noexcept {
+  const double norm2 = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+  return std::isfinite(norm2) && std::fabs(norm2 - 1.0) <= 1e-6;
+}
+
 /// Escape a string for a JSON string literal (quotes, backslashes, control chars).
 std::string json_escape(std::string_view in) {
   std::string out;
@@ -2300,11 +2311,8 @@ void SafetyKernelLifecycleNode::on_world_voxels(
   // not a rotation: reading it as identity would place every obstacle somewhere
   // the robot is not, and a world check against a misplaced map is fail-OPEN.
   // Refuse it exactly as an over-large or malformed grid is refused.
-  const double quat_norm2 =
-      msg->orientation.x * msg->orientation.x + msg->orientation.y * msg->orientation.y +
-      msg->orientation.z * msg->orientation.z + msg->orientation.w * msg->orientation.w;
   if (msg->occupancy.size() != cells || cells > world_voxel_max_cells_ || msg->resolution <= 0.0 ||
-      !std::isfinite(quat_norm2) || std::fabs(quat_norm2 - 1.0) > 1e-6) {
+      !is_unit_quaternion(msg->orientation)) {
     voxel_overflow_ = true;
     voxel_received_ = true;
     voxel_stamp_ = this->now();
@@ -2330,7 +2338,7 @@ void SafetyKernelLifecycleNode::on_world_voxels(
     }
     voxel_frame_id_ = msg->header.frame_id;
     place_region_ = PlaceApproachRegion{};
-    if (grasp_region_.valid) {
+    if (grasp_identity_armed()) {
       retire_grasp_declaration("grid_frame_changed");
     }
   }
@@ -2369,7 +2377,7 @@ void SafetyKernelLifecycleNode::on_world_state(
     // A message we do not trust for the payload model is not one to trust for
     // the region scoped to that payload either.
     place_region_ = PlaceApproachRegion{};
-    if (grasp_region_.valid) {
+    if (grasp_identity_armed()) {
       retire_grasp_declaration("attachment_rejected");
     }
   };
@@ -2495,7 +2503,7 @@ void SafetyKernelLifecycleNode::on_world_state(
     // A rejected payload model takes the region scoped to it: the object mask
     // the region was resolved against no longer describes anything.
     place_region_ = PlaceApproachRegion{};
-    if (grasp_region_.valid) {
+    if (grasp_identity_armed()) {
       retire_grasp_declaration("attachment_rejected");
     }
     return;
@@ -2567,7 +2575,7 @@ void SafetyKernelLifecycleNode::on_world_state(
       // re-arms. Liveness is the producer's: it sees every DETACH, drops its
       // other hand's pre-handover region and re-arms under a fresh identity from
       // a measurement taken after the detach.
-      if (grasp_region_.valid) {
+      if (grasp_identity_armed()) {
         retire_grasp_declaration("detached");
       }
     } else {
@@ -2717,7 +2725,12 @@ void SafetyKernelLifecycleNode::ingest_place_declaration(
       region.pose.orientation.x, region.pose.orientation.y, region.pose.orientation.z,
       region.pose.orientation.w);
   const Vec3 half{region.half_extents.x, region.half_extents.y, region.half_extents.z};
-  PlaceRegionStatus status = ingest_place_region(pose, half, object_mask, place_region_);
+  PlaceRegionStatus status = PlaceRegionStatus::kBadPose;
+  if (is_unit_quaternion(region.pose.orientation)) {
+    status = ingest_place_region(pose, half, object_mask, place_region_);
+  } else {
+    place_region_ = PlaceApproachRegion{};
+  }
   if (status == PlaceRegionStatus::kOk) {
     // ADR-0098: the declared target's own geometry, decoded off the same
     // message and validated the same fail-closed way. A producer that names a
@@ -2824,9 +2837,22 @@ bool SafetyKernelLifecycleNode::region_measurement_fresh(std::int64_t stamp_ns,
   return age_ns >= 0 && age_ns <= static_cast<std::int64_t>(max_age_s * 1e9);
 }
 
+bool SafetyKernelLifecycleNode::grasp_identity_armed() const noexcept {
+  // The live region, or the current declaration's identity having armed before
+  // and merely failing its last check (a stale measurement, a passing frame
+  // refusal): an edge that ends the scene the region was measured in retires it
+  // either way, so it cannot re-arm on the next fresh measurement (HZ-0115-3).
+  return grasp_region_.valid ||
+         (!grasp_declaration_target_.empty() && grasp_armed_target_ == grasp_declaration_target_ &&
+          grasp_armed_stamp_ns_ == grasp_declaration_stamp_ns_);
+}
+
 void SafetyKernelLifecycleNode::retire_grasp_declaration(const char* reason) {
   if (grasp_region_.valid) {
     RCLCPP_INFO(this->get_logger(), "safety.grasp_region_dropped reason=%s target=%s", reason,
+                grasp_declaration_target_.c_str());
+  } else {
+    RCLCPP_INFO(this->get_logger(), "safety.grasp_declaration_retired reason=%s target=%s", reason,
                 grasp_declaration_target_.c_str());
   }
   grasp_region_ = GraspTargetRegion{};
@@ -2982,7 +3008,9 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
       region.pose.orientation.x, region.pose.orientation.y, region.pose.orientation.z,
       region.pose.orientation.w);
   const Vec3 half{region.half_extents.x, region.half_extents.y, region.half_extents.z};
-  const GraspRegionStatus status = ingest_grasp_region(pose, half, mask, grasp_region_);
+  const GraspRegionStatus status = is_unit_quaternion(region.pose.orientation)
+                                       ? ingest_grasp_region(pose, half, mask, grasp_region_)
+                                       : GraspRegionStatus::kBadPose;
   if (status != GraspRegionStatus::kOk) {
     reject(grasp_region_status_reason(status));
     return;
@@ -3042,6 +3070,21 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   // Before any handover the region still updates on every snapshot.
   if (grasp_latched_ && grasp_latched_target_ == declaration.target_id &&
       grasp_latched_stamp_ns_ == declaration.stamp_ns) {
+    // The latch froze who the box exempts as well as where it is: the same
+    // (target, stamp) naming the other hand, or another object that happens to
+    // sit in the frozen box, is not the pick that latched. Fail closed.
+    const std::string& held = attached_labels_[grasp_region_.object_index];
+    if (grasp_region_.link_mask != grasp_latched_region_.link_mask ||
+        held != grasp_latched_object_) {
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.grasp_region_rejected reason=latch_mismatch target=%s latched_object=%s "
+                  "object=%s latched_links=%zu links=%zu rskill=%s trace=%s",
+                  declaration.target_id.c_str(), grasp_latched_object_.c_str(), held.c_str(),
+                  grasp_latched_region_.link_mask.count(), grasp_region_.link_mask.count(),
+                  declaration.rskill_id.c_str(), declaration.trace_id.c_str());
+      retire_grasp_declaration("latch_mismatch");
+      return;
+    }
     double moved = 0.0;
     for (std::size_t k = 0; k < 9; ++k) {
       moved = std::max(moved, std::abs(grasp_region_.pose.r[k] - grasp_latched_region_.pose.r[k]));
@@ -3065,6 +3108,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
     grasp_latched_target_ = declaration.target_id;
     grasp_latched_stamp_ns_ = declaration.stamp_ns;
     grasp_latched_region_ = grasp_region_;
+    grasp_latched_object_ = attached_labels_[grasp_region_.object_index];
     grasp_latched_moved_warned_ = false;
     RCLCPP_INFO(this->get_logger(), "safety.grasp_region_latched target=%s at handover",
                 declaration.target_id.c_str());
@@ -3072,6 +3116,8 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   grasp_region_refusal_reason_.clear();
   grasp_region_refusal_target_.clear();
   grasp_region_stamp_ns_ = region.stamp_ns;
+  grasp_armed_target_ = declaration.target_id;
+  grasp_armed_stamp_ns_ = declaration.stamp_ns;
   if (!was_valid || previous_target != declaration.target_id) {
     RCLCPP_INFO(this->get_logger(),
                 "safety.grasp_region_armed target=%s links=%zu half_m=%g,%g,%g rskill=%s trace=%s "
