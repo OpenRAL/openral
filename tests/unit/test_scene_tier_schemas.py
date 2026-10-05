@@ -226,6 +226,15 @@ def test_real_openarm_scene_commits_the_vision_leg_off_with_driver_topics():
     assert type(leg).model_validate(on).grasp_target_approach_m == 0.10
     with pytest.raises(ValueError, match="less than or equal"):
         type(leg).model_validate({**on, "grasp_target_approach_m": 0.25})  # over the cap
+    # The grasp-target margin (HZ-0115-32): the 25 mm default, 0 allowed (unbloated),
+    # refused above the 50 mm Safety-WG bound and below 0.
+    assert leg.grasp_target_margin_m == 0.025
+    assert type(leg).model_validate({**on, "grasp_target_margin_m": 0.0}).grasp_target_margin_m == 0
+    assert type(leg).model_validate({**on, "grasp_target_margin_m": 0.05}).grasp_target_margin_m
+    with pytest.raises(ValueError, match="less than or equal"):
+        type(leg).model_validate({**on, "grasp_target_margin_m": 0.051})
+    with pytest.raises(ValueError, match="greater than or equal"):
+        type(leg).model_validate({**on, "grasp_target_margin_m": -0.001})
 
 
 @pytest.mark.parametrize(

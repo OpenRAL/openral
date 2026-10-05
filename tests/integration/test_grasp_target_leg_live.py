@@ -354,8 +354,11 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         assert region.frame_id == _BASE
         assert region.evidence_ref.startswith("segment_in_view:openral/itest-grasp-target@")
         assert 0 < region.stamp_ns <= now_ns()
-        bottom = region.pose.xyz[2] - region.half_extents[2]
-        assert _SUPPORT_Z < bottom <= _SUPPORT_Z + _RES + 1e-6, f"lower face at {bottom:.3f}"
+        # The held region stands one voxel above the support (HZ-0115-6); the kernel's is
+        # bloated by the grasp-target margin on every face, downward too (HZ-0115-32).
+        margin = bridge._config.grasp_target_margin_m
+        bottom = region.pose.xyz[2] - region.half_extents[2] + margin
+        assert _SUPPORT_Z < bottom <= _SUPPORT_Z + _RES + 1e-6, f"held lower face at {bottom:.3f}"
         corners = np.array(
             [one + _BOX_HALF * np.array([sx, sy, 1.0]) for sx in (-1, 1) for sy in (-1, 1)]
             + [one + np.array([0.0, 0.0, -_BOX_HALF[2] + _RES + 0.005])]
@@ -444,15 +447,17 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         declaration_pub.publish(_declaration(now_ns(), one))
         assert _wait_until(region_live, timeout_s=20.0)
         published = PlaceRegion.from_idl(latest().grasp_declaration.region)
-        # The tracker holds the tight fit; the kernel gets it cell-closed — grown sideways
-        # and up, never down (``GraspTargetLeg.fill``) — and so does the payload (i50).
+        # The tracker holds the tight fit; the kernel gets it bloated by the margin on every
+        # face, downward too, then cell-closed (``GraspTargetLeg.fill``, HZ-0115-32); the
+        # payload is bloated on the sides and top only, then cell-closed (i50).
         assert bridge._grasp_target is not None
         region = bridge._grasp_target.tracker.region
         assert region is not None
+        margin = bridge._config.grasp_target_margin_m
         # (a re-fit may land between the two reads: same static scene, millimetres apart)
         assert published.pose.xyz[:2] == pytest.approx(region.pose.xyz[:2], abs=1e-3)
         assert published.pose.xyz[2] - published.half_extents[2] == pytest.approx(
-            region.pose.xyz[2] - region.half_extents[2], abs=1e-3
+            region.pose.xyz[2] - region.half_extents[2] - margin, abs=1e-3
         )
         assert all(p > h for p, h in zip(published.half_extents, region.half_extents, strict=True))
         left = next(j for j in description.joints if j.name == "left_gripper")
@@ -473,9 +478,12 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         assert held.evidence_kind == "grasp_target_region"
         assert held.object_id == "cell:restock_box", "the declaration names it (no object_id)"
         assert held.attach_link == left.parent_link
-        # The payload is the region's cell closure, the box the kernel latched (Isaac i50):
-        # same horizontal centre, its top (not its bottom) raised.
-        closed = bridge._grasp_target.kernel_region("cell:restock_box", region)
+        # The payload is the region bloated on the sides and top, then cell-closed (Isaac
+        # i50, HZ-0115-32): same horizontal centre, its top (not its bottom) raised.
+        closed = bridge._grasp_target.kernel_region("cell:restock_box", region, payload=True)
+        assert closed.pose.xyz[2] - closed.half_extents[2] == pytest.approx(
+            region.pose.xyz[2] - region.half_extents[2]
+        )
         assert tuple(held.primitives[0].shape_dimensions) == pytest.approx(closed.half_extents)
         np.testing.assert_allclose(
             [
@@ -758,8 +766,11 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
         assert region.pose.xyz[1] + region.half_extents[1] < neighbour[1] - _BOX_HALF[1], (
             "the region reaches the neighbour"
         )
-        bottom = region.pose.xyz[2] - region.half_extents[2]
-        assert _SUPPORT_Z < bottom <= _SUPPORT_Z + _RES + 1e-6, f"lower face at {bottom:.3f}"
+        # The held region stands one voxel above the support (HZ-0115-6); the kernel's is
+        # bloated by the grasp-target margin on every face, downward too (HZ-0115-32).
+        margin = bridge._config.grasp_target_margin_m
+        bottom = region.pose.xyz[2] - region.half_extents[2] + margin
+        assert _SUPPORT_Z < bottom <= _SUPPORT_Z + _RES + 1e-6, f"held lower face at {bottom:.3f}"
         assert not any("openarm_right_finger_pair" in line and "armed" in line for line in logs)
 
         # ── 2. The hand lifts clear: retracted at once, back to the goal-scope one. ──
