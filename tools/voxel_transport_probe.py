@@ -16,7 +16,7 @@ un-strike's cell count by 7×.
 deployed 10 Hz onto `/openral/world_voxels` under the kernel's own QoS for that
 topic — `RELIABLE`, `KEEP_LAST(1)`, `VOLATILE`, read from
 `lifecycle_kernel.cpp`. Grid sizes come from the shipped coverage radius
-(`deploy_e2e.launch.py::_octomap_coverage_radius`, 1.05 m), so the cell counts are
+(`deploy_e2e.launch.py::_coverage_ball`, 1.05 m for a ~1 m arm), so the cell counts are
 the deployed ones. Reports publish-call cost, publish→receive latency, delivery
 count, and the rate actually achieved.
 
@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import statistics
 import sys
@@ -54,7 +55,7 @@ from rclpy.qos import (
     QoSReliabilityPolicy,
 )
 
-RADIUS_M = 1.05  # deploy_e2e.launch.py::_octomap_coverage_radius
+RADIUS_M = 1.05  # a ~1 m arm's coverage ball (deploy_e2e.launch.py::_coverage_ball)
 TARGET_HZ = 10.0
 WARMUP = 5
 
@@ -68,7 +69,8 @@ def qos() -> QoSProfile:
 
 
 def per_axis(res: float) -> int:
-    return int(2.0 * RADIUS_M / res) + 1
+    # deploy_e2e.launch.py::_world_voxel_max_cells (the lattice snap adds up to half a cell).
+    return math.floor(2.0 * RADIUS_M / res + 0.5 + 1e-9) + 1
 
 
 def make_msg(res: float) -> tuple[Any, int]:

@@ -361,15 +361,15 @@ Measures whether megabyte best-effort clouds arrive; the evidence behind the dep
 
 ### `tools/voxel_transport_probe.py`
 
-- `RADIUS_M: float` (L57) — the shipped coverage radius (1.05 m), so grid sizes are the deployed ones.
-- `TARGET_HZ: float` (L58) — the publish rate the sweep drives each role at.
-- `WARMUP: int` (L59) — messages discarded before timing starts, so cold-start latency does not skew the measured rate.
-- `qos() -> QoSProfile` (L62) — the kernel's own `/openral/world_voxels` profile: `RELIABLE`, `KEEP_LAST(1)`, `VOLATILE`.
-- `per_axis(res: float) -> int` (L70) — cells per axis at that resolution.
-- `make_msg(res: float) -> tuple[Any, int]` (L74) — a full-size `OccupancyVoxels` at that resolution.
-- `run_pub(res, count)` (L83) — publisher role, emitting JSON; run as a separate **process** so intra-process short-circuiting cannot hide the transport.
-- `run_sub(res, count)` (L108) — subscriber role, emitting JSON; likewise a separate process.
-- `run_sweep(resolutions, count) -> int` (L142) — drives both roles per resolution and prints the table, reporting the RMW measured.
+- `RADIUS_M: float` (L58) — a ~1 m arm's coverage radius (1.05 m; `deploy_e2e.launch.py::_coverage_ball` measures it per robot), so grid sizes are deployed-sized.
+- `TARGET_HZ: float` (L59) — the publish rate the sweep drives each role at.
+- `WARMUP: int` (L60) — messages discarded before timing starts, so cold-start latency does not skew the measured rate.
+- `qos() -> QoSProfile` (L63) — the kernel's own `/openral/world_voxels` profile: `RELIABLE`, `KEEP_LAST(1)`, `VOLATILE`.
+- `per_axis(res: float) -> int` (L71) — cells per axis at that resolution.
+- `make_msg(res: float) -> tuple[Any, int]` (L76) — a full-size `OccupancyVoxels` at that resolution.
+- `run_pub(res, count)` (L85) — publisher role, emitting JSON; run as a separate **process** so intra-process short-circuiting cannot hide the transport.
+- `run_sub(res, count)` (L110) — subscriber role, emitting JSON; likewise a separate process.
+- `run_sweep(resolutions, count) -> int` (L144) — drives both roles per resolution and prints the table, reporting the RMW measured.
 - CLI: `uv run python tools/voxel_transport_probe.py sweep [--resolutions ...] [--count N]`. Needs a sourced ROS 2 overlay.
 
 Measures the wire cost of the dense `uint8[]` payload as publish→receive latency, i.e. map staleness. Result is transport- and host-specific.

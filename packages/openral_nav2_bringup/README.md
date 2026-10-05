@@ -379,8 +379,8 @@ distinguish anyway.
 
 What's genuinely given up: a payload sticking forward could clip a tall, thin
 obstacle the base itself clears. The kernel catches that in 3-D — its octomap
-bridge covers a ball of r = 1.05 m centred at z = 0.5 in `base_frame`
-(z ∈ [−0.55, 1.55], which contains the payload) — but as an E-stop, not an
+bridge covers the arm's measured reach ball, r = 1.04 m centred at z = 0.432 in
+`base_frame` (z ∈ [−0.61, 1.47], which contains the payload) — but as an E-stop, not an
 avoidance, since `/cmd_vel` never passes through it (ADR-0040/ADR-0099, above).
 
 ### What replaces it

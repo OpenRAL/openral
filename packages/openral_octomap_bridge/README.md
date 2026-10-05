@@ -179,7 +179,7 @@ re-published by a driver, still reaches `octomap_server` as fresh inserts.
 ## Publish rate: measure it RELIABLE
 
 The grid goes out on the `publish_rate_hz` timer (10 Hz) whenever the octree
-is fresh. At the real-arm deploy geometry (0.02 m, radius 1.05 m) it is
+is fresh. At the then-fixed real-arm deploy geometry (0.02 m, radius 1.05 m) it is
 106³ = 1 191 016 cells, a **1.19 MB** sample. A `BEST_EFFORT` subscriber
 loses such a fragmented sample whole whenever it misses one fragment, so a
 best-effort `ros2 topic hz` or rate probe under-reads it; the safety kernel
@@ -212,8 +212,15 @@ error and publishes nothing.**
 History: the old sim box was 1.6 m (fit the kernel's then 262,144-cell cap).
 Measured against `panda_mobile`'s manifest `collision_geometry`, its checked
 arm reach is **1016 mm** from the grid centre — up to **124 mm** outside the
-old grid. `deploy_e2e.launch.py` now covers 1.05 m and the kernel's cap is sized
-to hold it.
+old grid. `deploy_e2e.launch.py` then covered a fixed 1.05 m about `(0, 0, 0.5)`,
+which left the OpenArm's hanging arms reaching 108 mm below it (its `base_frame`
+is the torso top). It now measures the ball per robot (`_coverage_ball`): over the
+joint limits, against the same collision model the kernel is handed, the centre is
+the middle of the moving links' reach box and the radius the farthest reach from
+it plus 50 mm (OpenArm 0.871 m about `(0.003, 0, 0)`, panda_mobile 1.04 m about
+`(0, 0, 0.432)`, franka_panda 1.089 m about `(0, 0.001, 0.432)`). The kernel's cap
+is derived from that radius, and a ball this node would refuse (`kMaxCells`) is
+refused at launch instead.
 
 ### The ≤1-resolution inflation toward the sensor is octomap's, and stays
 
@@ -534,8 +541,10 @@ Requires TF from `base_frame` into the OctoMap's `header.frame_id` (usually
 | `attached_state_timeout_s` | `0.5` | Attachment state older than this clears nothing. |
 | `attach_link_tf_frames` | `[]` (none) | `"link=frame"` renames for the TF lookup of a payload's attach link: the published `attach_link` is the manifest's name (the kernel's collision model uses manifest names), but a real cell's TF tree may name that body differently (OpenArm: `openarm_left_link7` is `openarm_left_ee_base_link`). Unmapped links are looked up as themselves. `deploy_e2e.launch.py` passes the scene's `vision_attachment.tf_frames` — the strings the HAL gets as `vision_attachment_tf_frames` — and nothing when the leg is off. A malformed or conflicting entry refuses the whole mapping (logged ERROR): every link is then looked up by its own name and, on such a cell, its payload stays in the map. An unmapped link whose lookup fails logs a one-time hint to set this. |
 
-`size_x = size_y = size_z = ceil(2·coverage_radius_m / resolution)`. Keep
-`size_x*size_y*size_z ≤ world_voxel_max_cells` (kernel default 614125 = 85³, 1.05 m at 25 mm cells), or
+`size_x = size_y = size_z ≤ floor(2·coverage_radius_m / resolution + 1/2) + 1` (the half
+cell is the snap onto the octree's lattice). Keep
+`size_x*size_y*size_z ≤ world_voxel_max_cells` (kernel default 614125 = 85³, 1.05 m at 25 mm
+cells; `deploy_e2e.launch.py` derives it from the robot's ball), or
 the kernel fails closed.
 
 ## Producing the upstream OctoMap

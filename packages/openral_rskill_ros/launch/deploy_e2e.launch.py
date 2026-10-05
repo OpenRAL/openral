@@ -24,6 +24,7 @@ Lifecycle nodes auto-transition UNCONFIGURED → INACTIVE → ACTIVE.
 from __future__ import annotations
 
 import json
+import math
 import os
 import pathlib
 import re
@@ -44,8 +45,10 @@ _VENV_SITE = os.environ.get("OPENRAL_VENV_SITE")
 if _VENV_SITE and os.path.isdir(_VENV_SITE):
     site.addsitedir(_VENV_SITE)
 
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, NamedTuple
 
+import numpy as np
 from launch import LaunchContext, LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -325,18 +328,25 @@ def _octomap_frames(description: RobotDescription) -> tuple[str, str]:
     return (description.odom_frame if mobile else base_frame), base_frame
 
 
-def _world_voxel_max_cells(resolution_m: float) -> int:
-    """Cells the published coverage ball needs at ``resolution_m``.
+def _world_voxel_max_cells(radius_m: float, resolution_m: float) -> int:
+    """Cells the published coverage ball of ``radius_m`` needs at ``resolution_m``.
 
     This was written out by hand as ``614125`` with a comment explaining it was
-    ``85^3``, the worst case for :func:`_octomap_coverage_radius` at 25 mm cells
-    including the one cell per axis the lattice snap can add. A derived constant
-    kept by hand is exactly what goes wrong when the resolution moves: at 15 mm
-    the ball needs 141^3 = 2 803 221 cells, and a kernel still reserving 614 125
-    rejects every grid it is sent -- which reads as "no world" and is a
-    fail-*open* on the world check.
+    ``85^3``, the worst case for a 1.05 m ball at 25 mm cells including the one
+    cell per axis the lattice snap can add. A derived constant kept by hand is
+    exactly what goes wrong when the resolution moves: at 15 mm the ball needs
+    141^3 = 2 803 221 cells, and a kernel still reserving 614 125 rejects every
+    grid it is sent -- which reads as "no world" and is a fail-*open* on the
+    world check.
+
+    The bridge (``octree_to_grid.cpp::build_lattice``) snaps the ball's bounding
+    box onto the octree's cells: per axis it needs ``floor(2r/res + 1/2) + 1``
+    cells at most (the half cell is the snap). Now that the radius is per robot
+    and arbitrary, ``int(2r/res) + 1`` would undercount by one layer whenever the
+    fraction is at least a half, so the snap term is explicit (plus a hair of
+    float slack: over-reserving costs memory, under-reserving is fail-open).
     """
-    per_axis = int(2.0 * _octomap_coverage_radius() / resolution_m) + 1
+    per_axis = math.floor(2.0 * radius_m / resolution_m + 0.5 + 1e-9) + 1
     return per_axis**3
 
 
@@ -405,47 +415,256 @@ def _self_filter_params(
     return params
 
 
-def _octomap_coverage_radius() -> float:
-    """How far from the grid centre the world map has to reach.
+# The octomap bridge's allocation guard (``octree_to_grid.cpp``, ``kMaxCells``): a ball
+# needing more cells is REFUSED by the bridge, i.e. published as an empty grid -- every
+# obstacle dropped. ``_coverage_ball`` refuses such a ball at launch instead.
+_BRIDGE_MAX_CELLS = 4_000_000
 
-    Sized by the ROBOT, not by the cell cap — that inversion is what the old
-    1.6 m sim box encoded ("keep the finer sim grid within the kernel's fixed
-    262,144-cell cap"), and it left panda_mobile's kernel-checked arm reaching
-    up to 124 mm outside the published grid, where the world check sees nothing
-    at all. Measured over the arm's joint limits against the manifest's own
-    ``collision_geometry``, the checked links reach 1016 mm from the grid
-    centre; 1.05 m carries that with a small margin.
+#: Margin of the coverage ball over the measured reach: the kernel's real
+#: ``world_voxel_margin_m`` (20 mm) plus half a 20 mm cell (the window it scans around
+#: each link), plus 20 mm for the measured maximum falling short of the true one
+#: (``test_deploy_e2e_coverage_ball.py`` bounds that shortfall well inside it).
+_COVERAGE_MARGIN_M = 0.05
+#: Reach measurement (``_ReachModel.maximise``): random joint-space samples, then the best
+#: few refined by coordinate ascent, one exhaustive 1-D grid per joint per round.
+_COVERAGE_SAMPLES = 4096
+_COVERAGE_REFINE_SEEDS = 8
+_COVERAGE_REFINE_ROUNDS = 3
+_COVERAGE_REFINE_GRID = 49
+_COVERAGE_SEED = 0
+#: The ball for a robot with no collision model, whose map feeds no kernel check (the
+#: kernel's voxel check needs the model): the pre-per-robot default.
+_UNCHECKED_COVERAGE = ((0.0, 0.0, 0.5), 1.05)
 
-    A radius, not a box, because the grid's lattice is the OctoMap's: its axes
-    turn relative to ``base_frame`` as the robot does, and only a ball is
-    invariant to that. It is also why this no longer varies with ``hal_mode`` —
-    reach is a property of the arm, the same one in sim and on hardware.
+
+class _CoverageBall(NamedTuple):
+    """The world map's coverage, in ``base_frame``: a ball, and the octomap input clip.
+
+    ``centre`` / ``radius`` is the ball the voxel bridge publishes and the kernel checks
+    against; ``clip_lo`` / ``clip_hi`` is the measured reach box plus the margin, which
+    lies inside the ball's bounding box: a return outside it can never be in any link's
+    check window, so octomap does not integrate it.
     """
-    return 1.05
+
+    centre: tuple[float, float, float]
+    radius: float
+    clip_lo: tuple[float, float, float]
+    clip_hi: tuple[float, float, float]
 
 
-#: Centre of the coverage ball in ``base_frame`` (the voxel bridge's default): half a
-#: metre up, where a tabletop arm's reach is centred.
-_OCTOMAP_COVERAGE_CENTRE: tuple[float, float, float] = (0.0, 0.0, 0.5)
+def _xyzrpy_to_matrices(xyzrpy: np.ndarray) -> np.ndarray:
+    """``(K, 6)`` xyz + URDF rpy (``Rz Ry Rx``, as the kernel composes it) -> ``(K, 4, 4)``."""
+    x = np.asarray(xyzrpy, dtype=np.float64).reshape(-1, 6)
+    cr, sr = np.cos(x[:, 3]), np.sin(x[:, 3])
+    cp, sp = np.cos(x[:, 4]), np.sin(x[:, 4])
+    cy, sy = np.cos(x[:, 5]), np.sin(x[:, 5])
+    out = np.zeros((len(x), 4, 4))
+    out[:, 0] = np.stack([cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr, x[:, 0]], 1)
+    out[:, 1] = np.stack([sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr, x[:, 1]], 1)
+    out[:, 2] = np.stack([-sp, cp * sr, cp * cr, x[:, 2]], 1)
+    out[:, 3, 3] = 1.0
+    return out
 
 
-def _octomap_input_bounds() -> dict[str, float]:
-    """``octomap_server``'s input-cloud clip: the coverage ball's bounding box.
+class _ReachModel:
+    """The kernel's collision model, posed in batches: where its MOVING primitives can reach.
+
+    The kernel's own forward kinematics over the collision params it is handed
+    (``collision.cpp::forward_kinematics``: parent frame, joint origin, then the joint's
+    motion), vectorised over configurations. A link is moving when a non-base joint lies
+    between it and the root; a static link (pedestal, torso) cannot be driven into
+    anything, and base dofs are held at zero as the kernel zeroes them (the grid rides
+    the base). A capsule contributes its two segment ends with its radius, a box its
+    eight corners with radius 0, so ``d . p + r`` / ``|p - c| + r`` are a primitive's
+    exact farthest reach along ``d`` / from ``c`` in that configuration.
+    """
+
+    def __init__(
+        self,
+        params: dict[str, object],
+        position_limits: list[tuple[float, float]],
+        base_dofs: list[int],
+    ) -> None:
+        def ints(key: str) -> list[int]:
+            return [int(v) for v in params.get(key, [])]
+
+        def floats(key: str, width: int) -> np.ndarray:
+            return np.asarray(params.get(key, []), dtype=np.float64).reshape(-1, width)
+
+        self.parent, self.kind, self.dof = (
+            ints("collision_parent"),
+            ints("collision_joint_kind"),
+            ints("collision_dof_index"),
+        )
+        self.origin = _xyzrpy_to_matrices(floats("collision_origin_xyzrpy", 6))
+        self.axis = floats("collision_axis", 3)
+        self.base = set(base_dofs)
+        n = len(self.parent)
+        moving = [False] * n
+        for i in range(n):  # topological order: a parent precedes its children
+            driven = self.dof[i] >= 0 and self.kind[i] != 0 and self.dof[i] not in self.base
+            moving[i] = driven or (self.parent[i] >= 0 and moving[self.parent[i]])
+        corners = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)])
+        # (link, local 4x4 of the primitive, local points (k, 3), radius) per moving primitive
+        self.prims: list[tuple[int, np.ndarray, np.ndarray, float]] = []
+        cap_xf = _xyzrpy_to_matrices(floats("collision_capsule_origin_xyzrpy", 6))
+        half = floats("collision_capsule_half_length", 1)[:, 0]
+        rad = floats("collision_capsule_radius", 1)[:, 0]
+        for c, li in enumerate(ints("collision_capsule_link")):
+            ends = np.array([[0.0, 0.0, -half[c]], [0.0, 0.0, half[c]]])
+            self.prims += [(li, cap_xf[c], ends, float(rad[c]))] if moving[li] else []
+        box_xf = _xyzrpy_to_matrices(floats("collision_box_origin_xyzrpy", 6))
+        ext = floats("collision_box_half_extents", 3)
+        for b, li in enumerate(ints("collision_box_link")):
+            self.prims += [(li, box_xf[b], corners * ext[b], 0.0)] if moving[li] else []
+        # An unbounded (continuous) joint sweeps one turn.
+        limits = np.asarray(position_limits, dtype=np.float64).reshape(-1, 2)
+        self.limits = np.where(np.isfinite(limits), limits, np.sign(limits) * np.pi)
+        self.free = [
+            j for j in range(len(self.limits)) if j not in self.base and j in set(self.dof)
+        ]
+
+    def extremes(self, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """``(points (N, K, 3), radii (K,))``: every moving primitive's bounding points."""
+        q = np.array(q, dtype=np.float64)
+        q[:, sorted(self.base)] = 0.0
+        count = len(q)
+        world: list[np.ndarray] = []
+        for i in range(len(self.parent)):
+            motion = np.broadcast_to(np.eye(4), (count, 4, 4)).copy()
+            if self.dof[i] >= 0 and self.kind[i] in (1, 2):
+                qi = q[:, self.dof[i]]
+                a = self.axis[i] / np.linalg.norm(self.axis[i])
+                if self.kind[i] == 1:  # revolute: Rodrigues about the joint axis
+                    k = np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
+                    motion[:, :3, :3] = (
+                        np.eye(3)
+                        + np.sin(qi)[:, None, None] * k
+                        + (1.0 - np.cos(qi))[:, None, None] * (k @ k)
+                    )
+                else:  # prismatic
+                    motion[:, :3, 3] = qi[:, None] * a
+            local = self.origin[i] @ motion
+            world.append(local if self.parent[i] < 0 else world[self.parent[i]] @ local)
+        points: list[np.ndarray] = []
+        radii: list[float] = []
+        for li, xf, local_pts, r in self.prims:
+            frame = world[li] @ xf
+            points.append(frame[:, None, :3, :3] @ local_pts[None, :, :, None])
+            points[-1] = points[-1][..., 0] + frame[:, None, :3, 3]
+            radii += [r] * len(local_pts)
+        if not points:
+            return np.zeros((count, 0, 3)), np.zeros(0)
+        return np.concatenate(points, axis=1), np.asarray(radii)
+
+    def maximise(
+        self, score: Callable[[np.ndarray, np.ndarray], np.ndarray], *, seed: int
+    ) -> float:
+        """The largest ``score(points, radii)`` (per config) over the joint limits.
+
+        Random samples (each joint at its lower limit, its upper limit or uniform between,
+        a third each), then the best few refined by coordinate ascent with an exhaustive
+        1-D grid per joint: sampling alone stayed 20 mm short on panda_mobile at 4096
+        configurations and was still climbing at 262 144.
+        """
+        if not self.prims:
+            return -math.inf
+        rng = np.random.default_rng(seed)
+        lo, hi = self.limits[:, 0], self.limits[:, 1]
+        pick = rng.integers(0, 3, size=(_COVERAGE_SAMPLES, len(lo)))
+        q = np.where(pick == 0, lo, np.where(pick == 1, hi, rng.uniform(lo, hi, pick.shape)))
+        values = score(*self.extremes(q))
+        best = q[np.argsort(values)[-_COVERAGE_REFINE_SEEDS:]]
+        for _ in range(_COVERAGE_REFINE_ROUNDS):
+            for j in self.free:
+                grid = np.linspace(lo[j], hi[j], _COVERAGE_REFINE_GRID)
+                trial = np.repeat(best, len(grid), axis=0)
+                trial[:, j] = np.tile(grid, len(best))
+                v = score(*self.extremes(trial)).reshape(len(best), len(grid))
+                keep = v.argmax(axis=1)
+                best[:, j] = grid[keep]
+        return float(max(values.max(), score(*self.extremes(best)).max()))
+
+
+def _coverage_ball(
+    collision_params: dict[str, object],
+    position_limits: list[tuple[float, float]],
+    base_dofs: list[int],
+    resolution_m: float,
+) -> _CoverageBall:
+    """The world map's coverage for THIS robot: its moving links' reach, plus a margin.
+
+    Sized by the robot, not by the cell cap. The fixed ball this replaced -- 1.05 m
+    about ``(0, 0, 0.5)``, measured on panda_mobile -- left the OpenArm's arms, which
+    hang from a torso-top ``base_frame``, reaching 108 mm below it: a bin the arm can
+    reach was a kernel blind spot. Both the centre and the radius are now measured the
+    way that radius was: over the joint limits, against the SAME collision model the
+    kernel is handed (``_swept_surface_extremes``). The centre is the middle of the
+    reach box, the radius the farthest reach from it plus ``_COVERAGE_MARGIN_M``.
+
+    A radius, not a box, because the grid's lattice is the OctoMap's: its axes turn
+    relative to ``base_frame`` as the robot does, and only a ball is invariant to that.
+    Reach is a property of the arm, so this does not vary with ``hal_mode``.
+
+    Raises:
+        ROSConfigError: the ball needs more cells at ``resolution_m`` than the bridge
+            will publish (``_BRIDGE_MAX_CELLS``), which it would turn into an empty grid.
+    """
+    from openral_core.exceptions import ROSConfigError
+
+    if int(collision_params.get("collision_n_links", 0)) <= 0:
+        (cx, cy, cz), r = _UNCHECKED_COVERAGE
+        print(
+            f"[deploy_e2e] no collision model: world map covers the default ball "
+            f"(centre {(cx, cy, cz)}, radius {r} m); no kernel voxel check reads it.",
+            flush=True,
+        )
+        ball = _CoverageBall((cx, cy, cz), r, (cx - r, cy - r, cz - r), (cx + r, cy + r, cz + r))
+    else:
+        reach = _ReachModel(collision_params, position_limits, base_dofs)
+
+        def along(d: np.ndarray) -> Callable[[np.ndarray, np.ndarray], np.ndarray]:
+            return lambda p, r: (p @ d + r).max(axis=1)
+
+        axes = np.eye(3)
+        hi = np.array([reach.maximise(along(d), seed=_COVERAGE_SEED) for d in axes])
+        lo = -np.array([reach.maximise(along(-d), seed=_COVERAGE_SEED) for d in axes])
+        centre = np.round((lo + hi) / 2.0, 3)
+        farthest = reach.maximise(
+            lambda p, r: (np.linalg.norm(p - centre, axis=2) + r).max(axis=1),
+            seed=_COVERAGE_SEED,
+        )
+        radius = math.ceil((farthest + _COVERAGE_MARGIN_M) * 1000.0) / 1000.0
+        m = _COVERAGE_MARGIN_M
+        ball = _CoverageBall(
+            (float(centre[0]), float(centre[1]), float(centre[2])),
+            radius,
+            (float(lo[0] - m), float(lo[1] - m), float(lo[2] - m)),
+            (float(hi[0] + m), float(hi[1] + m), float(hi[2] + m)),
+        )
+    cells = _world_voxel_max_cells(ball.radius, resolution_m)
+    if cells > _BRIDGE_MAX_CELLS:
+        raise ROSConfigError(
+            f"the world map's coverage ball (radius {ball.radius} m about {ball.centre}) needs "
+            f"{cells} cells at {resolution_m} m, more than the voxel bridge publishes "
+            f"({_BRIDGE_MAX_CELLS}); it would publish an empty grid. Coarsen "
+            "OPENRAL_OCTOMAP_RESOLUTION_M or run without the octomap leg."
+        )
+    return ball
+
+
+def _octomap_input_bounds(ball: _CoverageBall) -> dict[str, float]:
+    """``octomap_server``'s input-cloud clip: the robot's reach box plus the margin.
 
     Returns the ``point_cloud_{min,max}_{x,y,z}`` parameters, in the map frame
-    (``base_frame``). Returns outside the ball never reach the kernel (the bridge
-    publishes the ball alone), so integrating them is pure cost: on Thor the floor
-    0.7 m below the base and the wall 3 m out were most of the ZED cloud.
+    (``base_frame``). A return outside it is outside every link's check window, so
+    integrating it is pure cost: on Thor the floor 0.7 m below the base and the wall
+    3 m out were most of the ZED cloud.
     """
-    r = _octomap_coverage_radius()
-    cx, cy, cz = _OCTOMAP_COVERAGE_CENTRE
     return {
-        "point_cloud_min_x": cx - r,
-        "point_cloud_max_x": cx + r,
-        "point_cloud_min_y": cy - r,
-        "point_cloud_max_y": cy + r,
-        "point_cloud_min_z": cz - r,
-        "point_cloud_max_z": cz + r,
+        f"point_cloud_{side}_{axis}": value
+        for side, corner in (("min", ball.clip_lo), ("max", ball.clip_hi))
+        for axis, value in zip("xyz", corner, strict=True)
     }
 
 
@@ -1582,6 +1801,25 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     # model) leaves predictive Cartesian off; the reactive measured-config check
     # is the floor regardless. Base dofs above are blocked from the arm Jacobian.
     kernel_params["collision_ee_link_index"] = ee_link_index_from_collision_params(collision_params)
+    # The world map's coverage, measured from the same collision model and base dofs the
+    # kernel is handed (refused here when the bridge could not publish it).
+    coverage = (
+        _coverage_ball(
+            collision_params,
+            [j.position_limits for j in description.joints],
+            _collision_base_dofs,
+            _octomap_resolution(hal_mode),
+        )
+        if enable_octomap
+        else None
+    )
+    if coverage is not None:
+        print(
+            f"[deploy_e2e] world map coverage: ball r={coverage.radius} m about "
+            f"{coverage.centre} in {description.base_frame}; octomap input clip "
+            f"{coverage.clip_lo}..{coverage.clip_hi}",
+            flush=True,
+        )
     # When octomap is enabled, turn on the kernel's allocation-free capsule-vs-voxel
     # world-collision check and subscribe /openral/world_voxels (published by the octomap
     # bridge below). max_cells covers the bridge's default 2×2×2 m @ 0.05 grid (64k cells) with
@@ -1665,6 +1903,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     if grasp_contact_links:
         kernel_params["grasp_contact_links"] = grasp_contact_links
     if enable_octomap and has_collision_capsules and enable_octomap_kernel_check:
+        assert coverage is not None  # reason: computed whenever enable_octomap
         kernel_params = {
             **kernel_params,
             "world_voxel_enabled": True,
@@ -1673,11 +1912,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             # manipulation; exact OBB-vs-cube overlap still E-stops. Real
             # deploy keeps 2 cm.
             "world_voxel_margin_m": _world_voxel_margin_m(hal_mode),
-            # Derived from the coverage ball and the octree resolution rather
-            # than pinned: 141^3 = 2 803 221 at the shipped sim 15 mm, 85^3 at 25 mm.
-            # See `_world_voxel_max_cells` for why a hand-kept derived constant
-            # is the wrong shape here.
-            "world_voxel_max_cells": _world_voxel_max_cells(_octomap_resolution(hal_mode)),
+            # Derived from the robot's coverage ball and the octree resolution rather
+            # than pinned. See `_world_voxel_max_cells` for why a hand-kept derived
+            # constant is the wrong shape here.
+            "world_voxel_max_cells": _world_voxel_max_cells(
+                coverage.radius, _octomap_resolution(hal_mode)
+            ),
             "world_voxel_deadline_ms": world_voxel_deadline_s * 1000.0,
             # How old the world behind a grid may be at check time (Entry 034).
             "world_voxel_data_age_budget_ms": rig.world_voxel_data_age_budget_s * 1000.0,
@@ -2730,6 +2970,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
     octomap_fixed_frame, octomap_base_frame = _octomap_frames(description)
 
     if enable_octomap:
+        assert coverage is not None  # reason: computed whenever enable_octomap
         octomap_cloud_topic = _octomap_cloud_topic(octomap_cloud_topic, description, hal_mode)
         # The world-collision perception leg. octomap_server builds a 3-D OcTree from the
         # HAL's depth PointCloud2 (``synthesize_depth_image`` back-projected by
@@ -2788,14 +3029,15 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "frame_id": octomap_fixed_frame,
                     "base_frame_id": octomap_base_frame,
                     # Only the coverage ball reaches the kernel, so octomap only
-                    # integrates returns inside it: the input cloud is clipped to the
-                    # ball's bounding box (in ``frame_id`` == the ball's frame) and a ray
+                    # integrates returns a link could reach: the input cloud is clipped
+                    # to the robot's reach box plus margin (inside the ball's bounding
+                    # box, in ``frame_id`` == the ball's frame) and a ray
                     # from any camera inside the ball ends within one diameter. On Thor
                     # the unclipped ZED cloud (4 m rays, floor and far wall) held
                     # octomap_server at ~2 Hz with multi-second gaps, i.e. a stale map
                     # (2026-10-02).
-                    "sensor_model.max_range": 2.0 * _octomap_coverage_radius(),
-                    **_octomap_input_bounds(),
+                    "sensor_model.max_range": 2.0 * coverage.radius,
+                    **_octomap_input_bounds(coverage),
                     # Keep the map fresh for manipulation: octomap ray-clears
                     # free space, so a grasped/moved object's old cells decay
                     # back to free once re-observed. A slightly higher
@@ -2840,10 +3082,10 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "octomap_topic": "/octomap_binary",
                     "output_topic": "/openral/world_voxels",
                     "resolution": _octomap_resolution(hal_mode),
-                    "coverage_radius_m": _octomap_coverage_radius(),
-                    "coverage_center_x": _OCTOMAP_COVERAGE_CENTRE[0],
-                    "coverage_center_y": _OCTOMAP_COVERAGE_CENTRE[1],
-                    "coverage_center_z": _OCTOMAP_COVERAGE_CENTRE[2],
+                    "coverage_radius_m": coverage.radius,
+                    "coverage_center_x": coverage.centre[0],
+                    "coverage_center_y": coverage.centre[1],
+                    "coverage_center_z": coverage.centre[2],
                     # Stop republishing an octree that stopped arriving, so the
                     # kernel's voxel deadline can fail closed (Entry 033).
                     "max_octree_age_s": max_octree_age_s,
