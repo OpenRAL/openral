@@ -471,6 +471,7 @@ _vision_attachment_st = st.builds(
     evidence_timeout_s=st.floats(min_value=0.01, max_value=5.0),
     tf_frames=st.dictionaries(_name, _name, max_size=3),
     grasp_target_enabled=st.booleans(),
+    grasp_target_margin_m=st.floats(min_value=0.0, max_value=0.05),
     place_target_enabled=st.booleans(),
     release_timeout_s=st.floats(min_value=0.01, max_value=30.0),
 )

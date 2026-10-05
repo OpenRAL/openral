@@ -36,7 +36,9 @@ Flow, one call per step so every step is replayable from its inputs alone:
 7. ``cell_closed_region`` — only what goes to the kernel: the held fit grown so
    every lattice cell it touches has its centre inside (the kernel's exemption
    test), horizontally and up, never down. The gates above keep comparing the
-   tight fits.
+   tight fits. ``margin_grown_region`` first bloats it by the configured grasp-target
+   margin: on every face (downward too) for the kernel's pre-handover region, on the
+   sides and top only for the attached payload (HZ-0115-32).
 8. ``occupied_touching_outside`` — before a fit is accepted, the region the kernel
    would get must hold the target's whole map component: no occupied cell above the
    support touches it from outside (a fit of the part the hand left in view would
@@ -80,6 +82,7 @@ __all__ = [
     "VoxelLattice",
     "cell_closed_region",
     "map_completed_region",
+    "margin_grown_region",
     "mask_without_removed_points",
     "occupied_centers_in_box",
     "occupied_touching_outside",
@@ -961,6 +964,60 @@ def cell_closed_region(
         }
     )
     return closed, half != wanted
+
+
+def margin_grown_region(region: PlaceRegion, margin_m: float, *, down: bool) -> PlaceRegion:
+    """``region`` bloated by ``margin_m`` on its four sides and top, and its bottom when ``down``.
+
+    The grasp-target margin (design note §2.1 "Grasp-target margin", HZ-0115-32): before
+    the handover the kernel exempts, for the declared finger links, the held region grown
+    on every face — ``down=True``, so cells up to ``margin_m`` below the region's lower
+    face (the support under the target among them) are exempt too; the attached payload
+    is grown on the sides and the top only (``down=False``), never into the support.
+    Growth is along the region's own axes (its local z is up for the yaw-only fits the
+    leg makes); ``margin_m = 0`` returns ``region`` unchanged.
+
+    Args:
+        region: The held region.
+        margin_m: Per-face growth, metres, ``>= 0``.
+        down: Whether the lower face moves down by ``margin_m`` too.
+
+    Returns:
+        The grown region (same frame, yaw, stamp and provenance).
+
+    Raises:
+        ROSConfigError: On a negative or non-finite margin.
+
+    Example:
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> r = PlaceRegion(
+        ...     frame_id="base",
+        ...     half_extents=(0.05, 0.04, 0.03),
+        ...     pose=Pose6D(xyz=(0.3, 0.0, 0.1), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ... )
+        >>> g = margin_grown_region(r, 0.02, down=False)
+        >>> [round(v, 3) for v in g.half_extents], round(g.pose.xyz[2] - g.half_extents[2], 3)
+        ([0.07, 0.06, 0.04], 0.07)
+        >>> g = margin_grown_region(r, 0.02, down=True)
+        >>> [round(v, 3) for v in g.half_extents], round(g.pose.xyz[2] - g.half_extents[2], 3)
+        ([0.07, 0.06, 0.05], 0.05)
+    """
+    if not (math.isfinite(margin_m) and margin_m >= 0.0):
+        raise ROSConfigError(f"margin_grown_region: margin {margin_m!r} must be finite and >= 0.")
+    if margin_m == 0.0:
+        return region
+    hx, hy, hz = region.half_extents
+    # Down too: both z faces move, the centre stays. Up only: the top moves, so the
+    # centre rises by half the margin along the region's own z.
+    rise = 0.0 if down else margin_m / 2.0
+    rot = homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)[:3, :3]
+    centre = np.asarray(region.pose.xyz, dtype=np.float64) + rot[:, 2] * rise
+    return region.model_copy(
+        update={
+            "half_extents": (hx + margin_m, hy + margin_m, hz + margin_m - rise),
+            "pose": region.pose.model_copy(update={"xyz": tuple(float(v) for v in centre)}),
+        }
+    )
 
 
 def occupied_touching_outside(

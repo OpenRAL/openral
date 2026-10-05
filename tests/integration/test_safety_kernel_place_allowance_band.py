@@ -761,6 +761,13 @@ _C_BOUNDARY = _c_index(10, 8, 9)
 #: A foreign cell (a shelf) over the payload, centre z = 67.5 mm: 9.5 mm clear of the closed
 #: payload at the snapshot, outside the closure.
 _C_FOREIGN = _c_index(8, 8, 12)
+#: A foreign cell higher up, cube z 90-105 mm: past the payload bloated by the 25 mm margin
+#: (top 77.5 mm at q = 0) — what the bloated payload is raised into.
+_C_FAR = _c_index(8, 8, 14)
+#: The grasp-target margin the bloated rows use (``VisionAttachmentRuntime`` default).
+_C_MARGIN_M = 0.025
+#: Raised 20 mm: the bloated payload's top into ``_C_FAR``.
+_C_Q_UP_FAR = _C_Q_MEAS + 0.020
 
 
 def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
@@ -782,6 +789,15 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
     * the closed payload whose witness patch is the *tight* footprint, same press: REFUSED
       on a support cell under the closure's corners — why the witness patch is the
       published footprint.
+
+    Then the payload bloated by the 25 mm grasp-target margin on the sides and the top (never
+    down; ``kernel_region(payload=True)``, HZ-0115-32):
+
+    * pressed 19 mm: ACCEPTED — the witness band (the bloated footprint) covers the support
+      under it, and the target's own cells are embedded residue;
+    * raised into a foreign cell past the bloat: REFUSED on it;
+    * the bloated payload whose witness patch is the unbloated closure's footprint, same
+      press: REFUSED on a support cell under the bloat's corners.
     """
     import rclpy
     from openral_core import GraspDeclaration, PlaceRegion, Pose6D
@@ -866,7 +882,7 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
                 )
                 revision = 0
 
-                def payload(closed: bool) -> Any:
+                def payload(closed: bool, margin_m: float = 0.0) -> Any:
                     """The producer's region payload, freshly stamped (a new witness key)."""
                     now_ns = helper.get_clock().now().nanoseconds
                     tight = PlaceRegion(
@@ -880,7 +896,11 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
                         evidence_ref="segment_in_view:closed-payload-band@0",
                         stamp_ns=now_ns,
                     )
-                    region, note = _kernel_closure(tight, lattice) if closed else (tight, "")
+                    region, note = (
+                        _kernel_closure(tight, lattice, margin_m=margin_m, down=False)
+                        if closed
+                        else (tight, "")
+                    )
                     assert note == ""
                     declaration = GraspDeclaration(
                         target_id="approach:carriage:1",
@@ -956,7 +976,7 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
                     grid_origin_m=_C_ORIGIN,
                     resolution_m=_C_RES,
                     grid_n=_C_GRID_N,
-                    occ_index=(*_C_SUPPORT, _C_BOTTOM, _C_BOUNDARY, _C_FOREIGN),
+                    occ_index=(*_C_SUPPORT, _C_BOTTOM, _C_BOUNDARY, _C_FOREIGN, _C_FAR),
                 )
                 publish_carriage_joint_state(
                     joint_pub, helper, spin, joint_names=["carriage"], positions=[_C_Q_MEAS]
@@ -991,8 +1011,42 @@ def test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells(
                     )
                 )
                 send("closed-pressed-tight-patch", _C_Q_PRESS, refused_on=_C_SUPPORT)
+                reset_kernel_estop(reset_client, executor, spin, estops)
+
+                # ── Bloated by the margin (sides + top): pressed, still on the witness ──
+                bloated = payload(closed=True, margin_m=_C_MARGIN_M)
+                (prim,) = bloated.primitives
+                closed_half = payload(closed=True).primitives[0].shape.half_extents_m
+                assert all(
+                    b == pytest.approx(c + _C_MARGIN_M if i < 2 else c + _C_MARGIN_M / 2)
+                    for i, (b, c) in enumerate(
+                        zip(prim.shape.half_extents_m, closed_half, strict=True)
+                    )
+                ), (prim.shape.half_extents_m, closed_half)
+                publish_attachment(bloated)
+                send("bloated-pressed", _C_Q_PRESS)
+
+                # ── Past the bloat, a foreign cell still stops it ──────────────
+                send("bloated-raised", _C_Q_UP_FAR, refused_on=(_C_FAR,))
+                reset_kernel_estop(reset_client, executor, spin, estops)
+
+                # ── The witness patch must be the bloated footprint ────────────
+                bloated = payload(closed=True, margin_m=_C_MARGIN_M)
+                witness = bloated.support_contact
+                closed_patch = float(np.linalg.norm(closed_half))
+                assert witness.patch_radius_m > closed_patch
+                publish_attachment(
+                    bloated.model_copy(
+                        update={
+                            "support_contact": witness.model_copy(
+                                update={"patch_radius_m": closed_patch}
+                            )
+                        }
+                    )
+                )
+                send("bloated-pressed-closed-patch", _C_Q_PRESS, refused_on=_C_SUPPORT)
                 log = log_path.read_text(encoding="utf-8", errors="replace")
-                assert log.count("safety.support_witness_armed object=approach:carriage:1") == 3
+                assert log.count("safety.support_witness_armed object=approach:carriage:1") == 5
             finally:
                 rclpy.shutdown()
         except AssertionError as exc:

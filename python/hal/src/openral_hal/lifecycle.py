@@ -1800,6 +1800,7 @@ if _ROS2_AVAILABLE:
             # to the conservative GRIPPER_CLOSURE box. The grasp trigger is the
             # jaw position stalling short of its command (manifest
             # closure_calibration); no effort channel is read.
+            from openral_core import VisionAttachmentRuntime
             from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 
             from openral_hal.vision_attachment_bridge import DEFAULT_SEGMENT_SERVICE
@@ -1870,6 +1871,12 @@ if _ROS2_AVAILABLE:
                     ("vision_attachment_grasp_target_occluder_margin_m", 0.05),
                     # Approach-armed target distance, metres; 0 = off (the default).
                     ("vision_attachment_grasp_target_approach_m", 0.0),
+                    # Grasp-target bloat, metres (0 = unbloated; a real value, not "unset"):
+                    # the deploy scene's VisionAttachmentRuntime default.
+                    (
+                        "vision_attachment_grasp_target_margin_m",
+                        VisionAttachmentRuntime.DEFAULT_GRASP_TARGET_MARGIN_M,
+                    ),
                 ],
             )
             # Real place producer leg (real pick-and-place design §2.3). OFF by
@@ -2436,6 +2443,9 @@ if _ROS2_AVAILABLE:
                     .get_parameter_value()
                     .double_value
                     or None,
+                    grasp_target_margin_m=gp("vision_attachment_grasp_target_margin_m")
+                    .get_parameter_value()
+                    .double_value,
                     place_target_enabled=gp("vision_attachment_place_target_enabled")
                     .get_parameter_value()
                     .bool_value,

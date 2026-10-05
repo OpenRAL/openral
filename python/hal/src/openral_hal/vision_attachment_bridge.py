@@ -130,7 +130,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
-from openral_core import CameraTopicKind, ControlMode, camera_topic
+from openral_core import CameraTopicKind, ControlMode, VisionAttachmentRuntime, camera_topic
 from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
@@ -543,10 +543,11 @@ def region_attachment(
     better payload than a re-segmentation. One box primitive with the region's half
     extents, posed at the region in the attach link; ``object_id`` is the declaration's
     ``object_id`` (what the kernel's handover matches the attachment against) or, when
-    that is empty, its ``target_id``. The bridge passes the region the kernel got — the
-    held fit closed over the map cells it touches (``GraspTargetLeg.kernel_region``,
-    Isaac i50) — so the target's own boundary cells are embedded residue at the
-    kernel's attach-time snapshot.
+    that is empty, its ``target_id``. The bridge passes the held fit bloated by the
+    grasp-target margin on the sides and top and closed over the map cells it touches
+    (``GraspTargetLeg.kernel_region(payload=True)``, Isaac i50, HZ-0115-32) — inside the
+    region the kernel latched — so the target's own boundary cells are embedded residue
+    at the kernel's attach-time snapshot.
 
     **Support witness.** The target still rests on the support it was measured on, so
     the payload's own box meets the support's cells at ATTACH (Isaac i42: -1.9 mm, a
@@ -556,9 +557,9 @@ def region_attachment(
     ``SupportContactWitness`` on that plane (``_place_target_leg.plane_witness``,
     ``support_id = "map_support_under:<target_id>"``, ``MAP_SUPPORT_PROXIMITY``), stamped
     ``stamp_ns``. ``None`` — nothing measured for this region — attests nothing. Its
-    patch radius is the published box's footprint (the closed one, not the tight fit):
-    the band must reach every support cell the published box can press into, and a
-    closed box pressed down meets support cells at its corners a tight-fit radius leaves
+    patch radius is the attached box's footprint (the bloated, closed one, not the tight
+    fit): the band must reach every support cell the attached box can press into, and a
+    bloated box pressed down meets support cells at its corners a tight-fit radius leaves
     outside the band (a stop on the support it was attested on).
 
     Args:
@@ -917,6 +918,13 @@ class VisionAttachmentConfig:
             measured around its jaws, so no one has to name the target (the policy
             picks it). ``None`` = off (default). At most
             ``GraspDeclaration.MAX_HALF_EXTENT_M``. *Calibration point.*
+        grasp_target_margin_m: How far the grasp target is bloated, metres
+            (``VisionAttachmentRuntime.grasp_target_margin_m``, whose default this is):
+            the kernel's pre-handover region is the held region grown by it on every
+            face, downward too; the region payload grows by it on the sides and the top
+            only (``GraspTargetLeg.kernel_region``). ``0.0`` = unbloated. In
+            ``[0, VisionAttachmentRuntime.MAX_GRASP_TARGET_MARGIN_M]``, else
+            ``ROSConfigError`` from the leg. *Calibration point*, Safety-WG (HZ-0115-32).
         release_clear_m: How far every link a released payload's frozen record
             exempts (the hand and its jaws) must be from it before the record is
             dropped (``ReleaseWindow``). The deploy sets it to the kernel's
@@ -998,6 +1006,7 @@ class VisionAttachmentConfig:
     grasp_target_support_probe_margin_m: float = 0.05
     grasp_target_occluder_margin_m: float = 0.05
     grasp_target_approach_m: float | None = None
+    grasp_target_margin_m: float = VisionAttachmentRuntime.DEFAULT_GRASP_TARGET_MARGIN_M
     release_clear_m: float = 0.04
     release_timeout_s: float = 3.0
     grid_max_age_s: float = 1.0
@@ -2051,19 +2060,23 @@ class VisionAttachmentBridge:
             return None
         leg.region_spent = key
         extrinsic = self._config.place_target_extrinsic_error_m
-        # The payload is the box the kernel latched (Isaac i50): the held region closed
-        # over the map cells it touches (``GraspTargetLeg.kernel_region`` — clamped and
-        # logged there; the tight fit when the kernel got the tight fit). The target's
-        # own boundary cells then sit at least half a cell inside the payload at the
-        # kernel's attach-time snapshot — embedded residue, not obstacles. Grown up
-        # only, so the support layer stays outside. The producer's own checks
-        # (``on_attach``, ``measured_support``) keep the held ``region``.
-        closed = self._grasp_target.kernel_region(declaration.target_id, region)
+        # The payload is the held region bloated by the grasp-target margin on the sides
+        # and the top (never down: the support stays outside it; HZ-0115-32) and closed
+        # over the map cells it touches (``GraspTargetLeg.kernel_region(payload=True)`` —
+        # the margin capped, clamped and logged there; the tight fit when the kernel got
+        # the tight fit). It lies inside the box the kernel latched (bloated on every
+        # face), and the target's own boundary cells sit at least half a cell inside it
+        # at the kernel's attach-time snapshot — embedded residue, not obstacles (Isaac
+        # i50). The producer's own checks (``on_attach``, ``measured_support``) keep the
+        # held ``region``.
+        closed = self._grasp_target.kernel_region(declaration.target_id, region, payload=True)
         self._node.get_logger().info(
             f"vision attachment {leg.joint_name}: region payload for "
-            f"{declaration.target_id!r} closed over the map cells it touches: half "
-            f"{tuple(round(h, 4) for h in region.half_extents)} m tight -> "
-            f"{tuple(round(h, 4) for h in closed.half_extents)} m published, centre "
+            f"{declaration.target_id!r} bloated by "
+            f"{self._config.grasp_target_margin_m:.3f} m (sides+top) and closed over the "
+            f"map cells it touches: half "
+            f"{tuple(round(h, 4) for h in region.half_extents)} m held -> "
+            f"{tuple(round(h, 4) for h in closed.half_extents)} m attached, centre "
             f"z {region.pose.xyz[2]:.4f} -> {closed.pose.xyz[2]:.4f} (bottom fixed)"
         )
         held = region_attachment(

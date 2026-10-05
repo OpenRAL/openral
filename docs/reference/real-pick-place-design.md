@@ -188,7 +188,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   kernel is therefore grown so every cell the box intersects has its centre inside: by
   `r/2·(|cos θ|+|sin θ|)` (≤ `r/√2`) per horizontal half-extent for a box yawed θ against the
   lattice, and by `r/2` **upward only** — the bottom stays where the fit put it, so the support
-  layer under the target stays non-exempt (HZ-0115-6). Each half-extent is clamped at
+  layer under the target stays non-exempt (HZ-0115-6; the closure itself — the grasp-target
+  margin below bloats the region downward first, by design). Each half-extent is clamped at
   `MAX_HALF_EXTENT_M` (logged); a closure over the volume cap publishes the tight fit (logged).
   Voxel-consistent: inside one cell the map cannot tell another body from the target. Only the
   kernel-facing region grows — the held region (the tight fit, or its map completion below),
@@ -229,6 +230,49 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   (real kernel: tight payload pressed 19 mm → REFUSED on the boundary cell; closed → ACCEPTED; a
   foreign cell outside the closure → REFUSED; a tight-footprint witness patch on the closed
   payload → REFUSED on a support cell).
+- **Grasp-target margin: the target is bloated** (producer side, `GraspTargetLeg.kernel_region`
+  → `margin_grown_region`; `VisionAttachmentRuntime.grasp_target_margin_m`, default 0.025 m,
+  validated `0 <= m <= 0.05`, refused above; HAL param `vision_attachment_grasp_target_margin_m`,
+  forwarded by `_vision_attachment_hal_params` on `deploy sim` and `deploy run` alike and logged
+  on the grasp-target leg's setup line). A task-dependent setting chosen by the user as WG
+  reviewer ("bloat the object 2-3 cm … those voxels detected as the object are exempt when
+  grasping … it's okay if some table voxels end up inside the primitive"). *Before the
+  handover* the region the kernel gets is the cell closure of the held region grown by the
+  margin on **every face, downward too**: the declared finger links, for this declaration
+  only, are exempt against every cell centred within the margin of the held region —
+  the support under the target included — so the fingers can close around the target and
+  press up to the margin into the support under it without a stop. *After the handover*
+  the attached region payload is the cell closure of the held region grown by the margin on
+  the four sides and the top only, **never down**: it rides with the hand, the octomap
+  bridge clears what lies inside it, and the kernel keeps checking it against the
+  environment and the robot against the environment; its support witness's patch is the
+  bloated footprint, so the band covers the support cells under the payload's corners. The
+  payload lies inside the latched region (the all-faces bloat contains the sides-and-top
+  one), so the handover's payload-origin-in-region rule holds. The margin, not the measured
+  box, shrinks to keep the bloat within `GraspDeclaration`'s caps (logged). Every producer
+  gate — tracking, `partial_fit`, cover, the hand tests, `on_attach` (`held == region`),
+  `measured_support` — keeps the unbloated held region; `0.0` reproduces the unbloated
+  behaviour exactly. *Geometry:* the held region's lower face sits one voxel above the
+  measured support top `S`, so a cell centred at `z` is exempt below it only when
+  `z >= S + r - m`: the target's own bottom layer (centres `S + r/2`, never exempt unbloated,
+  so on the real 20 mm cell the fingers stopped 14 mm above it) enters from `m >= r/2`, the
+  support's top layer (centres `S - r/2`) from `m >= 1.5 r` — 30 mm on the real 20 mm cell,
+  22.5 mm on Isaac's 15 mm cells; at the 25 mm default the real cell's support layer stays
+  non-exempt. *Hazards:* the finger links may press up to the margin into the support under
+  the target without a stop; any body within the margin of the target is exempt for the
+  finger links during the approach and, inside the payload at ATTACH, embedded residue. Arm
+  links, cells past the margin, self-collision and the force gate are unchanged; the kernel
+  is unchanged. *Safety-WG:* requested and permitted by the user as WG reviewer; hazard row
+  HZ-0115-32. Tests: `tests/unit/test_grasp_target_leg.py` (margin rows; the margin-0
+  regression guard `test_the_kernel_gets_the_cell_closed_region_while_the_held_fit_stays_tight`);
+  band rows `tests/integration/test_safety_kernel_grasp_target_band.py::test_the_grasp_target_margin_on_the_real_openarm_model`
+  (real kernel: margin 0 → REFUSED on the target's bottom layer; 25 mm → ACCEPTED; a
+  neighbour within the margin → ACCEPTED; a cell past it → REFUSED; the support 30 mm under
+  the held bottom at 25 mm → REFUSED, at 50 mm → ACCEPTED; link7 inside the bloat →
+  REFUSED) and
+  `tests/integration/test_safety_kernel_place_allowance_band.py::test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells`
+  (bloated payload pressed 19 mm → ACCEPTED; raised into a foreign cell past it → REFUSED;
+  an unbloated-footprint witness patch → REFUSED on the support).
 - **A fit is accepted only when the kernel's region holds the whole target** (producer side,
   `_gate_refit` → `occupied_touching_outside`; Isaac i40/i43). The map-cover gate needs only
   `grasp_target_min_cover` (0.5) of the fit's own footprint, so a fit of the part the head camera
