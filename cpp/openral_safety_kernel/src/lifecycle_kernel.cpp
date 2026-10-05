@@ -2338,7 +2338,7 @@ void SafetyKernelLifecycleNode::on_world_voxels(
     }
     voxel_frame_id_ = msg->header.frame_id;
     place_region_ = PlaceApproachRegion{};
-    if (grasp_region_.valid) {
+    if (grasp_identity_armed()) {
       retire_grasp_declaration("grid_frame_changed");
     }
   }
@@ -2377,7 +2377,7 @@ void SafetyKernelLifecycleNode::on_world_state(
     // A message we do not trust for the payload model is not one to trust for
     // the region scoped to that payload either.
     place_region_ = PlaceApproachRegion{};
-    if (grasp_region_.valid) {
+    if (grasp_identity_armed()) {
       retire_grasp_declaration("attachment_rejected");
     }
   };
@@ -2503,7 +2503,7 @@ void SafetyKernelLifecycleNode::on_world_state(
     // A rejected payload model takes the region scoped to it: the object mask
     // the region was resolved against no longer describes anything.
     place_region_ = PlaceApproachRegion{};
-    if (grasp_region_.valid) {
+    if (grasp_identity_armed()) {
       retire_grasp_declaration("attachment_rejected");
     }
     return;
@@ -2575,7 +2575,7 @@ void SafetyKernelLifecycleNode::on_world_state(
       // re-arms. Liveness is the producer's: it sees every DETACH, drops its
       // other hand's pre-handover region and re-arms under a fresh identity from
       // a measurement taken after the detach.
-      if (grasp_region_.valid) {
+      if (grasp_identity_armed()) {
         retire_grasp_declaration("detached");
       }
     } else {
@@ -2837,9 +2837,22 @@ bool SafetyKernelLifecycleNode::region_measurement_fresh(std::int64_t stamp_ns,
   return age_ns >= 0 && age_ns <= static_cast<std::int64_t>(max_age_s * 1e9);
 }
 
+bool SafetyKernelLifecycleNode::grasp_identity_armed() const noexcept {
+  // The live region, or the current declaration's identity having armed before
+  // and merely failing its last check (a stale measurement, a passing frame
+  // refusal): an edge that ends the scene the region was measured in retires it
+  // either way, so it cannot re-arm on the next fresh measurement (HZ-0115-3).
+  return grasp_region_.valid ||
+         (!grasp_declaration_target_.empty() && grasp_armed_target_ == grasp_declaration_target_ &&
+          grasp_armed_stamp_ns_ == grasp_declaration_stamp_ns_);
+}
+
 void SafetyKernelLifecycleNode::retire_grasp_declaration(const char* reason) {
   if (grasp_region_.valid) {
     RCLCPP_INFO(this->get_logger(), "safety.grasp_region_dropped reason=%s target=%s", reason,
+                grasp_declaration_target_.c_str());
+  } else {
+    RCLCPP_INFO(this->get_logger(), "safety.grasp_declaration_retired reason=%s target=%s", reason,
                 grasp_declaration_target_.c_str());
   }
   grasp_region_ = GraspTargetRegion{};
@@ -3103,6 +3116,8 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   grasp_region_refusal_reason_.clear();
   grasp_region_refusal_target_.clear();
   grasp_region_stamp_ns_ = region.stamp_ns;
+  grasp_armed_target_ = declaration.target_id;
+  grasp_armed_stamp_ns_ = declaration.stamp_ns;
   if (!was_valid || previous_target != declaration.target_id) {
     RCLCPP_INFO(this->get_logger(),
                 "safety.grasp_region_armed target=%s links=%zu half_m=%g,%g,%g rskill=%s trace=%s "

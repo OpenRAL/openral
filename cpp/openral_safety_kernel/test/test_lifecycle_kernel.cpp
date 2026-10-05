@@ -5354,3 +5354,33 @@ TEST_F(LifecycleKernelTest, ALatchedGraspCannotMoveToAnotherObjectOrHand) {
     EXPECT_TRUE(rig.node->fault_latched()) << c.name;
   }
 }
+
+TEST_F(LifecycleKernelTest, ADetachWhileTheArmedRegionIsMomentarilyStaleStillRetiresIt) {
+  // The detach retire ran only while the region was valid: one stale heartbeat
+  // at the detach edge let the same identity re-arm on the next fresh region,
+  // against a scene the detach had changed.
+  LogCapture logs;
+  GraspRig rig(
+      "kernel_grasp_detach_stale",
+      with_param(bimanual_grasp_params(), "grasp_region_max_age_s", rclcpp::ParameterValue(2.0)));
+  rig.start();
+  GraspBeat b;
+  b.declaration_stamp_ns = rig.now_ns();
+  b.second_attach_link = "other";  // the other hand holds something
+  b.revision = 1;
+  rig.warm(&b, 0.0, 300);
+  ASSERT_TRUE(rig.offer(&b, 0.0)) << logs.joined();
+  // The producer's measurement ages out, and the other hand lets go meanwhile.
+  b.region_stamp_ns = rig.now_ns() - std::int64_t{5'000'000'000};
+  rig.warm(&b, 0.0, 100);
+  ASSERT_EQ(logs.count("safety.grasp_region_rejected reason=region_stale"), 1U) << logs.joined();
+  b.second_attach_link.clear();
+  b.revision = 2;
+  rig.warm(&b, 0.0, 100);
+  // A fresh measurement of the same identity re-arms nothing.
+  b.region_stamp_ns = rig.now_ns();
+  rig.warm(&b, 0.0, 200);
+  EXPECT_FALSE(rig.offer(&b, 0.0, 800));
+  EXPECT_TRUE(rig.node->fault_latched());
+  EXPECT_EQ(logs.count("safety.grasp_region_armed"), 1U) << logs.joined();
+}
