@@ -217,6 +217,10 @@ class TargetRegionFit:
         point_count: Points that survived erosion and depth validity.
         depth_valid_fraction: Fraction of eroded-mask pixels with usable depth.
         half_extents: The fitted (padded) half-extents, also reported on refusal.
+        box: The fitted box on a ``NOT_ON_SUPPORT`` refusal (the visible part, its lower
+            face pinned one voxel above the support like a region's), else ``None``: the
+            leg tells the closing hand occluding the target's lower part (that box inside
+            the held region) from a contradiction (``_refused_fit``).
     """
 
     region: PlaceRegion | None
@@ -224,6 +228,7 @@ class TargetRegionFit:
     point_count: int
     depth_valid_fraction: float
     half_extents: tuple[float, float, float]
+    box: PlaceRegion | None = None
 
 
 def _in_region(points: NDArray[np.float64], region: PlaceRegion) -> NDArray[np.bool_]:
@@ -759,8 +764,6 @@ def target_region_from_mask(
         return TargetRegionFit(None, TargetRefusal.HALF_EXTENT_CAP, n, valid, half)
     if 8.0 * half[0] * half[1] * half[2] > max_volume_m3:
         return TargetRegionFit(None, TargetRefusal.VOLUME_CAP, n, valid, half)
-    if low > support_z + 2.0 * resolution + 1e-9:
-        return TargetRegionFit(None, TargetRefusal.NOT_ON_SUPPORT, n, valid, half)
 
     centre_xy = xy_mean + rot2 @ ((lo_uv + hi_uv) / 2.0)
     centre = (float(centre_xy[0]), float(centre_xy[1]), (z_hi + bottom) / 2.0)
@@ -771,6 +774,8 @@ def target_region_from_mask(
         evidence_ref=evidence_ref,
         stamp_ns=stamp_ns,
     )
+    if low > support_z + 2.0 * resolution + 1e-9:
+        return TargetRegionFit(None, TargetRefusal.NOT_ON_SUPPORT, n, valid, half, box=region)
     return TargetRegionFit(region, None, n, valid, half)
 
 
@@ -1220,9 +1225,11 @@ def map_completed_region(
         )
 
     centers = grid.occupied_centers()
-    above = centers[centers[:, 2] > support_z + grid.resolution]
-    # Every cell that can matter lies within two of the seed box or the column.
-    above = above[_in_region(above, grown(seed_box)) | _in_region(above, grown(column))]
+    everywhere = centers[centers[:, 2] > support_z + grid.resolution]
+    # Every cell the flood can reach lies within two of the seed box or the column.
+    above = everywhere[
+        _in_region(everywhere, grown(seed_box)) | _in_region(everywhere, grown(column))
+    ]
     in_seed = _in_region(above, seed_box)
     cells = [(int(i), int(j), int(k)) for i, j, k in _ijk(grid, above).tolist()]
     seeds = {c for c, ok in zip(cells, in_seed.tolist(), strict=True) if ok}
@@ -1262,10 +1269,10 @@ def map_completed_region(
         )
     closed, _ = cell_closed_region(completed, grid, max_half_extent_m=max_half_extent_m)
     members = set(component)
+    # Over the closure's own extent, every occupied cell above the support: in a yaw other
+    # than the column's its corners reach past the cells pre-filtered above.
     foreign = [
-        c
-        for c, inside in zip(cells, _in_region(above, closed).tolist(), strict=True)
-        if inside and c not in members
+        c for c in _cell_set(grid, everywhere[_in_region(everywhere, closed)]) if c not in members
     ]
     if foreign:
         return (

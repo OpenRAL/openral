@@ -172,6 +172,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
 
 __all__ = [
     "DEFAULT_SEGMENT_SERVICE",
+    "MAX_RELEASE_CLEAR_M",
     "ReleaseWindow",
     "SegmentOutcome",
     "VisionAttachmentBridge",
@@ -190,6 +191,14 @@ __all__ = [
 
 #: Service the perception-side segmenter node offers by default.
 DEFAULT_SEGMENT_SERVICE = "/openral/perception/segment_in_view"
+
+#: Largest accepted ``VisionAttachmentConfig.release_clear_m``, metres. The deploy derives
+#: it as the kernel's world-voxel margin plus one octree cell (0.04 m on the real cell:
+#: 20 mm + 20 mm); 0.1 m leaves headroom for a 5 cm margin over a coarse 5 cm cell and no
+#: more. It is also the region payload's support-witness rise tolerance
+#: (``_retire_lifted_supports``), so an unbounded value (a params-file 0.3) would keep the
+#: support exemption through a 30 cm carry.
+MAX_RELEASE_CLEAR_M = 0.1
 
 
 @dataclass
@@ -230,8 +239,9 @@ class _GripperLeg:
             close (command within ``stall_gap`` of closed, jaws empty) began, or ``None``
             outside one (``_log_close``).
         close_reported: Whether the current close's outcome was logged.
-        support_anchor: ``(frame, payload origin, tolerance)`` at the ATTACH whose region
-            payload carries the measured-support witness, until that witness is retired
+        support_anchor: ``(frame, payload origin, rise tolerance, slide tolerance)`` at the
+            ATTACH whose region payload carries the measured-support witness, ``frame`` the
+            support plane's (z up), until that witness is retired
             (``VisionAttachmentBridge._retire_lifted_supports``); ``None`` otherwise.
         regrasp_hold: The region payload this leg held when a REGRASP began segmenting,
             kept if that segmentation is rejected (``_finish``); ``None`` otherwise.
@@ -254,8 +264,8 @@ class _GripperLeg:
     announced_uncommanded: bool = False
     close_baseline: tuple[int, int] | None = None
     close_reported: bool = False
-    support_anchor: tuple[str, tuple[float, float, float], float] | None = None
-    regrasp_hold: Any = None
+    support_anchor: tuple[str, tuple[float, float, float], float, float] | None = None
+    regrasp_hold: AttachedCollisionObject | None = None
 
 
 def _published(leg: _GripperLeg) -> AttachedCollisionObject | None:
@@ -510,10 +520,18 @@ def freeze_released_attachment(
         t_base_from_link: ``(4, 4)`` pose of ``held.attach_link`` in ``base_link``
             at the DETACH stamp.
 
+    ``support_contact`` is dropped: a held payload's own witness is the grasp-time
+    ``map_support_under:*`` one (``region_attachment``), a claim about where the payload
+    rested at ATTACH. Released before it retired (lifted less than its rise tolerance),
+    it would ride the record at the release pose — its band misplaced above the support
+    — for the whole window though the payload no longer rests there. The place leg's
+    set-down witness is not on the held payload: ``PlaceTargetLeg.decorate`` puts it on
+    whatever carries the object's (id, stamp) at each publish, the record included, so
+    the place support stays exempt through the window.
+
     Returns:
-        The frozen record: same object, geometry, evidence and support/force
-        attestations; base-frame pose; ``evidence_ref`` suffixed
-        ``|frozen_release``.
+        The frozen record: same object, geometry, evidence and force attestation, no
+        support witness; base-frame pose; ``evidence_ref`` suffixed ``|frozen_release``.
     """
     from openral_core import AttachedCollisionObject as _Attached
     from openral_core.geometry import homogeneous_from_quat_xyz, rotation_to_quat_wxyz
@@ -534,6 +552,7 @@ def freeze_released_attachment(
                 "frame_id": base_link,
             },
             "evidence_ref": f"{held.evidence_ref or held.object_id}|frozen_release",
+            "support_contact": None,
         }
     )
 
@@ -557,9 +576,9 @@ def region_attachment(
     ``object_id`` (what the kernel's handover matches the attachment against) or, when
     that is empty, its ``target_id``. The bridge passes the held fit bloated by the
     grasp-target margin on the sides and top and closed over the map cells it touches
-    (``GraspTargetLeg.kernel_region(payload=True)``, Isaac i50, HZ-0115-32) — inside the
-    region the kernel latched — so the target's own boundary cells are embedded residue
-    at the kernel's attach-time snapshot.
+    (``GraspTargetLeg.kernel_region(payload=True)``, Isaac i50, HZ-0115-32) — the very box
+    the kernel latches from the handover on (``GraspTargetLeg.fill``) — so the target's
+    own boundary cells are embedded residue at the kernel's attach-time snapshot.
 
     **Support witness.** The target still rests on the support it was measured on, so
     the payload's own box meets the support's cells at ATTACH (Isaac i42: -1.9 mm, a
@@ -922,8 +941,8 @@ class VisionAttachmentConfig:
         grasp_target_occluder_margin_m: Distance (beyond one voxel) from the
             held region within which a declared contact link's hand point (its
             leg's TCP, ``jaw_point``) makes a shrunken re-fit an occlusion by the
-            robot's own hand, at most 0.10 m; also how far beyond the region the TCP
-            may be for an ATTACH to be on it (``jaw_at``).
+            robot's own hand, at most 0.10 m; also how far beyond the region the TCP or
+            the jaw's closing midpoint may be for an ATTACH to be on it (``jaw_at``).
             *Calibration point.*
         grasp_target_approach_m: Approach-armed target (``_grasp_target_leg``):
             while a live declaration has no ``search_box``, a hand whose TCP comes
@@ -932,10 +951,13 @@ class VisionAttachmentConfig:
             picks it). ``None`` = off (default). At most
             ``GraspDeclaration.MAX_HALF_EXTENT_M``. *Calibration point.*
         grasp_target_margin_m: How far the grasp target is bloated, metres
-            (``VisionAttachmentRuntime.grasp_target_margin_m``, whose default this is):
-            the kernel's pre-handover region is the held region grown by it on every
+            (``VisionAttachmentRuntime.grasp_target_margin_m``, whose default this is:
+            ``DEFAULT_GRASP_TARGET_MARGIN_M`` = ``0.0``, no bloat unless the scene names
+            one): the kernel's pre-handover region is the held region grown by it on every
             face, downward too; the region payload grows by it on the sides and the top
-            only (``GraspTargetLeg.kernel_region``). ``0.0`` = unbloated. In
+            only (``GraspTargetLeg.kernel_region``), and from the handover on that payload
+            box is also the region the kernel latches (``GraspTargetLeg.fill`` publishes
+            it). ``0.0`` = unbloated. In
             ``[0, VisionAttachmentRuntime.MAX_GRASP_TARGET_MARGIN_M]``, else
             ``ROSConfigError`` from the leg. *Calibration point*, Safety-WG (HZ-0115-32).
         release_clear_m: How far every link a released payload's frozen record
@@ -948,7 +970,9 @@ class VisionAttachmentConfig:
             ``ManifestHALLifecycleNode`` refuses to start the leg unless the
             deploy passes the value. A lower
             bound is measured (bounding boxes, separating axes), so the window can
-            only stay open longer than the true gap needs. *Calibration point.*
+            only stay open longer than the true gap needs. Also the region payload's
+            support-witness rise tolerance. In ``(0, MAX_RELEASE_CLEAR_M]`` (0.1 m), else
+            ``ROSConfigError`` at construction. *Calibration point.*
         release_timeout_s: Hard bound on a release window: the frozen record is
             dropped this long after DETACH even if the jaws were never proven
             clear — the kernel then sees the re-marked payload and stops a
@@ -1284,6 +1308,13 @@ class VisionAttachmentBridge:
             raise ROSConfigError(
                 "vision attachment: release_clear_m and release_timeout_s must be positive, got "
                 f"{self._config.release_clear_m} and {self._config.release_timeout_s}."
+            )
+        if self._config.release_clear_m > MAX_RELEASE_CLEAR_M:
+            raise ROSConfigError(
+                f"vision attachment: release_clear_m={self._config.release_clear_m} exceeds "
+                f"{MAX_RELEASE_CLEAR_M} m (the kernel's world margin plus one cell, with "
+                "headroom): it would keep a released record and a region payload's support "
+                "witness far past where the kernel needs them."
             )
         self._base_link = _release_base_link(description)
         links = set().union(*_tree_links(description))
@@ -2047,8 +2078,8 @@ class VisionAttachmentBridge:
         """The latched grasp-target region as this leg's payload, when it is confirmed.
 
         Confirmation is geometric: the declaration names this leg's jaw link and the
-        jaw is at the region (``jaw_at``: its TCP within ``grasp_target_occluder_margin_m``
-        of it, or its jaw link's collision geometry overlapping it).
+        jaw is at the region (``jaw_at``: its TCP or its closing midpoint within
+        ``grasp_target_occluder_margin_m`` of it).
         The region is a pre-grasp measurement, so a leg takes each measured
         region once (``region_spent``, keyed by ``target_id`` — one per pick — and the
         region's own ``stamp_ns``): a later ATTACH offered the same region — the object
@@ -2103,11 +2134,12 @@ class VisionAttachmentBridge:
         # outside it; HZ-0115-32) and closed
         # over the map cells it touches (``GraspTargetLeg.kernel_region(payload=True)`` —
         # the margin capped, clamped and logged there; the tight fit when the kernel got
-        # the tight fit). It lies inside the box the kernel latched (bloated on every
-        # face), and the target's own boundary cells sit at least half a cell inside it
-        # at the kernel's attach-time snapshot — embedded residue, not obstacles (Isaac
-        # i50). The producer's own checks (``on_attach``, ``measured_support``) keep the
-        # held ``region``.
+        # the tight fit). It IS the box the kernel latches: ``GraspTargetLeg.fill``
+        # publishes this payload box as the declaration's region from the handover on, so
+        # the payload origin lies in the latched region, and the target's own boundary
+        # cells sit at least half a cell inside it at the kernel's attach-time snapshot —
+        # embedded residue, not obstacles (Isaac i50). The producer's own checks
+        # (``on_attach``, ``measured_support``) keep the held ``region``.
         closed = self._grasp_target.kernel_region(declaration.target_id, region, payload=True)
         self._node.get_logger().info(
             f"vision attachment {leg.joint_name}: region payload for "
@@ -2132,21 +2164,22 @@ class VisionAttachmentBridge:
         if held.support_contact is not None:
             grid = self._grid
             # The payload's lower face rests on the support top (``lowered_to_support``),
-            # so the witness lives until the payload has risen clear of the kernel's world
-            # margin plus one cell (``release_clear_m``, the deploy's derivation): retired
-            # any sooner, the support's own cells sit inside the margin (a stop on the real
-            # cell's 20 mm margin).
-            tol = max(
-                grid[0].resolution if grid is not None else 0.0,
-                extrinsic,
-                self._config.release_clear_m,
-            )
-            # The payload frame's ATTACH pose: the closed box's centre.
-            leg.support_anchor = (closed.frame_id, closed.pose.xyz, tol)
+            # so the witness lives until the payload has RISEN clear of the kernel's world
+            # margin plus one cell (``release_clear_m``, the deploy's derivation, capped at
+            # ``MAX_RELEASE_CLEAR_M``): retired any sooner, the support's own cells sit
+            # inside the margin (a stop on the real cell's 20 mm margin). Sideways that
+            # margin buys nothing — the support is under the payload, not beside it — so a
+            # slide retires it past the measurement's own uncertainty alone.
+            slide = max(grid[0].resolution if grid is not None else 0.0, extrinsic)
+            rise = max(slide, self._config.release_clear_m)
+            # The payload frame's ATTACH pose (the closed box's centre), in the support's
+            # frame: the region's, z up (``plane_witness``).
+            leg.support_anchor = (closed.frame_id, closed.pose.xyz, rise, slide)
             self._node.get_logger().info(
                 f"vision attachment {leg.joint_name}: {held.object_id!r} carries the measured "
                 f"support witness ({held.support_contact.evidence_ref}); retired once the "
-                f"payload moves > {tol * 1e3:.1f} mm from here"
+                f"payload rises > {rise * 1e3:.1f} mm or slides > {slide * 1e3:.1f} mm "
+                "from here"
             )
         return held, region
 
@@ -2159,13 +2192,16 @@ class VisionAttachmentBridge:
         map, and the octomap bridge keeps every cell the witness band claims
         (``support_patch_withholds``) — the band rides with the payload, so the carried
         object's own lowest cells, seen by the head camera, would keep it alive through the
-        carry. The producer retires it on its own geometry instead: the payload frame moved
-        more than ``max(resolution, extrinsic_error_m, release_clear_m)`` from its ATTACH
-        pose (a lift, a slide; ``release_clear_m`` is the kernel's world margin plus a cell,
-        as the payload rests on the support top), or tf2 cannot place it (the exemption
-        dies on any doubt). For good: the payload keeps its identity and stamp, and the
-        kernel re-arms only a new (object, support, stamp) key. Throttled to the place
-        leg's witness period.
+        carry. The producer retires it on its own geometry instead: the payload frame, in
+        the support plane's frame (z up), rose more than ``max(resolution, extrinsic_error_m,
+        release_clear_m)`` above its ATTACH pose (``release_clear_m`` is the kernel's world
+        margin plus a cell, as the payload rests on the support top), or moved horizontally
+        more than ``max(resolution, extrinsic_error_m)`` (off the patch the witness was
+        measured for: the margin is no reason to keep it sideways), or tf2 cannot place it
+        (the exemption dies on any doubt). Sinking keeps it — still on the same plane, the
+        kernel bounds the penetration (``max_penetration_m``). For good: the payload keeps
+        its identity and stamp, and the kernel re-arms only a new (object, support, stamp)
+        key. Throttled to the place leg's witness period.
         """
         now_s = time.monotonic()
         if now_s - self._support_checked_s < _WITNESS_PERIOD_S:
@@ -2179,7 +2215,7 @@ class VisionAttachmentBridge:
             if held is None or held.support_contact is None:
                 leg.support_anchor = None  # released, or replaced by a segmented payload
                 continue
-            frame, origin, tol = anchor
+            frame, origin, rise_tol, slide_tol = anchor
             t_frame_link = self._lookup(frame, self.tf_frame(held.attach_link))
             if t_frame_link is None:
                 why = f"no tf2 {frame} <- {self.tf_frame(held.attach_link)}"
@@ -2187,16 +2223,18 @@ class VisionAttachmentBridge:
                 pose = t_frame_link @ homogeneous_from_quat_xyz(
                     held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
                 )
-                moved = float(np.linalg.norm(pose[:3, 3] - np.asarray(origin)))
-                if moved <= tol:
+                moved = pose[:3, 3] - np.asarray(origin)
+                rise, slide = float(moved[2]), float(np.linalg.norm(moved[:2]))
+                if rise <= rise_tol and slide <= slide_tol:
                     continue
-                why = f"payload moved {moved * 1e3:.1f} mm from its ATTACH pose"
+                why = f"payload rose {rise * 1e3:+.1f} mm and slid {slide * 1e3:.1f} mm"
             leg.support_anchor = None
             leg.attachment = held.model_copy(update={"support_contact": None})
             retired = True
             self._node.get_logger().info(
                 f"vision attachment {leg.joint_name}: support witness for {held.object_id!r} "
-                f"retired — {why} (tolerance {tol * 1e3:.1f} mm)"
+                f"retired — {why} (tolerances: rise {rise_tol * 1e3:.1f} mm, slide "
+                f"{slide_tol * 1e3:.1f} mm)"
             )
         if retired and self._heartbeat_open:
             # At the current revision: no detach edge, no fresh attach-time baseline in the
@@ -2283,15 +2321,19 @@ class VisionAttachmentBridge:
     def jaw_at(self, jaw_link: str, region: PlaceRegion, *, reach_m: float) -> tuple[bool, str]:
         """Whether the hand whose jaw link is ``jaw_link`` is at ``region``, and the measure.
 
-        At it when its TCP (``jaw_point``) lies in the region grown by ``reach_m`` on
-        every face, **or** a manifest collision primitive of ``jaw_link`` (bounded as a
-        box, the release window's geometry), posed at the jaw's last read angle through
-        the attach link's tf2 pose and the gripper joint's origin, overlaps the region
-        itself (no reach). The TCP may sit at the finger hinge, a finger length above
-        what the jaws close on (the OpenArm's does); the jaw link's geometry is where the
-        fingers are. Both tests are exact: the TCP's separating-axis gap on the region's
-        own axes is the grown-box test, and a separating-axis gap ``<= 0`` is overlap.
-        An unknown jaw angle leaves the geometry unposed — the TCP alone decides.
+        At it when a point that says the region is *between the fingers* lies in the
+        region grown by ``reach_m`` on every face: its TCP (``jaw_point``), **or** the
+        jaw's closing midpoint — the centre of ``jaw_link``'s manifest collision
+        primitives (the release window's bounded boxes), posed at the jaw's last read
+        angle through the attach link's tf2 pose and the gripper joint's origin. The TCP
+        may sit at the finger hinge, a finger length above what the jaws close on (the
+        OpenArm's does, Isaac i41); the jaw link's box centre is between the fingers. Never
+        a box *overlap*: the OpenArm's finger_pair box spans the whole jaw opening, so any
+        overlap accepted a neighbour up to ~7 cm beside the jaw along it. The TCP test is
+        as strict as the midpoint's — the same reach, from a point the jaw's own span
+        hangs below. Both are exact point-in-grown-box tests (the separating-axis gap on
+        the region's own axes). An unknown jaw angle leaves the midpoint unposed — the
+        TCP alone decides.
 
         Args:
             jaw_link: A gripper joint's child link (``GraspDeclaration.contact_links``).
@@ -2319,9 +2361,9 @@ class VisionAttachmentBridge:
         )
         if tcp_gap <= reach_m:
             return True, measure
-        # ponytail: each primitive's bounding box, not the kernel's tight hull — a box that
-        # spans the whole opening (OpenArm's finger_pair) reaches a target beside the jaw
-        # along it; a hull-vs-box distance on ``tight_geometry`` if that ever matters.
+        # ponytail: the mean of the primitives' bounding-box centres as the closing midpoint;
+        # a calibrated fingertip-midpoint frame per gripper if a jaw link's boxes ever sit
+        # off its closing axis.
         boxes = _link_boxes(self._description, jaw_link)
         q = self._positions.get(leg.joint_name)
         if not boxes:
@@ -2334,14 +2376,11 @@ class VisionAttachmentBridge:
             @ _xyz_rpy_matrix(joint.origin_xyz, joint.origin_rpy)
             @ _joint_motion(joint, q)
         )
-        gap = min(
-            box_gap_lower_bound_m(((t := t_jaw @ t_prim)[:3, 3], t[:3, :3], half), target)
-            for t_prim, half in boxes
-        )
-        at = gap <= 0.0
-        return at, (
-            f"{measure}; {jaw_link} collision geometry at q={q:.3f} "
-            + (f"overlaps it by {-gap:.3f} m" if at else f"is >= {gap:.3f} m from it")
+        mid = np.mean([(t_jaw @ t_prim)[:3, 3] for t_prim, _ in boxes], axis=0)
+        gap = box_gap_lower_bound_m((mid, target[1], np.zeros(3)), target)
+        return gap <= reach_m, (
+            f"{measure}; {jaw_link} closing midpoint (collision geometry at q={q:.3f}) at "
+            f"{tuple(round(float(v), 3) for v in mid)} is {gap:.3f} m outside it"
         )
 
     def _on_voxels(self, msg: Any) -> None:

@@ -1831,8 +1831,10 @@ if _ROS2_AVAILABLE:
             # release_clear_m: the deploy passes the kernel's world-voxel margin +
             # one voxel resolution. Both are 0.0 = unset, and REQUIRED with the leg
             # on: they belong to the kernel this deploy runs, so no cell's values are
-            # a safe fallback (refused at activate). release_timeout_s bounds the
-            # release window. See VisionAttachmentConfig.
+            # a safe fallback (refused at activate). release_clear_m above
+            # vision_attachment_bridge.MAX_RELEASE_CLEAR_M (0.1 m) is refused by the
+            # bridge at activate too. release_timeout_s bounds the release window. See
+            # VisionAttachmentConfig.
             self.declare_parameters(
                 "",
                 [
