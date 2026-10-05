@@ -464,6 +464,7 @@ def _vision_attachment_hal_params(leg: VisionAttachmentRuntime) -> dict[str, obj
         "vision_attachment_grasp_target_enabled": leg.grasp_target_enabled,
         "vision_attachment_grasp_target_approach_m": leg.grasp_target_approach_m or 0.0,
         "vision_attachment_grasp_target_margin_m": leg.grasp_target_margin_m,
+        "vision_attachment_grasp_target_primitives": leg.grasp_target_primitives,
         "vision_attachment_place_target_enabled": leg.place_target_enabled,
         "vision_attachment_release_timeout_s": leg.release_timeout_s,
     }

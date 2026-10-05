@@ -194,6 +194,21 @@ pick's identity at its release and never re-arms one it retired (HZ-0115-3). A
 named ``search_box`` wins: no approach detection runs for it, and it stays handed
 over after its pick.
 
+**Map primitives (``primitives=True``, default off; ``docs/reference/object-primitives-design.md``,
+issue #349).** A VLA never pauses for the head camera, so the region must exist before the
+fingers arrive without a clean unoccluded fit. In this mode the measurement tick does not
+ask the segmenter at all: the search column's support is measured as above, every
+26-connected component standing on it is fitted as a tight yaw box
+(``_object_primitives.primitives_from_voxels``), tracked under a stable identity across
+grids (``PrimitiveTracker``), and the one the armed hand is nearest — refused on a tie, or
+for a named search box unless exactly one lies in it (``nearest_primitive``) — is the
+candidate region, stamped with the grid's ``source_stamp`` and run through the same gates
+as a camera fit (``_gate_refit``: map cover, whole component, tracking against the held
+region, the own-hand occlusion hold, else a contradiction) before ``accept``. The kernel
+gets its cell closure as ever; nothing below this line changes. The map alone cannot
+tell a target from a body it touches or stands on (HZ-0115-30; the camera's
+``not_on_support``), which is why the mode is a prototype behind a parameter.
+
 Threading: every entry point here (tick, reply, deadline, declaration, teardown) and every
 bridge hook runs under the vision bridge's one re-entrant lock (``VisionAttachmentBridge``
 "Threading") — the bridge's ATTACH runs on the HAL's proprio thread, the leg's timers
@@ -249,6 +264,12 @@ from openral_hal._grasp_target import (
     target_region_from_masks,
     target_seed_from_voxels,
     track_region,
+)
+from openral_hal._object_primitives import (
+    PrimitiveTracker,
+    nearest_primitive,
+    primitives_from_voxels,
+    raised_anchor_xy,
 )
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
@@ -1419,6 +1440,9 @@ class GraspTargetLeg:
             *Calibration point* — it covers the TCP's offset from the finger
             surface; at most 0.10 m, beyond which any nearby arm pose
             would excuse a shrunken re-fit.
+        primitives: Measure the region from the voxel map's components instead of a
+            segmenter fit (module docstring "Map primitives"); ``False`` (the default)
+            keeps the camera path. From ``VisionAttachmentConfig.grasp_target_primitives``.
 
     Raises:
         ROSConfigError: On a rate outside 2-5 Hz; a non-positive cell count, cover
@@ -1441,8 +1465,11 @@ class GraspTargetLeg:
         support_probe_margin_m: float = 0.05,
         occluder_margin_m: float = 0.05,
         approach_m: float | None = None,
+        primitives: bool = False,
     ) -> None:
         """Validate the config; create no ROS entities yet."""
+        # Touched by the measurement tick only (``_tick_primitives``), never a reply.
+        self._primitives: PrimitiveTracker | None = PrimitiveTracker() if primitives else None
         if approach_m is not None and not 0.0 < approach_m <= GraspDeclaration.MAX_HALF_EXTENT_M:
             raise ROSConfigError(
                 f"grasp target approach_m must be in (0, {GraspDeclaration.MAX_HALF_EXTENT_M}] "
@@ -1571,6 +1598,7 @@ class GraspTargetLeg:
             f"occluder_margin={self._occluder_margin_m:.2f}m "
             f"approach={'off' if self._approach_m is None else f'{self._approach_m:.2f}m'} "
             f"margin={self._margin_m:.3f}m (pre-handover: every face; payload: sides+top) "
+            f"primitives={'map' if self._primitives is not None else 'off'} "
             f"deadline={self._config.deadline_s:.3f}s"
         )
 
@@ -1757,8 +1785,11 @@ class GraspTargetLeg:
         begun = self._begin_tick(now_ns)
         if begun is None:
             return
-        target, generation, grid = begun
+        target, generation, grid, source_ns = begun
         assert target.search_box is not None  # checked by ``_begin_tick``
+        if self._primitives is not None:
+            self._tick_primitives(now_ns, target, generation, grid, source_ns)
+            return
         try:
             try:
                 seed_point, support_z = self._seed(grid, target.search_box)
@@ -1769,9 +1800,97 @@ class GraspTargetLeg:
             return
         self._commit_request(now_ns, target, generation, grid, seed_point, support_z)
 
+    def _tick_primitives(
+        self,
+        now_ns: int,
+        target: GraspDeclaration,
+        generation: int,
+        grid: VoxelLattice,
+        source_ns: int,
+    ) -> None:
+        """One map-primitive measurement: support → components → the hand's one → gates → accept.
+
+        Pure work on the tick's grid snapshot runs outside the bridge lock; the hand
+        points and the held region are read under it, and the result is committed under
+        it only while the tracker generation is the one snapshotted (as ``_on_reply``).
+        """
+        assert self._primitives is not None
+        assert target.search_box is not None
+        try:
+            try:
+                box = target.search_box
+                # Anchor the support scan on what stands nearest the box centre, not on the
+                # surface under it: a hand approaching from the side is over bare support.
+                anchor = raised_anchor_xy(
+                    grid, search_column(box, below_m=self._search_below_m), box.pose.xyz[:2]
+                )
+                if anchor is None:
+                    raise _lost(
+                        "no_primitive", "nothing stands above the lowest surface in the column"
+                    )
+                column, _, _, support_z = self._measure_support(grid, box, near_xy=anchor)
+                fits, skipped = primitives_from_voxels(
+                    grid,
+                    column,
+                    support_z=support_z,
+                    min_cells=self._config.grasp_target_min_cells,
+                    max_half_extent_m=GraspDeclaration.MAX_HALF_EXTENT_M,
+                    max_volume_m3=GraspDeclaration.MAX_VOLUME_M3,
+                    stamp_ns=source_ns,
+                )
+                hands, previous = self._primitive_inputs(target, grid.frame_id)
+                tracked = self._primitives.update(
+                    fits, stamp_ns=source_ns, tol_m=grid.resolution, scanned=column
+                )
+                # A named search box names the object: only a lone primitive in it is
+                # unambiguous, whatever the hand does. An approach arming picks the one the
+                # hand is nearest.
+                approaching = target.target_id.startswith(APPROACH_TARGET_PREFIX)
+                index, why = nearest_primitive(
+                    [p.region for p in tracked],
+                    hands if approaching else (),
+                    ambiguity_m=grid.resolution,
+                )
+                if index is None:
+                    detail = f"{why}; {len(fits)} primitive(s) fitted, skipped: {skipped or 'none'}"
+                    if why.startswith("ambiguous"):
+                        raise _contradicted("ambiguous", detail)
+                    raise _lost("no_primitive", detail)
+                chosen = tracked[index]
+                region = chosen.region.model_copy(
+                    update={"evidence_ref": f"map_primitive:{chosen.primitive_id}@{source_ns}"}
+                )
+                accepted, _ = _gate_refit(
+                    grid,
+                    region,
+                    previous,
+                    support_z=support_z,
+                    min_cover=self._config.grasp_target_min_cover,
+                    column=column,
+                    hands=hands,
+                    occluder_margin_m=self._occluder_margin_m,
+                    hand_rise_m=self._approach_m or 0.0,
+                )
+            except ROSConfigError as exc:
+                raise _contradicted("rejected_inputs", str(exc)) from exc
+        except _Refusal as refusal:
+            self._refuse(refusal, now_ns=now_ns, generation=generation)
+            return
+        with self._lock:
+            self.tracker.accept(accepted, generation=generation, map_cells=chosen.cell_count)
+            if self.tracker.region is accepted:
+                self._support = (accepted, support_z)
+
     @_locked
-    def _begin_tick(self, now_ns: int) -> tuple[GraspDeclaration, int, VoxelLattice] | None:
-        """The tick's bookkeeping; ``(target, generation, grid)`` to measure, or ``None``."""
+    def _primitive_inputs(
+        self, target: GraspDeclaration, frame: str
+    ) -> tuple[list[tuple[float, float, float]], PlaceRegion | None]:
+        """The declared contact links' hand points and the held region, read together."""
+        return self._hands(target, frame), self.tracker.region
+
+    @_locked
+    def _begin_tick(self, now_ns: int) -> tuple[GraspDeclaration, int, VoxelLattice, int] | None:
+        """The tick's bookkeeping; ``(target, generation, grid, source_ns)``, or ``None``."""
         if self._torn_down:
             return None
         # A refusal applies to what was measured when it was raised: an arming or
@@ -1792,7 +1911,7 @@ class GraspTargetLeg:
                 if target is None or target.search_box is None:
                     return None
                 box = target.search_box
-                grid, _ = self._fresh_grid(now_ns)
+                grid, source_ns = self._fresh_grid(now_ns)
                 if box.frame_id != grid.frame_id:
                     raise _contradicted(
                         "frame_mismatch",
@@ -1804,7 +1923,7 @@ class GraspTargetLeg:
             self.tracker.presence_unknown()  # e.g. no fresh grid: no sample
             self._refuse(refusal, now_ns=now_ns, generation=generation)
             return None
-        return target, generation, grid
+        return target, generation, grid, source_ns
 
     @_locked
     def _commit_request(
@@ -2060,40 +2179,8 @@ class GraspTargetLeg:
         self, grid: VoxelLattice, box: PlaceRegion
     ) -> tuple[tuple[float, float, float], float]:
         """Measure the support under the box, then seed the one target above it — or refuse."""
-        try:
-            column = search_column(box, below_m=self._search_below_m)
-        except ROSConfigError as exc:
-            raise _contradicted("search_box_tilted", str(exc)) from exc
-        if self._probe_margin_m < 2.0 * grid.resolution - 1e-9:
-            # A config/grid mismatch, not evidence about the target: a lost view.
-            raise _lost(
-                "probe_margin_under_two_cells",
-                f"support_probe_margin_m={self._probe_margin_m:.3f} m is under two cells of "
-                f"the {grid.resolution:.3f} m grid; the support ring would be empty",
-            )
+        _, column_centers, near_xy, support_z = self._measure_support(grid, box)
         min_cells = self._config.grasp_target_min_cells
-        column_centers = occupied_centers_in_box(grid, column)
-        near_xy = (box.pose.xyz[0], box.pose.xyz[1])
-        # The ring lies outside the target's footprint, mostly outside a search box
-        # padded tightly around it: count it on the column grown to hold all of it.
-        grow = self._probe_margin_m + grid.resolution
-        hx, hy, hz = column.half_extents
-        around = column.model_copy(update={"half_extents": (hx + grow, hy + grow, hz)})
-        support_z = support_top_from_voxels(
-            grid,
-            column_centers,
-            near_xy=near_xy,
-            min_cells=min_cells,
-            probe_margin_m=self._probe_margin_m,
-            surface_centers=occupied_centers_in_box(grid, around),
-        )
-        if support_z is None:
-            raise _contradicted(
-                "no_support",
-                f"no layer in the column under the search box (down to "
-                f"{self._search_below_m:.2f} m below it) holds >= {min_cells} surface cells "
-                f"within {self._probe_margin_m:.2f} m around the target's footprint",
-            )
         # Seeded from the whole column, so a lifted box bottom cannot hide the
         # target's lower cells from the contact check below.
         seed = target_seed_from_voxels(
@@ -2118,6 +2205,52 @@ class GraspTargetLeg:
                 f"(> {2.0 * grid.resolution:.3f} m)",
             )
         return seed.point, support_z
+
+    def _measure_support(
+        self, grid: VoxelLattice, box: PlaceRegion, *, near_xy: tuple[float, float] | None = None
+    ) -> tuple[PlaceRegion, NDArray[np.float64], tuple[float, float], float]:
+        """The search column under ``box``, its occupied centres, the anchor xy and the support top.
+
+        ``support_top_from_voxels`` over the column (``search_column``), the target anchored
+        on the column nearest ``near_xy`` (the box centre by default) — or a refusal (a
+        tilted box, a probe margin under two cells, no ringed layer).
+        """
+        try:
+            column = search_column(box, below_m=self._search_below_m)
+        except ROSConfigError as exc:
+            raise _contradicted("search_box_tilted", str(exc)) from exc
+        if self._probe_margin_m < 2.0 * grid.resolution - 1e-9:
+            # A config/grid mismatch, not evidence about the target: a lost view.
+            raise _lost(
+                "probe_margin_under_two_cells",
+                f"support_probe_margin_m={self._probe_margin_m:.3f} m is under two cells of "
+                f"the {grid.resolution:.3f} m grid; the support ring would be empty",
+            )
+        min_cells = self._config.grasp_target_min_cells
+        column_centers = occupied_centers_in_box(grid, column)
+        if near_xy is None:
+            near_xy = (box.pose.xyz[0], box.pose.xyz[1])
+        # The ring lies outside the target's footprint, mostly outside a search box
+        # padded tightly around it: count it on the column grown to hold all of it.
+        grow = self._probe_margin_m + grid.resolution
+        hx, hy, hz = column.half_extents
+        around = column.model_copy(update={"half_extents": (hx + grow, hy + grow, hz)})
+        support_z = support_top_from_voxels(
+            grid,
+            column_centers,
+            near_xy=near_xy,
+            min_cells=min_cells,
+            probe_margin_m=self._probe_margin_m,
+            surface_centers=occupied_centers_in_box(grid, around),
+        )
+        if support_z is None:
+            raise _contradicted(
+                "no_support",
+                f"no layer in the column under the search box (down to "
+                f"{self._search_below_m:.2f} m below it) holds >= {min_cells} surface cells "
+                f"within {self._probe_margin_m:.2f} m around the target's footprint",
+            )
+        return column, column_centers, near_xy, support_z
 
     def _request(
         self,

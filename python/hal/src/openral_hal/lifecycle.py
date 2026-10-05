@@ -1880,6 +1880,8 @@ if _ROS2_AVAILABLE:
                     ("vision_attachment_grasp_target_occluder_margin_m", 0.05),
                     # Approach-armed target distance, metres; 0 = off (the default).
                     ("vision_attachment_grasp_target_approach_m", 0.0),
+                    # Map primitives instead of a segmenter fit (prototype, issue #349).
+                    ("vision_attachment_grasp_target_primitives", False),
                     # Grasp-target bloat, metres (0 = unbloated; a real value, not "unset"):
                     # the deploy scene's VisionAttachmentRuntime default.
                     (
@@ -2455,6 +2457,9 @@ if _ROS2_AVAILABLE:
                     grasp_target_margin_m=gp("vision_attachment_grasp_target_margin_m")
                     .get_parameter_value()
                     .double_value,
+                    grasp_target_primitives=gp("vision_attachment_grasp_target_primitives")
+                    .get_parameter_value()
+                    .bool_value,
                     place_target_enabled=gp("vision_attachment_place_target_enabled")
                     .get_parameter_value()
                     .bool_value,

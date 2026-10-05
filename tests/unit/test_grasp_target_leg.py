@@ -3458,3 +3458,101 @@ def test_a_margin_outside_its_bounds_is_refused_at_construction(margin: float) -
                 camera="head_zed", grasp_target_enabled=True, grasp_target_margin_m=margin
             ),
         )
+
+
+# ── map primitives: the region before contact, with no segmenter (issue #349) ────
+
+
+def _deck_and_two_props_lattice() -> VoxelLattice:
+    """20 mm cells: a deck (k=0-1, top face z=0.05) and two solid 10 cm props, 16 cm tall,
+    at (0.46, 0.0) and (0.46, 0.20)."""
+    size = (15, 25, 12)
+    occ = np.zeros(int(np.prod(size)), dtype=np.uint8)
+    cells = _cells(range(15), range(25), range(2))
+    for j0 in (7, 18):
+        cells |= _cells(range(8, 13), range(j0, j0 + 5), range(2, 10))
+    for a, b, c in cells:
+        occ[a + size[0] * (b + size[1] * c)] = 1
+    return VoxelLattice("openarm_base", (0.25, -0.2, 0.01), (0.0, 0.0, 0.0, 1.0), 0.02, size, occ)
+
+
+def test_map_primitives_measure_the_approached_target_with_no_segmenter() -> None:
+    """``grasp_target_primitives``: the hand 5 cm over a prop arms and, on the same tick,
+    holds that prop's map component as the region — stamped with the grid's world data,
+    within the kernel's contract — although no segmenter is in the graph at all. A
+    second tick tracks it under the same identity; the hand midway between two props is
+    a tie, refused (HZ-0115-2), and the hand leaving ends the arming."""
+    import time
+
+    with _live_leg("test_grasp_target_primitives", grasp_target_primitives=True) as live:
+        leg = live.leg
+        assert leg._primitives is not None and leg._bridge._client is None
+        leg._approach_m = 0.18  # the deploy's 0.20-class box: wide enough to hold a whole prop
+        now_ns = leg._now_ns()
+        source_ns = now_ns - 200_000_000
+        leg._bridge._grid = (_deck_and_two_props_lattice(), source_ns, time.monotonic())
+        live.place("left", (0.46, 0.0, 0.26))  # 5 cm over the first prop's top (0.21)
+        live.place("right", (0.46, -0.40, 0.40))
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+
+        leg._tick()
+        target = leg.tracker.target
+        assert target is not None and target.contact_links == _LEFT, "the left hand armed"
+        region = leg.tracker.region
+        assert region is not None, "no region on the arming tick"
+        assert region.evidence_ref == f"map_primitive:0@{source_ns}"
+        assert region.stamp_ns == source_ns, "stamped with the grid's world data, not now"
+        assert region.pose.xyz[0] == pytest.approx(0.46, abs=0.02)
+        assert region.pose.xyz[1] == pytest.approx(0.0, abs=0.02)
+        assert region.pose.xyz[2] - region.half_extents[2] == pytest.approx(0.05 + 0.02)
+        assert region.pose.xyz[2] + region.half_extents[2] == pytest.approx(0.21)
+        closed = leg.kernel_region(target.target_id, region)
+        GraspDeclaration.model_validate(target.model_dump() | {"region": closed})
+        envelope = leg.tracker.envelope(now_ns=now_ns)
+        assert envelope is not None and envelope.region == region
+        assert leg.measured_support(region) == pytest.approx(0.05)
+
+        leg._tick()  # a still scene: the same primitive, re-accepted from the same grid
+        held = leg.tracker.region
+        assert held is not None and held.evidence_ref == f"map_primitive:0@{source_ns}"
+
+        live.place("left", (0.46, 0.10, 0.26))  # midway between the two props: a tie
+        leg._tick()
+        assert leg.tracker.region is None, "a tie must not exempt either prop"
+
+        live.place("left", (0.46, 0.0, 0.60))  # 39 cm clear of the props
+        leg._tick()
+        assert leg.tracker.target == _goal_scope(stamp_ns=now_ns), "the approach ended"
+
+
+def test_a_named_search_box_grounds_to_the_lone_primitive_in_it_before_any_motion() -> None:
+    """A reasoner-grounded search box (no approach): the one primitive inside it is the
+    region at once, hands wherever they are; a box holding two is refused as ambiguous."""
+    import time
+
+    with _live_leg("test_grasp_target_primitives_named", grasp_target_primitives=True) as live:
+        leg = live.leg
+        now_ns = leg._now_ns()
+        leg._bridge._grid = (_deck_and_two_props_lattice(), now_ns, time.monotonic())
+        live.place("left", (0.20, 0.30, 0.60))  # the hand parked far from both props
+        live.place("right", (0.20, -0.30, 0.60))
+
+        def declare(y: float, half_y: float) -> None:
+            box = PlaceRegion(
+                frame_id="openarm_base",
+                pose=Pose6D(xyz=(0.46, y, 0.14), quat_xyzw=(0, 0, 0, 1), frame_id="openarm_base"),
+                half_extents=(0.10, half_y, 0.12),
+            )
+            leg.tracker.on_declaration(
+                _dispatched(stamp_ns=now_ns).model_copy(
+                    update={"target_id": f"obj:prop:{y}", "search_box": box, "contact_links": _LEFT}
+                )
+            )
+
+        declare(0.0, 0.08)
+        leg._tick()
+        region = leg.tracker.region
+        assert region is not None and region.pose.xyz[1] == pytest.approx(0.0, abs=0.02)
+        declare(0.10, 0.20)  # a box spanning both props
+        leg._tick()
+        assert leg.tracker.region is None

@@ -684,6 +684,14 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   `…AReleaseOnTheDeclaringChainRetiresWhileTheOtherHandHolds`,
   `…AHandedOverDeclarationThatLosesItsRegionRetires`,
   the runner in `packages/openral_rskill_ros/test/test_grasp_declaration_lifecycle.py`.
+- **Map primitives before contact (prototype, default off; issue #349):** a VLA never hovers for
+  the clean fit the measurement above needs. With `vision_attachment.grasp_target_primitives` the
+  leg measures the region from the voxel map's own components instead — every 26-connected
+  component standing on the measured support in the search column, fitted as a tight yaw box and
+  tracked across grids (`openral_hal._object_primitives`), the one the armed hand is nearest (or
+  the lone one in a reasoner's search box) run through the same gates and published on the arming
+  tick, no segmenter call. Design, residuals (a merged pair or a stacked body is one component)
+  and the drafted ADR-0116 amendment: [object-primitives-design.md](object-primitives-design.md).
 - **Representation:** an oriented box in `openarm_base` (reuse `PlaceRegion`): ~150 B, grid-instance
   independent, exact point-in-OBB already in the kernel.
 - **Tracking:** re-prompt from geometry at 2-5 Hz (project the previous centroid, re-fit, gate on
