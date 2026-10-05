@@ -543,7 +543,10 @@ def region_attachment(
     better payload than a re-segmentation. One box primitive with the region's half
     extents, posed at the region in the attach link; ``object_id`` is the declaration's
     ``object_id`` (what the kernel's handover matches the attachment against) or, when
-    that is empty, its ``target_id``.
+    that is empty, its ``target_id``. The bridge passes the region the kernel got — the
+    held fit closed over the map cells it touches (``GraspTargetLeg.kernel_region``,
+    Isaac i50) — so the target's own boundary cells are embedded residue at the
+    kernel's attach-time snapshot.
 
     **Support witness.** The target still rests on the support it was measured on, so
     the payload's own box meets the support's cells at ATTACH (Isaac i42: -1.9 mm, a
@@ -552,7 +555,11 @@ def region_attachment(
     lower face is pinned one voxel above it) — the payload carries the ADR-0092 D6
     ``SupportContactWitness`` on that plane (``_place_target_leg.plane_witness``,
     ``support_id = "map_support_under:<target_id>"``, ``MAP_SUPPORT_PROXIMITY``), stamped
-    ``stamp_ns``. ``None`` — nothing measured for this region — attests nothing.
+    ``stamp_ns``. ``None`` — nothing measured for this region — attests nothing. Its
+    patch radius is the published box's footprint (the closed one, not the tight fit):
+    the band must reach every support cell the published box can press into, and a
+    closed box pressed down meets support cells at its corners a tight-fit radius leaves
+    outside the band (a stop on the support it was attested on).
 
     Args:
         declaration: The live declaration, carrying the accepted ``region``.
@@ -2044,8 +2051,23 @@ class VisionAttachmentBridge:
             return None
         leg.region_spent = key
         extrinsic = self._config.place_target_extrinsic_error_m
+        # The payload is the box the kernel latched (Isaac i50): the held region closed
+        # over the map cells it touches (``GraspTargetLeg.kernel_region`` — clamped and
+        # logged there; the tight fit when the kernel got the tight fit). The target's
+        # own boundary cells then sit at least half a cell inside the payload at the
+        # kernel's attach-time snapshot — embedded residue, not obstacles. Grown up
+        # only, so the support layer stays outside. The producer's own checks
+        # (``on_attach``, ``measured_support``) keep the held ``region``.
+        closed = self._grasp_target.kernel_region(declaration.target_id, region)
+        self._node.get_logger().info(
+            f"vision attachment {leg.joint_name}: region payload for "
+            f"{declaration.target_id!r} closed over the map cells it touches: half "
+            f"{tuple(round(h, 4) for h in region.half_extents)} m tight -> "
+            f"{tuple(round(h, 4) for h in closed.half_extents)} m published, centre "
+            f"z {region.pose.xyz[2]:.4f} -> {closed.pose.xyz[2]:.4f} (bottom fixed)"
+        )
         held = region_attachment(
-            declaration,
+            declaration.model_copy(update={"region": closed}),
             attach_link=leg.producer.attach_link,
             touch_links=leg.producer.touch_links,
             t_link_from_region=t_link_from_region,
@@ -2057,7 +2079,8 @@ class VisionAttachmentBridge:
         if held.support_contact is not None:
             grid = self._grid
             tol = max(grid[0].resolution if grid is not None else 0.0, extrinsic)
-            leg.support_anchor = (region.frame_id, region.pose.xyz, tol)
+            # The payload frame's ATTACH pose: the closed box's centre.
+            leg.support_anchor = (closed.frame_id, closed.pose.xyz, tol)
             self._node.get_logger().info(
                 f"vision attachment {leg.joint_name}: {held.object_id!r} carries the measured "
                 f"support witness ({held.support_contact.evidence_ref}); retired once the "

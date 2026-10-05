@@ -567,6 +567,89 @@ def test_the_region_payload_carries_a_witness_only_on_a_measured_support() -> No
     assert wire.support_contact.patch_radius_m == 0.0  # the bare payload sends nothing
 
 
+def test_the_i50_region_payload_embeds_the_targets_boundary_cell_and_not_the_support() -> None:
+    """Isaac i50: after a clean region-payload ATTACH the kernel stopped on the target can's
+    own second-layer cell (centre (0.2175, -0.2325, -0.4575)). The kernel exempts an
+    attached payload's attach-time contact as embedded residue only at a snapshot distance
+    of at most -r/2; against the tight held fit that cell sat at about -4 mm (not residue),
+    so a commanded config ~19 mm below the measured one stopped on it. The payload is now
+    the box the kernel latched — the held fit closed over the 15 mm cells it touches
+    (``_kernel_closure``, as ``GraspTargetLeg.kernel_region`` publishes it): that cell's
+    centre is inside, so it is residue (<= -7.5 mm). Grown up only: the support layer under
+    the payload keeps a non-negative distance (never residue, HZ-0115-31). Distances are
+    the kernel's own 15-axis box/cell SAT (``box_gap_lower_bound_m`` == ``box_box_distance``),
+    on the payload as posed back from its attach link."""
+    from openral_core import DeployScene, PlaceRegion, Pose6D
+    from openral_core.geometry import homogeneous_from_quat_xyz, yaw_to_quat_xyzw
+    from openral_hal._grasp_target import VoxelLattice
+    from openral_hal._grasp_target_leg import _kernel_closure
+    from openral_hal.vision_attachment_bridge import box_gap_lower_bound_m, region_attachment
+
+    r = 0.015
+    grid = VoxelLattice(
+        "openarm_base",
+        (0.0, -0.3, -0.6),
+        (0.0, 0.0, 0.0, 1.0),
+        r,
+        (40, 40, 40),
+        np.zeros(40 * 40 * 40, dtype=np.uint8),
+    )
+    yaw = np.deg2rad(-80.4)
+    grow = 0.5 * r * (abs(np.cos(yaw)) + abs(np.sin(yaw)))
+    # i50's latched region (0.2642, -0.1875, -0.4288) half (0.0735, 0.0576, 0.0362),
+    # unclosed: the held (map-completed) fit the payload used to be.
+    tight = PlaceRegion(
+        frame_id="openarm_base",
+        pose=Pose6D(
+            xyz=(0.2642, -0.1875, -0.4288 - r / 4),
+            quat_xyzw=yaw_to_quat_xyzw(yaw),
+            frame_id="openarm_base",
+        ),
+        half_extents=(0.0735 - grow, 0.0576 - grow, 0.0362 - r / 4),
+        evidence_ref="segment_in_view:i50@0",
+        stamp_ns=5,
+    )
+    closed, note = _kernel_closure(tight, grid)
+    assert note == ""
+    np.testing.assert_allclose(closed.half_extents, (0.0735, 0.0576, 0.0362), atol=1e-9)
+    np.testing.assert_allclose(closed.pose.xyz, (0.2642, -0.1875, -0.4288), atol=1e-9)
+
+    scene = DeployScene.from_yaml(
+        "tests/unit/fixtures/scenes/openarm_direct_dispatch_grasp.yaml"
+    ).grasp_declaration
+    assert scene is not None
+    t_base_from_link = homogeneous_from_quat_xyz(
+        (0.25, -0.2, -0.33), (0.0, 0.7071068, 0.0, 0.7071068)
+    )
+
+    def payload_box(region: PlaceRegion) -> tuple[Any, Any, Any]:
+        held = region_attachment(
+            scene.model_copy(update={"region": region}),
+            attach_link="openarm_right_link7",
+            touch_links=("openarm_right_finger_pair",),
+            t_link_from_region=np.linalg.inv(t_base_from_link),
+            stamp_ns=7,
+            support_z=-0.48,
+        )
+        (prim,) = held.primitives
+        t = t_base_from_link @ homogeneous_from_quat_xyz(
+            held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
+        )
+        return t[:3, 3], t[:3, :3], np.asarray(prim.shape.half_extents_m)
+
+    def cell(xyz: tuple[float, float, float]) -> tuple[Any, Any, Any]:
+        return np.asarray(xyz), np.eye(3), np.full(3, r / 2)
+
+    boundary = cell((0.2175, -0.2325, -0.4575))  # voxel_125244, the can's own 2nd layer
+    support = cell((0.2625, -0.1875, -0.4875))  # the table layer under the payload
+    d_tight = box_gap_lower_bound_m(payload_box(tight), boundary)
+    d_closed = box_gap_lower_bound_m(payload_box(closed), boundary)
+    assert -0.5 * r < d_tight < 0.0 and d_tight == pytest.approx(-0.004, abs=5e-4)
+    assert d_closed <= -0.5 * r, "the target's own boundary cell is not embedded residue"
+    for box in (payload_box(tight), payload_box(closed)):
+        assert box_gap_lower_bound_m(box, support) >= 0.0, "the support layer became residue"
+
+
 def test_a_bimanual_bridge_builds_one_leg_per_gripper() -> None:
     """OpenArm's two hands each get a trigger, a producer and a unique object id."""
     bridge = VisionAttachmentBridge(
