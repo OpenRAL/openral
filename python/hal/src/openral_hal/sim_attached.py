@@ -939,6 +939,23 @@ class SimAttachedHAL:
         self._step_and_cache(env_action, source="send_action")
         self._last_applied_action = action
 
+    def discard_staged_slots(self) -> int:
+        """Drop a half-staged action group, keeping the committed watermark.
+
+        Called by the HAL lifecycle node at every ``/openral/estop`` latch and
+        ``/openral/estop_cleared`` (``_discard_staged_slots``), as for the MuJoCo and
+        real HALs: a tick cut short by a kernel stop never outlives it into the next
+        goal, whose first slot would otherwise report an incomplete group. A pre-stop
+        tick replayed afterwards is still refused as stale.
+
+        Returns:
+            How many staged slots were dropped.
+        """
+        dropped = len(self._pending_actions)
+        self._pending_actions.clear()
+        self._pending_action_key = None
+        return dropped
+
     def _stage_action_group(
         self,
         action: Action,

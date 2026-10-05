@@ -554,6 +554,7 @@ if _ROS2_AVAILABLE:
             # and the remapped `openral_hal_<robot_id>` is what diagnostics key on.
             self._node_name = self.get_name()
             self._hal: HAL | None = None
+            self._logged_no_slot_groups = False
             self._timer: Any = None
             self._publisher: Any = None
             self._joint_state_pub: Any = None
@@ -1552,6 +1553,12 @@ if _ROS2_AVAILABLE:
             """
             discard = getattr(self._hal, "discard_staged_slots", None)
             if discard is None:
+                if not self._logged_no_slot_groups:
+                    self._logged_no_slot_groups = True
+                    self.get_logger().info(
+                        f"openral_hal.slot_group_discard_skipped boundary={boundary}: "
+                        f"{type(self._hal).__name__} stages no slot groups"
+                    )
                 return
             dropped = int(discard())
             if dropped:
