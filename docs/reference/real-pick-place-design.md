@@ -193,9 +193,42 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   Voxel-consistent: inside one cell the map cannot tell another body from the target. Only the
   kernel-facing region grows — the held region (the tight fit, or its map completion below),
   every producer gate (`_gate_refit`, `region_within`, `track_region`, the cover check, the hand
-  tests) and the region payload are not closed. *Safety-WG:* enlarges the exempt volume by at most half a cell per side; chosen by the
-  user as WG reviewer; hazard row HZ-0115-26 (management Entry 055). Band row:
+  tests) are not closed; the region payload is (next item). *Safety-WG:* enlarges the exempt
+  volume by at most half a cell per side; chosen by the user as WG reviewer; hazard row
+  HZ-0115-26 (management Entry 055). Band row:
   `test_a_tight_fit_exempts_the_targets_boundary_cells_only_once_cell_closed`.
+- **The region payload is cell-closed too** (producer side, `VisionAttachmentBridge._region_payload`
+  → `GraspTargetLeg.kernel_region`; Isaac i50). After a clean region-payload ATTACH (handover
+  latched, support witness armed) the kernel stopped `attached:approach:… vs voxel_125244`, the
+  target can's own second-layer cell. The attached pass exempts a cell the payload already
+  overlapped at the attach-time snapshot only as *embedded residue* — snapshot distance
+  `<= -r/2` (`update_attached_voxel_contacts`, `collision.cpp`) — and against the tight held fit
+  that boundary cell sat at -3.9 mm (centre outside the fit); the octomap bridge withholds it
+  (support band), so it is never cleared, and the first commanded configuration sat ~19 mm below
+  the measured one (the arm pressed on the can), dropping the witness band — which rides with
+  the payload — below it. The payload is now the very box the kernel latched: the held region
+  closed over the map cells it touches (≤ `r/2·(|cos θ|+|sin θ|)` per horizontal half-extent,
+  `r/2` up, never down; clamped and logged as the published region is), so every cell the
+  target's surface touches has its centre inside the payload and is residue (i50's cell:
+  -12.5 mm). The bottom is not moved, so the support layer's snapshot distance stays `>= 0`
+  (never residue). The producer's own checks keep the held region: `on_attach` still compares
+  `held == region` against the tight (or completed) region, `measured_support` is keyed by it,
+  every tracking gate is unchanged; the payload origin is the closure's centre, inside the
+  latched region. One info line at ATTACH logs the tight vs published half-extents (CLAUDE.md
+  §1.4). The support witness's patch is the *published* footprint: a closed payload pressed
+  down meets support cells under its corners that a tight-footprint patch leaves outside the
+  band (a stop on the very support the witness attests); the band grows by at most the
+  closure's half-extent growth (≤ `r/√2` horizontally, `r/4` in the norm's vertical term) and
+  only at the support plane's height. Segmented payloads are unchanged. *Effects:* a stricter
+  carry/place envelope (the payload is up to half a cell larger per side), and the octomap
+  bridge clears a shell ~`r/2` wider around the held object. *Safety-WG:* chosen by the user as
+  WG reviewer; hazard row HZ-0115-31; kernel unchanged. Tests:
+  `tests/unit/test_vision_attachment_bridge.py::test_the_i50_region_payload_embeds_the_targets_boundary_cell_and_not_the_support`;
+  band row
+  `tests/integration/test_safety_kernel_place_allowance_band.py::test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells`
+  (real kernel: tight payload pressed 19 mm → REFUSED on the boundary cell; closed → ACCEPTED; a
+  foreign cell outside the closure → REFUSED; a tight-footprint witness patch on the closed
+  payload → REFUSED on a support cell).
 - **A fit is accepted only when the kernel's region holds the whole target** (producer side,
   `_gate_refit` → `occupied_touching_outside`; Isaac i40/i43). The map-cover gate needs only
   `grasp_target_min_cover` (0.5) of the fit's own footprint, so a fit of the part the head camera
@@ -244,8 +277,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   capture the closing fingers shrink below it is `occluded_refit` (held) or, with no hand of
   the robot's near, `unoccluded_refit` (retracted). The kernel gets its cell closure; the
   hand tests (`_hand_over_target`), the ATTACH confirmation (`on_attach`: `held == region`),
-  the region payload (one box, the completed one, centred in the region so the kernel's
-  payload-origin-inside-region handover holds) and its support witness
+  the region payload (one box, the completed one's cell closure since i50, centred in the
+  region so the kernel's payload-origin-inside-region handover holds) and its support witness
   (`measured_support`, recorded for the accepted — completed — region) all use it. Every
   retraction class is unchanged. The accept line logs `completed_from_map=<n> cell(s)` and
   the completed half-extents on entering that state (CLAUDE.md §1.4). *Residual:* a body
@@ -586,7 +619,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   (`GraspTargetLeg.measured_support`: the `support_top_from_voxels` top the accepted fit was
   stood on, its lower face one voxel above): `_place_target_leg.plane_witness` — the same
   construction the place leg uses — on `z = support_z`, normal +z, in the payload's object
-  frame, patch = the payload footprint, penetration = the extrinsic bound capped at 10 mm,
+  frame, patch = the (published, cell-closed) payload footprint, penetration = the extrinsic bound capped at 10 mm,
   `support_id = map_support_under:<target_id>`, `MAP_SUPPORT_PROXIMITY` (proximity to a
   map-measured plane, not sensed contact). No measured support for the region → no witness, the
   pre-i42 behaviour. A *segmented* payload gets none: its geometry is not the measured region
