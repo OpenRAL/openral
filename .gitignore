@@ -104,10 +104,6 @@ python/observability/src/openral_observability/dashboard/static/vendor/vad/ort-w
 python/observability/src/openral_observability/dashboard/static/vendor/vad/silero_vad_v5.onnx
 python/observability/src/openral_observability/dashboard/static/vendor/vad/silero_vad_legacy.onnx
 
-# The scripted Isaac pick/place driver's rSkill, linked in only while
-# tools/isaac_pick_place/run_trial.sh runs.
-rskills/_isaac_pick_place_driver
-
 # rSkill ONNX weights — binary artefacts reproduced locally via tools/export_rtdetr_onnx.py
 # ; provenance (sha256 + export command) recorded in rskills/*/README.md.
 # model.onnx.data is the external-data companion produced by the torch 2.9 new exporter
