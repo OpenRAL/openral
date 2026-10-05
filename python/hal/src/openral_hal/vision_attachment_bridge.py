@@ -70,7 +70,10 @@ dropped, so a late reply for an older event is discarded rather than overwriting
 what the newer event decided (a DETACH while a segmentation is in flight resolves
 to no attachment). A REGRASP always segments: the latched grasp-target region is a
 pre-grasp measurement and is the payload only on the first ATTACH of its
-declaration.
+declaration. A REGRASP on a held *region* payload whose segmentation the producer
+rejects keeps that payload (``_GripperLeg.regrasp_hold``, HZ-0115-34) rather than
+swapping in the generic jaw-span box: the object is still in the jaws, re-seated by at
+most their own travel, and the box overlapped the arm's own link5 (Isaac i63).
 Confirmation is geometric and an AND: a stall attaches with vision-measured
 geometry only when vision agrees — the grasp-target leg's latched pre-grasp
 region with the jaw at it (preferred: the hand occludes the head camera at that
@@ -130,7 +133,13 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
-from openral_core import CameraTopicKind, ControlMode, VisionAttachmentRuntime, camera_topic
+from openral_core import (
+    AttachmentEvidenceKind,
+    CameraTopicKind,
+    ControlMode,
+    VisionAttachmentRuntime,
+    camera_topic,
+)
 from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 from openral_core.exceptions import ROSConfigError
 from openral_core.geometry import homogeneous_from_quat_xyz
@@ -224,6 +233,8 @@ class _GripperLeg:
         support_anchor: ``(frame, payload origin, tolerance)`` at the ATTACH whose region
             payload carries the measured-support witness, until that witness is retired
             (``VisionAttachmentBridge._retire_lifted_supports``); ``None`` otherwise.
+        regrasp_hold: The region payload this leg held when a REGRASP began segmenting,
+            kept if that segmentation is rejected (``_finish``); ``None`` otherwise.
     """
 
     joint_name: str
@@ -244,6 +255,7 @@ class _GripperLeg:
     close_baseline: tuple[int, int] | None = None
     close_reported: bool = False
     support_anchor: tuple[str, tuple[float, float, float], float] | None = None
+    regrasp_hold: Any = None
 
 
 def _published(leg: _GripperLeg) -> AttachedCollisionObject | None:
@@ -1531,6 +1543,7 @@ class VisionAttachmentBridge:
                 held = leg.attachment
                 self._open_release(leg)
                 leg.attachment = None
+                leg.regrasp_hold = None
                 self._publish_attachment()
                 if leg.pending:
                     self._release_barrier(leg)
@@ -1702,6 +1715,14 @@ class VisionAttachmentBridge:
         Only an ATTACH may take the region: on a REGRASP the jaws have re-seated the
         payload away from where the pre-grasp region measured it, so it is segmented.
         """
+        held_now = leg.attachment
+        leg.regrasp_hold = (
+            held_now
+            if event is GraspEvent.REGRASP
+            and held_now is not None
+            and held_now.evidence_kind is AttachmentEvidenceKind.GRASP_TARGET_REGION
+            else None
+        )
         taken = self._region_payload(leg, stamp_ns=stamp_ns) if event is GraspEvent.ATTACH else None
         if taken is not None:
             held, region = taken
@@ -1978,6 +1999,21 @@ class VisionAttachmentBridge:
                     f"vision attachment {leg.joint_name}: a newer grasp event superseded this "
                     "fit while it ran; dropped"
                 )
+                return
+            kept, leg.regrasp_hold = leg.regrasp_hold, None
+            if kept is not None and not report.accepted:
+                # A REGRASP on a region payload whose re-segmentation the producer rejected
+                # (the mask took in the arm, an off-extent fit): the object is still in the
+                # jaws, re-seated by at most the jaw's own travel, and the measured region
+                # payload is its geometry. The generic jaw box would replace it (HZ-0115-34:
+                # Isaac i63, the box overlapped link5 by 32 mm and stopped a carry).
+                self._node.get_logger().warning(
+                    f"vision attachment {leg.joint_name}: REGRASP segmentation rejected "
+                    f"({list(report.rejections) or reason}); keeping the held "
+                    f"{kept.object_id!r} region payload instead of the jaw-span box"
+                )
+                self._publish_attachment()
+                self._release_barrier(leg)
                 return
             leg.attachment = attachment
             if self._grasp_target is not None and attachment is not None:
