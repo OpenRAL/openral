@@ -552,9 +552,10 @@ def region_attachment(
     **Support witness.** The target still rests on the support it was measured on, so
     the payload's own box meets the support's cells at ATTACH (Isaac i42: -1.9 mm, a
     stop 90 ms after the handover). Given ``support_z`` — the support top the grasp-target
-    leg measured under *this* region (``GraspTargetLeg.measured_support``; the region's
-    lower face is pinned one voxel above it) — the payload carries the ADR-0092 D6
-    ``SupportContactWitness`` on that plane (``_place_target_leg.plane_witness``,
+    leg measured under *this* region (``GraspTargetLeg.measured_support``; the held
+    region's lower face is pinned one voxel above it, the payload's rests on it) — the
+    payload carries the ADR-0092 D6 ``SupportContactWitness`` on that plane
+    (``_place_target_leg.plane_witness``,
     ``support_id = "map_support_under:<target_id>"``, ``MAP_SUPPORT_PROXIMITY``), stamped
     ``stamp_ns``. ``None`` — nothing measured for this region — attests nothing. Its
     patch radius is the attached box's footprint (the bloated, closed one, not the tight
@@ -628,7 +629,7 @@ def region_attachment(
         extrinsic_error_m=extrinsic_error_m,
         detail=(
             f"support top z={support_z:.4f} measured under the target (support_top_from_voxels); "
-            "the region's lower face is pinned one voxel above it"
+            "the payload's lower face rests on it"
         ),
         stamp_ns=stamp_ns,
     )
@@ -2060,8 +2061,10 @@ class VisionAttachmentBridge:
             return None
         leg.region_spent = key
         extrinsic = self._config.place_target_extrinsic_error_m
-        # The payload is the held region bloated by the grasp-target margin on the sides
-        # and the top (never down: the support stays outside it; HZ-0115-32) and closed
+        # The payload is the held region lowered onto the measured support top (the
+        # target's own bottom layer is payload, Isaac i56/i57), bloated by the
+        # grasp-target margin on the sides and the top (never down: the support stays
+        # outside it; HZ-0115-32) and closed
         # over the map cells it touches (``GraspTargetLeg.kernel_region(payload=True)`` —
         # the margin capped, clamped and logged there; the tight fit when the kernel got
         # the tight fit). It lies inside the box the kernel latched (bloated on every
@@ -2076,8 +2079,9 @@ class VisionAttachmentBridge:
             f"{self._config.grasp_target_margin_m:.3f} m (sides+top) and closed over the "
             f"map cells it touches: half "
             f"{tuple(round(h, 4) for h in region.half_extents)} m held -> "
-            f"{tuple(round(h, 4) for h in closed.half_extents)} m attached, centre "
-            f"z {region.pose.xyz[2]:.4f} -> {closed.pose.xyz[2]:.4f} (bottom fixed)"
+            f"{tuple(round(h, 4) for h in closed.half_extents)} m attached, "
+            f"bottom z {region.pose.xyz[2] - region.half_extents[2]:.4f} -> "
+            f"{closed.pose.xyz[2] - closed.half_extents[2]:.4f} (onto the measured support)"
         )
         held = region_attachment(
             declaration.model_copy(update={"region": closed}),
@@ -2091,7 +2095,16 @@ class VisionAttachmentBridge:
         leg.support_anchor = None
         if held.support_contact is not None:
             grid = self._grid
-            tol = max(grid[0].resolution if grid is not None else 0.0, extrinsic)
+            # The payload's lower face rests on the support top (``lowered_to_support``),
+            # so the witness lives until the payload has risen clear of the kernel's world
+            # margin plus one cell (``release_clear_m``, the deploy's derivation): retired
+            # any sooner, the support's own cells sit inside the margin (a stop on the real
+            # cell's 20 mm margin).
+            tol = max(
+                grid[0].resolution if grid is not None else 0.0,
+                extrinsic,
+                self._config.release_clear_m,
+            )
             # The payload frame's ATTACH pose: the closed box's centre.
             leg.support_anchor = (closed.frame_id, closed.pose.xyz, tol)
             self._node.get_logger().info(
@@ -2111,10 +2124,12 @@ class VisionAttachmentBridge:
         (``support_patch_withholds``) — the band rides with the payload, so the carried
         object's own lowest cells, seen by the head camera, would keep it alive through the
         carry. The producer retires it on its own geometry instead: the payload frame moved
-        more than ``max(resolution, extrinsic_error_m)`` from its ATTACH pose (a lift, a
-        slide), or tf2 cannot place it (the exemption dies on any doubt). For good: the
-        payload keeps its identity and stamp, and the kernel re-arms only a new
-        (object, support, stamp) key. Throttled to the place leg's witness period.
+        more than ``max(resolution, extrinsic_error_m, release_clear_m)`` from its ATTACH
+        pose (a lift, a slide; ``release_clear_m`` is the kernel's world margin plus a cell,
+        as the payload rests on the support top), or tf2 cannot place it (the exemption
+        dies on any doubt). For good: the payload keeps its identity and stamp, and the
+        kernel re-arms only a new (object, support, stamp) key. Throttled to the place
+        leg's witness period.
         """
         now_s = time.monotonic()
         if now_s - self._support_checked_s < _WITNESS_PERIOD_S:
