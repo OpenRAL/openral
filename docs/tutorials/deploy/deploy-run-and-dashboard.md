@@ -200,25 +200,28 @@ mostly lost before any consumer sees them: export the same variable there
 The scene has **no `sensors:` block**. The ZED is bolted to the robot, so both of
 its streams are robot cameras, and a deploy scene never touches a camera the
 robot manifest defines (`check_scene_sensor_overrides` refuses a scene entry
-that reuses a manifest sensor's name). The bindings go on the manifest's own
-entries, in `robots/<robot>/robot.yaml`, next to the geometry they belong to —
-this is what `robots/openarm/robot.yaml` commits:
+that reuses a manifest sensor's name). The manifest owns each camera's identity and frames
+(`robots/<robot>/robot.yaml`); its real-hardware `deploy_binding` and calibrated mount go
+in the unit overlay, `robots/<robot>/units/<unit>.yaml` — this is what
+`robots/openarm/units/thor.yaml` commits:
 
 ```yaml
+schema_version: "0.1"
+robot_id: openarm
+unit: thor
 sensors:
   # Depth: SDK-computed, so it exists only as a topic. `32FC1` metres on the
   # wire (or `16UC1` millimetres with `openni_depth_mode: true`) — either way
-  # it reaches the world state as DEPTH16, uint16 millimetres.
+  # it reaches the world state as DEPTH16, uint16 millimetres. Modality,
+  # frame_id and parent_frame stay in robot.yaml; the unit adds the
+  # calibrated mount and the binding.
   - name: head_zed
-    modality: depth
-    frame_id: zed_camera_link
-    parent_frame: openarm_base      # the mount: robot geometry, calibrated here
-    # … static_transform_xyz_rpy, intrinsics …
+    static_transform_xyz_rpy: [0.06597, -0.004548, 0.094539, -0.055916, 1.145014, -0.036625]
     deploy_binding:
       backend: ros2_image
       backend_params:
-        # Verified against a running zed_wrapper: the topic root is
-        # /<camera_name>/<node_name>/, so the node name is part of the path.
+        # The zed_wrapper topic root is /<camera_name>/<node_name>/, so the
+        # node name is part of the path.
         topic: /zed/zed_node/depth/depth_registered
         # best_effort (the default) also matches a RELIABLE publisher; a
         # `reliable` subscriber gets NOTHING from a best-effort one.
@@ -230,8 +233,6 @@ sensors:
   # published as `bgra8`; the reader drops the constant alpha plane and
   # delivers `bgr8`.
   - name: top
-    modality: rgb
-    # … frame_id, intrinsics, vla_feature_key …
     deploy_binding:
       backend: ros2_image
       backend_params:
@@ -328,8 +329,8 @@ runtime:
   # p99 ~1.0 s; hard cap 3.0 s). Measure yours; below the rig's latency tail the robot stops.
   # world_voxel_data_age_budget_s: 1.5
   # Optional, per rig (real camera only): how far past the robot's collision model a
-  # depth return is removed as the robot before octomap. Provisional 0.02 m; derive
-  # it from depth noise, extrinsic error, capture-to-joint-state motion and half a voxel.
+  # depth return is removed as the robot before octomap. 0.02 m is measured at rest on
+  # the OpenArm cells; derive it from depth noise, extrinsic error, capture-to-joint-state motion and half a voxel.
   # It is also a blind shell around the arm, so do not raise it without that derivation
   # (hard cap 0.10 m).
   # robot_self_filter_padding_m: 0.02

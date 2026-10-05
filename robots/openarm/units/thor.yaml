@@ -7,13 +7,9 @@
 # the arm's ~1 cm of joint play); the value is declared here as the
 # operator's calibration, which is what `deploy run` requires (runbook step 2).
 # Measure again if the ZED head is touched: the camera's view of the floor shifted by about
-# 1 deg between 2026-10-01 and 2026-10-02 with nothing deliberately moved. Earlier starting
-# estimates for this cell, oldest first: 2026-09-25 resting-arm fit (height and yaw
-# unresolved), 2026-10-01 table-plane + tape-measure correction (the ZED had been
-# reconnected and moved), 2026-10-01 fits over 3-10 poses (tilt unresolved).
+# 1 deg between 2026-10-01 and 2026-10-02 with nothing deliberately moved.
 #
-# Per-host camera bindings. Carried over unchanged from robot.yaml, which served every
-# OpenArm cell before per-unit overlays existed; re-check the Arducam by-id paths with
+# Per-host camera bindings. Re-check the Arducam by-id paths with
 # `ls -l /dev/v4l/by-id` on this host. The ros2_image topics are zed_wrapper's, launched
 # by the OpenArm scenes' `drivers:`. Selected by $OPENRAL_ROBOT_UNIT or a scene's
 # `robot_unit`.

@@ -74,15 +74,14 @@ rule's measured 0.26–0.30 ms.
 Tests (`test_octree_to_grid`, no ROS graph, real `octomap::OcTree`):
 - `TheGridIsTheOctreeCellForCellAtEveryPhaseAndYaw` — no obstacle lost, no
   reach surrendered, over swept phases/yaws.
-- `TheFieldPanelKeepsTheColumnItActuallyOccupies` — replays the
-  `robocasa_drawer_utensil` geometry (face at x=+0.0614, 25 mm, 12.1 mm phase).
-- `ASlabIsNeverMissedAndNeverFurtherForwardThanTheLatticesExplain` — sweeps
-  all 25 phases of a 25 mm lattice.
-- `EveryPhaseAndYawKeepsEveryCellTheCentreSampleWouldHaveMarked`,
-  `APhaseAlignedGridRasterizesExactlyAsCentreSamplingDid`,
+- `TheFieldPanelIsNeverReportedNearerThanTheOctreeItselfSaysAtAnyPhase` —
+  a face is never reported nearer than the octree places it, at any phase.
+- `TheOrientationIsTheOctreeToBaseRotationAndIsAlwaysAUnitQuaternion`,
+  `AnUnplaceableLatticePublishesNoCellsRatherThanWrongOnes`,
+  `AnAbsurdSpecIsRefusedRatherThanAllocated`,
   `ACoarseLeafMarksEveryCellUnderIt`,
-  `AnObliqueLeafMarksTheCellsItEntersAndNotTheirDiagonals`,
-  `AGridOutsideTheOctreesKeyRangeStillSeesEveryLeaf`,
+  `AGridStraddlingTheOctreesKeyRangeStillSeesEveryLeaf`.
+- `RasterizationCostAcrossTreeResolutions`,
   `RasterizingTheKitchenStaysInsideThePublishBudget` — hold the publish
   budget to a quarter of the 10 Hz period.
 
@@ -380,7 +379,8 @@ exist — this bridge never reads `AttachmentState.place_declaration`.
 
 The two predicates (bridge vs. kernel) are a deliberate cross-package
 mirror — consolidating them would couple this Layer-2 node to the Layer-6
-kernel's collision core — see `docs/methods/14-duplication-watch.md`, item 8.
+kernel's collision core — see `docs/methods/14-duplication-watch.md`, "Support-contact patch predicate"
+(Deliberate mirrors).
 
 **No latch beyond the attach window and the support anchor.** Withholding is derived from the wire
 attestation every publish; the bridge's memory is `AttachSweepLedger`'s
@@ -534,8 +534,8 @@ Requires TF from `base_frame` into the OctoMap's `header.frame_id` (usually
 | `attached_state_timeout_s` | `0.5` | Attachment state older than this clears nothing. |
 | `attach_link_tf_frames` | `[]` (none) | `"link=frame"` renames for the TF lookup of a payload's attach link: the published `attach_link` is the manifest's name (the kernel's collision model uses manifest names), but a real cell's TF tree may name that body differently (OpenArm: `openarm_left_link7` is `openarm_left_ee_base_link`). Unmapped links are looked up as themselves. `deploy_e2e.launch.py` passes the scene's `vision_attachment.tf_frames` — the strings the HAL gets as `vision_attachment_tf_frames` — and nothing when the leg is off. A malformed or conflicting entry refuses the whole mapping (logged ERROR): every link is then looked up by its own name and, on such a cell, its payload stays in the map. An unmapped link whose lookup fails logs a one-time hint to set this. |
 
-`size_{x,y,z} = ceil(box_size / resolution)`. Keep
-`size_x*size_y*size_z ≤ world_voxel_max_cells` (kernel default 262144), or
+`size_x = size_y = size_z = ceil(2·coverage_radius_m / resolution)`. Keep
+`size_x*size_y*size_z ≤ world_voxel_max_cells` (kernel default 614125 = 85³, 1.05 m at 25 mm cells), or
 the kernel fails closed.
 
 ## Producing the upstream OctoMap

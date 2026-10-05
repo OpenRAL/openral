@@ -10,8 +10,7 @@
 # hanging arms the height and yaw are unresolved (a re-fit moved the height 28 mm with no
 # change in residual, 2026-09-26), so it is a starting point for the calibration, not one.
 #
-# Per-host camera bindings. Carried over unchanged from robot.yaml, which served every
-# OpenArm cell before per-unit overlays existed; re-check the Arducam by-id paths with
+# Per-host camera bindings. Re-check the Arducam by-id paths with
 # `ls -l /dev/v4l/by-id` on this host. The ros2_image topics are zed_wrapper's, launched
 # by the OpenArm scenes' `drivers:`. Selected by $OPENRAL_ROBOT_UNIT or a scene's
 # `robot_unit`.

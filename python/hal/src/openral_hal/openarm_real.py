@@ -385,8 +385,7 @@ class OpenArmRealHAL(RosControlHAL):
             position=_reordered("position", absent=zeros),
             velocity=_reordered("velocity", absent=zeros),
             # An absent effort channel stays empty, never zero-filled: zeros
-            # would read as "gripper unloaded" and hide a driver that publishes
-            # no effort from the grasp trigger's missing-effort count.
+            # would fake an effort reading that the driver never published.
             effort=_reordered("effort", absent=[]),
             stamp_ns=state.stamp_ns,
         )

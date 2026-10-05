@@ -10249,11 +10249,10 @@ class DeployRuntime(BaseModel):
     ``openral_octomap_bridge``'s ``robot_self_filter`` before octomap inserts
     the cloud. Real camera path only; sim renders the robot transparent.
 
-    PROVISIONAL: 0.02 m (user decision 2026-09-25, down from the 0.05 m Thor
-    starting guess, since the filter now measures against the kernel's exact
-    link hulls rather than their boxes) is pending a Thor measurement: the p99
-    distance of the robot's own depth points outside its collision geometry,
-    from depth + joint states over several poses. Derive it per rig from the
+    0.02 m is measured AT REST on the OpenArm Thor and Orin cells (2026-09-25,
+    ZED-M, arms at q = 0): the robot's own depth returns end 5-7.5 mm outside
+    the kernel's link hulls. The tail with the arms moving is unmeasured
+    (``scenes/deploy/openarm_real_world_voxels.yaml``). Derive it per rig from the
     camera's depth noise at working range, the camera extrinsic error, how far
     a link moves between the cloud's capture and the joint state used to pose
     it, and half a voxel. It is also

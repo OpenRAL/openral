@@ -227,7 +227,7 @@ view**: the scene's `context` key reached the camera readers but not the
 runner, which kept the manifest's `top` → `base` slot, so lerobot fed a
 masked blank in its place. `compose_runtime` now merges the scene's
 `sensors:` (workcell cameras only, since the robot's own are bound in
-`robot.yaml`) into the one description every consumer reads.
+the unit overlay, `units/<unit>.yaml`) into the one description every consumer reads.
 
 ## Action layout (16 DoF)
 

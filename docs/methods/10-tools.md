@@ -106,7 +106,7 @@ _The four-scene collision-stack validation matrix as one versioned command, emit
 - `monitor_subscription_records(records) -> int` — Record count excluding the monitor's own start/stop markers, i.e. what it actually received. `0` means the monitor's DDS participant missed the run — a harness fault, not evidence the run stopped early. (L374)
 - `build_witness_timeline(records, deploy_lines) -> ValidationWitnessTimeline` — Producer side from the monitor, consumer side from the kernel's own `safety.support_witness_*` / `safety.place_region_*` lines. (L396)
 - `probe_is_collidability_filtered(snapshot) -> bool` — Whether every non-empty coverage block in the snapshot excludes non-collidable side geoms, i.e. the HAL filtered both sides of each probe to solid geoms. `False` for any snapshot recorded before that filter existed. (L498)
-- `hal_admissible_gap_m(snapshot, stop) -> float | None` — The HAL's own kernel-vs-probe budget for a stop, dispatched by stop class. `None` for a snapshot predating the budget; an over-large budget silently excuses a stop rather than failing loudly, which is the direction that hides a real defect. (L566)
+- `hal_admissible_gap_m(snapshot, stop, grid_resolution_m=None) -> float | None` — The HAL's own kernel-vs-probe budget for a stop, dispatched by stop class. `None` for a snapshot predating the budget; an over-large budget silently excuses a stop rather than failing loudly, which is the direction that hides a real defect. (L566)
 - `_payload_world_gap_m(budget, grid_resolution_m) -> float | None` — The payload-vs-world-voxel half of `hal_admissible_gap_m`: model overhang plus the voxel half-diagonal, re-derived when the snapshot's voxel term is zero. Returns `None` (unadjudicated) rather than a number that convicts when it can't be computed.
 - `_arm_world_gap_m(budget, grid_resolution_m) -> float | None` — The arm-link-vs-world-voxel half: corner slop of the worst link plus the voxel half-diagonal, re-derived when the snapshot's is zero so an omission can't understate the budget. Falls back to the published composition when a term is absent.
 - `_link_link_gap_m(budget, stop) -> float | None` — The link-vs-link half, extracted alongside it so the dispatcher above reads as one line per stop class.
@@ -144,7 +144,7 @@ _The four-scene collision-stack validation matrix as one versioned command, emit
 - `parse_log_start_time(lines) -> str | None` — UTC timestamp of the log's first ROS stamp; pre-harness rounds recorded no start time, their logs did. (L2754)
 - `resolve_scene_dirs(round_dir, aliases) -> dict[str, str]` — Map each matrix scene onto the directory a round kept it in; `--scene-alias` wins over `LEGACY_SCENE_DIRS`. (L2778)
 - `cmd_verdicts(round_dir, *, stem=None) -> int` (L2587) — `stem=None` reads the round's recorded `artifact_stem`.
-- `cmd_diff(round_dir, baseline_dir, out_path) -> int` (L2638) — `verdicts` subcommand body: field-by-field round comparison via `diff_rounds`.
+- `cmd_diff(round_dir, baseline_dir, out_path) -> int` (L2638) — `diff` subcommand body: field-by-field round comparison via `diff_rounds`; `out_path=None` prints.
 - `cmd_import(args) -> int` (L2808) — `import-round` subcommand body.
 - `cmd_run(args) -> int` (L2897) — `run` subcommand body.
 - `main(argv=None) -> int` — CLI entry; `run` / `verdicts` / `diff` / `import-round`. `3` on a guardrail refusal (nothing written), `4` when a scene bucketed `harness-error`. (L2977)

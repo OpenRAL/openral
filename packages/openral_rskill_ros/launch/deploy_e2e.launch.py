@@ -3729,7 +3729,7 @@ def generate_launch_description() -> LaunchDescription:
             description=(
                 "Real camera path: how far past the collision model a depth return is "
                 "removed as the robot (DeployRuntime.robot_self_filter_padding_m). "
-                "Empty = the schema default, 0.02 m (provisional); hard cap 0.10 m."
+                "Empty = the schema default, 0.02 m (measured at rest); hard cap 0.10 m."
             ),
         ),
         DeclareLaunchArgument(
