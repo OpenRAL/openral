@@ -1039,30 +1039,21 @@ def _gripper_spec(
     }
 
 
-# Public description packages fetched on demand when no sourced workspace or
-# ancestor directory provides them: ``{package: "module:function"}`` returning
-# the package root.
-_PUBLIC_ROS_PACKAGES: dict[str, str] = {
-    "openarm_description": "openral_hal._openarm_description_assets:ensure_openarm_description",
-}
-
-
 def _fetch_public_package(pkg: str) -> Path | None:
-    """The root of a known public ``pkg`` (``_PUBLIC_ROS_PACKAGES``), else ``None``."""
-    import importlib
+    """The root of a known public ``pkg`` (``openral_hal.ros_package_overlay``), else ``None``."""
+    # Lazy: openral_hal's package import pulls torch/lerobot.
+    from openral_hal.ros_package_overlay import PUBLIC_ROS_PACKAGES, fetch_public_package
 
-    target = _PUBLIC_ROS_PACKAGES.get(pkg)
-    if target is None:
+    if pkg not in PUBLIC_ROS_PACKAGES:
         return None
     # A fallback, said out loud (CLAUDE.md §1.4): the first use clones a pinned
     # public repo into the openral cache.
     print(
         f"[isaac-sim] package://{pkg}/ is on no AMENT_PREFIX_PATH entry and not "
-        f"beside the URDF; using the pinned public clone ({target}).",
+        "beside the URDF; using its pinned public clone.",
         flush=True,
     )
-    module, _, func = target.partition(":")
-    return Path(getattr(importlib.import_module(module), func)())
+    return fetch_public_package(pkg)
 
 
 def _ros_package_paths(urdf_path: Path) -> list[dict[str, str]]:
@@ -1072,8 +1063,9 @@ def _ros_package_paths(urdf_path: Path) -> list[dict[str, str]]:
     so a URDF whose meshes live in a sourced workspace imports without copying
     them; else an ancestor directory of the URDF named ``<pkg>`` (a standalone
     description repo, e.g. the ``robot_descriptions`` cache); else a known
-    public package fetched into the openral cache (``_PUBLIC_ROS_PACKAGES`` —
-    e.g. Enactic's ``openarm_description``).
+    public package fetched into the openral cache
+    (``openral_hal.ros_package_overlay.PUBLIC_ROS_PACKAGES`` — e.g. Enactic's
+    ``openarm_description``).
 
     Raises:
         ROSConfigError: a referenced package is found neither way.
