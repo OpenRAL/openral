@@ -281,13 +281,17 @@ A dynamic object without physics gets a rigid body and convex-hull colliders;
 observation).
 
 **Cameras**: every manifest RGB/depth sensor becomes an Isaac camera with a
-1 cm near clip and the FOV of its manifest intrinsics. Unmounted, it gets a
-generic base-relative viewpoint (not its `frame_id`'s view — the load prints
-every robot-framed camera left that way; one can render all-black inside the
-stage); `backend_options.camera_mounts` puts it on a robot link instead, so it
-rides that link (a wrist camera follows the wrist). The shipped OpenArm scene
-mounts its wrist cameras at the MuJoCo twin's `camera_wrist_*` poses
-(`axes: usd`):
+1 cm near clip, rendered at its manifest intrinsics' raster (a depth camera at
+that aspect, no wider than `observation_width`) with their FOV. Each is mounted
+from the manifest, a selected robot unit's calibration included
+(`$OPENRAL_ROBOT_UNIT`, which `deploy` sets from the scene's `robot_unit`): a
+sensor that `shares_mount_with` another rides that one's mount, a sensor with
+`parent_frame` + `static_transform_xyz_rpy` rides that link, and one the robot's
+MJCF declares a camera for rides the MJCF body at that camera's pose (`axes:
+usd`, the MJCF's FOV unless the unit calibrated the intrinsics). A camera none of
+these places gets a generic base-relative viewpoint (not its `frame_id`'s view —
+the load prints every robot-framed camera left that way; one can render
+all-black inside the stage). `backend_options.camera_mounts` overrides a mount:
 
 ```yaml
     camera_mounts:

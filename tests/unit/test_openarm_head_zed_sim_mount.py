@@ -80,3 +80,27 @@ def test_head_zed_sim_camera_matches_its_tf_mount() -> None:
     camera_optical = _quat_xyzw_to_matrix(qx, qy, qz, w) @ np.diag([1.0, -1.0, -1.0])
     mount_optical = mount @ _quat_xyzw_to_matrix(*BODY_TO_OPTICAL_QUAT_XYZW)
     assert _angle_deg(camera_optical, mount_optical) < 0.05
+
+
+def test_top_shares_head_zeds_mount_and_a_bad_reference_is_refused() -> None:
+    """`top` is the ZED's left image: it names head_zed's mount instead of restating it.
+
+    A reference must land on a sensor that declares its own mount; anything else (a
+    sensor with no static transform, a chain, an unknown name) is refused at load.
+    """
+    import pytest
+    import yaml
+
+    path = Path(__file__).resolve().parents[2] / "robots/openarm/robot.yaml"
+    desc = RobotDescription.from_yaml(str(path))
+    by_name = {s.name: s for s in desc.sensors}
+    assert by_name["top"].shares_mount_with == "head_zed"
+    assert by_name["head_zed"].static_transform_xyz_rpy is not None
+    data = yaml.safe_load(path.read_text())
+    for bad in ("wrist_left", "top", "no_such_sensor"):
+        broken = {**data, "sensors": [dict(s) for s in data["sensors"]]}
+        for s in broken["sensors"]:
+            if s["name"] == "top":
+                s["shares_mount_with"] = bad
+        with pytest.raises(ValueError, match="shares_mount_with"):
+            RobotDescription.model_validate(broken)

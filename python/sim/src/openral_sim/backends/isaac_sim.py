@@ -691,8 +691,9 @@ class IsaacCameraMount(BaseModel):
     ``xyz``, oriented by ``quat_wxyz`` (in Isaac's ``axes`` convention: ``world`` =
     x forward / z up, ``usd`` = -z forward / y up, ``ros`` = z forward / y down) or
     aimed at ``look_at`` (a point in the same link frame). So it rides the link:
-    a wrist camera follows the wrist. The pose is a fact about the cell being
-    simulated, so it lives in the scene, never in the robot manifest.
+    a wrist camera follows the wrist. A scene entry overrides the mount
+    ``default_camera_mounts`` derives from the robot manifest (and its unit's
+    calibration); a scene needs one only for a camera the manifest cannot place.
 
     Example:
         >>> IsaacCameraMount(link="openarm_base", xyz=(0, 0, 0.2), look_at=(0.4, 0, -0.5)).axes
@@ -738,7 +739,8 @@ class IsaacSimOptions(BaseModel):
     boot_timeout_s: float = Field(default=_DEFAULT_BOOT_TIMEOUT_S, gt=0)
     timeout_ms: int = Field(default=_DEFAULT_TIMEOUT_MS, gt=0)
     objects: list[IsaacSceneObject] = Field(default_factory=list)
-    # Per-sensor camera mounts (manifest sensor name -> mount); see IsaacCameraMount.
+    # Per-sensor camera mount overrides (manifest sensor name -> mount); see
+    # IsaacCameraMount and default_camera_mounts.
     camera_mounts: dict[str, IsaacCameraMount] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -1284,6 +1286,117 @@ def _build_robot_spec(desc: RobotDescription, robot_id: str) -> dict[str, Any]:
     }
 
 
+def _quat_wxyz_from_rpy(roll: float, pitch: float, yaw: float) -> tuple[float, float, float, float]:
+    """URDF/REP-103 fixed-axis roll-pitch-yaw (``Rz Ry Rx``) as a ``wxyz`` quaternion.
+
+    Example:
+        >>> [round(v, 6) for v in _quat_wxyz_from_rpy(0.0, 0.0, math.pi / 2)]
+        [0.707107, 0.0, 0.0, 0.707107]
+    """
+    cr, sr = math.cos(roll / 2.0), math.sin(roll / 2.0)
+    cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
+    cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
+    return (
+        cr * cp * cy + sr * sp * sy,
+        sr * cp * cy - cr * sp * sy,
+        cr * sp * cy + sr * cp * sy,
+        cr * cp * sy - sr * sp * cy,
+    )
+
+
+def _mjcf_camera_mounts(
+    desc: RobotDescription, manifest_dir: Path, mountable: set[str], calibrated: set[str]
+) -> dict[str, IsaacCameraMount]:
+    """Mounts of the manifest cameras the robot's own MJCF places, by camera name.
+
+    A camera found in ``desc.assets.mjcf`` (under ``sim_camera_name``, else its
+    ``name``) on a body the sidecar can mount on rides it at the MJCF's compiled
+    ``cam_pos`` / ``cam_quat`` — MuJoCo cameras look down ``-z`` with ``+y`` up, i.e.
+    ``axes: usd`` — with the MJCF's vertical ``fovy`` at the sensor's raster aspect,
+    as the MuJoCo twin renders it; a sensor in ``calibrated`` (a unit overlay set its
+    intrinsics) keeps its measured field of view instead. Empty without an MJCF.
+    """
+    if not desc.assets.mjcf:
+        return {}
+    import mujoco  # type: ignore[import-not-found,import-untyped,unused-ignore]  # reason: optional sim dep
+    from openral_core.assets import resolve_asset
+
+    model = mujoco.MjModel.from_xml_path(
+        str(resolve_asset(desc.assets.mjcf, "mjcf", manifest_dir=manifest_dir))
+    )
+    out: dict[str, IsaacCameraMount] = {}
+    for s in desc.sensors:
+        cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, s.sim_camera_name or s.name)
+        if cam < 0:
+            continue
+        body = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.cam_bodyid[cam]))
+        if body not in mountable:
+            continue
+        k = s.intrinsics
+        hfov = (
+            None
+            if k is None or s.name in calibrated
+            else math.degrees(
+                2.0
+                * math.atan(math.tan(math.radians(model.cam_fovy[cam]) / 2.0) * k.width / k.height)
+            )
+        )
+        out[s.name] = IsaacCameraMount(
+            link=body,
+            xyz=tuple(float(v) for v in model.cam_pos[cam]),
+            quat_wxyz=tuple(float(v) for v in model.cam_quat[cam]),
+            axes="usd",
+            hfov_deg=hfov,
+        )
+    return out
+
+
+def default_camera_mounts(
+    desc: RobotDescription,
+    manifest_dir: Path,
+    mountable: set[str],
+    calibrated: set[str] | None = None,
+) -> dict[str, IsaacCameraMount]:
+    """Each manifest camera's Isaac mount, from the manifest (unit calibration applied).
+
+    In order: a sensor that ``shares_mount_with`` another takes that sensor's mount;
+    one with ``parent_frame`` + ``static_transform_xyz_rpy`` rides ``parent_frame`` at
+    that transform (its ``frame_id`` is a REP-103 body frame, x forward / z up =
+    ``axes: world``, or an ``*_optical_frame``, z forward = ``axes: ros``); else the
+    robot's MJCF camera of that name (``_mjcf_camera_mounts``, which also takes its
+    field of view unless the sensor is in ``calibrated``). ``mountable`` is what the
+    sidecar can mount on (URDF links and the ``base_frame``). Otherwise the field of
+    view is left to the sensor's intrinsics. A camera none of these places gets the scene's
+    generic viewpoint (announced by ``_write_robot_spec``).
+
+    Example:
+        >>> from openral_core import RobotDescription
+        >>> desc = RobotDescription.from_yaml("robots/openarm/robot.yaml")
+        >>> m = default_camera_mounts(
+        ...     desc.model_copy(update={"assets": desc.assets.model_copy(update={"mjcf": None})}),
+        ...     Path("robots/openarm"),
+        ...     {"openarm_base"},
+        ... )
+        >>> (m["top"] == m["head_zed"], m["head_zed"].link, m["head_zed"].xyz)
+        (True, 'openarm_base', (0.0, 0.0, 0.2))
+    """
+    out = _mjcf_camera_mounts(desc, manifest_dir, mountable, calibrated or set())
+    for s in desc.sensors:
+        tf = s.static_transform_xyz_rpy
+        if s.parent_frame is None or tf is None or s.parent_frame not in mountable:
+            continue
+        out[s.name] = IsaacCameraMount(
+            link=s.parent_frame,
+            xyz=(float(tf[0]), float(tf[1]), float(tf[2])),
+            quat_wxyz=_quat_wxyz_from_rpy(tf[3], tf[4], tf[5]),
+            axes="ros" if s.frame_id.endswith("_optical_frame") else "world",
+        )
+    for s in desc.sensors:
+        if s.shares_mount_with in out:
+            out[s.name] = out[s.shares_mount_with]
+    return out
+
+
 def _write_robot_spec(
     env_cfg: SimEnvironment, camera_mounts: dict[str, IsaacCameraMount] | None = None
 ) -> tuple[str, RobotDescription]:
@@ -1302,8 +1415,40 @@ def _write_robot_spec(
             f"unknown robot_id {robot_id!r} for the Isaac manifest scene; "
             "expected a robots/<id>/robot.yaml manifest."
         ) from exc
+    # The robot unit this host simulates ($OPENRAL_ROBOT_UNIT, which the deploy launch
+    # sets from the scene's `robot_unit`): its calibrated mounts and intrinsics, as the
+    # launch's TF and kernel see them.
+    from openral_core import apply_sensor_overlays, resolve_sensor_overlays
+
+    from openral_sim.policies.robots import resolve_robot_manifest
+
+    manifest = resolve_robot_manifest(robot_id)
+    overlays = resolve_sensor_overlays(manifest, None, required=False)
+    if overlays:
+        desc = desc.model_copy(update={"sensors": apply_sensor_overlays(desc.sensors, overlays)})
+        print(
+            f"[isaac-sim] robot unit overlays: {', '.join(o.name for o in overlays)}",
+            flush=True,
+        )
     spec = _build_robot_spec(desc, robot_id)
     cameras = {s.name for s in desc.sensors if s.modality in ("rgb", "depth")}
+    # What the sidecar can mount on: a URDF link, or the base_frame (placed by its
+    # manifest offset when it is none).
+    urdf_links = set(re.findall(r'<link\s+name="([^"]+)"', Path(spec["urdf_path"]).read_text()))
+    urdf_links.add(desc.base_frame)
+    camera_mounts = {
+        **{
+            k: v
+            for k, v in default_camera_mounts(
+                desc,
+                manifest.parent,
+                urdf_links,
+                {o.name for o in overlays if o.intrinsics is not None},
+            ).items()
+            if k in cameras
+        },
+        **(camera_mounts or {}),
+    }
     # A robot-framed camera with no mount renders a generic base-relative viewpoint,
     # not its frame's view (on Spark an unmounted wrist_right came out all-black).
     # Say so (CLAUDE.md §1.4).
@@ -1314,8 +1459,9 @@ def _write_robot_spec(
     )
     if unmounted:
         print(
-            f"[isaac-sim] cameras {unmounted} have no backend_options.camera_mounts entry: "
-            "each renders a generic base-relative viewpoint, not the view from its frame_id.",
+            f"[isaac-sim] cameras {unmounted} have no mount (none in the manifest, its MJCF "
+            "or backend_options.camera_mounts): each renders a generic base-relative "
+            "viewpoint, not the view from its frame_id.",
             flush=True,
         )
     if camera_mounts:

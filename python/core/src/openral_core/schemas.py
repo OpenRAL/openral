@@ -448,6 +448,11 @@ class SensorSpec(BaseModel):
         vla_feature_key: VLA observation dict key this sensor maps to, e.g.
             'observation.images.camera1'. Used by skill loaders to auto-wire
             sensors to VLA input_features.
+        shares_mount_with: Another sensor of this robot that is the same physical
+            device (a stereo camera's colour stream and its depth): this one sits at
+            THAT sensor's mount (``parent_frame`` + ``static_transform_xyz_rpy``, a
+            unit's calibration included), so a sim renders both from one pose.
+            ``None``: the sensor declares its own mount, if any.
         ros2_topic: The image topic an *external* ROS 2 driver publishes
             (``/camera/color/image_raw``, ``/zed/zed_node/...``). ``None`` (every
             in-tree manifest) means OpenRAL itself produces the sensor (sim
@@ -498,6 +503,7 @@ class SensorSpec(BaseModel):
     # ``None`` = not rigged (the MJCF is expected to already declare the camera,
     # e.g. a scene-attached or composed-props model).
     sim_placement: CameraSimPlacement | None = None
+    shares_mount_with: str | None = None
     # LiDAR / point cloud
     n_channels: int | None = None
     range_min_m: float | None = None
@@ -2833,6 +2839,34 @@ class RobotDescription(BaseModel):
             if ref not in joint_names:
                 raise ValueError(
                     f"base_joints[*]={ref!r} is not present in joints (have: {sorted(joint_names)})"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_shared_sensor_mounts(self) -> RobotDescription:
+        """``shares_mount_with`` names another sensor here that declares its own mount.
+
+        One level only: the named sensor carries ``parent_frame`` and
+        ``static_transform_xyz_rpy`` and shares no mount itself, so the pose a consumer
+        reads is always one declared (and per-unit calibrated) transform.
+        """
+        by_name = {s.name: s for s in self.sensors}
+        for sensor in self.sensors:
+            ref = sensor.shares_mount_with
+            if ref is None:
+                continue
+            target = by_name.get(ref)
+            if (
+                ref == sensor.name
+                or target is None
+                or target.shares_mount_with is not None
+                or target.parent_frame is None
+                or target.static_transform_xyz_rpy is None
+            ):
+                raise ValueError(
+                    f"sensor {sensor.name!r}: shares_mount_with={ref!r} must name another "
+                    "sensor of this robot that declares parent_frame + "
+                    "static_transform_xyz_rpy and shares no mount itself."
                 )
         return self
 

@@ -385,6 +385,35 @@ def look_at_matrix(eye: NDArray[np.float64], target: NDArray[np.float64]) -> NDA
     return np.column_stack([fwd, left, np.cross(fwd, left)])
 
 
+def camera_resolution(meta: dict[str, Any], obs_width: int, obs_height: int) -> tuple[int, int]:
+    """A planned camera's render ``(width, height)``: its manifest intrinsics' raster.
+
+    A policy camera renders at the raster its checkpoint was trained on, so its aspect
+    survives the policy's resize. A depth camera keeps its aspect at no more than the
+    scene's width: its cloud and registered frames cross the wire every step. A camera
+    with no intrinsics takes the scene's ``observation_width``/``height``.
+
+    Example:
+        >>> camera_resolution(
+        ...     {"modality": "rgb", "intrinsics": {"width": 672, "height": 376}}, 512, 384
+        ... )
+        (672, 376)
+        >>> camera_resolution(
+        ...     {"modality": "depth", "intrinsics": {"width": 1920, "height": 1080}}, 512, 384
+        ... )
+        (512, 288)
+        >>> camera_resolution({"modality": "rgb"}, 512, 384)
+        (512, 384)
+    """
+    k = meta.get("intrinsics") or {}
+    w, h = int(k.get("width") or 0), int(k.get("height") or 0)
+    if w <= 0 or h <= 0:
+        return obs_width, obs_height
+    if meta.get("modality") == "depth" and w > obs_width:
+        return obs_width, max(1, round(h * obs_width / w))
+    return w, h
+
+
 def camera_hfov_deg(meta: dict[str, Any]) -> float | None:
     """A planned camera's horizontal FOV: its mount's ``hfov_deg``, else the manifest intrinsics.
 
@@ -775,7 +804,7 @@ class IsaacManifestScene(IsaacSceneBase):
             parent = self._mount_parent(meta["mount"])[0] if meta.get("mount") else "/World"
             cam = Camera(
                 prim_path=f"{parent}/cam_{meta['name']}",
-                resolution=(self.obs_width, self.obs_height),
+                resolution=camera_resolution(meta, self.obs_width, self.obs_height),
             )
             self._cameras[meta["name"]] = cam
 
@@ -792,7 +821,8 @@ class IsaacManifestScene(IsaacSceneBase):
             if hfov is not None:
                 aperture = 2.0 * cam.get_focal_length() * float(np.tan(np.radians(hfov) / 2.0))
                 cam.set_horizontal_aperture(aperture)
-                cam.set_vertical_aperture(aperture * self.obs_height / self.obs_width)
+                width, height = camera_resolution(meta, self.obs_width, self.obs_height)
+                cam.set_vertical_aperture(aperture * height / width)
             if meta.get("mount"):
                 self._mount_camera(cam, meta["mount"])
             if meta["modality"] == "depth":

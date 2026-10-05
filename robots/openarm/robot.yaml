@@ -581,13 +581,17 @@ sensors:
     modality: "rgb"
     frame_id: "world"
     rate_hz: 10.0
+    # The ZED-M left image at the restock rSkill's training raster (672x376): the Thor
+    # cell's live camera_info K (fx = fy = 1498.18, cx = 936.11, cy = 541.81 at
+    # 1920x1080, 2026-10-02) scaled per axis, so a sim renders the policy's view at its
+    # field of view (65.3 deg horizontal) and aspect.
     intrinsics:
-      width: 640
-      height: 480
-      fx: 640.0
-      fy: 640.0
-      cx: 320.0
-      cy: 240.0
+      width: 672
+      height: 376
+      fx: 524.363
+      fy: 521.589
+      cx: 327.639
+      cy: 188.630
     encoding: "rgb8"
     vla_feature_key: "observation.images.top"
     vendor: "sim"
@@ -600,6 +604,9 @@ sensors:
     # `observation.images.context` (`image_preprocessing.aliases: {top: "context"}`), and
     # the ros2_image reader takes the wire encoding from each message, not `encoding`.
     # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.
+    # It is the same device as head_zed, so it rides head_zed's mount (unit calibration
+    # included): the Isaac scene renders both from that one pose.
+    shares_mount_with: "head_zed"
     # Twin: the bimanual MJCF ships no head camera, so the generic camera rig splices one
     # in at head_zed's nominal mount. The MJCF world origin IS `openarm_base` (its
     # `openarm_left_base_link` sits at [0, 0.031, 0], the manifest's

@@ -74,6 +74,7 @@ if TYPE_CHECKING:
     from openral_core import RobotDescription, SensorSpec
 from lifecycle_msgs.msg import Transition
 from openral_core import (
+    ROBOT_UNIT_ENV,
     CameraTopicKind,
     DeployRuntime,
     apply_sensor_overlays,
@@ -306,6 +307,14 @@ def _octomap_resolution(hal_mode: str) -> float:
         if 0.001 <= value <= 0.5:
             return value
     return 0.015 if hal_mode == "sim" else 0.02
+
+
+def _robot_unit(scene_unit: str | None) -> str | None:
+    """The robot unit in force: ``$OPENRAL_ROBOT_UNIT``, else the scene's ``robot_unit``.
+
+    The same selection ``resolve_sensor_overlays`` makes.
+    """
+    return os.environ.get(ROBOT_UNIT_ENV) or scene_unit
 
 
 def _octomap_frames(description: RobotDescription) -> tuple[str, str]:
@@ -2248,7 +2257,13 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
             hal_params_file,
             {"use_sim_time": use_sim_time},
         ],
-        additional_env=otel_env,
+        # The unit this launch resolved (scene `robot_unit`, else the inherited env), so a
+        # sim HAL that renders the robot's cameras (the Isaac scene) places them at the
+        # same per-unit mounts the TF and kernel above use.
+        additional_env={
+            **otel_env,
+            **({ROBOT_UNIT_ENV: robot_unit} if (robot_unit := _robot_unit(scene_unit)) else {}),
+        },
         output="screen",
     )
     # Derive ``camera_names`` from the robot manifest's RGB sensors so the WorldState aggregator
