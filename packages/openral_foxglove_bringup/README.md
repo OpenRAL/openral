@@ -40,7 +40,7 @@ groups, so it is reviewable a group at a time:
 |---|---|
 | `SCENE_TOPICS` | Camera images (+ `/compressed` siblings, `camera_info`), `/map`, octomap cloud, `/scan`, `/odom`, `/joint_states`, `/robot_description`, TF |
 | `DEPTH_TOPICS` | Per-camera depth + `points`, the DA3 metric-depth sidecar, nvblox filtered depth + ESDF slice, `/openral/imu`, cuVSLAM odometry |
-| `BUCKET2_TOPICS` | The converter's `PointCloud2` output |
+| `BUCKET2_TOPICS` | The converter's outputs (`PointCloud2` voxels, attachment `MarkerArray`) |
 | `TELEMETRY_TOPICS` | `world_state_fast`/`_slow`, `policy_state`, `episode`, `critic/score`, `reward/active_task`, `perception/objects`, `attachment_state`(`_applied`), `skill_registry_changed`, `/diagnostics`, `/rosout` |
 
 Every entry is an observation topic a node publishes *about itself*. The
@@ -137,7 +137,7 @@ stack beside it; everything else is tabbed, one click away.
 
 | Panel | Topics | Shows |
 |---|---|---|
-| 3D · scene (hero) | URDF layer on `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels |
+| 3D · scene (hero) | URDF layer on `/robot_description`, `/tf`, `/map`, `/octomap_point_cloud_centers`, `/openral/world_voxels_cloud`, `/openral/viz/attachments`, `/odom`, `/scan` | The robot in its world — URDF posed by TF, occupancy grid, voxels, held payload + grasp/place regions |
 | Image ×N | `/openral/cameras/<slot>/image` | One panel per camera slot in the scene's `cameras:` list |
 
 **Scene tabs**
@@ -146,7 +146,7 @@ stack beside it; everything else is tabbed, one click away.
 |---|---|---|
 | Nav · 2D map | `/map`, `/odom`, `/scan` | Top-down 2D nav view |
 | Joints | `/joint_states.position[:]` | Every joint's position trace (`[:]` slices any DOF count) |
-| World voxels | `/openral/world_voxels_cloud`, URDF layer on `/robot_description` | Bucket-2 geometry close-up, robot overlaid |
+| World voxels | `/openral/world_voxels_cloud`, `/openral/viz/attachments`, URDF layer on `/robot_description` | Bucket-2 geometry close-up, robot overlaid |
 | Policy state | `/openral/policy_state`, `world_state_fast.staleness_ms[:]`, `.battery_pct` | Step-locked policy vector; staleness/battery off by default |
 
 **Telemetry tabs**
@@ -159,7 +159,7 @@ stack beside it; everything else is tabbed, one click away.
 | Mission | `/openral/episode` (`phase`, `success`, `task_string`) | Reasoner · mission, as a State Transitions timeline |
 | Reward | `/openral/critic/score` (`score`, `threshold`) | rSkill reward bars |
 | Objects | `/openral/perception/objects` | Spatial memory · scene objects |
-| Attachments | `/openral/attachment_state` | — (grasped-object set) |
+| Attachments | `/openral/attachment_state` | — (grasped-object set, raw; drawn in 3-D via `/openral/viz/attachments`) |
 | Topics | — | Connection graph (via `connectionGraph`) |
 
 > **Note:** Foxglove's *Map* panel is geographic (GPS/`NavSatFix`), **not** for
@@ -260,16 +260,36 @@ draws it natively — no TypeScript extension:
 | In (`openral_msgs`) | Out (standard) | Topic |
 |---|---|---|
 | `OccupancyVoxels` | `sensor_msgs/PointCloud2` (voxel centres) | `/openral/world_voxels_cloud` |
+| `AttachmentState` | `visualization_msgs/MarkerArray` (payload primitives + grasp/place regions) | `/openral/viz/attachments` |
+
+The attachment markers draw each held payload's collision primitives on its
+attach link's TF frame (`pose_in_link ∘ pose_in_object`, frame-locked so they
+ride the hand), translucent and coloured by `evidence_kind` — **orange**
+`grasp_target_region`, **cyan** `vision_segmentation`, **yellow**
+`gripper_closure`, **magenta** anything else — with a label (object id ·
+evidence · `support` when a support-contact witness is valid · `released` for
+a release record frozen on the base frame). The grasp and place declarations'
+measured regions are drawn as a translucent box + wireframe in their own frame:
+**green** grasp / **blue** place while active, **grey** once retracted. Every
+message is `DELETEALL` + re-add, so a detach clears the payload at once.
+
+A manifest attach link can be named differently on the cell's TF tree
+(OpenArm: `openarm_right_link7` is the vendor's `openarm_right_ee_base_link`).
+The node takes the octomap bridge's `attach_link_tf_frames` parameter
+(`["link=frame", …]`); `deploy_e2e` passes it the scene's
+`vision_attachment.tf_frames`, the same strings the HAL and the bridge get.
+Standalone: `ros2 run openral_foxglove_bringup bucket2_markers --ros-args -p
+attach_link_tf_frames:="['openarm_right_link7=openarm_right_ee_base_link']"`.
 
 `openral deploy sim/run --foxglove` spawns this converter as part of the graph,
-so this topic is live on any deploy that has Foxglove on. Standalone
+so these topics are live on any deploy that has Foxglove on. Standalone
 (pairing with `foxglove.launch.py`, or against a graph you brought up yourself):
 
 ```bash
 ros2 launch openral_foxglove_bringup bucket2.launch.py
 ```
 
-The conversion math lives in a pure, unit-tested function.
+The conversion math lives in pure, unit-tested functions.
 
 ## Record an MCAP
 
