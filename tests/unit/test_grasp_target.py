@@ -1,7 +1,8 @@
 """Pre-grasp target geometry (design note §2.2): seed, prompt, region, map cross-check, tracking.
 
 The scene is the real OpenArm cell's, numerically: the ``deploy_e2e`` octomap lattice
-(20 mm cells, coverage ball r = 1.05 m centred (0, 0, 0.5) in ``openarm_base``), the
+(20 mm cells, the OpenArm's coverage ball r = 0.871 m centred (0.003, 0, 0) in
+``openarm_base``), the
 floor 0.698 m below the base (``robots/openarm/robot.yaml`` ``base_to_root_xyz_rpy``),
 the Thor ZED's measured mount (``robots/openarm/units/thor.yaml``) and its live
 ``camera_info`` K (fx = fy = 1498.18, cx = 936.11, cy = 541.81 at 1920x1080).
@@ -51,8 +52,8 @@ from openral_hal._grasp_target import (
 from PIL import Image
 
 _RES = 0.02
-_COVERAGE_RADIUS = 1.05  # deploy_e2e.launch.py _octomap_coverage_radius()
-_COVERAGE_CENTRE = (0.0, 0.0, 0.5)  # deploy_e2e.launch.py _OCTOMAP_COVERAGE_CENTRE
+_COVERAGE_RADIUS = 0.871  # deploy_e2e.launch.py _coverage_ball() for the OpenArm
+_COVERAGE_CENTRE = (0.003, 0.0, 0.0)  # ditto
 _FLOOR_Z = -0.698  # robots/openarm/robot.yaml base_to_root_xyz_rpy
 _SUPPORT_Z = _FLOOR_Z + 0.40  # a 40 cm table top
 _BOX_HEIGHT = 0.12

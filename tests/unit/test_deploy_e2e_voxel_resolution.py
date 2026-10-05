@@ -2,7 +2,7 @@
 
 ``deploy_e2e.launch.py`` pinned the kernel's ``world_voxel_max_cells`` to the
 literal ``614125`` with a comment saying it was ``85^3``, the worst case for
-``_octomap_coverage_radius()`` at 25 mm cells. That is a *derived* quantity kept
+the then-fixed 1.05 m coverage ball at 25 mm cells. That is a *derived* quantity kept
 by hand, and the failure mode when it drifts is the wrong direction: a kernel
 reserving too few cells rejects every grid it is sent, which reads as an empty
 world and is a fail-**open** on the world check.
@@ -88,8 +88,7 @@ def test_cpuset_prefix_is_off_by_default_and_refuses_garbage(
 
 def test_the_cap_reproduces_the_constant_it_replaced(launch_module: object) -> None:
     """25 mm must still give exactly 614 125, or this refactor changed the shipped graph."""
-    assert launch_module._world_voxel_max_cells(0.025) == 614125
-    assert launch_module._octomap_coverage_radius() == 1.05
+    assert launch_module._world_voxel_max_cells(1.05, 0.025) == 614125
 
 
 def test_the_cap_grows_with_a_finer_grid(launch_module: object) -> None:
@@ -99,8 +98,27 @@ def test_the_cap_grows_with_a_finer_grid(launch_module: object) -> None:
     on with no world obstacles at all — which is why the cap is derived here
     rather than left for someone to remember.
     """
-    assert launch_module._world_voxel_max_cells(0.015) == 141**3 == 2803221
-    assert launch_module._world_voxel_max_cells(0.0125) == 169**3
+    assert launch_module._world_voxel_max_cells(1.05, 0.015) == 141**3 == 2803221
+    assert launch_module._world_voxel_max_cells(1.05, 0.0125) == 169**3
+
+
+def test_the_cap_counts_the_lattice_snap_for_any_radius(launch_module: object) -> None:
+    """The bridge's snapped lattice needs ``floor(2r/res + 1/2) + 1`` cells per axis.
+
+    With a per-robot radius the fraction of ``2r/res`` is arbitrary; ``int(2r/res) + 1``
+    undercounts by one layer whenever it is at least a half, and a kernel reserving
+    too few cells rejects every grid (fail-open). Replays ``build_lattice``'s arithmetic
+    for ball centres across a cell to find the worst case and checks the cap covers it.
+    """
+    import math
+
+    for radius, res in ((0.871, 0.015), (1.04, 0.015), (1.089, 0.02), (0.5075, 0.015)):
+        worst = 0
+        for k in range(200):
+            lo = -radius + k * res / 200.0  # every offset of the ball's minimum within a cell
+            c0 = (math.floor(lo / res) + 0.5) * res
+            worst = max(worst, math.floor((lo + 2.0 * radius - c0) / res) + 1)
+        assert launch_module._world_voxel_max_cells(radius, res) >= worst**3, (radius, res)
 
 
 def test_the_resolution_override_is_honoured_within_its_range(
@@ -157,12 +175,12 @@ def test_the_shipped_defaults_are_15_mm_in_sim_and_20_mm_on_hardware(
     assert launch_module._octomap_resolution("real") == 0.02
     assert launch_module._octomap_resolution("sim") != launch_module._octomap_resolution("real")
     # Both inside `kMaxCells` (4 000 000), with the real grid the roomier one.
-    assert launch_module._world_voxel_max_cells(0.02) == 1191016
+    assert launch_module._world_voxel_max_cells(1.05, 0.02) == 1191016
     # 15 mm is the finest value that ships without touching `kMaxCells`:
     # 141/axis is 2 803 221 against the 4 000 000 guard, where 12.5 mm needs
     # 4 826 809 and is refused outright.
-    assert launch_module._world_voxel_max_cells(0.015) == 2803221
-    assert launch_module._world_voxel_max_cells(0.015) < 4_000_000
+    assert launch_module._world_voxel_max_cells(1.05, 0.015) == 2803221
+    assert launch_module._world_voxel_max_cells(1.05, 0.015) < 4_000_000
 
 
 def _load_tool(name: str) -> object:
@@ -179,19 +197,21 @@ def test_the_transport_probe_sizes_the_grid_the_kernel_reserves(launch_module: o
     """The probe's cell derivation is a hand-copy of the launch file's; pin them together.
 
     ``voxel_transport_probe`` re-derives the grid from its own ``RADIUS_M``
-    literal rather than importing ``_octomap_coverage_radius``, because the
-    launch file is not importable as a package. If the shipped radius ever
-    moves, the probe would keep timing a message of the *old* size while the
-    kernel reserved the new one — and the wire latency it reports is the term
-    the whole 25 -> 15 mm trade is settled on. A wrong-sized message would not
-    fail; it would quietly measure the wrong lever.
+    literal rather than importing the launch file, which is not importable as a
+    package. If the derivation ever moves, the probe would keep timing a message
+    of the *old* size while the kernel reserved the new one — and the wire latency
+    it reports is the term the whole 25 -> 15 mm trade is settled on. A
+    wrong-sized message would not fail; it would quietly measure the wrong lever.
+    The radius itself is per robot now; the probe's is the largest in-tree arm's
+    order of magnitude (franka_panda's ball is 1.089 m).
     """
     pytest.importorskip("openral_msgs", reason="the probe imports openral_msgs at module level")
     probe = _load_tool("voxel_transport_probe")
 
-    assert launch_module._octomap_coverage_radius() == probe.RADIUS_M
     for resolution in (0.025, 0.015, 0.0125):
-        assert probe.per_axis(resolution) ** 3 == launch_module._world_voxel_max_cells(resolution)
+        assert probe.per_axis(resolution) ** 3 == launch_module._world_voxel_max_cells(  # type: ignore[attr-defined]
+            probe.RADIUS_M, resolution
+        )
 
 
 def test_the_quantisation_gain_matches_the_matrix_budget_it_is_derived_from() -> None:
@@ -251,23 +271,22 @@ def test_voxel_freshness_is_the_declared_rig_value_and_never_exceeds_the_deadlin
     assert '"world_voxel_deadline_ms": world_voxel_deadline_s * 1000.0' in source
 
 
-def test_octomap_only_integrates_the_coverage_ball(launch_module: object) -> None:
-    """The input clip is the ball's bounding box and a ray ends within one diameter.
+def test_octomap_only_integrates_the_reach_box(launch_module: object) -> None:
+    """The input clip is the ball's reach box, inside the ball's bounding box.
 
     Thor, 2026-10-02: with 4 m rays and no clip, octomap_server integrated the floor
     0.7 m below the base and the wall 3 m out — most of the ZED cloud — and ran at
     ~2 Hz with multi-second gaps, i.e. a map the kernel's deadline kept failing closed on.
     """
-    r = launch_module._octomap_coverage_radius()
-    cx, cy, cz = launch_module._OCTOMAP_COVERAGE_CENTRE
-    bounds = launch_module._octomap_input_bounds()
+    ball = launch_module._CoverageBall(  # type: ignore[attr-defined]
+        (0.0, 0.0, 0.0), 0.871, (-0.7, -0.86, -0.717), (0.7, 0.82, 0.7)
+    )
+    bounds = launch_module._octomap_input_bounds(ball)  # type: ignore[attr-defined]
     assert bounds == {
-        "point_cloud_min_x": cx - r,
-        "point_cloud_max_x": cx + r,
-        "point_cloud_min_y": cy - r,
-        "point_cloud_max_y": cy + r,
-        "point_cloud_min_z": cz - r,
-        "point_cloud_max_z": cz + r,
+        "point_cloud_min_x": -0.7,
+        "point_cloud_min_y": -0.86,
+        "point_cloud_min_z": -0.717,
+        "point_cloud_max_x": 0.7,
+        "point_cloud_max_y": 0.82,
+        "point_cloud_max_z": 0.7,
     }
-    assert bounds["point_cloud_min_z"] > -0.698  # the OpenArm floor stays out
-    assert 2.0 * r == pytest.approx(2.1)

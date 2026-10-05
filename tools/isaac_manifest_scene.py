@@ -42,7 +42,9 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
                    "parent_frame", "intrinsics": {...}, "range_min_m",
                    "range_max_m", "n_channels"}],
       "camera_mounts": {sensor_name: {"link", "xyz", "quat_wxyz", "look_at", "axes"}},
-    }                                  # optional; openral_sim...isaac_sim.IsaacCameraMount
+                                       # optional; openral_sim...isaac_sim.IsaacCameraMount
+      "initial_joint_positions": {manifest_joint: value},  # optional start pose
+    }
 """
 
 from __future__ import annotations
@@ -385,6 +387,35 @@ def look_at_matrix(eye: NDArray[np.float64], target: NDArray[np.float64]) -> NDA
     return np.column_stack([fwd, left, np.cross(fwd, left)])
 
 
+def camera_resolution(meta: dict[str, Any], obs_width: int, obs_height: int) -> tuple[int, int]:
+    """A planned camera's render ``(width, height)``: its manifest intrinsics' raster.
+
+    A policy camera renders at the raster its checkpoint was trained on, so its aspect
+    survives the policy's resize. A depth camera keeps its aspect at no more than the
+    scene's width: its cloud and registered frames cross the wire every step. A camera
+    with no intrinsics takes the scene's ``observation_width``/``height``.
+
+    Example:
+        >>> camera_resolution(
+        ...     {"modality": "rgb", "intrinsics": {"width": 672, "height": 376}}, 512, 384
+        ... )
+        (672, 376)
+        >>> camera_resolution(
+        ...     {"modality": "depth", "intrinsics": {"width": 1920, "height": 1080}}, 512, 384
+        ... )
+        (512, 288)
+        >>> camera_resolution({"modality": "rgb"}, 512, 384)
+        (512, 384)
+    """
+    k = meta.get("intrinsics") or {}
+    w, h = int(k.get("width") or 0), int(k.get("height") or 0)
+    if w <= 0 or h <= 0:
+        return obs_width, obs_height
+    if meta.get("modality") == "depth" and w > obs_width:
+        return obs_width, max(1, round(h * obs_width / w))
+    return w, h
+
+
 def camera_hfov_deg(meta: dict[str, Any]) -> float | None:
     """A planned camera's horizontal FOV: its mount's ``hfov_deg``, else the manifest intrinsics.
 
@@ -543,6 +574,17 @@ class IsaacManifestScene(IsaacSceneBase):
             if j.get("role") in ("arm", "gripper")
         ]
         self.action_dim = len(self._slot_plan) + (3 if self._has_base else 0)
+        # The scene's start pose, as one action (NaN = the URDF's own zero pose): each
+        # reset teleports the joints there and holds it.
+        initial: dict[str, float] = dict(robot_spec.get("initial_joint_positions") or {})
+        self._initial_slots = np.array(
+            [
+                float(initial.get(str(j["name"]), np.nan))
+                for j in self._manifest_joints
+                if j.get("role") in ("arm", "gripper")
+            ],
+            dtype=np.float32,
+        )
         self._objects: list[dict[str, Any]] = list(objects or [])
         self._object_prims: dict[str, Any] = {}
 
@@ -775,7 +817,7 @@ class IsaacManifestScene(IsaacSceneBase):
             parent = self._mount_parent(meta["mount"])[0] if meta.get("mount") else "/World"
             cam = Camera(
                 prim_path=f"{parent}/cam_{meta['name']}",
-                resolution=(self.obs_width, self.obs_height),
+                resolution=camera_resolution(meta, self.obs_width, self.obs_height),
             )
             self._cameras[meta["name"]] = cam
 
@@ -792,7 +834,8 @@ class IsaacManifestScene(IsaacSceneBase):
             if hfov is not None:
                 aperture = 2.0 * cam.get_focal_length() * float(np.tan(np.radians(hfov) / 2.0))
                 cam.set_horizontal_aperture(aperture)
-                cam.set_vertical_aperture(aperture * self.obs_height / self.obs_width)
+                width, height = camera_resolution(meta, self.obs_width, self.obs_height)
+                cam.set_vertical_aperture(aperture * height / width)
             if meta.get("mount"):
                 self._mount_camera(cam, meta["mount"])
             if meta["modality"] == "depth":
@@ -1181,11 +1224,8 @@ class IsaacManifestScene(IsaacSceneBase):
 
     # ── IsaacSceneBase template methods ──────────────────────────────────────
 
-    def _apply_action(self, action: NDArray[np.float32]) -> None:
-        """Set absolute joint targets (NaN slots hold) and advance the base twist."""
-        if self._target is None:
-            self._target = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
-        target = self._target
+    def _write_slots(self, target: NDArray[np.float32], action: NDArray[np.float32]) -> None:
+        """Write an action's joint slots into the DOF ``target`` vector (NaN slots hold)."""
         for k, (kind, ref) in enumerate(self._slot_plan):
             value = float(action[k]) if k < action.shape[0] else float("nan")
             if np.isnan(value):
@@ -1200,6 +1240,13 @@ class IsaacManifestScene(IsaacSceneBase):
                 target[self._dof_index[f["dof"]]] = float(f["multiplier"]) * lead + float(
                     f["offset"]
                 )
+
+    def _apply_action(self, action: NDArray[np.float32]) -> None:
+        """Set absolute joint targets (NaN slots hold) and advance the base twist."""
+        if self._target is None:
+            self._target = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
+        target = self._target
+        self._write_slots(target, action)
         self._robot.get_articulation_controller().apply_action(
             self._ArticulationAction(joint_positions=target)
         )
@@ -1251,8 +1298,13 @@ class IsaacManifestScene(IsaacSceneBase):
         # world.reset() puts the pinned root back at its import pose (the
         # origin); move it to the spawn before the warmup steps settle physics.
         self._place_robot()
-        # Hold the reset pose until the first command arrives.
+        # Hold the reset pose until the first command arrives: the URDF's zero pose, with
+        # the scene's initial_joint_positions teleported in (no motion to get there).
         self._target = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
+        if not np.all(np.isnan(self._initial_slots)):
+            self._write_slots(self._target, self._initial_slots)
+            self._robot.set_joint_positions(self._target)
+            self._robot.set_joint_velocities(np.zeros_like(self._target))
         self._robot.get_articulation_controller().apply_action(
             self._ArticulationAction(joint_positions=self._target)
         )

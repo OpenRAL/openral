@@ -51,6 +51,11 @@ def franka_with_depth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     manifest["sensors"] = [*(manifest.get("sensors") or []), depth]
     (dst / "robot.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False))
     monkeypatch.setenv("OPENRAL_ROBOTS_DIR", str(tmp_path / "robots"))
+    # franka_panda's kernel model is lowered from its MJCF, whose finger slide is driven
+    # by the manifest's normalised 0..1 gripper column: over those limits the finger
+    # reaches 1.95 m, a coverage ball the voxel bridge cannot publish at 15 mm (refused at
+    # launch). 25 mm holds it; the values under test do not depend on the resolution.
+    monkeypatch.setenv("OPENRAL_OCTOMAP_RESOLUTION_M", "0.025")
     return tmp_path
 
 
