@@ -21,7 +21,17 @@ declared, expired (``timeout_s`` passed)               REFUSED, ``/diagnostics``
 declared, region in another frame                      REFUSED, ``reason=frame_mismatch``
 declared, support-plane cells half a voxel below       REFUSED, left finger on a plane cell,
 the region's lower face, in the finger's margin        ``grasp_exemption_active=1``
+declared, fit tight to a surface inside the target's   REFUSED, left finger on a target cell,
+boundary cells (their centres outside the fit)         ``grasp_exemption_active=1``
+the same fit cell-closed (``cell_closed_region``,      ACCEPTED; the plane under it still
+what the producer leg publishes)                       outside (bottom kept)
 =====================================================  ========================================
+
+The grasp-target margin (the producer's held region bloated on every face, downward too, then
+cell-closed; HZ-0115-32) has its own rows:
+``test_the_grasp_target_margin_on_the_real_openarm_model``; the payload box the kernel latches
+at the handover (no downward bloat) has
+``test_after_the_handover_the_latched_payload_box_does_not_exempt_the_support``.
 
 Real throughout (CLAUDE.md §1.11): the real ``robots/openarm/robot.yaml``, the kernel parameters
 built by the same builders ``deploy_e2e.launch.py`` calls (``compute_intersection`` →
@@ -121,7 +131,7 @@ _LEFT_LINK7 = "openarm_left_link7"
 
 # ── The grid (real-cell resolution: `_octomap_resolution("real")` in deploy_e2e) ─────────────
 _RES = 0.02
-_SX, _SY, _SZ = 6, 8, 7
+_SX, _SY, _SZ = 6, 10, 7  # y 0.10-0.30: room for a cell past the bloated region
 _ORIGIN = (-0.06, 0.10, -0.68)  # min corner of cell (0,0,0); cell centres sit on odd cm
 #: The world raised one voxel (the support-plane row): same cells, same region, +20 mm in z.
 _RAISED_DZ = _RES
@@ -601,6 +611,61 @@ def test_grasp_exemption_band_on_the_real_openarm_model(
         assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
 
 
+#: A fit tight to the target's measured surface (Isaac i36/i37): x within +-8 mm, inside the
+#: boundary cells x -0.02..0.02 whose centres (x = +-0.01) lie outside it; bottom on the plane's
+#: top face (z = -0.64), top at -0.605 inside the upper target layer.
+_TIGHT_CENTRE = (0.0, 0.18, -0.6225)
+_TIGHT_HALF = (0.008, 0.035, 0.0175)
+
+
+def test_a_tight_fit_exempts_the_targets_boundary_cells_only_once_cell_closed(
+    reset_kernel_estop: Callable[..., None],
+) -> None:
+    """The kernel exempts a cell only when its centre is in the region. A fit tight to the
+    measured surface leaves every target cell here (centres at x = +-0.01) outside, so the
+    finger hull stops on the target's own cells; closed over the grid's cells — what the
+    grasp-target leg publishes — the same fit exempts them, and the plane under it stays
+    non-exempt (the closure never grows down)."""
+    import numpy as np
+    from openral_core import GraspDeclaration as _Declaration
+    from openral_hal._grasp_target import VoxelLattice, cell_closed_region
+
+    lattice = VoxelLattice(
+        _FRAME,
+        _ORIGIN,
+        (0.0, 0.0, 0.0, 1.0),
+        _RES,
+        (_SX, _SY, _SZ),
+        np.zeros(_SX * _SY * _SZ, dtype=np.uint8),
+    )
+    with _live_cell(grasp_allowance_enabled=True, reset_kernel_estop=reset_kernel_estop) as (
+        cell,
+        reset,
+    ):
+        tight = _region(_TIGHT_CENTRE, _TIGHT_HALF)
+        cell.world(_TARGET | _PLANE, _declaration(tight))
+        cell.send("tight-fit", expect_accept=False)
+        evidence = cell.refused("tight-fit")
+        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _TARGET}, (
+            "the tight fit's own target cells must be what stops the finger"
+        )
+        assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
+        reset()
+
+        closed, clamped = cell_closed_region(
+            _region(_TIGHT_CENTRE, _TIGHT_HALF),
+            lattice,
+            max_half_extent_m=_Declaration.MAX_HALF_EXTENT_M,
+        )
+        assert not clamped
+        assert closed.pose.xyz[2] - closed.half_extents[2] == pytest.approx(-0.64)
+        cell.world(_TARGET | _PLANE, _declaration(closed))
+        cell.send("cell-closed", expect_accept=True)
+        assert "cell-closed" in cell.safe, "the cell-closed fit must exempt the target's cells"
+        assert not cell.estops
+
+
 #: A neighbour standing on the plane one empty column beside the target (x = 0.05, cube
 #: 0.04-0.06; the region ends at x = 0.03): outside the measured region, but 13 mm from the
 #: left finger pair's hull, whose lower part spans x <= 0.027 at q = 0 (same FK as above).
@@ -1026,3 +1091,247 @@ def test_sigint_mid_goal_with_an_armed_region_exits_cleanly(
             stop.set()
             pump.join()
         assert status == 0, f"kernel exit status {status} on SIGINT\n{cell.log()}"
+
+
+# ── The grasp-target margin (HZ-0115-32; design note §2.1 "Grasp-target margin") ─────────────
+#: The region the producer HOLDS for the target, in its own convention
+#: (``target_region_from_mask``): lower face one voxel above the measured support top (the
+#: plane's top face, z = -0.64), so neither the plane nor the target's own bottom layer
+#: (centres z = -0.63) is in it; top one voxel above the target; one voxel of pad sideways.
+_HELD_CENTRE = (0.0, 0.18, -0.60)
+_HELD_HALF = (0.03, 0.05, 0.02)
+#: The same, two layers taller (the tall target to z = -0.56).
+_TALL_HELD_CENTRE = (0.0, 0.18, -0.58)
+_TALL_HELD_HALF = (0.03, 0.05, 0.04)
+#: Beside the target at y 0.24-0.26 (j = 7), z -0.56..-0.54 (k = 6): outside the held region
+#: (y <= 0.23) but within the 25 mm bloat, and inside the finger hull's reach (y <= ~0.26).
+_WITHIN_MARGIN = frozenset(_index(i, 7, 6) for i in (2, 3))
+#: One column further (y 0.26-0.28, j = 8): past the bloat (y <= 0.265 once cell-closed), a
+#: few millimetres from the finger hull, 54 mm from link7's.
+_PAST_MARGIN = frozenset(_index(i, 8, 6) for i in (2, 3))
+
+
+def _kernel_box(
+    centre: tuple[float, float, float],
+    half: tuple[float, float, float],
+    margin_m: float,
+    *,
+    dz: float = 0.0,
+    payload: bool = False,
+) -> PlaceRegion:
+    """The held region as ``GraspTargetLeg.kernel_region`` publishes it over this grid.
+
+    ``payload=False``: grown by ``margin_m`` on every face, downward too, then cell-closed
+    (the pre-handover region). ``payload=True``: first lowered onto the measured support
+    top (``lowered_to_support``; the held bottom stands one voxel above it), then grown on
+    the sides and top only and cell-closed (the payload box ``fill`` publishes from the
+    handover on). ``dz`` raises the held region with the world.
+    """
+    import numpy as np
+    from openral_hal._grasp_target import VoxelLattice, lowered_to_support
+    from openral_hal._grasp_target_leg import _kernel_closure
+
+    lattice = VoxelLattice(
+        _FRAME,
+        (_ORIGIN[0], _ORIGIN[1], _ORIGIN[2] + dz),
+        (0.0, 0.0, 0.0, 1.0),
+        _RES,
+        (_SX, _SY, _SZ),
+        np.zeros(_SX * _SY * _SZ, dtype=np.uint8),
+    )
+    held = _region((centre[0], centre[1], centre[2] + dz), half)
+    held_bottom = held.pose.xyz[2] - held.half_extents[2]
+    if payload:
+        held = lowered_to_support(held, held_bottom - _RES)
+    region, note = _kernel_closure(held, lattice, margin_m=margin_m, down=not payload)
+    assert note == "", note
+    bottom = held_bottom - _RES if payload else held_bottom - margin_m
+    assert region.pose.xyz[2] - region.half_extents[2] == pytest.approx(bottom)
+    return region
+
+
+def test_the_grasp_target_margin_on_the_real_openarm_model(
+    reset_kernel_estop: Callable[..., None],
+) -> None:
+    """The producer's held region bloated by the margin — on every face, DOWNWARD too —
+    then cell-closed (``_kernel_closure``, what ``GraspTargetLeg.kernel_region`` publishes),
+    against the real kernel on 20 mm cells at the real 20 mm margin.
+
+    ====================================================  =====================================
+    row                                                   verdict
+    ====================================================  =====================================
+    margin 0 (the unbloated closure, today)               REFUSED, left finger on the target's
+                                                          own bottom layer (centres below the
+                                                          held bottom), exemption active
+    margin 25 mm                                          ACCEPTED: the bottom layer is in the
+                                                          bloat, the plane 33.5 mm away
+    25 mm, a neighbour within the margin                  ACCEPTED: exempt for the finger
+                                                          (the HZ-0115-32 residual)
+    25 mm, a cell one column past the bloat               REFUSED, left finger on it
+    25 mm, world raised a voxel: the plane 13.5 mm from   REFUSED, left finger on the plane: its
+    the finger, its centres 30 mm under the held bottom   centres lie deeper than the margin
+    50 mm (the cap), same raised world                    ACCEPTED: the plane's top layer is in
+                                                          the bloat, exempt for the finger
+    25 mm, the tall target: link7 13.5 mm from cells      REFUSED, link7: the bloat exempts the
+    inside the bloat                                      finger links only
+    ====================================================  =====================================
+
+    On 20 mm cells the support's top layer (centres half a cell under its top face, so
+    1.5 cells under the held bottom) enters the bloat only from a 30 mm margin up; on
+    Isaac's 15 mm cells from 22.5 mm.
+    """
+    bloated = _kernel_box
+    bottom_layer = {f"voxel_{_index(i, j, 2)}" for i in (2, 3) for j in (2, 3, 4, 5)}
+    with _live_cell(grasp_allowance_enabled=True, reset_kernel_estop=reset_kernel_estop) as (
+        cell,
+        reset,
+    ):
+        # ── Margin 0: the target's own bottom layer stops the finger ──────────────────
+        cell.world(_TARGET | _PLANE, _declaration(bloated(_HELD_CENTRE, _HELD_HALF, 0.0)))
+        cell.send("margin-0", expect_accept=False)
+        evidence = cell.refused("margin-0")
+        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_b_or_object"] in bottom_layer, evidence
+        assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
+        reset()
+
+        # ── 25 mm on every face: the finger reaches into the target ───────────────────
+        cell.world(_TARGET | _PLANE, _declaration(bloated(_HELD_CENTRE, _HELD_HALF, 0.025)))
+        cell.send("margin-25", expect_accept=True)
+        assert "margin-25" in cell.safe, cell.log()
+
+        # ── A neighbour within the margin: exempt for the finger (the residual) ───────
+        cell.world(
+            _TARGET | _PLANE | _WITHIN_MARGIN,
+            _declaration(bloated(_HELD_CENTRE, _HELD_HALF, 0.025)),
+        )
+        cell.send("margin-25-neighbour", expect_accept=True)
+        assert "margin-25-neighbour" in cell.safe, cell.log()
+
+        # ── A cell past the bloat: still a stop ───────────────────────────────────────
+        cell.world(
+            _TARGET | _PLANE | _PAST_MARGIN,
+            _declaration(bloated(_HELD_CENTRE, _HELD_HALF, 0.025)),
+        )
+        cell.send("margin-25-past", expect_accept=False)
+        evidence = cell.refused("margin-25-past")
+        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _PAST_MARGIN}, evidence
+        assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
+        reset()
+
+        # ── The support deeper than the margin: still a stop ──────────────────────────
+        cell.world(
+            _TARGET | _PLANE,
+            _declaration(bloated(_HELD_CENTRE, _HELD_HALF, 0.025, dz=_RAISED_DZ)),
+            grid_dz=_RAISED_DZ,
+        )
+        cell.send("margin-25-support", expect_accept=False)
+        evidence = cell.refused("margin-25-support")
+        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _PLANE}, evidence
+        assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
+        reset()
+
+        # ── The support within the margin (the 50 mm cap): exempt for the finger ──────
+        cell.world(
+            _TARGET | _PLANE,
+            _declaration(bloated(_HELD_CENTRE, _HELD_HALF, 0.05, dz=_RAISED_DZ)),
+            grid_dz=_RAISED_DZ,
+        )
+        cell.send("margin-50-support", expect_accept=True)
+        assert "margin-50-support" in cell.safe, cell.log()
+
+        # ── An arm link at cells inside the bloat: still a stop ───────────────────────
+        cell.world(
+            _TALL_TARGET | _PLANE,
+            _declaration(bloated(_TALL_HELD_CENTRE, _TALL_HELD_HALF, 0.025)),
+        )
+        cell.send("margin-25-link7", expect_accept=False)
+        evidence = cell.refused("margin-25-link7")
+        assert evidence["link_a"] == _LEFT_LINK7, "the wrist is not a contact link"
+        assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _TALL_TARGET - _TARGET}
+        assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
+
+
+def test_after_the_handover_the_latched_payload_box_does_not_exempt_the_support(
+    reset_kernel_estop: Callable[..., None],
+) -> None:
+    """The region the kernel latches at the handover, on the real kernel (``GraspTargetLeg.fill``
+    from the handover on): world raised a voxel (the plane 13.5 mm from the finger, its centres
+    at ``S - r/2`` under the support top ``S``), margin 50 mm, the left gripper holding the
+    region payload.
+
+    ====================================================  =====================================
+    row                                                   verdict
+    ====================================================  =====================================
+    latched = the all-faces bloat (bottom ``S - 30 mm``,  ACCEPTED: the plane under the payload
+    what ``fill`` published before 56104428)              stays exempt for the finger
+    latched = the payload box (bottom ``S``, what         REFUSED, left finger on the plane,
+    ``fill`` publishes now)                               ``grasp_exemption_active=1``
+    ====================================================  =====================================
+    """
+    import numpy as np
+    from openral_hal.vision_attachment_bridge import (
+        VisionAttachmentBridge,
+        VisionAttachmentConfig,
+        region_attachment,
+    )
+
+    left = next(
+        g
+        for g in VisionAttachmentBridge(
+            None, _description(), config=VisionAttachmentConfig(camera="head_zed")
+        )._legs
+        if g.jaw_link == _LEFT_FINGER
+    )
+    t_link_from_base = np.linalg.inv(_t_base_from_link_at_q0(left.producer.attach_link))
+    margin = 0.05
+    support_top = _ORIGIN[2] + _RAISED_DZ + 2 * _RES  # the plane's (layer k=1) top face
+
+    def boxes() -> tuple[PlaceRegion, PlaceRegion]:
+        """(all-faces bloat, payload box), measured now (the edge needs a fresh box)."""
+        old = _kernel_box(_HELD_CENTRE, _HELD_HALF, margin, dz=_RAISED_DZ)
+        new = _kernel_box(_HELD_CENTRE, _HELD_HALF, margin, dz=_RAISED_DZ, payload=True)
+        return old, new
+
+    old, new = boxes()
+    plane_z = support_top - _RES / 2
+    assert old.pose.xyz[2] - old.half_extents[2] < plane_z, "the plane in the old bloat"
+    assert new.pose.xyz[2] - new.half_extents[2] == pytest.approx(support_top)
+
+    def handover(trace: str, latched: PlaceRegion, *, expect_accept: bool) -> None:
+        """Arm a fresh declaration on the pre-handover box, then attach with ``latched``."""
+        armed = _declaration(boxes()[0])
+        cell.world(_TARGET | _PLANE, armed, grid_dz=_RAISED_DZ, attached=[])
+        at_handover = armed.model_copy(update={"region": latched})
+        held_payload = region_attachment(
+            at_handover,
+            attach_link=left.producer.attach_link,
+            touch_links=left.producer.touch_links,
+            t_link_from_region=t_link_from_base,
+            stamp_ns=time.time_ns(),
+        )
+        cell.world(_TARGET | _PLANE, at_handover, grid_dz=_RAISED_DZ, attached=[held_payload])
+        assert f"safety.grasp_region_latched target={_TARGET_ID} at handover" in cell.log()
+        cell.send(trace, expect_accept=expect_accept)
+
+    with _live_cell(grasp_allowance_enabled=True, reset_kernel_estop=reset_kernel_estop) as (
+        cell,
+        reset,
+    ):
+        # ── Old: the all-faces bloat latched — the plane stays exempt for the finger ──────
+        handover("latched-all-faces", boxes()[0], expect_accept=True)
+        assert "latched-all-faces" in cell.safe, cell.log()
+        latches = cell.log().count("at handover")
+        # The release retires that declaration; the next row arms a fresh one.
+        cell.world(_TARGET | _PLANE, None, grid_dz=_RAISED_DZ, attached=[])
+
+        # ── Now: the payload box latched — the plane under it stops the finger ────────────
+        handover("latched-payload", boxes()[1], expect_accept=False)
+        assert cell.log().count("at handover") == latches + 1, "the payload box never latched"
+        evidence = cell.refused("latched-payload")
+        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _PLANE}, evidence
+        assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
+        reset()

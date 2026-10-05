@@ -44,6 +44,7 @@ def test_scene_vision_params_are_declared_by_the_hal(
         enabled=True,
         evidence_timeout_s=0.75,
         grasp_target_enabled=True,
+        grasp_target_margin_m=0.03,
         place_target_enabled=True,
     )
     scene = tmp_path / "vision_leg.yaml"
@@ -62,6 +63,7 @@ def test_scene_vision_params_are_declared_by_the_hal(
     )
     vision = {k: v for k, v in invocation.hal_params.items() if k.startswith("vision_attachment_")}
     assert vision["vision_attachment_evidence_timeout_s"] == 0.75
+    assert vision["vision_attachment_grasp_target_margin_m"] == 0.03
     assert not any("effort" in key for key in vision), "no effort knob survives"
 
     rclpy.init(args=["--ros-args", "--params-file", str(params_file)])

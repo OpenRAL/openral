@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -497,6 +498,159 @@ def test_the_region_payload_is_the_declared_object_at_the_region() -> None:
     np.testing.assert_allclose(back[:3, :3], np.eye(3), atol=1e-9)
 
 
+def test_the_region_payload_carries_a_witness_only_on_a_measured_support() -> None:
+    """Isaac i42: the region payload still rests on the support it was measured on. Given
+    that measured support top, the payload carries the ADR-0092 D6 witness on it — the
+    plane under the payload's centre with normal +z in the base frame, both expressed in
+    the (yawed) object frame, patch = the payload's footprint, penetration = the extrinsic
+    bound capped at the kernel's 10 mm — and the wire's validity flag is set. Without one,
+    nothing is attested (the flag stays down: the kernel exempts nothing)."""
+    from openral_core import AttachmentEvidenceKind, DeployScene, PlaceRegion, Pose6D
+    from openral_core.geometry import homogeneous_from_quat_xyz, yaw_to_quat_xyzw
+    from openral_hal.vision_attachment_bridge import region_attachment
+
+    scene = DeployScene.from_yaml(
+        "tests/unit/fixtures/scenes/openarm_direct_dispatch_grasp.yaml"
+    ).grasp_declaration
+    assert scene is not None
+    region = PlaceRegion(
+        frame_id="openarm_base",
+        pose=Pose6D(
+            xyz=(0.2613, -0.1976, -0.4351),  # i42's tight fit
+            quat_xyzw=yaw_to_quat_xyzw(np.deg2rad(76.0)),
+            frame_id="openarm_base",
+        ),
+        half_extents=(0.069, 0.071, 0.030),
+        evidence_ref="segment_in_view:test@0",
+        stamp_ns=5,
+    )
+    declaration = scene.model_copy(update={"region": region})
+    t_base_from_link = homogeneous_from_quat_xyz(
+        (0.25, -0.2, -0.33), (0.0, 0.7071068, 0.0, 0.7071068)
+    )
+    support_z = -0.48  # i42's measured table top (its lower face is one 15 mm cell above)
+    kwargs: dict[str, Any] = {
+        "attach_link": "openarm_right_link7",
+        "touch_links": ("openarm_right_finger_pair",),
+        "t_link_from_region": np.linalg.inv(t_base_from_link),
+        "stamp_ns": 7,
+    }
+    held = region_attachment(declaration, support_z=support_z, extrinsic_error_m=0.015, **kwargs)
+    witness = held.support_contact
+    assert witness is not None
+    assert witness.support_id == f"map_support_under:{declaration.target_id}"
+    assert witness.evidence_kind is AttachmentEvidenceKind.MAP_SUPPORT_PROXIMITY
+    assert witness.stamp_ns == 7 == held.stamp_ns
+    # The horizontal footprint's half-diagonal: the yaw-only box projected onto the plane.
+    assert witness.patch_radius_m == pytest.approx(float(np.linalg.norm(region.half_extents[:2])))
+    assert witness.max_penetration_m == pytest.approx(0.01)
+    t_base_obj = t_base_from_link @ homogeneous_from_quat_xyz(
+        held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
+    )
+    point = t_base_obj @ np.append(witness.contact_point_in_object, 1.0)
+    np.testing.assert_allclose(point[:3], (0.2613, -0.1976, support_z), atol=1e-9)
+    normal = t_base_obj[:3, :3] @ np.asarray(witness.contact_normal_in_object)
+    np.testing.assert_allclose(normal, (0.0, 0.0, 1.0), atol=1e-9)
+    # The object frame is the (yaw-only) region's: the plane sits straight under its centre.
+    np.testing.assert_allclose(
+        witness.contact_point_in_object, (0.0, 0.0, support_z + 0.4351), atol=1e-9
+    )
+    np.testing.assert_allclose(witness.contact_normal_in_object, (0.0, 0.0, 1.0), atol=1e-9)
+    bare = region_attachment(declaration, **kwargs)
+    assert bare.support_contact is None
+    assert held.model_copy(update={"support_contact": None}) == bare
+
+    msgs = pytest.importorskip("openral_msgs.msg")
+    for payload, valid in ((held, True), (bare, False)):
+        wire = msgs.AttachedCollisionObject()
+        payload.fill_idl(wire, primitive_factory=msgs.AttachedCollisionPrimitive)
+        assert wire.support_contact_valid is valid
+    assert wire.support_contact.patch_radius_m == 0.0  # the bare payload sends nothing
+
+
+def test_the_i50_region_payload_embeds_the_targets_boundary_cell_and_not_the_support() -> None:
+    """Isaac i50: after a clean region-payload ATTACH the kernel stopped on the target can's
+    own second-layer cell (centre (0.2175, -0.2325, -0.4575)). The kernel exempts an
+    attached payload's attach-time contact as embedded residue only at a snapshot distance
+    of at most -r/2; against the tight held fit that cell sat at about -4 mm (not residue),
+    so a commanded config ~19 mm below the measured one stopped on it. The payload is now
+    the box the kernel latched — the held fit closed over the 15 mm cells it touches
+    (``_kernel_closure``, as ``GraspTargetLeg.kernel_region`` publishes it): that cell's
+    centre is inside, so it is residue (<= -7.5 mm). Grown up only: the support layer under
+    the payload keeps a non-negative distance (never residue, HZ-0115-31). Distances are
+    the kernel's own 15-axis box/cell SAT (``box_gap_lower_bound_m`` == ``box_box_distance``),
+    on the payload as posed back from its attach link."""
+    from openral_core import DeployScene, PlaceRegion, Pose6D
+    from openral_core.geometry import homogeneous_from_quat_xyz, yaw_to_quat_xyzw
+    from openral_hal._grasp_target import VoxelLattice
+    from openral_hal._grasp_target_leg import _kernel_closure
+    from openral_hal.vision_attachment_bridge import box_gap_lower_bound_m, region_attachment
+
+    r = 0.015
+    grid = VoxelLattice(
+        "openarm_base",
+        (0.0, -0.3, -0.6),
+        (0.0, 0.0, 0.0, 1.0),
+        r,
+        (40, 40, 40),
+        np.zeros(40 * 40 * 40, dtype=np.uint8),
+    )
+    yaw = np.deg2rad(-80.4)
+    grow = 0.5 * r * (abs(np.cos(yaw)) + abs(np.sin(yaw)))
+    # i50's latched region (0.2642, -0.1875, -0.4288) half (0.0735, 0.0576, 0.0362),
+    # unclosed: the held (map-completed) fit the payload used to be.
+    tight = PlaceRegion(
+        frame_id="openarm_base",
+        pose=Pose6D(
+            xyz=(0.2642, -0.1875, -0.4288 - r / 4),
+            quat_xyzw=yaw_to_quat_xyzw(yaw),
+            frame_id="openarm_base",
+        ),
+        half_extents=(0.0735 - grow, 0.0576 - grow, 0.0362 - r / 4),
+        evidence_ref="segment_in_view:i50@0",
+        stamp_ns=5,
+    )
+    closed, note = _kernel_closure(tight, grid)
+    assert note == ""
+    np.testing.assert_allclose(closed.half_extents, (0.0735, 0.0576, 0.0362), atol=1e-9)
+    np.testing.assert_allclose(closed.pose.xyz, (0.2642, -0.1875, -0.4288), atol=1e-9)
+
+    scene = DeployScene.from_yaml(
+        "tests/unit/fixtures/scenes/openarm_direct_dispatch_grasp.yaml"
+    ).grasp_declaration
+    assert scene is not None
+    t_base_from_link = homogeneous_from_quat_xyz(
+        (0.25, -0.2, -0.33), (0.0, 0.7071068, 0.0, 0.7071068)
+    )
+
+    def payload_box(region: PlaceRegion) -> tuple[Any, Any, Any]:
+        held = region_attachment(
+            scene.model_copy(update={"region": region}),
+            attach_link="openarm_right_link7",
+            touch_links=("openarm_right_finger_pair",),
+            t_link_from_region=np.linalg.inv(t_base_from_link),
+            stamp_ns=7,
+            support_z=-0.48,
+        )
+        (prim,) = held.primitives
+        t = t_base_from_link @ homogeneous_from_quat_xyz(
+            held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
+        )
+        return t[:3, 3], t[:3, :3], np.asarray(prim.shape.half_extents_m)
+
+    def cell(xyz: tuple[float, float, float]) -> tuple[Any, Any, Any]:
+        return np.asarray(xyz), np.eye(3), np.full(3, r / 2)
+
+    boundary = cell((0.2175, -0.2325, -0.4575))  # voxel_125244, the can's own 2nd layer
+    support = cell((0.2625, -0.1875, -0.4875))  # the table layer under the payload
+    d_tight = box_gap_lower_bound_m(payload_box(tight), boundary)
+    d_closed = box_gap_lower_bound_m(payload_box(closed), boundary)
+    assert -0.5 * r < d_tight < 0.0 and d_tight == pytest.approx(-0.004, abs=5e-4)
+    assert d_closed <= -0.5 * r, "the target's own boundary cell is not embedded residue"
+    for box in (payload_box(tight), payload_box(closed)):
+        assert box_gap_lower_bound_m(box, support) >= 0.0, "the support layer became residue"
+
+
 def test_a_bimanual_bridge_builds_one_leg_per_gripper() -> None:
     """OpenArm's two hands each get a trigger, a producer and a unique object id."""
     bridge = VisionAttachmentBridge(
@@ -911,3 +1065,454 @@ def test_a_malformed_mask_reply_falls_back_and_releases_the_barrier() -> None:
             node.destroy_node()
     finally:
         rclpy.shutdown()
+
+
+_SELF_FILTERED = "/openral/world_cloud/self_filtered"
+
+
+def test_the_self_filtered_cloud_cache_matches_by_capture_stamp_and_is_torn_down() -> None:
+    """``kept_points`` hands back the self-filter's cloud nearest the depth frame's capture
+    within the mask/depth skew bound (clouds are best-effort and some are lost: Isaac i30 had
+    one in three, so an exact match left every fit unfiltered), never one further away, and
+    the bridge's subscription to it goes with
+    ``teardown``: the lifecycle node rebuilds the bridge on every activate, and a leaked
+    full-resolution ``PointCloud2`` subscription kept every dead bridge decoding clouds."""
+    pytest.importorskip("openral_msgs")
+    rclpy = pytest.importorskip("rclpy")
+    from sensor_msgs_py import point_cloud2
+    from std_msgs.msg import Header
+
+    def cloud(stamp_ns: int, points: np.ndarray) -> Any:
+        header = Header(frame_id="openarm_base")
+        header.stamp.sec, header.stamp.nanosec = divmod(stamp_ns, 1_000_000_000)
+        return point_cloud2.create_cloud_xyz32(header, points.tolist())
+
+    def on_topic(node: Any) -> int:
+        return [sub.topic_name for sub in node.subscriptions].count(_SELF_FILTERED)
+
+    rclpy.init()
+    try:
+        node = rclpy.create_node("test_vision_attachment_kept_cloud")
+        try:
+            config = VisionAttachmentConfig(
+                camera="head_zed", self_filtered_cloud_topic=_SELF_FILTERED
+            )
+            for _ in range(2):  # two activate cycles, each with a freshly built bridge
+                bridge = VisionAttachmentBridge(node, _openarm(), config=config)
+                bridge.setup()
+                try:
+                    assert on_topic(node) == 1
+                    points = np.array([[0.45, 0.0, 0.10], [0.46, 0.01, 0.12]], dtype=np.float32)
+                    stamp = 12 * 1_000_000_000 + 345_000_000
+                    bridge._on_kept_cloud(cloud(stamp, points))
+                    for probe in (stamp, stamp + 100_000_000, stamp - 100_000_000):
+                        kept = bridge.kept_points(probe, "openarm_base")
+                        assert kept is not None
+                        np.testing.assert_allclose(kept, points, atol=1e-6)
+                    assert bridge.kept_points(stamp + 101_000_000, "openarm_base") is None
+                    # The nearest capture wins, not the newest.
+                    later = points + np.float32(1.0)
+                    bridge._on_kept_cloud(cloud(stamp + 150_000_000, later))
+                    near = bridge.kept_points(stamp + 60_000_000, "openarm_base")
+                    np.testing.assert_allclose(near, points, atol=1e-6)
+                    far = bridge.kept_points(stamp + 90_000_000, "openarm_base")
+                    np.testing.assert_allclose(far, later, atol=1e-6)
+                    for i in range(2, 10):  # eight newer captures roll the first one out
+                        bridge._on_kept_cloud(cloud(stamp + i * 150_000_000, points))
+                    assert bridge.kept_points(stamp, "openarm_base") is None
+                    assert bridge.kept_points(stamp + 1_350_000_000, "openarm_base") is not None
+                finally:
+                    bridge.teardown()
+                assert on_topic(node) == 0, "the self-filtered subscription outlived teardown"
+                assert not bridge._kept_clouds
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
+
+
+def test_each_close_logs_the_trigger_counters_once_at_attach_or_give_up(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """Isaac i24-i29 closed the jaw six times and never logged why no ATTACH came. A close
+    (command within ``stall_gap`` of closed, jaws empty) logs once as it starts and once at
+    its outcome: the ATTACH, or the command leaving the band without one — with the gap
+    resets and repeated samples of that close, and how near the last sample came."""
+    pytest.importorskip("openral_msgs")
+    rclpy = pytest.importorskip("rclpy")
+
+    def close(bridge: VisionAttachmentBridge, target: float) -> None:
+        bridge.observe_command(
+            Action(
+                control_mode=ControlMode.JOINT_POSITION,
+                horizon=1,
+                joint_names=["left_gripper"],
+                joint_targets=[[target]],
+            )
+        )
+
+    def read(bridge: VisionAttachmentBridge, q: float, stamp_ns: int) -> None:
+        bridge.observe_joint_state(
+            JointState(
+                name=["left_gripper", "right_gripper"],
+                position=[q, 0.0],
+                effort=[0.0, 0.0],
+                stamp_ns=stamp_ns,
+            )
+        )
+
+    rclpy.init()
+    try:
+        node = rclpy.create_node("test_vision_attachment_close_log")
+        try:
+            bridge = VisionAttachmentBridge(
+                node, _openarm(), config=VisionAttachmentConfig(camera="head_zed")
+            )
+            period = 1_000_000_000 // 30
+            close(bridge, 0.0)  # a close opened again before the jaw ever stalls
+            read(bridge, 0.5, period)
+            read(bridge, 0.4, 2 * period)
+            close(bridge, 1.0)
+            read(bridge, 0.5, 3 * period)
+            close(bridge, 0.0)
+            # Stalled 0.2 rad short; a cached sample read twice and a 0.3 s gap that
+            # restarts the windows once, then the ATTACH.
+            stamps = [(4 + k) * period for k in range(4)]
+            stamps += [stamps[-1], *(stamps[-1] + 300_000_000 + k * period for k in range(8))]
+            for t in stamps:
+                read(bridge, 0.2, t)
+            close(bridge, 1.0)  # open: the close that attached ends quietly
+            read(bridge, 0.2, stamps[-1] + period)
+            bridge.teardown()
+        finally:
+            node.destroy_node()
+    finally:
+        rclpy.shutdown()
+    err = capfd.readouterr().err
+    assert err.count("grasp trigger left_gripper: close commanded") == 2, err
+    assert "left_gripper: no ATTACH before the close ended — this close: 0 gap resets" in err
+    assert "left_gripper: ATTACH — this close: 1 gap resets, 1 repeated samples" in err
+    assert "last short_of_command=0.2000, settle spread=0.0000" in err
+    assert err.count("this close:") == 2, "an outcome logged more than once per close"
+    assert "right_gripper: close commanded" not in err, "an uncommanded jaw logged a close"
+
+
+# ── Review findings on PR #346: release cap, jaw_at, released witness, REGRASP keep ──
+
+
+def test_a_release_clearance_above_its_cap_is_refused() -> None:
+    """``release_clear_m`` is also the region payload's support-witness rise tolerance, so an
+    unbounded params-file value (0.3) would keep the support exemption through a 30 cm
+    carry: refused above ``MAX_RELEASE_CLEAR_M`` (the kernel's world margin plus a cell,
+    with headroom); the cap itself is accepted."""
+    from openral_hal.vision_attachment_bridge import MAX_RELEASE_CLEAR_M
+
+    with pytest.raises(ROSConfigError, match=r"release_clear_m=0\.3 exceeds"):
+        VisionAttachmentBridge(
+            None, _openarm(), config=VisionAttachmentConfig(camera="head_zed", release_clear_m=0.3)
+        )
+    VisionAttachmentBridge(
+        None,
+        _openarm(),
+        config=VisionAttachmentConfig(camera="head_zed", release_clear_m=MAX_RELEASE_CLEAR_M),
+    )
+
+
+def _jaw_box_gap(live: Any, gripper: Any, region: Any) -> float:
+    """The pre-fix ``jaw_at`` measure: the jaw link's bounding box vs the region (SAT gap)."""
+    from openral_core.geometry import homogeneous_from_quat_xyz
+    from openral_hal.vision_attachment_bridge import (
+        _joint_motion,
+        _link_boxes,
+        _xyz_rpy_matrix,
+        box_gap_lower_bound_m,
+    )
+
+    bridge = live.bridge
+    joint = next(j for j in live.robot.joints if j.name == gripper.joint_name)
+    t_region_link = bridge._lookup(region.frame_id, bridge.tf_frame(gripper.producer.attach_link))
+    t_jaw = (
+        t_region_link
+        @ _xyz_rpy_matrix(joint.origin_xyz, joint.origin_rpy)
+        @ _joint_motion(joint, bridge._positions[gripper.joint_name])
+    )
+    t_r = homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)
+    target = (t_r[:3, 3], t_r[:3, :3], np.asarray(region.half_extents))
+    return min(
+        box_gap_lower_bound_m(((t := t_jaw @ t_prim)[:3, 3], t[:3, :3], half), target)
+        for t_prim, half in _link_boxes(live.robot, gripper.jaw_link)
+    )
+
+
+def test_a_neighbour_beside_the_jaw_is_not_at_it_though_the_jaw_box_overlaps_it() -> None:
+    """Review finding: ``jaw_at`` took ANY overlap of the jaw link's bounding box with the
+    region as "at it", and the OpenArm's finger_pair box (half 0.029 x 0.071 x 0.081 m)
+    spans the whole jaw opening — a neighbour along its long axis passed, and its region
+    became the payload. The test is now the jaw's closing midpoint (the box centre, between
+    the fingers) within the reach: i41's centred grasp (hinge 9 cm above the can, midpoint
+    13.5 mm off it) is at it; the same jaw 17 cm along base +y, its box still overlapping
+    the can's region, is not — and the region is not the payload."""
+    from tests.unit.test_grasp_target_leg import _I41_JAW, _i41_armed, _i41_region, _live_leg
+
+    with _live_leg("test_jaw_at_neighbour_beside_the_box") as live:
+        bridge, now_ns = live.bridge, live.leg._now_ns()
+        right = _i41_armed(live, now_ns)
+        region = _i41_region(now_ns)
+        live.place("right", _I41_JAW)
+        at, measure = bridge.jaw_at(right.jaw_link, region, reach_m=0.05)
+        assert at and "closing midpoint" in measure, measure
+
+        live.place("right", (_I41_JAW[0], _I41_JAW[1] + 0.17, _I41_JAW[2]))
+        assert _jaw_box_gap(live, right, region) < 0.0, "the old overlap test accepted it"
+        at, measure = bridge.jaw_at(right.jaw_link, region, reach_m=0.05)
+        assert not at, measure
+        assert bridge._region_payload(right, stamp_ns=now_ns) is None
+
+
+def _held_region_payload(live: Any) -> tuple[Any, int]:
+    """The left hand holding the measured region payload with its support witness (the
+    ``test_grasp_target_leg`` witness setup, through the bridge's real trigger path);
+    returns ``(gripper, last joint-state stamp)``."""
+    from openral_core import AttachmentEvidenceKind
+
+    from tests.unit.test_grasp_target_leg import (
+        _goal_scope,
+        _grip,
+        _held_block_lattice,
+        _measured,
+    )
+
+    leg, bridge = live.leg, live.bridge
+    now_ns = leg._now_ns()
+    left = live.gripper("openarm_left_finger_pair")
+    live.place("left", (0.45, 0.0, 0.18))
+    live.place("right", (0.45, -0.30, 0.40))
+    grid = _held_block_lattice()
+    bridge._grid = (grid, now_ns, time.monotonic())
+    leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+    leg._detect_approach(0.10, now_ns)
+    live.place("left", (0.45, 0.0, 0.10))
+    region = _measured(now_ns)
+    leg.tracker.accept(region)
+    leg._support = (region, region.pose.xyz[2] - region.half_extents[2] - grid.resolution)
+    t = _grip(bridge, 0.29, t0_ns=1)
+    held = left.attachment
+    assert held is not None and held.evidence_kind is AttachmentEvidenceKind.GRASP_TARGET_REGION
+    assert held.support_contact is not None and left.support_anchor is not None
+    return left, t
+
+
+def test_a_region_payload_released_before_its_witness_retired_freezes_without_it() -> None:
+    """Review finding: ATTACH on the support, lift less than the rise tolerance, open the
+    jaws — the frozen release record carried the grasp-time ``map_support_under`` witness
+    through the whole window at the release pose, though the payload no longer rests on
+    that plane there. The record is frozen without it."""
+    from tests.unit.test_grasp_target_leg import _grip, _live_leg
+
+    with _live_leg("test_released_region_payload_drops_its_witness") as live:
+        bridge = live.bridge
+        left, t = _held_region_payload(live)
+        live.place("left", (0.45, 0.0, 0.13))  # lifted 30 mm: short of the 40 mm rise
+        bridge._support_checked_s = 0.0
+        bridge._retire_lifted_supports()
+        assert left.attachment is not None and left.attachment.support_contact is not None
+        _grip(bridge, 0.0, t0_ns=t)  # the jaws open: DETACH
+        assert left.attachment is None and left.release is not None
+        assert left.release.record.support_contact is None, "the witness rode the record"
+        assert all(obj.support_contact is None for obj in bridge._attached_objects())
+
+
+_REGRASP_DEPTH_SHAPE = (24, 32)
+_REGRASP_DEPTH_STAMP_NS = 5_000_000_000
+_REGRASP_OPTICAL = "test_regrasp_optical"
+
+
+def _regrasp_inputs(live: Any) -> None:
+    """A real depth frame (all invalid: 0 m), its CameraInfo, and a tf2 path to its frame:
+    the REGRASP's ``SegmentInView`` round trip then runs asynchronously, and the producer
+    gates the reply's mask against depth it cannot use (``depth_validity``)."""
+    from geometry_msgs.msg import TransformStamped
+    from sensor_msgs.msg import CameraInfo
+    from sensor_msgs.msg import Image as ImageMsg
+
+    height, width = _REGRASP_DEPTH_SHAPE
+    depth = ImageMsg(height=height, width=width, encoding="32FC1", step=4 * width)
+    depth.header.frame_id = _REGRASP_OPTICAL
+    depth.header.stamp.sec = _REGRASP_DEPTH_STAMP_NS // 1_000_000_000
+    depth.data = np.zeros(_REGRASP_DEPTH_SHAPE, dtype=np.float32).tobytes()
+    live.bridge._on_depth(depth)
+    info = CameraInfo(height=height, width=width)
+    info.k = [40.0, 0.0, width / 2, 0.0, 40.0, height / 2, 0.0, 0.0, 1.0]
+    info.p = [40.0, 0.0, width / 2, 0.0, 0.0, 40.0, height / 2, 0.0, 0.0, 0.0, 1.0, 0.0]
+    live.bridge._on_camera_info(info)
+    camera = TransformStamped()
+    camera.header.frame_id = "openarm_base"
+    camera.child_frame_id = _REGRASP_OPTICAL
+    camera.transform.translation.z = 1.0
+    camera.transform.rotation.x = 1.0  # looking down
+    live.buffer.set_transform_static(camera, "test")
+
+
+class _Segmenter:
+    """A real ``SegmentInView`` server at the process boundary: every reply is one full
+    mono8 mask stamped with the depth frame (so it is gated, never skew-refused), held
+    until ``gate`` is set."""
+
+    def __init__(self, live: Any) -> None:
+        import threading
+
+        import rclpy
+        from openral_msgs.srv import SegmentInView
+        from rclpy.callback_groups import ReentrantCallbackGroup
+        from rclpy.executors import MultiThreadedExecutor
+
+        self.gate = threading.Event()
+        self.requests: list[Any] = []
+        bridge = live.bridge
+        self.node = rclpy.create_node(f"{live.node.get_name()}_segmenter")
+        self.node.create_service(
+            SegmentInView,
+            bridge._config.service_name,
+            self._segment,
+            callback_group=ReentrantCallbackGroup(),
+        )
+        bridge._client = live.node.create_client(SegmentInView, bridge._config.service_name)
+        self.executor = MultiThreadedExecutor(num_threads=3)
+        for each in (live.node, self.node):
+            self.executor.add_node(each)
+        self.thread = threading.Thread(target=self.executor.spin, daemon=True)
+        self.thread.start()
+        assert _eventually(bridge._client.service_is_ready), "SegmentInView never discovered"
+
+    def _segment(self, request: Any, response: Any) -> Any:
+        from sensor_msgs.msg import Image as ImageMsg
+
+        self.requests.append(request)
+        self.gate.wait(timeout=30.0)
+        height, width = _REGRASP_DEPTH_SHAPE
+        mask = ImageMsg(height=height, width=width, encoding="mono8", step=width)
+        mask.header.stamp.sec = _REGRASP_DEPTH_STAMP_NS // 1_000_000_000
+        mask.data = bytes([255]) * (height * width)
+        response.ok = True
+        response.camera = request.camera
+        response.masks = [mask]
+        response.mask_scores_advisory = [0.9]
+        return response
+
+    def close(self) -> None:
+        self.gate.set()
+        self.executor.shutdown()
+        self.thread.join(timeout=5.0)
+        self.node.destroy_node()
+
+
+def _eventually(predicate: Any, timeout_s: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return bool(predicate())
+
+
+@pytest.mark.parametrize("outcome", ["rejected_reply", "deadline"])
+def test_an_async_regrasp_that_resolves_without_a_fit_keeps_the_region_payload(
+    outcome: str, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """HZ-0115-34 beyond the synchronous no-depth path: a REGRASP of a held region payload
+    whose ``SegmentInView`` round trip runs asynchronously — a real reply the producer
+    rejects (``depth_validity``), or no reply before the deadline — keeps the payload (the
+    one the leg holds now) instead of the jaw-span box, and releases the barrier."""
+    pytest.importorskip("openral_msgs")
+    from tests.unit.test_grasp_target_leg import _grip, _live_leg
+
+    deadline_s = 20.0 if outcome == "rejected_reply" else 0.2
+    with _live_leg(
+        f"test_regrasp_async_{outcome}",
+        service_name=f"/test_regrasp_async_{outcome}",
+        deadline_s=deadline_s,
+    ) as live:
+        bridge = live.bridge
+        left, t = _held_region_payload(live)
+        held = left.attachment
+        _regrasp_inputs(live)
+        segmenter = _Segmenter(live)
+        try:
+            if outcome == "rejected_reply":
+                segmenter.gate.set()
+            _grip(bridge, 0.20, t0_ns=t)  # the jaw re-seats 0.09 rad while stalled: REGRASP
+            assert _eventually(lambda: len(segmenter.requests) == 1), "REGRASP did not segment"
+            assert _eventually(bridge.attachment_action_ack_ready), "the barrier stayed shut"
+            assert left.attachment == held, "the region payload was replaced"
+            assert left.regrasp_hold is None and left.inflight is None
+        finally:
+            segmenter.close()
+        assert left.attachment == held, "a late reply replaced the kept payload"
+    err = capfd.readouterr().err
+    assert "REGRASP segmentation rejected" in err, err
+    if outcome == "rejected_reply":
+        assert "['depth_validity']" in err, "not the producer's own gate"
+    else:
+        assert "ROSDeadlineMissed" in err, err
+
+
+def test_a_detach_while_a_regrasp_segments_leaves_nothing_attached() -> None:
+    """A DETACH while the REGRASP's segmentation is in flight: nothing stays attached (the
+    payload goes to its release record), ``regrasp_hold`` is cleared and the barrier
+    released; the late reply is dropped — it neither re-attaches nor keeps anything."""
+    pytest.importorskip("openral_msgs")
+    from tests.unit.test_grasp_target_leg import _grip, _live_leg
+
+    with _live_leg(
+        "test_regrasp_detach_in_flight", service_name="/test_regrasp_detach", deadline_s=20.0
+    ) as live:
+        bridge = live.bridge
+        left, t = _held_region_payload(live)
+        _regrasp_inputs(live)
+        segmenter = _Segmenter(live)
+        try:
+            t = _grip(bridge, 0.20, t0_ns=t)
+            assert _eventually(lambda: len(segmenter.requests) == 1), "REGRASP did not segment"
+            assert left.pending and left.regrasp_hold is not None and left.inflight is not None
+            _grip(bridge, 0.0, t0_ns=t)  # the jaws open: DETACH
+            assert left.attachment is None and left.regrasp_hold is None
+            assert left.inflight is None and bridge.attachment_action_ack_ready()
+            assert left.release is not None, "the payload went to its release record"
+            segmenter.gate.set()  # the late reply
+            time.sleep(0.5)
+            assert left.attachment is None and left.regrasp_hold is None and not left.pending
+        finally:
+            segmenter.close()
+
+
+def test_a_support_witness_retired_while_a_regrasp_segments_stays_retired() -> None:
+    """The payload lifted past its rise tolerance while its REGRASP segments: the witness is
+    retired on the payload the leg holds (the hold is only the marker that a region payload
+    began the REGRASP), and the rejected reply keeps that retired payload — the witness is
+    never resurrected from the pre-REGRASP copy."""
+    pytest.importorskip("openral_msgs")
+    from tests.unit.test_grasp_target_leg import _grip, _live_leg
+
+    with _live_leg(
+        "test_regrasp_support_retired", service_name="/test_regrasp_retired", deadline_s=20.0
+    ) as live:
+        bridge = live.bridge
+        left, t = _held_region_payload(live)
+        held = left.attachment
+        _regrasp_inputs(live)
+        segmenter = _Segmenter(live)
+        try:
+            _grip(bridge, 0.20, t0_ns=t)
+            assert _eventually(lambda: len(segmenter.requests) == 1), "REGRASP did not segment"
+            assert left.pending and left.regrasp_hold == held
+            live.place("left", (0.45, 0.0, 0.16))  # lifted 60 mm: past the 40 mm rise
+            bridge._support_checked_s = 0.0
+            bridge._retire_lifted_supports()
+            retired = held.model_copy(update={"support_contact": None})
+            assert left.attachment == retired and left.support_anchor is None
+            segmenter.gate.set()
+            assert _eventually(bridge.attachment_action_ack_ready), "the barrier stayed shut"
+            assert left.attachment == retired, "the witness came back with the kept payload"
+            assert left.regrasp_hold is None
+        finally:
+            segmenter.close()

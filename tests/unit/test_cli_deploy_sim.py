@@ -2984,6 +2984,8 @@ def test_deploy_vision_attachment_block_maps_to_hal_params_and_launch_args(
         "vision_attachment_evidence_timeout_s": 0.75,
         "vision_attachment_grasp_target_enabled": False,
         "vision_attachment_grasp_target_approach_m": 0.0,
+        # The scene names its margin, 1.5 x its 20 mm octomap (HZ-0115-32; the default is 0).
+        "vision_attachment_grasp_target_margin_m": 0.03,
         "vision_attachment_place_target_enabled": False,
         "vision_attachment_release_timeout_s": 3.0,
         "vision_attachment_tf_frames": [

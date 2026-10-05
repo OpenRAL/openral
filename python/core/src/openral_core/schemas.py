@@ -3075,11 +3075,11 @@ class AttachmentEvidenceKind(str, Enum):
     SIM_CONTACT_FORCE = "sim_contact_force"
     # Proximity to a support plane the producer MEASURED in the voxel map; NOT
     # sensed contact (real pick-and-place design §2.3, ADR-0092 D6 amendment,
-    # drafted). A producer attests it once per place declaration, when the
-    # payload's lowest primitive is within max(1 voxel, the extrinsic accuracy
-    # bound) of the plane it latched from the live map, the payload's centre is
-    # over the measured patch, and the gripper is still loaded. A consumer must
-    # never read it as a touch, nor the measured surface as a proven support.
+    # drafted). The place leg attests it once per place declaration (lowest
+    # primitive within max(1 voxel, extrinsic bound) of the plane it latched,
+    # centre over the patch, gripper loaded); a vision pick at ATTACH, on the
+    # support measured under its grasp-target region, until the payload moves.
+    # Never read it as a touch, nor the measured surface as a proven support.
     MAP_SUPPORT_PROXIMITY = "map_support_proximity"
     # A position-only gripper closed and stalled short of its command (the position-stall
     # trigger, no effort channel) and vision could not confirm the shape: the conservative
@@ -9976,6 +9976,23 @@ class VisionAttachmentRuntime(BaseModel):
             the rSkill runner arms a goal-scope declaration for every goal so the
             policy, not the reasoner, picks what to grasp. ``None`` = off (default).
             Calibration point; at most ``GraspDeclaration.MAX_HALF_EXTENT_M``.
+        grasp_target_margin_m: How far the grasp target is bloated, metres (HAL param
+            ``vision_attachment_grasp_target_margin_m``; design note §2.1 "Grasp-target
+            margin"). Before the handover the region the kernel exempts for the declared
+            finger links is the measured target grown by this margin on every face,
+            **downward too** — the finger links may press up to this far into the support
+            under the target (and into anything else within it) without a stop. From the
+            handover on, the attached payload — the target lowered onto the measured support
+            top and grown by it on the four sides and the top, never down — is also the
+            region the kernel latches and keeps exempting the finger links over until the
+            payload leaves it, carried with the hand and checked against the environment.
+            The producer's own gates keep the measured region. Default ``0.0`` (no bloat,
+            the safer side): a scene that wants the wider exemption names it (the real
+            OpenArm cell's 20 mm octomap needs ``>= 0.03`` to cover the support layer,
+            design note §2.1). In ``[0, MAX_GRASP_TARGET_MARGIN_M]`` (0.05 m); the margin,
+            not the measurement, shrinks when a bloated box would exceed the declaration's
+            caps (logged). Calibration point, task-dependent; a Safety-WG setting (hazard
+            row HZ-0115-32).
         place_target_enabled: Run the real place producer (HAL param
             ``vision_attachment_place_target_enabled``): while a payload is held it
             measures the support surface directly under it from the voxel map, arms a
@@ -9991,6 +10008,12 @@ class VisionAttachmentRuntime(BaseModel):
         >>> VisionAttachmentRuntime(camera="head_zed").enabled
         False
     """
+
+    #: Ceiling on ``grasp_target_margin_m`` (Safety-WG bound, HZ-0115-32).
+    MAX_GRASP_TARGET_MARGIN_M: ClassVar[float] = 0.05
+    #: The margin a deploy scene gets when it names none: no bloat (CLAUDE.md §6, safer
+    #: by default); a scene names its margin (the user's 2-3 cm choice) explicitly.
+    DEFAULT_GRASP_TARGET_MARGIN_M: ClassVar[float] = 0.0
 
     model_config = ConfigDict(extra="forbid")
 
@@ -10008,6 +10031,9 @@ class VisionAttachmentRuntime(BaseModel):
     grasp_target_enabled: bool = False
     grasp_target_approach_m: float | None = Field(
         default=None, gt=0, le=GraspDeclaration.MAX_HALF_EXTENT_M
+    )
+    grasp_target_margin_m: float = Field(
+        default=DEFAULT_GRASP_TARGET_MARGIN_M, ge=0.0, le=MAX_GRASP_TARGET_MARGIN_M
     )
     place_target_enabled: bool = False
     release_timeout_s: float = Field(default=3.0, gt=0)

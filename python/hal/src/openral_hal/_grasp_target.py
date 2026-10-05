@@ -33,6 +33,21 @@ Flow, one call per step so every step is replayable from its inputs alone:
    the same target if it barely moved. ``region_within`` tells a re-fit that
    shrank inside the held region (the approaching hand occluding part of the
    target) from one that reaches outside it (the target moved).
+7. ``cell_closed_region`` — only what goes to the kernel: the held fit grown so
+   every lattice cell it touches has its centre inside (the kernel's exemption
+   test), horizontally and up, never down. The gates above keep comparing the
+   tight fits. ``margin_grown_region`` first bloats it by the configured grasp-target
+   margin: on every face (downward too) for the kernel's pre-handover region, on the
+   sides and top only for the attached payload (HZ-0115-32).
+8. ``occupied_touching_outside`` — before a fit is accepted, the region the kernel
+   would get must hold the target's whole map component: no occupied cell above the
+   support touches it from outside (a fit of the part the hand left in view would
+   leave the far edge's cells unexempt).
+9. ``map_completed_region`` — a fit that fails 8 is completed from the map instead: the
+   region grows, in the fit's yaw and never down, to the centres of the target's whole
+   26-connected map component (the map remembers views from before the hand arrived),
+   refused when that component touches the search column's edge, exceeds the caps or
+   leaves another body's cell inside the result.
 
 Every threshold here is a **calibration point** (CLAUDE.md §1.2): the caps are
 the design note's Safety-WG placeholders (half-extent ≤ 0.20 m, volume ≤
@@ -45,7 +60,7 @@ import math
 from collections import deque
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -56,6 +71,8 @@ from openral_core.geometry import homogeneous_from_quat_xyz, yaw_to_quat_xyzw
 from openral_hal._vision_attachment_evidence import backproject_masked_depth
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
+    from collections.abc import Iterable
+
     from openral_core import IntrinsicsPinhole
 
 __all__ = [
@@ -63,7 +80,12 @@ __all__ = [
     "TargetRegionFit",
     "TargetSeed",
     "VoxelLattice",
+    "cell_closed_region",
+    "map_completed_region",
+    "margin_grown_region",
+    "mask_without_removed_points",
     "occupied_centers_in_box",
+    "occupied_touching_outside",
     "project_point",
     "region_covers_occupied",
     "region_within",
@@ -160,8 +182,7 @@ class VoxelLattice:
             sx, sy, _ = self.size
             idx = np.flatnonzero(self.occupancy)
             ijk = np.stack((idx % sx, (idx // sx) % sy, idx // (sx * sy)), axis=1)
-            local = (ijk.astype(np.float64) + 0.5) * self.resolution
-            cached = np.asarray(local @ self.rotation().T + np.asarray(self.origin), np.float64)
+            cached = _cell_centres(self, ijk)
             cached.setflags(write=False)
             # Frozen: the lattice never changes, so neither do its centres.
             self.__dict__["_occupied_centers"] = cached
@@ -196,6 +217,10 @@ class TargetRegionFit:
         point_count: Points that survived erosion and depth validity.
         depth_valid_fraction: Fraction of eroded-mask pixels with usable depth.
         half_extents: The fitted (padded) half-extents, also reported on refusal.
+        box: The fitted box on a ``NOT_ON_SUPPORT`` refusal (the visible part, its lower
+            face pinned one voxel above the support like a region's), else ``None``: the
+            leg tells the closing hand occluding the target's lower part (that box inside
+            the held region) from a contradiction (``_refused_fit``).
     """
 
     region: PlaceRegion | None
@@ -203,6 +228,7 @@ class TargetRegionFit:
     point_count: int
     depth_valid_fraction: float
     half_extents: tuple[float, float, float]
+    box: PlaceRegion | None = None
 
 
 def _in_region(points: NDArray[np.float64], region: PlaceRegion) -> NDArray[np.bool_]:
@@ -339,14 +365,14 @@ def support_top_from_voxels(
             f"support probe_margin_m={probe_margin_m!r} is under two cells of the "
             f"{grid.resolution!r} m lattice: the ring between one cell and it would be empty."
         )
-    local = (centers - np.asarray(grid.origin)) @ grid.rotation()
-    ijk = np.floor(local / grid.resolution).astype(np.int64)
+    ijk = _ijk(grid, centers)
     occupied = _cell_set(grid, centers)
     around = occupied if surface_centers is None else _cell_set(grid, surface_centers)
-    start = tuple(int(v) for v in ijk[_anchor(centers, ijk, near_xy)])
+    i0, j0, k0 = (int(v) for v in ijk[_anchor(centers, ijk, near_xy)])
+    start = (i0, j0, k0)
     reach = math.ceil(probe_margin_m / grid.resolution - 1e-9)
     for k in sorted({c[2] for c in occupied | around if c[2] < start[2]}, reverse=True):
-        footprint = {(i, j) for i, j, _ in _component_from(occupied, start, min_k=k + 1)}
+        footprint = {(i, j) for i, j, _ in _component_from(occupied, [start], min_k=k + 1)}
         inner = _dilate(footprint, 1)
         ring = _dilate(footprint, reach) - inner
         surface = sum(
@@ -357,10 +383,21 @@ def support_top_from_voxels(
     return None
 
 
+def _ijk(grid: VoxelLattice, centers: NDArray[np.float64]) -> NDArray[np.int64]:
+    """``(N, 3)`` integer lattice cells holding ``centers``."""
+    local = (centers - np.asarray(grid.origin)) @ grid.rotation() / grid.resolution
+    return np.asarray(np.floor(local), dtype=np.int64)
+
+
+def _cell_centres(grid: VoxelLattice, ijk: NDArray[np.int64]) -> NDArray[np.float64]:
+    """``(N, 3)`` centres of integer lattice cells in ``grid.frame_id`` (inverse of ``_ijk``)."""
+    local = (ijk.astype(np.float64) + 0.5) * grid.resolution
+    return np.asarray(local @ grid.rotation().T + np.asarray(grid.origin), np.float64)
+
+
 def _cell_set(grid: VoxelLattice, centers: NDArray[np.float64]) -> set[tuple[int, int, int]]:
     """Integer lattice cells of ``centers``."""
-    ijk = np.floor((centers - np.asarray(grid.origin)) @ grid.rotation() / grid.resolution)
-    return {(int(i), int(j), int(k)) for i, j, k in ijk.astype(np.int64).tolist()}
+    return {(int(i), int(j), int(k)) for i, j, k in _ijk(grid, centers).tolist()}
 
 
 def _anchor(
@@ -382,17 +419,19 @@ def _dilate(cells: set[tuple[int, int]], r: int) -> set[tuple[int, int]]:
 
 
 def _component_from(
-    occupied: set[tuple[int, int, int]], start: tuple[int, ...], *, min_k: int
+    occupied: set[tuple[int, int, int]],
+    starts: Iterable[tuple[int, int, int]],
+    *,
+    min_k: int | None = None,
 ) -> list[tuple[int, int, int]]:
-    """The 26-connected component of ``start`` among the occupied cells with ``k >= min_k``."""
-    first = (start[0], start[1], start[2])
-    seen = {first}
-    queue = deque([first])
+    """The 26-connected component of ``starts`` among the occupied cells with ``k >= min_k``."""
+    seen = set(starts)
+    queue = deque(seen)
     while queue:
         ci, cj, ck = queue.popleft()
         for di, dj, dk in _NEIGHBOURS_26:
             n = (ci + di, cj + dj, ck + dk)
-            if n[2] >= min_k and n in occupied and n not in seen:
+            if (min_k is None or n[2] >= min_k) and n in occupied and n not in seen:
                 seen.add(n)
                 queue.append(n)
     return list(seen)
@@ -537,6 +576,65 @@ def _erode(mask: NDArray[np.bool_], px: int) -> NDArray[np.bool_]:
     return m
 
 
+def mask_without_removed_points(
+    mask: NDArray[np.bool_],
+    depth_m: NDArray[np.float64],
+    intrinsics: IntrinsicsPinhole,
+    t_base_from_cam: NDArray[np.float64],
+    kept_points_base: NDArray[np.floating[Any]],
+    *,
+    cell_m: float = 0.005,
+) -> NDArray[np.bool_]:
+    """``mask`` without the pixels whose depth point the robot self-filter removed.
+
+    ``kept_points_base`` is the robot self-filter's output for the SAME capture
+    (``openral_octomap_bridge``'s ``robot_self_filter``: the robot's and a held
+    payload's returns removed against the collision model at the measured joint
+    state), in the base frame. A masked pixel is kept only if a kept point lies in its
+    own or a neighbouring ``cell_m`` cell — the robot is never re-modelled here, so
+    the fingers closing in on a target leave its fit exactly as they leave the map.
+    Pixels with no depth are left as they are (they contribute nothing). Removing
+    pixels only ever shrinks the fit.
+
+    Example:
+        >>> import numpy as np
+        >>> from openral_core import IntrinsicsPinhole
+        >>> k = IntrinsicsPinhole(width=4, height=4, fx=4.0, fy=4.0, cx=2.0, cy=2.0)
+        >>> m = np.ones((4, 4), dtype=bool)
+        >>> mask_without_removed_points(m, np.ones((4, 4)), k, np.eye(4), np.zeros((0, 3))).any()
+        np.False_
+    """
+    rows, cols = np.nonzero(mask & np.isfinite(depth_m) & (depth_m > 0.0))
+    out = mask.copy()
+    if len(rows) == 0:
+        return out
+    z = depth_m[rows, cols]
+    pts_cam = np.stack(
+        [
+            (cols + 0.5 - intrinsics.cx) / intrinsics.fx * z,
+            (rows + 0.5 - intrinsics.cy) / intrinsics.fy * z,
+            z,
+        ],
+        axis=1,
+    )
+    pts = pts_cam @ np.asarray(t_base_from_cam)[:3, :3].T + np.asarray(t_base_from_cam)[:3, 3]
+
+    def code(keys: NDArray[np.int64]) -> NDArray[np.int64]:
+        # ponytail: 21 bits per axis (±5 km at 5 mm), plenty for one camera's view.
+        k = keys + (1 << 20)
+        return (k[:, 0] << 42) | (k[:, 1] << 21) | k[:, 2]
+
+    kept: NDArray[np.float64] = np.asarray(kept_points_base, dtype=np.float64).reshape(-1, 3)
+    kept = kept[np.isfinite(kept).all(axis=1)]
+    kept_codes = np.unique(code(np.floor(kept / cell_m).astype(np.int64)))
+    own = np.floor(pts / cell_m).astype(np.int64)
+    found = np.zeros(len(pts), dtype=bool)
+    for offset in [*_NEIGHBOURS_26, (0, 0, 0)]:
+        found |= np.isin(code(own + np.asarray(offset, dtype=np.int64)), kept_codes)
+    out[rows[~found], cols[~found]] = False
+    return out
+
+
 def target_region_from_mask(
     mask: NDArray[np.bool_],
     depth_m: NDArray[np.float64],
@@ -666,8 +764,6 @@ def target_region_from_mask(
         return TargetRegionFit(None, TargetRefusal.HALF_EXTENT_CAP, n, valid, half)
     if 8.0 * half[0] * half[1] * half[2] > max_volume_m3:
         return TargetRegionFit(None, TargetRefusal.VOLUME_CAP, n, valid, half)
-    if low > support_z + 2.0 * resolution + 1e-9:
-        return TargetRegionFit(None, TargetRefusal.NOT_ON_SUPPORT, n, valid, half)
 
     centre_xy = xy_mean + rot2 @ ((lo_uv + hi_uv) / 2.0)
     centre = (float(centre_xy[0]), float(centre_xy[1]), (z_hi + bottom) / 2.0)
@@ -678,6 +774,8 @@ def target_region_from_mask(
         evidence_ref=evidence_ref,
         stamp_ns=stamp_ns,
     )
+    if low > support_z + 2.0 * resolution + 1e-9:
+        return TargetRegionFit(None, TargetRefusal.NOT_ON_SUPPORT, n, valid, half, box=region)
     return TargetRegionFit(region, None, n, valid, half)
 
 
@@ -807,3 +905,379 @@ def region_within(inner: PlaceRegion, outer: PlaceRegion, *, tol_m: float) -> bo
     corners = (signs * np.asarray(inner.half_extents)) @ t[:3, :3].T + t[:3, 3]
     grown = outer.model_copy(update={"half_extents": tuple(h + tol_m for h in outer.half_extents)})
     return bool(_in_region(corners, grown).all())
+
+
+def cell_closed_region(
+    region: PlaceRegion, grid: VoxelLattice, *, max_half_extent_m: float
+) -> tuple[PlaceRegion, bool]:
+    """``region`` grown so every lattice cell it intersects has its centre inside — never down.
+
+    The kernel exempts a world voxel only when the cell's *centre* lies in the grasp
+    region (``grasp_target_exempts`` in ``cpp/openral_safety_kernel/src/collision.cpp``).
+    A fit tight to the target's measured surface leaves the target's own boundary cells
+    — the surface inside them, their centres up to half a cell outside the box — never
+    exempt, and a finger hull swept over the target's top edge stops on them. A cell
+    meets the box iff its centre lies in the box ⊕ that cell, which the box grown per
+    local axis ``i`` by ``r/2 · Σ_j |(Rᵀ_box R_grid)_ij|`` contains: ``r/2 · (|cos θ| +
+    |sin θ|) ≤ r/√2`` horizontally for a yaw ``θ`` against a z-up lattice, ``r/2``
+    vertically. Grown horizontally on both sides and **up only**: the bottom stays where
+    the fit put it, so the support layer under it stays non-exempt (ADR-0115,
+    HZ-0115-6). Voxel-consistent: inside one cell the map cannot tell another body from
+    the target, so exempting the cells the target touches exempts nothing the map could
+    separate from it.
+
+    Args:
+        region: A gravity-aligned (yaw-only) fit in ``grid.frame_id``.
+        grid: The lattice the region is vouched against.
+        max_half_extent_m: Ceiling on each grown half-extent (the declaration's cap);
+            a clamped vertical half-extent keeps the bottom fixed.
+
+    Returns:
+        ``(closed, clamped)`` — ``clamped`` when any half-extent hit the ceiling.
+
+    Raises:
+        ROSConfigError: On a frame mismatch or a region that is not yaw-only.
+
+    Example:
+        >>> import numpy as np
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> origin, identity = (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)
+        >>> g = VoxelLattice("base", origin, identity, 0.02, (1, 1, 1), np.zeros(1, np.uint8))
+        >>> r = PlaceRegion(
+        ...     frame_id="base",
+        ...     half_extents=(0.05, 0.04, 0.03),
+        ...     pose=Pose6D(xyz=(0.3, 0.0, 0.1), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ... )
+        >>> closed, clamped = cell_closed_region(r, g, max_half_extent_m=0.2)
+        >>> [round(v, 3) for v in closed.half_extents], round(closed.pose.xyz[2], 3), clamped
+        ([0.06, 0.05, 0.035], 0.105, False)
+    """
+    _check_frame(grid, region)
+    rot = homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)[:3, :3]
+    if abs(rot[2, 2] - 1.0) > _UNIT_QUAT_TOL:
+        raise ROSConfigError("cell_closed_region: the region must be gravity-aligned (yaw only).")
+    grow = 0.5 * grid.resolution * np.abs(rot.T @ grid.rotation()).sum(axis=1)
+    hx, hy, hz = region.half_extents
+    wanted = (hx + float(grow[0]), hy + float(grow[1]), hz + float(grow[2]) / 2.0)
+    half = tuple(min(h, max_half_extent_m) for h in wanted)
+    x, y, z = region.pose.xyz
+    closed = region.model_copy(
+        update={
+            "half_extents": half,
+            # Bottom fixed: the top alone rises by what the vertical half-extent gained.
+            "pose": region.pose.model_copy(update={"xyz": (x, y, z - hz + half[2])}),
+        }
+    )
+    return closed, half != wanted
+
+
+def lowered_to_support(region: PlaceRegion, support_z: float) -> PlaceRegion:
+    """``region`` with its lower face moved down onto ``support_z``, the rest unchanged.
+
+    The grasp target's held region stands one voxel above the support it was measured
+    on (``target_region_from_mask``), so the target's own bottom layer lies outside it.
+    The vision-attached payload is lowered onto the support top: once lifted, that layer
+    rides under the payload's lower face, and outside the payload it is an obstacle the
+    octomap bridge never clears (Isaac i56/i57: a stop on the carried can's own bottom
+    layer the moment the support witness retired). The support's cells stay outside the
+    box (their tops at ``support_z``). Only a lower face above ``support_z`` moves; the
+    region's local z is up for the yaw-only fits the leg makes.
+
+    Args:
+        region: The held region.
+        support_z: The measured support top, in ``region.frame_id``.
+
+    Returns:
+        The lowered region (same frame, yaw, stamp and provenance), or ``region`` when its
+        lower face is not above ``support_z``.
+
+    Example:
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> r = PlaceRegion(
+        ...     frame_id="base",
+        ...     half_extents=(0.05, 0.04, 0.03),
+        ...     pose=Pose6D(xyz=(0.3, 0.0, 0.1), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ... )
+        >>> g = lowered_to_support(r, 0.055)
+        >>> round(g.half_extents[2], 4), round(g.pose.xyz[2] - g.half_extents[2], 4)
+        (0.0375, 0.055)
+        >>> lowered_to_support(r, 0.08) is r
+        True
+    """
+    hx, hy, hz = region.half_extents
+    x, y, z = region.pose.xyz
+    drop = (z - hz) - support_z
+    if not (math.isfinite(drop) and drop > 0.0):
+        return region
+    return region.model_copy(
+        update={
+            "half_extents": (hx, hy, hz + drop / 2.0),
+            "pose": region.pose.model_copy(update={"xyz": (x, y, z - drop / 2.0)}),
+        }
+    )
+
+
+def margin_grown_region(region: PlaceRegion, margin_m: float, *, down: bool) -> PlaceRegion:
+    """``region`` bloated by ``margin_m`` on its four sides and top, and its bottom when ``down``.
+
+    The grasp-target margin (design note §2.1 "Grasp-target margin", HZ-0115-32): before
+    the handover the kernel exempts, for the declared finger links, the held region grown
+    on every face — ``down=True``, so cells up to ``margin_m`` below the region's lower
+    face (the support under the target among them) are exempt too; the attached payload
+    is grown on the sides and the top only (``down=False``), never into the support.
+    Growth is along the region's own axes (its local z is up for the yaw-only fits the
+    leg makes); ``margin_m = 0`` returns ``region`` unchanged.
+
+    Args:
+        region: The held region.
+        margin_m: Per-face growth, metres, ``>= 0``.
+        down: Whether the lower face moves down by ``margin_m`` too.
+
+    Returns:
+        The grown region (same frame, yaw, stamp and provenance).
+
+    Raises:
+        ROSConfigError: On a negative or non-finite margin.
+
+    Example:
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> r = PlaceRegion(
+        ...     frame_id="base",
+        ...     half_extents=(0.05, 0.04, 0.03),
+        ...     pose=Pose6D(xyz=(0.3, 0.0, 0.1), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ... )
+        >>> g = margin_grown_region(r, 0.02, down=False)
+        >>> [round(v, 3) for v in g.half_extents], round(g.pose.xyz[2] - g.half_extents[2], 3)
+        ([0.07, 0.06, 0.04], 0.07)
+        >>> g = margin_grown_region(r, 0.02, down=True)
+        >>> [round(v, 3) for v in g.half_extents], round(g.pose.xyz[2] - g.half_extents[2], 3)
+        ([0.07, 0.06, 0.05], 0.05)
+    """
+    if not (math.isfinite(margin_m) and margin_m >= 0.0):
+        raise ROSConfigError(f"margin_grown_region: margin {margin_m!r} must be finite and >= 0.")
+    if margin_m == 0.0:
+        return region
+    hx, hy, hz = region.half_extents
+    # Down too: both z faces move, the centre stays. Up only: the top moves, so the
+    # centre rises by half the margin along the region's own z.
+    rise = 0.0 if down else margin_m / 2.0
+    rot = homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)[:3, :3]
+    centre = np.asarray(region.pose.xyz, dtype=np.float64) + rot[:, 2] * rise
+    return region.model_copy(
+        update={
+            "half_extents": (hx + margin_m, hy + margin_m, hz + margin_m - rise),
+            "pose": region.pose.model_copy(update={"xyz": tuple(float(v) for v in centre)}),
+        }
+    )
+
+
+def occupied_touching_outside(
+    grid: VoxelLattice, region: PlaceRegion, *, support_z: float
+) -> NDArray[np.float64]:
+    """Occupied cells above the support, outside ``region``, touching a cell inside it.
+
+    The target as the map sees it is the 26-connected component of the occupied cells
+    above the support (centres more than one voxel above ``support_z``, the layer
+    ``target_seed_from_voxels`` drops too) holding the cells whose centres lie in
+    ``region``. That component lies wholly in ``region`` exactly when no cell of it
+    outside ``region`` is 26-adjacent to one inside — any path out of the region
+    crosses that ring — so this looks one cell around the region, never the whole map,
+    and needs no bound on how far the component reaches. Empty means the region holds
+    every cell of the target the map has; anything else is a fit that saw part of it
+    (the far side occluded by the hand) or something touching it the map cannot
+    separate from it.
+
+    Args:
+        grid: The published lattice.
+        region: The region the kernel gets (``cell_closed_region`` of the fit), in
+            ``grid.frame_id``.
+        support_z: The measured support top the fit stands on.
+
+    Returns:
+        ``(N, 3)`` centres of those outside cells in ``grid.frame_id``.
+
+    Raises:
+        ROSConfigError: If ``region.frame_id`` is not the lattice frame.
+
+    Example:
+        >>> import numpy as np
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> occ = np.zeros(4 * 1 * 3, dtype=np.uint8)
+        >>> occ[[4, 5, 6]] = 1  # a 3-cell bar at k=1, i=0..2
+        >>> g = VoxelLattice("base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (4, 1, 3), occ)
+        >>> def box(hx):
+        ...     return PlaceRegion(
+        ...         frame_id="base",
+        ...         half_extents=(hx, 0.05, 0.05),
+        ...         pose=Pose6D(xyz=(hx, 0.05, 0.15), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ...     )
+        >>> occupied_touching_outside(g, box(0.1), support_z=0.0).round(3).tolist()
+        [[0.25, 0.05, 0.15]]
+        >>> len(occupied_touching_outside(g, box(0.15), support_z=0.0))
+        0
+    """
+    _check_frame(grid, region)
+    centers = grid.occupied_centers()
+    above = centers[centers[:, 2] > support_z + grid.resolution]
+    # Only cells within two of the region can be inside it or touch one inside it.
+    near = region.model_copy(
+        update={"half_extents": tuple(h + 2.0 * grid.resolution for h in region.half_extents)}
+    )
+    above = above[_in_region(above, near)]
+    inside = _in_region(above, region)
+    cells = [tuple(c) for c in _ijk(grid, above).tolist()]
+    touched = {
+        (i + di, j + dj, k + dk)
+        for (i, j, k), is_in in zip(cells, inside.tolist(), strict=True)
+        if is_in
+        for di, dj, dk in _NEIGHBOURS_26
+    }
+    outside = np.array(
+        [not is_in and c in touched for c, is_in in zip(cells, inside.tolist(), strict=True)],
+        dtype=bool,
+    )
+    return above[outside] if len(above) else above
+
+
+def map_completed_region(
+    grid: VoxelLattice,
+    fit: PlaceRegion,
+    column: PlaceRegion,
+    *,
+    support_z: float,
+    max_half_extent_m: float,
+    max_volume_m3: float,
+) -> tuple[PlaceRegion | None, int, str]:
+    """``fit`` grown to the target's whole map component, or why it cannot be.
+
+    The camera confirms which object the target is (``fit``, its visible part); the map
+    holds the rest, seen from earlier views (the far side the hovering hand hides from
+    the head camera, Isaac i45). The component is the 26-connected set of occupied cells
+    more than one voxel above ``support_z`` (``occupied_touching_outside``'s filter),
+    seeded from those whose centres lie in ``cell_closed_region(fit)`` and flooded inside
+    ``column``. The result is the smallest box in the fit's yaw holding ``fit`` and every
+    component cell's centre, its bottom the fit's own (never down into the support): its
+    ``cell_closed_region`` — what the kernel gets — then holds every component cell whole.
+
+    Refused (``None``, the reason) when a component cell has a 26-neighbour whose centre
+    lies outside ``column`` (the component touches the search edge: the leg cannot vouch
+    the rest is the target), when the box exceeds ``max_half_extent_m`` or
+    ``max_volume_m3``, or when its cell closure holds an occupied cell above the support
+    that is not the component's (another body inside the box's corners). A body within
+    one voxel of the target is 26-connected to it and merges into the component: the map
+    cannot separate the two (a Safety-WG residual, HZ-0115-30).
+
+    Args:
+        grid: The published lattice.
+        fit: The camera's gravity-aligned (yaw-only) fit, in ``grid.frame_id``.
+        column: The search column the leg vouches for (``search_column``).
+        support_z: The measured support top the fit stands on.
+        max_half_extent_m: Per-axis cap on the completed box.
+        max_volume_m3: Volume cap on the completed box.
+
+    Returns:
+        ``(completed, added, reason)`` — ``added`` the component cells beyond the fit's
+        cell closure (taken from the map alone); ``reason`` empty iff ``completed`` is set.
+
+    Raises:
+        ROSConfigError: On a frame mismatch or a tilted ``fit``.
+
+    Example:
+        >>> import numpy as np
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> occ = np.zeros(6 * 3 * 3, dtype=np.uint8)
+        >>> occ[[18 + 6 + i for i in range(1, 5)]] = 1  # a 4-cell bar at j=1, k=1, i=1..4
+        >>> g = VoxelLattice("base", (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (6, 3, 3), occ)
+        >>> def box(x, hx, hy, hz):
+        ...     return PlaceRegion(
+        ...         frame_id="base",
+        ...         half_extents=(hx, hy, hz),
+        ...         pose=Pose6D(xyz=(x, 0.15, 0.15), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ...     )
+        >>> fit = box(0.19, 0.09, 0.05, 0.05)  # x 0.1-0.28: the camera saw two of the 4 cells
+        >>> done, added, _ = map_completed_region(
+        ...     g,
+        ...     fit,
+        ...     box(0.3, 0.3, 0.15, 0.15),
+        ...     support_z=0.0,
+        ...     max_half_extent_m=0.2,
+        ...     max_volume_m3=0.03,
+        ... )
+        >>> [round(v, 3) for v in done.half_extents], round(done.pose.xyz[0], 3), added
+        ([0.175, 0.05, 0.05], 0.275, 2)
+        >>> map_completed_region(  # a column x 0.1-0.5: the bar's end cells touch its edge
+        ...     g,
+        ...     fit,
+        ...     box(0.3, 0.2, 0.15, 0.15),
+        ...     support_z=0.0,
+        ...     max_half_extent_m=0.2,
+        ...     max_volume_m3=0.03,
+        ... )[2]
+        "the target's map component (4 cells) touches the search column's edge"
+    """
+    _check_frame(grid, fit)
+    _check_frame(grid, column)
+    seed_box, _ = cell_closed_region(fit, grid, max_half_extent_m=max_half_extent_m)
+
+    def grown(box: PlaceRegion) -> PlaceRegion:
+        return box.model_copy(
+            update={"half_extents": tuple(h + 2.0 * grid.resolution for h in box.half_extents)}
+        )
+
+    centers = grid.occupied_centers()
+    everywhere = centers[centers[:, 2] > support_z + grid.resolution]
+    # Every cell the flood can reach lies within two of the seed box or the column.
+    above = everywhere[
+        _in_region(everywhere, grown(seed_box)) | _in_region(everywhere, grown(column))
+    ]
+    in_seed = _in_region(above, seed_box)
+    cells = [(int(i), int(j), int(k)) for i, j, k in _ijk(grid, above).tolist()]
+    seeds = {c for c, ok in zip(cells, in_seed.tolist(), strict=True) if ok}
+    allowed = in_seed | _in_region(above, column)
+    component = _component_from(
+        {c for c, ok in zip(cells, allowed.tolist(), strict=True) if ok}, seeds
+    )
+    comp = np.asarray(component, dtype=np.int64).reshape(-1, 3)
+    added = len(component) - len(seeds)
+    around = (comp[:, None, :] + np.asarray(_NEIGHBOURS_26, dtype=np.int64)[None]).reshape(-1, 3)
+    if not _in_region(_cell_centres(grid, around), column).all():
+        return (
+            None,
+            added,
+            f"the target's map component ({len(component)} cells) touches the search column's edge",
+        )
+    t = homogeneous_from_quat_xyz(fit.pose.xyz, fit.pose.quat_xyzw)
+    local = (_cell_centres(grid, comp) - t[:3, 3]) @ t[:3, :3]
+    half = np.asarray(fit.half_extents, dtype=np.float64)
+    lo = np.minimum(-half, local.min(axis=0, initial=np.inf))
+    hi = np.maximum(half, local.max(axis=0, initial=-np.inf))
+    lo[2] = -half[2]  # the bottom stays the fit's: never down into the support
+    centre = t[:3, 3] + t[:3, :3] @ ((lo + hi) / 2.0)
+    completed = fit.model_copy(
+        update={
+            "half_extents": tuple(float(v) for v in (hi - lo) / 2.0),
+            "pose": fit.pose.model_copy(update={"xyz": tuple(float(v) for v in centre)}),
+        }
+    )
+    if max(completed.half_extents) > max_half_extent_m or completed.volume_m3() > max_volume_m3:
+        return (
+            None,
+            added,
+            f"the target's map component ({len(component)} cells) completes to half_extents "
+            f"{tuple(round(v, 3) for v in completed.half_extents)}, over the "
+            f"{max_half_extent_m} m / {max_volume_m3} m^3 caps",
+        )
+    closed, _ = cell_closed_region(completed, grid, max_half_extent_m=max_half_extent_m)
+    members = set(component)
+    # Over the closure's own extent, every occupied cell above the support: in a yaw other
+    # than the column's its corners reach past the cells pre-filtered above.
+    foreign = [
+        c for c in _cell_set(grid, everywhere[_in_region(everywhere, closed)]) if c not in members
+    ]
+    if foreign:
+        return (
+            None,
+            added,
+            f"{len(foreign)} occupied cell(s) of another body inside the completed region",
+        )
+    return completed, added, ""

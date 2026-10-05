@@ -1800,6 +1800,7 @@ if _ROS2_AVAILABLE:
             # to the conservative GRIPPER_CLOSURE box. The grasp trigger is the
             # jaw position stalling short of its command (manifest
             # closure_calibration); no effort channel is read.
+            from openral_core import VisionAttachmentRuntime
             from openral_core.depth_extrinsic import MAX_PLANAR_ERR_M
 
             from openral_hal.vision_attachment_bridge import DEFAULT_SEGMENT_SERVICE
@@ -1811,6 +1812,9 @@ if _ROS2_AVAILABLE:
             # driver's live K is the only one ever projected through.
             self.declare_parameter("vision_attachment_camera_info_topic", "")
             self.declare_parameter("vision_attachment_service", DEFAULT_SEGMENT_SERVICE)
+            # The robot self-filter's output for the attach camera, set by the deploy
+            # launch when that filter runs: the grasp target fit drops the robot's points.
+            self.declare_parameter("vision_attachment_self_filtered_cloud_topic", "")
             # Seconds. A warmed SAM 2.1 call is ~53 ms on the reference GPU; the
             # default leaves ~4x margin while staying the same order as the
             # ~100 ms barrier it rides inside. A CPU-only host must raise it.
@@ -1827,8 +1831,10 @@ if _ROS2_AVAILABLE:
             # release_clear_m: the deploy passes the kernel's world-voxel margin +
             # one voxel resolution. Both are 0.0 = unset, and REQUIRED with the leg
             # on: they belong to the kernel this deploy runs, so no cell's values are
-            # a safe fallback (refused at activate). release_timeout_s bounds the
-            # release window. See VisionAttachmentConfig.
+            # a safe fallback (refused at activate). release_clear_m above
+            # vision_attachment_bridge.MAX_RELEASE_CLEAR_M (0.1 m) is refused by the
+            # bridge at activate too. release_timeout_s bounds the release window. See
+            # VisionAttachmentConfig.
             self.declare_parameters(
                 "",
                 [
@@ -1867,6 +1873,12 @@ if _ROS2_AVAILABLE:
                     ("vision_attachment_grasp_target_occluder_margin_m", 0.05),
                     # Approach-armed target distance, metres; 0 = off (the default).
                     ("vision_attachment_grasp_target_approach_m", 0.0),
+                    # Grasp-target bloat, metres (0 = unbloated; a real value, not "unset"):
+                    # the deploy scene's VisionAttachmentRuntime default.
+                    (
+                        "vision_attachment_grasp_target_margin_m",
+                        VisionAttachmentRuntime.DEFAULT_GRASP_TARGET_MARGIN_M,
+                    ),
                 ],
             )
             # Real place producer leg (real pick-and-place design §2.3). OFF by
@@ -2369,6 +2381,9 @@ if _ROS2_AVAILABLE:
                     .string_value
                     or None,
                     service_name=gp("vision_attachment_service").get_parameter_value().string_value,
+                    self_filtered_cloud_topic=gp("vision_attachment_self_filtered_cloud_topic")
+                    .get_parameter_value()
+                    .string_value,
                     deadline_s=gp("vision_attachment_deadline_s")
                     .get_parameter_value()
                     .double_value,
@@ -2430,6 +2445,9 @@ if _ROS2_AVAILABLE:
                     .get_parameter_value()
                     .double_value
                     or None,
+                    grasp_target_margin_m=gp("vision_attachment_grasp_target_margin_m")
+                    .get_parameter_value()
+                    .double_value,
                     place_target_enabled=gp("vision_attachment_place_target_enabled")
                     .get_parameter_value()
                     .bool_value,

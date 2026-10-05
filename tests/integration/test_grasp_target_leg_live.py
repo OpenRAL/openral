@@ -185,6 +185,7 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
 
     from openral_core import Action, ControlMode, JointState, PlaceRegion, RobotDescription
     from openral_core.geometry import homogeneous_from_quat_xyz
+    from openral_hal._grasp_target import lowered_to_support
     from openral_hal.vision_attachment_bridge import (
         VisionAttachmentBridge,
         VisionAttachmentConfig,
@@ -280,6 +281,8 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
             deadline_s=2.0,
             grasp_target_enabled=True,
             grasp_target_freeze_s=_FREEZE_S,
+            # Named, as a scene names it (the default is 0, no bloat): HZ-0115-32.
+            grasp_target_margin_m=0.025,
         ),
     )
     bridge.setup()
@@ -354,8 +357,11 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         assert region.frame_id == _BASE
         assert region.evidence_ref.startswith("segment_in_view:openral/itest-grasp-target@")
         assert 0 < region.stamp_ns <= now_ns()
-        bottom = region.pose.xyz[2] - region.half_extents[2]
-        assert _SUPPORT_Z < bottom <= _SUPPORT_Z + _RES + 1e-6, f"lower face at {bottom:.3f}"
+        # The held region stands one voxel above the support (HZ-0115-6); the kernel's is
+        # bloated by the grasp-target margin on every face, downward too (HZ-0115-32).
+        margin = bridge._config.grasp_target_margin_m
+        bottom = region.pose.xyz[2] - region.half_extents[2] + margin
+        assert _SUPPORT_Z < bottom <= _SUPPORT_Z + _RES + 1e-6, f"held lower face at {bottom:.3f}"
         corners = np.array(
             [one + _BOX_HALF * np.array([sx, sy, 1.0]) for sx in (-1, 1) for sy in (-1, 1)]
             + [one + np.array([0.0, 0.0, -_BOX_HALF[2] + _RES + 0.005])]
@@ -443,7 +449,20 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         state["mask_skew_s"] = 0.0
         declaration_pub.publish(_declaration(now_ns(), one))
         assert _wait_until(region_live, timeout_s=20.0)
-        region = PlaceRegion.from_idl(latest().grasp_declaration.region)
+        published = PlaceRegion.from_idl(latest().grasp_declaration.region)
+        # The tracker holds the tight fit; the kernel gets it bloated by the margin on every
+        # face, downward too, then cell-closed (``GraspTargetLeg.fill``, HZ-0115-32); the
+        # payload is bloated on the sides and top only, then cell-closed (i50).
+        assert bridge._grasp_target is not None
+        region = bridge._grasp_target.tracker.region
+        assert region is not None
+        margin = bridge._config.grasp_target_margin_m
+        # (a re-fit may land between the two reads: same static scene, millimetres apart)
+        assert published.pose.xyz[:2] == pytest.approx(region.pose.xyz[:2], abs=1e-3)
+        assert published.pose.xyz[2] - published.half_extents[2] == pytest.approx(
+            region.pose.xyz[2] - region.half_extents[2] - margin, abs=1e-3
+        )
+        assert all(p > h for p, h in zip(published.half_extents, region.half_extents, strict=True))
         left = next(j for j in description.joints if j.name == "left_gripper")
         # link7 placed so the left TCP (the gripper joint origin) sits at the region centre.
         t_base_link7 = _homogeneous(
@@ -462,20 +481,79 @@ def test_grasp_target_leg_measures_freezes_refuses_and_retracts() -> None:
         assert held.evidence_kind == "grasp_target_region"
         assert held.object_id == "cell:restock_box", "the declaration names it (no object_id)"
         assert held.attach_link == left.parent_link
+        # The payload is the region lowered onto the measured support top (one cell under
+        # its lower face; Isaac i56/i57), bloated on the sides and top, then cell-closed
+        # (Isaac i50, HZ-0115-32): same horizontal centre, its top raised, its bottom on the
+        # support. The leg measured the support for the pre-ATTACH region only, so it is
+        # named here.
+        support = region.pose.xyz[2] - region.half_extents[2] - _RES
+        closed = bridge._grasp_target.kernel_region(
+            "cell:restock_box", lowered_to_support(region, support), payload=True
+        )
+        assert closed.pose.xyz[2] - closed.half_extents[2] == pytest.approx(support)
+        assert tuple(held.primitives[0].shape_dimensions) == pytest.approx(closed.half_extents)
         np.testing.assert_allclose(
             [
                 held.pose_in_link.position.x,
                 held.pose_in_link.position.y,
                 held.pose_in_link.position.z,
             ],
-            left.origin_xyz,
+            np.asarray(left.origin_xyz) + np.asarray(closed.pose.xyz) - region.pose.xyz,
             atol=1e-6,
         )
         assert _wait_until(
             lambda: any("from the grasp-target region" in line for line in logs), timeout_s=3.0
         )
+        # From the ATTACH snapshot on, the declaration's region is the payload box itself —
+        # what the kernel latches at the handover: no downward bloat into the support.
+        latched = PlaceRegion.from_idl(latest().grasp_declaration.region)
+        assert latest().grasp_declaration_valid and latest().grasp_declaration.region_valid
+        assert latched.half_extents == pytest.approx(closed.half_extents, abs=1e-3)
+        assert latched.pose.xyz == pytest.approx(closed.pose.xyz, abs=1e-3)
+        assert latched.pose.xyz[2] - latched.half_extents[2] == pytest.approx(support, abs=1e-3)
         time.sleep(0.5)
         assert len(prompts) <= segments_before + 2, "the attach re-segmented the target"
+
+        # ── 7. The payload still rests on the table it was measured on: it carries the
+        #       support witness on the support top the leg measured (the region's lower
+        #       face one voxel below), normal up — until it is lifted three cells.
+        assert held.support_contact_valid, "the measured support was not attested"
+        witness = held.support_contact
+        assert witness.support_id == "map_support_under:cell:restock_box"
+        assert witness.evidence_kind == "map_support_proximity"
+        t_base_obj = t_base_link7 @ homogeneous_from_quat_xyz(
+            (
+                held.pose_in_link.position.x,
+                held.pose_in_link.position.y,
+                held.pose_in_link.position.z,
+            ),
+            (
+                held.pose_in_link.orientation.x,
+                held.pose_in_link.orientation.y,
+                held.pose_in_link.orientation.z,
+                held.pose_in_link.orientation.w,
+            ),
+        )
+        c, nrm = witness.contact_point_in_object, witness.contact_normal_in_object
+        plane = t_base_obj @ np.array([c.x, c.y, c.z, 1.0])
+        bottom = region.pose.xyz[2] - region.half_extents[2]
+        assert plane[2] == pytest.approx(bottom - _RES, abs=1e-9), "not the measured support"
+        assert _SUPPORT_Z - _RES < plane[2] <= _SUPPORT_Z + 1e-6
+        np.testing.assert_allclose(plane[:2], region.pose.xyz[:2], atol=1e-3)  # a re-fit: mm
+        np.testing.assert_allclose(
+            t_base_obj[:3, :3] @ np.array([nrm.x, nrm.y, nrm.z]), (0.0, 0.0, 1.0), atol=1e-9
+        )
+        lifted = t_base_link7.copy()
+        lifted[2, 3] += 3 * _RES
+        # A fresh broadcaster: one keeps the first transform it sent per child frame.
+        StaticTransformBroadcaster(peer).sendTransform([_tf_msg(_BASE, left.parent_link, lifted)])
+        assert _wait_until(
+            lambda: bool(latest().objects) and not latest().objects[0].support_contact_valid,
+            timeout_s=5.0,
+        ), f"the witness outlived the lift: {[ln for ln in logs if 'support witness' in ln]}"
+        (carried,) = latest().objects
+        assert (carried.object_id, carried.stamp_ns) == (held.object_id, held.stamp_ns)
+        assert any("support witness for 'cell:restock_box' retired" in ln for ln in logs)
     finally:
         # Stop the executor first: a timer callback waiting on the bridge lock must not
         # run on entities the teardown destroyed.
@@ -702,8 +780,11 @@ def test_an_approaching_hand_arms_the_target_with_no_named_target() -> None:
         assert region.pose.xyz[1] + region.half_extents[1] < neighbour[1] - _BOX_HALF[1], (
             "the region reaches the neighbour"
         )
-        bottom = region.pose.xyz[2] - region.half_extents[2]
-        assert _SUPPORT_Z < bottom <= _SUPPORT_Z + _RES + 1e-6, f"lower face at {bottom:.3f}"
+        # The held region stands one voxel above the support (HZ-0115-6); the kernel's is
+        # bloated by the grasp-target margin on every face, downward too (HZ-0115-32).
+        margin = bridge._config.grasp_target_margin_m
+        bottom = region.pose.xyz[2] - region.half_extents[2] + margin
+        assert _SUPPORT_Z < bottom <= _SUPPORT_Z + _RES + 1e-6, f"held lower face at {bottom:.3f}"
         assert not any("openarm_right_finger_pair" in line and "armed" in line for line in logs)
 
         # ── 2. The hand lifts clear: retracted at once, back to the goal-scope one. ──

@@ -366,6 +366,7 @@ def test_the_vision_leg_on_real_turns_the_kernel_attached_check_on(
         "vision_attachment_evidence_timeout_s": 0.5,
         "vision_attachment_grasp_target_enabled": False,
         "vision_attachment_grasp_target_approach_m": 0.0,
+        "vision_attachment_grasp_target_margin_m": 0.03,  # the scene names it (1.5 x 20 mm)
         "vision_attachment_place_target_enabled": False,
         "vision_attachment_release_timeout_s": 3.0,
         "vision_attachment_tf_frames": [
@@ -701,3 +702,48 @@ def test_the_runner_arms_goal_scope_place_declarations_only_with_the_place_leg(
         ctx, _node(entities, "openral_rskill_ros", "runtime_node")._Node__parameters
     )
     assert params["place_approach_enabled"] is expected
+
+
+_ISAAC_SCENE = _REPO_ROOT / "scenes" / "deploy" / "isaac_openarm_warehouse.yaml"
+
+
+def _sim_scene_with_vision_leg(tmp_path: Path, *, backend: str, octomap: bool) -> Path:
+    """This scene's runtime (vision leg on) on the sim path: in Isaac's warehouse (rendered
+    depth, which shows the robot) or as committed (MuJoCo, whose cloud never shows it)."""
+    import yaml
+
+    data = yaml.safe_load(_SCENE.read_text(encoding="utf-8"))
+    data["runtime"]["vision_attachment"]["enabled"] = True
+    data["runtime"]["enable_octomap"] = octomap
+    if backend == "isaacsim":
+        isaac = yaml.safe_load(_ISAAC_SCENE.read_text(encoding="utf-8"))
+        data["scene"], data["base_pose"] = isaac["scene"], isaac["base_pose"]
+    scene = tmp_path / f"vision_leg_{backend}_{octomap}.yaml"
+    scene.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return scene
+
+
+@pytest.mark.parametrize(
+    ("backend", "octomap", "topic"),
+    [
+        ("isaacsim", True, "/openral/world_cloud/self_filtered"),
+        ("isaacsim", False, ""),
+        ("mujoco", True, ""),
+    ],
+)
+def test_the_grasp_target_fit_reads_the_self_filtered_cloud_only_where_one_exists(
+    tmp_path: Path, backend: str, octomap: bool, topic: str
+) -> None:
+    """The HAL's fit drops the robot's own points through the self-filter's output — the
+    one octomap maps — so it gets that topic exactly when the filter runs: a cloud that
+    shows the robot (Isaac's rendered depth) with octomap on. MuJoCo's cloud never shows
+    the robot (no filter node) and octomap off spawns none: both say so with ``""``."""
+    ctx, entities = _compose(
+        _launch_args("sim", _sim_scene_with_vision_leg(tmp_path, backend=backend, octomap=octomap))
+    )
+    hal = _hal_launch_params(ctx, entities)
+    assert hal["vision_attachment_self_filtered_cloud_topic"] == topic
+    filters = [
+        e for e in entities if getattr(e, "_Node__node_executable", None) == "robot_self_filter"
+    ]
+    assert len(filters) == (1 if topic else 0), "the HAL's topic and the filter node disagree"
