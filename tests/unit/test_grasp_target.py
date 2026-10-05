@@ -35,11 +35,13 @@ from openral_hal._grasp_target import (
     VoxelLattice,
     _in_region,
     cell_closed_region,
+    map_completed_region,
     mask_without_removed_points,
     occupied_centers_in_box,
     occupied_touching_outside,
     project_point,
     region_covers_occupied,
+    region_within,
     support_top_from_voxels,
     target_region_from_mask,
     target_seed_from_voxels,
@@ -877,11 +879,13 @@ _I4X_TABLE = {(i, j, 7) for i in range(4, 32) for j in range(20)}
 _I4X_SUPPORT_Z = -0.48
 
 
-def _i4x_lattice(*extra: set[tuple[int, int, int]]) -> VoxelLattice:
-    occ = np.zeros(int(np.prod(_I4X_CELLS)), dtype=np.uint8)
+def _i4x_lattice(
+    *extra: set[tuple[int, int, int]], cells: tuple[int, int, int] = _I4X_CELLS
+) -> VoxelLattice:
+    occ = np.zeros(int(np.prod(cells)), dtype=np.uint8)
     for i, j, k in _I4X_TARGET.union(_I4X_TABLE, *extra):
-        occ[i + _I4X_CELLS[0] * (j + _I4X_CELLS[1] * k)] = 1
-    return VoxelLattice(_FRAME, (0.0, -0.3, -0.6), (0.0, 0.0, 0.0, 1.0), _I4X_RES, _I4X_CELLS, occ)
+        occ[i + cells[0] * (j + cells[1] * k)] = 1
+    return VoxelLattice(_FRAME, (0.0, -0.3, -0.6), (0.0, 0.0, 0.0, 1.0), _I4X_RES, cells, occ)
 
 
 def _touching(grid: VoxelLattice, tight: PlaceRegion) -> NDArray[np.float64]:
@@ -926,3 +930,117 @@ def test_a_neighbour_touching_the_target_is_part_of_it_one_cell_apart_is_not() -
     apart = {(i + 1, j, k) for i, j, k in against}
     assert len(_touching(_i4x_lattice(against), _yawed(*_I41_FULL)))
     assert len(_touching(_i4x_lattice(apart), _yawed(*_I41_FULL))) == 0
+
+
+# ── completing a partial fit from the map component (Isaac i45) ─────────────────
+
+#: Isaac i45's hover fit (graph.log; the yaw is i40's, the same view): the hand hides the
+#: can's far side from the head camera on every capture at the hover pose.
+_I45_PARTIAL = ((0.242, -0.196, -0.439), (0.06, 0.043, 0.026), -90.8)
+#: The search column the approach-armed leg vouches for at that hover: ``approach_box`` of
+#: the right TCP ~12 cm over the can (half-extents capped at 0.20 m) reaching 0.15 m below.
+_I45_COLUMN = _yawed((0.27, -0.195, -0.365), (0.2, 0.2, 0.275), 0.0)
+
+
+def _complete(
+    grid: VoxelLattice, fit: PlaceRegion, column: PlaceRegion = _I45_COLUMN
+) -> tuple[PlaceRegion | None, int, str]:
+    return map_completed_region(
+        grid,
+        fit,
+        column,
+        support_z=_I4X_SUPPORT_Z,
+        max_half_extent_m=0.20,
+        max_volume_m3=0.03,
+    )
+
+
+def _cell_centres_of(grid: VoxelLattice, cells: set[tuple[int, int, int]]) -> NDArray[np.float64]:
+    ijk = np.asarray(sorted(cells), dtype=np.float64)
+    return np.asarray((ijk + 0.5) * grid.resolution + np.asarray(grid.origin), np.float64)
+
+
+def test_isaac_i45_a_fit_of_the_near_part_is_completed_to_the_whole_can() -> None:
+    """i45: every hover capture saw the can's near part only (5-6 far cells outside, e.g.
+    (0.2925, -0.2325, -0.4425)) and was refused ``partial_fit``. Completed from the map:
+    the box holds the fit and every cell of the can's component, its bottom is the fit's
+    own, the kernel's closure of it leaves nothing of the can outside and no table cell
+    inside — and the good views' fits (i41/i42) track it within one voxel."""
+    grid = _i4x_lattice()
+    fit = _yawed(*_I45_PARTIAL)
+    assert len(_touching(grid, fit)), "the i45 fit already holds the whole can"
+    done, added, why = _complete(grid, fit)
+    assert done is not None, why
+    assert why == "" and added > 0
+    # The component: the can's cells more than a voxel above the support. Its lowest layer
+    # (k=8, centres half a voxel above the table top) stays outside, as for any fit.
+    can = _cell_centres_of(grid, {c for c in _I4X_TARGET if c[2] > 8})
+    assert _in_region(can, done).all(), "a can cell's centre is outside the completed box"
+    assert not _in_region(_cell_centres_of(grid, {c for c in _I4X_TARGET if c[2] == 8}), done).any()
+    assert region_within(fit, done, tol_m=1e-9), "the completed box dropped part of the fit"
+    bottom = done.pose.xyz[2] - done.half_extents[2]
+    assert bottom == pytest.approx(fit.pose.xyz[2] - fit.half_extents[2], abs=1e-12)
+    assert done.pose.quat_xyzw == fit.pose.quat_xyzw, "completed in another yaw"
+    assert len(_touching(grid, done)) == 0
+    closed, _ = cell_closed_region(done, grid, max_half_extent_m=0.2)
+    assert not _in_region(_cell_centres_of(grid, _I4X_TABLE), closed).any(), "table exempt"
+    for full in (_I41_FULL, _I42_FULL):
+        tol = {"max_centroid_shift_m": _I4X_RES, "extents_tol_m": _I4X_RES}
+        assert track_region(_yawed(*full), done, **tol)
+    # A fit of the whole can holds its component already: nothing to add.
+    whole, none_added, _ = _complete(grid, _yawed(*_I41_FULL))
+    assert whole is not None and none_added == 0
+
+
+def test_a_neighbour_within_one_voxel_merges_into_the_completed_target() -> None:
+    """The map cannot separate bodies 26-connected above the support: a box against the
+    can's +x side becomes part of the completed region (the Safety-WG residual,
+    HZ-0115-30), one empty cell away it does not. Merged into a blob over the
+    declaration's caps — a long box beside the can — the fit is not completed."""
+    against = {(i, j, k) for i in range(22, 26) for j in range(4, 10) for k in range(8, 12)}
+    apart = {(i + 1, j, k) for i, j, k in against}
+    fit = _yawed(*_I45_PARTIAL)
+
+    merged, _, _ = _complete(_i4x_lattice(against), fit)
+    assert merged is not None
+    above = {c for c in against if c[2] > 8}  # the layer at the support never counts
+    assert _in_region(_cell_centres_of(_i4x_lattice(), above), merged).all()
+
+    alone, _, _ = _complete(_i4x_lattice(apart), fit)
+    assert alone is not None
+    assert not _in_region(_cell_centres_of(_i4x_lattice(), apart), alone).any()
+
+    long_box = {(i, j, k) for i in range(22, 50) for j in range(4, 10) for k in range(8, 12)}
+    wide_column = _yawed((0.45, -0.195, -0.365), (0.42, 0.2, 0.275), 0.0)
+    over, _, why = _complete(_i4x_lattice(long_box, cells=(60, 20, 14)), fit, wide_column)
+    assert over is None and "over the 0.2 m / 0.03 m^3 caps" in why
+
+
+def test_a_component_touching_the_search_column_edge_is_not_completed() -> None:
+    """The leg vouches for its search column only: a component that reaches the column's
+    edge may continue past it, so it is not completed (``partial_fit`` in the leg)."""
+    cut = _yawed((0.15, -0.195, -0.365), (0.16, 0.2, 0.275), 0.0)  # x <= 0.31: cuts the can
+    done, _, why = _complete(_i4x_lattice(), _yawed(*_I45_PARTIAL), cut)
+    assert done is None and "touches the search column's edge" in why
+
+
+def test_another_body_inside_the_completed_box_is_not_completed() -> None:
+    """An L-shaped target's box takes in its bounding corner: a separate body standing
+    there (two empty cells from either arm, so not of the component) would be exempted
+    with it — refused, never merged."""
+    arms = {(i, 1, 1) for i in range(1, 5)} | {(4, j, 1) for j in range(2, 5)}
+    corner = {(1, 4, 1)}
+
+    def grid(cells: set[tuple[int, int, int]]) -> VoxelLattice:
+        occ = np.zeros(6 * 6 * 3, dtype=np.uint8)
+        for i, j, k in cells:
+            occ[i + 6 * (j + 6 * k)] = 1
+        return VoxelLattice(_FRAME, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0), 0.1, (6, 6, 3), occ)
+
+    fit = _yawed((0.2, 0.15, 0.15), (0.09, 0.05, 0.05), 0.0)  # the camera saw (1,1)-(2,1)
+    column = _yawed((0.3, 0.3, 0.15), (0.3, 0.3, 0.15), 0.0)
+    kwargs = {"support_z": 0.0, "max_half_extent_m": 0.2, "max_volume_m3": 0.03}
+    done, added, _ = map_completed_region(grid(arms), fit, column, **kwargs)
+    assert done is not None and added == 5
+    refused, _, why = map_completed_region(grid(arms | corner), fit, column, **kwargs)
+    assert refused is None and "another body inside the completed region" in why
