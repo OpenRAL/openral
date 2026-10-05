@@ -89,6 +89,29 @@ def test_openarm_units_keep_frames_and_pin_the_thor_mount() -> None:
     assert bench.robot_unit == "orin"
 
 
+def test_thor_wrist_cameras_carry_their_calibration_at_the_captured_size() -> None:
+    """Thor's wrist Arducams were calibrated on the cell (2026-10-02, plumb_bob [k1, k2, p1,
+    p2, k3]) at 960x600: the overlay carries that K and distortion through the merge, and each
+    camera captures at the calibrated size — a 4:3 capture would be a crop the 16:10
+    intrinsics cannot be rescaled to. Orin's wrists keep the manifest's nominal model."""
+    manifest = {s.name: s for s in RobotDescription.from_yaml(str(_OPENARM)).sensors}
+    thor, orin = _effective(_OPENARM, "thor"), _effective(_OPENARM, "orin")
+    expected = {
+        "wrist_left": (614.255921, 613.585651, 502.490468, 308.959123, -0.072761672),
+        "wrist_right": (616.019357, 615.588168, 483.154560, 306.781145, -0.085062635),
+    }
+    for name, (fx, fy, cx, cy, k1) in expected.items():
+        k = thor[name].intrinsics  # type: ignore[attr-defined]
+        assert (k.width, k.height) == (960, 600)
+        assert (k.fx, k.fy, k.cx, k.cy) == pytest.approx((fx, fy, cx, cy))
+        assert k.distortion_model == "plumb_bob"
+        assert len(k.distortion_coeffs) == 5 and k.distortion_coeffs[0] == pytest.approx(k1)
+        params = thor[name].deploy_binding.backend_params  # type: ignore[attr-defined]
+        assert (params["width"], params["height"]) == (k.width, k.height)
+        assert thor[name].frame_id == manifest[name].frame_id  # type: ignore[attr-defined]
+        assert orin[name].intrinsics == manifest[name].intrinsics  # type: ignore[attr-defined]
+
+
 def test_a_real_deploy_of_a_robot_with_units_refuses_without_one() -> None:
     with pytest.raises(ROSConfigError, match="none is selected"):
         resolve_sensor_overlays(_OPENARM, None, required=True)
