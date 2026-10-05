@@ -781,7 +781,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
     the support cells only — in the grid frame, no `geometry`, under `PlaceRegion`'s caps.
   - *Latch and freeze.* The patch is latched with the payload's identity and re-verified (never
     re-chosen) while the payload's centre stays over it: new occupancy in its free volume retracts it
-    at once; support cells missing (the payload and hand occlude the board from the head camera,
+    at once, and so does a grid whose lattice moved since the latch (the patch is cell indices into
+    that lattice; a re-snapped origin would make them name other columns); support cells missing (the payload and hand occlude the board from the head camera,
     payload clearing removes the cells under it) or a stale/missing grid is a lost view that holds
     the latched region for at most `place_target_freeze_s` (default **and ceiling** 2 ×
     `grid_max_age_s` — the kernel's `place_region_max_age_s`) from the grid stamp it was last

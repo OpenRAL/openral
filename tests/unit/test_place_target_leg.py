@@ -12,7 +12,9 @@ reasoner-grounded hint box.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
+from dataclasses import replace
 from functools import cache
 from pathlib import Path
 from typing import cast
@@ -34,6 +36,7 @@ from openral_core.exceptions import ROSConfigError
 from openral_hal._grasp_target import VoxelLattice
 from openral_hal._grasp_trigger import PositionStallConfig, PositionStallTrigger
 from openral_hal._place_target_leg import (
+    _LOST_VIEW,
     PlacePatch,
     PlaceRefusal,
     PlaceTargetLeg,
@@ -249,6 +252,27 @@ def test_the_set_down_payload_is_a_lost_view_not_a_contradiction() -> None:
     assert verdict is not None and verdict[0] is PlaceRefusal.FREE_VOLUME_OCCUPIED
     verdict = verify_patch(resting, patch, _posed(_TABLE_TOP + 0.002, (x, y)))
     assert verdict is not None and verdict[0] is PlaceRefusal.SUPPORT_OCCLUDED
+
+
+def test_a_grid_whose_lattice_moved_contradicts_the_latched_patch() -> None:
+    """The patch is cell indices into the grid it was measured on. The bridge re-snaps the
+    origin (a base move, an odom update): one cell over, the same indices name other
+    columns, so clutter arriving in the real free volume would go unseen. A re-snapped,
+    re-sized or re-oriented lattice retracts, never re-verifies by index."""
+    patch = _patch()
+    x, y, _ = patch.region.pose.xyz
+    grid = _lattice(lambda c: _table(c) | _blob(c, (x, y, _TABLE_TOP + 0.05)))
+    assert verify_patch(grid, patch) is not None  # the clutter, on the latch lattice
+    o = grid.origin
+    for moved in (
+        replace(grid, origin=(o[0] + _RES, o[1], o[2])),
+        replace(grid, resolution=_RES / 2.0),
+        replace(grid, orientation_xyzw=(0.0, 0.0, math.sin(0.05), math.cos(0.05))),
+    ):
+        verdict = verify_patch(moved, patch)
+        assert verdict is not None and verdict[0] is PlaceRefusal.GRID_MOVED
+        assert verdict[0] not in _LOST_VIEW
+    assert verify_patch(_lattice(_table), patch) is None  # the same lattice still holds
 
 
 # ── the tick loop: the goal scope, and no place target named ─────────────────
