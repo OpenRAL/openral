@@ -31,8 +31,10 @@ from openral_core.exceptions import ROSConfigError
 from openral_hal._grasp_target import (
     VoxelLattice,
     _in_region,
+    margin_grown_region,
     occupied_centers_in_box,
     occupied_touching_outside,
+    region_within,
 )
 from openral_hal._grasp_target_leg import (
     APPROACH_TARGET_PREFIX,
@@ -1561,11 +1563,15 @@ def test_the_region_payload_attests_its_measured_support_until_it_is_lifted() ->
         assert witness.support_id == f"map_support_under:{armed.target_id}"
         assert witness.evidence_kind is AttachmentEvidenceKind.MAP_SUPPORT_PROXIMITY
         assert witness.stamp_ns == held.stamp_ns
-        # Isaac i50: the payload is the box the kernel latched — the region closed over the
-        # 20 mm cells (+r/2 per side at yaw 0, +r/2 up, bottom fixed) — and the witness's
-        # patch is that published footprint; the handover still matched the held region.
-        closed = leg.kernel_region(armed.target_id, region)
-        assert closed.half_extents == pytest.approx((0.05, 0.05, 0.045))
+        # The payload is the held region bloated by the default 25 mm margin on the sides and
+        # the top (never down) and closed over the 20 mm cells (+r/2 per side at yaw 0, +r/2
+        # up, bottom fixed; Isaac i50, HZ-0115-32) — and the witness's patch is that attached
+        # footprint; the handover still matched the held region.
+        closed = leg.kernel_region(armed.target_id, region, payload=True)
+        assert closed.half_extents == pytest.approx((0.075, 0.075, 0.0575))
+        assert closed.pose.xyz[2] - closed.half_extents[2] == pytest.approx(
+            region.pose.xyz[2] - region.half_extents[2]
+        ), "the payload never grows down"
         (prim,) = held.primitives
         assert prim.shape.half_extents_m == pytest.approx(closed.half_extents)
         assert leg.tracker.handed_over == _LEFT and leg.tracker.region == region
@@ -2628,19 +2634,24 @@ def test_a_map_completed_region_is_the_region_payload_handed_over_at_attach() ->
         msg = attachment_state()
         leg.fill(msg, now_ns=now_ns + 2)
         published = PlaceRegion.from_idl(msg.grasp_declaration.region)
-        # Isaac i50: the payload is the published (latched) box itself, not the held fit.
-        assert payload.primitives[0].shape.half_extents_m == pytest.approx(published.half_extents)
+        # The payload is the completed box bloated by the margin on the sides and top and
+        # closed (``kernel_region(payload=True)``), inside the published (latched) box, which
+        # is bloated on every face — so its origin satisfies the kernel's handover rule.
+        attached = leg.kernel_region("i45", done, payload=True)
+        assert payload.primitives[0].shape.half_extents_m == pytest.approx(attached.half_extents)
         t_base_link = bridge._lookup("openarm_base", bridge.tf_frame(payload.attach_link))
         assert t_base_link is not None
         t_base_obj = t_base_link @ homogeneous_from_quat_xyz(
             payload.pose_in_link.xyz, payload.pose_in_link.quat_xyzw
         )
-        np.testing.assert_allclose(t_base_obj[:3, 3], published.pose.xyz, atol=1e-9)
-        assert _in_region(_i4x_centres(_I4X_COMPONENT), published).all()
-        assert len(occupied_touching_outside(grid, published, support_z=_I4X_SUPPORT_Z)) == 0
-        assert published.pose.xyz[2] - published.half_extents[2] == pytest.approx(
-            done.pose.xyz[2] - done.half_extents[2]
-        )
+        np.testing.assert_allclose(t_base_obj[:3, 3], attached.pose.xyz, atol=1e-9)
+        assert region_within(attached, published, tol_m=1e-9)
+        assert _in_region(_i4x_centres(_I4X_COMPONENT), attached).all()
+        assert len(occupied_touching_outside(grid, attached, support_z=_I4X_SUPPORT_Z)) == 0
+        bottom = done.pose.xyz[2] - done.half_extents[2]
+        assert attached.pose.xyz[2] - attached.half_extents[2] == pytest.approx(bottom)
+        margin = VisionAttachmentConfig().grasp_target_margin_m
+        assert published.pose.xyz[2] - published.half_extents[2] == pytest.approx(bottom - margin)
 
 
 # ── the tracker is serialized: the proprio thread vs the executor ──────────────────
@@ -2977,11 +2988,12 @@ def test_a_capture_of_the_targets_near_part_is_completed_through_measure() -> No
 
 
 def test_the_kernel_gets_the_cell_closed_region_while_the_held_fit_stays_tight() -> None:
-    """The published declaration carries the fit closed over the grid's cells (2 cm here:
-    +1 cm sideways and up, the bottom kept); the tracker, its envelope (the region payload's
-    source) and so every producer gate keep the tight fit. A grid in another frame publishes
-    the tight fit (the kernel refuses that frame itself)."""
-    with _live_leg("test_grasp_target_cell_closed") as live:
+    """Margin 0 reproduces the unbloated behaviour exactly (the regression guard,
+    HZ-0115-32): the published declaration carries the fit closed over the grid's cells
+    (2 cm here: +1 cm sideways and up, the bottom kept); the tracker, its envelope (the
+    region payload's source) and so every producer gate keep the tight fit. A grid in
+    another frame publishes the tight fit (the kernel refuses that frame itself)."""
+    with _live_leg("test_grasp_target_cell_closed", grasp_target_margin_m=0.0) as live:
         attachment_state = pytest.importorskip("openral_msgs.msg").AttachmentState
         leg = live.leg
         now_ns = leg._now_ns()
@@ -3012,4 +3024,116 @@ def test_the_kernel_gets_the_cell_closed_region_while_the_held_fit_stays_tight()
         leg.fill(msg, now_ns=now_ns + 3)
         assert PlaceRegion.from_idl(msg.grasp_declaration.region).half_extents == pytest.approx(
             tight.half_extents
+        )
+
+
+# ── the grasp-target margin (HZ-0115-32) ────────────────────────────────────────────
+
+
+def test_the_kernel_region_is_bloated_on_every_face_and_the_payload_on_sides_and_top() -> None:
+    """Default margin (25 mm) on the 20 mm held block: the published declaration is the held
+    fit grown 25 mm on every face — downward too, its bottom 25 mm below the held bottom —
+    then cell-closed; the region payload is grown on the four sides and the top only (bottom
+    kept), then cell-closed, and lies inside the published box (the kernel's handover rule
+    keys on the payload origin being inside it). The tracker keeps the tight fit."""
+    with _live_leg("test_grasp_target_margin") as live:
+        attachment_state = pytest.importorskip("openral_msgs.msg").AttachmentState
+        leg = live.leg
+        assert leg._margin_m == pytest.approx(0.025)
+        now_ns = leg._now_ns()
+        leg._bridge._grid = (_held_block_lattice(), now_ns, time.monotonic())
+        leg.tracker.on_declaration(_dispatched(stamp_ns=now_ns))
+        tight = _measured(now_ns + 1)  # half 0.04, centre z 0.09: bottom 0.05, top 0.13
+        leg.tracker.accept(tight)
+
+        msg = attachment_state()
+        leg.fill(msg, now_ns=now_ns + 2)
+        published = PlaceRegion.from_idl(msg.grasp_declaration.region)
+        # +25 mm every face, then +10 mm sideways and +10 mm up (the closure).
+        assert published.half_extents == pytest.approx((0.075, 0.075, 0.07))
+        assert published.pose.xyz[2] - published.half_extents[2] == pytest.approx(0.025)
+        assert published.pose.xyz[2] + published.half_extents[2] == pytest.approx(0.165)
+        assert leg.tracker.region == tight, "the held fit was replaced"
+
+        payload = leg.kernel_region("t", tight, payload=True)
+        assert payload.half_extents == pytest.approx((0.075, 0.075, 0.0575))
+        assert payload.pose.xyz[2] - payload.half_extents[2] == pytest.approx(0.05), "never down"
+        assert payload.pose.xyz[2] + payload.half_extents[2] == pytest.approx(0.165)
+        assert region_within(payload, published, tol_m=1e-9)
+        assert _in_region(np.asarray([payload.pose.xyz]), published).all()
+
+
+def test_margin_grown_region_grows_down_only_when_asked() -> None:
+    held = _measured(0)
+    assert margin_grown_region(held, 0.0, down=True) is held
+    every = margin_grown_region(held, 0.03, down=True)
+    assert every.half_extents == pytest.approx((0.07, 0.07, 0.07))
+    assert every.pose.xyz == pytest.approx(held.pose.xyz)
+    up = margin_grown_region(held, 0.03, down=False)
+    assert up.half_extents == pytest.approx((0.07, 0.07, 0.055))
+    assert up.pose.xyz[2] - up.half_extents[2] == pytest.approx(0.05)
+    assert up.pose.xyz[2] + up.half_extents[2] == pytest.approx(0.16)
+    assert (every.stamp_ns, every.evidence_ref) == (held.stamp_ns, held.evidence_ref)
+    for bad in (-0.001, float("nan"), float("inf")):
+        with pytest.raises(ROSConfigError):
+            margin_grown_region(held, bad, down=True)
+
+
+def test_margin_zero_is_the_unbloated_closure_exactly() -> None:
+    lattice = _held_block_lattice()
+    held = _measured(0)
+    for down in (True, False):
+        assert _kernel_closure(held, lattice, margin_m=0.0, down=down) == _kernel_closure(
+            held, lattice
+        )
+
+
+def _cap_lattice() -> VoxelLattice:
+    return VoxelLattice(
+        "openarm_base",
+        (0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 1.0),
+        0.02,
+        (1, 1, 1),
+        np.zeros(1, np.uint8),
+    )
+
+
+def test_the_margin_not_the_measurement_shrinks_at_the_half_extent_cap() -> None:
+    """A held half-extent of 0.18 m: the 25 mm bloat plus the 10 mm closure would pass the
+    0.20 m cap, so the margin shrinks to 10 mm (logged) and nothing is clamped or cut."""
+    held = _box(half=0.05, z=0.2, stamp_ns=0).model_copy(
+        update={"half_extents": (0.18, 0.03, 0.02)}
+    )
+    closed, note = _kernel_closure(held, _cap_lattice(), margin_m=0.025)
+    assert note.startswith("margin reduced 0.025 -> 0.0100 m"), note
+    assert max(closed.half_extents) <= GraspDeclaration.MAX_HALF_EXTENT_M
+    assert closed.half_extents[0] == pytest.approx(0.20, abs=1e-6)
+    unbloated, _ = _kernel_closure(held, _cap_lattice())
+    assert region_within(unbloated, closed, tol_m=1e-9), "the measured box was cut"
+
+
+def test_the_margin_shrinks_at_the_volume_cap() -> None:
+    held = _box(half=0.05, z=0.2, stamp_ns=0).model_copy(
+        update={"half_extents": (0.15, 0.15, 0.13)}
+    )
+    closed, note = _kernel_closure(held, _cap_lattice(), margin_m=0.025)
+    assert "margin reduced 0.025 ->" in note, note
+    assert closed.volume_m3() <= GraspDeclaration.MAX_VOLUME_M3
+    assert closed.volume_m3() == pytest.approx(GraspDeclaration.MAX_VOLUME_M3, rel=1e-6)
+    # The payload takes the same (reduced) margin, so it stays inside the kernel's region.
+    payload, payload_note = _kernel_closure(held, _cap_lattice(), margin_m=0.025, down=False)
+    assert payload_note == note
+    assert region_within(payload, closed, tol_m=1e-9)
+
+
+@pytest.mark.parametrize("margin", [-0.001, 0.0501, 0.10])
+def test_a_margin_outside_its_bounds_is_refused_at_construction(margin: float) -> None:
+    with pytest.raises(ROSConfigError, match="grasp_target_margin_m"):
+        VisionAttachmentBridge(
+            None,
+            RobotDescription.from_yaml(str(_ROBOT)),
+            config=VisionAttachmentConfig(
+                camera="head_zed", grasp_target_enabled=True, grasp_target_margin_m=margin
+            ),
         )
