@@ -466,10 +466,12 @@ def test_finger_friction_binds_the_links_the_finger_joints_drive(
     from pxr import UsdPhysics, UsdShade
 
     stage = _robot_stage()
-    bound = _manifest_scene_mod.apply_finger_friction(  # type: ignore[attr-defined]
+    result = _manifest_scene_mod.apply_finger_friction(  # type: ignore[attr-defined]
         stage, "/openarm", ["finger_joint1", "finger_joint2"], 0.9
     )
-    assert sorted(bound) == ["/openarm/hand/ee_link1", "/openarm/hand/ee_link2"]
+    assert sorted(result.bound) == ["/openarm/hand/ee_link1", "/openarm/hand/ee_link2"]
+    assert result.missing_joints == []
+    assert result.displaced == []
     material = UsdShade.Material.Get(stage, "/World/Physics_Materials/finger_pad")
     physics = UsdPhysics.MaterialAPI(material.GetPrim())
     assert physics.GetStaticFrictionAttr().Get() == pytest.approx(0.9)
@@ -491,9 +493,71 @@ def test_finger_friction_without_a_finger_joint_binds_nothing(
 ) -> None:
     pytest.importorskip("pxr")
     stage = _robot_stage()
-    bound = _manifest_scene_mod.apply_finger_friction(stage, "/openarm", ["no_such_joint"])  # type: ignore[attr-defined]
-    assert bound == []
+    result = _manifest_scene_mod.apply_finger_friction(stage, "/openarm", ["no_such_joint"])  # type: ignore[attr-defined]
+    assert result.bound == []
+    assert result.missing_joints == ["no_such_joint"]
+    assert result.combine_max is False
     assert not stage.GetPrimAtPath("/World/Physics_Materials/finger_pad")
+
+
+def _pad_for(stage: object, prim: str) -> object:
+    from pxr import UsdShade
+
+    return UsdShade.MaterialBindingAPI(stage.GetPrimAtPath(prim)).ComputeBoundMaterial(  # type: ignore[attr-defined]
+        "physics"
+    )[0]
+
+
+def test_finger_friction_partial_match_reports_the_missing_joint(
+    _manifest_scene_mod: object,
+) -> None:
+    pytest.importorskip("pxr")
+    stage = _robot_stage()
+    result = _manifest_scene_mod.apply_finger_friction(  # type: ignore[attr-defined]
+        stage, "/openarm", ["finger_joint1", "finger_joint_dropped"]
+    )
+    assert result.missing_joints == ["finger_joint_dropped"]
+    assert result.bound == ["/openarm/hand/ee_link1"]
+    assert _pad_for(stage, "/openarm/hand/ee_link1/collision")
+    assert not _pad_for(stage, "/openarm/hand/ee_link2/collision"), "the other finger is unbound"
+
+
+def test_finger_friction_forces_the_pad_over_a_descendant_material(
+    _manifest_scene_mod: object,
+) -> None:
+    pytest.importorskip("pxr")
+    from pxr import UsdPhysics, UsdShade
+
+    stage = _robot_stage()
+    own = UsdShade.Material.Define(stage, "/World/Physics_Materials/slippery")
+    UsdPhysics.MaterialAPI.Apply(own.GetPrim()).CreateStaticFrictionAttr(0.1)
+    collider = "/openarm/hand/ee_link1/collision"
+    UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(collider)).Bind(
+        own, UsdShade.Tokens.weakerThanDescendants, "physics"
+    )
+    result = _manifest_scene_mod.apply_finger_friction(  # type: ignore[attr-defined]
+        stage, "/openarm", ["finger_joint1", "finger_joint2"]
+    )
+    assert result.displaced == [collider]
+    assert _pad_for(stage, collider).GetPath() == "/World/Physics_Materials/finger_pad", (  # type: ignore[attr-defined]
+        "the pad, not the descendant's material, resolves on the collider"
+    )
+
+
+def test_finger_friction_reports_whether_max_combine_was_applied(
+    _manifest_scene_mod: object,
+) -> None:
+    pytest.importorskip("pxr")
+    try:
+        from pxr import PhysxSchema  # noqa: F401
+    except ImportError:
+        has_physx = False
+    else:
+        has_physx = True
+    result = _manifest_scene_mod.apply_finger_friction(  # type: ignore[attr-defined]
+        _robot_stage(), "/openarm", ["finger_joint1"]
+    )
+    assert result.combine_max is has_physx
 
 
 @pytest.mark.parametrize("friction", [0.0, -1.0, float("nan"), float("inf")])
