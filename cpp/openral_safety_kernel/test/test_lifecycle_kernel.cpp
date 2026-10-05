@@ -3835,6 +3835,8 @@ struct GraspBeat {
   /// A second payload, `cell:other` at the region centre, attached on this link
   /// ("" = none): the other hand still holding, or a released payload frozen on the base.
   std::string second_attach_link{};
+  double region_qx{0.0};  ///< the region's orientation x
+  double region_qw{1.0};  ///< the region's orientation w
 };
 
 // The producer-measured grasp declaration on the world-state envelope, stamped
@@ -3882,7 +3884,8 @@ openral_msgs::msg::WorldStateStamped grasp_state(std::int64_t stream_ns, const G
   d.region_valid = true;
   d.region.frame_id = b.region_frame;
   d.region.pose.position.x = b.region_x;
-  d.region.pose.orientation.w = 1.0;
+  d.region.pose.orientation.x = b.region_qx;
+  d.region.pose.orientation.w = b.region_qw;
   d.region.half_extents.x = 0.02;
   d.region.half_extents.y = 0.02;
   d.region.half_extents.z = 0.02;
@@ -4351,7 +4354,7 @@ TEST_F(LifecycleKernelTest, AGraspRegionMeasuredTooLongAgoExemptsNothing) {
   rig.start();
   GraspBeat b;
   b.declaration_stamp_ns = rig.now_ns();  // a brand-new, live declaration...
-  b.region_stamp_ns = rig.now_ns() - std::int64_t{2'000'000'000};  // ...over an old measurement
+  b.region_stamp_ns = rig.now_ns() - std::int64_t{5'000'000'000};  // ...over an old measurement
   rig.warm(&b, 0.0, 200);
   EXPECT_FALSE(rig.offer(&b, 0.0));
   EXPECT_TRUE(rig.node->fault_latched());
@@ -4409,7 +4412,7 @@ TEST_F(LifecycleKernelTest, AStaleRegionAtTheAttachEdgeLatchesNoHandover) {
   rig.start();
   GraspBeat b;
   b.declaration_stamp_ns = rig.now_ns();
-  b.region_stamp_ns = rig.now_ns() - std::int64_t{2'000'000'000};
+  b.region_stamp_ns = rig.now_ns() - std::int64_t{5'000'000'000};
   b.carrying = true;
   b.revision = 1;
   rig.warm(&b, 0.0, 200);
@@ -5273,4 +5276,46 @@ TEST_F(LifecycleKernelTest, AnEarlierTicksTargetIsNotHeldAgainstTheNextTick) {
   // Tick 8: only the measured right arm (x = 1.0) is the truth now.
   EXPECT_TRUE(rig.send(position_chunk(0.5, 0.0, {"left_j"}, 8)));
   EXPECT_FALSE(rig.node().fault_latched());
+}
+
+// ── Code-review hardening (#289 review, findings 7 and 8) ───────────────────
+
+TEST_F(LifecycleKernelTest, AGraspRegionWithANonUnitQuaternionIsRefused) {
+  // An unset orientation is the all-zero quaternion, which the transform reads
+  // as identity: a yawed box would exempt cells along the wrong axis. Refused
+  // exactly as the voxel-grid ingest refuses one.
+  for (const auto& [qx, qw] : {std::pair{0.0, 0.0}, std::pair{0.0, 0.5}, std::pair{0.6, 0.9}}) {
+    LogCapture logs;
+    GraspRig rig("kernel_grasp_quat");
+    rig.start();
+    GraspBeat b;
+    b.declaration_stamp_ns = rig.now_ns();
+    b.region_qx = qx;
+    b.region_qw = qw;
+    rig.warm(&b, 0.0, 300);
+    EXPECT_FALSE(rig.offer(&b, 0.0)) << "q=(" << qx << "," << qw << ")";
+    EXPECT_TRUE(rig.node->fault_latched());
+    EXPECT_EQ(logs.count("safety.grasp_region_armed"), 0U) << logs.joined();
+    EXPECT_EQ(logs.count("safety.grasp_region_rejected reason=bad_pose"), 1U) << logs.joined();
+  }
+}
+
+TEST_F(LifecycleKernelTest, APlaceRegionWithANonUnitQuaternionGrantsNoAllowance) {
+  for (const double qw : {0.0, 0.5}) {
+    LogCapture logs;
+    GraspRig rig("kernel_place_quat", place_declaration_params());
+    rig.voxels = declared_target_voxels();
+    const std::int64_t measured_ns = rig.now_ns();
+    rig.state_fn = [measured_ns, qw](std::int64_t stream_ns) {
+      auto msg = declared_carry_state(stream_ns, measured_ns, /*timeout_s=*/60.0);
+      msg.place_declaration.region.pose.orientation.w = qw;
+      return msg;
+    };
+    rig.start();
+    rig.warm(nullptr, 0.0, 200);
+    EXPECT_FALSE(rig.offer_chunk(nullptr, 0.0, declared_carry_chunk())) << "qw=" << qw;
+    EXPECT_TRUE(rig.node->fault_latched());
+    EXPECT_EQ(logs.count("safety.place_region_armed"), 0U) << logs.joined();
+    EXPECT_EQ(logs.count("safety.place_region_rejected reason=bad_pose"), 1U) << logs.joined();
+  }
 }
