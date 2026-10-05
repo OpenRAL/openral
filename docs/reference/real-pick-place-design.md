@@ -219,8 +219,12 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   §1.4). The support witness's patch is the *published* footprint: a closed payload pressed
   down meets support cells under its corners that a tight-footprint patch leaves outside the
   band (a stop on the very support the witness attests); the band grows by at most the
-  closure's half-extent growth (≤ `r/√2` horizontally, `r/4` in the norm's vertical term) and
-  only at the support plane's height. Segmented payloads are unchanged. *Effects:* a stricter
+  closure's horizontal half-extent growth (≤ `r/√2`) and only at the support plane's height.
+  The radius is the *horizontal* footprint — the box projected onto the support plane, a
+  yaw-only box's half-diagonal `hypot(hx, hy)` (`plane_witness`, PR #346 review): it used the
+  3-D half-extent norm, whose vertical term (the sides-and-top bloat, the lowering onto the
+  support) widened the exemption past the footprint — half (0.075, 0.075, 0.0675) gave
+  0.126 m against a 0.106 m footprint. Segmented payloads are unchanged. *Effects:* a stricter
   carry/place envelope (the payload is up to half a cell larger per side), and the octomap
   bridge clears a shell ~`r/2` wider around the held object. *Safety-WG:* chosen by the user as
   WG reviewer; hazard row HZ-0115-31; kernel unchanged. Tests:
@@ -239,10 +243,19 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   rejected (logged, warning); an accepted fit replaces it as before, and a REGRASP on any other
   payload still falls back to the jaw box. Test:
   `tests/unit/test_grasp_target_leg.py::test_a_regrasp_whose_segmentation_is_rejected_keeps_the_region_payload`
-  (fails without the change).
+  (fails without the change). The asynchronous paths through a real `SegmentInView` server
+  (PR #346 review): a reply the producer rejects (`depth_validity`) and a deadline expiry
+  keep the payload; a DETACH while the REGRASP segments leaves nothing attached, clears
+  `regrasp_hold` and drops the late reply; a support-witness retirement while it segments
+  stays retired (the kept payload is the one the leg holds now, never the pre-REGRASP copy) —
+  `tests/unit/test_vision_attachment_bridge.py::test_an_async_regrasp_that_resolves_without_a_fit_keeps_the_region_payload`,
+  `::test_a_detach_while_a_regrasp_segments_leaves_nothing_attached`,
+  `::test_a_support_witness_retired_while_a_regrasp_segments_stays_retired`.
 - **Grasp-target margin: the target is bloated** (producer side, `GraspTargetLeg.kernel_region`
-  → `margin_grown_region`; `VisionAttachmentRuntime.grasp_target_margin_m`, default 0.025 m,
-  validated `0 <= m <= 0.05`, refused above; HAL param `vision_attachment_grasp_target_margin_m`,
+  → `margin_grown_region`; `VisionAttachmentRuntime.grasp_target_margin_m`, default **0** (no
+  bloat — the safer side; a scene that wants it names it: the real OpenArm cell scenes
+  `scenes/deploy/openarm_real_*.yaml` name 0.03, the support-layer threshold `1.5 r` of their
+  20 mm octomap below), validated `0 <= m <= 0.05`, refused above; HAL param `vision_attachment_grasp_target_margin_m`,
   forwarded by `_vision_attachment_hal_params` on `deploy sim` and `deploy run` alike and logged
   on the grasp-target leg's setup line). A task-dependent setting chosen by the user as WG
   reviewer ("bloat the object 2-3 cm … those voxels detected as the object are exempt when
@@ -260,25 +273,36 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   support top**: it rides with the hand, the octomap
   bridge clears what lies inside it, and the kernel keeps checking it against the
   environment and the robot against the environment; its support witness's patch is the
-  bloated footprint, so the band covers the support cells under the payload's corners. The
-  payload lies inside the latched region (the all-faces bloat contains the sides-and-top
-  one), so the handover's payload-origin-in-region rule holds. The margin, not the measured
-  box, shrinks to keep the bloat within `GraspDeclaration`'s caps (logged). Every producer
-  gate — tracking, `partial_fit`, cover, the hand tests, `on_attach` (`held == region`),
-  `measured_support` — keeps the unbloated held region; `0.0` reproduces the unbloated
-  behaviour exactly. *Geometry:* the held region's lower face sits one voxel above the
+  bloated footprint, so the band covers the support cells under the payload's corners. From
+  the handover on the declaration's region **is** that payload box (`GraspTargetLeg.fill`
+  publishes `kernel_region(payload=True)` once `tracker.handed_over` is set; the bridge's
+  `on_attach` runs before it publishes the ATTACH snapshot, the one the kernel latches the
+  region from): the kernel keeps exempting the finger links over the latched box until the
+  payload origin leaves it, so a downward-bloated latched box would have kept the support's
+  top layer and every neighbour within the margin exempt until the payload rose by about its
+  height — the payload box has no downward bloat, and the payload origin lies inside it at
+  every margin (a margin under one voxel left the lowered payload's bottom below the
+  all-faces box's). The margin, not the measured box, shrinks to keep each bloated box within
+  `GraspDeclaration`'s caps (logged once per change of state, cached per region and grid
+  geometry). Every producer gate — tracking, `partial_fit`, cover, the hand tests,
+  `on_attach` (`held == region`), `measured_support` — keeps the unbloated held region. At
+  `0.0` the pre-handover region is the unbloated closure; the payload, and so the latched
+  region, is still lowered onto the measured support top. *Geometry:* the held region's lower face sits one voxel above the
   measured support top `S`, so a cell centred at `z` is exempt below it only when
   `z >= S + r - m`: the target's own bottom layer (centres `S + r/2`, never exempt unbloated,
   so on the real 20 mm cell the fingers stopped 14 mm above it) enters from `m >= r/2`, the
   support's top layer (centres `S - r/2`) from `m >= 1.5 r` — 30 mm on the real 20 mm cell,
-  22.5 mm on Isaac's 15 mm cells; at the 25 mm default the real cell's support layer stays
-  non-exempt. *Hazards:* the finger links may press up to the margin into the support under
-  the target without a stop; any body within the margin of the target is exempt for the
+  22.5 mm on Isaac's 15 mm cells, which is why the real cell scenes name 0.03 (a scene naming
+  25 mm on the real cell leaves its support layer non-exempt). *Hazards:* before the handover
+  the finger links may press up to the margin into the support under the target without a
+  stop; any body within the margin of the target is exempt for the
   finger links during the approach and, inside the payload at ATTACH, embedded residue. Arm
   links, cells past the margin, self-collision and the force gate are unchanged; the kernel
   is unchanged. *Safety-WG:* requested and permitted by the user as WG reviewer; hazard row
   HZ-0115-32. Tests: `tests/unit/test_grasp_target_leg.py` (margin rows; the margin-0
-  regression guard `test_the_kernel_gets_the_cell_closed_region_while_the_held_fit_stays_tight`);
+  rows `test_the_kernel_gets_the_cell_closed_region_while_the_held_fit_stays_tight` and
+  `test_at_margin_zero_the_latched_region_still_holds_the_lowered_payload`; the handover
+  row `test_from_the_handover_the_published_region_is_the_payload_box`);
   band rows `tests/integration/test_safety_kernel_grasp_target_band.py::test_the_grasp_target_margin_on_the_real_openarm_model`
   (real kernel: margin 0 → REFUSED on the target's bottom layer; 25 mm → ACCEPTED; a
   neighbour within the margin → ACCEPTED; a cell past it → REFUSED; the support 30 mm under
@@ -510,18 +534,26 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   only when the payload is the region (`_region_payload`: the jaw at it; and the tracker still
   holds exactly that region) or a segmented payload every primitive centre of which lies in the
   region grown by one voxel with the jaw at it (also the test for a region first accepted
-  mid-close). "The jaw at it" is `VisionAttachmentBridge.jaw_at`: its TCP within
-  `occluder_margin_m` of the region, **or** the jaw link's manifest collision primitives
-  (bounding boxes, posed by the attach link's tf2 pose, the gripper joint's origin and the
-  jaw's last read angle) overlapping the region; an unknown jaw angle leaves the TCP alone.
+  mid-close). "The jaw at it" is `VisionAttachmentBridge.jaw_at`: its TCP **or** its closing
+  midpoint within `occluder_margin_m` of the region — the midpoint being the centre of the jaw
+  link's manifest collision primitives (bounding boxes, posed by the attach link's tf2 pose,
+  the gripper joint's origin and the jaw's last read angle), the point between the fingers;
+  an unknown jaw angle leaves the TCP alone.
   *Fix (2026-10-05, Isaac trial i41, the first ATTACH):* the TCP alone was the test, and the
   OpenArm's TCP is the finger hinge (`tcp_in_link` = the gripper joint's `origin_xyz`), ~10 cm
   above the fingertips — with the jaws closed round the can it sat 6.8 cm outside the region,
   so the region payload was never taken, the grasp segmented (`payload_extent`) and the arming
   ended `attach_off_target` (`grasp_region_dropped`, the kernel then stopped the finger inside
-  the can). The finger_pair box at q = −0.717 overlaps the held fit by 0.09 m; 15 cm beside it
-  (along x) or 40 cm above it, it does not. Ceiling: a bounding box that spans the whole jaw
-  opening (OpenArm's finger_pair) reaches a target beside the jaw *along* the opening. Any other ATTACH — the jaws closed on a neighbour, the
+  the can). The first fix took any overlap of the finger_pair box with the region (0.09 m at
+  q = −0.717) — but that box (half 0.029 × 0.071 × 0.081 m) spans the whole jaw opening, so a
+  neighbour up to ~7 cm beside the jaw along it passed and its region became the payload,
+  posed where the neighbour was (PR #346 review). *Fix:* the box's centre — between the
+  fingers — must lie within the reach: at i41's stalled angle it is 13.5 mm outside the can's
+  fit (at it); the same jaw 17 cm along base +y, its box still overlapping the fit, is not; 15
+  cm beside it (along x) or 40 cm above it, neither is. The TCP alternative stays: the same
+  reach from a point the jaw's own span hangs below. Tests:
+  `tests/unit/test_vision_attachment_bridge.py::test_a_neighbour_beside_the_jaw_is_not_at_it_though_the_jaw_box_overlaps_it`
+  (fails with the overlap test). Any other ATTACH — the jaws closed on a neighbour, the
   region refused for this grasp and the grasp segmented — ends the arming as
   `attach_off_target`: handed over with **no** region (re-measurement stops; the hand holds
   something else), never the measured region for a payload it was not measured for — and a
@@ -677,7 +709,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   (`GraspTargetLeg.measured_support`: the `support_top_from_voxels` top the accepted fit was
   stood on, its lower face one voxel above): `_place_target_leg.plane_witness` — the same
   construction the place leg uses — on `z = support_z`, normal +z, in the payload's object
-  frame, patch = the (published, cell-closed) payload footprint, penetration = the extrinsic bound capped at 10 mm,
+  frame, patch = the (published, cell-closed) payload's horizontal footprint, penetration = the extrinsic bound capped at 10 mm,
   `support_id = map_support_under:<target_id>`, `MAP_SUPPORT_PROXIMITY` (proximity to a
   map-measured plane, not sensed contact). No measured support for the region → no witness, the
   pre-i42 behaviour. A *segmented* payload gets none: its geometry is not the measured region
@@ -690,9 +722,24 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   lowest cells, seen by the head camera, would sit in it and keep the witness alive through the
   carry, exempting everything under the payload's footprint. The producer therefore retires
   it itself (`VisionAttachmentBridge._retire_lifted_supports`, 20 Hz from the joint-state hook):
-  once the payload frame moved more than `max(resolution, extrinsic_error_m, release_clear_m)` (the kernel's world margin plus a cell, since the payload's lower face rests on the support top) from its ATTACH
-  pose (a lift or a slide), or tf2 cannot place it, the witness is dropped for good (same
-  object and stamp: nothing re-arms) and the set republished at the current revision. Live:
+  once the payload frame, in the support plane's frame, *rose* more than `max(resolution,
+  extrinsic_error_m, release_clear_m)` above its ATTACH pose (the kernel's world margin plus a
+  cell, since the payload's lower face rests on the support top), or *slid* more than
+  `max(resolution, extrinsic_error_m)` horizontally (off the patch it was measured for — the
+  margin buys nothing sideways), or tf2 cannot place it, the witness is dropped for good (same
+  object and stamp: nothing re-arms) and the set republished at the current revision; sinking
+  keeps it (the same plane; the kernel bounds the penetration). *Fix (PR #346 review):* one
+  Euclidean `max(…, release_clear_m)` let the payload slide 40 mm sideways with the exemption
+  alive, and `release_clear_m` had no ceiling (a params-file 0.3 kept it through a 30 cm carry);
+  it is now refused above `MAX_RELEASE_CLEAR_M` = 0.1 m (world margin + one cell, with
+  headroom). On the real cell: rise 40 mm, slide 20 mm. A payload *released* before its
+  witness retired freezes without it (`freeze_released_attachment` drops `support_contact`):
+  the grasp-time witness would ride the record at the release pose, its band misplaced above
+  the support, for the whole window. Tests:
+  `tests/unit/test_grasp_target_leg.py::test_the_region_payload_attests_its_measured_support_until_it_is_lifted`
+  (30 mm rise kept, 60 mm retires, 15 mm slide kept, 25 mm retires),
+  `tests/unit/test_vision_attachment_bridge.py::test_a_release_clearance_above_its_cap_is_refused`,
+  `::test_a_region_payload_released_before_its_witness_retired_freezes_without_it`. Live:
   `tests/integration/test_grasp_target_leg_live.py` step 7;
   `tests/integration/test_safety_kernel_place_allowance_band.py::test_the_vision_pick_support_witness_exempts_the_rest_and_dies_on_the_lift`
   (real kernel: refused without it, accepted with it, retired three cells up, not re-armed).
@@ -792,7 +839,8 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   the HAL node has no default for either and refuses to activate the leg without them)
   from its own single sources, and refuses to launch when an override (`--hal`, a hand-written
   params file) sets a grid age above the kernel's deadline or a clearance below its margin plus
-  one cell; `release_timeout_s` is the scene's
+  one cell; the bridge itself refuses a clearance above `MAX_RELEASE_CLEAR_M` (0.1 m) at
+  activate; `release_timeout_s` is the scene's
   `runtime.vision_attachment.release_timeout_s`. No octomap-bridge change was needed: payload clearing clears every attached object
   on `/openral/world_state_fast`, and the frozen record does not move, so its
   `AttachSweepLedger` window behaves as a held payload's. Proven on the real kernel by
@@ -800,7 +848,10 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   A place witness armed while held carries onto the frozen record (same object and stamp, so
   the kernel's latch key does not change) until the window closes, keeping the support patch
   exempt in the kernel and partitioned by the octomap bridge — proven against the real kernel
-  by `tests/integration/test_place_target_release_live.py`.
+  by `tests/integration/test_place_target_release_live.py`. That witness is decorated per
+  publish (`PlaceTargetLeg.decorate`), never stored on the held payload; the payload's own
+  grasp-time `map_support_under:*` witness, unretired at release, is dropped from the frozen
+  record (`freeze_released_attachment`, PR #346 review).
 - Open: fingers vs shelf at the 20 mm link margin. Either accept and measure finger-shelf
   clearance in the attended runs first, or extend the measured region's allowance to the
   finger link for cells inside the region and below the plane + 1 voxel — the same exemption class

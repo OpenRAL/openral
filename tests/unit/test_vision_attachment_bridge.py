@@ -541,7 +541,8 @@ def test_the_region_payload_carries_a_witness_only_on_a_measured_support() -> No
     assert witness.support_id == f"map_support_under:{declaration.target_id}"
     assert witness.evidence_kind is AttachmentEvidenceKind.MAP_SUPPORT_PROXIMITY
     assert witness.stamp_ns == 7 == held.stamp_ns
-    assert witness.patch_radius_m == pytest.approx(float(np.linalg.norm(region.half_extents)))
+    # The horizontal footprint's half-diagonal: the yaw-only box projected onto the plane.
+    assert witness.patch_radius_m == pytest.approx(float(np.linalg.norm(region.half_extents[:2])))
     assert witness.max_penetration_m == pytest.approx(0.01)
     t_base_obj = t_base_from_link @ homogeneous_from_quat_xyz(
         held.pose_in_link.xyz, held.pose_in_link.quat_xyzw
@@ -1194,3 +1195,324 @@ def test_each_close_logs_the_trigger_counters_once_at_attach_or_give_up(
     assert "last short_of_command=0.2000, settle spread=0.0000" in err
     assert err.count("this close:") == 2, "an outcome logged more than once per close"
     assert "right_gripper: close commanded" not in err, "an uncommanded jaw logged a close"
+
+
+# ── Review findings on PR #346: release cap, jaw_at, released witness, REGRASP keep ──
+
+
+def test_a_release_clearance_above_its_cap_is_refused() -> None:
+    """``release_clear_m`` is also the region payload's support-witness rise tolerance, so an
+    unbounded params-file value (0.3) would keep the support exemption through a 30 cm
+    carry: refused above ``MAX_RELEASE_CLEAR_M`` (the kernel's world margin plus a cell,
+    with headroom); the cap itself is accepted."""
+    from openral_hal.vision_attachment_bridge import MAX_RELEASE_CLEAR_M
+
+    with pytest.raises(ROSConfigError, match=r"release_clear_m=0\.3 exceeds"):
+        VisionAttachmentBridge(
+            None, _openarm(), config=VisionAttachmentConfig(camera="head_zed", release_clear_m=0.3)
+        )
+    VisionAttachmentBridge(
+        None,
+        _openarm(),
+        config=VisionAttachmentConfig(camera="head_zed", release_clear_m=MAX_RELEASE_CLEAR_M),
+    )
+
+
+def _jaw_box_gap(live: Any, gripper: Any, region: Any) -> float:
+    """The pre-fix ``jaw_at`` measure: the jaw link's bounding box vs the region (SAT gap)."""
+    from openral_core.geometry import homogeneous_from_quat_xyz
+    from openral_hal.vision_attachment_bridge import (
+        _joint_motion,
+        _link_boxes,
+        _xyz_rpy_matrix,
+        box_gap_lower_bound_m,
+    )
+
+    bridge = live.bridge
+    joint = next(j for j in live.robot.joints if j.name == gripper.joint_name)
+    t_region_link = bridge._lookup(region.frame_id, bridge.tf_frame(gripper.producer.attach_link))
+    t_jaw = (
+        t_region_link
+        @ _xyz_rpy_matrix(joint.origin_xyz, joint.origin_rpy)
+        @ _joint_motion(joint, bridge._positions[gripper.joint_name])
+    )
+    t_r = homogeneous_from_quat_xyz(region.pose.xyz, region.pose.quat_xyzw)
+    target = (t_r[:3, 3], t_r[:3, :3], np.asarray(region.half_extents))
+    return min(
+        box_gap_lower_bound_m(((t := t_jaw @ t_prim)[:3, 3], t[:3, :3], half), target)
+        for t_prim, half in _link_boxes(live.robot, gripper.jaw_link)
+    )
+
+
+def test_a_neighbour_beside_the_jaw_is_not_at_it_though_the_jaw_box_overlaps_it() -> None:
+    """Review finding: ``jaw_at`` took ANY overlap of the jaw link's bounding box with the
+    region as "at it", and the OpenArm's finger_pair box (half 0.029 x 0.071 x 0.081 m)
+    spans the whole jaw opening — a neighbour along its long axis passed, and its region
+    became the payload. The test is now the jaw's closing midpoint (the box centre, between
+    the fingers) within the reach: i41's centred grasp (hinge 9 cm above the can, midpoint
+    13.5 mm off it) is at it; the same jaw 17 cm along base +y, its box still overlapping
+    the can's region, is not — and the region is not the payload."""
+    from tests.unit.test_grasp_target_leg import _I41_JAW, _i41_armed, _i41_region, _live_leg
+
+    with _live_leg("test_jaw_at_neighbour_beside_the_box") as live:
+        bridge, now_ns = live.bridge, live.leg._now_ns()
+        right = _i41_armed(live, now_ns)
+        region = _i41_region(now_ns)
+        live.place("right", _I41_JAW)
+        at, measure = bridge.jaw_at(right.jaw_link, region, reach_m=0.05)
+        assert at and "closing midpoint" in measure, measure
+
+        live.place("right", (_I41_JAW[0], _I41_JAW[1] + 0.17, _I41_JAW[2]))
+        assert _jaw_box_gap(live, right, region) < 0.0, "the old overlap test accepted it"
+        at, measure = bridge.jaw_at(right.jaw_link, region, reach_m=0.05)
+        assert not at, measure
+        assert bridge._region_payload(right, stamp_ns=now_ns) is None
+
+
+def _held_region_payload(live: Any) -> tuple[Any, int]:
+    """The left hand holding the measured region payload with its support witness (the
+    ``test_grasp_target_leg`` witness setup, through the bridge's real trigger path);
+    returns ``(gripper, last joint-state stamp)``."""
+    from openral_core import AttachmentEvidenceKind
+
+    from tests.unit.test_grasp_target_leg import (
+        _goal_scope,
+        _grip,
+        _held_block_lattice,
+        _measured,
+    )
+
+    leg, bridge = live.leg, live.bridge
+    now_ns = leg._now_ns()
+    left = live.gripper("openarm_left_finger_pair")
+    live.place("left", (0.45, 0.0, 0.18))
+    live.place("right", (0.45, -0.30, 0.40))
+    grid = _held_block_lattice()
+    bridge._grid = (grid, now_ns, time.monotonic())
+    leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+    leg._detect_approach(0.10, now_ns)
+    live.place("left", (0.45, 0.0, 0.10))
+    region = _measured(now_ns)
+    leg.tracker.accept(region)
+    leg._support = (region, region.pose.xyz[2] - region.half_extents[2] - grid.resolution)
+    t = _grip(bridge, 0.29, t0_ns=1)
+    held = left.attachment
+    assert held is not None and held.evidence_kind is AttachmentEvidenceKind.GRASP_TARGET_REGION
+    assert held.support_contact is not None and left.support_anchor is not None
+    return left, t
+
+
+def test_a_region_payload_released_before_its_witness_retired_freezes_without_it() -> None:
+    """Review finding: ATTACH on the support, lift less than the rise tolerance, open the
+    jaws — the frozen release record carried the grasp-time ``map_support_under`` witness
+    through the whole window at the release pose, though the payload no longer rests on
+    that plane there. The record is frozen without it."""
+    from tests.unit.test_grasp_target_leg import _grip, _live_leg
+
+    with _live_leg("test_released_region_payload_drops_its_witness") as live:
+        bridge = live.bridge
+        left, t = _held_region_payload(live)
+        live.place("left", (0.45, 0.0, 0.13))  # lifted 30 mm: short of the 40 mm rise
+        bridge._support_checked_s = 0.0
+        bridge._retire_lifted_supports()
+        assert left.attachment is not None and left.attachment.support_contact is not None
+        _grip(bridge, 0.0, t0_ns=t)  # the jaws open: DETACH
+        assert left.attachment is None and left.release is not None
+        assert left.release.record.support_contact is None, "the witness rode the record"
+        assert all(obj.support_contact is None for obj in bridge._attached_objects())
+
+
+_REGRASP_DEPTH_SHAPE = (24, 32)
+_REGRASP_DEPTH_STAMP_NS = 5_000_000_000
+_REGRASP_OPTICAL = "test_regrasp_optical"
+
+
+def _regrasp_inputs(live: Any) -> None:
+    """A real depth frame (all invalid: 0 m), its CameraInfo, and a tf2 path to its frame:
+    the REGRASP's ``SegmentInView`` round trip then runs asynchronously, and the producer
+    gates the reply's mask against depth it cannot use (``depth_validity``)."""
+    from geometry_msgs.msg import TransformStamped
+    from sensor_msgs.msg import CameraInfo
+    from sensor_msgs.msg import Image as ImageMsg
+
+    height, width = _REGRASP_DEPTH_SHAPE
+    depth = ImageMsg(height=height, width=width, encoding="32FC1", step=4 * width)
+    depth.header.frame_id = _REGRASP_OPTICAL
+    depth.header.stamp.sec = _REGRASP_DEPTH_STAMP_NS // 1_000_000_000
+    depth.data = np.zeros(_REGRASP_DEPTH_SHAPE, dtype=np.float32).tobytes()
+    live.bridge._on_depth(depth)
+    info = CameraInfo(height=height, width=width)
+    info.k = [40.0, 0.0, width / 2, 0.0, 40.0, height / 2, 0.0, 0.0, 1.0]
+    info.p = [40.0, 0.0, width / 2, 0.0, 0.0, 40.0, height / 2, 0.0, 0.0, 0.0, 1.0, 0.0]
+    live.bridge._on_camera_info(info)
+    camera = TransformStamped()
+    camera.header.frame_id = "openarm_base"
+    camera.child_frame_id = _REGRASP_OPTICAL
+    camera.transform.translation.z = 1.0
+    camera.transform.rotation.x = 1.0  # looking down
+    live.buffer.set_transform_static(camera, "test")
+
+
+class _Segmenter:
+    """A real ``SegmentInView`` server at the process boundary: every reply is one full
+    mono8 mask stamped with the depth frame (so it is gated, never skew-refused), held
+    until ``gate`` is set."""
+
+    def __init__(self, live: Any) -> None:
+        import threading
+
+        import rclpy
+        from openral_msgs.srv import SegmentInView
+        from rclpy.callback_groups import ReentrantCallbackGroup
+        from rclpy.executors import MultiThreadedExecutor
+
+        self.gate = threading.Event()
+        self.requests: list[Any] = []
+        bridge = live.bridge
+        self.node = rclpy.create_node(f"{live.node.get_name()}_segmenter")
+        self.node.create_service(
+            SegmentInView,
+            bridge._config.service_name,
+            self._segment,
+            callback_group=ReentrantCallbackGroup(),
+        )
+        bridge._client = live.node.create_client(SegmentInView, bridge._config.service_name)
+        self.executor = MultiThreadedExecutor(num_threads=3)
+        for each in (live.node, self.node):
+            self.executor.add_node(each)
+        self.thread = threading.Thread(target=self.executor.spin, daemon=True)
+        self.thread.start()
+        assert _eventually(bridge._client.service_is_ready), "SegmentInView never discovered"
+
+    def _segment(self, request: Any, response: Any) -> Any:
+        from sensor_msgs.msg import Image as ImageMsg
+
+        self.requests.append(request)
+        self.gate.wait(timeout=30.0)
+        height, width = _REGRASP_DEPTH_SHAPE
+        mask = ImageMsg(height=height, width=width, encoding="mono8", step=width)
+        mask.header.stamp.sec = _REGRASP_DEPTH_STAMP_NS // 1_000_000_000
+        mask.data = bytes([255]) * (height * width)
+        response.ok = True
+        response.camera = request.camera
+        response.masks = [mask]
+        response.mask_scores_advisory = [0.9]
+        return response
+
+    def close(self) -> None:
+        self.gate.set()
+        self.executor.shutdown()
+        self.thread.join(timeout=5.0)
+        self.node.destroy_node()
+
+
+def _eventually(predicate: Any, timeout_s: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return bool(predicate())
+
+
+@pytest.mark.parametrize("outcome", ["rejected_reply", "deadline"])
+def test_an_async_regrasp_that_resolves_without_a_fit_keeps_the_region_payload(
+    outcome: str, capfd: pytest.CaptureFixture[str]
+) -> None:
+    """HZ-0115-34 beyond the synchronous no-depth path: a REGRASP of a held region payload
+    whose ``SegmentInView`` round trip runs asynchronously — a real reply the producer
+    rejects (``depth_validity``), or no reply before the deadline — keeps the payload (the
+    one the leg holds now) instead of the jaw-span box, and releases the barrier."""
+    pytest.importorskip("openral_msgs")
+    from tests.unit.test_grasp_target_leg import _grip, _live_leg
+
+    deadline_s = 20.0 if outcome == "rejected_reply" else 0.2
+    with _live_leg(
+        f"test_regrasp_async_{outcome}",
+        service_name=f"/test_regrasp_async_{outcome}",
+        deadline_s=deadline_s,
+    ) as live:
+        bridge = live.bridge
+        left, t = _held_region_payload(live)
+        held = left.attachment
+        _regrasp_inputs(live)
+        segmenter = _Segmenter(live)
+        try:
+            if outcome == "rejected_reply":
+                segmenter.gate.set()
+            _grip(bridge, 0.20, t0_ns=t)  # the jaw re-seats 0.09 rad while stalled: REGRASP
+            assert _eventually(lambda: len(segmenter.requests) == 1), "REGRASP did not segment"
+            assert _eventually(bridge.attachment_action_ack_ready), "the barrier stayed shut"
+            assert left.attachment == held, "the region payload was replaced"
+            assert left.regrasp_hold is None and left.inflight is None
+        finally:
+            segmenter.close()
+        assert left.attachment == held, "a late reply replaced the kept payload"
+    err = capfd.readouterr().err
+    assert "REGRASP segmentation rejected" in err, err
+    if outcome == "rejected_reply":
+        assert "['depth_validity']" in err, "not the producer's own gate"
+    else:
+        assert "ROSDeadlineMissed" in err, err
+
+
+def test_a_detach_while_a_regrasp_segments_leaves_nothing_attached() -> None:
+    """A DETACH while the REGRASP's segmentation is in flight: nothing stays attached (the
+    payload goes to its release record), ``regrasp_hold`` is cleared and the barrier
+    released; the late reply is dropped — it neither re-attaches nor keeps anything."""
+    pytest.importorskip("openral_msgs")
+    from tests.unit.test_grasp_target_leg import _grip, _live_leg
+
+    with _live_leg(
+        "test_regrasp_detach_in_flight", service_name="/test_regrasp_detach", deadline_s=20.0
+    ) as live:
+        bridge = live.bridge
+        left, t = _held_region_payload(live)
+        _regrasp_inputs(live)
+        segmenter = _Segmenter(live)
+        try:
+            t = _grip(bridge, 0.20, t0_ns=t)
+            assert _eventually(lambda: len(segmenter.requests) == 1), "REGRASP did not segment"
+            assert left.pending and left.regrasp_hold is not None and left.inflight is not None
+            _grip(bridge, 0.0, t0_ns=t)  # the jaws open: DETACH
+            assert left.attachment is None and left.regrasp_hold is None
+            assert left.inflight is None and bridge.attachment_action_ack_ready()
+            assert left.release is not None, "the payload went to its release record"
+            segmenter.gate.set()  # the late reply
+            time.sleep(0.5)
+            assert left.attachment is None and left.regrasp_hold is None and not left.pending
+        finally:
+            segmenter.close()
+
+
+def test_a_support_witness_retired_while_a_regrasp_segments_stays_retired() -> None:
+    """The payload lifted past its rise tolerance while its REGRASP segments: the witness is
+    retired on the payload the leg holds (the hold is only the marker that a region payload
+    began the REGRASP), and the rejected reply keeps that retired payload — the witness is
+    never resurrected from the pre-REGRASP copy."""
+    pytest.importorskip("openral_msgs")
+    from tests.unit.test_grasp_target_leg import _grip, _live_leg
+
+    with _live_leg(
+        "test_regrasp_support_retired", service_name="/test_regrasp_retired", deadline_s=20.0
+    ) as live:
+        bridge = live.bridge
+        left, t = _held_region_payload(live)
+        held = left.attachment
+        _regrasp_inputs(live)
+        segmenter = _Segmenter(live)
+        try:
+            _grip(bridge, 0.20, t0_ns=t)
+            assert _eventually(lambda: len(segmenter.requests) == 1), "REGRASP did not segment"
+            assert left.pending and left.regrasp_hold == held
+            live.place("left", (0.45, 0.0, 0.16))  # lifted 60 mm: past the 40 mm rise
+            bridge._support_checked_s = 0.0
+            bridge._retire_lifted_supports()
+            retired = held.model_copy(update={"support_contact": None})
+            assert left.attachment == retired and left.support_anchor is None
+            segmenter.gate.set()
+            assert _eventually(bridge.attachment_action_ack_ready), "the barrier stayed shut"
+            assert left.attachment == retired, "the witness came back with the kept payload"
+            assert left.regrasp_hold is None
+        finally:
+            segmenter.close()
