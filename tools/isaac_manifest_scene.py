@@ -42,7 +42,9 @@ Robot-spec contract (built by ``openral_sim.backends.isaac_sim._build_robot_spec
                    "parent_frame", "intrinsics": {...}, "range_min_m",
                    "range_max_m", "n_channels"}],
       "camera_mounts": {sensor_name: {"link", "xyz", "quat_wxyz", "look_at", "axes"}},
-    }                                  # optional; openral_sim...isaac_sim.IsaacCameraMount
+                                       # optional; openral_sim...isaac_sim.IsaacCameraMount
+      "initial_joint_positions": {manifest_joint: value},  # optional start pose
+    }
 """
 
 from __future__ import annotations
@@ -572,6 +574,17 @@ class IsaacManifestScene(IsaacSceneBase):
             if j.get("role") in ("arm", "gripper")
         ]
         self.action_dim = len(self._slot_plan) + (3 if self._has_base else 0)
+        # The scene's start pose, as one action (NaN = the URDF's own zero pose): each
+        # reset teleports the joints there and holds it.
+        initial: dict[str, float] = dict(robot_spec.get("initial_joint_positions") or {})
+        self._initial_slots = np.array(
+            [
+                float(initial.get(str(j["name"]), np.nan))
+                for j in self._manifest_joints
+                if j.get("role") in ("arm", "gripper")
+            ],
+            dtype=np.float32,
+        )
         self._objects: list[dict[str, Any]] = list(objects or [])
         self._object_prims: dict[str, Any] = {}
 
@@ -1211,11 +1224,8 @@ class IsaacManifestScene(IsaacSceneBase):
 
     # ── IsaacSceneBase template methods ──────────────────────────────────────
 
-    def _apply_action(self, action: NDArray[np.float32]) -> None:
-        """Set absolute joint targets (NaN slots hold) and advance the base twist."""
-        if self._target is None:
-            self._target = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
-        target = self._target
+    def _write_slots(self, target: NDArray[np.float32], action: NDArray[np.float32]) -> None:
+        """Write an action's joint slots into the DOF ``target`` vector (NaN slots hold)."""
         for k, (kind, ref) in enumerate(self._slot_plan):
             value = float(action[k]) if k < action.shape[0] else float("nan")
             if np.isnan(value):
@@ -1230,6 +1240,13 @@ class IsaacManifestScene(IsaacSceneBase):
                 target[self._dof_index[f["dof"]]] = float(f["multiplier"]) * lead + float(
                     f["offset"]
                 )
+
+    def _apply_action(self, action: NDArray[np.float32]) -> None:
+        """Set absolute joint targets (NaN slots hold) and advance the base twist."""
+        if self._target is None:
+            self._target = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
+        target = self._target
+        self._write_slots(target, action)
         self._robot.get_articulation_controller().apply_action(
             self._ArticulationAction(joint_positions=target)
         )
@@ -1281,8 +1298,13 @@ class IsaacManifestScene(IsaacSceneBase):
         # world.reset() puts the pinned root back at its import pose (the
         # origin); move it to the spawn before the warmup steps settle physics.
         self._place_robot()
-        # Hold the reset pose until the first command arrives.
+        # Hold the reset pose until the first command arrives: the URDF's zero pose, with
+        # the scene's initial_joint_positions teleported in (no motion to get there).
         self._target = np.asarray(self._robot.get_joint_positions(), dtype=np.float32)
+        if not np.all(np.isnan(self._initial_slots)):
+            self._write_slots(self._target, self._initial_slots)
+            self._robot.set_joint_positions(self._target)
+            self._robot.set_joint_velocities(np.zeros_like(self._target))
         self._robot.get_articulation_controller().apply_action(
             self._ArticulationAction(joint_positions=self._target)
         )

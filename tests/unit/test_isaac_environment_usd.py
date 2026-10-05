@@ -535,3 +535,31 @@ def test_a_camera_the_manifest_cannot_place_is_announced(
         "cameras ['front_depth', 'head', 'shoulder_left', 'shoulder_right', 'wrist'] have no mount"
         in capsys.readouterr().out
     )
+
+
+def test_initial_joint_positions_reach_the_sidecar_within_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scene's start pose is checked against the manifest, then handed to the sidecar.
+
+    The OpenArm restock policy starts with both jaws at its training opening, 0.6 rad
+    (the right jaw on the mirrored axis); the arms keep the URDF's zero (hanging).
+    """
+    from openral_core import ROBOT_UNIT_ENV
+    from openral_sim.backends.isaac_sim import IsaacSimOptions, _write_robot_spec
+
+    monkeypatch.delenv(ROBOT_UNIT_ENV, raising=False)
+    env_cfg = _openarm_env_cfg()
+    opening = {"left_gripper": 0.6, "right_gripper": -0.6}
+    opts = IsaacSimOptions(initial_joint_positions=opening)
+    path, _desc = _write_robot_spec(env_cfg, None, opts.initial_joint_positions)
+    try:
+        spec = json.loads(Path(path).read_text())
+    finally:
+        Path(path).unlink()
+    assert spec["initial_joint_positions"] == opening
+    names = [j["name"] for j in spec["joints"] if j.get("role") in ("arm", "gripper")]
+    assert {"left_gripper", "right_gripper"} <= set(names)
+    for bad in ({"left_gripper": -0.6}, {"no_such_joint": 0.0}):
+        with pytest.raises(ROSConfigError, match="initial_joint_positions"):
+            _write_robot_spec(env_cfg, None, bad)

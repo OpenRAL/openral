@@ -742,6 +742,11 @@ class IsaacSimOptions(BaseModel):
     # Per-sensor camera mount overrides (manifest sensor name -> mount); see
     # IsaacCameraMount and default_camera_mounts.
     camera_mounts: dict[str, IsaacCameraMount] = Field(default_factory=dict)
+    # The pose each reset starts the robot in: manifest joint name -> value in the
+    # unit the HAL reports and commands it in (rad; a gripper in its end effector's
+    # command_convention). Unnamed joints start at the URDF's zero. Teleported, not
+    # driven: the scene's opening state, like a stage's prop placements.
+    initial_joint_positions: dict[str, float] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _object_names_are_free(self) -> IsaacSimOptions:
@@ -1398,7 +1403,9 @@ def default_camera_mounts(
 
 
 def _write_robot_spec(
-    env_cfg: SimEnvironment, camera_mounts: dict[str, IsaacCameraMount] | None = None
+    env_cfg: SimEnvironment,
+    camera_mounts: dict[str, IsaacCameraMount] | None = None,
+    initial_joint_positions: dict[str, float] | None = None,
 ) -> tuple[str, RobotDescription]:
     """Build the robot spec for ``env_cfg.robot_id`` and write it to a temp JSON.
 
@@ -1472,6 +1479,23 @@ def _write_robot_spec(
                 f"{robot_id!r} camera sensors (have {sorted(cameras)})."
             )
         spec["camera_mounts"] = {k: m.model_dump() for k, m in camera_mounts.items()}
+    if initial_joint_positions:
+        limits = {
+            j.name: j.position_limits or (-math.inf, math.inf)
+            for j in desc.joints
+            if j.name not in set(desc.base_joints or [])
+        }
+        bad = sorted(
+            f"{name}={value}"
+            for name, value in initial_joint_positions.items()
+            if name not in limits or not (limits[name][0] <= value <= limits[name][1])
+        )
+        if bad:
+            raise ROSConfigError(
+                f"backend_options.initial_joint_positions {bad}: each must name a non-base "
+                f"{robot_id!r} joint and lie within its position_limits."
+            )
+        spec["initial_joint_positions"] = dict(initial_joint_positions)
     fd, path = tempfile.mkstemp(prefix=f"isaac_robot_spec_{robot_id}_", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(spec, fh)
@@ -1514,7 +1538,12 @@ def _placement(
     objects_json = _objects_json(opts.objects) if opts.objects else ""
     layout = opts.layout
     mounts = _camera_mounts_json(opts.camera_mounts)
-    world = _world_key(environment_usd, env_cfg.base_pose, objects_json + mounts)
+    initial = (
+        json.dumps(dict(sorted(opts.initial_joint_positions.items())))
+        if opts.initial_joint_positions
+        else ""
+    )
+    world = _world_key(environment_usd, env_cfg.base_pose, objects_json + mounts + initial)
     return layout, environment_usd, spawn, objects_json, world
 
 
@@ -1606,7 +1635,9 @@ def _build_isaac_sim_scene(env_cfg: SimEnvironment) -> _IsaacSimSidecar:
     # The scene imports the manifest robot's URDF. Marshal the RobotDescription
     # to a temp JSON the sidecar reads (it cannot import openral_core) and pass
     # it via --robot-spec.
-    robot_spec_path, desc = _write_robot_spec(env_cfg, opts.camera_mounts)
+    robot_spec_path, desc = _write_robot_spec(
+        env_cfg, opts.camera_mounts, opts.initial_joint_positions
+    )
     launch_argv += ["--robot-spec", robot_spec_path]
     if environment_usd is not None:
         launch_argv += ["--environment-usd", environment_usd]
