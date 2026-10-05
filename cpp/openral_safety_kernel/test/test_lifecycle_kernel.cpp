@@ -5319,3 +5319,38 @@ TEST_F(LifecycleKernelTest, APlaceRegionWithANonUnitQuaternionGrantsNoAllowance)
     EXPECT_EQ(logs.count("safety.place_region_rejected reason=bad_pose"), 1U) << logs.joined();
   }
 }
+
+TEST_F(LifecycleKernelTest, ALatchedGraspCannotMoveToAnotherObjectOrHand) {
+  // The handover latch froze the box but not who it exempts: a later heartbeat
+  // of the same (target, stamp) naming another object inside the box, or the
+  // other hand, kept the frozen exemption for it. Either retires the pick.
+  struct Case {
+    const char* name;
+    std::vector<std::string> links;
+    std::string object;
+    std::string second_link;
+  };
+  for (const Case& c : {Case{"object", {"link0"}, "cell:other", "link0"},
+                        Case{"hand", {"other"}, "cell:other", "other"}}) {
+    LogCapture logs;
+    GraspRig rig(std::string("kernel_grasp_latch_") + c.name, bimanual_grasp_params());
+    rig.start();
+    GraspBeat b;
+    b.declaration_stamp_ns = rig.now_ns();
+    b.carrying = true;
+    b.revision = 1;
+    rig.warm(&b, 0.0, 300);
+    ASSERT_TRUE(rig.offer(&b, 0.0)) << c.name << ": " << logs.joined();
+    ASSERT_EQ(logs.count("safety.grasp_region_latched target=cell:cube at handover"), 1U)
+        << c.name << ": " << logs.joined();
+    b.contact_links = c.links;
+    b.declared_object = c.object;
+    b.second_attach_link = c.second_link;
+    b.revision = 2;
+    rig.warm(&b, 0.0, 100);
+    EXPECT_EQ(logs.count("safety.grasp_region_dropped reason=latch_mismatch"), 1U)
+        << c.name << ": " << logs.joined();
+    EXPECT_FALSE(rig.offer(&b, 0.0)) << c.name;
+    EXPECT_TRUE(rig.node->fault_latched()) << c.name;
+  }
+}

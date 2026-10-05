@@ -363,8 +363,10 @@ private:
   /// Region latched at the handover edge, keyed by (target, stamp) like the
   /// retirement memory. Later snapshots of that declaration cannot move or
   /// resize it, so a producer re-measuring the carried payload at its live pose
-  /// cannot extend the exemption by dragging the box along with it.
+  /// cannot extend the exemption by dragging the box along with it; nor change
+  /// its contact links or held object (`grasp_latched_object_`), which retires it.
   GraspTargetRegion grasp_latched_region_{};
+  std::string grasp_latched_object_;
   std::string grasp_latched_target_;
   std::int64_t grasp_latched_stamp_ns_{0};
   bool grasp_latched_{false};

@@ -3057,6 +3057,21 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
   // Before any handover the region still updates on every snapshot.
   if (grasp_latched_ && grasp_latched_target_ == declaration.target_id &&
       grasp_latched_stamp_ns_ == declaration.stamp_ns) {
+    // The latch froze who the box exempts as well as where it is: the same
+    // (target, stamp) naming the other hand, or another object that happens to
+    // sit in the frozen box, is not the pick that latched. Fail closed.
+    const std::string& held = attached_labels_[grasp_region_.object_index];
+    if (grasp_region_.link_mask != grasp_latched_region_.link_mask ||
+        held != grasp_latched_object_) {
+      RCLCPP_WARN(this->get_logger(),
+                  "safety.grasp_region_rejected reason=latch_mismatch target=%s latched_object=%s "
+                  "object=%s latched_links=%zu links=%zu rskill=%s trace=%s",
+                  declaration.target_id.c_str(), grasp_latched_object_.c_str(), held.c_str(),
+                  grasp_latched_region_.link_mask.count(), grasp_region_.link_mask.count(),
+                  declaration.rskill_id.c_str(), declaration.trace_id.c_str());
+      retire_grasp_declaration("latch_mismatch");
+      return;
+    }
     double moved = 0.0;
     for (std::size_t k = 0; k < 9; ++k) {
       moved = std::max(moved, std::abs(grasp_region_.pose.r[k] - grasp_latched_region_.pose.r[k]));
@@ -3080,6 +3095,7 @@ void SafetyKernelLifecycleNode::ingest_grasp_declaration(
     grasp_latched_target_ = declaration.target_id;
     grasp_latched_stamp_ns_ = declaration.stamp_ns;
     grasp_latched_region_ = grasp_region_;
+    grasp_latched_object_ = attached_labels_[grasp_region_.object_index];
     grasp_latched_moved_warned_ = false;
     RCLCPP_INFO(this->get_logger(), "safety.grasp_region_latched target=%s at handover",
                 declaration.target_id.c_str());
