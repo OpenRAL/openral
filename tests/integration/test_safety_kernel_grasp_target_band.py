@@ -29,7 +29,9 @@ what the producer leg publishes)                       outside (bottom kept)
 
 The grasp-target margin (the producer's held region bloated on every face, downward too, then
 cell-closed; HZ-0115-32) has its own rows:
-``test_the_grasp_target_margin_on_the_real_openarm_model``.
+``test_the_grasp_target_margin_on_the_real_openarm_model``; the payload box the kernel latches
+at the handover (no downward bloat) has
+``test_after_the_handover_the_latched_payload_box_does_not_exempt_the_support``.
 
 Real throughout (CLAUDE.md §1.11): the real ``robots/openarm/robot.yaml``, the kernel parameters
 built by the same builders ``deploy_e2e.launch.py`` calls (``compute_intersection`` →
@@ -1047,6 +1049,45 @@ _WITHIN_MARGIN = frozenset(_index(i, 7, 6) for i in (2, 3))
 _PAST_MARGIN = frozenset(_index(i, 8, 6) for i in (2, 3))
 
 
+def _kernel_box(
+    centre: tuple[float, float, float],
+    half: tuple[float, float, float],
+    margin_m: float,
+    *,
+    dz: float = 0.0,
+    payload: bool = False,
+) -> PlaceRegion:
+    """The held region as ``GraspTargetLeg.kernel_region`` publishes it over this grid.
+
+    ``payload=False``: grown by ``margin_m`` on every face, downward too, then cell-closed
+    (the pre-handover region). ``payload=True``: first lowered onto the measured support
+    top (``lowered_to_support``; the held bottom stands one voxel above it), then grown on
+    the sides and top only and cell-closed (the payload box ``fill`` publishes from the
+    handover on). ``dz`` raises the held region with the world.
+    """
+    import numpy as np
+    from openral_hal._grasp_target import VoxelLattice, lowered_to_support
+    from openral_hal._grasp_target_leg import _kernel_closure
+
+    lattice = VoxelLattice(
+        _FRAME,
+        (_ORIGIN[0], _ORIGIN[1], _ORIGIN[2] + dz),
+        (0.0, 0.0, 0.0, 1.0),
+        _RES,
+        (_SX, _SY, _SZ),
+        np.zeros(_SX * _SY * _SZ, dtype=np.uint8),
+    )
+    held = _region((centre[0], centre[1], centre[2] + dz), half)
+    held_bottom = held.pose.xyz[2] - held.half_extents[2]
+    if payload:
+        held = lowered_to_support(held, held_bottom - _RES)
+    region, note = _kernel_closure(held, lattice, margin_m=margin_m, down=not payload)
+    assert note == "", note
+    bottom = held_bottom - _RES if payload else held_bottom - margin_m
+    assert region.pose.xyz[2] - region.half_extents[2] == pytest.approx(bottom)
+    return region
+
+
 def test_the_grasp_target_margin_on_the_real_openarm_model(
     reset_kernel_estop: Callable[..., None],
 ) -> None:
@@ -1077,32 +1118,7 @@ def test_the_grasp_target_margin_on_the_real_openarm_model(
     1.5 cells under the held bottom) enters the bloat only from a 30 mm margin up; on
     Isaac's 15 mm cells from 22.5 mm.
     """
-    import numpy as np
-    from openral_hal._grasp_target import VoxelLattice
-    from openral_hal._grasp_target_leg import _kernel_closure
-
-    def bloated(
-        centre: tuple[float, float, float],
-        half: tuple[float, float, float],
-        margin_m: float,
-        *,
-        dz: float = 0.0,
-    ) -> PlaceRegion:
-        lattice = VoxelLattice(
-            _FRAME,
-            (_ORIGIN[0], _ORIGIN[1], _ORIGIN[2] + dz),
-            (0.0, 0.0, 0.0, 1.0),
-            _RES,
-            (_SX, _SY, _SZ),
-            np.zeros(_SX * _SY * _SZ, dtype=np.uint8),
-        )
-        held = _region((centre[0], centre[1], centre[2] + dz), half)
-        region, note = _kernel_closure(held, lattice, margin_m=margin_m)
-        assert note == "", note
-        held_bottom = held.pose.xyz[2] - held.half_extents[2]
-        assert region.pose.xyz[2] - region.half_extents[2] == pytest.approx(held_bottom - margin_m)
-        return region
-
+    bloated = _kernel_box
     bottom_layer = {f"voxel_{_index(i, j, 2)}" for i in (2, 3) for j in (2, 3, 4, 5)}
     with _live_cell(grasp_allowance_enabled=True, reset_kernel_estop=reset_kernel_estop) as (
         cell,
@@ -1174,3 +1190,86 @@ def test_the_grasp_target_margin_on_the_real_openarm_model(
         assert evidence["link_a"] == _LEFT_LINK7, "the wrist is not a contact link"
         assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _TALL_TARGET - _TARGET}
         assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
+
+
+def test_after_the_handover_the_latched_payload_box_does_not_exempt_the_support(
+    reset_kernel_estop: Callable[..., None],
+) -> None:
+    """The region the kernel latches at the handover, on the real kernel (``GraspTargetLeg.fill``
+    from the handover on): world raised a voxel (the plane 13.5 mm from the finger, its centres
+    at ``S - r/2`` under the support top ``S``), margin 50 mm, the left gripper holding the
+    region payload.
+
+    ====================================================  =====================================
+    row                                                   verdict
+    ====================================================  =====================================
+    latched = the all-faces bloat (bottom ``S - 30 mm``,  ACCEPTED: the plane under the payload
+    what ``fill`` published before 56104428)              stays exempt for the finger
+    latched = the payload box (bottom ``S``, what         REFUSED, left finger on the plane,
+    ``fill`` publishes now)                               ``grasp_exemption_active=1``
+    ====================================================  =====================================
+    """
+    import numpy as np
+    from openral_hal.vision_attachment_bridge import (
+        VisionAttachmentBridge,
+        VisionAttachmentConfig,
+        region_attachment,
+    )
+
+    left = next(
+        g
+        for g in VisionAttachmentBridge(
+            None, _description(), config=VisionAttachmentConfig(camera="head_zed")
+        )._legs
+        if g.jaw_link == _LEFT_FINGER
+    )
+    t_link_from_base = np.linalg.inv(_t_base_from_link_at_q0(left.producer.attach_link))
+    margin = 0.05
+    support_top = _ORIGIN[2] + _RAISED_DZ + 2 * _RES  # the plane's (layer k=1) top face
+
+    def boxes() -> tuple[PlaceRegion, PlaceRegion]:
+        """(all-faces bloat, payload box), measured now (the edge needs a fresh box)."""
+        old = _kernel_box(_HELD_CENTRE, _HELD_HALF, margin, dz=_RAISED_DZ)
+        new = _kernel_box(_HELD_CENTRE, _HELD_HALF, margin, dz=_RAISED_DZ, payload=True)
+        return old, new
+
+    old, new = boxes()
+    plane_z = support_top - _RES / 2
+    assert old.pose.xyz[2] - old.half_extents[2] < plane_z, "the plane in the old bloat"
+    assert new.pose.xyz[2] - new.half_extents[2] == pytest.approx(support_top)
+
+    def handover(trace: str, latched: PlaceRegion, *, expect_accept: bool) -> None:
+        """Arm a fresh declaration on the pre-handover box, then attach with ``latched``."""
+        armed = _declaration(boxes()[0])
+        cell.world(_TARGET | _PLANE, armed, grid_dz=_RAISED_DZ, attached=[])
+        at_handover = armed.model_copy(update={"region": latched})
+        held_payload = region_attachment(
+            at_handover,
+            attach_link=left.producer.attach_link,
+            touch_links=left.producer.touch_links,
+            t_link_from_region=t_link_from_base,
+            stamp_ns=time.time_ns(),
+        )
+        cell.world(_TARGET | _PLANE, at_handover, grid_dz=_RAISED_DZ, attached=[held_payload])
+        assert f"safety.grasp_region_latched target={_TARGET_ID} at handover" in cell.log()
+        cell.send(trace, expect_accept=expect_accept)
+
+    with _live_cell(grasp_allowance_enabled=True, reset_kernel_estop=reset_kernel_estop) as (
+        cell,
+        reset,
+    ):
+        # ── Old: the all-faces bloat latched — the plane stays exempt for the finger ──────
+        handover("latched-all-faces", boxes()[0], expect_accept=True)
+        assert "latched-all-faces" in cell.safe, cell.log()
+        latches = cell.log().count("at handover")
+        # The release retires that declaration; the next row arms a fresh one.
+        cell.world(_TARGET | _PLANE, None, grid_dz=_RAISED_DZ, attached=[])
+
+        # ── Now: the payload box latched — the plane under it stops the finger ────────────
+        handover("latched-payload", boxes()[1], expect_accept=False)
+        assert cell.log().count("at handover") == latches + 1, "the payload box never latched"
+        evidence = cell.refused("latched-payload")
+        assert evidence["link_a"] == _LEFT_FINGER
+        assert evidence["link_b_or_object"] in {f"voxel_{i}" for i in _PLANE}, evidence
+        assert cell.stop_lines()[-1][2:] == (1, _TARGET_ID)
+        reset()
