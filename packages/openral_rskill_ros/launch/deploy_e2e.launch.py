@@ -1486,8 +1486,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         }
     )
     publishing = publishing_sensors(description.sensors, scene_sensors, hal_mode)
+    gripper_convention = LaunchConfiguration("gripper_convention").perform(context)
     envelope = compute_intersection(
-        description, skill=None, deploy=workcell.safety if workcell is not None else None
+        description,
+        skill=None,
+        deploy=workcell.safety if workcell is not None else None,
+        gripper_convention=gripper_convention or None,
     )
     # Self-collision model. Prefer lowering from the robot's MJCF
     # (the full kinematic tree, incl. fixed mounts + floating base, that the
@@ -2085,6 +2089,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 # before acknowledging application. Real HALs keep the 5 s
                 # transport watchdog; sim gets a bounded 8 s transaction.
                 "action_applied_timeout_s": 8.0 if hal_mode == "sim" else 5.0,
+                "gripper_convention": gripper_convention,
                 "rskill_search_paths": [_RSKILLS_DIR],
                 "reset_to_pose_service": reset_to_pose_service,
                 "approach_skill_id": approach_skill_id,
@@ -3545,6 +3550,17 @@ def generate_launch_description() -> LaunchDescription:
                 "present path is still not enough on its own -- the base "
                 "``HardwareEstopNode`` is not a driver, so a vendor subclass "
                 "must supply the device read."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "gripper_convention",
+            default_value="",
+            description=(
+                "Gripper encoding the simulated scene's environment consumes, "
+                "resolved by the CLI from the scene registry. The safety kernel "
+                "bounds GRIPPER_* chunks by this convention's range and the runner "
+                "refuses a skill that emits another one. Empty: each end "
+                "effector's own command_convention (real robots, bare twins)."
             ),
         ),
         DeclareLaunchArgument(

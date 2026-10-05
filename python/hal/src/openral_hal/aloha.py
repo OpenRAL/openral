@@ -153,7 +153,11 @@ _ALOHA_ARM_POSITION_LIMITS: dict[str, tuple[float, float]] = {
     "wrist_angle": (-1.8, 2.2),
     "wrist_rotate": (-_PI, _PI),
 }
-_ALOHA_GRIPPER_POSITION_LIMITS: tuple[float, float] = (0.0, 0.041)
+# The gripper channel is normalized: 0 = closed, 1 = open (gym_aloha and the
+# act-aloha checkpoints). The twin maps it onto the MJCF finger range
+# [0.021, 0.057] m. The former (0.0, 0.041) m had no source and clamped every
+# normalized command to nearly closed.
+_ALOHA_GRIPPER_POSITION_LIMITS: tuple[float, float] = (0.0, 1.0)
 _ALOHA_ARM_AXIS: dict[str, tuple[float, float, float]] = {
     "waist": (0.0, 0.0, 1.0),
     "shoulder": (0.0, 1.0, 0.0),
@@ -189,7 +193,7 @@ def _aloha_joint_specs() -> list[JointSpec]:
                 )
             )
             prev_link = child_link
-        # Gripper: prismatic [0, 0.041] m per finger (Interbotix gripper spec).
+        # Gripper: normalized [0, 1] channel (see _ALOHA_GRIPPER_POSITION_LIMITS).
         specs.append(
             JointSpec(
                 name=f"{side}_gripper",
@@ -222,6 +226,7 @@ ALOHA_DESCRIPTION = RobotDescription(
             max_grip_force_n=4.0,
             max_payload_kg=0.5,
             workspace_radius_m=0.6,
+            command_convention="normalized_open_unit",
         ),
         EndEffectorSpec(
             name="right_gripper",
@@ -231,6 +236,7 @@ ALOHA_DESCRIPTION = RobotDescription(
             max_grip_force_n=4.0,
             max_payload_kg=0.5,
             workspace_radius_m=0.6,
+            command_convention="normalized_open_unit",
         ),
     ],
     capabilities=RobotCapabilities(
@@ -267,7 +273,7 @@ ALOHA_DESCRIPTION = RobotDescription(
         control_freq_hz=50.0,
     ),
     hal=HalEntrypoints(sim=None, real="openral_hal.aloha:AlohaHAL"),
-    # MuJoCo wiring for the gym-aloha sim twin.  Two passthrough grippers
+    # MuJoCo wiring for the gym-aloha sim twin.  Two normalised grippers
     # with mirror_actuator_index (positive finger + mirror to negative
     # finger).  keyframe_index=0 seeds the fingers inside their
     # ctrlrange — gym-aloha's reset does the same.
@@ -311,8 +317,8 @@ ALOHA_DESCRIPTION = RobotDescription(
                 ctrl_range=(0.021, 0.057),
                 qpos_addrs=(6,),
                 qpos_scale=0.036,
-                read_mode=GripperReadMode.PASSTHROUGH,
-                write_mode=GripperWriteMode.PASSTHROUGH,
+                read_mode=GripperReadMode.AFFINE_LOW_HIGH,
+                write_mode=GripperWriteMode.NORMALISED,
                 actuator_index=6,
                 mirror_actuator_index=7,
             ),
@@ -321,8 +327,8 @@ ALOHA_DESCRIPTION = RobotDescription(
                 ctrl_range=(0.021, 0.057),
                 qpos_addrs=(14,),
                 qpos_scale=0.036,
-                read_mode=GripperReadMode.PASSTHROUGH,
-                write_mode=GripperWriteMode.PASSTHROUGH,
+                read_mode=GripperReadMode.AFFINE_LOW_HIGH,
+                write_mode=GripperWriteMode.NORMALISED,
                 actuator_index=14,
                 mirror_actuator_index=15,
             ),
@@ -719,7 +725,7 @@ def _default_publish(topic: str, msg: dict[str, object]) -> None:  # pragma: no 
 # ── MuJoCo HAL (digital twin) ────────────────────────────────────────────────
 # The gym-aloha bimanual sim twin is a thin
 # ``MujocoArmHAL`` subclass — all wiring (MJCF URI, joint→qpos/
-# actuator maps, two passthrough grippers with mirror_actuator_index,
+# actuator maps, two normalised grippers with mirror_actuator_index,
 # keyframe seeding) lives in ``ALOHA_DESCRIPTION.sim``.
 
 
@@ -727,16 +733,16 @@ class AlohaMujocoHAL(MujocoArmHAL):
     """HAL adapter for the Trossen ALOHA bimanual setup (MuJoCo digital twin).
 
     Thin manifest-driven wrapper around ``MujocoArmHAL``; all wiring
-    (MJCF URI, joint→qpos/actuator maps, two ``PASSTHROUGH`` grippers with
+    (MJCF URI, joint→qpos/actuator maps, two ``NORMALISED`` grippers with
     ``mirror_actuator_index`` for the antisymmetric finger pair, keyframe
     seeding) lives in ``ALOHA_DESCRIPTION.sim``.
 
     Public surface mirrors ``AlohaHAL``: a 14-DoF
     ``openral_core.Action`` with the
     ``left arm 6 + left gripper 1 + right arm 6 + right gripper 1``
-    layout.  Gripper values are positive-finger metres in
-    ``[0.021, 0.057]`` (passthrough); MuJoCo's ``ctrlrange`` clips
-    out-of-range commands.
+    layout.  Gripper values are normalized ``[0, 1]`` (0 closed, 1 open),
+    mapped affinely onto the finger range ``[0.021, 0.057]`` m and read
+    back the same way.
 
     Args:
         mjcf_path: Optional override for the MJCF file.  When ``None``,

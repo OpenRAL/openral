@@ -392,3 +392,69 @@ class TestKernelParamsFromEnvelope:
         params = kernel_params_from_envelope(intersection)
         assert "workspace_box_min_xyz" not in params
         assert "workspace_box_max_xyz" not in params
+
+    def test_cartesian_step_bounds_pass_through(self) -> None:
+        """max_cartesian_step_m/_rad reach the kernel params."""
+        robot = _toy_robot()
+        robot.safety.max_cartesian_step_m = 0.05
+        robot.safety.max_cartesian_step_rad = 0.2
+        intersection = compute_intersection(robot, None)
+        params = kernel_params_from_envelope(intersection)
+        assert params["max_cartesian_step_m"] == 0.05
+        assert params["max_cartesian_step_rad"] == 0.2
+
+    def test_cartesian_step_bounds_default_to_unbounded(self) -> None:
+        robot = _toy_robot()  # no max_cartesian_step_* declared
+        intersection = compute_intersection(robot, None)
+        params = kernel_params_from_envelope(intersection)
+        assert math.isinf(params["max_cartesian_step_m"])  # type: ignore[arg-type]
+        assert math.isinf(params["max_cartesian_step_rad"])  # type: ignore[arg-type]
+
+
+# ── gripper channels: per end effector, in its own convention ────────────────
+
+
+def _openarm() -> RobotDescription:
+    return RobotDescription.from_yaml(str(_REPO_ROOT / "robots" / "openarm" / "robot.yaml"))
+
+
+class TestGripperChannels:
+    """``gripper_*`` kernel params come from each end effector's command range."""
+
+    def test_each_jaw_keeps_its_own_range_not_the_intersection(self) -> None:
+        """OpenArm's jaws are mirrored ([0, 0.785] / [-0.785, 0]); their
+        intersection is [0, 0], which would refuse every command."""
+        params = kernel_params_from_envelope(compute_intersection(_openarm(), None))
+        assert params["gripper_ee_names"] == ["left_gripper", "right_gripper"]
+        assert params["gripper_command_min"] == [0.0, -0.7854]
+        assert params["gripper_command_max"] == [0.7854, 0.0]
+
+    def test_normalized_convention_supplies_its_own_range(self) -> None:
+        robot = RobotDescription.from_yaml(
+            str(_REPO_ROOT / "robots" / "panda_mobile" / "robot.yaml")
+        )
+        params = kernel_params_from_envelope(compute_intersection(robot, None))
+        assert params["gripper_ee_names"] == ["panda_gripper"]
+        assert params["gripper_command_min"] == [-1.0]
+        assert params["gripper_command_max"] == [1.0]
+
+    def test_scene_convention_replaces_the_end_effector_range(self) -> None:
+        """LIBERO's robosuite env consumes [-1, 1] on the same Franka whose own
+        twin takes [0, 1]."""
+        robot = RobotDescription.from_yaml(
+            str(_REPO_ROOT / "robots" / "franka_panda" / "robot.yaml")
+        )
+        own = kernel_params_from_envelope(compute_intersection(robot, None))
+        assert (own["gripper_command_min"], own["gripper_command_max"]) == ([0.0], [1.0])
+        libero = kernel_params_from_envelope(
+            compute_intersection(robot, None, gripper_convention="normalized_close_symmetric")
+        )
+        assert (libero["gripper_command_min"], libero["gripper_command_max"]) == ([-1.0], [1.0])
+
+    def test_a_physical_scene_convention_is_refused(self) -> None:
+        with pytest.raises(ROSConfigError, match="no intrinsic range"):
+            compute_intersection(_openarm(), None, gripper_convention="raw_joint_rad")
+
+    def test_robot_without_gripper_channel_omits_the_params(self) -> None:
+        params = kernel_params_from_envelope(compute_intersection(_toy_robot(), None))
+        assert "gripper_ee_names" not in params

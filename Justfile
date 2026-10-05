@@ -141,8 +141,7 @@ sync *args:
 lint:
     uv run ruff check .
     uv run ruff format --check .
-    uv run mypy --strict -p openral_core -p openral_cli -p openral_sim -p openral_observability -p openral_runner -p openral_reasoner -p openral_hal
-    uv run mypy --strict tools/
+    bash tools/run_mypy.sh
     uv run python tools/refresh_methods_linenos.py --check --coverage
     uv run python tools/gen_nav2_visual.py --check
     uv run python tools/gen_ros_topic_graph.py --check
@@ -762,7 +761,7 @@ safety-kernel-build:
     colcon build --merge-install --base-paths packages cpp --packages-select \
         openral_msgs opentelemetry_cpp_vendor openral_safety_kernel \
         --cmake-args -DBUILD_TESTING=ON \
-                     -DPython3_EXECUTABLE=$(which python)
+                     -DPython3_EXECUTABLE="$(pwd)/.venv/bin/python"
 
 # Run the C++ kernel's gtest + lifecycle test suite. CI parity
 # with `colcon test`; linter failures (cpplint, flake8, pep257,

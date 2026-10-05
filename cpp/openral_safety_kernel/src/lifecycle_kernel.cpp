@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -15,6 +16,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 #include <opentelemetry/common/attribute_value.h>
 #include <opentelemetry/context/runtime_context.h>
@@ -35,6 +37,31 @@ namespace {
 // rotation-matrix entries) between a re-measured grasp region and the one
 // latched at handover that still counts as the same box: float noise only.
 constexpr double kGraspRegionLatchNoise = 1e-6;
+
+/// Escape a string for a JSON string literal (quotes, backslashes, control chars).
+std::string json_escape(std::string_view in) {
+  std::string out;
+  out.reserve(in.size());
+  for (const char c : in) {
+    switch (c) {
+    case '"':
+      out += "\\\"";
+      break;
+    case '\\':
+      out += "\\\\";
+      break;
+    default:
+      if (static_cast<unsigned char>(c) < 0x20) {
+        char buf[8];
+        std::snprintf(buf, sizeof(buf), "\\u%04x", static_cast<unsigned>(c));
+        out += buf;
+      } else {
+        out += c;
+      }
+    }
+  }
+  return out;
+}
 
 rclcpp::QoS chunk_qos() {
   // openral slot dispatcher publishes N chunks/tick on /openral/candidate_action
@@ -234,10 +261,18 @@ SafetyKernelLifecycleNode::SafetyKernelLifecycleNode(const std::string& node_nam
   this->declare_parameter<std::vector<double>>("workspace_box_max_xyz", std::vector<double>{});
   this->declare_parameter<double>("max_ee_speed_m_s", kPosInfinity);
   this->declare_parameter<double>("max_ee_accel_m_s2", kPosInfinity);
+  this->declare_parameter<double>("max_ee_angular_speed_rad_s", kPosInfinity);
   this->declare_parameter<double>("max_force_n", kPosInfinity);
   this->declare_parameter<double>("max_torque_nm", kPosInfinity);
   this->declare_parameter<double>("contact_force_threshold_n", kPosInfinity);
+  this->declare_parameter<double>("max_base_linear_speed_m_s", kPosInfinity);
+  this->declare_parameter<double>("max_base_angular_speed_rad_s", kPosInfinity);
+  this->declare_parameter<double>("max_cartesian_step_m", kPosInfinity);
+  this->declare_parameter<double>("max_cartesian_step_rad", kPosInfinity);
   this->declare_parameter<bool>("deadman_required", false);
+  this->declare_parameter<std::vector<std::string>>("gripper_ee_names", std::vector<std::string>{});
+  this->declare_parameter<std::vector<double>>("gripper_command_min", std::vector<double>{});
+  this->declare_parameter<std::vector<double>>("gripper_command_max", std::vector<double>{});
 
   // Self-collision model. Disabled unless the launch emits a
   // populated model (openral_safety.envelope_loader.collision_params_from_*).
@@ -858,6 +893,8 @@ void SafetyKernelLifecycleNode::on_candidate_action(
   view.cartesian_delta_scale =
       msg->cartesian_delta_scale.empty() ? nullptr : msg->cartesian_delta_scale.data();
   view.cartesian_delta_scale_size = msg->cartesian_delta_scale.size();
+  view.ee_name = msg->ee_name.data();
+  view.ee_name_size = msg->ee_name.size();
 
   const auto result = validate(view, envelope_);
   if (result) {
@@ -1814,8 +1851,13 @@ void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg:
     // carried by ``ee_name`` (e.g. ``"joint_1"``).
     const bool is_cartesian = (v.field[0] == 'w' && v.field[1] == 'o');
     // workspace_xyz field → real Cartesian violation. Other fields are joint.
-    const std::string ee_name = is_cartesian
-                                    ? std::string{"end_effector"}
+    // A gripper_range violation carries the gripper's index in joint_index;
+    // report the configured end-effector name, which the reasoner reads.
+    const bool is_gripper = std::string_view(v.field) == "gripper_range" &&
+                            v.joint_index < envelope_.gripper_ee_names.size();
+    const std::string ee_name = is_cartesian ? std::string{"end_effector"}
+                                : is_gripper
+                                    ? json_escape(envelope_.gripper_ee_names[v.joint_index])
                                     : std::string{"joint_"} + std::to_string(v.joint_index);
     const double meas = v.offending_value;
     const double limit = v.limit_value;
@@ -1853,13 +1895,14 @@ void SafetyKernelLifecycleNode::publish_failure_trigger(const openral_msgs::msg:
   case ViolationKind::kController:
   default: {
     // ControllerEvidence: controller_name, state, detail.
-    const std::string state = (v.sub == ControllerSubKind::kNanInAction)    ? "nan_in_action"
-                              : (v.sub == ControllerSubKind::kNdofMismatch) ? "ndof_mismatch"
-                              : (v.sub == ControllerSubKind::kDimMismatch)  ? "dim_mismatch"
-                              : (v.sub == ControllerSubKind::kInvalidScale) ? "invalid_scale"
-                              : (v.sub == ControllerSubKind::kEnvelopeUnconfigured)
-                                  ? "envelope_unconfigured"
-                                  : "controller_error";
+    const std::string state =
+        (v.sub == ControllerSubKind::kNanInAction)            ? "nan_in_action"
+        : (v.sub == ControllerSubKind::kNdofMismatch)         ? "ndof_mismatch"
+        : (v.sub == ControllerSubKind::kDimMismatch)          ? "dim_mismatch"
+        : (v.sub == ControllerSubKind::kInvalidScale)         ? "invalid_scale"
+        : (v.sub == ControllerSubKind::kGripperUnresolved)    ? "gripper_unresolved"
+        : (v.sub == ControllerSubKind::kEnvelopeUnconfigured) ? "envelope_unconfigured"
+                                                              : "controller_error";
     std::ostringstream detail;
     detail << "field=" << v.field << " joint=" << v.joint_index << " value=" << v.offending_value
            << " limit=" << v.limit_value;

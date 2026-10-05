@@ -280,8 +280,13 @@ def provision_rlbench() -> None:
     _sidecar_python()
 
 
+# RLBench's gripper action is `gripper_open` (1 = open, 0 = closed).
 @SCENES.register(
-    _RLBENCH_SCENE_ID, fixed_robot="franka_panda", provision=provision_rlbench, sim_clock=True
+    _RLBENCH_SCENE_ID,
+    fixed_robot="franka_panda",
+    provision=provision_rlbench,
+    sim_clock=True,
+    gripper_convention="normalized_open_unit",
 )
 def _build_rlbench_scene(env_cfg: SimEnvironment) -> _RLBenchSidecar:
     """Build an RLBench task behind the out-of-process CoppeliaSim sidecar.

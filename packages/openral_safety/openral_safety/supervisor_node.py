@@ -39,7 +39,7 @@ from __future__ import annotations
 import math
 import sys
 import time
-from typing import Any
+from typing import Any, Protocol
 
 import rclpy
 from openral_observability import safety_span, semconv
@@ -129,6 +129,20 @@ def _violation_kind_constant(kind: str, status_cls: Any) -> int:
     if kind in _RATE_VIOLATION_KINDS:
         return int(status_cls.KIND_FORCE)
     return int(status_cls.KIND_CONTROLLER)
+
+
+class _ChunkFields(Protocol):
+    """The ``ActionChunk`` fields this node reads off a candidate."""
+
+    rskill_id: str
+    trace_id: str
+
+
+class _TriggerResponse(Protocol):
+    """``std_srvs/Trigger`` response fields."""
+
+    success: bool
+    message: str
 
 
 class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rclpy untyped
@@ -385,7 +399,7 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
 
     # ── Envelope check + publication ─────────────────────────────────────────
 
-    def _on_candidate_action(self, msg: object) -> None:
+    def _on_candidate_action(self, msg: _ChunkFields) -> None:
         """Validate one ``ActionChunk`` and forward it on ``/openral/safe_action``.
 
         Per the safety envelope contract:
@@ -703,7 +717,7 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
             return ("gripper_range", f"width={w:.4f} > gripper_max={gmax:.4f}")
         return (None, "")
 
-    def _handle_violation(self, msg: object, *, kind: str, reason: str) -> None:
+    def _handle_violation(self, msg: _ChunkFields, *, kind: str, reason: str) -> None:
         """Drop the candidate, fire estop, log structured."""
         from std_msgs.msg import Empty
 
@@ -759,7 +773,7 @@ class SafetyPassthroughNode(LifecycleNode):  # type: ignore[misc]  # reason: rcl
 
     # ── /openral/estop_reset ─────────────────────────────────────────────────
 
-    def _on_estop_reset(self, request: object, response: object) -> object:
+    def _on_estop_reset(self, request: object, response: _TriggerResponse) -> _TriggerResponse:
         """Service callback: clear the estop latch after the cooldown."""
         del request
         if not self._estopped:

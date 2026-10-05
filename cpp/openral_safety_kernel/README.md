@@ -138,6 +138,46 @@ std_srvs/srv/Trigger`. The service refuses to clear the latch until
 estop publish — `ROSEStopRequested` is never auto-cleared
 (CLAUDE.md §10).
 
+## Per-control-mode magnitude bounds
+
+`validate()` (`src/validator.cpp`) bounds every row of the chunk's horizon. A
+per-mode chunk's row stride is its own `n_dof` (6 for a twist or delta, 7 for a
+pose, 1 for a scalar), never the robot's joint count. Bounds come from the
+robot manifest's `safety:` block through `envelope_loader.kernel_params_from_envelope`;
+an undeclared bound is `+inf`, so the check is a no-op for that robot.
+
+| Mode | Bound | Manifest field | Evidence |
+|---|---|---|---|
+| `JOINT_POSITION` / `JOINT_TRAJECTORY` | per-joint position range | `joints[].position_limits` | `workspace` |
+| `JOINT_VELOCITY` / `JOINT_TORQUE` | per-joint cap | `velocity_limit × max_joint_speed_factor` / `effort_limit`, `max_torque_nm` | `workspace` / `force` |
+| `CARTESIAN_POSE` | position inside the workspace box | `workspace_box_*` | `workspace` |
+| `CARTESIAN_TWIST` | `‖v‖`, `‖ω‖` | `max_ee_speed_m_s`, `max_ee_angular_speed_rad_s` | `force` |
+| `BODY_TWIST` | `‖v‖`, `‖ω‖` | `max_base_linear_speed_m_s`, `max_base_angular_speed_rad_s` | `force` |
+| `CARTESIAN_DELTA` | `‖Δxyz‖`, `‖Δrot‖` after `clip(raw,−1,1)·cartesian_delta_scale` | `max_cartesian_step_m`, `max_cartesian_step_rad` | `force` |
+| `COMPOSITE_MODE` | flag in `[−1, 1]` (wire contract) | — | `workspace` |
+| `GRIPPER_BINARY` / `GRIPPER_POSITION` | every value inside the addressed end effector's command range; a chunk resolving to no declared end effector is refused (`gripper_unresolved`) | `end_effectors[].command_convention` / `command_range`, or the sim scene's `gripper_convention` | `workspace` / `controller` |
+
+The norms are Euclidean, so a controller with a per-axis output limit `a` needs
+a bound of at least `a·√3`: `panda_mobile` declares `0.087 m` / `0.87 rad` for
+robosuite's 0.05 m / 0.5 rad OSC box.
+
+Gripper bounds are **per end effector, in its own encoding**. A gripper value
+reaches the HAL unconverted, and robots disagree on what it means — a `[0,1]`
+fraction (Franka twin, SO-101, ALOHA), robosuite's `[−1,1]` with `+1` closed
+(RoboCasa, LIBERO), jaw radians (OpenArm, left `[0, 0.785]`, right
+`[−0.785, 0]`). Each end effector declares `command_convention` (and a
+`command_range` for the physical ones); a simulated scene declares the
+convention its environment consumes (`SCENES.register(...,
+gripper_convention=...)`), which `openral deploy sim` forwards as the
+`gripper_convention` launch argument and which then replaces every end
+effector's range. The kernel receives parallel arrays `gripper_ee_names` /
+`gripper_command_min` / `gripper_command_max` and resolves each chunk by its
+`ee_name` (an unnamed chunk binds to the robot's only gripper). Matching the
+skill's encoding to that one is the loader's job:
+`rSkill.check_gripper_conventions` refuses a mismatch when the runner resolves
+the skill. `tests/sim/safety/test_kernel_per_mode_envelopes.py` drives the real
+node from the real `r1pro`, `panda_mobile` and `openarm` manifests.
+
 ## Observability
 
 The kernel emits one OTel `safety.check` span per candidate chunk over
@@ -1106,7 +1146,9 @@ recorded decision, and the two models are deliberately separate:
 **`/cmd_vel` never reaches `/openral/candidate_action`.**
 `openral_hal.mobile_base_bridge.MobileBaseBridge` turns Nav2's `Twist` into a
 `BODY_TWIST` action and applies it through the HAL directly, so this kernel
-neither bounds nor vetoes base velocity; Nav2's `velocity_smoother` caps it.
+neither bounds nor vetoes Nav2's base velocity; Nav2's `velocity_smoother` caps
+it. (A `BODY_TWIST` chunk a policy publishes on `/openral/candidate_action` *is*
+bounded — see "Per-control-mode magnitude bounds".)
 The single authority this kernel retains over base motion is the **E-stop
 latch** — the bridge drops every `/cmd_vel` while the HAL node is latched, so
 an E-stop raised here does stop the base. There is no per-command bound.

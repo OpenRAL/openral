@@ -10,7 +10,7 @@ signal (CLAUDE.md §3, "deadline fallback mandatory").
 These tests pin the budget predicate and the elapsed time recorded on abort.
 
 No ROS context is created: ``_deadline_lapsed`` only needs a real ``rclpy``
-logger and the ``_last_deadline_elapsed_s`` slot, so it's bound to a minimal
+logger and the ``_last_deadline_miss`` slot, so it's bound to a minimal
 holder instead of a full ``RskillRunnerNode`` — an earlier version built one
 and its module-scoped ``rclpy.shutdown()`` broke every later rclpy test in
 this dir, taking the suite from 2m18s to >15m (CLAUDE.md §1.11: fixture, not
@@ -20,7 +20,6 @@ a mock of the code under test).
 from __future__ import annotations
 
 import importlib.util
-import time
 from pathlib import Path
 from types import MethodType, ModuleType
 from typing import Any
@@ -56,10 +55,21 @@ class _BudgetHolder:
         import rclpy.logging
 
         self._logger = rclpy.logging.get_logger("test_skill_runner_deadline")
-        self._last_deadline_elapsed_s: float | None = None
+        self._last_deadline_miss: Any = None
 
     def get_logger(self) -> Any:  # reason: rclpy logger is untyped
         return self._logger
+
+
+def _wall_budget(budget_s: float, *, elapsed_s: float = 0.0) -> Any:
+    """A wall-clock ``ExecutionBudget`` (no graph clock, as on a real robot) that
+    started ``elapsed_s`` ago on an injected monotonic clock."""
+    from openral_rskill.execution_budget import ExecutionBudget
+
+    now = [1000.0]
+    budget = ExecutionBudget(budget_s, wall_now=lambda: now[0])
+    now[0] += elapsed_s
+    return budget
 
 
 @pytest.fixture
@@ -75,8 +85,8 @@ def budget() -> Any:  # reason: dynamically bound method holder
 
 def test_budget_not_lapsed_returns_false(budget: Any) -> None:
     """Inside the budget the loop keeps stepping and nothing is recorded."""
-    assert budget.deadline_lapsed(time.monotonic(), 45.0, 0) is False
-    assert budget._last_deadline_elapsed_s is None
+    assert budget.deadline_lapsed(_wall_budget(45.0), 0) is False
+    assert budget._last_deadline_miss is None
 
 
 def test_zero_budget_disables_the_check(budget: Any) -> None:
@@ -86,8 +96,8 @@ def test_zero_budget_disables_the_check(budget: Any) -> None:
     loop runs, so a zero reaching this predicate means the caller
     deliberately disabled it: an unbounded run is correct, not a miss.
     """
-    assert budget.deadline_lapsed(time.monotonic() - 10_000.0, 0.0, 7) is False
-    assert budget._last_deadline_elapsed_s is None
+    assert budget.deadline_lapsed(_wall_budget(0.0, elapsed_s=10_000.0), 7) is False
+    assert budget._last_deadline_miss is None
 
 
 def test_lapsed_budget_reports_true_and_records_true_elapsed(budget: Any) -> None:
@@ -97,22 +107,23 @@ def test_lapsed_budget_reports_true_and_records_true_elapsed(budget: Any) -> Non
     (45 s) — quoting the limit back would hide exactly the number that made
     this bug visible.
     """
-    start = time.monotonic() - 144.5
+    assert budget.deadline_lapsed(_wall_budget(45.0, elapsed_s=144.5), 3) is True
 
-    assert budget.deadline_lapsed(start, 45.0, 3) is True
-
-    recorded = budget._last_deadline_elapsed_s
-    assert recorded is not None
+    miss = budget._last_deadline_miss
+    assert miss is not None and miss.kind == "deadline_exceeded"
+    recorded = miss.elapsed_s
     assert recorded == pytest.approx(144.5, abs=1.0), (
         f"expected the true elapsed (~144.5 s), got {recorded}"
     )
     assert recorded > 45.0, "recorded the budget instead of the overrun"
+    assert miss.detail == "elapsed=144.5s budget=45.0s (wall clock)"
 
 
 def test_boundary_just_inside_budget_is_not_a_miss(budget: Any) -> None:
     """Strictly-greater comparison: at the budget the loop may still step."""
-    assert budget.deadline_lapsed(time.monotonic() - 1.0, 45.0, 0) is False
-    assert budget._last_deadline_elapsed_s is None
+    assert budget.deadline_lapsed(_wall_budget(45.0, elapsed_s=1.0), 0) is False
+    assert budget.deadline_lapsed(_wall_budget(45.0, elapsed_s=45.0), 0) is False
+    assert budget._last_deadline_miss is None
 
 
 # ── _pace_tick — absolute-deadline loop cadence ──────────────────────────────

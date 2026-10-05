@@ -91,6 +91,16 @@ peers, and emits a `KIND_CONTROLLER` FailureTrigger
 remaining callbacks; a late accepted goal is canceled and cannot overwrite a
 newer dispatch.
 
+**Waiting for the runner:** the runner creates `/openral/execute_rskill` in its
+own `on_configure`, which can finish after the first prompt arrives. A dispatch
+that finds the server missing holds the busy latch (in-flight state
+`dispatching`) and re-probes every 0.25 s for up to `execute_server_wait_s`
+(default 30 s; `0` fails on the first miss), then sends the goal. Past that
+bound it releases the latch and emits a `KIND_CONTROLLER` FailureTrigger
+(`state="unavailable"`). This covers every prompt source — the deploy's
+startup prompt, an operator prompt, a dispatch after the runner restarts — not
+only the first.
+
 The reasoner **never** publishes `openral_msgs/ActionChunk` — actuation
 authority lives behind the F1 action server + the F5 safety boundary
 ("Holds no authority over actuation").
@@ -130,6 +140,12 @@ The env contract is:
   not a longer timeout.
 - `OPENRAL_REASONER_DIALECT=anthropic|openai` — required only for an uncurated
   raw model id.
+- `OPENRAL_REASONER_TOOL_CHOICE=auto|required` — the bare-URL `openai` path
+  sends `tool_choice: "required"`; set `auto` for a gateway whose thinking-mode
+  model rejects that with HTTP 400. Case-insensitive, and any other value fails
+  at client build (and in `openral doctor`). Named endpoints, curated models and
+  the `anthropic` dialect carry their own value, so there it is ignored with a
+  `reasoner.tool_choice_ignored` warning.
 
 ```bash
 # Curated cloud model

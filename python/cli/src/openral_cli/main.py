@@ -743,7 +743,18 @@ def _check_reasoner_model(model_key: str) -> list[CheckResult]:
     # import needed) — a hand-mirrored copy here drifted twice (2fe732a,
     # 131a489: doctor rejected valid named endpoints, then passed a dialect
     # clash the factory refuses).
-    from openral_core import REASONER_ENDPOINT_PRESETS, REASONER_MODELS
+    from openral_core import (
+        REASONER_ENDPOINT_PRESETS,
+        REASONER_MODELS,
+        parse_reasoner_tool_choice,
+    )
+    from openral_core.exceptions import ROSConfigError
+
+    # The factory validates this on every path before building a client.
+    try:
+        parse_reasoner_tool_choice(os.environ.get("OPENRAL_REASONER_TOOL_CHOICE"))
+    except ROSConfigError as exc:
+        return [CheckResult("Reasoner LLM", "fail", str(exc))]
 
     curated = sorted(REASONER_MODELS)
     entry = REASONER_MODELS.get(model_key)

@@ -11,7 +11,7 @@
       "type": "string"
     }
   },
-  "description": "End-effector specification.\n\nAttributes:\n    name: End-effector name.\n    kind: Type of end-effector.\n    hand: Laterality.\n    n_dof: Number of controllable degrees of freedom.\n    max_grip_force_n: Maximum grip force in Newtons.\n    max_payload_kg: Maximum payload in kg.\n    workspace_radius_m: Reach radius in meters.\n    tactile_sensors: List of tactile SensorSpec names attached to this EE.\n    actuated: Whether the end-effector is driven by an actuator.\n        False for passive tools (inert flanges,\n        magnetic plates without electromagnet, kinematic-only\n        mounts). When False, the safety kernel rejects any\n        chunk addressed at this EE \u2014 the chunk routes to a\n        no-op rather than risking unintended motion. Default\n        True: every actuated gripper / dexterous hand / suction\n        cup we ship is driven.",
+  "description": "End-effector specification.\n\nAttributes:\n    name: End-effector name.\n    kind: Type of end-effector.\n    hand: Laterality.\n    n_dof: Number of controllable degrees of freedom.\n    max_grip_force_n: Maximum grip force in Newtons.\n    max_payload_kg: Maximum payload in kg.\n    workspace_radius_m: Reach radius in meters.\n    tactile_sensors: List of tactile SensorSpec names attached to this EE.\n    actuated: Whether the end-effector is driven by an actuator.\n        False for passive tools (inert flanges,\n        magnetic plates without electromagnet, kinematic-only\n        mounts). When False, the safety kernel rejects any\n        chunk addressed at this EE \u2014 the chunk routes to a\n        no-op rather than risking unintended motion. Default\n        True: every actuated gripper / dexterous hand / suction\n        cup we ship is driven.\n    command_convention: Encoding of the value a ``GRIPPER_*`` action\n        addressed at this end effector carries when it reaches the HAL\n        (see ``GripperConvention``). An rSkill whose gripper convention\n        differs is refused at load time. Every actuated\n        ``parallel_gripper`` in ``robots/`` declares it.\n    command_range: Inclusive ``(min, max)`` the safety kernel bounds\n        every ``GRIPPER_*`` value addressed at this end effector by, in\n        ``command_convention``'s unit. Defaults to the convention's own\n        range for the normalized conventions; REQUIRED for the physical\n        ones (``raw_joint_rad``, ``width_meters``).\n\nExample:\n    >>> ee = EndEffectorSpec(\n    ...     name=\"left_gripper\",\n    ...     kind=\"parallel_gripper\",\n    ...     command_convention=\"raw_joint_rad\",\n    ...     command_range=(0.0, 0.7854),\n    ... )\n    >>> ee.resolved_command_range()\n    (0.0, 0.7854)\n    >>> EndEffectorSpec(\n    ...     name=\"g\", kind=\"parallel_gripper\", command_convention=\"normalized_open_unit\"\n    ... ).resolved_command_range()\n    (0.0, 1.0)",
   "properties": {
     "name": {
       "title": "Name",
@@ -84,6 +84,48 @@
       "default": true,
       "title": "Actuated",
       "type": "boolean"
+    },
+    "command_convention": {
+      "anyOf": [
+        {
+          "enum": [
+            "normalized_open_unit",
+            "normalized_open_symmetric",
+            "normalized_close_symmetric",
+            "binary_close_one",
+            "raw_joint_rad",
+            "width_meters"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Command Convention"
+    },
+    "command_range": {
+      "anyOf": [
+        {
+          "maxItems": 2,
+          "minItems": 2,
+          "prefixItems": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Command Range"
     }
   },
   "required": [

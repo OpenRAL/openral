@@ -20,9 +20,9 @@ just test                       # run unit tests (<30 s)
 just test-doctest               # run docstring examples on the curated set
 uv run pytest -k so100          # filter by keyword
 just lint                       # ruff check + ruff format --check + mypy --strict
-                                # (mypy targets: openral_core, openral_cli, openral_sim,
+                                # (mypy via tools/run_mypy.sh: openral_core, openral_cli, openral_sim,
                                 #  openral_observability, openral_runner, openral_reasoner,
-                                #  openral_hal, tools/)
+                                #  openral_hal, openral_safety, tools/)
 uv run ruff check . --fix       # autofix
 uv run ruff format .            # format
 ```

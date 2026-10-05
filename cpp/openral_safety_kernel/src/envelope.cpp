@@ -6,7 +6,9 @@
 
 #include "openral_safety_kernel/envelope.hpp"
 
+#include <cmath>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #include <rclcpp_lifecycle/lifecycle_node.hpp>
@@ -75,10 +77,63 @@ EnvelopeLoadStatus load_envelope_from_ros_parameters(rclcpp_lifecycle::Lifecycle
 
   out.max_ee_speed_m_s = node.get_parameter("max_ee_speed_m_s").as_double();
   out.max_ee_accel_m_s2 = node.get_parameter("max_ee_accel_m_s2").as_double();
+  out.max_ee_angular_speed_rad_s = node.get_parameter("max_ee_angular_speed_rad_s").as_double();
   out.max_force_n = node.get_parameter("max_force_n").as_double();
   out.max_torque_nm = node.get_parameter("max_torque_nm").as_double();
   out.contact_force_threshold_n = node.get_parameter("contact_force_threshold_n").as_double();
+  out.max_base_linear_speed_m_s = node.get_parameter("max_base_linear_speed_m_s").as_double();
+  out.max_base_angular_speed_rad_s = node.get_parameter("max_base_angular_speed_rad_s").as_double();
+  out.max_cartesian_step_m = node.get_parameter("max_cartesian_step_m").as_double();
+  out.max_cartesian_step_rad = node.get_parameter("max_cartesian_step_rad").as_double();
   out.deadman_required = node.get_parameter("deadman_required").as_bool();
+
+  // The per-mode bounds are compared as `magnitude > bound`, so a NaN bound
+  // passes everything and a negative one refuses everything. +inf is the
+  // "no bound declared" sentinel and stays legal. kernel_params_from_envelope
+  // already refuses NaN; this guards a direct ROS-parameter override.
+  const std::pair<const char*, double> per_mode_bounds[] = {
+      {"max_ee_angular_speed_rad_s", out.max_ee_angular_speed_rad_s},
+      {"max_base_linear_speed_m_s", out.max_base_linear_speed_m_s},
+      {"max_base_angular_speed_rad_s", out.max_base_angular_speed_rad_s},
+      {"max_cartesian_step_m", out.max_cartesian_step_m},
+      {"max_cartesian_step_rad", out.max_cartesian_step_rad},
+  };
+  for (const auto& [name, value] : per_mode_bounds) {
+    if (std::isnan(value) || value < 0.0) {
+      std::ostringstream oss;
+      oss << name << " must be >= 0 or +inf (unbounded); got " << value;
+      error_message = oss.str();
+      out = EnvelopeIntersection{};
+      return EnvelopeLoadStatus::kInvalidValue;
+    }
+  }
+
+  out.gripper_ee_names = node.get_parameter("gripper_ee_names").as_string_array();
+  out.gripper_command_min = read_double_array(node, "gripper_command_min");
+  out.gripper_command_max = read_double_array(node, "gripper_command_max");
+  const std::size_t n_grippers = out.gripper_ee_names.size();
+  if (out.gripper_command_min.size() != n_grippers ||
+      out.gripper_command_max.size() != n_grippers) {
+    std::ostringstream oss;
+    oss << "gripper_* parameter arrays disagree: names=" << n_grippers
+        << " min=" << out.gripper_command_min.size() << " max=" << out.gripper_command_max.size();
+    error_message = oss.str();
+    out = EnvelopeIntersection{};
+    return EnvelopeLoadStatus::kInvalidShape;
+  }
+  for (std::size_t i = 0; i < n_grippers; ++i) {
+    const double lo = out.gripper_command_min[i];
+    const double hi = out.gripper_command_max[i];
+    if (out.gripper_ee_names[i].empty() || !std::isfinite(lo) || !std::isfinite(hi) || lo >= hi) {
+      std::ostringstream oss;
+      oss << "gripper end effector " << i << " (" << out.gripper_ee_names[i]
+          << ") needs a name and a finite command range with min < max; got [" << lo << ", " << hi
+          << "]";
+      error_message = oss.str();
+      out = EnvelopeIntersection{};
+      return EnvelopeLoadStatus::kInvalidValue;
+    }
+  }
 
   return EnvelopeLoadStatus::kOk;
 }

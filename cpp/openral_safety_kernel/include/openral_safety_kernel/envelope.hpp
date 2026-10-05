@@ -63,11 +63,37 @@ struct EnvelopeIntersection {
   WorkspaceBox workspace_box;
   double max_ee_speed_m_s{kPosInfinity};
   double max_ee_accel_m_s2{kPosInfinity};
+  // CARTESIAN_TWIST angular bound, paired with max_ee_speed_m_s above (the
+  // linear bound). Default kPosInfinity = "no bound declared".
+  double max_ee_angular_speed_rad_s{kPosInfinity};
 
   // Force / torque caps applied across all joints + cartesian.
   double max_force_n{kPosInfinity};
   double max_torque_nm{kPosInfinity};
   double contact_force_threshold_n{kPosInfinity};
+
+  // BODY_TWIST bounds (mobile-base linear/angular speed). Default
+  // kPosInfinity = "no bound declared" (today's behaviour for any robot
+  // that doesn't set these on its manifest, e.g. a fixed-base arm) --
+  // matches `openral_safety.envelope_loader`'s None -> inf resolution so
+  // the loader never has to special-case an absent bound either.
+  double max_base_linear_speed_m_s{kPosInfinity};
+  double max_base_angular_speed_rad_s{kPosInfinity};
+
+  // CARTESIAN_DELTA per-step bounds: the Euclidean magnitude of the xyz
+  // translation delta and the axis-angle rotation delta. Default
+  // kPosInfinity -- same "no bound declared" sentinel as every other
+  // optional magnitude field here.
+  double max_cartesian_step_m{kPosInfinity};
+  double max_cartesian_step_rad{kPosInfinity};
+
+  // GRIPPER_POSITION / GRIPPER_BINARY bounds, one entry per gripper end
+  // effector, in that end effector's command convention
+  // (EndEffectorSpec.command_range). Parallel arrays. Empty = the robot
+  // declares no gripper channel, and every gripper chunk is refused.
+  std::vector<std::string> gripper_ee_names;
+  std::vector<double> gripper_command_min;
+  std::vector<double> gripper_command_max;
 
   bool deadman_required{false};
 };
@@ -77,6 +103,7 @@ enum class EnvelopeLoadStatus : std::uint8_t {
   kOk = 0,
   kInvalidShape = 1,  ///< joint arrays disagree with `n_dof`
   kUnconfigured = 2,  ///< `n_dof` is 0 — no envelope supplied
+  kInvalidValue = 3,  ///< a per-mode bound is NaN or negative
 };
 
 /// Build the envelope from this node's ROS parameters.

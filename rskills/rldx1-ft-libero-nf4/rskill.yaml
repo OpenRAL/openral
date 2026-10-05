@@ -56,6 +56,10 @@ actuators_required:
   - kind: "joint_position"
     control_mode_semantics:
       mode: "absolute"
+  - kind: "gripper_position"
+    control_mode_semantics:
+      mode: "absolute"
+      gripper_convention: "normalized_close_symmetric"
 
 # ── Runtime / weights ──────────────────────────────────────────────────────
 runtime: "pytorch"

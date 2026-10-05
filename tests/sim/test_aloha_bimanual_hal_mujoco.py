@@ -178,6 +178,13 @@ def hal() -> AlohaMujocoHAL:
 # self-colliding configuration and the contact dynamics push joints
 # unpredictably — physical reality, not a HAL bug (the real ALOHA
 # refuses to track an all-zeros target for the same reason).
+# The gripper channel is normalized (0 closed, 1 open) over the MJCF finger
+# range [0.021, 0.057] m; home is 0.024 m, slightly open.
+_GRIPPER_HOME = (0.024 - 0.021) / (0.057 - 0.021)
+# Per-step settle tolerances, 3 mm and 5 mm of finger travel.
+_GRIPPER_TIGHT = 0.003 / 0.036
+_GRIPPER_LOOSE = 0.005 / 0.036
+
 _ALOHA_HOME_POSE: tuple[float, ...] = (
     0.0,
     -0.96,
@@ -185,14 +192,14 @@ _ALOHA_HOME_POSE: tuple[float, ...] = (
     0.0,
     -0.3,
     0.0,  # left arm
-    0.024,  # left gripper (slightly open)
+    _GRIPPER_HOME,  # left gripper (slightly open)
     0.0,
     -0.96,
     1.16,
     0.0,
     -0.3,
     0.0,  # right arm
-    0.024,  # right gripper
+    _GRIPPER_HOME,  # right gripper
 )
 
 
@@ -347,8 +354,8 @@ class TestClosedLoopMujoco:
 
     def test_left_gripper_opens(self, connected_hal: AlohaMujocoHAL) -> None:
         target = list(_ALOHA_HOME_POSE)
-        target[6] = 0.057  # left_gripper fully open
-        # right gripper stays at home (0.024).
+        target[6] = 1.0  # left_gripper fully open
+        # right gripper stays at home.
         connected_hal.send_action(
             Action(
                 control_mode=ControlMode.JOINT_POSITION,
@@ -358,13 +365,13 @@ class TestClosedLoopMujoco:
             )
         )
         state = connected_hal.read_state()
-        assert state.position[6] == pytest.approx(0.057, abs=3e-3)
+        assert state.position[6] == pytest.approx(1.0, abs=_GRIPPER_TIGHT)
         # Right gripper stays roughly at home (still in valid range).
-        assert state.position[13] == pytest.approx(0.024, abs=5e-3)
+        assert state.position[13] == pytest.approx(_GRIPPER_HOME, abs=_GRIPPER_LOOSE)
 
     def test_right_gripper_opens_independently(self, connected_hal: AlohaMujocoHAL) -> None:
         target = list(_ALOHA_HOME_POSE)
-        target[13] = 0.057  # right_gripper fully open
+        target[13] = 1.0  # right_gripper fully open
         connected_hal.send_action(
             Action(
                 control_mode=ControlMode.JOINT_POSITION,
@@ -374,8 +381,8 @@ class TestClosedLoopMujoco:
             )
         )
         state = connected_hal.read_state()
-        assert state.position[6] == pytest.approx(0.024, abs=5e-3)
-        assert state.position[13] == pytest.approx(0.057, abs=3e-3)
+        assert state.position[6] == pytest.approx(_GRIPPER_HOME, abs=_GRIPPER_LOOSE)
+        assert state.position[13] == pytest.approx(1.0, abs=_GRIPPER_TIGHT)
 
     def test_action_index_split_matches_real_hal_layout(
         self, connected_hal: AlohaMujocoHAL

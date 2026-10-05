@@ -228,6 +228,34 @@ TEST_F(LifecycleKernelTest, ParameterPathFailsOnJointArrayLengthMismatch) {
   EXPECT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE);
 }
 
+TEST_F(LifecycleKernelTest, ParameterPathFailsOnANaNOrNegativePerModeBound) {
+  // A NaN bound would pass every chunk (`x > NaN` is false); a negative one
+  // would refuse every chunk. Both must fail configure; +inf stays legal.
+  for (const char* name :
+       {"max_ee_angular_speed_rad_s", "max_base_linear_speed_m_s", "max_base_angular_speed_rad_s",
+        "max_cartesian_step_m", "max_cartesian_step_rad"}) {
+    for (const double bad : {std::numeric_limits<double>::quiet_NaN(), -0.1}) {
+      rclcpp::NodeOptions opts;
+      auto params = minimal_envelope_params();
+      params.emplace_back(name, bad);
+      opts.parameter_overrides(params);
+      auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_bad_bound", opts);
+      rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
+                                     "unconfigured");
+      EXPECT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::FAILURE)
+          << name << "=" << bad;
+    }
+  }
+  rclcpp::NodeOptions opts;
+  auto params = minimal_envelope_params();
+  params.emplace_back("max_base_linear_speed_m_s", std::numeric_limits<double>::infinity());
+  opts.parameter_overrides(params);
+  auto node = std::make_shared<osk::SafetyKernelLifecycleNode>("kernel_inf_bound", opts);
+  rclcpp_lifecycle::State unconf(lifecycle_msgs::msg::State::PRIMARY_STATE_UNCONFIGURED,
+                                 "unconfigured");
+  EXPECT_EQ(node->on_configure(unconf), osk::SafetyKernelLifecycleNode::CallbackReturn::SUCCESS);
+}
+
 TEST_F(LifecycleKernelTest, ResetServiceRespectsCooldown) {
   rclcpp::NodeOptions opts;
   auto overrides = minimal_envelope_params();

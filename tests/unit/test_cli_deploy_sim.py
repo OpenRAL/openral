@@ -3123,3 +3123,22 @@ def test_deploy_vision_attachment_off_forwards_nothing(monkeypatch: pytest.Monke
     )
     assert not any(k.startswith("vision_attachment_") for k in invocation.hal_params)
     assert not any("vision_attachment" in a for a in invocation.argv_template)
+
+
+@pytest.mark.parametrize(
+    ("scene", "expected"),
+    [
+        # robosuite environments: -1 opens, +1 closes.
+        ("libero_pnp", "normalized_close_symmetric"),
+        ("robocasa_pnp", "normalized_close_symmetric"),
+        ("behavior_r1pro", "normalized_open_symmetric"),
+        # A bare twin: the robot's own end effector encoding applies.
+        ("so101_box", ""),
+    ],
+)
+def test_scene_gripper_convention_comes_from_the_scene_registry(scene: str, expected: str) -> None:
+    from openral_cli.deploy_sim import _scene_gripper_convention
+
+    repo = Path(__file__).resolve().parents[2]
+    assert _scene_gripper_convention(repo / "scenes" / "deploy" / f"{scene}.yaml") == expected
+    assert _scene_gripper_convention(None) == ""

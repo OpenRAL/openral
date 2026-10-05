@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -177,6 +178,33 @@ TEST(Validator, CartesianTwistSpeedCap) {
   EXPECT_NEAR(rc.error().offending_value, 1.0, 1e-9);
 }
 
+TEST(Validator, CartesianTwistAngularSpeedCapEnforced) {
+  auto env = make_env(6);
+  env.max_ee_speed_m_s = 0.5;
+  env.max_ee_angular_speed_rad_s = 0.4;
+  // Linear component within bound; angular |w|=1.0 > 0.4.
+  const std::vector<double> flat = {0.1, 0.0, 0.0, 1.0, 0.0, 0.0};
+  const auto view = make_chunk_view(flat, 1, 6, osk::ControlMode::kCartesianTwist);
+  const auto rc = osk::validate(view, env);
+  ASSERT_FALSE(rc);
+  EXPECT_EQ(rc.error().kind, osk::ViolationKind::kForce);
+  EXPECT_STREQ(rc.error().field, "ee_angular_speed");
+  EXPECT_NEAR(rc.error().offending_value, 1.0, 1e-9);
+  EXPECT_NEAR(rc.error().limit_value, 0.4, 1e-9);
+}
+
+TEST(Validator, CartesianTwistAngularSpeedDefaultsToUnboundedWhenUnset) {
+  // env.max_ee_angular_speed_rad_s defaults to kPosInfinity in make_env() --
+  // a robot that never declares this bound (every robot except the ones
+  // fixed as part of this change) must see unchanged behaviour.
+  auto env = make_env(6);
+  env.max_ee_speed_m_s = 0.5;
+  const std::vector<double> flat = {0.1, 0.0, 0.0, 100.0, 0.0, 0.0};
+  const auto view = make_chunk_view(flat, 1, 6, osk::ControlMode::kCartesianTwist);
+  const auto rc = osk::validate(view, env);
+  EXPECT_TRUE(rc);
+}
+
 TEST(Validator, CartesianPoseWorkspaceAabb) {
   auto env = make_env(7);
   env.workspace_box.set = true;
@@ -190,8 +218,7 @@ TEST(Validator, CartesianPoseWorkspaceAabb) {
   EXPECT_EQ(rc.error().kind, osk::ViolationKind::kWorkspace);
 }
 
-// Per-mode chunks pass the kernel structural check and
-// delegate per-axis bounds to the Python openral_safety supervisor. The
+// Per-mode chunks pass the kernel structural check. The
 // kernel only enforces ``chunk.n_dof == envelope.n_dof`` for JOINT
 // modes; cartesian / twist / gripper chunks have a per-mode width
 // (6, 6, 1, …) that has nothing to do with the joint count.
@@ -206,6 +233,9 @@ TEST(Validator, CartesianDeltaPassesWithSixDofWidthAndJointEnvelope) {
 
 TEST(Validator, GripperPositionPassesWithUnaryWidthAndJointEnvelope) {
   auto env = make_env(11);
+  env.gripper_ee_names = {"panda_gripper"};
+  env.gripper_command_min = {0.0};
+  env.gripper_command_max = {1.0};
   const std::vector<double> flat = {0.04};
   const auto view = make_chunk_view(flat, 1, 1, osk::ControlMode::kGripperPosition);
   const auto rc = osk::validate(view, env);
@@ -218,6 +248,309 @@ TEST(Validator, BodyTwistPassesWithSixDofWidthAndJointEnvelope) {
   const auto view = make_chunk_view(flat, 1, 6, osk::ControlMode::kBodyTwist);
   const auto rc = osk::validate(view, env);
   EXPECT_TRUE(rc);
+}
+
+TEST(Validator, BodyTwistLinearSpeedCapEnforced) {
+  auto env = make_env(11);
+  env.max_base_linear_speed_m_s = 0.3;
+  env.max_base_angular_speed_rad_s = 0.5;
+  // (vx, vy, vz, wx, wy, wz) — |v|=6.0 > 0.3 m/s.
+  const std::vector<double> flat = {6.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  const auto view = make_chunk_view(flat, 1, 6, osk::ControlMode::kBodyTwist);
+  const auto rc = osk::validate(view, env);
+  ASSERT_FALSE(rc);
+  EXPECT_EQ(rc.error().kind, osk::ViolationKind::kForce);
+  EXPECT_STREQ(rc.error().field, "base_linear_speed");
+  EXPECT_NEAR(rc.error().offending_value, 6.0, 1e-9);
+  EXPECT_NEAR(rc.error().limit_value, 0.3, 1e-9);
+}
+
+TEST(Validator, BodyTwistAngularSpeedCapEnforced) {
+  auto env = make_env(11);
+  env.max_base_linear_speed_m_s = 0.3;
+  env.max_base_angular_speed_rad_s = 0.5;
+  // Linear component within bound; angular |w|=1.0 > 0.5.
+  const std::vector<double> flat = {0.1, 0.0, 0.0, 1.0, 0.0, 0.0};
+  const auto view = make_chunk_view(flat, 1, 6, osk::ControlMode::kBodyTwist);
+  const auto rc = osk::validate(view, env);
+  ASSERT_FALSE(rc);
+  EXPECT_EQ(rc.error().kind, osk::ViolationKind::kForce);
+  EXPECT_STREQ(rc.error().field, "base_angular_speed");
+  EXPECT_NEAR(rc.error().offending_value, 1.0, 1e-9);
+  EXPECT_NEAR(rc.error().limit_value, 0.5, 1e-9);
+}
+
+TEST(Validator, BodyTwistDimMismatchRejected) {
+  auto env = make_env(11);
+  env.max_base_linear_speed_m_s = 0.3;
+  // n_dof (row width) < 6: not a well-formed body-twist chunk.
+  auto narrow_env = env;
+  narrow_env.n_dof = 3;
+  narrow_env.joint_position_min.assign(3, -1.0);
+  narrow_env.joint_position_max.assign(3, 1.0);
+  narrow_env.joint_velocity_max.assign(3, 1.0);
+  narrow_env.joint_torque_max.assign(3, 1.0);
+  const std::vector<double> flat = {0.1, 0.0, 0.0};
+  const auto view = make_chunk_view(flat, 1, 3, osk::ControlMode::kBodyTwist);
+  const auto rc = osk::validate(view, narrow_env);
+  ASSERT_FALSE(rc);
+  EXPECT_EQ(rc.error().sub, osk::ControllerSubKind::kDimMismatch);
+}
+
+// ── kJointTrajectory / kCartesianDelta / kCompositeMode magnitude checks ─
+
+TEST(Validator, JointTrajectoryPositionCapEnforced) {
+  // JOINT_TRAJECTORY shares JOINT_POSITION's per-step position envelope
+  // (ROSPublishingHAL._flatten_action_payload treats the two modes
+  // identically). Previously delegated to the unlaunched Python stub.
+  const auto env = make_env();                       // pos in [-1, 1]
+  const std::vector<double> flat = {0.0, 0.0, 1.5};  // joint 2 exceeds 1.0
+  const auto view = make_chunk_view(flat, 1, 3, osk::ControlMode::kJointTrajectory);
+  const auto rc = osk::validate(view, env);
+  ASSERT_FALSE(rc);
+  EXPECT_EQ(rc.error().kind, osk::ViolationKind::kWorkspace);
+  EXPECT_STREQ(rc.error().field, "joint_position");
+  EXPECT_EQ(rc.error().joint_index, 2);
+}
+
+TEST(Validator, CartesianDeltaStepCapEnforced) {
+  auto env = make_env(11);
+  env.max_cartesian_step_m = 0.05;
+  // |dxyz| = sqrt(0.06^2*3) ≈ 0.1039 > 0.05.
+  const std::vector<double> flat = {0.06, 0.06, 0.06, 0.0, 0.0, 0.0};
+  const auto view = make_chunk_view(flat, 1, 6, osk::ControlMode::kCartesianDelta);
+  const auto rc = osk::validate(view, env);
+  ASSERT_FALSE(rc);
+  EXPECT_EQ(rc.error().kind, osk::ViolationKind::kForce);
+  EXPECT_STREQ(rc.error().field, "cartesian_step");
+  EXPECT_NEAR(rc.error().limit_value, 0.05, 1e-9);
+}
+
+TEST(Validator, CartesianDeltaRotationStepCapEnforced) {
+  auto env = make_env(11);
+  env.max_cartesian_step_rad = 0.1;
+  // xyz within (default unbounded); |drotvec| = 0.3 > 0.1.
+  const std::vector<double> flat = {0.0, 0.0, 0.0, 0.3, 0.0, 0.0};
+  const auto view = make_chunk_view(flat, 1, 6, osk::ControlMode::kCartesianDelta);
+  const auto rc = osk::validate(view, env);
+  ASSERT_FALSE(rc);
+  EXPECT_EQ(rc.error().kind, osk::ViolationKind::kForce);
+  EXPECT_STREQ(rc.error().field, "cartesian_step_rot");
+  EXPECT_NEAR(rc.error().limit_value, 0.1, 1e-9);
+}
+
+TEST(Validator, CartesianDeltaStepCapAppliesScale) {
+  // Raw [-1, 1] controller-native values * cartesian_delta_scale must be
+  // converted to physical units BEFORE the magnitude check -- mirrors
+  // lifecycle_kernel.cpp's apply-path formula exactly. Raw 1.0 (clamped)
+  // * scale 0.2 = 0.2 physical metres per axis; |d|=sqrt(0.2^2*3)≈0.346.
+  auto env = make_env(11);
+  env.max_cartesian_step_m = 0.1;  // physical bound well under 0.346
+  const std::vector<double> flat = {1.0, 1.0, 1.0, 0.0, 0.0, 0.0};
+  const std::vector<double> scale = {0.2, 0.2, 0.2, 1.0, 1.0, 1.0};
+  const auto view = make_chunk_view(flat, 1, 6, osk::ControlMode::kCartesianDelta, &scale);
+  const auto rc = osk::validate(view, env);
+  ASSERT_FALSE(rc);
+  EXPECT_STREQ(rc.error().field, "cartesian_step");
+  // Physical, not raw: offending_value should read ~0.346, not sqrt(3)≈1.73.
+  EXPECT_NEAR(rc.error().offending_value, std::sqrt(3.0) * 0.2, 1e-6);
+}
+
+TEST(Validator, CartesianDeltaStepCapDefaultsToUnboundedWhenUnset) {
+  // A robot that never declares max_cartesian_step_m/_rad keeps today's
+  // behaviour: any finite delta passes (regression for the "no bound
+  // declared" sentinel).
+  auto env = make_env(11);
+  const std::vector<double> flat = {5.0, 5.0, 5.0, 5.0, 5.0, 5.0};
+  const auto view = make_chunk_view(flat, 1, 6, osk::ControlMode::kCartesianDelta);
+  const auto rc = osk::validate(view, env);
+  EXPECT_TRUE(rc);
+}
+
+// ── Per-mode row stride ─────────────────────────────────────────────────────
+// A per-mode chunk's row width is chunk.n_dof, never the robot's joint
+// count. Striding by envelope.n_dof reads past flat[] when the robot has
+// more joints than the row width (7-DoF arm, 6-wide twist, horizon 2) and
+// rejects a well-formed chunk when it has fewer (a 3-joint base).
+
+TEST(Validator, CartesianTwistStridesByRowWidthOnSevenDofRobot) {
+  auto env = make_env(7);
+  env.max_ee_speed_m_s = 0.5;
+  // Step 0 in bound; step 1 has |v| = 1.0. A 7-wide stride would read
+  // flat[7..12] -- past the 12-element buffer -- instead of step 1.
+  const std::vector<double> flat = {0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  const auto view = make_chunk_view(flat, 2, 6, osk::ControlMode::kCartesianTwist);
+  const auto rc = osk::validate(view, env);
+  ASSERT_FALSE(rc);
+  EXPECT_STREQ(rc.error().field, "ee_speed");
+  EXPECT_EQ(rc.error().horizon_step, 1);
+  EXPECT_NEAR(rc.error().offending_value, 1.0, 1e-9);
+}
+
+TEST(Validator, BodyTwistStridesByRowWidthOnSevenDofRobot) {
+  auto env = make_env(7);
+  env.max_base_linear_speed_m_s = 0.5;
+  // Step 1 drives forward at 1.0 m/s (flat[6]); a 7-wide stride would
+  // read step 1's linear part from flat[7..9] and miss it.
+  const std::vector<double> flat = {0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  const auto view = make_chunk_view(flat, 2, 6, osk::ControlMode::kBodyTwist);
+  const auto rc = osk::validate(view, env);
+  ASSERT_FALSE(rc);
+  EXPECT_STREQ(rc.error().field, "base_linear_speed");
+  EXPECT_EQ(rc.error().horizon_step, 1);
+  EXPECT_NEAR(rc.error().offending_value, 1.0, 1e-9);
+}
+
+TEST(Validator, BodyTwistAcceptedOnRobotWithFewerJointsThanTwistWidth) {
+  // A planar base with 3 joints (x, y, yaw) still receives 6-wide twists.
+  auto env = make_env(3);
+  env.max_base_linear_speed_m_s = 0.7;
+  env.max_base_angular_speed_rad_s = 0.3;
+  const std::vector<double> flat = {0.2, 0.1, 0.0, 0.0, 0.0, 0.1, 0.3, 0.0, 0.0, 0.0, 0.0, -0.2};
+  const auto view = make_chunk_view(flat, 2, 6, osk::ControlMode::kBodyTwist);
+  EXPECT_TRUE(osk::validate(view, env));
+}
+
+TEST(Validator, CartesianPoseStridesByRowWidthOnElevenDofRobot) {
+  auto env = make_env(11);
+  env.workspace_box.min_xyz = {-0.1, -0.1, 0.0};
+  env.workspace_box.max_xyz = {0.1, 0.1, 0.5};
+  // (xyzw, xyz) x 2; step 1's z = 1.0 breaks the box.
+  const std::vector<double> flat = {0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.2,
+                                    0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0};
+  const auto view = make_chunk_view(flat, 2, 7, osk::ControlMode::kCartesianPose);
+  const auto rc = osk::validate(view, env);
+  ASSERT_FALSE(rc);
+  EXPECT_EQ(rc.error().horizon_step, 1);
+  EXPECT_NEAR(rc.error().offending_value, 1.0, 1e-9);
+}
+
+TEST(Validator, CartesianDeltaUsesChunkWidthNotEnvelopeWidthAcrossHorizon) {
+  // A non-joint-mode chunk's per-step stride must be
+  // chunk.n_dof (6 here), NOT envelope.n_dof (11 here) -- using the
+  // latter would misindex every step past the first for horizon > 1.
+  // Step 0 = (0.01,0,0,0,0,0) [in bound]; step 1 = (0.2,0,0,0,0,0) [out
+  // of bound] -- correct 6-wide striding must reach step 1's real values,
+  // not read six zeros/garbage from an 11-wide stride.
+  auto env = make_env(11);
+  env.max_cartesian_step_m = 0.05;
+  const std::vector<double> flat = {0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.0, 0.0};
+  const auto view = make_chunk_view(flat, 2, 6, osk::ControlMode::kCartesianDelta);
+  const auto rc = osk::validate(view, env);
+  ASSERT_FALSE(rc);
+  EXPECT_STREQ(rc.error().field, "cartesian_step");
+  EXPECT_EQ(rc.error().horizon_step, 1);
+  EXPECT_NEAR(rc.error().offending_value, 0.2, 1e-9);
+}
+
+TEST(Validator, CompositeModeRangeCapEnforced) {
+  auto env = make_env(11);
+  const std::vector<double> flat = {1.5};  // > 1.0, fixed protocol contract
+  const auto view = make_chunk_view(flat, 1, 1, osk::ControlMode::kCompositeMode);
+  const auto rc = osk::validate(view, env);
+  ASSERT_FALSE(rc);
+  EXPECT_EQ(rc.error().kind, osk::ViolationKind::kWorkspace);
+  EXPECT_STREQ(rc.error().field, "composite_mode_range");
+  EXPECT_NEAR(rc.error().limit_value, 1.0, 1e-9);
+}
+
+TEST(Validator, CompositeModeWithinRangePasses) {
+  auto env = make_env(11);
+  const std::vector<double> flat = {-1.0};  // boundary value, must NOT reject
+  const auto view = make_chunk_view(flat, 1, 1, osk::ControlMode::kCompositeMode);
+  const auto rc = osk::validate(view, env);
+  EXPECT_TRUE(rc);
+}
+
+// ── GRIPPER_* bounds, per end effector, in its own convention ─────────────────
+
+namespace {
+
+// OpenArm's two jaws: radians, mirrored ranges.
+osk::EnvelopeIntersection two_jaw_env() {
+  auto env = make_env(16);
+  env.gripper_ee_names = {"left_gripper", "right_gripper"};
+  env.gripper_command_min = {0.0, -0.7854};
+  env.gripper_command_max = {0.7854, 0.0};
+  return env;
+}
+
+osk::ChunkView gripper_view(const std::vector<double>& flat, osk::ControlMode mode,
+                            const std::string& ee) {
+  auto view = make_chunk_view(flat, static_cast<std::uint16_t>(flat.size()), 1, mode);
+  view.ee_name = ee.data();
+  view.ee_name_size = ee.size();
+  return view;
+}
+
+}  // namespace
+
+TEST(Validator, GripperBoundIsTheAddressedEndEffectorsOwnRange) {
+  const auto env = two_jaw_env();
+  // -0.5 rad closes the right jaw and opens nothing on the left: each jaw is
+  // bounded by its own range, never by the intersection ([0, 0]).
+  const std::string right = "right_gripper";
+  const std::string left = "left_gripper";
+  EXPECT_TRUE(
+      osk::validate(gripper_view({-0.5, -0.7}, osk::ControlMode::kGripperPosition, right), env));
+  EXPECT_TRUE(osk::validate(gripper_view({0.5}, osk::ControlMode::kGripperPosition, left), env));
+
+  const auto rc =
+      osk::validate(gripper_view({-0.5}, osk::ControlMode::kGripperPosition, left), env);
+  ASSERT_FALSE(rc);
+  EXPECT_EQ(rc.error().kind, osk::ViolationKind::kWorkspace);
+  EXPECT_STREQ(rc.error().field, "gripper_range");
+  EXPECT_EQ(rc.error().joint_index, 0);
+  EXPECT_NEAR(rc.error().limit_value, 0.0, 1e-12);
+}
+
+TEST(Validator, GripperViolationOnALaterStepIsCaught) {
+  const auto env = two_jaw_env();
+  const std::string right = "right_gripper";
+  const auto rc = osk::validate(
+      gripper_view({-0.1, -0.2, 0.3}, osk::ControlMode::kGripperPosition, right), env);
+  ASSERT_FALSE(rc);
+  EXPECT_EQ(rc.error().horizon_step, 2);
+  EXPECT_NEAR(rc.error().offending_value, 0.3, 1e-12);
+}
+
+TEST(Validator, GripperBinaryIsBoundedToo) {
+  auto env = make_env(7);
+  env.gripper_ee_names = {"panda_hand"};
+  env.gripper_command_min = {0.0};
+  env.gripper_command_max = {1.0};
+  const std::string ee = "panda_hand";
+  EXPECT_TRUE(osk::validate(gripper_view({1.0}, osk::ControlMode::kGripperBinary, ee), env));
+  EXPECT_FALSE(osk::validate(gripper_view({5.0}, osk::ControlMode::kGripperBinary, ee), env));
+}
+
+TEST(Validator, UnnamedGripperChunkBindsToTheOnlyGripper) {
+  auto env = make_env(7);
+  env.gripper_ee_names = {"panda_hand"};
+  env.gripper_command_min = {0.0};
+  env.gripper_command_max = {1.0};
+  const std::vector<double> ok = {0.5};
+  const std::vector<double> bad = {-1.0};
+  EXPECT_TRUE(osk::validate(make_chunk_view(ok, 1, 1, osk::ControlMode::kGripperPosition), env));
+  EXPECT_FALSE(osk::validate(make_chunk_view(bad, 1, 1, osk::ControlMode::kGripperPosition), env));
+}
+
+TEST(Validator, GripperChunkThatResolvesToNoEndEffectorIsRefused) {
+  // Unknown name; unnamed with two grippers; any gripper chunk on a robot
+  // that declares no gripper channel.
+  const auto env = two_jaw_env();
+  const std::string unknown = "panda_hand";
+  const std::vector<double> flat = {0.1};
+  for (const auto& rc :
+       {osk::validate(gripper_view(flat, osk::ControlMode::kGripperPosition, unknown), env),
+        osk::validate(make_chunk_view(flat, 1, 1, osk::ControlMode::kGripperPosition), env),
+        osk::validate(make_chunk_view(flat, 1, 1, osk::ControlMode::kGripperBinary),
+                      make_env(6))}) {
+    ASSERT_FALSE(rc);
+    EXPECT_EQ(rc.error().kind, osk::ViolationKind::kController);
+    EXPECT_EQ(rc.error().sub, osk::ControllerSubKind::kGripperUnresolved);
+    EXPECT_STREQ(rc.error().field, "gripper_ee");
+  }
 }
 
 TEST(Validator, NonJointModeStillRejectsNan) {

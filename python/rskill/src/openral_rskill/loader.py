@@ -47,6 +47,7 @@ import structlog
 from openral_core.exceptions import ROSCapabilityMismatch, ROSConfigError, ROSError
 from openral_core.schemas import (
     ComputeSpec,
+    ControlMode,
     RobotCapabilities,
     RobotDescription,
     RSkillEvalResult,
@@ -54,6 +55,7 @@ from openral_core.schemas import (
     RSkillManifest,
     SensorRequirement,
     SensorSpec,
+    canonical_slots_for_representation,
 )
 from pydantic import BaseModel, Field, ValidationError
 
@@ -589,6 +591,8 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
     def check_compatibility(
         manifest: RSkillManifest,
         robot: RobotDescription,
+        *,
+        scene_gripper_convention: str | None = None,
     ) -> None:
         """Run every rSkill ↔ robot compatibility check in one call.
 
@@ -602,10 +606,15 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
         Args:
             manifest: The rSkill manifest to check.
             robot: The target robot's full description.
+            scene_gripper_convention: The gripper encoding the simulated
+                scene's environment consumes (``SCENES.meta(id)
+                ["gripper_convention"]``), which overrides the end effectors'
+                own; ``None`` for a real robot or a bare twin.
 
         Raises:
             ROSCapabilityMismatch: If embodiment tags mismatch, a capability
-                flag is unsatisfied, or any sensor requirement fails.
+                flag is unsatisfied, any sensor requirement fails, or the
+                gripper encodings differ.
 
         Example:
             >>> # rSkill.check_compatibility(manifest, robot)
@@ -614,6 +623,118 @@ class rSkill:  # noqa: N801  # reason: rSkill is the official package-format nam
             manifest, robot.capabilities, compute=robot.compute_edge or robot.compute_local
         )
         rSkill.check_sensors(manifest, robot.sensors)
+        rSkill.check_gripper_conventions(
+            manifest, robot, scene_gripper_convention=scene_gripper_convention
+        )
+
+    @staticmethod
+    def check_gripper_conventions(
+        manifest: RSkillManifest,
+        robot: RobotDescription,
+        *,
+        scene_gripper_convention: str | None = None,
+    ) -> None:
+        """Refuse a skill whose gripper encoding differs from the end effector it drives.
+
+        A ``GRIPPER_*`` value reaches the HAL unconverted, so the skill's
+        ``gripper_convention`` (on its ``GRIPPER_*`` actuator) must equal the
+        target end effector's ``command_convention`` — or, in a simulated
+        scene, the encoding the scene's environment consumes. The targets are
+        the gripper action slots, explicit or expanded from
+        ``action_contract.representation``; a skill with neither must match
+        every actuated gripper end effector it could address. Both sides must
+        be declared — an undeclared encoding is a mismatch, never a guess.
+
+        Args:
+            manifest: The rSkill manifest to check.
+            robot: The target robot's full description.
+            scene_gripper_convention: Overrides every end effector's
+                ``command_convention`` (see ``check_compatibility``).
+
+        Raises:
+            ROSCapabilityMismatch: When a gripper actuator or slot has no
+                declared convention, a slot names an unknown end effector,
+                the end effector declares no ``command_convention``, or the
+                two conventions differ.
+
+        Example:
+            >>> from openral_core import RobotDescription, RSkillManifest
+            >>> skill = RSkillManifest.from_yaml("rskills/xr1-robocasa365/rskill.yaml")
+            >>> robot = RobotDescription.from_yaml("robots/panda_mobile/robot.yaml")
+            >>> rSkill.check_gripper_conventions(skill, robot)  # same encoding: no raise
+        """
+        declared, targets = rSkill._gripper_targets(manifest, robot)
+        if not targets:
+            return
+
+        ees = {ee.name: ee for ee in robot.end_effectors}
+        grippers = [ee for ee in robot.end_effectors if ee.actuated and ee.kind != "tool"]
+        for mode, ee_name in targets:
+            conventions = declared.get(mode, set())
+            if len(conventions) != 1:
+                raise ROSCapabilityMismatch(
+                    f"rSkill '{manifest.name}' emits {mode.value} but declares "
+                    + (
+                        "no gripper_convention for it"
+                        if not conventions
+                        else f"conflicting gripper_conventions {sorted(conventions)}"
+                    )
+                    + f"; add one actuators_required entry of kind {mode.value!r} with "
+                    "control_mode_semantics.gripper_convention."
+                )
+            (convention,) = conventions
+            if ee_name is not None:
+                if ee_name not in ees:
+                    raise ROSCapabilityMismatch(
+                        f"rSkill '{manifest.name}' addresses gripper end effector "
+                        f"{ee_name!r}; robot '{robot.name}' declares {sorted(ees) or '<none>'}."
+                    )
+                candidates = [ees[ee_name]]
+            else:
+                candidates = grippers
+            if not candidates:
+                raise ROSCapabilityMismatch(
+                    f"rSkill '{manifest.name}' emits {mode.value} but robot '{robot.name}' "
+                    "has no actuated gripper end effector."
+                )
+            for ee in candidates:
+                consumed = scene_gripper_convention or ee.command_convention
+                if consumed != convention:
+                    where = (
+                        "this scene's environment"
+                        if scene_gripper_convention
+                        else f"robot '{robot.name}' end effector {ee.name!r}"
+                    )
+                    raise ROSCapabilityMismatch(
+                        f"rSkill '{manifest.name}' emits {mode.value} as {convention!r} but "
+                        f"{where} consumes {consumed or '<undeclared>'!r}; the value reaches "
+                        "the HAL unconverted, so the encodings must match."
+                    )
+
+    @staticmethod
+    def _gripper_targets(
+        manifest: RSkillManifest, robot: RobotDescription
+    ) -> tuple[dict[ControlMode, set[str]], list[tuple[ControlMode, str | None]]]:
+        """(declared conventions per gripper mode, (mode, ee) for each gripper output)."""
+        gripper_modes = (ControlMode.GRIPPER_POSITION, ControlMode.GRIPPER_BINARY)
+        declared: dict[ControlMode, set[str]] = {}
+        for act in manifest.actuators_required:
+            if act.kind in gripper_modes:
+                convention = act.control_mode_semantics.gripper_convention
+                declared.setdefault(act.kind, set()).add(str(convention))
+        contract = manifest.action_contract
+        slots = contract.slots if contract is not None else None
+        if not slots and contract is not None and contract.representation is not None:
+            slots = canonical_slots_for_representation(
+                contract.representation, dim=contract.dim, description=robot
+            )
+        if not slots:
+            return declared, [(mode, None) for mode in declared]
+        return declared, [
+            (slot.control_mode, slot.ee)
+            for slot in slots
+            if slot.control_mode in gripper_modes and not slot.discard
+        ]
 
     # ── Sensor-match helpers ──────────────────────────────────────────────────
 

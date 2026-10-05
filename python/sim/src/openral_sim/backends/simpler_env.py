@@ -367,6 +367,8 @@ class _SimplerEnvSim:
     fixed_robot="widowx",
     sequential_init=True,  # SAPIEN gym.make races the policy bf16 dtype window
     sim_clock=True,
+    # ManiSkill normalizes [-1, 1] onto the WidowX fingers, -1 = closed.
+    gripper_convention="normalized_open_symmetric",
 )
 def _build_simpler_env_scene(env_cfg: SimEnvironment) -> _SimplerEnvSim:
     """Lazily import ``simpler_env`` and build a ``_SimplerEnvSim``.

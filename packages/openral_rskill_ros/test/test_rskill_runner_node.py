@@ -24,6 +24,7 @@ calls ``aggregator.snapshot()`` in-process via the shared instance the
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Iterator
@@ -1461,3 +1462,132 @@ def test_reactivating_mid_preload_does_not_start_a_second_worker() -> None:
         _spin_for(executor, 2.5)
         assert len(built) == 1, "a second preload worker ran"
         assert not node._preload_in_flight.is_set()
+
+
+_NAV2_MANIFEST = (
+    Path(__file__).resolve().parents[3] / "rskills" / "rskill-nav2-navigate-to-pose" / "rskill.yaml"
+)
+
+
+def _nav2_goal_params(x: float) -> str:
+    return json.dumps({"pose": {"pose": {"position": {"x": x, "y": 0.0, "z": 0.0}}}})
+
+
+def test_wrapped_ros_skill_is_never_reused() -> None:
+    """A ``ROSActionRskill`` is rebuilt for every dispatch, identical or not.
+
+    It merges goal_params_json at configure() (a reuse would send the old
+    target) and is single-shot (a reused one reports success without sending
+    a goal). Uses the in-tree Nav2 manifest; its embodiment tag is swapped for
+    the harness robot's so the runner's embodiment gate admits it.
+    """
+    pytest.importorskip("nav2_msgs")
+    import rclpy
+    from openral_core import RSkillManifest
+    from openral_rskill.ros_action_rskill import ROSActionRskill
+
+    from tests.integration.fakes.action_servers import navigate_to_pose_server
+
+    manifest = RSkillManifest.from_yaml(str(_NAV2_MANIFEST)).model_copy(
+        update={"embodiment_tags": ["so100_follower"]}
+    )
+    built: list[Any] = []
+
+    def _nav2_resolver(*, goal_params_json: str = "", ros_node: Any = None, **_k: Any) -> Any:
+        skill = ROSActionRskill(
+            manifest=manifest,
+            ros_node=ros_node,
+            robot_description=None,
+            prompt="",
+            prompt_metadata_json="",
+            goal_params_json=goal_params_json,
+        )
+        skill.configure()
+        skill.activate()
+        built.append(skill)
+        return skill
+
+    with _compose_harness(resolver=_nav2_resolver) as (executor, runtime, _safety, _observed):
+        # configure() waits for the wrapped server; host one at the graph boundary.
+        nav2_side = rclpy.create_node("openral_test_nav2_side")
+        server = navigate_to_pose_server(nav2_side)
+        executor.add_node(nav2_side)
+        try:
+            _spin_for(executor, 0.3)
+            runner = runtime.skill_runner_node
+            kwargs = {
+                "rskill_id": manifest.name,
+                "revision": "",
+                "prompt": "go",
+                "prompt_metadata_json": "",
+            }
+            first = runner._acquire_skill(**kwargs, goal_params_json=_nav2_goal_params(1.0))
+            again = runner._acquire_skill(**kwargs, goal_params_json=_nav2_goal_params(1.0))
+            moved = runner._acquire_skill(**kwargs, goal_params_json=_nav2_goal_params(2.0))
+        finally:
+            server.destroy()
+            executor.remove_node(nav2_side)
+            nav2_side.destroy_node()
+
+    assert len({id(first), id(again), id(moved)}) == 3, "a wrapped skill was reused"
+    assert len(built) == 3
+    assert moved._goal_dict["pose"]["pose"]["position"]["x"] == 2.0
+
+
+def test_vla_style_skill_stays_resident_across_goal_params() -> None:
+    """A policy skill (``set_goal_prompt``, every VLA) must not reload when goal params vary.
+
+    Its weights are keyed by ``(rskill_id, revision)`` alone; any other skill bakes the
+    per-goal inputs in when it is built, so for it they stay in the key.
+    """
+    built: list[Any] = []
+    prompts: list[str] = []
+
+    def _resolver(**_k: Any) -> Any:
+        skill = _make_constant_skill()
+        skill.set_goal_prompt = prompts.append
+        built.append(skill)
+        return skill
+
+    with _compose_harness(resolver=_resolver) as (_executor, runtime, _safety, _observed):
+        runner = runtime.skill_runner_node
+        kwargs = {"rskill_id": "openral/test-constant-skill", "revision": "", "prompt": "go"}
+        first = runner._acquire_skill(**kwargs, prompt_metadata_json="", goal_params_json="")
+        second = runner._acquire_skill(
+            **kwargs, prompt_metadata_json="", goal_params_json='{"speed": "slow"}'
+        )
+
+    assert second is first
+    assert len(built) == 1
+
+
+def test_runner_refuses_a_skill_whose_gripper_encoding_does_not_fit_the_robot() -> None:
+    """The runner runs ``rSkill.check_gripper_conventions`` when it resolves a skill.
+
+    The harness robot is the SO-100 (gripper ``normalized_open_unit``, end
+    effector ``gripper``); the RoboCasa skill sends ``normalized_close_symmetric``
+    to ``panda_gripper``, so resolving it must fail before any chunk is sent.
+    """
+    from openral_core import RSkillManifest
+    from openral_core.exceptions import ROSCapabilityMismatch
+
+    manifest = RSkillManifest.from_yaml(
+        str(Path(__file__).resolve().parents[3] / "rskills" / "xr1-robocasa365" / "rskill.yaml")
+    )
+
+    def _resolver(**_k: Any) -> Any:
+        skill = _make_constant_skill()
+        skill.manifest = manifest
+        return skill
+
+    with (
+        _compose_harness(resolver=_resolver) as (_executor, runtime, _safety, _observed),
+        pytest.raises(ROSCapabilityMismatch, match="panda_gripper"),
+    ):
+        runtime.skill_runner_node._acquire_skill(
+            rskill_id=manifest.name,
+            revision="",
+            prompt="go",
+            prompt_metadata_json="",
+            goal_params_json="",
+        )

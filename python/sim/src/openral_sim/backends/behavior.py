@@ -379,7 +379,15 @@ def provision_behavior() -> None:
     _sidecar_python()
 
 
-@SCENES.register(_SCENE_ID, fixed_robot=_ROBOT_ID, provision=provision_behavior, sim_clock=True)
+# OmniGibson's R1 Pro gripper takes [-1, 1] with -1 closed (the idle action
+# below encodes finger width as 2 * (w / 0.05) - 1).
+@SCENES.register(
+    _SCENE_ID,
+    fixed_robot=_ROBOT_ID,
+    provision=provision_behavior,
+    sim_clock=True,
+    gripper_convention="normalized_open_symmetric",
+)
 def _build_behavior_scene(env_cfg: SimEnvironment) -> _BehaviorSidecar:
     from openral_sim._deps import ensure_backend_deps
 

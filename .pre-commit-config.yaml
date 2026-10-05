@@ -30,10 +30,10 @@ repos:
     hooks:
       - id: mypy
         name: mypy (project venv)
-        entry: uv run mypy --strict -p openral_core -p openral_cli -p openral_sim
+        entry: bash tools/run_mypy.sh
         language: system
         pass_filenames: false
-        files: ^python/(core|cli|sim)/
+        files: ^python/(core|cli|sim|observability|runner|reasoner|hal)/|^packages/openral_safety/|^tools/|^mypy\.ini$
       - id: schema-export
         name: check JSON Schema drift
         entry: uv run python tools/schema_export.py --check

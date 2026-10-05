@@ -1079,6 +1079,49 @@ class JointSpec(BaseModel):
     closure_calibration: GripperClosureCalibration | None = None
 
 
+GripperConvention: TypeAlias = Literal[
+    "normalized_open_unit",
+    "normalized_open_symmetric",
+    "normalized_close_symmetric",
+    "binary_close_one",
+    "raw_joint_rad",
+    "width_meters",
+]
+"""How a gripper command value is encoded — on both sides of the wire.
+
+An rSkill declares the encoding it emits on its ``GRIPPER_*`` actuator
+(``ControlModeSemantics.gripper_convention``); a robot declares the encoding
+each gripper end effector consumes (``EndEffectorSpec.command_convention``).
+``rSkill.check_gripper_conventions`` refuses to load a skill whose encoding
+differs from the end effector it drives — silently mis-encoding the gripper
+between scenes / robots is a top observed mis-actuation failure — and the
+safety kernel bounds every ``GRIPPER_*`` chunk by that end effector's
+``command_range``.
+
+Conventions:
+
+* ``normalized_open_unit`` — ``0.0 = fully closed``, ``1.0 = fully open``.
+  Most lerobot / SmolVLA / pi0.5 LIBERO checkpoints.
+* ``normalized_open_symmetric`` — ``-1.0 = fully closed``, ``+1.0 = fully open``.
+  Some MetaWorld checkpoints.
+* ``normalized_close_symmetric`` — ``-1.0 = fully open``, ``+1.0 = fully closed``.
+  robosuite's gripper action (RoboCasa).
+* ``binary_close_one`` — ``0.0 = open``, ``1.0 = close`` (single bit).
+* ``raw_joint_rad`` — raw per-finger joint angle in radians (Fourier dexhands,
+  some humanoid skills).
+* ``width_meters`` — physical gripper width in metres (Franka FCI native).
+"""
+
+# The value range each normalized convention defines. Physical conventions
+# (radians, metres) have no intrinsic range: the end effector must declare it.
+GRIPPER_CONVENTION_RANGES: dict[str, tuple[float, float]] = {
+    "normalized_open_unit": (0.0, 1.0),
+    "normalized_open_symmetric": (-1.0, 1.0),
+    "normalized_close_symmetric": (-1.0, 1.0),
+    "binary_close_one": (0.0, 1.0),
+}
+
+
 class EndEffectorSpec(BaseModel):
     """End-effector specification.
 
@@ -1099,6 +1142,30 @@ class EndEffectorSpec(BaseModel):
             no-op rather than risking unintended motion. Default
             True: every actuated gripper / dexterous hand / suction
             cup we ship is driven.
+        command_convention: Encoding of the value a ``GRIPPER_*`` action
+            addressed at this end effector carries when it reaches the HAL
+            (see ``GripperConvention``). An rSkill whose gripper convention
+            differs is refused at load time. Every actuated
+            ``parallel_gripper`` in ``robots/`` declares it.
+        command_range: Inclusive ``(min, max)`` the safety kernel bounds
+            every ``GRIPPER_*`` value addressed at this end effector by, in
+            ``command_convention``'s unit. Defaults to the convention's own
+            range for the normalized conventions; REQUIRED for the physical
+            ones (``raw_joint_rad``, ``width_meters``).
+
+    Example:
+        >>> ee = EndEffectorSpec(
+        ...     name="left_gripper",
+        ...     kind="parallel_gripper",
+        ...     command_convention="raw_joint_rad",
+        ...     command_range=(0.0, 0.7854),
+        ... )
+        >>> ee.resolved_command_range()
+        (0.0, 0.7854)
+        >>> EndEffectorSpec(
+        ...     name="g", kind="parallel_gripper", command_convention="normalized_open_unit"
+        ... ).resolved_command_range()
+        (0.0, 1.0)
     """
 
     name: str
@@ -1110,6 +1177,46 @@ class EndEffectorSpec(BaseModel):
     workspace_radius_m: float | None = None
     tactile_sensors: list[str] = Field(default_factory=list)
     actuated: bool = True
+    command_convention: GripperConvention | None = None
+    command_range: tuple[float, float] | None = None
+
+    @model_validator(mode="after")
+    def _check_command_encoding(self) -> EndEffectorSpec:
+        """A command range needs a convention, lies inside it, and is non-empty."""
+        if self.command_range is not None:
+            lo, hi = self.command_range
+            if self.command_convention is None:
+                raise ValueError(
+                    f"EndEffectorSpec({self.name!r}): command_range needs command_convention."
+                )
+            if not (math.isfinite(lo) and math.isfinite(hi)) or lo >= hi:
+                raise ValueError(
+                    f"EndEffectorSpec({self.name!r}): command_range must be finite with "
+                    f"min < max; got {self.command_range!r}."
+                )
+            natural = GRIPPER_CONVENTION_RANGES.get(self.command_convention)
+            if natural is not None and (lo < natural[0] or hi > natural[1]):
+                raise ValueError(
+                    f"EndEffectorSpec({self.name!r}): command_range {self.command_range!r} "
+                    f"exceeds {self.command_convention!r}'s own range {natural!r}."
+                )
+        elif (
+            self.command_convention is not None
+            and self.command_convention not in GRIPPER_CONVENTION_RANGES
+        ):
+            raise ValueError(
+                f"EndEffectorSpec({self.name!r}): command_convention "
+                f"{self.command_convention!r} is physical, so command_range is required."
+            )
+        return self
+
+    def resolved_command_range(self) -> tuple[float, float] | None:
+        """The kernel's bound for this end effector, or ``None`` if undeclared."""
+        if self.command_range is not None:
+            return self.command_range
+        if self.command_convention is None:
+            return None
+        return GRIPPER_CONVENTION_RANGES[self.command_convention]
 
 
 # ─── Capabilities ──────────────────────────────────────────────────────────────
@@ -1288,8 +1395,7 @@ class SafetyEnvelope(BaseModel):
         workspace_box_max_xyz: Upper corner of allowed workspace (m).
         no_go_zones: List of polygon definitions (dicts with 'vertices').
         max_ee_speed_m_s: Maximum end-effector linear speed in m/s.
-            Also used by the per-control-mode supervisor as the
-            CARTESIAN_TWIST linear bound.
+            Also the C++ safety kernel's CARTESIAN_TWIST linear bound.
         max_ee_accel_m_s2: Maximum end-effector acceleration in m/s².
         max_joint_speed_factor: Fraction of joint velocity_limit allowed.
         max_force_n: Maximum contact force in Newtons.
@@ -1300,27 +1406,26 @@ class SafetyEnvelope(BaseModel):
         contact_force_threshold_n: Force threshold for contact detection.
         cycle_time_violation_threshold_ms: Control cycle time violation threshold.
         human_in_loop_required: rSkill names requiring human supervision.
-        max_cartesian_step_m: Per-control-mode supervisor bound —
-            per-step magnitude bound on
-            CARTESIAN_DELTA's xyz triplet (Euclidean). ``None`` means
-            "no per-mode check declared, skip"; today's behaviour
-            preserved. Robots that host OSC-trained checkpoints
-            (panda_mobile, future Franka + π0.7) declare this so the
-            supervisor rejects out-of-distribution arm deltas before
-            they reach the controller.
-        max_cartesian_step_rad: Per-control-mode supervisor bound —
+        max_cartesian_step_m: Per-control-mode bound the C++ safety
+            kernel enforces — per-step magnitude bound on
+            CARTESIAN_DELTA's xyz triplet (Euclidean, after
+            ``cartesian_delta_scale``). ``None`` means "no per-mode
+            check declared, skip". It is a norm, so a controller with a
+            per-axis output limit ``a`` needs at least ``a·√3`` here or
+            in-distribution diagonal moves E-stop.
+        max_cartesian_step_rad: Per-control-mode kernel bound —
             per-step magnitude bound on
             CARTESIAN_DELTA's axis-angle triplet (Euclidean). ``None``
             skips the check.
-        max_ee_angular_speed_rad_s: Per-control-mode supervisor bound —
+        max_ee_angular_speed_rad_s: Per-control-mode kernel bound —
             angular component bound
             for CARTESIAN_TWIST (the linear bound reuses
             ``max_ee_speed_m_s``). ``None`` skips the check.
-        max_base_linear_speed_m_s: Per-control-mode supervisor bound —
+        max_base_linear_speed_m_s: Per-control-mode kernel bound —
             BODY_TWIST linear bound
             (Euclidean over vx,vy,vz). ``None`` skips the check;
             mobile manipulators / wheeled bases declare it.
-        max_base_angular_speed_rad_s: Per-control-mode supervisor bound —
+        max_base_angular_speed_rad_s: Per-control-mode kernel bound —
             BODY_TWIST angular
             bound (Euclidean over wx,wy,wz; for planar bases only
             wz is non-zero). ``None`` skips the check.
@@ -1376,11 +1481,8 @@ class SafetyEnvelope(BaseModel):
     contact_force_threshold_n: float = 30.0
     cycle_time_violation_threshold_ms: float = 5.0
     human_in_loop_required: list[str] = Field(default_factory=list)
-    # Per-control-mode bounds for the supervisor dispatch.
-    # All default to None so legacy behaviour is preserved: a robot
-    # that doesn't declare these gets its chunks passed through the
-    # per-mode check (cartesian / twist / gripper / etc.) verbatim, the
-    # same as today.
+    # Per-control-mode bounds the C++ safety kernel enforces. None =
+    # "not declared": the kernel treats the bound as +inf for that robot.
     max_cartesian_step_m: float | None = None
     max_cartesian_step_rad: float | None = None
     max_ee_angular_speed_rad_s: float | None = None
@@ -5110,8 +5212,8 @@ class RSkillLatencyBudget(BaseModel):
             the reference host (CLAUDE.md §7.4).
         warmup_ms: Maximum allowed warm-up time during ``activate()``.
         load_ms: Maximum allowed weight-load time during ``configure()``.
-        max_execution_s: Total wall-clock budget for a single ``execute_rskill``
-            goal (one task attempt). A VLA policy never self-terminates (only
+        max_execution_s: Total execution budget for one ``execute_rskill`` goal, in graph-clock
+            seconds under ``use_sim_time``, else wall. A VLA policy never self-terminates (only
             wrapped-ROS skills raise ``ROSRskillGoalSatisfied``), so a deploy
             dispatch with ``deadline_s=0`` (the LLM's "use the manifest default"
             sentinel) would otherwise run forever. The skill_runner resolves
@@ -6536,33 +6638,6 @@ def scene_task_space_compatible(family: str, skill_space: TaskSpace) -> TaskSpac
             f"expected dim {spec.action_dim}"
         )
     return TaskSpaceMatch(ok=not reasons, reasons=reasons)
-
-
-GripperConvention: TypeAlias = Literal[
-    "normalized_open_unit",
-    "normalized_open_symmetric",
-    "binary_close_one",
-    "raw_joint_rad",
-    "width_meters",
-]
-"""Per-skill gripper action encoding (Gap 2 of the rSkill self-containment audit).
-
-Required on ``ControlModeSemantics`` whenever the parent
-``ActuatorRequirement.kind`` is ``ControlMode.GRIPPER_BINARY`` or
-``ControlMode.GRIPPER_POSITION`` — silently mis-encoding the gripper
-slot between scenes / robots is a top observed mis-actuation failure.
-
-Conventions:
-
-* ``normalized_open_unit`` — ``0.0 = fully closed``, ``1.0 = fully open``.
-  Most lerobot / SmolVLA / pi0.5 LIBERO checkpoints.
-* ``normalized_open_symmetric`` — ``-1.0 = fully closed``, ``+1.0 = fully open``.
-  Some MetaWorld checkpoints.
-* ``binary_close_one`` — ``0.0 = open``, ``1.0 = close`` (single bit, RoboCasa-style).
-* ``raw_joint_rad`` — raw per-finger joint angle in radians (Fourier dexhands,
-  some humanoid skills).
-* ``width_meters`` — physical gripper width in metres (Franka FCI native).
-"""
 
 
 class ControlModeSemantics(BaseModel):
@@ -11829,6 +11904,35 @@ REASONER_ENDPOINT_PRESETS: dict[str, ReasonerEndpointPreset] = {
     "ollama": ReasonerEndpointPreset(OLLAMA_BASE_URL, "openai", False, 60.0, "required"),
     "vllm": ReasonerEndpointPreset(VLLM_BASE_URL, "openai", False, 60.0, "required"),
 }
+
+
+REASONER_TOOL_CHOICES: tuple[str, ...] = ("auto", "required")
+"""Values ``OPENRAL_REASONER_TOOL_CHOICE`` accepts (OpenAI ``tool_choice`` modes)."""
+
+
+def parse_reasoner_tool_choice(raw: str | None) -> str | None:
+    """Validate an ``OPENRAL_REASONER_TOOL_CHOICE`` value; ``None`` when unset.
+
+    Shared by the reasoner's client factory and ``openral doctor`` so the two
+    cannot drift. Case-insensitive, like ``OPENRAL_REASONER_DIALECT``.
+
+    Raises:
+        ROSConfigError: When set to anything but ``auto`` / ``required``.
+
+    Example:
+        >>> parse_reasoner_tool_choice(" AUTO ")
+        'auto'
+        >>> parse_reasoner_tool_choice("") is None
+        True
+    """
+    value = (raw or "").strip().lower()
+    if not value:
+        return None
+    if value not in REASONER_TOOL_CHOICES:
+        raise ROSConfigError(
+            f"OPENRAL_REASONER_TOOL_CHOICE={raw!r}; expected one of {list(REASONER_TOOL_CHOICES)}."
+        )
+    return value
 
 
 # ─── Reasoner tool calls ─────────────────────────────────────────

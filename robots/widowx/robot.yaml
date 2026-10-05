@@ -81,6 +81,7 @@ joints:
 
 end_effectors:
   - name: "gripper"
+    command_convention: "normalized_open_symmetric"
     kind: "parallel_gripper"
     hand: "na"
     n_dof: 1
