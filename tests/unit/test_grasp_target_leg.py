@@ -32,6 +32,7 @@ from openral_hal._grasp_target import (
     VoxelLattice,
     _in_region,
     margin_grown_region,
+    mask_without_removed_points,
     occupied_centers_in_box,
     occupied_touching_outside,
     region_within,
@@ -40,6 +41,7 @@ from openral_hal._grasp_target_leg import (
     APPROACH_TARGET_PREFIX,
     GraspTargetLeg,
     GraspTargetTracker,
+    _capped_margin,
     _gate_refit,
     _kernel_closure,
     _Refusal,
@@ -293,14 +295,27 @@ def test_a_hand_hovering_over_the_target_within_the_approach_distance_occludes()
 def test_a_refused_refit_with_the_hand_over_the_held_target_is_a_lost_view() -> None:
     """With the fingers removed from the fit, the hand still OCCLUDES the target's lower
     part from the head camera as it closes: what is left of the box no longer reaches the
-    support and the re-fit is refused (``not_on_support``, Isaac i25). With a region held
-    and the hand over it, that is a lost view (held region kept under its TTL); with
-    none held yet, or the hand elsewhere, it is the contradiction it names."""
+    support and the re-fit is refused (``not_on_support``, Isaac i25). With a region held,
+    what is visible inside it and the hand over it, that is a lost view (held region kept
+    under its TTL); with none held yet, the hand elsewhere, or no visible box, it is the
+    contradiction it names."""
     held = _measured(11 * _S)
+    inside = _refit(0.45, (0.03, 0.03, 0.04))  # the target's upper part, lower face pinned
 
-    def refused(prev: PlaceRegion | None, hand: tuple[float, float, float]) -> _Refusal:
+    def refused(
+        prev: PlaceRegion | None,
+        hand: tuple[float, float, float],
+        visible: PlaceRegion | None = inside,
+    ) -> _Refusal:
         return _refused_fit(
-            "not_on_support", "points=900", prev, (hand,), reach_m=0.07, hand_rise_m=0.20
+            "not_on_support",
+            "points=900",
+            prev,
+            (hand,),
+            reach_m=0.07,
+            hand_rise_m=0.20,
+            visible=visible,
+            tol_m=0.02,
         )
 
     at = refused(held, (0.45, 0.0, 0.25))
@@ -308,8 +323,44 @@ def test_a_refused_refit_with_the_hand_over_the_held_target_is_a_lost_view() -> 
     assert "not_on_support" in at.detail
     assert refused(held, _HAND_FAR).kind == "not_on_support"
     assert refused(None, (0.45, 0.0, 0.25)).kind == "not_on_support"
+    assert refused(held, (0.45, 0.0, 0.25), visible=None).kind == "not_on_support"
     few = _refused_fit("too_few_points", "points=3", None, (), reach_m=0.07, hand_rise_m=0.2)
     assert (few.kind, few.retract) == ("too_few_points", False)
+
+
+def test_a_contradicting_refit_retracts_even_with_the_hand_over_the_held_target() -> None:
+    """Only what the robot's closing hand can cause is a lost view under it. The target
+    knocked over (what is visible reaches outside the held region), gone (no height above
+    the support) or a fit over the caps retracts at once though the hand hovers over the
+    held target — it never holds the region and its finger exemption to the freeze TTL."""
+    tracker, lines = _tracker()
+    held = _measured(11 * _S)
+    tracker.accept(held)
+    hover = (0.45, 0.0, 0.25)
+    knocked_over = _refit(0.53, (0.07, 0.03, 0.02), z=0.07)  # lying, reaching past x 0.49
+    refusals = [
+        _refused_fit(
+            "not_on_support",
+            "points=900",
+            held,
+            (hover,),
+            reach_m=0.07,
+            hand_rise_m=0.20,
+            visible=knocked_over,
+            tol_m=0.02,
+        ),
+        *(
+            _refused_fit(kind, "points=900", held, (hover,), reach_m=0.07, hand_rise_m=0.20)
+            for kind in ("no_height_above_support", "half_extent_cap", "volume_cap")
+        ),
+    ]
+    for refusal in refusals:
+        assert refusal.retract, refusal.kind
+        assert refusal.kind != "hand_at_target"
+    first = refusals[0]
+    tracker.refuse(first.kind, first.detail, retract=first.retract, now_ns=12 * _S)
+    assert tracker.region is None
+    assert any("retracted — not_on_support" in line for line in lines)
 
 
 def test_a_refit_within_the_tracking_gate_replaces_the_held_region() -> None:
@@ -1526,13 +1577,17 @@ def test_the_region_payload_attests_its_measured_support_until_it_is_lifted() ->
     the table's cells at ATTACH and the kernel stopped 90 ms after the handover. The payload
     now carries the ADR-0092 D6 witness on the support top the leg measured under exactly
     that region — plane under the payload's centre, normal +z in the base frame, both in
-    the object frame, patch = the published (cell-closed) payload's footprint — and the
-    producer retires it for good once the payload leaves where it rested (here: lifted three
-    cells)."""
+    the object frame, patch = the published (cell-closed) payload's horizontal footprint —
+    and the producer retires it for good once the payload leaves where it rested: risen
+    past the world margin plus a cell (``release_clear_m``, 40 mm; 30 mm is kept, 60 mm
+    retires) or slid past one cell (20 mm here; 25 mm retires — the margin buys nothing
+    sideways)."""
     from openral_core import AttachmentEvidenceKind
     from openral_core.geometry import homogeneous_from_quat_xyz
 
-    with _live_leg("test_grasp_target_support_witness") as live:
+    # The user's 25 mm bloat, named (the default is now unbloated): the patch must follow the
+    # attached, bloated footprint, not the tight fit.
+    with _live_leg("test_grasp_target_support_witness", grasp_target_margin_m=0.025) as live:
         leg, bridge = live.leg, live.bridge
         now_ns = leg._now_ns()
         left = live.gripper("openarm_left_finger_pair")
@@ -1576,7 +1631,11 @@ def test_the_region_payload_attests_its_measured_support_until_it_is_lifted() ->
         (prim,) = held.primitives
         assert prim.shape.half_extents_m == pytest.approx(closed.half_extents)
         assert leg.tracker.handed_over == _LEFT and leg.tracker.region == region
-        assert witness.patch_radius_m == pytest.approx(float(np.linalg.norm(closed.half_extents)))
+        # The horizontal footprint's half-diagonal (0.106 m), not the 3-D half-extent norm
+        # (0.126 m): the vertical bloat must not widen the exemption past the footprint.
+        assert witness.patch_radius_m == pytest.approx(
+            float(np.linalg.norm(closed.half_extents[:2]))
+        )
         assert witness.max_penetration_m == pytest.approx(0.01)
         # Back in the base frame: the measured plane, normal up, under the payload's centre.
         t_base_link = bridge._lookup("openarm_base", bridge.tf_frame(held.attach_link))
@@ -1589,18 +1648,32 @@ def test_the_region_payload_attests_its_measured_support_until_it_is_lifted() ->
         normal = t_base_obj[:3, :3] @ np.asarray(witness.contact_normal_in_object)
         np.testing.assert_allclose(normal, (0.0, 0.0, 1.0), atol=1e-9)
 
+        # Rise: the world margin plus a cell (``release_clear_m``); slide: one 20 mm cell
+        # (over the 15 mm extrinsic bound).
+        anchor = left.support_anchor
+        assert anchor is not None and anchor[2:] == pytest.approx((0.04, 0.02))
+
+        def retire_at(tcp: tuple[float, float, float]) -> Any:
+            live.place("left", tcp)
+            bridge._support_checked_s = 0.0
+            bridge._retire_lifted_supports()
+            assert left.attachment is not None
+            return left.attachment.support_contact
+
         # Still resting where it was measured: kept.
-        bridge._support_checked_s = 0.0
-        bridge._retire_lifted_supports()
-        assert left.attachment is not None and left.attachment.support_contact == witness
+        assert retire_at((0.45, 0.0, 0.10)) == witness
         # Lifted 30 mm — past a cell and the extrinsic error, short of ``release_clear_m``
         # (40 mm: the kernel's world margin plus a cell; the support's cells would sit
-        # inside that margin): kept.
-        live.place("left", (0.45, 0.0, 0.10 + 1.5 * grid.resolution))
-        bridge._support_checked_s = 0.0
-        bridge._retire_lifted_supports()
-        assert left.attachment is not None and left.attachment.support_contact == witness
-        # Lifted three cells: retired, same payload identity and stamp otherwise.
+        # inside that margin): kept. Slid 15 mm on the support (within a cell): kept.
+        assert retire_at((0.45, 0.0, 0.10 + 1.5 * grid.resolution)) == witness
+        assert retire_at((0.45 + 0.015, 0.0, 0.10)) == witness
+        # Slid 25 mm on the support: off the patch it was measured for — retired, though
+        # the 40 mm rise tolerance (the old Euclidean test) would have kept it.
+        assert retire_at((0.45 + 0.025, 0.0, 0.10)) is None
+        assert left.support_anchor is None
+        # Re-armed as at the ATTACH, then lifted three cells (60 mm): retired, same payload
+        # identity and stamp otherwise.
+        left.attachment, left.support_anchor = held, anchor
         live.place("left", (0.45, 0.0, 0.10 + 3 * grid.resolution))
         bridge._support_checked_s = 0.0
         bridge._retire_lifted_supports()
@@ -2625,6 +2698,9 @@ def test_isaac_i45_a_partial_view_is_completed_held_through_descend_and_handed_o
     with pytest.raises(_Refusal) as far:  # the same capture with no hand of the robot's near
         gate(_i4x_fit((0.235, -0.196, -0.445), (0.03, 0.04, 0.02), -90.8, 12 * _S), _HAND_FAR)
     assert (far.value.kind, far.value.retract) == ("unoccluded_refit", True)
+    # The fingers hide the can's lower part: what is left, inside the held region, no longer
+    # reaches the support.
+    upper = _i4x_fit((0.235, -0.196, -0.43), (0.03, 0.04, 0.02), -90.8, 12 * _S + 300)
     refused = _refused_fit(
         "not_on_support",
         "points=900",
@@ -2632,6 +2708,8 @@ def test_isaac_i45_a_partial_view_is_completed_held_through_descend_and_handed_o
         (jaw,),
         reach_m=grid.resolution + 0.05,
         hand_rise_m=0.20,
+        visible=upper,
+        tol_m=grid.resolution,
     )
     assert (refused.kind, refused.retract) == ("hand_at_target", False)
     tracker.refuse(refused.kind, refused.detail, retract=False, now_ns=12 * _S + 300)
@@ -2646,12 +2724,13 @@ def test_a_map_completed_region_is_the_region_payload_handed_over_at_attach() ->
     """The bridge's ATTACH on the completed region: the jaw stalled at i41's angle and pose
     is at it, the payload is the completed box's cell closure — the very box published to
     the kernel (Isaac i50) — standing on the support measured under it (the witness),
-    ``on_attach`` hands the held completed region over, and the published closure holds
-    every cell of the can inside, nothing of it touching from outside."""
+    ``on_attach`` hands the held completed region over, and from that snapshot on the
+    published region is the payload box itself (what the kernel latches): every cell of the
+    can inside, nothing of it touching from outside, no downward bloat into the support."""
     from openral_core.geometry import homogeneous_from_quat_xyz
 
     pytest.importorskip("openral_msgs")
-    with _live_leg("test_grasp_target_i45_completed_payload") as live:
+    with _live_leg("test_grasp_target_i45_completed_payload", grasp_target_margin_m=0.025) as live:
         attachment_state = pytest.importorskip("openral_msgs.msg").AttachmentState
         leg, bridge = live.leg, live.bridge
         now_ns = leg._now_ns()
@@ -2688,10 +2767,12 @@ def test_a_map_completed_region_is_the_region_payload_handed_over_at_attach() ->
         msg = attachment_state()
         leg.fill(msg, now_ns=now_ns + 2)
         published = PlaceRegion.from_idl(msg.grasp_declaration.region)
-        # The payload is the completed box bloated by the margin on the sides and top and
-        # closed (``kernel_region(payload=True)``), inside the published (latched) box, which
-        # is bloated on every face — so its origin satisfies the kernel's handover rule.
+        # The payload is the completed box lowered onto the support, bloated by the margin on
+        # the sides and top and closed (``kernel_region(payload=True)``) — and, handed over,
+        # it is the published (latched) box, so its origin satisfies the handover rule.
         attached = leg.kernel_region("i45", done, payload=True)
+        assert published.half_extents == pytest.approx(attached.half_extents)
+        assert published.pose.xyz == pytest.approx(attached.pose.xyz)
         assert payload.primitives[0].shape.half_extents_m == pytest.approx(attached.half_extents)
         t_base_link = bridge._lookup("openarm_base", bridge.tf_frame(payload.attach_link))
         assert t_base_link is not None
@@ -2702,11 +2783,10 @@ def test_a_map_completed_region_is_the_region_payload_handed_over_at_attach() ->
         assert region_within(attached, published, tol_m=1e-9)
         assert _in_region(_i4x_centres(_I4X_COMPONENT), attached).all()
         assert len(occupied_touching_outside(grid, attached, support_z=_I4X_SUPPORT_Z)) == 0
-        bottom = done.pose.xyz[2] - done.half_extents[2]
-        # Lowered onto the measured support top: the target's own bottom layer is payload.
+        # Lowered onto the measured support top: the target's own bottom layer is payload;
+        # never below it, though the pre-handover region reached the margin under the fit.
         assert attached.pose.xyz[2] - attached.half_extents[2] == pytest.approx(_I4X_SUPPORT_Z)
-        margin = VisionAttachmentConfig().grasp_target_margin_m
-        assert published.pose.xyz[2] - published.half_extents[2] == pytest.approx(bottom - margin)
+        assert published.pose.xyz[2] - published.half_extents[2] == pytest.approx(_I4X_SUPPORT_Z)
 
 
 # ── the tracker is serialized: the proprio thread vs the executor ──────────────────
@@ -3086,12 +3166,11 @@ def test_the_kernel_gets_the_cell_closed_region_while_the_held_fit_stays_tight()
 
 
 def test_the_kernel_region_is_bloated_on_every_face_and_the_payload_on_sides_and_top() -> None:
-    """Default margin (25 mm) on the 20 mm held block: the published declaration is the held
-    fit grown 25 mm on every face — downward too, its bottom 25 mm below the held bottom —
-    then cell-closed; the region payload is grown on the four sides and the top only (bottom
-    kept), then cell-closed, and lies inside the published box (the kernel's handover rule
-    keys on the payload origin being inside it). The tracker keeps the tight fit."""
-    with _live_leg("test_grasp_target_margin") as live:
+    """A 25 mm margin on the 20 mm held block: the published declaration is the held fit
+    grown 25 mm on every face — downward too, its bottom 25 mm below the held bottom — then
+    cell-closed; the region payload is grown on the four sides and the top only (bottom
+    kept), then cell-closed. The tracker keeps the tight fit."""
+    with _live_leg("test_grasp_target_margin", grasp_target_margin_m=0.025) as live:
         attachment_state = pytest.importorskip("openral_msgs.msg").AttachmentState
         leg = live.leg
         assert leg._margin_m == pytest.approx(0.025)
@@ -3114,8 +3193,75 @@ def test_the_kernel_region_is_bloated_on_every_face_and_the_payload_on_sides_and
         assert payload.half_extents == pytest.approx((0.075, 0.075, 0.0575))
         assert payload.pose.xyz[2] - payload.half_extents[2] == pytest.approx(0.05), "never down"
         assert payload.pose.xyz[2] + payload.half_extents[2] == pytest.approx(0.165)
-        assert region_within(payload, published, tol_m=1e-9)
-        assert _in_region(np.asarray([payload.pose.xyz]), published).all()
+
+
+def _handed_over_publications(margin: float, name: str) -> tuple[PlaceRegion, ...]:
+    """``(before, at, after, payload)`` for the held block measured on ``_SUPPORT_Z``: the
+    region published before the ATTACH, at the ATTACH snapshot (the one the kernel latches
+    from: the bridge's ``on_attach`` runs before it publishes), on a later heartbeat, and
+    the region payload the bridge attached (``kernel_region(payload=True)``)."""
+    with _live_leg(name, grasp_target_margin_m=margin) as live:
+        attachment_state = pytest.importorskip("openral_msgs.msg").AttachmentState
+        leg = live.leg
+        now_ns = leg._now_ns()
+        leg._bridge._grid = (_held_block_lattice(), now_ns, time.monotonic())
+        declaration = _dispatched(stamp_ns=now_ns)
+        leg.tracker.on_declaration(declaration)
+        tight = _measured(now_ns + 1)
+        leg.tracker.accept(tight)
+        leg._support = (tight, _SUPPORT_Z)  # what ``_on_reply`` records with it
+
+        def published(at_ns: int) -> PlaceRegion:
+            msg = attachment_state()
+            leg.fill(msg, now_ns=at_ns)
+            assert msg.grasp_declaration_valid and msg.grasp_declaration.region_valid
+            return PlaceRegion.from_idl(msg.grasp_declaration.region)
+
+        before = published(now_ns + 2)
+        payload = leg.kernel_region(declaration.target_id, tight, payload=True)
+        leg.tracker.on_attach(declaration.contact_links[0], confirm=lambda held: held == tight)
+        assert leg.tracker.handed_over is not None and leg.tracker.region == tight
+        return before, published(now_ns + 3), published(now_ns + 4), payload
+
+
+def test_from_the_handover_the_published_region_is_the_payload_box() -> None:
+    """The kernel latches the region of the snapshot that first carries the payload and keeps
+    exempting the finger links over it until the payload origin leaves it. Before the ATTACH
+    the region is bloated on every face (25 mm under the held bottom, into the support's top
+    layer); from the ATTACH snapshot on it is the payload box — lowered onto the measured
+    support top, bloated on the sides and top only — so nothing under the support top and no
+    neighbour beside the downward bloat stays exempt while the payload rises, and the payload
+    origin lies inside what was latched."""
+    before, at, after, payload = _handed_over_publications(0.025, "test_grasp_target_handover")
+    held_bottom = 0.05  # ``_measured``: one 20 mm voxel above _SUPPORT_Z
+    assert before.pose.xyz[2] - before.half_extents[2] == pytest.approx(held_bottom - 0.025)
+    for region in (at, after):
+        assert region.half_extents == pytest.approx(payload.half_extents)
+        assert region.pose.xyz == pytest.approx(payload.pose.xyz)
+        assert region.pose.xyz[2] - region.half_extents[2] == pytest.approx(_SUPPORT_Z)
+        assert _in_region(np.asarray([payload.pose.xyz]), region).all()
+    assert at.pose.xyz[2] + at.half_extents[2] == pytest.approx(
+        before.pose.xyz[2] + before.half_extents[2]
+    ), "the top keeps the margin and the closure"
+
+
+def test_at_margin_zero_the_latched_region_still_holds_the_lowered_payload() -> None:
+    """Margin 0 is no longer "the previous behaviour exactly": the payload is lowered onto
+    the measured support at every margin, so its bottom (0.03) lay under the unbloated
+    pre-handover region's (0.05) — on a 20 mm lattice outside the box the kernel latched.
+    Published from the handover on, the latched region is the payload itself."""
+    before, at, after, payload = _handed_over_publications(0.0, "test_grasp_target_margin0")
+    # Before: the unbloated closure (+10 mm sideways and up, the bottom kept).
+    assert before.half_extents == pytest.approx((0.05, 0.05, 0.045))
+    assert before.pose.xyz[2] - before.half_extents[2] == pytest.approx(0.05)
+    # The payload: lowered onto the support top (0.03), closed, unbloated.
+    assert payload.pose.xyz[2] - payload.half_extents[2] == pytest.approx(_SUPPORT_Z)
+    assert payload.half_extents[:2] == pytest.approx((0.05, 0.05))
+    assert not region_within(payload, before, tol_m=1e-9), "the bug this guards is gone?"
+    for region in (at, after):
+        assert region.half_extents == pytest.approx(payload.half_extents)
+        assert region.pose.xyz == pytest.approx(payload.pose.xyz)
+        assert region_within(payload, region, tol_m=1e-9)
 
 
 def test_margin_grown_region_grows_down_only_when_asked() -> None:
@@ -3161,7 +3307,9 @@ def test_the_margin_not_the_measurement_shrinks_at_the_half_extent_cap() -> None
         update={"half_extents": (0.18, 0.03, 0.02)}
     )
     closed, note = _kernel_closure(held, _cap_lattice(), margin_m=0.025)
-    assert note.startswith("margin reduced 0.025 -> 0.0100 m"), note
+    assert note.startswith("margin reduced from 0.025 m"), note
+    margin, _ = _capped_margin(held, _cap_lattice(), 0.025)
+    assert margin == pytest.approx(0.010, abs=1e-6)
     assert max(closed.half_extents) <= GraspDeclaration.MAX_HALF_EXTENT_M
     assert closed.half_extents[0] == pytest.approx(0.20, abs=1e-6)
     unbloated, _ = _kernel_closure(held, _cap_lattice())
@@ -3173,13 +3321,88 @@ def test_the_margin_shrinks_at_the_volume_cap() -> None:
         update={"half_extents": (0.15, 0.15, 0.13)}
     )
     closed, note = _kernel_closure(held, _cap_lattice(), margin_m=0.025)
-    assert "margin reduced 0.025 ->" in note, note
+    assert "margin reduced from 0.025 m" in note, note
     assert closed.volume_m3() <= GraspDeclaration.MAX_VOLUME_M3
     assert closed.volume_m3() == pytest.approx(GraspDeclaration.MAX_VOLUME_M3, rel=1e-6)
-    # The payload takes the same (reduced) margin, so it stays inside the kernel's region.
+    # The payload (and, from the handover, the latched region) takes the largest margin its
+    # own sides-and-top bloat allows: within the caps, never cut below the unbloated box.
     payload, payload_note = _kernel_closure(held, _cap_lattice(), margin_m=0.025, down=False)
-    assert payload_note == note
-    assert region_within(payload, closed, tol_m=1e-9)
+    assert "margin reduced from 0.025 m" in payload_note, payload_note
+    assert payload.volume_m3() == pytest.approx(GraspDeclaration.MAX_VOLUME_M3, rel=1e-6)
+    unbloated, _ = _kernel_closure(held, _cap_lattice(), down=False)
+    assert region_within(unbloated, payload, tol_m=1e-9)
+
+
+def test_a_capped_margin_is_logged_once_per_state_not_per_refit(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    """Two refits near the half-extent cap differ by a fraction of a millimetre, so the
+    bisected margin differs: the closure note names the capped state, never the value, so
+    ``kernel_region`` warns once (with the value applied), not on every refit."""
+    first = _box(half=0.05, z=0.2, stamp_ns=0).model_copy(
+        update={"half_extents": (0.18, 0.03, 0.02)}
+    )
+    second = first.model_copy(update={"half_extents": (0.1803, 0.03, 0.02)})
+    m1, n1 = _capped_margin(first, _cap_lattice(), 0.025)
+    m2, n2 = _capped_margin(second, _cap_lattice(), 0.025)
+    assert m1 != pytest.approx(m2, abs=1e-6) and n1 == n2 != ""
+    with _live_leg("test_grasp_target_cap_note", grasp_target_margin_m=0.025) as live:
+        leg = live.leg
+        leg._bridge._grid = (_cap_lattice(), leg._now_ns(), time.monotonic())
+        for region in (first, second, first):
+            leg.kernel_region("t", region)
+    err = capfd.readouterr().err
+    assert err.count("cell closure margin reduced") == 1, err
+    assert f"margin applied {m1:.4f} m of 0.025 m" in err
+
+
+def test_an_unchanged_region_reuses_its_capped_margin() -> None:
+    """``fill`` runs under the bridge lock on every publish: the capped margin's bisection
+    runs once per (region, grid geometry, margin) and box kind, and the cached result is
+    exactly the fresh one. A new grid of the same geometry (a newer octomap) reuses it; a
+    new region recomputes it."""
+    held = _box(half=0.05, z=0.2, stamp_ns=0).model_copy(
+        update={"half_extents": (0.18, 0.03, 0.02)}
+    )
+    with _live_leg("test_grasp_target_cap_cache", grasp_target_margin_m=0.025) as live:
+        leg = live.leg
+        leg._bridge._grid = (_cap_lattice(), leg._now_ns(), time.monotonic())
+        first = leg.kernel_region("t", held)
+        cached = leg._capped[False]
+        newer = VoxelLattice(
+            "openarm_base",
+            (0.5, 0.5, 0.0),
+            (0.0, 0.0, 0.0, 1.0),
+            0.02,
+            (2, 1, 1),
+            np.ones(2, np.uint8),
+        )
+        leg._bridge._grid = (newer, leg._now_ns(), time.monotonic())
+        assert leg.kernel_region("t", held) == first
+        assert leg._capped[False] is cached, "the bisection ran again for the same region"
+        assert first == _kernel_closure(held, _cap_lattice(), margin_m=0.025)[0]
+        moved = held.model_copy(update={"half_extents": (0.17, 0.03, 0.02)})
+        assert (
+            leg.kernel_region("t", moved)
+            == _kernel_closure(moved, _cap_lattice(), margin_m=0.025)[0]
+        )
+        assert leg._capped[False] is not cached
+
+
+def test_filtering_the_candidates_union_once_is_filtering_each_candidate() -> None:
+    """``_measure`` bins the self-filtered cloud once per capture: it filters the union of
+    the segmenter's candidates and intersects each with it. A pixel's verdict does not
+    depend on the mask, so that is exactly the per-candidate filter."""
+    depth, mask, t_base_from_cam, k, kept = _oblique_capture()
+    rows = np.arange(mask.shape[0])[:, None]
+    candidates = [mask, mask & (rows < mask.shape[0] // 2), mask & (rows >= 40)]
+    union = mask_without_removed_points(
+        np.logical_or.reduce(candidates), depth, k, t_base_from_cam, kept
+    )
+    for candidate in candidates:
+        alone = mask_without_removed_points(candidate, depth, k, t_base_from_cam, kept)
+        np.testing.assert_array_equal(candidate & union, alone)
+    assert union.sum() < mask.sum(), "the finger's pixels were not removed"
 
 
 @pytest.mark.parametrize("margin", [-0.001, 0.0501, 0.10])

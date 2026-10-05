@@ -53,12 +53,15 @@ classes, each logged once per transition with its typed reason:
   ``unoccluded_refit``, a contradiction (a person's hand, the target knocked
   over). "Near" is measured over the target: the jaw's hand point (its TCP, a
   finger length above the fingertips) over the held footprint, up to the approach
-  distance above its top. A fit refused outright with the hand there (what is left
+  distance above its top. A fit refused as ``not_on_support`` with the hand there and
+  what is visible of the target inside the held region grown by one voxel (what is left
   of an occluded target no longer reaches the support) is the lost view
-  ``hand_at_target``. A fit whose cell-closed region leaves an occupied cell of the
-  target's map component outside — a cell more than a voxel above the support,
-  touching the region's cells (the far side the hovering hand hid from the head
-  camera, Isaac i40/i43/i45) — is **completed from the map** (below); when that is
+  ``hand_at_target``; every other refusal, and a visible part reaching outside the held
+  region (the target knocked over, another object under the seed), stays the
+  contradiction it names, hand or not (``_refused_fit``). A fit whose cell-closed region
+  leaves an occupied cell of the target's map component outside — a cell more than a
+  voxel above the support, touching the region's cells (the far side the hovering hand
+  hid from the head camera, Isaac i40/i43/i45) — is **completed from the map** (below); when that is
   refused and the fit passed every other gate it is the lost view ``partial_fit``,
   raised only where the fit would have been accepted, so it never changes another
   refusal's class. The gripper closing in on
@@ -78,25 +81,32 @@ unexempt, and the finger hull swept over the target's top edge stops on them. Th
 published region is ``cell_closed_region`` of the held fit against the newest grid:
 grown by ``r/2·(|cos θ|+|sin θ|)`` (≤ ``r/√2``) horizontally and ``r/2`` up, never
 down, so the support layer stays non-exempt (the closure itself: the grasp-target margin
-below bloats it downward first, by design). Every gate here (``_gate_refit``,
-``region_within``, ``track_region``, the cover check, the hand tests, the ATTACH
-confirmation, ``measured_support``) keeps the held region (not its closure). The region
-*payload* is the closure (``kernel_region``, Safety-WG choice for Isaac i50): the box the
-kernel latched, so the target's own boundary cells sit at least half a cell inside the
-payload when the kernel snapshots its attach-time contacts — embedded residue, not
-obstacles — never grown down, so the support layer stays outside it (HZ-0115-31).
+below bloats it downward first, before the handover, by design). Every gate here
+(``_gate_refit``, ``region_within``, ``track_region``, the cover check, the hand tests,
+the ATTACH confirmation, ``measured_support``) keeps the held region (not its closure).
+The region *payload* (``kernel_region(payload=True)``, Safety-WG choice for Isaac i50) is
+the held region lowered onto the measured support top, then closed: the target's own
+boundary cells sit at least half a cell inside the payload when the kernel snapshots its
+attach-time contacts — embedded residue, not obstacles — never grown down, so the support
+layer stays outside it (HZ-0115-31). From the handover on (``tracker.handed_over``; the
+bridge's ``on_attach`` runs before it publishes the ATTACH snapshot) ``fill`` publishes
+that payload box as the declaration's region, so the box the kernel latches at the
+handover — and keeps exempting the finger links over until the payload origin leaves it —
+is the payload itself.
 
 **Bloated by the grasp-target margin** (``VisionAttachmentConfig.grasp_target_margin_m``,
-default 0.025 m, at most 0.05 m; Safety-WG choice, HZ-0115-32). Before the closure the
-held region is grown by the margin (``margin_grown_region``): on **every face, downward
-too**, for the region the kernel exempts for the declared finger links before the
-handover — the fingers may close around the target and press up to the margin into the
-support under it, and anything within the margin of it is exempt for them for this
-declaration — and on the sides and top only, never down, for the region payload, which
-the hand carries and the kernel checks against the environment like any attached
-object. The margin, not the measured box, shrinks to keep the bloat within
-``GraspDeclaration``'s caps (logged). Every producer gate keeps the unbloated held
-region; ``0.0`` is the unbloated behaviour exactly.
+default 0 — a deploy that wants it names it per scene; at most 0.05 m; Safety-WG choice,
+HZ-0115-32). Before the closure the region is grown by the margin
+(``margin_grown_region``): on **every face, downward too**, for the region the kernel
+exempts for the declared finger links before the handover — the fingers may close around
+the target and press up to the margin into the support under it, and anything within the
+margin of it is exempt for them for this declaration — and on the sides and top only,
+never down, for the region payload, which the hand carries and the kernel checks against
+the environment like any attached object, and which is the region the kernel latches at
+the handover. The margin, not the measured box, shrinks to keep each bloated box within
+``GraspDeclaration``'s caps (logged once per change). Every producer gate keeps the
+unbloated held region. At ``0.0`` the pre-handover region is the unbloated closure; the
+payload (and so the latched region) is still lowered onto the measured support.
 
 **Completed from the map** (``map_completed_region``, Safety-WG choice for Isaac i45).
 The camera confirms which object the target is (the self-filtered fit of its visible
@@ -1161,21 +1171,33 @@ def _refused_fit(
     *,
     reach_m: float,
     hand_rise_m: float,
+    visible: PlaceRegion | None = None,
+    tol_m: float = 0.0,
 ) -> _Refusal:
     """A re-fit ``target_region_from_mask`` refused: a lost view or a contradiction.
 
-    Too few points is a lost view. So is any refusal with a region held and a declared
-    contact link's hand over it (``hand_at_target``): the closing hand occludes the
-    target's lower part, so what is left no longer reaches the support. The held region
-    stays, never replaced, under its freeze TTL until the stall's ATTACH hands over.
-    Before anything is held, or with the hand elsewhere, it is the contradiction it names.
+    Too few points is a lost view. Of the rest, only what the robot's own closing hand
+    can cause becomes the lost view ``hand_at_target`` (the held region stays, never
+    replaced, under its freeze TTL until the stall's ATTACH hands over): a
+    ``not_on_support`` whose ``visible`` box (``TargetRegionFit.box``) lies inside the
+    held region grown by ``tol_m`` (one voxel) with a declared contact link's hand over
+    it — the hand occluding the target's lower part, so what is left of it no longer
+    reaches the support (Isaac i25). Every other refusal contradicts the held region
+    whatever the hand does and retracts it: a visible part reaching outside it (the
+    target knocked over, or another object under the seed), no height above the support
+    (the target gone), a fit over the caps. Before anything is held, or with the hand
+    elsewhere, it is the contradiction it names.
     """
     if kind == TargetRefusal.TOO_FEW_POINTS.value:
         return _lost(kind, detail)
-    if previous is not None and _hand_over_target(
-        hands, previous, reach_m=reach_m, hand_rise_m=hand_rise_m
+    if (
+        kind == TargetRefusal.NOT_ON_SUPPORT.value
+        and previous is not None
+        and visible is not None
+        and region_within(visible, previous, tol_m=tol_m)
+        and _hand_over_target(hands, previous, reach_m=reach_m, hand_rise_m=hand_rise_m)
     ):
-        return _lost("hand_at_target", f"{kind}: {detail}, hand over the held target")
+        return _lost("hand_at_target", f"{kind}: {detail}, inside the held target, hand over it")
     return _contradicted(kind, detail)
 
 
@@ -1187,29 +1209,31 @@ def _within_caps(region: PlaceRegion, grid: VoxelLattice) -> bool:
     return not clamped and closed.volume_m3() <= GraspDeclaration.MAX_VOLUME_M3
 
 
-def _capped_margin(region: PlaceRegion, grid: VoxelLattice, margin_m: float) -> tuple[float, str]:
-    """The largest margin ``<= margin_m`` whose all-faces bloat of ``region`` stays in the caps.
+def _capped_margin(
+    region: PlaceRegion, grid: VoxelLattice, margin_m: float, *, down: bool = True
+) -> tuple[float, str]:
+    """The largest margin ``<= margin_m`` whose bloat of ``region`` stays in the caps, and a note.
 
     The margin shrinks, never the measured box (HZ-0115-32): the cell closure of
-    ``margin_grown_region(region, m, down=True)`` must fit ``MAX_HALF_EXTENT_M`` and
-    ``MAX_VOLUME_M3`` unclamped. The all-faces bloat contains the sides-and-top one, so
-    the payload taking the same margin stays inside the region the kernel latched. Both
-    constraints are monotone in ``m``, so a bisection finds it (to well under a
-    millimetre, rounded down: always within the caps).
+    ``margin_grown_region(region, m, down=down)`` must fit ``MAX_HALF_EXTENT_M`` and
+    ``MAX_VOLUME_M3`` unclamped. Both constraints are monotone in ``m``, so a bisection
+    finds it (to well under a millimetre, rounded down: always within the caps). The note
+    names the state (reduced, dropped), never the bisected value, so a caller logging on
+    change logs once per state, not on every refit near the caps.
     """
-    if margin_m <= 0.0 or _within_caps(margin_grown_region(region, margin_m, down=True), grid):
+    if margin_m <= 0.0 or _within_caps(margin_grown_region(region, margin_m, down=down), grid):
         return margin_m, ""
     if not _within_caps(region, grid):
         return 0.0, f"margin {margin_m} m dropped: the unbloated closure is at the caps"
     lo, hi = 0.0, margin_m
     for _ in range(40):
         mid = (lo + hi) / 2.0
-        if _within_caps(margin_grown_region(region, mid, down=True), grid):
+        if _within_caps(margin_grown_region(region, mid, down=down), grid):
             lo = mid
         else:
             hi = mid
     return lo, (
-        f"margin reduced {margin_m} -> {lo:.4f} m to stay within the "
+        f"margin reduced from {margin_m} m to stay within the "
         f"{GraspDeclaration.MAX_HALF_EXTENT_M} m half-extent / "
         f"{GraspDeclaration.MAX_VOLUME_M3} m^3 caps"
     )
@@ -1221,14 +1245,15 @@ def _kernel_closure(
     """``region`` as the kernel gets it over ``grid``, and a note when not as configured.
 
     Bloated by ``margin_m`` first (``margin_grown_region``: every face with ``down``, the
-    kernel's pre-handover region; sides and top only without it, the region payload),
-    the margin shrunk to fit the caps (``_capped_margin``, noted), then
-    ``cell_closed_region`` clamped at ``GraspDeclaration.MAX_HALF_EXTENT_M`` (noted); a
-    closure over ``GraspDeclaration.MAX_VOLUME_M3`` is the tight fit (noted). ``margin_m
-    = 0`` is the unbloated closure exactly. Raises ``ROSConfigError`` as
+    kernel's pre-handover region; sides and top only without it, the region payload and
+    the region the kernel latches at the handover), the margin shrunk to keep that box in
+    the caps (``_capped_margin``, noted), then ``cell_closed_region`` clamped at
+    ``GraspDeclaration.MAX_HALF_EXTENT_M`` (noted); a closure over
+    ``GraspDeclaration.MAX_VOLUME_M3`` is the tight fit (noted). ``margin_m = 0`` is the
+    unbloated closure of ``region`` exactly. Raises ``ROSConfigError`` as
     ``cell_closed_region`` does (another frame, a tilted region).
     """
-    margin, note = _capped_margin(region, grid, margin_m)
+    margin, note = _capped_margin(region, grid, margin_m, down=down)
     closed, clamped = cell_closed_region(
         margin_grown_region(region, margin, down=down),
         grid,
@@ -1484,9 +1509,13 @@ class GraspTargetLeg:
         # Consecutive fits that found no self-filtered cloud although a topic is
         # configured: logged on entering and on leaving that state (CLAUDE.md §1.4).
         self.unfiltered_fits = 0
-        # Why the last published region was not exactly the cell-closed fit ("" when it
-        # was): logged on every change, never per publish (``kernel_region``).
-        self._closure_note = ""
+        # (payload box?, why the last closed box was not exactly the cell-closed bloat —
+        # "" when it was): logged on every change, never per publish (``kernel_region``).
+        self._closure_note: tuple[bool, str] = (False, "")
+        # Per box kind (payload or not): (region + grid geometry + margin, the capped
+        # margin and its note) — ``_capped_margin``'s bisection once per change, not per
+        # publish under the bridge lock (``kernel_region``).
+        self._capped: dict[bool, tuple[tuple[object, ...], tuple[float, str]]] = {}
         # The last accepted region and the support top it was fitted on
         # (``measured_support``).
         self._support: tuple[PlaceRegion, float] | None = None
@@ -1538,7 +1567,7 @@ class GraspTargetLeg:
             f"support_probe_margin={self._probe_margin_m:.2f}m "
             f"occluder_margin={self._occluder_margin_m:.2f}m "
             f"approach={'off' if self._approach_m is None else f'{self._approach_m:.2f}m'} "
-            f"margin={self._margin_m:.3f}m (kernel region: every face; payload: sides+top) "
+            f"margin={self._margin_m:.3f}m (pre-handover: every face; payload: sides+top) "
             f"deadline={self._config.deadline_s:.3f}s"
         )
 
@@ -1562,17 +1591,27 @@ class GraspTargetLeg:
     def fill(self, msg: Any, *, now_ns: int) -> None:
         """Put the declaration in force (region and all) on one ``AttachmentState``.
 
-        The region goes out cell-closed (``kernel_region``); the tracker keeps the
-        held region (the tight fit, or its map completion) every producer gate compares
-        against.
+        The region goes out cell-closed (``kernel_region``): before the handover bloated
+        on every face; once handed over — the bridge's ``on_attach`` runs before it
+        publishes the ATTACH snapshot, the one the kernel latches the region from — as
+        the region payload's own box (``payload=True``), so what the kernel keeps
+        exempting the finger links over until the payload leaves it is the payload: no
+        downward bloat into the support after the handover, the payload origin inside it
+        at every margin. The tracker keeps the held region (the tight fit, or its map
+        completion) every producer gate compares against.
         """
         declaration = self.tracker.envelope(now_ns=now_ns)
         msg.grasp_declaration_valid = declaration is not None
         if declaration is None:
             return
         if declaration.region is not None:
+            handed_over = self.tracker.handed_over is not None
             declaration = declaration.model_copy(
-                update={"region": self.kernel_region(declaration.target_id, declaration.region)}
+                update={
+                    "region": self.kernel_region(
+                        declaration.target_id, declaration.region, payload=handed_over
+                    )
+                }
             )
         declaration.fill_idl(msg.grasp_declaration)
 
@@ -1582,58 +1621,74 @@ class GraspTargetLeg:
     ) -> PlaceRegion:
         """The held region as the kernel gets it: bloated, then closed over the newest grid.
 
-        ``payload=False`` (``fill``): the kernel's pre-handover region — the held region
-        grown by ``grasp_target_margin_m`` on **every face, downward too**
+        ``payload=False`` (``fill`` before the handover): the kernel's pre-handover region —
+        the held region grown by ``grasp_target_margin_m`` on **every face, downward too**
         (``margin_grown_region``, HZ-0115-32), so for the declared finger links cells up
         to the margin below its lower face (the support under the target) and beside it
-        are exempt. ``payload=True`` (``VisionAttachmentBridge._region_payload``): the
-        attached payload's box — its lower face lowered from one voxel above the measured
-        support onto the support top (``lowered_to_support``: the target's own bottom
-        layer is payload, Isaac i56/i57), then grown by the same margin on the sides and
-        the top only, never down, so the support stays outside it; it lies inside the
-        region the kernel latched (the handover's payload-origin-in-region rule), and the
+        are exempt. ``payload=True`` (``VisionAttachmentBridge._region_payload``, and
+        ``fill`` from the handover on): the attached payload's box — its lower face
+        lowered from one voxel above the measured support onto the support top
+        (``lowered_to_support``: the target's own bottom layer is payload, Isaac
+        i56/i57), then grown by the same margin on the sides and the top only, never
+        down, so the support stays outside it. It is the very region the kernel latches
+        at the handover (the payload origin inside it, the handover rule), and the
         target's own boundary cells sit at least half a cell inside it (embedded residue,
-        Isaac i50).
-        The producer's own gates keep the held region.
+        Isaac i50). The producer's own gates keep the held region.
 
         The kernel exempts a voxel only when its centre lies in the region, so the bloat
         is then ``cell_closed_region``: at most half a cell more per side (``r/√2``
         horizontally, ``r/2`` up, never down). The newest grid is the one the kernel
         checks the same publication against. The margin, not the measurement, shrinks to
-        keep the bloat within ``GraspDeclaration``'s caps; each half-extent is clamped at
-        ``MAX_HALF_EXTENT_M``; a closure over the volume cap, no grid or a grid in another
-        frame (the kernel refuses that region itself) publishes the tight fit. Every such
-        case is logged once per change (the payload's at its ATTACH).
+        keep each box within ``GraspDeclaration``'s caps (``_capped_margin``, cached per
+        region, grid geometry and margin, so an unchanged region costs no bisection per
+        publish); each half-extent is clamped at ``MAX_HALF_EXTENT_M``; a closure over the
+        volume cap, no grid or a grid in another frame (the kernel refuses that region
+        itself) publishes the tight box. Every such case is logged once per change of
+        state (which box, which note), never per publish or per refit near the caps.
         """
         grid = self._grid
         if payload:
             support = self.measured_support(region)
             if support is not None:
                 region = lowered_to_support(region, support)
+        margin = 0.0
         try:
             if grid is None:
                 raise ROSConfigError("no voxel grid to close the region over")
-            closed, note = _kernel_closure(
-                region, grid[0], margin_m=self._margin_m, down=not payload
+            lattice = grid[0]
+            key = (
+                region,
+                lattice.frame_id,
+                lattice.resolution,
+                lattice.orientation_xyzw,
+                self._margin_m,
             )
+            cached = self._capped.get(payload)
+            if cached is None or cached[0] != key:
+                cached = (
+                    key,
+                    _capped_margin(region, lattice, self._margin_m, down=not payload),
+                )
+                self._capped[payload] = cached
+            margin, margin_note = cached[1]
+            closed, cap_note = _kernel_closure(region, lattice, margin_m=margin, down=not payload)
+            note = "; ".join(n for n in (margin_note, cap_note) if n)
         except ROSConfigError as exc:
             closed = region
             note = f"published tight: {exc}"
-        if payload:
+        state = (payload, note)
+        if state != self._closure_note:
+            was = self._closure_note[1]
+            self._closure_note = state
+            what = "payload" if payload else "region"
             if note:
                 self._node.get_logger().warning(
-                    f"grasp target payload for {target_id!r}: cell closure {note}"
+                    f"grasp target {what} for {target_id!r}: cell closure {note} "
+                    f"(margin applied {margin:.4f} m of {self._margin_m} m)"
                 )
-            return closed
-        if note != self._closure_note:
-            self._closure_note = note
-            if note:
-                self._node.get_logger().warning(
-                    f"grasp target region for {target_id!r}: cell closure {note}"
-                )
-            else:
+            elif was:
                 self._node.get_logger().info(
-                    f"grasp target region for {target_id!r}: cell-closed again"
+                    f"grasp target {what} for {target_id!r}: cell-closed again"
                 )
         return closed
 
@@ -2275,11 +2330,15 @@ class GraspTargetLeg:
                 "unfiltered",
                 f"no self-filtered cloud within the mask/depth skew of stamp {depth_stamp_ns}",
             )
-        if kept is not None:
-            masks = [
-                mask_without_removed_points(mask, depth, intrinsics, t_base_from_cam, kept)
-                for mask in masks
-            ]
+        if kept is not None and masks:
+            # One pass over the candidates' union: whether a pixel's depth point was kept
+            # does not depend on the mask, so each candidate is its own pixels of the
+            # filtered union — the kept cloud is binned once per capture, not per mask.
+            union = np.logical_or.reduce(masks)
+            kept_pixels = mask_without_removed_points(
+                union, depth, intrinsics, t_base_from_cam, kept
+            )
+            masks = [mask & kept_pixels for mask in masks]
         model = declaration.rskill_id or self._config.service_name
         fit = None
         for mask in masks:  # candidates in the segmenter's order; first one that fits
@@ -2310,6 +2369,8 @@ class GraspTargetLeg:
                 hands,
                 reach_m=grid.resolution + self._occluder_margin_m,
                 hand_rise_m=self._approach_m or 0.0,
+                visible=fit.box,
+                tol_m=grid.resolution,
             )
         assert declaration.search_box is not None  # only a searchable target is measured
         return _gate_refit(

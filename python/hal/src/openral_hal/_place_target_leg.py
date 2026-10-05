@@ -470,8 +470,11 @@ def plane_witness(
     (``vision_attachment_bridge.region_attachment``, on the support the grasp-target leg
     measured under the target). Contact point under the payload's centre on the plane and
     normal +z, both expressed in the object frame; ``patch_radius_m`` the payload's
-    footprint about that centre (each primitive's horizontal offset plus its half-extent
-    norm), capped at the kernel's ``support_witness_max_patch_radius_m``;
+    horizontal footprint about that centre (each primitive's horizontal offset plus its
+    local box's farthest corner projected onto the plane — a yaw-only box's half-diagonal
+    ``hypot(hx, hy)``; never the 3-D half-extent norm, whose vertical term widened the
+    exemption past the footprint), capped at the kernel's
+    ``support_witness_max_patch_radius_m``;
     ``max_penetration_m`` the depth extrinsic's accuracy bound, capped at
     ``support_witness_max_penetration_m``. Not sensed contact: ``evidence_ref`` says so.
 
@@ -492,9 +495,13 @@ def plane_witness(
     n = np.array([0.0, 0.0, 1.0])
     posed = list(zip(obj.primitives, primitive_poses(obj, t_base_link), strict=True))
     centre = np.mean([t[:3, 3] for _, t in posed], axis=0)
+    corners = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)])
     lateral = [
         float(np.linalg.norm((t[:3, 3] - centre)[:2]))
-        + float(np.linalg.norm(_shape_half_extents(prim)))
+        # The primitive's local box projected onto the plane: its farthest corner.
+        + float(
+            np.linalg.norm((corners * _shape_half_extents(prim) @ t[:3, :3].T)[:, :2], axis=1).max()
+        )
         for prim, t in posed
     ]
     p = obj.pose_in_link
