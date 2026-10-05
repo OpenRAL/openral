@@ -1,0 +1,80 @@
+# Isaac deploy-sim validation scene for the scripted OpenArm pick/place driver
+# (tools/isaac_pick_place/run_trial.sh): two YCB foam bricks on the warehouse pallet,
+# the octomap world-collision check, the grasp-target exemption and the vision
+# attachment leg on, no reasoner. Public assets only (NVIDIA's Isaac asset server).
+robot_id: "openarm"
+
+base_pose:
+  xyz: [-0.92, 5.10, 0.0]
+  quat_xyzw: [0.0, 0.0, 0.0, 1.0]  # facing +x, toward the pallet
+  frame_id: world
+
+scene:
+  id: isaac_sim
+  backend: isaacsim
+  assets_uri: "isaac:Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd"
+  observation_height: 384
+  observation_width: 512
+  backend_options:
+    boot_timeout_s: 1200
+    camera_mounts:
+      # A measured cell's calibrated head mount (robots/openarm/units/):
+      # openarm_base -> zed_camera_link, rpy [-0.055916, 1.145014, -0.036625].
+      head_zed:
+        link: openarm_base
+        xyz: [0.06597, -0.004548, 0.094539]
+        quat_wxyz: [0.840353, -0.013577, 0.541869, -0.000244]
+      # The wrist cameras at the MuJoCo twin's camera_wrist_* poses (see
+      # scenes/deploy/isaac_openarm_warehouse.yaml).
+      wrist_left:
+        link: openarm_left_ee_base_link
+        xyz: [0.023, 0.0182, -0.10236]
+        quat_wxyz: [0.676209, -0.206737, -0.049327, -0.705385]
+        axes: usd
+        hfov_deg: 81.7
+      wrist_right:
+        link: openarm_right_ee_base_link
+        xyz: [0.023, -0.0182, -0.10236]
+        quat_wxyz: [0.705383, 0.049326, 0.206737, -0.676211]
+        axes: usd
+        hfov_deg: 81.7
+    objects:
+      # 061_foam_brick (about 7.5 x 5 x 5 cm; the non-physics YCB set, the loader adds a
+      # rigid body + convex hull): narrower than the jaw's full opening and short enough
+      # that the hovering hand stays out of its segmentation mask.
+      - name: foam_brick_a
+        usd: "isaac:Isaac/Props/YCB/Axis_Aligned/061_foam_brick.usd"
+        xyz: [-0.65, 4.90, 0.26]
+      - name: foam_brick_b
+        usd: "isaac:Isaac/Props/YCB/Axis_Aligned/061_foam_brick.usd"
+        xyz: [-0.65, 5.30, 0.26]
+
+runtime:
+  enable_octomap: true
+  enable_octomap_kernel_check: true
+  enable_reasoner: false
+  enable_slam: false
+  enable_nav2: false
+  enable_object_detector: false
+  enable_reward_monitor: false
+  enable_critic: false
+  spatial_memory_ingest: false
+  approach_skill_id: null
+  grasp_allowance_enabled: true
+  vision_attachment:
+    enabled: true
+    camera: head_zed
+    rgb_topic: /openral/cameras/head_zed/image
+    rgb_camera_info_topic: /openral/cameras/head_zed/camera_info
+    depth_topic: /openral/cameras/head_zed/depth/image
+    depth_camera_info_topic: /openral/cameras/head_zed/depth/camera_info
+    device: cuda
+    deadline_s: 1.0
+    grasp_target_enabled: true
+    grasp_target_approach_m: 0.20
+    # The Isaac octree's 15 mm cells: >= 1.5 cells reaches the support layer.
+    grasp_target_margin_m: 0.025
+    place_target_enabled: true
+    tf_frames:
+      openarm_left_link7: openarm_left_ee_base_link
+      openarm_right_link7: openarm_right_ee_base_link

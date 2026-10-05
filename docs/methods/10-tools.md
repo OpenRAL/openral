@@ -237,6 +237,38 @@ _Robot-agnostic, URDF-driven Isaac Sim scene (the sidecar's only scene): imports
   - `IsaacManifestScene._relative_to_root(prim_path) -> NDArray[np.float64]` (L1013) — 4x4 pose of a prim in the robot root frame, as USD holds it (import pose).
   - `IsaacManifestScene.build() -> None` (L653) — Import the manifest robot's URDF (Isaac >= 6: `URDFImporter` before `World()` + reference with the `physx` variant; < 6: the command importer), wire joints/sensors/control, place cameras per `_plan_cameras`; references the `environment_usd` stage (else the default ground plane), adds `objects` (rigid bodies + convex-hull colliders when missing, reset with the World), and places the robot at `spawn_pose` by moving the base anchor joint with the root. Each slot is an absolute target (NaN keeps the commanded target); each gripper maps manifest units onto its leader and drives the mimic followers. Step `info` carries `robot_position` (PhysX root) and `object_positions`.
 
+### `tools/isaac_pick_place/driver.py`
+_Scripted OpenArm pick/place driver for the Isaac deploy-sim validation run (`tools/isaac_pick_place/README.md`; `run_trial.sh <out_dir> [deadline_s]` brings up `openral deploy sim` on `scene.yaml`, links the driver's `rskill/` into `rskills/` for the run only, dispatches it as a goal and records `run.mp4`). Not a policy; never on a real robot. World inputs: `/openral/world_voxels` and `/openral/attachment_state` only._
+
+- `footprint_minor_yaw(columns_xy) -> float` (L82) — Yaw of the narrow horizontal axis of a footprint, each occupied column once (a per-cell PCA leans toward the camera-facing walls). Pure.
+- `grasp_centre(region_xy, cluster_xy, closing_yaw) -> NDArray` (L96) — Jaw centre: the measured region's centre across the jaws, the voxel cluster's along them (the hovering hand hides the target's far part from the head camera). Pure.
+- `region_covers_footprint(region, columns_xy, res) -> bool` (L108) — Whether a yaw-only region box holds every footprint column (one cell of slack); only such a region may re-aim the jaws. Pure.
+- `class Perception` (L125) — World voxels + attachment state on a dedicated node and executor thread.
+  - `Perception.lattice() -> VoxelLattice | None` (L178) — The latest voxel map as a lattice, `None` when older than 1 s.
+  - `Perception.held(side) -> list[str]` (L187) — Object ids attached to that hand.
+  - `Perception.grasp_region(side) -> dict | None` (L194) — The producer-measured grasp region for that hand (centre, half extents, yaw, minor-axis yaw, age).
+  - `Perception.any_attached() -> list[tuple[str, str]]` (L218) — Every attached `(object_id, attach_link)`.
+- `scene_from_lattice(lat) -> dict` (L224) — Support plane, object clusters (26-connected cells above it, each with its footprint and narrow-axis yaw) and support cells, indexed from the lattice origin.
+- `class Driver` (L295) — The policy adapter: a phase machine scan → pregrasp → hover (until a fresh grasp region) → descend → close → lift → transport → lower → open → retreat, every command a 16-joint target through the runner and the kernel.
+  - `Driver.reset() -> None` (L308) — Clears the phase machine; the next step re-seeds from the measured state.
+  - `Driver.step(observation, instruction) -> NDArray[np.float32]` (L334) — Advances the phase machine one tick and returns the joint target.
+  - `Driver.close() -> None` (L331) — No-op.
+- `register() -> None` (L932) — Registers policy family `isaac_pick_place_scripted`; called by `sitecustomize.py` in the runner process only.
+
+### `tools/isaac_pick_place/kin.py`
+_OpenArm FK/IK on its MJCF for the scripted driver (robot model only, `openarm_base` frame)._
+
+- `class Kin` (L23) — Joint addresses, limits (arm joints intersected with the URDF the Isaac scene imports), per-side arm/gripper indices and open jaw values.
+  - `Kin.fk(q, side) -> tuple[NDArray, NDArray]` (L63) — `ee_base_link` position and rotation.
+  - `Kin.tcp(q, side) -> tuple[NDArray, NDArray]` (L68) — Closed fingertip centre and the hand rotation.
+  - `Kin.ik(q0, side, p_tgt, r_tgt, ..., full=False) -> tuple[NDArray, float, float]` (L72) — Damped least squares on `ee_base_link`; `full` matches all three axes, else only z.
+  - `Kin.ik_tcp(q0, side, tcp_target, yaw, ...) -> tuple[NDArray, float, float, float, bool]` (L113) — Fingertip centre at a point, closing axis horizontal along `yaw`, tilt bounded.
+
+### `tools/isaac_pick_place/recorder.py`
+_Run video: scene + head camera side by side with the attach state, declarations and kernel status burnt in._
+
+- `main(out) -> None` (L32) — Subscribes, composes 10 fps frames and pipes them to ffmpeg until SIGINT / SIGTERM.
+
 ### `tools/robocasa_carry_survey.py`
 _Answers whether any RoboCasa task makes the base drive while holding something, by building the env and measuring the distance from the base's start pose to every manipulated object — not by reading the source. See [`docs/reference/robocasa-carry-survey.md`](../reference/robocasa-carry-survey.md)._
 
