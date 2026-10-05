@@ -112,6 +112,11 @@ if(BUILD_TESTING)
   target_link_libraries(test_bridge_attach_link_tf octree_to_grid)
   ament_target_dependencies(test_bridge_attach_link_tf
     rclcpp octomap_msgs tf2 tf2_ros tf2_geometry_msgs geometry_msgs openral_msgs)
+  ament_add_gtest(test_bridge_lifted_payload test/test_bridge_lifted_payload.cpp TIMEOUT 60)
+  target_include_directories(test_bridge_lifted_payload PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(test_bridge_lifted_payload octree_to_grid)
+  ament_target_dependencies(test_bridge_lifted_payload
+    rclcpp octomap_msgs tf2 tf2_ros tf2_geometry_msgs geometry_msgs openral_msgs)
   ament_add_gtest(test_bridge_rate_budget test/test_bridge_rate_budget.cpp TIMEOUT 60)
   target_include_directories(test_bridge_rate_budget PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(test_bridge_rate_budget octree_to_grid)

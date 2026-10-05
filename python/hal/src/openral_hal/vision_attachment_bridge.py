@@ -2190,10 +2190,11 @@ class VisionAttachmentBridge:
         (``region_attachment``). The kernel kills it once no exempt occupied cell touches
         the payload (``update_support_contact_witnesses``), but that liveness reads the
         map, and the octomap bridge keeps every cell the witness band claims
-        (``support_patch_withholds``) — the band rides with the payload, so the carried
-        object's own lowest cells, seen by the head camera, would keep it alive through the
-        carry. The producer retires it on its own geometry instead: the payload frame, in
-        the support plane's frame (z up), rose more than ``max(resolution, extrinsic_error_m,
+        (``support_patch_withholds``, anchored at the attestation's first grid) — the
+        kernel's band rides with the payload, so the carried object's own lowest cells, seen
+        by the head camera, would keep it alive through the carry. The producer retires it
+        on its own geometry instead: the payload frame, in the support plane's frame (z up),
+        rose more than ``max(resolution, extrinsic_error_m,
         release_clear_m)`` above its ATTACH pose (``release_clear_m`` is the kernel's world
         margin plus a cell, as the payload rests on the support top), or moved horizontally
         more than ``max(resolution, extrinsic_error_m)`` (off the patch the witness was

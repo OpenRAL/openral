@@ -282,8 +282,12 @@ observation).
 
 **Cameras**: every manifest RGB/depth sensor becomes an Isaac camera with a
 1 cm near clip and the FOV of its manifest intrinsics. Unmounted, it gets a
-generic base-relative viewpoint; `backend_options.camera_mounts` puts it on a
-robot link instead, so it rides that link (a wrist camera follows the wrist):
+generic base-relative viewpoint (not its `frame_id`'s view — the load prints
+every robot-framed camera left that way; one can render all-black inside the
+stage); `backend_options.camera_mounts` puts it on a robot link instead, so it
+rides that link (a wrist camera follows the wrist). The shipped OpenArm scene
+mounts its wrist cameras at the MuJoCo twin's `camera_wrist_*` poses
+(`axes: usd`):
 
 ```yaml
     camera_mounts:
