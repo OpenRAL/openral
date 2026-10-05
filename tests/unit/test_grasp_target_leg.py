@@ -1524,8 +1524,9 @@ def test_the_region_payload_attests_its_measured_support_until_it_is_lifted() ->
     the table's cells at ATTACH and the kernel stopped 90 ms after the handover. The payload
     now carries the ADR-0092 D6 witness on the support top the leg measured under exactly
     that region — plane under the payload's centre, normal +z in the base frame, both in
-    the object frame, patch = the payload's footprint — and the producer retires it for good
-    once the payload leaves where it rested (here: lifted three cells)."""
+    the object frame, patch = the published (cell-closed) payload's footprint — and the
+    producer retires it for good once the payload leaves where it rested (here: lifted three
+    cells)."""
     from openral_core import AttachmentEvidenceKind
     from openral_core.geometry import homogeneous_from_quat_xyz
 
@@ -1560,7 +1561,15 @@ def test_the_region_payload_attests_its_measured_support_until_it_is_lifted() ->
         assert witness.support_id == f"map_support_under:{armed.target_id}"
         assert witness.evidence_kind is AttachmentEvidenceKind.MAP_SUPPORT_PROXIMITY
         assert witness.stamp_ns == held.stamp_ns
-        assert witness.patch_radius_m == pytest.approx(float(np.linalg.norm([0.04] * 3)))
+        # Isaac i50: the payload is the box the kernel latched — the region closed over the
+        # 20 mm cells (+r/2 per side at yaw 0, +r/2 up, bottom fixed) — and the witness's
+        # patch is that published footprint; the handover still matched the held region.
+        closed = leg.kernel_region(armed.target_id, region)
+        assert closed.half_extents == pytest.approx((0.05, 0.05, 0.045))
+        (prim,) = held.primitives
+        assert prim.shape.half_extents_m == pytest.approx(closed.half_extents)
+        assert leg.tracker.handed_over == _LEFT and leg.tracker.region == region
+        assert witness.patch_radius_m == pytest.approx(float(np.linalg.norm(closed.half_extents)))
         assert witness.max_penetration_m == pytest.approx(0.01)
         # Back in the base frame: the measured plane, normal up, under the payload's centre.
         t_base_link = bridge._lookup("openarm_base", bridge.tf_frame(held.attach_link))
@@ -2575,9 +2584,12 @@ def test_isaac_i45_a_partial_view_is_completed_held_through_descend_and_handed_o
 
 def test_a_map_completed_region_is_the_region_payload_handed_over_at_attach() -> None:
     """The bridge's ATTACH on the completed region: the jaw stalled at i41's angle and pose
-    is at it, the payload is the completed box standing on the support measured under it
-    (the witness), ``on_attach`` hands that region over, and what is published is its cell
-    closure — every cell of the can inside, nothing of it touching from outside."""
+    is at it, the payload is the completed box's cell closure — the very box published to
+    the kernel (Isaac i50) — standing on the support measured under it (the witness),
+    ``on_attach`` hands the held completed region over, and the published closure holds
+    every cell of the can inside, nothing of it touching from outside."""
+    from openral_core.geometry import homogeneous_from_quat_xyz
+
     pytest.importorskip("openral_msgs")
     with _live_leg("test_grasp_target_i45_completed_payload") as live:
         attachment_state = pytest.importorskip("openral_msgs.msg").AttachmentState
@@ -2609,7 +2621,6 @@ def test_a_map_completed_region_is_the_region_payload_handed_over_at_attach() ->
         taken = bridge._region_payload(right, stamp_ns=now_ns + 1)
         assert taken is not None and taken[1] == done
         payload = taken[0]
-        assert payload.primitives[0].shape.half_extents_m == pytest.approx(done.half_extents)
         assert payload.support_contact is not None, "no support witness under the payload"
         leg.on_attach(right.jaw_link, payload, region=taken[1])
         assert leg.tracker.handed_over == _RIGHT and leg.tracker.region == done
@@ -2617,6 +2628,14 @@ def test_a_map_completed_region_is_the_region_payload_handed_over_at_attach() ->
         msg = attachment_state()
         leg.fill(msg, now_ns=now_ns + 2)
         published = PlaceRegion.from_idl(msg.grasp_declaration.region)
+        # Isaac i50: the payload is the published (latched) box itself, not the held fit.
+        assert payload.primitives[0].shape.half_extents_m == pytest.approx(published.half_extents)
+        t_base_link = bridge._lookup("openarm_base", bridge.tf_frame(payload.attach_link))
+        assert t_base_link is not None
+        t_base_obj = t_base_link @ homogeneous_from_quat_xyz(
+            payload.pose_in_link.xyz, payload.pose_in_link.quat_xyzw
+        )
+        np.testing.assert_allclose(t_base_obj[:3, 3], published.pose.xyz, atol=1e-9)
         assert _in_region(_i4x_centres(_I4X_COMPONENT), published).all()
         assert len(occupied_touching_outside(grid, published, support_z=_I4X_SUPPORT_Z)) == 0
         assert published.pose.xyz[2] - published.half_extents[2] == pytest.approx(
