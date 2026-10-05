@@ -58,9 +58,9 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -71,7 +71,7 @@ from openral_core.geometry import homogeneous_from_quat_xyz, yaw_to_quat_xyzw
 from openral_hal._vision_attachment_evidence import backproject_masked_depth
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
     from openral_core import IntrinsicsPinhole
 
@@ -91,6 +91,7 @@ __all__ = [
     "region_within",
     "support_top_from_voxels",
     "target_region_from_mask",
+    "target_region_from_masks",
     "target_seed_from_voxels",
     "track_region",
 ]
@@ -120,6 +121,20 @@ class TargetRefusal(StrEnum):
     NOT_ON_SUPPORT = "not_on_support"
     HALF_EXTENT_CAP = "half_extent_cap"
     VOLUME_CAP = "volume_cap"
+    STACKED = "stacked"
+
+
+# Most severe first: how ``target_region_from_masks`` reports a candidate set it refused
+# whole. Every refusal but ``TOO_FEW_POINTS`` contradicts a held region (``not_on_support``
+# only when it is not the closing hand's occlusion, ``_grasp_target_leg._refused_fit``).
+_REFUSAL_SEVERITY = (
+    TargetRefusal.STACKED,
+    TargetRefusal.HALF_EXTENT_CAP,
+    TargetRefusal.VOLUME_CAP,
+    TargetRefusal.NO_HEIGHT_ABOVE_SUPPORT,
+    TargetRefusal.NOT_ON_SUPPORT,
+    TargetRefusal.TOO_FEW_POINTS,
+)
 
 
 @dataclass(frozen=True)
@@ -221,6 +236,7 @@ class TargetRegionFit:
             face pinned one voxel above the support like a region's), else ``None``: the
             leg tells the closing hand occluding the target's lower part (that box inside
             the held region) from a contradiction (``_refused_fit``).
+        z_span: Height of the (trimmed) cloud, top minus lowest point; 0 when too few.
     """
 
     region: PlaceRegion | None
@@ -229,6 +245,7 @@ class TargetRegionFit:
     depth_valid_fraction: float
     half_extents: tuple[float, float, float]
     box: PlaceRegion | None = None
+    z_span: float = 0.0
 
 
 def _in_region(points: NDArray[np.float64], region: PlaceRegion) -> NDArray[np.bool_]:
@@ -758,12 +775,15 @@ def target_region_from_mask(
     z_hi = top + pad
     half_xy = (hi_uv - lo_uv) / 2.0 + pad
     half = (float(half_xy[0]), float(half_xy[1]), (z_hi - bottom) / 2.0)
+    span = top - low
     if top <= bottom:
-        return TargetRegionFit(None, TargetRefusal.NO_HEIGHT_ABOVE_SUPPORT, n, valid, half)
+        return TargetRegionFit(
+            None, TargetRefusal.NO_HEIGHT_ABOVE_SUPPORT, n, valid, half, z_span=span
+        )
     if max(half) > max_half_extent_m:
-        return TargetRegionFit(None, TargetRefusal.HALF_EXTENT_CAP, n, valid, half)
+        return TargetRegionFit(None, TargetRefusal.HALF_EXTENT_CAP, n, valid, half, z_span=span)
     if 8.0 * half[0] * half[1] * half[2] > max_volume_m3:
-        return TargetRegionFit(None, TargetRefusal.VOLUME_CAP, n, valid, half)
+        return TargetRegionFit(None, TargetRefusal.VOLUME_CAP, n, valid, half, z_span=span)
 
     centre_xy = xy_mean + rot2 @ ((lo_uv + hi_uv) / 2.0)
     centre = (float(centre_xy[0]), float(centre_xy[1]), (z_hi + bottom) / 2.0)
@@ -775,8 +795,83 @@ def target_region_from_mask(
         stamp_ns=stamp_ns,
     )
     if low > support_z + 2.0 * resolution + 1e-9:
-        return TargetRegionFit(None, TargetRefusal.NOT_ON_SUPPORT, n, valid, half, box=region)
-    return TargetRegionFit(region, None, n, valid, half)
+        return TargetRegionFit(
+            None, TargetRefusal.NOT_ON_SUPPORT, n, valid, half, box=region, z_span=span
+        )
+    return TargetRegionFit(region, None, n, valid, half, z_span=span)
+
+
+def target_region_from_masks(
+    masks: Sequence[NDArray[np.bool_]],
+    depth_m: NDArray[np.float64],
+    intrinsics: IntrinsicsPinhole,
+    t_base_from_cam: NDArray[np.float64],
+    *,
+    resolution: float,
+    nested_fraction: float = 0.9,
+    **fit_kwargs: Any,  # noqa: ANN401  # reason: forwarded verbatim to target_region_from_mask
+) -> TargetRegionFit:
+    """``target_region_from_mask`` over a segmenter's candidate masks, HZ-0115-6 kept whole.
+
+    SAM returns nested candidates (subpart, part, whole). Each is fitted; the first one
+    that fits, in the segmenter's order, is the answer, except:
+
+    - **A body refused ``not_on_support`` vetoes every larger candidate holding it.** A
+      candidate refused ``NOT_ON_SUPPORT`` whose cloud spans at least two voxels of
+      height is a body standing on something; a larger candidate holding at least
+      ``nested_fraction`` of its pixels and reaching the support adds what it stands on
+      (an item on a riser of its footprint: the item mask is refused, the item + riser
+      mask fits), and a region pinned to the support would exempt that lower body. Such a
+      candidate is refused ``STACKED``. A top face alone (a can's lid: under two voxels of
+      height) has no body to stand on anything and vetoes nothing, so the whole can still
+      fits. ponytail: a subpart with its own height (a can's upper half) also vetoes the
+      whole object — less exemption, never more; the Safety-WG owns relaxing it.
+    - **A candidate set refused whole reports its most severe refusal**
+      (``_REFUSAL_SEVERITY``), never the last one tried: a contradiction is not read as a
+      lost view because a smaller candidate came last.
+
+    Args:
+        masks: The candidates on the depth raster, in the segmenter's order.
+        depth_m: ``(H, W)`` metric depth.
+        intrinsics: Intrinsics at ``(H, W)``.
+        t_base_from_cam: ``(4, 4)`` optical-frame → base-frame transform.
+        resolution: The voxel lattice's cell edge.
+        nested_fraction: Fraction of a refused body's pixels a larger candidate must hold to
+            stand on it. *Calibration point.*
+        **fit_kwargs: The rest of ``target_region_from_mask``'s keyword arguments.
+
+    Returns:
+        The chosen ``TargetRegionFit``; ``TOO_FEW_POINTS`` when ``masks`` is empty.
+    """
+    fits = [
+        target_region_from_mask(
+            mask, depth_m, intrinsics, t_base_from_cam, resolution=resolution, **fit_kwargs
+        )
+        for mask in masks
+    ]
+    bodies = [
+        mask
+        for mask, fit in zip(masks, fits, strict=True)
+        if fit.refusal is TargetRefusal.NOT_ON_SUPPORT and fit.z_span >= 2.0 * resolution
+    ]
+    checked: list[TargetRegionFit] = []
+    for mask, fit in zip(masks, fits, strict=True):
+        size = np.count_nonzero(mask)
+        stacked = any(
+            np.count_nonzero(body) < size
+            and np.count_nonzero(body & mask) >= nested_fraction * np.count_nonzero(body)
+            for body in bodies
+        )
+        if fit.region is not None and not stacked:
+            return fit
+        checked.append(
+            replace(fit, region=None, refusal=TargetRefusal.STACKED)
+            if fit.region is not None
+            else fit
+        )
+    if not checked:
+        return TargetRegionFit(None, TargetRefusal.TOO_FEW_POINTS, 0, 0.0, (0.0, 0.0, 0.0))
+    return min(checked, key=lambda f: _REFUSAL_SEVERITY.index(cast("TargetRefusal", f.refusal)))
 
 
 def region_covers_occupied(

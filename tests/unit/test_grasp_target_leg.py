@@ -1186,7 +1186,9 @@ def test_a_confirm_that_raises_hands_nothing_over() -> None:
 
 
 def test_a_named_declaration_stays_handed_over_after_its_pick() -> None:
-    """A named target was picked; a new target needs a new declaration from dispatch."""
+    """A named target was picked; a new target needs a new declaration from dispatch. Its
+    region dies at the release like an approach-armed one's: republished as the payload box
+    until the timeout, only the kernel's retired-identity set kept it from being used."""
     tracker, _ = _tracker()
     tracker.accept(_measured(11 * _S))
     tracker.on_attach("openarm_left_finger_pair", confirm=_CONFIRMED)
@@ -1194,8 +1196,10 @@ def test_a_named_declaration_stays_handed_over_after_its_pick() -> None:
     assert handed is not None
     tracker.on_release(handed, None)
     assert not tracker.on_pick_complete(handed, now_ns=12 * _S)
-    assert tracker.handed_over == handed and tracker.region == _measured(11 * _S)
+    assert tracker.handed_over == handed and tracker.region is None
     assert not tracker.wants_measurement(now_ns=12 * _S)
+    envelope = tracker.envelope(now_ns=12 * _S)
+    assert envelope is not None and envelope.region is None
 
 
 # ── approach: the support surface is not a target; no re-arm flood ──────────────
@@ -2007,6 +2011,45 @@ def test_an_attachment_change_refreshes_the_other_hands_pre_handover_arming() ->
         leg.tracker.accept(after)
         assert leg.tracker.region == after and leg.tracker.target is fresh
         assert left.attachment is None
+
+
+def test_the_detach_snapshot_no_longer_carries_the_released_region() -> None:
+    """The AttachmentState announcing a DETACH is filled after the grasp leg heard of it
+    (``on_detach``): its envelope carries no region, never the handed-over one as a payload
+    box — the kernel retires the declaration as released either way, this keeps the
+    producer's own claim consistent (defence in depth)."""
+    pytest.importorskip("openral_msgs")
+    from openral_msgs.msg import AttachmentState
+
+    with _live_leg("test_grasp_target_detach_snapshot") as live:
+        leg, bridge = live.leg, live.bridge
+        _attachment_publisher(live)
+        now_ns = leg._now_ns()
+        left = live.gripper("openarm_left_finger_pair")
+        live.place("left", (0.45, 0.0, 0.18))
+        live.place("right", (0.45, -0.30, 0.40))
+        leg._bridge._grid = (_held_block_lattice(), now_ns, time.monotonic())
+        leg.tracker.on_declaration(_goal_scope(stamp_ns=now_ns))
+        leg._detect_approach(0.10, now_ns)
+        live.place("left", (0.45, 0.0, 0.10))
+        leg.tracker.accept(_measured(now_ns))
+        t = _grip(bridge, 0.2, t0_ns=1)
+        assert left.attachment is not None and leg.tracker.handed_over == _LEFT
+        filled: list[Any] = []
+        sub = live.node.create_subscription(
+            AttachmentState, "/openral/attachment_state", filled.append, 10
+        )
+        _grip(bridge, 0.0, t0_ns=t)
+        assert left.attachment is None
+        rclpy = pytest.importorskip("rclpy")
+        deadline = time.monotonic() + 5.0
+        while not filled and time.monotonic() < deadline:
+            rclpy.spin_once(live.node, timeout_sec=0.05)
+        live.node.destroy_subscription(sub)
+        assert filled, "no snapshot at the DETACH"
+        assert not filled[0].grasp_declaration.region_valid, (
+            "the DETACH snapshot carried the released region"
+        )
 
 
 def test_an_attachment_change_leaves_a_handed_over_pick_to_its_own_path() -> None:

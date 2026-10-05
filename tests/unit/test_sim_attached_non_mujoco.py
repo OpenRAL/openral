@@ -237,6 +237,37 @@ def test_incomplete_action_group_fails_on_first_tick_transition() -> None:
     assert env.steps == 0  # atomicity preserved: nothing partial ever stepped
 
 
+def test_a_stop_boundary_discards_a_half_staged_group() -> None:
+    """A kernel stop cuts a tick short: the HAL lifecycle node calls
+    ``discard_staged_slots`` at the estop latch/clear (as for the MuJoCo and real HALs),
+    so the next goal's first slot starts clean instead of raising "incomplete action
+    group". The committed watermark is kept: the pre-stop tick is still stale."""
+    description = _franka_description()
+    env = _GroupedSim([0.0] * len(description.joints))
+    hal = SimAttachedHAL(env, description)
+    hal.connect()
+
+    def slot(tick: int, mode: ControlMode = ControlMode.BODY_TWIST) -> Action:
+        if mode is ControlMode.BODY_TWIST:
+            return Action(
+                control_mode=mode, body_twist=[(0.1, 0.0, 0.0, 0.0, 0.0, 0.0)], tick_index=tick
+            )
+        return Action(control_mode=mode, gripper=[1.0], ee_name="panda_hand", tick_index=tick)
+
+    hal.send_action(slot(3))
+    hal.send_action(slot(3, ControlMode.GRIPPER_POSITION))  # tick 3 committed
+    hal.send_action(slot(4))  # tick 4 half-staged when the stop lands
+    assert hal.discard_staged_slots() == 1
+    assert hal.discard_staged_slots() == 0
+    hal.send_action(slot(5))  # no "incomplete action group"
+    hal.send_action(slot(5, ControlMode.GRIPPER_POSITION))
+    assert env.steps == 2
+    from openral_core.exceptions import ROSRuntimeError
+
+    with pytest.raises(ROSRuntimeError):
+        hal.send_action(slot(3))  # the committed watermark survived the discard
+
+
 def test_group_commit_latches_commanded_base_twist() -> None:
     """The group path maintains base_twist like the per-mode send_action paths."""
     description = _franka_description()

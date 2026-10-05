@@ -152,6 +152,7 @@ class PlaceRefusal(StrEnum):
     FREE_VOLUME_OCCUPIED = "free_volume_occupied"
     SUPPORT_OCCLUDED = "support_occluded"
     FREEZE_TTL = "freeze_ttl"
+    GRID_MOVED = "grid_moved"
     NO_DECLARATION = "no_declaration"
     REDECLARED = "redeclared"
 
@@ -176,6 +177,8 @@ class PlacePatch:
         free_layers: Layers above ``layer`` that must stay free.
         plane_z: The support's top face in the grid frame (z up).
         region: The patch's one-voxel support slab as a ``PlaceRegion``.
+        lattice: The measured grid's ``(origin, orientation_xyzw, resolution)``: the
+            indices above name cells of that lattice only (``verify_patch``).
     """
 
     layer: int
@@ -186,6 +189,13 @@ class PlacePatch:
     free_layers: int
     plane_z: float
     region: PlaceRegion
+    lattice: tuple[tuple[float, float, float], tuple[float, float, float, float], float]
+
+
+def _lattice_key(
+    grid: VoxelLattice,
+) -> tuple[tuple[float, float, float], tuple[float, float, float, float], float]:
+    return grid.origin, grid.orientation_xyzw, grid.resolution
 
 
 # ── payload geometry ─────────────────────────────────────────────────────────
@@ -226,6 +236,11 @@ def _inside_any(points: NDArray[np.float64], posed: Posed, *, pad: float) -> NDA
 
 
 # ── measurement ──────────────────────────────────────────────────────────────
+
+
+#: How far a re-published lattice's origin/orientation/resolution may differ from the
+#: latch lattice and still be the same one: float noise only.
+_LATTICE_TOL = 1e-6
 
 
 def _z_up(grid: VoxelLattice) -> bool:
@@ -361,7 +376,7 @@ def measure_under_payload(
     plane_z = float(grid.origin[2] + (layer + 1) * res)
     ref = f"{evidence_ref}map_measured_support:plane_z={plane_z:.3f};patch={ni}x{nj}@layer{layer}"
     region = _patch_region(grid, layer, i0, j0, ni, nj, ref)
-    return PlacePatch(layer, i0, j0, ni, nj, free_layers, plane_z, region)
+    return PlacePatch(layer, i0, j0, ni, nj, free_layers, plane_z, region, _lattice_key(grid))
 
 
 def verify_patch(
@@ -371,12 +386,26 @@ def verify_patch(
 
     Anything occupied in the free volume (outside one voxel of the payload) is a
     contradiction; support cells missing are a lost view (the payload and hand
-    occlude the board, payload clearing removes the cells under it).
+    occlude the board, payload clearing removes the cells under it). A lattice moved
+    since the latch (origin, orientation or resolution beyond ``_LATTICE_TOL``) is a
+    contradiction too: the patch's indices no longer name its cells.
     """
     if grid.frame_id != patch.region.frame_id:
         return PlaceRefusal.FRAME_MISMATCH, f"grid now in {grid.frame_id!r}"
     if not _z_up(grid):
         return PlaceRefusal.TILTED, "the lattice is no longer yaw-only"
+    now = _lattice_key(grid)
+    if not all(
+        math.isclose(a, b, rel_tol=0.0, abs_tol=_LATTICE_TOL)
+        for x, y in zip(now[:2], patch.lattice[:2], strict=True)
+        for a, b in zip(x, y, strict=True)
+    ) or not math.isclose(now[2], patch.lattice[2], rel_tol=0.0, abs_tol=_LATTICE_TOL):
+        # The patch is indices into the latch lattice; on a re-snapped origin they name
+        # other columns, so clutter in the real free volume would go unseen.
+        return (
+            PlaceRefusal.GRID_MOVED,
+            f"lattice {now} is not the one the patch was latched on {patch.lattice}",
+        )
     ijk = _occupied_cells(grid, payload)
     in_cols = (
         (ijk[:, 0] >= patch.i0)

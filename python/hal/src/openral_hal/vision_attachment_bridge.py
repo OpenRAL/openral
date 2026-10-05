@@ -1575,9 +1575,8 @@ class VisionAttachmentBridge:
                 self._open_release(leg)
                 leg.attachment = None
                 leg.regrasp_hold = None
-                self._publish_attachment()
-                if leg.pending:
-                    self._release_barrier(leg)
+                # The grasp leg hears of it first, so the envelope of the DETACH snapshot
+                # below no longer carries the released region.
                 if self._grasp_target is not None and held is not None:
                     # The pick-complete path: the frozen record (None without tf2).
                     record = leg.release.record if leg.release is not None else None
@@ -1586,6 +1585,9 @@ class VisionAttachmentBridge:
                     # Nothing latched (a regrasp superseded before its reply): the hand
                     # may still be handed over, and nothing else would complete its pick.
                     self._grasp_target.on_hand_settled(leg.jaw_link)
+                self._publish_attachment()
+                if leg.pending:
+                    self._release_barrier(leg)
                 continue
             if leg.release is not None:
                 self._close_release(leg, "attach")
