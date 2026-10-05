@@ -3214,15 +3214,28 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # type natively and the custom one not at all. Nothing else in the
         # graph produces it, so without this the panels sit empty on every
         # deploy while the underlying world state is perfectly healthy.
-        # Read-only viz: it subscribes one topic and publishes one, and
-        # actuates nothing.
+        # It also draws `/openral/attachment_state` (held payload primitives,
+        # grasp/place regions) on `/openral/viz/attachments`, posed on the attach
+        # link's TF frame — so it gets the octomap bridge's `attach_link_tf_frames`
+        # renames (omitted when empty: an empty list has no ROS param type).
+        # Read-only viz: it subscribes and publishes viz topics, and actuates
+        # nothing.
         nodes.append(
             Node(
                 package="openral_foxglove_bringup",
                 executable="bucket2_markers",
                 name="openral_bucket2_markers",
                 output="log",
-                parameters=[{"use_sim_time": use_sim_time}],
+                parameters=[
+                    {
+                        "use_sim_time": use_sim_time,
+                        **(
+                            {"attach_link_tf_frames": attach_link_tf_frames}
+                            if attach_link_tf_frames
+                            else {}
+                        ),
+                    }
+                ],
                 additional_env=otel_env,
             )
         )
