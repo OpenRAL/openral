@@ -164,6 +164,8 @@ def _scene_panel(follow_frame: str) -> dict[str, Any]:
                 "colorMap": "turbo",
                 "pointSize": 0.04,
             },
+            # Grasped-object collision primitives + grasp/place regions.
+            "/openral/viz/attachments": {"visible": True},
             "/odom": {"visible": True},
             "/scan": {"visible": True},
         },
@@ -221,6 +223,8 @@ def _bucket2_panel(follow_frame: str) -> dict[str, Any]:
                 "colorMap": "turbo",
                 "pointSize": 0.04,
             },
+            # Grasped-object collision primitives + grasp/place regions.
+            "/openral/viz/attachments": {"visible": True},
         },
         # The robot in the close-up too: self-occupancy reads off the overlap.
         "layers": urdf_layer(),

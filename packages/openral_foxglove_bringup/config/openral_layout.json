@@ -39,6 +39,9 @@
      "colorMap": "turbo",
      "pointSize": 0.04
     },
+    "/openral/viz/attachments": {
+     "visible": true
+    },
     "/odom": {
      "visible": true
     },
@@ -138,6 +141,9 @@
      "colorMode": "colormap",
      "colorMap": "turbo",
      "pointSize": 0.04
+    },
+    "/openral/viz/attachments": {
+     "visible": true
     }
    },
    "layers": {
