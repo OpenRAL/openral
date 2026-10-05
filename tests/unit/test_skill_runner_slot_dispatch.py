@@ -470,3 +470,62 @@ def test_a_joint_position_slot_whose_width_differs_from_its_joint_names_is_refus
                 range=(0, width - 1), control_mode=ControlMode.JOINT_POSITION, joint_names=names
             )
     ActionSlot(range=(0, 6), control_mode=ControlMode.JOINT_POSITION, joint_names=names)
+
+
+def test_gripper_position_slots_are_clamped_inside_the_end_effectors_command_range(
+    runner_mod: ModuleType,
+) -> None:
+    """A GRIPPER_POSITION slot target past its end effector's range is pulled inside it.
+
+    Real fixtures: the OpenArm v2 manifest (``raw_joint_rad``: right gripper
+    ``[-0.7854, 0]``) and panda_mobile (``normalized_close_symmetric``: ``[-1, 1]``).
+    In Isaac on 2026-10-05 the restock π0.5 de-normalised its right gripper to
+    -0.785627 rad, 0.2 mrad past the limit; the kernel refused it (``gripper_range``)
+    and E-stopped after 361 ticks. The codec now clamps gripper channels the way it
+    clamps JOINT_POSITION ones.
+    """
+    import yaml
+    from openral_core import RobotDescription
+
+    repo_root = Path(__file__).resolve().parents[2]
+    desc = RobotDescription.model_validate(
+        yaml.safe_load((repo_root / "robots" / "openarm" / "robot.yaml").read_text())
+    )
+    right = next(e for e in desc.end_effectors if e.name == "right_gripper")
+    lo, hi = right.resolved_command_range()
+    assert (lo, hi) == pytest.approx((-0.7854, 0.0))
+    slots = [
+        ActionSlot(range=(0, 6), control_mode=ControlMode.JOINT_POSITION),
+        ActionSlot(range=(7, 7), control_mode=ControlMode.GRIPPER_POSITION, ee="left_gripper"),
+        ActionSlot(range=(8, 14), control_mode=ControlMode.JOINT_POSITION),
+        ActionSlot(range=(15, 15), control_mode=ControlMode.GRIPPER_POSITION, ee="right_gripper"),
+    ]
+    vec = np.zeros(16, dtype=np.float32)
+    vec[7] = 0.5  # in range: untouched
+    vec[15] = -0.7857  # 0.3 mrad past the open limit
+    actions = runner_mod._policy_action_to_actions(
+        vec,
+        codec=PolicyIOCodec.from_manifest(None, desc),
+        slots=slots,
+        description=desc,
+        cartesian_delta_scale=None,
+    )
+    grips = {a.ee_name: a.gripper[0] for a in actions if a.ee_name}
+    assert grips["right_gripper"] == pytest.approx(lo + 1e-3)
+    assert grips["right_gripper"] > lo
+    assert grips["left_gripper"] == pytest.approx(0.5)
+
+    panda = RobotDescription.model_validate(
+        yaml.safe_load((repo_root / "robots" / "panda_mobile" / "robot.yaml").read_text())
+    )
+    assert panda.end_effectors[0].name == "panda_gripper"
+    actions = runner_mod._policy_action_to_actions(
+        np.array([1.0003], dtype=np.float32),
+        codec=PolicyIOCodec.from_manifest(None, panda),
+        slots=[
+            ActionSlot(range=(0, 0), control_mode=ControlMode.GRIPPER_POSITION, ee="panda_gripper")
+        ],
+        description=panda,
+        cartesian_delta_scale=None,
+    )
+    assert actions[0].gripper[0] == pytest.approx(1.0 - 1e-3)
