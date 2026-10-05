@@ -77,13 +77,26 @@ surface leaves the target's own boundary cells (surface inside, centre outside)
 unexempt, and the finger hull swept over the target's top edge stops on them. The
 published region is ``cell_closed_region`` of the held fit against the newest grid:
 grown by ``r/2·(|cos θ|+|sin θ|)`` (≤ ``r/√2``) horizontally and ``r/2`` up, never
-down, so the support layer stays non-exempt. Every gate here (``_gate_refit``,
+down, so the support layer stays non-exempt (the closure itself: the grasp-target margin
+below bloats it downward first, by design). Every gate here (``_gate_refit``,
 ``region_within``, ``track_region``, the cover check, the hand tests, the ATTACH
 confirmation, ``measured_support``) keeps the held region (not its closure). The region
 *payload* is the closure (``kernel_region``, Safety-WG choice for Isaac i50): the box the
 kernel latched, so the target's own boundary cells sit at least half a cell inside the
 payload when the kernel snapshots its attach-time contacts — embedded residue, not
 obstacles — never grown down, so the support layer stays outside it (HZ-0115-31).
+
+**Bloated by the grasp-target margin** (``VisionAttachmentConfig.grasp_target_margin_m``,
+default 0.025 m, at most 0.05 m; Safety-WG choice, HZ-0115-32). Before the closure the
+held region is grown by the margin (``margin_grown_region``): on **every face, downward
+too**, for the region the kernel exempts for the declared finger links before the
+handover — the fingers may close around the target and press up to the margin into the
+support under it, and anything within the margin of it is exempt for them for this
+declaration — and on the sides and top only, never down, for the region payload, which
+the hand carries and the kernel checks against the environment like any attached
+object. The margin, not the measured box, shrinks to keep the bloat within
+``GraspDeclaration``'s caps (logged). Every producer gate keeps the unbloated held
+region; ``0.0`` is the unbloated behaviour exactly.
 
 **Completed from the map** (``map_completed_region``, Safety-WG choice for Isaac i45).
 The camera confirms which object the target is (the self-filtered fit of its visible
@@ -198,7 +211,13 @@ from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
-from openral_core import GraspDeclaration, PlaceRegion, Pose6D, gripper_hands
+from openral_core import (
+    GraspDeclaration,
+    PlaceRegion,
+    Pose6D,
+    VisionAttachmentRuntime,
+    gripper_hands,
+)
 from openral_core.exceptions import ROSConfigError, ROSSafetyViolation
 from openral_core.geometry import homogeneous_from_quat_xyz
 
@@ -208,6 +227,7 @@ from openral_hal._grasp_target import (
     _in_region,
     cell_closed_region,
     map_completed_region,
+    margin_grown_region,
     mask_without_removed_points,
     occupied_centers_in_box,
     occupied_touching_outside,
@@ -1158,24 +1178,74 @@ def _refused_fit(
     return _contradicted(kind, detail)
 
 
-def _kernel_closure(region: PlaceRegion, grid: VoxelLattice) -> tuple[PlaceRegion, str]:
-    """``region`` as the kernel gets it over ``grid``, and a note when not cell-closed.
-
-    ``cell_closed_region`` clamped at ``GraspDeclaration.MAX_HALF_EXTENT_M`` (noted); a
-    closure over ``GraspDeclaration.MAX_VOLUME_M3`` is the tight fit (noted). Raises
-    ``ROSConfigError`` as ``cell_closed_region`` does (another frame, a tilted region).
-    """
+def _within_caps(region: PlaceRegion, grid: VoxelLattice) -> bool:
+    """Whether ``region``'s cell closure fits ``GraspDeclaration``'s caps unclamped."""
     closed, clamped = cell_closed_region(
         region, grid, max_half_extent_m=GraspDeclaration.MAX_HALF_EXTENT_M
     )
+    return not clamped and closed.volume_m3() <= GraspDeclaration.MAX_VOLUME_M3
+
+
+def _capped_margin(region: PlaceRegion, grid: VoxelLattice, margin_m: float) -> tuple[float, str]:
+    """The largest margin ``<= margin_m`` whose all-faces bloat of ``region`` stays in the caps.
+
+    The margin shrinks, never the measured box (HZ-0115-32): the cell closure of
+    ``margin_grown_region(region, m, down=True)`` must fit ``MAX_HALF_EXTENT_M`` and
+    ``MAX_VOLUME_M3`` unclamped. The all-faces bloat contains the sides-and-top one, so
+    the payload taking the same margin stays inside the region the kernel latched. Both
+    constraints are monotone in ``m``, so a bisection finds it (to well under a
+    millimetre, rounded down: always within the caps).
+    """
+    if margin_m <= 0.0 or _within_caps(margin_grown_region(region, margin_m, down=True), grid):
+        return margin_m, ""
+    if not _within_caps(region, grid):
+        return 0.0, f"margin {margin_m} m dropped: the unbloated closure is at the caps"
+    lo, hi = 0.0, margin_m
+    for _ in range(40):
+        mid = (lo + hi) / 2.0
+        if _within_caps(margin_grown_region(region, mid, down=True), grid):
+            lo = mid
+        else:
+            hi = mid
+    return lo, (
+        f"margin reduced {margin_m} -> {lo:.4f} m to stay within the "
+        f"{GraspDeclaration.MAX_HALF_EXTENT_M} m half-extent / "
+        f"{GraspDeclaration.MAX_VOLUME_M3} m^3 caps"
+    )
+
+
+def _kernel_closure(
+    region: PlaceRegion, grid: VoxelLattice, *, margin_m: float = 0.0, down: bool = True
+) -> tuple[PlaceRegion, str]:
+    """``region`` as the kernel gets it over ``grid``, and a note when not as configured.
+
+    Bloated by ``margin_m`` first (``margin_grown_region``: every face with ``down``, the
+    kernel's pre-handover region; sides and top only without it, the region payload),
+    the margin shrunk to fit the caps (``_capped_margin``, noted), then
+    ``cell_closed_region`` clamped at ``GraspDeclaration.MAX_HALF_EXTENT_M`` (noted); a
+    closure over ``GraspDeclaration.MAX_VOLUME_M3`` is the tight fit (noted). ``margin_m
+    = 0`` is the unbloated closure exactly. Raises ``ROSConfigError`` as
+    ``cell_closed_region`` does (another frame, a tilted region).
+    """
+    margin, note = _capped_margin(region, grid, margin_m)
+    closed, clamped = cell_closed_region(
+        margin_grown_region(region, margin, down=down),
+        grid,
+        max_half_extent_m=GraspDeclaration.MAX_HALF_EXTENT_M,
+    )
     if closed.volume_m3() > GraspDeclaration.MAX_VOLUME_M3:
-        return region, (
-            f"published tight: the closure exceeds the {GraspDeclaration.MAX_VOLUME_M3} "
-            "m^3 volume cap"
+        closed, cap = (
+            region,
+            (
+                f"published tight: the closure exceeds the {GraspDeclaration.MAX_VOLUME_M3} "
+                "m^3 volume cap"
+            ),
         )
-    if clamped:
-        return closed, f"clamped at the {GraspDeclaration.MAX_HALF_EXTENT_M} m half-extent cap"
-    return closed, ""
+    elif clamped:
+        cap = f"clamped at the {GraspDeclaration.MAX_HALF_EXTENT_M} m half-extent cap"
+    else:
+        cap = ""
+    return closed, "; ".join(n for n in (note, cap) if n)
 
 
 def _gate_refit(
@@ -1326,9 +1396,10 @@ class GraspTargetLeg:
             fraction or probe margin; a freeze outside ``(0, 2 * grid_max_age_s]`` (the
             kernel's ``grasp_region_max_age_s``),
             a search depth outside ``(0, 0.5]`` m or an occluder margin outside
-            ``[0, 0.10]`` m, or an approach distance outside
-            ``(0, GraspDeclaration.MAX_HALF_EXTENT_M]`` (``grid_max_age_s`` itself is
-            checked by the bridge).
+            ``[0, 0.10]`` m, an approach distance outside
+            ``(0, GraspDeclaration.MAX_HALF_EXTENT_M]``, or a ``grasp_target_margin_m``
+            outside ``[0, VisionAttachmentRuntime.MAX_GRASP_TARGET_MARGIN_M]``
+            (``grid_max_age_s`` itself is checked by the bridge).
     """
 
     def __init__(
@@ -1349,6 +1420,13 @@ class GraspTargetLeg:
                 f"m, got {approach_m!r}."
             )
         self._approach_m = approach_m
+        margin_cap = VisionAttachmentRuntime.MAX_GRASP_TARGET_MARGIN_M
+        if not 0.0 <= config.grasp_target_margin_m <= margin_cap:
+            raise ROSConfigError(
+                f"grasp_target_margin_m must be in [0, {margin_cap}] m, got "
+                f"{config.grasp_target_margin_m!r}."
+            )
+        self._margin_m = config.grasp_target_margin_m
         # The robot's hands, for the approach-armed target (one hand arms at a time).
         self._hands_of_robot = gripper_hands(bridge._description)
         if not _RATE_BAND_HZ[0] <= config.grasp_target_rate_hz <= _RATE_BAND_HZ[1]:
@@ -1459,6 +1537,7 @@ class GraspTargetLeg:
             f"support_probe_margin={self._probe_margin_m:.2f}m "
             f"occluder_margin={self._occluder_margin_m:.2f}m "
             f"approach={'off' if self._approach_m is None else f'{self._approach_m:.2f}m'} "
+            f"margin={self._margin_m:.3f}m (kernel region: every face; payload: sides+top) "
             f"deadline={self._config.deadline_s:.3f}s"
         )
 
@@ -1497,31 +1576,47 @@ class GraspTargetLeg:
         declaration.fill_idl(msg.grasp_declaration)
 
     @_locked
-    def kernel_region(self, target_id: str, region: PlaceRegion) -> PlaceRegion:
-        """The held fit as the kernel gets it: closed over the cells of the newest grid.
+    def kernel_region(
+        self, target_id: str, region: PlaceRegion, *, payload: bool = False
+    ) -> PlaceRegion:
+        """The held region as the kernel gets it: bloated, then closed over the newest grid.
 
-        Also the region payload's box (``VisionAttachmentBridge._region_payload``): the
-        payload the kernel snapshots at the handover is the box it latched, so the
-        target's own boundary cells sit at least half a cell inside it (embedded
-        residue, Isaac i50) while the producer's own gates keep the held region.
+        ``payload=False`` (``fill``): the kernel's pre-handover region — the held region
+        grown by ``grasp_target_margin_m`` on **every face, downward too**
+        (``margin_grown_region``, HZ-0115-32), so for the declared finger links cells up
+        to the margin below its lower face (the support under the target) and beside it
+        are exempt. ``payload=True`` (``VisionAttachmentBridge._region_payload``): the
+        attached payload's box — grown by the same margin on the sides and the top only,
+        never down, so the support stays outside it; it lies inside the region the kernel
+        latched (the handover's payload-origin-in-region rule), and the target's own
+        boundary cells sit at least half a cell inside it (embedded residue, Isaac i50).
+        The producer's own gates keep the held region.
 
-        The kernel exempts a voxel only when its centre lies in the region, so the
-        tight fit leaves the target's own boundary cells unexempt; ``cell_closed_region``
-        grows it by at most half a cell per side (``r/√2`` horizontally, ``r/2`` up,
-        never down). The newest grid is the one the kernel checks the same publication
-        against. Each half-extent is clamped at ``GraspDeclaration.MAX_HALF_EXTENT_M``;
-        a closure over the volume cap, no grid or a grid in another frame (the kernel
-        refuses that region itself) publishes the tight fit. Every such case is logged
-        once per change.
+        The kernel exempts a voxel only when its centre lies in the region, so the bloat
+        is then ``cell_closed_region``: at most half a cell more per side (``r/√2``
+        horizontally, ``r/2`` up, never down). The newest grid is the one the kernel
+        checks the same publication against. The margin, not the measurement, shrinks to
+        keep the bloat within ``GraspDeclaration``'s caps; each half-extent is clamped at
+        ``MAX_HALF_EXTENT_M``; a closure over the volume cap, no grid or a grid in another
+        frame (the kernel refuses that region itself) publishes the tight fit. Every such
+        case is logged once per change (the payload's at its ATTACH).
         """
         grid = self._grid
         try:
             if grid is None:
                 raise ROSConfigError("no voxel grid to close the region over")
-            closed, note = _kernel_closure(region, grid[0])
+            closed, note = _kernel_closure(
+                region, grid[0], margin_m=self._margin_m, down=not payload
+            )
         except ROSConfigError as exc:
             closed = region
             note = f"published tight: {exc}"
+        if payload:
+            if note:
+                self._node.get_logger().warning(
+                    f"grasp target payload for {target_id!r}: cell closure {note}"
+                )
+            return closed
         if note != self._closure_note:
             self._closure_note = note
             if note:
