@@ -16,7 +16,7 @@ rows join only on identical placeholder text, except that every
 Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 `just lint` and pre-commit fail when this page is stale.
 
-## Topics (44)
+## Topics (45)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
@@ -64,15 +64,16 @@ Regenerate with `uv run python tools/gen_ros_topic_graph.py`;
 | `cloud_in` | `sensor_msgs/PointCloud2` | — | packages/openral_octomap_bridge/src/robot_self_filter.hpp |
 | `cloud_out` | `sensor_msgs/PointCloud2` | packages/openral_octomap_bridge/src/robot_self_filter.hpp | — |
 | `~/joint_states` | `sensor_msgs/JointState` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase.on_activate) | — |
+| `~/urdf_joint_states` | `msg_type` | python/hal/src/openral_hal/lifecycle.py (HALLifecycleNodeBase._open_urdf_joint_state_pub) | — |
 
 ## Per-instance topics (10)
 
 | Name | Type | Publishers | Subscribers |
 |---|---|---|---|
-| `/openral/cameras/{sensor}/camera_info` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera) | — |
+| `/openral/cameras/{sensor}/camera_info` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._colour_publishers) | — |
 | `/openral/cameras/{sensor}/depth/camera_info` | `sensor_msgs/CameraInfo` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | — |
 | `/openral/cameras/{sensor}/depth/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | — |
-| `/openral/cameras/{sensor}/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera) | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) |
+| `/openral/cameras/{sensor}/image` | `sensor_msgs/Image` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._advertise_camera)<br>python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._colour_publishers) | packages/world_state/openral_world_state_ros/lifecycle_node.py (_WorldStateLifecycleNode.on_configure) |
 | `/openral/cameras/{sensor}/points` | `sensor_msgs/PointCloud2` | python/hal/src/openral_hal/sim_sensor_bridge.py (SimSensorBridge._setup_depth) | — |
 | `/openral/failure/{source}` | `openral_msgs/FailureTrigger` | — | packages/openral_reasoner_ros/openral_reasoner_ros/reasoner_node.py (ReasonerNode.on_configure) |
 | `/openral/perception/{detector.kind}` | `openral_msgs/PromptStamped` | python/runner/src/openral_runner/backends/gstreamer/perception_tee.py (PerceptionEventPublisher.start) | — |

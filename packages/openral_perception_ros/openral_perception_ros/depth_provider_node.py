@@ -27,8 +27,8 @@ def main(args: Any = None) -> None:
     """Entry point: init ROS, spin the depth-provider node, shut down cleanly."""
     import numpy as np
     import rclpy
+    from openral_observability.rclpy_spin import spin_node_until_shutdown
     from PIL import Image as PILImage
-    from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
     from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
     from sensor_msgs.msg import CameraInfo, Image
@@ -172,9 +172,7 @@ def main(args: Any = None) -> None:
     rclpy.init(args=args)
     node = DepthProviderNode()
     try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
+        spin_node_until_shutdown(node)  # quiet on the SIGINT shutdown race
     finally:
         node.destroy_node()
         if rclpy.ok():

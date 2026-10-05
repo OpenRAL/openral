@@ -517,6 +517,9 @@ class SimAttachedHAL:
         # publisher can republish whatever the env rendered without
         # re-stepping the simulator. ``None`` until ``connect``.
         self._last_obs: dict[str, Any] | None = None
+        # Newest registered colour + depth frames (``read_depth_frames``): a backend
+        # ships them on some steps only, so they outlive the step that carried them.
+        self._last_depth_frames: dict[str, dict[str, Any]] = {}
         self._body_twist_dt_s: float = body_twist_dt_s
         # Built once per env on first read_state; reset on connect.
         self._joint_index: dict[str, int] | None = None
@@ -612,6 +615,7 @@ class SimAttachedHAL:
         except Exception as exc:
             raise ROSRuntimeError(f"SimAttachedHAL.connect: env.reset failed: {exc}") from exc
         self._last_obs = dict(obs) if isinstance(obs, dict) else None
+        self._keep_depth_frames(self._last_obs)
         self._last_state_ns = time.time_ns()
         self._connected = True
         self._pending_action_key = None
@@ -1182,6 +1186,13 @@ class SimAttachedHAL:
         obs = getattr(step_result, "observation", None)
         if isinstance(obs, dict):
             self._last_obs = dict(obs)
+            self._keep_depth_frames(self._last_obs)
+
+    def _keep_depth_frames(self, obs: dict[str, Any] | None) -> None:
+        """Keep the newest ``"depth_frames"`` an observation carried (see ``read_depth_frames``)."""
+        frames = obs.get("depth_frames") if obs is not None else None
+        if isinstance(frames, dict) and frames:
+            self._last_depth_frames = {str(k): v for k, v in frames.items() if isinstance(v, dict)}
 
     # ── Task-success signal (observability only) ────────────────────────
 
@@ -1989,7 +2000,27 @@ class SimAttachedHAL:
         clouds = self._last_obs.get("depth_points")
         if not isinstance(clouds, dict):
             return {}
-        return {str(k): np.asarray(v, dtype=np.float32).reshape(-1, 3) for k, v in clouds.items()}
+        out: dict[str, NDArray[np.float32]] = {}
+        for k, v in clouds.items():
+            arr = np.asarray(v, dtype=np.float32)
+            # The backend's own (N, 3) array, not a fresh view of it: SimSensorBridge
+            # publishes each cloud once, by identity.
+            out[str(k)] = arr if arr.shape[1:] == (3,) else arr.reshape(-1, 3)
+        return out
+
+    def read_depth_frames(self) -> dict[str, dict[str, Any]]:
+        """Return the newest registered colour + depth frame per depth sensor.
+
+        A non-MuJoCo backend (the Isaac manifest scene) renders each depth camera's
+        metric depth AND its RGB in one render and surfaces them under the
+        ``"depth_frames"`` obs slot as ``{name: {"depth": (H, W) float32 m,
+        "rgb": (H, W, 3) uint8, "k": [fx, fy, cx, cy], "optical_in_base": 4x4}}``.
+        The backend ships them on some steps only, so the newest frame is kept
+        until the next one replaces it; ``SimSensorBridge`` publishes each frame
+        once (by identity). Empty when the backend renders none (MuJoCo backends
+        ray-cast their depth instead). Never raises.
+        """
+        return dict(self._last_depth_frames)
 
     def read_scan(self) -> NDArray[np.float32] | None:
         """Return the 2-D LaserScan range fan, or ``None``.

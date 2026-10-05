@@ -36,6 +36,9 @@ from openral_hal.mobile_base_bridge import describes_mobile_base
 # payload with redundant thumbnails (the dashboard polls at ~1 Hz anyway).
 _THUMB_INTERVAL_NS = 1_000_000_000
 _IMAGE_DIM = 3  # HWC ndarray
+# How far (pixels) a depth raster's principal point may sit from its centre and still
+# be the image MuJoCo renders from that camera (``_publish_registered_colour``).
+_REGISTERED_PRINCIPAL_TOL_PX = 0.5
 _RGB_CHANNELS = 3
 # Cap on the pre-attach occupancy snapshot (#272). A partial set would answer
 # "not pre-existing" for cells it never looked at, so an over-large grid is
@@ -187,6 +190,23 @@ def should_idle_step(
         False
     """
     return step_while_active or now_ns - last_action_ns >= idle_hold_ns
+
+
+def _rgb8_image(rgb: Any, *, frame_id: str, stamp: Any) -> Any:
+    """Pack an ``(H, W, 3)`` uint8 array as an ``rgb8`` ``sensor_msgs/Image``."""
+    from sensor_msgs.msg import Image as RosImage
+
+    h, w = int(rgb.shape[0]), int(rgb.shape[1])
+    msg = RosImage()
+    msg.header.stamp = stamp
+    msg.header.frame_id = frame_id
+    msg.height = h
+    msg.width = w
+    msg.encoding = "rgb8"
+    msg.is_bigendian = 0
+    msg.step = 3 * w
+    msg.data = rgb.astype("uint8").tobytes()
+    return msg
 
 
 def _frame_for_camera(images: dict[str, Any], obs_key: str, name: str) -> Any:
@@ -2622,6 +2642,19 @@ class SimSensorBridge:
         # (which rejects the sparse hit-only cloud) can build a `/map`.
         self._depth_image_pubs: dict[str, Any] = {}
         self._depth_info_pubs: dict[str, Any] = {}
+        # A depth sensor that owns its sim camera (``sim_placement``) also publishes
+        # that camera's colour at the depth raster, registered to it pixel for pixel
+        # (``_publish_registered_colour``): one renderer and Image/CameraInfo pair each.
+        self._depth_colour_pubs: dict[str, tuple[Any, Any]] = {}
+        self._depth_colour_renderers: dict[str, Any] = {}
+        # Depth sensors on a manifest mount (body-convention ``frame_id``): their
+        # optical child is a static TF under the mount, never a live one.
+        self._depth_static_optical: set[str] = set()
+        # Backend RGB-D frames already published (identity per camera) and the
+        # cameras warned for a colour/depth size mismatch (``_publish_depth_frame``).
+        self._depth_frames_published: dict[str, Any] = {}
+        self._depth_clouds_published: dict[str, Any] = {}
+        self._depth_colour_mismatch_warned: set[str] = set()
         self._depth_timer: Any = None
         self._attachment_sub: Any = None
         self._attachment_ack_sub: Any = None
@@ -2801,11 +2834,21 @@ class SimSensorBridge:
             *self._depth_pubs.values(),
             *self._depth_image_pubs.values(),
             *self._depth_info_pubs.values(),
+            *(p for pair in self._depth_colour_pubs.values() for p in pair),
         ):
             self._node.destroy_publisher(pub)
         self._depth_pubs.clear()
         self._depth_image_pubs.clear()
         self._depth_info_pubs.clear()
+        self._depth_colour_pubs.clear()
+        for renderer in self._depth_colour_renderers.values():
+            with contextlib.suppress(Exception):  # reason: GL context already gone
+                renderer.close()
+        self._depth_colour_renderers.clear()
+        self._depth_static_optical.clear()
+        self._depth_frames_published.clear()
+        self._depth_clouds_published.clear()
+        self._depth_colour_mismatch_warned.clear()
         self._depth_disabled.clear()
         self._depth_base_body = None
         self._depth_base_body_id = -1
@@ -3454,22 +3497,28 @@ class SimSensorBridge:
         subscriptions and the MuJoCo evidence tracker that drive real
         attach/release transitions — needs the API.
 
-        ``attachment_heartbeat=False`` opens nothing here for a HAL without the
-        API. The HAL node sets it (``lifecycle.sim_attachment_heartbeat``) when
-        its vision attachment leg is on — that leg publishes revisions on the
-        same latched topic, and a revision-0 heartbeat beside it would move the
-        aggregator's revision backwards on every timer tick — and under
+        ``attachment_heartbeat=False`` opens nothing here — no publisher, no
+        timer, no evidence tracker, whatever the HAL. The HAL node sets it
+        (``lifecycle.sim_attachment_heartbeat``) when its vision attachment leg is
+        on — that leg publishes revisions on the same latched topic, and a
+        revision-0 heartbeat beside it would move the aggregator's revision
+        backwards on every timer tick — and under
         ``hal_mode:=real``, where "nothing attached" is a claim no evidence
         backs.
         """
-        update = getattr(self._hal, "update_attached_objects", None)
-        read = getattr(self._hal, "read_attached_objects", None)
-        if not self._attachment_heartbeat and not (callable(update) and callable(read)):
+        if not self._attachment_heartbeat:
+            # Another authority owns the topic — even for a HAL with the attachment
+            # API (``SimAttachedHAL``), whose MuJoCo evidence tracker would otherwise
+            # still publish beside the vision leg: two writers on one latched topic,
+            # the leg's set and declarations alternating with this bridge's empty
+            # revision-0 snapshot (Isaac deploy sim, 2026-10-04).
             self._node.get_logger().info(
                 "attachment heartbeat off: another attachment authority publishes "
                 "/openral/attachment_state"
             )
             return
+        update = getattr(self._hal, "update_attached_objects", None)
+        read = getattr(self._hal, "read_attached_objects", None)
         from openral_msgs.msg import AttachmentState
         from rclpy.qos import (
             QoSDurabilityPolicy,
@@ -3982,6 +4031,12 @@ class SimSensorBridge:
             self._depth_info_pubs[spec.name] = self._node.create_publisher(
                 CameraInfo, camera_topic(spec.name, CameraTopicKind.DEPTH_CAMERA_INFO), info_qos
             )
+            if spec.sim_placement is not None and has_mujoco:
+                # It owns its sim camera: the colour of that camera is registered to
+                # the ray-cast depth (``_publish_registered_colour``).
+                self._colour_publishers(spec.name)
+            if has_mujoco:
+                self._publish_depth_optical_mount(spec)
         self._depth_timer = self._node.create_timer(
             1.0 / max(self._depth_rate_hz, 1.0), self._publish_depth_clouds
         )
@@ -3990,7 +4045,113 @@ class SimSensorBridge:
             "(PointCloud2 + 32FC1 depth image + CameraInfo): "
             + ", ".join(s.name for s in depth_specs)
             + f" @ {self._depth_rate_hz:.1f} Hz"
+            + (
+                "; registered colour for " + ", ".join(sorted(self._depth_colour_pubs))
+                if self._depth_colour_pubs
+                else ""
+            )
         )
+
+    def _publish_depth_optical_mount(self, spec: Any) -> None:
+        """Latch ``<mount> -> <mount>_optical_frame`` for a body-frame depth sensor.
+
+        A depth sensor whose ``frame_id`` is a body-convention camera mount with a
+        manifest pose (``parent_frame`` + ``static_transform_xyz_rpy``, published by
+        the deploy launch) gets its optical child here, the way a real camera
+        driver publishes its own optical frame under its mount. Its sim camera
+        sits at that same mount (``SensorSpec.sim_placement``), so the raster,
+        the cloud and the registered colour are placed by TF where they were
+        cast. A sensor already framed optically, or with no manifest mount, keeps
+        the live ``base -> optical`` TF of ``_publish_depth_clouds``.
+        """
+        from openral_hal.depth_cloud import BODY_TO_OPTICAL_QUAT_XYZW, depth_optical_frame_id
+
+        optical = depth_optical_frame_id(spec)
+        if (
+            optical == spec.frame_id
+            or spec.parent_frame is None
+            or spec.static_transform_xyz_rpy is None
+        ):
+            return
+        from geometry_msgs.msg import TransformStamped
+        from tf2_ros import StaticTransformBroadcaster
+
+        if self._static_tf_broadcaster is None:
+            self._static_tf_broadcaster = StaticTransformBroadcaster(self._node)
+        tf = TransformStamped()
+        tf.header.stamp = self._node.get_clock().now().to_msg()
+        tf.header.frame_id = str(spec.frame_id)
+        tf.child_frame_id = optical
+        qx, qy, qz, qw = BODY_TO_OPTICAL_QUAT_XYZW
+        tf.transform.rotation.x = qx
+        tf.transform.rotation.y = qy
+        tf.transform.rotation.z = qz
+        tf.transform.rotation.w = qw
+        self._static_tf_broadcaster.sendTransform(tf)
+        self._depth_static_optical.add(spec.name)
+
+    def _publish_registered_colour(
+        self,
+        *,
+        name: str,
+        model: Any,
+        data: Any,
+        camera_name: str,
+        info: Any,
+        frame_id: str,
+        stamp: Any,
+    ) -> None:
+        """Render the depth camera's colour at its raster and publish it beside the depth.
+
+        The real head camera's driver publishes RGB registered to its depth (same
+        optical frame, same raster): the segmenter masks the colour and the
+        attachment leg back-projects that mask through the depth. This is the sim's
+        version, for a depth sensor that owns its sim camera: the same MJCF camera,
+        the same instant (the ``MjData`` the depth was cast from), the same
+        ``CameraInfo``. MuJoCo renders square pixels about the image centre with the
+        camera's ``fovy``, so registration needs the raster's ``fx == fy``, a centred
+        principal point, and ``fy`` equal to the one the ``fovy`` implies; a camera
+        model that breaks it publishes no colour, warned once, rather than a frame
+        misregistered against its depth.
+        """
+        import math
+
+        import mujoco  # reason: defer optional sim dep
+
+        pubs = self._depth_colour_pubs.get(name)
+        if pubs is None:
+            return
+        w, h = int(info.width), int(info.height)
+        fx, fy, cx, cy = float(info.k[0]), float(info.k[4]), float(info.k[2]), float(info.k[5])
+        cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera_name)
+        fy_fovy = (
+            (h / 2.0) / math.tan(math.radians(float(model.cam_fovy[cam_id])) / 2.0)
+            if cam_id >= 0
+            else float("nan")
+        )
+        if not (
+            abs(fx - fy) <= 1e-3 * fy
+            and abs(cx - w / 2.0) <= _REGISTERED_PRINCIPAL_TOL_PX
+            and abs(cy - h / 2.0) <= _REGISTERED_PRINCIPAL_TOL_PX
+            and abs(fy - fy_fovy) <= 1e-2 * fy
+        ):
+            self._depth_colour_pubs.pop(name)
+            self._node.get_logger().warning(
+                f"registered colour for depth camera {name!r} disabled: raster K "
+                f"fx={fx:.2f} fy={fy:.2f} cx={cx:.2f} cy={cy:.2f} ({w}x{h}) is not the "
+                f"square, centred pinhole its MJCF camera renders (fy from fovy "
+                f"{fy_fovy:.2f}); check the sensor's intrinsics against sim_placement.fovy_deg."
+            )
+            return
+        renderer = self._depth_colour_renderers.get(name)
+        if renderer is None:
+            renderer = mujoco.Renderer(model, height=h, width=w)
+            self._depth_colour_renderers[name] = renderer
+        renderer.update_scene(data, camera=camera_name)
+        rgb = renderer.render()
+        image_pub, info_pub = pubs
+        image_pub.publish(_rgb8_image(rgb, frame_id=frame_id, stamp=stamp))
+        info_pub.publish(info)
 
     def _resolve_depth_base_body(self, model: object) -> None:
         """Resolve + cache the MJCF base bodies (self-exclusion **and** TF parent).
@@ -4122,6 +4283,7 @@ class SimSensorBridge:
             camera_info_from_intrinsics,
             camera_optical_tf_to_base,
             depth_image_from_grid,
+            depth_optical_frame_id,
             depth_synth_kwargs,
             is_depth_sensor,
             pointcloud2_from_points_xyz,
@@ -4145,10 +4307,12 @@ class SimSensorBridge:
             if spec is None:
                 continue
             try:
+                # A sensor that owns its sim camera casts at its own intrinsics; the
+                # scene's RGB render size describes some other camera.
                 kwargs = depth_synth_kwargs(
                     spec,
                     max_range_default=max_range_default,
-                    render_size=self._render_size(),
+                    render_size=None if spec.sim_placement is not None else self._render_size(),
                 )
                 # The ONE ray-cast of this frame: a dense 32FC1 raster (every
                 # pixel, 0.0 = no return) at the strided resolution, so the
@@ -4175,7 +4339,8 @@ class SimSensorBridge:
                     max_range_m=float(kwargs["max_range_m"]),
                     **intr,
                 )
-                cloud = pointcloud2_from_points_xyz(points, frame_id=spec.frame_id, stamp=stamp)
+                optical_frame = depth_optical_frame_id(spec)
+                cloud = pointcloud2_from_points_xyz(points, frame_id=optical_frame, stamp=stamp)
                 pub.publish(cloud)
                 if self._attachment_depth_frames_remaining > 0:
                     # One transparent cloud has now gone out: the attachment
@@ -4187,18 +4352,30 @@ class SimSensorBridge:
                 # single raster (the barrier used to skip this publish only to
                 # avoid a second cast, which no longer exists).
                 self._depth_image_pubs[name].publish(
-                    depth_image_from_grid(depth_grid, frame_id=spec.frame_id, stamp=stamp)
+                    depth_image_from_grid(depth_grid, frame_id=optical_frame, stamp=stamp)
                 )
-                self._depth_info_pubs[name].publish(
-                    camera_info_from_intrinsics(
-                        width=w_eff,
-                        height=h_eff,
-                        **intr,
-                        frame_id=spec.frame_id,
-                        stamp=stamp,
-                    )
+                depth_info = camera_info_from_intrinsics(
+                    width=w_eff,
+                    height=h_eff,
+                    **intr,
+                    frame_id=optical_frame,
+                    stamp=stamp,
                 )
-                if self._base_frame_body is not None and self._tf_broadcaster is not None:
+                self._depth_info_pubs[name].publish(depth_info)
+                self._publish_registered_colour(
+                    name=name,
+                    model=model,
+                    data=data,
+                    camera_name=kwargs["camera_name"],
+                    info=depth_info,
+                    frame_id=optical_frame,
+                    stamp=stamp,
+                )
+                if (
+                    self._base_frame_body is not None
+                    and self._tf_broadcaster is not None
+                    and name not in self._depth_static_optical
+                ):
                     xyz, quat = camera_optical_tf_to_base(
                         model=model,
                         data=data,
@@ -4208,7 +4385,7 @@ class SimSensorBridge:
                     tf = TransformStamped()
                     tf.header.stamp = stamp
                     tf.header.frame_id = base_frame_id
-                    tf.child_frame_id = spec.frame_id
+                    tf.child_frame_id = optical_frame
                     tf.transform.translation.x = xyz[0]
                     tf.transform.translation.y = xyz[1]
                     tf.transform.translation.z = xyz[2]
@@ -4847,31 +5024,134 @@ class SimSensorBridge:
         return self._depth_self_bodies | attached_ids
 
     def _publish_depth_clouds_from_obs(self) -> None:
-        """Publish the HAL's ready ``base_link`` clouds as ``PointCloud2``.
+        """Publish the HAL's ready ``base_link`` clouds, and its registered RGB-D frames.
 
         Non-MuJoCo path: the backend (Isaac scene) already deprojected each depth
         camera to a ``(N, 3)`` cloud in ``base_link`` (Isaac owns the camera
         convention), surfaced via ``hal.read_depth_clouds()``. We just wrap each in
         a ``PointCloud2`` stamped ``base_link`` — no ray-cast, no per-camera optical
         TF (``base_link`` is already on /tf via /odom). octomap lifts it into the
-        world map exactly as it does the MuJoCo clouds.
+        world map exactly as it does the MuJoCo clouds. A backend that also renders
+        the camera's metric depth with its colour (``hal.read_depth_frames()``) gets
+        those published as the camera's depth and colour streams
+        (``_publish_depth_frame``).
         """
         read = getattr(self._hal, "read_depth_clouds", None)
-        if not callable(read):
-            return
-        clouds = read()
-        if not clouds:
-            return
-        from openral_hal.depth_cloud import pointcloud2_from_points_xyz
-
-        base_frame_id = getattr(self._description, "base_frame", "base_link")
+        clouds = read() if callable(read) else {}
         stamp = self._node.get_clock().now().to_msg()
-        for name, pub in self._depth_pubs.items():
-            pts = clouds.get(name)
-            if pts is None or pts.size == 0:
+        if clouds:
+            from openral_hal.depth_cloud import pointcloud2_from_points_xyz
+
+            base_frame_id = getattr(self._description, "base_frame", "base_link")
+            for name, pub in self._depth_pubs.items():
+                pts = clouds.get(name)
+                if pts is None or pts.size == 0:
+                    continue
+                # Each backend cloud once (by identity; the reference held here keeps
+                # the id from being reused): a timer faster than the backend's frames
+                # must not feed octomap the same cloud again.
+                if self._depth_clouds_published.get(name) is pts:
+                    continue
+                self._depth_clouds_published[name] = pts
+                cloud = pointcloud2_from_points_xyz(pts, frame_id=base_frame_id, stamp=stamp)
+                pub.publish(cloud)
+        read_frames = getattr(self._hal, "read_depth_frames", None)
+        frames = read_frames() if callable(read_frames) else {}
+        if not frames:
+            return
+        specs = {s.name: s for s in self._description.sensors if s.name in self._depth_pubs}
+        for name, frame in frames.items():
+            spec = specs.get(name)
+            if spec is None or self._depth_frames_published.get(name) is frame:
                 continue
-            cloud = pointcloud2_from_points_xyz(pts, frame_id=base_frame_id, stamp=stamp)
-            pub.publish(cloud)
+            self._depth_frames_published[name] = frame
+            self._publish_depth_frame(name, spec, frame, stamp)
+
+    def _colour_publishers(self, name: str) -> tuple[Any, Any]:
+        """The depth camera's colour ``Image`` + ``CameraInfo`` publishers, created once.
+
+        Same QoS as the RGB cameras (RELIABLE / VOLATILE, depth 1), which matches
+        both reliable and best-effort subscribers.
+        """
+        pubs = self._depth_colour_pubs.get(name)
+        if pubs is None:
+            from rclpy.qos import QoSDurabilityPolicy, QoSProfile, QoSReliabilityPolicy
+            from sensor_msgs.msg import CameraInfo
+            from sensor_msgs.msg import Image as RosImage
+
+            qos = QoSProfile(
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.VOLATILE,
+                depth=1,
+            )
+            pubs = (
+                self._node.create_publisher(RosImage, camera_topic(name), qos),
+                self._node.create_publisher(
+                    CameraInfo, camera_topic(name, CameraTopicKind.CAMERA_INFO), qos
+                ),
+            )
+            self._depth_colour_pubs[name] = pubs
+        return pubs
+
+    def _publish_depth_frame(self, name: str, spec: Any, frame: Any, stamp: Any) -> None:
+        """One backend RGB-D frame → depth + colour ``Image``/``CameraInfo`` and the optical TF.
+
+        The streams a real RGB-D driver publishes (the ZED's ``depth_registered`` +
+        ``rgb/color/rect`` pairs), on the camera's canonical topics: the metric
+        depth (``32FC1``, ``0.0`` = no return) and its colour from the same render,
+        both stamped in ``depth_optical_frame_id(spec)`` with one ``CameraInfo``
+        (the backend's own K), and ``base_frame -> <optical frame>`` on /tf from the
+        camera's pose as the backend placed it. That is exactly what the vision
+        attachment leg (segmenter + HAL bridge) consumes. A frame whose colour does
+        not match its depth raster publishes the depth only, warned once.
+        """
+        import numpy as np
+        from geometry_msgs.msg import TransformStamped
+        from openral_core.geometry import rotation_to_quat_wxyz
+
+        from openral_hal.depth_cloud import (
+            camera_info_from_intrinsics,
+            depth_image_from_grid,
+            depth_optical_frame_id,
+        )
+
+        depth = np.asarray(frame["depth"], dtype=np.float32)
+        rgb = np.asarray(frame["rgb"], dtype=np.uint8)
+        fx, fy, cx, cy = (float(v) for v in np.asarray(frame["k"], dtype=np.float64).reshape(4))
+        optical_in_base = np.asarray(frame["optical_in_base"], dtype=np.float64).reshape(4, 4)
+        h, w = int(depth.shape[0]), int(depth.shape[1])
+        optical = depth_optical_frame_id(spec)
+        info = camera_info_from_intrinsics(
+            width=w, height=h, fx=fx, fy=fy, cx=cx, cy=cy, frame_id=optical, stamp=stamp
+        )
+        self._depth_image_pubs[name].publish(
+            depth_image_from_grid(depth, frame_id=optical, stamp=stamp)
+        )
+        self._depth_info_pubs[name].publish(info)
+        if rgb.shape == (h, w, _RGB_CHANNELS):
+            image_pub, info_pub = self._colour_publishers(name)
+            image_pub.publish(_rgb8_image(rgb, frame_id=optical, stamp=stamp))
+            info_pub.publish(info)
+        elif name not in self._depth_colour_mismatch_warned:
+            self._depth_colour_mismatch_warned.add(name)
+            self._node.get_logger().warning(
+                f"depth camera {name!r}: colour {rgb.shape} does not match its depth raster "
+                f"{(h, w)}; publishing depth only"
+            )
+        if self._tf_broadcaster is not None:
+            qw, qx, qy, qz = rotation_to_quat_wxyz(optical_in_base[:3, :3])
+            tf = TransformStamped()
+            tf.header.stamp = stamp
+            tf.header.frame_id = getattr(self._description, "base_frame", "base_link")
+            tf.child_frame_id = optical
+            tf.transform.translation.x = float(optical_in_base[0, 3])
+            tf.transform.translation.y = float(optical_in_base[1, 3])
+            tf.transform.translation.z = float(optical_in_base[2, 3])
+            tf.transform.rotation.x = float(qx)
+            tf.transform.rotation.y = float(qy)
+            tf.transform.rotation.z = float(qz)
+            tf.transform.rotation.w = float(qw)
+            self._tf_broadcaster.sendTransform(tf)
 
     # -- Viewer --
     def _setup_viewer(self) -> None:

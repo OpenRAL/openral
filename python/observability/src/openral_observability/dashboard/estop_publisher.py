@@ -20,6 +20,8 @@ from __future__ import annotations
 import threading
 from typing import Any
 
+from openral_observability.rclpy_spin import spin_executor_until_shutdown
+
 
 class EstopPublisher:
     """A launch-time-created, always-matched publisher for the e-stop topics."""
@@ -68,7 +70,10 @@ class EstopPublisher:
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(self._node)
         self._thread = threading.Thread(
-            target=self._executor.spin, name="openral_dashboard_estop_spin", daemon=True
+            target=spin_executor_until_shutdown,
+            args=(self._executor,),
+            name="openral_dashboard_estop_spin",
+            daemon=True,
         )
         self._thread.start()
 

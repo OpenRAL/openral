@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
     from openral_rskill_ros.rskill_runner_node import RskillRunnerNode, SkillResolver
 
-__all__ = ["ComposedRuntime", "compose_runtime", "compose_so100_runtime"]
+__all__ = ["ComposedRuntime", "compose_runtime", "compose_so100_runtime", "spin_until_shutdown"]
 
 
 @dataclass
@@ -83,6 +83,32 @@ class ComposedRuntime:
 log = structlog.get_logger(__name__)
 
 
+def spin_until_shutdown(executor: Any) -> None:
+    """``executor.spin()`` until a signal-driven shutdown, which ends it quietly.
+
+    rclpy's SIGINT handler shuts the context down first; an executor already past its
+    shutdown check then builds its next wait set (``RCLError: failed to initialize wait
+    set: the given context is not valid``), or a dequeued callback publishes on the dead
+    context — an ``RCLError`` out of ``spin`` that is teardown, not a fault. The deploy
+    runtime exited 1 on it (2026-10-04, ``runtime_node``). ``KeyboardInterrupt`` and
+    ``ExternalShutdownException`` end it quietly too (a ``RuntimeError`` after the context
+    went down, which covers ``RCLError``/``InvalidHandle`` and a subscription take racing
+    the shutdown); one while the context is still up is a real error and propagates.
+    Same contract as the HAL's ``openral_hal.lifecycle.spin_until_shutdown`` (which spins
+    a node, not an executor).
+    """
+    import rclpy
+    from rclpy.executors import ExternalShutdownException
+
+    try:
+        executor.spin()
+    except RuntimeError:  # RCLError / InvalidHandle subclass it; so does a racing take
+        if rclpy.ok():
+            raise
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+
+
 def start_world_state_executor(
     world_state_node: Any, *, on_failure: Callable[[BaseException], None] | None = None
 ) -> Callable[[], None] | None:
@@ -122,19 +148,15 @@ def start_world_state_executor(
         return None
     import threading
 
-    from rclpy.executors import ExternalShutdownException
-
     executor = EventsExecutor()
     executor.add_node(world_state_node)
     stopping = threading.Event()
 
     def _spin() -> None:
         try:
-            executor.spin()
-        except ExternalShutdownException:
-            # Ctrl-C / rclpy.shutdown() from outside: the context went away
-            # before `_stop` ran. A clean exit, not a dead executor.
-            return
+            # Ctrl-C / rclpy.shutdown() from outside (the context went away before
+            # `_stop` ran) is a clean exit, not a dead executor.
+            spin_until_shutdown(executor)
         except Exception as exc:  # reason: the thread's boundary; nothing above it
             if stopping.is_set():
                 return

@@ -44,8 +44,8 @@ from openral_observability.failure_bus import (
     FailureBusPublisher,
     FailureSource,
 )
+from openral_observability.rclpy_spin import spin_node_until_shutdown
 from openral_reasoner import CriticWatchdogGroup
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
     QoSDurabilityPolicy,
@@ -127,9 +127,7 @@ def main(args: Any = None) -> None:
     node = CriticProducerNode()
     try:
         try:
-            rclpy.spin(node)
-        except (KeyboardInterrupt, ExternalShutdownException):
-            pass
+            spin_node_until_shutdown(node)  # quiet on the SIGINT shutdown race
         finally:
             node.destroy_node()
     finally:

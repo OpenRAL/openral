@@ -57,10 +57,11 @@ Example (manifest-driven, the preferred path)::
 from __future__ import annotations
 
 import contextlib
+import copy
 import logging
 import sys
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from time import monotonic, perf_counter
 from typing import TYPE_CHECKING, Any
@@ -80,7 +81,9 @@ __all__ = [
     "make_lifecycle_main",
     "make_lifecycle_main_from_manifest",
     "sim_attachment_heartbeat",
+    "spin_until_shutdown",
     "twin_jaw_evidence_timeout_s",
+    "urdf_named_joint_state",
 ]
 
 
@@ -123,6 +126,34 @@ def joint_state_republish_stamp_ns(
     if sample_stamp_ns <= 0 or age < 0 or age > _MAX_CARRIED_SAMPLE_AGE_NS:
         return node_now_ns
     return node_now_ns - age
+
+
+def urdf_named_joint_state(msg: Any, urdf_names: Sequence[str]) -> Any:  # noqa: ANN401  # reason: sensor_msgs/JointState is imported only on the ROS path
+    """A copy of a manifest-named ``JointState`` under the URDF's joint names.
+
+    ``urdf_names`` is parallel to the manifest joints (``resolver.urdf_joint_names``);
+    a joint the URDF does not declare (``""``) is left out, and a message whose
+    names are not the manifest's in order is renamed by position only where the
+    lengths agree (the HAL always publishes all its joints, in manifest order).
+
+    Example:
+        >>> from types import SimpleNamespace as NS
+        >>> m = NS(header=None, name=["a", "b"], position=[1.0, 2.0], velocity=[], effort=[])
+        >>> out = urdf_named_joint_state(m, ["robot_a", ""])
+        >>> out.name, list(out.position)
+        (['robot_a'], [1.0])
+    """
+    out = copy.copy(msg)
+    keep = [i for i, name in enumerate(urdf_names) if name and i < len(msg.name)]
+
+    def _pick(values: Sequence[float]) -> list[float]:
+        return [values[i] for i in keep] if len(values) == len(msg.name) else []
+
+    out.name = [urdf_names[i] for i in keep]
+    out.position = _pick(msg.position)
+    out.velocity = _pick(msg.velocity)
+    out.effort = _pick(msg.effort)
+    return out
 
 
 def sim_attachment_heartbeat(*, hal_mode: str, vision_attachment_enabled: bool) -> bool:
@@ -408,16 +439,7 @@ def make_lifecycle_main(
         rclpy.init()
         node = _FactoryHALLifecycleNode(node_name, hal_factory)
         try:
-            rclpy.spin(node)
-        except (KeyboardInterrupt, ExternalShutdownException):
-            # Normal teardown: rclpy's SIGINT handler shuts the context down
-            # and raises KeyboardInterrupt out of `rclpy.spin()` on Jazzy;
-            # ROS 2 Rolling / a manual `rclpy.shutdown()` from another thread
-            # raises ExternalShutdownException instead. The context is
-            # already down by `finally`, so `try_shutdown()` (idempotent) is
-            # used instead of the bare `rclpy.shutdown()` that used to raise
-            # `RCLError: rcl_shutdown already called` here.
-            pass
+            spin_until_shutdown(node)
         finally:
             # SIGINT never runs a lifecycle transition, so this is the only
             # place `HAL.disconnect` (and the terminal `sim.task_success_final`
@@ -427,6 +449,29 @@ def make_lifecycle_main(
             rclpy.try_shutdown()  # idempotent if the context is already down
 
     return main
+
+
+def spin_until_shutdown(node: Any) -> None:  # noqa: ANN401  # reason: rclpy Node is untyped
+    """``rclpy.spin(node)`` until a signal-driven shutdown, which ends it quietly.
+
+    Normal teardown: rclpy's SIGINT handler shuts the context down and raises
+    ``KeyboardInterrupt`` out of ``rclpy.spin()`` on Jazzy; ROS 2 Rolling / a manual
+    ``rclpy.shutdown()`` from another thread raises ``ExternalShutdownException``. And a
+    timer callback already dequeued when the context went down (a sensor publish)
+    publishes on the invalidated context and raises ``RCLError`` out of the spin: also
+    teardown, not a fault — the HAL used to exit 1 on every Ctrl-C of a graph with a
+    depth camera (2026-10-04). A ``RuntimeError`` (``RCLError``, ``InvalidHandle``, a take
+    racing the shutdown) while the context is still up is a real error and propagates.
+    The caller's ``finally`` uses ``rclpy.try_shutdown()`` (idempotent), not the bare
+    ``rclpy.shutdown()`` that raised ``RCLError: rcl_shutdown already called``.
+    """
+    try:
+        rclpy.spin(node)
+    except RuntimeError:  # RCLError / InvalidHandle subclass it; so does a racing take
+        if rclpy.ok():
+            raise
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
 
 
 def make_lifecycle_main_from_manifest(node_name: str) -> Callable[[], None]:
@@ -476,16 +521,7 @@ def make_lifecycle_main_from_manifest(node_name: str) -> Callable[[], None]:
         # node offloads odom/joint_state to a dedicated publisher thread reading
         # the proprio snapshot, keeping all env.step / render on this one thread.
         try:
-            rclpy.spin(node)
-        except (KeyboardInterrupt, ExternalShutdownException):
-            # Normal teardown: rclpy's SIGINT handler shuts the context down
-            # and raises KeyboardInterrupt out of `rclpy.spin()` on Jazzy;
-            # ROS 2 Rolling / a manual `rclpy.shutdown()` from another thread
-            # raises ExternalShutdownException instead. The context is
-            # already down by `finally`, so `try_shutdown()` (idempotent) is
-            # used instead of the bare `rclpy.shutdown()` that used to raise
-            # `RCLError: rcl_shutdown already called` here.
-            pass
+            spin_until_shutdown(node)
         finally:
             # SIGINT never runs a lifecycle transition, so this is the only
             # place `HAL.disconnect` (and the terminal `sim.task_success_final`
@@ -583,6 +619,14 @@ if _ROS2_AVAILABLE:
             # sim-only manifest that declares no rate falls back to 30 Hz with a
             # warning; a real manifest cannot load without one (issue #303).
             self.declare_parameter("publish_rate_hz", 0.0)
+            # URDF joint names parallel to the manifest joints (``resolver.urdf_joint_names``),
+            # set by the deploy launch on a sim twin whose URDF names its joints differently:
+            # the state is then also published under those names on ``~/urdf_joint_states``,
+            # which ``robot_state_publisher`` reads, so the moving links reach ``/tf``. The
+            # one-empty-string default is "off" (an empty list has no ROS parameter type).
+            self.declare_parameter("urdf_joint_names", [""])
+            self._urdf_joint_names: list[str] = []
+            self._urdf_joint_state_pub: Any = None
             # The rate joint states are read (and fed to the grasp trigger) at,
             # resolved on activate; ``None`` until then.
             self._joint_state_rate_hz: float | None = None
@@ -720,6 +764,28 @@ if _ROS2_AVAILABLE:
             self.get_logger().info("HAL connected.")
             return self.on_configure_post_hal()
 
+        def _open_urdf_joint_state_pub(self, msg_type: Any, qos: Any) -> None:  # noqa: ANN401  # reason: rclpy message/QoS types are untyped
+            """Open ``~/urdf_joint_states`` when ``urdf_joint_names`` is set (sim twins only).
+
+            A real ros2_control robot's vendor broadcaster already publishes the
+            URDF names, so the renamed stream is never opened beside it.
+            """
+            urdf_names = list(
+                self.get_parameter("urdf_joint_names").get_parameter_value().string_array_value
+            )
+            if self._ros_control_transport is not None or not any(urdf_names):
+                return
+            assert self._hal is not None
+            if len(urdf_names) != len(self._hal.description.joints):
+                from openral_core.exceptions import ROSConfigError
+
+                raise ROSConfigError(
+                    f"urdf_joint_names has {len(urdf_names)} entries but the manifest "
+                    f"declares {len(self._hal.description.joints)} joints."
+                )
+            self._urdf_joint_names = urdf_names
+            self._urdf_joint_state_pub = self.create_publisher(msg_type, "~/urdf_joint_states", qos)
+
         @log_lifecycle_errors
         def on_activate(self, state: object) -> TransitionCallbackReturn:
             """Open the standard publishers + subscribers + timer."""
@@ -761,6 +827,7 @@ if _ROS2_AVAILABLE:
                     RosJointState, "/joint_states", control_qos
                 )
             self._publisher = self.create_publisher(RosJointState, "~/joint_states", control_qos)
+            self._open_urdf_joint_state_pub(RosJointState, control_qos)
             self._policy_state_pub = self.create_publisher(
                 Float32MultiArray,
                 "/openral/policy_state",
@@ -917,6 +984,9 @@ if _ROS2_AVAILABLE:
             if self._joint_state_pub is not None:
                 self.destroy_publisher(self._joint_state_pub)
                 self._joint_state_pub = None
+            if self._urdf_joint_state_pub is not None:
+                self.destroy_publisher(self._urdf_joint_state_pub)
+                self._urdf_joint_state_pub = None
             if self._policy_state_pub is not None:
                 self.destroy_publisher(self._policy_state_pub)
                 self._policy_state_pub = None
@@ -1167,6 +1237,10 @@ if _ROS2_AVAILABLE:
                 vision.observe_joint_state(state)
             if self._joint_state_pub is not None:
                 self._joint_state_pub.publish(msg)
+            if self._urdf_joint_state_pub is not None:
+                self._urdf_joint_state_pub.publish(
+                    urdf_named_joint_state(msg, self._urdf_joint_names)
+                )
             if self._policy_state_pub is not None:
                 frame = self._proprio.latest() if self._proprio is not None else None
                 # Publish only when the frame is NEW (one publish per env.step

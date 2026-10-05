@@ -32,6 +32,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from openral_observability.rclpy_spin import spin_executor_until_shutdown
+
 if TYPE_CHECKING:
     from openral_observability.dashboard.store import TelemetryStore
 
@@ -208,7 +210,8 @@ class PerceptionOverlaySubscriber:
         self._executor = SingleThreadedExecutor()
         self._executor.add_node(self._node)
         self._thread = threading.Thread(
-            target=self._executor.spin,
+            target=spin_executor_until_shutdown,
+            args=(self._executor,),
             name="openral_dashboard_perception_overlay_spin",
             daemon=True,
         )

@@ -92,7 +92,7 @@ def _prewarm_vla_imports() -> None:
 def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstrap entry point — splitting obscures the launch contract
     try:
         import rclpy
-        from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
+        from rclpy.executors import MultiThreadedExecutor
         from rclpy.parameter import Parameter
     except ImportError as exc:
         print(
@@ -103,7 +103,11 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
 
     from openral_observability import configure_observability
     from openral_observability.system_metrics import start_system_metrics_collector
-    from openral_rskill_ros.compose import compose_runtime, start_world_state_executor
+    from openral_rskill_ros.compose import (
+        compose_runtime,
+        spin_until_shutdown,
+        start_world_state_executor,
+    )
 
     # Idempotent + no-op if OTEL_EXPORTER_OTLP_ENDPOINT is unset.
     # The launch passes the dashboard's endpoint via env so the
@@ -457,19 +461,12 @@ def _main() -> int:  # noqa: PLR0911, PLR0912, PLR0915  # reason: linear bootstr
             return 6
 
     try:
-        executor.spin()
-    except (KeyboardInterrupt, ExternalShutdownException):
-        # Normal teardown path. rclpy installs a SIGINT handler at
-        # `rclpy.init()` that shuts down the context AND raises
-        # KeyboardInterrupt out of `executor.spin()` on Jazzy. On
-        # ROS 2 Rolling / a manual `rclpy.shutdown()` from another
-        # thread, the executor instead raises ExternalShutdownException.
-        # Either way the context is already shut down by the time we
-        # reach the `finally` below, so the bare `rclpy.shutdown()`
-        # we used to call there raised
-        # `RCLError: rcl_shutdown already called` — the
-        # `try_shutdown()` switch below is the corresponding fix.
-        pass
+        # Normal teardown ends this quietly (KeyboardInterrupt, ExternalShutdownException,
+        # or an RCLError raised because the SIGINT handler invalidated the context
+        # mid-spin). The context is then already shut down when the `finally` below
+        # runs, hence `try_shutdown()` there, not the bare `rclpy.shutdown()` that
+        # raised `RCLError: rcl_shutdown already called`.
+        spin_until_shutdown(executor)
     finally:
         # Close the real-camera leg first: its publishers poll the readers,
         # and the readers hold v4l2 / GStreamer pipeline handles.

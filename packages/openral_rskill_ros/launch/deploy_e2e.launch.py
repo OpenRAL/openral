@@ -1937,6 +1937,19 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                 f"world_voxel_margin_m + octomap resolution ({clear_floor_m}): a released "
                 "payload's record would drop while the kernel still measures it inside its margin."
             )
+    # Sim twin: the HAL publishes joint states under the manifest's logical names; a URDF
+    # that names its joints differently (the OpenArm's vendored one) gets a renamed copy
+    # on `~/urdf_joint_states` for robot_state_publisher, or no moving link reaches /tf
+    # (`openral_hal.resolver.urdf_joint_names`). Real: the vendor broadcaster's own names.
+    rsp_urdf_joint_names: list[str] = []
+    if hal_mode == "sim" and description.assets.urdf is not None:
+        _rsp_urdf = _resolve_urdf_path(description.assets.urdf.ref, pathlib.Path(robot_yaml).parent)
+        if _rsp_urdf is not None:
+            from openral_hal.resolver import urdf_joint_names
+
+            rsp_urdf_joint_names = urdf_joint_names(
+                description, pathlib.Path(_rsp_urdf).read_text(encoding="utf-8")
+            )
     hal = LifecycleNode(
         package=hal_package,
         executable=hal_executable,
@@ -1946,7 +1959,12 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         # authority — it stamps /scan, odom→base_link TF and joint_states.
         # Host-wall origin is unchanged; a simulation clock origin makes those
         # stamps sim-time, coherent with the HAL's /clock publisher.
-        parameters=[*hal_derived_params, hal_params_file, {"use_sim_time": use_sim_time}],
+        parameters=[
+            *hal_derived_params,
+            *([{"urdf_joint_names": rsp_urdf_joint_names}] if rsp_urdf_joint_names else []),
+            hal_params_file,
+            {"use_sim_time": use_sim_time},
+        ],
         additional_env=otel_env,
         output="screen",
     )
@@ -2400,11 +2418,18 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     # rather than race for it. `/tf` is unaffected (that is this
                     # node's actual job here) and the manifest URDF stays
                     # readable at the `/openral/` name.
-                    remappings=(
-                        [("robot_description", "/openral/robot_description")]
-                        if vendor_owns_robot_description
-                        else []
-                    ),
+                    remappings=[
+                        *(
+                            [("robot_description", "/openral/robot_description")]
+                            if vendor_owns_robot_description
+                            else []
+                        ),
+                        *(
+                            [("joint_states", f"/{hal_node_name}/urdf_joint_states")]
+                            if rsp_urdf_joint_names
+                            else []
+                        ),
+                    ],
                     parameters=[
                         {
                             "robot_description": robot_description_xml,

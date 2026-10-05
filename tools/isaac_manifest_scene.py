@@ -130,6 +130,50 @@ def _yaw_quat(yaw: float) -> NDArray[np.float64]:
     return np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)])
 
 
+def _rpy_quat(roll: float, pitch: float, yaw: float) -> NDArray[np.float64]:
+    """``(w, x, y, z)`` of fixed-axis roll about x, then pitch about y, then yaw about z.
+
+    The URDF ``rpy`` convention, ``R = Rz(yaw)·Ry(pitch)·Rx(roll)``.
+
+    Example:
+        >>> import numpy as np
+        >>> np.allclose(_rpy_quat(0.0, 0.0, 0.3), _yaw_quat(0.3))
+        True
+        >>> np.round(_rpy_quat(np.pi / 2, 0.0, 0.0), 4).tolist()
+        [0.7071, 0.7071, 0.0, 0.0]
+    """
+    cr, sr = np.cos(roll / 2), np.sin(roll / 2)
+    cp, sp = np.cos(pitch / 2), np.sin(pitch / 2)
+    cy, sy = np.cos(yaw / 2), np.sin(yaw / 2)
+    return np.array(
+        [
+            cr * cp * cy + sr * sp * sy,
+            sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+        ]
+    )
+
+
+def pose_matrix(position: Any, quat_wxyz: Any) -> NDArray[np.float64]:
+    """4x4 rigid transform from a position and a ``(w, x, y, z)`` quaternion (normalised).
+
+    Example:
+        >>> import numpy as np
+        >>> np.round(pose_matrix((1.0, 2.0, 3.0), _yaw_quat(np.pi / 2)), 6).tolist()[0]
+        [0.0, -1.0, 0.0, 1.0]
+    """
+    w, x, y, z = np.asarray(quat_wxyz, dtype=np.float64) / np.linalg.norm(quat_wxyz)
+    out = np.eye(4)
+    out[:3, :3] = [
+        [1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+        [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
+        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)],
+    ]
+    out[:3, 3] = np.asarray(position, dtype=np.float64)
+    return out
+
+
 def manifest_to_urdf_gripper(gripper: dict[str, Any], value: float) -> float:
     """A gripper target in manifest units → its URDF leader joint target.
 
@@ -397,6 +441,8 @@ class IsaacManifestScene(IsaacSceneBase):
 
         self._robot: Any = None
         self._robot_prim = ""
+        # (prim path, 4x4 pose in the root frame at import) of the root rigid body.
+        self._root_body: tuple[str, NDArray[np.float64]] = ("", np.eye(4))
         # Isaac >= 6: the importer pins the base with a fixed joint whose body0 is
         # not a rigid body — its localPos0/localRot0 are a WORLD-frame anchor, so
         # placing (or kinematically driving) the robot moves that anchor rather
@@ -524,6 +570,13 @@ class IsaacManifestScene(IsaacSceneBase):
             else self._import_urdf(omni.kit.commands)
         )
         self._robot_prim = prim_path
+        # The root rigid body and its pose in the root frame, read NOW — at the import
+        # pose. Once the robot is placed, PhysX writes the body's world pose back while
+        # the pinned root Xform stays at the origin, so the same read later returns the
+        # spawn offset (and a camera mounted through it lands back at the origin).
+        root_body = self._root_rigid_body_prim()
+        if root_body:
+            self._root_body = (root_body, self._relative_to_root(root_body))
         wx, wy, wz, wyaw = self._world_pose()
         self._set_anchor(wx, wy, wz, wyaw)
         self._robot = self._world.scene.add(
@@ -630,7 +683,7 @@ class IsaacManifestScene(IsaacSceneBase):
     def _add_objects(self) -> None:
         """Place the scene's extra USD objects; dynamic ones are graspable rigid bodies.
 
-        Each object is ``{"usd", "name", "xyz", "yaw", "dynamic"}`` (validated
+        Each object is ``{"usd", "name", "xyz", "roll", "pitch", "yaw", "dynamic"}`` (validated
         openral-side). A dynamic object without physics gets a rigid body on its
         root and convex-hull colliders on its meshes; one that already carries a
         rigid body (Isaac's ``Axis_Aligned_Physics`` YCB props) is used as is.
@@ -647,8 +700,11 @@ class IsaacManifestScene(IsaacSceneBase):
         for obj in self._objects:
             path = f"/World/objects/{obj['name']}"
             add_reference_to_stage(usd_path=self._resolve_usd(str(obj["usd"])), prim_path=path)
-            yaw = float(obj.get("yaw", 0.0))
-            quat = _yaw_quat(yaw)
+            quat = _rpy_quat(
+                float(obj.get("roll", 0.0)),
+                float(obj.get("pitch", 0.0)),
+                float(obj.get("yaw", 0.0)),
+            )
             pos = np.asarray(obj["xyz"], dtype=np.float64)
             name = str(obj["name"])
             prim: Any
@@ -747,10 +803,6 @@ class IsaacManifestScene(IsaacSceneBase):
         """4x4 pose of ``link`` in the robot root frame (identity for the root or no link)."""
         if not link:
             return np.eye(4)
-        from isaacsim.core.utils.stage import get_current_stage
-        from pxr import UsdGeom
-
-        stage = get_current_stage()
         try:
             path = self._link_prim_path(link)
         except ValueError:
@@ -759,10 +811,7 @@ class IsaacManifestScene(IsaacSceneBase):
             # base_frame is no URDF link (OpenArm's openarm_base): the manifest's
             # base_to_root transform, marshalled openral-side.
             return np.asarray(self._spec.get("root_to_base", np.eye(4)), dtype=np.float64)
-        rel, _reset = UsdGeom.XformCache().ComputeRelativeTransform(
-            stage.GetPrimAtPath(path), stage.GetPrimAtPath(self._robot_prim)
-        )
-        return np.asarray(rel, dtype=np.float64).T  # Gf is row-vector: transpose to column
+        return self._relative_to_root(path)
 
     def _mount_parent(self, mount: dict[str, Any]) -> tuple[str, NDArray[np.float64]]:
         """``(parent prim, parent-from-link pose)`` for a camera mount.
@@ -776,7 +825,41 @@ class IsaacManifestScene(IsaacSceneBase):
         except ValueError:
             if link != self._spec.get("base_frame"):
                 raise
-            return self._robot_prim, self._link_offset(link)
+            # Not the robot root prim: Isaac >= 6 places a pinned robot by its world
+            # anchor, so the root Xform stays at the import origin while PhysX moves
+            # the links — a camera parented to the root renders (and reports its pose)
+            # from the origin, not from the robot (2026-10-04: the OpenArm head camera
+            # looked at the warehouse floor 5 m from the robot). The first rigid body
+            # under the root is fixed to it and is moved with it; its offset from the
+            # root is the import-time one (``self._root_body``).
+            body, root_from_body = self._root_body
+            if not body:
+                raise ValueError(
+                    f"no rigid body under {self._robot_prim!r} to mount {link!r} on"
+                ) from None
+            return body, np.linalg.inv(root_from_body) @ self._link_offset(link)
+
+    def _root_rigid_body_prim(self) -> str:
+        """The first rigid body under the robot root (a fixed-base robot's root link), or ``""``."""
+        from isaacsim.core.utils.stage import get_current_stage
+        from pxr import Usd, UsdPhysics
+
+        root = get_current_stage().GetPrimAtPath(self._robot_prim)
+        for prim in Usd.PrimRange(root):
+            if prim.HasAPI(UsdPhysics.RigidBodyAPI):
+                return str(prim.GetPath())
+        return ""
+
+    def _relative_to_root(self, prim_path: str) -> NDArray[np.float64]:
+        """4x4 pose of ``prim_path`` in the robot root frame (the import pose, as USD holds it)."""
+        from isaacsim.core.utils.stage import get_current_stage
+        from pxr import UsdGeom
+
+        stage = get_current_stage()
+        rel, _reset = UsdGeom.XformCache().ComputeRelativeTransform(
+            stage.GetPrimAtPath(prim_path), stage.GetPrimAtPath(self._robot_prim)
+        )
+        return np.asarray(rel, dtype=np.float64).T  # Gf is row-vector: transpose to column
 
     def _mount_camera(self, cam: Any, mount: dict[str, Any]) -> None:
         """Set a link-mounted camera's local pose from its scene mount."""
@@ -1018,6 +1101,9 @@ class IsaacManifestScene(IsaacSceneBase):
         clouds = self._depth_clouds()
         if clouds:
             obs["depth_points"] = clouds
+        frames = self._depth_frames()
+        if frames:
+            obs["depth_frames"] = frames
         scan = self._scan_ranges()
         if scan is not None:
             obs["scan"] = scan
@@ -1028,6 +1114,65 @@ class IsaacManifestScene(IsaacSceneBase):
         for meta in self._cam_meta:
             if meta["modality"] == "rgb":
                 out[meta["key"]] = self._grab(self._cameras[meta["name"]])
+        return out
+
+    def _world_from_base(self) -> NDArray[np.float64]:
+        """4x4 pose of the manifest ``base_frame`` in the world, where PhysX holds the robot.
+
+        From the articulation root's measured pose, not the commanded spawn: the two
+        differ when PhysX does not honour the spawn (a spawn below the ground plane
+        stays at ground level), and a cloud expressed against the commanded pose then
+        disagrees with the robot's own links by that offset — the self-filter misses
+        the arm, the kernel stops it against its own surface.
+        """
+        pos, quat_wxyz = self._robot.get_world_pose()
+        return pose_matrix(pos, quat_wxyz) @ self._root_to_base
+
+    def _depth_frames(self) -> dict[str, dict[str, Any]]:
+        """Registered colour + metric depth per depth camera — what a real RGB-D driver publishes.
+
+        ``{sensor_name: {"depth", "rgb", "k", "optical_in_base"}}``: the
+        ``distance_to_image_plane`` raster (metres, ``0.0`` = no return or past the
+        sensor's ``range_max_m``) and the RGB of the SAME Isaac camera in the same
+        render, so a mask on one is a mask on the other; ``k`` = ``[fx, fy, cx, cy]``
+        from Isaac's own intrinsics matrix; ``optical_in_base`` = the camera's
+        REP-103 optical pose (``camera_axes="ros"``) in the manifest ``base_frame``
+        as a 4x4. The openral-side ``SimSensorBridge`` publishes these as Image +
+        CameraInfo pairs and the optical frame on /tf — the four streams the vision
+        attachment leg (segmenter + HAL bridge) consumes. Empty when the manifest
+        declares no depth sensor.
+        """
+        from isaacsim.core.utils.numpy.rotations import quats_to_rot_matrices
+
+        base_from_world = np.linalg.inv(self._world_from_base())
+        out: dict[str, dict[str, Any]] = {}
+        for meta in self._cam_meta:
+            if meta["modality"] != "depth":
+                continue
+            cam = self._cameras[meta["name"]]
+            depth = cam.get_depth()
+            if depth is None or np.asarray(depth).size == 0:
+                continue
+            raster = np.nan_to_num(
+                np.asarray(depth, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0
+            )
+            raster[raster < 0.0] = 0.0
+            rmax = float(meta.get("range_max_m") or 0.0)
+            if rmax > 0.0:
+                raster[raster > rmax] = 0.0
+            k = np.asarray(cam.get_intrinsics_matrix(), dtype=np.float64)
+            pos, quat_wxyz = cam.get_world_pose(camera_axes="ros")
+            world_from_optical = np.eye(4)
+            world_from_optical[:3, :3] = quats_to_rot_matrices(
+                np.asarray(quat_wxyz, dtype=np.float64)[None]
+            )[0]
+            world_from_optical[:3, 3] = np.asarray(pos, dtype=np.float64)
+            out[meta["name"]] = {
+                "depth": raster,
+                "rgb": self._grab(cam),
+                "k": np.array([k[0, 0], k[1, 1], k[0, 2], k[1, 2]], dtype=np.float64),
+                "optical_in_base": base_from_world @ world_from_optical,
+            }
         return out
 
     def _depth_clouds(self) -> dict[str, NDArray[np.float32]]:
@@ -1044,15 +1189,7 @@ class IsaacManifestScene(IsaacSceneBase):
         from the base) per the depth ``SensorSpec``. Empty when the manifest
         declares no depth sensor — never a fabricated cloud.
         """
-        bx, by, bz, byaw = self._world_pose()
-        world_from_root = np.eye(4)
-        world_from_root[:3, :3] = [
-            [np.cos(byaw), -np.sin(byaw), 0.0],
-            [np.sin(byaw), np.cos(byaw), 0.0],
-            [0.0, 0.0, 1.0],
-        ]
-        world_from_root[:3, 3] = (bx, by, bz)
-        world_from_base = world_from_root @ self._root_to_base
+        world_from_base = self._world_from_base()
         out: dict[str, NDArray[np.float32]] = {}
         for meta in self._cam_meta:
             if meta["modality"] != "depth":

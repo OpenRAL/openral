@@ -540,11 +540,15 @@ sensors:
   # MUST use the image header's frame_id and the driver's camera_info, never this
   # frame_id or these intrinsics (segmenter_node: `camera_infos` parameter).
   #
-  # SIM cost, accepted: MuJoCo twin's MJCF has no `head_zed` camera, so
-  # SimSensorBridge's `synthesize_depth_pointcloud` raises ROSConfigError once,
-  # the bridge logs one warning and disables the sensor for the run — bounded,
-  # not a crash. Clean fix: add a `head_zed` <camera> to the tabletop MJCF
-  # composer at this mount, or point `metadata.mjcf_camera` at an existing one.
+  # SIM: the twin MJCF ships no head camera, so the generic camera rig splices
+  # one in from `sim_placement` below — the static mount above expressed from the
+  # MJCF body `openarm_left_base_link` (= openarm_base + [0, 0.031, 0], same
+  # orientation): `target` is one metre along the mount's x axis and `up` its z
+  # axis, so roll -0.0123 / pitch 1.1823 are reproduced exactly (drift-checked
+  # by tests/unit/test_openarm_head_zed_sim_mount.py). SimSensorBridge ray-casts
+  # depth from that camera and renders its colour at the same raster, both in
+  # `zed_camera_link_optical_frame` (REP-103 child of `zed_camera_link`), the
+  # sim's stand-in for the driver's `zed_left_camera_frame_optical`.
   - name: "head_zed"
     modality: "depth"
     frame_id: "zed_camera_link"
@@ -562,6 +566,11 @@ sensors:
     catalog_id: "stereolabs/zed_mini"
     vendor: "StereoLabs"
     model: "ZED Mini"
+    sim_placement:
+      parent_body: "openarm_left_base_link"
+      pos: [0.0, -0.031, 0.20]
+      target: [0.3788, -0.031, -0.7255]
+      up: [0.9254, 0.0123, 0.3788]
     # Real-hardware binding: per host, in robots/openarm/units/<unit>.yaml.
 
   - name: "top"
