@@ -307,7 +307,9 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   (real kernel: margin 0 → REFUSED on the target's bottom layer; 25 mm → ACCEPTED; a
   neighbour within the margin → ACCEPTED; a cell past it → REFUSED; the support 30 mm under
   the held bottom at 25 mm → REFUSED, at 50 mm → ACCEPTED; link7 inside the bloat →
-  REFUSED) and
+  REFUSED), `::test_after_the_handover_the_latched_payload_box_does_not_exempt_the_support`
+  (real handover, 50 mm, the support 13.5 mm from the finger: the all-faces bloat latched →
+  ACCEPTED, the payload box latched → REFUSED on the support) and
   `tests/integration/test_safety_kernel_place_allowance_band.py::test_a_cell_closed_region_payload_embeds_its_targets_boundary_cells`
   (bloated payload pressed 19 mm → ACCEPTED; raised into a foreign cell past it → REFUSED;
   an unbloated-footprint witness patch → REFUSED on the support).
