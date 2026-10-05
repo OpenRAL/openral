@@ -1563,15 +1563,16 @@ def test_the_region_payload_attests_its_measured_support_until_it_is_lifted() ->
         assert witness.support_id == f"map_support_under:{armed.target_id}"
         assert witness.evidence_kind is AttachmentEvidenceKind.MAP_SUPPORT_PROXIMITY
         assert witness.stamp_ns == held.stamp_ns
-        # The payload is the held region bloated by the default 25 mm margin on the sides and
-        # the top (never down) and closed over the 20 mm cells (+r/2 per side at yaw 0, +r/2
-        # up, bottom fixed; Isaac i50, HZ-0115-32) — and the witness's patch is that attached
-        # footprint; the handover still matched the held region.
+        # The payload is the held region lowered one cell onto the measured support top (the
+        # target's own bottom layer is payload, Isaac i56/i57), bloated by the default 25 mm
+        # margin on the sides and the top (never down) and closed over the 20 mm cells (+r/2
+        # per side at yaw 0, +r/2 up; Isaac i50, HZ-0115-32) — and the witness's patch is
+        # that attached footprint; the handover still matched the held region.
         closed = leg.kernel_region(armed.target_id, region, payload=True)
-        assert closed.half_extents == pytest.approx((0.075, 0.075, 0.0575))
-        assert closed.pose.xyz[2] - closed.half_extents[2] == pytest.approx(
-            region.pose.xyz[2] - region.half_extents[2]
-        ), "the payload never grows down"
+        assert closed.half_extents == pytest.approx((0.075, 0.075, 0.0675))
+        assert closed.pose.xyz[2] - closed.half_extents[2] == pytest.approx(support_z), (
+            "the payload's lower face rests on the support top, never below it"
+        )
         (prim,) = held.primitives
         assert prim.shape.half_extents_m == pytest.approx(closed.half_extents)
         assert leg.tracker.handed_over == _LEFT and leg.tracker.region == region
@@ -1589,6 +1590,13 @@ def test_the_region_payload_attests_its_measured_support_until_it_is_lifted() ->
         np.testing.assert_allclose(normal, (0.0, 0.0, 1.0), atol=1e-9)
 
         # Still resting where it was measured: kept.
+        bridge._support_checked_s = 0.0
+        bridge._retire_lifted_supports()
+        assert left.attachment is not None and left.attachment.support_contact == witness
+        # Lifted 30 mm — past a cell and the extrinsic error, short of ``release_clear_m``
+        # (40 mm: the kernel's world margin plus a cell; the support's cells would sit
+        # inside that margin): kept.
+        live.place("left", (0.45, 0.0, 0.10 + 1.5 * grid.resolution))
         bridge._support_checked_s = 0.0
         bridge._retire_lifted_supports()
         assert left.attachment is not None and left.attachment.support_contact == witness
@@ -2649,7 +2657,8 @@ def test_a_map_completed_region_is_the_region_payload_handed_over_at_attach() ->
         assert _in_region(_i4x_centres(_I4X_COMPONENT), attached).all()
         assert len(occupied_touching_outside(grid, attached, support_z=_I4X_SUPPORT_Z)) == 0
         bottom = done.pose.xyz[2] - done.half_extents[2]
-        assert attached.pose.xyz[2] - attached.half_extents[2] == pytest.approx(bottom)
+        # Lowered onto the measured support top: the target's own bottom layer is payload.
+        assert attached.pose.xyz[2] - attached.half_extents[2] == pytest.approx(_I4X_SUPPORT_Z)
         margin = VisionAttachmentConfig().grasp_target_margin_m
         assert published.pose.xyz[2] - published.half_extents[2] == pytest.approx(bottom - margin)
 

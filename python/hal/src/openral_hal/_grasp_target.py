@@ -966,6 +966,52 @@ def cell_closed_region(
     return closed, half != wanted
 
 
+def lowered_to_support(region: PlaceRegion, support_z: float) -> PlaceRegion:
+    """``region`` with its lower face moved down onto ``support_z``, the rest unchanged.
+
+    The grasp target's held region stands one voxel above the support it was measured
+    on (``target_region_from_mask``), so the target's own bottom layer lies outside it.
+    The vision-attached payload is lowered onto the support top: once lifted, that layer
+    rides under the payload's lower face, and outside the payload it is an obstacle the
+    octomap bridge never clears (Isaac i56/i57: a stop on the carried can's own bottom
+    layer the moment the support witness retired). The support's cells stay outside the
+    box (their tops at ``support_z``). Only a lower face above ``support_z`` moves; the
+    region's local z is up for the yaw-only fits the leg makes.
+
+    Args:
+        region: The held region.
+        support_z: The measured support top, in ``region.frame_id``.
+
+    Returns:
+        The lowered region (same frame, yaw, stamp and provenance), or ``region`` when its
+        lower face is not above ``support_z``.
+
+    Example:
+        >>> from openral_core import PlaceRegion, Pose6D
+        >>> r = PlaceRegion(
+        ...     frame_id="base",
+        ...     half_extents=(0.05, 0.04, 0.03),
+        ...     pose=Pose6D(xyz=(0.3, 0.0, 0.1), quat_xyzw=(0, 0, 0, 1), frame_id="base"),
+        ... )
+        >>> g = lowered_to_support(r, 0.055)
+        >>> round(g.half_extents[2], 4), round(g.pose.xyz[2] - g.half_extents[2], 4)
+        (0.0375, 0.055)
+        >>> lowered_to_support(r, 0.08) is r
+        True
+    """
+    hx, hy, hz = region.half_extents
+    x, y, z = region.pose.xyz
+    drop = (z - hz) - support_z
+    if not (math.isfinite(drop) and drop > 0.0):
+        return region
+    return region.model_copy(
+        update={
+            "half_extents": (hx, hy, hz + drop / 2.0),
+            "pose": region.pose.model_copy(update={"xyz": (x, y, z - drop / 2.0)}),
+        }
+    )
+
+
 def margin_grown_region(region: PlaceRegion, margin_m: float, *, down: bool) -> PlaceRegion:
     """``region`` bloated by ``margin_m`` on its four sides and top, and its bottom when ``down``.
 
