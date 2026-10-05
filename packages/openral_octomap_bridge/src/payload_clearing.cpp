@@ -163,21 +163,19 @@ bool place_attached_object(const openral_msgs::msg::AttachedCollisionObject& obj
   return true;
 }
 
-bool support_patch_withholds(const SupportPatch& patch, const tf2::Vector3& center,
-                             double resolution) noexcept {
-  if (!(patch.patch_radius > 0.0) || !(resolution > 0.0)) {
-    return false;
-  }
-  const tf2::Vector3 delta = center - patch.point;
-  const double height = delta.dot(patch.normal);
+namespace {
+
+bool plane_withholds(const SupportPatch& patch, const tf2::Vector3& point,
+                     const tf2::Vector3& normal, const tf2::Vector3& center, double resolution) {
+  const tf2::Vector3 delta = center - point;
+  const double height = delta.dot(normal);
   const double lateral_sq = std::max(0.0, delta.length2() - height * height);
   const double half = 0.5 * resolution;
   // Both pads are exact discretisation geometry, not tuned tolerances, and are
   // the kernel's own: the cube's half-width projected on the normal, and the
   // cube's circumradius laterally.
   const double normal_half_width =
-      half *
-      (std::fabs(patch.normal.x()) + std::fabs(patch.normal.y()) + std::fabs(patch.normal.z()));
+      half * (std::fabs(normal.x()) + std::fabs(normal.y()) + std::fabs(normal.z()));
   const double lateral_pad = half * 1.7320508075688772;  // sqrt(3)
   const double reach = patch.patch_radius + lateral_pad;
   if (lateral_sq > reach * reach) {
@@ -193,6 +191,42 @@ bool support_patch_withholds(const SupportPatch& patch, const tf2::Vector3& cent
   // No `slack` term (the kernel's `attached_contact_tolerance`): what this
   // withholds must stay a subset of what the kernel exempts.
   return height <= normal_half_width + patch.max_penetration + resolution;
+}
+
+}  // namespace
+
+bool support_patch_withholds(const SupportPatch& patch, const tf2::Vector3& center,
+                             double resolution) noexcept {
+  if (!(patch.patch_radius > 0.0) || !(resolution > 0.0)) {
+    return false;
+  }
+  // The live plane is what the kernel exempts against, so it always gates. The
+  // anchor (`SupportPatchAnchors`) only ever narrows it: an AND, never an OR.
+  return plane_withholds(patch, patch.point, patch.normal, center, resolution) &&
+         (!patch.has_anchor ||
+          plane_withholds(patch, patch.anchor_point, patch.anchor_normal, center, resolution));
+}
+
+std::vector<SupportPatch>
+SupportPatchAnchors::anchor(const std::vector<SupportPatchObservation>& present) {
+  std::vector<SupportPatchObservation> next;
+  next.reserve(present.size());
+  std::vector<SupportPatch> out;
+  out.reserve(present.size());
+  for (const auto& observation : present) {
+    // First sighting anchors HERE: that grid is the attestation's own.
+    SupportPatchObservation kept = observation;
+    for (const auto& prior : anchors_) {
+      if (prior.key == observation.key) {
+        kept = prior;
+        break;
+      }
+    }
+    out.push_back(kept.patch);
+    next.push_back(std::move(kept));
+  }
+  anchors_ = std::move(next);
+  return out;
 }
 
 std::size_t clear_attached_payload_cells(openral_msgs::msg::OccupancyVoxels& grid,

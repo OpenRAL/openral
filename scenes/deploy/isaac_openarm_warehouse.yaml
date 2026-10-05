@@ -36,13 +36,32 @@ scene:
     # First boot also streams the stage + its props from the asset server.
     boot_timeout_s: 1200
     # The head ZED at the manifest's nominal mount (openarm_base -> zed_camera_link,
-    # xyz [0, 0, 0.2], rpy [-0.0123, 1.1823, 0]); unmounted cameras get the scene's
-    # generic viewpoints. Wrist cameras are mounted the same way, per cell.
+    # xyz [0, 0, 0.2], rpy [-0.0123, 1.1823, 0]). An unmounted camera gets one of the
+    # scene's generic base-relative viewpoints instead: on this stage the third
+    # (top-down) one rendered wrist_right all-black and the second stared wrist_left
+    # at a shelf upright.
+    #
+    # The wrist cameras ride the jaw at the MuJoCo twin's camera_wrist_left/right
+    # (openarm_v20_bimanual.xml, compiled cam_pos/cam_quat in openarm_*_ee_base_link,
+    # which is the URDF link of the same name). MuJoCo cameras look down -z with +y up:
+    # `axes: usd`. hfov 81.7 deg: the twin's fovy 66 deg at the 4:3 wrist intrinsics.
     camera_mounts:
       head_zed:
         link: openarm_base
         xyz: [0.0, 0.0, 0.2]
         quat_wxyz: [0.830285, -0.005106, 0.557306, 0.003427]
+      wrist_left:
+        link: openarm_left_ee_base_link
+        xyz: [0.023, 0.0182, -0.10236]
+        quat_wxyz: [0.676209, -0.206737, -0.049327, -0.705385]
+        axes: usd
+        hfov_deg: 81.7
+      wrist_right:
+        link: openarm_right_ee_base_link
+        xyz: [0.023, -0.0182, -0.10236]
+        quat_wxyz: [0.705383, 0.049326, 0.206737, -0.676211]
+        axes: usd
+        hfov_deg: 81.7
     objects:
       - name: cracker_box
         usd: "isaac:Isaac/Props/YCB/Axis_Aligned_Physics/003_cracker_box.usd"

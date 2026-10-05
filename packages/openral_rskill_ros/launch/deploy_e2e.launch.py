@@ -852,6 +852,38 @@ def _write_foxglove_layout(cameras: list[str], robot_id: str, base_frame: str) -
     return str(path)
 
 
+def _foxglove_asset_env(robot_description_xml: str | None) -> dict[str, str]:
+    """``foxglove_bridge``'s env, so a viewer can fetch the URDF's ``package://`` meshes.
+
+    The bridge serves a 3D panel's ``fetchAsset`` through ``resource_retriever``,
+    which resolves ``package://<pkg>`` only through the ament index. A public
+    description package OpenRAL fetches into its cache (OpenArm's
+    ``openarm_description``) is on no workspace's index, so on Spark the bridge
+    refused every mesh (``Package [openarm_description] does not exist``) and the
+    panel drew TF axes with no robot. Prepend an overlay prefix that indexes it.
+    Empty when no overlay is needed or it cannot be built — a viz convenience
+    must never take the graph down, so that failure is printed, not raised.
+    """
+    if robot_description_xml is None:
+        return {}
+    from openral_core.exceptions import ROSConfigError
+    from openral_hal.ros_package_overlay import public_package_overlay
+
+    try:
+        overlay = public_package_overlay(robot_description_xml)
+    except (ROSConfigError, OSError) as exc:
+        print(f"[deploy_e2e] foxglove: URDF meshes will not load: {exc!r}", flush=True)
+        return {}
+    if overlay is None:
+        return {}
+    print(f"[deploy_e2e] foxglove: serving package:// URDF meshes via {overlay}", flush=True)
+    return {
+        "AMENT_PREFIX_PATH": os.pathsep.join(
+            p for p in (str(overlay), os.environ.get("AMENT_PREFIX_PATH", "")) if p
+        )
+    }
+
+
 def _build_real_bringup_include(real_bringup: str | None) -> object | None:
     """Include the robot's vendor ros2_control bringup, if its manifest declares one.
 
@@ -2401,6 +2433,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
         if scene_drivers:
             extra_nodes.extend(_build_driver_includes(scene_drivers, deploy_config))
 
+    robot_description_xml: str | None = None
     urdf_asset = description.assets.urdf
     if urdf_asset is not None:
         urdf_path = _resolve_urdf_path(urdf_asset.ref, pathlib.Path(robot_yaml).parent)
@@ -3226,6 +3259,7 @@ def compose_runtime_graph(context: LaunchContext, *_args: object, **_kwargs: obj
                     "use_sim_time": use_sim_time,
                 }
             ],
+            additional_env=_foxglove_asset_env(robot_description_xml),
         )
         nodes.append(TimerAction(period=5.0, actions=[foxglove_bridge_node]))
 
