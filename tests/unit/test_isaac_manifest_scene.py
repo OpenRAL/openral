@@ -419,3 +419,71 @@ def test_camera_fov_comes_from_the_mount_else_the_manifest(_manifest_scene_mod: 
     assert mod.camera_hfov_deg({"intrinsics": k}) == pytest.approx(90.0)  # type: ignore[attr-defined]
     assert mod.camera_hfov_deg({"mount": {"hfov_deg": 70.0}, "intrinsics": k}) == 70.0  # type: ignore[attr-defined]
     assert mod.camera_hfov_deg({}) is None  # type: ignore[attr-defined]
+
+
+# ── finger friction (Isaac i58/i59) ───────────────────────────────────────────
+
+
+def _robot_stage() -> object:
+    """A real in-memory USD stage: a robot with a finger and a non-finger collider."""
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.CreateInMemory()
+    for path in (
+        "/openarm/openarm_right_link7/collisions/box",
+        "/openarm/openarm_right_ee_inner_finger/collisions/pad",
+        "/openarm/openarm_left_ee_outer_finger/collisions/pad",
+        "/openarm/openarm_right_ee_inner_finger/visuals/mesh",  # a finger visual: no collider
+    ):
+        UsdGeom.Cube.Define(stage, path)
+    for path in (
+        "/openarm/openarm_right_link7/collisions/box",
+        "/openarm/openarm_right_ee_inner_finger/collisions/pad",
+        "/openarm/openarm_left_ee_outer_finger/collisions/pad",
+    ):
+        UsdPhysics.CollisionAPI.Apply(stage.GetPrimAtPath(path))
+    return stage
+
+
+def test_finger_friction_binds_only_the_finger_colliders(_manifest_scene_mod: object) -> None:
+    pytest.importorskip("pxr")
+    from pxr import UsdPhysics, UsdShade
+
+    stage = _robot_stage()
+    bound = _manifest_scene_mod.apply_finger_friction(stage, "/openarm", 0.9)  # type: ignore[attr-defined]
+    assert sorted(bound) == [
+        "/openarm/openarm_left_ee_outer_finger/collisions/pad",
+        "/openarm/openarm_right_ee_inner_finger/collisions/pad",
+    ]
+    material = UsdShade.Material.Get(stage, "/World/Physics_Materials/finger_pad")
+    physics = UsdPhysics.MaterialAPI(material.GetPrim())
+    assert physics.GetStaticFrictionAttr().Get() == pytest.approx(0.9)
+    assert physics.GetDynamicFrictionAttr().Get() == pytest.approx(0.9)
+    for path in bound:
+        binding = UsdShade.MaterialBindingAPI(stage.GetPrimAtPath(path))
+        assert binding.ComputeBoundMaterial("physics")[0].GetPath() == material.GetPath()
+    link = UsdShade.MaterialBindingAPI(
+        stage.GetPrimAtPath("/openarm/openarm_right_link7/collisions/box")
+    )
+    assert not link.ComputeBoundMaterial("physics")[0], "a non-finger collider is untouched"
+
+
+def test_finger_friction_without_finger_colliders_binds_nothing(
+    _manifest_scene_mod: object,
+) -> None:
+    pytest.importorskip("pxr")
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.CreateInMemory()
+    UsdGeom.Cube.Define(stage, "/robot/link1/collisions/box")
+    UsdPhysics.CollisionAPI.Apply(stage.GetPrimAtPath("/robot/link1/collisions/box"))
+    assert _manifest_scene_mod.apply_finger_friction(stage, "/robot") == []  # type: ignore[attr-defined]
+    assert not stage.GetPrimAtPath("/World/Physics_Materials/finger_pad")
+
+
+@pytest.mark.parametrize("friction", [0.0, -1.0, float("nan"), float("inf")])
+def test_finger_friction_refuses_a_bad_coefficient(
+    _manifest_scene_mod: object, friction: float
+) -> None:
+    with pytest.raises(ValueError, match="friction"):
+        _manifest_scene_mod.apply_finger_friction(object(), "/robot", friction)  # type: ignore[attr-defined]
