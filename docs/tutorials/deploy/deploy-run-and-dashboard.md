@@ -190,6 +190,13 @@ runtime:
   octomap_cloud_topic: /zed/zed_node/point_cloud/cloud_registered
 ```
 
+A driver launched from the scene's `drivers:` block inherits the deploy's Fast DDS
+large-data profile (`FASTRTPS_DEFAULT_PROFILES_FILE`, named on the
+`dds_transport_ready:` line). One you start yourself in another shell does not, and
+its best-effort samples above ~512 KB — clouds, depth and colour frames — are then
+mostly lost before any consumer sees them: export the same variable there
+([DDS transport for large messages](../../reference/dds-large-messages.md)).
+
 The scene has **no `sensors:` block**. The ZED is bolted to the robot, so both of
 its streams are robot cameras, and a deploy scene never touches a camera the
 robot manifest defines (`check_scene_sensor_overrides` refuses a scene entry

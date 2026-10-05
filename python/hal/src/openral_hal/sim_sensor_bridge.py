@@ -4008,6 +4008,8 @@ class SimSensorBridge:
         if self._tf_broadcaster is None:  # may already exist (RGB camera TFs)
             self._tf_broadcaster = TransformBroadcaster(self._node)
 
+        # Megabyte samples: under Fast DDS they arrive only with the deploy's large-data
+        # profile (docs/reference/dds-large-messages.md); best effort is the sensor class.
         depth_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
             durability=QoSDurabilityPolicy.VOLATILE,

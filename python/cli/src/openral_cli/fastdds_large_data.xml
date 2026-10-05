@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Fast DDS participant profile shipped by `openral deploy sim` / `openral deploy run`
+  (openral_cli.deploy_sim.apply_fastdds_large_data_profile, exported as
+  FASTRTPS_DEFAULT_PROFILES_FILE unless the operator already set one).
+
+  Why: Fast DDS 2.14 (ROS 2 Jazzy's default RMW) gives every participant a 512 KiB
+  shared-memory segment. A same-host sample larger than that is fragmented into the
+  publisher's segment faster than readers free it; for a BEST_EFFORT reader nothing
+  repairs the lost fragments, so the whole sample is dropped. Measured 2026-10-04
+  (tools/cloud_transport_probe.py, 4 Hz, BEST_EFFORT, KEEP_LAST): 480 KB clouds 40/40,
+  540 KB 3/40, 720 KB and up 0/40. The deploy graph's depth clouds are 2.4-2.8 MB (Isaac
+  512x384), its depth/colour images 0.6-3.7 MB. With this profile: 2.8 MB 60/60.
+
+  What changes: only the shared-memory segment size. The transports are the builtin
+  defaults (SHM for same-host peers, UDPv4 for discovery and other hosts), declared
+  explicitly because replacing the segment size means replacing the builtin set.
+
+  Cost: Fast DDS maps the whole segment into /dev/shm for EVERY participant (one per
+  ROS process), resident from creation: 16 MiB x the graph's process count.
+  Sizing: the segment is the PUBLISHER's, and must hold the fragments of every sample
+  it has in flight to its slowest reader - an RGB-D frame set (cloud + depth + colour,
+  up to ~8 MB for an HD720 ZED) with headroom for one more.
+
+  docs/reference/dds-large-messages.md has the measurements and the alternatives.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>openral_shm_large</transport_id>
+      <type>SHM</type>
+      <segment_size>16777216</segment_size>
+    </transport_descriptor>
+    <transport_descriptor>
+      <transport_id>openral_udpv4</transport_id>
+      <type>UDPv4</type>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="openral_large_data" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>openral_shm_large</transport_id>
+        <transport_id>openral_udpv4</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>

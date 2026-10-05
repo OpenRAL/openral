@@ -477,6 +477,24 @@ def test_the_voxel_bridge_gets_no_tf_frames_without_the_vision_leg(tmp_path: Pat
     assert off == absent
 
 
+@pytest.mark.usefixtures("calibrated_openarm")
+def test_the_foxglove_attachment_markers_get_the_bridges_tf_frames(tmp_path: Path) -> None:
+    """``bucket2_markers`` draws the held payload on its attach link's TF frame, so with
+    Foxglove on it gets the very ``attach_link_tf_frames`` the octomap bridge gets — else the
+    payload's markers name a frame the cell's TF tree does not have and never render."""
+    from launch_ros.utilities import evaluate_parameters
+
+    _, _, ctx, entities = _real_graph(
+        _scene_with_vision_leg(tmp_path, enabled=True), {"enable_foxglove": "true"}
+    )
+    (params,) = evaluate_parameters(
+        ctx, _node(entities, "openral_foxglove_bringup", "bucket2_markers")._Node__parameters
+    )
+    assert tuple(params["attach_link_tf_frames"]) == tuple(
+        _voxel_bridge_params(ctx, entities)["attach_link_tf_frames"]
+    )
+
+
 # ── Grasp-target exemption (DeployRuntime.grasp_allowance_enabled) ───────────
 
 _OPENARM_FINGER_LINKS = ("openarm_left_finger_pair", "openarm_right_finger_pair")

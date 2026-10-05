@@ -73,6 +73,8 @@ DEPTH_TOPICS: list[str] = [
 #: Read-only viz, not actuation.
 BUCKET2_TOPICS: list[str] = [
     r"/openral/world_voxels_cloud",  # sensor_msgs/PointCloud2 — occupied voxel centres
+    # visualization_msgs/MarkerArray — attached-object primitives + grasp/place regions
+    r"/openral/viz/attachments",
 ]
 
 #: **Telemetry** — the mission/state plane the OTel dashboard also renders,

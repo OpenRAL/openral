@@ -455,7 +455,7 @@ everything dies with the goal.** One goal-scoped declaration carries both halves
   the runner; a search hint only — the support layer is measured from the voxel map, never read
   off the box's bottom face),
   re-measured at `grasp_target_rate_hz` (3 Hz) on the masked pixels the robot self-filter kept
-  for the nearest capture within the mask/depth skew bound (best-effort clouds are lost in transit, and a neighbouring capture can only remove more pixels) (`mask_without_removed_points`: the fingers closing in on the target leave
+  for the nearest capture within the mask/depth skew bound (best-effort clouds can be lost in transit — under Fast DDS's default 512 KiB shared-memory segment most megabyte clouds were, until the deploy shipped its large-data profile, [DDS transport for large messages](dds-large-messages.md) — and a neighbouring capture can only remove more pixels) (`mask_without_removed_points`: the fingers closing in on the target leave
   its fit exactly as they leave the map, so they neither grow it nor fail it as `not_on_support`;
   with the topic configured, a capture with no self-filtered cloud that close is not fitted at
   all — the lost view `unfiltered` (Isaac i38: an unfiltered fit grew a 32 cm hand column that
